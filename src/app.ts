@@ -26,6 +26,10 @@ export async function createApp(): Promise<{
     });
   });
 
+  app.get('/', (_req, res) => {
+    res.redirect('/docs');
+  });
+
   app.get('/openapi.json', (_req, res) => {
     res.json(openApiSpec);
   });
