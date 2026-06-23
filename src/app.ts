@@ -1,16 +1,32 @@
+
 /**
  * @file app.ts
  * @description Bootstrap de la aplicación Express.
  *
- * Orden de middlewares (importa para la seguridad):
- * 1. cors()          — Headers CORS (antes de parsear el body)
- * 2. express.json()  — Parsear body JSON
- * 3. Rutas públicas  — /health, /, /openapi.json, /docs  (sin auth)
- * 4. authenticate()  — Verifica JWT para todo /api/*
- * 5. Routers de API  — /api/resources, /api/reservations, /api/reports
- * 6. errorHandler    — Captura errores de toda la cadena anterior
+ * ## Orden de middlewares (crítico para la seguridad)
+ *
+ * ```
+ * cors()          ← CORS headers antes de parsear body
+ * express.json()  ← Parser de body JSON
+ * /health         ← Pública: sin auth
+ * /               ← Pública: redirect a /docs
+ * /openapi.json   ← Pública: spec para clientes SDK
+ * /docs           ← Pública: Swagger UI
+ * /api/login      ← Pública: emite tokens (antes del authenticate)
+ * authenticate()  ← A partir de aquí: todas las rutas requieren JWT
+ * /api/resources     ← Protegida
+ * /api/reservations  ← Protegida
+ * /api/reports       ← Protegida
+ * errorHandler    ← Siempre al final
+ * ```
+ *
+ * ## Por qué /api/login va ANTES de authenticate()
+ *
+ * `authenticate()` rechaza cualquier request sin JWT válido.
+ * Si montáramos `/api/login` después, el propio endpoint de login
+ * sería bloqueado antes de poder emitir el primer token.
  */
-
+ 
 import express from 'express';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
@@ -18,107 +34,92 @@ import { createAppContainer, AppContainer } from './container.js';
 import { createResourcesRouter } from './api/routes/resources.routes.js';
 import { createReservationsRouter } from './api/routes/reservations.routes.js';
 import { createReportsRouter } from './api/routes/reports.routes.js';
+import { createAuthRouter } from './api/routes/auth.routes.js';
 import { errorHandler } from './api/middleware/error.middleware.js';
 import { openApiSpec } from './openapi/spec.js';
 import { authenticate } from './security/auth.middleware.js';
-
+import { AuthService } from './security/auth.service.js';
+import { InMemoryUserStore } from './security/user.store.js';
+ 
 export async function createApp(): Promise<{
   app: express.Application;
   container: AppContainer;
 }> {
   const container = await createAppContainer();
+ 
+  // Inicializar servicio de autenticación con el store en memoria.
+  // Para producción con BD: sustituir InMemoryUserStore por SqlUserStore.
+  const userStore = new InMemoryUserStore();
+  const authService = new AuthService(userStore);
+ 
   const app = express();
-
+ 
   // -------------------------------------------------------------------------
   // Middlewares globales
   // -------------------------------------------------------------------------
-
-  /**
-   * CORS: en producción restringe el origen al dominio de tu frontend.
-   *
-   * Render Dashboard → Environment → Agregar:
-   *   CORS_ORIGIN = https://tu-frontend.onrender.com
-   *
-   * Para múltiples orígenes, usa una lista separada por comas en la variable
-   * y parsea aquí: process.env.CORS_ORIGIN?.split(',')
-   */
+ 
   app.use(
     cors({
+      // En producción: restringe al origen del frontend.
+      // Render Dashboard → Environment → CORS_ORIGIN=https://tu-frontend.com
       origin: process.env.CORS_ORIGIN ?? '*',
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     }),
   );
-
+ 
   app.use(express.json());
-
+ 
   // -------------------------------------------------------------------------
-  // Rutas públicas (sin autenticación)
+  // Rutas públicas — sin authenticate()
   // -------------------------------------------------------------------------
-
-  /**
-   * @swagger
-   * /health:
-   *   get:
-   *     summary: Health check — no requiere autenticación
-   *     tags: [System]
-   *     responses:
-   *       200:
-   *         description: Servicio operativo
-   */
+ 
   app.get('/health', (_req, res) => {
-    res.json({
-      status: 'ok',
-      mode: 'in-memory',
-      resources: 'seeded',
-    });
+    res.json({ status: 'ok', mode: 'in-memory', resources: 'seeded' });
   });
-
-  /** Redirige la raíz a la documentación Swagger */
+ 
   app.get('/', (_req, res) => {
     res.redirect('/docs');
   });
-
-  /** Spec OpenAPI en JSON — útil para clientes que generan SDK */
+ 
   app.get('/openapi.json', (_req, res) => {
     res.json(openApiSpec);
   });
-
-  /** Swagger UI — disponible sin autenticación para facilitar la exploración */
+ 
   app.use(
     '/docs',
     swaggerUi.serve,
     swaggerUi.setup(openApiSpec, {
       customSiteTitle: 'Reservations API',
       swaggerOptions: {
-        // Persiste el token entre recargas en el navegador
+        // Mantiene el token entre recargas del navegador
         persistAuthorization: true,
+        // Expande el tag Auth por defecto para que el flujo login→Authorize sea visible
+        docExpansion: 'list',
+        filter: true,
       },
     }),
   );
-
+ 
   // -------------------------------------------------------------------------
-  // Rutas protegidas — authenticate() se aplica a TODO /api/*
+  // POST /api/login — DEBE ir antes de authenticate()
   // -------------------------------------------------------------------------
-
-  /**
-   * `authenticate()` sin argumentos lee el JWT del header `Authorization: Bearer <token>`.
-   * Para tests de integración se puede pasar un resolver que devuelva un usuario fijo:
-   *
-   * ```ts
-   * app.use('/api', authenticate(() => ({ id: 'test', role: UserRole.ADMIN })));
-   * ```
-   */
+  app.use('/api/login', createAuthRouter(authService));
+ 
+  // -------------------------------------------------------------------------
+  // authenticate() — protege TODAS las rutas /api/* montadas a continuación
+  // -------------------------------------------------------------------------
   app.use('/api', authenticate());
-
+ 
   app.use('/api/resources', createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
   app.use('/api/reports', createReportsRouter(container));
-
+ 
   // -------------------------------------------------------------------------
-  // Manejador de errores global — siempre al final
+  // Error handler global — siempre al final
   // -------------------------------------------------------------------------
   app.use(errorHandler);
-
+ 
   return { app, container };
 }
+ 
