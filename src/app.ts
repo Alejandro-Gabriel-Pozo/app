@@ -34,7 +34,7 @@ export async function createApp(): Promise<{
     '/docs',
     swaggerUi.serve,
     swaggerUi.setup(openApiSpec, {
-      customSiteTitle: 'Reservations API Docs',
+      customSiteTitle: 'Reservations API',
     }),
   );
 

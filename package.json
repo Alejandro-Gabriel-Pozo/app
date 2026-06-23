@@ -1,12 +1,12 @@
 {
-  "name": "reservations",
+  "name": "reservations-api",
   "version": "1.0.0",
   "description": "Sistema de reservas multi-recurso (cabinas, mesas, spa, tours)",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "start": "node dist/server.js",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest"

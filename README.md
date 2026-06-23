@@ -1,4 +1,4 @@
-# Reservations
+# Reservations API
 
 Sistema de reservas multi-recurso para hoteles y resorts: cabañas, mesas de restaurante, spa y asientos de tour.
 
@@ -112,23 +112,31 @@ src/
 └── openapi/         # Especificación Swagger
 ```
 
+## Deploy en Render
+
+1. Sube el repo a GitHub (ver abajo).
+2. En [Render](https://render.com), crea un **Web Service** conectado al repo.
+3. Render detecta `render.yaml` automáticamente, o configura manualmente:
+   - **Build command:** `npm install && npm run build`
+   - **Start command:** `npm start`
+   - **Health check path:** `/health`
+4. Tras el deploy, la API queda en `https://<tu-servicio>.onrender.com` con Swagger en `/docs`.
+
 ## Publicar en GitHub
 
 ```bash
-git init
 git add .
-git commit -m "Initial commit: reservations API demo"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/reservations.git
+git commit -m "Flatten repo structure and prepare Render deploy"
 git push -u origin main
 ```
+
+Repositorio: https://github.com/alepozo/reservations-main
 
 El workflow de CI (`.github/workflows/ci.yml`) ejecuta tests y typecheck en cada push.
 
 ## Próximos pasos
 
 - [ ] Docker + PostgreSQL para persistencia real
-- [ ] Deploy en Render / Railway
 - [ ] Autenticación JWT (middleware ya preparado en `src/security/`)
 - [ ] UI web
 

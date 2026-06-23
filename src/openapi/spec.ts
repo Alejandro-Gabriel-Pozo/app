@@ -1,7 +1,7 @@
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'Reservations API',
+    title: 'Reservations API — Multi-resource booking',
     version: '1.0.0',
     description:
       'API de reservas multi-recurso: cabañas, mesas, spa y asientos de tour.',
