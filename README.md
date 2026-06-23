@@ -130,7 +130,7 @@ git commit -m "Flatten repo structure and prepare Render deploy"
 git push -u origin main
 ```
 
-Repositorio: https://github.com/alepozo/reservations-main
+Repositorio: https://github.com/Alejandro-Gabriel-Pozo/app
 
 El workflow de CI (`.github/workflows/ci.yml`) ejecuta tests y typecheck en cada push.
 
