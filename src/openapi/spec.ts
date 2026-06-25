@@ -46,11 +46,8 @@ export const openApiSpec = {
       '| recepcion@demo.com | recep123 | RECEPTIONIST |\n' +
       '| mesero@demo.com | waiter123 | WAITER |',
   },
-  servers: [
-    {
-      url: 'https://app-chny.onrender.com',
-      description: 'Render (producción)',
-    },
+  servers:  [
+    { url: 'https://app-chny.onrender.com', description: 'Render (producción)' },
     { url: 'http://localhost:3000', description: 'Desarrollo local' },
   ],
  
