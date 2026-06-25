@@ -27,7 +27,7 @@
  * 5. Pegar el token en el campo `Value` → "Authorize" → "Close"
  * 6. Todos los endpoints subsiguientes enviarán `Authorization: Bearer <token>`
  */
-
+ 
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
@@ -47,32 +47,26 @@ export const openApiSpec = {
       '| mesero@demo.com | waiter123 | WAITER |',
   },
   servers: [
-    { url: 'http://localhost:3000', description: 'Desarrollo local' },
     {
-      url: 'https://{appName}.onrender.com',
+      url: 'https://app-chny.onrender.com',
       description: 'Render (producción)',
-      variables: {
-        appName: {
-          default: 'reservations-api',
-          description: 'Nombre de tu servicio en Render',
-        },
-      },
     },
+    { url: 'http://localhost:3000', description: 'Desarrollo local' },
   ],
-
+ 
   // ---------------------------------------------------------------------------
   // Seguridad global — se aplica a todos los endpoints salvo los que
   // declaren explícitamente `security: []`
   // ---------------------------------------------------------------------------
   security: [{ BearerAuth: [] }],
-
+ 
   tags: [
     { name: 'Auth', description: 'Autenticación y emisión de tokens' },
     { name: 'Resources', description: 'Recursos reservables' },
     { name: 'Reservations', description: 'Gestión de reservas' },
     { name: 'Reports', description: 'Reportes de ocupación' },
   ],
-
+ 
   paths: {
     // -------------------------------------------------------------------------
     // Rutas públicas (sin BearerAuth)
@@ -95,7 +89,7 @@ export const openApiSpec = {
         },
       },
     },
-
+ 
     '/api/login': {
       post: {
         summary: 'Obtener JWT',
@@ -152,7 +146,7 @@ export const openApiSpec = {
         },
       },
     },
-
+ 
     // -------------------------------------------------------------------------
     // Recursos
     // -------------------------------------------------------------------------
@@ -233,7 +227,7 @@ export const openApiSpec = {
         },
       },
     },
-
+ 
     // -------------------------------------------------------------------------
     // Reservas
     // -------------------------------------------------------------------------
@@ -339,7 +333,7 @@ export const openApiSpec = {
         },
       },
     },
-
+ 
     // -------------------------------------------------------------------------
     // Reportes
     // -------------------------------------------------------------------------
@@ -436,7 +430,7 @@ export const openApiSpec = {
       },
     },
   },
-
+ 
   components: {
     // -------------------------------------------------------------------------
     // ✅ CLAVE: sin este bloque, el botón "Authorize" no aparece en Swagger UI
@@ -451,7 +445,7 @@ export const openApiSpec = {
           'Pega solo el valor del campo `token`, sin el prefijo "Bearer".',
       },
     },
-
+ 
     // -------------------------------------------------------------------------
     // Respuestas reutilizables
     // -------------------------------------------------------------------------
@@ -504,7 +498,7 @@ export const openApiSpec = {
         },
       },
     },
-
+ 
     // -------------------------------------------------------------------------
     // Schemas
     // -------------------------------------------------------------------------
@@ -517,7 +511,7 @@ export const openApiSpec = {
           password: { type: 'string', minLength: 6, example: 'admin123' },
         },
       },
-
+ 
       LoginResponse: {
         type: 'object',
         properties: {
@@ -538,7 +532,7 @@ export const openApiSpec = {
           },
         },
       },
-
+ 
       ErrorResponse: {
         type: 'object',
         properties: {
@@ -546,7 +540,7 @@ export const openApiSpec = {
           message: { type: 'string', example: 'Reserva no encontrada: abc-123' },
         },
       },
-
+ 
       ValidationErrorResponse: {
         type: 'object',
         properties: {
@@ -561,7 +555,7 @@ export const openApiSpec = {
           },
         },
       },
-
+ 
       CreateReservation: {
         type: 'object',
         required: ['resourceType', 'resourceId', 'customer', 'startTime', 'endTime', 'details'],
@@ -591,3 +585,4 @@ export const openApiSpec = {
     },
   },
 } as const;
+ 
