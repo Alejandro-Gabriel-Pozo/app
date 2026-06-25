@@ -1,4 +1,3 @@
-
 /**
  * @file user.store.ts
  * @description Almacén de usuarios para autenticación.
@@ -194,30 +193,27 @@ export class InMemoryUserStore implements UserStore {
         role: UserRole.ADMIN,
         // hash de "admin123" — solo para desarrollo
         passwordHash:
-          '7a5d8f2b3c1e4a9f6b0d2e7c5a3f1b8d:' +
-          'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6' +
-          'e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2' +
-          'c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8',
+          'eacd2ec131cc27483111fd162a820d5a:' +
+          'c9d36d745334e44f36da17224499fc92f7340f74fd17ba4deedaa284a9752db1' +
+          'ec07ce9622456c071becfa40158888bd994e724549f87598e2a94fc51ff3731b',
       },
       {
         id: 'demo-recep-001',
         email: 'recepcion@demo.com',
         role: UserRole.RECEPTIONIST,
         passwordHash:
-          '3e1a7f5c2b8d4a6e0f9c3b5d7a2e4f8c:' +
-          'b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7' +
-          'f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3' +
-          'd4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9',
+          '829280e6baa346e556e93a4aa1297ae0:' +
+          '09293eff08b0114d7330e7a895c3770e65d7a2fe39bf2c480e92010fad0f029e' +
+          'a00c4d70e52378d74bbfc7d95aabc27e0349692d4237b6e83e1b625d09bd9113',
       },
       {
         id: 'demo-waiter-001',
         email: 'mesero@demo.com',
         role: UserRole.WAITER,
         passwordHash:
-          '9c4b2a1f6e3d7b5c8a0e2f4c6b1d3a7e:' +
-          'c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8' +
-          'a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4' +
-          'e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+          '55e9c9188fedb31713ea77573814e946:' +
+          '6a1f9c19d673ac6103f7bc9b7c0b68c1b786a4bc56e1844017dd61c453c29c88' +
+          'ac907ea38b52cdb199257e0077bd28fee9ed5d70b3502f04144a4c072613d44a',
       },
     ];
  
@@ -237,4 +233,5 @@ export class InMemoryUserStore implements UserStore {
     return this.users.get(email.toLowerCase());
   }
 }
+ 
  
