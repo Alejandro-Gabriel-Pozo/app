@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "db:migrate": "psql $DATABASE_URL -f src/db/schema.sql",
     "db:migrate:local": "psql postgresql://localhost/reservations_dev -f src/db/schema.sql"
+     "build": "tsc && cp src/db/schema.sql dist/db/schema.sql
   },
   "engines": {
     "node": "20.x"
