@@ -1,0 +1,7 @@
+npm install          # instala pg y todas las dependencias
+npm run build        # tsc — debe compilar sin errores
+npm run dev          # modo in-memory (sin DATABASE_URL)
+
+# Para PostgreSQL:
+npm run db:migrate   # ejecuta schema.sql contra DATABASE_URL
+DATABASE_URL=postgresql://... npm run dev
