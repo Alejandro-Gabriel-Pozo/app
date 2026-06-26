@@ -7,12 +7,9 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "npm run build && node dist/server.js",
-    "build": "tsc",
+    "build": "tsc && cp src/db/schema.sql dist/db/schema.sql",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "db:migrate": "psql $DATABASE_URL -f src/db/schema.sql",
-    "db:migrate:local": "psql postgresql://localhost/reservations_dev -f src/db/schema.sql"
-     "build": "tsc && cp src/db/schema.sql dist/db/schema.sql
+    "test:watch": "vitest"
   },
   "engines": {
     "node": "20.x"
