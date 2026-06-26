@@ -37,7 +37,7 @@
  * y no necesita cambios.
  */
  
-import { createHash, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
+import { pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { UserRole } from '../types/enums.js';
  
@@ -233,5 +233,3 @@ export class InMemoryUserStore implements UserStore {
     return this.users.get(email.toLowerCase());
   }
 }
- 
- 
