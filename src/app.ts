@@ -16,12 +16,13 @@
  * 7. /api/resources, /reservations, /reports — rutas protegidas
  * 8. errorHandler
  */
- 
+
 import express from 'express';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import pg from 'pg';
- 
+import http from 'node:http';
+
 import { createResourcesRouter } from './api/routes/resources.routes.js';
 import { createReservationsRouter } from './api/routes/reservations.routes.js';
 import { createReportsRouter } from './api/routes/reports.routes.js';
@@ -36,38 +37,38 @@ import { tenantMiddleware } from './platform/tenant.middleware.js';
 import { SqlClient } from './repositories/sql.client.js';
 import { createAppContainer } from './container.js';
 import { checkDatabaseHealth } from './db/pg.client.js';
- 
+
 const { Pool } = pg;
- 
+
 // ---------------------------------------------------------------------------
 // Inicialización de la BD central (PLATFORM_DATABASE_URL)
 // ---------------------------------------------------------------------------
- 
+
 function createPlatformClient(): SqlClient | null {
   const url = process.env.PLATFORM_DATABASE_URL;
   if (!url) return null;
- 
+
   const pool = new Pool({
     connectionString: url,
     max: 5,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
   });
- 
+
   pool.on('error', (err) => {
     console.error('[platform] Error en pool central:', err.message);
   });
- 
+
   return {
-    async query(sql: string, params?: unknown[]) {
+    async query<T = unknown>(sql: string, params?: unknown[]) {
       const result = await pool.query(sql, params);
-      return { rows: result.rows, rowCount: result.rowCount ?? undefined };
+      return { rows: result.rows as T[], rowCount: result.rowCount ?? undefined };
     },
   };
 }
- 
+
 export async function createApp(): Promise<{ app: express.Application }> {
   const app = express();
- 
+
   // -------------------------------------------------------------------------
   // BD central y repositorio de plataforma
   // -------------------------------------------------------------------------
@@ -75,7 +76,7 @@ export async function createApp(): Promise<{ app: express.Application }> {
   const platformRepo = platformClient
     ? new PlatformRepository(platformClient)
     : null;
- 
+
   if (!platformClient) {
     console.warn(
       '[app] ⚠️  PLATFORM_DATABASE_URL no definida. ' +
@@ -83,19 +84,17 @@ export async function createApp(): Promise<{ app: express.Application }> {
       'Modo desarrollo single-tenant activo.',
     );
   }
- 
+
   // -------------------------------------------------------------------------
   // Auth service (lee usuarios de plataforma o fallback a InMemory)
   // -------------------------------------------------------------------------
-  const authService = platformRepo
-    ? new AuthService(platformRepo)
-    : new AuthService(null); // fallback: usuarios hardcodeados para dev
- 
+  const authService = new AuthService(platformRepo);
+
   // -------------------------------------------------------------------------
   // Container single-tenant (fallback cuando no hay PLATFORM_DATABASE_URL)
   // -------------------------------------------------------------------------
   const container = await createAppContainer();
- 
+
   // -------------------------------------------------------------------------
   // Middlewares globales
   // -------------------------------------------------------------------------
@@ -105,7 +104,7 @@ export async function createApp(): Promise<{ app: express.Application }> {
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
   app.use(express.json());
- 
+
   // -------------------------------------------------------------------------
   // Rutas públicas
   // -------------------------------------------------------------------------
@@ -117,44 +116,70 @@ export async function createApp(): Promise<{ app: express.Application }> {
       db: dbOk === null ? 'n/a' : dbOk ? 'connected' : 'error',
     });
   });
- 
+
   app.get('/', (_req, res) => res.redirect('/docs'));
   app.get('/openapi.json', (_req, res) => res.json(openApiSpec));
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
     customSiteTitle: 'Reservations API',
     swaggerOptions: { persistAuthorization: true, docExpansion: 'list', filter: true },
   }));
- 
+
   // -------------------------------------------------------------------------
   // POST /register — registro de negocios (público)
   // -------------------------------------------------------------------------
   if (platformRepo) {
     app.use('/register', createBusinessRouter(platformRepo));
   }
- 
+
   // -------------------------------------------------------------------------
   // POST /api/login — público, antes de authenticate()
   // -------------------------------------------------------------------------
   app.use('/api/login', createAuthRouter(authService));
- 
+
   // -------------------------------------------------------------------------
   // authenticate() + tenantMiddleware() — protegen todo /api/*
   // -------------------------------------------------------------------------
   app.use('/api', authenticate());
- 
+
   if (platformRepo) {
     // Modo multi-tenant: req.db apunta a la BD del negocio
     app.use('/api', tenantMiddleware(platformRepo));
   }
- 
+
   // -------------------------------------------------------------------------
   // Rutas protegidas
   // -------------------------------------------------------------------------
   app.use('/api/resources',    createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
   app.use('/api/reports',      createReportsRouter(container));
- 
+
   app.use(errorHandler);
- 
+
   return { app };
+}
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown — exportado para server.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * Registra los manejadores SIGTERM/SIGINT para cerrar el servidor
+ * de forma limpia antes de que el proceso termine.
+ */
+export function registerGracefulShutdown(server: http.Server): void {
+  const shutdown = (signal: string) => {
+    console.log(`\n[server] ${signal} recibido. Cerrando servidor...`);
+    server.close(() => {
+      console.log('[server] Servidor cerrado correctamente.');
+      process.exit(0);
+    });
+    // Forzar cierre si tarda más de 10s
+    setTimeout(() => {
+      console.error('[server] Cierre forzado por timeout.');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
 }
