@@ -3,8 +3,8 @@
  * Funciona con cualquier driver: pg, mysql2, better-sqlite3, etc.
  */
 export interface SqlClient {
-  query(
+  query<T = unknown>(
     sql: string,
     params?: unknown[],
-  ): Promise<{ rows: unknown[]; rowCount?: number }>;
+  ): Promise<{ rows: T[]; rowCount?: number }>;
 }
