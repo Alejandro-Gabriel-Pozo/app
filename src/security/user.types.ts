@@ -8,5 +8,5 @@ export interface AuthenticatedUser {
   id: string;
   role: UserRole;
   /** ID del negocio al que pertenece — usado por tenantMiddleware para conectar a la BD correcta */
-  businessId: string;
+  businessId?: string;
 }
