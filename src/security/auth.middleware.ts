@@ -3,59 +3,58 @@
  * @description Middleware de autenticación y autorización basado en JWT.
  *
  * ## Cambio respecto a versión anterior
- * El JWT ahora incluye `business_id` en el payload. El tenant middleware
- * lo usa para conectar a la BD correcta del negocio.
+ * El JWT puede incluir `business_id` en el payload (multi-tenant).
+ * Es opcional para mantener compatibilidad con modos single-tenant / dev.
  *
  * ## Variables de entorno (Render Dashboard)
  * - JWT_SECRET     — clave secreta para firmar/verificar tokens (OBLIGATORIA)
  * - JWT_EXPIRES_IN — duración del token (opcional, default "24h")
  */
- 
+
 import { Request, Response, NextFunction } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { UserRole } from '../types/enums.js';
 import { AuthenticatedUser } from './user.types.js';
- 
+
 // ---------------------------------------------------------------------------
-// JWT Payload — ahora incluye business_id
+// JWT Payload
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Payload del JWT.
- * `business_id` identifica el tenant — el tenant middleware lo usa
- * para conectar a la BD correcta.
+ * `business_id` es opcional: presente en modo multi-tenant,
+ * ausente en modo single-tenant / dev.
  */
 export interface JwtPayload {
   sub: string;
   role: UserRole;
-  /** ID del negocio al que pertenece el usuario */
-  business_id: string;
+  /** ID del negocio al que pertenece el usuario (multi-tenant únicamente) */
+  business_id?: string;
   iat: number;
   exp: number;
 }
- 
+
 // ---------------------------------------------------------------------------
 // Implementación JWT con node:crypto (sin dependencias externas)
 // ---------------------------------------------------------------------------
- 
+
 function base64UrlEncode(input: string | Buffer): string {
   const buf = typeof input === 'string' ? Buffer.from(input) : input;
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
- 
+
 function base64UrlDecode(input: string): Buffer {
   const padded = input + '==='.slice((input.length + 3) % 4);
   return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
- 
+
 /**
  * Genera un JWT firmado con HS256.
- * Ahora requiere `business_id` en el payload.
  *
  * @example
  * ```ts
  * const token = signToken(
- *   { sub: 'user-1', role: UserRole.ADMIN, business_id: 'biz-001' },
+ *   { sub: 'user-1', role: UserRole.ADMIN },
  *   process.env.JWT_SECRET!
  * );
  * ```
@@ -76,7 +75,7 @@ export function signToken(
   );
   return `${signingInput}.${signature}`;
 }
- 
+
 /**
  * Verifica y decodifica un JWT.
  */
@@ -87,7 +86,7 @@ export function verifyToken(token: string, secret: string): JwtPayload {
     (err as NodeJS.ErrnoException).code = 'JWT_MALFORMED';
     throw err;
   }
- 
+
   const [header, body, signature] = parts;
   const signingInput = `${header}.${body}`;
   const expectedSig = base64UrlEncode(
@@ -95,7 +94,7 @@ export function verifyToken(token: string, secret: string): JwtPayload {
   );
   const expectedBuf = Buffer.from(expectedSig);
   const receivedBuf = Buffer.from(signature);
- 
+
   if (
     expectedBuf.length !== receivedBuf.length ||
     !timingSafeEqual(expectedBuf, receivedBuf)
@@ -104,23 +103,23 @@ export function verifyToken(token: string, secret: string): JwtPayload {
     (err as NodeJS.ErrnoException).code = 'JWT_INVALID_SIGNATURE';
     throw err;
   }
- 
+
   const payload = JSON.parse(base64UrlDecode(body).toString('utf8')) as JwtPayload;
   const now = Math.floor(Date.now() / 1000);
- 
+
   if (payload.exp < now) {
     const err = new Error('Token expirado');
     (err as NodeJS.ErrnoException).code = 'JWT_EXPIRED';
     throw err;
   }
- 
+
   return payload;
 }
- 
+
 // ---------------------------------------------------------------------------
 // Configuración
 // ---------------------------------------------------------------------------
- 
+
 function requireJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
@@ -131,13 +130,13 @@ function requireJwtSecret(): string {
   }
   return secret;
 }
- 
+
 const JWT_SECRET = requireJwtSecret();
- 
+
 // ---------------------------------------------------------------------------
 // Middlewares
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Middleware de autenticación.
  * Verifica el JWT y adjunta `req.user` con `{ id, role, businessId }`.
@@ -154,7 +153,7 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
       next();
       return;
     }
- 
+
     const authHeader = req.headers['authorization'];
     if (!authHeader?.startsWith('Bearer ')) {
       res.status(401).json({
@@ -163,9 +162,9 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
       });
       return;
     }
- 
+
     const token = authHeader.slice(7);
- 
+
     try {
       const payload = verifyToken(token, JWT_SECRET);
       req.user = {
@@ -184,7 +183,7 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
     }
   };
 };
- 
+
 /**
  * Middleware de autorización por rol.
  */
