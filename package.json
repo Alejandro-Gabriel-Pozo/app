@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc && mkdir -p dist/db && cp src/db/schema.sql dist/db/schema.sql && cp src/db/platform.schema.sql dist/db/platform.schema.sql",
-  "start": "npm run build && node dist/server.js"
+  "start": "npm run build && node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
