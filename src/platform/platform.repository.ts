@@ -8,14 +8,16 @@
  * ## Schema esperado
  * Ver src/db/platform.schema.sql
  */
- 
+
 import { SqlClient } from '../repositories/sql.client.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
- 
+import { UserStore, SystemUser } from '../security/user.store.js';
+import { UserRole } from '../types/enums.js';
+
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
- 
+
 export interface Business {
   id: string;
   name: string;
@@ -31,7 +33,7 @@ export interface Business {
   createdAt: Date;
   updatedAt: Date;
 }
- 
+
 export interface CreateBusinessInput {
   id: string;
   name: string;
@@ -39,7 +41,7 @@ export interface CreateBusinessInput {
   plan: BusinessPlan;
   ownerEmail: string;
 }
- 
+
 export interface PlatformUser {
   id: string;
   email: string;
@@ -49,7 +51,7 @@ export interface PlatformUser {
   active: boolean;
   createdAt: Date;
 }
- 
+
 export interface CreatePlatformUserInput {
   id: string;
   email: string;
@@ -57,18 +59,37 @@ export interface CreatePlatformUserInput {
   role: string;
   passwordHash: string;
 }
- 
+
 // ---------------------------------------------------------------------------
 // Repositorio
 // ---------------------------------------------------------------------------
- 
-export class PlatformRepository {
+
+export class PlatformRepository implements UserStore {
   constructor(private readonly db: SqlClient) {}
- 
+
+  // -------------------------------------------------------------------------
+  // UserStore — requerido por AuthService
+  // -------------------------------------------------------------------------
+
+  /**
+   * Implementa UserStore.findByEmail para que AuthService pueda usar
+   * PlatformRepository directamente.
+   */
+  async findByEmail(email: string): Promise<SystemUser | undefined> {
+    const platformUser = await this.findUserByEmail(email);
+    if (!platformUser) return undefined;
+    return {
+      id: platformUser.id,
+      email: platformUser.email,
+      role: platformUser.role as UserRole,
+      passwordHash: platformUser.passwordHash,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Businesses
   // -------------------------------------------------------------------------
- 
+
   /**
    * Crea un negocio en estado PENDING (antes de provisionar la BD).
    */
@@ -81,7 +102,7 @@ export class PlatformRepository {
     );
     return this.rowToBusiness(result.rows[0]);
   }
- 
+
   /**
    * Actualiza el negocio con los datos de la BD provisionada.
    * Cambia estado de PENDING → ACTIVE.
@@ -98,7 +119,7 @@ export class PlatformRepository {
       [BusinessStatus.ACTIVE, supabaseProjectId, dbUrlEncrypted, businessId],
     );
   }
- 
+
   /**
    * Busca un negocio por ID.
    */
@@ -109,7 +130,7 @@ export class PlatformRepository {
     );
     return result.rows[0] ? this.rowToBusiness(result.rows[0]) : undefined;
   }
- 
+
   /**
    * Busca un negocio por slug (para URLs tipo /b/mi-negocio).
    */
@@ -120,7 +141,7 @@ export class PlatformRepository {
     );
     return result.rows[0] ? this.rowToBusiness(result.rows[0]) : undefined;
   }
- 
+
   /**
    * Verifica si ya existe un negocio con ese email o slug.
    */
@@ -132,11 +153,11 @@ export class PlatformRepository {
     );
     return parseInt(result.rows[0].count, 10) > 0;
   }
- 
+
   // -------------------------------------------------------------------------
   // Platform users (staff de cada negocio)
   // -------------------------------------------------------------------------
- 
+
   /**
    * Crea el usuario admin inicial del negocio.
    */
@@ -149,7 +170,7 @@ export class PlatformRepository {
     );
     return this.rowToUser(result.rows[0]);
   }
- 
+
   /**
    * Busca un usuario por email y business_id.
    * Usado por AuthService para login multi-tenant.
@@ -165,7 +186,7 @@ export class PlatformRepository {
     );
     return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
   }
- 
+
   /**
    * Busca un usuario solo por email (para el login donde el negocio
    * se identifica por subdomain o slug, no por ID).
@@ -179,11 +200,11 @@ export class PlatformRepository {
     );
     return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
   }
- 
+
   // -------------------------------------------------------------------------
   // Mappers
   // -------------------------------------------------------------------------
- 
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private rowToBusiness(row: any): Business {
     return {
@@ -199,7 +220,7 @@ export class PlatformRepository {
       updatedAt: new Date(row.updated_at),
     };
   }
- 
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private rowToUser(row: any): PlatformUser {
     return {
