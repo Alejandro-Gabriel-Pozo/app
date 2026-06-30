@@ -19,14 +19,14 @@
  *    "Credenciales inválidas" tanto si el email no existe como si la contraseña
  *    es incorrecta. Nunca se revela cuál de las dos falló.
  */
-
+ 
 import { signToken } from './auth.middleware.js';
 import { UserStore, InMemoryUserStore, verifyPassword } from './user.store.js';
-
+ 
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
-
+ 
 /**
  * Respuesta exitosa del login.
  */
@@ -44,7 +44,7 @@ export interface LoginResult {
     role: string;
   };
 }
-
+ 
 // ---------------------------------------------------------------------------
 // Hash dummy para la comparación constante anti-timing
 // Formato válido: "salt_hex:hash_hex" de 16+64 bytes
@@ -53,11 +53,11 @@ const DUMMY_HASH =
   'ffffffffffffffffffffffffffffffff:' +
   'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' +
   'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
-
+ 
 // ---------------------------------------------------------------------------
 // Servicio
 // ---------------------------------------------------------------------------
-
+ 
 /**
  * Servicio de autenticación.
  *
@@ -74,12 +74,12 @@ export class AuthService {
    */
   private readonly tokenTtlSeconds: number;
   private readonly store: UserStore;
-
+ 
   constructor(userStore: UserStore | null) {
     this.store = userStore ?? new InMemoryUserStore();
     this.tokenTtlSeconds = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
   }
-
+ 
   /**
    * Intenta autenticar con email + contraseña.
    *
@@ -100,28 +100,28 @@ export class AuthService {
    */
   async login(email: string, password: string): Promise<LoginResult> {
     const user = await this.store.findByEmail(email);
-
+ 
     // Siempre hasheamos — aunque el usuario no exista — para tiempo constante
     const hashToVerify = user?.passwordHash ?? DUMMY_HASH;
     const passwordMatches = await verifyPassword(password, hashToVerify);
-
+ 
     if (!user || !passwordMatches) {
       const err = new Error('Credenciales inválidas');
       (err as NodeJS.ErrnoException).code = 'INVALID_CREDENTIALS';
       throw err;
     }
-
+ 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       throw new Error('[AuthService] JWT_SECRET no está definida');
     }
-
+ 
     const token = signToken(
       { sub: user.id, role: user.role },
       jwtSecret,
       this.tokenTtlSeconds,
     );
-
+ 
     return {
       token,
       tokenType: 'Bearer',
@@ -134,11 +134,11 @@ export class AuthService {
     };
   }
 }
-
+ 
 // ---------------------------------------------------------------------------
 // Helper: parsear JWT_EXPIRES_IN
 // ---------------------------------------------------------------------------
-
+ 
 /**
  * Convierte la cadena de `JWT_EXPIRES_IN` a segundos.
  *
@@ -154,7 +154,7 @@ export class AuthService {
 function parseExpiresIn(value: string): number {
   const lower = value.trim().toLowerCase();
   const num = parseFloat(lower);
-
+ 
   let seconds: number;
   if (lower.endsWith('h')) {
     seconds = num * 3_600;
@@ -165,17 +165,17 @@ function parseExpiresIn(value: string): number {
   } else {
     seconds = num;
   }
-
+ 
   if (!Number.isFinite(seconds) || seconds < 60) {
     console.warn(`[AuthService] JWT_EXPIRES_IN="${value}" inválido, usando 24h`);
     return 86_400;
   }
-
+ 
   const MAX_TTL = 30 * 86_400;
   if (seconds > MAX_TTL) {
     console.warn(`[AuthService] JWT_EXPIRES_IN supera 30 días, limitando a 30d`);
     return MAX_TTL;
   }
-
+ 
   return Math.floor(seconds);
 }
