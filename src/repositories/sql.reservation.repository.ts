@@ -7,7 +7,6 @@ import { PreferenceDetailsByResource } from '../types/preferences.types.js';
 import { validatePreferences } from '../services/validation.factory.js';
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
-import { CustomerRepository } from './customer.repository.js';
 
 // ---------------------------------------------------------------------------
 // Tipos de fila
@@ -30,14 +29,18 @@ interface ReservationRow {
  * Implementación SQL del repositorio de reservas.
  *
  * ## Estrategia de deserialización
- * `rowToReservation` reconstruye el objeto `Reservation` completo usando
- * JOIN con `resources` y `customers`, evitando el problema N+1 de queries
- * adicionales por cada reserva.
+ * `rowToReservation` reconstruye el objeto `Reservation` completo sin
+ * queries adicionales:
+ * - **Customer**: reconstruido desde los campos desnormalizados
+ *   `customer_name` y `customer_email` que viven en la tabla `reservations`.
+ *   No se necesita un `CustomerRepository` para lectura.
+ * - **Resource**: resuelto via `resourceRepository.getById()` — necesario
+ *   para instanciar el subtipo correcto (CabinResource, TableResource, etc.).
  *
  * ## Constructor
- * - `sqlClient` — cliente SQL genérico (pg pool)
- * - `resourceRepository` — para lookups de recurso en métodos de escritura
- * - `customerRepository` — para lookups de cliente en métodos de escritura
+ * - `sqlClient`          — cliente SQL genérico (pg pool)
+ * - `resourceRepository` — para resolver el subtipo de recurso en lectura
+ *                          y para lookups en métodos de escritura
  *
  * Schema esperado (PostgreSQL):
  * ```sql
@@ -68,7 +71,6 @@ export class SqlReservationRepository implements ReservationRepository {
   constructor(
     private readonly sqlClient: SqlClient,
     private readonly resourceRepository: ResourceRepository,
-    private readonly customerRepository: CustomerRepository,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -112,12 +114,12 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   // -------------------------------------------------------------------------
-  // Lectura — todos los métodos usan JOIN para evitar N+1
+  // Lectura
   // -------------------------------------------------------------------------
 
   async getById(id: string): Promise<Reservation | undefined> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()} WHERE r.id = $1`,
+      `${this.baseSelect()} WHERE r.id = $1`,
       [id],
     );
     const row = result.rows[0];
@@ -126,7 +128,7 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getByCustomerId(customerId: string): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()} WHERE r.customer_id = $1 ORDER BY r.start_time DESC`,
+      `${this.baseSelect()} WHERE r.customer_id = $1 ORDER BY r.start_time DESC`,
       [customerId],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
@@ -134,7 +136,7 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getByResourceId(resourceId: string): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()} WHERE r.resource_id = $1 ORDER BY r.start_time DESC`,
+      `${this.baseSelect()} WHERE r.resource_id = $1 ORDER BY r.start_time DESC`,
       [resourceId],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
@@ -142,7 +144,7 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getByStatus(status: ReservationStatus): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()} WHERE r.status = $1 ORDER BY r.start_time DESC`,
+      `${this.baseSelect()} WHERE r.status = $1 ORDER BY r.start_time DESC`,
       [status],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
@@ -150,7 +152,7 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getByDateRange(startDate: Date, endDate: Date): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()}
+      `${this.baseSelect()}
        WHERE r.start_time < $2 AND r.end_time > $1
        ORDER BY r.start_time ASC`,
       [startDate.toISOString(), endDate.toISOString()],
@@ -171,7 +173,7 @@ export class SqlReservationRepository implements ReservationRepository {
     ];
 
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()}
+      `${this.baseSelect()}
        WHERE r.resource_id = $1
          AND r.status = ANY($4)
          AND r.start_time < $3
@@ -189,7 +191,7 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getAll(): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelectJoin()} ORDER BY r.start_time DESC`,
+      `${this.baseSelect()} ORDER BY r.start_time DESC`,
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
@@ -199,15 +201,11 @@ export class SqlReservationRepository implements ReservationRepository {
   // -------------------------------------------------------------------------
 
   /**
-   * SELECT base con JOIN a resources y customers.
-   * Desnormaliza los campos necesarios del recurso directamente en la fila,
-   * eliminando queries adicionales en rowToReservation (evita N+1).
-   *
-   * Los datos del cliente (customer_name, customer_email) ya están
-   * desnormalizados en la tabla reservations, por lo que no se necesita
-   * JOIN a customers para lectura.
+   * SELECT base de la tabla reservations (sin JOIN).
+   * Customer se reconstruye desde campos desnormalizados en la fila;
+   * Resource se resuelve via resourceRepository.getById() en rowToReservation.
    */
-  private baseSelectJoin(): string {
+  private baseSelect(): string {
     return `
       SELECT
         r.id,
@@ -227,10 +225,9 @@ export class SqlReservationRepository implements ReservationRepository {
   /**
    * Convierte una fila SQL a una instancia de Reservation.
    *
-   * Usa customer_name y customer_email desnormalizados de la fila para
-   * reconstruir el Customer sin queries adicionales.
-   * Resuelve el Resource via resourceRepository.getById() — necesario para
-   * instanciar el subtipo correcto (CabinResource, TableResource, etc.).
+   * - Customer: reconstruido desde campos desnormalizados — sin query adicional.
+   * - Resource: resuelto via resourceRepository.getById() para instanciar
+   *   el subtipo correcto (CabinResource, TableResource, etc.).
    *
    * @throws ResourceNotFoundError si el recurso fue eliminado de la BD
    */

@@ -44,10 +44,10 @@ export class SqlResourceRepository implements ResourceRepository {
       INSERT INTO resources (id, name, type, base_price, visual_data)
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (id) DO UPDATE SET
-        name       = $2,
-        type       = $3,
-        base_price = $4,
-        visual_data = $5
+        name        = $2,
+        type        = $3,
+        base_price  = $4,
+        visual_data = COALESCE(EXCLUDED.visual_data, resources.visual_data)
     `.trim();
 
     await this.sqlClient.query(sql, [

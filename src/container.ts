@@ -100,10 +100,11 @@ async function createPostgresContainer(): Promise<AppContainer> {
   // Los repositorios comparten el mismo pool (pgClient es singleton)
   const resourceRepository    = new SqlResourceRepository(pgClient);
   const customerRepository    = new SqlCustomerRepository(pgClient);
+  // SqlReservationRepository solo necesita sqlClient y resourceRepository.
+  // Customer se reconstruye desde campos desnormalizados — no requiere CustomerRepository.
   const reservationRepository = new SqlReservationRepository(
     pgClient,
     resourceRepository,
-    customerRepository,
   );
   const occupancyRepository   = new SqlOccupancyRepository(pgClient);
 
@@ -146,11 +147,13 @@ async function createInMemoryContainer(): Promise<AppContainer> {
   );
   const reportService = new ReportService(occupancyRepository);
 
-  // El seed solo corre en modo in-memory — en SQL los recursos viven en schema.sql
+  // El seed solo corre en modo in-memory — en SQL los recursos viven en schema.sql.
+  // customerRepository se pasa para que el seed persista los clientes demo.
   await seedDemoData({
     resourceRepository,
     reservationRepository,
     occupancyRepository,
+    customerRepository,
   });
 
   console.log('[container] ✅ In-memory listo con datos demo.');

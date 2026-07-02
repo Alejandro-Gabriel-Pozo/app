@@ -21,7 +21,10 @@ interface CustomerRow {
  *   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
  * );
  *
- * CREATE INDEX idx_customers_email ON customers(email);
+ * -- Índice funcional necesario para que getByEmail() use el índice B-tree.
+ * -- Sin él, WHERE LOWER(email) = LOWER($1) fuerza un seq-scan.
+ * CREATE UNIQUE INDEX idx_customers_email_lower ON customers(LOWER(email));
+ *
  * -- Para searchByName eficiente en producción:
  * -- CREATE EXTENSION IF NOT EXISTS pg_trgm;
  * -- CREATE INDEX idx_customers_name_trgm ON customers USING gin(full_name gin_trgm_ops);
@@ -31,12 +34,14 @@ export class SqlCustomerRepository implements CustomerRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
   async save(customer: Customer): Promise<void> {
+    // updated_at se omite del INSERT — la columna tiene DEFAULT CURRENT_TIMESTAMP
+    // en el schema. Solo se actualiza explícitamente en el ON CONFLICT.
     const sql = `
-      INSERT INTO customers (id, full_name, email, updated_at)
-      VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+      INSERT INTO customers (id, full_name, email)
+      VALUES ($1, $2, $3)
       ON CONFLICT (id) DO UPDATE SET
-        full_name = $2,
-        email     = $3,
+        full_name  = $2,
+        email      = $3,
         updated_at = CURRENT_TIMESTAMP
     `.trim();
     await this.sqlClient.query(sql, [customer.id, customer.fullName, customer.email]);
@@ -58,6 +63,11 @@ export class SqlCustomerRepository implements CustomerRepository {
     return result.rows.map((r) => this.rowToCustomer(r));
   }
 
+  /**
+   * Lookup por email case-insensitive.
+   * Requiere el índice funcional `idx_customers_email_lower` (ver schema).
+   * Sin ese índice el query hace seq-scan en tablas grandes.
+   */
   async getByEmail(email: string): Promise<Customer | undefined> {
     const result = await this.sqlClient.query<CustomerRow>(
       `SELECT id, full_name, email FROM customers WHERE LOWER(email) = LOWER($1)`,

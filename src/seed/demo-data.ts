@@ -17,11 +17,13 @@ import { Reservation } from '../domain/Reservation.js';
 import { ResourceRepository } from '../repositories/resource.repository.js';
 import { ReservationRepository } from '../repositories/reservation.repository.js';
 import { OccupancyRepository } from '../repositories/occupancy.repository.js';
+import { CustomerRepository } from '../repositories/customer.repository.js';
 
 export async function seedDemoData(deps: {
   resourceRepository: ResourceRepository;
   reservationRepository: ReservationRepository;
   occupancyRepository: OccupancyRepository;
+  customerRepository: CustomerRepository;
 }): Promise<void> {
   const resources = [
     new CabinResource('cabin-a', 'Cabaña Bosque', 180),
@@ -59,7 +61,14 @@ export async function seedDemoData(deps: {
     await deps.resourceRepository.save(resource);
   }
 
-  const customer = new Customer('cust-demo', 'María López', 'maria@demo.com');
+  // Persistir clientes antes de las reservas
+  const customer        = new Customer('cust-demo', 'María López',  'maria@demo.com');
+  const pendingCustomer = new Customer('cust-2',    'Carlos Ruiz',  'carlos@demo.com');
+  const spaCustomer     = new Customer('cust-3',    'Laura Vega',   'laura@demo.com');
+
+  await deps.customerRepository.save(customer);
+  await deps.customerRepository.save(pendingCustomer);
+  await deps.customerRepository.save(spaCustomer);
 
   const confirmedReservation = new Reservation(
     ResourceType.RESTAURANT_TABLE,
@@ -81,7 +90,6 @@ export async function seedDemoData(deps: {
     ReservationStatus.CONFIRMED,
   );
 
-  const pendingCustomer = new Customer('cust-2', 'Carlos Ruiz', 'carlos@demo.com');
   const pendingReservation = new Reservation(
     ResourceType.CABIN,
     'res-demo-2',
@@ -97,7 +105,6 @@ export async function seedDemoData(deps: {
   );
   await deps.reservationRepository.save(pendingReservation);
 
-  const spaCustomer = new Customer('cust-3', 'Laura Vega', 'laura@demo.com');
   const spaReservation = new Reservation(
     ResourceType.SPA,
     'res-demo-3',
