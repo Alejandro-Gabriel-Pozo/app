@@ -10,11 +10,15 @@
  * 1. cors, express.json
  * 2. /health, /docs, /openapi.json  — rutas públicas
  * 3. POST /register                 — registro de negocios (público, sin auth)
- * 4. POST /api/login                — login (público, sin auth)
- * 5. authenticate()                 — verifica JWT, extrae user + business_id
- * 6. tenantMiddleware()             — inyecta req.db con la BD del negocio
- * 7. /api/resources, /reservations, /reports — rutas protegidas
- * 8. errorHandler
+ * 4. POST /api/login                — login de empleados (público)
+ * 5. /api/customer/register         — registro de clientes (público)
+ * 6. /api/customer/login            — login de clientes (público)
+ * 7. /api/customer/availability/**  — disponibilidad pública (sin auth)
+ * 8. authenticate()                 — verifica JWT, protege /api/* restante
+ * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
+ * 10. /api/resources, /reservations, /reports — rutas de empleados
+ * 11. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
+ * 12. errorHandler
  */
 
 import express from 'express';
@@ -23,20 +27,21 @@ import swaggerUi from 'swagger-ui-express';
 import pg from 'pg';
 import http from 'node:http';
 
-import { createResourcesRouter } from './api/routes/resources.routes.js';
-import { createReservationsRouter } from './api/routes/reservations.routes.js';
-import { createReportsRouter } from './api/routes/reports.routes.js';
-import { createAuthRouter } from './api/routes/auth.routes.js';
-import { createBusinessRouter } from './api/routes/business.routes.js';
-import { errorHandler } from './api/middleware/error.middleware.js';
-import { openApiSpec } from './openapi/spec.js';
-import { authenticate } from './security/auth.middleware.js';
-import { AuthService } from './security/auth.service.js';
-import { PlatformRepository } from './platform/platform.repository.js';
-import { tenantMiddleware } from './platform/tenant.middleware.js';
-import { SqlClient } from './repositories/sql.client.js';
-import { createAppContainer } from './container.js';
-import { checkDatabaseHealth } from './db/pg.client.js';
+import { createResourcesRouter }     from './api/routes/resources.routes.js';
+import { createReservationsRouter }  from './api/routes/reservations.routes.js';
+import { createReportsRouter }       from './api/routes/reports.routes.js';
+import { createAuthRouter }          from './api/routes/auth.routes.js';
+import { createBusinessRouter }      from './api/routes/business.routes.js';
+import { createCustomerRouter }      from './api/routes/customer.routes.js';
+import { errorHandler }              from './api/middleware/error.middleware.js';
+import { openApiSpec }               from './openapi/spec.js';
+import { authenticate }              from './security/auth.middleware.js';
+import { AuthService }               from './security/auth.service.js';
+import { PlatformRepository }        from './platform/platform.repository.js';
+import { tenantMiddleware }          from './platform/tenant.middleware.js';
+import { SqlClient }                 from './repositories/sql.client.js';
+import { createAppContainer }        from './container.js';
+import { checkDatabaseHealth }       from './db/pg.client.js';
 
 const { Pool } = pg;
 
@@ -86,7 +91,7 @@ export async function createApp(): Promise<{ app: express.Application }> {
   }
 
   // -------------------------------------------------------------------------
-  // Auth service (lee usuarios de plataforma o fallback a InMemory)
+  // Auth service (empleados)
   // -------------------------------------------------------------------------
   const authService = new AuthService(platformRepo);
 
@@ -132,22 +137,30 @@ export async function createApp(): Promise<{ app: express.Application }> {
   }
 
   // -------------------------------------------------------------------------
-  // POST /api/login — público, antes de authenticate()
+  // POST /api/login — login de empleados (público, antes de authenticate)
   // -------------------------------------------------------------------------
   app.use('/api/login', createAuthRouter(authService));
 
   // -------------------------------------------------------------------------
-  // authenticate() + tenantMiddleware() — protegen todo /api/*
+  // /api/customer — portal del cliente
+  // register, login y availability son públicos;
+  // /me/** está protegido por authenticate+authorize dentro del router.
+  // Montado ANTES del authenticate() global para que register/login/availability
+  // no requieran token de empleado.
+  // -------------------------------------------------------------------------
+  app.use('/api/customer', createCustomerRouter(container));
+
+  // -------------------------------------------------------------------------
+  // authenticate() + tenantMiddleware() — protegen todo /api/* (empleados)
   // -------------------------------------------------------------------------
   app.use('/api', authenticate());
 
   if (platformRepo) {
-    // Modo multi-tenant: req.db apunta a la BD del negocio
     app.use('/api', tenantMiddleware(platformRepo));
   }
 
   // -------------------------------------------------------------------------
-  // Rutas protegidas
+  // Rutas protegidas de empleados
   // -------------------------------------------------------------------------
   app.use('/api/resources',    createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
@@ -159,13 +172,9 @@ export async function createApp(): Promise<{ app: express.Application }> {
 }
 
 // ---------------------------------------------------------------------------
-// Graceful shutdown — exportado para server.ts
+// Graceful shutdown
 // ---------------------------------------------------------------------------
 
-/**
- * Registra los manejadores SIGTERM/SIGINT para cerrar el servidor
- * de forma limpia antes de que el proceso termine.
- */
 export function registerGracefulShutdown(server: http.Server): void {
   const shutdown = (signal: string) => {
     console.log(`\n[server] ${signal} recibido. Cerrando servidor...`);
@@ -173,7 +182,6 @@ export function registerGracefulShutdown(server: http.Server): void {
       console.log('[server] Servidor cerrado correctamente.');
       process.exit(0);
     });
-    // Forzar cierre si tarda más de 10s
     setTimeout(() => {
       console.error('[server] Cierre forzado por timeout.');
       process.exit(1);

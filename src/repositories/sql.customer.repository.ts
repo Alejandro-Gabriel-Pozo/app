@@ -1,11 +1,12 @@
 import { Customer } from '../domain/entities.js';
 import { SqlClient } from './sql.client.js';
-import { CustomerRepository } from './customer.repository.js';
+import { CustomerRepository, CustomerWithPassword } from './customer.repository.js';
 
 interface CustomerRow {
   id: string;
   full_name: string;
   email: string;
+  password_hash?: string | null;
 }
 
 /**
@@ -17,12 +18,12 @@ interface CustomerRow {
  *   id VARCHAR(255) PRIMARY KEY,
  *   full_name VARCHAR(255) NOT NULL,
  *   email VARCHAR(255) NOT NULL UNIQUE,
+ *   password_hash VARCHAR(512),        -- null para clientes creados por recepción
  *   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  *   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
  * );
  *
- * -- Índice funcional necesario para que getByEmail() use el índice B-tree.
- * -- Sin él, WHERE LOWER(email) = LOWER($1) fuerza un seq-scan.
+ * -- Índice funcional para getByEmail() — evita seq-scan
  * CREATE UNIQUE INDEX idx_customers_email_lower ON customers(LOWER(email));
  *
  * -- Para searchByName eficiente en producción:
@@ -34,8 +35,6 @@ export class SqlCustomerRepository implements CustomerRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
   async save(customer: Customer): Promise<void> {
-    // updated_at se omite del INSERT — la columna tiene DEFAULT CURRENT_TIMESTAMP
-    // en el schema. Solo se actualiza explícitamente en el ON CONFLICT.
     const sql = `
       INSERT INTO customers (id, full_name, email)
       VALUES ($1, $2, $3)
@@ -45,6 +44,24 @@ export class SqlCustomerRepository implements CustomerRepository {
         updated_at = CURRENT_TIMESTAMP
     `.trim();
     await this.sqlClient.query(sql, [customer.id, customer.fullName, customer.email]);
+  }
+
+  async saveWithPassword(customer: Customer, passwordHash: string): Promise<void> {
+    const sql = `
+      INSERT INTO customers (id, full_name, email, password_hash)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (id) DO UPDATE SET
+        full_name     = $2,
+        email         = $3,
+        password_hash = $4,
+        updated_at    = CURRENT_TIMESTAMP
+    `.trim();
+    await this.sqlClient.query(sql, [
+      customer.id,
+      customer.fullName,
+      customer.email,
+      passwordHash,
+    ]);
   }
 
   async getById(id: string): Promise<Customer | undefined> {
@@ -65,8 +82,7 @@ export class SqlCustomerRepository implements CustomerRepository {
 
   /**
    * Lookup por email case-insensitive.
-   * Requiere el índice funcional `idx_customers_email_lower` (ver schema).
-   * Sin ese índice el query hace seq-scan en tablas grandes.
+   * Requiere el índice funcional `idx_customers_email_lower`.
    */
   async getByEmail(email: string): Promise<Customer | undefined> {
     const result = await this.sqlClient.query<CustomerRow>(
@@ -78,10 +94,24 @@ export class SqlCustomerRepository implements CustomerRepository {
   }
 
   /**
-   * Búsqueda parcial por nombre (ILIKE).
-   * Nota: usa un índice GIN con pg_trgm si está disponible;
-   * sin él hace seq-scan en tablas grandes.
+   * Devuelve el customer con su password_hash para verificación.
+   * Solo para uso interno del CustomerAuthService.
    */
+  async getByEmailWithPassword(email: string): Promise<CustomerWithPassword | undefined> {
+    const result = await this.sqlClient.query<CustomerRow>(
+      `SELECT id, full_name, email, password_hash
+       FROM customers
+       WHERE LOWER(email) = LOWER($1)`,
+      [email],
+    );
+    const row = result.rows[0];
+    if (!row || !row.password_hash) return undefined;
+    return {
+      customer: this.rowToCustomer(row),
+      passwordHash: row.password_hash,
+    };
+  }
+
   async searchByName(name: string): Promise<Customer[]> {
     const result = await this.sqlClient.query<CustomerRow>(
       `SELECT id, full_name, email

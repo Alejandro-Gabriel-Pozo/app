@@ -2,12 +2,12 @@
  * @file auth.middleware.ts
  * @description Middleware de autenticación y autorización basado en JWT.
  *
- * ## Cambio respecto a versión anterior
- * El JWT puede incluir `business_id` en el payload (multi-tenant).
- * Es opcional para mantener compatibilidad con modos single-tenant / dev.
+ * ## Payload del JWT
+ * - Empleados (ADMIN, RECEPTIONIST, WAITER): llevan `sub` (userId) + `business_id`
+ * - Clientes (CUSTOMER): llevan `sub` (customerId) + `customer_id` + `business_id`
  *
- * ## Variables de entorno (Render Dashboard)
- * - JWT_SECRET     — clave secreta para firmar/verificar tokens (OBLIGATORIA)
+ * ## Variables de entorno
+ * - JWT_SECRET     — clave secreta (OBLIGATORIA, mínimo 32 chars)
  * - JWT_EXPIRES_IN — duración del token (opcional, default "24h")
  */
 
@@ -20,16 +20,13 @@ import { AuthenticatedUser } from './user.types.js';
 // JWT Payload
 // ---------------------------------------------------------------------------
 
-/**
- * Payload del JWT.
- * `business_id` es opcional: presente en modo multi-tenant,
- * ausente en modo single-tenant / dev.
- */
 export interface JwtPayload {
   sub: string;
   role: UserRole;
-  /** ID del negocio al que pertenece el usuario (multi-tenant únicamente) */
+  /** ID del negocio al que pertenece el usuario (multi-tenant) */
   business_id?: string;
+  /** ID del Customer entity — presente solo en tokens CUSTOMER */
+  customer_id?: string;
   iat: number;
   exp: number;
 }
@@ -48,17 +45,6 @@ function base64UrlDecode(input: string): Buffer {
   return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
 
-/**
- * Genera un JWT firmado con HS256.
- *
- * @example
- * ```ts
- * const token = signToken(
- *   { sub: 'user-1', role: UserRole.ADMIN },
- *   process.env.JWT_SECRET!
- * );
- * ```
- */
 export function signToken(
   payload: Omit<JwtPayload, 'iat' | 'exp'>,
   secret: string,
@@ -76,9 +62,6 @@ export function signToken(
   return `${signingInput}.${signature}`;
 }
 
-/**
- * Verifica y decodifica un JWT.
- */
 export function verifyToken(token: string, secret: string): JwtPayload {
   const parts = token.split('.');
   if (parts.length !== 3) {
@@ -122,12 +105,8 @@ export function verifyToken(token: string, secret: string): JwtPayload {
 
 function requireJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error('[auth.middleware] JWT_SECRET no está definida.');
-  }
-  if (secret.length < 32) {
-    throw new Error('[auth.middleware] JWT_SECRET debe tener al menos 32 caracteres.');
-  }
+  if (!secret) throw new Error('[auth.middleware] JWT_SECRET no está definida.');
+  if (secret.length < 32) throw new Error('[auth.middleware] JWT_SECRET debe tener al menos 32 caracteres.');
   return secret;
 }
 
@@ -137,10 +116,6 @@ const JWT_SECRET = requireJwtSecret();
 // Middlewares
 // ---------------------------------------------------------------------------
 
-/**
- * Middleware de autenticación.
- * Verifica el JWT y adjunta `req.user` con `{ id, role, businessId }`.
- */
 export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser | undefined) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (resolveUser) {
@@ -171,6 +146,7 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
         id: payload.sub,
         role: payload.role,
         businessId: payload.business_id,
+        customerId: payload.customer_id,
       };
       next();
     } catch (err) {
@@ -184,9 +160,6 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
   };
 };
 
-/**
- * Middleware de autorización por rol.
- */
 export const authorize = (allowedRoles: readonly UserRole[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
