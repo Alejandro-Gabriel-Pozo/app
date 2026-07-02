@@ -20,9 +20,9 @@
  *
  * ## AppContainer
  *
- * Las propiedades ahora están tipadas contra las INTERFACES, no las
- * implementaciones concretas. Esto cierra el bug de acoplamiento que
- * existía en la versión anterior.
+ * Las propiedades están tipadas contra las INTERFACES, no las
+ * implementaciones concretas. Esto cierra el acoplamiento entre
+ * capas y facilita el testing.
  */
 
 import { ReservationService } from './services/reservation.service.js';
@@ -31,14 +31,17 @@ import { ReportService } from './services/report.service.js';
 import { ReservationRepository } from './repositories/reservation.repository.js';
 import { ResourceRepository } from './repositories/resource.repository.js';
 import { OccupancyRepository } from './repositories/occupancy.repository.js';
+import { CustomerRepository } from './repositories/customer.repository.js';
 
 import { InMemoryResourceRepository } from './repositories/in-memory.resource.repository.js';
 import { InMemoryReservationRepository } from './repositories/in-memory.reservation.repository.js';
 import { InMemoryOccupancyRepository } from './repositories/in-memory.occupancy.repository.js';
+import { InMemoryCustomerRepository } from './repositories/in-memory.customer.repository.js';
 
 import { SqlResourceRepository } from './repositories/sql.resource.repository.js';
 import { SqlReservationRepository } from './repositories/sql.reservation.repository.js';
 import { SqlOccupancyRepository } from './repositories/sql.occupancy.repository.js';
+import { SqlCustomerRepository } from './repositories/sql.customer.repository.js';
 
 import { pgClient } from './db/pg.client.js';
 import { seedDemoData } from './seed/demo-data.js';
@@ -58,6 +61,7 @@ export interface AppContainer {
   resourceRepository:    ResourceRepository;
   reservationRepository: ReservationRepository;
   occupancyRepository:   OccupancyRepository;
+  customerRepository:    CustomerRepository;
   reservationService:    ReservationService;
   reportService:         ReportService;
   /** Indica el modo de persistencia activo — útil para /health */
@@ -93,9 +97,14 @@ export async function createAppContainer(): Promise<AppContainer> {
 async function createPostgresContainer(): Promise<AppContainer> {
   console.log('[container] 🐘 Modo PostgreSQL — conectando a DATABASE_URL');
 
-  // Los tres repositorios comparten el mismo pool (pgClient es singleton)
+  // Los repositorios comparten el mismo pool (pgClient es singleton)
   const resourceRepository    = new SqlResourceRepository(pgClient);
-  const reservationRepository = new SqlReservationRepository(pgClient, resourceRepository);
+  const customerRepository    = new SqlCustomerRepository(pgClient);
+  const reservationRepository = new SqlReservationRepository(
+    pgClient,
+    resourceRepository,
+    customerRepository,
+  );
   const occupancyRepository   = new SqlOccupancyRepository(pgClient);
 
   const reservationService = new ReservationService(
@@ -105,14 +114,13 @@ async function createPostgresContainer(): Promise<AppContainer> {
   );
   const reportService = new ReportService(occupancyRepository);
 
-  // En modo SQL el seed vive en schema.sql (ON CONFLICT DO NOTHING).
-  // No se ejecuta seed en memoria para no duplicar datos.
   console.log('[container] ✅ PostgreSQL listo. Seed en schema.sql (idempotente).');
 
   return {
     resourceRepository,
     reservationRepository,
     occupancyRepository,
+    customerRepository,
     reservationService,
     reportService,
     mode: 'postgresql',
@@ -129,6 +137,7 @@ async function createInMemoryContainer(): Promise<AppContainer> {
   const resourceRepository    = new InMemoryResourceRepository();
   const reservationRepository = new InMemoryReservationRepository();
   const occupancyRepository   = new InMemoryOccupancyRepository();
+  const customerRepository    = new InMemoryCustomerRepository();
 
   const reservationService = new ReservationService(
     reservationRepository,
@@ -150,6 +159,7 @@ async function createInMemoryContainer(): Promise<AppContainer> {
     resourceRepository,
     reservationRepository,
     occupancyRepository,
+    customerRepository,
     reservationService,
     reportService,
     mode: 'in-memory',

@@ -44,8 +44,8 @@ export class SqlResourceRepository implements ResourceRepository {
       INSERT INTO resources (id, name, type, base_price, visual_data)
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (id) DO UPDATE SET
-        name = $2,
-        type = $3,
+        name       = $2,
+        type       = $3,
         base_price = $4,
         visual_data = $5
     `.trim();
@@ -61,8 +61,8 @@ export class SqlResourceRepository implements ResourceRepository {
 
   async getById(id: string): Promise<BookableResource | undefined> {
     const sql = `SELECT * FROM resources WHERE id = $1 AND active IS NOT FALSE`;
-    const result = await this.sqlClient.query(sql, [id]);
-    const row = (result.rows as ResourceRow[])[0];
+    const result = await this.sqlClient.query<ResourceRow>(sql, [id]);
+    const row = result.rows[0];
     return row ? this.rowToResource(row) : undefined;
   }
 
@@ -72,8 +72,8 @@ export class SqlResourceRepository implements ResourceRepository {
       WHERE type = $1 AND active IS NOT FALSE
       ORDER BY name ASC
     `;
-    const result = await this.sqlClient.query(sql, [type]);
-    return (result.rows as ResourceRow[]).map((row) => this.rowToResource(row));
+    const result = await this.sqlClient.query<ResourceRow>(sql, [type]);
+    return result.rows.map((row) => this.rowToResource(row));
   }
 
   async getAll(): Promise<BookableResource[]> {
@@ -82,14 +82,22 @@ export class SqlResourceRepository implements ResourceRepository {
       WHERE active IS NOT FALSE
       ORDER BY name ASC
     `;
-    const result = await this.sqlClient.query(sql);
-    return (result.rows as ResourceRow[]).map((row) => this.rowToResource(row));
+    const result = await this.sqlClient.query<ResourceRow>(sql);
+    return result.rows.map((row) => this.rowToResource(row));
+  }
+
+  async getByName(name: string): Promise<BookableResource | undefined> {
+    const sql = `
+      SELECT * FROM resources
+      WHERE LOWER(name) = LOWER($1) AND active IS NOT FALSE
+    `;
+    const result = await this.sqlClient.query<ResourceRow>(sql, [name]);
+    const row = result.rows[0];
+    return row ? this.rowToResource(row) : undefined;
   }
 
   async delete(id: string): Promise<boolean> {
-    const sql = `
-      UPDATE resources SET active = FALSE WHERE id = $1
-    `;
+    const sql = `UPDATE resources SET active = FALSE WHERE id = $1`;
     const result = await this.sqlClient.query(sql, [id]);
     return (result.rowCount ?? 0) > 0;
   }

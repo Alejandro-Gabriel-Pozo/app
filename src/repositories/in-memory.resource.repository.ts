@@ -25,6 +25,13 @@ export class InMemoryResourceRepository implements ResourceRepository {
     return Array.from(this.resources.values());
   }
 
+  async getByName(name: string): Promise<BookableResource | undefined> {
+    const lower = name.toLowerCase();
+    return Array.from(this.resources.values()).find(
+      (r) => r.name.toLowerCase() === lower,
+    );
+  }
+
   async delete(id: string): Promise<boolean> {
     return this.resources.delete(id);
   }
