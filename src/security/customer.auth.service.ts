@@ -40,10 +40,27 @@ export interface CustomerAuthResult {
   };
 }
 
+/**
+ * Hash dummy usado para mantener tiempo constante en login cuando el email
+ * no existe — evita timing attack por enumeración de emails.
+ * Generado una vez al importar el módulo.
+ */
+const DUMMY_HASH = await hashPassword('dummy-constant-time-placeholder');
+
 export class CustomerAuthService {
+  private readonly jwtSecret: string;
+
   constructor(
     private readonly customerRepository: CustomerRepository,
-  ) {}
+  ) {
+    // Bug 1 fix: validar JWT_SECRET al construir el servicio (falla en startup,
+    // no en el primer request de login).
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('[CustomerAuthService] JWT_SECRET no está definida en las variables de entorno.');
+    }
+    this.jwtSecret = secret;
+  }
 
   /**
    * Registra un nuevo cliente.
@@ -70,18 +87,23 @@ export class CustomerAuthService {
 
   /**
    * Autentica un cliente existente.
+   *
+   * ## Seguridad — timing-safe
+   * verifyPassword (PBKDF2) se ejecuta siempre, incluso cuando el email no
+   * existe, para que el tiempo de respuesta sea constante y no permita
+   * enumerar emails registrados midiendo latencia.
+   *
    * @throws Error con code INVALID_CREDENTIALS si email o contraseña no coinciden.
    */
   async login(input: CustomerLoginInput): Promise<CustomerAuthResult> {
     const record = await this.customerRepository.getByEmailWithPassword(input.email);
-    if (!record) {
-      const err = new Error('Credenciales inválidas');
-      (err as NodeJS.ErrnoException).code = 'INVALID_CREDENTIALS';
-      throw err;
-    }
 
-    const valid = await verifyPassword(input.password, record.passwordHash);
-    if (!valid) {
+    // Bug 2 fix: ejecutar verifyPassword siempre para evitar timing attack.
+    // Si el email no existe, comparamos contra DUMMY_HASH (resultado siempre false).
+    const hashToVerify = record?.passwordHash ?? DUMMY_HASH;
+    const valid = await verifyPassword(input.password, hashToVerify);
+
+    if (!record || !valid) {
       const err = new Error('Credenciales inválidas');
       (err as NodeJS.ErrnoException).code = 'INVALID_CREDENTIALS';
       throw err;
@@ -99,10 +121,9 @@ export class CustomerAuthService {
   }
 
   private issueToken(customerId: string): string {
-    const secret = process.env.JWT_SECRET!;
     return signToken(
       { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId },
-      secret,
+      this.jwtSecret,
     );
   }
 }
