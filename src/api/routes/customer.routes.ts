@@ -219,16 +219,19 @@ export function createCustomerRouter(container: AppContainer): Router {
         // Todos los recursos del tipo solicitado
         const allResources = await container.resourceRepository.getByType(resourceType);
 
-        // Reservas activas que bloquean en ese rango
+        // Bug 3 fix: ejecutar todas las queries de disponibilidad en paralelo
+        // con Promise.all en vez de un for-loop secuencial (N+1 serial → concurrent).
         const busyResourceIds = new Set<string>();
-        for (const resource of allResources) {
-          const active = await container.reservationRepository.getActiveForResourceInRange(
-            resource.id,
-            startTime,
-            endTime,
-          );
-          if (active.length > 0) busyResourceIds.add(resource.id);
-        }
+        await Promise.all(
+          allResources.map(async (resource) => {
+            const active = await container.reservationRepository.getActiveForResourceInRange(
+              resource.id,
+              startTime,
+              endTime,
+            );
+            if (active.length > 0) busyResourceIds.add(resource.id);
+          }),
+        );
 
         const available = allResources.filter((r) => !busyResourceIds.has(r.id));
 
