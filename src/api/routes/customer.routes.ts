@@ -5,19 +5,21 @@
  * ## Rutas
  *
  * ### Públicas (sin autenticación)
- * POST /api/customer/register    — crear cuenta
- * POST /api/customer/login       — obtener JWT de cliente
- * GET  /api/customer/availability/:resourceType — ver disponibilidad
+ * POST  /api/customer/register    — crear cuenta
+ * POST  /api/customer/login       — obtener JWT de cliente
+ * GET   /api/customer/availability/:resourceType — ver disponibilidad
  *
  * ### Protegidas (requieren JWT con role=CUSTOMER)
- * GET  /api/customer/me                — ver perfil propio
- * GET  /api/customer/me/reservations   — ver mis reservas
- * POST /api/customer/me/reservations   — crear reserva propia
- * POST /api/customer/me/reservations/:id/cancel — cancelar reserva propia
+ * GET   /api/customer/me                        — ver perfil propio
+ * GET   /api/customer/me/reservations           — ver mis reservas
+ * POST  /api/customer/me/reservations           — crear reserva propia
+ * PATCH /api/customer/me/reservations/:id       — modificar reserva propia (solo PENDING)
+ * POST  /api/customer/me/reservations/:id/cancel — cancelar reserva propia
  *
  * ## Restricciones de seguridad
- * - Un cliente SOLO puede ver y cancelar SUS propias reservas.
+ * - Un cliente SOLO puede ver, modificar y cancelar SUS propias reservas.
  * - Un cliente no puede ver datos de otros clientes.
+ * - La modificación solo está permitida si la reserva está en PENDING.
  * - La cancelación solo está permitida si la reserva está en PENDING.
  */
 
@@ -54,6 +56,19 @@ const CreateCustomerReservationSchema = z.object({
   startTime:    z.string().datetime(),
   endTime:      z.string().datetime(),
   details:      z.record(z.unknown()).default({}),
+});
+
+/**
+ * Schema para PATCH /api/customer/me/reservations/:id.
+ *
+ * Todos los campos son opcionales — se fusionan con los valores existentes
+ * de la reserva en el servicio. Al menos uno debe estar presente (validado
+ * en el servicio).
+ */
+const UpdateCustomerReservationSchema = z.object({
+  startTime: z.string().datetime().optional(),
+  endTime:   z.string().datetime().optional(),
+  details:   z.record(z.unknown()).optional(),
 });
 
 const AvailabilityQuerySchema = z.object({
@@ -216,10 +231,8 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Todos los recursos del tipo solicitado
         const allResources = await container.resourceRepository.getByType(resourceType);
 
-        // Reservas activas que bloquean en ese rango
         const busyResourceIds = new Set<string>();
         for (const resource of allResources) {
           const active = await container.reservationRepository.getActiveForResourceInRange(
@@ -380,6 +393,101 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
+  // PATCH /api/customer/me/reservations/:id — modificar reserva propia
+  // -------------------------------------------------------------------------
+  /**
+   * @swagger
+   * /api/customer/me/reservations/{id}:
+   *   patch:
+   *     summary: Modificar una reserva propia
+   *     description: |
+   *       Permite actualizar el rango horario y/o los detalles de una reserva
+   *       en estado PENDING. Todos los campos son opcionales — se fusionan con
+   *       los valores existentes. Al menos uno debe estar presente.
+   *     tags: [Customer Portal]
+   *     security:
+   *       - BearerAuth: []
+   *     parameters:
+   *       - name: id
+   *         in: path
+   *         required: true
+   *         schema: { type: string }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               startTime: { type: string, format: date-time }
+   *               endTime:   { type: string, format: date-time }
+   *               details:   { type: object, description: "Preferencias según el tipo de recurso" }
+   *     responses:
+   *       200:
+   *         description: Reserva actualizada
+   *       400:
+   *         description: Datos inválidos o ningún campo enviado
+   *       403:
+   *         description: La reserva no pertenece al cliente autenticado
+   *       404:
+   *         description: Reserva no encontrada
+   *       409:
+   *         description: La reserva no está en PENDING o el recurso no está disponible
+   */
+  router.patch(
+    '/me/reservations/:id',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const reservationId = req.params.id;
+        const customerId    = req.user!.customerId!;
+
+        // Verificar existencia y ownership antes de pasar al servicio
+        const existing = await container.reservationRepository.getById(reservationId);
+        if (!existing) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
+          return;
+        }
+        if (existing.customer.id !== customerId) {
+          res.status(403).json({ code: 'FORBIDDEN', message: 'No tenés permiso para modificar esta reserva' });
+          return;
+        }
+
+        // Estado validado en el router para devolver 409 antes de parsear el body
+        if (existing.status !== ReservationStatus.PENDING) {
+          res.status(409).json({
+            code: 'INVALID_STATUS',
+            message: `Solo se pueden modificar reservas en estado PENDING. Estado actual: ${existing.status}`,
+          });
+          return;
+        }
+
+        const body = UpdateCustomerReservationSchema.parse(req.body);
+
+        if (!body.startTime && !body.endTime && !body.details) {
+          res.status(400).json({
+            code: 'NO_CHANGES',
+            message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details',
+          });
+          return;
+        }
+
+        const updated = await container.reservationService.updateReservation(
+          reservationId,
+          {
+            startTime: body.startTime ? new Date(body.startTime) : undefined,
+            endTime:   body.endTime   ? new Date(body.endTime)   : undefined,
+            details:   body.details,
+          },
+        );
+
+        res.json(toReservationDto(updated));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // POST /api/customer/me/reservations/:id/cancel — cancelar reserva propia
   // -------------------------------------------------------------------------
   /**
@@ -419,13 +527,11 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Verificar que la reserva pertenece al cliente autenticado
         if (reservation.customer.id !== customerId) {
           res.status(403).json({ code: 'FORBIDDEN', message: 'No tenés permiso para cancelar esta reserva' });
           return;
         }
 
-        // Solo se pueden cancelar reservas PENDING
         if (reservation.status !== ReservationStatus.PENDING) {
           res.status(409).json({
             code: 'INVALID_STATUS',
