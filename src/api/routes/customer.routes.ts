@@ -19,11 +19,13 @@
  * - Un cliente SOLO puede ver y cancelar SUS propias reservas.
  * - Un cliente no puede ver datos de otros clientes.
  * - La cancelación solo está permitida si la reserva está en PENDING.
+ * - /register y /login están limitados por rate limiting (ver abajo).
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import rateLimit from 'express-rate-limit';
 import { AppContainer } from '../../container.js';
 import { Customer } from '../../domain/entities.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
@@ -32,6 +34,46 @@ import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { UserRole, ResourceType, ReservationStatus } from '../../types/enums.js';
 import { PreferenceDetailsByResource } from '../../types/preferences.types.js';
 import { validateDetailsForType } from '../schemas/request.schemas.js';
+
+// ---------------------------------------------------------------------------
+// Rate limiters — evitan abuso en endpoints públicos costosos (PBKDF2)
+// ---------------------------------------------------------------------------
+
+/**
+ * /register: máximo 5 intentos por IP cada 15 minutos.
+ * Más restrictivo porque implica PBKDF2 + escritura en BD.
+ */
+const registerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Demasiados intentos de registro. Intentá de nuevo en 15 minutos.',
+      retryAfter: 15,
+    });
+  },
+});
+
+/**
+ * /login: máximo 10 intentos por IP cada 15 minutos.
+ * Mitiga fuerza bruta sobre cuentas existentes.
+ */
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Demasiados intentos de inicio de sesión. Intentá de nuevo en 15 minutos.',
+      retryAfter: 15,
+    });
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Schemas de validación
@@ -70,7 +112,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   const customerAuthService = new CustomerAuthService(container.customerRepository);
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/register — público
+  // POST /api/customer/register — público (rate limited)
   // -------------------------------------------------------------------------
   /**
    * @swagger
@@ -95,9 +137,12 @@ export function createCustomerRouter(container: AppContainer): Router {
    *         description: Cuenta creada — devuelve JWT listo para usar
    *       400:
    *         description: Datos inválidos o email ya registrado
+   *       429:
+   *         description: Demasiados intentos — rate limit excedido
    */
   router.post(
     '/register',
+    registerLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = RegisterCustomerSchema.parse(req.body);
@@ -120,7 +165,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/login — público
+  // POST /api/customer/login — público (rate limited)
   // -------------------------------------------------------------------------
   /**
    * @swagger
@@ -144,9 +189,12 @@ export function createCustomerRouter(container: AppContainer): Router {
    *         description: Login exitoso — devuelve JWT
    *       401:
    *         description: Credenciales inválidas
+   *       429:
+   *         description: Demasiados intentos — rate limit excedido
    */
   router.post(
     '/login',
+    loginLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = LoginCustomerSchema.parse(req.body);
@@ -216,11 +264,9 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Todos los recursos del tipo solicitado
         const allResources = await container.resourceRepository.getByType(resourceType);
 
-        // Bug 3 fix: ejecutar todas las queries de disponibilidad en paralelo
-        // con Promise.all en vez de un for-loop secuencial (N+1 serial → concurrent).
+        // Ejecutar todas las queries de disponibilidad en paralelo
         const busyResourceIds = new Set<string>();
         await Promise.all(
           allResources.map(async (resource) => {
@@ -422,13 +468,11 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Verificar que la reserva pertenece al cliente autenticado
         if (reservation.customer.id !== customerId) {
           res.status(403).json({ code: 'FORBIDDEN', message: 'No tenés permiso para cancelar esta reserva' });
           return;
         }
 
-        // Solo se pueden cancelar reservas PENDING
         if (reservation.status !== ReservationStatus.PENDING) {
           res.status(409).json({
             code: 'INVALID_STATUS',
