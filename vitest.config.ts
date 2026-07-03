@@ -26,6 +26,14 @@ export default defineConfig({
         'src/app.ts',
         'src/container.ts',
         'src/repositories/supabase.occupancy.repository.ts',
+        // interfaces y tipos puros — sin lógica ejecutable
+        'src/repositories/customer.repository.ts',
+        'src/repositories/occupancy.repository.ts',
+        'src/repositories/reservation.repository.ts',
+        'src/repositories/resource.repository.ts',
+        'src/repositories/sql.client.ts',
+        'src/domain/**/*.types.ts',
+        'src/types/**',
       ],
       thresholds: {
         lines: 80,
