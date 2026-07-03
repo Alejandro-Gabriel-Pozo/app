@@ -1,16 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  ResourceType,
-  TableShape,
-  TableLocation,
-  ReservationStatus,
-} from '../types/enums.js';
-import { Customer } from '../domain/entities.js';
+import { ReservationStatus } from '../types/enums.js';
+import { BookableResource, Customer } from '../domain/entities.js';
 import { ReservationService } from './reservation.service.js';
 import { InMemoryReservationRepository } from '../repositories/in-memory.reservation.repository.js';
 import { InMemoryResourceRepository } from '../repositories/in-memory.resource.repository.js';
 import { InMemoryOccupancyRepository } from '../repositories/in-memory.occupancy.repository.js';
-import { TableResource } from '../domain/entities.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
 
 describe('ReservationService', () => {
@@ -19,8 +13,8 @@ describe('ReservationService', () => {
   let occupancyRepo: InMemoryOccupancyRepository;
   let service: ReservationService;
 
-  const table = new TableResource('t1', 'Mesa Ventana', 50, {
-    shape: TableShape.RECTANGLE,
+  const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
+    shape: 'RECTANGLE',
     width: 120,
     height: 80,
     positionX: 0,
@@ -49,12 +43,11 @@ describe('ReservationService', () => {
 
       const reservation = await service.createReservation({
         id: 'res-1',
-        resourceType: ResourceType.RESTAURANT_TABLE,
         resourceId: 't1',
         customer,
         startTime: start,
         endTime: end,
-        details: { allergies: [], tableLocation: TableLocation.WINDOW },
+        details: { guests: 2 },
       });
 
       expect(reservation.id).toBe('res-1');
@@ -66,12 +59,11 @@ describe('ReservationService', () => {
       await expect(
         service.createReservation({
           id: 'res-1',
-          resourceType: ResourceType.RESTAURANT_TABLE,
           resourceId: 'missing',
           customer,
           startTime: new Date('2026-07-01T20:00:00'),
           endTime: new Date('2026-07-01T22:00:00'),
-          details: { allergies: [], tableLocation: TableLocation.WINDOW },
+          details: {},
         }),
       ).rejects.toThrow(ResourceNotFoundError);
     });
@@ -82,23 +74,21 @@ describe('ReservationService', () => {
 
       await service.createReservation({
         id: 'res-1',
-        resourceType: ResourceType.RESTAURANT_TABLE,
         resourceId: 't1',
         customer,
         startTime: start,
         endTime: end,
-        details: { allergies: [], tableLocation: TableLocation.WINDOW },
+        details: {},
       });
 
       await expect(
         service.createReservation({
           id: 'res-2',
-          resourceType: ResourceType.RESTAURANT_TABLE,
           resourceId: 't1',
           customer,
           startTime: new Date('2026-07-01T21:00:00'),
           endTime: new Date('2026-07-01T23:00:00'),
-          details: { allergies: [], tableLocation: TableLocation.INSIDE },
+          details: {},
         }),
       ).rejects.toThrow(InvalidReservationError);
     });
@@ -111,12 +101,11 @@ describe('ReservationService', () => {
 
       await service.createReservation({
         id: 'res-1',
-        resourceType: ResourceType.RESTAURANT_TABLE,
         resourceId: 't1',
         customer,
         startTime: start,
         endTime: end,
-        details: { allergies: [], tableLocation: TableLocation.WINDOW },
+        details: {},
       });
 
       const confirmed = await service.confirmReservation('res-1');
@@ -135,12 +124,11 @@ describe('ReservationService', () => {
 
       await service.createReservation({
         id: 'res-1',
-        resourceType: ResourceType.RESTAURANT_TABLE,
         resourceId: 't1',
         customer,
         startTime: start,
         endTime: end,
-        details: { allergies: [], tableLocation: TableLocation.WINDOW },
+        details: {},
       });
 
       const available = await service.checkAvailability(
@@ -154,16 +142,14 @@ describe('ReservationService', () => {
   });
 
   describe('updateReservation', () => {
-    // Crea una reserva PENDING base reutilizable en cada test
     async function createBaseReservation(id = 'res-1') {
       return service.createReservation({
         id,
-        resourceType: ResourceType.RESTAURANT_TABLE,
         resourceId: 't1',
         customer,
         startTime: new Date('2026-08-01T19:00:00Z'),
         endTime:   new Date('2026-08-01T21:00:00Z'),
-        details: { allergies: [], tableLocation: TableLocation.WINDOW },
+        details: {},
       });
     }
 
@@ -203,30 +189,28 @@ describe('ReservationService', () => {
     });
 
     it('debe rechazar si endTime <= startTime después del merge (solo startTime enviado)', async () => {
-      await createBaseReservation(); // endTime = 21:00
+      await createBaseReservation();
 
-      // Enviamos un startTime posterior al endTime existente (21:00)
       await expect(
         service.updateReservation('res-1', {
-          startTime: new Date('2026-08-01T22:00:00Z'), // > endTime existente 21:00
+          startTime: new Date('2026-08-01T22:00:00Z'),
         }),
       ).rejects.toThrow(InvalidReservationError);
     });
 
     it('debe rechazar si endTime <= startTime después del merge (solo endTime enviado)', async () => {
-      await createBaseReservation(); // startTime = 19:00
+      await createBaseReservation();
 
-      // Enviamos un endTime anterior al startTime existente (19:00)
       await expect(
         service.updateReservation('res-1', {
-          endTime: new Date('2026-08-01T18:00:00Z'), // < startTime existente 19:00
+          endTime: new Date('2026-08-01T18:00:00Z'),
         }),
       ).rejects.toThrow(InvalidReservationError);
     });
 
     it('debe rechazar si la reserva no está en PENDING', async () => {
       await createBaseReservation();
-      await service.confirmReservation('res-1'); // PENDING → CONFIRMED
+      await service.confirmReservation('res-1');
 
       await expect(
         service.updateReservation('res-1', {

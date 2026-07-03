@@ -1,14 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import {
-  ResourceType,
-  TableShape,
-  TableLocation,
-  ReservationStatus,
-} from '../types/enums.js';
+import { ReservationStatus } from '../types/enums.js';
+import { BookableResource } from '../domain/entities.js';
 import { SqlReservationRepository } from './sql.reservation.repository.js';
 import { SqlResourceRepository } from './sql.resource.repository.js';
 import { SqlClient } from './sql.client.js';
-import { TableResource } from '../domain/entities.js';
 
 describe('SqlReservationRepository', () => {
   let mockSqlClient: SqlClient;
@@ -21,11 +16,10 @@ describe('SqlReservationRepository', () => {
     customer_name: 'Ana García',
     customer_email: 'ana@example.com',
     resource_id: 't1',
-    resource_type: ResourceType.RESTAURANT_TABLE,
     status: ReservationStatus.CONFIRMED,
     start_time: '2026-07-01T20:00:00.000Z',
     end_time: '2026-07-01T22:00:00.000Z',
-    details: { allergies: [], tableLocation: TableLocation.WINDOW },
+    details: { guests: 2 },
   };
 
   beforeEach(() => {
@@ -37,16 +31,9 @@ describe('SqlReservationRepository', () => {
               {
                 id: 't1',
                 name: 'Mesa Ventana',
-                type: ResourceType.RESTAURANT_TABLE,
+                category_id: 'cat-table',
                 base_price: 50,
-                visual_data: {
-                  shape: TableShape.RECTANGLE,
-                  width: 120,
-                  height: 80,
-                  positionX: 0,
-                  positionY: 0,
-                  rotationDegrees: 0,
-                },
+                visual_data: null,
               },
             ],
           };
@@ -64,7 +51,7 @@ describe('SqlReservationRepository', () => {
     expect(reservation).toBeDefined();
     expect(reservation!.id).toBe('res-1');
     expect(reservation!.status).toBe(ReservationStatus.CONFIRMED);
-    expect(reservation!.resource).toBeInstanceOf(TableResource);
+    expect(reservation!.resource).toBeInstanceOf(BookableResource);
     expect(reservation!.customer.email).toBe('ana@example.com');
   });
 

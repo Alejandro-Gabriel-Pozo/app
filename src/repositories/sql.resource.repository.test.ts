@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ResourceType, TableShape } from '../types/enums.js';
+import { BookableResource } from '../domain/entities.js';
 import { SqlResourceRepository } from './sql.resource.repository.js';
 import { SqlClient } from './sql.client.js';
-import { TableResource } from '../domain/entities.js';
 
 describe('SqlResourceRepository', () => {
   let mockSqlClient: SqlClient;
@@ -15,9 +14,9 @@ describe('SqlResourceRepository', () => {
     repo = new SqlResourceRepository(mockSqlClient);
   });
 
-  it('debe insertar un recurso con visual_data para mesas', async () => {
-    const table = new TableResource('t1', 'Mesa 1', 40, {
-      shape: TableShape.SQUARE,
+  it('debe insertar un recurso con visual_data', async () => {
+    const table = new BookableResource('t1', 'Mesa 1', 40, 'cat-table', {
+      shape: 'SQUARE',
       width: 100,
       height: 100,
       positionX: 5,
@@ -28,12 +27,10 @@ describe('SqlResourceRepository', () => {
     await repo.save(table);
 
     expect(mockSqlClient.query).toHaveBeenCalledOnce();
-    const [sql, params] = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock
-      .calls[0];
+    const [sql, params] = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(sql).toContain('INSERT INTO resources');
     expect(params[0]).toBe('t1');
-    expect(params[2]).toBe(ResourceType.RESTAURANT_TABLE);
-    expect(JSON.parse(params[4] as string).shape).toBe(TableShape.SQUARE);
+    expect(JSON.parse(params[4] as string).shape).toBe('SQUARE');
   });
 
   it('debe mapear filas SQL a BookableResource', async () => {
@@ -42,10 +39,10 @@ describe('SqlResourceRepository', () => {
         {
           id: 't1',
           name: 'Mesa 1',
-          type: ResourceType.RESTAURANT_TABLE,
+          category_id: 'cat-table',
           base_price: '40.00',
           visual_data: {
-            shape: TableShape.CIRCLE,
+            shape: 'CIRCLE',
             width: 80,
             height: 80,
             positionX: 0,
@@ -58,9 +55,10 @@ describe('SqlResourceRepository', () => {
 
     const resource = await repo.getById('t1');
 
-    expect(resource).toBeInstanceOf(TableResource);
+    expect(resource).toBeInstanceOf(BookableResource);
     expect(resource!.id).toBe('t1');
     expect(resource!.basePrice).toBe(40);
+    expect(resource!.categoryId).toBe('cat-table');
   });
 
   it('debe hacer soft delete marcando active = FALSE', async () => {
