@@ -19,6 +19,7 @@ import { Customer } from '../domain/entities.js';
 import { hashPassword, verifyPassword } from './user.store.js';
 import { signToken } from './auth.middleware.js';
 import { UserRole } from '../types/enums.js';
+import { withTransaction } from '../db/pg.client.js';
 
 export interface CustomerRegistrationInput {
   fullName: string;
@@ -43,7 +44,6 @@ export interface CustomerAuthResult {
 /**
  * Hash dummy usado para mantener tiempo constante en login cuando el email
  * no existe — evita timing attack por enumeración de emails.
- * Generado una vez al importar el módulo.
  */
 const DUMMY_HASH = await hashPassword('dummy-constant-time-placeholder');
 
@@ -53,8 +53,6 @@ export class CustomerAuthService {
   constructor(
     private readonly customerRepository: CustomerRepository,
   ) {
-    // Bug 1 fix: validar JWT_SECRET al construir el servicio (falla en startup,
-    // no en el primer request de login).
     const secret = process.env.JWT_SECRET;
     if (!secret) {
       throw new Error('[CustomerAuthService] JWT_SECRET no está definida en las variables de entorno.');
@@ -64,6 +62,9 @@ export class CustomerAuthService {
 
   /**
    * Registra un nuevo cliente.
+   * Crea el Customer con su ContactMethod de email y persiste ambos
+   * en la misma transacción (customers + customer_contact_methods).
+   *
    * @throws Error con code EMAIL_TAKEN si el email ya está en uso.
    */
   async register(input: CustomerRegistrationInput): Promise<CustomerAuthResult> {
@@ -76,10 +77,13 @@ export class CustomerAuthService {
 
     const id = randomUUID();
     const passwordHash = await hashPassword(input.password);
-    const customer = new Customer(id, input.fullName, input.email);
+    const customer = new Customer(id, input.fullName, [
+      { id: `ccm-${id}`, channel: 'EMAIL', value: input.email, isPrimary: true },
+    ]);
 
-    // Persiste el cliente con su password hash
-    await this.customerRepository.saveWithPassword(customer, passwordHash);
+    await withTransaction(async (tx) => {
+      await this.customerRepository.saveWithClient(tx, customer, passwordHash);
+    });
 
     const token = this.issueToken(id);
     return { token, customer: { id, fullName: input.fullName, email: input.email } };
@@ -98,8 +102,6 @@ export class CustomerAuthService {
   async login(input: CustomerLoginInput): Promise<CustomerAuthResult> {
     const record = await this.customerRepository.getByEmailWithPassword(input.email);
 
-    // Bug 2 fix: ejecutar verifyPassword siempre para evitar timing attack.
-    // Si el email no existe, comparamos contra DUMMY_HASH (resultado siempre false).
     const hashToVerify = record?.passwordHash ?? DUMMY_HASH;
     const valid = await verifyPassword(input.password, hashToVerify);
 
