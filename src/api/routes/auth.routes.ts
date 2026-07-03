@@ -15,20 +15,75 @@
  *        ← 200 [...]
  * ```
  *
- * ## Rate limiting (recomendado en producción)
- * El endpoint de login es el más sensible a ataques de fuerza bruta.
- * Cuando añadas un reverse proxy (Render, Nginx, Cloudflare), configura
- * un límite de ~10 intentos por IP por minuto en esta ruta.
+ * ## Rate limiting
+ * Limita a 10 intentos por IP cada 15 minutos para prevenir fuerza bruta.
+ * En producción detrás de Render/Cloudflare, asegúrate de activar
+ * `app.set('trust proxy', 1)` para que el limiter lea la IP real desde
+ * el header `X-Forwarded-For`.
  */
- 
+
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AuthService } from '../../security/auth.service.js';
- 
+
+// ---------------------------------------------------------------------------
+// Rate limiter — protección anti fuerza bruta
+// ---------------------------------------------------------------------------
+
+/**
+ * Mapa en memoria: IP → { count, resetAt }.
+ * Suficiente para una instancia única (Render free/starter).
+ * Para multi-instancia reemplazar por un store Redis.
+ */
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+/** Máximo de intentos fallidos por IP en la ventana */
+const MAX_ATTEMPTS = 10;
+/** Ventana de tiempo en milisegundos (15 minutos) */
+const WINDOW_MS = 15 * 60 * 1_000;
+
+/**
+ * Middleware de rate limiting para el endpoint de login.
+ * Retorna 429 con el header `Retry-After` si se supera el límite.
+ */
+function loginRateLimiter(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const ip =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ??
+    req.socket.remoteAddress ??
+    'unknown';
+
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+
+  if (!entry || now > entry.resetAt) {
+    // Primera petición o ventana expirada — reiniciar contador
+    loginAttempts.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    next();
+    return;
+  }
+
+  if (entry.count >= MAX_ATTEMPTS) {
+    const retryAfterSeconds = Math.ceil((entry.resetAt - now) / 1_000);
+    res.set('Retry-After', String(retryAfterSeconds));
+    res.status(429).json({
+      code: 'TOO_MANY_REQUESTS',
+      message: `Demasiados intentos de inicio de sesión. Intentá de nuevo en ${Math.ceil(retryAfterSeconds / 60)} minuto(s).`,
+    });
+    return;
+  }
+
+  entry.count += 1;
+  next();
+}
+
 // ---------------------------------------------------------------------------
 // Schema de validación del body
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Esquema Zod para el body de `POST /api/login`.
  *
@@ -43,7 +98,7 @@ const LoginBodySchema = z.object({
   email: z
     .string({ required_error: 'email es obligatorio' })
     .email({ message: 'email debe tener un formato válido' }),
- 
+
   /**
    * Contraseña en texto plano. Longitud mínima de 6 para evitar
    * envíos vacíos accidentales, sin revelar la política real.
@@ -53,11 +108,11 @@ const LoginBodySchema = z.object({
     .string({ required_error: 'password es obligatorio' })
     .min(6, { message: 'password debe tener al menos 6 caracteres' }),
 });
- 
+
 // ---------------------------------------------------------------------------
 // Factory del router
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Crea y configura el router de autenticación.
  *
@@ -72,7 +127,7 @@ const LoginBodySchema = z.object({
  */
 export function createAuthRouter(authService: AuthService): Router {
   const router = Router();
- 
+
   /**
    * @swagger
    * /api/login:
@@ -82,6 +137,7 @@ export function createAuthRouter(authService: AuthService): Router {
    *       Valida las credenciales del usuario y devuelve un JWT Bearer.
    *       Incluye el token en el header `Authorization: Bearer <token>`
    *       de todas las peticiones posteriores a `/api/*`.
+   *       Máximo 10 intentos por IP cada 15 minutos (429 si se supera).
    *     tags:
    *       - Auth
    *     requestBody:
@@ -123,17 +179,24 @@ export function createAuthRouter(authService: AuthService): Router {
    *             example:
    *               code: "INVALID_CREDENTIALS"
    *               message: "Credenciales inválidas"
+   *       429:
+   *         description: Demasiados intentos — rate limit superado
+   *         headers:
+   *           Retry-After:
+   *             schema: { type: integer }
+   *             description: Segundos hasta que se libera la ventana
    */
   router.post(
     '/',
+    loginRateLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         // 1. Validar formato del body con Zod (400 si falla)
         const body = LoginBodySchema.parse(req.body);
- 
+
         // 2. Delegar autenticación al servicio (401 si las credenciales son incorrectas)
         const result = await authService.login(body.email, body.password);
- 
+
         // 3. Responder con el token y datos del usuario
         res.status(200).json(result);
       } catch (err) {
@@ -151,7 +214,6 @@ export function createAuthRouter(authService: AuthService): Router {
       }
     },
   );
- 
+
   return router;
 }
- 
