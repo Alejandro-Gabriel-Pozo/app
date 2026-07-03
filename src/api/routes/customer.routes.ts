@@ -20,7 +20,8 @@
  * - Un cliente SOLO puede ver, modificar y cancelar SUS propias reservas.
  * - Un cliente no puede ver datos de otros clientes.
  * - La modificación solo está permitida si la reserva está en PENDING.
- * - La cancelación solo está permitida si la reserva está en PENDING.
+ * - La cancelación está permitida en PENDING (sin restricción de tiempo)
+ *   o en CONFIRMED con al menos CANCEL_ADVANCE_MS de antelación.
  * - /register y /login están limitados por rate limiting (ver abajo).
  */
 
@@ -36,6 +37,22 @@ import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { UserRole, ResourceType, ReservationStatus } from '../../types/enums.js';
 import { PreferenceDetailsByResource } from '../../types/preferences.types.js';
 import { validateDetailsForType } from '../schemas/request.schemas.js';
+
+// ---------------------------------------------------------------------------
+// Política de cancelación
+// ---------------------------------------------------------------------------
+
+/**
+ * Antelación mínima para cancelar una reserva CONFIRMED.
+ * 24 horas expresadas en milisegundos — cambiar aquí para ajustar la política.
+ */
+const CANCEL_ADVANCE_MS = 24 * 60 * 60 * 1_000;
+
+/** Estados desde los que un cliente puede cancelar su reserva. */
+const CANCELLABLE_STATUSES: ReservationStatus[] = [
+  ReservationStatus.PENDING,
+  ReservationStatus.CONFIRMED,
+];
 
 // ---------------------------------------------------------------------------
 // Rate limiters — evitan abuso en endpoints públicos costosos (PBKDF2)
@@ -453,7 +470,6 @@ export function createCustomerRouter(container: AppContainer): Router {
 
         const reservation = await container.reservationService.createReservation({
           id:           randomUUID(),
-          resourceType: body.resourceType,
           resourceId:   body.resourceId,
           customer:     new Customer(customerEntity.id, customerEntity.fullName, customerEntity.email),
           startTime:    new Date(body.startTime),
@@ -573,7 +589,11 @@ export function createCustomerRouter(container: AppContainer): Router {
    * /api/customer/me/reservations/{id}/cancel:
    *   post:
    *     summary: Cancelar una reserva propia
-   *     description: Solo se pueden cancelar reservas en estado PENDING.
+   *     description: |
+   *       Cancela una reserva propia según el estado:
+   *       - **PENDING**: sin restricción de tiempo.
+   *       - **CONFIRMED**: requiere al menos 24 horas de antelación respecto a `startTime`.
+   *       - Otros estados (COMPLETED, CANCELLED): no permitido.
    *     tags: [Customer Portal]
    *     security:
    *       - BearerAuth: []
@@ -590,7 +610,9 @@ export function createCustomerRouter(container: AppContainer): Router {
    *       404:
    *         description: Reserva no encontrada
    *       409:
-   *         description: La reserva ya no puede cancelarse (estado != PENDING)
+   *         description: La reserva ya no puede cancelarse (COMPLETED o CANCELLED)
+   *       422:
+   *         description: Cancelación muy tardía — reserva CONFIRMED dentro de las próximas 24h
    */
   router.post(
     '/me/reservations/:id/cancel',
@@ -612,12 +634,28 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        if (reservation.status !== ReservationStatus.PENDING) {
+        // Verificar que el estado sea cancelable por el cliente
+        if (!CANCELLABLE_STATUSES.includes(reservation.status)) {
           res.status(409).json({
             code: 'INVALID_STATUS',
-            message: `Solo se pueden cancelar reservas en estado PENDING. Estado actual: ${reservation.status}`,
+            message: `No se puede cancelar una reserva en estado ${reservation.status}.`,
           });
           return;
+        }
+
+        // Para reservas CONFIRMED: verificar antelación mínima de 24h
+        if (reservation.status === ReservationStatus.CONFIRMED) {
+          const msUntilStart = reservation.startTime.getTime() - Date.now();
+          if (msUntilStart < CANCEL_ADVANCE_MS) {
+            const hoursLeft = Math.max(0, Math.floor(msUntilStart / (1000 * 60 * 60)));
+            res.status(422).json({
+              code: 'CANCELLATION_TOO_LATE',
+              message:
+                `Las reservas confirmadas solo pueden cancelarse con al menos 24 horas de antelación. ` +
+                `Tu reserva comienza en ${hoursLeft} hora(s). Contactá al establecimiento para asistencia.`,
+            });
+            return;
+          }
         }
 
         const cancelled = await container.reservationService.cancelReservation(reservationId);
