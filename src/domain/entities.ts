@@ -2,16 +2,11 @@
  * @file entities.ts
  * @description Entidades de dominio.
  *
- * ## Cambios respecto a la versión anterior
- * - Se elimina la jerarquía `BookableResource` (abstract) +
- *   `CabinResource` / `TableResource` / `SpaResource` / `TourSeatResource`.
- *   El tipo de recurso ya no es un enum estático — cada negocio define sus
- *   propias categorías en BD (`resource_categories`).
- * - `BookableResource` pasa a ser una clase concreta con `categoryId: string`
- *   en lugar de `type: ResourceType`.
- * - `visualData` se mueve a campo opcional sobre `BookableResource`
- *   (antes solo existía en `TableResource`).
- * - `Customer` no cambia.
+ * ## Cambios v2 — Customer como agregado
+ * - ContactMethod interface: canal de contacto tipado (EMAIL, PHONE, WHATSAPP)
+ * - Constructor sobrecargado: acepta string (legacy) o ContactMethod[]
+ * - Getters email/fullName para compatibilidad con código existente
+ * - BookableResource sin cambios
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -25,21 +20,66 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Customer
 // ---------------------------------------------------------------------------
 
+export interface ContactMethod {
+  id: string;
+  channel: 'EMAIL' | 'PHONE' | 'WHATSAPP';
+  value: string;
+  isPrimary: boolean;
+  verifiedAt?: Date;
+}
+
 export class Customer {
+  public readonly displayName: string;
+  public readonly contactMethods: ContactMethod[];
+
+  /**
+   * @param id              - UUID del cliente
+   * @param displayName     - Nombre para mostrar (era fullName)
+   * @param emailOrContacts - string legacy (email) o ContactMethod[]
+   *
+   * Compatibilidad hacia atrás:
+   *   new Customer(id, name, 'user@mail.com')  ← sigue funcionando
+   *   new Customer(id, name, [{ channel: 'EMAIL', ... }])  ← nuevo
+   */
   constructor(
     public readonly id: string,
-    public readonly fullName: string,
-    public readonly email: string,
+    displayName: string,
+    emailOrContacts: string | ContactMethod[] = [],
   ) {
-    if (!id.trim()) {
-      throw new InvalidCustomerError('id es obligatorio');
+    if (!id.trim()) throw new InvalidCustomerError('id es obligatorio');
+    if (!displayName.trim()) throw new InvalidCustomerError('fullName es obligatorio');
+
+    this.displayName = displayName;
+
+    if (typeof emailOrContacts === 'string') {
+      if (!EMAIL_PATTERN.test(emailOrContacts)) {
+        throw new InvalidCustomerError('email inválido');
+      }
+      this.contactMethods = [
+        { id: `ccm-${id}`, channel: 'EMAIL', value: emailOrContacts, isPrimary: true },
+      ];
+    } else {
+      for (const cm of emailOrContacts) {
+        if (cm.channel === 'EMAIL' && !EMAIL_PATTERN.test(cm.value)) {
+          throw new InvalidCustomerError('email inválido');
+        }
+      }
+      this.contactMethods = emailOrContacts;
     }
-    if (!fullName.trim()) {
-      throw new InvalidCustomerError('fullName es obligatorio');
-    }
-    if (!EMAIL_PATTERN.test(email)) {
-      throw new InvalidCustomerError('email inválido');
-    }
+  }
+
+  /** Email primario — compatibilidad con todo el código existente */
+  get email(): string {
+    return (
+      this.contactMethods.find((c) => c.channel === 'EMAIL' && c.isPrimary)?.value ??
+      this.contactMethods.find((c) => c.channel === 'EMAIL')?.value ??
+      ''
+    );
+  }
+
+  /** Alias de displayName — compatibilidad con tests y servicios */
+  get fullName(): string {
+    return this.displayName;
   }
 }
 
@@ -67,11 +107,6 @@ export class BookableResource {
 
   /**
    * Verifica si el recurso está disponible en el rango dado.
-   *
-   * @param start                - Inicio del rango
-   * @param end                  - Fin del rango
-   * @param reservations         - Reservas activas contra las que chequear solapamiento
-   * @param excludeReservationId - ID a ignorar (para updates)
    */
   isAvailable(
     start: Date,

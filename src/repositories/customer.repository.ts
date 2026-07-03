@@ -1,4 +1,5 @@
 import { Customer } from '../domain/entities.js';
+import { SqlClient } from './sql.client.js';
 
 /**
  * Registro de cliente con contraseña (solo para autenticación interna).
@@ -11,19 +12,22 @@ export interface CustomerWithPassword {
 
 /**
  * Contrato del repositorio de clientes.
- *
- * La mayoría de métodos trabajan con `Customer` sin contraseña.
- * `saveWithPassword` y `getByEmailWithPassword` son exclusivos del
- * flujo de autenticación del portal de clientes.
  */
 export interface CustomerRepository {
   save(customer: Customer): Promise<void>;
 
   /**
    * Persiste un cliente junto con su password hash.
-   * Usado exclusivamente por CustomerAuthService al registrar un cliente nuevo.
+   * Usado por CustomerAuthService al registrar un cliente nuevo.
    */
   saveWithPassword(customer: Customer, passwordHash: string): Promise<void>;
+
+  /**
+   * Versión transaccional de saveWithPassword().
+   * Recibe un SqlClient ya dentro de BEGIN — no adquiere conexión propia.
+   * Llamar solo desde dentro de withTransaction() de db/pg.client.ts.
+   */
+  saveWithClient(client: SqlClient, customer: Customer, passwordHash: string): Promise<void>;
 
   getById(id: string): Promise<Customer | undefined>;
   getAll(): Promise<Customer[]>;
@@ -40,19 +44,8 @@ export interface CustomerRepository {
 
   /**
    * Anonimiza (pseudo-elimina) un cliente.
-   *
-   * En lugar de borrar el registro — lo cual rompería la integridad referencial
-   * con las reservas existentes — reemplaza todos los datos personales con
-   * valores neutros y elimina el password hash, impidiendo futuros logins.
-   *
-   * Datos que se limpian:
-   * - `full_name`     → '[eliminado]'
-   * - `email`         → 'deleted-{id}@anon.local'
-   * - `password_hash` → NULL
-   *
-   * El ID del cliente se preserva para mantener el historial de reservas.
-   *
-   * @returns `true` si el cliente existía y fue anonimizado, `false` si no existía.
+   * Reemplaza PII con valores neutros y elimina el password hash.
+   * El ID se preserva para mantener integridad referencial con reservas.
    */
   anonymize(id: string): Promise<boolean>;
 }

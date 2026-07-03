@@ -1,5 +1,6 @@
 import { Customer } from '../domain/entities.js';
 import { CustomerRepository, CustomerWithPassword } from './customer.repository.js';
+import { SqlClient } from './sql.client.js';
 
 interface CustomerRecord {
   customer: Customer;
@@ -24,6 +25,18 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   async saveWithPassword(customer: Customer, passwordHash: string): Promise<void> {
     this.store.set(customer.id, { customer, passwordHash });
     this.emailIndex.set(customer.email.toLowerCase(), customer.id);
+  }
+
+  /**
+   * Versión transaccional — en memoria no hay transacciones reales,
+   * se delega a saveWithPassword (misma semántica, sin overhead de tx).
+   */
+  async saveWithClient(
+    _client: SqlClient,
+    customer: Customer,
+    passwordHash: string,
+  ): Promise<void> {
+    await this.saveWithPassword(customer, passwordHash);
   }
 
   async getById(id: string): Promise<Customer | undefined> {
@@ -66,19 +79,18 @@ export class InMemoryCustomerRepository implements CustomerRepository {
    * Anonimiza el cliente en memoria: reemplaza PII con valores neutros
    * y limpia el passwordHash. El registro permanece en el store para
    * que las reservas sigan apuntando a un ID válido.
-   * La entrada en emailIndex se elimina (el email anonimizado no debe
-   * ser buscable).
    */
   async anonymize(id: string): Promise<boolean> {
     const record = this.store.get(id);
     if (!record) return false;
 
-    // Verificar que no esté ya anonimizado
-    if (record.customer.email.startsWith('deleted-') && record.customer.email.endsWith('@anon.local')) {
+    if (
+      record.customer.email.startsWith('deleted-') &&
+      record.customer.email.endsWith('@anon.local')
+    ) {
       return false;
     }
 
-    // Limpiar índice del email original
     this.emailIndex.delete(record.customer.email.toLowerCase());
 
     const anonymizedCustomer = new Customer(
@@ -88,7 +100,6 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     );
 
     this.store.set(id, { customer: anonymizedCustomer, passwordHash: null });
-    // No indexar el email anonimizado — no debe ser buscable
     return true;
   }
 }
