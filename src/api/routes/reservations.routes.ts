@@ -20,6 +20,11 @@
  * - **WAITER no puede crear**: evita reservas fantasma creadas desde sala.
  * - `authenticate()` ya corrió en `app.ts`, así que `req.user` siempre existe
  *   cuando llegamos aquí. `authorize()` solo comprueba el rol.
+ *
+ * ## Integridad del cliente en POST /
+ * El body incluye `customer.id`. Se valida contra `customerRepository` antes
+ * de crear la reserva para evitar reservas huérfanas (asignadas a un ID
+ * ficticio que no corresponde a ningún cliente registrado).
  */
  
 import { Router, Request, Response, NextFunction } from 'express';
@@ -131,6 +136,9 @@ export function createReservationsRouter(container: AppContainer): Router {
    * /api/reservations:
    *   post:
    *     summary: Crear una nueva reserva
+   *     description: >
+   *       `customer.id` debe corresponder a un cliente registrado en la BD.
+   *       Si el ID no existe, se retorna 404 con código `CUSTOMER_NOT_FOUND`.
    *     tags: [Reservations]
    *     security:
    *       - BearerAuth: []
@@ -149,6 +157,8 @@ export function createReservationsRouter(container: AppContainer): Router {
    *         $ref: '#/components/responses/Unauthorized'
    *       403:
    *         $ref: '#/components/responses/Forbidden'
+   *       404:
+   *         description: Cliente no encontrado (customer.id inválido)
    *       409:
    *         description: Recurso no disponible en el rango solicitado
    */
@@ -159,15 +169,29 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const body = CreateReservationSchema.parse(req.body);
         validateDetailsForType(body.resourceType, body.details);
+
+        // Validar que el cliente exista en la BD antes de crear la reserva.
+        // Evita reservas huérfanas asignadas a IDs ficticios que nunca
+        // aparecerían en /customer/me/reservations del cliente real.
+        const existingCustomer = await container.customerRepository.getById(
+          body.customer.id,
+        );
+        if (!existingCustomer) {
+          res.status(404).json({
+            code: 'CUSTOMER_NOT_FOUND',
+            message: `No existe un cliente con id "${body.customer.id}"`,
+          });
+          return;
+        }
  
         const reservation = await container.reservationService.createReservation({
           id: randomUUID(),
           resourceType: body.resourceType,
           resourceId: body.resourceId,
           customer: new Customer(
-            body.customer.id,
-            body.customer.fullName,
-            body.customer.email,
+            existingCustomer.id,
+            existingCustomer.fullName,
+            existingCustomer.email,
           ),
           startTime: new Date(body.startTime),
           endTime: new Date(body.endTime),
