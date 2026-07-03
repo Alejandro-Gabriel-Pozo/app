@@ -3,12 +3,13 @@
  * @description Composición de dependencias (Composition Root).
  *
  * ## Cambios en esta versión
- * - Se agregan `SqlCategoryRepository` y `CategoryService` al container.
- * - Se expone `categoryService` en `AppContainer`.
- * - Se agrega `getBusinessPlan` como callback que lee `plan` de la BD central
- *   via `PlatformRepository.findById()`. Se usa en las rutas de categorías
- *   para enforcement de límites por plan.
- * - El seed in-memory ya no crea recursos con `type` — usa `categoryId`.
+ * - Se agrega `SqlDomainEventRepository` al container PostgreSQL.
+ * - Se agrega `SqlFinancialTransactionRepository` al container PostgreSQL.
+ * - Se inyectan ambos en `ReservationService` (parámetros opcionales 5.° y 6.°)
+ *   para activar el outbox transaccional en modo PostgreSQL.
+ * - Se crea y expone `outboxWorker` en el container para que `server.ts`
+ *   pueda arrancarlo y detenerlo con graceful shutdown.
+ * - El modo in-memory no instancia ni arranca el worker (no hay BD).
  */
 
 import { ReservationService } from './services/reservation.service.js';
@@ -31,6 +32,11 @@ import { SqlReservationRepository } from './repositories/sql.reservation.reposit
 import { SqlOccupancyRepository } from './repositories/sql.occupancy.repository.js';
 import { SqlCustomerRepository } from './repositories/sql.customer.repository.js';
 import { SqlCategoryRepository } from './repositories/sql.category.repository.js';
+import { SqlDomainEventRepository } from './repositories/sql.domain-event.repository.js';
+import { SqlFinancialTransactionRepository } from './repositories/sql.financial-transaction.repository.js';
+
+import { OutboxWorker } from './workers/outbox.worker.js';
+import { registerFinancialHandlers } from './workers/outbox.handlers.js';
 
 import { PlatformRepository } from './platform/platform.repository.js';
 import { pgClient } from './db/pg.client.js';
@@ -47,6 +53,8 @@ export interface AppContainer {
   reservationService:    ReservationService;
   reportService:         ReportService;
   categoryService:       CategoryService;
+  /** Solo presente en modo PostgreSQL. null en modo in-memory. */
+  outboxWorker:          OutboxWorker | null;
   /** Resuelve el plan de un negocio desde la BD central */
   getBusinessPlan:       (businessId: string) => Promise<BusinessPlan>;
   mode: 'in-memory' | 'postgresql';
@@ -61,22 +69,32 @@ export async function createAppContainer(): Promise<AppContainer> {
 async function createPostgresContainer(): Promise<AppContainer> {
   console.log('[container] 🐘 Modo PostgreSQL — conectando a DATABASE_URL');
 
-  const categoryRepository    = new SqlCategoryRepository(pgClient);
-  const resourceRepository    = new SqlResourceRepository(pgClient);
-  const customerRepository    = new SqlCustomerRepository(pgClient);
-  const reservationRepository = new SqlReservationRepository(pgClient, resourceRepository);
-  const occupancyRepository   = new SqlOccupancyRepository(pgClient);
+  const categoryRepository            = new SqlCategoryRepository(pgClient);
+  const resourceRepository            = new SqlResourceRepository(pgClient);
+  const customerRepository            = new SqlCustomerRepository(pgClient);
+  const reservationRepository         = new SqlReservationRepository(pgClient, resourceRepository);
+  const occupancyRepository           = new SqlOccupancyRepository(pgClient);
+  const domainEventRepository         = new SqlDomainEventRepository(pgClient);
+  const financialTransactionRepository = new SqlFinancialTransactionRepository(pgClient);
 
+  // Inyectar domainEventRepository + pgClient activa el outbox transaccional
+  // en confirmReservation() y completeReservation().
   const reservationService = new ReservationService(
     reservationRepository,
     resourceRepository,
     occupancyRepository,
     categoryRepository,
+    domainEventRepository,
+    pgClient,
   );
-  const reportService    = new ReportService(occupancyRepository);
-  const categoryService  = new CategoryService(categoryRepository);
 
-  // Repositorio de la BD central para leer el plan del negocio
+  const reportService   = new ReportService(occupancyRepository);
+  const categoryService = new CategoryService(categoryRepository);
+
+  // Worker: lee domain_events pendientes cada 5 s y los despacha.
+  const outboxWorker = new OutboxWorker(domainEventRepository);
+  registerFinancialHandlers(outboxWorker, financialTransactionRepository);
+
   const platformRepository = new PlatformRepository(platformPgClient);
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
     const business = await platformRepository.findById(businessId);
@@ -94,6 +112,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
     reservationService,
     reportService,
     categoryService,
+    outboxWorker,
     getBusinessPlan,
     mode: 'postgresql',
   };
@@ -102,7 +121,6 @@ async function createPostgresContainer(): Promise<AppContainer> {
 async function createInMemoryContainer(): Promise<AppContainer> {
   console.log('[container] 🧠 Modo in-memory — datos no persisten entre reinicios');
 
-  // In-memory no tiene ICategoryRepository real — usamos un stub mínimo
   const categoryRepository: ICategoryRepository = {
     findAll:     async () => [],
     findById:    async () => null,
@@ -117,6 +135,7 @@ async function createInMemoryContainer(): Promise<AppContainer> {
   const occupancyRepository   = new InMemoryOccupancyRepository();
   const customerRepository    = new InMemoryCustomerRepository();
 
+  // Sin outbox en in-memory — ReservationService funciona igual que antes.
   const reservationService = new ReservationService(
     reservationRepository,
     resourceRepository,
@@ -134,7 +153,7 @@ async function createInMemoryContainer(): Promise<AppContainer> {
   });
 
   const getBusinessPlan = async (_businessId: string): Promise<BusinessPlan> =>
-    BusinessPlan.PRO; // In-memory siempre PRO para no bloquear el desarrollo
+    BusinessPlan.PRO;
 
   console.log('[container] ✅ In-memory listo con datos demo.');
 
@@ -147,6 +166,7 @@ async function createInMemoryContainer(): Promise<AppContainer> {
     reservationService,
     reportService,
     categoryService,
+    outboxWorker: null,   // no hay BD en modo in-memory
     getBusinessPlan,
     mode: 'in-memory',
   };
