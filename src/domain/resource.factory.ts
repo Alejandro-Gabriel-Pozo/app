@@ -1,40 +1,14 @@
-import { ResourceType } from '../types/enums.js';
-import { VisualMetadata } from '../types/visual.interface.js';
-import {
-  BookableResource,
-  CabinResource,
-  SpaResource,
-  TableResource,
-  TourSeatResource,
-} from './entities.js';
-import { InvalidResourceError } from './errors.js';
+/**
+ * @file resource.factory.ts
+ * @deprecated Eliminado en feat/domain-cleanup.
+ *
+ * `createBookableResource()` mapeaba un `type: ResourceType` a la subclase
+ * concreta correspondiente (CabinResource, TableResource, etc.).
+ * Esa jerarquía de subclases ya no existe — hay una sola clase `BookableResource`
+ * con `categoryId: string`.
+ *
+ * Este archivo se mantiene vacío para no romper imports residuales.
+ * Eliminar en el próximo PR de limpieza final.
+ */
 
-export interface ResourceData {
-  id: string;
-  name: string;
-  type: ResourceType;
-  basePrice: number;
-  visualData?: VisualMetadata | null;
-}
-
-export function createBookableResource(data: ResourceData): BookableResource {
-  const { id, name, type, basePrice, visualData } = data;
-
-  switch (type) {
-    case ResourceType.CABIN:
-      return new CabinResource(id, name, basePrice);
-    case ResourceType.RESTAURANT_TABLE:
-      if (!visualData) {
-        throw new InvalidResourceError(
-          `El recurso ${id} (RESTAURANT_TABLE) requiere visualData`,
-        );
-      }
-      return new TableResource(id, name, basePrice, visualData);
-    case ResourceType.SPA:
-      return new SpaResource(id, name, basePrice);
-    case ResourceType.TOUR_SEAT:
-      return new TourSeatResource(id, name, basePrice);
-    default:
-      throw new InvalidResourceError(`Tipo de recurso desconocido: ${type}`);
-  }
-}
+export {};
