@@ -11,8 +11,8 @@
  *   internamente a partir del recurso.
  * - Se agrega soporte de **outbox transaccional**: `confirmReservation` y
  *   `completeReservation` escriben el evento de dominio en la misma transacción SQL
- *   que el cambio de estado cuando `domainEventRepository` y `sqlClient` están
- *   configurados. Sin ellos, el comportamiento es idéntico al anterior.
+ *   que el cambio de estado cuando `domainEventRepository` está configurado.
+ *   Sin él, el comportamiento es idéntico al anterior.
  */
 
 import { Reservation } from '../domain/Reservation.js';
@@ -28,7 +28,7 @@ import { ResourceRepository } from '../repositories/resource.repository.js';
 import { OccupancyRepository } from '../repositories/occupancy.repository.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
 import { DomainEventRepository } from '../repositories/domain-event.repository.js';
-import { SqlClient } from '../repositories/sql.client.js';
+import { withTransaction } from '../db/pg.client.js';
 
 export class ReservationService {
   constructor(
@@ -37,7 +37,6 @@ export class ReservationService {
     private readonly occupancyRepository?: OccupancyRepository,
     private readonly categoryRepository?: ICategoryRepository,
     private readonly domainEventRepository?: DomainEventRepository,
-    private readonly sqlClient?: SqlClient,
   ) {}
 
   /**
@@ -181,11 +180,10 @@ export class ReservationService {
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
-    if (this.domainEventRepository && this.sqlClient) {
-      await this.sqlClient.withTransaction(async (client) => {
+    if (this.domainEventRepository) {
+      await withTransaction(async (client) => {
         await this.reservationRepository.saveWithClient(client, reservation);
         await this.domainEventRepository!.insertWithClient(client, {
-          businessId:    reservation.resource.businessId,
           aggregateType: 'RESERVATION',
           aggregateId:   reservation.id,
           eventType:     'reservation.confirmed',
@@ -223,11 +221,10 @@ export class ReservationService {
     const reservation = await this.requireReservation(id);
     reservation.complete();
 
-    if (this.domainEventRepository && this.sqlClient) {
-      await this.sqlClient.withTransaction(async (client) => {
+    if (this.domainEventRepository) {
+      await withTransaction(async (client) => {
         await this.reservationRepository.saveWithClient(client, reservation);
         await this.domainEventRepository!.insertWithClient(client, {
-          businessId:    reservation.resource.businessId,
           aggregateType: 'RESERVATION',
           aggregateId:   reservation.id,
           eventType:     'reservation.completed',
