@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { ReservationStatus, ResourceType } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
 import { ReservationRepository } from './reservation.repository.js';
@@ -77,21 +78,8 @@ export class SqlReservationRepository implements ReservationRepository {
   // Escritura
   // -------------------------------------------------------------------------
 
-  async save(reservation: Reservation): Promise<void> {
-    const sql = `
-      INSERT INTO reservations (
-        id, customer_id, customer_name, customer_email,
-        resource_id, resource_type, status,
-        start_time, end_time, details, updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-      ON CONFLICT (id) DO UPDATE SET
-        status     = $7,
-        details    = $10,
-        updated_at = CURRENT_TIMESTAMP
-    `.trim();
-
-    await this.sqlClient.query(sql, [
+  private buildSaveParams(reservation: Reservation): unknown[] {
+    return [
       reservation.id,
       reservation.customer.id,
       reservation.customer.fullName,
@@ -102,7 +90,33 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.startTime.toISOString(),
       reservation.endTime.toISOString(),
       JSON.stringify(reservation.details),
-    ]);
+    ];
+  }
+
+  private readonly UPSERT_SQL = `
+    INSERT INTO reservations (
+      id, customer_id, customer_name, customer_email,
+      resource_id, resource_type, status,
+      start_time, end_time, details, updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+    ON CONFLICT (id) DO UPDATE SET
+      status     = $7,
+      details    = $10,
+      updated_at = CURRENT_TIMESTAMP
+  `.trim();
+
+  async save(reservation: Reservation): Promise<void> {
+    await this.sqlClient.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
+  }
+
+  /**
+   * Versión transaccional de save().
+   * Usa el PoolClient recibido — no adquiere una conexión nueva.
+   * Llamar solo desde dentro de SqlClient.withTransaction().
+   */
+  async saveWithClient(client: PoolClient, reservation: Reservation): Promise<void> {
+    await client.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
   }
 
   async delete(id: string): Promise<boolean> {
@@ -165,8 +179,6 @@ export class SqlReservationRepository implements ReservationRepository {
     startDate: Date,
     endDate: Date,
   ): Promise<Reservation[]> {
-    // Solo PENDING y CONFIRMED bloquean disponibilidad.
-    // COMPLETED ya terminó — no debe impedir nuevas reservas.
     const blockingStatuses = [
       ReservationStatus.PENDING,
       ReservationStatus.CONFIRMED,
@@ -200,11 +212,6 @@ export class SqlReservationRepository implements ReservationRepository {
   // Helpers privados
   // -------------------------------------------------------------------------
 
-  /**
-   * SELECT base de la tabla reservations (sin JOIN).
-   * Customer se reconstruye desde campos desnormalizados en la fila;
-   * Resource se resuelve via resourceRepository.getById() en rowToReservation.
-   */
   private baseSelect(): string {
     return `
       SELECT
@@ -222,30 +229,18 @@ export class SqlReservationRepository implements ReservationRepository {
     `;
   }
 
-  /**
-   * Convierte una fila SQL a una instancia de Reservation.
-   *
-   * - Customer: reconstruido desde campos desnormalizados — sin query adicional.
-   * - Resource: resuelto via resourceRepository.getById() para instanciar
-   *   el subtipo correcto (CabinResource, TableResource, etc.).
-   *
-   * @throws ResourceNotFoundError si el recurso fue eliminado de la BD
-   */
   private async rowToReservation(row: ReservationRow): Promise<Reservation> {
-    // Reconstruir Customer desde campos desnormalizados — sin query adicional
     const customer = new Customer(
       row.customer_id,
       row.customer_name,
       row.customer_email,
     );
 
-    // Resolver el recurso (necesario para instanciar el subtipo correcto)
     const resource = await this.resourceRepository.getById(row.resource_id);
     if (!resource) {
       throw new ResourceNotFoundError(row.resource_id);
     }
 
-    // Parsear details: JSONB en pg ya devuelve objeto, string en otros drivers
     const rawDetails =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
 
