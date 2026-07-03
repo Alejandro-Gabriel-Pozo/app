@@ -1,26 +1,18 @@
 /**
  * @file platform.auth.middleware.ts
- * @description Middleware de autenticación para rutas de plataforma (/platform/*).
+ * @description Autenticación y autorización para rutas /platform/*.
  *
- * Completamente independiente del stack por-tenant (authenticate/authorize).
- * Valida JWTs emitidos por PlatformAuthService y verifica PlatformRole.
+ * Usa una clave JWT separada (PLATFORM_JWT_SECRET) para aislar completamente
+ * los tokens de SUPERADMIN de los tokens de empleados/clientes de cada tenant.
  *
- * ## Uso
- * ```typescript
- * import { requirePlatformRole } from '../../security/platform.auth.middleware.js';
- * import { PlatformRole } from '../../types/enums.js';
+ * ## Variables de entorno requeridas
+ * - PLATFORM_JWT_SECRET  — clave secreta exclusiva para tokens de plataforma (min 32 chars)
+ * - PLATFORM_JWT_EXPIRES_IN — duración del token en segundos (default: 3600 = 1 hora)
  *
- * router.use(requirePlatformRole(PlatformRole.SUPERADMIN));
- * ```
- *
- * ## JWT esperado
- * El token debe contener:
- * - `sub`          — ID del usuario de plataforma
- * - `platformRole` — valor del enum PlatformRole
- * - `iat`, `exp`   — emitido y expiración estándar
- *
- * El secreto usado para firmar/verificar debe estar en PLATFORM_JWT_SECRET.
- * Distinto de JWT_SECRET para separar los contextos de autenticación.
+ * ## Por qué una clave separada
+ * - Un token de empleado comprometido no puede usarse en /platform/*
+ * - Un token de SUPERADMIN no puede usarse en rutas de tenant
+ * - Permite rotar cada clave independientemente
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -28,129 +20,152 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { PlatformRole } from '../types/enums.js';
 
 // ---------------------------------------------------------------------------
-// Extensión del tipo Request para tipado del usuario de plataforma
+// JWT helpers (misma implementación que auth.middleware.ts — sin librerías)
 // ---------------------------------------------------------------------------
 
-declare global {
-  namespace Express {
-    interface Request {
-      /** Usuario de plataforma autenticado (solo en rutas /platform/*) */
-      platformUser?: {
-        id: string;
-        platformRole: PlatformRole;
-      };
-    }
-  }
+function base64UrlEncode(input: string | Buffer): string {
+  const buf = typeof input === 'string' ? Buffer.from(input) : input;
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-// ---------------------------------------------------------------------------
-// Verificación de JWT (implementación nativa — sin dependencias)
-// ---------------------------------------------------------------------------
+function base64UrlDecode(input: string): Buffer {
+  const padded = input + '==='.slice((input.length + 3) % 4);
+  return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+}
 
-interface PlatformTokenPayload {
+export interface PlatformJwtPayload {
   sub: string;
-  platformRole: PlatformRole;
+  role: PlatformRole;
+  email: string;
   iat: number;
   exp: number;
 }
 
-/**
- * Verifica un JWT HS256 usando PLATFORM_JWT_SECRET.
- * Retorna el payload si el token es válido, lanza Error si no.
- */
-function verifyPlatformToken(token: string): PlatformTokenPayload {
-  const secret = process.env.PLATFORM_JWT_SECRET;
-  if (!secret) {
-    throw new Error('[platform-auth] PLATFORM_JWT_SECRET no está definida');
-  }
+export interface AuthenticatedPlatformUser {
+  id: string;
+  email: string;
+  role: PlatformRole;
+}
 
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      platformUser?: AuthenticatedPlatformUser;
+    }
+  }
+}
+
+function getPlatformJwtSecret(): string {
+  const secret = process.env.PLATFORM_JWT_SECRET;
+  if (!secret) throw new Error('[platform.auth] PLATFORM_JWT_SECRET no está definida.');
+  if (secret.length < 32) throw new Error('[platform.auth] PLATFORM_JWT_SECRET debe tener al menos 32 caracteres.');
+  return secret;
+}
+
+export function signPlatformToken(
+  payload: Omit<PlatformJwtPayload, 'iat' | 'exp'>,
+  expiresIn = 3_600,
+): string {
+  const secret = getPlatformJwtSecret();
+  const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const now = Math.floor(Date.now() / 1000);
+  const body = base64UrlEncode(
+    JSON.stringify({ ...payload, iat: now, exp: now + expiresIn }),
+  );
+  const signingInput = `${header}.${body}`;
+  const signature = base64UrlEncode(
+    createHmac('sha256', secret).update(signingInput).digest(),
+  );
+  return `${signingInput}.${signature}`;
+}
+
+function verifyPlatformToken(token: string): PlatformJwtPayload {
+  const secret = getPlatformJwtSecret();
   const parts = token.split('.');
   if (parts.length !== 3) {
-    throw new Error('Token malformado');
+    const err = new Error('Token malformado');
+    (err as NodeJS.ErrnoException).code = 'JWT_MALFORMED';
+    throw err;
   }
 
-  const [headerB64, payloadB64, signatureB64] = parts;
-
-  // Verificar firma con timing-safe compare
-  const expectedSig = createHmac('sha256', secret)
-    .update(`${headerB64}.${payloadB64}`)
-    .digest('base64url');
-
-  const sigBuffer = Buffer.from(signatureB64, 'base64url');
-  const expectedBuffer = Buffer.from(expectedSig, 'base64url');
+  const [header, body, signature] = parts;
+  const signingInput = `${header}.${body}`;
+  const expectedSig = base64UrlEncode(
+    createHmac('sha256', secret).update(signingInput).digest(),
+  );
 
   if (
-    sigBuffer.length !== expectedBuffer.length ||
-    !timingSafeEqual(sigBuffer, expectedBuffer)
+    Buffer.from(expectedSig).length !== Buffer.from(signature).length ||
+    !timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature))
   ) {
-    throw new Error('Firma inválida');
+    const err = new Error('Firma inválida');
+    (err as NodeJS.ErrnoException).code = 'JWT_INVALID_SIGNATURE';
+    throw err;
   }
 
-  // Decodificar payload
-  const payload = JSON.parse(
-    Buffer.from(payloadB64, 'base64url').toString('utf8'),
-  ) as PlatformTokenPayload;
-
-  // Verificar expiración
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (payload.exp < nowSec) {
-    throw new Error('Token expirado');
+  const payload = JSON.parse(base64UrlDecode(body).toString('utf8')) as PlatformJwtPayload;
+  if (payload.exp < Math.floor(Date.now() / 1000)) {
+    const err = new Error('Token expirado');
+    (err as NodeJS.ErrnoException).code = 'JWT_EXPIRED';
+    throw err;
   }
 
   return payload;
 }
 
 // ---------------------------------------------------------------------------
-// Middleware factory
+// Middlewares
 // ---------------------------------------------------------------------------
 
 /**
- * Middleware que verifica el JWT de plataforma y exige el rol indicado.
- *
- * Extrae el token del header `Authorization: Bearer <token>`.
- * Adjunta `req.platformUser` para uso en los handlers.
- *
- * @param requiredRole - Rol mínimo requerido (actualmente solo SUPERADMIN)
+ * Verifica el Bearer token de plataforma y adjunta `req.platformUser`.
+ * Usa PLATFORM_JWT_SECRET — completamente separado de JWT_SECRET de tenants.
  */
-export function requirePlatformRole(
-  requiredRole: PlatformRole,
-): (req: Request, res: Response, next: NextFunction) => void {
+export function authenticatePlatform() {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const authHeader = req.headers.authorization;
+    const authHeader = req.headers['authorization'];
     if (!authHeader?.startsWith('Bearer ')) {
       res.status(401).json({
         code: 'UNAUTHORIZED',
-        message: 'Se requiere token de plataforma',
+        message: 'Se requiere header Authorization: Bearer <token>',
       });
       return;
     }
 
     const token = authHeader.slice(7);
-
-    let payload: PlatformTokenPayload;
     try {
-      payload = verifyPlatformToken(token);
+      const payload = verifyPlatformToken(token);
+      req.platformUser = { id: payload.sub, email: payload.email, role: payload.role };
+      next();
     } catch (err) {
-      res.status(401).json({
-        code: 'INVALID_TOKEN',
-        message: (err as Error).message,
-      });
+      const code = (err as NodeJS.ErrnoException).code ?? 'JWT_ERROR';
+      if (code === 'JWT_EXPIRED') {
+        res.status(401).json({ code: 'TOKEN_EXPIRED', message: 'El token ha expirado' });
+        return;
+      }
+      res.status(401).json({ code: 'UNAUTHORIZED', message: 'Token inválido' });
+    }
+  };
+}
+
+/**
+ * Verifica que `req.platformUser.role` esté en los roles permitidos.
+ * Siempre va después de `authenticatePlatform()`.
+ */
+export function authorizePlatform(allowedRoles: readonly PlatformRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.platformUser) {
+      res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado en plataforma' });
       return;
     }
-
-    if (payload.platformRole !== requiredRole) {
+    if (!allowedRoles.includes(req.platformUser.role)) {
       res.status(403).json({
         code: 'FORBIDDEN',
-        message: `Se requiere rol de plataforma: ${requiredRole}`,
+        message: `Acceso denegado. Roles permitidos: ${allowedRoles.join(', ')}`,
       });
       return;
     }
-
-    req.platformUser = {
-      id: payload.sub,
-      platformRole: payload.platformRole,
-    };
-
     next();
   };
 }
