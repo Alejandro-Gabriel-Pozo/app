@@ -1,72 +1,97 @@
 import { describe, it, expect } from 'vitest';
-import {
-  CabinResource,
-  SpaResource,
-  TableResource,
-  TourSeatResource,
-} from '../../domain/entities.js';
-import { ResourceType } from '../../types/enums.js';
+import { BookableResource } from '../../domain/entities.js';
+import { ReservationStatus } from '../../types/enums.js';
+import type { ReservationSnapshot } from '../../domain/reservation.types.js';
 
-const NO_RESERVATIONS: never[] = [];
+const NO_RESERVATIONS: ReservationSnapshot[] = [];
 const start = new Date('2025-01-10T10:00:00Z');
-const end = new Date('2025-01-10T12:00:00Z');
+const end   = new Date('2025-01-10T12:00:00Z');
+
+const makeResource = (
+  id = 'r1',
+  categoryId = 'cat-cabin',
+  basePrice  = 100,
+  visualData: any = null,
+) => new BookableResource(id, 'Recurso Test', basePrice, categoryId, visualData);
+
+const makeSnapshot = (
+  overrides: Partial<ReservationSnapshot> = {},
+): ReservationSnapshot => ({
+  id: 'res-1',
+  resourceId: 'r1',
+  status: ReservationStatus.PENDING,
+  startTime: start,
+  endTime:   end,
+  ...overrides,
+});
 
 // ---------------------------------------------------------------------------
-describe('CabinResource', () => {
-  it('crea instancia con tipo CABIN', () => {
-    const r = new CabinResource('c1', 'Cabaña Norte', 100);
-    expect(r.type).toBe(ResourceType.CABIN);
+describe('BookableResource — construcción', () => {
+  it('crea instancia con categoryId correcto', () => {
+    const r = makeResource('r1', 'cat-spa');
+    expect(r.categoryId).toBe('cat-spa');
     expect(r.basePrice).toBe(100);
   });
 
-  it('isAvailable devuelve true cuando no hay reservas', () => {
-    const r = new CabinResource('c1', 'Cabaña Norte', 100);
-    expect(r.isAvailable(start, end, NO_RESERVATIONS)).toBe(true);
+  it('visualData es null por defecto', () => {
+    const r = makeResource();
+    expect(r.visualData).toBeNull();
+  });
+
+  it('acepta visualData cuando se provee', () => {
+    const vd = { x: 10, y: 20, width: 50, height: 50, rotation: 0 };
+    const r = makeResource('r1', 'cat-table', 50, vd);
+    expect(r.visualData).toEqual(vd);
   });
 
   it('lanza si basePrice es negativo', () => {
-    expect(() => new CabinResource('c1', 'X', -1)).toThrow('basePrice no puede ser negativo');
+    expect(() => new BookableResource('r1', 'X', -1, 'cat-x')).toThrow(
+      'basePrice no puede ser negativo',
+    );
+  });
+
+  it('lanza si categoryId está vacío', () => {
+    expect(() => new BookableResource('r1', 'X', 0, '   ')).toThrow(
+      'categoryId es obligatorio',
+    );
   });
 });
 
 // ---------------------------------------------------------------------------
-describe('SpaResource', () => {
-  it('crea instancia con tipo SPA', () => {
-    const r = new SpaResource('s1', 'Spa Relax', 200);
-    expect(r.type).toBe(ResourceType.SPA);
-  });
-
-  it('isAvailable devuelve true cuando no hay reservas', () => {
-    const r = new SpaResource('s1', 'Spa Relax', 200);
+describe('BookableResource — isAvailable', () => {
+  it('devuelve true cuando no hay reservas', () => {
+    const r = makeResource();
     expect(r.isAvailable(start, end, NO_RESERVATIONS)).toBe(true);
   });
-});
 
-// ---------------------------------------------------------------------------
-describe('TourSeatResource', () => {
-  it('crea instancia con tipo TOUR_SEAT', () => {
-    const r = new TourSeatResource('t1', 'Tour Patagonia', 150);
-    expect(r.type).toBe(ResourceType.TOUR_SEAT);
+  it('devuelve false cuando hay reserva PENDING que solapa', () => {
+    const r = makeResource();
+    expect(r.isAvailable(start, end, [makeSnapshot()])).toBe(false);
   });
 
-  it('isAvailable devuelve true cuando no hay reservas', () => {
-    const r = new TourSeatResource('t1', 'Tour Patagonia', 150);
-    expect(r.isAvailable(start, end, NO_RESERVATIONS)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-describe('TableResource', () => {
-  const visualData = { x: 10, y: 20, width: 50, height: 50, rotation: 0 };
-
-  it('crea instancia con tipo RESTAURANT_TABLE', () => {
-    const r = new TableResource('tb1', 'Mesa 1', 50, visualData);
-    expect(r.type).toBe(ResourceType.RESTAURANT_TABLE);
-    expect(r.visualData).toEqual(visualData);
+  it('devuelve true cuando la reserva solapante está CANCELLED', () => {
+    const r = makeResource();
+    const snap = makeSnapshot({ status: ReservationStatus.CANCELLED });
+    expect(r.isAvailable(start, end, [snap])).toBe(true);
   });
 
-  it('isAvailable devuelve true cuando no hay reservas', () => {
-    const r = new TableResource('tb1', 'Mesa 1', 50, visualData);
-    expect(r.isAvailable(start, end, NO_RESERVATIONS)).toBe(true);
+  it('devuelve true cuando la reserva solapante es de otro recurso', () => {
+    const r = makeResource();
+    const snap = makeSnapshot({ resourceId: 'otro-r' });
+    expect(r.isAvailable(start, end, [snap])).toBe(true);
+  });
+
+  it('excluye reserva propia al actualizar (excludeReservationId)', () => {
+    const r = makeResource();
+    const snap = makeSnapshot({ id: 'res-edit' });
+    expect(r.isAvailable(start, end, [snap], 'res-edit')).toBe(true);
+  });
+
+  it('devuelve true para slot contiguo inmediatamente después', () => {
+    const r = makeResource();
+    const snap = makeSnapshot(); // 10:00-12:00
+    const start2 = new Date('2025-01-10T12:00:00Z');
+    const end2   = new Date('2025-01-10T14:00:00Z');
+    expect(r.isAvailable(start2, end2, [snap])).toBe(true);
   });
 });
