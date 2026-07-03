@@ -119,6 +119,26 @@ const AvailabilityQuerySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Helper: extrae customerId del token o responde 403
+// ---------------------------------------------------------------------------
+
+/**
+ * Devuelve el customerId del JWT autenticado, o envía 403 y retorna null.
+ * Usar en todos los handlers protegidos de este router para uniformidad.
+ */
+function requireCustomerId(req: Request, res: Response): string | null {
+  const customerId = req.user?.customerId;
+  if (!customerId) {
+    res.status(403).json({
+      code: 'FORBIDDEN',
+      message: 'Ruta exclusiva para clientes autenticados',
+    });
+    return null;
+  }
+  return customerId;
+}
+
+// ---------------------------------------------------------------------------
 // Factory del router
 // ---------------------------------------------------------------------------
 
@@ -338,7 +358,9 @@ export function createCustomerRouter(container: AppContainer): Router {
     '/me',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const customerId = req.user!.customerId!;
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
+
         const customer = await container.customerRepository.getById(customerId);
         if (!customer) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
@@ -370,7 +392,9 @@ export function createCustomerRouter(container: AppContainer): Router {
     '/me/reservations',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const customerId = req.user!.customerId!;
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
+
         const reservations = await container.reservationRepository.getByCustomerId(customerId);
         res.json(reservations.map(toReservationDto));
       } catch (err) {
@@ -418,7 +442,9 @@ export function createCustomerRouter(container: AppContainer): Router {
         const body = CreateCustomerReservationSchema.parse(req.body);
         validateDetailsForType(body.resourceType, body.details);
 
-        const customerId = req.user!.customerId!;
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
+
         const customerEntity = await container.customerRepository.getById(customerId);
         if (!customerEntity) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
@@ -489,7 +515,9 @@ export function createCustomerRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const reservationId = req.params.id;
-        const customerId    = req.user!.customerId!;
+
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
 
         // Verificar existencia y ownership antes de pasar al servicio
         const existing = await container.reservationRepository.getById(reservationId);
@@ -569,7 +597,9 @@ export function createCustomerRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const reservationId = req.params.id;
-        const customerId    = req.user!.customerId!;
+
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
 
         const reservation = await container.reservationRepository.getById(reservationId);
         if (!reservation) {

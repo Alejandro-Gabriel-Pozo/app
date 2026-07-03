@@ -152,4 +152,95 @@ describe('ReservationService', () => {
       expect(available).toBe(false);
     });
   });
+
+  describe('updateReservation', () => {
+    // Crea una reserva PENDING base reutilizable en cada test
+    async function createBaseReservation(id = 'res-1') {
+      return service.createReservation({
+        id,
+        resourceType: ResourceType.RESTAURANT_TABLE,
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-08-01T19:00:00Z'),
+        endTime:   new Date('2026-08-01T21:00:00Z'),
+        details: { allergies: [], tableLocation: TableLocation.WINDOW },
+      });
+    }
+
+    it('debe actualizar solo startTime manteniendo endTime existente', async () => {
+      await createBaseReservation();
+
+      const updated = await service.updateReservation('res-1', {
+        startTime: new Date('2026-08-01T18:00:00Z'),
+      });
+
+      expect(updated.startTime).toEqual(new Date('2026-08-01T18:00:00Z'));
+      expect(updated.endTime).toEqual(new Date('2026-08-01T21:00:00Z'));
+      expect(updated.status).toBe(ReservationStatus.PENDING);
+    });
+
+    it('debe actualizar solo endTime manteniendo startTime existente', async () => {
+      await createBaseReservation();
+
+      const updated = await service.updateReservation('res-1', {
+        endTime: new Date('2026-08-01T22:00:00Z'),
+      });
+
+      expect(updated.startTime).toEqual(new Date('2026-08-01T19:00:00Z'));
+      expect(updated.endTime).toEqual(new Date('2026-08-01T22:00:00Z'));
+    });
+
+    it('debe actualizar startTime y endTime juntos', async () => {
+      await createBaseReservation();
+
+      const updated = await service.updateReservation('res-1', {
+        startTime: new Date('2026-08-01T17:00:00Z'),
+        endTime:   new Date('2026-08-01T19:00:00Z'),
+      });
+
+      expect(updated.startTime).toEqual(new Date('2026-08-01T17:00:00Z'));
+      expect(updated.endTime).toEqual(new Date('2026-08-01T19:00:00Z'));
+    });
+
+    it('debe rechazar si endTime <= startTime después del merge (solo startTime enviado)', async () => {
+      await createBaseReservation(); // endTime = 21:00
+
+      // Enviamos un startTime posterior al endTime existente (21:00)
+      await expect(
+        service.updateReservation('res-1', {
+          startTime: new Date('2026-08-01T22:00:00Z'), // > endTime existente 21:00
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('debe rechazar si endTime <= startTime después del merge (solo endTime enviado)', async () => {
+      await createBaseReservation(); // startTime = 19:00
+
+      // Enviamos un endTime anterior al startTime existente (19:00)
+      await expect(
+        service.updateReservation('res-1', {
+          endTime: new Date('2026-08-01T18:00:00Z'), // < startTime existente 19:00
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('debe rechazar si la reserva no está en PENDING', async () => {
+      await createBaseReservation();
+      await service.confirmReservation('res-1'); // PENDING → CONFIRMED
+
+      await expect(
+        service.updateReservation('res-1', {
+          startTime: new Date('2026-08-01T18:00:00Z'),
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('debe rechazar si no se envía ningún campo', async () => {
+      await createBaseReservation();
+
+      await expect(
+        service.updateReservation('res-1', {}),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+  });
 });
