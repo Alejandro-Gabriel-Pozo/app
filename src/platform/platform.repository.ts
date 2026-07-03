@@ -119,6 +119,22 @@ export class PlatformRepository implements UserStore {
     );
   }
 
+  /**
+   * Actualiza el estado de un negocio.
+   * Usado por el SUPERADMIN para suspender, activar o cancelar negocios.
+   */
+  async updateBusinessStatus(
+    businessId: string,
+    status: BusinessStatus,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE businesses
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [status, businessId],
+    );
+  }
+
   async findById(id: string): Promise<Business | undefined> {
     const result = await this.db.query<Business>(
       'SELECT * FROM businesses WHERE id = $1',
@@ -144,10 +160,25 @@ export class PlatformRepository implements UserStore {
     return parseInt(result.rows[0].count, 10) > 0;
   }
 
+  /**
+   * Lista todos los negocios de la plataforma.
+   * Solo para uso del SUPERADMIN — no filtrar por tenant.
+   */
+  async listAll(): Promise<Business[]> {
+    const result = await this.db.query<Business>(
+      'SELECT * FROM businesses ORDER BY created_at DESC',
+    );
+    return result.rows.map((r) => this.rowToBusiness(r));
+  }
+
   // -------------------------------------------------------------------------
   // Platform users — auth
   // -------------------------------------------------------------------------
 
+  /**
+   * Implementa UserStore.findByEmail para que AuthService pueda usar
+   * PlatformRepository directamente.
+   */
   async createPlatformUser(input: CreatePlatformUserInput): Promise<PlatformUser> {
     const result = await this.db.query<PlatformUser>(
       `INSERT INTO platform_users (id, email, business_id, role, password_hash)

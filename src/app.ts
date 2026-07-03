@@ -9,16 +9,19 @@
  * ## Orden de middlewares
  * 1. cors, express.json
  * 2. /health, /docs, /openapi.json  — rutas públicas
- * 3. POST /register                 — registro de negocios (público, sin auth)
- * 4. POST /api/login                — login de empleados (público)
- * 5. /api/customer/register         — registro de clientes (público)
- * 6. /api/customer/login            — login de clientes (público)
- * 7. /api/customer/availability/**  — disponibilidad pública (sin auth)
- * 8. authenticate()                 — verifica JWT, protege /api/* restante
- * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
- * 10. /api/resources, /reservations, /reports, /users — rutas de empleados
- * 11. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
- * 12. errorHandler
+ * 3. /platform/*                    — gestión de plataforma (SUPERADMIN)
+ *    - POST /platform/login         — público
+ *    - resto requiere JWT SUPERADMIN (authenticatePlatform dentro del router)
+ * 4. POST /register                 — registro de negocios (público, sin auth)
+ * 5. POST /api/login                — login de empleados (público)
+ * 6. /api/customer/register         — registro de clientes (público)
+ * 7. /api/customer/login            — login de clientes (público)
+ * 8. /api/customer/availability/**  — disponibilidad pública (sin auth)
+ * 9. authenticate()                 — verifica JWT, protege /api/* restante
+ * 10. tenantMiddleware()            — inyecta req.db con la BD del negocio
+ * 11. /api/resources, /reservations, /reports, /users — rutas de empleados
+ * 12. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
+ * 13. errorHandler
  */
 
 import express from 'express';
@@ -34,11 +37,13 @@ import { createAuthRouter }          from './api/routes/auth.routes.js';
 import { createBusinessRouter }      from './api/routes/business.routes.js';
 import { createCustomerRouter }      from './api/routes/customer.routes.js';
 import { createUsersRouter }         from './api/routes/users.routes.js';
+import { createPlatformRouter }      from './api/routes/platform.routes.js';
 import { errorHandler }              from './api/middleware/error.middleware.js';
 import { openApiSpec }               from './openapi/spec.js';
 import { authenticate }              from './security/auth.middleware.js';
 import { AuthService }               from './security/auth.service.js';
 import { PlatformRepository }        from './platform/platform.repository.js';
+import { createPlatformContainer }   from './platform/platform.container.js';
 import { tenantMiddleware }          from './platform/tenant.middleware.js';
 import { SqlClient }                 from './repositories/sql.client.js';
 import { createAppContainer }        from './container.js';
@@ -129,6 +134,23 @@ export async function createApp(): Promise<{ app: express.Application }> {
     customSiteTitle: 'Reservations API',
     swaggerOptions: { persistAuthorization: true, docExpansion: 'list', filter: true },
   }));
+
+  // -------------------------------------------------------------------------
+  // /platform/* — gestión de plataforma (SUPERADMIN)
+  // POST /platform/login es público; el resto requiere JWT SUPERADMIN.
+  // Se monta ANTES de authenticate() para que /platform/login no quede bloqueado.
+  // -------------------------------------------------------------------------
+  const platformContainer = createPlatformContainer();
+  if (platformContainer) {
+    app.use('/platform', createPlatformRouter(platformContainer));
+  } else {
+    app.use('/platform', (_req, res) => {
+      res.status(503).json({
+        code: 'PLATFORM_UNAVAILABLE',
+        message: 'Rutas de plataforma no disponibles. Definí PLATFORM_DATABASE_URL en Render Dashboard.',
+      });
+    });
+  }
 
   // -------------------------------------------------------------------------
   // POST /register — registro de negocios (público)
