@@ -1,90 +1,48 @@
 /**
  * @file request.schemas.ts
- * @description Schemas Zod para validar los parámetros de entrada de la API.
+ * @description Schemas Zod para validación de request bodies.
  *
- * ## Cambios en este archivo
- * - Se elimina `resourceType: z.nativeEnum(ResourceType)` del CreateReservationSchema.
- *   El tipo de recurso ya no es un enum fijo — lo define cada negocio mediante
- *   resource_categories. La validación de `details` se hace en runtime en
- *   ReservationService contra los `fields` de la categoría.
- * - Se elimina la función `validateDetailsForType()` y sus imports de preferences.
+ * ## Cambios
+ * - Se elimina `resourceType` de `CreateReservationSchema`. El tipo de recurso
+ *   ya no se envía en la petición — se resuelve desde `resource.categoryId`.
+ * - Se elimina `validateDetailsForType()` (basada en enum estático `ResourceType`).
+ *   La validación de `details` ocurre en `ReservationService`.
  */
 
 import { z } from 'zod';
 
-// ---------------------------------------------------------------------------
-// Schemas de cliente
-// ---------------------------------------------------------------------------
-
-export const CreateCustomerSchema = z.object({
+const CustomerSchema = z.object({
   id:       z.string().min(1),
   fullName: z.string().min(1),
   email:    z.string().email(),
 });
 
-// ---------------------------------------------------------------------------
-// Schemas de reservas
-// ---------------------------------------------------------------------------
-
-/**
- * Body para crear una reserva.
- *
- * `resourceId` identifica el recurso específico.
- * `details` es libre (JSONB) — se valida en ReservationService
- * contra los `fields` de la categoría del recurso.
- */
 export const CreateReservationSchema = z.object({
   resourceId: z.string().min(1),
-  customer:   CreateCustomerSchema,
+  customer:   CustomerSchema,
   startTime:  z.string().datetime(),
   endTime:    z.string().datetime(),
-  details:    z.record(z.unknown()).optional().default({}),
+  details:    z.record(z.unknown()).default({}),
 });
 
-// ---------------------------------------------------------------------------
-// Schemas de disponibilidad
-// ---------------------------------------------------------------------------
+export const UpdateReservationSchema = z.object({
+  startTime: z.string().datetime().optional(),
+  endTime:   z.string().datetime().optional(),
+  details:   z.record(z.unknown()).optional(),
+}).refine(
+  (data) => data.startTime || data.endTime || data.details,
+  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details' },
+);
 
 export const AvailabilityQuerySchema = z.object({
   startTime: z.string().datetime(),
   endTime:   z.string().datetime(),
 });
 
-// ---------------------------------------------------------------------------
-// Schemas de reportes
-// ---------------------------------------------------------------------------
-
-export const DateRangeQuerySchema = z.object({
-  startDate: z.string().datetime(),
-  endDate:   z.string().datetime(),
+export const CreateResourceSchema = z.object({
+  id:         z.string().min(1).optional(),
+  name:       z.string().min(1),
+  categoryId: z.string().min(1),
+  basePrice:  z.number().min(0),
+  visualData: z.record(z.unknown()).optional(),
 });
-
-export const SummaryQuerySchema = DateRangeQuerySchema.extend({
-  limit: z
-    .string()
-    .optional()
-    .default('5')
-    .pipe(
-      z.coerce
-        .number({ invalid_type_error: 'limit debe ser un número entero' })
-        .int({ message: 'limit debe ser un entero, no un decimal' })
-        .min(1, { message: 'limit debe ser al menos 1' })
-        .max(100, { message: 'limit no puede superar 100' }),
-    ),
-});
-
-export const UnderutilizedQuerySchema = DateRangeQuerySchema.extend({
-  threshold: z
-    .string()
-    .optional()
-    .default('30')
-    .pipe(
-      z.coerce
-        .number({ invalid_type_error: 'threshold debe ser un número' })
-        .min(0, { message: 'threshold debe ser >= 0' })
-        .max(100, { message: 'threshold debe ser <= 100' }),
-    ),
-});
-
-export type SummaryQuery      = z.infer<typeof SummaryQuerySchema>;
-export type UnderutilizedQuery = z.infer<typeof UnderutilizedQuerySchema>;

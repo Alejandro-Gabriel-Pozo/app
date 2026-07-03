@@ -1,13 +1,18 @@
-import { ResourceType } from '../types/enums.js';
+/**
+ * @file in-memory.resource.repository.ts
+ * @description Implementación in-memory del repositorio de recursos.
+ *
+ * ## Cambios
+ * - Se reemplaza `getByType(type: ResourceType)` por `getByCategory(categoryId: string)`.
+ * - Se filtra por `r.categoryId` en lugar de `r.type`.
+ * - Se agrega `countActive()` que cuenta el tamaño del mapa.
+ */
+
 import { BookableResource } from '../domain/entities.js';
 import { ResourceRepository } from './resource.repository.js';
 
-/**
- * Implementación en memoria del repositorio de recursos.
- * Ideal para desarrollo y tests. No persiste entre reinicios.
- */
 export class InMemoryResourceRepository implements ResourceRepository {
-  private resources: Map<string, BookableResource> = new Map();
+  private readonly resources = new Map<string, BookableResource>();
 
   async save(resource: BookableResource): Promise<void> {
     this.resources.set(resource.id, resource);
@@ -17,8 +22,10 @@ export class InMemoryResourceRepository implements ResourceRepository {
     return this.resources.get(id);
   }
 
-  async getByType(type: ResourceType): Promise<BookableResource[]> {
-    return Array.from(this.resources.values()).filter((r) => r.type === type);
+  async getByCategory(categoryId: string): Promise<BookableResource[]> {
+    return Array.from(this.resources.values()).filter(
+      (r) => r.categoryId === categoryId,
+    );
   }
 
   async getAll(): Promise<BookableResource[]> {
@@ -26,10 +33,13 @@ export class InMemoryResourceRepository implements ResourceRepository {
   }
 
   async getByName(name: string): Promise<BookableResource | undefined> {
-    const lower = name.toLowerCase();
     return Array.from(this.resources.values()).find(
-      (r) => r.name.toLowerCase() === lower,
+      (r) => r.name.toLowerCase() === name.toLowerCase(),
     );
+  }
+
+  async countActive(): Promise<number> {
+    return this.resources.size;
   }
 
   async delete(id: string): Promise<boolean> {

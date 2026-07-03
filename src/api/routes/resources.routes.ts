@@ -1,14 +1,23 @@
+/**
+ * @file resources.routes.ts
+ * @description Rutas de recursos reservables.
+ *
+ * ## Cambios
+ * - Se reemplaza `/type/:type` por `/category/:categoryId`.
+ *   El enum `ResourceType` ya no existe — el filtro es por FK a `resource_categories`.
+ */
+
 import { Router, Request, Response, NextFunction } from 'express';
 import { AppContainer } from '../../container.js';
 import { toResourceDto } from '../mappers/reservation.mapper.js';
 import { AvailabilityQuerySchema } from '../schemas/request.schemas.js';
 import { ResourceNotFoundError } from '../../domain/errors.js';
-import { ResourceType } from '../../types/enums.js';
 import { routeParam } from '../utils/params.js';
 
 export function createResourcesRouter(container: AppContainer): Router {
   const router = Router();
 
+  /** Listar todos los recursos activos */
   router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const resources = await container.resourceRepository.getAll();
@@ -18,12 +27,13 @@ export function createResourcesRouter(container: AppContainer): Router {
     }
   });
 
+  /** Filtrar recursos por categoría */
   router.get(
-    '/type/:type',
+    '/category/:categoryId',
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const type = routeParam(req.params.type) as ResourceType;
-        const resources = await container.resourceRepository.getByType(type);
+        const categoryId = routeParam(req.params.categoryId);
+        const resources = await container.resourceRepository.getByCategory(categoryId);
         res.json(resources.map(toResourceDto));
       } catch (err) {
         next(err);
@@ -31,6 +41,7 @@ export function createResourcesRouter(container: AppContainer): Router {
     },
   );
 
+  /** Verificar disponibilidad de un recurso en un rango de tiempo */
   router.get(
     '/:id/availability',
     async (req: Request, res: Response, next: NextFunction) => {
@@ -43,9 +54,9 @@ export function createResourcesRouter(container: AppContainer): Router {
           new Date(query.endTime),
         );
         res.json({
-          resourceId: routeParam(req.params.id),
+          resourceId,
           startTime: query.startTime,
-          endTime: query.endTime,
+          endTime:   query.endTime,
           available,
         });
       } catch (err) {
@@ -54,6 +65,7 @@ export function createResourcesRouter(container: AppContainer): Router {
     },
   );
 
+  /** Obtener un recurso por ID */
   router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const resourceId = routeParam(req.params.id);

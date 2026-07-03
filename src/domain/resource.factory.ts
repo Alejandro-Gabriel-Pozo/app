@@ -1,14 +1,10 @@
 /**
  * @file resource.factory.ts
- * @deprecated Eliminado en feat/domain-cleanup.
+ * @deprecated feat/final-cleanup
  *
- * `createBookableResource()` mapeaba un `type: ResourceType` a la subclase
- * concreta correspondiente (CabinResource, TableResource, etc.).
- * Esa jerarquía de subclases ya no existe — hay una sola clase `BookableResource`
- * con `categoryId: string`.
- *
- * Este archivo se mantiene vacío para no romper imports residuales.
- * Eliminar en el próximo PR de limpieza final.
+ * Este archivo ha sido vaciado. Ya no existe la jerarquía de subclases
+ * CabinResource / TableResource / SpaResource / TourSeatResource.
+ * Eliminar este archivo en el próximo refactor de imports en tests.
  */
 
 export {};

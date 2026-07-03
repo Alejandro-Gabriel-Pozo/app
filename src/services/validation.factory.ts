@@ -1,23 +1,10 @@
-import { ResourceType } from '../types/enums.js';
-import { PreferenceDetailsByResource } from '../types/preferences.types.js';
-import { ValidationError, UnsupportedResourceTypeError } from '../domain/errors.js';
-import { preferenceSchemaRegistry } from './validation.registry.js';
+/**
+ * @file validation.factory.ts
+ * @deprecated Eliminado en feat/final-cleanup.
+ *
+ * `validatePreferences(type, details)` usaba el enum `ResourceType` y los
+ * schemas Zod por tipo para validar el body de la reserva.
+ * Esa lógica vive ahora en `CategoryService.validateDetailsAgainstFields()`.
+ */
 
-export function validatePreferences<T extends ResourceType>(
-  type: T,
-  data: unknown,
-): PreferenceDetailsByResource[T] {
-  const schema = preferenceSchemaRegistry[type];
-
-  if (!schema) {
-    throw new UnsupportedResourceTypeError(type);
-  }
-
-  const result = schema.safeParse(data);
-
-  if (!result.success) {
-    throw new ValidationError(result.error);
-  }
-
-  return result.data as PreferenceDetailsByResource[T];
-}
+export {};
