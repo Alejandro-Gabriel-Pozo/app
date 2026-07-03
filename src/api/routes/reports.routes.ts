@@ -5,27 +5,30 @@
  * Todos los endpoints requieren autenticación (el middleware `authenticate()` se
  * aplica globalmente en `app.ts` para todo `/api/*`).
  *
+ * ## Control de acceso
+ * Los reportes contienen información sensible de negocio y están restringidos
+ * a `ADMIN` y `RECEPTIONIST`.
+ *
  * ## Cambios respecto a la versión anterior
  * - `limit` y `threshold` ahora se validan con Zod (`SummaryQuerySchema` y
  *   `UnderutilizedQuerySchema`) en lugar de `parseInt`/`parseFloat` sin validación.
  *   Un valor inválido (ej. `limit=-1`, `threshold=abc`) retorna HTTP 400 con
  *   detalle del error en lugar de producir `NaN` silencioso.
- *
- * ## Roles recomendados por endpoint
- * Los reportes contienen información sensible de negocio. Se sugiere restringirlos
- * a `ADMIN` y `RECEPTIONIST`. Descomenta las líneas `authorize(...)` cuando estés
- * listo para activar control de acceso granular.
+ * - `authorize([UserRole.ADMIN, UserRole.RECEPTIONIST])` activado en los 3 endpoints.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { AppContainer } from '../../container.js';
-// import { authorize } from '../../security/auth.middleware.js';
-// import { UserRole } from '../../types/enums.js';
+import { authorize } from '../../security/auth.middleware.js';
+import { UserRole } from '../../types/enums.js';
 import {
   DateRangeQuerySchema,
   SummaryQuerySchema,
   UnderutilizedQuerySchema,
 } from '../schemas/request.schemas.js';
+
+/** Roles con acceso a reportes — información sensible de negocio */
+const REPORT_READERS = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 
 export function createReportsRouter(container: AppContainer): Router {
   const router = Router();
@@ -59,10 +62,12 @@ export function createReportsRouter(container: AppContainer): Router {
    *         description: Parámetros de fecha inválidos
    *       401:
    *         description: No autenticado
+   *       403:
+   *         description: Rol sin acceso (requiere ADMIN o RECEPTIONIST)
    */
   router.get(
     '/occupancy',
-    // authorize([UserRole.ADMIN, UserRole.RECEPTIONIST]),
+    authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const query = DateRangeQuerySchema.parse(req.query);
@@ -113,10 +118,12 @@ export function createReportsRouter(container: AppContainer): Router {
    *         description: Parámetros inválidos (ej. limit < 1 o no numérico)
    *       401:
    *         description: No autenticado
+   *       403:
+   *         description: Rol sin acceso (requiere ADMIN o RECEPTIONIST)
    */
   router.get(
     '/summary',
-    // authorize([UserRole.ADMIN, UserRole.RECEPTIONIST]),
+    authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         // SummaryQuerySchema valida y coerciona `limit` desde string a int.
@@ -171,10 +178,12 @@ export function createReportsRouter(container: AppContainer): Router {
    *         description: Parámetros inválidos (ej. threshold fuera de rango 0–100)
    *       401:
    *         description: No autenticado
+   *       403:
+   *         description: Rol sin acceso (requiere ADMIN o RECEPTIONIST)
    */
   router.get(
     '/underutilized',
-    // authorize([UserRole.ADMIN, UserRole.RECEPTIONIST]),
+    authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         // UnderutilizedQuerySchema valida y coerciona `threshold` desde string a float.
