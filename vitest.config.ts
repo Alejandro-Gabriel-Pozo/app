@@ -38,10 +38,10 @@ export default defineConfig({
         'src/repositories/sql.customer.repository.ts',
       ],
       thresholds: {
-        lines: 75,
-        functions: 71,
+        lines: 80,
+        functions: 80,
         branches: 70,
-        statements: 75,
+        statements: 80,
       },
     },
   },
