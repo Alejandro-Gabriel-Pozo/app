@@ -284,7 +284,7 @@ export function createCustomerRouter(container: AppContainer): Router {
     '/availability/:resourceType',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const resourceType = req.params.resourceType as ResourceType;
+        const resourceType = String(req.params.resourceType) as ResourceType;
         if (!Object.values(ResourceType).includes(resourceType)) {
           res.status(400).json({ code: 'INVALID_RESOURCE_TYPE', message: `Tipo inválido. Valores válidos: ${Object.values(ResourceType).join(', ')}` });
           return;
@@ -514,7 +514,7 @@ export function createCustomerRouter(container: AppContainer): Router {
     '/me/reservations/:id',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const reservationId = req.params.id;
+        const reservationId = String(req.params.id);
 
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
@@ -596,7 +596,7 @@ export function createCustomerRouter(container: AppContainer): Router {
     '/me/reservations/:id/cancel',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const reservationId = req.params.id;
+        const reservationId = String(req.params.id);
 
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
