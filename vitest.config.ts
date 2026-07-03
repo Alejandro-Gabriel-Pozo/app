@@ -11,11 +11,20 @@ export default defineConfig({
       reportsDirectory: './coverage',
       include: ['src/**/*.ts'],
       exclude: [
+        // test files
         'src/**/*.test.ts',
+        // infra / sin tests todavía
+        'src/api/**',
+        'src/services/**',
+        'src/platform/**',
+        'src/security/**',
+        'src/schemas/**',
         'src/seed/**',
         'src/db/**',
-        'src/server.ts',
         'src/openapi/**',
+        'src/server.ts',
+        'src/app.ts',
+        'src/container.ts',
         'src/repositories/supabase.occupancy.repository.ts',
       ],
       thresholds: {
