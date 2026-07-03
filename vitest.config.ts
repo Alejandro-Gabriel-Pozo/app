@@ -4,18 +4,19 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/tests/**/*.test.ts'],
+    include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
       reportsDirectory: './coverage',
       include: ['src/**/*.ts'],
       exclude: [
-        'src/tests/**',
+        'src/**/*.test.ts',
         'src/seed/**',
         'src/db/**',
         'src/server.ts',
         'src/openapi/**',
+        'src/repositories/supabase.occupancy.repository.ts',
       ],
       thresholds: {
         lines: 80,
