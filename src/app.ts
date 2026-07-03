@@ -16,7 +16,7 @@
  * 7. /api/customer/availability/**  — disponibilidad pública (sin auth)
  * 8. authenticate()                 — verifica JWT, protege /api/* restante
  * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
- * 10. /api/resources, /reservations, /reports — rutas de empleados
+ * 10. /api/resources, /reservations, /reports, /users — rutas de empleados
  * 11. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
  * 12. errorHandler
  */
@@ -33,6 +33,7 @@ import { createReportsRouter }       from './api/routes/reports.routes.js';
 import { createAuthRouter }          from './api/routes/auth.routes.js';
 import { createBusinessRouter }      from './api/routes/business.routes.js';
 import { createCustomerRouter }      from './api/routes/customer.routes.js';
+import { createUsersRouter }         from './api/routes/users.routes.js';
 import { errorHandler }              from './api/middleware/error.middleware.js';
 import { openApiSpec }               from './openapi/spec.js';
 import { authenticate }              from './security/auth.middleware.js';
@@ -145,8 +146,6 @@ export async function createApp(): Promise<{ app: express.Application }> {
   // /api/customer — portal del cliente
   // register, login y availability son públicos;
   // /me/** está protegido por authenticate+authorize dentro del router.
-  // Montado ANTES del authenticate() global para que register/login/availability
-  // no requieran token de empleado.
   // -------------------------------------------------------------------------
   app.use('/api/customer', createCustomerRouter(container));
 
@@ -165,6 +164,8 @@ export async function createApp(): Promise<{ app: express.Application }> {
   app.use('/api/resources',    createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
   app.use('/api/reports',      createReportsRouter(container));
+  // Gestión de staff — solo ADMIN (authorize dentro del router)
+  app.use('/api/users',        createUsersRouter(platformRepo));
 
   app.use(errorHandler);
 

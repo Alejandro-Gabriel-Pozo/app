@@ -60,6 +60,12 @@ export interface CreatePlatformUserInput {
   passwordHash: string;
 }
 
+export interface UpdatePlatformUserInput {
+  email?: string;
+  role?: string;
+  passwordHash?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Repositorio
 // ---------------------------------------------------------------------------
@@ -90,9 +96,6 @@ export class PlatformRepository implements UserStore {
   // Businesses
   // -------------------------------------------------------------------------
 
-  /**
-   * Crea un negocio en estado PENDING (antes de provisionar la BD).
-   */
   async createBusiness(input: CreateBusinessInput): Promise<Business> {
     const result = await this.db.query<Business>(
       `INSERT INTO businesses (id, name, slug, plan, status, owner_email)
@@ -103,10 +106,6 @@ export class PlatformRepository implements UserStore {
     return this.rowToBusiness(result.rows[0]);
   }
 
-  /**
-   * Actualiza el negocio con los datos de la BD provisionada.
-   * Cambia estado de PENDING → ACTIVE.
-   */
   async activateBusiness(
     businessId: string,
     supabaseProjectId: string,
@@ -120,9 +119,6 @@ export class PlatformRepository implements UserStore {
     );
   }
 
-  /**
-   * Busca un negocio por ID.
-   */
   async findById(id: string): Promise<Business | undefined> {
     const result = await this.db.query<Business>(
       'SELECT * FROM businesses WHERE id = $1',
@@ -131,9 +127,6 @@ export class PlatformRepository implements UserStore {
     return result.rows[0] ? this.rowToBusiness(result.rows[0]) : undefined;
   }
 
-  /**
-   * Busca un negocio por slug (para URLs tipo /b/mi-negocio).
-   */
   async findBySlug(slug: string): Promise<Business | undefined> {
     const result = await this.db.query<Business>(
       'SELECT * FROM businesses WHERE slug = $1',
@@ -142,9 +135,6 @@ export class PlatformRepository implements UserStore {
     return result.rows[0] ? this.rowToBusiness(result.rows[0]) : undefined;
   }
 
-  /**
-   * Verifica si ya existe un negocio con ese email o slug.
-   */
   async existsByEmailOrSlug(email: string, slug: string): Promise<boolean> {
     const result = await this.db.query<{ count: string }>(
       `SELECT COUNT(*) as count FROM businesses
@@ -155,12 +145,9 @@ export class PlatformRepository implements UserStore {
   }
 
   // -------------------------------------------------------------------------
-  // Platform users (staff de cada negocio)
+  // Platform users — auth
   // -------------------------------------------------------------------------
 
-  /**
-   * Crea el usuario admin inicial del negocio.
-   */
   async createPlatformUser(input: CreatePlatformUserInput): Promise<PlatformUser> {
     const result = await this.db.query<PlatformUser>(
       `INSERT INTO platform_users (id, email, business_id, role, password_hash)
@@ -171,10 +158,6 @@ export class PlatformRepository implements UserStore {
     return this.rowToUser(result.rows[0]);
   }
 
-  /**
-   * Busca un usuario por email y business_id.
-   * Usado por AuthService para login multi-tenant.
-   */
   async findUserByEmailAndBusiness(
     email: string,
     businessId: string,
@@ -187,10 +170,6 @@ export class PlatformRepository implements UserStore {
     return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
   }
 
-  /**
-   * Busca un usuario solo por email (para el login donde el negocio
-   * se identifica por subdomain o slug, no por ID).
-   */
   async findUserByEmail(email: string): Promise<PlatformUser | undefined> {
     const result = await this.db.query<PlatformUser>(
       `SELECT * FROM platform_users
@@ -199,6 +178,113 @@ export class PlatformRepository implements UserStore {
       [email.toLowerCase()],
     );
     return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
+  }
+
+  // -------------------------------------------------------------------------
+  // Platform users — gestión por ADMIN
+  // -------------------------------------------------------------------------
+
+  /**
+   * Lista todos los usuarios activos e inactivos de un negocio.
+   * Solo para uso del ADMIN del negocio — no expone passwordHash.
+   */
+  async listUsersByBusiness(businessId: string): Promise<PlatformUser[]> {
+    const result = await this.db.query<PlatformUser>(
+      `SELECT * FROM platform_users
+       WHERE business_id = $1
+       ORDER BY created_at ASC`,
+      [businessId],
+    );
+    return result.rows.map((r) => this.rowToUser(r));
+  }
+
+  /**
+   * Busca un usuario por ID dentro de un negocio.
+   * El `businessId` actúa como guardia multi-tenant: un ADMIN
+   * no puede acceder a usuarios de otro negocio.
+   */
+  async findUserByIdAndBusiness(
+    userId: string,
+    businessId: string,
+  ): Promise<PlatformUser | undefined> {
+    const result = await this.db.query<PlatformUser>(
+      `SELECT * FROM platform_users
+       WHERE id = $1 AND business_id = $2`,
+      [userId, businessId],
+    );
+    return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Verifica si ya existe un usuario con ese email en el negocio.
+   */
+  async existsUserByEmailInBusiness(
+    email: string,
+    businessId: string,
+    excludeUserId?: string,
+  ): Promise<boolean> {
+    const result = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM platform_users
+       WHERE email = $1 AND business_id = $2
+       ${excludeUserId ? 'AND id != $3' : ''}`,
+      excludeUserId
+        ? [email.toLowerCase(), businessId, excludeUserId]
+        : [email.toLowerCase(), businessId],
+    );
+    return parseInt(result.rows[0].count, 10) > 0;
+  }
+
+  /**
+   * Actualiza email, rol y/o contraseña de un usuario.
+   * Solo actualiza los campos presentes en el input.
+   */
+  async updateUser(
+    userId: string,
+    businessId: string,
+    input: UpdatePlatformUserInput,
+  ): Promise<PlatformUser | undefined> {
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+
+    if (input.email !== undefined) {
+      setClauses.push(`email = $${idx++}`);
+      values.push(input.email.toLowerCase());
+    }
+    if (input.role !== undefined) {
+      setClauses.push(`role = $${idx++}`);
+      values.push(input.role);
+    }
+    if (input.passwordHash !== undefined) {
+      setClauses.push(`password_hash = $${idx++}`);
+      values.push(input.passwordHash);
+    }
+
+    if (setClauses.length === 0) return this.findUserByIdAndBusiness(userId, businessId);
+
+    values.push(userId, businessId);
+    const result = await this.db.query<PlatformUser>(
+      `UPDATE platform_users
+       SET ${setClauses.join(', ')}
+       WHERE id = $${idx++} AND business_id = $${idx}
+       RETURNING *`,
+      values,
+    );
+    return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Desactiva (soft-delete) un usuario.
+   * No borra el registro para preservar historial de reservas.
+   */
+  async deactivateUser(userId: string, businessId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE platform_users
+       SET active = FALSE
+       WHERE id = $1 AND business_id = $2 AND active = TRUE`,
+      [userId, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   // -------------------------------------------------------------------------
