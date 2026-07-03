@@ -3,13 +3,8 @@
  * @description Composición de dependencias (Composition Root).
  *
  * ## Cambios en esta versión
- * - Se agrega `SqlDomainEventRepository` al container PostgreSQL.
- * - Se agrega `SqlFinancialTransactionRepository` al container PostgreSQL.
- * - Se inyectan ambos en `ReservationService` (parámetros opcionales 5.° y 6.°)
- *   para activar el outbox transaccional en modo PostgreSQL.
- * - Se crea y expone `outboxWorker` en el container para que `server.ts`
- *   pueda arrancarlo y detenerlo con graceful shutdown.
- * - El modo in-memory no instancia ni arranca el worker (no hay BD).
+ * - Se expone `financialTransactionRepository` en `AppContainer` para que
+ *   las rutas puedan consultarlo directamente (ej: GET /reservations/:id/charges).
  */
 
 import { ReservationService } from './services/reservation.service.js';
@@ -21,6 +16,7 @@ import { ResourceRepository } from './repositories/resource.repository.js';
 import { OccupancyRepository } from './repositories/occupancy.repository.js';
 import { CustomerRepository } from './repositories/customer.repository.js';
 import { ICategoryRepository } from './repositories/category.repository.js';
+import { FinancialTransactionRepository } from './repositories/financial-transaction.repository.js';
 
 import { InMemoryResourceRepository } from './repositories/in-memory.resource.repository.js';
 import { InMemoryReservationRepository } from './repositories/in-memory.reservation.repository.js';
@@ -45,18 +41,20 @@ import { seedDemoData } from './seed/demo-data.js';
 import { BusinessPlan } from './types/enums.js';
 
 export interface AppContainer {
-  resourceRepository:    ResourceRepository;
-  reservationRepository: ReservationRepository;
-  occupancyRepository:   OccupancyRepository;
-  customerRepository:    CustomerRepository;
-  categoryRepository:    ICategoryRepository;
-  reservationService:    ReservationService;
-  reportService:         ReportService;
-  categoryService:       CategoryService;
+  resourceRepository:              ResourceRepository;
+  reservationRepository:           ReservationRepository;
+  occupancyRepository:             OccupancyRepository;
+  customerRepository:              CustomerRepository;
+  categoryRepository:              ICategoryRepository;
+  /** null en modo in-memory (no hay BD). */
+  financialTransactionRepository:  FinancialTransactionRepository | null;
+  reservationService:              ReservationService;
+  reportService:                   ReportService;
+  categoryService:                 CategoryService;
   /** Solo presente en modo PostgreSQL. null en modo in-memory. */
-  outboxWorker:          OutboxWorker | null;
+  outboxWorker:                    OutboxWorker | null;
   /** Resuelve el plan de un negocio desde la BD central */
-  getBusinessPlan:       (businessId: string) => Promise<BusinessPlan>;
+  getBusinessPlan:                 (businessId: string) => Promise<BusinessPlan>;
   mode: 'in-memory' | 'postgresql';
 }
 
@@ -69,16 +67,14 @@ export async function createAppContainer(): Promise<AppContainer> {
 async function createPostgresContainer(): Promise<AppContainer> {
   console.log('[container] 🐘 Modo PostgreSQL — conectando a DATABASE_URL');
 
-  const categoryRepository            = new SqlCategoryRepository(pgClient);
-  const resourceRepository            = new SqlResourceRepository(pgClient);
-  const customerRepository            = new SqlCustomerRepository(pgClient);
-  const reservationRepository         = new SqlReservationRepository(pgClient, resourceRepository);
-  const occupancyRepository           = new SqlOccupancyRepository(pgClient);
-  const domainEventRepository         = new SqlDomainEventRepository(pgClient);
+  const categoryRepository             = new SqlCategoryRepository(pgClient);
+  const resourceRepository             = new SqlResourceRepository(pgClient);
+  const customerRepository             = new SqlCustomerRepository(pgClient);
+  const reservationRepository          = new SqlReservationRepository(pgClient, resourceRepository);
+  const occupancyRepository            = new SqlOccupancyRepository(pgClient);
+  const domainEventRepository          = new SqlDomainEventRepository(pgClient);
   const financialTransactionRepository = new SqlFinancialTransactionRepository(pgClient);
 
-  // Inyectar domainEventRepository + pgClient activa el outbox transaccional
-  // en confirmReservation() y completeReservation().
   const reservationService = new ReservationService(
     reservationRepository,
     resourceRepository,
@@ -91,7 +87,6 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const reportService   = new ReportService(occupancyRepository);
   const categoryService = new CategoryService(categoryRepository);
 
-  // Worker: lee domain_events pendientes cada 5 s y los despacha.
   const outboxWorker = new OutboxWorker(domainEventRepository);
   registerFinancialHandlers(outboxWorker, financialTransactionRepository);
 
@@ -109,6 +104,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
     occupancyRepository,
     customerRepository,
     categoryRepository,
+    financialTransactionRepository,
     reservationService,
     reportService,
     categoryService,
@@ -135,7 +131,6 @@ async function createInMemoryContainer(): Promise<AppContainer> {
   const occupancyRepository   = new InMemoryOccupancyRepository();
   const customerRepository    = new InMemoryCustomerRepository();
 
-  // Sin outbox en in-memory — ReservationService funciona igual que antes.
   const reservationService = new ReservationService(
     reservationRepository,
     resourceRepository,
@@ -163,10 +158,11 @@ async function createInMemoryContainer(): Promise<AppContainer> {
     occupancyRepository,
     customerRepository,
     categoryRepository,
+    financialTransactionRepository: null,
     reservationService,
     reportService,
     categoryService,
-    outboxWorker: null,   // no hay BD en modo in-memory
+    outboxWorker: null,
     getBusinessPlan,
     mode: 'in-memory',
   };

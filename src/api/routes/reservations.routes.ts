@@ -2,24 +2,17 @@
  * @file reservations.routes.ts
  * @description Rutas de gestión de reservas con control de acceso por rol.
  *
- * ## Cambios
- * - Se elimina `resourceType` del body de POST /. El tipo de recurso ya no
- *   se envía en la petición — se resuelve internamente desde `resource.categoryId`.
- * - Se elimina la llamada a `validateDetailsForType()` (basada en enum estático).
- *   La validación de `details` ahora ocurre en `ReservationService` contra
- *   los `fields` dinámicos de la categoría.
- * - Se eliminan los imports de `ResourceType` y `PreferenceDetailsByResource`.
- *
  * ## Matriz de permisos
  *
- * | Operación                  | ADMIN | RECEPTIONIST | WAITER |
- * |----------------------------|-------|--------------|--------|
- * | GET /           (listar)   | ✅    | ✅           | ✅     |
- * | GET /:id        (detalle)  | ✅    | ✅           | ✅     |
- * | POST /          (crear)    | ✅    | ✅           | ❌     |
- * | POST /:id/confirm          | ✅    | ✅           | ❌     |
- * | POST /:id/cancel           | ✅    | ✅           | ❌     |
- * | POST /:id/complete         | ✅    | ✅           | ✅     |
+ * | Operación                     | ADMIN | RECEPTIONIST | WAITER |
+ * |-------------------------------|-------|--------------|--------|
+ * | GET /           (listar)      | ✅    | ✅           | ✅     |
+ * | GET /:id        (detalle)     | ✅    | ✅           | ✅     |
+ * | GET /:id/charges              | ✅    | ✅           | ❌     |
+ * | POST /          (crear)       | ✅    | ✅           | ❌     |
+ * | POST /:id/confirm             | ✅    | ✅           | ❌     |
+ * | POST /:id/cancel              | ✅    | ✅           | ❌     |
+ * | POST /:id/complete            | ✅    | ✅           | ✅     |
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -53,6 +46,49 @@ export function createReservationsRouter(container: AppContainer): Router {
       const reservation = await container.reservationService.getReservation(id);
       if (!reservation) throw new ReservationNotFoundError(id);
       res.json(toReservationDto(reservation));
+    } catch (err) { next(err); }
+  });
+
+  /**
+   * GET /api/reservations/:id/charges
+   *
+   * Devuelve todos los movimientos financieros asociados a una reserva.
+   * Solo ADMIN y RECEPTIONIST pueden ver datos financieros.
+   *
+   * Respuestas:
+   * - 200: array de FinancialTransaction (puede ser vacío si no hay cargos)
+   * - 404: reserva no encontrada
+   * - 503: ledger no disponible en modo in-memory
+   */
+  router.get('/:id/charges', authorize(MANAGERS), async (req, res, next) => {
+    try {
+      const id = routeParam(req.params.id);
+
+      // Verificar que la reserva existe antes de consultar el ledger.
+      const reservation = await container.reservationService.getReservation(id);
+      if (!reservation) throw new ReservationNotFoundError(id);
+
+      // En modo in-memory no hay ledger — responder con 503 descriptivo.
+      if (!container.financialTransactionRepository) {
+        res.status(503).json({
+          code:    'LEDGER_UNAVAILABLE',
+          message: 'El ledger financiero no está disponible en modo in-memory. Conectá DATABASE_URL para activarlo.',
+        });
+        return;
+      }
+
+      const charges = await container.financialTransactionRepository.getByReservationId(id);
+
+      res.json(charges.map((c) => ({
+        id:            c.id,
+        type:          c.type,
+        amount:        c.amount,
+        currency:      c.currency,
+        status:        c.status,
+        reservationId: c.reservationId,
+        customerId:    c.customerId,
+        createdAt:     c.createdAt,
+      })));
     } catch (err) { next(err); }
   });
 
