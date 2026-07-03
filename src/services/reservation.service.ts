@@ -119,6 +119,112 @@ export class ReservationService {
   }
 
   /**
+   * Modifica el rango horario y/o los detalles de una reserva PENDING.
+   *
+   * Como `startTime`, `endTime` y `details` son campos `readonly` en `Reservation`,
+   * la actualización se implementa creando una nueva instancia con los valores
+   * fusionados y persistiéndola con el mismo `id` (ON CONFLICT DO UPDATE en SQL).
+   *
+   * ## Reglas de negocio
+   * - Solo se pueden modificar reservas en estado `PENDING`.
+   * - La disponibilidad se verifica excluyendo la reserva actual (`excludeReservationId`).
+   * - El estado `PENDING` se preserva en la nueva instancia.
+   *
+   * @param id      - ID de la reserva a modificar
+   * @param changes - Campos a actualizar (todos opcionales)
+   * @returns La reserva actualizada
+   *
+   * @throws {ReservationNotFoundError} Si la reserva no existe              → HTTP 404
+   * @throws {InvalidReservationError}  Si no está en PENDING o sin cambios   → HTTP 409
+   * @throws {InvalidReservationError}  Si el recurso no está disponible       → HTTP 409
+   * @throws {ValidationError}          Si los nuevos `details` son inválidos   → HTTP 400
+   *
+   * @swagger
+   * /api/customer/me/reservations/{id}:
+   *   patch:
+   *     summary: Modificar reserva propia
+   *     security:
+   *       - BearerAuth: []
+   *     responses:
+   *       200:
+   *         description: Reserva actualizada
+   *       400:
+   *         description: Datos inválidos
+   *       404:
+   *         description: Reserva no encontrada
+   *       409:
+   *         description: No está en PENDING o recurso no disponible
+   */
+  async updateReservation(
+    id: string,
+    changes: {
+      startTime?: Date;
+      endTime?: Date;
+      details?: Record<string, unknown>;
+    },
+  ): Promise<Reservation> {
+    const reservation = await this.requireReservation(id);
+
+    if (reservation.status !== 'PENDING') {
+      throw new InvalidReservationError(
+        `Solo se pueden modificar reservas en estado PENDING. Estado actual: ${reservation.status}`,
+      );
+    }
+
+    if (!changes.startTime && !changes.endTime && !changes.details) {
+      throw new InvalidReservationError(
+        'Debés enviar al menos un campo para modificar: startTime, endTime o details',
+      );
+    }
+
+    const newStartTime = changes.startTime ?? reservation.startTime;
+    const newEndTime   = changes.endTime   ?? reservation.endTime;
+    const rawDetails   = changes.details   ?? reservation.details;
+
+    // Validar detalles (incluso si no cambian, para garantizar consistencia)
+    const validatedDetails = validatePreferences(
+      reservation.resourceType,
+      rawDetails,
+    );
+
+    // Verificar disponibilidad excluyendo la reserva actual
+    const activeReservations =
+      await this.reservationRepository.getActiveForResourceInRange(
+        reservation.resource.id,
+        newStartTime,
+        newEndTime,
+      );
+
+    const isAvailable = reservation.resource.isAvailable(
+      newStartTime,
+      newEndTime,
+      activeReservations.map((r) => r.toSnapshot()),
+      id, // excluir la reserva actual del chequeo de solapamiento
+    );
+
+    if (!isAvailable) {
+      throw new InvalidReservationError(
+        `El recurso ${reservation.resource.id} no está disponible en el nuevo rango solicitado`,
+      );
+    }
+
+    // Construir nueva instancia con los valores fusionados (los campos son readonly)
+    const updated = new Reservation(
+      reservation.resourceType,
+      reservation.id,
+      reservation.customer,
+      reservation.resource,
+      newStartTime,
+      newEndTime,
+      validatedDetails as PreferenceDetailsByResource[typeof reservation.resourceType],
+    );
+    // El status ya es PENDING por defecto en el constructor — no hace falta asignarlo
+
+    await this.reservationRepository.save(updated);
+    return updated;
+  }
+
+  /**
    * Confirma una reserva existente y registra la ocupación del recurso.
    *
    * @param id - ID de la reserva a confirmar
@@ -261,8 +367,6 @@ export class ReservationService {
   private async requireReservation(id: string): Promise<Reservation> {
     const reservation = await this.reservationRepository.getById(id);
     if (!reservation) {
-      // ✅ CORREGIDO: era `InvalidReservationError` → HTTP 409
-      //              ahora es `ReservationNotFoundError` → HTTP 404
       throw new ReservationNotFoundError(id);
     }
     return reservation;
