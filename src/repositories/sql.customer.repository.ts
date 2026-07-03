@@ -131,6 +131,31 @@ export class SqlCustomerRepository implements CustomerRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * Anonimiza un cliente en lugar de borrarlo.
+   *
+   * Reemplaza todos los datos personales con valores neutros y elimina
+   * el password hash. El registro permanece en la BD para preservar la
+   * integridad referencial con las reservas existentes.
+   *
+   * El email anonimizado 'deleted-{id}@anon.local' es único por construcción
+   * (usa el ID del cliente) y no coincide con ningún email real.
+   */
+  async anonymize(id: string): Promise<boolean> {
+    const result = await this.sqlClient.query(
+      `UPDATE customers
+       SET
+         full_name     = '[eliminado]',
+         email         = $1,
+         password_hash = NULL,
+         updated_at    = CURRENT_TIMESTAMP
+       WHERE id = $2
+         AND email NOT LIKE 'deleted-%@anon.local'`,
+      [`deleted-${id}@anon.local`, id],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   private rowToCustomer(row: CustomerRow): Customer {
     return new Customer(row.id, row.full_name, row.email);
   }

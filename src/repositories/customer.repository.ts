@@ -37,4 +37,22 @@ export interface CustomerRepository {
 
   searchByName(name: string): Promise<Customer[]>;
   delete(id: string): Promise<boolean>;
+
+  /**
+   * Anonimiza (pseudo-elimina) un cliente.
+   *
+   * En lugar de borrar el registro — lo cual rompería la integridad referencial
+   * con las reservas existentes — reemplaza todos los datos personales con
+   * valores neutros y elimina el password hash, impidiendo futuros logins.
+   *
+   * Datos que se limpian:
+   * - `full_name`     → '[eliminado]'
+   * - `email`         → 'deleted-{id}@anon.local'
+   * - `password_hash` → NULL
+   *
+   * El ID del cliente se preserva para mantener el historial de reservas.
+   *
+   * @returns `true` si el cliente existía y fue anonimizado, `false` si no existía.
+   */
+  anonymize(id: string): Promise<boolean>;
 }
