@@ -17,6 +17,13 @@
  * ## Por qué no usar el pgClient global
  * El pgClient global apunta a la BD central (PLATFORM_DATABASE_URL).
  * Cada tenant tiene su propia BD — req.db apunta a ella.
+ *
+ * ## CUSTOMER y tenantMiddleware
+ * Los JWTs de clientes (`role: CUSTOMER`) no llevan `business_id` — usan
+ * `customer_id` en su lugar. Las rutas `/customer/*` se montan antes de
+ * este middleware en `app.ts`, por lo que los requests de clientes no llegan
+ * aquí en condiciones normales. Sin embargo, se agrega un guard explícito
+ * para evitar un 401 silencioso si el orden de montaje cambiara en el futuro.
  */
  
 import { Request, Response, NextFunction } from 'express';
@@ -24,7 +31,7 @@ import pg from 'pg';
 import { SqlClient } from '../repositories/sql.client.js';
 import { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './supabase.provisioner.js';
-import { BusinessStatus } from '../types/enums.js';
+import { BusinessStatus, UserRole } from '../types/enums.js';
  
 const { Pool } = pg;
  
@@ -98,6 +105,10 @@ async function getTenantClient(
  * Middleware que inyecta `req.db` con la conexión al tenant correcto.
  * Debe montarse DESPUÉS de `authenticate()`.
  *
+ * Los requests con `role: CUSTOMER` se dejan pasar sin modificar —
+ * sus rutas (`/customer/*`) no usan la BD del tenant y tienen su propio
+ * pool. Ver nota en la cabecera del archivo.
+ *
  * @param platformRepo - Repositorio de la BD central
  *
  * @example
@@ -109,6 +120,14 @@ async function getTenantClient(
  */
 export function tenantMiddleware(platformRepo: PlatformRepository) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Guard: CUSTOMER no usa tenant DB — pasa directo.
+    // Sus rutas se montan antes de este middleware, pero si el orden cambia
+    // esto evita un 401 por business_id ausente en el JWT de cliente.
+    if (req.user?.role === UserRole.CUSTOMER) {
+      next();
+      return;
+    }
+
     if (!req.user?.businessId) {
       res.status(401).json({
         code: 'UNAUTHORIZED',
