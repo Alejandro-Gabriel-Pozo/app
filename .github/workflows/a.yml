@@ -1,1 +1,8 @@
-
+# placeholder — reserved for future workflow
+name: placeholder
+on: workflow_dispatch
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "noop"
