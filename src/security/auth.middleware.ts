@@ -100,17 +100,20 @@ export function verifyToken(token: string, secret: string): JwtPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Configuración
+// Configuración — LAZY: se lee en tiempo de uso, no al importar
 // ---------------------------------------------------------------------------
 
-function requireJwtSecret(): string {
+/**
+ * Lee y valida JWT_SECRET en el momento de llamarse.
+ * Al ser lazy, no explota durante la carga del módulo en tests donde
+ * beforeEach setea la variable antes de instanciar el servicio.
+ */
+export function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error('[auth.middleware] JWT_SECRET no está definida.');
   if (secret.length < 32) throw new Error('[auth.middleware] JWT_SECRET debe tener al menos 32 caracteres.');
   return secret;
 }
-
-const JWT_SECRET = requireJwtSecret();
 
 // ---------------------------------------------------------------------------
 // Middlewares
@@ -141,7 +144,7 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
     const token = authHeader.slice(7);
 
     try {
-      const payload = verifyToken(token, JWT_SECRET);
+      const payload = verifyToken(token, getJwtSecret());
       req.user = {
         id: payload.sub,
         role: payload.role,
