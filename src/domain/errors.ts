@@ -1,5 +1,13 @@
+/**
+ * @file errors.ts
+ * @description Errores de dominio.
+ *
+ * ## Cambios
+ * - Se elimina `UnsupportedResourceTypeError`: ya no existe el enum `ResourceType`.
+ *   Los tipos de recurso son categorías dinámicas definidas en BD.
+ */
+
 import { ZodError } from 'zod';
-import { ResourceType } from '../types/enums.js';
 
 export class DomainError extends Error {
   constructor(
@@ -11,24 +19,21 @@ export class DomainError extends Error {
   }
 }
 
-export class ValidationError extends DomainError {
-  constructor(public readonly zodError: ZodError) {
-    super('Validación fallida', 'VALIDATION_ERROR');
-  }
-}
-
-export class UnsupportedResourceTypeError extends DomainError {
-  constructor(public readonly resourceType: ResourceType) {
-    super(
-      `Tipo de recurso no soportado: ${resourceType}`,
-      'UNSUPPORTED_RESOURCE_TYPE',
-    );
-  }
-}
-
 export class InvalidReservationError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_RESERVATION');
+  }
+}
+
+export class ReservationNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Reserva con id "${id}" no encontrada`, 'RESERVATION_NOT_FOUND');
+  }
+}
+
+export class ResourceNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Recurso con id "${id}" no encontrado`, 'RESOURCE_NOT_FOUND');
   }
 }
 
@@ -38,20 +43,29 @@ export class InvalidCustomerError extends DomainError {
   }
 }
 
-export class InvalidResourceError extends DomainError {
-  constructor(message: string) {
-    super(message, 'INVALID_RESOURCE');
+export class ValidationError extends DomainError {
+  constructor(
+    message: string,
+    public readonly issues?: ZodError['issues'],
+  ) {
+    super(message, 'VALIDATION_ERROR');
   }
 }
 
-export class ResourceNotFoundError extends DomainError {
-  constructor(public readonly resourceId: string) {
-    super(`Recurso no encontrado: ${resourceId}`, 'RESOURCE_NOT_FOUND');
+export class AuthError extends DomainError {
+  constructor(message = 'No autorizado') {
+    super(message, 'AUTH_ERROR');
   }
 }
 
-export class ReservationNotFoundError extends DomainError {
-  constructor(public readonly reservationId: string) {
-    super(`Reserva no encontrada: ${reservationId}`, 'RESERVATION_NOT_FOUND');
+export class ForbiddenError extends DomainError {
+  constructor(message = 'Acceso denegado') {
+    super(message, 'FORBIDDEN');
+  }
+}
+
+export class CategoryNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Categoría con id "${id}" no encontrada`, 'CATEGORY_NOT_FOUND');
   }
 }
