@@ -17,13 +17,6 @@
  * GET   /platform/businesses/:id           — detalle de un negocio
  * PATCH /platform/businesses/:id/status    — cambiar estado (ACTIVE/SUSPENDED/CANCELLED)
  * GET   /platform/stats                    — estadísticas globales de la plataforma
- *
- * ## Notas de diseño
- * - El provisioning de BD Supabase es asíncrono: `POST /businesses` responde
- *   202 inmediatamente con status=PENDING y dispara el provisioning en background.
- *   El SUPERADMIN puede consultar el estado con `GET /businesses/:id`.
- * - `PATCH /businesses/:id/status` con `SUSPENDED` bloquea el tenant en el
- *   middleware de tenant pero NO borra datos.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -41,6 +34,17 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ---------------------------------------------------------------------------
+// Tipos
+// ---------------------------------------------------------------------------
+
+interface AuthenticatedPlatformUser {
+  id: string;
+  email: string;
+  role: string;
+  [key: string]: unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -70,14 +74,19 @@ const UpdateBusinessStatusSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Normaliza query params que pueden ser string | string[] a string */
+function firstString(val: string | string[] | undefined): string | undefined {
+  if (val === undefined) return undefined;
+  return Array.isArray(val) ? val[0] : val;
+}
+
+// ---------------------------------------------------------------------------
 // Middleware de autenticación de plataforma
 // ---------------------------------------------------------------------------
 
-/**
- * Verifica que el JWT tenga `platform_role: SUPERADMIN`.
- * Independiente de `authenticate()` de los tenants para evitar
- * que un token de negocio pueda acceder a rutas de plataforma.
- */
 function authenticatePlatform() {
   const jwtService = new JwtService();
 
@@ -90,10 +99,11 @@ function authenticatePlatform() {
 
     const token = authHeader.slice(7);
     try {
-      const payload = await jwtService.verify(token);
+      const rawPayload = jwtService.verify(token);
+      // Cast via unknown para evitar TS2352 entre JwtPayload y Record<string,unknown>
+      const payload = rawPayload as unknown as AuthenticatedPlatformUser;
 
-      // Verificar que sea explícitamente un token de plataforma
-      if ((payload as Record<string, unknown>).platform_role !== PlatformRole.SUPERADMIN) {
+      if (payload.platform_role !== PlatformRole.SUPERADMIN) {
         res.status(403).json({
           code: 'FORBIDDEN',
           message: 'Acceso restringido a SUPERADMIN de plataforma',
@@ -101,8 +111,7 @@ function authenticatePlatform() {
         return;
       }
 
-      // Guardar el payload en req para uso en handlers
-      (req as Request & { platformUser: Record<string, unknown> }).platformUser = payload as Record<string, unknown>;
+      (req as Request & { platformUser: AuthenticatedPlatformUser }).platformUser = payload;
       next();
     } catch {
       res.status(401).json({ code: 'INVALID_TOKEN', message: 'Token inválido o expirado' });
@@ -121,28 +130,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   // -------------------------------------------------------------------------
   // POST /platform/login — público
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /platform/login:
-   *   post:
-   *     summary: Login de SUPERADMIN
-   *     tags: [Platform]
-   *     security: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [email, password]
-   *             properties:
-   *               email:    { type: string, format: email }
-   *               password: { type: string }
-   *     responses:
-   *       200: { description: JWT de SUPERADMIN }
-   *       401: { description: Credenciales inválidas }
-   *       503: { description: Plataforma no configurada }
-   */
   router.post(
     '/login',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -165,32 +152,15 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
-  // -------------------------------------------------------------------------
-  // A partir de aquí: requieren JWT SUPERADMIN
-  // -------------------------------------------------------------------------
   router.use(authenticatePlatform());
 
   // -------------------------------------------------------------------------
-  // GET /platform/stats — estadísticas globales
+  // GET /platform/stats
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /platform/stats:
-   *   get:
-   *     summary: Estadísticas globales de la plataforma
-   *     tags: [Platform]
-   *     security: [{ BearerAuth: [] }]
-   *     responses:
-   *       200:
-   *         description: Totales por plan y estado
-   */
   router.get(
     '/stats',
     async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        // Obtener todos los negocios para calcular stats en memoria
-        // En producción esto debería ser una query agregada en SQL;
-        // para el volumen actual (< 1000 negocios) este enfoque es suficiente.
         const allBusinesses = await platformRepository.listAll();
 
         const byPlan: Record<string, number> = {};
@@ -202,9 +172,9 @@ export function createPlatformRouter(container: PlatformContainer): Router {
         }
 
         res.json({
-          total:    allBusinesses.length,
-          active:   byStatus[BusinessStatus.ACTIVE]    ?? 0,
-          pending:  byStatus[BusinessStatus.PENDING]   ?? 0,
+          total:     allBusinesses.length,
+          active:    byStatus[BusinessStatus.ACTIVE]    ?? 0,
+          pending:   byStatus[BusinessStatus.PENDING]   ?? 0,
           suspended: byStatus[BusinessStatus.SUSPENDED] ?? 0,
           cancelled: byStatus[BusinessStatus.CANCELLED] ?? 0,
           byPlan,
@@ -218,33 +188,16 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // GET /platform/businesses — listar negocios
+  // GET /platform/businesses
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /platform/businesses:
-   *   get:
-   *     summary: Listar todos los negocios registrados
-   *     tags: [Platform]
-   *     security: [{ BearerAuth: [] }]
-   *     parameters:
-   *       - name: status
-   *         in: query
-   *         schema: { type: string, enum: [PENDING, ACTIVE, SUSPENDED, CANCELLED] }
-   *       - name: plan
-   *         in: query
-   *         schema: { type: string, enum: [FREE, STARTER, PRO] }
-   *     responses:
-   *       200: { description: Lista de negocios }
-   */
   router.get(
     '/businesses',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         let businesses = await platformRepository.listAll();
 
-        // Filtros opcionales por query param
-        const { status, plan } = req.query;
+        const status = firstString(req.query['status'] as string | string[] | undefined);
+        const plan   = firstString(req.query['plan']   as string | string[] | undefined);
         if (status) businesses = businesses.filter((b) => b.status === status);
         if (plan)   businesses = businesses.filter((b) => b.plan   === plan);
 
@@ -259,42 +212,14 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // POST /platform/businesses — registrar nuevo negocio
+  // POST /platform/businesses
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /platform/businesses:
-   *   post:
-   *     summary: Registrar un nuevo negocio y provisionar su BD
-   *     description: |
-   *       Responde 202 inmediatamente. El provisioning de la BD Supabase
-   *       ocurre en background (puede tardar hasta 5 minutos).
-   *       Consultá el estado con GET /platform/businesses/:id.
-   *     tags: [Platform]
-   *     security: [{ BearerAuth: [] }]
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [name, slug, plan, ownerEmail]
-   *             properties:
-   *               name:       { type: string, example: "Hotel Patagonia" }
-   *               slug:       { type: string, example: "hotel-patagonia" }
-   *               plan:       { type: string, enum: [FREE, STARTER, PRO] }
-   *               ownerEmail: { type: string, format: email }
-   *     responses:
-   *       202: { description: Negocio creado — provisioning en progreso }
-   *       409: { description: Email o slug ya registrado }
-   */
   router.post(
     '/businesses',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = CreateBusinessSchema.parse(req.body);
 
-        // Verificar unicidad antes de crear
         const exists = await platformRepository.existsByEmailOrSlug(body.ownerEmail, body.slug);
         if (exists) {
           res.status(409).json({
@@ -313,7 +238,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           ownerEmail: body.ownerEmail,
         });
 
-        // Provisioning asíncrono — no bloquea la respuesta
         provisionInBackground(businessId, body.name, platformRepository).catch((err) => {
           console.error(`[platform] Error provisionando negocio ${businessId}:`, err);
         });
@@ -329,24 +253,8 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // GET /platform/businesses/:id — detalle de un negocio
+  // GET /platform/businesses/:id
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /platform/businesses/{id}:
-   *   get:
-   *     summary: Ver detalle de un negocio
-   *     tags: [Platform]
-   *     security: [{ BearerAuth: [] }]
-   *     parameters:
-   *       - name: id
-   *         in: path
-   *         required: true
-   *         schema: { type: string }
-   *     responses:
-   *       200: { description: Datos del negocio }
-   *       404: { description: Negocio no encontrado }
-   */
   router.get(
     '/businesses/:id',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -364,39 +272,8 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // PATCH /platform/businesses/:id/status — suspender / activar / cancelar
+  // PATCH /platform/businesses/:id/status
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /platform/businesses/{id}/status:
-   *   patch:
-   *     summary: Cambiar estado de un negocio
-   *     description: |
-   *       - SUSPENDED: bloquea acceso del tenant (tenant middleware retorna 403)
-   *       - ACTIVE: reactiva el acceso
-   *       - CANCELLED: marca como cancelado (no se puede revertir)
-   *     tags: [Platform]
-   *     security: [{ BearerAuth: [] }]
-   *     parameters:
-   *       - name: id
-   *         in: path
-   *         required: true
-   *         schema: { type: string }
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [status]
-   *             properties:
-   *               status: { type: string, enum: [ACTIVE, SUSPENDED, CANCELLED] }
-   *               reason: { type: string, maxLength: 500 }
-   *     responses:
-   *       200: { description: Estado actualizado }
-   *       400: { description: Transición de estado inválida }
-   *       404: { description: Negocio no encontrado }
-   */
   router.patch(
     '/businesses/:id/status',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -409,7 +286,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           return;
         }
 
-        // Validar transición de estado
         if (business.status === BusinessStatus.CANCELLED) {
           res.status(400).json({
             code: 'INVALID_TRANSITION',
@@ -456,13 +332,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 // Provisioning en background
 // ---------------------------------------------------------------------------
 
-/**
- * Llama al provisioner de Supabase y actualiza el negocio en la BD central
- * con el projectId y la connection string cifrada.
- *
- * Se ejecuta fuera del ciclo request/response — los errores se loguean
- * pero no son fatales para el servidor.
- */
 async function provisionInBackground(
   businessId: string,
   businessName: string,
@@ -470,10 +339,8 @@ async function provisionInBackground(
 ): Promise<void> {
   console.log(`[platform] Iniciando provisioning para negocio ${businessId}...`);
 
-  // 1. Crear el proyecto en Supabase
   const provisioned = await provisionBusinessDatabase(businessId, businessName);
 
-  // 2. Ejecutar el schema del tenant en la nueva BD
   const schemaPath = resolve(__dirname, '../../db/schema.sql');
   const schemaSQL  = await readFile(schemaPath, 'utf-8');
 
@@ -482,7 +349,6 @@ async function provisionInBackground(
   );
   await runSchemaOnNewDatabase(provisioned.connectionString, schemaSQL);
 
-  // 3. Cifrar y guardar la connection string en la BD central
   const encrypted = await encryptConnectionString(provisioned.connectionString);
   await platformRepository.activateBusiness(
     businessId,
@@ -494,7 +360,7 @@ async function provisionInBackground(
 }
 
 // ---------------------------------------------------------------------------
-// DTO — nunca exponer db_url_encrypted ni password hashes
+// DTO
 // ---------------------------------------------------------------------------
 
 function toBusinessDto(b: import('../../platform/platform.repository.js').Business) {
@@ -506,7 +372,6 @@ function toBusinessDto(b: import('../../platform/platform.repository.js').Busine
     status:           b.status,
     ownerEmail:       b.ownerEmail,
     supabaseProjectId: b.supabaseProjectId,
-    // db_url_encrypted NUNCA se expone en la API
     createdAt:        b.createdAt,
     updatedAt:        b.updatedAt,
   };

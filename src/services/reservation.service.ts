@@ -1,18 +1,6 @@
 /**
  * @file reservation.service.ts
  * @description Servicio de dominio para gestión de reservas.
- *
- * ## Cambios respecto a la versión anterior
- * - Se elimina el acoplamiento a `ResourceType` y `PreferenceDetailsByResource`.
- *   El tipo de recurso ya no es un enum fijo — vive en `resource_categories` de la BD.
- * - Se inyecta `ICategoryRepository` para obtener los `fields` de la categoría
- *   y validar `details` en runtime contra ellos (`validateDetailsAgainstFields`).
- * - `createReservation` ya no recibe `resourceType` como parámetro — lo resuelve
- *   internamente a partir del recurso.
- * - Se agrega soporte de **outbox transaccional**: `confirmReservation` y
- *   `completeReservation` escriben el evento de dominio en la misma transacción SQL
- *   que el cambio de estado cuando `domainEventRepository` está configurado.
- *   Sin él, el comportamiento es idéntico al anterior.
  */
 
 import { Reservation } from '../domain/Reservation.js';
@@ -28,6 +16,7 @@ import { ResourceRepository } from '../repositories/resource.repository.js';
 import { OccupancyRepository } from '../repositories/occupancy.repository.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
 import { DomainEventRepository } from '../repositories/domain-event.repository.js';
+import { SqlClient } from '../repositories/sql.client.js';
 import { withTransaction } from '../db/pg.client.js';
 
 export class ReservationService {
@@ -39,13 +28,6 @@ export class ReservationService {
     private readonly domainEventRepository?: DomainEventRepository,
   ) {}
 
-  /**
-   * Crea una nueva reserva si el recurso está disponible en el rango solicitado.
-   *
-   * @throws {ResourceNotFoundError}   Si `resourceId` no existe               → 404
-   * @throws {InvalidReservationError} Si el recurso no está disponible         → 409
-   * @throws {Error}                   Si `details` no cumple los campos        → 400
-   */
   async createReservation(params: {
     id: string;
     resourceId: string;
@@ -98,13 +80,6 @@ export class ReservationService {
     return reservation;
   }
 
-  /**
-   * Modifica el rango horario y/o los detalles de una reserva PENDING.
-   *
-   * @throws {ReservationNotFoundError} Si la reserva no existe              → 404
-   * @throws {InvalidReservationError}  Si no está en PENDING o sin cambios   → 409
-   * @throws {InvalidReservationError}  Si el recurso no está disponible       → 409
-   */
   async updateReservation(
     id: string,
     changes: {
@@ -174,14 +149,14 @@ export class ReservationService {
   /**
    * Confirma una reserva PENDING.
    * Si el outbox está configurado, escribe reservation.confirmed en la misma
-   * transacción que el cambio de estado — entrega garantizada.
+   * transacción que el cambio de estado.
    */
   async confirmReservation(id: string): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
     if (this.domainEventRepository) {
-      await withTransaction(async (client) => {
+      await withTransaction(async (client: SqlClient) => {
         await this.reservationRepository.saveWithClient(client, reservation);
         await this.domainEventRepository!.insertWithClient(client, {
           aggregateType: 'RESERVATION',
@@ -222,7 +197,7 @@ export class ReservationService {
     reservation.complete();
 
     if (this.domainEventRepository) {
-      await withTransaction(async (client) => {
+      await withTransaction(async (client: SqlClient) => {
         await this.reservationRepository.saveWithClient(client, reservation);
         await this.domainEventRepository!.insertWithClient(client, {
           aggregateType: 'RESERVATION',

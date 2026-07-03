@@ -1,13 +1,6 @@
 /**
  * @file sql.resource.repository.ts
  * @description Implementación PostgreSQL del repositorio de recursos.
- *
- * ## Cambios respecto a la versión anterior
- * - Se reemplaza `type` por `category_id` en todas las queries.
- *   El antiguo enum `ResourceType` ya no existe — el tipo de recurso
- *   es una FK a `resource_categories` definida por cada negocio.
- * - Se agrega `countActive()` para enforcement de plan en `ResourceService`.
- * - `rowToResource` instancia `BookableResource` via constructor.
  */
 
 import { SqlClient } from './sql.client.js';
@@ -94,12 +87,17 @@ export class SqlResourceRepository implements ResourceRepository {
   }
 
   private rowToResource(row: ResourceRow): BookableResource {
-    const visualData: VisualMetadata | null =
-      row.visual_data == null
-        ? null
-        : typeof row.visual_data === 'string'
-          ? (JSON.parse(row.visual_data) as VisualMetadata)
-          : (row.visual_data as VisualMetadata);
+    let visualData: VisualMetadata | null = null;
+
+    if (row.visual_data != null) {
+      // Parsear si viene como string (pg puede devolver JSONB como string o como objeto)
+      const raw: unknown =
+        typeof row.visual_data === 'string'
+          ? JSON.parse(row.visual_data)
+          : row.visual_data;
+      // Cast via unknown para satisfacer el type-checker; el schema SQL garantiza la forma
+      visualData = raw as unknown as VisualMetadata;
+    }
 
     return new BookableResource(
       row.id,

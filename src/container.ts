@@ -1,10 +1,6 @@
 /**
  * @file container.ts
  * @description Composición de dependencias (Composition Root).
- *
- * ## Cambios en esta versión
- * - Se expone `financialTransactionRepository` en `AppContainer` para que
- *   las rutas puedan consultarlo directamente (ej: GET /reservations/:id/charges).
  */
 
 import { ReservationService } from './services/reservation.service.js';
@@ -36,9 +32,12 @@ import { registerFinancialHandlers } from './workers/outbox.handlers.js';
 
 import { PlatformRepository } from './platform/platform.repository.js';
 import { pgClient } from './db/pg.client.js';
-import { platformPgClient } from './db/platform.pg.client.js';
+import { SqlClient } from './repositories/sql.client.js';
 import { seedDemoData } from './seed/demo-data.js';
 import { BusinessPlan } from './types/enums.js';
+import pg from 'pg';
+
+const { Pool } = pg;
 
 export interface AppContainer {
   resourceRepository:              ResourceRepository;
@@ -64,6 +63,32 @@ export async function createAppContainer(): Promise<AppContainer> {
     : createInMemoryContainer();
 }
 
+/**
+ * Crea un SqlClient para PLATFORM_DATABASE_URL si está definida.
+ * Devuelve null si la variable no está configurada.
+ */
+function createPlatformSqlClient(): SqlClient | null {
+  const url = process.env.PLATFORM_DATABASE_URL;
+  if (!url) return null;
+
+  const pool = new Pool({
+    connectionString: url,
+    max: 5,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  });
+
+  pool.on('error', (err) => {
+    console.error('[container] Error en pool central:', err.message);
+  });
+
+  return {
+    async query<T = unknown>(sql: string, params?: unknown[]) {
+      const result = await pool.query(sql, params);
+      return { rows: result.rows as T[], rowCount: result.rowCount ?? undefined };
+    },
+  };
+}
+
 async function createPostgresContainer(): Promise<AppContainer> {
   console.log('[container] 🐘 Modo PostgreSQL — conectando a DATABASE_URL');
 
@@ -81,7 +106,6 @@ async function createPostgresContainer(): Promise<AppContainer> {
     occupancyRepository,
     categoryRepository,
     domainEventRepository,
-    pgClient,
   );
 
   const reportService   = new ReportService(occupancyRepository);
@@ -90,8 +114,11 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const outboxWorker = new OutboxWorker(domainEventRepository);
   registerFinancialHandlers(outboxWorker, financialTransactionRepository);
 
-  const platformRepository = new PlatformRepository(platformPgClient);
+  // Plataforma: usar SqlClient sobre PLATFORM_DATABASE_URL si está disponible
+  const platformSqlClient = createPlatformSqlClient();
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
+    if (!platformSqlClient) return BusinessPlan.PRO;
+    const platformRepository = new PlatformRepository(platformSqlClient);
     const business = await platformRepository.findById(businessId);
     return (business?.plan ?? BusinessPlan.FREE) as BusinessPlan;
   };

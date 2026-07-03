@@ -1,27 +1,6 @@
 /**
  * @file users.routes.ts
  * @description Gestión de empleados por el ADMIN del negocio.
- *
- * Todas las rutas requieren:
- * - JWT válido de empleado (authenticate() en app.ts)
- * - Rol ADMIN (authorize([UserRole.ADMIN]) en cada ruta)
- *
- * El `businessId` se extrae siempre de `req.user.businessId` — nunca del body
- * ni de parámetros de URL — para garantizar aislamiento multi-tenant.
- *
- * ## Rutas
- * | Método | Path             | Descripción                              |
- * |--------|------------------|------------------------------------------|
- * | GET    | /api/users       | Listar empleados del negocio             |
- * | POST   | /api/users       | Crear nuevo empleado                     |
- * | PATCH  | /api/users/:id   | Actualizar email/rol/contraseña          |
- * | DELETE | /api/users/:id   | Desactivar empleado (soft-delete)        |
- *
- * ## Restricciones de negocio
- * - Un ADMIN no puede cambiar su propio rol ni desactivarse a sí mismo
- *   (evita quedar sin acceso al sistema).
- * - No se puede crear un empleado con el mismo email que otro activo del negocio.
- * - El rol CUSTOMER no es válido para empleados.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -31,6 +10,16 @@ import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
 import { hashPassword } from '../../security/user.store.js';
 import { UserRole } from '../../types/enums.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Normaliza query params que pueden ser string | string[] a string */
+function firstString(val: string | string[] | undefined): string | undefined {
+  if (val === undefined) return undefined;
+  return Array.isArray(val) ? val[0] : val;
+}
 
 // ---------------------------------------------------------------------------
 // Schemas Zod
@@ -82,17 +71,11 @@ function toUserDto(user: { id: string; email: string; role: string; active: bool
 // Factory del router
 // ---------------------------------------------------------------------------
 
-/**
- * @param platformRepo - Repositorio de la BD central. Puede ser null en modo
- *   single-tenant (sin PLATFORM_DATABASE_URL); en ese caso todas las rutas
- *   devuelven 503 con un mensaje claro.
- */
 export function createUsersRouter(
   platformRepo: PlatformRepository | null,
 ): Router {
   const router = Router();
 
-  // Guardia general: si no hay BD central, el endpoint no está disponible
   const requirePlatform = (_req: Request, res: Response, next: NextFunction): void => {
     if (!platformRepo) {
       res.status(503).json({
@@ -106,9 +89,7 @@ export function createUsersRouter(
     next();
   };
 
-  // ---------------------------------------------------------------------------
-  // GET /api/users — listar empleados del negocio
-  // ---------------------------------------------------------------------------
+  // GET /api/users
   router.get(
     '/',
     authorize([UserRole.ADMIN]),
@@ -124,9 +105,7 @@ export function createUsersRouter(
     },
   );
 
-  // ---------------------------------------------------------------------------
-  // POST /api/users — crear empleado
-  // ---------------------------------------------------------------------------
+  // POST /api/users
   router.post(
     '/',
     authorize([UserRole.ADMIN]),
@@ -136,7 +115,6 @@ export function createUsersRouter(
         const body = CreateUserSchema.parse(req.body);
         const businessId = req.user!.businessId!;
 
-        // Verificar unicidad de email dentro del negocio
         const emailTaken = await platformRepo!.existsUserByEmailInBusiness(
           body.email,
           businessId,
@@ -165,9 +143,7 @@ export function createUsersRouter(
     },
   );
 
-  // ---------------------------------------------------------------------------
-  // PATCH /api/users/:id — actualizar email, rol y/o contraseña
-  // ---------------------------------------------------------------------------
+  // PATCH /api/users/:id
   router.patch(
     '/:id',
     authorize([UserRole.ADMIN]),
@@ -176,9 +152,8 @@ export function createUsersRouter(
       try {
         const body = UpdateUserSchema.parse(req.body);
         const businessId = req.user!.businessId!;
-        const targetId = req.params['id']!;
+        const targetId   = firstString(req.params['id'] as string | string[]) ?? '';
 
-        // El ADMIN no puede cambiar su propio rol (evita quedar sin acceso)
         if (targetId === req.user!.id && body.role !== undefined && body.role !== UserRole.ADMIN) {
           res.status(422).json({
             code: 'CANNOT_CHANGE_OWN_ROLE',
@@ -187,14 +162,12 @@ export function createUsersRouter(
           return;
         }
 
-        // Verificar que el usuario pertenezca al negocio
         const existing = await platformRepo!.findUserByIdAndBusiness(targetId, businessId);
         if (!existing) {
           res.status(404).json({ code: 'USER_NOT_FOUND', message: 'Usuario no encontrado.' });
           return;
         }
 
-        // Verificar unicidad de email si se está cambiando
         if (body.email && body.email !== existing.email) {
           const emailTaken = await platformRepo!.existsUserByEmailInBusiness(
             body.email,
@@ -216,7 +189,7 @@ export function createUsersRouter(
 
         const updated = await platformRepo!.updateUser(targetId, businessId, {
           email: body.email,
-          role: body.role,
+          role:  body.role,
           passwordHash,
         });
 
@@ -227,9 +200,7 @@ export function createUsersRouter(
     },
   );
 
-  // ---------------------------------------------------------------------------
-  // DELETE /api/users/:id — desactivar empleado (soft-delete)
-  // ---------------------------------------------------------------------------
+  // DELETE /api/users/:id
   router.delete(
     '/:id',
     authorize([UserRole.ADMIN]),
@@ -237,9 +208,8 @@ export function createUsersRouter(
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const businessId = req.user!.businessId!;
-        const targetId = req.params['id']!;
+        const targetId   = firstString(req.params['id'] as string | string[]) ?? '';
 
-        // El ADMIN no puede desactivarse a sí mismo
         if (targetId === req.user!.id) {
           res.status(422).json({
             code: 'CANNOT_DEACTIVATE_SELF',
