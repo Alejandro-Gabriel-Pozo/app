@@ -129,6 +129,7 @@ export class ReservationService {
    * - Solo se pueden modificar reservas en estado `PENDING`.
    * - La disponibilidad se verifica excluyendo la reserva actual (`excludeReservationId`).
    * - El estado `PENDING` se preserva en la nueva instancia.
+   * - `endTime` debe ser posterior a `startTime` (validado después del merge).
    *
    * @param id      - ID de la reserva a modificar
    * @param changes - Campos a actualizar (todos opcionales)
@@ -136,24 +137,9 @@ export class ReservationService {
    *
    * @throws {ReservationNotFoundError} Si la reserva no existe              → HTTP 404
    * @throws {InvalidReservationError}  Si no está en PENDING o sin cambios   → HTTP 409
+   * @throws {InvalidReservationError}  Si endTime <= startTime tras el merge  → HTTP 409
    * @throws {InvalidReservationError}  Si el recurso no está disponible       → HTTP 409
    * @throws {ValidationError}          Si los nuevos `details` son inválidos   → HTTP 400
-   *
-   * @swagger
-   * /api/customer/me/reservations/{id}:
-   *   patch:
-   *     summary: Modificar reserva propia
-   *     security:
-   *       - BearerAuth: []
-   *     responses:
-   *       200:
-   *         description: Reserva actualizada
-   *       400:
-   *         description: Datos inválidos
-   *       404:
-   *         description: Reserva no encontrada
-   *       409:
-   *         description: No está en PENDING o recurso no disponible
    */
   async updateReservation(
     id: string,
@@ -180,6 +166,15 @@ export class ReservationService {
     const newStartTime = changes.startTime ?? reservation.startTime;
     const newEndTime   = changes.endTime   ?? reservation.endTime;
     const rawDetails   = changes.details   ?? reservation.details;
+
+    // Validar que el rango temporal sea coherente tras el merge de valores.
+    // Esto cubre el caso en que se envía solo startTime o solo endTime y el
+    // valor resultante produce un rango inválido con el valor existente.
+    if (newStartTime >= newEndTime) {
+      throw new InvalidReservationError(
+        'endTime debe ser posterior a startTime',
+      );
+    }
 
     // Validar detalles (incluso si no cambian, para garantizar consistencia)
     const validatedDetails = validatePreferences(

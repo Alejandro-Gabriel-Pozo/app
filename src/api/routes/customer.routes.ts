@@ -489,7 +489,14 @@ export function createCustomerRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const reservationId = req.params.id;
-        const customerId    = req.user!.customerId!;
+
+        // Guarda explícita: esta ruta es exclusiva para clientes.
+        // Un token de empleado también pasa authenticate() pero no tiene customerId.
+        const customerId = req.user?.customerId;
+        if (!customerId) {
+          res.status(403).json({ code: 'FORBIDDEN', message: 'Ruta exclusiva para clientes autenticados' });
+          return;
+        }
 
         // Verificar existencia y ownership antes de pasar al servicio
         const existing = await container.reservationRepository.getById(reservationId);
