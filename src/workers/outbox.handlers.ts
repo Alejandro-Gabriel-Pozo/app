@@ -2,10 +2,16 @@
  * @file outbox.handlers.ts
  * @description Handlers concretos del OutboxWorker.
  *
- * Cada handler es idempotente: si se ejecuta dos veces para el mismo evento
- * (garantía at-least-once del outbox), el resultado es el mismo.
- * La idempotencia se garantiza con ON CONFLICT DO NOTHING en `createIfNotExists`
- * usando (reservation_id, type) como clave de unicidad de negocio.
+ * ## Idempotencia
+ * Cada handler es idempotente. El worker tiene garantía at-least-once:
+ * un evento puede procesarse más de una vez si el proceso muere después
+ * del handler pero antes de `markDispatched`.
+ *
+ * - `handleReservationConfirmed`: pasa `idempotencyKey = "${event.id}:CHARGE"`
+ *   al repo. ON CONFLICT DO NOTHING en SQL garantiza que el CHARGE se crea
+ *   una sola vez aunque el handler se ejecute N veces.
+ * - `handleReservationCompleted` y `handleReservationCancelled`: idempotentes
+ *   por construcción (filtran por status).
  *
  * ## Handlers registrados
  * - `reservation.confirmed`  → crea CHARGE PENDING en financial_transactions
@@ -46,26 +52,28 @@ export function handleReservationConfirmed(
   financialRepo: FinancialTransactionRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { reservationId, customerId, totalPrice, businessId } = event.payload as {
+    const { reservationId, customerId, totalPrice } = event.payload as {
       reservationId: string;
       customerId: string;
       totalPrice: number | undefined;
-      businessId: string;
     };
 
-    // totalPrice puede ser undefined si la reserva no tiene precio (recursos sin costo).
-    // En ese caso no hay nada que registrar financieramente.
+    // Sin precio (recursos sin costo) → no hay movimiento financiero.
     if (totalPrice == null || totalPrice <= 0) return;
 
+    // idempotencyKey: garantiza que este evento solo crea un CHARGE,
+    // aunque el handler se reintente múltiples veces.
+    // Convención: "${eventId}:CHARGE" — único por evento de dominio + tipo.
     await financialRepo.create({
-      id:            randomUUID(),
-      businessId:    event.businessId,
+      id:             randomUUID(),
+      businessId:     event.businessId,
       customerId,
       reservationId,
-      type:          'CHARGE',
-      amount:        totalPrice,
-      currency:      'ARS',
-      status:        'PENDING',
+      type:           'CHARGE',
+      amount:         totalPrice,
+      currency:       'ARS',
+      status:         'PENDING',
+      idempotencyKey: `${event.id}:CHARGE`,
     });
   };
 }

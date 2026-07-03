@@ -12,6 +12,7 @@ interface TransactionRow {
   business_id: string;
   customer_id: string;
   reservation_id: string | null;
+  idempotency_key: string | null;
   type: TransactionType;
   amount: string; // DECIMAL llega como string en pg
   currency: string;
@@ -26,6 +27,9 @@ interface TransactionRow {
  * - Nunca se actualiza `amount` in-place. Cada cambio económico es una fila nueva.
  * - `settleByReservationId` y `voidByReservationId` solo cambian `status`.
  * - `getNetBalanceByCustomerId` calcula el balance directamente en SQL.
+ * - `create()` con `idempotencyKey`: ON CONFLICT DO NOTHING sobre el UNIQUE index
+ *   `idx_ft_idempotency_key`. Permite múltiples CHARGE por reserva (anticipo + saldo)
+ *   mientras el outbox worker no crea duplicados en reintentos.
  *
  * Schema esperado: ver `migrations/004_financial_transactions.sql`.
  */
@@ -34,9 +38,36 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
 
   async create(
     tx: Omit<FinancialTransaction, 'createdAt'>,
-  ): Promise<FinancialTransaction> {
+  ): Promise<FinancialTransaction | null> {
     const id = tx.id ?? randomUUID();
+    const idempotencyKey = tx.idempotencyKey ?? null;
 
+    if (idempotencyKey !== null) {
+      // Path idempotente: el worker usa esto para evitar duplicados en reintentos.
+      // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
+      const result = await this.sqlClient.query<TransactionRow>(
+        `INSERT INTO financial_transactions
+           (id, business_id, customer_id, reservation_id, idempotency_key, type, amount, currency, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (idempotency_key) DO NOTHING
+         RETURNING *`,
+        [
+          id,
+          tx.businessId,
+          tx.customerId,
+          tx.reservationId ?? null,
+          idempotencyKey,
+          tx.type,
+          tx.amount,
+          tx.currency,
+          tx.status,
+        ],
+      );
+      // RETURNING vacío = ON CONFLICT activado = fila ya existía = éxito silencioso.
+      return result.rows[0] ? this.rowToEntity(result.rows[0]) : null;
+    }
+
+    // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto de id.
     const result = await this.sqlClient.query<TransactionRow>(
       `INSERT INTO financial_transactions
          (id, business_id, customer_id, reservation_id, type, amount, currency, status)
@@ -53,7 +84,6 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.status,
       ],
     );
-
     return this.rowToEntity(result.rows[0]);
   }
 
@@ -126,15 +156,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
 
   private rowToEntity(row: TransactionRow): FinancialTransaction {
     return {
-      id:            row.id,
-      businessId:    row.business_id,
-      customerId:    row.customer_id,
-      reservationId: row.reservation_id,
-      type:          row.type,
-      amount:        parseFloat(row.amount),
-      currency:      row.currency,
-      status:        row.status,
-      createdAt:     row.created_at,
+      id:              row.id,
+      businessId:      row.business_id,
+      customerId:      row.customer_id,
+      reservationId:   row.reservation_id,
+      idempotencyKey:  row.idempotency_key,
+      type:            row.type,
+      amount:          parseFloat(row.amount),
+      currency:        row.currency,
+      status:          row.status,
+      createdAt:       row.created_at,
     };
   }
 }

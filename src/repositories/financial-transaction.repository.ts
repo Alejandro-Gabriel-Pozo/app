@@ -11,12 +11,31 @@ export interface FinancialTransaction {
   amount: number;
   currency: string;
   status: TransactionStatus;
+  /**
+   * Clave de idempotencia opcional.
+   *
+   * Si se provee, el INSERT usa ON CONFLICT (idempotency_key) DO NOTHING:
+   * el worker puede reintentar sin crear duplicados.
+   * Si es null/undefined, el INSERT es normal (sin protección de duplicados).
+   *
+   * Convención para el outbox worker: `${domainEventId}:${type}` —
+   * garantiza unicidad por evento de dominio + tipo de movimiento.
+   */
+  idempotencyKey?: string | null;
   createdAt?: Date;
 }
 
 export interface FinancialTransactionRepository {
-  /** Crea una transacción nueva. Lanza si ya existe el id (no upsert). */
-  create(tx: Omit<FinancialTransaction, 'createdAt'>): Promise<FinancialTransaction>;
+  /**
+   * Crea una transacción nueva.
+   *
+   * - Si `idempotencyKey` está presente: ON CONFLICT DO NOTHING — retorna
+   *   `null` si la fila ya existía (el caller debe tratarlo como éxito).
+   * - Si `idempotencyKey` está ausente: INSERT normal — lanza si el id ya existe.
+   */
+  create(
+    tx: Omit<FinancialTransaction, 'createdAt'>,
+  ): Promise<FinancialTransaction | null>;
 
   /** Obtiene todas las transacciones de una reserva. */
   getByReservationId(reservationId: string): Promise<FinancialTransaction[]>;
