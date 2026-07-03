@@ -9,6 +9,10 @@
  *   y validar `details` en runtime contra ellos (`validateDetailsAgainstFields`).
  * - `createReservation` ya no recibe `resourceType` como parámetro — lo resuelve
  *   internamente a partir del recurso.
+ * - Se agrega soporte de **outbox transaccional**: `confirmReservation` y
+ *   `completeReservation` escriben el evento de dominio en la misma transacción SQL
+ *   que el cambio de estado cuando `domainEventRepository` y `sqlClient` están
+ *   configurados. Sin ellos, el comportamiento es idéntico al anterior.
  */
 
 import { Reservation } from '../domain/Reservation.js';
@@ -23,6 +27,8 @@ import { ReservationRepository } from '../repositories/reservation.repository.js
 import { ResourceRepository } from '../repositories/resource.repository.js';
 import { OccupancyRepository } from '../repositories/occupancy.repository.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
+import { DomainEventRepository } from '../repositories/domain-event.repository.js';
+import { SqlClient } from '../repositories/sql.client.js';
 
 export class ReservationService {
   constructor(
@@ -30,6 +36,8 @@ export class ReservationService {
     private readonly resourceRepository: ResourceRepository,
     private readonly occupancyRepository?: OccupancyRepository,
     private readonly categoryRepository?: ICategoryRepository,
+    private readonly domainEventRepository?: DomainEventRepository,
+    private readonly sqlClient?: SqlClient,
   ) {}
 
   /**
@@ -37,7 +45,7 @@ export class ReservationService {
    *
    * @throws {ResourceNotFoundError}   Si `resourceId` no existe               → 404
    * @throws {InvalidReservationError} Si el recurso no está disponible         → 409
-   * @throws {Error}                   Si `details` no cumple los campos        → 400 (manejado por errorHandler)
+   * @throws {Error}                   Si `details` no cumple los campos        → 400
    */
   async createReservation(params: {
     id: string;
@@ -52,7 +60,6 @@ export class ReservationService {
       throw new ResourceNotFoundError(params.resourceId);
     }
 
-    // Validar details contra los fields de la categoría (si categoryRepository disponible)
     if (this.categoryRepository) {
       const category = await this.categoryRepository.findById(resource.categoryId);
       if (category) {
@@ -125,7 +132,6 @@ export class ReservationService {
     const newEndTime   = changes.endTime   ?? reservation.endTime;
     const rawDetails   = changes.details   ?? (reservation.details as Record<string, unknown>);
 
-    // Validar details actualizados contra los fields de la categoría
     if (this.categoryRepository) {
       const category = await this.categoryRepository.findById(reservation.resource.categoryId);
       if (category) {
@@ -166,10 +172,37 @@ export class ReservationService {
     return updated;
   }
 
+  /**
+   * Confirma una reserva PENDING.
+   * Si el outbox está configurado, escribe reservation.confirmed en la misma
+   * transacción que el cambio de estado — entrega garantizada.
+   */
   async confirmReservation(id: string): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.confirm();
-    await this.reservationRepository.save(reservation);
+
+    if (this.domainEventRepository && this.sqlClient) {
+      await this.sqlClient.withTransaction(async (client) => {
+        await this.reservationRepository.saveWithClient(client, reservation);
+        await this.domainEventRepository!.insertWithClient(client, {
+          businessId:    reservation.resource.businessId,
+          aggregateType: 'RESERVATION',
+          aggregateId:   reservation.id,
+          eventType:     'reservation.confirmed',
+          payload: {
+            reservationId: reservation.id,
+            customerId:    reservation.customer.id,
+            resourceId:    reservation.resource.id,
+            startTime:     reservation.startTime.toISOString(),
+            endTime:       reservation.endTime.toISOString(),
+            totalPrice:    (reservation as unknown as { totalPrice?: number }).totalPrice,
+          },
+        });
+      });
+    } else {
+      await this.reservationRepository.save(reservation);
+    }
+
     await this.recordOccupancy(reservation);
     return reservation;
   }
@@ -181,10 +214,36 @@ export class ReservationService {
     return reservation;
   }
 
+  /**
+   * Completa una reserva CONFIRMED.
+   * Si el outbox está configurado, escribe reservation.completed en la misma
+   * transacción que el cambio de estado.
+   */
   async completeReservation(id: string): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.complete();
-    await this.reservationRepository.save(reservation);
+
+    if (this.domainEventRepository && this.sqlClient) {
+      await this.sqlClient.withTransaction(async (client) => {
+        await this.reservationRepository.saveWithClient(client, reservation);
+        await this.domainEventRepository!.insertWithClient(client, {
+          businessId:    reservation.resource.businessId,
+          aggregateType: 'RESERVATION',
+          aggregateId:   reservation.id,
+          eventType:     'reservation.completed',
+          payload: {
+            reservationId: reservation.id,
+            customerId:    reservation.customer.id,
+            resourceId:    reservation.resource.id,
+            totalPrice:    (reservation as unknown as { totalPrice?: number }).totalPrice,
+            completedAt:   new Date().toISOString(),
+          },
+        });
+      });
+    } else {
+      await this.reservationRepository.save(reservation);
+    }
+
     await this.recordOccupancy(reservation);
     return reservation;
   }
