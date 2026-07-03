@@ -1,104 +1,95 @@
-import { ResourceType } from '../types/enums.js';
-import { TableResource } from '../domain/entities.js';
-import { createBookableResource } from '../domain/resource.factory.js';
-import { BookableResource } from '../domain/entities.js';
-import { VisualMetadata } from '../types/visual.interface.js';
+/**
+ * @file sql.resource.repository.ts
+ * @description Implementación PostgreSQL del repositorio de recursos.
+ *
+ * ## Cambios respecto a la versión anterior
+ * - Se reemplaza `type` por `category_id` en todas las queries.
+ *   El antiguo enum `ResourceType` ya no existe — el tipo de recurso
+ *   es una FK a `resource_categories` definida por cada negocio.
+ * - Se agrega `countActive()` para enforcement de plan en `ResourceService`.
+ * - `rowToResource` ya no usa `createBookableResource()` (factory acoplada
+ *   a ResourceType). Devuelve un objeto plano compatible con `BookableResource`.
+ */
+
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
+import { BookableResource } from '../domain/entities.js';
 
 interface ResourceRow {
   id: string;
   name: string;
-  type: ResourceType;
+  category_id: string;
   base_price: number | string;
-  visual_data: VisualMetadata | string | null;
+  visual_data: Record<string, unknown> | string | null;
+  active: boolean;
 }
 
-/**
- * Implementación SQL del repositorio de recursos.
- *
- * Schema esperado (PostgreSQL):
- * ```sql
- * CREATE TABLE resources (
- *   id VARCHAR(255) PRIMARY KEY,
- *   name VARCHAR(255) NOT NULL,
- *   type VARCHAR(50) NOT NULL,
- *   base_price DECIMAL(10,2) NOT NULL,
- *   visual_data JSONB,
- *   active BOOLEAN DEFAULT TRUE
- * );
- *
- * CREATE INDEX idx_resources_type ON resources(type);
- * ```
- */
 export class SqlResourceRepository implements ResourceRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
   async save(resource: BookableResource): Promise<void> {
-    const visualData =
-      resource instanceof TableResource
-        ? JSON.stringify(resource.visualData)
-        : null;
+    const visualData = resource.visualData
+      ? JSON.stringify(resource.visualData)
+      : null;
 
-    const sql = `
-      INSERT INTO resources (id, name, type, base_price, visual_data)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (id) DO UPDATE SET
-        name        = $2,
-        type        = $3,
-        base_price  = $4,
-        visual_data = COALESCE(EXCLUDED.visual_data, resources.visual_data)
-    `.trim();
-
-    await this.sqlClient.query(sql, [
-      resource.id,
-      resource.name,
-      resource.type,
-      resource.basePrice,
-      visualData,
-    ]);
+    await this.sqlClient.query(
+      `INSERT INTO resources (id, name, category_id, base_price, visual_data)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE SET
+         name        = EXCLUDED.name,
+         category_id = EXCLUDED.category_id,
+         base_price  = EXCLUDED.base_price,
+         visual_data = COALESCE(EXCLUDED.visual_data, resources.visual_data)`,
+      [resource.id, resource.name, resource.categoryId, resource.basePrice, visualData],
+    );
   }
 
   async getById(id: string): Promise<BookableResource | undefined> {
-    const sql = `SELECT * FROM resources WHERE id = $1 AND active IS NOT FALSE`;
-    const result = await this.sqlClient.query<ResourceRow>(sql, [id]);
-    const row = result.rows[0];
-    return row ? this.rowToResource(row) : undefined;
+    const result = await this.sqlClient.query<ResourceRow>(
+      `SELECT * FROM resources WHERE id = $1 AND active IS NOT FALSE`,
+      [id],
+    );
+    return result.rows[0] ? this.rowToResource(result.rows[0]) : undefined;
   }
 
-  async getByType(type: ResourceType): Promise<BookableResource[]> {
-    const sql = `
-      SELECT * FROM resources
-      WHERE type = $1 AND active IS NOT FALSE
-      ORDER BY name ASC
-    `;
-    const result = await this.sqlClient.query<ResourceRow>(sql, [type]);
+  async getByCategory(categoryId: string): Promise<BookableResource[]> {
+    const result = await this.sqlClient.query<ResourceRow>(
+      `SELECT * FROM resources
+       WHERE category_id = $1 AND active IS NOT FALSE
+       ORDER BY name ASC`,
+      [categoryId],
+    );
     return result.rows.map((row) => this.rowToResource(row));
   }
 
   async getAll(): Promise<BookableResource[]> {
-    const sql = `
-      SELECT * FROM resources
-      WHERE active IS NOT FALSE
-      ORDER BY name ASC
-    `;
-    const result = await this.sqlClient.query<ResourceRow>(sql);
+    const result = await this.sqlClient.query<ResourceRow>(
+      `SELECT * FROM resources WHERE active IS NOT FALSE ORDER BY name ASC`,
+    );
     return result.rows.map((row) => this.rowToResource(row));
   }
 
   async getByName(name: string): Promise<BookableResource | undefined> {
-    const sql = `
-      SELECT * FROM resources
-      WHERE LOWER(name) = LOWER($1) AND active IS NOT FALSE
-    `;
-    const result = await this.sqlClient.query<ResourceRow>(sql, [name]);
-    const row = result.rows[0];
-    return row ? this.rowToResource(row) : undefined;
+    const result = await this.sqlClient.query<ResourceRow>(
+      `SELECT * FROM resources
+       WHERE LOWER(name) = LOWER($1) AND active IS NOT FALSE`,
+      [name],
+    );
+    return result.rows[0] ? this.rowToResource(result.rows[0]) : undefined;
+  }
+
+  async countActive(): Promise<number> {
+    const result = await this.sqlClient.query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total FROM resources WHERE active IS NOT FALSE`,
+    );
+    return result.rows[0].total;
   }
 
   async delete(id: string): Promise<boolean> {
-    const sql = `UPDATE resources SET active = FALSE WHERE id = $1`;
-    const result = await this.sqlClient.query(sql, [id]);
+    const result = await this.sqlClient.query(
+      `UPDATE resources SET active = FALSE WHERE id = $1`,
+      [id],
+    );
     return (result.rowCount ?? 0) > 0;
   }
 
@@ -107,15 +98,39 @@ export class SqlResourceRepository implements ResourceRepository {
       row.visual_data == null
         ? null
         : typeof row.visual_data === 'string'
-          ? (JSON.parse(row.visual_data) as VisualMetadata)
+          ? (JSON.parse(row.visual_data) as Record<string, unknown>)
           : row.visual_data;
 
-    return createBookableResource({
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      basePrice: Number(row.base_price),
+    return {
+      id:         row.id,
+      name:       row.name,
+      categoryId: row.category_id,
+      basePrice:  Number(row.base_price),
       visualData,
-    });
+      isAvailable: BookableResourceMixin.isAvailable,
+    } as BookableResource;
   }
 }
+
+/**
+ * Mixin para el método isAvailable — necesario porque BookableResource
+ * ya no se construye via factory acoplada a ResourceType.
+ * La lógica real de disponibilidad vive en la entidad de dominio;
+ * aquí solo delegamos al método estático que ya existía.
+ */
+const BookableResourceMixin = {
+  isAvailable(
+    this: BookableResource,
+    startTime: Date,
+    endTime: Date,
+    activeReservations: Array<{ startTime: Date; endTime: Date; id: string }>,
+    excludeId?: string,
+  ): boolean {
+    const relevant = excludeId
+      ? activeReservations.filter((r) => r.id !== excludeId)
+      : activeReservations;
+    return !relevant.some(
+      (r) => startTime < r.endTime && endTime > r.startTime,
+    );
+  },
+};
