@@ -5,16 +5,15 @@
  * Todos los endpoints requieren autenticación (el middleware `authenticate()` se
  * aplica globalmente en `app.ts` para todo `/api/*`).
  *
- * ## Control de acceso
- * Los reportes contienen información sensible de negocio y están restringidos
- * a `ADMIN` y `RECEPTIONIST`.
- *
  * ## Cambios respecto a la versión anterior
  * - `limit` y `threshold` ahora se validan con Zod (`SummaryQuerySchema` y
  *   `UnderutilizedQuerySchema`) en lugar de `parseInt`/`parseFloat` sin validación.
  *   Un valor inválido (ej. `limit=-1`, `threshold=abc`) retorna HTTP 400 con
  *   detalle del error en lugar de producir `NaN` silencioso.
- * - `authorize([UserRole.ADMIN, UserRole.RECEPTIONIST])` activado en los 3 endpoints.
+ *
+ * ## Roles por endpoint
+ * Los reportes contienen información sensible de negocio — restringidos a
+ * `ADMIN` y `RECEPTIONIST`. `WAITER` recibe 403.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -27,7 +26,7 @@ import {
   UnderutilizedQuerySchema,
 } from '../schemas/request.schemas.js';
 
-/** Roles con acceso a reportes — información sensible de negocio */
+/** Roles que pueden acceder a reportes de negocio */
 const REPORT_READERS = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 
 export function createReportsRouter(container: AppContainer): Router {
@@ -63,7 +62,7 @@ export function createReportsRouter(container: AppContainer): Router {
    *       401:
    *         description: No autenticado
    *       403:
-   *         description: Rol sin acceso (requiere ADMIN o RECEPTIONIST)
+   *         description: Rol sin permiso (WAITER)
    */
   router.get(
     '/occupancy',
@@ -119,7 +118,7 @@ export function createReportsRouter(container: AppContainer): Router {
    *       401:
    *         description: No autenticado
    *       403:
-   *         description: Rol sin acceso (requiere ADMIN o RECEPTIONIST)
+   *         description: Rol sin permiso (WAITER)
    */
   router.get(
     '/summary',
@@ -168,35 +167,41 @@ export function createReportsRouter(container: AppContainer): Router {
    *         schema:
    *           type: number
    *           minimum: 0
+   *           maximum: 1
+   *           default: 0.3
+   *         description: Umbral de ocupación (0.0–1.0). Recursos por debajo de este valor se incluyen.
+   *       - name: limit
+   *         in: query
+   *         required: false
+   *         schema:
+   *           type: integer
+   *           minimum: 1
    *           maximum: 100
-   *           default: 30
-   *         description: Umbral de ocupación en % (0–100). Recursos por debajo de este valor se consideran subutilizados.
+   *           default: 10
    *     responses:
    *       200:
    *         description: Lista de recursos subutilizados
    *       400:
-   *         description: Parámetros inválidos (ej. threshold fuera de rango 0–100)
+   *         description: Parámetros inválidos
    *       401:
    *         description: No autenticado
    *       403:
-   *         description: Rol sin acceso (requiere ADMIN o RECEPTIONIST)
+   *         description: Rol sin permiso (WAITER)
    */
   router.get(
     '/underutilized',
     authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        // UnderutilizedQuerySchema valida y coerciona `threshold` desde string a float.
-        // Rechaza valores fuera del rango 0–100 con error descriptivo.
         const query = UnderutilizedQuerySchema.parse(req.query);
 
-        const resources =
-          await container.reportService.getUnderutilizedResources(
-            new Date(query.startDate),
-            new Date(query.endDate),
-            query.threshold,
-          );
-        res.json(resources);
+        const result = await container.reportService.getUnderutilizedResources(
+          new Date(query.startDate),
+          new Date(query.endDate),
+          query.threshold,
+          query.limit,
+        );
+        res.json(result);
       } catch (err) {
         next(err);
       }
