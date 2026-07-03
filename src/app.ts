@@ -22,6 +22,13 @@
  * 11. /api/resources, /reservations, /reports, /users — rutas de empleados
  * 12. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
  * 13. errorHandler
+ *
+ * ## Cambios en esta versión
+ * - `createApp()` devuelve `{ app, container }` para que `server.ts` pueda
+ *   acceder al `outboxWorker` y arrancarlo/detenerlo.
+ * - `registerGracefulShutdown()` acepta un segundo parámetro opcional
+ *   `{ onShutdown }` que se ejecuta antes de cerrar el servidor HTTP.
+ *   Permite detener el outbox worker limpiamente en SIGTERM/SIGINT.
  */
 
 import express from 'express';
@@ -46,7 +53,7 @@ import { PlatformRepository }        from './platform/platform.repository.js';
 import { createPlatformContainer }   from './platform/platform.container.js';
 import { tenantMiddleware }          from './platform/tenant.middleware.js';
 import { SqlClient }                 from './repositories/sql.client.js';
-import { createAppContainer }        from './container.js';
+import { createAppContainer, AppContainer } from './container.js';
 import { checkDatabaseHealth }       from './db/pg.client.js';
 
 const { Pool } = pg;
@@ -77,7 +84,10 @@ function createPlatformClient(): SqlClient | null {
   };
 }
 
-export async function createApp(): Promise<{ app: express.Application }> {
+export async function createApp(): Promise<{
+  app: express.Application;
+  container: AppContainer;
+}> {
   const app = express();
 
   // -------------------------------------------------------------------------
@@ -186,31 +196,57 @@ export async function createApp(): Promise<{ app: express.Application }> {
   app.use('/api/resources',    createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
   app.use('/api/reports',      createReportsRouter(container));
-  // Gestión de staff — solo ADMIN (authorize dentro del router)
   app.use('/api/users',        createUsersRouter(platformRepo));
 
   app.use(errorHandler);
 
-  return { app };
+  return { app, container };
 }
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
 
-export function registerGracefulShutdown(server: http.Server): void {
-  const shutdown = (signal: string) => {
+export interface GracefulShutdownOptions {
+  /**
+   * Callback asíncrono ejecutado ANTES de cerrar el servidor HTTP.
+   * útil para detener workers, cerrar conexiones externas, etc.
+   */
+  onShutdown?: () => Promise<void>;
+}
+
+export function registerGracefulShutdown(
+  server: http.Server,
+  options: GracefulShutdownOptions = {},
+): void {
+  const { onShutdown } = options;
+
+  const shutdown = async (signal: string) => {
     console.log(`\n[server] ${signal} recibido. Cerrando servidor...`);
+
+    // 1. Ejecutar cleanup (detener workers, etc.) antes de cerrar el HTTP server.
+    //    Si onShutdown lanza, se loguea el error pero el proceso sigue cerrando.
+    if (onShutdown) {
+      try {
+        await onShutdown();
+      } catch (err) {
+        console.error('[server] Error en onShutdown:', err);
+      }
+    }
+
+    // 2. Cerrar el servidor HTTP — deja de aceptar conexiones nuevas.
     server.close(() => {
       console.log('[server] Servidor cerrado correctamente.');
       process.exit(0);
     });
+
+    // 3. Forzar cierre si no termina en 10 s.
     setTimeout(() => {
       console.error('[server] Cierre forzado por timeout.');
       process.exit(1);
     }, 10_000).unref();
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGINT',  () => { void shutdown('SIGINT'); });
 }
