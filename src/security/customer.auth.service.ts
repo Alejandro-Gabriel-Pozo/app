@@ -11,6 +11,13 @@
  * ## Hashing
  * Usa la misma implementación PBKDF2 del proyecto (hashPassword / verifyPassword
  * de user.store.ts) para consistencia.
+ *
+ * ## Transacciones
+ * register() delega la persistencia a customerRepository.saveWithPassword().
+ * La responsabilidad de envolver la operación en una transacción SQL es del
+ * repositorio concreto (SqlCustomerRepository), no del servicio.
+ * Así los tests unitarios con InMemoryCustomerRepository no necesitan
+ * DATABASE_URL ni un pool real.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -19,7 +26,6 @@ import { Customer } from '../domain/entities.js';
 import { hashPassword, verifyPassword } from './user.store.js';
 import { signToken } from './auth.middleware.js';
 import { UserRole } from '../types/enums.js';
-import { withTransaction } from '../db/pg.client.js';
 
 export interface CustomerRegistrationInput {
   fullName: string;
@@ -62,8 +68,8 @@ export class CustomerAuthService {
 
   /**
    * Registra un nuevo cliente.
-   * Crea el Customer con su ContactMethod de email y persiste ambos
-   * en la misma transacción (customers + customer_contact_methods).
+   * Persiste el Customer + passwordHash via customerRepository.saveWithPassword().
+   * La implementación SQL de ese método maneja la transacción internamente.
    *
    * @throws Error con code EMAIL_TAKEN si el email ya está en uso.
    */
@@ -81,9 +87,7 @@ export class CustomerAuthService {
       { id: `ccm-${id}`, channel: 'EMAIL', value: input.email, isPrimary: true },
     ]);
 
-    await withTransaction(async (tx) => {
-      await this.customerRepository.saveWithClient(tx, customer, passwordHash);
-    });
+    await this.customerRepository.saveWithPassword(customer, passwordHash);
 
     const token = this.issueToken(id);
     return { token, customer: { id, fullName: input.fullName, email: input.email } };

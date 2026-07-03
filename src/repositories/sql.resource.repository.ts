@@ -7,13 +7,13 @@
  *   El antiguo enum `ResourceType` ya no existe — el tipo de recurso
  *   es una FK a `resource_categories` definida por cada negocio.
  * - Se agrega `countActive()` para enforcement de plan en `ResourceService`.
- * - `rowToResource` ya no usa `createBookableResource()` (factory acoplada
- *   a ResourceType). Devuelve un objeto plano compatible con `BookableResource`.
+ * - `rowToResource` instancia `BookableResource` via constructor.
  */
 
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
 import { BookableResource } from '../domain/entities.js';
+import { VisualMetadata } from '../types/visual.interface.js';
 
 interface ResourceRow {
   id: string;
@@ -94,43 +94,19 @@ export class SqlResourceRepository implements ResourceRepository {
   }
 
   private rowToResource(row: ResourceRow): BookableResource {
-    const visualData =
+    const visualData: VisualMetadata | null =
       row.visual_data == null
         ? null
         : typeof row.visual_data === 'string'
-          ? (JSON.parse(row.visual_data) as Record<string, unknown>)
-          : row.visual_data;
+          ? (JSON.parse(row.visual_data) as VisualMetadata)
+          : (row.visual_data as VisualMetadata);
 
-    return {
-      id:         row.id,
-      name:       row.name,
-      categoryId: row.category_id,
-      basePrice:  Number(row.base_price),
+    return new BookableResource(
+      row.id,
+      row.name,
+      Number(row.base_price),
+      row.category_id,
       visualData,
-      isAvailable: BookableResourceMixin.isAvailable,
-    } as BookableResource;
+    );
   }
 }
-
-/**
- * Mixin para el método isAvailable — necesario porque BookableResource
- * ya no se construye via factory acoplada a ResourceType.
- * La lógica real de disponibilidad vive en la entidad de dominio;
- * aquí solo delegamos al método estático que ya existía.
- */
-const BookableResourceMixin = {
-  isAvailable(
-    this: BookableResource,
-    startTime: Date,
-    endTime: Date,
-    activeReservations: Array<{ startTime: Date; endTime: Date; id: string }>,
-    excludeId?: string,
-  ): boolean {
-    const relevant = excludeId
-      ? activeReservations.filter((r) => r.id !== excludeId)
-      : activeReservations;
-    return !relevant.some(
-      (r) => startTime < r.endTime && endTime > r.startTime,
-    );
-  },
-};
