@@ -6,6 +6,7 @@
  * - Se eliminan los imports de `ResourceType` y las subclases.
  * - Se usa `BookableResource` directamente con `categoryId` fijo ('cat-demo').
  * - La reserva de demo ya no pasa `resourceType` al constructor de `Reservation`.
+ * - `visualData` usa `positionX`/`positionY` en lugar de `x`/`y`.
  */
 
 import { BookableResource, Customer } from '../domain/entities.js';
@@ -25,13 +26,13 @@ interface SeedDeps {
 export async function seedDemoData(deps: SeedDeps): Promise<void> {
   const table1 = new BookableResource('table-terrace', 'Mesa Terraza', 0, 'cat-demo', {
     shape: 'ROUND',
-    x: 100,
-    y: 200,
+    positionX: 100,
+    positionY: 200,
   });
   const table2 = new BookableResource('table-garden', 'Mesa Jardín', 0, 'cat-demo', {
     shape: 'SQUARE',
-    x: 300,
-    y: 150,
+    positionX: 300,
+    positionY: 150,
   });
   const cabin1 = new BookableResource('cabin-pine', 'Cabaña Pino', 150, 'cat-demo');
 

@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
 import { ReservationRepository } from './reservation.repository.js';
@@ -5,12 +6,21 @@ import { ReservationRepository } from './reservation.repository.js';
 /**
  * Implementación en memoria del repositorio de reservas.
  * Ideal para desarrollo y tests. No persiste entre reinicios.
+ *
+ * `saveWithClient` delega a `save()` porque el modo in-memory no tiene
+ * transacciones reales — satisface la interfaz sin romper la lógica.
  */
 export class InMemoryReservationRepository implements ReservationRepository {
   private reservations: Map<string, Reservation> = new Map();
 
   async save(reservation: Reservation): Promise<void> {
     this.reservations.set(reservation.id, reservation);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async saveWithClient(_client: PoolClient, reservation: Reservation): Promise<void> {
+    // In-memory no tiene transacciones — delega a save()
+    await this.save(reservation);
   }
 
   async getById(id: string): Promise<Reservation | undefined> {

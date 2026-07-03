@@ -1,11 +1,9 @@
 import type { PoolClient } from 'pg';
-import { ReservationStatus, ResourceType } from '../types/enums.js';
+import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
 import { ReservationRepository } from './reservation.repository.js';
 import { Customer } from '../domain/entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
-import { PreferenceDetailsByResource } from '../types/preferences.types.js';
-import { validatePreferences } from '../services/validation.factory.js';
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
 
@@ -19,7 +17,6 @@ interface ReservationRow {
   customer_name: string;
   customer_email: string;
   resource_id: string;
-  resource_type: ResourceType;
   status: ReservationStatus;
   start_time: string | Date;
   end_time: string | Date;
@@ -36,12 +33,11 @@ interface ReservationRow {
  *   `customer_name` y `customer_email` que viven en la tabla `reservations`.
  *   No se necesita un `CustomerRepository` para lectura.
  * - **Resource**: resuelto via `resourceRepository.getById()` — necesario
- *   para instanciar el subtipo correcto (CabinResource, TableResource, etc.).
+ *   para instanciar el recurso correcto.
  *
  * ## Constructor
  * - `sqlClient`          — cliente SQL genérico (pg pool)
- * - `resourceRepository` — para resolver el subtipo de recurso en lectura
- *                          y para lookups en métodos de escritura
+ * - `resourceRepository` — para resolver el recurso en lectura
  *
  * Schema esperado (PostgreSQL):
  * ```sql
@@ -51,7 +47,6 @@ interface ReservationRow {
  *   customer_name VARCHAR(255) NOT NULL,
  *   customer_email VARCHAR(255) NOT NULL,
  *   resource_id VARCHAR(255) NOT NULL,
- *   resource_type VARCHAR(50) NOT NULL,
  *   status VARCHAR(50) NOT NULL,
  *   start_time TIMESTAMP NOT NULL,
  *   end_time TIMESTAMP NOT NULL,
@@ -85,7 +80,6 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.customer.fullName,
       reservation.customer.email,
       reservation.resource.id,
-      reservation.resourceType,
       reservation.status,
       reservation.startTime.toISOString(),
       reservation.endTime.toISOString(),
@@ -96,13 +90,13 @@ export class SqlReservationRepository implements ReservationRepository {
   private readonly UPSERT_SQL = `
     INSERT INTO reservations (
       id, customer_id, customer_name, customer_email,
-      resource_id, resource_type, status,
+      resource_id, status,
       start_time, end_time, details, updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
     ON CONFLICT (id) DO UPDATE SET
-      status     = $7,
-      details    = $10,
+      status     = $6,
+      details    = $9,
       updated_at = CURRENT_TIMESTAMP
   `.trim();
 
@@ -220,7 +214,6 @@ export class SqlReservationRepository implements ReservationRepository {
         r.customer_name,
         r.customer_email,
         r.resource_id,
-        r.resource_type,
         r.status,
         r.start_time,
         r.end_time,
@@ -241,19 +234,16 @@ export class SqlReservationRepository implements ReservationRepository {
       throw new ResourceNotFoundError(row.resource_id);
     }
 
-    const rawDetails =
+    const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
 
-    const details = validatePreferences(row.resource_type, rawDetails);
-
     const reservation = new Reservation(
-      row.resource_type,
       row.id,
       customer,
       resource,
       new Date(row.start_time),
       new Date(row.end_time),
-      details as PreferenceDetailsByResource[typeof row.resource_type],
+      details,
     );
 
     if (row.status !== reservation.status) {
