@@ -1,21 +1,8 @@
-export enum ResourceType {
-  CABIN = 'CABIN',
-  TOUR_SEAT = 'TOUR_SEAT',
-  RESTAURANT_TABLE = 'RESTAURANT_TABLE',
-  SPA = 'SPA',
-}
-
 export enum ReservationStatus {
   PENDING = 'PENDING',
   CONFIRMED = 'CONFIRMED',
   CANCELLED = 'CANCELLED',
   COMPLETED = 'COMPLETED',
-}
-
-export enum TableShape {
-  CIRCLE = 'CIRCLE',
-  SQUARE = 'SQUARE',
-  RECTANGLE = 'RECTANGLE',
 }
 
 /**
@@ -43,6 +30,7 @@ export enum PlatformRole {
 
 /**
  * Planes de suscripción disponibles para los negocios.
+ * Los límites de cada plan están definidos en src/config/plan-limits.ts
  */
 export enum BusinessPlan {
   FREE    = 'FREE',
@@ -58,22 +46,4 @@ export enum BusinessStatus {
   ACTIVE    = 'ACTIVE',
   SUSPENDED = 'SUSPENDED',
   CANCELLED = 'CANCELLED',
-}
-
-export enum BedPreference {
-  SINGLE = 'SINGLE',
-  DOUBLE = 'DOUBLE',
-  KING   = 'KING',
-}
-
-export enum TableLocation {
-  WINDOW  = 'WINDOW',
-  TERRACE = 'TERRACE',
-  INSIDE  = 'INSIDE',
-}
-
-export enum TherapistGenderPreference {
-  MALE   = 'MALE',
-  FEMALE = 'FEMALE',
-  ANY    = 'ANY',
 }
