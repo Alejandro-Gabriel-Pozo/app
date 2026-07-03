@@ -16,7 +16,6 @@ export class InMemoryCustomerRepository implements CustomerRepository {
 
   async save(customer: Customer): Promise<void> {
     const existing = this.store.get(customer.id);
-    // Preservar passwordHash si ya existía
     const passwordHash = existing?.passwordHash ?? null;
     this.store.set(customer.id, { customer, passwordHash });
     this.emailIndex.set(customer.email.toLowerCase(), customer.id);
@@ -60,6 +59,36 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     if (!record) return false;
     this.emailIndex.delete(record.customer.email.toLowerCase());
     this.store.delete(id);
+    return true;
+  }
+
+  /**
+   * Anonimiza el cliente en memoria: reemplaza PII con valores neutros
+   * y limpia el passwordHash. El registro permanece en el store para
+   * que las reservas sigan apuntando a un ID válido.
+   * La entrada en emailIndex se elimina (el email anonimizado no debe
+   * ser buscable).
+   */
+  async anonymize(id: string): Promise<boolean> {
+    const record = this.store.get(id);
+    if (!record) return false;
+
+    // Verificar que no esté ya anonimizado
+    if (record.customer.email.startsWith('deleted-') && record.customer.email.endsWith('@anon.local')) {
+      return false;
+    }
+
+    // Limpiar índice del email original
+    this.emailIndex.delete(record.customer.email.toLowerCase());
+
+    const anonymizedCustomer = new Customer(
+      id,
+      '[eliminado]',
+      `deleted-${id}@anon.local`,
+    );
+
+    this.store.set(id, { customer: anonymizedCustomer, passwordHash: null });
+    // No indexar el email anonimizado — no debe ser buscable
     return true;
   }
 }

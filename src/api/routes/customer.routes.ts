@@ -5,16 +5,17 @@
  * ## Rutas
  *
  * ### Públicas (sin autenticación)
- * POST  /api/customer/register    — crear cuenta
- * POST  /api/customer/login       — obtener JWT de cliente
- * GET   /api/customer/availability/:resourceType — ver disponibilidad
+ * POST   /api/customer/register    — crear cuenta
+ * POST   /api/customer/login       — obtener JWT de cliente
+ * GET    /api/customer/availability/:resourceType — ver disponibilidad
  *
  * ### Protegidas (requieren JWT con role=CUSTOMER)
- * GET   /api/customer/me                        — ver perfil propio
- * GET   /api/customer/me/reservations           — ver mis reservas
- * POST  /api/customer/me/reservations           — crear reserva propia
- * PATCH /api/customer/me/reservations/:id       — modificar reserva propia (solo PENDING)
- * POST  /api/customer/me/reservations/:id/cancel — cancelar reserva propia
+ * GET    /api/customer/me                        — ver perfil propio
+ * DELETE /api/customer/me                        — eliminar cuenta (anonimización GDPR)
+ * GET    /api/customer/me/reservations           — ver mis reservas
+ * POST   /api/customer/me/reservations           — crear reserva propia
+ * PATCH  /api/customer/me/reservations/:id       — modificar reserva propia (solo PENDING)
+ * POST   /api/customer/me/reservations/:id/cancel — cancelar reserva propia
  *
  * ## Restricciones de seguridad
  * - Un cliente SOLO puede ver, modificar y cancelar SUS propias reservas.
@@ -22,6 +23,8 @@
  * - La modificación solo está permitida si la reserva está en PENDING.
  * - La cancelación está permitida en PENDING (sin restricción de tiempo)
  *   o en CONFIRMED con al menos CANCEL_ADVANCE_MS de antelación.
+ * - DELETE /me anonimiza los datos personales y anula el password hash;
+ *   el token JWT actual queda implícitamente invalidado (próximo login fallará).
  * - /register y /login están limitados por rate limiting (ver abajo).
  */
 
@@ -166,32 +169,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // POST /api/customer/register — público (rate limited)
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/register:
-   *   post:
-   *     summary: Registrar cuenta de cliente
-   *     tags: [Customer Portal]
-   *     security: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [fullName, email, password]
-   *             properties:
-   *               fullName: { type: string, example: "María López" }
-   *               email:    { type: string, format: email, example: "maria@example.com" }
-   *               password: { type: string, minLength: 8, example: "MiClave123!" }
-   *     responses:
-   *       201:
-   *         description: Cuenta creada — devuelve JWT listo para usar
-   *       400:
-   *         description: Datos inválidos o email ya registrado
-   *       429:
-   *         description: Demasiados intentos — rate limit excedido
-   */
   router.post(
     '/register',
     registerLimiter,
@@ -219,31 +196,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // POST /api/customer/login — público (rate limited)
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/login:
-   *   post:
-   *     summary: Login de cliente
-   *     tags: [Customer Portal]
-   *     security: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [email, password]
-   *             properties:
-   *               email:    { type: string, format: email }
-   *               password: { type: string }
-   *     responses:
-   *       200:
-   *         description: Login exitoso — devuelve JWT
-   *       401:
-   *         description: Credenciales inválidas
-   *       429:
-   *         description: Demasiados intentos — rate limit excedido
-   */
   router.post(
     '/login',
     loginLimiter,
@@ -270,33 +222,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // GET /api/customer/availability/:resourceType — público
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/availability/{resourceType}:
-   *   get:
-   *     summary: Ver recursos disponibles en un rango horario
-   *     description: Endpoint público — no requiere autenticación.
-   *     tags: [Customer Portal]
-   *     security: []
-   *     parameters:
-   *       - name: resourceType
-   *         in: path
-   *         required: true
-   *         schema: { type: string, enum: [CABIN, TOUR_SEAT, RESTAURANT_TABLE, SPA] }
-   *       - name: startTime
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *       - name: endTime
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *     responses:
-   *       200:
-   *         description: Lista de recursos disponibles en el rango solicitado
-   *       400:
-   *         description: Parámetros de fecha inválidos
-   */
   router.get(
     '/availability/:resourceType',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -357,20 +282,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // GET /api/customer/me — perfil del cliente autenticado
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/me:
-   *   get:
-   *     summary: Ver perfil del cliente autenticado
-   *     tags: [Customer Portal]
-   *     security:
-   *       - BearerAuth: []
-   *     responses:
-   *       200:
-   *         description: Datos del cliente
-   *       401:
-   *         $ref: '#/components/responses/Unauthorized'
-   */
   router.get(
     '/me',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -391,20 +302,69 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // GET /api/customer/me/reservations — mis reservas
+  // DELETE /api/customer/me — eliminar cuenta (anonimización GDPR)
   // -------------------------------------------------------------------------
   /**
    * @swagger
-   * /api/customer/me/reservations:
-   *   get:
-   *     summary: Ver mis reservas
+   * /api/customer/me:
+   *   delete:
+   *     summary: Eliminar cuenta del cliente (derecho al olvido)
+   *     description: |
+   *       Anonimiza todos los datos personales del cliente (nombre, email,
+   *       contraseña). Las reservas pasadas se conservan sin datos
+   *       identificables para integridad del historial del negocio.
+   *
+   *       El JWT actual queda implícitamente invalidado: cualquier intento
+   *       de login posterior con las credenciales originales fallará.
+   *
+   *       Esta acción es **irreversible**.
    *     tags: [Customer Portal]
    *     security:
    *       - BearerAuth: []
    *     responses:
-   *       200:
-   *         description: Lista de reservas del cliente autenticado
+   *       204:
+   *         description: Cuenta eliminada correctamente (sin cuerpo de respuesta)
+   *       401:
+   *         $ref: '#/components/responses/Unauthorized'
+   *       404:
+   *         description: Cliente no encontrado (ya eliminado o inexistente)
+   *       409:
+   *         description: La cuenta ya fue eliminada previamente
    */
+  router.delete(
+    '/me',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
+
+        const anonymized = await container.customerRepository.anonymize(customerId);
+
+        if (!anonymized) {
+          // anonymize() retorna false si el cliente no existe o ya fue anonimizado
+          const existing = await container.customerRepository.getById(customerId);
+          if (!existing) {
+            res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
+          } else {
+            res.status(409).json({
+              code: 'ALREADY_DELETED',
+              message: 'La cuenta ya fue eliminada previamente.',
+            });
+          }
+          return;
+        }
+
+        // 204 No Content — estándar REST para eliminación exitosa
+        res.status(204).send();
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/customer/me/reservations — mis reservas
+  // -------------------------------------------------------------------------
   router.get(
     '/me/reservations',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -423,35 +383,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // POST /api/customer/me/reservations — crear reserva propia
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/me/reservations:
-   *   post:
-   *     summary: Crear una reserva
-   *     tags: [Customer Portal]
-   *     security:
-   *       - BearerAuth: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [resourceType, resourceId, startTime, endTime]
-   *             properties:
-   *               resourceType: { type: string, enum: [CABIN, TOUR_SEAT, RESTAURANT_TABLE, SPA] }
-   *               resourceId:   { type: string }
-   *               startTime:    { type: string, format: date-time }
-   *               endTime:      { type: string, format: date-time }
-   *               details:      { type: object }
-   *     responses:
-   *       201:
-   *         description: Reserva creada en estado PENDING
-   *       400:
-   *         description: Validación fallida
-   *       409:
-   *         description: Recurso no disponible en el rango solicitado
-   */
   router.post(
     '/me/reservations',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -487,45 +418,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // PATCH /api/customer/me/reservations/:id — modificar reserva propia
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/me/reservations/{id}:
-   *   patch:
-   *     summary: Modificar una reserva propia
-   *     description: |
-   *       Permite actualizar el rango horario y/o los detalles de una reserva
-   *       en estado PENDING. Todos los campos son opcionales — se fusionan con
-   *       los valores existentes. Al menos uno debe estar presente.
-   *     tags: [Customer Portal]
-   *     security:
-   *       - BearerAuth: []
-   *     parameters:
-   *       - name: id
-   *         in: path
-   *         required: true
-   *         schema: { type: string }
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             properties:
-   *               startTime: { type: string, format: date-time }
-   *               endTime:   { type: string, format: date-time }
-   *               details:   { type: object, description: "Preferencias según el tipo de recurso" }
-   *     responses:
-   *       200:
-   *         description: Reserva actualizada
-   *       400:
-   *         description: Datos inválidos o ningún campo enviado
-   *       403:
-   *         description: La reserva no pertenece al cliente autenticado
-   *       404:
-   *         description: Reserva no encontrada
-   *       409:
-   *         description: La reserva no está en PENDING o el recurso no está disponible
-   */
   router.patch(
     '/me/reservations/:id',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -535,7 +427,6 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        // Verificar existencia y ownership antes de pasar al servicio
         const existing = await container.reservationRepository.getById(reservationId);
         if (!existing) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
@@ -546,7 +437,6 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Estado validado en el router para devolver 409 antes de parsear el body
         if (existing.status !== ReservationStatus.PENDING) {
           res.status(409).json({
             code: 'INVALID_STATUS',
@@ -584,36 +474,6 @@ export function createCustomerRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // POST /api/customer/me/reservations/:id/cancel — cancelar reserva propia
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/me/reservations/{id}/cancel:
-   *   post:
-   *     summary: Cancelar una reserva propia
-   *     description: |
-   *       Cancela una reserva propia según el estado:
-   *       - **PENDING**: sin restricción de tiempo.
-   *       - **CONFIRMED**: requiere al menos 24 horas de antelación respecto a `startTime`.
-   *       - Otros estados (COMPLETED, CANCELLED): no permitido.
-   *     tags: [Customer Portal]
-   *     security:
-   *       - BearerAuth: []
-   *     parameters:
-   *       - name: id
-   *         in: path
-   *         required: true
-   *         schema: { type: string }
-   *     responses:
-   *       200:
-   *         description: Reserva cancelada
-   *       403:
-   *         description: La reserva no pertenece al cliente autenticado
-   *       404:
-   *         description: Reserva no encontrada
-   *       409:
-   *         description: La reserva ya no puede cancelarse (COMPLETED o CANCELLED)
-   *       422:
-   *         description: Cancelación muy tardía — reserva CONFIRMED dentro de las próximas 24h
-   */
   router.post(
     '/me/reservations/:id/cancel',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -634,7 +494,6 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Verificar que el estado sea cancelable por el cliente
         if (!CANCELLABLE_STATUSES.includes(reservation.status)) {
           res.status(409).json({
             code: 'INVALID_STATUS',
@@ -643,7 +502,6 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // Para reservas CONFIRMED: verificar antelación mínima de 24h
         if (reservation.status === ReservationStatus.CONFIRMED) {
           const msUntilStart = reservation.startTime.getTime() - Date.now();
           if (msUntilStart < CANCEL_ADVANCE_MS) {
