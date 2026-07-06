@@ -1,4 +1,3 @@
-import type { PoolClient } from 'pg';
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
 import { ReservationRepository } from './reservation.repository.js';
@@ -106,10 +105,10 @@ export class SqlReservationRepository implements ReservationRepository {
 
   /**
    * Versión transaccional de save().
-   * Usa el PoolClient recibido — no adquiere una conexión nueva.
-   * Llamar solo desde dentro de SqlClient.withTransaction().
+   * Usa el SqlClient recibido — no adquiere una conexión nueva.
+   * Llamar solo desde dentro de withTransaction().
    */
-  async saveWithClient(client: PoolClient, reservation: Reservation): Promise<void> {
+  async saveWithClient(client: SqlClient, reservation: Reservation): Promise<void> {
     await client.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
   }
 
