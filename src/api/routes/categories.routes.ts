@@ -14,8 +14,7 @@
  */
 
 import { Router, type Request, type Response } from 'express';
-import { authenticate } from '../middleware/auth.middleware.js';
-import { authorize } from '../middleware/authorize.middleware.js';
+import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { UserRole, BusinessPlan } from '../../types/enums.js';
 import {
   CategoryService,
@@ -35,11 +34,12 @@ export function createCategoryRouter(
   const router = Router();
 
   // Todas las rutas requieren empleado autenticado
-  router.use(authenticate);
+  router.use(authenticate());
 
   // GET /api/categories
   router.get('/', async (req: Request, res: Response) => {
-    const categories = await categoryService.listCategories();
+    const businessId = (req as any).user?.businessId as string;
+    const categories = await categoryService.listCategories(businessId);
     res.json(categories);
   });
 
@@ -64,7 +64,8 @@ export function createCategoryRouter(
     async (req: Request, res: Response) => {
       try {
         const body = CreateCategorySchema.parse(req.body);
-        const plan = await getBusinessPlan((req as any).user.businessId);
+        const businessId = (req as any).user?.businessId as string;
+        const plan = await getBusinessPlan(businessId);
         const category = await categoryService.createCategory(body, plan);
         res.status(201).json(category);
       } catch (err) {

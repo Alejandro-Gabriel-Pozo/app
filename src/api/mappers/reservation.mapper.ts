@@ -6,6 +6,7 @@
  * - `ResourceDto.type` → `ResourceDto.categoryId` (string)
  * - Se elimina el `instanceof TableResource` — `visualData` ahora
  *   es un campo opcional en la clase base `BookableResource`
+ * - `customer.email` es `string | undefined` — se normaliza a `string` con ?? ''
  */
 
 import { Reservation } from '../../domain/Reservation.js';
@@ -56,7 +57,7 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     customer: {
       id:       reservation.customer.id,
       fullName: reservation.customer.fullName,
-      email:    reservation.customer.email,
+      email:    reservation.customer.email ?? '',
     },
     startTime: reservation.startTime.toISOString(),
     endTime:   reservation.endTime.toISOString(),

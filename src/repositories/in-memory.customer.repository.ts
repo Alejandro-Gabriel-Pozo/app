@@ -19,18 +19,16 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     const existing = this.store.get(customer.id);
     const passwordHash = existing?.passwordHash ?? null;
     this.store.set(customer.id, { customer, passwordHash });
-    this.emailIndex.set(customer.email.toLowerCase(), customer.id);
+    const email = customer.email;
+    if (email) this.emailIndex.set(email.toLowerCase(), customer.id);
   }
 
   async saveWithPassword(customer: Customer, passwordHash: string): Promise<void> {
     this.store.set(customer.id, { customer, passwordHash });
-    this.emailIndex.set(customer.email.toLowerCase(), customer.id);
+    const email = customer.email;
+    if (email) this.emailIndex.set(email.toLowerCase(), customer.id);
   }
 
-  /**
-   * Versión transaccional — en memoria no hay transacciones reales,
-   * se delega a saveWithPassword (misma semántica, sin overhead de tx).
-   */
   async saveWithClient(
     _client: SqlClient,
     customer: Customer,
@@ -70,28 +68,25 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   async delete(id: string): Promise<boolean> {
     const record = this.store.get(id);
     if (!record) return false;
-    this.emailIndex.delete(record.customer.email.toLowerCase());
+    const email = record.customer.email;
+    if (email) this.emailIndex.delete(email.toLowerCase());
     this.store.delete(id);
     return true;
   }
 
-  /**
-   * Anonimiza el cliente en memoria: reemplaza PII con valores neutros
-   * y limpia el passwordHash. El registro permanece en el store para
-   * que las reservas sigan apuntando a un ID válido.
-   */
   async anonymize(id: string): Promise<boolean> {
     const record = this.store.get(id);
     if (!record) return false;
 
+    const currentEmail = record.customer.email ?? '';
     if (
-      record.customer.email.startsWith('deleted-') &&
-      record.customer.email.endsWith('@anon.local')
+      currentEmail.startsWith('deleted-') &&
+      currentEmail.endsWith('@anon.local')
     ) {
       return false;
     }
 
-    this.emailIndex.delete(record.customer.email.toLowerCase());
+    if (currentEmail) this.emailIndex.delete(currentEmail.toLowerCase());
 
     const anonymizedCustomer = new Customer(
       id,

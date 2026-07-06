@@ -18,10 +18,11 @@ export function errorHandler(
   }
 
   if (err instanceof ValidationError) {
+    const errors = err.issues ? new ZodError(err.issues).flatten() : {};
     res.status(400).json({
       code: err.code,
       message: err.message,
-      errors: err.zodError.flatten(),
+      errors,
     });
     return;
   }

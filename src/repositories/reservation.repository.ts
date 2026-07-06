@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { SqlClient } from './sql.client.js';
 import { Reservation } from '../domain/Reservation.js';
 import { ReservationStatus } from '../types/enums.js';
 
@@ -7,10 +7,10 @@ export interface ReservationRepository {
 
   /**
    * Versión transaccional de save().
-   * Usa el PoolClient recibido en lugar de adquirir una conexión del pool.
-   * Llamar solo desde dentro de SqlClient.withTransaction().
+   * Usa el SqlClient recibido en lugar de adquirir una conexión del pool.
+   * Llamar solo desde dentro de TransactionManager.run().
    */
-  saveWithClient(client: PoolClient, reservation: Reservation): Promise<void>;
+  saveWithClient(client: SqlClient, reservation: Reservation): Promise<void>;
 
   delete(id: string): Promise<boolean>;
   getById(id: string): Promise<Reservation | undefined>;

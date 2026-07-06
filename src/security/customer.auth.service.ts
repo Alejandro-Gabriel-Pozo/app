@@ -1,23 +1,6 @@
 /**
  * @file customer.auth.service.ts
  * @description Servicio de autenticación para clientes del portal público.
- *
- * ## Diferencia con AuthService (empleados)
- * - Los clientes se registran solos desde el portal.
- * - Sus credenciales se almacenan en la tabla `customers` con un campo
- *   `password_hash` adicional.
- * - El JWT resultante lleva `role: CUSTOMER` y `customer_id`.
- *
- * ## Hashing
- * Usa la misma implementación PBKDF2 del proyecto (hashPassword / verifyPassword
- * de user.store.ts) para consistencia.
- *
- * ## Transacciones
- * register() delega la persistencia a customerRepository.saveWithPassword().
- * La responsabilidad de envolver la operación en una transacción SQL es del
- * repositorio concreto (SqlCustomerRepository), no del servicio.
- * Así los tests unitarios con InMemoryCustomerRepository no necesitan
- * DATABASE_URL ni un pool real.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -66,13 +49,6 @@ export class CustomerAuthService {
     this.jwtSecret = secret;
   }
 
-  /**
-   * Registra un nuevo cliente.
-   * Persiste el Customer + passwordHash via customerRepository.saveWithPassword().
-   * La implementación SQL de ese método maneja la transacción internamente.
-   *
-   * @throws Error con code EMAIL_TAKEN si el email ya está en uso.
-   */
   async register(input: CustomerRegistrationInput): Promise<CustomerAuthResult> {
     const existing = await this.customerRepository.getByEmail(input.email);
     if (existing) {
@@ -93,16 +69,6 @@ export class CustomerAuthService {
     return { token, customer: { id, fullName: input.fullName, email: input.email } };
   }
 
-  /**
-   * Autentica un cliente existente.
-   *
-   * ## Seguridad — timing-safe
-   * verifyPassword (PBKDF2) se ejecuta siempre, incluso cuando el email no
-   * existe, para que el tiempo de respuesta sea constante y no permita
-   * enumerar emails registrados midiendo latencia.
-   *
-   * @throws Error con code INVALID_CREDENTIALS si email o contraseña no coinciden.
-   */
   async login(input: CustomerLoginInput): Promise<CustomerAuthResult> {
     const record = await this.customerRepository.getByEmailWithPassword(input.email);
 
@@ -119,9 +85,9 @@ export class CustomerAuthService {
     return {
       token,
       customer: {
-        id: record.customer.id,
+        id:       record.customer.id,
         fullName: record.customer.fullName,
-        email: record.customer.email,
+        email:    record.customer.email ?? '',
       },
     };
   }

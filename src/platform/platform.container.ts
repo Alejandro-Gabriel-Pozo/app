@@ -11,7 +11,7 @@
 
 import { PlatformRepository } from './platform.repository.js';
 import { PlatformAuthService } from '../security/platform.auth.service.js';
-import { platformPgClient } from '../db/platform.pg.client.js';
+import { createPlatformPool } from '../container.js';
 
 export interface PlatformContainer {
   platformRepository: PlatformRepository;
@@ -20,12 +20,9 @@ export interface PlatformContainer {
 
 /**
  * Crea el container de plataforma.
- * Retorna `null` si `PLATFORM_DATABASE_URL` no está definida
- * (p. ej. en desarrollo local con modo in-memory).
+ * Retorna `null` si `PLATFORM_DATABASE_URL` no está definida.
  */
 export function createPlatformContainer(): PlatformContainer | null {
-  // platformPgClient ya se conecta contra PLATFORM_DATABASE_URL
-  // Si no existe, pg lanzará error al primer query — no al construir el client
   if (!process.env.PLATFORM_DATABASE_URL) {
     console.warn(
       '[platform-container] ⚠️  PLATFORM_DATABASE_URL no definida — ' +
@@ -34,8 +31,11 @@ export function createPlatformContainer(): PlatformContainer | null {
     return null;
   }
 
+  const platformSqlClient = createPlatformPool();
+  if (!platformSqlClient) return null;
+
   return {
-    platformRepository:  new PlatformRepository(platformPgClient),
+    platformRepository:  new PlatformRepository(platformSqlClient),
     platformAuthService: new PlatformAuthService(),
   };
 }

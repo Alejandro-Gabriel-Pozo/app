@@ -3,8 +3,8 @@
  * @description Rutas de gestión de plataforma — exclusivas para SUPERADMIN.
  *
  * ## Autenticación
- * Las rutas protegidas requieren JWT con `platform_role: SUPERADMIN`.
- * El middleware `authenticatePlatform()` verifica este claim.
+ * Las rutas protegidas requieren JWT con `role: SUPERADMIN` firmado con PLATFORM_JWT_SECRET.
+ * El middleware `authenticatePlatform()` de platform.auth.middleware verifica este claim.
  *
  * ## Rutas
  *
@@ -22,9 +22,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { JwtService } from '../../security/jwt.service.js';
 import { PlatformContainer } from '../../../src/platform/platform.container.js';
 import { BusinessPlan, BusinessStatus, PlatformRole } from '../../types/enums.js';
+import {
+  authenticatePlatform,
+  AuthenticatedPlatformUser,
+} from '../../security/platform.auth.middleware.js';
 import {
   provisionBusinessDatabase,
   encryptConnectionString,
@@ -34,17 +37,6 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-
-interface AuthenticatedPlatformUser {
-  id: string;
-  email: string;
-  role: string;
-  [key: string]: unknown;
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -81,42 +73,6 @@ const UpdateBusinessStatusSchema = z.object({
 function firstString(val: string | string[] | undefined): string | undefined {
   if (val === undefined) return undefined;
   return Array.isArray(val) ? val[0] : val;
-}
-
-// ---------------------------------------------------------------------------
-// Middleware de autenticación de plataforma
-// ---------------------------------------------------------------------------
-
-function authenticatePlatform() {
-  const jwtService = new JwtService();
-
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      res.status(401).json({ code: 'MISSING_TOKEN', message: 'Token de autenticación requerido' });
-      return;
-    }
-
-    const token = authHeader.slice(7);
-    try {
-      const rawPayload = jwtService.verify(token);
-      // Cast via unknown para evitar TS2352 entre JwtPayload y Record<string,unknown>
-      const payload = rawPayload as unknown as AuthenticatedPlatformUser;
-
-      if (payload.platform_role !== PlatformRole.SUPERADMIN) {
-        res.status(403).json({
-          code: 'FORBIDDEN',
-          message: 'Acceso restringido a SUPERADMIN de plataforma',
-        });
-        return;
-      }
-
-      (req as Request & { platformUser: AuthenticatedPlatformUser }).platformUser = payload;
-      next();
-    } catch {
-      res.status(401).json({ code: 'INVALID_TOKEN', message: 'Token inválido o expirado' });
-    }
-  };
 }
 
 // ---------------------------------------------------------------------------

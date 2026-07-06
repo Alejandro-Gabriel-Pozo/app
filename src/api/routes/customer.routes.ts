@@ -7,7 +7,7 @@
  * ### Públicas (sin autenticación)
  * POST   /api/customer/register    — crear cuenta
  * POST   /api/customer/login       — obtener JWT de cliente
- * GET    /api/customer/availability/:resourceType — ver disponibilidad
+ * GET    /api/customer/availability — ver disponibilidad por categoría
  *
  * ### Protegidas (requieren JWT con role=CUSTOMER)
  * GET    /api/customer/me                        — ver perfil propio
@@ -16,16 +16,6 @@
  * POST   /api/customer/me/reservations           — crear reserva propia
  * PATCH  /api/customer/me/reservations/:id       — modificar reserva propia (solo PENDING)
  * POST   /api/customer/me/reservations/:id/cancel — cancelar reserva propia
- *
- * ## Restricciones de seguridad
- * - Un cliente SOLO puede ver, modificar y cancelar SUS propias reservas.
- * - Un cliente no puede ver datos de otros clientes.
- * - La modificación solo está permitida si la reserva está en PENDING.
- * - La cancelación está permitida en PENDING (sin restricción de tiempo)
- *   o en CONFIRMED con al menos CANCEL_ADVANCE_MS de antelación.
- * - DELETE /me anonimiza los datos personales y anula el password hash;
- *   el token JWT actual queda implícitamente invalidado (próximo login fallará).
- * - /register y /login están limitados por rate limiting (ver abajo).
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -37,34 +27,23 @@ import { Customer } from '../../domain/entities.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
-import { UserRole, ResourceType, ReservationStatus } from '../../types/enums.js';
-import { PreferenceDetailsByResource } from '../../types/preferences.types.js';
-import { validateDetailsForType } from '../schemas/request.schemas.js';
+import { UserRole, ReservationStatus } from '../../types/enums.js';
 
 // ---------------------------------------------------------------------------
 // Política de cancelación
 // ---------------------------------------------------------------------------
 
-/**
- * Antelación mínima para cancelar una reserva CONFIRMED.
- * 24 horas expresadas en milisegundos — cambiar aquí para ajustar la política.
- */
 const CANCEL_ADVANCE_MS = 24 * 60 * 60 * 1_000;
 
-/** Estados desde los que un cliente puede cancelar su reserva. */
 const CANCELLABLE_STATUSES: ReservationStatus[] = [
   ReservationStatus.PENDING,
   ReservationStatus.CONFIRMED,
 ];
 
 // ---------------------------------------------------------------------------
-// Rate limiters — evitan abuso en endpoints públicos costosos (PBKDF2)
+// Rate limiters
 // ---------------------------------------------------------------------------
 
-/**
- * /register: máximo 5 intentos por IP cada 15 minutos.
- * Más restrictivo porque implica PBKDF2 + escritura en BD.
- */
 const registerLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -79,10 +58,6 @@ const registerLimiter = rateLimit({
   },
 });
 
-/**
- * /login: máximo 10 intentos por IP cada 15 minutos.
- * Mitiga fuerza bruta sobre cuentas existentes.
- */
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -98,7 +73,7 @@ const loginLimiter = rateLimit({
 });
 
 // ---------------------------------------------------------------------------
-// Schemas de validación
+// Schemas
 // ---------------------------------------------------------------------------
 
 const RegisterCustomerSchema = z.object({
@@ -113,20 +88,13 @@ const LoginCustomerSchema = z.object({
 });
 
 const CreateCustomerReservationSchema = z.object({
-  resourceType: z.nativeEnum(ResourceType),
-  resourceId:   z.string().min(1),
-  startTime:    z.string().datetime(),
-  endTime:      z.string().datetime(),
-  details:      z.record(z.unknown()).default({}),
+  categoryId: z.string().min(1),
+  resourceId: z.string().min(1),
+  startTime:  z.string().datetime(),
+  endTime:    z.string().datetime(),
+  details:    z.record(z.unknown()).default({}),
 });
 
-/**
- * Schema para PATCH /api/customer/me/reservations/:id.
- *
- * Todos los campos son opcionales — se fusionan con los valores existentes
- * de la reserva en el servicio. Al menos uno debe estar presente (validado
- * en el servicio).
- */
 const UpdateCustomerReservationSchema = z.object({
   startTime: z.string().datetime().optional(),
   endTime:   z.string().datetime().optional(),
@@ -134,18 +102,15 @@ const UpdateCustomerReservationSchema = z.object({
 });
 
 const AvailabilityQuerySchema = z.object({
-  startTime: z.string().datetime(),
-  endTime:   z.string().datetime(),
+  startTime:  z.string().datetime(),
+  endTime:    z.string().datetime(),
+  categoryId: z.string().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------
-// Helper: extrae customerId del token o responde 403
+// Helper
 // ---------------------------------------------------------------------------
 
-/**
- * Devuelve el customerId del JWT autenticado, o envía 403 y retorna null.
- * Usar en todos los handlers protegidos de este router para uniformidad.
- */
 function requireCustomerId(req: Request, res: Response): string | null {
   const customerId = req.user?.customerId;
   if (!customerId) {
@@ -167,7 +132,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   const customerAuthService = new CustomerAuthService(container.customerRepository);
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/register — público (rate limited)
+  // POST /api/customer/register
   // -------------------------------------------------------------------------
   router.post(
     '/register',
@@ -194,7 +159,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/login — público (rate limited)
+  // POST /api/customer/login
   // -------------------------------------------------------------------------
   router.post(
     '/login',
@@ -220,18 +185,14 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // GET /api/customer/availability/:resourceType — público
+  // GET /api/customer/availability — público
+  // Filtra recursos disponibles por rango de tiempo.
+  // Opcionalmente filtra por categoryId.
   // -------------------------------------------------------------------------
   router.get(
-    '/availability/:resourceType',
+    '/availability',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const resourceType = String(req.params.resourceType) as ResourceType;
-        if (!Object.values(ResourceType).includes(resourceType)) {
-          res.status(400).json({ code: 'INVALID_RESOURCE_TYPE', message: `Tipo inválido. Valores válidos: ${Object.values(ResourceType).join(', ')}` });
-          return;
-        }
-
         const query = AvailabilityQuerySchema.parse(req.query);
         const startTime = new Date(query.startTime);
         const endTime   = new Date(query.endTime);
@@ -241,7 +202,11 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        const allResources = await container.resourceRepository.getByType(resourceType);
+        let allResources = await container.resourceRepository.getAll();
+
+        if (query.categoryId) {
+          allResources = allResources.filter((r) => r.categoryId === query.categoryId);
+        }
 
         const busyResourceIds = new Set<string>();
         await Promise.all(
@@ -258,13 +223,14 @@ export function createCustomerRouter(container: AppContainer): Router {
         const available = allResources.filter((r) => !busyResourceIds.has(r.id));
 
         res.json({
-          resourceType,
-          startTime: startTime.toISOString(),
-          endTime:   endTime.toISOString(),
-          available: available.map((r) => ({
-            id:        r.id,
-            name:      r.name,
-            basePrice: r.basePrice,
+          categoryId: query.categoryId ?? null,
+          startTime:  startTime.toISOString(),
+          endTime:    endTime.toISOString(),
+          available:  available.map((r) => ({
+            id:         r.id,
+            name:       r.name,
+            categoryId: r.categoryId,
+            basePrice:  r.basePrice,
           })),
           total: available.length,
         });
@@ -280,7 +246,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   router.use(authenticate(), authorize([UserRole.CUSTOMER]));
 
   // -------------------------------------------------------------------------
-  // GET /api/customer/me — perfil del cliente autenticado
+  // GET /api/customer/me
   // -------------------------------------------------------------------------
   router.get(
     '/me',
@@ -294,7 +260,7 @@ export function createCustomerRouter(container: AppContainer): Router {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
           return;
         }
-        res.json({ id: customer.id, fullName: customer.fullName, email: customer.email });
+        res.json({ id: customer.id, fullName: customer.fullName, email: customer.email ?? '' });
       } catch (err) {
         next(err);
       }
@@ -302,35 +268,8 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // DELETE /api/customer/me — eliminar cuenta (anonimización GDPR)
+  // DELETE /api/customer/me
   // -------------------------------------------------------------------------
-  /**
-   * @swagger
-   * /api/customer/me:
-   *   delete:
-   *     summary: Eliminar cuenta del cliente (derecho al olvido)
-   *     description: |
-   *       Anonimiza todos los datos personales del cliente (nombre, email,
-   *       contraseña). Las reservas pasadas se conservan sin datos
-   *       identificables para integridad del historial del negocio.
-   *
-   *       El JWT actual queda implícitamente invalidado: cualquier intento
-   *       de login posterior con las credenciales originales fallará.
-   *
-   *       Esta acción es **irreversible**.
-   *     tags: [Customer Portal]
-   *     security:
-   *       - BearerAuth: []
-   *     responses:
-   *       204:
-   *         description: Cuenta eliminada correctamente (sin cuerpo de respuesta)
-   *       401:
-   *         $ref: '#/components/responses/Unauthorized'
-   *       404:
-   *         description: Cliente no encontrado (ya eliminado o inexistente)
-   *       409:
-   *         description: La cuenta ya fue eliminada previamente
-   */
   router.delete(
     '/me',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -341,7 +280,6 @@ export function createCustomerRouter(container: AppContainer): Router {
         const anonymized = await container.customerRepository.anonymize(customerId);
 
         if (!anonymized) {
-          // anonymize() retorna false si el cliente no existe o ya fue anonimizado
           const existing = await container.customerRepository.getById(customerId);
           if (!existing) {
             res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
@@ -354,7 +292,6 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        // 204 No Content — estándar REST para eliminación exitosa
         res.status(204).send();
       } catch (err) {
         next(err);
@@ -363,7 +300,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // GET /api/customer/me/reservations — mis reservas
+  // GET /api/customer/me/reservations
   // -------------------------------------------------------------------------
   router.get(
     '/me/reservations',
@@ -381,14 +318,13 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/me/reservations — crear reserva propia
+  // POST /api/customer/me/reservations
   // -------------------------------------------------------------------------
   router.post(
     '/me/reservations',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = CreateCustomerReservationSchema.parse(req.body);
-        validateDetailsForType(body.resourceType, body.details);
 
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
@@ -400,12 +336,12 @@ export function createCustomerRouter(container: AppContainer): Router {
         }
 
         const reservation = await container.reservationService.createReservation({
-          id:           randomUUID(),
-          resourceId:   body.resourceId,
-          customer:     new Customer(customerEntity.id, customerEntity.fullName, customerEntity.email),
-          startTime:    new Date(body.startTime),
-          endTime:      new Date(body.endTime),
-          details:      body.details as PreferenceDetailsByResource[ResourceType],
+          id:         randomUUID(),
+          resourceId: body.resourceId,
+          customer:   new Customer(customerEntity.id, customerEntity.fullName, customerEntity.email ?? ''),
+          startTime:  new Date(body.startTime),
+          endTime:    new Date(body.endTime),
+          details:    body.details,
         });
 
         res.status(201).json(toReservationDto(reservation));
@@ -416,7 +352,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // PATCH /api/customer/me/reservations/:id — modificar reserva propia
+  // PATCH /api/customer/me/reservations/:id
   // -------------------------------------------------------------------------
   router.patch(
     '/me/reservations/:id',
@@ -472,7 +408,7 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/me/reservations/:id/cancel — cancelar reserva propia
+  // POST /api/customer/me/reservations/:id/cancel
   // -------------------------------------------------------------------------
   router.post(
     '/me/reservations/:id/cancel',
