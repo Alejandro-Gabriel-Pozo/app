@@ -28,10 +28,9 @@ export function createCategoryRouter(
   // GET /api/categories
   router.get(
     '/',
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const businessId = String((req as any).user?.businessId ?? '');
-        const categories = await categoryService.listCategories(businessId);
+        const categories = await categoryService.listCategories();
         res.json(categories);
       } catch (err) {
         next(err);
