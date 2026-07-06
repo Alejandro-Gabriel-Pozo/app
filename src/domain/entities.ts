@@ -7,6 +7,11 @@
  * - Constructor sobrecargado: acepta string (legacy) o ContactMethod[]
  * - Getters email/fullName para compatibilidad con código existente
  * - BookableResource sin cambios
+ *
+ * ## Cambios v3
+ * - `email` getter retorna `string | undefined` en lugar de `''`.
+ *   El string vacío era un bug silencioso: los consumidores ahora
+ *   deben manejar explícitamente el caso sin email.
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -68,12 +73,15 @@ export class Customer {
     }
   }
 
-  /** Email primario — compatibilidad con todo el código existente */
-  get email(): string {
+  /**
+   * Email primario del cliente.
+   * Retorna `undefined` si el cliente no tiene ningún contacto de tipo EMAIL.
+   * Los consumidores deben manejar este caso explícitamente.
+   */
+  get email(): string | undefined {
     return (
       this.contactMethods.find((c) => c.channel === 'EMAIL' && c.isPrimary)?.value ??
-      this.contactMethods.find((c) => c.channel === 'EMAIL')?.value ??
-      ''
+      this.contactMethods.find((c) => c.channel === 'EMAIL')?.value
     );
   }
 

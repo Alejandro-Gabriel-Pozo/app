@@ -77,7 +77,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.id,
       reservation.customer.id,
       reservation.customer.fullName,
-      reservation.customer.email,
+      reservation.customer.email ?? '',
       reservation.resource.id,
       reservation.status,
       reservation.startTime.toISOString(),
@@ -236,19 +236,14 @@ export class SqlReservationRepository implements ReservationRepository {
     const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
 
-    const reservation = new Reservation(
+    return Reservation.restore(
       row.id,
       customer,
       resource,
       new Date(row.start_time),
       new Date(row.end_time),
       details,
+      row.status,
     );
-
-    if (row.status !== reservation.status) {
-      reservation.status = row.status;
-    }
-
-    return reservation;
   }
 }

@@ -9,6 +9,8 @@
  *   `resource.type !== resourceType` (ya no existe `.type` en `BookableResource`).
  * - `details` pasa a ser `Record<string, unknown>` — la validación estructural
  *   ocurre en `ReservationService` contra los `fields` de la categoría.
+ * - Se agrega `Reservation.restore()` para reconstruir desde persistencia
+ *   sin mutar `status` directamente desde fuera del dominio.
  */
 
 import { ReservationStatus } from '../types/enums.js';
@@ -28,7 +30,7 @@ const ALLOWED_TRANSITIONS: Record<
 };
 
 export class Reservation {
-  public status: ReservationStatus = ReservationStatus.PENDING;
+  private _status: ReservationStatus;
 
   constructor(
     public readonly id: string,
@@ -38,20 +40,44 @@ export class Reservation {
     public readonly endTime: Date,
     /** Campos libres validados contra `resource_categories.fields` en el servicio */
     public readonly details: Record<string, unknown>,
+    /** Solo usar desde Reservation.restore() — no pasar directamente */
+    initialStatus: ReservationStatus = ReservationStatus.PENDING,
   ) {
     if (!id.trim()) {
       throw new InvalidReservationError('id es obligatorio');
     }
     assertValidTimeRange(startTime, endTime);
+    this._status = initialStatus;
+  }
+
+  get status(): ReservationStatus {
+    return this._status;
+  }
+
+  /**
+   * Reconstruye una Reservation desde una fila de persistencia.
+   * Permite restaurar cualquier status sin pasar por las validaciones
+   * de transición del dominio, que solo aplican a cambios en tiempo de vida.
+   */
+  static restore(
+    id: string,
+    customer: Customer,
+    resource: BookableResource,
+    startTime: Date,
+    endTime: Date,
+    details: Record<string, unknown>,
+    status: ReservationStatus,
+  ): Reservation {
+    return new Reservation(id, customer, resource, startTime, endTime, details, status);
   }
 
   toSnapshot(): ReservationSnapshot {
     return {
-      id:        this.id,
+      id:         this.id,
       resourceId: this.resource.id,
-      startTime: this.startTime,
-      endTime:   this.endTime,
-      status:    this.status,
+      startTime:  this.startTime,
+      endTime:    this.endTime,
+      status:     this._status,
     };
   }
 
@@ -60,12 +86,12 @@ export class Reservation {
   complete(): void { this.transitionTo(ReservationStatus.COMPLETED);  }
 
   private transitionTo(nextStatus: ReservationStatus): void {
-    const allowed = ALLOWED_TRANSITIONS[this.status];
+    const allowed = ALLOWED_TRANSITIONS[this._status];
     if (!allowed.includes(nextStatus)) {
       throw new InvalidReservationError(
-        `Transición inválida: ${this.status} → ${nextStatus}`,
+        `Transición inválida: ${this._status} → ${nextStatus}`,
       );
     }
-    this.status = nextStatus;
+    this._status = nextStatus;
   }
 }
