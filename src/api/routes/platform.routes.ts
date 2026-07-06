@@ -1,32 +1,15 @@
 /**
  * @file platform.routes.ts
  * @description Rutas de gestión de plataforma — exclusivas para SUPERADMIN.
- *
- * ## Autenticación
- * Las rutas protegidas requieren JWT con `role: SUPERADMIN` firmado con PLATFORM_JWT_SECRET.
- * El middleware `authenticatePlatform()` de platform.auth.middleware verifica este claim.
- *
- * ## Rutas
- *
- * ### Públicas
- * POST  /platform/login                    — obtener JWT de SUPERADMIN
- *
- * ### Protegidas (requieren JWT SUPERADMIN)
- * GET   /platform/businesses               — listar todos los negocios
- * POST  /platform/businesses               — registrar negocio + provisionar BD async
- * GET   /platform/businesses/:id           — detalle de un negocio
- * PATCH /platform/businesses/:id/status    — cambiar estado (ACTIVE/SUSPENDED/CANCELLED)
- * GET   /platform/stats                    — estadísticas globales de la plataforma
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PlatformContainer } from '../../../src/platform/platform.container.js';
-import { BusinessPlan, BusinessStatus, PlatformRole } from '../../types/enums.js';
+import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
 import {
   authenticatePlatform,
-  AuthenticatedPlatformUser,
 } from '../../security/platform.auth.middleware.js';
 import {
   provisionBusinessDatabase,
@@ -66,13 +49,13 @@ const UpdateBusinessStatusSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helper: normaliza query params string | string[] -> string | undefined
 // ---------------------------------------------------------------------------
 
-/** Normaliza query params que pueden ser string | string[] a string */
-function firstString(val: string | string[] | undefined): string | undefined {
-  if (val === undefined) return undefined;
-  return Array.isArray(val) ? val[0] : val;
+function firstString(val: unknown): string | undefined {
+  if (val === undefined || val === null) return undefined;
+  if (Array.isArray(val)) return String(val[0]);
+  return String(val);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,9 +66,7 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   const router = Router();
   const { platformRepository, platformAuthService } = container;
 
-  // -------------------------------------------------------------------------
   // POST /platform/login — público
-  // -------------------------------------------------------------------------
   router.post(
     '/login',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -110,23 +91,18 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
   router.use(authenticatePlatform());
 
-  // -------------------------------------------------------------------------
   // GET /platform/stats
-  // -------------------------------------------------------------------------
   router.get(
     '/stats',
     async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const allBusinesses = await platformRepository.listAll();
-
         const byPlan: Record<string, number> = {};
         const byStatus: Record<string, number> = {};
-
         for (const b of allBusinesses) {
           byPlan[b.plan]     = (byPlan[b.plan]     ?? 0) + 1;
           byStatus[b.status] = (byStatus[b.status] ?? 0) + 1;
         }
-
         res.json({
           total:     allBusinesses.length,
           active:    byStatus[BusinessStatus.ACTIVE]    ?? 0,
@@ -143,39 +119,29 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
-  // -------------------------------------------------------------------------
   // GET /platform/businesses
-  // -------------------------------------------------------------------------
   router.get(
     '/businesses',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         let businesses = await platformRepository.listAll();
-
-        const status = firstString(req.query['status'] as string | string[] | undefined);
-        const plan   = firstString(req.query['plan']   as string | string[] | undefined);
+        const status = firstString(req.query['status']);
+        const plan   = firstString(req.query['plan']);
         if (status) businesses = businesses.filter((b) => b.status === status);
         if (plan)   businesses = businesses.filter((b) => b.plan   === plan);
-
-        res.json({
-          businesses: businesses.map(toBusinessDto),
-          total: businesses.length,
-        });
+        res.json({ businesses: businesses.map(toBusinessDto), total: businesses.length });
       } catch (err) {
         next(err);
       }
     },
   );
 
-  // -------------------------------------------------------------------------
   // POST /platform/businesses
-  // -------------------------------------------------------------------------
   router.post(
     '/businesses',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = CreateBusinessSchema.parse(req.body);
-
         const exists = await platformRepository.existsByEmailOrSlug(body.ownerEmail, body.slug);
         if (exists) {
           res.status(409).json({
@@ -184,7 +150,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           });
           return;
         }
-
         const businessId = randomUUID();
         const business   = await platformRepository.createBusiness({
           id:         businessId,
@@ -193,11 +158,9 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           plan:       body.plan,
           ownerEmail: body.ownerEmail,
         });
-
         provisionInBackground(businessId, body.name, platformRepository).catch((err) => {
           console.error(`[platform] Error provisionando negocio ${businessId}:`, err);
         });
-
         res.status(202).json({
           message: 'Negocio registrado. Provisionando base de datos en segundo plano (hasta 5 min).',
           business: toBusinessDto(business),
@@ -208,14 +171,12 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
-  // -------------------------------------------------------------------------
   // GET /platform/businesses/:id
-  // -------------------------------------------------------------------------
   router.get(
     '/businesses/:id',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const business = await platformRepository.findById(req.params.id);
+        const business = await platformRepository.findById(String(req.params['id']));
         if (!business) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Negocio no encontrado' });
           return;
@@ -227,21 +188,17 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
-  // -------------------------------------------------------------------------
   // PATCH /platform/businesses/:id/status
-  // -------------------------------------------------------------------------
   router.patch(
     '/businesses/:id/status',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body     = UpdateBusinessStatusSchema.parse(req.body);
-        const business = await platformRepository.findById(req.params.id);
-
+        const business = await platformRepository.findById(String(req.params['id']));
         if (!business) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Negocio no encontrado' });
           return;
         }
-
         if (business.status === BusinessStatus.CANCELLED) {
           res.status(400).json({
             code: 'INVALID_TRANSITION',
@@ -249,7 +206,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           });
           return;
         }
-
         if (business.status === body.status) {
           res.status(400).json({
             code: 'SAME_STATUS',
@@ -257,24 +213,12 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           });
           return;
         }
-
-        await platformRepository.updateBusinessStatus(
-          business.id,
-          body.status as BusinessStatus,
-        );
-
+        await platformRepository.updateBusinessStatus(business.id, body.status as BusinessStatus);
         if (body.reason) {
-          console.info(
-            `[platform] Negocio ${business.id} (${business.name}) → ${body.status}. ` +
-            `Motivo: ${body.reason}`,
-          );
+          console.info(`[platform] Negocio ${business.id} (${business.name}) → ${body.status}. Motivo: ${body.reason}`);
         }
-
         const updated = await platformRepository.findById(business.id);
-        res.json({
-          message: `Estado actualizado a ${body.status}`,
-          business: updated ? toBusinessDto(updated) : null,
-        });
+        res.json({ message: `Estado actualizado a ${body.status}`, business: updated ? toBusinessDto(updated) : null });
       } catch (err) {
         next(err);
       }
@@ -294,24 +238,13 @@ async function provisionInBackground(
   platformRepository: import('../../platform/platform.repository.js').PlatformRepository,
 ): Promise<void> {
   console.log(`[platform] Iniciando provisioning para negocio ${businessId}...`);
-
   const provisioned = await provisionBusinessDatabase(businessId, businessName);
-
   const schemaPath = resolve(__dirname, '../../db/schema.sql');
   const schemaSQL  = await readFile(schemaPath, 'utf-8');
-
-  const { runSchemaOnNewDatabase } = await import(
-    '../../platform/supabase.provisioner.js'
-  );
+  const { runSchemaOnNewDatabase } = await import('../../platform/supabase.provisioner.js');
   await runSchemaOnNewDatabase(provisioned.connectionString, schemaSQL);
-
   const encrypted = await encryptConnectionString(provisioned.connectionString);
-  await platformRepository.activateBusiness(
-    businessId,
-    provisioned.projectId,
-    encrypted,
-  );
-
+  await platformRepository.activateBusiness(businessId, provisioned.projectId, encrypted);
   console.log(`[platform] ✅ Negocio ${businessId} provisionado y activo.`);
 }
 
@@ -321,14 +254,14 @@ async function provisionInBackground(
 
 function toBusinessDto(b: import('../../platform/platform.repository.js').Business) {
   return {
-    id:               b.id,
-    name:             b.name,
-    slug:             b.slug,
-    plan:             b.plan,
-    status:           b.status,
-    ownerEmail:       b.ownerEmail,
+    id:                b.id,
+    name:              b.name,
+    slug:              b.slug,
+    plan:              b.plan,
+    status:            b.status,
+    ownerEmail:        b.ownerEmail,
     supabaseProjectId: b.supabaseProjectId,
-    createdAt:        b.createdAt,
-    updatedAt:        b.updatedAt,
+    createdAt:         b.createdAt,
+    updatedAt:         b.updatedAt,
   };
 }

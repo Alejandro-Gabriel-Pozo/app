@@ -1,9 +1,6 @@
 /**
  * @file container.ts
  * @description Composición de dependencias (Composition Root).
- *
- * Siempre usa PostgreSQL (DATABASE_URL obligatoria).
- * El modo in-memory fue eliminado — usar Supabase en todos los entornos.
  */
 
 import { ReservationService }   from './services/reservation.service.js';
@@ -39,7 +36,6 @@ const { Pool } = pg;
 
 // ---------------------------------------------------------------------------
 // Pool compartido para PLATFORM_DATABASE_URL
-// Usado tanto por container.ts como por app.ts — fuente única de verdad.
 // ---------------------------------------------------------------------------
 
 let _platformPool: InstanceType<typeof Pool> | null = null;
@@ -67,11 +63,6 @@ export function createPlatformPool(): SqlClient | null {
   };
 }
 
-/**
- * Cierra y resetea el pool de PLATFORM_DATABASE_URL.
- * Llamar en teardown de tests de integración para evitar que el
- * singleton sobreviva entre suites.
- */
 export async function closePlatformPool(): Promise<void> {
   if (_platformPool) {
     await _platformPool.end();
@@ -135,9 +126,12 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const outboxWorker = new OutboxWorker(domainEventRepository);
   registerFinancialHandlers(outboxWorker, financialTransactionRepository);
 
-  // Plataforma: instancia única del repositorio fuera del closure.
-  const platformSqlClient    = createPlatformPool();
-  const platformRepository   = platformSqlClient ? new PlatformRepository(platformSqlClient) : null;
+  // Plataforma: guard explícito — platformSqlClient puede ser null si
+  // PLATFORM_DATABASE_URL no está definida.
+  const platformSqlClient  = createPlatformPool();
+  const platformRepository = platformSqlClient
+    ? new PlatformRepository(platformSqlClient)
+    : null;
 
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
     if (!platformRepository) return BusinessPlan.PRO;
