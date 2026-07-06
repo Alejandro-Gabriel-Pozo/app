@@ -85,21 +85,22 @@ CREATE INDEX IF NOT EXISTS idx_customers_email
 -- ---------------------------------------------------------------------------
 -- Tabla: reservations
 -- ---------------------------------------------------------------------------
+-- customer_email es nullable: el dominio admite clientes sin email.
 
 CREATE TABLE IF NOT EXISTS reservations (
-  id            VARCHAR(255)    PRIMARY KEY,
-  resource_id   VARCHAR(255)    NOT NULL REFERENCES resources(id),
-  customer_id   VARCHAR(255)    NOT NULL REFERENCES customers(id),
-  customer_name VARCHAR(255)    NOT NULL,
-  customer_email VARCHAR(255)   NOT NULL,
-  start_time    TIMESTAMPTZ     NOT NULL,
-  end_time      TIMESTAMPTZ     NOT NULL,
-  status        VARCHAR(50)     NOT NULL DEFAULT 'PENDING'
-                  CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED')),
-  details       JSONB,
-  total_price   DECIMAL(10, 2)  NOT NULL CHECK (total_price >= 0),
-  created_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-  updated_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+  id             VARCHAR(255)    PRIMARY KEY,
+  resource_id    VARCHAR(255)    NOT NULL REFERENCES resources(id),
+  customer_id    VARCHAR(255)    NOT NULL REFERENCES customers(id),
+  customer_name  VARCHAR(255)    NOT NULL,
+  customer_email VARCHAR(255),
+  start_time     TIMESTAMPTZ     NOT NULL,
+  end_time       TIMESTAMPTZ     NOT NULL,
+  status         VARCHAR(50)     NOT NULL DEFAULT 'PENDING'
+                   CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED')),
+  details        JSONB,
+  total_price    DECIMAL(10, 2)  NOT NULL CHECK (total_price >= 0),
+  created_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
   CONSTRAINT chk_reservation_times CHECK (end_time > start_time)
 );
