@@ -14,7 +14,7 @@ interface ReservationRow {
   id: string;
   customer_id: string;
   customer_name: string;
-  customer_email: string;
+  customer_email: string | null;  // NULL en DB cuando el cliente no tiene email
   resource_id: string;
   status: ReservationStatus;
   start_time: string | Date;
@@ -34,6 +34,12 @@ interface ReservationRow {
  * - **Resource**: resuelto via `resourceRepository.getById()` — necesario
  *   para instanciar el recurso correcto.
  *
+ * ## Política de email nulo
+ * Se almacena NULL en la DB cuando el cliente no tiene email (en lugar de '').
+ * Esto alinea la persistencia con el dominio, donde `Customer.email` es
+ * `string | undefined`. Al leer, `null` se convierte en el array vacío de
+ * contactMethods, dejando `email` como `undefined`.
+ *
  * ## Constructor
  * - `sqlClient`          — cliente SQL genérico (pg pool)
  * - `resourceRepository` — para resolver el recurso en lectura
@@ -44,7 +50,7 @@ interface ReservationRow {
  *   id VARCHAR(255) PRIMARY KEY,
  *   customer_id VARCHAR(255) NOT NULL,
  *   customer_name VARCHAR(255) NOT NULL,
- *   customer_email VARCHAR(255) NOT NULL,
+ *   customer_email VARCHAR(255),        -- nullable
  *   resource_id VARCHAR(255) NOT NULL,
  *   status VARCHAR(50) NOT NULL,
  *   start_time TIMESTAMP NOT NULL,
@@ -55,11 +61,6 @@ interface ReservationRow {
  *   FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
  *   FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
  * );
- *
- * CREATE INDEX idx_reservations_customer ON reservations(customer_id);
- * CREATE INDEX idx_reservations_resource ON reservations(resource_id);
- * CREATE INDEX idx_reservations_status   ON reservations(status);
- * CREATE INDEX idx_reservations_dates    ON reservations(start_time, end_time);
  * ```
  */
 export class SqlReservationRepository implements ReservationRepository {
@@ -77,7 +78,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.id,
       reservation.customer.id,
       reservation.customer.fullName,
-      reservation.customer.email ?? '',
+      reservation.customer.email ?? null,   // NULL en DB, no string vacío
       reservation.resource.id,
       reservation.status,
       reservation.startTime.toISOString(),
@@ -106,7 +107,7 @@ export class SqlReservationRepository implements ReservationRepository {
   /**
    * Versión transaccional de save().
    * Usa el SqlClient recibido — no adquiere una conexión nueva.
-   * Llamar solo desde dentro de withTransaction().
+   * Llamar solo desde dentro de TransactionManager.run().
    */
   async saveWithClient(client: SqlClient, reservation: Reservation): Promise<void> {
     await client.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
@@ -222,11 +223,11 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   private async rowToReservation(row: ReservationRow): Promise<Reservation> {
-    const customer = new Customer(
-      row.customer_id,
-      row.customer_name,
-      row.customer_email,
-    );
+    // customer_email puede ser NULL — se pasa como string o como array vacío
+    // para que Customer quede con email === undefined (sin contact EMAIL).
+    const customer = row.customer_email
+      ? new Customer(row.customer_id, row.customer_name, row.customer_email)
+      : new Customer(row.customer_id, row.customer_name, []);
 
     const resource = await this.resourceRepository.getById(row.resource_id);
     if (!resource) {

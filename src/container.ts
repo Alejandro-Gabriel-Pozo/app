@@ -31,6 +31,7 @@ import { registerFinancialHandlers } from './workers/outbox.handlers.js';
 import { PlatformRepository } from './platform/platform.repository.js';
 import { pgClient }           from './db/pg.client.js';
 import { SqlClient }          from './repositories/sql.client.js';
+import { PgTransactionManager } from './db/pg.transaction-manager.js';
 import { BusinessPlan }       from './types/enums.js';
 import pg from 'pg';
 
@@ -64,6 +65,18 @@ export function createPlatformPool(): SqlClient | null {
       return { rows: result.rows as T[], rowCount: result.rowCount ?? undefined };
     },
   };
+}
+
+/**
+ * Cierra y resetea el pool de PLATFORM_DATABASE_URL.
+ * Llamar en teardown de tests de integración para evitar que el
+ * singleton sobreviva entre suites.
+ */
+export async function closePlatformPool(): Promise<void> {
+  if (_platformPool) {
+    await _platformPool.end();
+    _platformPool = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +118,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const occupancyRepository            = new SqlOccupancyRepository(pgClient);
   const domainEventRepository          = new SqlDomainEventRepository(pgClient);
   const financialTransactionRepository = new SqlFinancialTransactionRepository(pgClient);
+  const transactionManager             = new PgTransactionManager();
 
   const reservationService = new ReservationService(
     reservationRepository,
@@ -112,6 +126,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
     occupancyRepository,
     categoryRepository,
     domainEventRepository,
+    transactionManager,
   );
 
   const reportService   = new ReportService(occupancyRepository);

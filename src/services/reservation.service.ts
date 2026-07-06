@@ -1,31 +1,43 @@
 /**
  * @file reservation.service.ts
- * @description Servicio de dominio para gestión de reservas.
+ * @description Servicio de aplicación para gestión de reservas.
+ *
+ * ## Cambios respecto a versión anterior
+ * - `withTransaction` ya no se importa directamente desde infraestructura.
+ *   Se recibe un `TransactionManager` por inyección en el constructor.
+ * - `occupancyRepository`, `categoryRepository` y `domainEventRepository`
+ *   pasan a ser dependencias obligatorias. Se eliminan los guards
+ *   `if (this.categoryRepository)` a lo largo del servicio.
+ * - `updateReservation` usa `Reservation.restore()` en lugar de
+ *   `new Reservation()` para consistencia semántica con persistencia.
+ * - `totalPrice` eliminado de los payloads de eventos — el campo no existe
+ *   en el dominio. Se añadirá cuando esté modelado correctamente.
  */
 
-import { Reservation } from '../domain/Reservation.js';
-import { Customer } from '../domain/entities.js';
+import { Reservation }                  from '../domain/Reservation.js';
+import { Customer }                     from '../domain/entities.js';
 import {
   InvalidReservationError,
   ResourceNotFoundError,
   ReservationNotFoundError,
 } from '../domain/errors.js';
 import { validateDetailsAgainstFields } from './category.service.js';
-import { ReservationRepository } from '../repositories/reservation.repository.js';
-import { ResourceRepository } from '../repositories/resource.repository.js';
-import { OccupancyRepository } from '../repositories/occupancy.repository.js';
-import { ICategoryRepository } from '../repositories/category.repository.js';
-import { DomainEventRepository } from '../repositories/domain-event.repository.js';
-import { SqlClient } from '../repositories/sql.client.js';
-import { withTransaction } from '../db/pg.client.js';
+import { ReservationRepository }        from '../repositories/reservation.repository.js';
+import { ResourceRepository }           from '../repositories/resource.repository.js';
+import { OccupancyRepository }          from '../repositories/occupancy.repository.js';
+import { ICategoryRepository }          from '../repositories/category.repository.js';
+import { DomainEventRepository }        from '../repositories/domain-event.repository.js';
+import { TransactionManager }           from '../db/transaction-manager.js';
+import { SqlClient }                    from '../repositories/sql.client.js';
 
 export class ReservationService {
   constructor(
-    private readonly reservationRepository: ReservationRepository,
-    private readonly resourceRepository: ResourceRepository,
-    private readonly occupancyRepository?: OccupancyRepository,
-    private readonly categoryRepository?: ICategoryRepository,
-    private readonly domainEventRepository?: DomainEventRepository,
+    private readonly reservationRepository:  ReservationRepository,
+    private readonly resourceRepository:     ResourceRepository,
+    private readonly occupancyRepository:    OccupancyRepository,
+    private readonly categoryRepository:     ICategoryRepository,
+    private readonly domainEventRepository:  DomainEventRepository,
+    private readonly transactionManager:     TransactionManager,
   ) {}
 
   async createReservation(params: {
@@ -41,11 +53,9 @@ export class ReservationService {
       throw new ResourceNotFoundError(params.resourceId);
     }
 
-    if (this.categoryRepository) {
-      const category = await this.categoryRepository.findById(resource.categoryId);
-      if (category) {
-        validateDetailsAgainstFields(params.details, category.fields);
-      }
+    const category = await this.categoryRepository.findById(resource.categoryId);
+    if (category) {
+      validateDetailsAgainstFields(params.details, category.fields);
     }
 
     const activeReservations =
@@ -106,11 +116,9 @@ export class ReservationService {
     const newEndTime   = changes.endTime   ?? reservation.endTime;
     const rawDetails   = changes.details   ?? (reservation.details as Record<string, unknown>);
 
-    if (this.categoryRepository) {
-      const category = await this.categoryRepository.findById(reservation.resource.categoryId);
-      if (category) {
-        validateDetailsAgainstFields(rawDetails, category.fields);
-      }
+    const category = await this.categoryRepository.findById(reservation.resource.categoryId);
+    if (category) {
+      validateDetailsAgainstFields(rawDetails, category.fields);
     }
 
     const activeReservations =
@@ -133,13 +141,15 @@ export class ReservationService {
       );
     }
 
-    const updated = new Reservation(
+    // Usar restore() — operación de persistencia, no de creación nueva
+    const updated = Reservation.restore(
       reservation.id,
       reservation.customer,
       reservation.resource,
       newStartTime,
       newEndTime,
       rawDetails,
+      reservation.status,
     );
 
     await this.reservationRepository.save(updated);
@@ -148,33 +158,27 @@ export class ReservationService {
 
   /**
    * Confirma una reserva PENDING.
-   * Si el outbox está configurado, escribe reservation.confirmed en la misma
-   * transacción que el cambio de estado.
+   * Escribe reservation.confirmed en la misma transacción que el cambio de estado.
    */
   async confirmReservation(id: string): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
-    if (this.domainEventRepository) {
-      await withTransaction(async (client: SqlClient) => {
-        await this.reservationRepository.saveWithClient(client, reservation);
-        await this.domainEventRepository!.insertWithClient(client, {
-          aggregateType: 'RESERVATION',
-          aggregateId:   reservation.id,
-          eventType:     'reservation.confirmed',
-          payload: {
-            reservationId: reservation.id,
-            customerId:    reservation.customer.id,
-            resourceId:    reservation.resource.id,
-            startTime:     reservation.startTime.toISOString(),
-            endTime:       reservation.endTime.toISOString(),
-            totalPrice:    (reservation as unknown as { totalPrice?: number }).totalPrice,
-          },
-        });
+    await this.transactionManager.run(async (client: SqlClient) => {
+      await this.reservationRepository.saveWithClient(client, reservation);
+      await this.domainEventRepository.insertWithClient(client, {
+        aggregateType: 'RESERVATION',
+        aggregateId:   reservation.id,
+        eventType:     'reservation.confirmed',
+        payload: {
+          reservationId: reservation.id,
+          customerId:    reservation.customer.id,
+          resourceId:    reservation.resource.id,
+          startTime:     reservation.startTime.toISOString(),
+          endTime:       reservation.endTime.toISOString(),
+        },
       });
-    } else {
-      await this.reservationRepository.save(reservation);
-    }
+    });
 
     await this.recordOccupancy(reservation);
     return reservation;
@@ -189,32 +193,26 @@ export class ReservationService {
 
   /**
    * Completa una reserva CONFIRMED.
-   * Si el outbox está configurado, escribe reservation.completed en la misma
-   * transacción que el cambio de estado.
+   * Escribe reservation.completed en la misma transacción que el cambio de estado.
    */
   async completeReservation(id: string): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.complete();
 
-    if (this.domainEventRepository) {
-      await withTransaction(async (client: SqlClient) => {
-        await this.reservationRepository.saveWithClient(client, reservation);
-        await this.domainEventRepository!.insertWithClient(client, {
-          aggregateType: 'RESERVATION',
-          aggregateId:   reservation.id,
-          eventType:     'reservation.completed',
-          payload: {
-            reservationId: reservation.id,
-            customerId:    reservation.customer.id,
-            resourceId:    reservation.resource.id,
-            totalPrice:    (reservation as unknown as { totalPrice?: number }).totalPrice,
-            completedAt:   new Date().toISOString(),
-          },
-        });
+    await this.transactionManager.run(async (client: SqlClient) => {
+      await this.reservationRepository.saveWithClient(client, reservation);
+      await this.domainEventRepository.insertWithClient(client, {
+        aggregateType: 'RESERVATION',
+        aggregateId:   reservation.id,
+        eventType:     'reservation.completed',
+        payload: {
+          reservationId: reservation.id,
+          customerId:    reservation.customer.id,
+          resourceId:    reservation.resource.id,
+          completedAt:   new Date().toISOString(),
+        },
       });
-    } else {
-      await this.reservationRepository.save(reservation);
-    }
+    });
 
     await this.recordOccupancy(reservation);
     return reservation;
@@ -259,7 +257,6 @@ export class ReservationService {
   }
 
   private async recordOccupancy(reservation: Reservation): Promise<void> {
-    if (!this.occupancyRepository) return;
     await this.occupancyRepository.recordReservation(
       reservation.resource.id,
       reservation.resource.name,
