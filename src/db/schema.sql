@@ -3,12 +3,6 @@
 -- =============================================================================
 -- Ejecutar en orden. Idempotente: usa IF NOT EXISTS en todas las sentencias.
 -- Compatible con PostgreSQL 14+.
---
--- Cómo ejecutar en Render:
---   1. Render Dashboard → tu servicio PostgreSQL → "PSQL Command"
---   2. Pega y ejecuta este archivo completo
---   O desde local:
---   psql $DATABASE_URL -f src/db/schema.sql
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -16,16 +10,6 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ---------------------------------------------------------------------------
 -- Tabla: resource_categories
 -- ---------------------------------------------------------------------------
--- Categorías de recursos definidas por cada negocio en runtime.
--- Reemplaza el enum ResourceType hardcodeado.
---
--- El campo `fields` es un array JSONB de objetos con esta forma:
---   [
---     { "name": "mascota",  "label": "Nombre de la mascota", "type": "text",   "required": true },
---     { "name": "tamanio",  "label": "Tamaño",               "type": "select", "required": true,
---       "options": ["toy", "mediano", "grande"] }
---   ]
--- Tipos de campo soportados: "text", "number", "select", "boolean", "date"
 
 CREATE TABLE IF NOT EXISTS resource_categories (
   id          VARCHAR(255)  PRIMARY KEY,
@@ -44,9 +28,6 @@ CREATE INDEX IF NOT EXISTS idx_resource_categories_active
 -- ---------------------------------------------------------------------------
 -- Tabla: resources
 -- ---------------------------------------------------------------------------
--- Recursos reservables del negocio (cabañas, mesas, bañeras, canchas, etc.).
--- category_id reemplaza al antiguo `type` con CHECK hardcodeado.
--- La columna `active` implementa soft-delete.
 
 CREATE TABLE IF NOT EXISTS resources (
   id            VARCHAR(255)    PRIMARY KEY,
@@ -116,6 +97,81 @@ CREATE INDEX IF NOT EXISTS idx_reservations_status
 
 CREATE INDEX IF NOT EXISTS idx_reservations_times
   ON reservations (start_time, end_time);
+
+-- ---------------------------------------------------------------------------
+-- Tabla: domain_events (outbox pattern)
+-- ---------------------------------------------------------------------------
+-- Almacena eventos de dominio pendientes de despacho.
+-- El OutboxWorker lee WHERE dispatched_at IS NULL y los procesa.
+
+CREATE TABLE IF NOT EXISTS domain_events (
+  id              BIGSERIAL     PRIMARY KEY,
+  business_id     VARCHAR(255)  NOT NULL,
+  aggregate_type  VARCHAR(50)   NOT NULL,
+  aggregate_id    VARCHAR(255)  NOT NULL,
+  event_type      VARCHAR(100)  NOT NULL,
+  payload         JSONB         NOT NULL DEFAULT '{}',
+  occurred_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  dispatched_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_domain_events_pending
+  ON domain_events (id)
+  WHERE dispatched_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Tabla: occupancy_records
+-- ---------------------------------------------------------------------------
+-- Snapshot diario de ocupación por recurso.
+
+CREATE TABLE IF NOT EXISTS occupancy_records (
+  id             SERIAL        PRIMARY KEY,
+  resource_id    VARCHAR(255)  NOT NULL,
+  resource_name  VARCHAR(255)  NOT NULL,
+  date           DATE          NOT NULL,
+  total_minutes  INT           NOT NULL DEFAULT 1440,
+  booked_minutes INT           NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT uq_occupancy_resource_date UNIQUE (resource_id, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_occupancy_date
+  ON occupancy_records (date);
+
+CREATE INDEX IF NOT EXISTS idx_occupancy_resource_date
+  ON occupancy_records (resource_id, date);
+
+-- ---------------------------------------------------------------------------
+-- Tabla: financial_transactions
+-- ---------------------------------------------------------------------------
+-- Ledger inmutable de movimientos financieros por reserva.
+
+CREATE TABLE IF NOT EXISTS financial_transactions (
+  id               VARCHAR(255)    PRIMARY KEY,
+  business_id      VARCHAR(255)    NOT NULL,
+  customer_id      VARCHAR(255)    NOT NULL,
+  reservation_id   VARCHAR(255),
+  idempotency_key  VARCHAR(255),
+  type             VARCHAR(50)     NOT NULL
+                     CHECK (type IN ('CHARGE', 'PAYMENT', 'REFUND', 'ADJUSTMENT')),
+  amount           DECIMAL(10, 2)  NOT NULL CHECK (amount >= 0),
+  currency         VARCHAR(10)     NOT NULL DEFAULT 'ARS',
+  status           VARCHAR(50)     NOT NULL DEFAULT 'PENDING'
+                     CHECK (status IN ('PENDING', 'SETTLED', 'VOIDED')),
+  created_at       TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_idempotency_key
+  ON financial_transactions (idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ft_reservation
+  ON financial_transactions (reservation_id)
+  WHERE reservation_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ft_customer
+  ON financial_transactions (customer_id);
 
 -- ---------------------------------------------------------------------------
 -- Triggers updated_at
