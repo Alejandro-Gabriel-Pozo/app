@@ -10,8 +10,12 @@
  *   `if (this.categoryRepository)` a lo largo del servicio.
  * - `updateReservation` usa `Reservation.restore()` en lugar de
  *   `new Reservation()` para consistencia semántica con persistencia.
- * - `totalPrice` eliminado de los payloads de eventos — el campo no existe
- *   en el dominio. Se añadirá cuando esté modelado correctamente.
+ * - `businessId` se lee de `process.env.BUSINESS_ID` al emitir eventos.
+ *   En esta arquitectura single-tenant cada instancia del proceso
+ *   corresponde a un único negocio, por lo que el id del negocio es
+ *   configuración de entorno, no dato de request ni de dominio.
+ * - `cancelReservation` ahora corre dentro de una transacción y emite
+ *   `reservation.cancelled` atómicamente con el cambio de estado.
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -161,12 +165,14 @@ export class ReservationService {
    * Escribe reservation.confirmed en la misma transacción que el cambio de estado.
    */
   async confirmReservation(id: string): Promise<Reservation> {
+    const businessId  = process.env.BUSINESS_ID ?? '';
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
     await this.transactionManager.run(async (client: SqlClient) => {
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
+        businessId,
         aggregateType: 'RESERVATION',
         aggregateId:   reservation.id,
         eventType:     'reservation.confirmed',
@@ -184,10 +190,32 @@ export class ReservationService {
     return reservation;
   }
 
+  /**
+   * Cancela una reserva PENDING o CONFIRMED.
+   * Escribe reservation.cancelled en la misma transacción que el cambio de estado,
+   * de modo que el OutboxWorker pueda hacer VOID del CHARGE financiero asociado.
+   */
   async cancelReservation(id: string): Promise<Reservation> {
+    const businessId  = process.env.BUSINESS_ID ?? '';
     const reservation = await this.requireReservation(id);
     reservation.cancel();
-    await this.reservationRepository.save(reservation);
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      await this.reservationRepository.saveWithClient(client, reservation);
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId,
+        aggregateType: 'RESERVATION',
+        aggregateId:   reservation.id,
+        eventType:     'reservation.cancelled',
+        payload: {
+          reservationId: reservation.id,
+          customerId:    reservation.customer.id,
+          resourceId:    reservation.resource.id,
+          cancelledAt:   new Date().toISOString(),
+        },
+      });
+    });
+
     return reservation;
   }
 
@@ -196,12 +224,14 @@ export class ReservationService {
    * Escribe reservation.completed en la misma transacción que el cambio de estado.
    */
   async completeReservation(id: string): Promise<Reservation> {
+    const businessId  = process.env.BUSINESS_ID ?? '';
     const reservation = await this.requireReservation(id);
     reservation.complete();
 
     await this.transactionManager.run(async (client: SqlClient) => {
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
+        businessId,
         aggregateType: 'RESERVATION',
         aggregateId:   reservation.id,
         eventType:     'reservation.completed',
