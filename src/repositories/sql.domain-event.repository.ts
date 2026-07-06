@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from 'pg';
+import type { SqlClient } from './sql.client.js';
 import type { DomainEvent, DomainEventRepository } from './domain-event.repository.js';
 
 interface DomainEventRow {
@@ -15,6 +15,9 @@ interface DomainEventRow {
 /**
  * Implementación SQL del repositorio de eventos de dominio.
  *
+ * Recibe SqlClient (no pg.Pool directo) para mantener la inversión
+ * de dependencias consistente con el resto de los repositorios.
+ *
  * Schema esperado (PostgreSQL):
  * ```sql
  * CREATE TABLE domain_events (
@@ -29,14 +32,17 @@ interface DomainEventRow {
  * );
  *
  * CREATE INDEX idx_domain_events_pending
- *   ON domain_events (business_id, id)
+ *   ON domain_events (id)
  *   WHERE dispatched_at IS NULL;
  * ```
  */
 export class SqlDomainEventRepository implements DomainEventRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly sqlClient: SqlClient) {}
 
-  async insertWithClient(client: PoolClient, event: DomainEvent): Promise<void> {
+  async insertWithClient(
+    client: SqlClient,
+    event: Omit<DomainEvent, 'id' | 'occurredAt' | 'dispatchedAt'>,
+  ): Promise<void> {
     await client.query(
       `INSERT INTO domain_events
          (business_id, aggregate_type, aggregate_id, event_type, payload)
@@ -52,7 +58,7 @@ export class SqlDomainEventRepository implements DomainEventRepository {
   }
 
   async getPending(limit = 50): Promise<DomainEvent[]> {
-    const result = await this.pool.query<DomainEventRow>(
+    const result = await this.sqlClient.query<DomainEventRow>(
       `SELECT id, business_id, aggregate_type, aggregate_id,
               event_type, payload, occurred_at, dispatched_at
        FROM domain_events
@@ -75,7 +81,7 @@ export class SqlDomainEventRepository implements DomainEventRepository {
   }
 
   async markDispatched(id: number): Promise<void> {
-    await this.pool.query(
+    await this.sqlClient.query(
       `UPDATE domain_events
        SET dispatched_at = NOW()
        WHERE id = $1 AND dispatched_at IS NULL`,

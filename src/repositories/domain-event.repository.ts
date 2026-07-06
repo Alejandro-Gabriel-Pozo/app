@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { SqlClient } from './sql.client.js';
 
 export interface DomainEvent {
   /** Asignado por la BD (BIGSERIAL). Undefined antes de persistir. */
@@ -17,10 +17,10 @@ export interface DomainEvent {
 
 export interface DomainEventRepository {
   /**
-   * Inserta el evento usando el PoolClient de una transacción activa.
+   * Inserta el evento usando el SqlClient de una transacción activa.
    * NUNCA abrir una conexión nueva aquí — usar el client recibido.
    */
-  insertWithClient(client: PoolClient, event: DomainEvent): Promise<void>;
+  insertWithClient(client: SqlClient, event: Omit<DomainEvent, 'id' | 'occurredAt' | 'dispatchedAt'>): Promise<void>;
 
   /** Lee eventos pendientes (dispatched_at IS NULL) ordenados por id ASC. */
   getPending(limit: number): Promise<DomainEvent[]>;
