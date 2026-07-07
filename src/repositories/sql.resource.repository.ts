@@ -75,7 +75,7 @@ export class SqlResourceRepository implements ResourceRepository {
     const result = await this.sqlClient.query<{ total: number }>(
       `SELECT COUNT(*)::int AS total FROM resources WHERE active IS NOT FALSE`,
     );
-    return result.rows[0].total;
+    return result.rows[0]?.total ?? 0;
   }
 
   async delete(id: string): Promise<boolean> {

@@ -52,7 +52,7 @@ function loginRateLimiter(
   next: NextFunction,
 ): void {
   const ip =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ??
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ??
     req.socket.remoteAddress ??
     'unknown';
 

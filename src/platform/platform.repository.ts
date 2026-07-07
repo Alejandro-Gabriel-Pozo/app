@@ -103,7 +103,7 @@ export class PlatformRepository implements UserStore {
        RETURNING *`,
       [input.id, input.name, input.slug, input.plan, BusinessStatus.PENDING, input.ownerEmail],
     );
-    return this.rowToBusiness(result.rows[0]);
+    return this.rowToBusiness(result.rows[0]!);
   }
 
   async activateBusiness(
@@ -186,7 +186,7 @@ export class PlatformRepository implements UserStore {
        RETURNING *`,
       [input.id, input.email, input.businessId, input.role, input.passwordHash],
     );
-    return this.rowToUser(result.rows[0]);
+    return this.rowToUser(result.rows[0]!);
   }
 
   async findUserByEmailAndBusiness(

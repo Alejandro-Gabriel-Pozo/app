@@ -394,9 +394,9 @@ export function createCustomerRouter(container: AppContainer): Router {
         const updated = await container.reservationService.updateReservation(
           reservationId,
           {
-            startTime: body.startTime ? new Date(body.startTime) : undefined,
-            endTime:   body.endTime   ? new Date(body.endTime)   : undefined,
-            details:   body.details,
+            ...(body.startTime !== undefined && { startTime: new Date(body.startTime) }),
+            ...(body.endTime   !== undefined && { endTime:   new Date(body.endTime) }),
+            ...(body.details   !== undefined && { details:   body.details }),
           },
         );
 

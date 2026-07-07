@@ -64,7 +64,12 @@ export function createCategoryRouter(
         const body = CreateCategorySchema.parse(req.body);
         const businessId = String((req as any).user?.businessId ?? '');
         const plan = await getBusinessPlan(businessId);
-        const category = await categoryService.createCategory(body, plan);
+        const categoryInput = {
+          name: body.name,
+          fields: body.fields,
+          ...(body.description !== undefined && { description: body.description }),
+        };
+        const category = await categoryService.createCategory(categoryInput, plan);
         res.status(201).json(category);
       } catch (err) {
         if (err instanceof ZodError) {
@@ -87,7 +92,13 @@ export function createCategoryRouter(
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = UpdateCategorySchema.parse(req.body);
-        const category = await categoryService.updateCategory(String(req.params['id']), body);
+        const updateInput = {
+          ...(body.name        !== undefined && { name:        body.name }),
+          ...(body.description !== undefined && { description: body.description }),
+          ...(body.fields      !== undefined && { fields:      body.fields }),
+          ...(body.active      !== undefined && { active:      body.active }),
+        };
+        const category = await categoryService.updateCategory(String(req.params['id']), updateInput);
         res.json(category);
       } catch (err) {
         if (err instanceof ZodError) {

@@ -58,7 +58,11 @@ export function createPlatformPool(): SqlClient | null {
   return {
     async query<T = unknown>(sql: string, params?: unknown[]) {
       const result = await _platformPool!.query(sql, params);
-      return { rows: result.rows as T[], rowCount: result.rowCount ?? undefined };
+      const rowCount = result.rowCount ?? undefined;
+      return {
+        rows: result.rows as T[],
+        ...(rowCount !== undefined && { rowCount }),
+      };
     },
   };
 }
