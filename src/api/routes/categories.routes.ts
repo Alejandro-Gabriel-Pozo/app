@@ -15,6 +15,7 @@ import {
   CreateCategorySchema,
   UpdateCategorySchema,
 } from '../schemas/category.schemas.js';
+import type { CategoryField } from '../../types/resource-category.types.js';
 import { ZodError } from 'zod';
 
 export function createCategoryRouter(
@@ -66,7 +67,7 @@ export function createCategoryRouter(
         const plan = await getBusinessPlan(businessId);
         const categoryInput = {
           name: body.name,
-          fields: body.fields,
+          fields: body.fields as CategoryField[],
           ...(body.description !== undefined && { description: body.description }),
         };
         const category = await categoryService.createCategory(categoryInput, plan);
@@ -95,7 +96,7 @@ export function createCategoryRouter(
         const updateInput = {
           ...(body.name        !== undefined && { name:        body.name }),
           ...(body.description !== undefined && { description: body.description }),
-          ...(body.fields      !== undefined && { fields:      body.fields }),
+          ...(body.fields      !== undefined && { fields:      body.fields as CategoryField[] }),
           ...(body.active      !== undefined && { active:      body.active }),
         };
         const category = await categoryService.updateCategory(String(req.params['id']), updateInput);

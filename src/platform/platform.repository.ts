@@ -157,7 +157,7 @@ export class PlatformRepository implements UserStore {
        WHERE owner_email = $1 OR slug = $2`,
       [email, slug],
     );
-    return parseInt(result.rows[0].count, 10) > 0;
+    return parseInt(result.rows[0]!.count, 10) > 0;
   }
 
   /**
@@ -262,7 +262,7 @@ export class PlatformRepository implements UserStore {
         ? [email.toLowerCase(), businessId, excludeUserId]
         : [email.toLowerCase(), businessId],
     );
-    return parseInt(result.rows[0].count, 10) > 0;
+    return parseInt(result.rows[0]!.count, 10) > 0;
   }
 
   /**
