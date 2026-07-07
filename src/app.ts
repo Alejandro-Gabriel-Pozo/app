@@ -79,8 +79,17 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   // Middlewares globales
   // -------------------------------------------------------------------------
+  //
+  // CORS origin: en producción se requiere CORS_ORIGIN explícita.
+  // Si no está definida en producción, se bloquea todo origen (false)
+  // para evitar exponer la API a cualquier dominio.
+  // En desarrollo el fallback es '*' para comodidad local.
+  const corsOrigin =
+    process.env.CORS_ORIGIN ??
+    (process.env.NODE_ENV === 'production' ? false : '*');
+
   app.use(cors({
-    origin: process.env.CORS_ORIGIN ?? '*',
+    origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
