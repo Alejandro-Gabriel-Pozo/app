@@ -31,7 +31,7 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  */
 export class OutboxWorker {
   private readonly handlers = new Map<string, EventHandler[]>();
-  private intervalId?: ReturnType<typeof setInterval>;
+  private intervalId: ReturnType<typeof setInterval> | undefined = undefined;
   private polling = false;
 
   constructor(

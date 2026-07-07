@@ -188,9 +188,9 @@ export function createUsersRouter(
           : undefined;
 
         const updated = await platformRepo!.updateUser(targetId, businessId, {
-          email: body.email,
-          role:  body.role,
-          passwordHash,
+          ...(body.email     !== undefined && { email: body.email }),
+          ...(body.role      !== undefined && { role: body.role }),
+          ...(passwordHash   !== undefined && { passwordHash }),
         });
 
         res.json(toUserDto(updated!));

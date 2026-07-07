@@ -100,7 +100,7 @@ export class SqlCustomerRepository implements CustomerRepository {
        WHERE ccm.channel = 'EMAIL' AND LOWER(ccm.ccm_value) = LOWER($1)`,
       [email],
     );
-    if (!rows.length || !rows[0].password_hash) return undefined;
+    if (!rows.length || !rows[0]?.password_hash) return undefined;
     return { customer: rowsToCustomer(rows), passwordHash: rows[0].password_hash };
   }
 
@@ -187,15 +187,17 @@ export class SqlCustomerRepository implements CustomerRepository {
 // ── Helpers de mapeo (funciones puras) ────────────────────────────────────
 
 function rowsToCustomer(rows: CustomerRow[]): Customer {
-  const { id, display_name } = rows[0];
+  const first = rows[0];
+  if (!first) throw new Error('rowsToCustomer llamado con array vacío');
+  const { id, display_name } = first;
   const contactMethods: ContactMethod[] = rows
     .filter((r) => r.ccm_id !== null)
     .map((r) => ({
-      id:         r.ccm_id!,
-      channel:    r.channel as ContactMethod['channel'],
-      value:      r.ccm_value!,
-      isPrimary:  r.is_primary ?? false,
-      verifiedAt: r.verified_at ?? undefined,
+      id:        r.ccm_id!,
+      channel:   r.channel as ContactMethod['channel'],
+      value:     r.ccm_value!,
+      isPrimary: r.is_primary ?? false,
+      ...(r.verified_at !== null && r.verified_at !== undefined && { verifiedAt: r.verified_at }),
     }));
   return new Customer(id, display_name, contactMethods);
 }

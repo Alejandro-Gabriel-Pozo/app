@@ -89,15 +89,17 @@ function verifyPlatformToken(token: string): PlatformJwtPayload {
     throw err;
   }
 
-  const [header, body, signature] = parts;
+  const [header, body, signature] = parts as [string, string, string];
   const signingInput = `${header}.${body}`;
   const expectedSig = base64UrlEncode(
     createHmac('sha256', secret).update(signingInput).digest(),
   );
+  const expectedBuf = Buffer.from(expectedSig);
+  const receivedBuf = Buffer.from(signature);
 
   if (
-    Buffer.from(expectedSig).length !== Buffer.from(signature).length ||
-    !timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature))
+    expectedBuf.length !== receivedBuf.length ||
+    !timingSafeEqual(expectedBuf, receivedBuf)
   ) {
     const err = new Error('Firma inválida');
     (err as NodeJS.ErrnoException).code = 'JWT_INVALID_SIGNATURE';

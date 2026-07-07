@@ -56,7 +56,7 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       );
 
       if (existingIndex >= 0) {
-        this.snapshots[existingIndex].bookedMinutes += minInDay;
+        this.snapshots[existingIndex]!.bookedMinutes += minInDay;
       } else {
         this.snapshots.push({
           resourceId,

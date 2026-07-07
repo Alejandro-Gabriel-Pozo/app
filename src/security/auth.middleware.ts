@@ -70,7 +70,7 @@ export function verifyToken(token: string, secret: string): JwtPayload {
     throw err;
   }
 
-  const [header, body, signature] = parts;
+  const [header, body, signature] = parts as [string, string, string];
   const signingInput = `${header}.${body}`;
   const expectedSig = base64UrlEncode(
     createHmac('sha256', secret).update(signingInput).digest(),
@@ -148,8 +148,8 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
       req.user = {
         id: payload.sub,
         role: payload.role,
-        businessId: payload.business_id,
-        customerId: payload.customer_id,
+        ...(payload.business_id !== undefined && { businessId: payload.business_id }),
+        ...(payload.customer_id !== undefined && { customerId: payload.customer_id }),
       };
       next();
     } catch (err) {

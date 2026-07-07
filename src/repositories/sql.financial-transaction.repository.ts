@@ -84,7 +84,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.status,
       ],
     );
-    return this.rowToEntity(result.rows[0]);
+    return this.rowToEntity(result.rows[0]!);
   }
 
   async getByReservationId(reservationId: string): Promise<FinancialTransaction[]> {

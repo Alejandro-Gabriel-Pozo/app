@@ -89,7 +89,10 @@ async function getTenantClient(
   const client: SqlClient = {
     async query(sql: string, params?: unknown[]) {
       const result = await pool.query(sql, params);
-      return { rows: result.rows, rowCount: result.rowCount ?? undefined };
+      const rowCount = result.rowCount ?? undefined;
+      return rowCount !== undefined
+        ? { rows: result.rows, rowCount }
+        : { rows: result.rows };
     },
   };
  

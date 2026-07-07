@@ -14,14 +14,15 @@ import type {
 } from '../types/resource-category.types.js';
 
 function mapRow(row: Record<string, unknown>): ResourceCategory {
+  const description = row['description'] as string | undefined;
   return {
-    id:          row['id'] as string,
-    name:        row['name'] as string,
-    description: row['description'] as string | undefined,
-    fields:      (row['fields'] as CategoryField[]) ?? [],
-    active:      row['active'] as boolean,
-    createdAt:   new Date(row['created_at'] as string),
-    updatedAt:   new Date(row['updated_at'] as string),
+    id:        row['id'] as string,
+    name:      row['name'] as string,
+    ...(description !== undefined && { description }),
+    fields:    (row['fields'] as CategoryField[]) ?? [],
+    active:    row['active'] as boolean,
+    createdAt: new Date(row['created_at'] as string),
+    updatedAt: new Date(row['updated_at'] as string),
   };
 }
 
@@ -41,7 +42,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
       [id],
     );
     const rows = result.rows as Record<string, unknown>[];
-    return rows.length ? mapRow(rows[0]) : null;
+    return rows.length ? mapRow(rows[0] ?? {}) : null;
   }
 
   async countActive(): Promise<number> {
@@ -60,7 +61,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
       [dto.id, dto.name, dto.description ?? null, JSON.stringify(dto.fields ?? [])],
     );
     const rows = result.rows as Record<string, unknown>[];
-    return mapRow(rows[0]);
+    return mapRow(rows[0] ?? {});
   }
 
   async update(id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory> {
@@ -86,7 +87,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
     );
     const rows = result.rows as Record<string, unknown>[];
     if (!rows.length) throw new Error(`Category ${id} not found`);
-    return mapRow(rows[0]);
+    return mapRow(rows[0] ?? {});
   }
 
   async deactivate(id: string): Promise<void> {

@@ -73,10 +73,10 @@ function getPool(): InstanceType<typeof Pool> {
 export const pgClient: SqlClient = {
   async query(sql: string, params?: unknown[]) {
     const result = await getPool().query(sql, params);
-    return {
-      rows: result.rows,
-      rowCount: result.rowCount ?? undefined,
-    };
+    const rowCount = result.rowCount ?? undefined;
+    return rowCount !== undefined
+      ? { rows: result.rows, rowCount }
+      : { rows: result.rows };
   },
 };
 
@@ -93,7 +93,10 @@ export async function withTransaction<T>(
     const txClient: SqlClient = {
       async query(sql: string, params?: unknown[]) {
         const result = await client.query(sql, params);
-        return { rows: result.rows, rowCount: result.rowCount ?? undefined };
+        const rowCount = result.rowCount ?? undefined;
+        return rowCount !== undefined
+          ? { rows: result.rows, rowCount }
+          : { rows: result.rows };
       },
     };
     const result = await fn(txClient);

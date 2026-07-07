@@ -44,7 +44,7 @@ export class ReportService {
     );
 
     return snapshots.map((snapshot) => ({
-      date: snapshot.date.toISOString().split('T')[0],
+      date: snapshot.date.toISOString().split('T')[0] ?? '',
       resourceId: snapshot.resourceId,
       resourceName: snapshot.resourceName,
       totalMinutes: snapshot.totalMinutes,
@@ -92,8 +92,8 @@ export class ReportService {
         : 0;
 
     return {
-      startDate: startDate.toISOString().split('T')[0],
-      endDate: endDate.toISOString().split('T')[0],
+      startDate: startDate.toISOString().split('T')[0] ?? '',
+      endDate: endDate.toISOString().split('T')[0] ?? '',
       totalResources: averageByResource.length,
       averageOccupancy: totalOccupancy,
       topOccupied,
@@ -146,7 +146,7 @@ export class ReportService {
       if (!byType[type]) {
         byType[type] = [];
       }
-      byType[type].push(stat);
+      byType[type]!.push(stat);
     }
 
     return byType;
