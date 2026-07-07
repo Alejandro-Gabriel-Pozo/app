@@ -55,6 +55,9 @@ function domainErrorStatus(error: DomainError): number {
     case 'UNSUPPORTED_RESOURCE_TYPE':
       return 400;
     default:
-      return 400;
+      // DomainError con code no mapeado — es un error del servidor, no del cliente.
+      // Logueamos para detectar codigos nuevos que necesiten mapeo explicito.
+      console.error(`[errorHandler] DomainError sin mapeo de status: "${error.code}"`);
+      return 500;
   }
 }
