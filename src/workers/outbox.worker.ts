@@ -55,12 +55,22 @@ export class OutboxWorker {
     console.log(`[OutboxWorker] Iniciado — polling cada ${this.pollIntervalMs}ms`);
   }
 
-  stop(): void {
+  /**
+   * Detiene el worker y espera a que el ciclo de polling activo termine.
+   * Es async para que el caller pueda hacer `await worker.stop()` correctamente.
+   */
+  async stop(): Promise<void> {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = undefined;
-      console.log('[OutboxWorker] Detenido');
     }
+
+    // Esperar a que el ciclo actual termine si está en curso
+    while (this.polling) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+
+    console.log('[OutboxWorker] Detenido');
   }
 
   // ---------------------------------------------------------------------------
