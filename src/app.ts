@@ -2,28 +2,20 @@
  * @file app.ts
  * @description Bootstrap de la aplicación Express — arquitectura multi-tenant.
  *
- * ## Dos bases de datos
- * - PLATFORM_DATABASE_URL → BD central (businesses, platform_users)
- * - DATABASE_URL          → BD del negocio (inyectada por tenantMiddleware en req.db)
- *
  * ## Orden de middlewares
  * 1. cors, express.json
  * 2. /health, /docs, /openapi.json  — rutas públicas
  * 3. /platform/*                    — gestión de plataforma (SUPERADMIN)
- *    - POST /platform/login         — público
- *    - resto requiere JWT SUPERADMIN (authenticatePlatform dentro del router)
- * 4. POST /register                 — registro de negocios (público, sin auth)
+ * 4. POST /register                 — registro de negocios (público)
  * 5. POST /api/login                — login de empleados (público)
- * 6. /api/customer/register         — registro de clientes (público)
- * 7. /api/customer/login            — login de clientes (público)
- * 8. /api/customer/availability/**  — disponibilidad pública (sin auth)
- * 9. authenticate()                 — verifica JWT, protege /api/* restante
- * 10. tenantMiddleware()            — inyecta req.db con la BD del negocio
- * 11. /api/resources, /reservations, /reports, /customers, /users, /categories
- *                                    — rutas de empleados (todas usan req.db)
- * 12. /api/admin                    — reparación/mantenimiento (ADMIN)
- * 13. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
- * 14. errorHandler
+ * 6. /api/customer/*                — portal del cliente
+ * 7. authenticate()                 — verifica JWT, protege /api/* restante
+ * 8. /api/admin                     — mantenimiento (ADMIN, SIN tenantMiddleware)
+ *    ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
+ *       necesita correr cuando la BD del tenant todavía no está activa.
+ * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
+ * 10. /api/resources, /reservations, /reports, /customers, /users, /categories
+ * 11. errorHandler
  */
 
 import express from 'express';
@@ -59,7 +51,7 @@ export async function createApp(): Promise<{
   const app = express();
 
   // -------------------------------------------------------------------------
-  // BD central y repositorio de plataforma (usa pool compartido de container.ts)
+  // BD central y repositorio de plataforma
   // -------------------------------------------------------------------------
   const platformClient = createPlatformPool();
   const platformRepo   = platformClient ? new PlatformRepository(platformClient) : null;
@@ -71,24 +63,12 @@ export async function createApp(): Promise<{
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Auth service (empleados)
-  // -------------------------------------------------------------------------
   const authService = new AuthService(platformRepo);
-
-  // -------------------------------------------------------------------------
-  // Container principal (siempre PostgreSQL)
-  // -------------------------------------------------------------------------
-  const container = await createAppContainer();
+  const container   = await createAppContainer();
 
   // -------------------------------------------------------------------------
   // Middlewares globales
   // -------------------------------------------------------------------------
-  //
-  // CORS origin: en producción se requiere CORS_ORIGIN explícita.
-  // Si no está definida en producción, se bloquea todo origen (false)
-  // para evitar exponer la API a cualquier dominio.
-  // En desarrollo el fallback es '*' para comodidad local.
   const corsOrigin =
     process.env.CORS_ORIGIN ??
     (process.env.NODE_ENV === 'production' ? false : '*');
@@ -153,10 +133,24 @@ export async function createApp(): Promise<{
   app.use('/api/customer', createCustomerRouter(container));
 
   // -------------------------------------------------------------------------
-  // authenticate() + tenantMiddleware() — protegen todo /api/*
+  // authenticate() — protege todo /api/* desde aquí
   // -------------------------------------------------------------------------
   app.use('/api', authenticate());
 
+  // -------------------------------------------------------------------------
+  // /api/admin — ANTES de tenantMiddleware
+  //
+  // repair-tenant-db necesita ejecutarse cuando db_url_encrypted es null,
+  // es decir, exactamente cuando tenantMiddleware fallaría con BUSINESS_NOT_READY.
+  // Solo necesita el JWT verificado (authenticate ya corrió arriba).
+  // El router interno vuelve a llamar authorize([ADMIN]) como segunda defensa.
+  // -------------------------------------------------------------------------
+  app.use('/api/admin', createAdminRouter(platformRepo));
+
+  // -------------------------------------------------------------------------
+  // tenantMiddleware() — inyecta req.db con la BD del negocio
+  // Solo se aplica a las rutas de empleados que están debajo.
+  // -------------------------------------------------------------------------
   if (platformRepo) {
     app.use('/api', tenantMiddleware(platformRepo));
   }
@@ -170,16 +164,6 @@ export async function createApp(): Promise<{
   app.use('/api/customers',    createCustomersRouter(container));
   app.use('/api/users',        createUsersRouter(platformRepo));
   app.use('/api/categories',   createCategoryRouter(platformRepo));
-
-  // -------------------------------------------------------------------------
-  // /api/admin — reparación/mantenimiento puntual (ADMIN)
-  // Monta DESPUÉS de authenticate() + tenantMiddleware() para que el JWT
-  // ya esté verificado. El propio router vuelve a llamar authorize([ADMIN])
-  // como segunda línea de defensa.
-  // ⚠️  Una vez usado repair-tenant-db, se puede borrar este bloque y
-  //     admin.routes.ts sin efectos secundarios.
-  // -------------------------------------------------------------------------
-  app.use('/api/admin', createAdminRouter(platformRepo));
 
   app.use(errorHandler);
 
