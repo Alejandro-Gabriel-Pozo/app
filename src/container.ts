@@ -13,6 +13,7 @@ import { OccupancyRepository }           from './repositories/occupancy.reposito
 import { CustomerRepository }            from './repositories/customer.repository.js';
 import { ICategoryRepository }           from './repositories/category.repository.js';
 import { FinancialTransactionRepository } from './repositories/financial-transaction.repository.js';
+import { TransactionManager }            from './db/transaction-manager.js';
 
 import { SqlResourceRepository }             from './repositories/sql.resource.repository.js';
 import { SqlReservationRepository }          from './repositories/sql.reservation.repository.js';
@@ -85,6 +86,7 @@ export interface AppContainer {
   customerRepository:             CustomerRepository;
   categoryRepository:             ICategoryRepository;
   financialTransactionRepository: FinancialTransactionRepository;
+  transactionManager:             TransactionManager;
   reservationService:             ReservationService;
   reportService:                  ReportService;
   categoryService:                CategoryService;
@@ -130,8 +132,6 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const outboxWorker = new OutboxWorker(domainEventRepository);
   registerFinancialHandlers(outboxWorker, financialTransactionRepository);
 
-  // Plataforma: guard explícito — platformSqlClient puede ser null si
-  // PLATFORM_DATABASE_URL no está definida.
   const platformSqlClient  = createPlatformPool();
   const platformRepository = platformSqlClient
     ? new PlatformRepository(platformSqlClient)
@@ -152,6 +152,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
     customerRepository,
     categoryRepository,
     financialTransactionRepository,
+    transactionManager,
     reservationService,
     reportService,
     categoryService,
