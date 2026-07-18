@@ -64,6 +64,8 @@ export interface SystemUser {
   role: UserRole;
   /** Hash en formato "salt_hex:hash_hex" producido por `hashPassword()` */
   passwordHash: string;
+  /** ID del negocio al que pertenece (multi-tenant) — ausente en modo single-tenant */
+  businessId?: string;
 }
  
 /**
@@ -233,3 +235,4 @@ export class InMemoryUserStore implements UserStore {
     return this.users.get(email.toLowerCase());
   }
 }
+
