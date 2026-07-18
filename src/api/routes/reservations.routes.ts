@@ -2,6 +2,11 @@
  * @file reservations.routes.ts
  * @description Rutas de gestión de reservas con control de acceso por rol.
  *
+ * ## Aislamiento multi-tenant
+ * Cada handler construye sus repositorios y ReservationService con req.db
+ * (SqlClient inyectado por tenantMiddleware). El TransactionManager es
+ * stateless y se reutiliza del container global.
+ *
  * ## Matriz de permisos
  *
  * | Operación                     | ADMIN | RECEPTIONIST | WAITER |
@@ -25,17 +30,53 @@ import { UserRole } from '../../types/enums.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { authorize } from '../../security/auth.middleware.js';
 import { CreateReservationSchema } from '../schemas/request.schemas.js';
+import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
+import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
+import { SqlCustomerRepository }    from '../../repositories/sql.customer.repository.js';
+import { SqlOccupancyRepository }   from '../../repositories/sql.occupancy.repository.js';
+import { SqlCategoryRepository }    from '../../repositories/sql.category.repository.js';
+import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
+import { SqlFinancialTransactionRepository } from '../../repositories/sql.financial-transaction.repository.js';
+import { ReservationService }       from '../../services/reservation.service.js';
 
 const READERS    = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
 const MANAGERS   = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 const COMPLETERS = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
 
+/** Construye todos los repositorios y el servicio usando req.db del tenant. */
+function buildService(req: Request, container: AppContainer): {
+  reservationService: ReservationService;
+  reservationRepo: SqlReservationRepository;
+  customerRepo: SqlCustomerRepository;
+  financialRepo: SqlFinancialTransactionRepository;
+} {
+  const resourceRepo    = new SqlResourceRepository(req.db);
+  const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
+  const customerRepo    = new SqlCustomerRepository(req.db);
+  const occupancyRepo   = new SqlOccupancyRepository(req.db);
+  const categoryRepo    = new SqlCategoryRepository(req.db);
+  const domainEventRepo = new SqlDomainEventRepository(req.db);
+  const financialRepo   = new SqlFinancialTransactionRepository(req.db);
+
+  const reservationService = new ReservationService(
+    reservationRepo,
+    resourceRepo,
+    occupancyRepo,
+    categoryRepo,
+    domainEventRepo,
+    container.transactionManager,
+  );
+
+  return { reservationService, reservationRepo, customerRepo, financialRepo };
+}
+
 export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
-  router.get('/', authorize(READERS), async (_req, res, next) => {
+  router.get('/', authorize(READERS), async (req, res, next) => {
     try {
-      const reservations = await container.reservationRepository.getAll();
+      const { reservationRepo } = buildService(req, container);
+      const reservations = await reservationRepo.getAll();
       res.json(reservations.map(toReservationDto));
     } catch (err) { next(err); }
   });
@@ -43,41 +84,22 @@ export function createReservationsRouter(container: AppContainer): Router {
   router.get('/:id', authorize(READERS), async (req, res, next) => {
     try {
       const id = routeParam(req.params.id);
-      const reservation = await container.reservationService.getReservation(id);
+      const { reservationService } = buildService(req, container);
+      const reservation = await reservationService.getReservation(id);
       if (!reservation) throw new ReservationNotFoundError(id);
       res.json(toReservationDto(reservation));
     } catch (err) { next(err); }
   });
 
-  /**
-   * GET /api/reservations/:id/charges
-   *
-   * Devuelve todos los movimientos financieros asociados a una reserva.
-   * Solo ADMIN y RECEPTIONIST pueden ver datos financieros.
-   *
-   * Respuestas:
-   * - 200: array de FinancialTransaction (puede ser vacío si no hay cargos)
-   * - 404: reserva no encontrada
-   * - 503: ledger no disponible en modo in-memory
-   */
   router.get('/:id/charges', authorize(MANAGERS), async (req, res, next) => {
     try {
       const id = routeParam(req.params.id);
+      const { reservationService, financialRepo } = buildService(req, container);
 
-      // Verificar que la reserva existe antes de consultar el ledger.
-      const reservation = await container.reservationService.getReservation(id);
+      const reservation = await reservationService.getReservation(id);
       if (!reservation) throw new ReservationNotFoundError(id);
 
-      // En modo in-memory no hay ledger — responder con 503 descriptivo.
-      if (!container.financialTransactionRepository) {
-        res.status(503).json({
-          code:    'LEDGER_UNAVAILABLE',
-          message: 'El ledger financiero no está disponible en modo in-memory. Conectá DATABASE_URL para activarlo.',
-        });
-        return;
-      }
-
-      const charges = await container.financialTransactionRepository.getByReservationId(id);
+      const charges = await financialRepo.getByReservationId(id);
 
       res.json(charges.map((c) => ({
         id:            c.id,
@@ -95,8 +117,9 @@ export function createReservationsRouter(container: AppContainer): Router {
   router.post('/', authorize(MANAGERS), async (req, res, next) => {
     try {
       const body = CreateReservationSchema.parse(req.body);
+      const { reservationService, customerRepo } = buildService(req, container);
 
-      const existingCustomer = await container.customerRepository.getById(body.customer.id);
+      const existingCustomer = await customerRepo.getById(body.customer.id);
       if (!existingCustomer) {
         res.status(404).json({
           code: 'CUSTOMER_NOT_FOUND',
@@ -105,7 +128,7 @@ export function createReservationsRouter(container: AppContainer): Router {
         return;
       }
 
-      const reservation = await container.reservationService.createReservation({
+      const reservation = await reservationService.createReservation({
         id: randomUUID(),
         resourceId: body.resourceId,
         customer: new Customer(
@@ -124,7 +147,8 @@ export function createReservationsRouter(container: AppContainer): Router {
 
   router.post('/:id/confirm', authorize(MANAGERS), async (req, res, next) => {
     try {
-      const reservation = await container.reservationService.confirmReservation(
+      const { reservationService } = buildService(req, container);
+      const reservation = await reservationService.confirmReservation(
         routeParam(req.params.id),
       );
       res.json(toReservationDto(reservation));
@@ -133,7 +157,8 @@ export function createReservationsRouter(container: AppContainer): Router {
 
   router.post('/:id/cancel', authorize(MANAGERS), async (req, res, next) => {
     try {
-      const reservation = await container.reservationService.cancelReservation(
+      const { reservationService } = buildService(req, container);
+      const reservation = await reservationService.cancelReservation(
         routeParam(req.params.id),
       );
       res.json(toReservationDto(reservation));
@@ -142,7 +167,8 @@ export function createReservationsRouter(container: AppContainer): Router {
 
   router.post('/:id/complete', authorize(COMPLETERS), async (req, res, next) => {
     try {
-      const reservation = await container.reservationService.completeReservation(
+      const { reservationService } = buildService(req, container);
+      const reservation = await reservationService.completeReservation(
         routeParam(req.params.id),
       );
       res.json(toReservationDto(reservation));

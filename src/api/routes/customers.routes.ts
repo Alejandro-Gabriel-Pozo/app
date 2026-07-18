@@ -2,6 +2,10 @@
  * @file customers.routes.ts
  * @description Gestión de clientes por parte de empleados (ADMIN/RECEPTIONIST).
  *
+ * ## Aislamiento multi-tenant
+ * Cada handler instancia SqlCustomerRepository(req.db) con el SqlClient
+ * inyectado por tenantMiddleware para el negocio del token JWT.
+ *
  * A diferencia de `POST /api/customer/register` (portal público, requiere
  * contraseña porque crea una cuenta con login propio), estas rutas permiten
  * cargar un cliente "walk-in" sin pedirle que se autentique — pensado para
@@ -15,6 +19,7 @@ import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import { AppContainer } from '../../container.js';
 import { Customer } from '../../domain/entities.js';
 import { UserRole } from '../../types/enums.js';
+import { SqlCustomerRepository } from '../../repositories/sql.customer.repository.js';
 
 const MANAGERS = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 
@@ -31,17 +36,17 @@ function toCustomerDto(customer: Customer) {
   };
 }
 
-export function createCustomersRouter(container: AppContainer): Router {
+export function createCustomersRouter(_container: AppContainer): Router {
   const router = Router();
 
-  // GET /api/customers/:id — buscar cliente existente por id
   router.get(
     '/:id',
     authorize(MANAGERS),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        const repo = new SqlCustomerRepository(req.db);
         const id = String(req.params['id']);
-        const customer = await container.customerRepository.getById(id);
+        const customer = await repo.getById(id);
         if (!customer) {
           res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: `No existe un cliente con id "${id}"` });
           return;
@@ -53,7 +58,6 @@ export function createCustomersRouter(container: AppContainer): Router {
     },
   );
 
-  // GET /api/customers?email=... — buscar cliente existente por email
   router.get(
     '/',
     authorize(MANAGERS),
@@ -64,7 +68,8 @@ export function createCustomersRouter(container: AppContainer): Router {
           res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Query param "email" es obligatorio.' });
           return;
         }
-        const customer = await container.customerRepository.getByEmail(email);
+        const repo = new SqlCustomerRepository(req.db);
+        const customer = await repo.getByEmail(email);
         res.json(customer ? toCustomerDto(customer) : null);
       } catch (err) {
         next(err);
@@ -72,15 +77,15 @@ export function createCustomersRouter(container: AppContainer): Router {
     },
   );
 
-  // POST /api/customers — alta rápida sin contraseña (walk-in)
   router.post(
     '/',
     authorize(MANAGERS),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        const repo = new SqlCustomerRepository(req.db);
         const body = CreateCustomerSchema.parse(req.body);
 
-        const existing = await container.customerRepository.getByEmail(body.email);
+        const existing = await repo.getByEmail(body.email);
         if (existing) {
           res.status(409).json({
             code: 'CUSTOMER_ALREADY_EXISTS',
@@ -91,7 +96,7 @@ export function createCustomersRouter(container: AppContainer): Router {
         }
 
         const customer = new Customer(randomUUID(), body.fullName, body.email);
-        await container.customerRepository.save(customer);
+        await repo.save(customer);
 
         res.status(201).json(toCustomerDto(customer));
       } catch (err) {

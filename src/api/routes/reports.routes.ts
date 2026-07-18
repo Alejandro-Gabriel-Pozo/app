@@ -1,6 +1,10 @@
 /**
  * @file reports.routes.ts
  * @description Rutas de reportes de ocupación.
+ *
+ * ## Aislamiento multi-tenant
+ * Cada handler instancia SqlOccupancyRepository(req.db) y ReportService
+ * con el SqlClient inyectado por tenantMiddleware para el negocio del JWT.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -12,42 +16,22 @@ import {
   SummaryQuerySchema,
   UnderutilizedQuerySchema,
 } from '../schemas/request.schemas.js';
+import { SqlOccupancyRepository } from '../../repositories/sql.occupancy.repository.js';
+import { ReportService }          from '../../services/report.service.js';
 
 const REPORT_READERS = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 
-export function createReportsRouter(container: AppContainer): Router {
+export function createReportsRouter(_container: AppContainer): Router {
   const router = Router();
 
-  /**
-   * @swagger
-   * /api/reports/occupancy:
-   *   get:
-   *     summary: Reporte diario de ocupación
-   *     tags: [Reports]
-   *     security:
-   *       - BearerAuth: []
-   *     parameters:
-   *       - name: startDate
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *       - name: endDate
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *     responses:
-   *       200: { description: Lista de filas de ocupación diaria }
-   *       400: { description: Parámetros de fecha inválidos }
-   *       401: { description: No autenticado }
-   *       403: { description: Rol sin permiso (WAITER) }
-   */
   router.get(
     '/occupancy',
     authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const query = DateRangeQuerySchema.parse(req.query);
-        const report = await container.reportService.generateOccupancyReport(
+        const reportService = new ReportService(new SqlOccupancyRepository(req.db));
+        const report = await reportService.generateOccupancyReport(
           new Date(query.startDate),
           new Date(query.endDate),
         );
@@ -58,39 +42,14 @@ export function createReportsRouter(container: AppContainer): Router {
     },
   );
 
-  /**
-   * @swagger
-   * /api/reports/summary:
-   *   get:
-   *     summary: Resumen ejecutivo de ocupación
-   *     tags: [Reports]
-   *     security:
-   *       - BearerAuth: []
-   *     parameters:
-   *       - name: startDate
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *       - name: endDate
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *       - name: limit
-   *         in: query
-   *         schema: { type: integer, minimum: 1, maximum: 100, default: 5 }
-   *     responses:
-   *       200: { description: Resumen de ocupación }
-   *       400: { description: Parámetros inválidos }
-   *       401: { description: No autenticado }
-   *       403: { description: Rol sin permiso (WAITER) }
-   */
   router.get(
     '/summary',
     authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const query = SummaryQuerySchema.parse(req.query);
-        const summary = await container.reportService.generateOccupancySummary(
+        const reportService = new ReportService(new SqlOccupancyRepository(req.db));
+        const summary = await reportService.generateOccupancySummary(
           new Date(query.startDate),
           new Date(query.endDate),
           query.limit,
@@ -102,40 +61,14 @@ export function createReportsRouter(container: AppContainer): Router {
     },
   );
 
-  /**
-   * @swagger
-   * /api/reports/underutilized:
-   *   get:
-   *     summary: Recursos subutilizados
-   *     tags: [Reports]
-   *     security:
-   *       - BearerAuth: []
-   *     parameters:
-   *       - name: startDate
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *       - name: endDate
-   *         in: query
-   *         required: true
-   *         schema: { type: string, format: date-time }
-   *       - name: threshold
-   *         in: query
-   *         schema: { type: number, minimum: 0, maximum: 1, default: 0.3 }
-   *     responses:
-   *       200: { description: Lista de recursos subutilizados }
-   *       400: { description: Parámetros inválidos }
-   *       401: { description: No autenticado }
-   *       403: { description: Rol sin permiso (WAITER) }
-   */
   router.get(
     '/underutilized',
     authorize(REPORT_READERS),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const query = UnderutilizedQuerySchema.parse(req.query);
-        // getUnderutilizedResources acepta (startDate, endDate, threshold) — 3 args
-        const result = await container.reportService.getUnderutilizedResources(
+        const reportService = new ReportService(new SqlOccupancyRepository(req.db));
+        const result = await reportService.getUnderutilizedResources(
           new Date(query.startDate),
           new Date(query.endDate),
           query.threshold,

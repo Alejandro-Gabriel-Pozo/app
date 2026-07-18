@@ -2,6 +2,12 @@
  * @file resources.routes.ts
  * @description Rutas de recursos reservables.
  *
+ * ## Aislamiento multi-tenant
+ * Cada handler instancia SqlResourceRepository(req.db) donde req.db es el
+ * SqlClient inyectado por tenantMiddleware para el negocio del token JWT.
+ * Así cada request opera sobre la BD correcta sin importar cuántos negocios
+ * haya en el sistema.
+ *
  * ## Endpoints
  * GET    /                        — Listar todos los recursos activos
  * GET    /category/:categoryId    — Filtrar por categoría
@@ -10,16 +16,12 @@
  * POST   /                        — Crear recurso (ADMIN)
  * PUT    /:id                     — Actualizar recurso (ADMIN)
  * DELETE /:id                     — Dar de baja recurso — soft delete (ADMIN)
- *
- * ## Cambios
- * - Se reemplaza `/type/:type` por `/category/:categoryId`.
- *   El enum `ResourceType` ya no existe — el filtro es por FK a `resource_categories`.
- * - Se agregan POST, PUT y DELETE protegidos con `authorize([UserRole.ADMIN])`.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { AppContainer } from '../../container.js';
+import { SqlResourceRepository } from '../../repositories/sql.resource.repository.js';
 import { toResourceDto } from '../mappers/reservation.mapper.js';
 import { AvailabilityQuerySchema, CreateResourceSchema } from '../schemas/request.schemas.js';
 import { ResourceNotFoundError } from '../../domain/errors.js';
@@ -27,31 +29,44 @@ import { routeParam } from '../utils/params.js';
 import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import { BookableResource } from '../../domain/entities.js';
 import { UserRole } from '../../types/enums.js';
+import {
+  SqlReservationRepository,
+} from '../../repositories/sql.reservation.repository.js';
+import {
+  SqlOccupancyRepository,
+} from '../../repositories/sql.occupancy.repository.js';
+import {
+  SqlCategoryRepository,
+} from '../../repositories/sql.category.repository.js';
+import {
+  SqlDomainEventRepository,
+} from '../../repositories/sql.domain-event.repository.js';
+import { ReservationService } from '../../services/reservation.service.js';
 
 export function createResourcesRouter(container: AppContainer): Router {
   const router = Router();
 
   // -------------------------------------------------------------------------
-  // Rutas GET (públicas dentro de /api — requieren JWT pero no rol específico)
+  // Rutas GET
   // -------------------------------------------------------------------------
 
-  /** Listar todos los recursos activos */
-  router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
+  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const resources = await container.resourceRepository.getAll();
+      const repo = new SqlResourceRepository(req.db);
+      const resources = await repo.getAll();
       res.json(resources.map(toResourceDto));
     } catch (err) {
       next(err);
     }
   });
 
-  /** Filtrar recursos por categoría */
   router.get(
     '/category/:categoryId',
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const repo = new SqlResourceRepository(req.db);
         const categoryId = routeParam(req.params.categoryId);
-        const resources = await container.resourceRepository.getByCategory(categoryId);
+        const resources = await repo.getByCategory(categoryId);
         res.json(resources.map(toResourceDto));
       } catch (err) {
         next(err);
@@ -59,14 +74,28 @@ export function createResourcesRouter(container: AppContainer): Router {
     },
   );
 
-  /** Verificar disponibilidad de un recurso en un rango de tiempo */
   router.get(
     '/:id/availability',
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const resourceId = routeParam(req.params.id);
         const query = AvailabilityQuerySchema.parse(req.query);
-        const available = await container.reservationService.checkAvailability(
+
+        const resourceRepo     = new SqlResourceRepository(req.db);
+        const reservationRepo  = new SqlReservationRepository(req.db, resourceRepo);
+        const occupancyRepo    = new SqlOccupancyRepository(req.db);
+        const categoryRepo     = new SqlCategoryRepository(req.db);
+        const domainEventRepo  = new SqlDomainEventRepository(req.db);
+        const reservationService = new ReservationService(
+          reservationRepo,
+          resourceRepo,
+          occupancyRepo,
+          categoryRepo,
+          domainEventRepo,
+          container.transactionManager,
+        );
+
+        const available = await reservationService.checkAvailability(
           resourceId,
           new Date(query.startTime),
           new Date(query.endTime),
@@ -83,11 +112,11 @@ export function createResourcesRouter(container: AppContainer): Router {
     },
   );
 
-  /** Obtener un recurso por ID */
   router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const repo = new SqlResourceRepository(req.db);
       const resourceId = routeParam(req.params.id);
-      const resource = await container.resourceRepository.getById(resourceId);
+      const resource = await repo.getById(resourceId);
       if (!resource) {
         throw new ResourceNotFoundError(resourceId);
       }
@@ -101,21 +130,16 @@ export function createResourcesRouter(container: AppContainer): Router {
   // Rutas de escritura — solo ADMIN
   // -------------------------------------------------------------------------
 
-  /**
-   * POST /api/resources
-   * Crea un nuevo recurso.
-   * Si no se envía `id`, se genera un UUID automáticamente.
-   */
   router.post(
     '/',
     authorize([UserRole.ADMIN]),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const repo = new SqlResourceRepository(req.db);
         const body = CreateResourceSchema.parse(req.body);
         const id = body.id ?? randomUUID();
 
-        // Evitar duplicados por nombre dentro del mismo negocio
-        const existing = await container.resourceRepository.getByName(body.name);
+        const existing = await repo.getByName(body.name);
         if (existing) {
           res.status(409).json({
             code: 'RESOURCE_NAME_CONFLICT',
@@ -132,7 +156,7 @@ export function createResourcesRouter(container: AppContainer): Router {
           body.visualData ?? null,
         );
 
-        await container.resourceRepository.save(resource);
+        await repo.save(resource);
         res.status(201).json(toResourceDto(resource));
       } catch (err) {
         next(err);
@@ -140,29 +164,23 @@ export function createResourcesRouter(container: AppContainer): Router {
     },
   );
 
-  /**
-   * PUT /api/resources/:id
-   * Actualiza un recurso existente (reemplaza campos enviados).
-   * Usa el mismo upsert de `save()` — todos los campos son obligatorios
-   * porque `BookableResource` es inmutable.
-   */
   router.put(
     '/:id',
     authorize([UserRole.ADMIN]),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const repo = new SqlResourceRepository(req.db);
         const resourceId = routeParam(req.params.id);
 
-        const current = await container.resourceRepository.getById(resourceId);
+        const current = await repo.getById(resourceId);
         if (!current) {
           throw new ResourceNotFoundError(resourceId);
         }
 
         const body = CreateResourceSchema.parse(req.body);
 
-        // Si cambia el nombre, verificar que no colisione con otro recurso
         if (body.name !== current.name) {
-          const nameConflict = await container.resourceRepository.getByName(body.name);
+          const nameConflict = await repo.getByName(body.name);
           if (nameConflict && nameConflict.id !== resourceId) {
             res.status(409).json({
               code: 'RESOURCE_NAME_CONFLICT',
@@ -180,7 +198,7 @@ export function createResourcesRouter(container: AppContainer): Router {
           body.visualData ?? current.visualData,
         );
 
-        await container.resourceRepository.save(updated);
+        await repo.save(updated);
         res.json(toResourceDto(updated));
       } catch (err) {
         next(err);
@@ -188,19 +206,14 @@ export function createResourcesRouter(container: AppContainer): Router {
     },
   );
 
-  /**
-   * DELETE /api/resources/:id
-   * Soft-delete: marca el recurso como `active = FALSE`.
-   * No elimina registros de la BD para mantener integridad referencial
-   * con reservas históricas.
-   */
   router.delete(
     '/:id',
     authorize([UserRole.ADMIN]),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const repo = new SqlResourceRepository(req.db);
         const resourceId = routeParam(req.params.id);
-        const deleted = await container.resourceRepository.delete(resourceId);
+        const deleted = await repo.delete(resourceId);
         if (!deleted) {
           throw new ResourceNotFoundError(resourceId);
         }
