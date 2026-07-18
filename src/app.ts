@@ -20,7 +20,7 @@
  * 9. authenticate()                 — verifica JWT, protege /api/* restante
  * 10. tenantMiddleware()            — inyecta req.db con la BD del negocio
  * 11. /api/resources, /reservations, /reports, /customers, /users, /categories
- *                                    — rutas de empleados
+ *                                    — rutas de empleados (todas usan req.db)
  * 12. /api/admin                    — reparación/mantenimiento (ADMIN)
  * 13. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
  * 14. errorHandler
@@ -162,37 +162,14 @@ export async function createApp(): Promise<{
   }
 
   // -------------------------------------------------------------------------
-  // Rutas protegidas de empleados
+  // Rutas protegidas de empleados — todas usan req.db (multi-tenant)
   // -------------------------------------------------------------------------
   app.use('/api/resources',    createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
   app.use('/api/reports',      createReportsRouter(container));
   app.use('/api/customers',    createCustomersRouter(container));
   app.use('/api/users',        createUsersRouter(platformRepo));
-
-  // /api/categories requiere resolver el plan del negocio vía platformRepo.
-  // Sin PLATFORM_DATABASE_URL no hay forma de conocer el plan (límites por
-  // categoría), así que en single-tenant queda deshabilitado explícitamente
-  // en vez de fallar de forma confusa dentro del servicio.
-  if (platformRepo) {
-    app.use('/api/categories', createCategoryRouter(
-      container.categoryService,
-      async (businessId: string) => {
-        const business = await platformRepo.findById(businessId);
-        if (!business) {
-          throw new Error(`Negocio "${businessId}" no encontrado al resolver su plan.`);
-        }
-        return business.plan;
-      },
-    ));
-  } else {
-    app.use('/api/categories', (_req, res) => {
-      res.status(503).json({
-        code: 'PLATFORM_UNAVAILABLE',
-        message: 'La gestión de categorías requiere PLATFORM_DATABASE_URL.',
-      });
-    });
-  }
+  app.use('/api/categories',   createCategoryRouter(platformRepo));
 
   // -------------------------------------------------------------------------
   // /api/admin — reparación/mantenimiento puntual (ADMIN)
