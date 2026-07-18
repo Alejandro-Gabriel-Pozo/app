@@ -14,9 +14,7 @@
 import { z } from 'zod';
 
 const CustomerSchema = z.object({
-  id:       z.string().min(1),
-  fullName: z.string().min(1),
-  email:    z.string().email(),
+  id: z.string().min(1, 'customer.id es obligatorio — el cliente debe existir previamente'),
 });
 
 export const CreateReservationSchema = z.object({
