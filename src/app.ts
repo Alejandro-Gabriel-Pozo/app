@@ -19,7 +19,8 @@
  * 8. /api/customer/availability/**  — disponibilidad pública (sin auth)
  * 9. authenticate()                 — verifica JWT, protege /api/* restante
  * 10. tenantMiddleware()            — inyecta req.db con la BD del negocio
- * 11. /api/resources, /reservations, /reports, /users — rutas de empleados
+ * 11. /api/resources, /reservations, /reports, /customers, /users, /categories
+ *                                    — rutas de empleados
  * 12. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
  * 13. errorHandler
  */
@@ -35,6 +36,8 @@ import { createReportsRouter }      from './api/routes/reports.routes.js';
 import { createAuthRouter }         from './api/routes/auth.routes.js';
 import { createBusinessRouter }     from './api/routes/business.routes.js';
 import { createCustomerRouter }     from './api/routes/customer.routes.js';
+import { createCustomersRouter }    from './api/routes/customers.routes.js';
+import { createCategoryRouter }     from './api/routes/categories.routes.js';
 import { createUsersRouter }        from './api/routes/users.routes.js';
 import { createPlatformRouter }     from './api/routes/platform.routes.js';
 import { errorHandler }             from './api/middleware/error.middleware.js';
@@ -162,7 +165,32 @@ export async function createApp(): Promise<{
   app.use('/api/resources',    createResourcesRouter(container));
   app.use('/api/reservations', createReservationsRouter(container));
   app.use('/api/reports',      createReportsRouter(container));
+  app.use('/api/customers',    createCustomersRouter(container));
   app.use('/api/users',        createUsersRouter(platformRepo));
+
+  // /api/categories requiere resolver el plan del negocio vía platformRepo.
+  // Sin PLATFORM_DATABASE_URL no hay forma de conocer el plan (límites por
+  // categoría), así que en single-tenant queda deshabilitado explícitamente
+  // en vez de fallar de forma confusa dentro del servicio.
+  if (platformRepo) {
+    app.use('/api/categories', createCategoryRouter(
+      container.categoryService,
+      async (businessId: string) => {
+        const business = await platformRepo.findById(businessId);
+        if (!business) {
+          throw new Error(`Negocio "${businessId}" no encontrado al resolver su plan.`);
+        }
+        return business.plan;
+      },
+    ));
+  } else {
+    app.use('/api/categories', (_req, res) => {
+      res.status(503).json({
+        code: 'PLATFORM_UNAVAILABLE',
+        message: 'La gestión de categorías requiere PLATFORM_DATABASE_URL.',
+      });
+    });
+  }
 
   app.use(errorHandler);
 
