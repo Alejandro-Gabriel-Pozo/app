@@ -89,6 +89,7 @@ export class PlatformRepository implements UserStore {
       email: platformUser.email,
       role: platformUser.role as UserRole,
       passwordHash: platformUser.passwordHash,
+      businessId: platformUser.businessId,
     };
   }
 
