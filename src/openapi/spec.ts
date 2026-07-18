@@ -31,7 +31,7 @@ export const openApiSpec = {
   tags: [
     { name: 'Auth',         description: 'Autenticación y emisión de tokens' },
     { name: 'Admin',        description: 'Mantenimiento puntual (solo ADMIN)' },
-    { name: 'Resources',    description: 'Recursos reservables' },
+    { name: 'Resources',    description: 'Recursos reservables (CRUD)' },
     { name: 'Reservations', description: 'Gestión de reservas' },
     { name: 'Reports',      description: 'Reportes de ocupación' },
   ],
@@ -92,9 +92,7 @@ export const openApiSpec = {
           '200': {
             description: 'Token JWT emitido correctamente',
             content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/LoginResponse' },
-              },
+              'application/json': { schema: { $ref: '#/components/schemas/LoginResponse' } },
             },
           },
           '400': { $ref: '#/components/responses/ValidationError' },
@@ -120,8 +118,7 @@ export const openApiSpec = {
         description:
           'Cifra la `DATABASE_URL` del proceso con `DB_ENCRYPTION_KEY` y la ' +
           'persiste en la BD central, activando el negocio del usuario autenticado.\n\n' +
-          '⚠️ **Uso único** — ejecutar una sola vez para negocios sembrados por SQL ' +
-          'sin pasar por `/register`. No requiere body.',
+          '⚠️ **Uso único** — ejecutar una sola vez para negocios sembrados por SQL. No requiere body.',
         tags: ['Admin'],
         security: [{ BearerAuth: [] }],
         responses: {
@@ -136,18 +133,10 @@ export const openApiSpec = {
           '401': { $ref: '#/components/responses/Unauthorized' },
           '403': { $ref: '#/components/responses/Forbidden' },
           '500': {
-            description: 'DATABASE_URL no definida en el proceso',
+            description: 'DATABASE_URL o DB_ENCRYPTION_KEY no definidas',
             content: {
               'application/json': {
                 example: { code: 'MISSING_DATABASE_URL', message: 'DATABASE_URL no está definida en este proceso.' },
-              },
-            },
-          },
-          '503': {
-            description: 'PLATFORM_DATABASE_URL no definida',
-            content: {
-              'application/json': {
-                example: { code: 'PLATFORM_UNAVAILABLE', message: 'Requiere PLATFORM_DATABASE_URL.' },
               },
             },
           },
@@ -168,7 +157,62 @@ export const openApiSpec = {
           '401': { $ref: '#/components/responses/Unauthorized' },
         },
       },
+      post: {
+        tags: ['Resources'],
+        summary: 'Crear recurso',
+        description: 'Requiere rol **ADMIN**.',
+        security: [{ BearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CreateResource' },
+              examples: {
+                mesa: {
+                  summary: 'Mesa de restaurante',
+                  value: {
+                    name: 'Mesa 5',
+                    categoryId: 'cat-restaurant-01',
+                    basePrice: 0,
+                    visualData: {
+                      shape: 'rect',
+                      width: 80,
+                      height: 60,
+                      positionX: 120,
+                      positionY: 200,
+                      rotationDegrees: 0,
+                    },
+                  },
+                },
+                cabaña: {
+                  summary: 'Cabaña',
+                  value: {
+                    name: 'Cabaña del Bosque',
+                    categoryId: 'cat-cabin-01',
+                    basePrice: 15000,
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: 'Recurso creado' },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '409': {
+            description: 'Ya existe un recurso con ese nombre',
+            content: {
+              'application/json': {
+                example: { code: 'RESOURCE_NAME_CONFLICT', message: 'Ya existe un recurso con el nombre "Mesa 5".' },
+              },
+            },
+          },
+        },
+      },
     },
+
     '/api/resources/type/{type}': {
       get: {
         tags: ['Resources'],
@@ -188,6 +232,7 @@ export const openApiSpec = {
         },
       },
     },
+
     '/api/resources/{id}': {
       get: {
         tags: ['Resources'],
@@ -202,7 +247,68 @@ export const openApiSpec = {
           '404': { $ref: '#/components/responses/NotFound' },
         },
       },
+      put: {
+        tags: ['Resources'],
+        summary: 'Editar recurso',
+        description: 'Reemplaza todos los campos del recurso. Requiere rol **ADMIN**.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, example: 'table-001' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CreateResource' },
+              example: {
+                name: 'Mesa 5 (renovada)',
+                categoryId: 'cat-restaurant-01',
+                basePrice: 0,
+                visualData: {
+                  shape: 'rect',
+                  width: 90,
+                  height: 60,
+                  positionX: 130,
+                  positionY: 200,
+                  rotationDegrees: 0,
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Recurso actualizado' },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': {
+            description: 'Ya existe otro recurso con ese nombre',
+            content: {
+              'application/json': {
+                example: { code: 'RESOURCE_NAME_CONFLICT', message: 'Ya existe otro recurso con el nombre "Mesa 5 (renovada)".' },
+              },
+            },
+          },
+        },
+      },
+      delete: {
+        tags: ['Resources'],
+        summary: 'Eliminar recurso',
+        description: 'Requiere rol **ADMIN**. Operación irreversible.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, example: 'table-001' },
+        ],
+        responses: {
+          '204': { description: 'Recurso eliminado (sin contenido)' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
     },
+
     '/api/resources/{id}/availability': {
       get: {
         tags: ['Resources'],
@@ -245,6 +351,13 @@ export const openApiSpec = {
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/CreateReservation' },
+              example: {
+                resourceId: 'table-001',
+                customer: { id: 'cust-001' },
+                startTime: '2026-07-25T21:00:00.000Z',
+                endTime:   '2026-07-25T23:00:00.000Z',
+                details:   {},
+              },
             },
           },
         },
@@ -391,8 +504,8 @@ export const openApiSpec = {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
             examples: {
-              missingToken: { summary: 'Sin token',       value: { code: 'UNAUTHORIZED',  message: 'Se requiere header Authorization: Bearer <token>' } },
-              expiredToken: { summary: 'Token expirado',  value: { code: 'TOKEN_EXPIRED', message: 'El token ha expirado' } },
+              missingToken: { summary: 'Sin token',      value: { code: 'UNAUTHORIZED',  message: 'Se requiere header Authorization: Bearer <token>' } },
+              expiredToken: { summary: 'Token expirado', value: { code: 'TOKEN_EXPIRED', message: 'El token ha expirado' } },
             },
           },
         },
@@ -402,7 +515,7 @@ export const openApiSpec = {
         content: {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
-            example: { code: 'FORBIDDEN', message: 'Acceso denegado. Roles permitidos: ADMIN, RECEPTIONIST' },
+            example: { code: 'FORBIDDEN', message: 'Acceso denegado. Roles permitidos: ADMIN' },
           },
         },
       },
@@ -411,7 +524,7 @@ export const openApiSpec = {
         content: {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
-            example: { code: 'RESERVATION_NOT_FOUND', message: 'Reserva no encontrada: abc-123' },
+            example: { code: 'RESOURCE_NOT_FOUND', message: 'Recurso no encontrado: table-001' },
           },
         },
       },
@@ -455,8 +568,8 @@ export const openApiSpec = {
       ErrorResponse: {
         type: 'object',
         properties: {
-          code:    { type: 'string',  example: 'RESERVATION_NOT_FOUND' },
-          message: { type: 'string',  example: 'Reserva no encontrada: abc-123' },
+          code:    { type: 'string',  example: 'RESOURCE_NOT_FOUND' },
+          message: { type: 'string',  example: 'Recurso no encontrado: table-001' },
         },
       },
 
@@ -475,24 +588,47 @@ export const openApiSpec = {
         },
       },
 
+      // Usado por POST /api/resources y PUT /api/resources/{id}
+      CreateResource: {
+        type: 'object',
+        required: ['name', 'categoryId', 'basePrice'],
+        properties: {
+          id:         { type: 'string', description: 'ID personalizado (opcional, se genera UUID si se omite)', example: 'table-005' },
+          name:       { type: 'string', example: 'Mesa 5' },
+          categoryId: { type: 'string', description: 'ID de la categoría del recurso', example: 'cat-restaurant-01' },
+          basePrice:  { type: 'number', minimum: 0, example: 0 },
+          visualData: {
+            type: 'object',
+            description: 'Posición y forma en el mapa visual (opcional)',
+            required: ['shape', 'width', 'height', 'positionX', 'positionY', 'rotationDegrees'],
+            properties: {
+              shape:           { type: 'string', example: 'rect' },
+              width:           { type: 'number', example: 80 },
+              height:          { type: 'number', example: 60 },
+              positionX:       { type: 'number', example: 120 },
+              positionY:       { type: 'number', example: 200 },
+              rotationDegrees: { type: 'number', example: 0 },
+            },
+          },
+        },
+      },
+
+      // Usado por POST /api/reservations
       CreateReservation: {
         type: 'object',
-        required: ['resourceType', 'resourceId', 'customer', 'startTime', 'endTime', 'details'],
+        required: ['resourceId', 'customer', 'startTime', 'endTime'],
         properties: {
-          resourceType: { type: 'string', enum: ['CABIN', 'RESTAURANT_TABLE', 'SPA', 'TOUR_SEAT'] },
-          resourceId:   { type: 'string', example: 'cabin-001' },
+          resourceId: { type: 'string', example: 'table-001' },
           customer: {
             type: 'object',
-            required: ['id', 'fullName', 'email'],
+            required: ['id'],
             properties: {
-              id:       { type: 'string', example: 'customer-001' },
-              fullName: { type: 'string', example: 'Juan García' },
-              email:    { type: 'string', format: 'email', example: 'juan@email.com' },
+              id: { type: 'string', description: 'ID del cliente (debe existir previamente)', example: 'cust-001' },
             },
           },
           startTime: { type: 'string', format: 'date-time', example: '2026-07-25T21:00:00.000Z' },
           endTime:   { type: 'string', format: 'date-time', example: '2026-07-25T23:00:00.000Z' },
-          details:   { type: 'object', description: 'Preferencias específicas según resourceType.' },
+          details:   { type: 'object', description: 'Datos adicionales opcionales (ej. número de comensales)', example: {} },
         },
       },
     },
