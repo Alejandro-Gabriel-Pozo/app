@@ -66,9 +66,29 @@ Content-Type: application/json
 ```
 
 **Vía SQL** (si perdés acceso al sistema):
+
+> ⚠️ Este proyecto **no usa bcrypt**. `AuthService` verifica contraseñas con
+> `verifyPassword()` (PBKDF2, formato `"salt_hex:hash_hex"`) definido en
+> `src/security/user.store.ts`. Un hash bcrypt (`$2b$12$...`) sembrado en
+> `password_hash` nunca va a matchear y el login fallará siempre con
+> `INVALID_CREDENTIALS`, sin importar la contraseña que pruebes.
+
+```bash
+# 1. Generá el hash nuevo desde tu terminal (usa la función real del repo,
+#    después de correr `npm run build`):
+node -e "
+  const {hashPassword} = require('./dist/security/user.store.js');
+  hashPassword('TuNuevaContraseña').then(console.log);
+"
+```
+
 ```sql
--- 1. Generá el hash nuevo desde tu terminal:
---    node -e "require('bcrypt').hash('TuPassword', 12).then(console.log)"
+-- 2. Pegá el resultado (formato "salt_hex:hash_hex") acá y ejecutá en
+--    el SQL Editor de Supabase:
+UPDATE platform_users
+SET password_hash = 'PEGÁ_ACÁ_EL_HASH_GENERADO'
+WHERE id = 'usr-admin-01';
+```
 
 -- 2. Pegalo acá y ejecutá en Supabase SQL Editor:
 UPDATE platform_users
