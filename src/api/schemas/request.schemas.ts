@@ -9,6 +9,8 @@
  *   La validación de `details` ocurre en `ReservationService`.
  * - Se agregan `DateRangeQuerySchema`, `SummaryQuerySchema` y
  *   `UnderutilizedQuerySchema` para los endpoints de reportes.
+ * - `visualData` en `CreateResourceSchema` usa `VisualMetadataSchema` tipado
+ *   para coincidir con `VisualMetadata` y evitar el error TS2345.
  */
 
 import { z } from 'zod';
@@ -39,12 +41,26 @@ export const AvailabilityQuerySchema = z.object({
   endTime:   z.string().datetime(),
 });
 
+/**
+ * Replica la forma de `VisualMetadata` (src/types/visual.interface.ts).
+ * Al usar campos tipados el compilador puede verificar la asignación
+ * a `BookableResource.visualData` sin necesidad de cast.
+ */
+export const VisualMetadataSchema = z.object({
+  shape:           z.string().min(1),
+  width:           z.number(),
+  height:          z.number(),
+  positionX:       z.number(),
+  positionY:       z.number(),
+  rotationDegrees: z.number(),
+});
+
 export const CreateResourceSchema = z.object({
   id:         z.string().min(1).optional(),
   name:       z.string().min(1),
   categoryId: z.string().min(1),
   basePrice:  z.number().min(0),
-  visualData: z.record(z.unknown()).optional(),
+  visualData: VisualMetadataSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
