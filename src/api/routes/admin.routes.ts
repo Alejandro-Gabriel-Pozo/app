@@ -9,16 +9,16 @@
  * Una vez que ya no la necesites, se puede borrar este archivo y su mount
  * en app.ts sin efectos secundarios.
  */
- 
+
 import { Router, Request, Response, NextFunction } from 'express';
 import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString } from '../../platform/supabase.provisioner.js';
 import { UserRole } from '../../types/enums.js';
- 
+
 export function createAdminRouter(platformRepo: PlatformRepository | null): Router {
   const router = Router();
- 
+
   // POST /api/admin/repair-tenant-db
   // Apunta el negocio del usuario autenticado a la misma DATABASE_URL que ya
   // usa el proceso (la que tiene el schema de recursos/reservas aplicado),
@@ -36,8 +36,7 @@ export function createAdminRouter(platformRepo: PlatformRepository | null): Rout
           });
           return;
         }
- 
-        const businessId = req.user!.businessId!;
+
         const databaseUrl = process.env.DATABASE_URL;
         if (!databaseUrl) {
           res.status(500).json({
@@ -46,18 +45,38 @@ export function createAdminRouter(platformRepo: PlatformRepository | null): Rout
           });
           return;
         }
- 
+
+        const encryptionKey = process.env.DB_ENCRYPTION_KEY;
+        if (!encryptionKey) {
+          res.status(500).json({
+            code: 'MISSING_DB_ENCRYPTION_KEY',
+            message:
+              'DB_ENCRYPTION_KEY no está definida en Render. ' +
+              'Agrégala en Render Dashboard → Environment → Add environment variable. ' +
+              'Genera el valor con: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+          });
+          return;
+        }
+
+        const businessId = req.user!.businessId!;
+
+        console.log(`[admin] repair-tenant-db iniciado para negocio ${businessId}`);
+
         const encrypted = await encryptConnectionString(databaseUrl);
         await platformRepo.activateBusiness(businessId, 'manual-demo', encrypted);
- 
+
+        console.log(`[admin] ✅ Negocio ${businessId} activado correctamente.`);
+
         res.json({
           message: `Negocio ${businessId} activado y apuntado a DATABASE_URL.`,
         });
       } catch (err) {
+        // Loguear el error real para verlo en Render Logs
+        console.error('[admin] repair-tenant-db ERROR:', err);
         next(err);
       }
     },
   );
- 
+
   return router;
 }
