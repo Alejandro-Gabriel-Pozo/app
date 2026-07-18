@@ -35,7 +35,15 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 -- 2. Usuario ADMIN
--- Hash bcrypt (cost 12) de: Admin1234!
+-- Hash PBKDF2 (formato "salt_hex:hash_hex", ver src/security/user.store.ts)
+-- de: Admin1234!
+-- ⚠️  NO uses bcrypt acá — AuthService verifica contra el formato PBKDF2
+--     de hashPassword()/verifyPassword() en user.store.ts, no bcrypt.
+--     Para generar el hash de una contraseña propia:
+--       node -e "
+--         const {hashPassword} = require('./dist/security/user.store.js');
+--         hashPassword('TuContraseña').then(console.log);
+--       "
 INSERT INTO platform_users (
   id,
   email,
@@ -49,7 +57,7 @@ VALUES (
   'admin@demo.com',
   'biz-demo-01',
   'ADMIN',
-  '$2b$12$PNcOq0G.S2KVLftfNbaky.yUD8kcdOLcj.GaNpxMq.bupPJVV0zBe',
+  'be293d28b2a3847ea467b099d31de843:d433ade61518da771b249c1ad83f41db53de020e1baea9de92fe95dedd9ee06c13711b9b8cb3af6e4731afd6f978646bef154c2d0589183d0fe00357b10267a9',
   TRUE
 )
 ON CONFLICT (email, business_id) DO NOTHING;
