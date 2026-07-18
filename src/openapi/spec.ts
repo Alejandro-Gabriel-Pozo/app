@@ -1,33 +1,8 @@
 /**
  * @file spec.ts
  * @description Especificación OpenAPI 3.0 de la Reservations API.
- *
- * ## Cambios respecto a la versión anterior
- *
- * 1. `components.securitySchemes.BearerAuth` — habilita el botón "Authorize"
- *    en Swagger UI y el envío automático del JWT en todas las peticiones.
- *
- * 2. `security: [{ BearerAuth: [] }]` a nivel global — aplica el esquema a
- *    todos los endpoints por defecto. Los que no requieren auth (como /health
- *    y /api/login) lo anulan con `security: []`.
- *
- * 3. Nuevo path `POST /api/login` con ejemplos de credenciales demo.
- *
- * 4. `components.responses` — respuestas de error reutilizables (Unauthorized,
- *    Forbidden, NotFound, ValidationError) para no repetirlas en cada endpoint.
- *
- * 5. `components.schemas` ampliado con LoginRequest, LoginResponse y ErrorResponse.
- *
- * ## Flujo en Swagger UI
- *
- * 1. Abrir /docs
- * 2. Expandir `POST /api/login` → "Try it out" → seleccionar ejemplo "admin"
- * 3. Copiar el campo `token` de la respuesta
- * 4. Clic en el botón 🔒 "Authorize" (arriba a la derecha)
- * 5. Pegar el token en el campo `Value` → "Authorize" → "Close"
- * 6. Todos los endpoints subsiguientes enviarán `Authorization: Bearer <token>`
  */
- 
+
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
@@ -42,51 +17,47 @@ export const openApiSpec = {
       '**Credenciales demo**\n\n' +
       '| Email | Contraseña | Rol |\n' +
       '|---|---|---|\n' +
-      '| admin@demo.com | admin123 | ADMIN |\n' +
+      '| admin@demo.com | Admin1234! | ADMIN |\n' +
       '| recepcion@demo.com | recep123 | RECEPTIONIST |\n' +
       '| mesero@demo.com | waiter123 | WAITER |',
   },
-  servers:  [
+  servers: [
     { url: 'https://app-chny.onrender.com', description: 'Render (producción)' },
     { url: 'http://localhost:3000', description: 'Desarrollo local' },
   ],
- 
-  // ---------------------------------------------------------------------------
-  // Seguridad global — se aplica a todos los endpoints salvo los que
-  // declaren explícitamente `security: []`
-  // ---------------------------------------------------------------------------
+
   security: [{ BearerAuth: [] }],
- 
+
   tags: [
-    { name: 'Auth', description: 'Autenticación y emisión de tokens' },
-    { name: 'Resources', description: 'Recursos reservables' },
+    { name: 'Auth',         description: 'Autenticación y emisión de tokens' },
+    { name: 'Admin',        description: 'Mantenimiento puntual (solo ADMIN)' },
+    { name: 'Resources',    description: 'Recursos reservables' },
     { name: 'Reservations', description: 'Gestión de reservas' },
-    { name: 'Reports', description: 'Reportes de ocupación' },
+    { name: 'Reports',      description: 'Reportes de ocupación' },
   ],
- 
+
   paths: {
     // -------------------------------------------------------------------------
-    // Rutas públicas (sin BearerAuth)
+    // Rutas públicas
     // -------------------------------------------------------------------------
     '/health': {
       get: {
         summary: 'Health check',
         tags: ['System'],
-        // Anula la seguridad global — esta ruta es pública
         security: [],
         responses: {
           '200': {
             description: 'Servicio operativo',
             content: {
               'application/json': {
-                example: { status: 'ok', mode: 'in-memory', resources: 'seeded' },
+                example: { status: 'ok', mode: 'multi-tenant', db: 'connected' },
               },
             },
           },
         },
       },
     },
- 
+
     '/api/login': {
       post: {
         summary: 'Obtener JWT',
@@ -94,7 +65,6 @@ export const openApiSpec = {
           'Autentica con email y contraseña. Copia el `token` de la respuesta ' +
           'y pégalo en el botón **Authorize** 🔒 para usar los demás endpoints.',
         tags: ['Auth'],
-        // Ruta pública — anula la seguridad global
         security: [],
         requestBody: {
           required: true,
@@ -104,7 +74,7 @@ export const openApiSpec = {
               examples: {
                 admin: {
                   summary: 'Administrador (acceso total)',
-                  value: { email: 'admin@demo.com', password: 'admin123' },
+                  value: { email: 'admin@demo.com', password: 'Admin1234!' },
                 },
                 recepcionista: {
                   summary: 'Recepcionista (crea y gestiona reservas)',
@@ -133,17 +103,58 @@ export const openApiSpec = {
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/ErrorResponse' },
-                example: {
-                  code: 'INVALID_CREDENTIALS',
-                  message: 'Credenciales inválidas',
-                },
+                example: { code: 'INVALID_CREDENTIALS', message: 'Credenciales inválidas' },
               },
             },
           },
         },
       },
     },
- 
+
+    // -------------------------------------------------------------------------
+    // Admin — mantenimiento
+    // -------------------------------------------------------------------------
+    '/api/admin/repair-tenant-db': {
+      post: {
+        summary: 'Activar BD del negocio (uso único)',
+        description:
+          'Cifra la `DATABASE_URL` del proceso con `DB_ENCRYPTION_KEY` y la ' +
+          'persiste en la BD central, activando el negocio del usuario autenticado.\n\n' +
+          '⚠️ **Uso único** — ejecutar una sola vez para negocios sembrados por SQL ' +
+          'sin pasar por `/register`. No requiere body.',
+        tags: ['Admin'],
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Negocio activado correctamente',
+            content: {
+              'application/json': {
+                example: { message: 'Negocio biz-demo-01 activado y apuntado a DATABASE_URL.' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '500': {
+            description: 'DATABASE_URL no definida en el proceso',
+            content: {
+              'application/json': {
+                example: { code: 'MISSING_DATABASE_URL', message: 'DATABASE_URL no está definida en este proceso.' },
+              },
+            },
+          },
+          '503': {
+            description: 'PLATFORM_DATABASE_URL no definida',
+            content: {
+              'application/json': {
+                example: { code: 'PLATFORM_UNAVAILABLE', message: 'Requiere PLATFORM_DATABASE_URL.' },
+              },
+            },
+          },
+        },
+      },
+    },
+
     // -------------------------------------------------------------------------
     // Recursos
     // -------------------------------------------------------------------------
@@ -168,10 +179,7 @@ export const openApiSpec = {
             name: 'type',
             in: 'path',
             required: true,
-            schema: {
-              type: 'string',
-              enum: ['CABIN', 'RESTAURANT_TABLE', 'SPA', 'TOUR_SEAT'],
-            },
+            schema: { type: 'string', enum: ['CABIN', 'RESTAURANT_TABLE', 'SPA', 'TOUR_SEAT'] },
           },
         ],
         responses: {
@@ -202,20 +210,8 @@ export const openApiSpec = {
         security: [{ BearerAuth: [] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-          {
-            name: 'startTime',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-            example: '2026-07-25T21:00:00.000Z',
-          },
-          {
-            name: 'endTime',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-            example: '2026-07-25T23:00:00.000Z',
-          },
+          { name: 'startTime', in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, example: '2026-07-25T21:00:00.000Z' },
+          { name: 'endTime',   in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, example: '2026-07-25T23:00:00.000Z' },
         ],
         responses: {
           '200': { description: 'Resultado de disponibilidad' },
@@ -224,7 +220,7 @@ export const openApiSpec = {
         },
       },
     },
- 
+
     // -------------------------------------------------------------------------
     // Reservas
     // -------------------------------------------------------------------------
@@ -266,9 +262,7 @@ export const openApiSpec = {
         tags: ['Reservations'],
         summary: 'Detalle de reserva',
         security: [{ BearerAuth: [] }],
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Reserva encontrada' },
           '401': { $ref: '#/components/responses/Unauthorized' },
@@ -282,9 +276,7 @@ export const openApiSpec = {
         summary: 'Confirmar reserva (PENDING → CONFIRMED)',
         description: 'Requiere rol **ADMIN** o **RECEPTIONIST**.',
         security: [{ BearerAuth: [] }],
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Reserva confirmada' },
           '401': { $ref: '#/components/responses/Unauthorized' },
@@ -300,9 +292,7 @@ export const openApiSpec = {
         summary: 'Cancelar reserva',
         description: 'Requiere rol **ADMIN** o **RECEPTIONIST**.',
         security: [{ BearerAuth: [] }],
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Reserva cancelada' },
           '401': { $ref: '#/components/responses/Unauthorized' },
@@ -315,13 +305,9 @@ export const openApiSpec = {
       post: {
         tags: ['Reservations'],
         summary: 'Completar reserva (CONFIRMED → COMPLETED)',
-        description:
-          'Accesible por **ADMIN**, **RECEPTIONIST** y **WAITER**. ' +
-          'El mesero puede marcar la mesa como libre al finalizar el servicio.',
+        description: 'Accesible por **ADMIN**, **RECEPTIONIST** y **WAITER**.',
         security: [{ BearerAuth: [] }],
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Reserva completada' },
           '401': { $ref: '#/components/responses/Unauthorized' },
@@ -330,7 +316,7 @@ export const openApiSpec = {
         },
       },
     },
- 
+
     // -------------------------------------------------------------------------
     // Reportes
     // -------------------------------------------------------------------------
@@ -340,20 +326,8 @@ export const openApiSpec = {
         summary: 'Reporte diario de ocupación',
         security: [{ BearerAuth: [] }],
         parameters: [
-          {
-            name: 'startDate',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-            example: '2026-07-01T00:00:00.000Z',
-          },
-          {
-            name: 'endDate',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-            example: '2026-07-31T23:59:59.000Z',
-          },
+          { name: 'startDate', in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, example: '2026-07-01T00:00:00.000Z' },
+          { name: 'endDate',   in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, example: '2026-07-31T23:59:59.000Z' },
         ],
         responses: {
           '200': { description: 'Filas de ocupación' },
@@ -368,24 +342,9 @@ export const openApiSpec = {
         summary: 'Resumen ejecutivo de ocupación',
         security: [{ BearerAuth: [] }],
         parameters: [
-          {
-            name: 'startDate',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-          },
-          {
-            name: 'endDate',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-          },
-          {
-            name: 'limit',
-            in: 'query',
-            schema: { type: 'integer', minimum: 1, maximum: 100, default: 5 },
-            description: 'Máximo de recursos en cada ranking',
-          },
+          { name: 'startDate', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+          { name: 'endDate',   in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+          { name: 'limit',     in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 5 }, description: 'Máximo de recursos en cada ranking' },
         ],
         responses: {
           '200': { description: 'Resumen ejecutivo' },
@@ -400,24 +359,9 @@ export const openApiSpec = {
         summary: 'Recursos subutilizados',
         security: [{ BearerAuth: [] }],
         parameters: [
-          {
-            name: 'startDate',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-          },
-          {
-            name: 'endDate',
-            in: 'query',
-            required: true,
-            schema: { type: 'string', format: 'date-time' },
-          },
-          {
-            name: 'threshold',
-            in: 'query',
-            schema: { type: 'number', minimum: 0, maximum: 100, default: 30 },
-            description: 'Umbral de ocupación en % (0–100)',
-          },
+          { name: 'startDate', in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+          { name: 'endDate',   in: 'query', required: true, schema: { type: 'string', format: 'date-time' } },
+          { name: 'threshold', in: 'query', schema: { type: 'number', minimum: 0, maximum: 100, default: 30 }, description: 'Umbral de ocupación en % (0–100)' },
         ],
         responses: {
           '200': { description: 'Recursos bajo el umbral indicado' },
@@ -427,11 +371,8 @@ export const openApiSpec = {
       },
     },
   },
- 
+
   components: {
-    // -------------------------------------------------------------------------
-    // ✅ CLAVE: sin este bloque, el botón "Authorize" no aparece en Swagger UI
-    // -------------------------------------------------------------------------
     securitySchemes: {
       BearerAuth: {
         type: 'http',
@@ -442,10 +383,7 @@ export const openApiSpec = {
           'Pega solo el valor del campo `token`, sin el prefijo "Bearer".',
       },
     },
- 
-    // -------------------------------------------------------------------------
-    // Respuestas reutilizables
-    // -------------------------------------------------------------------------
+
     responses: {
       Unauthorized: {
         description: 'No autenticado — falta el token o expiró',
@@ -453,14 +391,8 @@ export const openApiSpec = {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
             examples: {
-              missingToken: {
-                summary: 'Sin token',
-                value: { code: 'UNAUTHORIZED', message: 'Se requiere header Authorization: Bearer <token>' },
-              },
-              expiredToken: {
-                summary: 'Token expirado',
-                value: { code: 'TOKEN_EXPIRED', message: 'El token ha expirado' },
-              },
+              missingToken: { summary: 'Sin token',       value: { code: 'UNAUTHORIZED',  message: 'Se requiere header Authorization: Bearer <token>' } },
+              expiredToken: { summary: 'Token expirado',  value: { code: 'TOKEN_EXPIRED', message: 'El token ha expirado' } },
             },
           },
         },
@@ -470,10 +402,7 @@ export const openApiSpec = {
         content: {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
-            example: {
-              code: 'FORBIDDEN',
-              message: 'Acceso denegado. Roles permitidos: ADMIN, RECEPTIONIST',
-            },
+            example: { code: 'FORBIDDEN', message: 'Acceso denegado. Roles permitidos: ADMIN, RECEPTIONIST' },
           },
         },
       },
@@ -495,91 +424,77 @@ export const openApiSpec = {
         },
       },
     },
- 
-    // -------------------------------------------------------------------------
-    // Schemas
-    // -------------------------------------------------------------------------
+
     schemas: {
       LoginRequest: {
         type: 'object',
         required: ['email', 'password'],
         properties: {
-          email: { type: 'string', format: 'email', example: 'admin@demo.com' },
-          password: { type: 'string', minLength: 6, example: 'admin123' },
+          email:    { type: 'string', format: 'email', example: 'admin@demo.com' },
+          password: { type: 'string', minLength: 6,    example: 'Admin1234!' },
         },
       },
- 
+
       LoginResponse: {
         type: 'object',
         properties: {
-          token: {
-            type: 'string',
-            description: 'JWT firmado con HS256. Cópialo en el botón Authorize 🔒.',
-            example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
-          },
+          token:     { type: 'string', description: 'JWT firmado con HS256. Cópialo en el botón Authorize 🔒.', example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' },
           tokenType: { type: 'string', enum: ['Bearer'] },
           expiresIn: { type: 'integer', description: 'Segundos hasta expiración', example: 86400 },
           user: {
             type: 'object',
             properties: {
-              id: { type: 'string', example: 'demo-admin-001' },
+              id:    { type: 'string', example: 'usr-admin-01' },
               email: { type: 'string', example: 'admin@demo.com' },
-              role: { type: 'string', enum: ['ADMIN', 'RECEPTIONIST', 'WAITER'] },
+              role:  { type: 'string', enum: ['ADMIN', 'RECEPTIONIST', 'WAITER'] },
             },
           },
         },
       },
- 
+
       ErrorResponse: {
         type: 'object',
         properties: {
-          code: { type: 'string', example: 'RESERVATION_NOT_FOUND' },
-          message: { type: 'string', example: 'Reserva no encontrada: abc-123' },
+          code:    { type: 'string',  example: 'RESERVATION_NOT_FOUND' },
+          message: { type: 'string',  example: 'Reserva no encontrada: abc-123' },
         },
       },
- 
+
       ValidationErrorResponse: {
         type: 'object',
         properties: {
-          code: { type: 'string', example: 'VALIDATION_ERROR' },
+          code:    { type: 'string', example: 'VALIDATION_ERROR' },
           message: { type: 'string', example: 'Datos de entrada inválidos' },
           errors: {
             type: 'object',
             properties: {
               fieldErrors: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } } },
-              formErrors: { type: 'array', items: { type: 'string' } },
+              formErrors:  { type: 'array',  items: { type: 'string' } },
             },
           },
         },
       },
- 
+
       CreateReservation: {
         type: 'object',
         required: ['resourceType', 'resourceId', 'customer', 'startTime', 'endTime', 'details'],
         properties: {
-          resourceType: {
-            type: 'string',
-            enum: ['CABIN', 'RESTAURANT_TABLE', 'SPA', 'TOUR_SEAT'],
-          },
-          resourceId: { type: 'string', example: 'cabin-001' },
+          resourceType: { type: 'string', enum: ['CABIN', 'RESTAURANT_TABLE', 'SPA', 'TOUR_SEAT'] },
+          resourceId:   { type: 'string', example: 'cabin-001' },
           customer: {
             type: 'object',
             required: ['id', 'fullName', 'email'],
             properties: {
-              id: { type: 'string', example: 'customer-001' },
+              id:       { type: 'string', example: 'customer-001' },
               fullName: { type: 'string', example: 'Juan García' },
-              email: { type: 'string', format: 'email', example: 'juan@email.com' },
+              email:    { type: 'string', format: 'email', example: 'juan@email.com' },
             },
           },
           startTime: { type: 'string', format: 'date-time', example: '2026-07-25T21:00:00.000Z' },
-          endTime: { type: 'string', format: 'date-time', example: '2026-07-25T23:00:00.000Z' },
-          details: {
-            type: 'object',
-            description: 'Preferencias específicas según resourceType. Ver schemas de preferencias.',
-          },
+          endTime:   { type: 'string', format: 'date-time', example: '2026-07-25T23:00:00.000Z' },
+          details:   { type: 'object', description: 'Preferencias específicas según resourceType.' },
         },
       },
     },
   },
 } as const;
- 
