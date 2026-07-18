@@ -21,8 +21,9 @@
  * 10. tenantMiddleware()            — inyecta req.db con la BD del negocio
  * 11. /api/resources, /reservations, /reports, /customers, /users, /categories
  *                                    — rutas de empleados
- * 12. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
- * 13. errorHandler
+ * 12. /api/admin                    — reparación/mantenimiento (ADMIN)
+ * 13. /api/customer/me/**           — rutas privadas del cliente (auth dentro del router)
+ * 14. errorHandler
  */
 
 import express from 'express';
@@ -40,6 +41,7 @@ import { createCustomersRouter }    from './api/routes/customers.routes.js';
 import { createCategoryRouter }     from './api/routes/categories.routes.js';
 import { createUsersRouter }        from './api/routes/users.routes.js';
 import { createPlatformRouter }     from './api/routes/platform.routes.js';
+import { createAdminRouter }        from './api/routes/admin.routes.js';
 import { errorHandler }             from './api/middleware/error.middleware.js';
 import { openApiSpec }              from './openapi/spec.js';
 import { authenticate }             from './security/auth.middleware.js';
@@ -191,6 +193,16 @@ export async function createApp(): Promise<{
       });
     });
   }
+
+  // -------------------------------------------------------------------------
+  // /api/admin — reparación/mantenimiento puntual (ADMIN)
+  // Monta DESPUÉS de authenticate() + tenantMiddleware() para que el JWT
+  // ya esté verificado. El propio router vuelve a llamar authorize([ADMIN])
+  // como segunda línea de defensa.
+  // ⚠️  Una vez usado repair-tenant-db, se puede borrar este bloque y
+  //     admin.routes.ts sin efectos secundarios.
+  // -------------------------------------------------------------------------
+  app.use('/api/admin', createAdminRouter(platformRepo));
 
   app.use(errorHandler);
 
