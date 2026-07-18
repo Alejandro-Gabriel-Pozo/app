@@ -117,7 +117,7 @@ export class AuthService {
     }
  
     const token = signToken(
-      { sub: user.id, role: user.role },
+      { sub: user.id, role: user.role, ...(user.businessId && { business_id: user.businessId }) },
       jwtSecret,
       this.tokenTtlSeconds,
     );
@@ -179,3 +179,4 @@ function parseExpiresIn(value: string): number {
  
   return Math.floor(seconds);
 }
+
