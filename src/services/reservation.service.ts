@@ -10,10 +10,10 @@
  *   `if (this.categoryRepository)` a lo largo del servicio.
  * - `updateReservation` usa `Reservation.restore()` en lugar de
  *   `new Reservation()` para consistencia semántica con persistencia.
- * - `businessId` se lee de `process.env.BUSINESS_ID` al emitir eventos.
- *   En esta arquitectura multi-tenant el id del negocio identifica al tenant
- *   activo en el proceso, por lo que es configuración de entorno.
- * - `cancelReservation` ahora corre dentro de una transacción y emite
+ * - `businessId` se recibe como parámetro explícito en los métodos que
+ *   emiten eventos de dominio (confirmReservation, cancelReservation,
+ *   completeReservation). El servicio NO lee process.env.BUSINESS_ID.
+ * - `cancelReservation` corre dentro de una transacción y emite
  *   `reservation.cancelled` atómicamente con el cambio de estado.
  */
 
@@ -166,9 +166,12 @@ export class ReservationService {
   /**
    * Confirma una reserva PENDING.
    * Escribe reservation.confirmed en la misma transacción que el cambio de estado.
+   *
+   * @param id         - ID de la reserva a confirmar.
+   * @param businessId - ID del tenant activo. Proviene de req.businessId en el router.
+   *                     No se lee de process.env — el servicio es agnóstico al entorno.
    */
-  async confirmReservation(id: string): Promise<Reservation> {
-    const businessId  = process.env.BUSINESS_ID ?? '';
+  async confirmReservation(id: string, businessId: string = ''): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
@@ -197,9 +200,11 @@ export class ReservationService {
    * Cancela una reserva PENDING o CONFIRMED.
    * Escribe reservation.cancelled en la misma transacción que el cambio de estado,
    * de modo que el OutboxWorker pueda hacer VOID del CHARGE financiero asociado.
+   *
+   * @param id         - ID de la reserva a cancelar.
+   * @param businessId - ID del tenant activo. Proviene de req.businessId en el router.
    */
-  async cancelReservation(id: string): Promise<Reservation> {
-    const businessId  = process.env.BUSINESS_ID ?? '';
+  async cancelReservation(id: string, businessId: string = ''): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.cancel();
 
@@ -225,9 +230,11 @@ export class ReservationService {
   /**
    * Completa una reserva CONFIRMED.
    * Escribe reservation.completed en la misma transacción que el cambio de estado.
+   *
+   * @param id         - ID de la reserva a completar.
+   * @param businessId - ID del tenant activo. Proviene de req.businessId en el router.
    */
-  async completeReservation(id: string): Promise<Reservation> {
-    const businessId  = process.env.BUSINESS_ID ?? '';
+  async completeReservation(id: string, businessId: string = ''): Promise<Reservation> {
     const reservation = await this.requireReservation(id);
     reservation.complete();
 
