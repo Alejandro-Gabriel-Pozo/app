@@ -5,21 +5,21 @@
  * ## Endpoints
  *
  * ### Productos
- * GET    /api/products              — listar todos los productos del tenant
- * POST   /api/products              — crear producto
- * GET    /api/products/:id          — obtener producto por ID
- * PUT    /api/products/:id          — actualizar producto
- * DELETE /api/products/:id          — eliminar producto
+ * GET    /api/products                                    — listar todos los productos
+ * POST   /api/products                                    — crear producto
+ * GET    /api/products/:id                               — obtener producto por ID
+ * PUT    /api/products/:id                               — actualizar producto
+ * DELETE /api/products/:id                               — eliminar producto
  *
  * ### Variantes (anidadas bajo producto)
- * GET    /api/products/:id/variants          — listar variantes del producto
- * POST   /api/products/:id/variants          — crear variante
- * PUT    /api/products/:id/variants/:variantId  — actualizar variante
- * DELETE /api/products/:id/variants/:variantId  — eliminar variante
+ * GET    /api/products/:id/variants                      — listar variantes
+ * POST   /api/products/:id/variants                      — crear variante
+ * PUT    /api/products/:id/variants/:variantId           — actualizar variante
+ * DELETE /api/products/:id/variants/:variantId           — eliminar variante
  *
  * ### Stock
- * POST   /api/products/:id/stock/decrement          — descontar stock (sin variante)
- * POST   /api/products/:id/variants/:variantId/stock/decrement — descontar stock variante
+ * POST   /api/products/:id/stock/decrement                        — descontar stock (sin variante)
+ * POST   /api/products/:id/variants/:variantId/stock/decrement    — descontar stock variante
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -32,7 +32,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // GET /api/products
   // -------------------------------------------------------------------------
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const products = await service.listProducts();
       res.json(products);
@@ -159,10 +159,8 @@ export function createProductsRouter(container: AppContainer): Router {
         res.status(400).json({ code: 'INVALID_QUANTITY', message: 'quantity debe ser >= 1.' });
         return;
       }
-
       await service.checkStock(req.params.id, undefined, quantity);
-      // Para descuento directo sin transacción externa usamos el client del tenant (req.db)
-      await service.decrementStock((req as any).db, req.params.id, undefined, quantity);
+      await service.decrementStock(req.db, req.params.id, undefined, quantity);
       res.status(204).send();
     } catch (err) {
       next(err);
@@ -179,9 +177,8 @@ export function createProductsRouter(container: AppContainer): Router {
         res.status(400).json({ code: 'INVALID_QUANTITY', message: 'quantity debe ser >= 1.' });
         return;
       }
-
       await service.checkStock(req.params.id, req.params.variantId, quantity);
-      await service.decrementStock((req as any).db, req.params.id, req.params.variantId, quantity);
+      await service.decrementStock(req.db, req.params.id, req.params.variantId, quantity);
       res.status(204).send();
     } catch (err) {
       next(err);
