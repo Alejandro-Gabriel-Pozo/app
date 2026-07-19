@@ -6,6 +6,11 @@
  * buildService() construye todos los repos y ReservationService usando
  * req.db! (SqlClient del tenant, inyectado por tenantMiddleware).
  * container.transactionManager es stateless y se reutiliza del container.
+ *
+ * ## businessId en eventos de dominio
+ * Los métodos confirmReservation, cancelReservation y completeReservation
+ * reciben req.businessId! como segundo argumento. El servicio NO lee
+ * process.env — el router es el dueño del contexto JWT del request.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -115,7 +120,10 @@ export function createReservationsRouter(container: AppContainer): Router {
   router.post('/:id/confirm', authorize(MANAGERS), async (req, res, next) => {
     try {
       const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.confirmReservation(routeParam(req.params.id));
+      const reservation = await reservationService.confirmReservation(
+        routeParam(req.params.id),
+        req.businessId!,
+      );
       res.json(toReservationDto(reservation));
     } catch (err) { next(err); }
   });
@@ -123,7 +131,10 @@ export function createReservationsRouter(container: AppContainer): Router {
   router.post('/:id/cancel', authorize(MANAGERS), async (req, res, next) => {
     try {
       const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.cancelReservation(routeParam(req.params.id));
+      const reservation = await reservationService.cancelReservation(
+        routeParam(req.params.id),
+        req.businessId!,
+      );
       res.json(toReservationDto(reservation));
     } catch (err) { next(err); }
   });
@@ -131,7 +142,10 @@ export function createReservationsRouter(container: AppContainer): Router {
   router.post('/:id/complete', authorize(COMPLETERS), async (req, res, next) => {
     try {
       const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.completeReservation(routeParam(req.params.id));
+      const reservation = await reservationService.completeReservation(
+        routeParam(req.params.id),
+        req.businessId!,
+      );
       res.json(toReservationDto(reservation));
     } catch (err) { next(err); }
   });
