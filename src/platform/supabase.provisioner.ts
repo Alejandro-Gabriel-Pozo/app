@@ -8,31 +8,43 @@
  * | Variable                  | Descripción                                      |
  * |---------------------------|--------------------------------------------------|
  * | SUPABASE_ACCESS_TOKEN     | Personal access token de tu cuenta Supabase      |
- * | SUPABASE_ORG_ID           | Organization ID (ymtinqkxelvxlgnclitf)           |
- * | SUPABASE_REGION           | Región para nuevos proyectos (us-east-1)         |
+ * | SUPABASE_ORG_ID           | Organization ID de tu cuenta Supabase            |
+ * | SUPABASE_REGION           | Región para nuevos proyectos (default: us-east-1)|
  * | SUPABASE_DB_PASSWORD_SALT | Salt para derivar passwords de BD por negocio    |
+ * | DB_ENCRYPTION_KEY         | 32 bytes hex para cifrar db_urls en la BD central|
  *
  * ## Cómo obtener SUPABASE_ACCESS_TOKEN
  * Supabase Dashboard → Account (avatar) → Access Tokens → Generate new token
  * Nombre sugerido: "reservations-platform-api"
  *
+ * ## Generar DB_ENCRYPTION_KEY
+ *   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+ *
  * ## Seguridad de db_url
  * La connection string de cada negocio se guarda en la BD central cifrada
  * con AES-256-GCM usando DB_ENCRYPTION_KEY. Nunca se almacena en texto plano.
  *
- * ## Variables adicionales requeridas
- * | DB_ENCRYPTION_KEY | 32 bytes hex para cifrar db_urls (genera con: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") |
+ * ## Cifrado manual de una connection string existente
+ * Usar el script CLI incluido:
+ *   DB_ENCRYPTION_KEY=<hex> npx ts-node src/scripts/encrypt-database-url.ts \
+ *     "postgres://user:pass@host:5432/postgres"
+ *
+ * ## Modo de operación
+ * Esta plataforma siempre opera en modo MULTI-TENANT.
+ * Cada negocio tiene su propia BD Supabase — no existe fallback single-tenant.
+ * La connection string se obtiene dinámicamente desde businesses.db_url_encrypted
+ * en la BD central, nunca desde una variable de entorno estática por tenant.
  */
- 
+
 import { createCipheriv, createDecipheriv, randomBytes, scrypt } from 'node:crypto';
 import { promisify } from 'node:util';
- 
+
 const scryptAsync = promisify(scrypt);
- 
+
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
- 
+
 export interface ProvisionedDatabase {
   /** ID del proyecto en Supabase */
   projectId: string;
@@ -41,7 +53,7 @@ export interface ProvisionedDatabase {
   /** Host del proyecto (para referencia) */
   host: string;
 }
- 
+
 interface SupabaseProject {
   id: string;
   name: string;
@@ -51,14 +63,17 @@ interface SupabaseProject {
   db_user: string;
   status: string;
 }
- 
+
 // ---------------------------------------------------------------------------
 // Cifrado de connection strings
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Cifra una connection string con AES-256-GCM.
  * El resultado es seguro para almacenar en la BD central.
+ *
+ * Requiere DB_ENCRYPTION_KEY en el entorno (32 bytes hex).
+ * Lanza error si la variable no está definida — no hay fallback single-tenant.
  *
  * @param plaintext - Connection string en texto plano
  * @returns String cifrado en formato "iv:authTag:ciphertext" (hex)
@@ -67,18 +82,21 @@ export async function encryptConnectionString(plaintext: string): Promise<string
   const key = await deriveEncryptionKey();
   const iv = randomBytes(16);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
- 
+
   const encrypted = Buffer.concat([
     cipher.update(plaintext, 'utf8'),
     cipher.final(),
   ]);
   const authTag = cipher.getAuthTag();
- 
+
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
 }
- 
+
 /**
  * Descifra una connection string cifrada con `encryptConnectionString`.
+ *
+ * Requiere DB_ENCRYPTION_KEY en el entorno (32 bytes hex).
+ * Lanza error si la variable no está definida — no hay fallback single-tenant.
  *
  * @param ciphertext - String cifrado en formato "iv:authTag:ciphertext"
  * @returns Connection string en texto plano
@@ -86,36 +104,52 @@ export async function encryptConnectionString(plaintext: string): Promise<string
 export async function decryptConnectionString(ciphertext: string): Promise<string> {
   const key = await deriveEncryptionKey();
   const [ivHex, authTagHex, dataHex] = ciphertext.split(':');
- 
+
   if (!ivHex || !authTagHex || !dataHex) {
-    throw new Error('[provisioner] Formato de ciphertext inválido');
+    throw new Error('[provisioner] Formato de ciphertext inválido — esperado: iv:authTag:ciphertext');
   }
- 
+
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
   const data = Buffer.from(dataHex, 'hex');
- 
+
   const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(authTag);
- 
+
   return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
 }
- 
+
+/**
+ * Deriva la clave de cifrado desde DB_ENCRYPTION_KEY.
+ *
+ * Lanza un error descriptivo si la variable no está definida.
+ * En modo multi-tenant esta variable es OBLIGATORIA — no hay fallback.
+ */
 async function deriveEncryptionKey(): Promise<Buffer> {
   const keyMaterial = process.env.DB_ENCRYPTION_KEY;
   if (!keyMaterial) {
     throw new Error(
       '[provisioner] DB_ENCRYPTION_KEY no está definida. ' +
+      'Esta variable es obligatoria en modo multi-tenant. ' +
       'Generá una con: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
     );
   }
-  return Buffer.from(keyMaterial, 'hex');
+
+  const keyBuffer = Buffer.from(keyMaterial, 'hex');
+  if (keyBuffer.length !== 32) {
+    throw new Error(
+      `[provisioner] DB_ENCRYPTION_KEY debe ser 32 bytes en hex (64 caracteres). ` +
+      `Recibido: ${keyBuffer.length} bytes.`,
+    );
+  }
+
+  return keyBuffer;
 }
- 
+
 // ---------------------------------------------------------------------------
 // Provisioner
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Provisiona una nueva base de datos Supabase para un negocio.
  *
@@ -136,15 +170,15 @@ export async function provisionBusinessDatabase(
   const accessToken = requireEnv('SUPABASE_ACCESS_TOKEN');
   const orgId = requireEnv('SUPABASE_ORG_ID');
   const region = process.env.SUPABASE_REGION ?? 'us-east-1';
- 
+
   // Password único por negocio — derivado del business_id + salt
   const dbPassword = await deriveDbPassword(businessId);
- 
+
   // Nombre del proyecto: slug del negocio + primeros 8 chars del id
   const projectName = `reservations-${slugify(businessName)}-${businessId.slice(0, 8)}`;
- 
+
   console.log(`[provisioner] Creando proyecto Supabase: ${projectName}`);
- 
+
   // 1. Crear el proyecto
   const createResponse = await fetch('https://api.supabase.com/v1/projects', {
     method: 'POST',
@@ -160,30 +194,30 @@ export async function provisionBusinessDatabase(
       plan: 'free',
     }),
   });
- 
+
   if (!createResponse.ok) {
     const error = await createResponse.text();
     throw new Error(`[provisioner] Error creando proyecto Supabase: ${error}`);
   }
- 
+
   const project = await createResponse.json() as SupabaseProject;
   console.log(`[provisioner] Proyecto creado: ${project.id} — esperando activación...`);
- 
+
   // 2. Polling hasta que el proyecto esté activo (máximo 5 minutos)
   const activeProject = await waitForProjectActive(project.id, accessToken);
- 
+
   // 3. Construir connection string
   const connectionString = buildConnectionString(activeProject, dbPassword);
- 
+
   console.log(`[provisioner] ✅ BD provisionada para negocio ${businessId}`);
- 
+
   return {
     projectId: activeProject.id,
     connectionString,
     host: activeProject.db_host,
   };
 }
- 
+
 /**
  * Espera hasta que el proyecto Supabase esté en estado ACTIVE_HEALTHY.
  * Polling cada 10 segundos, timeout de 5 minutos.
@@ -195,29 +229,29 @@ async function waitForProjectActive(
 ): Promise<SupabaseProject> {
   const startTime = Date.now();
   const pollInterval = 10_000; // 10 segundos
- 
+
   while (Date.now() - startTime < timeoutMs) {
     await sleep(pollInterval);
- 
+
     const response = await fetch(`https://api.supabase.com/v1/projects/${projectId}`, {
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });
- 
+
     if (!response.ok) continue;
- 
+
     const project = await response.json() as SupabaseProject;
     console.log(`[provisioner] Estado del proyecto ${projectId}: ${project.status}`);
- 
+
     if (project.status === 'ACTIVE_HEALTHY') {
       return project;
     }
   }
- 
+
   throw new Error(
     `[provisioner] Timeout esperando activación del proyecto ${projectId} (5 min)`,
   );
 }
- 
+
 /**
  * Ejecuta el schema.sql en el proyecto recién provisionado.
  * Se llama después de que el proyecto está activo.
@@ -236,7 +270,7 @@ export async function runSchemaOnNewDatabase(
     ssl: { rejectUnauthorized: false },
     connectionTimeoutMillis: 10_000,
   });
- 
+
   try {
     await client.connect();
     await client.query(schemaSQL);
@@ -245,21 +279,21 @@ export async function runSchemaOnNewDatabase(
     await client.end();
   }
 }
- 
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
- 
+
 function buildConnectionString(project: SupabaseProject, password: string): string {
   return `postgresql://${project.db_user}:${encodeURIComponent(password)}@${project.db_host}:${project.db_port}/${project.db_name}`;
 }
- 
+
 async function deriveDbPassword(businessId: string): Promise<string> {
   const salt = requireEnv('SUPABASE_DB_PASSWORD_SALT');
   const key = await scryptAsync(businessId, salt, 32) as Buffer;
   return key.toString('base64url').slice(0, 32);
 }
- 
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -267,11 +301,11 @@ function slugify(name: string): string {
     .replace(/^-|-$/g, '')
     .slice(0, 20);
 }
- 
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
- 
+
 function requireEnv(key: string): string {
   const value = process.env[key];
   if (!value) {
