@@ -5,8 +5,7 @@
  * Completamente independiente de `AppContainer` (tenants). Se instancia
  * UNA vez al arrancar el servidor y se pasa al `createPlatformRouter`.
  *
- * En modo in-memory (sin PLATFORM_DATABASE_URL) devuelve null — las rutas
- * /platform/* responderán 503 Service Unavailable.
+ * PLATFORM_DATABASE_URL siempre es requerida — la app es exclusivamente multi-tenant.
  */
 
 import { PlatformRepository } from './platform.repository.js';
@@ -20,19 +19,10 @@ export interface PlatformContainer {
 
 /**
  * Crea el container de plataforma.
- * Retorna `null` si `PLATFORM_DATABASE_URL` no está definida.
+ * Lanza error si `PLATFORM_DATABASE_URL` no está definida.
  */
-export function createPlatformContainer(): PlatformContainer | null {
-  if (!process.env.PLATFORM_DATABASE_URL) {
-    console.warn(
-      '[platform-container] ⚠️  PLATFORM_DATABASE_URL no definida — ' +
-      'rutas /platform/* deshabilitadas.',
-    );
-    return null;
-  }
-
+export function createPlatformContainer(): PlatformContainer {
   const platformSqlClient = createPlatformPool();
-  if (!platformSqlClient) return null;
 
   return {
     platformRepository:  new PlatformRepository(platformSqlClient),
