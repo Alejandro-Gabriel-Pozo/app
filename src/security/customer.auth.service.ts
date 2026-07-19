@@ -41,6 +41,7 @@ export class CustomerAuthService {
 
   constructor(
     private readonly customerRepository: CustomerRepository,
+    private readonly businessId: string,
   ) {
     const secret = process.env.JWT_SECRET;
     if (!secret) {
@@ -94,7 +95,7 @@ export class CustomerAuthService {
 
   private issueToken(customerId: string): string {
     return signToken(
-      { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId },
+      { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: this.businessId },
       this.jwtSecret,
     );
   }
