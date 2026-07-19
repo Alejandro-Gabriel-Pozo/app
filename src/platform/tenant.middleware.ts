@@ -8,6 +8,7 @@
  * 3. Descifra la connection string
  * 4. Obtiene (o crea) un pool de conexiones para ese negocio
  * 5. Adjunta `req.db` al request
+ * 6. Adjunta `req.businessId` al request
  *
  * ## Pool cache
  * Los pools se cachean en memoria por business_id.
@@ -106,7 +107,7 @@ export async function getTenantClient(
 // ---------------------------------------------------------------------------
  
 /**
- * Middleware que inyecta `req.db` con la conexión al tenant correcto.
+ * Middleware que inyecta `req.db` y `req.businessId` con la conexión al tenant correcto.
  * Debe montarse DESPUÉS de `authenticate()`.
  *
  * Los requests con `role: CUSTOMER` se dejan pasar sin modificar —
@@ -141,7 +142,8 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
     }
  
     try {
-      req.db = await getTenantClient(req.user.businessId, platformRepo);
+      req.db         = await getTenantClient(req.user.businessId, platformRepo);
+      req.businessId = req.user.businessId;
       next();
     } catch (err) {
       if (err instanceof TenantNotFoundError) {
