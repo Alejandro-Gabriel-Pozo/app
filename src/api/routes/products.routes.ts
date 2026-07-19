@@ -2,24 +2,19 @@
  * @file products.routes.ts
  * @description Rutas REST para productos y variantes.
  *
- * ## Endpoints
+ * GET    /api/products
+ * POST   /api/products
+ * GET    /api/products/:id
+ * PUT    /api/products/:id
+ * DELETE /api/products/:id
  *
- * ### Productos
- * GET    /api/products                                    — listar todos los productos
- * POST   /api/products                                    — crear producto
- * GET    /api/products/:id                               — obtener producto por ID
- * PUT    /api/products/:id                               — actualizar producto
- * DELETE /api/products/:id                               — eliminar producto
+ * GET    /api/products/:id/variants
+ * POST   /api/products/:id/variants
+ * PUT    /api/products/:id/variants/:variantId
+ * DELETE /api/products/:id/variants/:variantId
  *
- * ### Variantes (anidadas bajo producto)
- * GET    /api/products/:id/variants                      — listar variantes
- * POST   /api/products/:id/variants                      — crear variante
- * PUT    /api/products/:id/variants/:variantId           — actualizar variante
- * DELETE /api/products/:id/variants/:variantId           — eliminar variante
- *
- * ### Stock
- * POST   /api/products/:id/stock/decrement                        — descontar stock (sin variante)
- * POST   /api/products/:id/variants/:variantId/stock/decrement    — descontar stock variante
+ * POST   /api/products/:id/stock/decrement
+ * POST   /api/products/:id/variants/:variantId/stock/decrement
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -32,9 +27,10 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   // GET /api/products
   // -------------------------------------------------------------------------
-  router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
+  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const products = await service.listProducts();
+      // businessId viene del JWT, inyectado por authenticate()
+      const products = await service.listProducts(req.businessId);
       res.json(products);
     } catch (err) {
       next(err);
@@ -46,7 +42,10 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const product = await service.createProduct(req.body);
+      const product = await service.createProduct({
+        ...req.body,
+        businessId: req.businessId,
+      });
       res.status(201).json(product);
     } catch (err) {
       next(err);
@@ -150,7 +149,7 @@ export function createProductsRouter(container: AppContainer): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/products/:id/stock/decrement  — producto sin variantes
+  // POST /api/products/:id/stock/decrement
   // -------------------------------------------------------------------------
   router.post('/:id/stock/decrement', async (req: Request, res: Response, next: NextFunction) => {
     try {
