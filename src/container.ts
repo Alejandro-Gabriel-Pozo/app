@@ -6,6 +6,7 @@
 import { ReservationService }   from './services/reservation.service.js';
 import { ReportService }        from './services/report.service.js';
 import { CategoryService }      from './services/category.service.js';
+import { ProductService }       from './services/product.service.js';
 
 import { ReservationRepository }          from './repositories/reservation.repository.js';
 import { ResourceRepository }            from './repositories/resource.repository.js';
@@ -22,6 +23,10 @@ import { SqlCustomerRepository }             from './repositories/sql.customer.r
 import { SqlCategoryRepository }             from './repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }          from './repositories/sql.domain-event.repository.js';
 import { SqlFinancialTransactionRepository } from './repositories/sql.financial-transaction.repository.js';
+import {
+  SqlProductRepository,
+  SqlProductVariantRepository,
+} from './repositories/sql.product.repository.js';
 
 import { OutboxWorker }             from './workers/outbox.worker.js';
 import { registerFinancialHandlers } from './workers/outbox.handlers.js';
@@ -95,6 +100,7 @@ export interface AppContainer {
   reservationService:             ReservationService;
   reportService:                  ReportService;
   categoryService:                CategoryService;
+  productService:                 ProductService;
   outboxWorker:                   OutboxWorker;
   getBusinessPlan:                (businessId: string) => Promise<BusinessPlan>;
   mode: 'postgresql';
@@ -121,6 +127,10 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const domainEventRepository          = new SqlDomainEventRepository(pgClient);
   const financialTransactionRepository = new SqlFinancialTransactionRepository(pgClient);
   const transactionManager             = new PgTransactionManager();
+
+  const productRepository        = new SqlProductRepository(pgClient);
+  const productVariantRepository = new SqlProductVariantRepository(pgClient);
+  const productService           = new ProductService(productRepository, productVariantRepository);
 
   const reservationService = new ReservationService(
     reservationRepository,
@@ -158,6 +168,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
     reservationService,
     reportService,
     categoryService,
+    productService,
     outboxWorker,
     getBusinessPlan,
     mode: 'postgresql',

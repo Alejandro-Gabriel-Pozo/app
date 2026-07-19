@@ -14,7 +14,7 @@
  *    ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
  *       necesita correr cuando la BD del tenant todavía no está activa.
  * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
- * 10. /api/resources, /reservations, /reports, /customers, /users, /categories
+ * 10. /api/resources, /reservations, /reports, /customers, /users, /categories, /products
  * 11. errorHandler
  */
 
@@ -34,6 +34,7 @@ import { createCategoryRouter }     from './api/routes/categories.routes.js';
 import { createUsersRouter }        from './api/routes/users.routes.js';
 import { createPlatformRouter }     from './api/routes/platform.routes.js';
 import { createAdminRouter }        from './api/routes/admin.routes.js';
+import { createProductsRouter }     from './api/routes/products.routes.js';
 import { errorHandler }             from './api/middleware/error.middleware.js';
 import { openApiSpec }              from './openapi/spec.js';
 import { authenticate }             from './security/auth.middleware.js';
@@ -137,6 +138,7 @@ export async function createApp(): Promise<{
   app.use('/api/customers',    createCustomersRouter(container));
   app.use('/api/users',        createUsersRouter(platformRepo));
   app.use('/api/categories',   createCategoryRouter(platformRepo));
+  app.use('/api/products',     createProductsRouter(container));
 
   app.use(errorHandler);
 

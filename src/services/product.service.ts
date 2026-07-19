@@ -1,84 +1,71 @@
-// =============================================================================
-// services/product.service.ts — Lógica de dominio para productos y variantes
-// =============================================================================
-// Reglas centrales de herencia has_variants:
-//
-//  hasVariants = false
-//    → precio: product.basePrice
-//    → stock:  product.stockQuantity
-//    → decrementStock va a IProductRepository.decrementStock()
-//
-//  hasVariants = true
-//    → se EXIGE variantId (lanza ProductVariantRequiredError si falta)
-//    → precio: variant.priceOverride ?? product.basePrice
-//    → stock:  variant.stockQuantity
-//    → decrementStock va a IProductVariantRepository.decrementStock()
-//
-// Este servicio es la única fuente de verdad para esa lógica.
-// Los controladores de la API NUNCA calculan precio/stock directamente.
-// =============================================================================
+/**
+ * @file product.service.ts
+ * @description Lógica de negocio para productos y variantes.
+ *
+ * ## Reglas de herencia has_variants
+ *
+ * has_variants = false
+ *   → effectivePrice = product.basePrice
+ *   → stock          = product.stockQuantity
+ *   → product_variant_id NO se acepta (se ignora en la resolución)
+ *
+ * has_variants = true
+ *   → product_variant_id REQUERIDO
+ *   → effectivePrice = variant.priceOverride ?? product.basePrice
+ *   → stock          = variant.stockQuantity
+ */
 
-import type { SqlClient } from '../repositories/sql.client.js';
-import type {
+import {
   IProductRepository,
   IProductVariantRepository,
-  ListProductsFilter,
-  ListVariantsFilter,
 } from '../repositories/product.repository.js';
-import type {
+import {
   Product,
   ProductVariant,
   ResolvedProductTarget,
   CreateProductInput,
   UpdateProductInput,
-  CreateProductVariantInput,
-  UpdateProductVariantInput,
+  CreateVariantInput,
+  UpdateVariantInput,
 } from '../domain/product.entities.js';
+import { SqlClient } from '../repositories/sql.client.js';
 
 // ---------------------------------------------------------------------------
-// Errores tipados
+// Errores de dominio
 // ---------------------------------------------------------------------------
 
 export class ProductNotFoundError extends Error {
-  constructor(id: string) {
-    super(`Producto no encontrado (id=${id}).`);
+  constructor(productId: string) {
+    super(`Producto no encontrado: ${productId}`);
     this.name = 'ProductNotFoundError';
   }
 }
 
-export class ProductVariantRequiredError extends Error {
+export class VariantNotFoundError extends Error {
+  constructor(variantId: string) {
+    super(`Variante no encontrada: ${variantId}`);
+    this.name = 'VariantNotFoundError';
+  }
+}
+
+export class VariantRequiredError extends Error {
   constructor(productId: string) {
     super(
-      `El producto (id=${productId}) usa variantes: se requiere product_variant_id.`,
+      `El producto ${productId} tiene variantes (has_variants=true). ` +
+      'Debés proveer un product_variant_id para transaccionar.',
     );
-    this.name = 'ProductVariantRequiredError';
-  }
-}
-
-export class ProductVariantNotFoundError extends Error {
-  constructor(id: string) {
-    super(`Variante no encontrada (id=${id}).`);
-    this.name = 'ProductVariantNotFoundError';
-  }
-}
-
-export class ProductVariantMismatchError extends Error {
-  constructor(variantId: string, productId: string) {
-    super(
-      `La variante (id=${variantId}) no pertenece al producto (id=${productId}).`,
-    );
-    this.name = 'ProductVariantMismatchError';
+    this.name = 'VariantRequiredError';
   }
 }
 
 export class InsufficientStockError extends Error {
   readonly available: number;
-  constructor(id: string, available: number, requested: number) {
-    super(
-      `Stock insuficiente para ${id}: disponible=${available}, solicitado=${requested}.`,
-    );
-    this.name = 'InsufficientStockError';
+  readonly requested: number;
+  constructor(available: number, requested: number) {
+    super(`Stock insuficiente: disponible ${available}, solicitado ${requested}.`);
+    this.name  = 'InsufficientStockError';
     this.available = available;
+    this.requested = requested;
   }
 }
 
@@ -93,201 +80,153 @@ export class ProductService {
   ) {}
 
   // -------------------------------------------------------------------------
-  // CRUD — Productos
+  // CRUD productos
   // -------------------------------------------------------------------------
 
-  async getProduct(id: string): Promise<Product> {
-    const product = await this.productRepo.getById(id);
-    if (!product) throw new ProductNotFoundError(id);
-    return product;
+  async listProducts(): Promise<Product[]> {
+    return this.productRepo.findAll();
   }
 
-  async listProducts(filter: ListProductsFilter): Promise<Product[]> {
-    return this.productRepo.getAll(filter);
+  async getProduct(id: string): Promise<Product | null> {
+    return this.productRepo.findById(id);
   }
 
   async createProduct(input: CreateProductInput): Promise<Product> {
+    // Si se crea con has_variants=true, el stock_quantity del padre no aplica.
+    // Normalizamos a 0 para evitar confusión.
+    if (input.hasVariants) {
+      input = { ...input, stockQuantity: 0 };
+    }
     return this.productRepo.create(input);
   }
 
-  async updateProduct(
-    id: string,
-    input: UpdateProductInput,
-  ): Promise<Product> {
-    const updated = await this.productRepo.update(id, input);
-    if (!updated) throw new ProductNotFoundError(id);
-    return updated;
+  async updateProduct(id: string, input: UpdateProductInput): Promise<Product | null> {
+    return this.productRepo.update(id, input);
   }
 
   async deleteProduct(id: string): Promise<void> {
-    const ok = await this.productRepo.delete(id);
-    if (!ok) throw new ProductNotFoundError(id);
+    return this.productRepo.delete(id);
   }
 
   // -------------------------------------------------------------------------
-  // CRUD — Variantes
+  // CRUD variantes
   // -------------------------------------------------------------------------
 
-  async getVariant(id: string): Promise<ProductVariant> {
-    const variant = await this.variantRepo.getById(id);
-    if (!variant) throw new ProductVariantNotFoundError(id);
-    return variant;
+  async listVariants(productId: string): Promise<ProductVariant[]> {
+    return this.variantRepo.findByProductId(productId);
   }
 
-  async listVariants(filter: ListVariantsFilter): Promise<ProductVariant[]> {
-    return this.variantRepo.getByProduct(filter);
-  }
-
-  async createVariant(
-    input: CreateProductVariantInput,
-  ): Promise<ProductVariant> {
-    // Verificar que el producto padre existe y usa variantes
-    const product = await this.getProduct(input.productId);
+  async createVariant(productId: string, input: CreateVariantInput): Promise<ProductVariant> {
+    // Aseguramos que el producto padre exista y tenga has_variants=true
+    const product = await this.productRepo.findById(productId);
+    if (!product) throw new ProductNotFoundError(productId);
     if (!product.hasVariants) {
       throw new Error(
-        `El producto (id=${product.id}) no usa variantes (has_variants=false).`,
+        `El producto ${productId} tiene has_variants=false. ` +
+        'Activalo antes de crear variantes.',
       );
     }
-    return this.variantRepo.create(input);
+    return this.variantRepo.create(productId, input);
   }
 
-  async updateVariant(
-    id: string,
-    input: UpdateProductVariantInput,
-  ): Promise<ProductVariant> {
-    const updated = await this.variantRepo.update(id, input);
-    if (!updated) throw new ProductVariantNotFoundError(id);
-    return updated;
+  async updateVariant(variantId: string, input: UpdateVariantInput): Promise<ProductVariant | null> {
+    return this.variantRepo.update(variantId, input);
   }
 
-  async deleteVariant(id: string): Promise<void> {
-    const ok = await this.variantRepo.delete(id);
-    if (!ok) throw new ProductVariantNotFoundError(id);
+  async deleteVariant(variantId: string): Promise<void> {
+    return this.variantRepo.delete(variantId);
   }
 
   // -------------------------------------------------------------------------
-  // Herencia has_variants — método central
+  // Resolución de herencia has_variants
   // -------------------------------------------------------------------------
 
   /**
-   * Resuelve el target de una transacción (orden, stock_movement) según
-   * la lógica de herencia de has_variants.
-   *
-   * @param productId       ID del producto siempre requerido.
-   * @param variantId       Requerido cuando hasVariants=true, ignorado si false.
-   * @throws ProductVariantRequiredError   si hasVariants=true y variantId es null/undefined.
-   * @throws ProductVariantMismatchError   si la variante no pertenece al producto.
+   * Resuelve el target efectivo de una transacción (precio y stock correctos).
+   * No toca la BD — solo lee y valida.
    */
-  async resolveTransactionTarget(
+  async resolveTarget(
     productId: string,
-    variantId?: string | null,
+    variantId?: string,
   ): Promise<ResolvedProductTarget> {
-    const product = await this.getProduct(productId);
+    const product = await this.productRepo.findById(productId);
+    if (!product) throw new ProductNotFoundError(productId);
 
-    if (!product.hasVariants) {
-      // ── Modo simple: precio y stock del producto ──
+    if (product.hasVariants) {
+      if (!variantId) throw new VariantRequiredError(productId);
+
+      const variant = await this.variantRepo.findById(variantId);
+      if (!variant) throw new VariantNotFoundError(variantId);
+
       return {
         product,
-        variant: undefined,
-        effectivePrice: product.basePrice,
-        availableStock: product.stockQuantity,
+        variant,
+        effectivePrice: variant.priceOverride ?? product.basePrice,
+        availableStock: variant.stockQuantity,
       };
     }
 
-    // ── Modo variantes: variantId es obligatorio ──
-    if (!variantId) {
-      throw new ProductVariantRequiredError(productId);
-    }
-
-    const variant = await this.variantRepo.getById(variantId);
-    if (!variant) throw new ProductVariantNotFoundError(variantId);
-    if (variant.productId !== productId) {
-      throw new ProductVariantMismatchError(variantId, productId);
-    }
-    if (!variant.active) {
-      throw new Error(`La variante (id=${variantId}) está inactiva.`);
-    }
-
+    // has_variants = false: opera directo sobre el producto padre
     return {
       product,
-      variant,
-      // price_override NULL → hereda basePrice del padre
-      effectivePrice: variant.priceOverride ?? product.basePrice,
-      availableStock: variant.stockQuantity,
+      variant: undefined,
+      effectivePrice: product.basePrice,
+      availableStock: product.stockQuantity,
     };
   }
 
-  /**
-   * Verifica disponibilidad de stock antes de confirmar una transacción.
-   * No modifica la BD — solo valida.
-   */
+  // -------------------------------------------------------------------------
+  // Validación de stock (sin tocar BD)
+  // -------------------------------------------------------------------------
+
   async checkStock(
     productId: string,
-    variantId: string | null | undefined,
+    variantId: string | undefined,
     quantity: number,
-  ): Promise<ResolvedProductTarget> {
-    const target = await this.resolveTransactionTarget(productId, variantId);
+  ): Promise<void> {
+    const target = await this.resolveTarget(productId, variantId);
     if (target.availableStock < quantity) {
-      const targetId = target.variant?.id ?? productId;
-      throw new InsufficientStockError(targetId, target.availableStock, quantity);
+      throw new InsufficientStockError(target.availableStock, quantity);
     }
-    return target;
   }
 
+  // -------------------------------------------------------------------------
+  // Descuento de stock (dentro de una TX activa)
+  // -------------------------------------------------------------------------
+
   /**
-   * Descuenta stock dentro de una transacción SQL activa.
-   * Delega al repositorio correcto según has_variants.
-   *
-   * Llamar siempre DESPUÉS de checkStock() o dentro de BEGIN/COMMIT
-   * donde la fila está bloqueada con SELECT FOR UPDATE.
+   * Descuenta stock dentro de la transacción activa `client`.
+   * Llamar siempre DESPUÉS de checkStock() o dentro de la misma TX
+   * que verifica la disponibilidad a nivel BD.
    */
   async decrementStock(
     client: SqlClient,
     productId: string,
-    variantId: string | null | undefined,
+    variantId: string | undefined,
     quantity: number,
   ): Promise<void> {
-    const product = await this.getProduct(productId);
-
-    if (!product.hasVariants) {
+    if (!variantId) {
+      // Producto sin variantes
       await this.productRepo.decrementStock(client, productId, quantity);
-      return;
+    } else {
+      // Producto con variantes
+      await this.variantRepo.decrementStock(client, variantId, quantity);
     }
-
-    if (!variantId) throw new ProductVariantRequiredError(productId);
-    await this.variantRepo.decrementStock(client, variantId, quantity);
   }
 
   /**
-   * Incrementa stock (devoluciones / ajustes).
+   * Incrementa stock (para reversiones / devoluciones).
    */
   async incrementStock(
     client: SqlClient,
     productId: string,
-    variantId: string | null | undefined,
+    variantId: string | undefined,
     quantity: number,
   ): Promise<void> {
-    const product = await this.getProduct(productId);
-
-    if (!product.hasVariants) {
+    if (!variantId) {
       await this.productRepo.incrementStock(client, productId, quantity);
-      return;
+    } else {
+      await this.variantRepo.incrementStock(client, variantId, quantity);
     }
-
-    if (!variantId) throw new ProductVariantRequiredError(productId);
-    await this.variantRepo.incrementStock(client, variantId, quantity);
-  }
-
-  // -------------------------------------------------------------------------
-  // Helper utilitario
-  // -------------------------------------------------------------------------
-
-  /**
-   * Devuelve el precio efectivo sin necesidad de resolver el target completo.
-   * Útil para renderizar listas de productos con precio resuelto.
-   */
-  resolvePrice(product: Product, variant?: ProductVariant | null): number {
-    if (!product.hasVariants || !variant) return product.basePrice;
-    return variant.priceOverride ?? product.basePrice;
   }
 }
