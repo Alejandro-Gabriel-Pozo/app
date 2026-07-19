@@ -72,32 +72,18 @@ function toUserDto(user: { id: string; email: string; role: string; active: bool
 // ---------------------------------------------------------------------------
 
 export function createUsersRouter(
-  platformRepo: PlatformRepository | null,
+  platformRepo: PlatformRepository,
 ): Router {
   const router = Router();
-
-  const requirePlatform = (_req: Request, res: Response, next: NextFunction): void => {
-    if (!platformRepo) {
-      res.status(503).json({
-        code: 'PLATFORM_UNAVAILABLE',
-        message:
-          'La gestión de usuarios requiere PLATFORM_DATABASE_URL. ' +
-          'En modo single-tenant los usuarios se configuran por variables de entorno.',
-      });
-      return;
-    }
-    next();
-  };
 
   // GET /api/users
   router.get(
     '/',
     authorize([UserRole.ADMIN]),
-    requirePlatform,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const businessId = req.user!.businessId!;
-        const users = await platformRepo!.listUsersByBusiness(businessId);
+        const users = await platformRepo.listUsersByBusiness(businessId);
         res.json(users.map(toUserDto));
       } catch (err) {
         next(err);
@@ -109,13 +95,12 @@ export function createUsersRouter(
   router.post(
     '/',
     authorize([UserRole.ADMIN]),
-    requirePlatform,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = CreateUserSchema.parse(req.body);
         const businessId = req.user!.businessId!;
 
-        const emailTaken = await platformRepo!.existsUserByEmailInBusiness(
+        const emailTaken = await platformRepo.existsUserByEmailInBusiness(
           body.email,
           businessId,
         );
@@ -128,7 +113,7 @@ export function createUsersRouter(
         }
 
         const passwordHash = await hashPassword(body.password);
-        const newUser = await platformRepo!.createPlatformUser({
+        const newUser = await platformRepo.createPlatformUser({
           id: crypto.randomUUID(),
           email: body.email,
           businessId,
@@ -147,7 +132,6 @@ export function createUsersRouter(
   router.patch(
     '/:id',
     authorize([UserRole.ADMIN]),
-    requirePlatform,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = UpdateUserSchema.parse(req.body);
@@ -162,14 +146,14 @@ export function createUsersRouter(
           return;
         }
 
-        const existing = await platformRepo!.findUserByIdAndBusiness(targetId, businessId);
+        const existing = await platformRepo.findUserByIdAndBusiness(targetId, businessId);
         if (!existing) {
           res.status(404).json({ code: 'USER_NOT_FOUND', message: 'Usuario no encontrado.' });
           return;
         }
 
         if (body.email && body.email !== existing.email) {
-          const emailTaken = await platformRepo!.existsUserByEmailInBusiness(
+          const emailTaken = await platformRepo.existsUserByEmailInBusiness(
             body.email,
             businessId,
             targetId,
@@ -187,7 +171,7 @@ export function createUsersRouter(
           ? await hashPassword(body.password)
           : undefined;
 
-        const updated = await platformRepo!.updateUser(targetId, businessId, {
+        const updated = await platformRepo.updateUser(targetId, businessId, {
           ...(body.email     !== undefined && { email: body.email }),
           ...(body.role      !== undefined && { role: body.role }),
           ...(passwordHash   !== undefined && { passwordHash }),
@@ -204,7 +188,6 @@ export function createUsersRouter(
   router.delete(
     '/:id',
     authorize([UserRole.ADMIN]),
-    requirePlatform,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const businessId = req.user!.businessId!;
@@ -218,7 +201,7 @@ export function createUsersRouter(
           return;
         }
 
-        const deactivated = await platformRepo!.deactivateUser(targetId, businessId);
+        const deactivated = await platformRepo.deactivateUser(targetId, businessId);
         if (!deactivated) {
           res.status(404).json({ code: 'USER_NOT_FOUND', message: 'Usuario no encontrado o ya inactivo.' });
           return;

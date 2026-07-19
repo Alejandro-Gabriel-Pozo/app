@@ -25,7 +25,7 @@ import { ZodError } from 'zod';
 import { SqlCategoryRepository } from '../../repositories/sql.category.repository.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 
-export function createCategoryRouter(platformRepo: PlatformRepository | null): Router {
+export function createCategoryRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
 
   router.get('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -55,10 +55,6 @@ export function createCategoryRouter(platformRepo: PlatformRepository | null): R
       const body       = CreateCategorySchema.parse(req.body);
       const businessId = String((req as any).user?.businessId ?? '');
 
-      if (!platformRepo) {
-        res.status(503).json({ code: 'PLATFORM_UNAVAILABLE', message: 'La gestión de categorías requiere PLATFORM_DATABASE_URL.' });
-        return;
-      }
       const business = await platformRepo.findById(businessId);
       if (!business) {
         res.status(404).json({ code: 'BUSINESS_NOT_FOUND', message: `Negocio "${businessId}" no encontrado.` });

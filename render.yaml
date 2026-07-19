@@ -24,34 +24,14 @@ services:
       - key: PLATFORM_DATABASE_URL
         sync: false
 
-      # Base de datos del tenant (modo single-tenant / dev)
+      # Base de datos del tenant (por negocio — provisionada vía Supabase)
       - key: DATABASE_URL
+        sync: false
+
+      # Cifrado de connection strings de tenants
+      - key: DB_ENCRYPTION_KEY
         sync: false
 
       # CORS — dominio del frontend (ej. https://mi-app.vercel.app)
       - key: CORS_ORIGIN
-        sync: false
-
-      # Credenciales del usuario ADMIN
-      - key: ADMIN_USER_ID
-        sync: false
-      - key: ADMIN_USER_EMAIL
-        sync: false
-      - key: ADMIN_PASSWORD_HASH
-        sync: false
-
-      # Credenciales del usuario RECEPCIONISTA
-      - key: RECEP_USER_ID
-        sync: false
-      - key: RECEP_USER_EMAIL
-        sync: false
-      - key: RECEP_PASSWORD_HASH
-        sync: false
-
-      # Credenciales del usuario MESERO/WAITER
-      - key: WAITER_USER_ID
-        sync: false
-      - key: WAITER_USER_EMAIL
-        sync: false
-      - key: WAITER_PASSWORD_HASH
         sync: false

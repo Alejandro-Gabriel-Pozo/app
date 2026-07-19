@@ -218,21 +218,9 @@ function requireCustomerId(req: Request, res: Response): string | null {
 
 export function createCustomerRouter(
   container: AppContainer,
-  platformRepo: PlatformRepository | null,
+  platformRepo: PlatformRepository,
 ): Router {
   const router = Router();
-
-  if (!platformRepo) {
-    // Sin PLATFORM_DATABASE_URL no hay forma de resolver a qué negocio
-    // pertenece cada request — el portal de clientes no puede operar.
-    router.use((_req: Request, res: Response) => {
-      res.status(503).json({
-        code: 'PLATFORM_UNAVAILABLE',
-        message: 'El portal de clientes requiere PLATFORM_DATABASE_URL.',
-      });
-    });
-    return router;
-  }
 
   // -------------------------------------------------------------------------
   // POST /api/customer/:businessSlug/register
@@ -606,4 +594,3 @@ export function createCustomerRouter(
 
   return router;
 }
-

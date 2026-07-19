@@ -9,7 +9,7 @@
  * - Envuelve el arranque en `main()` con try/catch para capturar errores fatales.
  *
  * Migraciones automáticas al arrancar:
- * - PLATFORM_DATABASE_URL → platform.schema.sql (BD central, multi-tenant)
+ * - PLATFORM_DATABASE_URL → platform.schema.sql (BD central, siempre requerida)
  * - Tenant schemas se aplican vía tenant.middleware al primer request del tenant.
  */
 
@@ -26,26 +26,24 @@ const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
 async function main(): Promise<void> {
   // -------------------------------------------------------------------------
-  // Migración de la BD central (PLATFORM_DATABASE_URL)
+  // Migración de la BD central (PLATFORM_DATABASE_URL — siempre requerida)
   // -------------------------------------------------------------------------
-  if (process.env.PLATFORM_DATABASE_URL) {
-    try {
-      console.log('[migrate] Ejecutando platform.schema.sql...');
-      const schemaPath = join(__dirname, 'db', 'platform.schema.sql');
-      const sql = await readFile(schemaPath, 'utf-8');
+  try {
+    console.log('[migrate] Ejecutando platform.schema.sql...');
+    const schemaPath = join(__dirname, 'db', 'platform.schema.sql');
+    const sql = await readFile(schemaPath, 'utf-8');
 
-      const { Pool } = pg;
-      const pool = new Pool({
-        connectionString: process.env.PLATFORM_DATABASE_URL,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-      });
-      await pool.query(sql);
-      await pool.end();
-      console.log('[migrate] ✅ platform.schema.sql aplicado.');
-    } catch (err) {
-      console.error('[migrate] ❌ Error en platform.schema.sql:', err);
-      process.exit(1);
-    }
+    const { Pool } = pg;
+    const pool = new Pool({
+      connectionString: process.env.PLATFORM_DATABASE_URL,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    });
+    await pool.query(sql);
+    await pool.end();
+    console.log('[migrate] ✅ platform.schema.sql aplicado.');
+  } catch (err) {
+    console.error('[migrate] ❌ Error en platform.schema.sql:', err);
+    process.exit(1);
   }
 
   // -------------------------------------------------------------------------

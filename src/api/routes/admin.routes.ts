@@ -16,7 +16,7 @@ import { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString } from '../../platform/supabase.provisioner.js';
 import { UserRole } from '../../types/enums.js';
 
-export function createAdminRouter(platformRepo: PlatformRepository | null): Router {
+export function createAdminRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
 
   // POST /api/admin/repair-tenant-db
@@ -29,14 +29,6 @@ export function createAdminRouter(platformRepo: PlatformRepository | null): Rout
     authorize([UserRole.ADMIN]),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        if (!platformRepo) {
-          res.status(503).json({
-            code: 'PLATFORM_UNAVAILABLE',
-            message: 'Requiere PLATFORM_DATABASE_URL.',
-          });
-          return;
-        }
-
         const databaseUrl = process.env.DATABASE_URL;
         if (!databaseUrl) {
           res.status(500).json({
@@ -71,7 +63,6 @@ export function createAdminRouter(platformRepo: PlatformRepository | null): Rout
           message: `Negocio ${businessId} activado y apuntado a DATABASE_URL.`,
         });
       } catch (err) {
-        // Loguear el error real para verlo en Render Logs
         console.error('[admin] repair-tenant-db ERROR:', err);
         next(err);
       }
