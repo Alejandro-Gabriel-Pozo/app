@@ -11,9 +11,23 @@
  * 6. Adjunta `req.businessId` al request
  *
  * ## Pool cache
- * Los pools se cachean en memoria por business_id.
+ * Los pools se cachean en `tenantPools` por business_id.
+ * Cada entrada guarda tanto el SqlClient (interfaz usada por los repos)
+ * como el Pool de pg (necesario para llamar pool.end() en shutdown).
+ *
  * Un negocio activo tiene exactamente un pool durante la vida del proceso.
  * Si el proceso se reinicia (Render deploy), los pools se recrean lazy.
+ *
+ * ## Límite de pools
+ * MAX_TENANT_POOLS controla cuántos pools pueden coexistir en memoria.
+ * Cada pool tiene max:5 conexiones; a 200 tenants = 1.000 conexiones
+ * máximas. Al superarse el límite se loguea una advertencia — no se
+ * bloquea ni se implementa LRU dado el volumen actual del producto.
+ * Revisitar cuando se superen los 200 tenants activos simultáneos.
+ *
+ * ## Invalidación proactiva
+ * `evictTenantPool(businessId)` cierra el pool y lo remueve del cache.
+ * Útil para rotar credenciales o cuando un negocio se desactiva en caliente.
  *
  * ## Por qué no usar el pgClient global
  * El pgClient global apunta a la BD central (PLATFORM_DATABASE_URL).
@@ -27,22 +41,45 @@
  * cliente para las rutas autenticadas. El guard de abajo es una segunda
  * defensa por si el orden de montaje cambiara en el futuro.
  */
- 
+
 import { Request, Response, NextFunction } from 'express';
 import pg from 'pg';
 import { SqlClient } from '../repositories/sql.client.js';
 import { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './supabase.provisioner.js';
 import { BusinessStatus, UserRole } from '../types/enums.js';
- 
+
 const { Pool } = pg;
- 
+type PgPool = InstanceType<typeof Pool>;
+
 // ---------------------------------------------------------------------------
 // Pool cache — un pool por business_id
 // ---------------------------------------------------------------------------
- 
-const tenantPools = new Map<string, SqlClient>();
- 
+
+/**
+ * Entrada del cache de pools.
+ * Se guarda el Pool de pg junto al SqlClient para poder cerrar la conexión
+ * real en shutdown o al invalidar un tenant en caliente.
+ */
+interface TenantPoolEntry {
+  client: SqlClient;
+  pool:   PgPool;
+}
+
+/**
+ * Número máximo de pools de tenant en memoria.
+ * Cada pool tiene max:5 conexiones; a 200 tenants = 1.000 conexiones máximas.
+ * Al superarse, se loguea una advertencia. No se bloquea ni se hace evición
+ * automática (LRU) dado el volumen actual. Revisitar al escalar.
+ */
+const MAX_TENANT_POOLS = parseInt(process.env.MAX_TENANT_POOLS ?? '200', 10);
+
+const tenantPools = new Map<string, TenantPoolEntry>();
+
+// ---------------------------------------------------------------------------
+// Pool lifecycle
+// ---------------------------------------------------------------------------
+
 /**
  * Obtiene (o crea) el SqlClient para un negocio.
  * Cachea los pools en memoria para no reconectar en cada request.
@@ -53,26 +90,26 @@ export async function getTenantClient(
 ): Promise<SqlClient> {
   // Cache hit
   const cached = tenantPools.get(businessId);
-  if (cached) return cached;
- 
+  if (cached) return cached.client;
+
   // Buscar negocio en BD central
   const business = await platformRepo.findById(businessId);
- 
+
   if (!business) {
     throw new TenantNotFoundError(businessId);
   }
- 
+
   if (business.status !== BusinessStatus.ACTIVE) {
     throw new TenantInactiveError(businessId, business.status);
   }
- 
+
   if (!business.dbUrlEncrypted) {
     throw new TenantNotReadyError(businessId);
   }
- 
+
   // Descifrar connection string
   const connectionString = await decryptConnectionString(business.dbUrlEncrypted);
- 
+
   // Crear pool para este tenant
   const pool = new Pool({
     connectionString,
@@ -81,13 +118,15 @@ export async function getTenantClient(
     connectionTimeoutMillis: 5_000,
     ssl: { rejectUnauthorized: false },
   });
- 
+
   pool.on('error', (err) => {
     console.error(`[tenant] Error en pool de ${businessId}:`, err.message);
-    // Remover del cache para forzar reconexión en el próximo request
+    // Remover del cache para forzar reconexión en el próximo request.
+    // No llamamos pool.end() aquí porque el error ya indica que el pool
+    // está en estado inconsistente y pg lo maneja internamente.
     tenantPools.delete(businessId);
   });
- 
+
   const client: SqlClient = {
     async query(sql: string, params?: unknown[]) {
       const result = await pool.query(sql, params);
@@ -97,15 +136,48 @@ export async function getTenantClient(
         : { rows: result.rows };
     },
   };
- 
-  tenantPools.set(businessId, client);
+
+  // Advertir si se supera el límite de pools simultáneos
+  if (tenantPools.size >= MAX_TENANT_POOLS) {
+    console.warn(
+      `[tenant] ⚠️  Límite de pools alcanzado (${MAX_TENANT_POOLS}). ` +
+      `Tenants activos: ${tenantPools.size + 1}. ` +
+      'Considerar implementar LRU o aumentar MAX_TENANT_POOLS.',
+    );
+  }
+
+  tenantPools.set(businessId, { client, pool });
   return client;
 }
- 
+
+/**
+ * Invalida el pool de un tenant en caliente.
+ * Cierra la conexión real con Postgres y lo remueve del cache.
+ * Útil para rotación de credenciales o deprovisioning de un negocio.
+ *
+ * @param businessId - ID del tenant a invalidar.
+ */
+export async function evictTenantPool(businessId: string): Promise<void> {
+  const entry = tenantPools.get(businessId);
+  if (!entry) return;
+
+  tenantPools.delete(businessId);
+
+  try {
+    await entry.pool.end();
+    console.log(`[tenant] Pool de ${businessId} invalidado correctamente.`);
+  } catch (err) {
+    console.error(
+      `[tenant] Error al cerrar pool de ${businessId} durante eviction:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
- 
+
 /**
  * Middleware que inyecta `req.db` y `req.businessId` con la conexión al tenant correcto.
  * Debe montarse DESPUÉS de `authenticate()`.
@@ -140,7 +212,7 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
       });
       return;
     }
- 
+
     try {
       req.db         = await getTenantClient(req.user.businessId, platformRepo);
       req.businessId = req.user.businessId;
@@ -171,39 +243,56 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
     }
   };
 }
- 
+
 // ---------------------------------------------------------------------------
 // Shutdown graceful — cerrar todos los pools
 // ---------------------------------------------------------------------------
- 
+
 /**
- * Cierra todos los pools de tenants activos.
- * Llamar en el shutdown del servidor (SIGTERM).
+ * Cierra todos los pools de tenants activos llamando pool.end() en cada uno.
+ * Llamar en el shutdown del servidor (SIGTERM / SIGINT).
+ *
+ * Antes: solo hacía tenantPools.clear() — las conexiones TCP quedaban
+ * abiertas en Postgres hasta el idle_timeout. Ahora se cierran correctamente.
  */
 export async function closeTenantPools(): Promise<void> {
-  const count = tenantPools.size;
+  const entries = Array.from(tenantPools.entries());
   tenantPools.clear();
-  console.log(`[tenant] ${count} pools de tenants cerrados`);
+
+  await Promise.allSettled(
+    entries.map(async ([businessId, { pool }]) => {
+      try {
+        await pool.end();
+      } catch (err) {
+        console.error(
+          `[tenant] Error al cerrar pool de ${businessId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }),
+  );
+
+  console.log(`[tenant] ${entries.length} pool(s) de tenants cerrados correctamente.`);
 }
- 
+
 // ---------------------------------------------------------------------------
 // Errores específicos de tenant
 // ---------------------------------------------------------------------------
- 
+
 export class TenantNotFoundError extends Error {
   constructor(businessId: string) {
     super(`Negocio no encontrado: ${businessId}`);
     this.name = 'TenantNotFoundError';
   }
 }
- 
+
 export class TenantInactiveError extends Error {
   constructor(businessId: string, public readonly status: string) {
     super(`Negocio ${businessId} inactivo (estado: ${status})`);
     this.name = 'TenantInactiveError';
   }
 }
- 
+
 export class TenantNotReadyError extends Error {
   constructor(businessId: string) {
     super(`BD del negocio ${businessId} aún en provisioning`);
