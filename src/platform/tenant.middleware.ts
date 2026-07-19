@@ -19,11 +19,12 @@
  * Cada tenant tiene su propia BD — req.db apunta a ella.
  *
  * ## CUSTOMER y tenantMiddleware
- * Los JWTs de clientes (`role: CUSTOMER`) no llevan `business_id` — usan
- * `customer_id` en su lugar. Las rutas `/customer/*` se montan antes de
- * este middleware en `app.ts`, por lo que los requests de clientes no llegan
- * aquí en condiciones normales. Sin embargo, se agrega un guard explícito
- * para evitar un 401 silencioso si el orden de montaje cambiara en el futuro.
+ * Las rutas `/customer/*` se montan antes de este middleware en `app.ts`,
+ * así que sus requests no llegan aquí en condiciones normales — resuelven
+ * su propio `req.db` internamente (ver `customer.routes.ts`), a partir de
+ * `:businessSlug` en las rutas públicas o de `business_id` en el JWT del
+ * cliente para las rutas autenticadas. El guard de abajo es una segunda
+ * defensa por si el orden de montaje cambiara en el futuro.
  */
  
 import { Request, Response, NextFunction } from 'express';
@@ -45,7 +46,7 @@ const tenantPools = new Map<string, SqlClient>();
  * Obtiene (o crea) el SqlClient para un negocio.
  * Cachea los pools en memoria para no reconectar en cada request.
  */
-async function getTenantClient(
+export async function getTenantClient(
   businessId: string,
   platformRepo: PlatformRepository,
 ): Promise<SqlClient> {
@@ -123,9 +124,9 @@ async function getTenantClient(
  */
 export function tenantMiddleware(platformRepo: PlatformRepository) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Guard: CUSTOMER no usa tenant DB — pasa directo.
-    // Sus rutas se montan antes de este middleware, pero si el orden cambia
-    // esto evita un 401 por business_id ausente en el JWT de cliente.
+    // Guard: CUSTOMER resuelve su propio req.db en customer.routes.ts y no
+    // debería llegar hasta acá — esto es una segunda defensa, no el camino
+    // esperado. Ver nota en la cabecera del archivo.
     if (req.user?.role === UserRole.CUSTOMER) {
       next();
       return;
