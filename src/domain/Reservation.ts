@@ -2,15 +2,18 @@
  * @file Reservation.ts
  * @description Agregado de dominio para reservas.
  *
- * ## Cambios respecto a la versión anterior
+ * ## Cambios v2
  * - Se elimina el parámetro genérico `<T extends ResourceType>`.
- *   La clase pasa a ser concreta: `class Reservation`.
- * - Se elimina `resourceType` del constructor y del chequeo
- *   `resource.type !== resourceType` (ya no existe `.type` en `BookableResource`).
- * - `details` pasa a ser `Record<string, unknown>` — la validación estructural
- *   ocurre en `ReservationService` contra los `fields` de la categoría.
- * - Se agrega `Reservation.restore()` para reconstruir desde persistencia
- *   sin mutar `status` directamente desde fuera del dominio.
+ * - `details` pasa a ser `Record<string, unknown>`.
+ * - Se agrega `Reservation.restore()` para reconstruir desde persistencia.
+ *
+ * ## Cambios v4 — Motor de Órdenes
+ * - `+serviceId`    : qué servicio se reservó (nullable para restaurantes).
+ * - `+partySize`    : cuántas personas incluye la reserva (comensales, tour, huéspedes).
+ * - `+notes`        : comentarios libres del cliente.
+ * - `+orderItemId`  : FK a `order_items`; NULL en reservas legacy pre-v4.
+ * - `toSnapshot()`  : ahora incluye `serviceId` y `partySize` para cálculo de disponibilidad parcial.
+ * - `restore()`     : firma extendida con los nuevos campos opcionales.
  */
 
 import { ReservationStatus } from '../types/enums.js';
@@ -29,26 +32,76 @@ const ALLOWED_TRANSITIONS: Record<
   [ReservationStatus.COMPLETED]: [],
 };
 
+export interface ReservationProps {
+  id: string;
+  customer: Customer;
+  resource: BookableResource;
+  startTime: Date;
+  endTime: Date;
+  details: Record<string, unknown>;
+  initialStatus?: ReservationStatus;
+  /** v4: qué servicio se contrató (nullable para restaurantes) */
+  serviceId?: string | null;
+  /** v4: personas que incluye la reserva */
+  partySize?: number;
+  /** v4: comentarios libres del cliente */
+  notes?: string | null;
+  /** v4: FK a order_items; NULL en legacy */
+  orderItemId?: string | null;
+}
+
 export class Reservation {
   private _status: ReservationStatus;
 
-  constructor(
-    public readonly id: string,
-    public readonly customer: Customer,
-    public readonly resource: BookableResource,
-    public readonly startTime: Date,
-    public readonly endTime: Date,
-    /** Campos libres validados contra `resource_categories.fields` en el servicio */
-    public readonly details: Record<string, unknown>,
-    /** Solo usar desde Reservation.restore() — no pasar directamente */
-    initialStatus: ReservationStatus = ReservationStatus.PENDING,
-  ) {
-    if (!id.trim()) {
-      throw new InvalidReservationError('id es obligatorio');
+  public readonly serviceId: string | null;
+  public readonly partySize: number;
+  public readonly notes: string | null;
+  public readonly orderItemId: string | null;
+
+  constructor(props: ReservationProps) {
+    const {
+      id,
+      customer,
+      resource,
+      startTime,
+      endTime,
+      details,
+      initialStatus = ReservationStatus.PENDING,
+      serviceId = null,
+      partySize = 1,
+      notes = null,
+      orderItemId = null,
+    } = props;
+
+    if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
+    if (partySize < 1) throw new InvalidReservationError('partySize debe ser al menos 1');
+    if (partySize > resource.capacity) {
+      throw new InvalidReservationError(
+        `partySize (${partySize}) supera la capacidad del recurso (${resource.capacity})`,
+      );
     }
+
     assertValidTimeRange(startTime, endTime);
-    this._status = initialStatus;
+
+    this.id          = id;
+    this.customer    = customer;
+    this.resource    = resource;
+    this.startTime   = startTime;
+    this.endTime     = endTime;
+    this.details     = details;
+    this.serviceId   = serviceId;
+    this.partySize   = partySize;
+    this.notes       = notes;
+    this.orderItemId = orderItemId;
+    this._status     = initialStatus;
   }
+
+  public readonly id: string;
+  public readonly customer: Customer;
+  public readonly resource: BookableResource;
+  public readonly startTime: Date;
+  public readonly endTime: Date;
+  public readonly details: Record<string, unknown>;
 
   get status(): ReservationStatus {
     return this._status;
@@ -56,28 +109,22 @@ export class Reservation {
 
   /**
    * Reconstruye una Reservation desde una fila de persistencia.
-   * Permite restaurar cualquier status sin pasar por las validaciones
-   * de transición del dominio, que solo aplican a cambios en tiempo de vida.
+   * Restaura cualquier status sin pasar por las validaciones de transición.
    */
-  static restore(
-    id: string,
-    customer: Customer,
-    resource: BookableResource,
-    startTime: Date,
-    endTime: Date,
-    details: Record<string, unknown>,
-    status: ReservationStatus,
-  ): Reservation {
-    return new Reservation(id, customer, resource, startTime, endTime, details, status);
+  static restore(props: ReservationProps): Reservation {
+    return new Reservation(props);
   }
 
   toSnapshot(): ReservationSnapshot {
     return {
-      id:         this.id,
-      resourceId: this.resource.id,
-      startTime:  this.startTime,
-      endTime:    this.endTime,
-      status:     this._status,
+      id:          this.id,
+      resourceId:  this.resource.id,
+      startTime:   this.startTime,
+      endTime:     this.endTime,
+      status:      this._status,
+      serviceId:   this.serviceId,
+      partySize:   this.partySize,
+      orderItemId: this.orderItemId,
     };
   }
 

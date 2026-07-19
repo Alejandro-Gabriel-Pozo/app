@@ -6,12 +6,17 @@
  * - ContactMethod interface: canal de contacto tipado (EMAIL, PHONE, WHATSAPP)
  * - Constructor sobrecargado: acepta string (legacy) o ContactMethod[]
  * - Getters email/fullName para compatibilidad con código existente
- * - BookableResource sin cambios
  *
  * ## Cambios v3
- * - `email` getter retorna `string | undefined` en lugar de `''`.
- *   El string vacío era un bug silencioso: los consumidores ahora
- *   deben manejar explícitamente el caso sin email.
+ * - `email` getter retorna `string | undefined` en lugar de ''.
+ *
+ * ## Cambios v4 — Motor de Órdenes
+ * - BookableResource: +capacity, +description
+ * - BookableService: nueva entidad (catálogo de servicios por categoría)
+ * - ServiceSchedule: horarios fijos para booking_mode='event'
+ * - Product: catálogo de productos físicos / add-ons
+ * - Order: raíz transaccional del carrito unificado
+ * - OrderItem: línea de orden (product | service_reservation)
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -37,15 +42,6 @@ export class Customer {
   public readonly displayName: string;
   public readonly contactMethods: ContactMethod[];
 
-  /**
-   * @param id              - UUID del cliente
-   * @param displayName     - Nombre para mostrar (era fullName)
-   * @param emailOrContacts - string legacy (email) o ContactMethod[]
-   *
-   * Compatibilidad hacia atrás:
-   *   new Customer(id, name, 'user@mail.com')  ← sigue funcionando
-   *   new Customer(id, name, [{ channel: 'EMAIL', ... }])  ← nuevo
-   */
   constructor(
     public readonly id: string,
     displayName: string,
@@ -73,11 +69,6 @@ export class Customer {
     }
   }
 
-  /**
-   * Email primario del cliente.
-   * Retorna `undefined` si el cliente no tiene ningún contacto de tipo EMAIL.
-   * Los consumidores deben manejar este caso explícitamente.
-   */
   get email(): string | undefined {
     return (
       this.contactMethods.find((c) => c.channel === 'EMAIL' && c.isPrimary)?.value ??
@@ -100,30 +91,156 @@ export class BookableResource {
     public readonly id: string,
     public readonly name: string,
     public readonly basePrice: number,
-    /** FK a `resource_categories.id` — reemplaza el antiguo `type: ResourceType` */
+    /** FK a `resource_categories.id` */
     public readonly categoryId: string,
-    /** Metadatos visuales opcionales (ej: posición de mesa en plano) */
+    /** Metadatos visuales opcionales (posición en plano) */
     public readonly visualData: VisualMetadata | null = null,
+    /**
+     * Máximo de reservas/personas simultáneas.
+     * 1 = uso exclusivo (barbería, spa, hotel).
+     * N > 1 = uso compartido (clases grupales, tours).
+     */
+    public readonly capacity: number = 1,
+    /** Descripción opcional visible al cliente */
+    public readonly description: string | null = null,
   ) {
-    if (basePrice < 0) {
-      throw new Error('basePrice no puede ser negativo');
-    }
-    if (!categoryId.trim()) {
-      throw new Error('categoryId es obligatorio');
-    }
+    if (basePrice < 0) throw new Error('basePrice no puede ser negativo');
+    if (!categoryId.trim()) throw new Error('categoryId es obligatorio');
+    if (capacity < 1) throw new Error('capacity debe ser al menos 1');
   }
 
-  /**
-   * Verifica si el recurso está disponible en el rango dado.
-   */
   isAvailable(
     start: Date,
     end: Date,
     reservations: ReservationSnapshot[],
     excludeReservationId?: string,
   ): boolean {
-    return isResourceAvailable(
-      this.id, start, end, reservations, excludeReservationId,
-    );
+    return isResourceAvailable(this.id, start, end, reservations, excludeReservationId);
   }
+
+  /**
+   * Para recursos con capacity > 1 (clases, tours).
+   * Retorna cuántos lugares quedan en el rango dado.
+   */
+  availableSlots(
+    start: Date,
+    end: Date,
+    reservations: ReservationSnapshot[],
+  ): number {
+    const overlapping = reservations.filter(
+      (r) =>
+        r.resourceId === this.id &&
+        r.status !== 'CANCELLED' &&
+        r.startTime < end &&
+        r.endTime > start,
+    );
+    const occupied = overlapping.reduce((sum, r) => sum + (r.partySize ?? 1), 0);
+    return Math.max(0, this.capacity - occupied);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BookableService
+// ---------------------------------------------------------------------------
+
+/** Modo de reserva que define la semántica de tiempo del servicio. */
+export type BookingMode = 'slot' | 'block' | 'event';
+
+/**
+ * Servicio ofrecido sobre un recurso (corte, masaje, tour, noche de hotel, etc.).
+ * Pertenece a una `resource_category` y puede estar restringido a ciertos resources
+ * mediante la tabla `resource_services`.
+ */
+export interface BookableService {
+  id: string;
+  categoryId: string;
+  name: string;
+  description: string | null;
+  /**
+   * Duración en minutos.
+   * - `slot`: obligatorio (define el bloqueo en el calendario).
+   * - `block`: ignorado — la duración se calcula por fechas completas.
+   * - `event`: ignorado — el horario lo fija `ServiceSchedule`.
+   */
+  durationMinutes: number | null;
+  price: number;
+  active: boolean;
+}
+
+/**
+ * Turno fijo de un servicio con `bookingMode = 'event'`.
+ * Mapea a la tabla `service_schedules`.
+ */
+export interface ServiceSchedule {
+  id: string;
+  serviceId: string;
+  /** 0 = Domingo … 6 = Sábado */
+  dayOfWeek: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  startTime: string; // 'HH:MM:SS'
+  maxCapacity: number;
+  active: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Product (add-ons y tienda física)
+// ---------------------------------------------------------------------------
+
+/**
+ * Producto físico o digital vendible junto a una reserva.
+ * Mapea a la tabla `products`.
+ */
+export interface Product {
+  id: string;
+  name: string;
+  description: string | null;
+  price: number;
+  stock: number;
+  /** FALSE = stock ilimitado (ej: servicio digital, descarga) */
+  requiresStockControl: boolean;
+  active: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Order + OrderItem (motor transaccional unificado)
+// ---------------------------------------------------------------------------
+
+export type OrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'paid'
+  | 'cancelled'
+  | 'refunded';
+
+export type OrderItemType = 'product' | 'service_reservation';
+
+/**
+ * Línea de una orden.
+ * - Si `itemType === 'product'`: `productId` es obligatorio.
+ * - Si `itemType === 'service_reservation'`: la `Reservation` referencia esta línea
+ *   mediante `orderItemId`.
+ */
+export interface OrderItem {
+  id: string;
+  orderId: string;
+  itemType: OrderItemType;
+  productId: string | null;
+  quantity: number;
+  unitPrice: number;
+}
+
+/**
+ * Raíz transaccional del carrito.
+ * Agrupa reservas y productos en un único cobro.
+ * Mapea a la tabla `orders` (vive en el tenant).
+ * Los eventos de pago se sincronizan a la plataforma via `domain_events`.
+ */
+export interface Order {
+  id: string;
+  customerId: string;
+  status: OrderStatus;
+  totalAmount: number;
+  notes: string | null;
+  items: OrderItem[];
+  createdAt: Date;
+  updatedAt: Date;
 }
