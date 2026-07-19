@@ -130,7 +130,7 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   // /api/customer — portal del cliente
   // -------------------------------------------------------------------------
-  app.use('/api/customer', createCustomerRouter(container));
+  app.use('/api/customer', createCustomerRouter(container, platformRepo));
 
   // -------------------------------------------------------------------------
   // authenticate() — protege todo /api/* desde aquí
