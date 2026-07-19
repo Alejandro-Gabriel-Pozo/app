@@ -29,8 +29,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // businessId viene del JWT, inyectado por authenticate()
-      const products = await service.listProducts(req.businessId);
+      const products = await service.listProducts(req.businessId!);
       res.json(products);
     } catch (err) {
       next(err);
@@ -44,7 +43,7 @@ export function createProductsRouter(container: AppContainer): Router {
     try {
       const product = await service.createProduct({
         ...req.body,
-        businessId: req.businessId,
+        businessId: req.businessId!,
       });
       res.status(201).json(product);
     } catch (err) {
@@ -57,7 +56,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const product = await service.getProduct(req.params.id);
+      const product = await service.getProduct(req.params['id']!);
       if (!product) {
         res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: 'Producto no encontrado.' });
         return;
@@ -73,7 +72,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const product = await service.updateProduct(req.params.id, req.body);
+      const product = await service.updateProduct(req.params['id']!, req.body);
       if (!product) {
         res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: 'Producto no encontrado.' });
         return;
@@ -89,7 +88,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      await service.deleteProduct(req.params.id);
+      await service.deleteProduct(req.params['id']!);
       res.status(204).send();
     } catch (err) {
       next(err);
@@ -101,7 +100,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.get('/:id/variants', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const variants = await service.listVariants(req.params.id);
+      const variants = await service.listVariants(req.params['id']!);
       res.json(variants);
     } catch (err) {
       next(err);
@@ -113,7 +112,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/:id/variants', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const variant = await service.createVariant(req.params.id, req.body);
+      const variant = await service.createVariant(req.params['id']!, req.body);
       res.status(201).json(variant);
     } catch (err) {
       next(err);
@@ -125,7 +124,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.put('/:id/variants/:variantId', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const variant = await service.updateVariant(req.params.variantId, req.body);
+      const variant = await service.updateVariant(req.params['variantId']!, req.body);
       if (!variant) {
         res.status(404).json({ code: 'VARIANT_NOT_FOUND', message: 'Variante no encontrada.' });
         return;
@@ -141,7 +140,7 @@ export function createProductsRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.delete('/:id/variants/:variantId', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      await service.deleteVariant(req.params.variantId);
+      await service.deleteVariant(req.params['variantId']!);
       res.status(204).send();
     } catch (err) {
       next(err);
@@ -158,8 +157,8 @@ export function createProductsRouter(container: AppContainer): Router {
         res.status(400).json({ code: 'INVALID_QUANTITY', message: 'quantity debe ser >= 1.' });
         return;
       }
-      await service.checkStock(req.params.id, undefined, quantity);
-      await service.decrementStock(req.db, req.params.id, undefined, quantity);
+      await service.checkStock(req.params['id']!, undefined, quantity);
+      await service.decrementStock(req.db!, req.params['id']!, undefined, quantity);
       res.status(204).send();
     } catch (err) {
       next(err);
@@ -176,8 +175,8 @@ export function createProductsRouter(container: AppContainer): Router {
         res.status(400).json({ code: 'INVALID_QUANTITY', message: 'quantity debe ser >= 1.' });
         return;
       }
-      await service.checkStock(req.params.id, req.params.variantId, quantity);
-      await service.decrementStock(req.db, req.params.id, req.params.variantId, quantity);
+      await service.checkStock(req.params['id']!, req.params['variantId']!, quantity);
+      await service.decrementStock(req.db!, req.params['id']!, req.params['variantId']!, quantity);
       res.status(204).send();
     } catch (err) {
       next(err);
