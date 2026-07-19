@@ -9,15 +9,14 @@
  * - Envuelve el arranque en `main()` con try/catch para capturar errores fatales.
  *
  * Migraciones automáticas al arrancar:
- * - DATABASE_URL          → schema.sql (BD del tenant, para modo single-tenant)
- * - PLATFORM_DATABASE_URL → platform.schema.sql (BD central)
+ * - PLATFORM_DATABASE_URL → platform.schema.sql (BD central, multi-tenant)
+ * - Tenant schemas se aplican vía tenant.middleware al primer request del tenant.
  */
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp, registerGracefulShutdown } from './app.js';
-import { pgClient } from './db/pg.client.js';
 import { closePlatformPool } from './container.js';
 import { closeTenantPools } from './platform/tenant.middleware.js';
 import pg from 'pg';
@@ -50,34 +49,15 @@ async function main(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
-  // Migración de la BD del tenant (DATABASE_URL — modo single-tenant / dev)
-  // -------------------------------------------------------------------------
-  if (process.env.DATABASE_URL) {
-    try {
-      console.log('[migrate] Ejecutando schema.sql...');
-      const schemaPath = join(__dirname, 'db', 'schema.sql');
-      const sql = await readFile(schemaPath, 'utf-8');
-      await pgClient.query(sql);
-      console.log('[migrate] ✅ schema.sql aplicado.');
-    } catch (err) {
-      console.error('[migrate] ❌ Error en schema.sql:', err);
-      process.exit(1);
-    }
-  }
-
-  // -------------------------------------------------------------------------
   // Arranque del servidor + worker
   // -------------------------------------------------------------------------
   const { app, container } = await createApp();
 
   const server = app.listen(PORT, () => {
-    const isMultiTenant = Boolean(process.env.PLATFORM_DATABASE_URL);
     console.log(`\n🚀 Reservations API en http://localhost:${PORT}`);
     console.log(`   Swagger UI: http://localhost:${PORT}/docs`);
-    console.log(`   Modo:       ${isMultiTenant ? 'multi-tenant' : 'single-tenant (dev)'}\n`);
+    console.log(`   Modo:       multi-tenant\n`);
 
-    // Arrancar el worker solo después de que el servidor HTTP esté escuchando.
-    // En modo in-memory outboxWorker es null — no hay nada que arrancar.
     if (container.outboxWorker) {
       container.outboxWorker.start();
       console.log('[outbox] ✅ Worker arrancado.');

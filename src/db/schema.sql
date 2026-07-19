@@ -131,10 +131,19 @@ CREATE TABLE IF NOT EXISTS occupancy_records (
   date           DATE          NOT NULL,
   total_minutes  INT           NOT NULL DEFAULT 1440,
   booked_minutes INT           NOT NULL DEFAULT 0,
-  created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-
-  CONSTRAINT uq_occupancy_resource_date UNIQUE (resource_id, date)
+  created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- Constraint idempotente: ADD CONSTRAINT IF NOT EXISTS evita el error
+-- "already exists" en redeploys cuando la tabla ya fue creada previamente.
+ALTER TABLE occupancy_records
+  ADD CONSTRAINT uq_occupancy_resource_date UNIQUE (resource_id, date)
+  NOT VALID;
+
+DO $$ BEGIN
+  -- Si el constraint ya existe, ignorar el error gracefully.
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_occupancy_date
   ON occupancy_records (date);
