@@ -167,7 +167,7 @@ export class SqlProductRepository implements IProductRepository {
         input.stockMinAlert ?? 0,
       ],
     );
-    return rowToProduct(rows[0]);
+    return rowToProduct(rows[0]!);
   }
 
   async update(id: string, input: UpdateProductInput): Promise<Product | undefined> {
@@ -328,7 +328,7 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
         input.stockMinAlert ?? 0,
       ],
     );
-    return rowToVariant(rows[0]);
+    return rowToVariant(rows[0]!);
   }
 
   async update(id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined> {
