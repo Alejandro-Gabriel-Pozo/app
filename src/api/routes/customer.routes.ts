@@ -2,20 +2,35 @@
  * @file customer.routes.ts
  * @description Portal público para clientes — registro, login y gestión de sus reservas.
  *
+ * ## Aislamiento multi-tenant
+ * Antes, este router usaba `container` (la BD global del proceso) sin
+ * saber para qué negocio era cada registro/reserva — incompatible con
+ * que `resources`/`reservations` ya viven en la BD propia de cada tenant.
+ *
+ * Ahora:
+ * - Rutas públicas (`register`/`login`/`availability`) reciben `:businessSlug`
+ *   en la URL y resuelven el tenant en cada request vía
+ *   `platformRepo.findBySlug()` + `getTenantClient()` — el mismo mecanismo
+ *   que usa `tenantMiddleware`, reexportado desde ahí para no duplicar la
+ *   lógica de caché de pools.
+ * - Rutas autenticadas (`/me/*`) resuelven el tenant desde `business_id`
+ *   en el JWT del cliente (ver `CustomerAuthService`), ya que el negocio
+ *   no cambia dentro de una misma sesión.
+ *
  * ## Rutas
  *
  * ### Públicas (sin autenticación)
- * POST   /api/customer/register    — crear cuenta
- * POST   /api/customer/login       — obtener JWT de cliente
- * GET    /api/customer/availability — ver disponibilidad por categoría
+ * POST   /api/customer/:businessSlug/register
+ * POST   /api/customer/:businessSlug/login
+ * GET    /api/customer/:businessSlug/availability
  *
- * ### Protegidas (requieren JWT con role=CUSTOMER)
- * GET    /api/customer/me                        — ver perfil propio
- * DELETE /api/customer/me                        — eliminar cuenta (anonimización GDPR)
- * GET    /api/customer/me/reservations           — ver mis reservas
- * POST   /api/customer/me/reservations           — crear reserva propia
- * PATCH  /api/customer/me/reservations/:id       — modificar reserva propia (solo PENDING)
- * POST   /api/customer/me/reservations/:id/cancel — cancelar reserva propia
+ * ### Protegidas (requieren JWT con role=CUSTOMER, business_id incluido)
+ * GET    /api/customer/me
+ * DELETE /api/customer/me
+ * GET    /api/customer/me/reservations
+ * POST   /api/customer/me/reservations
+ * PATCH  /api/customer/me/reservations/:id
+ * POST   /api/customer/me/reservations/:id/cancel
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -23,11 +38,25 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import { AppContainer } from '../../container.js';
-import { Customer } from '../../domain/entities.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
-import { UserRole, ReservationStatus } from '../../types/enums.js';
+import { UserRole, ReservationStatus, BusinessStatus } from '../../types/enums.js';
+import { PlatformRepository } from '../../platform/platform.repository.js';
+import {
+  getTenantClient,
+  TenantNotFoundError,
+  TenantInactiveError,
+  TenantNotReadyError,
+} from '../../platform/tenant.middleware.js';
+import { SqlClient } from '../../repositories/sql.client.js';
+import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
+import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
+import { SqlCustomerRepository }    from '../../repositories/sql.customer.repository.js';
+import { SqlOccupancyRepository }   from '../../repositories/sql.occupancy.repository.js';
+import { SqlCategoryRepository }    from '../../repositories/sql.category.repository.js';
+import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
+import { ReservationService }       from '../../services/reservation.service.js';
 
 // ---------------------------------------------------------------------------
 // Política de cancelación
@@ -108,8 +137,68 @@ const AvailabilityQuerySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Helper
+// Helpers de resolución de tenant
 // ---------------------------------------------------------------------------
+
+function buildService(client: SqlClient, container: AppContainer) {
+  const resourceRepo    = new SqlResourceRepository(client);
+  const reservationRepo = new SqlReservationRepository(client, resourceRepo);
+  const customerRepo    = new SqlCustomerRepository(client);
+  const occupancyRepo   = new SqlOccupancyRepository(client);
+  const categoryRepo    = new SqlCategoryRepository(client);
+  const domainEventRepo = new SqlDomainEventRepository(client);
+
+  const reservationService = new ReservationService(
+    reservationRepo,
+    resourceRepo,
+    occupancyRepo,
+    categoryRepo,
+    domainEventRepo,
+    container.transactionManager,
+  );
+
+  return { reservationService, reservationRepo, resourceRepo, customerRepo };
+}
+
+/** Resuelve el SqlClient del tenant a partir del slug en la URL pública. */
+async function resolveTenantBySlug(
+  slug: string,
+  platformRepo: PlatformRepository,
+): Promise<{ client: SqlClient; businessId: string }> {
+  const business = await platformRepo.findBySlug(slug);
+  if (!business) throw new TenantNotFoundError(slug);
+  if (business.status !== BusinessStatus.ACTIVE) {
+    throw new TenantInactiveError(business.id, business.status);
+  }
+  if (!business.dbUrlEncrypted) throw new TenantNotReadyError(business.id);
+  const client = await getTenantClient(business.id, platformRepo);
+  return { client, businessId: business.id };
+}
+
+type TenantError = TenantNotFoundError | TenantInactiveError | TenantNotReadyError;
+
+function isTenantError(err: unknown): err is TenantError {
+  return (
+    err instanceof TenantNotFoundError ||
+    err instanceof TenantInactiveError ||
+    err instanceof TenantNotReadyError
+  );
+}
+
+function respondTenantError(err: TenantError, res: Response): void {
+  if (err instanceof TenantNotFoundError) {
+    res.status(404).json({ code: 'BUSINESS_NOT_FOUND', message: 'Negocio no encontrado' });
+    return;
+  }
+  if (err instanceof TenantInactiveError) {
+    res.status(403).json({ code: 'BUSINESS_INACTIVE', message: `Negocio inactivo (estado: ${err.status})` });
+    return;
+  }
+  res.status(503).json({
+    code: 'BUSINESS_NOT_READY',
+    message: 'La base de datos del negocio aún está siendo provisionada',
+  });
+}
 
 function requireCustomerId(req: Request, res: Response): string | null {
   const customerId = req.user?.customerId;
@@ -127,20 +216,40 @@ function requireCustomerId(req: Request, res: Response): string | null {
 // Factory del router
 // ---------------------------------------------------------------------------
 
-export function createCustomerRouter(container: AppContainer): Router {
+export function createCustomerRouter(
+  container: AppContainer,
+  platformRepo: PlatformRepository | null,
+): Router {
   const router = Router();
-  const customerAuthService = new CustomerAuthService(container.customerRepository);
+
+  if (!platformRepo) {
+    // Sin PLATFORM_DATABASE_URL no hay forma de resolver a qué negocio
+    // pertenece cada request — el portal de clientes no puede operar.
+    router.use((_req: Request, res: Response) => {
+      res.status(503).json({
+        code: 'PLATFORM_UNAVAILABLE',
+        message: 'El portal de clientes requiere PLATFORM_DATABASE_URL.',
+      });
+    });
+    return router;
+  }
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/register
+  // POST /api/customer/:businessSlug/register
   // -------------------------------------------------------------------------
   router.post(
-    '/register',
+    '/:businessSlug/register',
     registerLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        const slug = String(req.params.businessSlug);
+        const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
+
         const body = RegisterCustomerSchema.parse(req.body);
-        const result = await customerAuthService.register(body);
+        const { customerRepo } = buildService(client, container);
+        const authService = new CustomerAuthService(customerRepo, businessId);
+        const result = await authService.register(body);
+
         res.status(201).json({
           message: 'Cuenta creada exitosamente',
           token: result.token,
@@ -148,6 +257,7 @@ export function createCustomerRouter(container: AppContainer): Router {
           customer: result.customer,
         });
       } catch (err) {
+        if (isTenantError(err)) { respondTenantError(err, res); return; }
         const code = (err as NodeJS.ErrnoException).code;
         if (code === 'EMAIL_TAKEN') {
           res.status(400).json({ code: 'EMAIL_TAKEN', message: (err as Error).message });
@@ -159,21 +269,28 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/customer/login
+  // POST /api/customer/:businessSlug/login
   // -------------------------------------------------------------------------
   router.post(
-    '/login',
+    '/:businessSlug/login',
     loginLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        const slug = String(req.params.businessSlug);
+        const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
+
         const body = LoginCustomerSchema.parse(req.body);
-        const result = await customerAuthService.login(body);
+        const { customerRepo } = buildService(client, container);
+        const authService = new CustomerAuthService(customerRepo, businessId);
+        const result = await authService.login(body);
+
         res.json({
           token: result.token,
           tokenType: 'Bearer',
           customer: result.customer,
         });
       } catch (err) {
+        if (isTenantError(err)) { respondTenantError(err, res); return; }
         const code = (err as NodeJS.ErrnoException).code;
         if (code === 'INVALID_CREDENTIALS') {
           res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Email o contraseña incorrectos' });
@@ -185,14 +302,15 @@ export function createCustomerRouter(container: AppContainer): Router {
   );
 
   // -------------------------------------------------------------------------
-  // GET /api/customer/availability — público
-  // Filtra recursos disponibles por rango de tiempo.
-  // Opcionalmente filtra por categoryId.
+  // GET /api/customer/:businessSlug/availability — público
   // -------------------------------------------------------------------------
   router.get(
-    '/availability',
+    '/:businessSlug/availability',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        const slug = String(req.params.businessSlug);
+        const { client } = await resolveTenantBySlug(slug, platformRepo);
+
         const query = AvailabilityQuerySchema.parse(req.query);
         const startTime = new Date(query.startTime);
         const endTime   = new Date(query.endTime);
@@ -202,7 +320,8 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        let allResources = await container.resourceRepository.getAll();
+        const { resourceRepo, reservationRepo } = buildService(client, container);
+        let allResources = await resourceRepo.getAll();
 
         if (query.categoryId) {
           allResources = allResources.filter((r) => r.categoryId === query.categoryId);
@@ -211,7 +330,7 @@ export function createCustomerRouter(container: AppContainer): Router {
         const busyResourceIds = new Set<string>();
         await Promise.all(
           allResources.map(async (resource) => {
-            const active = await container.reservationRepository.getActiveForResourceInRange(
+            const active = await reservationRepo.getActiveForResourceInRange(
               resource.id,
               startTime,
               endTime,
@@ -235,15 +354,34 @@ export function createCustomerRouter(container: AppContainer): Router {
           total: available.length,
         });
       } catch (err) {
+        if (isTenantError(err)) { respondTenantError(err, res); return; }
         next(err);
       }
     },
   );
 
   // -------------------------------------------------------------------------
-  // A partir de aquí: requieren JWT con role=CUSTOMER
+  // A partir de aquí: requieren JWT con role=CUSTOMER (business_id incluido)
   // -------------------------------------------------------------------------
   router.use(authenticate(), authorize([UserRole.CUSTOMER]));
+
+  // Resuelve req.db para el negocio del cliente autenticado — mismo campo
+  // que usa tenantMiddleware, aunque ese middleware nunca llega a correr
+  // sobre este router (se monta antes, y además ignora role=CUSTOMER).
+  router.use(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const businessId = req.user?.businessId;
+      if (!businessId) {
+        res.status(401).json({ code: 'UNAUTHORIZED', message: 'Token no contiene business_id' });
+        return;
+      }
+      req.db = await getTenantClient(businessId, platformRepo);
+      next();
+    } catch (err) {
+      if (isTenantError(err)) { respondTenantError(err, res); return; }
+      next(err);
+    }
+  });
 
   // -------------------------------------------------------------------------
   // GET /api/customer/me
@@ -255,12 +393,13 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const customer = await container.customerRepository.getById(customerId);
+        const { customerRepo } = buildService(req.db!, container);
+        const customer = await customerRepo.getById(customerId);
         if (!customer) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
           return;
         }
-        res.json({ id: customer.id, fullName: customer.fullName, email: customer.email ?? '' });
+        res.json({ id: customer.id, fullName: customer.displayName, email: customer.email ?? '' });
       } catch (err) {
         next(err);
       }
@@ -277,10 +416,11 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const anonymized = await container.customerRepository.anonymize(customerId);
+        const { customerRepo } = buildService(req.db!, container);
+        const anonymized = await customerRepo.anonymize(customerId);
 
         if (!anonymized) {
-          const existing = await container.customerRepository.getById(customerId);
+          const existing = await customerRepo.getById(customerId);
           if (!existing) {
             res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
           } else {
@@ -309,7 +449,8 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const reservations = await container.reservationRepository.getByCustomerId(customerId);
+        const { reservationRepo } = buildService(req.db!, container);
+        const reservations = await reservationRepo.getByCustomerId(customerId);
         res.json(reservations.map(toReservationDto));
       } catch (err) {
         next(err);
@@ -329,16 +470,17 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const customerEntity = await container.customerRepository.getById(customerId);
+        const { reservationService, customerRepo } = buildService(req.db!, container);
+        const customerEntity = await customerRepo.getById(customerId);
         if (!customerEntity) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
           return;
         }
 
-        const reservation = await container.reservationService.createReservation({
+        const reservation = await reservationService.createReservation({
           id:         randomUUID(),
           resourceId: body.resourceId,
-          customer:   new Customer(customerEntity.id, customerEntity.fullName, customerEntity.email ?? ''),
+          customer:   customerEntity,
           startTime:  new Date(body.startTime),
           endTime:    new Date(body.endTime),
           details:    body.details,
@@ -363,7 +505,8 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const existing = await container.reservationRepository.getById(reservationId);
+        const { reservationService, reservationRepo } = buildService(req.db!, container);
+        const existing = await reservationRepo.getById(reservationId);
         if (!existing) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
           return;
@@ -391,7 +534,7 @@ export function createCustomerRouter(container: AppContainer): Router {
           return;
         }
 
-        const updated = await container.reservationService.updateReservation(
+        const updated = await reservationService.updateReservation(
           reservationId,
           {
             ...(body.startTime !== undefined && { startTime: new Date(body.startTime) }),
@@ -419,7 +562,8 @@ export function createCustomerRouter(container: AppContainer): Router {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const reservation = await container.reservationRepository.getById(reservationId);
+        const { reservationService, reservationRepo } = buildService(req.db!, container);
+        const reservation = await reservationRepo.getById(reservationId);
         if (!reservation) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
           return;
@@ -452,7 +596,7 @@ export function createCustomerRouter(container: AppContainer): Router {
           }
         }
 
-        const cancelled = await container.reservationService.cancelReservation(reservationId);
+        const cancelled = await reservationService.cancelReservation(reservationId);
         res.json(toReservationDto(cancelled));
       } catch (err) {
         next(err);
@@ -462,3 +606,4 @@ export function createCustomerRouter(container: AppContainer): Router {
 
   return router;
 }
+
