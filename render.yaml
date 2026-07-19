@@ -24,14 +24,31 @@ services:
       - key: PLATFORM_DATABASE_URL
         sync: false
 
-      # Base de datos del tenant (por negocio — provisionada vía Supabase)
-      - key: DATABASE_URL
-        sync: false
-
       # Cifrado de connection strings de tenants
+      # Generar con: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       - key: DB_ENCRYPTION_KEY
         sync: false
 
       # CORS — dominio del frontend (ej. https://mi-app.vercel.app)
       - key: CORS_ORIGIN
         sync: false
+
+      # ---------------------------------------------------------------------------
+      # Supabase — provisioning automático de BD por negocio
+      # ---------------------------------------------------------------------------
+
+      # Personal access token (Supabase Dashboard → Account → Access Tokens)
+      - key: SUPABASE_ACCESS_TOKEN
+        sync: false
+
+      # Organization ID de tu cuenta Supabase
+      - key: SUPABASE_ORG_ID
+        sync: false
+
+      # Salt para derivar passwords únicos por negocio
+      - key: SUPABASE_DB_PASSWORD_SALT
+        sync: false
+
+      # Región para nuevos proyectos Supabase (default: us-east-1)
+      - key: SUPABASE_REGION
+        value: us-east-1
