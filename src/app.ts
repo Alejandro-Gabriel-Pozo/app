@@ -51,17 +51,10 @@ export async function createApp(): Promise<{
   const app = express();
 
   // -------------------------------------------------------------------------
-  // BD central y repositorio de plataforma
+  // BD central y repositorio de plataforma (siempre requerida)
   // -------------------------------------------------------------------------
   const platformClient = createPlatformPool();
-  const platformRepo   = platformClient ? new PlatformRepository(platformClient) : null;
-
-  if (!platformClient) {
-    console.warn(
-      '[app] ⚠️  PLATFORM_DATABASE_URL no definida. ' +
-      'El registro de negocios y el login multi-tenant no funcionarán.',
-    );
-  }
+  const platformRepo   = new PlatformRepository(platformClient);
 
   const authService = new AuthService(platformRepo);
   const container   = await createAppContainer();
@@ -87,7 +80,7 @@ export async function createApp(): Promise<{
     const dbOk = await checkDatabaseHealth();
     res.json({
       status: 'ok',
-      mode: platformClient ? 'multi-tenant' : 'single-tenant',
+      mode: 'multi-tenant',
       db: dbOk ? 'connected' : 'error',
     });
   });
@@ -103,24 +96,12 @@ export async function createApp(): Promise<{
   // /platform/* — gestión de plataforma (SUPERADMIN)
   // -------------------------------------------------------------------------
   const platformContainer = createPlatformContainer();
-  if (platformContainer) {
-    app.use('/platform', createPlatformRouter(platformContainer));
-  } else {
-    console.warn('[app] ⚠️  /platform deshabilitado — PLATFORM_DATABASE_URL no definida.');
-    app.use('/platform', (_req, res) => {
-      res.status(503).json({
-        code: 'PLATFORM_UNAVAILABLE',
-        message: 'Rutas de plataforma no disponibles. Definí PLATFORM_DATABASE_URL en Render Dashboard.',
-      });
-    });
-  }
+  app.use('/platform', createPlatformRouter(platformContainer));
 
   // -------------------------------------------------------------------------
   // POST /register — registro de negocios (público)
   // -------------------------------------------------------------------------
-  if (platformRepo) {
-    app.use('/register', createBusinessRouter(platformRepo));
-  }
+  app.use('/register', createBusinessRouter(platformRepo));
 
   // -------------------------------------------------------------------------
   // POST /api/login — login de empleados (público, antes de authenticate)
@@ -139,21 +120,13 @@ export async function createApp(): Promise<{
 
   // -------------------------------------------------------------------------
   // /api/admin — ANTES de tenantMiddleware
-  //
-  // repair-tenant-db necesita ejecutarse cuando db_url_encrypted es null,
-  // es decir, exactamente cuando tenantMiddleware fallaría con BUSINESS_NOT_READY.
-  // Solo necesita el JWT verificado (authenticate ya corrió arriba).
-  // El router interno vuelve a llamar authorize([ADMIN]) como segunda defensa.
   // -------------------------------------------------------------------------
   app.use('/api/admin', createAdminRouter(platformRepo));
 
   // -------------------------------------------------------------------------
   // tenantMiddleware() — inyecta req.db con la BD del negocio
-  // Solo se aplica a las rutas de empleados que están debajo.
   // -------------------------------------------------------------------------
-  if (platformRepo) {
-    app.use('/api', tenantMiddleware(platformRepo));
-  }
+  app.use('/api', tenantMiddleware(platformRepo));
 
   // -------------------------------------------------------------------------
   // Rutas protegidas de empleados — todas usan req.db (multi-tenant)

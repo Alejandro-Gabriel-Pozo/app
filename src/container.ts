@@ -36,14 +36,19 @@ import pg from 'pg';
 const { Pool } = pg;
 
 // ---------------------------------------------------------------------------
-// Pool compartido para PLATFORM_DATABASE_URL
+// Pool compartido para PLATFORM_DATABASE_URL (siempre requerida)
 // ---------------------------------------------------------------------------
 
 let _platformPool: InstanceType<typeof Pool> | null = null;
 
-export function createPlatformPool(): SqlClient | null {
+export function createPlatformPool(): SqlClient {
   const url = process.env.PLATFORM_DATABASE_URL;
-  if (!url) return null;
+  if (!url) {
+    throw new Error(
+      '[container] PLATFORM_DATABASE_URL no está definida. ' +
+      'Configurá la variable de entorno en Render Dashboard → Environment Variables.',
+    );
+  }
 
   if (!_platformPool) {
     _platformPool = new Pool({
@@ -133,12 +138,9 @@ async function createPostgresContainer(): Promise<AppContainer> {
   registerFinancialHandlers(outboxWorker, financialTransactionRepository);
 
   const platformSqlClient  = createPlatformPool();
-  const platformRepository = platformSqlClient
-    ? new PlatformRepository(platformSqlClient)
-    : null;
+  const platformRepository = new PlatformRepository(platformSqlClient);
 
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
-    if (!platformRepository) return BusinessPlan.PRO;
     const business = await platformRepository.findById(businessId);
     return (business?.plan ?? BusinessPlan.FREE) as BusinessPlan;
   };
