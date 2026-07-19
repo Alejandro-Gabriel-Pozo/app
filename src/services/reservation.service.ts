@@ -11,9 +11,8 @@
  * - `updateReservation` usa `Reservation.restore()` en lugar de
  *   `new Reservation()` para consistencia semántica con persistencia.
  * - `businessId` se lee de `process.env.BUSINESS_ID` al emitir eventos.
- *   En esta arquitectura single-tenant cada instancia del proceso
- *   corresponde a un único negocio, por lo que el id del negocio es
- *   configuración de entorno, no dato de request ni de dominio.
+ *   En esta arquitectura multi-tenant el id del negocio identifica al tenant
+ *   activo en el proceso, por lo que es configuración de entorno.
  * - `cancelReservation` ahora corre dentro de una transacción y emite
  *   `reservation.cancelled` atómicamente con el cambio de estado.
  */
@@ -81,14 +80,14 @@ export class ReservationService {
       );
     }
 
-    const reservation = new Reservation(
-      params.id,
-      params.customer,
+    const reservation = new Reservation({
+      id:        params.id,
+      customer:  params.customer,
       resource,
-      params.startTime,
-      params.endTime,
-      params.details,
-    );
+      startTime: params.startTime,
+      endTime:   params.endTime,
+      details:   params.details,
+    });
 
     await this.reservationRepository.save(reservation);
     return reservation;
@@ -146,15 +145,19 @@ export class ReservationService {
     }
 
     // Usar restore() — operación de persistencia, no de creación nueva
-    const updated = Reservation.restore(
-      reservation.id,
-      reservation.customer,
-      reservation.resource,
-      newStartTime,
-      newEndTime,
-      rawDetails,
-      reservation.status,
-    );
+    const updated = Reservation.restore({
+      id:            reservation.id,
+      customer:      reservation.customer,
+      resource:      reservation.resource,
+      startTime:     newStartTime,
+      endTime:       newEndTime,
+      details:       rawDetails,
+      initialStatus: reservation.status,
+      serviceId:     reservation.serviceId,
+      partySize:     reservation.partySize,
+      notes:         reservation.notes,
+      orderItemId:   reservation.orderItemId,
+    });
 
     await this.reservationRepository.save(updated);
     return updated;

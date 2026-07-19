@@ -20,6 +20,10 @@ interface ReservationRow {
   start_time: string | Date;
   end_time: string | Date;
   details: string | Record<string, unknown>;
+  service_id?: string | null;
+  party_size?: number | null;
+  notes?: string | null;
+  order_item_id?: string | null;
 }
 
 /**
@@ -56,6 +60,10 @@ interface ReservationRow {
  *   start_time TIMESTAMP NOT NULL,
  *   end_time TIMESTAMP NOT NULL,
  *   details JSONB NOT NULL,
+ *   service_id VARCHAR(255),
+ *   party_size INT DEFAULT 1,
+ *   notes TEXT,
+ *   order_item_id VARCHAR(255),
  *   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  *   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  *   FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
@@ -217,7 +225,11 @@ export class SqlReservationRepository implements ReservationRepository {
         r.status,
         r.start_time,
         r.end_time,
-        r.details
+        r.details,
+        r.service_id,
+        r.party_size,
+        r.notes,
+        r.order_item_id
       FROM reservations r
     `;
   }
@@ -237,14 +249,18 @@ export class SqlReservationRepository implements ReservationRepository {
     const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
 
-    return Reservation.restore(
-      row.id,
+    return Reservation.restore({
+      id:            row.id,
       customer,
       resource,
-      new Date(row.start_time),
-      new Date(row.end_time),
+      startTime:     new Date(row.start_time),
+      endTime:       new Date(row.end_time),
       details,
-      row.status,
-    );
+      initialStatus: row.status,
+      serviceId:     row.service_id  ?? null,
+      partySize:     row.party_size  ?? 1,
+      notes:         row.notes       ?? null,
+      orderItemId:   row.order_item_id ?? null,
+    });
   }
 }
