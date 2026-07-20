@@ -6,10 +6,6 @@ import { ResourceNotFoundError } from '../domain/errors.js';
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
 
-// ---------------------------------------------------------------------------
-// Tipos de fila
-// ---------------------------------------------------------------------------
-
 interface ReservationRow {
   id: string;
   customer_id: string;
@@ -29,24 +25,11 @@ interface ReservationRow {
 /**
  * Implementación SQL del repositorio de reservas.
  *
- * ## Estrategia de deserialización
- * `rowToReservation` reconstruye el objeto `Reservation` completo sin
- * queries adicionales:
- * - **Customer**: reconstruido desde los campos desnormalizados
- *   `customer_name` y `customer_email` que viven en la tabla `reservations`.
- *   No se necesita un `CustomerRepository` para lectura.
- * - **Resource**: resuelto via `resourceRepository.getById()`.
- *
- * ## Política de email nulo
- * Se almacena NULL en la DB cuando el cliente no tiene email (en lugar de '').
- * Al leer, `null` se convierte en el array vacío de contactMethods,
- * dejando `email` como `undefined`.
- *
- * ## getFiltered()
- * Construye la cláusula WHERE dinámicamente con parámetros numerados
- * para evitar inyección SQL. Soporta filtros AND combinables:
- * status, resourceId, customerId, rango from/to (solapamiento de intervalos).
- * Sin filtros es equivalente a getAll().
+ * ## getFiltered() / countFiltered()
+ * buildWhereClause() construye la cláusula WHERE dinámicamente.
+ * getFiltered() aplica LIMIT/OFFSET cuando page+limit están presentes.
+ * countFiltered() corre SELECT COUNT(*) con los mismos filtros (sin paginar)
+ * para poder construir el envelope paginado { data, total, page, limit, totalPages }.
  */
 export class SqlReservationRepository implements ReservationRepository {
   constructor(
@@ -102,7 +85,7 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   // -------------------------------------------------------------------------
-  // Lectura — métodos específicos (mantenidos por compatibilidad)
+  // Lectura — métodos específicos
   // -------------------------------------------------------------------------
 
   async getById(id: string): Promise<Reservation | undefined> {
@@ -140,9 +123,7 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getByDateRange(startDate: Date, endDate: Date): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelect()}
-       WHERE r.start_time < $2 AND r.end_time > $1
-       ORDER BY r.start_time ASC`,
+      `${this.baseSelect()} WHERE r.start_time < $2 AND r.end_time > $1 ORDER BY r.start_time ASC`,
       [startDate.toISOString(), endDate.toISOString()],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
@@ -153,10 +134,7 @@ export class SqlReservationRepository implements ReservationRepository {
     startDate: Date,
     endDate: Date,
   ): Promise<Reservation[]> {
-    const blockingStatuses = [
-      ReservationStatus.PENDING,
-      ReservationStatus.CONFIRMED,
-    ];
+    const blockingStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
     const result = await this.sqlClient.query<ReservationRow>(
       `${this.baseSelect()}
        WHERE r.resource_id = $1
@@ -169,16 +147,18 @@ export class SqlReservationRepository implements ReservationRepository {
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
+  // -------------------------------------------------------------------------
+  // Filtrado genérico + paginación
+  // -------------------------------------------------------------------------
+
   /**
-   * Devuelve reservas que satisfacen TODOS los filtros provistos (AND).
-   * Sin filtros es equivalente a getAll().
-   *
-   * El rango from/to usa lógica de solapamiento de intervalos:
-   * una reserva aparece si su intervalo [start_time, end_time) se
-   * intersecta con [from, to), es decir:
+   * Construye WHERE y params compartidos entre getFiltered() y countFiltered().
+   * El rango from/to usa solapamiento de intervalos:
    *   r.end_time > from AND r.start_time < to
    */
-  async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
+  private buildWhereClause(
+    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+  ): { conditions: string[]; params: unknown[] } {
     const conditions: string[] = [];
     const params: unknown[]    = [];
 
@@ -186,17 +166,14 @@ export class SqlReservationRepository implements ReservationRepository {
       params.push(filters.status);
       conditions.push(`r.status = $${params.length}`);
     }
-
     if (filters.resourceId !== undefined) {
       params.push(filters.resourceId);
       conditions.push(`r.resource_id = $${params.length}`);
     }
-
     if (filters.customerId !== undefined) {
       params.push(filters.customerId);
       conditions.push(`r.customer_id = $${params.length}`);
     }
-
     if (filters.from !== undefined && filters.to !== undefined) {
       params.push(filters.from.toISOString());
       conditions.push(`r.end_time > $${params.length}`);
@@ -204,20 +181,35 @@ export class SqlReservationRepository implements ReservationRepository {
       conditions.push(`r.start_time < $${params.length}`);
     }
 
+    return { conditions, params };
+  }
+
+  async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
+    const { conditions, params } = this.buildWhereClause(filters);
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const sql   = `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`;
+    let sql = `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`;
+
+    if (filters.limit !== undefined && filters.page !== undefined) {
+      params.push(filters.limit);
+      sql += ` LIMIT $${params.length}`;
+      params.push((filters.page - 1) * filters.limit);
+      sql += ` OFFSET $${params.length}`;
+    }
 
     const result = await this.sqlClient.query<ReservationRow>(sql, params);
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
-  async getAll(): Promise<Reservation[]> {
-    const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`,
+  async countFiltered(
+    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+  ): Promise<number> {
+    const { conditions, params } = this.buildWhereClause(filters);
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const result = await this.sqlClient.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM reservations r ${where}`,
       params,
     );
-
-    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+    return parseInt(result.rows[0]?.count ?? '0', 10);
   }
 
   /** @deprecated Usar getFiltered({}) para consistencia. Se mantiene por compatibilidad. */
