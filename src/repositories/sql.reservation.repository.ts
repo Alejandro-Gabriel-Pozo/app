@@ -102,7 +102,7 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   // -------------------------------------------------------------------------
-  // Lectura
+  // Lectura — métodos específicos (mantenidos por compatibilidad)
   // -------------------------------------------------------------------------
 
   async getById(id: string): Promise<Reservation | undefined> {
@@ -157,7 +157,6 @@ export class SqlReservationRepository implements ReservationRepository {
       ReservationStatus.PENDING,
       ReservationStatus.CONFIRMED,
     ];
-
     const result = await this.sqlClient.query<ReservationRow>(
       `${this.baseSelect()}
        WHERE r.resource_id = $1
@@ -165,12 +164,7 @@ export class SqlReservationRepository implements ReservationRepository {
          AND r.start_time < $3
          AND r.end_time   > $2
        ORDER BY r.start_time ASC`,
-      [
-        resourceId,
-        startDate.toISOString(),
-        endDate.toISOString(),
-        blockingStatuses,
-      ],
+      [resourceId, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
@@ -219,9 +213,16 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async getAll(): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelect()} ORDER BY r.start_time DESC`,
+      `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`,
+      params,
     );
+
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  /** @deprecated Usar getFiltered({}) para consistencia. Se mantiene por compatibilidad. */
+  async getAll(): Promise<Reservation[]> {
+    return this.getFiltered({});
   }
 
   // -------------------------------------------------------------------------
@@ -231,19 +232,9 @@ export class SqlReservationRepository implements ReservationRepository {
   private baseSelect(): string {
     return `
       SELECT
-        r.id,
-        r.customer_id,
-        r.customer_name,
-        r.customer_email,
-        r.resource_id,
-        r.status,
-        r.start_time,
-        r.end_time,
-        r.details,
-        r.service_id,
-        r.party_size,
-        r.notes,
-        r.order_item_id
+        r.id, r.customer_id, r.customer_name, r.customer_email,
+        r.resource_id, r.status, r.start_time, r.end_time, r.details,
+        r.service_id, r.party_size, r.notes, r.order_item_id
       FROM reservations r
     `;
   }
@@ -254,9 +245,7 @@ export class SqlReservationRepository implements ReservationRepository {
       : new Customer(row.customer_id, row.customer_name, []);
 
     const resource = await this.resourceRepository.getById(row.resource_id);
-    if (!resource) {
-      throw new ResourceNotFoundError(row.resource_id);
-    }
+    if (!resource) throw new ResourceNotFoundError(row.resource_id);
 
     const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;

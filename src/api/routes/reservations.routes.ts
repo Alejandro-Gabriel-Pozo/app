@@ -131,24 +131,37 @@ export function createReservationsRouter(container: AppContainer): Router {
     } catch (err) { next(err); }
   });
 
+  // POST / — crear reserva con safeParse para 400 limpio
   router.post('/', authorize(MANAGERS), async (req, res, next) => {
     try {
-      const body = CreateReservationSchema.parse(req.body);
+      const parseResult = CreateReservationSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        res.status(400).json({
+          code:   'VALIDATION_ERROR',
+          errors: parseResult.error.issues,
+        });
+        return;
+      }
+
+      const body = parseResult.data;
       const { reservationService, customerRepo } = buildService(req, container);
 
       const existingCustomer = await customerRepo.getById(body.customer.id);
       if (!existingCustomer) {
-        res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: `No existe un cliente con id "${body.customer.id}"` });
+        res.status(404).json({
+          code:    'CUSTOMER_NOT_FOUND',
+          message: `No existe un cliente con id "${body.customer.id}"`,
+        });
         return;
       }
 
       const reservation = await reservationService.createReservation({
-        id: randomUUID(),
+        id:         randomUUID(),
         resourceId: body.resourceId,
-        customer: new Customer(existingCustomer.id, existingCustomer.fullName, existingCustomer.email),
-        startTime: new Date(body.startTime),
-        endTime:   new Date(body.endTime),
-        details:   body.details as Record<string, unknown>,
+        customer:   new Customer(existingCustomer.id, existingCustomer.fullName, existingCustomer.email),
+        startTime:  new Date(body.startTime),
+        endTime:    new Date(body.endTime),
+        details:    body.details as Record<string, unknown>,
       });
       res.status(201).json(toReservationDto(reservation));
     } catch (err) { next(err); }

@@ -56,6 +56,43 @@ export const AvailabilityQuerySchema = z.object({
 });
 
 /**
+ * Schema para los query params de GET /api/reservations.
+ *
+ * Todos los filtros son opcionales y se combinan con AND.
+ * Si se provee `from` o `to`, ambos son requeridos y `from` < `to`.
+ *
+ * @example
+ * GET /api/reservations?status=PENDING
+ * GET /api/reservations?resourceId=abc&from=2026-07-01T00:00:00Z&to=2026-07-31T23:59:59Z
+ * GET /api/reservations?customerId=xyz&status=CONFIRMED
+ */
+export const ReservationListQuerySchema = z
+  .object({
+    status:     z.nativeEnum(ReservationStatus).optional(),
+    resourceId: z.string().min(1).optional(),
+    customerId: z.string().min(1).optional(),
+    from:       z.string().datetime().optional(),
+    to:         z.string().datetime().optional(),
+  })
+  .refine(
+    (data) => {
+      const hasFrom = Boolean(data.from);
+      const hasTo   = Boolean(data.to);
+      return hasFrom === hasTo; // ambos presentes o ninguno
+    },
+    { message: 'Debés proveer tanto `from` como `to`, o ninguno de los dos' },
+  )
+  .refine(
+    (data) => {
+      if (data.from && data.to) {
+        return new Date(data.to) > new Date(data.from);
+      }
+      return true;
+    },
+    { message: '`to` debe ser posterior a `from`', path: ['to'] },
+  );
+
+/**
  * Replica la forma de `VisualMetadata` (src/types/visual.interface.ts).
  */
 export const VisualMetadataSchema = z.object({
