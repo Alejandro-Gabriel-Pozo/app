@@ -11,6 +11,11 @@
  * Los métodos confirmReservation, cancelReservation y completeReservation
  * reciben req.businessId! como segundo argumento. El servicio NO lee
  * process.env — el router es el dueño del contexto JWT del request.
+ *
+ * ## Filtros en GET /
+ * Acepta query params opcionales: status, resourceId, customerId, from, to.
+ * Validados con ReservationListQuerySchema (Zod) antes de ejecutar la query.
+ * Delega a reservationRepo.getFiltered() — sin params equivale a getAll().
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -22,7 +27,10 @@ import { routeParam } from '../utils/params.js';
 import { UserRole } from '../../types/enums.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { authorize } from '../../security/auth.middleware.js';
-import { CreateReservationSchema } from '../schemas/request.schemas.js';
+import {
+  CreateReservationSchema,
+  ReservationListQuerySchema,
+} from '../schemas/request.schemas.js';
 import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
 import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
 import { SqlCustomerRepository }    from '../../repositories/sql.customer.repository.js';
@@ -61,10 +69,39 @@ function buildService(req: Request, container: AppContainer) {
 export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
+  /**
+   * GET /api/reservations
+   * Filros opcionales combinables con AND:
+   *   ?status=PENDING|CONFIRMED|COMPLETED|CANCELLED
+   *   ?resourceId=<id>
+   *   ?customerId=<id>
+   *   ?from=<ISO8601>&to=<ISO8601>  (ambos requeridos si se usa el rango)
+   */
   router.get('/', authorize(READERS), async (req, res, next) => {
     try {
+      const parsed = ReservationListQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({
+          code:   'VALIDATION_ERROR',
+          errors: parsed.error.errors.map((e) => ({
+            path:    e.path.join('.'),
+            message: e.message,
+          })),
+        });
+        return;
+      }
+
+      const { status, resourceId, customerId, from, to } = parsed.data;
       const { reservationRepo } = buildService(req, container);
-      const reservations = await reservationRepo.getAll();
+
+      const reservations = await reservationRepo.getFiltered({
+        status,
+        resourceId,
+        customerId,
+        from: from ? new Date(from) : undefined,
+        to:   to   ? new Date(to)   : undefined,
+      });
+
       res.json(reservations.map(toReservationDto));
     } catch (err) { next(err); }
   });
