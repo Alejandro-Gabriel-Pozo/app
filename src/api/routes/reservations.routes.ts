@@ -16,6 +16,11 @@
  * Acepta query params opcionales: status, resourceId, customerId, from, to.
  * Validados con ReservationListQuerySchema (Zod) antes de ejecutar la query.
  * Delega a reservationRepo.getFiltered() — sin params equivale a getAll().
+ *
+ * ## PATCH /:id
+ * Modifica una reserva en estado PENDING (startTime, endTime, details).
+ * Al menos un campo es obligatorio. Valida con UpdateReservationSchema.
+ * El servicio verifica disponibilidad del recurso en el nuevo rango.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -29,6 +34,7 @@ import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { authorize } from '../../security/auth.middleware.js';
 import {
   CreateReservationSchema,
+  UpdateReservationSchema,
   ReservationListQuerySchema,
 } from '../schemas/request.schemas.js';
 import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
@@ -71,7 +77,7 @@ export function createReservationsRouter(container: AppContainer): Router {
 
   /**
    * GET /api/reservations
-   * Filros opcionales combinables con AND:
+   * Filtros opcionales combinables con AND:
    *   ?status=PENDING|CONFIRMED|COMPLETED|CANCELLED
    *   ?resourceId=<id>
    *   ?customerId=<id>
@@ -151,6 +157,42 @@ export function createReservationsRouter(container: AppContainer): Router {
         details:   body.details as Record<string, unknown>,
       });
       res.status(201).json(toReservationDto(reservation));
+    } catch (err) { next(err); }
+  });
+
+  /**
+   * PATCH /api/reservations/:id
+   * Modifica una reserva en estado PENDING.
+   * Body (al menos uno de los tres campos):
+   *   { startTime?, endTime?, details? }
+   * Roles: ADMIN, RECEPTIONIST
+   */
+  router.patch('/:id', authorize(MANAGERS), async (req, res, next) => {
+    try {
+      const id = routeParam(req.params.id);
+
+      const parsed = UpdateReservationSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          code:   'VALIDATION_ERROR',
+          errors: parsed.error.errors.map((e) => ({
+            path:    e.path.join('.'),
+            message: e.message,
+          })),
+        });
+        return;
+      }
+
+      const { startTime, endTime, details } = parsed.data;
+      const { reservationService } = buildService(req, container);
+
+      const reservation = await reservationService.updateReservation(id, {
+        startTime: startTime ? new Date(startTime) : undefined,
+        endTime:   endTime   ? new Date(endTime)   : undefined,
+        details:   details   as Record<string, unknown> | undefined,
+      });
+
+      res.json(toReservationDto(reservation));
     } catch (err) { next(err); }
   });
 
