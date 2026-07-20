@@ -34,11 +34,19 @@ interface ReservationRow {
  * queries adicionales:
  * - **Customer**: reconstruido desde los campos desnormalizados
  *   `customer_name` y `customer_email` que viven en la tabla `reservations`.
+ *   No se necesita un `CustomerRepository` para lectura.
  * - **Resource**: resuelto via `resourceRepository.getById()`.
  *
  * ## Política de email nulo
- * NULL en DB cuando el cliente no tiene email. Al leer, `null` se convierte
- * en array vacío, dejando `Customer.email` como `undefined`.
+ * Se almacena NULL en la DB cuando el cliente no tiene email (en lugar de '').
+ * Al leer, `null` se convierte en el array vacío de contactMethods,
+ * dejando `email` como `undefined`.
+ *
+ * ## getFiltered()
+ * Construye la cláusula WHERE dinámicamente con parámetros numerados
+ * para evitar inyección SQL. Soporta filtros AND combinables:
+ * status, resourceId, customerId, rango from/to (solapamiento de intervalos).
+ * Sin filtros es equivalente a getAll().
  */
 export class SqlReservationRepository implements ReservationRepository {
   constructor(
@@ -161,50 +169,49 @@ export class SqlReservationRepository implements ReservationRepository {
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
-  // -------------------------------------------------------------------------
-  // getFiltered — query dinámica con filtros opcionales AND
-  // -------------------------------------------------------------------------
-
   /**
-   * Lista reservas aplicando filtros opcionales combinados con AND.
-   * Sin filtros devuelve todas las reservas (equivale a getAll).
+   * Devuelve reservas que satisfacen TODOS los filtros provistos (AND).
+   * Sin filtros es equivalente a getAll().
    *
-   * Filtro de rango: solapamiento (end_time > from AND start_time < to),
-   * coherente con la lógica de disponibilidad del dominio.
+   * El rango from/to usa lógica de solapamiento de intervalos:
+   * una reserva aparece si su intervalo [start_time, end_time) se
+   * intersecta con [from, to), es decir:
+   *   r.end_time > from AND r.start_time < to
    */
   async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
     const conditions: string[] = [];
     const params: unknown[]    = [];
 
-    if (filters.status) {
+    if (filters.status !== undefined) {
       params.push(filters.status);
       conditions.push(`r.status = $${params.length}`);
     }
 
-    if (filters.resourceId) {
+    if (filters.resourceId !== undefined) {
       params.push(filters.resourceId);
       conditions.push(`r.resource_id = $${params.length}`);
     }
 
-    if (filters.customerId) {
+    if (filters.customerId !== undefined) {
       params.push(filters.customerId);
       conditions.push(`r.customer_id = $${params.length}`);
     }
 
-    if (filters.from) {
+    if (filters.from !== undefined && filters.to !== undefined) {
       params.push(filters.from.toISOString());
       conditions.push(`r.end_time > $${params.length}`);
-    }
-
-    if (filters.to) {
       params.push(filters.to.toISOString());
       conditions.push(`r.start_time < $${params.length}`);
     }
 
-    const where = conditions.length > 0
-      ? `WHERE ${conditions.join(' AND ')}`
-      : '';
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql   = `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`;
 
+    const result = await this.sqlClient.query<ReservationRow>(sql, params);
+    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  async getAll(): Promise<Reservation[]> {
     const result = await this.sqlClient.query<ReservationRow>(
       `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`,
       params,

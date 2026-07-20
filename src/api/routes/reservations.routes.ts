@@ -13,10 +13,9 @@
  * process.env — el router es el dueño del contexto JWT del request.
  *
  * ## Filtros en GET /
- * Los query params se validan con ReservationListQuerySchema (Zod).
- * Filtros disponibles: status, resourceId, customerId, from, to.
- * Todos opcionales; se combinan con AND en getFiltered().
- * Errores de validación de query retornan 400 con el detalle de Zod.
+ * Acepta query params opcionales: status, resourceId, customerId, from, to.
+ * Validados con ReservationListQuerySchema (Zod) antes de ejecutar la query.
+ * Delega a reservationRepo.getFiltered() — sin params equivale a getAll().
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -70,19 +69,29 @@ function buildService(req: Request, container: AppContainer) {
 export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
-  // GET / — lista con filtros opcionales
+  /**
+   * GET /api/reservations
+   * Filros opcionales combinables con AND:
+   *   ?status=PENDING|CONFIRMED|COMPLETED|CANCELLED
+   *   ?resourceId=<id>
+   *   ?customerId=<id>
+   *   ?from=<ISO8601>&to=<ISO8601>  (ambos requeridos si se usa el rango)
+   */
   router.get('/', authorize(READERS), async (req, res, next) => {
     try {
-      const queryResult = ReservationListQuerySchema.safeParse(req.query);
-      if (!queryResult.success) {
+      const parsed = ReservationListQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
         res.status(400).json({
           code:   'VALIDATION_ERROR',
-          errors: queryResult.error.issues,
+          errors: parsed.error.errors.map((e) => ({
+            path:    e.path.join('.'),
+            message: e.message,
+          })),
         });
         return;
       }
 
-      const { status, resourceId, customerId, from, to } = queryResult.data;
+      const { status, resourceId, customerId, from, to } = parsed.data;
       const { reservationRepo } = buildService(req, container);
 
       const reservations = await reservationRepo.getFiltered({

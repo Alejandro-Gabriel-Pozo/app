@@ -2,19 +2,11 @@
  * @file request.schemas.ts
  * @description Schemas Zod para validación de request bodies y query params.
  *
- * ## Cambios
- * - Se elimina `resourceType` de `CreateReservationSchema`. El tipo de recurso
- *   ya no se envía en la petición — se resuelve desde `resource.categoryId`.
- * - Se elimina `validateDetailsForType()` (basada en enum estático `ResourceType`).
- *   La validación de `details` ocurre en `ReservationService`.
- * - Se agregan `DateRangeQuerySchema`, `SummaryQuerySchema` y
- *   `UnderutilizedQuerySchema` para los endpoints de reportes.
- * - `visualData` en `CreateResourceSchema` usa `VisualMetadataSchema` tipado
- *   para coincidir con `VisualMetadata` y evitar el error TS2345.
- * - `CreateReservationSchema` y `UpdateReservationSchema` validan rango temporal
- *   (endTime > startTime) directamente en el schema para devolver 400 con
- *   mensaje claro antes de llegar al servicio de dominio.
- * - `ReservationListQuerySchema` para filtros en GET /api/reservations.
+ * ## Cambios Iteración 2
+ * - CreateReservationSchema: refine endTime > startTime (400 claro al cliente)
+ * - UpdateReservationSchema: superRefine endTime > startTime cuando ambos presentes
+ * - ReservationListQuerySchema: filtros para GET /reservations
+ *   (status, resourceId, customerId, from/to)
  */
 
 import { z } from 'zod';
@@ -24,42 +16,39 @@ const CustomerSchema = z.object({
   id: z.string().min(1, 'customer.id es obligatorio — el cliente debe existir previamente'),
 });
 
-export const CreateReservationSchema = z
-  .object({
-    resourceId: z.string().min(1),
-    customer:   CustomerSchema,
-    startTime:  z.string().datetime(),
-    endTime:    z.string().datetime(),
-    details:    z.record(z.unknown()).default({}),
-  })
-  .refine(
-    (data) => new Date(data.endTime) > new Date(data.startTime),
-    { message: 'endTime debe ser posterior a startTime', path: ['endTime'] },
-  )
-  .refine(
-    (data) => new Date(data.startTime) > new Date(),
-    { message: 'startTime no puede ser en el pasado', path: ['startTime'] },
-  );
+export const CreateReservationSchema = z.object({
+  resourceId: z.string().min(1),
+  customer:   CustomerSchema,
+  startTime:  z.string().datetime(),
+  endTime:    z.string().datetime(),
+  details:    z.record(z.unknown()).default({}),
+}).refine(
+  (data) => new Date(data.endTime) > new Date(data.startTime),
+  {
+    message: 'endTime debe ser posterior a startTime',
+    path:    ['endTime'],
+  },
+);
 
-export const UpdateReservationSchema = z
-  .object({
-    startTime: z.string().datetime().optional(),
-    endTime:   z.string().datetime().optional(),
-    details:   z.record(z.unknown()).optional(),
-  })
-  .refine(
-    (data) => data.startTime || data.endTime || data.details,
-    { message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details' },
-  )
-  .refine(
-    (data) => {
-      if (data.startTime && data.endTime) {
-        return new Date(data.endTime) > new Date(data.startTime);
-      }
-      return true;
-    },
-    { message: 'endTime debe ser posterior a startTime', path: ['endTime'] },
-  );
+export const UpdateReservationSchema = z.object({
+  startTime: z.string().datetime().optional(),
+  endTime:   z.string().datetime().optional(),
+  details:   z.record(z.unknown()).optional(),
+}).refine(
+  (data) => data.startTime || data.endTime || data.details,
+  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details' },
+).superRefine((data, ctx) => {
+  // Solo validamos el orden si ambos vienen en el mismo body.
+  // Si viene solo uno, el servicio compara contra el valor persistido
+  // (esa validación ocurre en ReservationService.updateReservation).
+  if (data.startTime && data.endTime && new Date(data.endTime) <= new Date(data.startTime)) {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.custom,
+      message: 'endTime debe ser posterior a startTime',
+      path:    ['endTime'],
+    });
+  }
+});
 
 export const AvailabilityQuerySchema = z.object({
   startTime: z.string().datetime(),
@@ -105,8 +94,6 @@ export const ReservationListQuerySchema = z
 
 /**
  * Replica la forma de `VisualMetadata` (src/types/visual.interface.ts).
- * Al usar campos tipados el compilador puede verificar la asignación
- * a `BookableResource.visualData` sin necesidad de cast.
  */
 export const VisualMetadataSchema = z.object({
   shape:           z.string().min(1),
@@ -156,3 +143,56 @@ export const UnderutilizedQuerySchema = DateRangeQuerySchema.extend({
     .max(100, { message: 'limit no puede superar 100' })
     .default(10),
 });
+
+// ---------------------------------------------------------------------------
+// Schema para filtros de GET /reservations
+// ---------------------------------------------------------------------------
+
+/**
+ * Query params aceptados por GET /api/reservations.
+ *
+ * Todos los filtros son opcionales y se combinan con AND:
+ * - status       → filtra por estado (PENDING, CONFIRMED, COMPLETED, CANCELLED)
+ * - resourceId   → filtra por recurso
+ * - customerId   → filtra por cliente
+ * - from + to    → rango de fechas ISO 8601 (ambos requeridos si se usa alguno)
+ *
+ * Ejemplos:
+ *   GET /api/reservations?status=PENDING
+ *   GET /api/reservations?resourceId=abc&from=2026-07-01T00:00:00Z&to=2026-07-31T23:59:59Z
+ *   GET /api/reservations?customerId=xyz&status=CONFIRMED
+ */
+export const ReservationListQuerySchema = z.object({
+  status:     z.nativeEnum(ReservationStatus).optional(),
+  resourceId: z.string().min(1).optional(),
+  customerId: z.string().min(1).optional(),
+  from:       z.string().datetime({ message: 'from debe ser ISO 8601' }).optional(),
+  to:         z.string().datetime({ message: 'to debe ser ISO 8601' }).optional(),
+}).superRefine((data, ctx) => {
+  const hasFrom = data.from !== undefined;
+  const hasTo   = data.to   !== undefined;
+
+  if (hasFrom && !hasTo) {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.custom,
+      message: "Si enviás 'from' también debés enviar 'to'",
+      path:    ['to'],
+    });
+  }
+  if (!hasFrom && hasTo) {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.custom,
+      message: "Si enviás 'to' también debés enviar 'from'",
+      path:    ['from'],
+    });
+  }
+  if (hasFrom && hasTo && new Date(data.to!) <= new Date(data.from!)) {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.custom,
+      message: "'to' debe ser posterior a 'from'",
+      path:    ['to'],
+    });
+  }
+});
+
+export type ReservationListQuery = z.infer<typeof ReservationListQuerySchema>;

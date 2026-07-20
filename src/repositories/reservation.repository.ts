@@ -3,14 +3,8 @@ import { Reservation } from '../domain/Reservation.js';
 import { ReservationStatus } from '../types/enums.js';
 
 /**
- * Filtros opcionales para listar reservas.
- * Todos los campos son opcionales y se combinan con AND.
- *
- * - `status`     — filtra por estado de la reserva.
- * - `resourceId` — filtra por recurso reservado.
- * - `customerId` — filtra por cliente.
- * - `from` / `to` — filtra reservas cuyo rango solapa con [from, to].
- *   Si se provee uno se debe proveer el otro.
+ * Filtros opcionales para getFiltered().
+ * Todos se combinan con AND. Sin filtros equivale a getAll().
  */
 export interface ReservationFilters {
   status?:     ReservationStatus;
@@ -43,13 +37,10 @@ export interface ReservationRepository {
   ): Promise<Reservation[]>;
 
   /**
-   * Lista reservas aplicando filtros opcionales combinados con AND.
-   * Sin filtros equivale a getAll().
-   *
-   * @param filters - Objeto con filtros opcionales.
+   * Devuelve reservas que satisfacen TODOS los filtros provistos (AND).
+   * Reemplaza al uso directo de getAll() en el router de listado.
    */
   getFiltered(filters: ReservationFilters): Promise<Reservation[]>;
 
-  /** @deprecated Usar getFiltered({}) para consistencia. Se mantiene por compatibilidad. */
   getAll(): Promise<Reservation[]>;
 }
