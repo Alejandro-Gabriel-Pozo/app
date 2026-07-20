@@ -5,9 +5,19 @@
  * ## Cambios
  * - Se elimina `UnsupportedResourceTypeError`: ya no existe el enum `ResourceType`.
  *   Los tipos de recurso son categorías dinámicas definidas en BD.
+ * - `ValidationError` ya no depende de `ZodError`. Usa `DomainIssue` (tipo propio)
+ *   para mantener el dominio libre de dependencias de infraestructura.
  */
 
-import { ZodError } from 'zod';
+/**
+ * Representación agnóstica de un error de validación de campo.
+ * Equivalente estructural a un elemento de `ZodError['issues']`,
+ * pero sin depender de Zod.
+ */
+export interface DomainIssue {
+  path:    (string | number)[];
+  message: string;
+}
 
 export class DomainError extends Error {
   constructor(
@@ -46,7 +56,7 @@ export class InvalidCustomerError extends DomainError {
 export class ValidationError extends DomainError {
   constructor(
     message: string,
-    public readonly issues?: ZodError['issues'],
+    public readonly issues?: DomainIssue[],
   ) {
     super(message, 'VALIDATION_ERROR');
   }

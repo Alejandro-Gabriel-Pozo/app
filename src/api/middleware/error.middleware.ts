@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { ZodError } from 'zod';
-import { DomainError, ValidationError } from '../../domain/errors.js';
+import { ZodError }                        from 'zod';
+import { DomainError, ValidationError, DomainIssue } from '../../domain/errors.js';
 
 export function errorHandler(
   err: unknown,
@@ -10,17 +10,29 @@ export function errorHandler(
 ): void {
   if (err instanceof ZodError) {
     res.status(400).json({
-      code: 'VALIDATION_ERROR',
+      code:    'VALIDATION_ERROR',
       message: 'Datos de entrada inválidos',
-      errors: err.flatten(),
+      errors:  err.flatten(),
     });
     return;
   }
 
   if (err instanceof ValidationError) {
-    const errors = err.issues ? new ZodError(err.issues).flatten() : {};
+    // Mapeo de DomainIssue[] → ZodError confinado a la capa de infraestructura.
+    // El dominio emite DomainIssue (tipo propio); aquí lo convertimos al shape
+    // que ZodError.flatten() produce para mantener el contrato de respuesta HTTP.
+    const errors = err.issues
+      ? new ZodError(
+          err.issues.map((issue: DomainIssue) => ({
+            ...issue,
+            code:    'custom' as const,
+            params:  {},
+          }))
+        ).flatten()
+      : {};
+
     res.status(400).json({
-      code: err.code,
+      code:    err.code,
       message: err.message,
       errors,
     });
@@ -30,7 +42,7 @@ export function errorHandler(
   if (err instanceof DomainError) {
     const status = domainErrorStatus(err);
     res.status(status).json({
-      code: err.code,
+      code:    err.code,
       message: err.message,
     });
     return;
@@ -38,7 +50,7 @@ export function errorHandler(
 
   console.error(err);
   res.status(500).json({
-    code: 'INTERNAL_ERROR',
+    code:    'INTERNAL_ERROR',
     message: 'Error interno del servidor',
   });
 }
