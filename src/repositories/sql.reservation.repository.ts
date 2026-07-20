@@ -1,6 +1,6 @@
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
-import { ReservationRepository } from './reservation.repository.js';
+import { ReservationRepository, ReservationFilters } from './reservation.repository.js';
 import { Customer } from '../domain/entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
 import { SqlClient } from './sql.client.js';
@@ -14,7 +14,7 @@ interface ReservationRow {
   id: string;
   customer_id: string;
   customer_name: string;
-  customer_email: string | null;  // NULL en DB cuando el cliente no tiene email
+  customer_email: string | null;
   resource_id: string;
   status: ReservationStatus;
   start_time: string | Date;
@@ -34,42 +34,11 @@ interface ReservationRow {
  * queries adicionales:
  * - **Customer**: reconstruido desde los campos desnormalizados
  *   `customer_name` y `customer_email` que viven en la tabla `reservations`.
- *   No se necesita un `CustomerRepository` para lectura.
- * - **Resource**: resuelto via `resourceRepository.getById()` — necesario
- *   para instanciar el recurso correcto.
+ * - **Resource**: resuelto via `resourceRepository.getById()`.
  *
  * ## Política de email nulo
- * Se almacena NULL en la DB cuando el cliente no tiene email (en lugar de '').
- * Esto alinea la persistencia con el dominio, donde `Customer.email` es
- * `string | undefined`. Al leer, `null` se convierte en el array vacío de
- * contactMethods, dejando `email` como `undefined`.
- *
- * ## Constructor
- * - `sqlClient`          — cliente SQL genérico (pg pool)
- * - `resourceRepository` — para resolver el recurso en lectura
- *
- * Schema esperado (PostgreSQL):
- * ```sql
- * CREATE TABLE reservations (
- *   id VARCHAR(255) PRIMARY KEY,
- *   customer_id VARCHAR(255) NOT NULL,
- *   customer_name VARCHAR(255) NOT NULL,
- *   customer_email VARCHAR(255),        -- nullable
- *   resource_id VARCHAR(255) NOT NULL,
- *   status VARCHAR(50) NOT NULL,
- *   start_time TIMESTAMP NOT NULL,
- *   end_time TIMESTAMP NOT NULL,
- *   details JSONB NOT NULL,
- *   service_id VARCHAR(255),
- *   party_size INT DEFAULT 1,
- *   notes TEXT,
- *   order_item_id VARCHAR(255),
- *   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
- *   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
- *   FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
- *   FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
- * );
- * ```
+ * NULL en DB cuando el cliente no tiene email. Al leer, `null` se convierte
+ * en array vacío, dejando `Customer.email` como `undefined`.
  */
 export class SqlReservationRepository implements ReservationRepository {
   constructor(
@@ -86,7 +55,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.id,
       reservation.customer.id,
       reservation.customer.fullName,
-      reservation.customer.email ?? null,   // NULL en DB, no string vacío
+      reservation.customer.email ?? null,
       reservation.resource.id,
       reservation.status,
       reservation.startTime.toISOString(),
@@ -112,11 +81,6 @@ export class SqlReservationRepository implements ReservationRepository {
     await this.sqlClient.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
   }
 
-  /**
-   * Versión transaccional de save().
-   * Usa el SqlClient recibido — no adquiere una conexión nueva.
-   * Llamar solo desde dentro de TransactionManager.run().
-   */
   async saveWithClient(client: SqlClient, reservation: Reservation): Promise<void> {
     await client.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
   }
@@ -130,7 +94,7 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   // -------------------------------------------------------------------------
-  // Lectura
+  // Lectura — métodos específicos (mantenidos por compatibilidad)
   // -------------------------------------------------------------------------
 
   async getById(id: string): Promise<Reservation | undefined> {
@@ -185,7 +149,6 @@ export class SqlReservationRepository implements ReservationRepository {
       ReservationStatus.PENDING,
       ReservationStatus.CONFIRMED,
     ];
-
     const result = await this.sqlClient.query<ReservationRow>(
       `${this.baseSelect()}
        WHERE r.resource_id = $1
@@ -193,21 +156,66 @@ export class SqlReservationRepository implements ReservationRepository {
          AND r.start_time < $3
          AND r.end_time   > $2
        ORDER BY r.start_time ASC`,
-      [
-        resourceId,
-        startDate.toISOString(),
-        endDate.toISOString(),
-        blockingStatuses,
-      ],
+      [resourceId, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
-  async getAll(): Promise<Reservation[]> {
+  // -------------------------------------------------------------------------
+  // getFiltered — query dinámica con filtros opcionales AND
+  // -------------------------------------------------------------------------
+
+  /**
+   * Lista reservas aplicando filtros opcionales combinados con AND.
+   * Sin filtros devuelve todas las reservas (equivale a getAll).
+   *
+   * Filtro de rango: solapamiento (end_time > from AND start_time < to),
+   * coherente con la lógica de disponibilidad del dominio.
+   */
+  async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
+    const conditions: string[] = [];
+    const params: unknown[]    = [];
+
+    if (filters.status) {
+      params.push(filters.status);
+      conditions.push(`r.status = $${params.length}`);
+    }
+
+    if (filters.resourceId) {
+      params.push(filters.resourceId);
+      conditions.push(`r.resource_id = $${params.length}`);
+    }
+
+    if (filters.customerId) {
+      params.push(filters.customerId);
+      conditions.push(`r.customer_id = $${params.length}`);
+    }
+
+    if (filters.from) {
+      params.push(filters.from.toISOString());
+      conditions.push(`r.end_time > $${params.length}`);
+    }
+
+    if (filters.to) {
+      params.push(filters.to.toISOString());
+      conditions.push(`r.start_time < $${params.length}`);
+    }
+
+    const where = conditions.length > 0
+      ? `WHERE ${conditions.join(' AND ')}`
+      : '';
+
     const result = await this.sqlClient.query<ReservationRow>(
-      `${this.baseSelect()} ORDER BY r.start_time DESC`,
+      `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`,
+      params,
     );
+
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  /** @deprecated Usar getFiltered({}) para consistencia. Se mantiene por compatibilidad. */
+  async getAll(): Promise<Reservation[]> {
+    return this.getFiltered({});
   }
 
   // -------------------------------------------------------------------------
@@ -217,34 +225,20 @@ export class SqlReservationRepository implements ReservationRepository {
   private baseSelect(): string {
     return `
       SELECT
-        r.id,
-        r.customer_id,
-        r.customer_name,
-        r.customer_email,
-        r.resource_id,
-        r.status,
-        r.start_time,
-        r.end_time,
-        r.details,
-        r.service_id,
-        r.party_size,
-        r.notes,
-        r.order_item_id
+        r.id, r.customer_id, r.customer_name, r.customer_email,
+        r.resource_id, r.status, r.start_time, r.end_time, r.details,
+        r.service_id, r.party_size, r.notes, r.order_item_id
       FROM reservations r
     `;
   }
 
   private async rowToReservation(row: ReservationRow): Promise<Reservation> {
-    // customer_email puede ser NULL — se pasa como string o como array vacío
-    // para que Customer quede con email === undefined (sin contact EMAIL).
     const customer = row.customer_email
       ? new Customer(row.customer_id, row.customer_name, row.customer_email)
       : new Customer(row.customer_id, row.customer_name, []);
 
     const resource = await this.resourceRepository.getById(row.resource_id);
-    if (!resource) {
-      throw new ResourceNotFoundError(row.resource_id);
-    }
+    if (!resource) throw new ResourceNotFoundError(row.resource_id);
 
     const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
@@ -257,9 +251,9 @@ export class SqlReservationRepository implements ReservationRepository {
       endTime:       new Date(row.end_time),
       details,
       initialStatus: row.status,
-      serviceId:     row.service_id  ?? null,
-      partySize:     row.party_size  ?? 1,
-      notes:         row.notes       ?? null,
+      serviceId:     row.service_id    ?? null,
+      partySize:     row.party_size    ?? 1,
+      notes:         row.notes         ?? null,
       orderItemId:   row.order_item_id ?? null,
     });
   }
