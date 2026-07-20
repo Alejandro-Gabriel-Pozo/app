@@ -5,6 +5,7 @@ import { ReservationStatus } from '../types/enums.js';
 /**
  * Filtros opcionales para getFiltered().
  * Todos se combinan con AND. Sin filtros equivale a getAll().
+ * page + limit habilitan paginación en getFiltered().
  */
 export interface ReservationFilters {
   status?:     ReservationStatus;
@@ -12,6 +13,8 @@ export interface ReservationFilters {
   customerId?: string;
   from?:       Date;
   to?:         Date;
+  page?:       number;
+  limit?:      number;
 }
 
 export interface ReservationRepository {
@@ -38,9 +41,15 @@ export interface ReservationRepository {
 
   /**
    * Devuelve reservas que satisfacen TODOS los filtros provistos (AND).
-   * Reemplaza al uso directo de getAll() en el router de listado.
+   * Si page y limit están presentes aplica LIMIT/OFFSET.
    */
   getFiltered(filters: ReservationFilters): Promise<Reservation[]>;
+
+  /**
+   * Cuenta el total de filas que satisfacen los filtros (sin paginación).
+   * Se usa junto a getFiltered() para construir la respuesta paginada.
+   */
+  countFiltered(filters: Omit<ReservationFilters, 'page' | 'limit'>): Promise<number>;
 
   getAll(): Promise<Reservation[]>;
 }
