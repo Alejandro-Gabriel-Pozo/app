@@ -11,6 +11,12 @@
  * Los métodos confirmReservation, cancelReservation y completeReservation
  * reciben req.businessId! como segundo argumento. El servicio NO lee
  * process.env — el router es el dueño del contexto JWT del request.
+ *
+ * ## Filtros en GET /
+ * Los query params se validan con ReservationListQuerySchema (Zod).
+ * Filtros disponibles: status, resourceId, customerId, from, to.
+ * Todos opcionales; se combinan con AND en getFiltered().
+ * Errores de validación de query retornan 400 con el detalle de Zod.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -22,7 +28,10 @@ import { routeParam } from '../utils/params.js';
 import { UserRole } from '../../types/enums.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { authorize } from '../../security/auth.middleware.js';
-import { CreateReservationSchema } from '../schemas/request.schemas.js';
+import {
+  CreateReservationSchema,
+  ReservationListQuerySchema,
+} from '../schemas/request.schemas.js';
 import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
 import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
 import { SqlCustomerRepository }    from '../../repositories/sql.customer.repository.js';
@@ -61,10 +70,29 @@ function buildService(req: Request, container: AppContainer) {
 export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
+  // GET / — lista con filtros opcionales
   router.get('/', authorize(READERS), async (req, res, next) => {
     try {
+      const queryResult = ReservationListQuerySchema.safeParse(req.query);
+      if (!queryResult.success) {
+        res.status(400).json({
+          code:   'VALIDATION_ERROR',
+          errors: queryResult.error.issues,
+        });
+        return;
+      }
+
+      const { status, resourceId, customerId, from, to } = queryResult.data;
       const { reservationRepo } = buildService(req, container);
-      const reservations = await reservationRepo.getAll();
+
+      const reservations = await reservationRepo.getFiltered({
+        status,
+        resourceId,
+        customerId,
+        from: from ? new Date(from) : undefined,
+        to:   to   ? new Date(to)   : undefined,
+      });
+
       res.json(reservations.map(toReservationDto));
     } catch (err) { next(err); }
   });
@@ -94,24 +122,37 @@ export function createReservationsRouter(container: AppContainer): Router {
     } catch (err) { next(err); }
   });
 
+  // POST / — crear reserva con safeParse para 400 limpio
   router.post('/', authorize(MANAGERS), async (req, res, next) => {
     try {
-      const body = CreateReservationSchema.parse(req.body);
+      const parseResult = CreateReservationSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        res.status(400).json({
+          code:   'VALIDATION_ERROR',
+          errors: parseResult.error.issues,
+        });
+        return;
+      }
+
+      const body = parseResult.data;
       const { reservationService, customerRepo } = buildService(req, container);
 
       const existingCustomer = await customerRepo.getById(body.customer.id);
       if (!existingCustomer) {
-        res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: `No existe un cliente con id "${body.customer.id}"` });
+        res.status(404).json({
+          code:    'CUSTOMER_NOT_FOUND',
+          message: `No existe un cliente con id "${body.customer.id}"`,
+        });
         return;
       }
 
       const reservation = await reservationService.createReservation({
-        id: randomUUID(),
+        id:         randomUUID(),
         resourceId: body.resourceId,
-        customer: new Customer(existingCustomer.id, existingCustomer.fullName, existingCustomer.email),
-        startTime: new Date(body.startTime),
-        endTime:   new Date(body.endTime),
-        details:   body.details as Record<string, unknown>,
+        customer:   new Customer(existingCustomer.id, existingCustomer.fullName, existingCustomer.email),
+        startTime:  new Date(body.startTime),
+        endTime:    new Date(body.endTime),
+        details:    body.details as Record<string, unknown>,
       });
       res.status(201).json(toReservationDto(reservation));
     } catch (err) { next(err); }
