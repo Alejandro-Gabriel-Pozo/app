@@ -11,35 +11,97 @@
  *   `UnderutilizedQuerySchema` para los endpoints de reportes.
  * - `visualData` en `CreateResourceSchema` usa `VisualMetadataSchema` tipado
  *   para coincidir con `VisualMetadata` y evitar el error TS2345.
+ * - `CreateReservationSchema` y `UpdateReservationSchema` validan rango temporal
+ *   (endTime > startTime) directamente en el schema para devolver 400 con
+ *   mensaje claro antes de llegar al servicio de dominio.
+ * - `ReservationListQuerySchema` para filtros en GET /api/reservations.
  */
 
 import { z } from 'zod';
+import { ReservationStatus } from '../../types/enums.js';
 
 const CustomerSchema = z.object({
   id: z.string().min(1, 'customer.id es obligatorio — el cliente debe existir previamente'),
 });
 
-export const CreateReservationSchema = z.object({
-  resourceId: z.string().min(1),
-  customer:   CustomerSchema,
-  startTime:  z.string().datetime(),
-  endTime:    z.string().datetime(),
-  details:    z.record(z.unknown()).default({}),
-});
+export const CreateReservationSchema = z
+  .object({
+    resourceId: z.string().min(1),
+    customer:   CustomerSchema,
+    startTime:  z.string().datetime(),
+    endTime:    z.string().datetime(),
+    details:    z.record(z.unknown()).default({}),
+  })
+  .refine(
+    (data) => new Date(data.endTime) > new Date(data.startTime),
+    { message: 'endTime debe ser posterior a startTime', path: ['endTime'] },
+  )
+  .refine(
+    (data) => new Date(data.startTime) > new Date(),
+    { message: 'startTime no puede ser en el pasado', path: ['startTime'] },
+  );
 
-export const UpdateReservationSchema = z.object({
-  startTime: z.string().datetime().optional(),
-  endTime:   z.string().datetime().optional(),
-  details:   z.record(z.unknown()).optional(),
-}).refine(
-  (data) => data.startTime || data.endTime || data.details,
-  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details' },
-);
+export const UpdateReservationSchema = z
+  .object({
+    startTime: z.string().datetime().optional(),
+    endTime:   z.string().datetime().optional(),
+    details:   z.record(z.unknown()).optional(),
+  })
+  .refine(
+    (data) => data.startTime || data.endTime || data.details,
+    { message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details' },
+  )
+  .refine(
+    (data) => {
+      if (data.startTime && data.endTime) {
+        return new Date(data.endTime) > new Date(data.startTime);
+      }
+      return true;
+    },
+    { message: 'endTime debe ser posterior a startTime', path: ['endTime'] },
+  );
 
 export const AvailabilityQuerySchema = z.object({
   startTime: z.string().datetime(),
   endTime:   z.string().datetime(),
 });
+
+/**
+ * Schema para los query params de GET /api/reservations.
+ *
+ * Todos los filtros son opcionales y se combinan con AND.
+ * Si se provee `from` o `to`, ambos son requeridos y `from` < `to`.
+ *
+ * @example
+ * GET /api/reservations?status=PENDING
+ * GET /api/reservations?resourceId=abc&from=2026-07-01T00:00:00Z&to=2026-07-31T23:59:59Z
+ * GET /api/reservations?customerId=xyz&status=CONFIRMED
+ */
+export const ReservationListQuerySchema = z
+  .object({
+    status:     z.nativeEnum(ReservationStatus).optional(),
+    resourceId: z.string().min(1).optional(),
+    customerId: z.string().min(1).optional(),
+    from:       z.string().datetime().optional(),
+    to:         z.string().datetime().optional(),
+  })
+  .refine(
+    (data) => {
+      const hasFrom = Boolean(data.from);
+      const hasTo   = Boolean(data.to);
+      return hasFrom === hasTo; // ambos presentes o ninguno
+    },
+    { message: 'Debés proveer tanto `from` como `to`, o ninguno de los dos' },
+  )
+  .refine(
+    (data) => {
+      if (data.from && data.to) {
+        return new Date(data.to) > new Date(data.from);
+      }
+      return true;
+    },
+    { message: '`to` debe ser posterior a `from`', path: ['to'] },
+  );
 
 /**
  * Replica la forma de `VisualMetadata` (src/types/visual.interface.ts).
