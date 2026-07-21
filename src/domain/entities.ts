@@ -1,6 +1,6 @@
 /**
  * @file entities.ts
- * @description Entidades de dominio.
+ * @description Entidades de dominio — bounded context de Reservas.
  *
  * ## Cambios v2 — Customer como agregado
  * - ContactMethod interface: canal de contacto tipado (EMAIL, PHONE, WHATSAPP)
@@ -10,13 +10,10 @@
  * ## Cambios v3
  * - `email` getter retorna `string | undefined` en lugar de ''.
  *
- * ## Cambios v4 — Motor de Órdenes
- * - BookableResource: +capacity, +description
- * - BookableService: nueva entidad (catálogo de servicios por categoría)
- * - ServiceSchedule: horarios fijos para booking_mode='event'
- * - Product: catálogo de productos físicos / add-ons
- * - Order: raíz transaccional del carrito unificado
- * - OrderItem: línea de orden (product | service_reservation)
+ * ## Cambios v5 — Limpieza de bounded contexts
+ * - Product, Order, OrderItem y OrderStatus removidos de este archivo.
+ *   Product vive en `product.entities.ts`.
+ *   Order vive en `order.entities.ts`.
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -179,68 +176,4 @@ export interface ServiceSchedule {
   startTime: string; // 'HH:MM:SS'
   maxCapacity: number;
   active: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Product (add-ons y tienda física)
-// ---------------------------------------------------------------------------
-
-/**
- * Producto físico o digital vendible junto a una reserva.
- * Mapea a la tabla `products`.
- */
-export interface Product {
-  id: string;
-  name: string;
-  description: string | null;
-  price: number;
-  stock: number;
-  /** FALSE = stock ilimitado (ej: servicio digital, descarga) */
-  requiresStockControl: boolean;
-  active: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Order + OrderItem (motor transaccional unificado)
-// ---------------------------------------------------------------------------
-
-export type OrderStatus =
-  | 'pending'
-  | 'confirmed'
-  | 'paid'
-  | 'cancelled'
-  | 'refunded';
-
-export type OrderItemType = 'product' | 'service_reservation';
-
-/**
- * Línea de una orden.
- * - Si `itemType === 'product'`: `productId` es obligatorio.
- * - Si `itemType === 'service_reservation'`: la `Reservation` referencia esta línea
- *   mediante `orderItemId`.
- */
-export interface OrderItem {
-  id: string;
-  orderId: string;
-  itemType: OrderItemType;
-  productId: string | null;
-  quantity: number;
-  unitPrice: number;
-}
-
-/**
- * Raíz transaccional del carrito.
- * Agrupa reservas y productos en un único cobro.
- * Mapea a la tabla `orders` (vive en el tenant).
- * Los eventos de pago se sincronizan a la plataforma via `domain_events`.
- */
-export interface Order {
-  id: string;
-  customerId: string;
-  status: OrderStatus;
-  totalAmount: number;
-  notes: string | null;
-  items: OrderItem[];
-  createdAt: Date;
-  updatedAt: Date;
 }
