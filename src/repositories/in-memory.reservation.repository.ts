@@ -98,7 +98,8 @@ export class InMemoryReservationRepository implements ReservationRepository {
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.reservations.delete(id);\n  }
+    return this.reservations.delete(id);
+  }
 
   async getAll(): Promise<Reservation[]> {
     return Array.from(this.reservations.values());
