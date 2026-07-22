@@ -15,6 +15,10 @@
  * ## Multi-tenant
  * buildOrderService(req) instancia SqlOrderRepository usando req.db
  * del tenant activo (inyectado por tenantMiddleware).
+ *
+ * ## exactOptionalPropertyTypes
+ * compact() elimina las claves con valor undefined antes de pasar
+ * el filtro a listOrders(), satisfaciendo exactOptionalPropertyTypes: true.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -26,6 +30,8 @@ import {
   InvalidOrderTransitionError,
 } from '../../services/order.service.js';
 import { SqlOrderRepository } from '../../repositories/sql.order.repository.js';
+import { compact } from '../utils/compact.js';
+import type { OrderStatus } from '../../domain/order.entities.js';
 
 function buildOrderService(req: Request): OrderService {
   return new OrderService(new SqlOrderRepository(req.db!));
@@ -45,15 +51,18 @@ export function createOrdersRouter(_container: AppContainer): Router {
     try {
       const service = buildOrderService(req);
       const { customerId, status, from, to, limit, offset } = req.query as Record<string, string>;
-      const orders = await service.listOrders({
+
+      const filter = compact({
         businessId: req.businessId!,
-        customerId: customerId || undefined,
-        status:     (status as any) || undefined,
-        from:       from   ? new Date(from)   : undefined,
-        to:         to     ? new Date(to)     : undefined,
-        limit:      limit  ? Number(limit)   : undefined,
-        offset:     offset ? Number(offset)  : undefined,
+        ...(customerId !== undefined && { customerId }),
+        ...(status     !== undefined && { status: status as OrderStatus }),
+        ...(from       !== undefined && { from:   new Date(from) }),
+        ...(to         !== undefined && { to:     new Date(to) }),
+        ...(limit      !== undefined && { limit:  Number(limit) }),
+        ...(offset     !== undefined && { offset: Number(offset) }),
       });
+
+      const orders = await service.listOrders({ businessId: req.businessId!, ...filter });
       res.json(orders);
     } catch (err) {
       next(err);
