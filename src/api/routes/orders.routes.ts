@@ -17,8 +17,9 @@
  * del tenant activo (inyectado por tenantMiddleware).
  *
  * ## exactOptionalPropertyTypes
- * compact() elimina las claves con valor undefined antes de pasar
- * el filtro a listOrders(), satisfaciendo exactOptionalPropertyTypes: true.
+ * compact() se usa solo para los filtros OPCIONALES.
+ * businessId es obligatorio y se pasa directamente a listOrders(),
+ * evitando la clave duplicada que causa TS2783.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -52,8 +53,8 @@ export function createOrdersRouter(_container: AppContainer): Router {
       const service = buildOrderService(req);
       const { customerId, status, from, to, limit, offset } = req.query as Record<string, string>;
 
-      const filter = compact({
-        businessId: req.businessId!,
+      // compact() solo recibe los filtros OPCIONALES para no duplicar businessId
+      const optionalFilters = compact({
         ...(customerId !== undefined && { customerId }),
         ...(status     !== undefined && { status: status as OrderStatus }),
         ...(from       !== undefined && { from:   new Date(from) }),
@@ -62,7 +63,10 @@ export function createOrdersRouter(_container: AppContainer): Router {
         ...(offset     !== undefined && { offset: Number(offset) }),
       });
 
-      const orders = await service.listOrders({ businessId: req.businessId!, ...filter });
+      const orders = await service.listOrders({
+        businessId: req.businessId!,
+        ...optionalFilters,
+      });
       res.json(orders);
     } catch (err) {
       next(err);
@@ -110,7 +114,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
       const order = await buildOrderService(req).confirmOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
-      if (err instanceof OrderNotFoundError)             res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
+      if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
       else next(err);
     }
@@ -124,7 +128,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
       const order = await buildOrderService(req).completeOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
-      if (err instanceof OrderNotFoundError)             res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
+      if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
       else next(err);
     }
@@ -138,7 +142,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
       const order = await buildOrderService(req).cancelOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
-      if (err instanceof OrderNotFoundError)             res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
+      if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
       else next(err);
     }
