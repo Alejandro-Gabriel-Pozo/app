@@ -9,6 +9,11 @@
  *
  * ## PATCH /:id
  * Modifica una reserva PENDING. Body: { startTime?, endTime?, details? }
+ *
+ * ## Nota: exactOptionalPropertyTypes
+ * El tsconfig usa exactOptionalPropertyTypes: true.
+ * compact() elimina las claves con valor undefined antes de armar
+ * los objetos de filtro/update, evitando TS2379.
  */
 
 import { Router, Request } from 'express';
@@ -37,6 +42,17 @@ import { ReservationService }               from '../../services/reservation.ser
 const READERS    = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
 const MANAGERS   = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 const COMPLETERS = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
+
+/**
+ * Elimina las propiedades cuyo valor es `undefined`.
+ * Necesario para respetar exactOptionalPropertyTypes: true — pasar
+ * { key: undefined } es distinto a omitir la clave por completo.
+ */
+function compact<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, v]) => v !== undefined),
+  ) as Partial<T>;
+}
 
 function buildService(req: Request, container: AppContainer) {
   const db = req.db!;
@@ -69,13 +85,17 @@ export function createReservationsRouter(container: AppContainer): Router {
       }
       const { status, resourceId, customerId, from, to, page, limit } = parsed.data;
       const { reservationRepo } = buildService(req, container);
-      const filters = {
+
+      // compact() garantiza que no se pasen claves con valor undefined
+      // (requerido por exactOptionalPropertyTypes: true)
+      const filters = compact({
         status,
         resourceId,
         customerId,
         from: from ? new Date(from) : undefined,
         to:   to   ? new Date(to)   : undefined,
-      };
+      });
+
       const [reservations, total] = await Promise.all([
         reservationRepo.getFiltered({ ...filters, page, limit }),
         reservationRepo.countFiltered(filters),
@@ -152,11 +172,15 @@ export function createReservationsRouter(container: AppContainer): Router {
       }
       const { startTime, endTime, details } = parsed.data;
       const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.updateReservation(id, {
+
+      // compact() elimina las claves undefined antes de pasar a updateReservation
+      const updatePayload = compact({
         startTime: startTime ? new Date(startTime) : undefined,
         endTime:   endTime   ? new Date(endTime)   : undefined,
         details:   details   as Record<string, unknown> | undefined,
       });
+
+      const reservation = await reservationService.updateReservation(id, updatePayload);
       res.json(toReservationDto(reservation));
     } catch (err) { next(err); }
   });
