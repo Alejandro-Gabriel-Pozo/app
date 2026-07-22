@@ -138,7 +138,7 @@ export async function createApp(): Promise<{
   app.use('/api/reports',      createReportsRouter(container));
   app.use('/api/customers',    createCustomersRouter(container));
   app.use('/api/users',        createUsersRouter(platformRepo));
-  app.use('/api/categories',   createCategoryRouter(platformRepo));
+  app.use('/api/categories',   createCategoryRouter(container));  // ahora recibe container
   app.use('/api/products',     createProductsRouter(container));
   app.use('/api/orders',       createOrdersRouter(container));
 

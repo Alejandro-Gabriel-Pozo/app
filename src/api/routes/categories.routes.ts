@@ -6,6 +6,11 @@
  * Cada handler instancia SqlCategoryRepository(req.db!) y construye
  * un CategoryService fresco. El ! es seguro: tenantMiddleware garantiza
  * req.db antes de que cualquier handler aquí ejecute.
+ *
+ * ## Plan del negocio
+ * Se obtiene vía container.getBusinessPlan(businessId) en lugar de
+ * platformRepo.findById() — es más eficiente (solo trae el plan,
+ * no el objeto completo) y evita una query innecesaria a la BD central.
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
@@ -23,9 +28,9 @@ import {
 import type { CategoryField } from '../../types/resource-category.types.js';
 import { ZodError } from 'zod';
 import { SqlCategoryRepository } from '../../repositories/sql.category.repository.js';
-import type { PlatformRepository } from '../../platform/platform.repository.js';
+import type { AppContainer } from '../../container.js';
 
-export function createCategoryRouter(platformRepo: PlatformRepository): Router {
+export function createCategoryRouter(container: AppContainer): Router {
   const router = Router();
 
   router.get('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -55,16 +60,14 @@ export function createCategoryRouter(platformRepo: PlatformRepository): Router {
       const body       = CreateCategorySchema.parse(req.body);
       const businessId = String((req as any).user?.businessId ?? '');
 
-      const business = await platformRepo.findById(businessId);
-      if (!business) {
-        res.status(404).json({ code: 'BUSINESS_NOT_FOUND', message: `Negocio "${businessId}" no encontrado.` });
-        return;
-      }
+      // Usa getBusinessPlan() en lugar de platformRepo.findById() —
+      // solo trae el plan (string), no el objeto completo del negocio.
+      const plan = await container.getBusinessPlan(businessId);
 
       const service  = new CategoryService(new SqlCategoryRepository(req.db!));
       const category = await service.createCategory(
         { name: body.name, fields: body.fields as CategoryField[], ...(body.description !== undefined && { description: body.description }) },
-        business.plan,
+        plan,
       );
       res.status(201).json(category);
     } catch (err) {

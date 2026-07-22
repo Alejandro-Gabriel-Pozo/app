@@ -11,11 +11,17 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  * - Marcar el evento como despachado SOLO si todos los handlers tuvieron éxito.
  * - Si algún handler falla, el evento queda pendiente y se reintenta al próximo ciclo.
  *
- * ## Garantías
+ * ## Garantas
  * - Entrega at-least-once: un evento puede procesarse más de una vez si el
  *   worker muere entre el handler y el markDispatched. Los handlers deben ser
  *   idempotentes (usar el aggregateId + eventType + occurredAt como clave).
  * - No entrega out-of-order dentro del mismo aggregate: getPending ordena por id ASC.
+ *
+ * ## Arranque diferido
+ * Si la tabla domain_events todavía no existe en la BD (p.ej. primer deploy
+ * antes de correr las migraciones), el worker loguea un aviso único y
+ * desactiva el polling automáticamente para no llenar los logs de errores.
+ * Se reactiva llamando a worker.start() de nuevo una vez que la tabla exista.
  *
  * ## Uso
  * ```ts
@@ -34,6 +40,9 @@ export class OutboxWorker {
   private intervalId: ReturnType<typeof setInterval> | undefined = undefined;
   private polling = false;
 
+  /** true si ya se emitió el aviso de tabla faltante (evita spam en logs) */
+  private missingTableWarned = false;
+
   constructor(
     private readonly eventRepository: DomainEventRepository,
     private readonly pollIntervalMs = 5_000,
@@ -51,6 +60,8 @@ export class OutboxWorker {
 
   start(): void {
     if (this.intervalId) return;
+    // Resetear el flag al (re)arrancar para que se pueda detectar de nuevo
+    this.missingTableWarned = false;
     this.intervalId = setInterval(() => void this.poll(), this.pollIntervalMs);
     console.log(`[OutboxWorker] Iniciado — polling cada ${this.pollIntervalMs}ms`);
   }
@@ -92,10 +103,39 @@ export class OutboxWorker {
         await this.dispatch(event);
       }
     } catch (err) {
-      console.error('[OutboxWorker] Error leyendo domain_events:', err);
+      this.handlePollError(err);
     } finally {
       this.polling = false;
     }
+  }
+
+  /**
+   * Maneja errores del ciclo de polling.
+   *
+   * - Si la tabla domain_events no existe (42P01), emite un aviso único y
+   *   detiene el worker para no llenar los logs. El deploy debería correr
+   *   las migraciones y luego llamar a worker.start() de nuevo.
+   * - Para cualquier otro error, loguea normalmente (se reintenta al siguiente ciclo).
+   */
+  private handlePollError(err: unknown): void {
+    const pgCode = (err as any)?.code;
+
+    if (pgCode === '42P01') {
+      // relation does not exist — tabla todavía no creada en la BD
+      if (!this.missingTableWarned) {
+        this.missingTableWarned = true;
+        console.warn(
+          '[OutboxWorker] ⚠️  La tabla domain_events no existe en la BD central.\n' +
+          '               Ejecutá src/db/platform.schema.sql en PLATFORM_DATABASE_URL.\n' +
+          '               El worker queda en pausa hasta que se llame a worker.start() de nuevo.',
+        );
+        // Detener polling para no llenar los logs
+        void this.stop();
+      }
+      return;
+    }
+
+    console.error('[OutboxWorker] Error leyendo domain_events:', err);
   }
 
   private async dispatch(event: DomainEvent): Promise<void> {
