@@ -1,25 +1,10 @@
-import { UserRole } from '../types/enums.js';
-import { SqlClient } from '../repositories/sql.client.js';
-
-declare global {
-  namespace Express {
-    interface Request {
-      user?: {
-        id: string;
-        role: UserRole;
-        /** ID del negocio (multi-tenant). Presente en tokens de empleados. */
-        businessId?: string;
-        /** ID del cliente (portal de clientes). Presente en tokens CUSTOMER. */
-        customerId?: string;
-      };
-      /**
-       * Conexión a la BD del tenant autenticado.
-       * Inyectada por tenantMiddleware() después de authenticate().
-       * Solo presente en rutas de empleados — no disponible en el portal de clientes.
-       */
-      db?: SqlClient;
-    }
-  }
-}
+/**
+ * @file express.d.ts  (src/security) — ELIMINADO
+ * @description Este archivo fue consolidado en src/types/express.d.ts (fix M8).
+ *
+ * Mantener este archivo vacío (solo export {}) evita errores de import
+ * en archivos que aún lo referencian. Una vez que todos los imports
+ * apunten a src/types/express.d.ts, este archivo puede borrarse.
+ */
 
 export {};

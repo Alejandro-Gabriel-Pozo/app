@@ -1,52 +1,17 @@
 /**
- * @file jwt.service.ts
- * @description Wrapper de clase sobre las funciones `signToken` / `verifyToken`
- * de `auth.middleware.ts`.
+ * @file jwt.service.ts — DEPRECADO (fix C6)
+ * @description Este archivo ya no tiene consumidores activos.
  *
- * Existe para que `platform.auth.service.ts` (y cualquier servicio que
- * necesite emitir tokens sin depender directamente del middleware de Express)
- * pueda instanciar un objeto `JwtService` con una interfaz orientada a objetos.
+ * platform.auth.service.ts fue modificado para firmar tokens de plataforma
+ * usando signPlatformToken() de platform.auth.middleware.ts, que utiliza
+ * PLATFORM_JWT_SECRET en lugar de JWT_SECRET.
  *
- * La implementación real sigue viviendo en `auth.middleware.ts` — este archivo
- * solo expone esa lógica como una clase inyectable.
+ * Este archivo puede eliminarse del proyecto una vez confirmado que
+ * ningún import lo referencia (ver hallazgo C6 del code review).
+ *
+ * @deprecated Usar signPlatformToken / verifyPlatformToken para tokens
+ * de plataforma, y signToken / verifyToken de auth.middleware.ts para
+ * tokens de empleados y clientes.
  */
 
-import { signToken, verifyToken, JwtPayload } from './auth.middleware.js';
-
-export type { JwtPayload };
-
-export class JwtService {
-  /**
-   * Firma un nuevo JWT.
-   *
-   * @param payload    - Claims adicionales (sin iat/exp — se agregan aquí)
-   * @param subject    - Valor del claim `sub`
-   * @param expiresIn  - TTL en segundos (default 86 400 = 24 h)
-   * @returns JWT firmado con HS256
-   */
-  async sign(
-    payload: Record<string, unknown>,
-    subject: string,
-    expiresIn = 86_400,
-  ): Promise<string> {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) throw new Error('[JwtService] JWT_SECRET no está definida.');
-
-    return signToken(
-      { sub: subject, ...payload } as Omit<JwtPayload, 'iat' | 'exp'>,
-      secret,
-      expiresIn,
-    );
-  }
-
-  /**
-   * Verifica y decodifica un JWT.
-   *
-   * @throws Error con code JWT_EXPIRED | JWT_INVALID_SIGNATURE | JWT_MALFORMED
-   */
-  verify(token: string): JwtPayload {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) throw new Error('[JwtService] JWT_SECRET no está definida.');
-    return verifyToken(token, secret);
-  }
-}
+export {};
