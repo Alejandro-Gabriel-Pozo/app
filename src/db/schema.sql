@@ -4,7 +4,7 @@
 -- Aplicado en cada BD nueva al provisionar un negocio (runSchemaOnNewDatabase).
 -- Idempotente: usa IF NOT EXISTS / ADD COLUMN IF NOT EXISTS.
 -- Compatible con PostgreSQL 14+.
--- Sincronizado con migraciones 001 → 006.
+-- Sincronizado con migraciones 001 → 007.
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -77,7 +77,7 @@ DO $$ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- bookable_services  (servicios ofrecidos sobre un recurso)
+-- bookable_services
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bookable_services (
   id               VARCHAR(255)   PRIMARY KEY,
@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_bookable_services_category
   ON bookable_services (category_id) WHERE active = TRUE;
 
 -- ---------------------------------------------------------------------------
--- service_schedules  (turnos fijos para booking_mode = 'event')
+-- service_schedules
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS service_schedules (
   id            VARCHAR(255)  PRIMARY KEY,
@@ -111,11 +111,10 @@ CREATE TABLE IF NOT EXISTS service_schedules (
 );
 
 -- ---------------------------------------------------------------------------
--- customers  (huéspedes / clientes finales — separados de staff)
+-- customers
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS customers (
   id            VARCHAR(255)  PRIMARY KEY,
-  -- display_name reemplaza full_name como campo canónico (migración 005)
   full_name     VARCHAR(255),
   display_name  VARCHAR(255)  NOT NULL,
   email         VARCHAR(255)  UNIQUE,
@@ -139,7 +138,7 @@ DO $$ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- customer_contact_methods  (email, teléfono, WhatsApp — múltiples canales)
+-- customer_contact_methods
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS customer_contact_methods (
   id          VARCHAR(255) PRIMARY KEY,
@@ -188,12 +187,11 @@ CREATE TABLE IF NOT EXISTS customer_tax_profiles (
 );
 
 -- ---------------------------------------------------------------------------
--- tags  (etiquetas por negocio para clientes)
+-- tags
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tags (
-  id          VARCHAR(255) PRIMARY KEY,
-  name        VARCHAR(100) NOT NULL,
-  UNIQUE (name)
+  id   VARCHAR(255) PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS customer_tags (
@@ -242,14 +240,15 @@ END $$;
 -- BLOQUE 2 — STAFF / USUARIOS DEL PANEL
 -- ===========================================================================
 
+-- Roles alineados con UserRole enum: ADMIN, RECEPTIONIST, WAITER
 CREATE TABLE IF NOT EXISTS users (
   id            VARCHAR(255)  PRIMARY KEY,
   business_id   VARCHAR(255)  NOT NULL,
   full_name     VARCHAR(255)  NOT NULL,
   email         VARCHAR(255)  NOT NULL,
   password_hash TEXT          NOT NULL,
-  role          VARCHAR(50)   NOT NULL DEFAULT 'STAFF'
-                  CHECK (role IN ('OWNER', 'ADMIN', 'STAFF')),
+  role          VARCHAR(50)   NOT NULL DEFAULT 'RECEPTIONIST'
+                  CHECK (role IN ('ADMIN', 'RECEPTIONIST', 'WAITER')),
   active        BOOLEAN       NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
@@ -429,11 +428,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by    ON stock_movements 
 -- BLOQUE 6 — INFRAESTRUCTURA / ANALYTICS
 -- ===========================================================================
 
--- ---------------------------------------------------------------------------
--- domain_events  (outbox pattern)
--- Nota: en la BD del tenant NO referencia businesses(id) — el tenant ya ES
--- un negocio. business_id se guarda como string opaco para correlación.
--- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS domain_events (
   id              BIGSERIAL     PRIMARY KEY,
   business_id     VARCHAR(255)  NOT NULL,
@@ -448,9 +442,6 @@ CREATE TABLE IF NOT EXISTS domain_events (
 CREATE INDEX IF NOT EXISTS idx_domain_events_pending
   ON domain_events (id) WHERE dispatched_at IS NULL;
 
--- ---------------------------------------------------------------------------
--- occupancy_records  (snapshot diario de ocupación por recurso)
--- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS occupancy_records (
   id             SERIAL        PRIMARY KEY,
   resource_id    VARCHAR(255)  NOT NULL,
@@ -471,11 +462,6 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_occupancy_date          ON occupancy_records (date);
 CREATE INDEX IF NOT EXISTS idx_occupancy_resource_date ON occupancy_records (resource_id, date);
 
--- ---------------------------------------------------------------------------
--- financial_transactions  (ledger inmutable)
--- Alineado con migración 004: amount DECIMAL(12,2), status incluye 'FAILED',
--- currency VARCHAR(3), idempotency_key VARCHAR(512).
--- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS financial_transactions (
   id               VARCHAR(255)    PRIMARY KEY,
   business_id      VARCHAR(255)    NOT NULL,
