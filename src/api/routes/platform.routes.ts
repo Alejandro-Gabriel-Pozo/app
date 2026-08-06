@@ -8,22 +8,13 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PlatformContainer } from '../../../src/platform/platform.container.js';
 import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
-import {
-  authenticatePlatform,
-} from '../../security/platform.auth.middleware.js';
+import { authenticatePlatform } from '../../security/platform.auth.middleware.js';
 import {
   provisionBusinessDatabase,
+  runSchemaOnNewDatabase,
   encryptConnectionString,
+  loadTenantSchema,
 } from '../../platform/supabase.provisioner.js';
-import { readFile } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -48,25 +39,16 @@ const UpdateBusinessStatusSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
-// ---------------------------------------------------------------------------
-// Helper: normaliza query params string | string[] -> string | undefined
-// ---------------------------------------------------------------------------
-
 function firstString(val: unknown): string | undefined {
   if (val === undefined || val === null) return undefined;
   if (Array.isArray(val)) return String(val[0]);
   return String(val);
 }
 
-// ---------------------------------------------------------------------------
-// Factory del router
-// ---------------------------------------------------------------------------
-
 export function createPlatformRouter(container: PlatformContainer): Router {
   const router = Router();
   const { platformRepository, platformAuthService } = container;
 
-  // POST /platform/login — público
   router.post(
     '/login',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -91,7 +73,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
   router.use(authenticatePlatform());
 
-  // GET /platform/stats
   router.get(
     '/stats',
     async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -113,13 +94,10 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           byStatus,
           generatedAt: new Date().toISOString(),
         });
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
-  // GET /platform/businesses
   router.get(
     '/businesses',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -130,13 +108,10 @@ export function createPlatformRouter(container: PlatformContainer): Router {
         if (status) businesses = businesses.filter((b) => b.status === status);
         if (plan)   businesses = businesses.filter((b) => b.plan   === plan);
         res.json({ businesses: businesses.map(toBusinessDto), total: businesses.length });
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
-  // POST /platform/businesses
   router.post(
     '/businesses',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -152,11 +127,7 @@ export function createPlatformRouter(container: PlatformContainer): Router {
         }
         const businessId = randomUUID();
         const business   = await platformRepository.createBusiness({
-          id:         businessId,
-          name:       body.name,
-          slug:       body.slug,
-          plan:       body.plan,
-          ownerEmail: body.ownerEmail,
+          id: businessId, name: body.name, slug: body.slug, plan: body.plan, ownerEmail: body.ownerEmail,
         });
         provisionInBackground(businessId, body.name, platformRepository).catch((err) => {
           console.error(`[platform] Error provisionando negocio ${businessId}:`, err);
@@ -165,13 +136,10 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           message: 'Negocio registrado. Provisionando base de datos en segundo plano (hasta 5 min).',
           business: toBusinessDto(business),
         });
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
-  // GET /platform/businesses/:id
   router.get(
     '/businesses/:id',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -182,13 +150,10 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           return;
         }
         res.json(toBusinessDto(business));
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
-  // PATCH /platform/businesses/:id/status
   router.patch(
     '/businesses/:id/status',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -200,17 +165,11 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           return;
         }
         if (business.status === BusinessStatus.CANCELLED) {
-          res.status(400).json({
-            code: 'INVALID_TRANSITION',
-            message: 'Un negocio cancelado no puede cambiar de estado.',
-          });
+          res.status(400).json({ code: 'INVALID_TRANSITION', message: 'Un negocio cancelado no puede cambiar de estado.' });
           return;
         }
         if (business.status === body.status) {
-          res.status(400).json({
-            code: 'SAME_STATUS',
-            message: `El negocio ya está en estado ${body.status}.`,
-          });
+          res.status(400).json({ code: 'SAME_STATUS', message: `El negocio ya está en estado ${body.status}.` });
           return;
         }
         await platformRepository.updateBusinessStatus(business.id, body.status as BusinessStatus);
@@ -219,18 +178,12 @@ export function createPlatformRouter(container: PlatformContainer): Router {
         }
         const updated = await platformRepository.findById(business.id);
         res.json({ message: `Estado actualizado a ${body.status}`, business: updated ? toBusinessDto(updated) : null });
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
   return router;
 }
-
-// ---------------------------------------------------------------------------
-// Provisioning en background
-// ---------------------------------------------------------------------------
 
 async function provisionInBackground(
   businessId: string,
@@ -239,29 +192,17 @@ async function provisionInBackground(
 ): Promise<void> {
   console.log(`[platform] Iniciando provisioning para negocio ${businessId}...`);
   const provisioned = await provisionBusinessDatabase(businessId, businessName);
-  const schemaPath = resolve(__dirname, '../../db/schema.sql');
-  const schemaSQL  = await readFile(schemaPath, 'utf-8');
-  const { runSchemaOnNewDatabase } = await import('../../platform/supabase.provisioner.js');
+  const schemaSQL   = await loadTenantSchema();
   await runSchemaOnNewDatabase(provisioned.connectionString, schemaSQL);
   const encrypted = await encryptConnectionString(provisioned.connectionString);
   await platformRepository.activateBusiness(businessId, provisioned.projectId, encrypted);
   console.log(`[platform] ✅ Negocio ${businessId} provisionado y activo.`);
 }
 
-// ---------------------------------------------------------------------------
-// DTO
-// ---------------------------------------------------------------------------
-
 function toBusinessDto(b: import('../../platform/platform.repository.js').Business) {
   return {
-    id:                b.id,
-    name:              b.name,
-    slug:              b.slug,
-    plan:              b.plan,
-    status:            b.status,
-    ownerEmail:        b.ownerEmail,
-    supabaseProjectId: b.supabaseProjectId,
-    createdAt:         b.createdAt,
-    updatedAt:         b.updatedAt,
+    id: b.id, name: b.name, slug: b.slug, plan: b.plan, status: b.status,
+    ownerEmail: b.ownerEmail, supabaseProjectId: b.supabaseProjectId,
+    createdAt: b.createdAt, updatedAt: b.updatedAt,
   };
 }
