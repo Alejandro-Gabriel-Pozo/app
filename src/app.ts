@@ -14,7 +14,8 @@
  *    ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
  *       necesita correr cuando la BD del tenant todavía no está activa.
  * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
- * 10. /api/resources, /reservations, /reports, /customers, /users, /categories, /products, /orders
+ * 10. /api/resources, /reservations, /reports, /customers, /users,
+ *     /categories, /products, /orders, /bookable-services
  * 11. errorHandler
  */
 
@@ -23,28 +24,29 @@ import cors    from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import http from 'node:http';
 
-import { createResourcesRouter }    from './api/routes/resources.routes.js';
-import { createReservationsRouter } from './api/routes/reservations.routes.js';
-import { createReportsRouter }      from './api/routes/reports.routes.js';
-import { createAuthRouter }         from './api/routes/auth.routes.js';
-import { createBusinessRouter }     from './api/routes/business.routes.js';
-import { createCustomerRouter }     from './api/routes/customer.routes.js';
-import { createCustomersRouter }    from './api/routes/customers.routes.js';
-import { createCategoryRouter }     from './api/routes/categories.routes.js';
-import { createUsersRouter }        from './api/routes/users.routes.js';
-import { createPlatformRouter }     from './api/routes/platform.routes.js';
-import { createAdminRouter }        from './api/routes/admin.routes.js';
-import { createProductsRouter }     from './api/routes/products.routes.js';
-import { createOrdersRouter }       from './api/routes/orders.routes.js';
-import { errorHandler }             from './api/middleware/error.middleware.js';
-import { openApiSpec }              from './openapi/spec.js';
-import { authenticate }             from './security/auth.middleware.js';
-import { AuthService }              from './security/auth.service.js';
-import { PlatformRepository }       from './platform/platform.repository.js';
-import { createPlatformContainer }  from './platform/platform.container.js';
-import { tenantMiddleware }         from './platform/tenant.middleware.js';
+import { createResourcesRouter }         from './api/routes/resources.routes.js';
+import { createReservationsRouter }      from './api/routes/reservations.routes.js';
+import { createReportsRouter }           from './api/routes/reports.routes.js';
+import { createAuthRouter }              from './api/routes/auth.routes.js';
+import { createBusinessRouter }          from './api/routes/business.routes.js';
+import { createCustomerRouter }          from './api/routes/customer.routes.js';
+import { createCustomersRouter }         from './api/routes/customers.routes.js';
+import { createCategoryRouter }          from './api/routes/categories.routes.js';
+import { createUsersRouter }             from './api/routes/users.routes.js';
+import { createPlatformRouter }          from './api/routes/platform.routes.js';
+import { createAdminRouter }             from './api/routes/admin.routes.js';
+import { createProductsRouter }          from './api/routes/products.routes.js';
+import { createOrdersRouter }            from './api/routes/orders.routes.js';
+import { createBookableServicesRouter }  from './api/routes/bookable-services.routes.js';
+import { errorHandler }                  from './api/middleware/error.middleware.js';
+import { openApiSpec }                   from './openapi/spec.js';
+import { authenticate }                  from './security/auth.middleware.js';
+import { AuthService }                   from './security/auth.service.js';
+import { PlatformRepository }            from './platform/platform.repository.js';
+import { createPlatformContainer }       from './platform/platform.container.js';
+import { tenantMiddleware }              from './platform/tenant.middleware.js';
 import { createAppContainer, AppContainer, createPlatformPool } from './container.js';
-import { checkDatabaseHealth }      from './db/pg.client.js';
+import { checkDatabaseHealth }           from './db/pg.client.js';
 
 export async function createApp(): Promise<{
   app: express.Application;
@@ -133,14 +135,15 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   // Rutas protegidas de empleados — todas usan req.db (multi-tenant)
   // -------------------------------------------------------------------------
-  app.use('/api/resources',    createResourcesRouter(container));
-  app.use('/api/reservations', createReservationsRouter(container));
-  app.use('/api/reports',      createReportsRouter(container));
-  app.use('/api/customers',    createCustomersRouter(container));
-  app.use('/api/users',        createUsersRouter(platformRepo));
-  app.use('/api/categories',   createCategoryRouter(container));  // ahora recibe container
-  app.use('/api/products',     createProductsRouter(container));
-  app.use('/api/orders',       createOrdersRouter(container));
+  app.use('/api/resources',         createResourcesRouter(container));
+  app.use('/api/reservations',      createReservationsRouter(container));
+  app.use('/api/reports',           createReportsRouter(container));
+  app.use('/api/customers',         createCustomersRouter(container));
+  app.use('/api/users',             createUsersRouter(platformRepo));
+  app.use('/api/categories',        createCategoryRouter(container));
+  app.use('/api/products',          createProductsRouter(container));
+  app.use('/api/orders',            createOrdersRouter(container));
+  app.use('/api/bookable-services', createBookableServicesRouter(container));
 
   app.use(errorHandler);
 
