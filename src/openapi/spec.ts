@@ -29,11 +29,12 @@ export const openApiSpec = {
   security: [{ BearerAuth: [] }],
 
   tags: [
-    { name: 'Auth',         description: 'Autenticación y emisión de tokens' },
-    { name: 'Admin',        description: 'Mantenimiento puntual (solo ADMIN)' },
-    { name: 'Resources',    description: 'Recursos reservables (CRUD)' },
-    { name: 'Reservations', description: 'Gestión de reservas' },
-    { name: 'Reports',      description: 'Reportes de ocupación' },
+    { name: 'Auth',              description: 'Autenticación y emisión de tokens' },
+    { name: 'Admin',             description: 'Mantenimiento puntual (solo ADMIN)' },
+    { name: 'Resources',         description: 'Recursos reservables (CRUD)' },
+    { name: 'Reservations',      description: 'Gestión de reservas' },
+    { name: 'Reports',           description: 'Reportes de ocupación' },
+    { name: 'BookableServices',  description: 'Servicios agendables y sus horarios recurrentes' },
   ],
 
   paths: {
@@ -483,6 +484,277 @@ export const openApiSpec = {
         },
       },
     },
+
+    // -------------------------------------------------------------------------
+    // Bookable Services
+    // -------------------------------------------------------------------------
+    '/api/bookable-services': {
+      get: {
+        tags: ['BookableServices'],
+        summary: 'Listar servicios agendables',
+        description: 'Devuelve todos los servicios activos del tenant.',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Lista de servicios agendables',
+            content: {
+              'application/json': {
+                schema: { type: 'array', items: { $ref: '#/components/schemas/BookableService' } },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+      post: {
+        tags: ['BookableServices'],
+        summary: 'Crear servicio agendable',
+        description: 'Requiere rol **ADMIN**.',
+        security: [{ BearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CreateBookableService' },
+              examples: {
+                masaje: {
+                  summary: 'Masaje (slot de 60 min)',
+                  value: {
+                    categoryId: 'cat-spa-01',
+                    name: 'Masaje Relajante',
+                    description: 'Masaje de cuerpo completo con aceites esenciales',
+                    bookingMode: 'slot',
+                    durationMinutes: 60,
+                    price: 4500,
+                  },
+                },
+                retiro: {
+                  summary: 'Retiro de yoga (evento sin duración fija)',
+                  value: {
+                    categoryId: 'cat-wellness-01',
+                    name: 'Retiro de Yoga',
+                    bookingMode: 'event',
+                    durationMinutes: null,
+                    price: 2000,
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Servicio creado',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/BookableService' } },
+            },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+        },
+      },
+    },
+
+    '/api/bookable-services/{id}': {
+      get: {
+        tags: ['BookableServices'],
+        summary: 'Obtener servicio por ID',
+        description: 'Incluye los horarios (`schedules`) del servicio.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: 'Servicio con schedules inline',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/BookableServiceWithSchedules' } },
+            },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+      put: {
+        tags: ['BookableServices'],
+        summary: 'Actualizar servicio agendable',
+        description: 'Actualización parcial. Requiere rol **ADMIN**.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/UpdateBookableService' },
+              example: { name: 'Masaje Relajante Premium', price: 5500, active: true },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Servicio actualizado',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/BookableService' } },
+            },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+      delete: {
+        tags: ['BookableServices'],
+        summary: 'Desactivar servicio agendable',
+        description: 'Soft-delete (marca `active = false`). Requiere rol **ADMIN**.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '204': { description: 'Servicio desactivado (sin contenido)' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
+
+    '/api/bookable-services/{id}/schedules': {
+      get: {
+        tags: ['BookableServices'],
+        summary: 'Listar horarios del servicio',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'ID del servicio' },
+        ],
+        responses: {
+          '200': {
+            description: 'Horarios activos del servicio',
+            content: {
+              'application/json': {
+                schema: { type: 'array', items: { $ref: '#/components/schemas/ServiceSchedule' } },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+      post: {
+        tags: ['BookableServices'],
+        summary: 'Agregar horario al servicio',
+        description: 'Requiere rol **ADMIN**. Devuelve `409` si ya existe el mismo día+hora.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'ID del servicio' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CreateServiceSchedule' },
+              examples: {
+                lunes: {
+                  summary: 'Lunes a las 10:00, cap. 4',
+                  value: { dayOfWeek: 0, startTime: '10:00', maxCapacity: 4 },
+                },
+                sabado: {
+                  summary: 'Sábado a las 15:30, cap. 2',
+                  value: { dayOfWeek: 5, startTime: '15:30', maxCapacity: 2 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Horario creado',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ServiceSchedule' } },
+            },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': {
+            description: 'Ya existe un horario activo para ese día y hora',
+            content: {
+              'application/json': {
+                example: { code: 'SCHEDULE_CONFLICT', message: 'Ya existe un schedule activo para día 0 a las 10:00.' },
+              },
+            },
+          },
+        },
+      },
+    },
+
+    '/api/bookable-services/{id}/schedules/{scheduleId}': {
+      put: {
+        tags: ['BookableServices'],
+        summary: 'Actualizar horario',
+        description: 'Actualización parcial del horario. Requiere rol **ADMIN**.\n\nUsá `{ "active": false }` para desactivar sin borrar.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id',         in: 'path', required: true, schema: { type: 'string' }, description: 'ID del servicio' },
+          { name: 'scheduleId', in: 'path', required: true, schema: { type: 'string' }, description: 'ID del horario' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/UpdateServiceSchedule' },
+              examples: {
+                cambiarCapacidad: {
+                  summary: 'Cambiar capacidad máxima',
+                  value: { maxCapacity: 6 },
+                },
+                desactivar: {
+                  summary: 'Desactivar el horario',
+                  value: { active: false },
+                },
+                moverHora: {
+                  summary: 'Mover a las 11:00',
+                  value: { startTime: '11:00' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Horario actualizado',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ServiceSchedule' } },
+            },
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+      delete: {
+        tags: ['BookableServices'],
+        summary: 'Eliminar horario',
+        description: 'Hard-delete del horario. Requiere rol **ADMIN**.',
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: 'id',         in: 'path', required: true, schema: { type: 'string' }, description: 'ID del servicio' },
+          { name: 'scheduleId', in: 'path', required: true, schema: { type: 'string' }, description: 'ID del horario' },
+        ],
+        responses: {
+          '204': { description: 'Horario eliminado (sin contenido)' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
   },
 
   components: {
@@ -629,6 +901,99 @@ export const openApiSpec = {
           startTime: { type: 'string', format: 'date-time', example: '2026-07-25T21:00:00.000Z' },
           endTime:   { type: 'string', format: 'date-time', example: '2026-07-25T23:00:00.000Z' },
           details:   { type: 'object', description: 'Datos adicionales opcionales (ej. número de comensales)', example: {} },
+        },
+      },
+
+      // ------------------------------------------------------------------
+      // BookableService schemas
+      // ------------------------------------------------------------------
+
+      BookableService: {
+        type: 'object',
+        properties: {
+          id:              { type: 'string', example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' },
+          categoryId:      { type: 'string', example: 'cat-spa-01' },
+          name:            { type: 'string', example: 'Masaje Relajante' },
+          description:     { type: 'string', nullable: true, example: 'Masaje de cuerpo completo' },
+          bookingMode:     { type: 'string', enum: ['slot', 'block', 'event'], example: 'slot' },
+          durationMinutes: { type: 'integer', nullable: true, example: 60 },
+          price:           { type: 'number', example: 4500 },
+          active:          { type: 'boolean', example: true },
+          createdAt:       { type: 'string', format: 'date-time' },
+          updatedAt:       { type: 'string', format: 'date-time' },
+        },
+      },
+
+      BookableServiceWithSchedules: {
+        allOf: [
+          { $ref: '#/components/schemas/BookableService' },
+          {
+            type: 'object',
+            properties: {
+              schedules: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/ServiceSchedule' },
+              },
+            },
+          },
+        ],
+      },
+
+      ServiceSchedule: {
+        type: 'object',
+        properties: {
+          id:          { type: 'string', example: 'sch-001' },
+          serviceId:   { type: 'string', example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' },
+          dayOfWeek:   { type: 'integer', minimum: 0, maximum: 6, description: '0 = lunes … 6 = domingo', example: 0 },
+          startTime:   { type: 'string', example: '10:00:00', description: 'Formato HH:MM o HH:MM:SS' },
+          maxCapacity: { type: 'integer', minimum: 1, example: 4 },
+          active:      { type: 'boolean', example: true },
+        },
+      },
+
+      CreateBookableService: {
+        type: 'object',
+        required: ['categoryId', 'name', 'bookingMode', 'price'],
+        properties: {
+          categoryId:      { type: 'string', example: 'cat-spa-01' },
+          name:            { type: 'string', maxLength: 255, example: 'Masaje Relajante' },
+          description:     { type: 'string', example: 'Masaje de cuerpo completo con aceites esenciales' },
+          bookingMode:     { type: 'string', enum: ['slot', 'block', 'event'], example: 'slot' },
+          durationMinutes: { type: 'integer', nullable: true, minimum: 1, example: 60, description: 'Nulo para eventos sin duración fija' },
+          price:           { type: 'number', minimum: 0, example: 4500 },
+        },
+      },
+
+      UpdateBookableService: {
+        type: 'object',
+        properties: {
+          categoryId:      { type: 'string' },
+          name:            { type: 'string', maxLength: 255 },
+          description:     { type: 'string' },
+          bookingMode:     { type: 'string', enum: ['slot', 'block', 'event'] },
+          durationMinutes: { type: 'integer', nullable: true, minimum: 1 },
+          price:           { type: 'number', minimum: 0 },
+          active:          { type: 'boolean' },
+        },
+      },
+
+      CreateServiceSchedule: {
+        type: 'object',
+        required: ['dayOfWeek', 'startTime', 'maxCapacity'],
+        properties: {
+          dayOfWeek:   { type: 'integer', minimum: 0, maximum: 6, description: '0 = lunes, 6 = domingo', example: 0 },
+          startTime:   { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$', example: '10:00', description: 'Formato HH:MM o HH:MM:SS' },
+          maxCapacity: { type: 'integer', minimum: 1, example: 4 },
+        },
+      },
+
+      UpdateServiceSchedule: {
+        type: 'object',
+        properties: {
+          dayOfWeek:   { type: 'integer', minimum: 0, maximum: 6 },
+          startTime:   { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$', description: 'Formato HH:MM o HH:MM:SS' },
+          maxCapacity: { type: 'integer', minimum: 1 },
+          active:      { type: 'boolean', description: 'false para desactivar sin borrar' },
         },
       },
     },
