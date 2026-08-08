@@ -34,13 +34,16 @@
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
+ *
+ * Si TEST_DATABASE_URL no está definida la suite completa se saltea
+ * (skipped) en lugar de fallar el pipeline.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
-import { createTestDatabase, dropTestDatabase } from './helpers/db.js';
+import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
 import { seedCategory, seedResource, seedCustomer, seedReservation } from './helpers/seed.js';
 
 import { SqlClient }                            from '../../repositories/sql.client.js';
@@ -66,14 +69,6 @@ let db: SqlClient;
 let pool: pg.Pool;
 let dbName: string;
 
-beforeAll(async () => {
-  ({ db, pool, dbName } = await createTestDatabase());
-}, 30_000);
-
-afterAll(async () => {
-  await dropTestDatabase(dbName, pool);
-});
-
 // ---------------------------------------------------------------------------
 // Helpers de fixture por test
 // ---------------------------------------------------------------------------
@@ -81,12 +76,12 @@ afterAll(async () => {
 const BUSINESS_ID = 'biz-test-001';
 
 async function buildService() {
-  const resourceRepo   = new SqlResourceRepository(db);
+  const resourceRepo    = new SqlResourceRepository(db);
   const reservationRepo = new SqlReservationRepository(db, resourceRepo);
-  const occupancyRepo  = new SqlOccupancyRepository(db);
-  const categoryRepo   = new SqlCategoryRepository(db);
+  const occupancyRepo   = new SqlOccupancyRepository(db);
+  const categoryRepo    = new SqlCategoryRepository(db);
   const domainEventRepo = new SqlDomainEventRepository(db);
-  const txManager      = new PostgresTransactionManager(pool);
+  const txManager       = new PostgresTransactionManager(pool);
 
   return new ReservationService(
     reservationRepo,
@@ -107,10 +102,18 @@ async function setupFixture() {
 }
 
 // ---------------------------------------------------------------------------
-// Suite
+// Suite — se saltea automáticamente si TEST_DATABASE_URL no está definida
 // ---------------------------------------------------------------------------
 
-describe('ReservationService — integración', () => {
+describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
+
+  beforeAll(async () => {
+    ({ db, pool, dbName } = await createTestDatabase());
+  }, 30_000);
+
+  afterAll(async () => {
+    await dropTestDatabase(dbName, pool);
+  });
 
   // ─── createReservation ─────────────────────────────────────────────────
 
