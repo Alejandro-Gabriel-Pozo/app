@@ -3,9 +3,15 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
+  // Archivos ignorados — no lintear la salida del compilador
   { ignores: ['dist/**', 'coverage/**', 'node_modules/**'] },
 
+  // Base JS recomendado
   js.configs.recommended,
+
+  // TypeScript recomendado (sin type-aware rules — no requiere tsconfig)
+  // Las reglas type-aware (no-unsafe-*) se agregan cuando el CI tenga
+  // un tsconfig dedicado para ESLint que incluya tests y todos los archivos.
   ...tseslint.configs.recommended,
 
   {
@@ -14,34 +20,30 @@ export default tseslint.config(
       // Reglas derivadas de bugs reales encontrados en code review
       // ----------------------------------------------------------------
 
-      // warn (no error): el codebase preexistente tiene 113 ocurrencias.
-      // Corregir con `npm run lint:fix` en una pasada dedicada.
-      // Cuando ese PR se mergee, subir esto a 'error'.
+      // Prohibe `any` explícito — obliga a tipar correctamente.
+      // Detecta: parámetros sin tipo, retornos `any` en repositorios.
+      '@typescript-eslint/no-explicit-any': 'error',
+
+      // Obliga a usar `import type` para imports de solo tipos.
+      // Detecta: imports de interfaz mezclados con imports de valor.
       '@typescript-eslint/consistent-type-imports': [
-        'warn',
+        'error',
         { prefer: 'type-imports', fixStyle: 'separate-type-imports' },
       ],
 
-      // Prohibe `any` explicito. Detecta retornos sin tipo en repositorios.
-      '@typescript-eslint/no-explicit-any': 'error',
-
       // Prohibe variables declaradas pero no usadas.
-      // Prefijo _ para ignorar intencionalmente: _myVar.
+      // Detecta: imports muertos después de refactors.
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
 
-      // Prohibe require() en modulos ESM.
-      '@typescript-eslint/no-require-imports': 'error',
+      // Prohibe promesas flotantes (sin await ni .catch).
+      // Detecta: errores async silenciosos en middleware.
+      '@typescript-eslint/no-floating-promises': 'off', // requiere type-aware — activar en próximo PR
 
-      // Desactivadas hasta que haya tsconfig dedicado para ESLint
-      // (type-aware rules requieren parserOptions.project).
-      // TODO: activar en PR siguiente con eslint.tsconfig.json.
-      '@typescript-eslint/no-floating-promises': 'off',
-      '@typescript-eslint/require-await': 'off',
-      '@typescript-eslint/no-unsafe-call': 'off',
-      '@typescript-eslint/no-unsafe-member-access': 'off',
+      // Requiere return consistente en funciones async.
+      '@typescript-eslint/require-await': 'off', // requiere type-aware — activar en próximo PR
     },
   },
 );
