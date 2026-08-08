@@ -1,203 +1,158 @@
 /**
  * @file reservations.routes.ts
- * @description Rutas de gestión de reservas con control de acceso por rol.
  *
- * ## GET / — Filtros + Paginación
- * Acepta: status, resourceId, customerId, from, to, page, limit.
- * Responde: { data, total, page, limit, totalPages }
- * getFiltered() y countFiltered() corren en paralelo (Promise.all).
+ * Permisos por endpoint:
  *
- * ## PATCH /:id
- * Modifica una reserva PENDING. Body: { startTime?, endTime?, details? }
- *
- * ## Nota: exactOptionalPropertyTypes
- * compact() (src/api/utils/compact.ts) elimina las claves con valor
- * undefined antes de pasar objetos a getFiltered / countFiltered /
- * updateReservation, satisfaciendo exactOptionalPropertyTypes: true.
+ * GET  /reservations          — FRONT_DESK (OWNER, ADMIN, RECEPTIONIST)
+ * GET  /reservations/:id      — FRONT_DESK
+ * POST /reservations          — BOOKING (+ CUSTOMER desde portal)
+ * PUT  /reservations/:id      — FRONT_DESK
+ * POST /reservations/:id/confirm   — FRONT_DESK
+ * POST /reservations/:id/cancel    — FRONT_DESK
+ * POST /reservations/:id/complete  — FRONT_DESK
  */
 
-import { Router, Request } from 'express';
-import { randomUUID } from 'node:crypto';
-import { AppContainer } from '../../container.js';
-import { Customer } from '../../domain/entities.js';
-import { ReservationNotFoundError } from '../../domain/errors.js';
-import { routeParam } from '../utils/params.js';
+import { Router } from 'express';
+import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { Roles } from '../../security/roles.js';
+import type { ReservationService } from '../../services/reservation.service.js';
+import type { AuthenticatedUser } from '../../security/user.types.js';
 import { UserRole } from '../../types/enums.js';
-import { toReservationDto } from '../mappers/reservation.mapper.js';
-import { authorize } from '../../security/auth.middleware.js';
-import {
-  CreateReservationSchema,
-  UpdateReservationSchema,
-  ReservationListQuerySchema,
-} from '../schemas/request.schemas.js';
-import { SqlResourceRepository }            from '../../repositories/sql.resource.repository.js';
-import { SqlReservationRepository }         from '../../repositories/sql.reservation.repository.js';
-import { SqlCustomerRepository }            from '../../repositories/sql.customer.repository.js';
-import { SqlOccupancyRepository }           from '../../repositories/sql.occupancy.repository.js';
-import { SqlCategoryRepository }            from '../../repositories/sql.category.repository.js';
-import { SqlDomainEventRepository }         from '../../repositories/sql.domain-event.repository.js';
-import { SqlFinancialTransactionRepository } from '../../repositories/sql.financial-transaction.repository.js';
-import { ReservationService }               from '../../services/reservation.service.js';
-import { compact } from '../utils/compact.js';
 
-const READERS    = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
-const MANAGERS   = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
-const COMPLETERS = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
-
-function buildService(req: Request, container: AppContainer) {
-  const db = req.db!;
-  const resourceRepo    = new SqlResourceRepository(db);
-  const reservationRepo = new SqlReservationRepository(db, resourceRepo);
-  const customerRepo    = new SqlCustomerRepository(db);
-  const occupancyRepo   = new SqlOccupancyRepository(db);
-  const categoryRepo    = new SqlCategoryRepository(db);
-  const domainEventRepo = new SqlDomainEventRepository(db);
-  const financialRepo   = new SqlFinancialTransactionRepository(db);
-  const reservationService = new ReservationService(
-    reservationRepo, resourceRepo, occupancyRepo, categoryRepo, domainEventRepo, container.transactionManager,
-  );
-  return { reservationService, reservationRepo, customerRepo, financialRepo };
-}
-
-export function createReservationsRouter(container: AppContainer): Router {
+export function createReservationsRouter(service: ReservationService): Router {
   const router = Router();
 
-  // GET / — lista paginada con filtros opcionales
-  router.get('/', authorize(READERS), async (req, res, next) => {
-    try {
-      const parsed = ReservationListQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        res.status(400).json({
-          code:   'VALIDATION_ERROR',
-          errors: parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })),
+  // ── GET /reservations ──────────────────────────────────────────────────────
+  router.get(
+    '/',
+    authenticate(),
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const reservations = await service.listReservations(businessId);
+        res.json(reservations);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /reservations/:id ──────────────────────────────────────────────────
+  router.get(
+    '/:id',
+    authenticate(),
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const reservation = await service.getReservationById(req.params.id!, businessId);
+        if (!reservation) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
+          return;
+        }
+        res.json(reservation);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── POST /reservations ─────────────────────────────────────────────────────
+  router.post(
+    '/',
+    authenticate(),
+    authorize(Roles.BOOKING),
+    async (req, res, next) => {
+      try {
+        const user = req.user as AuthenticatedUser;
+        const businessId = user.businessId!;
+
+        // Clientes externos usan su customer_id del JWT; staff usa el del body.
+        const customerId =
+          user.role === UserRole.CUSTOMER
+            ? user.customerId!
+            : req.body.customerId;
+
+        const reservation = await service.createReservation({
+          ...req.body,
+          customerId,
+          businessId,
         });
-        return;
+        res.status(201).json(reservation);
+      } catch (err) {
+        next(err);
       }
-      const { status, resourceId, customerId, from, to, page, limit } = parsed.data;
-      const { reservationRepo } = buildService(req, container);
+    },
+  );
 
-      const filters = compact({
-        ...(status     !== undefined && { status }),
-        ...(resourceId !== undefined && { resourceId }),
-        ...(customerId !== undefined && { customerId }),
-        ...(from       !== undefined && { from: new Date(from) }),
-        ...(to         !== undefined && { to:   new Date(to) }),
-      });
-
-      const [reservations, total] = await Promise.all([
-        reservationRepo.getFiltered({ ...filters, page, limit }),
-        reservationRepo.countFiltered(filters),
-      ]);
-      res.json({
-        data:       reservations.map(toReservationDto),
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      });
-    } catch (err) { next(err); }
-  });
-
-  // GET /:id
-  router.get('/:id', authorize(READERS), async (req, res, next) => {
-    try {
-      const id = routeParam(req.params.id);
-      const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.getReservation(id);
-      if (!reservation) throw new ReservationNotFoundError(id);
-      res.json(toReservationDto(reservation));
-    } catch (err) { next(err); }
-  });
-
-  // GET /:id/charges
-  router.get('/:id/charges', authorize(MANAGERS), async (req, res, next) => {
-    try {
-      const id = routeParam(req.params.id);
-      const { reservationService, financialRepo } = buildService(req, container);
-      const reservation = await reservationService.getReservation(id);
-      if (!reservation) throw new ReservationNotFoundError(id);
-      const charges = await financialRepo.getByReservationId(id);
-      res.json(charges.map((c) => ({
-        id: c.id, type: c.type, amount: c.amount, currency: c.currency,
-        status: c.status, reservationId: c.reservationId, customerId: c.customerId, createdAt: c.createdAt,
-      })));
-    } catch (err) { next(err); }
-  });
-
-  // POST /
-  router.post('/', authorize(MANAGERS), async (req, res, next) => {
-    try {
-      const body = CreateReservationSchema.parse(req.body);
-      const { reservationService, customerRepo } = buildService(req, container);
-      const existingCustomer = await customerRepo.getById(body.customer.id);
-      if (!existingCustomer) {
-        res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: `No existe un cliente con id "${body.customer.id}"` });
-        return;
+  // ── PUT /reservations/:id ──────────────────────────────────────────────────
+  router.put(
+    '/:id',
+    authenticate(),
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const updated = await service.updateReservation(
+          req.params.id!,
+          req.body,
+          businessId,
+        );
+        res.json(updated);
+      } catch (err) {
+        next(err);
       }
-      const reservation = await reservationService.createReservation({
-        id:         randomUUID(),
-        resourceId: body.resourceId,
-        customer:   new Customer(existingCustomer.id, existingCustomer.fullName, existingCustomer.email),
-        startTime:  new Date(body.startTime),
-        endTime:    new Date(body.endTime),
-        details:    body.details as Record<string, unknown>,
-      });
-      res.status(201).json(toReservationDto(reservation));
-    } catch (err) { next(err); }
-  });
+    },
+  );
 
-  // PATCH /:id
-  router.patch('/:id', authorize(MANAGERS), async (req, res, next) => {
-    try {
-      const id = routeParam(req.params.id);
-      const parsed = UpdateReservationSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({
-          code:   'VALIDATION_ERROR',
-          errors: parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })),
-        });
-        return;
+  // ── POST /reservations/:id/confirm ────────────────────────────────────────
+  router.post(
+    '/:id/confirm',
+    authenticate(),
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const reservation = await service.confirmReservation(req.params.id!, businessId);
+        res.json(reservation);
+      } catch (err) {
+        next(err);
       }
-      const { startTime, endTime, details } = parsed.data;
-      const { reservationService } = buildService(req, container);
+    },
+  );
 
-      const updatePayload = compact({
-        ...(startTime !== undefined && { startTime: new Date(startTime) }),
-        ...(endTime   !== undefined && { endTime:   new Date(endTime) }),
-        ...(details   !== undefined && { details:   details as Record<string, unknown> }),
-      });
+  // ── POST /reservations/:id/cancel ─────────────────────────────────────────
+  router.post(
+    '/:id/cancel',
+    authenticate(),
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const reservation = await service.cancelReservation(req.params.id!, businessId);
+        res.json(reservation);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
-      const reservation = await reservationService.updateReservation(id, updatePayload);
-      res.json(toReservationDto(reservation));
-    } catch (err) { next(err); }
-  });
-
-  // POST /:id/confirm
-  router.post('/:id/confirm', authorize(MANAGERS), async (req, res, next) => {
-    try {
-      const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.confirmReservation(routeParam(req.params.id), req.businessId!);
-      res.json(toReservationDto(reservation));
-    } catch (err) { next(err); }
-  });
-
-  // POST /:id/cancel
-  router.post('/:id/cancel', authorize(MANAGERS), async (req, res, next) => {
-    try {
-      const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.cancelReservation(routeParam(req.params.id), req.businessId!);
-      res.json(toReservationDto(reservation));
-    } catch (err) { next(err); }
-  });
-
-  // POST /:id/complete
-  router.post('/:id/complete', authorize(COMPLETERS), async (req, res, next) => {
-    try {
-      const { reservationService } = buildService(req, container);
-      const reservation = await reservationService.completeReservation(routeParam(req.params.id), req.businessId!);
-      res.json(toReservationDto(reservation));
-    } catch (err) { next(err); }
-  });
+  // ── POST /reservations/:id/complete ───────────────────────────────────────
+  router.post(
+    '/:id/complete',
+    authenticate(),
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const reservation = await service.completeReservation(req.params.id!, businessId);
+        res.json(reservation);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   return router;
 }
