@@ -1,0 +1,38 @@
+name: Lint Autofix
+
+# Runs eslint --fix on the codebase and commits the result.
+# Delete this workflow after the first successful run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run ESLint autofix
+        run: npx eslint src --ext .ts --fix || true
+
+      - name: Commit fixed files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "fix: apply eslint --fix (consistent-type-imports)"
+          git push
