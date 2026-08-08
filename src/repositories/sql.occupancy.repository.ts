@@ -7,6 +7,27 @@ import {
 import { SqlClient } from './sql.client.js';
 
 /**
+ * Fila raw devuelta por PostgreSQL para las queries de ocupación.
+ * Elimina la necesidad de `as any[]` en los mapeos de rows.
+ */
+interface OccupancyRow {
+  resourceId: string;
+  resourceName: string;
+  date: string | Date;
+  totalMinutes: number;
+  bookedMinutes: number;
+}
+
+/**
+ * Fila raw devuelta por PostgreSQL para las queries de estadísticas.
+ */
+interface OccupancyStatsRow {
+  resourceId: string;
+  resourceName: string;
+  occupancyRate: string | number;
+}
+
+/**
  * Implementación SQL del repositorio de ocupación.
  * Funciona con PostgreSQL, MySQL, etc.
  *
@@ -95,11 +116,11 @@ export class SqlOccupancyRepository implements OccupancyRepository {
 
     let sql = `
       SELECT 
-        resource_id as resourceId,
-        resource_name as resourceName,
+        resource_id as "resourceId",
+        resource_name as "resourceName",
         date,
-        total_minutes as totalMinutes,
-        booked_minutes as bookedMinutes
+        total_minutes as "totalMinutes",
+        booked_minutes as "bookedMinutes"
       FROM occupancy_records
       WHERE date >= $1 AND date < $2
     `;
@@ -113,9 +134,9 @@ export class SqlOccupancyRepository implements OccupancyRepository {
 
     sql += ` ORDER BY date DESC, resource_id ASC`;
 
-    const result = await this.sqlClient.query(sql, params);
+    const result = await this.sqlClient.query<OccupancyRow>(sql, params);
 
-    return (result.rows as any[]).map((row) => ({
+    return result.rows.map((row) => ({
       resourceId: row.resourceId,
       resourceName: row.resourceName,
       date: new Date(row.date),
@@ -133,25 +154,25 @@ export class SqlOccupancyRepository implements OccupancyRepository {
 
     const sql = `
       SELECT 
-        resource_id as resourceId,
-        resource_name as resourceName,
+        resource_id as "resourceId",
+        resource_name as "resourceName",
         ROUND(
           100.0 * SUM(booked_minutes) / SUM(total_minutes),
           2
-        ) as occupancyRate
+        ) as "occupancyRate"
       FROM occupancy_records
       WHERE date >= $1 AND date < $2
       GROUP BY resource_id, resource_name
-      ORDER BY occupancyRate DESC
+      ORDER BY "occupancyRate" DESC
     `;
 
-    const result = await this.sqlClient.query(sql, [startStr, endStr]);
+    const result = await this.sqlClient.query<OccupancyStatsRow>(sql, [startStr, endStr]);
 
-    return (result.rows as any[]).map((row) => ({
+    return result.rows.map((row) => ({
       resourceId: row.resourceId,
       resourceName: row.resourceName,
       date: '',
-      occupancyRate: parseFloat(row.occupancyRate) || 0,
+      occupancyRate: parseFloat(String(row.occupancyRate)) || 0,
     }));
   }
 
@@ -165,30 +186,30 @@ export class SqlOccupancyRepository implements OccupancyRepository {
 
     const sql = `
       SELECT 
-        resource_id as resourceId,
-        resource_name as resourceName,
+        resource_id as "resourceId",
+        resource_name as "resourceName",
         ROUND(
           100.0 * SUM(booked_minutes) / SUM(total_minutes),
           2
-        ) as occupancyRate
+        ) as "occupancyRate"
       FROM occupancy_records
       WHERE date >= $1 AND date < $2
       GROUP BY resource_id, resource_name
-      ORDER BY occupancyRate DESC
+      ORDER BY "occupancyRate" DESC
       LIMIT $3
     `;
 
-    const result = await this.sqlClient.query(sql, [
+    const result = await this.sqlClient.query<OccupancyStatsRow>(sql, [
       startStr,
       endStr,
       limit,
     ]);
 
-    return (result.rows as any[]).map((row) => ({
+    return result.rows.map((row) => ({
       resourceId: row.resourceId,
       resourceName: row.resourceName,
       date: '',
-      occupancyRate: parseFloat(row.occupancyRate) || 0,
+      occupancyRate: parseFloat(String(row.occupancyRate)) || 0,
     }));
   }
 
@@ -206,18 +227,18 @@ export class SqlOccupancyRepository implements OccupancyRepository {
   async getAllSnapshots(): Promise<OccupancySnapshot[]> {
     const sql = `
       SELECT 
-        resource_id as resourceId,
-        resource_name as resourceName,
+        resource_id as "resourceId",
+        resource_name as "resourceName",
         date,
-        total_minutes as totalMinutes,
-        booked_minutes as bookedMinutes
+        total_minutes as "totalMinutes",
+        booked_minutes as "bookedMinutes"
       FROM occupancy_records
       ORDER BY date DESC, resource_id ASC
     `;
 
-    const result = await this.sqlClient.query(sql);
+    const result = await this.sqlClient.query<OccupancyRow>(sql);
 
-    return (result.rows as any[]).map((row) => ({
+    return result.rows.map((row) => ({
       resourceId: row.resourceId,
       resourceName: row.resourceName,
       date: new Date(row.date),

@@ -55,6 +55,7 @@ import { SqlStayRepository }             from './repositories/stay.repository.js
 import { HousekeepingService }           from './services/housekeeping.service.js';
 import { StayService }                   from './services/stay.service.js';
 import { SqlReservationRepository }      from './repositories/sql.reservation.repository.js';
+import type { Request, Response, NextFunction } from 'express';
 
 export async function createApp(): Promise<{
   app: express.Application;
@@ -133,20 +134,18 @@ export async function createApp(): Promise<{
   app.use('/api/bookable-services', createBookableServicesRouter(container));
 
   // Fase 2 — Housekeeping
-  app.use('/api/housekeeping', (req, _res, next) => {
-    const db = (req as any).db;
-    const housekeepingRepo = new SqlHousekeepingRepository(db);
+  app.use('/api/housekeeping', (req: Request, _res: Response, next: NextFunction) => {
+    const housekeepingRepo = new SqlHousekeepingRepository(req.db);
     const housekeepingService = new HousekeepingService(housekeepingRepo);
     const router = createHousekeepingRouter(housekeepingService);
     router(req, _res, next);
   });
 
   // Fase 2 — Check-in / Check-out
-  app.use('/api/stays', (req, _res, next) => {
-    const db = (req as any).db;
-    const stayRepo         = new SqlStayRepository(db);
-    const reservationRepo  = new SqlReservationRepository(db);
-    const housekeepingRepo = new SqlHousekeepingRepository(db);
+  app.use('/api/stays', (req: Request, _res: Response, next: NextFunction) => {
+    const stayRepo         = new SqlStayRepository(req.db);
+    const reservationRepo  = new SqlReservationRepository(req.db);
+    const housekeepingRepo = new SqlHousekeepingRepository(req.db);
     const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
     const router = createStaysRouter(stayService);
     router(req, _res, next);
