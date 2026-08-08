@@ -18,6 +18,13 @@
  * buildXxxService(req) que reciben req.db (SqlClient del tenant
  * inyectado por tenantMiddleware). Ver reservations.routes.ts y
  * products.routes.ts como referencia del patrón.
+ *
+ * ## fix/code-review-bugs
+ * - ssl: rejectUnauthorized cambiado de false → true en producción.
+ *   rejectUnauthorized: false deshabilitaba la verificación del certificado
+ *   SSL, exponiendo la conexión a ataques MITM en proveedores como Render o
+ *   Neon que emiten certificados válidos. Si se necesita un cert autofirmado
+ *   usar la variable SSL_CERT con el CA bundle correspondiente.
  */
 
 import { TransactionManager }            from './db/transaction-manager.js';
@@ -57,7 +64,10 @@ export function createPlatformPool(): SqlClient {
     _platformPool = new Pool({
       connectionString: url,
       max: 5,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+      // rejectUnauthorized: true verifica el certificado SSL del servidor.
+      // Proveedores como Render y Neon emiten certs válidos — no deshabilitar.
+      // Si usás un cert autofirmado, pasá el CA via SSL_CERT env var.
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
     });
     _platformPool.on('error', (err) => {
       console.error('[platform] Error en pool central:', err.message);
