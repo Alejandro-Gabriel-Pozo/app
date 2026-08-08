@@ -30,6 +30,12 @@ interface ReservationRow {
  * getFiltered() aplica LIMIT/OFFSET cuando page+limit están presentes.
  * countFiltered() corre SELECT COUNT(*) con los mismos filtros (sin paginar)
  * para poder construir el envelope paginado { data, total, page, limit, totalPages }.
+ *
+ * ## getActiveForResourceInRangeWithLock()
+ * Igual que getActiveForResourceInRange pero añade FOR UPDATE al final
+ * de la query. Debe llamarse dentro de una transacción activa.
+ * Bloquea las filas solapadas hasta COMMIT, serializando las escrituras
+ * concurrentes al mismo slot de recurso.
  */
 export class SqlReservationRepository implements ReservationRepository {
   constructor(
@@ -129,6 +135,11 @@ export class SqlReservationRepository implements ReservationRepository {
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
+  /**
+   * Reservas PENDING + CONFIRMED que solapan el rango.
+   * Usado en contextos de solo lectura (checkAvailability, GET /availability).
+   * NO emite lock — no usar para chequeos que preceden a un INSERT/UPDATE.
+   */
   async getActiveForResourceInRange(
     resourceId: string,
     startDate: Date,
@@ -142,6 +153,42 @@ export class SqlReservationRepository implements ReservationRepository {
          AND r.start_time < $3
          AND r.end_time   > $2
        ORDER BY r.start_time ASC`,
+      [resourceId, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
+    );
+    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  /**
+   * Igual que getActiveForResourceInRange pero añade FOR UPDATE.
+   *
+   * FOR UPDATE bloquea las filas que solapan el rango hasta que la
+   * transacción actual haga COMMIT o ROLLBACK. Cualquier otra transacción
+   * que quiera leer o escribir esas filas (o insertar una nueva que las
+   * solape) debe esperar, serializando la verificación de disponibilidad
+   * más el INSERT que sigue.
+   *
+   * @param client    - SqlClient dentro de la transacción activa (de transactionManager.run).
+   * @param resourceId
+   * @param startDate
+   * @param endDate
+   */
+  async getActiveForResourceInRangeWithLock(
+    client: SqlClient,
+    resourceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Reservation[]> {
+    const blockingStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    // baseSelect() usa `this.sqlClient` internamente para rowToReservation,
+    // pero la QUERY de disponibilidad se emite sobre `client` (transaccional).
+    const result = await client.query<ReservationRow>(
+      `${this.baseSelect()}
+       WHERE r.resource_id = $1
+         AND r.status = ANY($4)
+         AND r.start_time < $3
+         AND r.end_time   > $2
+       ORDER BY r.start_time ASC
+       FOR UPDATE`,
       [resourceId, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));

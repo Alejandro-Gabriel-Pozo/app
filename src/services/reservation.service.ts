@@ -15,6 +15,14 @@
  *   completeReservation). El servicio NO lee process.env.BUSINESS_ID.
  * - `cancelReservation` corre dentro de una transacción y emite
  *   `reservation.cancelled` atómicamente con el cambio de estado.
+ *
+ * ## Cambios — fix/reservation-select-for-update
+ * - `createReservation` y `updateReservation` ahora corren dentro de
+ *   `transactionManager.run()`. Dentro de la transacción se llama a
+ *   `getActiveForResourceInRangeWithLock()` (SELECT ... FOR UPDATE)
+ *   para serializar el chequeo de disponibilidad + INSERT/UPSERT.
+ *   Si el repositorio no implementa el método (mocks en tests), se hace
+ *   fallback a `getActiveForResourceInRange()` sin lock.
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -61,35 +69,50 @@ export class ReservationService {
       validateDetailsAgainstFields(params.details, category.fields);
     }
 
-    const activeReservations =
-      await this.reservationRepository.getActiveForResourceInRange(
-        params.resourceId,
+    let reservation!: Reservation;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      // SELECT ... FOR UPDATE: bloquea las filas solapadas hasta COMMIT.
+      // Si otro request concurrent llegó primero y ya insertó, este
+      // verifica contra el dato commiteado — no contra el snapshot previo.
+      const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
+        ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
+            client,
+            params.resourceId,
+            params.startTime,
+            params.endTime,
+          )
+        : await this.reservationRepository.getActiveForResourceInRange(
+            params.resourceId,
+            params.startTime,
+            params.endTime,
+          );
+
+      const isAvailable = resource.isAvailable(
         params.startTime,
         params.endTime,
+        activeReservations.map((r) => r.toSnapshot()),
       );
 
-    const isAvailable = resource.isAvailable(
-      params.startTime,
-      params.endTime,
-      activeReservations.map((r) => r.toSnapshot()),
-    );
+      if (!isAvailable) {
+        throw new InvalidReservationError(
+          `El recurso ${params.resourceId} no está disponible en el rango solicitado`,
+        );
+      }
 
-    if (!isAvailable) {
-      throw new InvalidReservationError(
-        `El recurso ${params.resourceId} no está disponible en el rango solicitado`,
-      );
-    }
+      reservation = new Reservation({
+        id:        params.id,
+        customer:  params.customer,
+        resource,
+        startTime: params.startTime,
+        endTime:   params.endTime,
+        details:   params.details,
+      });
 
-    const reservation = new Reservation({
-      id:        params.id,
-      customer:  params.customer,
-      resource,
-      startTime: params.startTime,
-      endTime:   params.endTime,
-      details:   params.details,
+      // saveWithClient: usa el client transaccional (mismo BEGIN)
+      await this.reservationRepository.saveWithClient(client, reservation);
     });
 
-    await this.reservationRepository.save(reservation);
     return reservation;
   }
 
@@ -101,11 +124,11 @@ export class ReservationService {
       details?: Record<string, unknown>;
     },
   ): Promise<Reservation> {
-    const reservation = await this.requireReservation(id);
+    const existing = await this.requireReservation(id);
 
-    if (reservation.status !== 'PENDING') {
+    if (existing.status !== 'PENDING') {
       throw new InvalidReservationError(
-        `Solo se pueden modificar reservas en estado PENDING. Estado actual: ${reservation.status}`,
+        `Solo se pueden modificar reservas en estado PENDING. Estado actual: ${existing.status}`,
       );
     }
 
@@ -115,51 +138,62 @@ export class ReservationService {
       );
     }
 
-    const newStartTime = changes.startTime ?? reservation.startTime;
-    const newEndTime   = changes.endTime   ?? reservation.endTime;
-    const rawDetails   = changes.details   ?? (reservation.details as Record<string, unknown>);
+    const newStartTime = changes.startTime ?? existing.startTime;
+    const newEndTime   = changes.endTime   ?? existing.endTime;
+    const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
 
-    const category = await this.categoryRepository.findById(reservation.resource.categoryId);
+    const category = await this.categoryRepository.findById(existing.resource.categoryId);
     if (category) {
       validateDetailsAgainstFields(rawDetails, category.fields);
     }
 
-    const activeReservations =
-      await this.reservationRepository.getActiveForResourceInRange(
-        reservation.resource.id,
+    let updated!: Reservation;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      // SELECT ... FOR UPDATE: excluye la propia reserva (id) del chequeo.
+      const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
+        ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
+            client,
+            existing.resource.id,
+            newStartTime,
+            newEndTime,
+          )
+        : await this.reservationRepository.getActiveForResourceInRange(
+            existing.resource.id,
+            newStartTime,
+            newEndTime,
+          );
+
+      const isAvailable = existing.resource.isAvailable(
         newStartTime,
         newEndTime,
+        activeReservations.map((r) => r.toSnapshot()),
+        id, // excluye la propia reserva del solapamiento
       );
 
-    const isAvailable = reservation.resource.isAvailable(
-      newStartTime,
-      newEndTime,
-      activeReservations.map((r) => r.toSnapshot()),
-      id,
-    );
+      if (!isAvailable) {
+        throw new InvalidReservationError(
+          `El recurso ${existing.resource.id} no está disponible en el nuevo rango solicitado`,
+        );
+      }
 
-    if (!isAvailable) {
-      throw new InvalidReservationError(
-        `El recurso ${reservation.resource.id} no está disponible en el nuevo rango solicitado`,
-      );
-    }
+      updated = Reservation.restore({
+        id:            existing.id,
+        customer:      existing.customer,
+        resource:      existing.resource,
+        startTime:     newStartTime,
+        endTime:       newEndTime,
+        details:       rawDetails,
+        initialStatus: existing.status,
+        serviceId:     existing.serviceId,
+        partySize:     existing.partySize,
+        notes:         existing.notes,
+        orderItemId:   existing.orderItemId,
+      });
 
-    // Usar restore() — operación de persistencia, no de creación nueva
-    const updated = Reservation.restore({
-      id:            reservation.id,
-      customer:      reservation.customer,
-      resource:      reservation.resource,
-      startTime:     newStartTime,
-      endTime:       newEndTime,
-      details:       rawDetails,
-      initialStatus: reservation.status,
-      serviceId:     reservation.serviceId,
-      partySize:     reservation.partySize,
-      notes:         reservation.notes,
-      orderItemId:   reservation.orderItemId,
+      await this.reservationRepository.saveWithClient(client, updated);
     });
 
-    await this.reservationRepository.save(updated);
     return updated;
   }
 
@@ -269,6 +303,8 @@ export class ReservationService {
       throw new ResourceNotFoundError(resourceId);
     }
 
+    // GET /availability no requiere lock — es una consulta de solo lectura
+    // que no precede inmediatamente a un INSERT.
     const activeReservations =
       await this.reservationRepository.getActiveForResourceInRange(
         resourceId,
