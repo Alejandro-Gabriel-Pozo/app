@@ -9,12 +9,37 @@
  * ## Variables de entorno
  * - JWT_SECRET     — clave secreta (OBLIGATORIA, mínimo 32 chars)
  * - JWT_EXPIRES_IN — duración del token (opcional, default "24h")
+ *
+ * ## Re-exports de utilidades de hashing
+ * hashPassword y verifyPassword viven en user.store.ts.
+ * Se re-exportan aquí para que los routers puedan importarlas desde
+ * auth.middleware sin depender directamente de user.store.
+ * NO mover la implementación a este archivo — rompería la separación
+ * de responsabilidades y duplicaría la lógica.
  */
 
 import { Request, Response, NextFunction } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { UserRole } from '../types/enums.js';
 import { AuthenticatedUser } from './user.types.js';
+
+// ---------------------------------------------------------------------------
+// Re-exports — utilitarios de hashing de contraseñas
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-export de hashPassword y verifyPassword desde user.store.
+ *
+ * ## ¿Por qué re-exportar desde aquí?
+ * users.routes.ts importa `hashPassword` desde auth.middleware para no
+ * acoplarse a user.store directamente (que es un detalle de implementación
+ * del InMemoryUserStore). Al re-exportar aquí mantenemos el contrato de
+ * import estable incluso si la implementación cambia.
+ *
+ * ## REGLA: no duplicar la implementación
+ * Siempre re-exportar desde user.store.ts — nunca reimplementar aquí.
+ */
+export { hashPassword, verifyPassword } from './user.store.js';
 
 // ---------------------------------------------------------------------------
 // JWT Payload

@@ -17,6 +17,23 @@
  * | POST /housekeeping/:id/inspect   | HOUSEKEEPING_AND_MANAGEMENT |
  * | POST /housekeeping/:id/out-of-service | MANAGEMENT |
  * | POST /housekeeping/:id/reset     | MANAGEMENT |
+ *
+ * ## exactOptionalPropertyTypes — req.params
+ * Express tipifica req.params[key] como `string | string[]` (puede ser un
+ * array si la misma clave aparece repetida en la URL, ej. /a?x=1&x=2).
+ * Con exactOptionalPropertyTypes=true el cast `as string` no alcanza cuando
+ * el valor se pasa como argumento a una función que espera `string`.
+ *
+ * Regla: usar SIEMPRE `String(req.params['key'])` en lugar de
+ * `req.params['key'] as string`. String() coerce cualquier valor primitivo
+ * a string — incluso arrays — de forma segura y sin error de TS.
+ *
+ * NO hacer:
+ *   service.startTask(req.params['id']!, businessId)   // TS2345
+ *   service.startTask(req.params['id'] as string, businessId) // TS2345
+ *
+ * SÍ hacer:
+ *   service.startTask(String(req.params['id']), businessId)   // ✅
  */
 
 import { Router } from 'express';
@@ -69,7 +86,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
         const businessId = req.user!.businessId!;
         const tasks = await service.getTasksByStatus(
           businessId,
-          req.params['status'] as HousekeepingStatus,
+          String(req.params['status']) as HousekeepingStatus,
         );
         res.json(tasks.map(t => t.toJSON()));
       } catch (err) { next(err); }
@@ -85,7 +102,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
       try {
         const businessId = req.user!.businessId!;
         const tasks = await service.getTasksByResource(
-          req.params['resourceId']!,
+          String(req.params['resourceId']),
           businessId,
         );
         res.json(tasks.map(t => t.toJSON()));
@@ -101,7 +118,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        const task = await service.getTaskById(req.params['id']!, businessId);
+        const task = await service.getTaskById(String(req.params['id']), businessId);
         if (!task) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Tarea no encontrada' });
           return;
@@ -138,7 +155,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
       try {
         const businessId = req.user!.businessId!;
         const task = await service.assignTask({
-          taskId: req.params['id']!,
+          taskId: String(req.params['id']),
           userId: req.body.userId as string,
           businessId,
         });
@@ -155,7 +172,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        const task = await service.startTask(req.params['id']!, businessId);
+        const task = await service.startTask(String(req.params['id']), businessId);
         res.json(task.toJSON());
       } catch (err) { next(err); }
     },
@@ -170,7 +187,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
       try {
         const businessId = req.user!.businessId!;
         const task = await service.completeTask(
-          req.params['id']!,
+          String(req.params['id']),
           businessId,
           req.body.notes as string | undefined,
         );
@@ -189,7 +206,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
         const businessId = req.user!.businessId!;
         const inspectorId = req.user!.id;
         const task = await service.inspectTask(
-          req.params['id']!,
+          String(req.params['id']),
           businessId,
           inspectorId,
         );
@@ -207,7 +224,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
       try {
         const businessId = req.user!.businessId!;
         const task = await service.setOutOfService(
-          req.params['id']!,
+          String(req.params['id']),
           businessId,
           req.body.reason as string | undefined,
         );
@@ -224,7 +241,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        const task = await service.resetToPending(req.params['id']!, businessId);
+        const task = await service.resetToPending(String(req.params['id']), businessId);
         res.json(task.toJSON());
       } catch (err) { next(err); }
     },

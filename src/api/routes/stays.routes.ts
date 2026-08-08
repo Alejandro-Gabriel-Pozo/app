@@ -13,6 +13,27 @@
  * | POST /stays/check-in               | FRONT_DESK | Check-in (crea Stay) |
  * | POST /stays/:id/check-out          | FRONT_DESK | Check-out (cierra Stay) |
  * | POST /stays/:id/no-show            | FRONT_DESK | Marcar NO_SHOW |
+ *
+ * ## exactOptionalPropertyTypes — campos opcionales en DTOs
+ * CheckOutInput define `notes?: string` y `nextCleaningShift?: string`
+ * (propiedades opcionales SIN undefined explícito en el tipo).
+ *
+ * Con exactOptionalPropertyTypes=true:
+ *   { notes: undefined }  ← NO assignable a CheckOutInput  → TS2379
+ *   { notes: 'texto'  }  ← SÍ assignable
+ *   {}                    ← SÍ assignable (clave ausente)
+ *
+ * Solución: spread condicional para incluir la clave solo si tiene valor.
+ *
+ * NO hacer:
+ *   service.checkOut({ stayId, businessId, notes: req.body.notes })  // TS2379
+ *
+ * SÍ hacer:
+ *   service.checkOut({
+ *     stayId, businessId,
+ *     ...(notes !== undefined && { notes }),
+ *     ...(shift !== undefined && { nextCleaningShift: shift }),
+ *   })
  */
 
 import { Router } from 'express';
@@ -44,7 +65,7 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.getStayByReservation(
-          req.params['reservationId'] as string,
+          String(req.params['reservationId']),
           req.user!.businessId as string,
         );
         if (!stay) {
@@ -64,7 +85,7 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.getActiveStayForResource(
-          req.params['resourceId'] as string,
+          String(req.params['resourceId']),
           req.user!.businessId as string,
         );
         if (!stay) {
@@ -84,7 +105,7 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.getStayById(
-          req.params['id'] as string,
+          String(req.params['id']),
           req.user!.businessId as string,
         );
         if (!stay) {
@@ -123,11 +144,16 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
+        // Spread condicional obligatorio con exactOptionalPropertyTypes.
+        // Si notes o nextCleaningShift son undefined, NO incluir la clave
+        // en el objeto — CheckOutInput.notes?: string no acepta undefined.
+        const notes = req.body.notes as string | undefined;
+        const shift = req.body.nextCleaningShift as string | undefined;
         const stay = await service.checkOut({
-          stayId:             req.params['id'] as string,
-          businessId:         req.user!.businessId as string,
-          notes:              req.body.notes as string | undefined,
-          nextCleaningShift:  req.body.nextCleaningShift as string | undefined,
+          stayId:    String(req.params['id']),
+          businessId: req.user!.businessId as string,
+          ...(notes !== undefined && { notes }),
+          ...(shift !== undefined && { nextCleaningShift: shift }),
         });
         res.json(stay.toJSON());
       } catch (err) { next(err); }
@@ -142,7 +168,7 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.markNoShow(
-          req.params['id'] as string,
+          String(req.params['id']),
           req.user!.businessId as string,
         );
         res.json(stay.toJSON());

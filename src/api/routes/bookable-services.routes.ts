@@ -16,6 +16,22 @@
  * ## Aislamiento multi-tenant
  * buildService() instancia SqlBookableServiceRepository con req.db
  * (inyectado por tenantMiddleware). No hay estado compartido entre tenants.
+ *
+ * ## exactOptionalPropertyTypes — Zod parse y DTOs opcionales
+ * Con exactOptionalPropertyTypes=true en tsconfig, un objeto
+ * `{ dayOfWeek: undefined }` NO es assignable a `{ dayOfWeek?: number }`.
+ * Zod infiere las propiedades opcionales como `T | undefined` (la clave
+ * siempre existe en el objeto parseado, con valor undefined si el campo
+ * no vino en el body).
+ *
+ * Solución: usar `omitUndefined()` para producir un objeto donde las
+ * claves con valor undefined directamente no existen.
+ *
+ * NO hacer:
+ *   service.updateSchedule(id, body)  // body tiene { dayOfWeek: undefined } → TS2379
+ *
+ * SÍ hacer:
+ *   service.updateSchedule(id, omitUndefined(body))  // solo claves con valor
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
@@ -32,12 +48,24 @@ import {
 } from '../schemas/bookable-service.schemas.js';
 import type { AppContainer } from '../../container.js';
 
+/**
+ * Elimina las claves cuyo valor es `undefined` del objeto dado.
+ * Necesario para cumplir exactOptionalPropertyTypes: el resultado solo
+ * contiene claves con valor real, lo que lo hace assignable a un DTO
+ * con propiedades opcionales.
+ */
+function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, v]) => v !== undefined),
+  ) as Partial<T>;
+}
+
 function buildService(req: Request): BookableServiceService {
   return new BookableServiceService(new SqlBookableServiceRepository(req.db!));
 }
 
 function param(req: Request, key: string): string {
-  return req.params[key] as string;
+  return String(req.params[key]);
 }
 
 export function createBookableServicesRouter(_container: AppContainer): Router {
@@ -85,7 +113,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.put('/:id', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const body    = UpdateBookableServiceSchema.parse(req.body);
+      const body    = omitUndefined(UpdateBookableServiceSchema.parse(req.body));
       const service = await buildService(req).updateService(param(req, 'id'), body);
       res.json(service);
     } catch (err) {
@@ -142,7 +170,10 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.put('/:id/schedules/:scheduleId', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const body     = UpdateServiceScheduleSchema.parse(req.body);
+      // omitUndefined: Zod parsea campos opcionales ausentes como { key: undefined }.
+      // exactOptionalPropertyTypes rechaza eso — omitimos las claves undefined
+      // para producir un objeto que cumpla UpdateServiceScheduleDTO.
+      const body     = omitUndefined(UpdateServiceScheduleSchema.parse(req.body));
       const schedule = await buildService(req).updateSchedule(param(req, 'scheduleId'), body);
       res.json(schedule);
     } catch (err) {

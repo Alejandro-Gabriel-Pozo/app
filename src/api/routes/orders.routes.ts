@@ -16,15 +16,35 @@
  * buildOrderService(req) instancia SqlOrderRepository usando req.db
  * del tenant activo (inyectado por tenantMiddleware).
  *
- * ## exactOptionalPropertyTypes
- * compact() se usa solo para los filtros OPCIONALES.
- * businessId es obligatorio y se pasa directamente a listOrders(),
- * evitando la clave duplicada que causa TS2783.
+ * ## exactOptionalPropertyTypes — CreateOrderInput y CreateOrderItemInput
+ * Con exactOptionalPropertyTypes=true:
+ *   { notes: undefined }  ← NO assignable a CreateOrderInput.notes?: string|null
+ *   { notes: 'texto'  }  ← SÍ assignable
+ *   {}                    ← SÍ assignable (clave ausente)
+ *
+ * Zod infiere campos opcionales como `T | undefined` — si el campo no vino
+ * en el body, la clave existe con valor undefined en el objeto parseado.
+ * Eso viola exactOptionalPropertyTypes al pasarlo a service.createOrder().
+ *
+ * Solución:
+ *  1. Para CreateOrderInput.notes: spread condicional.
+ *  2. Para items[].productId / productVariantId / reservationId: stripItemUndefined()
+ *     convierte undefined → null (que sí es válido en el tipo `string | null`).
+ *
+ * NO hacer:
+ *   service.createOrder({ ...parsed.data, businessId })  // notes: undefined → TS2379
+ *
+ * SÍ hacer:
+ *   service.createOrder({
+ *     businessId,
+ *     customerId: parsed.data.customerId,
+ *     items: parsed.data.items.map(stripItemUndefined),
+ *     ...(parsed.data.notes !== undefined && { notes: parsed.data.notes }),
+ *   })
  *
  * ## Transacción en createOrder
  * OrderService recibe container.transactionManager para envolver
  * INSERT orders + INSERT order_items en un único BEGIN/COMMIT.
- * Patrón idéntico al de reservations.routes.ts.
  *
  * ## Validación Zod
  * POST /api/orders             → CreateOrderSchema
@@ -42,10 +62,11 @@ import {
 } from '../../services/order.service.js';
 import { SqlOrderRepository } from '../../repositories/sql.order.repository.js';
 import { compact } from '../utils/compact.js';
-import type { OrderStatus } from '../../domain/order.entities.js';
+import type { OrderStatus, CreateOrderItemInput } from '../../domain/order.entities.js';
 import {
   CreateOrderSchema,
   CreateOrderItemSchema,
+  type CreateOrderItemBody,
 } from '../schemas/request.schemas.js';
 
 function buildOrderService(req: Request, container: AppContainer): OrderService {
@@ -56,11 +77,30 @@ function buildOrderService(req: Request, container: AppContainer): OrderService 
 }
 
 function param(req: Request, key: string): string {
-  return req.params[key] as string;
+  return String(req.params[key]);
 }
 
 function validationError(res: Response, errors: { path: string; message: string }[]): void {
   res.status(400).json({ code: 'VALIDATION_ERROR', errors });
+}
+
+/**
+ * Convierte los campos opcionales FK de un ítem de orden de
+ * `string | null | undefined` → `string | null`.
+ *
+ * Zod parsea los campos `.nullable().optional()` con valor ausente como
+ * `undefined`, pero CreateOrderItemInput acepta solo `string | null`.
+ * Con exactOptionalPropertyTypes, pasar undefined viola el contrato.
+ */
+function stripItemUndefined(item: CreateOrderItemBody): CreateOrderItemInput {
+  return {
+    itemType:         item.itemType,
+    quantity:         item.quantity,
+    unitPrice:        item.unitPrice,
+    productId:        item.productId        ?? null,
+    productVariantId: item.productVariantId ?? null,
+    reservationId:    item.reservationId    ?? null,
+  };
 }
 
 export function createOrdersRouter(container: AppContainer): Router {
@@ -104,9 +144,13 @@ export function createOrdersRouter(container: AppContainer): Router {
         return;
       }
       const service = buildOrderService(req, container);
+      // Spread condicional para notes: Zod puede parsear notes como undefined
+      // si el campo no vino en el body, y undefined no cumple exactOptionalPropertyTypes.
       const order = await service.createOrder({
-        ...parsed.data,
         businessId: req.businessId!,
+        customerId: parsed.data.customerId,
+        items:      parsed.data.items.map(stripItemUndefined),
+        ...(parsed.data.notes !== undefined && { notes: parsed.data.notes }),
       });
       res.status(201).json(order);
     } catch (err) {
@@ -198,7 +242,11 @@ export function createOrdersRouter(container: AppContainer): Router {
         validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
         return;
       }
-      const item = await buildOrderService(req, container).addItem(param(req, 'id'), parsed.data);
+      // stripItemUndefined convierte undefined → null en FK opcionales
+      const item = await buildOrderService(req, container).addItem(
+        param(req, 'id'),
+        stripItemUndefined(parsed.data),
+      );
       res.status(201).json(item);
     } catch (err) {
       if (err instanceof OrderNotFoundError)        res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
