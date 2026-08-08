@@ -11,15 +11,19 @@
  *
  * Nota: el rol OWNER no puede ser asignado desde la API — se asigna al crear
  * el negocio en la plataforma. El endpoint de creación lo rechaza explícitamente.
+ *
+ * Los usuarios son entidades de plataforma (tabla `users` en PLATFORM_DATABASE_URL).
+ * El router recibe `platformRepo` como parámetro de fábrica para operar sobre
+ * esa BD, en lugar de req.db (BD del tenant).
  */
 
 import { Router } from 'express';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { UserRole } from '../../types/enums.js';
-import type { UserService } from '../../services/user.service.js';
+import type { PlatformRepository } from '../../platform/platform.repository.js';
 
-export function createUsersRouter(service: UserService): Router {
+export function createUsersRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
 
   // ── GET /users ─────────────────────────────────────────────────────────────
@@ -30,7 +34,7 @@ export function createUsersRouter(service: UserService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        const users = await service.listUsers(businessId);
+        const users = await platformRepo.findUsersByBusiness(businessId);
         res.json(users);
       } catch (err) {
         next(err);
@@ -46,7 +50,7 @@ export function createUsersRouter(service: UserService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        const user = await service.getUserById(req.params.id!, businessId);
+        const user = await platformRepo.findUserById(req.params.id!, businessId);
         if (!user) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Usuario no encontrado' });
           return;
@@ -67,7 +71,6 @@ export function createUsersRouter(service: UserService): Router {
       try {
         const businessId = req.user!.businessId!;
 
-        // El rol OWNER no puede asignarse desde la API
         if (req.body.role === UserRole.OWNER) {
           res.status(400).json({
             code: 'INVALID_ROLE',
@@ -76,7 +79,7 @@ export function createUsersRouter(service: UserService): Router {
           return;
         }
 
-        const user = await service.createUser({ ...req.body, businessId });
+        const user = await platformRepo.createUser({ ...req.body, businessId });
         res.status(201).json(user);
       } catch (err) {
         next(err);
@@ -93,7 +96,6 @@ export function createUsersRouter(service: UserService): Router {
       try {
         const businessId = req.user!.businessId!;
 
-        // Tampoco se puede cambiar el rol de alguien a OWNER
         if (req.body.role === UserRole.OWNER) {
           res.status(400).json({
             code: 'INVALID_ROLE',
@@ -102,7 +104,7 @@ export function createUsersRouter(service: UserService): Router {
           return;
         }
 
-        const updated = await service.updateUser(req.params.id!, req.body, businessId);
+        const updated = await platformRepo.updateUser(req.params.id!, req.body, businessId);
         res.json(updated);
       } catch (err) {
         next(err);
@@ -118,7 +120,7 @@ export function createUsersRouter(service: UserService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        await service.deleteUser(req.params.id!, businessId);
+        await platformRepo.deleteUser(req.params.id!, businessId);
         res.status(204).send();
       } catch (err) {
         next(err);

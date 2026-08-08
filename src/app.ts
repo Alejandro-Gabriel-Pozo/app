@@ -125,8 +125,13 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   // Rutas protegidas de empleados (todas usan req.db del tenant)
   // -------------------------------------------------------------------------
-  app.use('/api/resources',         createResourcesRouter(container));
-  app.use('/api/reservations',      createReservationsRouter(container));
+
+  // /api/resources — patrón per-request, sin AppContainer
+  app.use('/api/resources', createResourcesRouter());
+
+  // /api/reservations — patrón per-request, sin AppContainer
+  app.use('/api/reservations', createReservationsRouter());
+
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));

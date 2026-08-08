@@ -8,14 +8,18 @@
  * POST /resources          — MANAGEMENT (OWNER, ADMIN)
  * PUT  /resources/:id      — MANAGEMENT
  * DELETE /resources/:id    — MANAGEMENT
+ *
+ * El servicio se construye por request usando req.db (SqlClient del tenant
+ * inyectado por tenantMiddleware). Patrón idéntico a housekeeping y stays.
  */
 
 import { Router } from 'express';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
-import type { ResourceService } from '../../services/resource.service.js';
+import { SqlResourceRepository } from '../../repositories/sql.resource.repository.js';
+import { randomUUID } from 'node:crypto';
 
-export function createResourcesRouter(service: ResourceService): Router {
+export function createResourcesRouter(): Router {
   const router = Router();
 
   // ── GET /resources ─────────────────────────────────────────────────────────
@@ -25,8 +29,8 @@ export function createResourcesRouter(service: ResourceService): Router {
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
-        const resources = await service.listResources(businessId);
+        const repo = new SqlResourceRepository(req.db);
+        const resources = await repo.getAll();
         res.json(resources);
       } catch (err) {
         next(err);
@@ -41,8 +45,8 @@ export function createResourcesRouter(service: ResourceService): Router {
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
-        const resource = await service.getResourceById(req.params.id!, businessId);
+        const repo = new SqlResourceRepository(req.db);
+        const resource = await repo.getById(req.params.id!);
         if (!resource) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
           return;
@@ -61,8 +65,16 @@ export function createResourcesRouter(service: ResourceService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
-        const resource = await service.createResource({ ...req.body, businessId });
+        const repo = new SqlResourceRepository(req.db);
+        const { BookableResource } = await import('../../domain/entities.js');
+        const resource = new BookableResource(
+          req.body.id ?? randomUUID(),
+          req.body.name,
+          Number(req.body.basePrice ?? req.body.base_price ?? 0),
+          req.body.categoryId ?? req.body.category_id,
+          req.body.visualData ?? req.body.visual_data ?? null,
+        );
+        await repo.save(resource);
         res.status(201).json(resource);
       } catch (err) {
         next(err);
@@ -77,8 +89,21 @@ export function createResourcesRouter(service: ResourceService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
-        const updated = await service.updateResource(req.params.id!, req.body, businessId);
+        const repo = new SqlResourceRepository(req.db);
+        const existing = await repo.getById(req.params.id!);
+        if (!existing) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
+          return;
+        }
+        const { BookableResource } = await import('../../domain/entities.js');
+        const updated = new BookableResource(
+          existing.id,
+          req.body.name      ?? existing.name,
+          Number(req.body.basePrice ?? req.body.base_price ?? existing.basePrice),
+          req.body.categoryId ?? req.body.category_id ?? existing.categoryId,
+          req.body.visualData ?? req.body.visual_data ?? existing.visualData ?? null,
+        );
+        await repo.save(updated);
         res.json(updated);
       } catch (err) {
         next(err);
@@ -93,8 +118,12 @@ export function createResourcesRouter(service: ResourceService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
-        await service.deleteResource(req.params.id!, businessId);
+        const repo = new SqlResourceRepository(req.db);
+        const deleted = await repo.delete(req.params.id!);
+        if (!deleted) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
+          return;
+        }
         res.status(204).send();
       } catch (err) {
         next(err);
