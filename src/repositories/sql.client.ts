@@ -14,9 +14,13 @@ export interface SqlClient {
 /**
  * Implementación concreta de SqlClient sobre un pg.Pool.
  * Usada principalmente en tests de integración donde se necesita
- * instanciar `new SqlClient(pool)` directamente.
+ * instanciar `new PgSqlClient(pool)` directamente.
+ *
+ * NOTA: el nombre de la clase es distinto al de la interfaz para evitar
+ * la colisión que causaba que el campo `pool` privado "filtrara" al tipo
+ * de la interfaz (TS2741).
  */
-export class SqlClient implements SqlClient {
+export class PgSqlClient implements SqlClient {
   constructor(private readonly pool: InstanceType<typeof pg.Pool>) {}
 
   async query<T = unknown>(

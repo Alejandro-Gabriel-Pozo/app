@@ -55,6 +55,8 @@ import { SqlStayRepository }             from './repositories/stay.repository.js
 import { HousekeepingService }           from './services/housekeeping.service.js';
 import { StayService }                   from './services/stay.service.js';
 import { SqlReservationRepository }      from './repositories/sql.reservation.repository.js';
+import { SqlOccupancyRepository }        from './repositories/sql.occupancy.repository.js';
+import { ReportService }                 from './services/report.service.js';
 import type { Request, Response, NextFunction } from 'express';
 
 export async function createApp(): Promise<{
@@ -125,13 +127,20 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   app.use('/api/resources',         createResourcesRouter(container));
   app.use('/api/reservations',      createReservationsRouter(container));
-  app.use('/api/reports',           createReportsRouter(container));
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products',          createProductsRouter(container));
   app.use('/api/orders',            createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
+
+  // /api/reports — construye ReportService por request con req.db del tenant
+  app.use('/api/reports', (req: Request, _res: Response, next: NextFunction) => {
+    const occupancyRepo = new SqlOccupancyRepository(req.db);
+    const reportService = new ReportService(occupancyRepo);
+    const router = createReportsRouter(reportService);
+    router(req, _res, next);
+  });
 
   // Fase 2 — Housekeeping
   app.use('/api/housekeeping', (req: Request, _res: Response, next: NextFunction) => {

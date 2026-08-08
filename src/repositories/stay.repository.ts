@@ -79,7 +79,7 @@ export class SqlStayRepository implements StayRepository {
   }
 
   async findById(id: string, businessId: string): Promise<Stay | null> {
-    const r = await this.db.query(
+    const r = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM stays WHERE id=$1 AND business_id=$2`,
       [id, businessId],
     );
@@ -87,7 +87,7 @@ export class SqlStayRepository implements StayRepository {
   }
 
   async findByReservation(reservationId: string, businessId: string): Promise<Stay | null> {
-    const r = await this.db.query(
+    const r = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM stays
        WHERE reservation_id=$1 AND business_id=$2
        ORDER BY created_at DESC LIMIT 1`,
@@ -97,7 +97,7 @@ export class SqlStayRepository implements StayRepository {
   }
 
   async findActiveByResource(resourceId: string, businessId: string): Promise<Stay | null> {
-    const r = await this.db.query(
+    const r = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM stays
        WHERE resource_id=$1 AND business_id=$2 AND status='CHECKED_IN'
        LIMIT 1`,
@@ -107,7 +107,7 @@ export class SqlStayRepository implements StayRepository {
   }
 
   async findActiveByCustomer(customerId: string, businessId: string): Promise<Stay[]> {
-    const r = await this.db.query(
+    const r = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM stays
        WHERE customer_id=$1 AND business_id=$2 AND status='CHECKED_IN'
        ORDER BY checked_in_at DESC`,
@@ -117,7 +117,7 @@ export class SqlStayRepository implements StayRepository {
   }
 
   async findByStatus(businessId: string, status: StayStatus): Promise<Stay[]> {
-    const r = await this.db.query(
+    const r = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM stays
        WHERE business_id=$1 AND status=$2
        ORDER BY checked_in_at DESC`,

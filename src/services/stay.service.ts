@@ -13,10 +13,6 @@
  *   El flujo correcto es: ReservationService.confirmReservation() → StayService.checkIn().
  * - Al hacer check-out, StayService crea automáticamente una HousekeepingTask PENDING
  *   para el turno siguiente (coordinación entre módulos).
- *
- * ## fix/code-review-bugs
- * - checkIn: corregido reservationRepository.findById() → getById()
- *   (la interfaz ReservationRepository expone getById, no findById).
  */
 
 import { Stay } from '../domain/stay.js';
@@ -53,8 +49,6 @@ export class StayService {
   // ---------------------------------------------------------------------------
 
   async checkIn(input: CheckInInput): Promise<Stay> {
-    // 1. Verificar que la reserva exista y esté CONFIRMED
-    // Nota: ReservationRepository expone getById(), no findById().
     const reservation = await this.reservationRepository.getById(
       input.reservationId,
     );
@@ -71,7 +65,6 @@ export class StayService {
       throw err;
     }
 
-    // 2. Verificar que el recurso no tenga una estadía activa
     const activeStay = await this.stayRepository.findActiveByResource(
       input.resourceId,
       input.businessId,
@@ -84,14 +77,14 @@ export class StayService {
       throw err;
     }
 
-    // 3. Crear la Stay
+    // exactOptionalPropertyTypes: solo pasamos notes si está definido
     const stay = Stay.checkIn({
       businessId:    input.businessId,
       reservationId: input.reservationId,
       resourceId:    input.resourceId,
       customerId:    reservation.customer.id,
       assignedBy:    input.assignedBy,
-      notes:         input.notes,
+      ...(input.notes !== undefined && { notes: input.notes }),
     });
 
     await this.stayRepository.save(stay);
@@ -107,7 +100,6 @@ export class StayService {
     stay.checkOut(input.notes);
     await this.stayRepository.update(stay);
 
-    // Crear tarea de housekeeping para la habitación recién liberada
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(8, 0, 0, 0);

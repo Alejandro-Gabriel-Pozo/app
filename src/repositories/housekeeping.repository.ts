@@ -83,7 +83,7 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
   }
 
   async findById(id: string, businessId: string): Promise<HousekeepingTask | null> {
-    const result = await this.db.query(
+    const result = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM housekeeping_tasks WHERE id=$1 AND business_id=$2`,
       [id, businessId],
     );
@@ -92,7 +92,7 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
   }
 
   async findByResource(resourceId: string, businessId: string): Promise<HousekeepingTask[]> {
-    const result = await this.db.query(
+    const result = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM housekeeping_tasks
        WHERE resource_id=$1 AND business_id=$2
        ORDER BY scheduled_for DESC`,
@@ -102,7 +102,7 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
   }
 
   async findByDate(businessId: string, date: Date): Promise<HousekeepingTask[]> {
-    const result = await this.db.query(
+    const result = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM housekeeping_tasks
        WHERE business_id=$1 AND scheduled_for::date = $2::date
        ORDER BY shift, resource_id`,
@@ -112,7 +112,7 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
   }
 
   async findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]> {
-    const result = await this.db.query(
+    const result = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM housekeeping_tasks
        WHERE assigned_to=$1 AND business_id=$2 AND status NOT IN ('DONE','INSPECTED')
        ORDER BY scheduled_for`,
@@ -122,7 +122,7 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
   }
 
   async findByStatus(businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]> {
-    const result = await this.db.query(
+    const result = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM housekeeping_tasks
        WHERE business_id=$1 AND status=$2
        ORDER BY scheduled_for`,

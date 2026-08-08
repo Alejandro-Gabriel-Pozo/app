@@ -24,8 +24,8 @@
 
 import { randomUUID, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { JwtService } from './jwt.service.js';
-import { PlatformRole } from '../types/enums.js';
+import { signToken, getJwtSecret } from './auth.middleware.js';
+import { PlatformRole, UserRole } from '../types/enums.js';
 
 const pbkdf2Async = promisify(pbkdf2);
 
@@ -53,20 +53,12 @@ const KEY_LENGTH  = 32;
 const DIGEST      = 'sha256';
 const SEPARATOR   = '$';
 
-/**
- * Deriva un hash PBKDF2 del formato "salt$hash" (hex).
- * Compatible con el formato del AuthService principal.
- */
 async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex');
   const key  = await pbkdf2Async(password, salt, ITERATIONS, KEY_LENGTH, DIGEST);
   return `${salt}${SEPARATOR}${key.toString('hex')}`;
 }
 
-/**
- * Verifica una contraseña contra su hash almacenado.
- * Usa `timingSafeEqual` para evitar timing attacks.
- */
 async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [salt, storedHex] = stored.split(SEPARATOR);
   if (!salt || !storedHex) return false;
@@ -80,12 +72,6 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
 // Credenciales bootstrap (env vars → hash en memoria al arrancar)
 // ---------------------------------------------------------------------------
 
-/**
- * Hashea las credenciales del superadmin desde variables de entorno.
- * Se llama UNA vez al iniciar el servidor y el hash se guarda en memoria.
- * Las env vars pueden rotarse sin reiniciar (el hash se actualiza en el
- * próximo reinicio del proceso).
- */
 let _bootstrapHash: string | null = null;
 let _bootstrapEmail: string | null = null;
 
@@ -108,21 +94,9 @@ async function getBootstrapCredentials(): Promise<{ email: string; hash: string 
 // ---------------------------------------------------------------------------
 
 export class PlatformAuthService {
-  private readonly jwtService: JwtService;
   /** TTL del token de SUPERADMIN: 8 horas (menor que el de empleados) */
   private readonly TOKEN_TTL_SECONDS = 8 * 60 * 60;
 
-  constructor() {
-    this.jwtService = new JwtService();
-  }
-
-  /**
-   * Autentica al SUPERADMIN contra las credenciales de entorno.
-   * Retorna un JWT con `platform_role: SUPERADMIN`.
-   *
-   * @throws INVALID_CREDENTIALS si el email/contraseña no coinciden
-   * @throws PLATFORM_AUTH_NOT_CONFIGURED si faltan las env vars
-   */
   async login(input: PlatformLoginInput): Promise<PlatformLoginResult> {
     const creds = await getBootstrapCredentials();
 
@@ -144,12 +118,13 @@ export class PlatformAuthService {
       throw err;
     }
 
-    // ID estable derivado del email — no hace falta BD para el SUPERADMIN
     const userId = randomUUID();
 
-    const token = await this.jwtService.sign(
-      { platform_role: PlatformRole.SUPERADMIN },
-      userId,
+    // platform_role no forma parte de UserRole — lo casteamos para que
+    // signToken lo incluya en el payload sin modificar la interfaz JwtPayload.
+    const token = signToken(
+      { sub: userId, role: 'SUPERADMIN' as unknown as UserRole, platform_role: PlatformRole.SUPERADMIN } as Parameters<typeof signToken>[0],
+      getJwtSecret(),
       this.TOKEN_TTL_SECONDS,
     );
 
