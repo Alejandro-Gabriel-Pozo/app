@@ -51,12 +51,24 @@ jobs:
           path: coverage/
           retention-days: 30
 
-  # ------------------------------------------------------------
-  # Job 2 — Typecheck + build (independiente de test)
-  #
-  # No usa `needs: test` para que los errores de tipos sean
-  # visibles aunque los tests fallen, y viceversa.
-  # ------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run lint
+        run: npm run lint
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
