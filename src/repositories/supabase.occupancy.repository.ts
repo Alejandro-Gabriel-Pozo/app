@@ -30,7 +30,7 @@ export class SupabaseOccupancyRepository implements OccupancyRepository {
       throw new Error(`Failed to fetch occupancy: ${error.message}`);
     }
 
-    return (data as SupabaseReservationRow[] || []).map((row) => ({
+    return ((data as SupabaseReservationRow[]) || []).map((row) => ({
       id: row.id,
       resourceId: row.resource_id,
       startTime: new Date(row.start_time),
@@ -59,7 +59,7 @@ export class SupabaseOccupancyRepository implements OccupancyRepository {
 
     const occupancyMap: Record<string, ReservationSnapshot[]> = {};
 
-    (data as SupabaseReservationRow[] || []).forEach((row) => {
+    ((data as SupabaseReservationRow[]) || []).forEach((row) => {
       const resourceId = row.resource_id;
       if (!occupancyMap[resourceId]) {
         occupancyMap[resourceId] = [];
@@ -93,7 +93,7 @@ export class SupabaseOccupancyRepository implements OccupancyRepository {
       throw new Error(`Failed to fetch underutilized resources: ${error.message}`);
     }
 
-    return data || [];
+    return (data as { resourceId: string; occupancyPercent: number }[]) || [];
   }
 
   async recordOccupancy(resourceId: string, snapshot: ReservationSnapshot): Promise<void> {
@@ -108,5 +108,7 @@ export class SupabaseOccupancyRepository implements OccupancyRepository {
     if (error) {
       throw new Error(`Failed to record occupancy: ${error.message}`);
     }
+
+    void resourceId;
   }
 }
