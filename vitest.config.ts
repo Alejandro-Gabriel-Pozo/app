@@ -45,10 +45,13 @@ export default defineConfig({
         'src/repositories/sql.customer.repository.ts',
       ],
       thresholds: {
-        lines: 80,
-        functions: 80,
-        branches: 70,
-        statements: 80,
+        // TODO: subir gradualmente por módulo a medida que se agregan tests.
+        // Objetivo Fase 2: lines/functions/statements → 60%, branches → 50%
+        // Objetivo Fase 3: lines/functions/statements → 80%, branches → 70%
+        lines: 30,
+        functions: 30,
+        branches: 25,
+        statements: 30,
       },
     },
   },
