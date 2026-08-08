@@ -51,24 +51,9 @@ jobs:
           path: coverage/
           retention-days: 30
 
-  lint:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run lint
-        run: npm run lint
-
+  # ------------------------------------------------------------
+  # Job 2 — Typecheck & build
+  # ------------------------------------------------------------
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -86,9 +71,6 @@ jobs:
 
   # ------------------------------------------------------------
   # Job 3 — Lint
-  #
-  # Corre en paralelo con test y typecheck.
-  # --max-warnings 0: cualquier warning es error de CI.
   # ------------------------------------------------------------
   lint:
     runs-on: ubuntu-latest
