@@ -1,0 +1,233 @@
+/**
+ * @file housekeeping.routes.ts
+ *
+ * ## Permisos por endpoint
+ *
+ * | Endpoint | Roles |
+ * |---|---|
+ * | GET  /housekeeping               | STAFF (tablero diario — todos ven) |
+ * | GET  /housekeeping/me            | HOUSEKEEPING (mis tareas) |
+ * | GET  /housekeeping/status/:s     | HOUSEKEEPING_AND_MANAGEMENT |
+ * | GET  /housekeeping/resource/:id  | STAFF |
+ * | GET  /housekeeping/:id           | STAFF |
+ * | POST /housekeeping               | MANAGEMENT (planificar turno) |
+ * | POST /housekeeping/:id/assign    | MANAGEMENT (asignar empleado) |
+ * | POST /housekeeping/:id/start     | HOUSEKEEPING (el asignado inicia) |
+ * | POST /housekeeping/:id/complete  | HOUSEKEEPING |
+ * | POST /housekeeping/:id/inspect   | HOUSEKEEPING_AND_MANAGEMENT |
+ * | POST /housekeeping/:id/out-of-service | MANAGEMENT |
+ * | POST /housekeeping/:id/reset     | MANAGEMENT |
+ */
+
+import { Router } from 'express';
+import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { Roles } from '../../security/roles.js';
+import type { HousekeepingService } from '../../services/housekeeping.service.js';
+
+export function createHousekeepingRouter(service: HousekeepingService): Router {
+  const router = Router();
+
+  // ── GET /housekeeping?date=YYYY-MM-DD ──────────────────────────────────────
+  router.get(
+    '/',
+    authenticate(),
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const date = req.query['date']
+          ? new Date(req.query['date'] as string)
+          : new Date();
+        const tasks = await service.getTasksByDate(businessId, date);
+        res.json(tasks.map(t => t.toJSON()));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /housekeeping/me ─────────────────────────────────────────────────
+  router.get(
+    '/me',
+    authenticate(),
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const { businessId, id: userId } = req.user!;
+        const tasks = await service.getTasksByAssignee(userId, businessId!);
+        res.json(tasks.map(t => t.toJSON()));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /housekeeping/status/:status ─────────────────────────────────────
+  router.get(
+    '/status/:status',
+    authenticate(),
+    authorize(Roles.HOUSEKEEPING_AND_MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const tasks = await service.getTasksByStatus(
+          businessId,
+          req.params['status'] as any,
+        );
+        res.json(tasks.map(t => t.toJSON()));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /housekeeping/resource/:resourceId ──────────────────────────────
+  router.get(
+    '/resource/:resourceId',
+    authenticate(),
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const tasks = await service.getTasksByResource(
+          req.params['resourceId']!,
+          businessId,
+        );
+        res.json(tasks.map(t => t.toJSON()));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /housekeeping/:id ───────────────────────────────────────────────
+  router.get(
+    '/:id',
+    authenticate(),
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.getTaskById(req.params['id']!, businessId);
+        if (!task) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Tarea no encontrada' });
+          return;
+        }
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping ──────────────────────────────────────────────────
+  router.post(
+    '/',
+    authenticate(),
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.createTask({
+          ...req.body,
+          businessId,
+          scheduledFor: new Date(req.body.scheduledFor as string),
+        });
+        res.status(201).json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping/:id/assign ───────────────────────────────────────
+  router.post(
+    '/:id/assign',
+    authenticate(),
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.assignTask({
+          taskId: req.params['id']!,
+          userId: req.body.userId as string,
+          businessId,
+        });
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping/:id/start ─────────────────────────────────────────
+  router.post(
+    '/:id/start',
+    authenticate(),
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.startTask(req.params['id']!, businessId);
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping/:id/complete ──────────────────────────────────────
+  router.post(
+    '/:id/complete',
+    authenticate(),
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.completeTask(
+          req.params['id']!,
+          businessId,
+          req.body.notes as string | undefined,
+        );
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping/:id/inspect ───────────────────────────────────────
+  router.post(
+    '/:id/inspect',
+    authenticate(),
+    authorize(Roles.HOUSEKEEPING_AND_MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const inspectorId = req.user!.id;
+        const task = await service.inspectTask(
+          req.params['id']!,
+          businessId,
+          inspectorId,
+        );
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping/:id/out-of-service ───────────────────────────────
+  router.post(
+    '/:id/out-of-service',
+    authenticate(),
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.setOutOfService(
+          req.params['id']!,
+          businessId,
+          req.body.reason as string | undefined,
+        );
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping/:id/reset ─────────────────────────────────────────
+  router.post(
+    '/:id/reset',
+    authenticate(),
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId!;
+        const task = await service.resetToPending(req.params['id']!, businessId);
+        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  return router;
+}
