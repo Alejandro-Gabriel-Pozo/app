@@ -14,6 +14,8 @@ experiencia real en code review. El objetivo es que los bugs ya encontrados
 4. [SSL y configuración de BD](#4-ssl-y-configuración-de-bd)
 5. [Tests](#5-tests)
 6. [Commits](#6-commits)
+7. [Schema SQL para tests de integración](#7-schema-sql-para-tests-de-integración)
+8. [Import type — regla de linter](#8-import-type--regla-de-linter)
 
 ---
 
@@ -219,3 +221,157 @@ Cada POST /api/stays/check-in fallaba con TypeError.
 # MAL
 fix: arreglo bug
 ```
+
+---
+
+## 7. Schema SQL para tests de integración
+
+> **Regla:** el archivo `db/schema.sql` debe existir en el repo y mantenerse
+> actualizado. **Nunca** borrarlo ni moverlo.
+
+### ¿Qué es y para qué sirve?
+
+`src/tests/integration/helpers/db.ts` lee `db/schema.sql` con `readFileSync`
+**en el módulo top-level** (fuera de cualquier `beforeAll`). Esto significa
+que si el archivo no existe, el proceso de Vitest falla **antes de ejecutar
+cualquier test** con:
+
+```
+Error: ENOENT: no such file or directory, open '/home/runner/work/app/app/db/schema.sql'
+```
+
+La suite entera queda marcada como `FAIL` con 0 tests ejecutados.
+
+### Estructura de archivos SQL del proyecto
+
+```
+repo/
+  db/
+    schema.sql              ← estado consolidado de TODA la BD  ✅ este es el que usan los tests
+  supabase/
+    migrations/
+      001_init.sql          ← migration original (histórico)
+  migrations/
+    003_add_customers.sql   ← migraciones incrementales
+    004_...sql
+    00N_...sql
+```
+
+### Regla al agregar una migración
+
+Cada vez que se crea un archivo en `migrations/`, el mismo commit debe
+refleja el cambio también en `db/schema.sql`:
+
+```bash
+# 1. Crear la migración incremental
+touch migrations/009_add_nueva_tabla.sql
+# ... escribir ALTER TABLE / CREATE TABLE ...
+
+# 2. Reflejar el cambio en el schema consolidado
+#    (agregar la tabla/columna nueva al CREATE TABLE correspondiente en db/schema.sql)
+vim db/schema.sql
+
+# 3. Commitear ambos juntos
+git add migrations/009_add_nueva_tabla.sql db/schema.sql
+git commit -m "feat(db): add nueva_tabla — migration + schema consolidado"
+```
+
+### Contenido mínimo de db/schema.sql
+
+El archivo debe ser **idempotente** (ejecutable múltiples veces sin error).
+Usar siempre `CREATE TABLE IF NOT EXISTS` y `CREATE INDEX IF NOT EXISTS`.
+
+```sql
+-- BIEN — idempotente
+CREATE TABLE IF NOT EXISTS reservations (
+  id UUID PRIMARY KEY,
+  ...
+);
+
+-- MAL — rompe si se corre dos veces
+CREATE TABLE reservations (
+  id UUID PRIMARY KEY,
+  ...
+);
+```
+
+**Historial:** el archivo nunca existió en el repo. Los tests de integración
+fallaban con `ENOENT` en cada corrida del CI. Creado en
+`fix/add-db-schema-sql` (2026-08-08).
+
+---
+
+## 8. Import type — regla de linter
+
+> **Regla:** cuando todos los símbolos de un `import` se usan únicamente como
+> tipos TypeScript, usar `import type { ... }` en lugar de `import { ... }`.
+
+### ¿Por qué lo exige el linter?
+
+La regla `@typescript-eslint/consistent-type-imports` garantiza que los
+imports de solo-tipos no generen ninguna referencia en el JavaScript emitido.
+El proyecto tiene `--max-warnings 0`, así que **un solo warning rompe el CI**.
+
+### Cuándo usar cada forma
+
+```ts
+// ✅ BIEN — todos los símbolos son tipos (interfaces, type aliases, enums usados solo como tipo)
+import type { Request, Response, NextFunction } from 'express';
+import type { Reservation } from '../domain/Reservation.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+// ✅ BIEN — mezcla: algunos son valores, otros son tipos → import normal
+//    (UserRole se usa en runtime como valor, BusinessStatus también)
+import { UserRole, BusinessStatus } from '../types/enums.js';
+import { ReservationService } from '../services/reservation.service.js';
+
+// ✅ BIEN — mezcla explícita (alternativa más granular)
+import { ReservationService, type ReservationInput } from '../services/reservation.service.js';
+
+// ❌ MAL — Request/Response/NextFunction son solo tipos en este archivo
+import { Request, Response, NextFunction } from 'express';
+```
+
+### Regla práctica
+
+| Símbolo | ¿`import type`? |
+|---|---|
+| Interface / `type X = ...` | Siempre `import type` |
+| Clase usada solo como anotación de parámetro | `import type` |
+| Clase instanciada con `new` | Import normal |
+| Enum usado como valor (`UserRole.ADMIN`) | Import normal |
+| Enum usado solo en anotación de tipo | `import type` |
+| `Request`, `Response`, `NextFunction` de Express | Casi siempre `import type` |
+
+### Cómo verificar antes de commitear
+
+```bash
+# Ver todos los warnings del linter
+npm run lint
+
+# Aplicar autofix (seguro — solo cambia imports)
+npx eslint src --ext .ts --fix
+
+# Verificar que no quedan warnings
+npm run lint
+```
+
+### Cómo configurar el editor para evitarlo
+
+VS Code con la extensión ESLint muestra los warnings inline. Activar
+`"editor.codeActionsOnSave": { "source.fixAll.eslint": true }` en
+`.vscode/settings.json` para que el fix se aplique automáticamente al
+guardar.
+
+```json
+{
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  }
+}
+```
+
+**Historial:** 106 warnings de `consistent-type-imports` en 50 archivos
+rompieron el CI. Corregidos con `eslint --fix` via workflow
+`lint-autofix.yml` (2026-08-08). El workflow se puede eliminar
+una vez que el fix esté mergeado.
