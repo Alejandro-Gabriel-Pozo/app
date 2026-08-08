@@ -20,6 +20,11 @@
  * compact() se usa solo para los filtros OPCIONALES.
  * businessId es obligatorio y se pasa directamente a listOrders(),
  * evitando la clave duplicada que causa TS2783.
+ *
+ * ## Transacción en createOrder
+ * OrderService recibe container.transactionManager para envolver
+ * INSERT orders + INSERT order_items en un único BEGIN/COMMIT.
+ * Patrón idéntico al de reservations.routes.ts.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -34,15 +39,18 @@ import { SqlOrderRepository } from '../../repositories/sql.order.repository.js';
 import { compact } from '../utils/compact.js';
 import type { OrderStatus } from '../../domain/order.entities.js';
 
-function buildOrderService(req: Request): OrderService {
-  return new OrderService(new SqlOrderRepository(req.db!));
+function buildOrderService(req: Request, container: AppContainer): OrderService {
+  return new OrderService(
+    new SqlOrderRepository(req.db!),
+    container.transactionManager,
+  );
 }
 
 function param(req: Request, key: string): string {
   return req.params[key] as string;
 }
 
-export function createOrdersRouter(_container: AppContainer): Router {
+export function createOrdersRouter(container: AppContainer): Router {
   const router = Router();
 
   // -------------------------------------------------------------------------
@@ -50,10 +58,9 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const service = buildOrderService(req);
+      const service = buildOrderService(req, container);
       const { customerId, status, from, to, limit, offset } = req.query as Record<string, string>;
 
-      // compact() solo recibe los filtros OPCIONALES para no duplicar businessId
       const optionalFilters = compact({
         ...(customerId !== undefined && { customerId }),
         ...(status     !== undefined && { status: status as OrderStatus }),
@@ -78,7 +85,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const service = buildOrderService(req);
+      const service = buildOrderService(req, container);
       const order = await service.createOrder({
         ...req.body,
         businessId: req.businessId!,
@@ -94,7 +101,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const service = buildOrderService(req);
+      const service = buildOrderService(req, container);
       const order = await service.getOrder(param(req, 'id'));
       if (!order) {
         res.status(404).json({ code: 'ORDER_NOT_FOUND', message: 'Orden no encontrada.' });
@@ -111,7 +118,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/:id/confirm', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req).confirmOrder(param(req, 'id'));
+      const order = await buildOrderService(req, container).confirmOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
@@ -125,7 +132,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/:id/complete', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req).completeOrder(param(req, 'id'));
+      const order = await buildOrderService(req, container).completeOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
@@ -139,7 +146,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req).cancelOrder(param(req, 'id'));
+      const order = await buildOrderService(req, container).cancelOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
@@ -154,7 +161,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   router.patch('/:id/notes', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { notes } = req.body as { notes?: string | null };
-      const order = await buildOrderService(req).updateNotes(param(req, 'id'), notes ?? null);
+      const order = await buildOrderService(req, container).updateNotes(param(req, 'id'), notes ?? null);
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)        res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
@@ -168,7 +175,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/:id/items', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const item = await buildOrderService(req).addItem(param(req, 'id'), req.body);
+      const item = await buildOrderService(req, container).addItem(param(req, 'id'), req.body);
       res.status(201).json(item);
     } catch (err) {
       if (err instanceof OrderNotFoundError)        res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
@@ -182,7 +189,7 @@ export function createOrdersRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.delete('/:id/items/:itemId', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      await buildOrderService(req).removeItem(param(req, 'id'), param(req, 'itemId'));
+      await buildOrderService(req, container).removeItem(param(req, 'id'), param(req, 'itemId'));
       res.status(204).send();
     } catch (err) {
       if (err instanceof OrderNotFoundError)        res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });

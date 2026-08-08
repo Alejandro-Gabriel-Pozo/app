@@ -2,11 +2,20 @@
 // repositories/sql.order.repository.ts — Implementación PostgreSQL
 // Usa SqlClient.query(sql, params) — compatible con pg (node-postgres).
 // NO usa tagged templates ni APIs de postgres.js.
+//
+// ## Cambios respecto a versión anterior
+//   - createWithClient(): crea la fila en `orders` usando un client
+//     externo (transaccional). No inserta ítems — eso lo hace
+//     OrderService.createOrder() dentro de transactionManager.run().
+//   - addItemWithClient(): inserta un order_item usando un client externo.
+//   - removeItem(): ahora acepta orderId y recalcula total_amount con
+//     SUM(subtotal) después del DELETE, evitando totales corruptos.
 // =============================================================================
 
 import { randomUUID } from 'crypto';
 import type { SqlClient } from './sql.client.js';
 import type { IOrderRepository, ListOrdersFilter } from './order.repository.js';
+import type { IOrderRepositoryWithClient } from '../services/order.service.js';
 import type {
   Order,
   OrderItem,
@@ -58,7 +67,7 @@ function rowToOrder(row: Record<string, unknown>, items: OrderItem[]): Order {
 // SqlOrderRepository
 // ---------------------------------------------------------------------------
 
-export class SqlOrderRepository implements IOrderRepository {
+export class SqlOrderRepository implements IOrderRepositoryWithClient {
   constructor(private readonly db: SqlClient) {}
 
   // -------------------------------------------------------------------------
@@ -107,7 +116,7 @@ export class SqlOrderRepository implements IOrderRepository {
     const { rows: orderRows } = await this.db.query<Record<string, unknown>>(sql, params);
     if (orderRows.length === 0) return [];
 
-    const orderIds    = orderRows.map((r) => r['id'] as string);
+    const orderIds     = orderRows.map((r) => r['id'] as string);
     const placeholders = orderIds.map((_, i) => `$${i + 1}`).join(', ');
     const { rows: itemRows } = await this.db.query<Record<string, unknown>>(
       `SELECT * FROM order_items WHERE order_id IN (${placeholders}) ORDER BY created_at ASC`,
@@ -128,21 +137,20 @@ export class SqlOrderRepository implements IOrderRepository {
 
   // -------------------------------------------------------------------------
   // create
+  //
+  // Mantiene la firma original (IOrderRepository) para compatibilidad.
+  // Internamente delega a createWithClient usando this.db.
+  // ⚠️  Para garantizar atomicidad, preferir createOrder() en OrderService
+  //    (que usa transactionManager.run → createWithClient + addItemWithClient).
   // -------------------------------------------------------------------------
 
   async create(input: CreateOrderInput): Promise<Order> {
     const id = randomUUID();
-
-    const { rows: orderRows } = await this.db.query<Record<string, unknown>>(
-      `INSERT INTO orders (id, business_id, customer_id, notes)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [id, input.businessId, input.customerId, input.notes ?? null],
-    );
+    const order = await this.createWithClient(this.db, input, id);
 
     const items: OrderItem[] = [];
     for (const item of input.items ?? []) {
-      const newItem = await this.addItem(id, {
+      const newItem = await this.addItemWithClient(this.db, id, {
         itemType:         item.itemType,
         productId:        item.productId        ?? null,
         productVariantId: item.productVariantId ?? null,
@@ -163,7 +171,29 @@ export class SqlOrderRepository implements IOrderRepository {
       );
     }
 
-    return rowToOrder({ ...orderRows[0]!, total_amount: total }, items);
+    return { ...order, totalAmount: total, items };
+  }
+
+  // -------------------------------------------------------------------------
+  // createWithClient  ← NUEVO
+  //
+  // Inserta únicamente la fila en `orders`. Los ítems se insertan
+  // por separado en addItemWithClient(), ambos coordinados por
+  // OrderService.createOrder() dentro de una transacción.
+  // -------------------------------------------------------------------------
+
+  async createWithClient(
+    client: SqlClient,
+    input: CreateOrderInput,
+    id: string,
+  ): Promise<Order> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `INSERT INTO orders (id, business_id, customer_id, notes)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [id, input.businessId, input.customerId, input.notes ?? null],
+    );
+    return rowToOrder(rows[0]!, []);
   }
 
   // -------------------------------------------------------------------------
@@ -226,8 +256,23 @@ export class SqlOrderRepository implements IOrderRepository {
     orderId: string,
     item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
   ): Promise<OrderItem> {
+    return this.addItemWithClient(this.db, orderId, item);
+  }
+
+  // -------------------------------------------------------------------------
+  // addItemWithClient  ← NUEVO
+  //
+  // Inserta un ítem usando el client provisto (puede ser transaccional).
+  // addItem() delega aquí usando this.db para mantener la firma original.
+  // -------------------------------------------------------------------------
+
+  async addItemWithClient(
+    client: SqlClient,
+    orderId: string,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+  ): Promise<OrderItem> {
     const id = randomUUID();
-    const { rows } = await this.db.query<Record<string, unknown>>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `INSERT INTO order_items
          (id, order_id, item_type, product_id, product_variant_id, reservation_id,
           quantity, unit_price, subtotal, notes)
@@ -246,14 +291,33 @@ export class SqlOrderRepository implements IOrderRepository {
   }
 
   // -------------------------------------------------------------------------
-  // removeItem
+  // removeItem  ← ACTUALIZADO
+  //
+  // Ahora recibe orderId para poder recalcular total_amount con SUM(subtotal)
+  // después del DELETE. Antes el total quedaba corrupto porque nunca se
+  // actualizaba al eliminar un ítem.
   // -------------------------------------------------------------------------
 
-  async removeItem(orderItemId: string): Promise<boolean> {
+  async removeItem(orderItemId: string, orderId: string): Promise<boolean> {
     const { rows } = await this.db.query<Record<string, unknown>>(
       'DELETE FROM order_items WHERE id = $1 RETURNING id',
       [orderItemId],
     );
+
+    if (rows.length > 0) {
+      // Recalcular total_amount a partir de los ítems que quedan
+      await this.db.query(
+        `UPDATE orders
+         SET total_amount = COALESCE(
+           (SELECT SUM(subtotal) FROM order_items WHERE order_id = $1),
+           0
+         ),
+         updated_at = NOW()
+         WHERE id = $1`,
+        [orderId],
+      );
+    }
+
     return rows.length > 0;
   }
 }
