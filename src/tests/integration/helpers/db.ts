@@ -47,6 +47,11 @@
  *
  * NUNCA mover el readFileSync al top-level. Si el archivo no existe o
  * TEST_DATABASE_URL no está definida, la suite debe saltear (skip), no explotar.
+ *
+ * ## SqlClient vs PgSqlClient
+ * SqlClient es una INTERFAZ (no se puede instanciar con `new`).
+ * PgSqlClient es la clase concreta que implementa SqlClient sobre pg.Pool.
+ * Siempre usar `new PgSqlClient(pool)` aquí.
  */
 
 import { readFileSync } from 'node:fs';
@@ -54,7 +59,8 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { SqlClient } from '../../../repositories/sql.client.js';
+import type { SqlClient } from '../../../repositories/sql.client.js';
+import { PgSqlClient } from '../../../repositories/sql.client.js';
 
 const { Pool } = pg;
 
@@ -109,7 +115,8 @@ export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: str
   const tenantUrl = url.toString();
 
   const pool = new Pool({ connectionString: tenantUrl, max: 3 });
-  const db = new SqlClient(pool);
+  // PgSqlClient es la clase concreta; SqlClient es solo la interfaz.
+  const db = new PgSqlClient(pool);
 
   // Aplicar schema completo
   await db.query(schemaSql, []);

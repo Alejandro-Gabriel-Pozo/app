@@ -46,7 +46,7 @@ export function createResourcesRouter(): Router {
     async (req, res, next) => {
       try {
         const repo = new SqlResourceRepository(req.db);
-        const resource = await repo.getById(req.params.id!);
+        const resource = await repo.getById(req.params['id'] as string);
         if (!resource) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
           return;
@@ -90,7 +90,7 @@ export function createResourcesRouter(): Router {
     async (req, res, next) => {
       try {
         const repo = new SqlResourceRepository(req.db);
-        const existing = await repo.getById(req.params.id!);
+        const existing = await repo.getById(req.params['id'] as string);
         if (!existing) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
           return;
@@ -119,7 +119,7 @@ export function createResourcesRouter(): Router {
     async (req, res, next) => {
       try {
         const repo = new SqlResourceRepository(req.db);
-        const deleted = await repo.delete(req.params.id!);
+        const deleted = await repo.delete(req.params['id'] as string);
         if (!deleted) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
           return;

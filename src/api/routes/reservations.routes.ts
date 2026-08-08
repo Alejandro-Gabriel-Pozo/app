@@ -32,8 +32,8 @@ import { UserRole }                      from '../../types/enums.js';
 
 function buildReservationService(req: import('express').Request): ReservationService {
   const db = req.db;
-  const reservationRepo     = new SqlReservationRepository(db);
   const resourceRepo        = new SqlResourceRepository(db);
+  const reservationRepo     = new SqlReservationRepository(db, resourceRepo);
   const occupancyRepo       = new SqlOccupancyRepository(db);
   const categoryRepo        = new SqlCategoryRepository(db);
   const domainEventRepo     = new SqlDomainEventRepository(db);
@@ -58,7 +58,8 @@ export function createReservationsRouter(): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const repo = new SqlReservationRepository(req.db);
+        const resourceRepo = new SqlResourceRepository(req.db);
+        const repo = new SqlReservationRepository(req.db, resourceRepo);
         const reservations = await repo.getAll();
         res.json(reservations);
       } catch (err) {
@@ -74,8 +75,9 @@ export function createReservationsRouter(): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const repo = new SqlReservationRepository(req.db);
-        const reservation = await repo.getById(req.params.id!);
+        const resourceRepo = new SqlResourceRepository(req.db);
+        const repo = new SqlReservationRepository(req.db, resourceRepo);
+        const reservation = await repo.getById(req.params['id'] as string);
         if (!reservation) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
           return;
@@ -95,7 +97,7 @@ export function createReservationsRouter(): Router {
     async (req, res, next) => {
       try {
         const user = req.user as AuthenticatedUser;
-        const businessId = user.businessId!;
+        const businessId = user.businessId as string;
 
         const customerId =
           user.role === UserRole.CUSTOMER
@@ -124,7 +126,7 @@ export function createReservationsRouter(): Router {
       try {
         const service = buildReservationService(req);
         const updated = await service.updateReservation(
-          req.params.id!,
+          req.params['id'] as string,
           req.body,
         );
         res.json(updated);
@@ -141,9 +143,9 @@ export function createReservationsRouter(): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
+        const businessId = req.user!.businessId as string;
         const service = buildReservationService(req);
-        const reservation = await service.confirmReservation(req.params.id!, businessId);
+        const reservation = await service.confirmReservation(req.params['id'] as string, businessId);
         res.json(reservation);
       } catch (err) {
         next(err);
@@ -158,9 +160,9 @@ export function createReservationsRouter(): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
+        const businessId = req.user!.businessId as string;
         const service = buildReservationService(req);
-        const reservation = await service.cancelReservation(req.params.id!, businessId);
+        const reservation = await service.cancelReservation(req.params['id'] as string, businessId);
         res.json(reservation);
       } catch (err) {
         next(err);
@@ -175,9 +177,9 @@ export function createReservationsRouter(): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const businessId = req.user!.businessId!;
+        const businessId = req.user!.businessId as string;
         const service = buildReservationService(req);
-        const reservation = await service.completeReservation(req.params.id!, businessId);
+        const reservation = await service.completeReservation(req.params['id'] as string, businessId);
         res.json(reservation);
       } catch (err) {
         next(err);

@@ -30,7 +30,7 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const stays = await service.getActiveStays(req.user!.businessId!);
+        const stays = await service.getActiveStays(req.user!.businessId as string);
         res.json(stays.map(s => s.toJSON()));
       } catch (err) { next(err); }
     },
@@ -44,8 +44,8 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.getStayByReservation(
-          req.params['reservationId']!,
-          req.user!.businessId!,
+          req.params['reservationId'] as string,
+          req.user!.businessId as string,
         );
         if (!stay) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Estadía no encontrada para esa reserva' });
@@ -64,8 +64,8 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.getActiveStayForResource(
-          req.params['resourceId']!,
-          req.user!.businessId!,
+          req.params['resourceId'] as string,
+          req.user!.businessId as string,
         );
         if (!stay) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Habitación libre' });
@@ -83,7 +83,10 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const stay = await service.getStayById(req.params['id']!, req.user!.businessId!);
+        const stay = await service.getStayById(
+          req.params['id'] as string,
+          req.user!.businessId as string,
+        );
         if (!stay) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Estadía no encontrada' });
           return;
@@ -100,12 +103,13 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
+        const notes = req.body.notes as string | undefined;
         const stay = await service.checkIn({
           reservationId: req.body.reservationId as string,
           resourceId:    req.body.resourceId as string,
-          businessId:    req.user!.businessId!,
+          businessId:    req.user!.businessId as string,
           assignedBy:    req.user!.id,
-          notes:         req.body.notes as string | undefined,
+          ...(notes !== undefined && { notes }),
         });
         res.status(201).json(stay.toJSON());
       } catch (err) { next(err); }
@@ -120,8 +124,8 @@ export function createStaysRouter(service: StayService): Router {
     async (req, res, next) => {
       try {
         const stay = await service.checkOut({
-          stayId:             req.params['id']!,
-          businessId:         req.user!.businessId!,
+          stayId:             req.params['id'] as string,
+          businessId:         req.user!.businessId as string,
           notes:              req.body.notes as string | undefined,
           nextCleaningShift:  req.body.nextCleaningShift as string | undefined,
         });
@@ -137,7 +141,10 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const stay = await service.markNoShow(req.params['id']!, req.user!.businessId!);
+        const stay = await service.markNoShow(
+          req.params['id'] as string,
+          req.user!.businessId as string,
+        );
         res.json(stay.toJSON());
       } catch (err) { next(err); }
     },
