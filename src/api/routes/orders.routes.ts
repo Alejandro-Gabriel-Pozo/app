@@ -25,6 +25,11 @@
  * OrderService recibe container.transactionManager para envolver
  * INSERT orders + INSERT order_items en un único BEGIN/COMMIT.
  * Patrón idéntico al de reservations.routes.ts.
+ *
+ * ## Validación Zod
+ * POST /api/orders             → CreateOrderSchema
+ * POST /api/orders/:id/items   → CreateOrderItemSchema
+ * Respuesta 400 con code VALIDATION_ERROR consistente con el resto de rutas.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -38,6 +43,10 @@ import {
 import { SqlOrderRepository } from '../../repositories/sql.order.repository.js';
 import { compact } from '../utils/compact.js';
 import type { OrderStatus } from '../../domain/order.entities.js';
+import {
+  CreateOrderSchema,
+  CreateOrderItemSchema,
+} from '../schemas/request.schemas.js';
 
 function buildOrderService(req: Request, container: AppContainer): OrderService {
   return new OrderService(
@@ -48,6 +57,10 @@ function buildOrderService(req: Request, container: AppContainer): OrderService 
 
 function param(req: Request, key: string): string {
   return req.params[key] as string;
+}
+
+function validationError(res: Response, errors: { path: string; message: string }[]): void {
+  res.status(400).json({ code: 'VALIDATION_ERROR', errors });
 }
 
 export function createOrdersRouter(container: AppContainer): Router {
@@ -85,9 +98,14 @@ export function createOrdersRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const parsed = CreateOrderSchema.safeParse(req.body);
+      if (!parsed.success) {
+        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
+        return;
+      }
       const service = buildOrderService(req, container);
       const order = await service.createOrder({
-        ...req.body,
+        ...parsed.data,
         businessId: req.businessId!,
       });
       res.status(201).json(order);
@@ -175,7 +193,12 @@ export function createOrdersRouter(container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/:id/items', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const item = await buildOrderService(req, container).addItem(param(req, 'id'), req.body);
+      const parsed = CreateOrderItemSchema.safeParse(req.body);
+      if (!parsed.success) {
+        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
+        return;
+      }
+      const item = await buildOrderService(req, container).addItem(param(req, 'id'), parsed.data);
       res.status(201).json(item);
     } catch (err) {
       if (err instanceof OrderNotFoundError)        res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
