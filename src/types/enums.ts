@@ -9,13 +9,20 @@ export enum ReservationStatus {
  * Roles dentro de un negocio (tenant).
  * Se incluyen en el JWT junto con el business_id.
  *
- * CUSTOMER es un rol especial: no es empleado del negocio, sino un
- * cliente externo que reserva por su cuenta desde el portal público.
- * Su JWT lleva `customer_id` en lugar de `sub` como empleado.
+ * OWNER        — propietario del negocio: acceso total a su tenant, igual que ADMIN
+ *                pero además puede ver facturación y configuración del plan.
+ * ADMIN        — administrador operativo: gestión completa excepto facturación.
+ * RECEPTIONIST — recepción: reservas, check-in/out, clientes. Sin acceso a reportes ni config.
+ * HOUSEKEEPING — mucama / limpieza: solo lectura del estado de habitaciones y tareas asignadas.
+ * WAITER       — mozo: órdenes de consumo. Sin acceso a reservas ni config.
+ * CUSTOMER     — cliente externo que reserva desde el portal público.
+ *                Su JWT lleva `customer_id` en lugar de `sub` como empleado.
  */
 export enum UserRole {
+  OWNER        = 'OWNER',
   ADMIN        = 'ADMIN',
   RECEPTIONIST = 'RECEPTIONIST',
+  HOUSEKEEPING = 'HOUSEKEEPING',
   WAITER       = 'WAITER',
   CUSTOMER     = 'CUSTOMER',
 }
