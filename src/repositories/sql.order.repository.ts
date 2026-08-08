@@ -21,6 +21,7 @@
 
 import { randomUUID } from 'crypto';
 import pg from 'pg';
+import type { Pool } from 'pg';
 import type { SqlClient } from './sql.client.js';
 import type { ListOrdersFilter } from './order.repository.js';
 import type { IOrderRepositoryWithClient } from '../services/order.service.js';
@@ -32,8 +33,6 @@ import type {
   CreateOrderInput,
   UpdateOrderInput,
 } from '../domain/order.entities.js';
-
-const { Pool } = pg;
 
 // ---------------------------------------------------------------------------
 // Helpers de mapeo DB → dominio
@@ -368,3 +367,6 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     return rows.length > 0;
   }
 }
+
+// Needed only to access pool.connect() in addItem — imported as type above
+void pg;

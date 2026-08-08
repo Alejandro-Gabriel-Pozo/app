@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReservationStatus } from '../types/enums.js';
 import { SqlOccupancyRepository } from './sql.occupancy.repository.js';
 import type { SqlClient } from './sql.client.js';
+import type { QueryResult } from 'pg';
 
 describe('SqlOccupancyRepository', () => {
   let mockSqlClient: SqlClient;
@@ -9,7 +10,7 @@ describe('SqlOccupancyRepository', () => {
 
   beforeEach(() => {
     mockSqlClient = {
-      query: vi.fn(async () => ({ rows: [] })),
+      query: vi.fn(async () => ({ rows: [] } as QueryResult<Record<string, unknown>>)),
     };
     repo = new SqlOccupancyRepository(mockSqlClient);
   });
@@ -94,7 +95,7 @@ describe('SqlOccupancyRepository', () => {
             bookedMinutes: 60,
           },
         ],
-      });
+      } as unknown as QueryResult<Record<string, unknown>>);
     });
 
     it('debe consultar ocupación por rango de fechas', async () => {
@@ -142,7 +143,7 @@ describe('SqlOccupancyRepository', () => {
             occupancyRate: '10.00',
           },
         ],
-      });
+      } as unknown as QueryResult<Record<string, unknown>>);
     });
 
     it('debe calcular ocupación promedio por recurso', async () => {
@@ -172,7 +173,7 @@ describe('SqlOccupancyRepository', () => {
             occupancyRate: '80.00',
           },
         ],
-      });
+      } as unknown as QueryResult<Record<string, unknown>>);
     });
 
     it('debe limitar resultados', async () => {
@@ -201,7 +202,7 @@ describe('SqlOccupancyRepository', () => {
 
   describe('deleteOldRecords', () => {
     it('debe ejecutar DELETE con fecha correcta', async () => {
-      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rowCount: 5 });
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rowCount: 5 } as unknown as QueryResult<Record<string, unknown>>);
 
       const beforeDate = new Date('2026-06-20');
 
@@ -219,7 +220,7 @@ describe('SqlOccupancyRepository', () => {
     it('debe manejar respuesta sin rowCount', async () => {
       vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [{}, {}, {}],
-      });
+      } as unknown as QueryResult<Record<string, unknown>>);
 
       const beforeDate = new Date('2026-06-20');
 
@@ -241,7 +242,7 @@ describe('SqlOccupancyRepository', () => {
             bookedMinutes: 120,
           },
         ],
-      });
+      } as unknown as QueryResult<Record<string, unknown>>);
     });
 
     it('debe retornar todos los snapshots', async () => {
