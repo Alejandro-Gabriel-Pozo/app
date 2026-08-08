@@ -23,6 +23,7 @@ import { Router } from 'express';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { HousekeepingService } from '../../services/housekeeping.service.js';
+import { HousekeepingStatus } from '../../domain/housekeeping-task.js';
 
 export function createHousekeepingRouter(service: HousekeepingService): Router {
   const router = Router();
@@ -68,7 +69,7 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
         const businessId = req.user!.businessId!;
         const tasks = await service.getTasksByStatus(
           businessId,
-          req.params['status'] as any,
+          req.params['status'] as HousekeepingStatus,
         );
         res.json(tasks.map(t => t.toJSON()));
       } catch (err) { next(err); }

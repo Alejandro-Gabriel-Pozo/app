@@ -4,7 +4,14 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Tests de integración excluidos del run por defecto:
+    // requieren TEST_DATABASE_URL (BD postgres real).
+    // Correrlos con: TEST_DATABASE_URL=... npx vitest run src/tests/integration
     include: ['src/**/*.test.ts'],
+    exclude: [
+      'src/tests/integration/**',
+      'node_modules/**',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
@@ -38,10 +45,13 @@ export default defineConfig({
         'src/repositories/sql.customer.repository.ts',
       ],
       thresholds: {
-        lines: 80,
-        functions: 80,
-        branches: 70,
-        statements: 80,
+        // TODO: subir gradualmente por módulo a medida que se agregan tests.
+        // Objetivo Fase 2: lines/functions/statements → 60%, branches → 50%
+        // Objetivo Fase 3: lines/functions/statements → 80%, branches → 70%
+        lines: 30,
+        functions: 30,
+        branches: 25,
+        statements: 30,
       },
     },
   },

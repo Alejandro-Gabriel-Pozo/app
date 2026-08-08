@@ -16,6 +16,7 @@
 //     dependencias), igual que en ReservationService.
 // =============================================================================
 
+import { randomUUID } from 'node:crypto';
 import type { IOrderRepository, ListOrdersFilter } from '../repositories/order.repository.js';
 import type {
   Order,
@@ -57,19 +58,12 @@ export class InvalidOrderTransitionError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface IOrderRepositoryWithClient extends IOrderRepository {
-  /**
-   * Crea la fila en `orders` usando el client transaccional provisto.
-   * No inserta ítems — eso lo maneja createOrder() en el servicio.
-   */
   createWithClient(
     client: SqlClient,
     input: CreateOrderInput,
     id: string,
   ): Promise<Order>;
 
-  /**
-   * Inserta un ítem en `order_items` usando el client transaccional provisto.
-   */
   addItemWithClient(
     client: SqlClient,
     orderId: string,
@@ -87,10 +81,6 @@ export class OrderService {
     private readonly transactionManager: TransactionManager,
   ) {}
 
-  // -------------------------------------------------------------------------
-  // Queries
-  // -------------------------------------------------------------------------
-
   async listOrders(filter: ListOrdersFilter): Promise<Order[]> {
     return this.orderRepo.getAll(filter);
   }
@@ -99,22 +89,13 @@ export class OrderService {
     return (await this.orderRepo.getById(id)) ?? null;
   }
 
-  // -------------------------------------------------------------------------
-  // Crear orden
-  //
-  // Envuelve la creación de la order row + todos sus ítems en una única
-  // transacción. Si cualquier INSERT falla, el BEGIN hace ROLLBACK
-  // automático y no quedan filas huérfanas.
-  // -------------------------------------------------------------------------
-
   async createOrder(input: CreateOrderInput): Promise<Order> {
     return this.transactionManager.run(async (client: SqlClient) => {
-      const id = require('node:crypto').randomUUID() as string;
+      // randomUUID importado desde node:crypto (no require())
+      const id = randomUUID();
 
-      // 1. Insertar la fila en `orders` (total_amount empieza en 0)
       const order = await this.orderRepo.createWithClient(client, input, id);
 
-      // 2. Insertar cada ítem dentro de la misma transacción
       const items: OrderItem[] = [];
       for (const item of input.items ?? []) {
         const newItem = await this.orderRepo.addItemWithClient(client, id, {
@@ -130,7 +111,6 @@ export class OrderService {
         items.push(newItem);
       }
 
-      // 3. Recalcular total_amount dentro de la transacción
       const total = items.reduce((sum, i) => sum + i.subtotal, 0);
       if (total > 0) {
         await client.query(
@@ -142,10 +122,6 @@ export class OrderService {
       return { ...order, totalAmount: total, items };
     });
   }
-
-  // -------------------------------------------------------------------------
-  // Agregar ítem (solo DRAFT)
-  // -------------------------------------------------------------------------
 
   async addItem(orderId: string, item: CreateOrderItemInput): Promise<OrderItem> {
     const order = await this.orderRepo.getById(orderId);
@@ -164,20 +140,12 @@ export class OrderService {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Eliminar ítem (solo DRAFT)
-  // -------------------------------------------------------------------------
-
   async removeItem(orderId: string, itemId: string): Promise<void> {
     const order = await this.orderRepo.getById(orderId);
     if (!order) throw new OrderNotFoundError(orderId);
     if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
     await this.orderRepo.removeItem(itemId, orderId);
   }
-
-  // -------------------------------------------------------------------------
-  // Confirmar (DRAFT → CONFIRMED)
-  // -------------------------------------------------------------------------
 
   async confirmOrder(id: string): Promise<Order> {
     const order = await this.orderRepo.getById(id);
@@ -186,10 +154,6 @@ export class OrderService {
     return (await this.orderRepo.update(id, { status: 'CONFIRMED' }))!;
   }
 
-  // -------------------------------------------------------------------------
-  // Completar (CONFIRMED → COMPLETED)
-  // -------------------------------------------------------------------------
-
   async completeOrder(id: string): Promise<Order> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
@@ -197,20 +161,12 @@ export class OrderService {
     return (await this.orderRepo.complete(id))!;
   }
 
-  // -------------------------------------------------------------------------
-  // Cancelar (cualquier estado salvo COMPLETED)
-  // -------------------------------------------------------------------------
-
   async cancelOrder(id: string): Promise<Order> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status === 'COMPLETED') throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
     return (await this.orderRepo.cancel(id))!;
   }
-
-  // -------------------------------------------------------------------------
-  // Actualizar notas (solo DRAFT)
-  // -------------------------------------------------------------------------
 
   async updateNotes(id: string, notes: string | null): Promise<Order> {
     const order = await this.orderRepo.getById(id);

@@ -118,7 +118,7 @@ export class OutboxWorker {
    * - Para cualquier otro error, loguea normalmente (se reintenta al siguiente ciclo).
    */
   private handlePollError(err: unknown): void {
-    const pgCode = (err as any)?.code;
+    const pgCode = (err as NodeJS.ErrnoException)?.code;
 
     if (pgCode === '42P01') {
       // relation does not exist — tabla todavía no creada en la BD

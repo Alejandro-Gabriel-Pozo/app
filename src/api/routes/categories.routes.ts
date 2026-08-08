@@ -58,7 +58,7 @@ export function createCategoryRouter(container: AppContainer): Router {
   router.post('/', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body       = CreateCategorySchema.parse(req.body);
-      const businessId = String((req as any).user?.businessId ?? '');
+      const businessId = String(req.user?.businessId ?? '');
 
       // Usa getBusinessPlan() en lugar de platformRepo.findById() —
       // solo trae el plan (string), no el objeto completo del negocio.
