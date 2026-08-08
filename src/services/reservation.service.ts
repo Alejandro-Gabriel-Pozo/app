@@ -23,6 +23,13 @@
  *   para serializar el chequeo de disponibilidad + INSERT/UPSERT.
  *   Si el repositorio no implementa el método (mocks en tests), se hace
  *   fallback a `getActiveForResourceInRange()` sin lock.
+ *
+ * ## Cambios — fix/reservation-businessid-required
+ * - `confirmReservation`, `cancelReservation` y `completeReservation`
+ *   ya no tienen `businessId = ''` como default. El parámetro es
+ *   obligatorio y se valida con una guard explícita al inicio de cada
+ *   método. Un businessId vacío lanza Error en lugar de persistir
+ *   un evento de dominio con businessId: '' (bug silencioso).
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -73,7 +80,7 @@ export class ReservationService {
 
     await this.transactionManager.run(async (client: SqlClient) => {
       // SELECT ... FOR UPDATE: bloquea las filas solapadas hasta COMMIT.
-      // Si otro request concurrent llegó primero y ya insertó, este
+      // Si otro request concurrente llegó primero y ya insertó, este
       // verifica contra el dato commiteado — no contra el snapshot previo.
       const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
         ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
@@ -202,10 +209,12 @@ export class ReservationService {
    * Escribe reservation.confirmed en la misma transacción que el cambio de estado.
    *
    * @param id         - ID de la reserva a confirmar.
-   * @param businessId - ID del tenant activo. Proviene de req.businessId en el router.
+   * @param businessId - ID del tenant activo (obligatorio). Proviene de req.businessId en el router.
    *                     No se lee de process.env — el servicio es agnóstico al entorno.
    */
-  async confirmReservation(id: string, businessId: string = ''): Promise<Reservation> {
+  async confirmReservation(id: string, businessId: string): Promise<Reservation> {
+    if (!businessId) throw new Error('businessId es obligatorio en confirmReservation');
+
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
@@ -236,9 +245,11 @@ export class ReservationService {
    * de modo que el OutboxWorker pueda hacer VOID del CHARGE financiero asociado.
    *
    * @param id         - ID de la reserva a cancelar.
-   * @param businessId - ID del tenant activo. Proviene de req.businessId en el router.
+   * @param businessId - ID del tenant activo (obligatorio). Proviene de req.businessId en el router.
    */
-  async cancelReservation(id: string, businessId: string = ''): Promise<Reservation> {
+  async cancelReservation(id: string, businessId: string): Promise<Reservation> {
+    if (!businessId) throw new Error('businessId es obligatorio en cancelReservation');
+
     const reservation = await this.requireReservation(id);
     reservation.cancel();
 
@@ -266,9 +277,11 @@ export class ReservationService {
    * Escribe reservation.completed en la misma transacción que el cambio de estado.
    *
    * @param id         - ID de la reserva a completar.
-   * @param businessId - ID del tenant activo. Proviene de req.businessId en el router.
+   * @param businessId - ID del tenant activo (obligatorio). Proviene de req.businessId en el router.
    */
-  async completeReservation(id: string, businessId: string = ''): Promise<Reservation> {
+  async completeReservation(id: string, businessId: string): Promise<Reservation> {
+    if (!businessId) throw new Error('businessId es obligatorio en completeReservation');
+
     const reservation = await this.requireReservation(id);
     reservation.complete();
 
