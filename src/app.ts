@@ -15,7 +15,8 @@
  *       necesita correr cuando la BD del tenant todavía no está activa.
  * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
  * 10. /api/resources, /reservations, /reports, /customers, /users,
- *     /categories, /products, /orders, /bookable-services
+ *     /categories, /products, /orders, /bookable-services,
+ *     /housekeeping, /stays
  * 11. errorHandler
  */
 
@@ -38,6 +39,8 @@ import { createAdminRouter }             from './api/routes/admin.routes.js';
 import { createProductsRouter }          from './api/routes/products.routes.js';
 import { createOrdersRouter }            from './api/routes/orders.routes.js';
 import { createBookableServicesRouter }  from './api/routes/bookable-services.routes.js';
+import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.js';
+import { createStaysRouter }             from './api/routes/stays.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { openApiSpec }                   from './openapi/spec.js';
 import { authenticate }                  from './security/auth.middleware.js';
@@ -47,6 +50,11 @@ import { createPlatformContainer }       from './platform/platform.container.js'
 import { tenantMiddleware }              from './platform/tenant.middleware.js';
 import { createAppContainer, AppContainer, createPlatformPool } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
+import { SqlHousekeepingRepository }     from './repositories/housekeeping.repository.js';
+import { SqlStayRepository }             from './repositories/stay.repository.js';
+import { HousekeepingService }           from './services/housekeeping.service.js';
+import { StayService }                   from './services/stay.service.js';
+import { SqlReservationRepository }      from './repositories/sql.reservation.repository.js';
 
 export async function createApp(): Promise<{
   app: express.Application;
@@ -54,18 +62,13 @@ export async function createApp(): Promise<{
 }> {
   const app = express();
 
-  // -------------------------------------------------------------------------
-  // BD central y repositorio de plataforma (siempre requerida)
-  // -------------------------------------------------------------------------
   const platformClient = createPlatformPool();
   const platformRepo   = new PlatformRepository(platformClient);
 
   const authService = new AuthService(platformRepo);
   const container   = await createAppContainer();
 
-  // -------------------------------------------------------------------------
   // Middlewares globales
-  // -------------------------------------------------------------------------
   const corsOrigin =
     process.env.CORS_ORIGIN ??
     (process.env.NODE_ENV === 'production' ? false : '*');
@@ -77,9 +80,7 @@ export async function createApp(): Promise<{
   }));
   app.use(express.json());
 
-  // -------------------------------------------------------------------------
   // Rutas públicas
-  // -------------------------------------------------------------------------
   app.get('/health', async (_req, res) => {
     const dbOk = await checkDatabaseHealth();
     res.json({
@@ -96,44 +97,30 @@ export async function createApp(): Promise<{
     swaggerOptions: { persistAuthorization: true, docExpansion: 'list', filter: true },
   }));
 
-  // -------------------------------------------------------------------------
-  // /platform/* — gestión de plataforma (SUPERADMIN)
-  // -------------------------------------------------------------------------
+  // /platform/*
   const platformContainer = createPlatformContainer();
   app.use('/platform', createPlatformRouter(platformContainer));
 
-  // -------------------------------------------------------------------------
-  // POST /register — registro de negocios (público)
-  // -------------------------------------------------------------------------
+  // /register
   app.use('/register', createBusinessRouter(platformRepo));
 
-  // -------------------------------------------------------------------------
-  // POST /api/login — login de empleados (público, antes de authenticate)
-  // -------------------------------------------------------------------------
+  // /api/login
   app.use('/api/login', createAuthRouter(authService));
 
-  // -------------------------------------------------------------------------
-  // /api/customer — portal del cliente
-  // -------------------------------------------------------------------------
+  // /api/customer
   app.use('/api/customer', createCustomerRouter(container, platformRepo));
 
-  // -------------------------------------------------------------------------
-  // authenticate() — protege todo /api/* desde aquí
-  // -------------------------------------------------------------------------
+  // authenticate() — protege /api/* desde aquí
   app.use('/api', authenticate());
 
-  // -------------------------------------------------------------------------
   // /api/admin — ANTES de tenantMiddleware
-  // -------------------------------------------------------------------------
   app.use('/api/admin', createAdminRouter(platformRepo));
 
-  // -------------------------------------------------------------------------
-  // tenantMiddleware() — inyecta req.db con la BD del negocio
-  // -------------------------------------------------------------------------
+  // tenantMiddleware() — inyecta req.db
   app.use('/api', tenantMiddleware(platformRepo));
 
   // -------------------------------------------------------------------------
-  // Rutas protegidas de empleados — todas usan req.db (multi-tenant)
+  // Rutas protegidas de empleados (todas usan req.db del tenant)
   // -------------------------------------------------------------------------
   app.use('/api/resources',         createResourcesRouter(container));
   app.use('/api/reservations',      createReservationsRouter(container));
@@ -145,14 +132,30 @@ export async function createApp(): Promise<{
   app.use('/api/orders',            createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
 
+  // Fase 2 — Housekeeping
+  app.use('/api/housekeeping', (req, _res, next) => {
+    const db = (req as any).db;
+    const housekeepingRepo = new SqlHousekeepingRepository(db);
+    const housekeepingService = new HousekeepingService(housekeepingRepo);
+    const router = createHousekeepingRouter(housekeepingService);
+    router(req, _res, next);
+  });
+
+  // Fase 2 — Check-in / Check-out
+  app.use('/api/stays', (req, _res, next) => {
+    const db = (req as any).db;
+    const stayRepo         = new SqlStayRepository(db);
+    const reservationRepo  = new SqlReservationRepository(db);
+    const housekeepingRepo = new SqlHousekeepingRepository(db);
+    const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
+    const router = createStaysRouter(stayService);
+    router(req, _res, next);
+  });
+
   app.use(errorHandler);
 
   return { app, container };
 }
-
-// ---------------------------------------------------------------------------
-// Graceful shutdown
-// ---------------------------------------------------------------------------
 
 export interface GracefulShutdownOptions {
   onShutdown?: () => Promise<void>;
