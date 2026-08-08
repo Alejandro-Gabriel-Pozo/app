@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ReservationStatus } from '../types/enums.js';
-import { ReportService, OccupancyReportRow, OccupancySummary } from './report.service.js';
-import { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
+import { ReportService } from './report.service.js';
+import type { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
 
 // Mock repository
 class MockOccupancyRepository implements OccupancyRepository {
@@ -84,7 +83,7 @@ describe('ReportService', () => {
 
       const report = await service.generateOccupancyReport(startDate, endDate);
 
-      expect(report[0].occupancyRate).toBe(50.0);
+      expect(report[0]!.occupancyRate).toBe(50.0);
     });
   });
 
@@ -110,10 +109,10 @@ describe('ReportService', () => {
       const summary = await service.generateOccupancySummary(startDate, endDate, 1);
 
       expect(summary.topOccupied).toHaveLength(1);
-      expect(summary.topOccupied[0].resourceId).toBe('r1');
+      expect(summary.topOccupied[0]!.resourceId).toBe('r1');
 
       expect(summary.bottomOccupied).toHaveLength(1);
-      expect(summary.bottomOccupied[0].resourceId).toBe('r2'); // 15% es el más bajo
+      expect(summary.bottomOccupied[0]!.resourceId).toBe('r2'); // 15% es el más bajo
     });
 
     it('debe respetar límite de top recursos', async () => {

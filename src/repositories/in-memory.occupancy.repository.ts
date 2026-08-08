@@ -1,5 +1,5 @@
 import { ReservationStatus } from '../types/enums.js';
-import {
+import type {
   OccupancyRepository,
   OccupancySnapshot,
   OccupancyStats,
@@ -27,10 +27,6 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       return;
     }
 
-    // Calcular minutos ocupados
-    const bookedMinutes =
-      (endTime.getTime() - startTime.getTime()) / (1000 * 60);
-
     // Registrar por cada día que ocupe la reserva
     const currentDate = new Date(startTime);
     currentDate.setHours(0, 0, 0, 0);
@@ -44,7 +40,7 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       const dayStart = new Date(currentDate);
       const effectiveEnd = Math.min(endTime.getTime(), dayEnd.getTime());
       const effectiveStart = Math.max(dayStart.getTime(), startTime.getTime());
-      const minInDay = Math.max(
+      const _minInDay = Math.max(
         0,
         (effectiveEnd - effectiveStart) / (1000 * 60),
       );
@@ -56,14 +52,14 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       );
 
       if (existingIndex >= 0) {
-        this.snapshots[existingIndex]!.bookedMinutes += minInDay;
+        this.snapshots[existingIndex]!.bookedMinutes += _minInDay;
       } else {
         this.snapshots.push({
           resourceId,
           resourceName,
           date: new Date(currentDate),
           totalMinutes: 24 * 60,
-          bookedMinutes: minInDay,
+          bookedMinutes: _minInDay,
         });
       }
       currentDate.setDate(currentDate.getDate() + 1);

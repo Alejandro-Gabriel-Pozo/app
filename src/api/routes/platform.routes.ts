@@ -3,10 +3,11 @@
  * @description Rutas de gestión de plataforma — exclusivas para SUPERADMIN.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { PlatformContainer } from '../../../src/platform/platform.container.js';
+import type { PlatformContainer } from '../../../src/platform/platform.container.js';
 import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
 import { authenticatePlatform } from '../../security/platform.auth.middleware.js';
 import {
@@ -15,6 +16,7 @@ import {
   encryptConnectionString,
   loadTenantSchema,
 } from '../../platform/supabase.provisioner.js';
+import type { PlatformRepository, Business } from '../../platform/platform.repository.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -188,7 +190,7 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 async function provisionInBackground(
   businessId: string,
   businessName: string,
-  platformRepository: import('../../platform/platform.repository.js').PlatformRepository,
+  platformRepository: PlatformRepository,
 ): Promise<void> {
   console.log(`[platform] Iniciando provisioning para negocio ${businessId}...`);
   const provisioned = await provisionBusinessDatabase(businessId, businessName);
@@ -199,7 +201,7 @@ async function provisionInBackground(
   console.log(`[platform] ✅ Negocio ${businessId} provisionado y activo.`);
 }
 
-function toBusinessDto(b: import('../../platform/platform.repository.js').Business) {
+function toBusinessDto(b: Business) {
   return {
     id: b.id, name: b.name, slug: b.slug, plan: b.plan, status: b.status,
     ownerEmail: b.ownerEmail, supabaseProjectId: b.supabaseProjectId,
