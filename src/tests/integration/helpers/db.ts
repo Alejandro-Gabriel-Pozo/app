@@ -8,20 +8,26 @@
  * ## Uso
  *
  * ```ts
- * import { createTestDatabase, dropTestDatabase } from './helpers/db.js';
+ * import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
  * import type { SqlClient } from '../../../repositories/sql.client.js';
  *
  * let db: SqlClient;
  * let dbName: string;
  *
- * beforeAll(async () => ({ db, dbName } = await createTestDatabase()));
- * afterAll(async () => dropTestDatabase(dbName));
+ * // Saltear toda la suite si no hay DB disponible (entorno local sin Postgres)
+ * describe.skipIf(skipIfNoDb)('Mi suite de integración', () => {
+ *   beforeAll(async () => ({ db, dbName } = await createTestDatabase()));
+ *   afterAll(async () => dropTestDatabase(dbName, pool));
+ * });
  * ```
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL debe apuntar a un servidor PostgreSQL donde el
  * usuario tenga permisos de CREATE DATABASE y DROP DATABASE.
  * Ejemplo: postgres://user:pass@localhost:5432/postgres
+ *
+ * Si TEST_DATABASE_URL no está definida, skipIfNoDb === true y los tests
+ * se saltean sin fallar el pipeline (útil en entornos locales sin Postgres).
  */
 
 import { readFileSync } from 'node:fs';
@@ -35,11 +41,13 @@ const { Pool } = pg;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Lee el schema.sql desde src/db/schema.sql (relativo a este helper)
-const SCHEMA_SQL = readFileSync(
-  resolve(__dirname, '../../../../db/schema.sql'),
-  'utf-8',
-);
+/**
+ * true cuando TEST_DATABASE_URL no está definida.
+ * Usarlo con describe.skipIf(skipIfNoDb) para saltear suites de integración
+ * en entornos locales sin PostgreSQL, en lugar de fallar con ENOENT o
+ * "TEST_DATABASE_URL no está definida".
+ */
+export const skipIfNoDb = !process.env.TEST_DATABASE_URL;
 
 /**
  * Crea una BD temporal `test_<uuid_sin_guiones>`, aplica schema.sql
@@ -53,6 +61,14 @@ export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: str
       'Ejemplo: TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres',
     );
   }
+
+  // Leer el schema aquí (lazy) en lugar de en el top-level del módulo,
+  // para evitar ENOENT al importar el helper cuando el archivo no existe
+  // o cuando los tests se saltean con skipIfNoDb.
+  const schemaSql = readFileSync(
+    resolve(__dirname, '../../../../db/schema.sql'),
+    'utf-8',
+  );
 
   const dbName = `test_${randomUUID().replace(/-/g, '')}`;
 
@@ -73,7 +89,7 @@ export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: str
   const db = new SqlClient(pool);
 
   // Aplicar schema completo
-  await db.query(SCHEMA_SQL, []);
+  await db.query(schemaSql, []);
 
   return { db, dbName, pool };
 }
