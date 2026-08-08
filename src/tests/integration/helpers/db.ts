@@ -28,6 +28,25 @@
  *
  * Si TEST_DATABASE_URL no está definida, skipIfNoDb === true y los tests
  * se saltean sin fallar el pipeline (útil en entornos locales sin Postgres).
+ *
+ * ## Dónde vive el schema
+ * - Canónico: src/db/schema.sql  ← este helper siempre usa este path
+ * - No existe db/schema.sql en la raíz del proyecto; no crearlo.
+ *
+ * ## Regla crítica — readFileSync lazy
+ * El readFileSync del schema está DENTRO de createTestDatabase(), no en
+ * el top-level del módulo. Esto es intencional:
+ *
+ *   ❌ MAL — explota al importar el módulo, antes de que skipIfNoDb actúe:
+ *      const SCHEMA = readFileSync(path, 'utf-8');   // top-level
+ *
+ *   ✅ BIEN — solo se ejecuta cuando se llama createTestDatabase():
+ *      async function createTestDatabase() {
+ *        const schema = readFileSync(path, 'utf-8'); // lazy, dentro de la función
+ *      }
+ *
+ * NUNCA mover el readFileSync al top-level. Si el archivo no existe o
+ * TEST_DATABASE_URL no está definida, la suite debe saltear (skip), no explotar.
  */
 
 import { readFileSync } from 'node:fs';
@@ -52,6 +71,11 @@ export const skipIfNoDb = !process.env.TEST_DATABASE_URL;
 /**
  * Crea una BD temporal `test_<uuid_sin_guiones>`, aplica schema.sql
  * y devuelve un SqlClient conectado a ella.
+ *
+ * El schema se lee de src/db/schema.sql (relativo a este helper:
+ * ../../../db/schema.sql). La lectura es lazy (dentro de esta función)
+ * para no explotar al importar el módulo cuando TEST_DATABASE_URL no
+ * está definida.
  */
 export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: string; pool: pg.Pool }> {
   const baseUrl = process.env.TEST_DATABASE_URL;
@@ -62,11 +86,10 @@ export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: str
     );
   }
 
-  // Leer el schema aquí (lazy) en lugar de en el top-level del módulo,
-  // para evitar ENOENT al importar el helper cuando el archivo no existe
-  // o cuando los tests se saltean con skipIfNoDb.
+  // Leer el schema LAZY aquí (no en el top-level del módulo).
+  // src/tests/integration/helpers/ → ../../../db/schema.sql = src/db/schema.sql
   const schemaSql = readFileSync(
-    resolve(__dirname, '../../../../db/schema.sql'),
+    resolve(__dirname, '../../../db/schema.sql'),
     'utf-8',
   );
 
