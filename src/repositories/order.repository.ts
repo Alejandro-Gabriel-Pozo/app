@@ -29,11 +29,18 @@ export interface IOrderRepository {
   cancel(id: string): Promise<Order | undefined>;
   /** CONFIRMED → COMPLETED y pone completed_at=NOW() */
   complete(id: string): Promise<Order | undefined>;
-  /** Agrega una línea a una orden existente en estado DRAFT */
+  /**
+   * Agrega una línea a una orden existente en estado DRAFT.
+   * La implementación debe usar SELECT FOR UPDATE sobre la fila de `orders`
+   * para evitar race conditions en total_amount con concurrencia.
+   */
   addItem(
     orderId: string,
     item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
   ): Promise<OrderItem>;
-  /** Elimina una línea de la orden */
-  removeItem(orderItemId: string): Promise<boolean>;
+  /**
+   * Elimina una línea de la orden y recalcula total_amount.
+   * orderId es necesario para el UPDATE de total_amount post-DELETE.
+   */
+  removeItem(orderItemId: string, orderId: string): Promise<boolean>;
 }

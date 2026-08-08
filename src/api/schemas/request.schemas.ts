@@ -6,6 +6,11 @@
  * - CreateReservationSchema: refine endTime > startTime (400 claro al cliente)
  * - UpdateReservationSchema: superRefine endTime > startTime cuando ambos presentes
  * - ReservationListQuerySchema: filtros + paginación (page, limit)
+ *
+ * ## Cambios Iteración 3 — Módulo de Órdenes
+ * - CreateOrderItemSchema: valida itemType (enum), quantity >= 1, unitPrice >= 0
+ *   y refinements de consistencia FK por tipo de ítem.
+ * - CreateOrderSchema: valida customerId, notes y lista de ítems.
  */
 
 import { z } from 'zod';
@@ -104,3 +109,70 @@ export const ReservationListQuerySchema = z.object({
 });
 
 export type ReservationListQuery = z.infer<typeof ReservationListQuerySchema>;
+
+// ---------------------------------------------------------------------------
+// Schemas de Órdenes
+// ---------------------------------------------------------------------------
+
+const ORDER_ITEM_TYPES = ['PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION'] as const;
+
+/**
+ * Valida una línea de orden al agregarla (POST /api/orders/:id/items).
+ *
+ * Reglas de consistencia FK por tipo:
+ *  - PRODUCT          → productId obligatorio, productVariantId prohibido, reservationId prohibido
+ *  - PRODUCT_VARIANT  → productId y productVariantId obligatorios, reservationId prohibido
+ *  - RESERVATION      → reservationId obligatorio, productId y productVariantId prohibidos
+ */
+export const CreateOrderItemSchema = z.object({
+  itemType:         z.enum(ORDER_ITEM_TYPES, {
+    errorMap: () => ({ message: `itemType debe ser uno de: ${ORDER_ITEM_TYPES.join(', ')}` }),
+  }),
+  productId:        z.string().min(1).nullable().optional(),
+  productVariantId: z.string().min(1).nullable().optional(),
+  reservationId:    z.string().min(1).nullable().optional(),
+  quantity:         z.number({ invalid_type_error: 'quantity debe ser un número' })
+    .int({ message: 'quantity debe ser un entero' })
+    .min(1, { message: 'quantity debe ser mayor o igual a 1' }),
+  unitPrice:        z.number({ invalid_type_error: 'unitPrice debe ser un número' })
+    .min(0, { message: 'unitPrice no puede ser negativo' }),
+  notes:            z.string().nullable().optional(),
+}).superRefine((data, ctx) => {
+  if (data.itemType === 'PRODUCT' || data.itemType === 'PRODUCT_VARIANT') {
+    if (!data.productId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productId es obligatorio para itemType PRODUCT y PRODUCT_VARIANT', path: ['productId'] });
+    }
+    if (data.reservationId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'reservationId debe ser null para itemType PRODUCT y PRODUCT_VARIANT', path: ['reservationId'] });
+    }
+  }
+  if (data.itemType === 'PRODUCT_VARIANT') {
+    if (!data.productVariantId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productVariantId es obligatorio para itemType PRODUCT_VARIANT', path: ['productVariantId'] });
+    }
+  }
+  if (data.itemType === 'RESERVATION') {
+    if (!data.reservationId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'reservationId es obligatorio para itemType RESERVATION', path: ['reservationId'] });
+    }
+    if (data.productId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productId debe ser null para itemType RESERVATION', path: ['productId'] });
+    }
+    if (data.productVariantId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productVariantId debe ser null para itemType RESERVATION', path: ['productVariantId'] });
+    }
+  }
+});
+
+/**
+ * Valida el body de POST /api/orders.
+ * Los ítems son opcionales al crear — se pueden agregar después con POST /api/orders/:id/items.
+ */
+export const CreateOrderSchema = z.object({
+  customerId: z.string().min(1, 'customerId es obligatorio'),
+  notes:      z.string().nullable().optional(),
+  items:      z.array(CreateOrderItemSchema).optional().default([]),
+});
+
+export type CreateOrderBody     = z.infer<typeof CreateOrderSchema>;
+export type CreateOrderItemBody = z.infer<typeof CreateOrderItemSchema>;

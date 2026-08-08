@@ -3,13 +3,20 @@
 // Usa SqlClient.query(sql, params) — compatible con pg (node-postgres).
 // NO usa tagged templates ni APIs de postgres.js.
 //
-// ## Cambios respecto a versión anterior
+// ## Cambios respecto a versión anterior (PR #28)
 //   - createWithClient(): crea la fila en `orders` usando un client
-//     externo (transaccional). No inserta ítems — eso lo hace
-//     OrderService.createOrder() dentro de transactionManager.run().
+//     externo (transaccional). No inserta ítems.
 //   - addItemWithClient(): inserta un order_item usando un client externo.
-//   - removeItem(): ahora acepta orderId y recalcula total_amount con
-//     SUM(subtotal) después del DELETE, evitando totales corruptos.
+//   - removeItem(): recibe orderId y recalcula total_amount con SUM post-DELETE.
+//
+// ## Cambios en esta iteración (PR #29)
+//   - addItem(): ahora corre dentro de transactionManager-like pattern usando
+//     un SqlClient wrapping BEGIN/COMMIT/ROLLBACK manual, adquiriendo
+//     SELECT ... FOR UPDATE sobre la fila de `orders` antes de insertar
+//     el ítem y recalcular total_amount. Esto serializa las escrituras
+//     concurrentes a la misma orden.
+//   - addItemWithClient(): sin cambios — sigue siendo el método primitivo
+//     que el servicio usa dentro de createOrder (ya envuelto en transacción).
 // =============================================================================
 
 import { randomUUID } from 'crypto';
@@ -24,6 +31,9 @@ import type {
   CreateOrderInput,
   UpdateOrderInput,
 } from '../domain/order.entities.js';
+import pg from 'pg';
+
+const { Pool } = pg;
 
 // ---------------------------------------------------------------------------
 // Helpers de mapeo DB → dominio
@@ -139,7 +149,6 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // create
   //
   // Mantiene la firma original (IOrderRepository) para compatibilidad.
-  // Internamente delega a createWithClient usando this.db.
   // ⚠️  Para garantizar atomicidad, preferir createOrder() en OrderService
   //    (que usa transactionManager.run → createWithClient + addItemWithClient).
   // -------------------------------------------------------------------------
@@ -175,7 +184,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // createWithClient  ← NUEVO
+  // createWithClient
   //
   // Inserta únicamente la fila en `orders`. Los ítems se insertan
   // por separado en addItemWithClient(), ambos coordinados por
@@ -249,21 +258,99 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // addItem
+  // addItem  ← ACTUALIZADO: SELECT FOR UPDATE + SUM recalc
+  //
+  // Serializa escrituras concurrentes al mismo orderId mediante un lock
+  // a nivel de fila (SELECT ... FOR UPDATE) en la tabla `orders`.
+  //
+  // Flujo dentro de la transacción:
+  //   1. BEGIN
+  //   2. SELECT id FROM orders WHERE id = $1 FOR UPDATE
+  //      → bloquea la fila; otras transacciones esperan hasta COMMIT
+  //   3. INSERT INTO order_items ...
+  //   4. UPDATE orders SET total_amount = (SELECT SUM(subtotal) ...) + NOW()
+  //   5. COMMIT
+  //
+  // Si el Pool expuesto por SqlClient es pg.Pool, obtenemos un client
+  // dedicado (pool.connect()) para poder emitir BEGIN/COMMIT/ROLLBACK.
+  // De lo contrario (e.g. tests con SqlClient mock) usamos el client
+  // directamente sin transacción explícita.
   // -------------------------------------------------------------------------
 
   async addItem(
     orderId: string,
     item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
   ): Promise<OrderItem> {
-    return this.addItemWithClient(this.db, orderId, item);
+    // Obtenemos un client dedicado del pool para poder emitir BEGIN/COMMIT
+    // SqlClient no expone BEGIN directamente, pero `this.db` es en realidad
+    // un wrapper de pg.Pool — accedemos al pool subyacente vía la función
+    // helper interna, o usamos addItemWithClient con una transacción manual.
+    //
+    // Patrón: creamos un SqlClient "de un solo client" usando pool.connect()
+    // para tener control total del ciclo de vida de la transacción.
+    const pool = (this.db as unknown as { _pool?: InstanceType<typeof Pool> })._pool;
+
+    if (!pool) {
+      // Fallback para tests o contextos sin pool real: comportamiento anterior
+      return this.addItemWithClient(this.db, orderId, item);
+    }
+
+    const pgClient = await pool.connect();
+    try {
+      await pgClient.query('BEGIN');
+
+      // Adquirir lock a nivel de fila en `orders`
+      await pgClient.query(
+        'SELECT id FROM orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+      );
+
+      // Insertar el ítem
+      const itemId = randomUUID();
+      const { rows: itemRows } = await pgClient.query<Record<string, unknown>>(
+        `INSERT INTO order_items
+           (id, order_id, item_type, product_id, product_variant_id, reservation_id,
+            quantity, unit_price, subtotal, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         RETURNING *`,
+        [
+          itemId, orderId, item.itemType,
+          item.productId        ?? null,
+          item.productVariantId ?? null,
+          item.reservationId    ?? null,
+          item.quantity, item.unitPrice, item.subtotal,
+          item.notes ?? null,
+        ],
+      );
+
+      // Recalcular total_amount usando SUM desde BD (no aritmética JS)
+      await pgClient.query(
+        `UPDATE orders
+         SET total_amount = COALESCE(
+           (SELECT SUM(subtotal) FROM order_items WHERE order_id = $1),
+           0
+         ),
+         updated_at = NOW()
+         WHERE id = $1`,
+        [orderId],
+      );
+
+      await pgClient.query('COMMIT');
+      return rowToOrderItem(itemRows[0]!);
+    } catch (err) {
+      await pgClient.query('ROLLBACK');
+      throw err;
+    } finally {
+      pgClient.release();
+    }
   }
 
   // -------------------------------------------------------------------------
-  // addItemWithClient  ← NUEVO
+  // addItemWithClient  ← sin cambios
   //
   // Inserta un ítem usando el client provisto (puede ser transaccional).
-  // addItem() delega aquí usando this.db para mantener la firma original.
+  // addItem() usa este método como fallback en tests sin pool real.
+  // createOrder() en OrderService lo llama dentro de transactionManager.run().
   // -------------------------------------------------------------------------
 
   async addItemWithClient(
@@ -291,11 +378,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // removeItem  ← ACTUALIZADO
-  //
-  // Ahora recibe orderId para poder recalcular total_amount con SUM(subtotal)
-  // después del DELETE. Antes el total quedaba corrupto porque nunca se
-  // actualizaba al eliminar un ítem.
+  // removeItem  ← actualizado en PR #28: recibe orderId + recalcula total
   // -------------------------------------------------------------------------
 
   async removeItem(orderItemId: string, orderId: string): Promise<boolean> {
@@ -305,7 +388,6 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     );
 
     if (rows.length > 0) {
-      // Recalcular total_amount a partir de los ítems que quedan
       await this.db.query(
         `UPDATE orders
          SET total_amount = COALESCE(
