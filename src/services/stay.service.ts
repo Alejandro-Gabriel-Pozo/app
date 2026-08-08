@@ -13,6 +13,10 @@
  *   El flujo correcto es: ReservationService.confirmReservation() → StayService.checkIn().
  * - Al hacer check-out, StayService crea automáticamente una HousekeepingTask PENDING
  *   para el turno siguiente (coordinación entre módulos).
+ *
+ * ## fix/code-review-bugs
+ * - checkIn: corregido reservationRepository.findById() → getById()
+ *   (la interfaz ReservationRepository expone getById, no findById).
  */
 
 import { Stay } from '../domain/stay.js';
@@ -50,9 +54,9 @@ export class StayService {
 
   async checkIn(input: CheckInInput): Promise<Stay> {
     // 1. Verificar que la reserva exista y esté CONFIRMED
-    const reservation = await this.reservationRepository.findById(
+    // Nota: ReservationRepository expone getById(), no findById().
+    const reservation = await this.reservationRepository.getById(
       input.reservationId,
-      input.businessId,
     );
     if (!reservation) {
       const err = new Error(`Reserva no encontrada: ${input.reservationId}`);
@@ -85,7 +89,7 @@ export class StayService {
       businessId:    input.businessId,
       reservationId: input.reservationId,
       resourceId:    input.resourceId,
-      customerId:    reservation.customerId,
+      customerId:    reservation.customer.id,
       assignedBy:    input.assignedBy,
       notes:         input.notes,
     });

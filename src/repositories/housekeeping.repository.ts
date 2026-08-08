@@ -3,7 +3,7 @@
  * @description Interfaz del repositorio de Housekeeping + implementación PostgreSQL.
  */
 
-import { SqlClient } from '../db/sql-client.js';
+import { SqlClient } from '../repositories/sql.client.js';
 import { HousekeepingTask, HousekeepingTaskProps, HousekeepingStatus } from '../domain/housekeeping-task.js';
 
 // ---------------------------------------------------------------------------

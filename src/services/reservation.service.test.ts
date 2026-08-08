@@ -54,6 +54,9 @@ class InMemoryTransactionManager implements TransactionManager {
 // Suite principal
 // ---------------------------------------------------------------------------
 
+/** businessId de prueba — requerido desde fix/reservation-businessid-required. */
+const TEST_BUSINESS_ID = 'biz-test';
+
 describe('ReservationService', () => {
   let reservationRepo: InMemoryReservationRepository;
   let resourceRepo: InMemoryResourceRepository;
@@ -159,7 +162,9 @@ describe('ReservationService', () => {
         details: {},
       });
 
-      const confirmed = await service.confirmReservation('res-1');
+      // businessId es obligatorio desde fix/reservation-businessid-required.
+      // Los eventos de dominio se persisten con este ID — no puede ser vacío.
+      const confirmed = await service.confirmReservation('res-1', TEST_BUSINESS_ID);
 
       expect(confirmed.status).toBe(ReservationStatus.CONFIRMED);
 
@@ -184,10 +189,11 @@ describe('ReservationService', () => {
         endTime:   new Date('2026-07-01T22:00:00'),
         details: {},
       });
-      await service.confirmReservation('res-1');
+      await service.confirmReservation('res-1', TEST_BUSINESS_ID);
       eventRepo.events = []; // reset — solo nos interesa el evento de complete
 
-      const completed = await service.completeReservation('res-1');
+      // businessId es obligatorio desde fix/reservation-businessid-required.
+      const completed = await service.completeReservation('res-1', TEST_BUSINESS_ID);
 
       expect(completed.status).toBe(ReservationStatus.COMPLETED);
       expect(eventRepo.events).toHaveLength(1);
@@ -280,7 +286,7 @@ describe('ReservationService', () => {
 
     it('debe rechazar si la reserva no está en PENDING', async () => {
       await createBase();
-      await service.confirmReservation('res-1');
+      await service.confirmReservation('res-1', TEST_BUSINESS_ID);
       await expect(
         service.updateReservation('res-1', {
           startTime: new Date('2026-08-01T18:00:00Z'),
