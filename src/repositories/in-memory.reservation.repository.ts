@@ -1,7 +1,7 @@
 import type { SqlClient }          from './sql.client.js';
 import { ReservationStatus }        from '../types/enums.js';
 import { Reservation }              from '../domain/Reservation.js';
-import {
+import type {
   ReservationRepository,
   ReservationFilters,
 }                                   from './reservation.repository.js';
@@ -24,7 +24,6 @@ export class InMemoryReservationRepository implements ReservationRepository {
     this.reservations.set(reservation.id, reservation);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async saveWithClient(_client: SqlClient, reservation: Reservation): Promise<void> {
     // In-memory no tiene transacciones — delega a save()
     await this.save(reservation);

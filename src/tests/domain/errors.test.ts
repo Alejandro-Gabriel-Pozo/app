@@ -5,7 +5,6 @@ import {
   ValidationError,
   InvalidReservationError,
   InvalidCustomerError,
-  InvalidResourceError,
   ResourceNotFoundError,
   ReservationNotFoundError,
   CategoryNotFoundError,

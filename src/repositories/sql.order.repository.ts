@@ -20,8 +20,9 @@
 // =============================================================================
 
 import { randomUUID } from 'crypto';
+import pg from 'pg';
 import type { SqlClient } from './sql.client.js';
-import type { IOrderRepository, ListOrdersFilter } from './order.repository.js';
+import type { ListOrdersFilter } from './order.repository.js';
 import type { IOrderRepositoryWithClient } from '../services/order.service.js';
 import type {
   Order,
@@ -31,7 +32,6 @@ import type {
   CreateOrderInput,
   UpdateOrderInput,
 } from '../domain/order.entities.js';
-import pg from 'pg';
 
 const { Pool } = pg;
 
@@ -185,10 +185,6 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
 
   // -------------------------------------------------------------------------
   // createWithClient
-  //
-  // Inserta únicamente la fila en `orders`. Los ítems se insertan
-  // por separado en addItemWithClient(), ambos coordinados por
-  // OrderService.createOrder() dentro de una transacción.
   // -------------------------------------------------------------------------
 
   async createWithClient(
@@ -258,40 +254,16 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // addItem  ← ACTUALIZADO: SELECT FOR UPDATE + SUM recalc
-  //
-  // Serializa escrituras concurrentes al mismo orderId mediante un lock
-  // a nivel de fila (SELECT ... FOR UPDATE) en la tabla `orders`.
-  //
-  // Flujo dentro de la transacción:
-  //   1. BEGIN
-  //   2. SELECT id FROM orders WHERE id = $1 FOR UPDATE
-  //      → bloquea la fila; otras transacciones esperan hasta COMMIT
-  //   3. INSERT INTO order_items ...
-  //   4. UPDATE orders SET total_amount = (SELECT SUM(subtotal) ...) + NOW()
-  //   5. COMMIT
-  //
-  // Si el Pool expuesto por SqlClient es pg.Pool, obtenemos un client
-  // dedicado (pool.connect()) para poder emitir BEGIN/COMMIT/ROLLBACK.
-  // De lo contrario (e.g. tests con SqlClient mock) usamos el client
-  // directamente sin transacción explícita.
+  // addItem  ← SELECT FOR UPDATE + SUM recalc
   // -------------------------------------------------------------------------
 
   async addItem(
     orderId: string,
     item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
   ): Promise<OrderItem> {
-    // Obtenemos un client dedicado del pool para poder emitir BEGIN/COMMIT
-    // SqlClient no expone BEGIN directamente, pero `this.db` es en realidad
-    // un wrapper de pg.Pool — accedemos al pool subyacente vía la función
-    // helper interna, o usamos addItemWithClient con una transacción manual.
-    //
-    // Patrón: creamos un SqlClient "de un solo client" usando pool.connect()
-    // para tener control total del ciclo de vida de la transacción.
     const pool = (this.db as unknown as { _pool?: InstanceType<typeof Pool> })._pool;
 
     if (!pool) {
-      // Fallback para tests o contextos sin pool real: comportamiento anterior
       return this.addItemWithClient(this.db, orderId, item);
     }
 
@@ -299,13 +271,11 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     try {
       await pgClient.query('BEGIN');
 
-      // Adquirir lock a nivel de fila en `orders`
       await pgClient.query(
         'SELECT id FROM orders WHERE id = $1 FOR UPDATE',
         [orderId],
       );
 
-      // Insertar el ítem
       const itemId = randomUUID();
       const { rows: itemRows } = await pgClient.query<Record<string, unknown>>(
         `INSERT INTO order_items
@@ -323,7 +293,6 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
         ],
       );
 
-      // Recalcular total_amount usando SUM desde BD (no aritmética JS)
       await pgClient.query(
         `UPDATE orders
          SET total_amount = COALESCE(
@@ -346,11 +315,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // addItemWithClient  ← sin cambios
-  //
-  // Inserta un ítem usando el client provisto (puede ser transaccional).
-  // addItem() usa este método como fallback en tests sin pool real.
-  // createOrder() en OrderService lo llama dentro de transactionManager.run().
+  // addItemWithClient
   // -------------------------------------------------------------------------
 
   async addItemWithClient(
@@ -378,7 +343,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // removeItem  ← actualizado en PR #28: recibe orderId + recalcula total
+  // removeItem
   // -------------------------------------------------------------------------
 
   async removeItem(orderItemId: string, orderId: string): Promise<boolean> {

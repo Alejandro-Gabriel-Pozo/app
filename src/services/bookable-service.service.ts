@@ -11,7 +11,6 @@ import type {
   CreateBookableServiceDTO,
   UpdateBookableServiceDTO,
   UpdateServiceScheduleDTO,
-  BookingMode,
 } from '../types/bookable-service.types.js';
 
 // ---------------------------------------------------------------------------

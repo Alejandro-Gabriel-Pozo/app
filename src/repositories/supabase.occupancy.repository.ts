@@ -1,6 +1,15 @@
 import { supabase } from '../config/supabase.js';
-import { ReservationSnapshot } from '../domain/reservation.types.js';
-import { OccupancyRepository } from './occupancy.repository.js';
+import type { ReservationSnapshot } from '../domain/reservation.types.js';
+import type { OccupancyRepository } from './occupancy.repository.js';
+
+interface SupabaseReservationRow {
+  id: string;
+  resource_id: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  resource_type?: string;
+}
 
 export class SupabaseOccupancyRepository implements OccupancyRepository {
   async getOccupancyByResourceAndDateRange(
@@ -21,7 +30,7 @@ export class SupabaseOccupancyRepository implements OccupancyRepository {
       throw new Error(`Failed to fetch occupancy: ${error.message}`);
     }
 
-    return (data || []).map((row: any) => ({
+    return (data as SupabaseReservationRow[] || []).map((row) => ({
       id: row.id,
       resourceId: row.resource_id,
       startTime: new Date(row.start_time),
@@ -50,12 +59,12 @@ export class SupabaseOccupancyRepository implements OccupancyRepository {
 
     const occupancyMap: Record<string, ReservationSnapshot[]> = {};
 
-    (data || []).forEach((row: any) => {
+    (data as SupabaseReservationRow[] || []).forEach((row) => {
       const resourceId = row.resource_id;
       if (!occupancyMap[resourceId]) {
         occupancyMap[resourceId] = [];
       }
-      occupancyMap[resourceId].push({
+      occupancyMap[resourceId]!.push({
         id: row.id,
         resourceId: row.resource_id,
         startTime: new Date(row.start_time),

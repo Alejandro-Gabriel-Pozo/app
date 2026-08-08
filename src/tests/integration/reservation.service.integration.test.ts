@@ -36,7 +36,7 @@
  * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
@@ -218,7 +218,7 @@ describe('ReservationService — integración', () => {
            AND status != 'CANCELLED'`,
         [resource.id, slot.startTime],
       );
-      expect(Number(count.rows[0].count)).toBe(1);
+      expect(Number(count.rows[0]!.count)).toBe(1);
     });
   });
 
@@ -249,7 +249,7 @@ describe('ReservationService — integración', () => {
         [seeded.id],
       );
       expect(event.rows).toHaveLength(1);
-      expect(event.rows[0].business_id).toBe(BUSINESS_ID);
+      expect(event.rows[0]!.business_id).toBe(BUSINESS_ID);
     });
 
     it('lanza Error si businessId es string vacío', async () => {
@@ -369,7 +369,7 @@ describe('ReservationService — integración', () => {
         'SELECT start_time, end_time FROM reservations WHERE id = $1',
         [seeded.id],
       );
-      expect(new Date(row.rows[0].start_time)).toEqual(newStart);
+      expect(new Date(row.rows[0]!.start_time)).toEqual(newStart);
     });
 
     it('lanza InvalidReservationError al intentar modificar una reserva CONFIRMED', async () => {

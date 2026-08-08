@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReservationStatus } from '../types/enums.js';
 import { SqlOccupancyRepository } from './sql.occupancy.repository.js';
-import { SqlClient } from './sql.client.js';
+import type { SqlClient } from './sql.client.js';
 
 describe('SqlOccupancyRepository', () => {
   let mockSqlClient: SqlClient;
@@ -31,7 +31,8 @@ describe('SqlOccupancyRepository', () => {
       await repo.recordReservation('r1', 'Mesa A', start, end, ReservationStatus.CONFIRMED);
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
-      const call = (mockSqlClient.query as any).mock.calls[0];
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('INSERT INTO occupancy_records');
       expect(call[0]).toContain('ON CONFLICT');
       expect(call[1]).toContain('r1');
@@ -63,19 +64,20 @@ describe('SqlOccupancyRepository', () => {
 
       await repo.recordReservation('r1', 'Mesa A', start, end, ReservationStatus.CONFIRMED);
 
-      const calls = (mockSqlClient.query as any).mock.calls;
-      
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const calls = mockQuery.mock.calls;
+
       // Día 1: 22:00 a 00:00 = 2 horas = 120 minutos
-      expect(calls[0][1][4]).toBe(120);
-      
+      expect(calls[0]![1]![4]).toBe(120);
+
       // Día 2: 00:00 a 02:00 = 2 horas = 120 minutos
-      expect(calls[1][1][4]).toBe(120);
+      expect(calls[1]![1]![4]).toBe(120);
     });
   });
 
   describe('getOccupancyByDateRange', () => {
     beforeEach(() => {
-      (mockSqlClient.query as any).mockResolvedValueOnce({
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [
           {
             resourceId: 'r1',
@@ -102,13 +104,14 @@ describe('SqlOccupancyRepository', () => {
       const result = await repo.getOccupancyByDateRange(startDate, endDate);
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
-      const call = (mockSqlClient.query as any).mock.calls[0];
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('WHERE date >=');
-      expect(call[1][0]).toBe('2026-06-21');
-      expect(call[1][1]).toBe('2026-06-22');
+      expect(call[1]![0]).toBe('2026-06-21');
+      expect(call[1]![1]).toBe('2026-06-22');
 
       expect(result).toHaveLength(2);
-      expect(result[0].resourceId).toBe('r1');
+      expect(result[0]!.resourceId).toBe('r1');
     });
 
     it('debe filtrar por resourceIds si se proporcionan', async () => {
@@ -117,15 +120,16 @@ describe('SqlOccupancyRepository', () => {
 
       await repo.getOccupancyByDateRange(startDate, endDate, ['r1']);
 
-      const call = (mockSqlClient.query as any).mock.calls[0];
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('resource_id = ANY');
-      expect(call[1][2]).toEqual(['r1']);
+      expect(call[1]![2]).toEqual(['r1']);
     });
   });
 
   describe('getAverageOccupancyByResource', () => {
     beforeEach(() => {
-      (mockSqlClient.query as any).mockResolvedValueOnce({
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [
           {
             resourceId: 'r1',
@@ -148,18 +152,19 @@ describe('SqlOccupancyRepository', () => {
       const result = await repo.getAverageOccupancyByResource(startDate, endDate);
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
-      const call = (mockSqlClient.query as any).mock.calls[0];
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('GROUP BY resource_id');
       expect(call[0]).toContain('ORDER BY occupancyRate DESC');
 
       expect(result).toHaveLength(2);
-      expect(result[0].occupancyRate).toBe(25.5);
+      expect(result[0]!.occupancyRate).toBe(25.5);
     });
   });
 
   describe('getTopOccupiedResources', () => {
     beforeEach(() => {
-      (mockSqlClient.query as any).mockResolvedValueOnce({
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [
           {
             resourceId: 'r1',
@@ -176,9 +181,10 @@ describe('SqlOccupancyRepository', () => {
 
       await repo.getTopOccupiedResources(startDate, endDate, 5);
 
-      const call = (mockSqlClient.query as any).mock.calls[0];
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('LIMIT');
-      expect(call[1][2]).toBe(5);
+      expect(call[1]![2]).toBe(5);
     });
 
     it('debe usar límite por defecto de 10', async () => {
@@ -187,29 +193,31 @@ describe('SqlOccupancyRepository', () => {
 
       await repo.getTopOccupiedResources(startDate, endDate);
 
-      const call = (mockSqlClient.query as any).mock.calls[0];
-      expect(call[1][2]).toBe(10);
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
+      expect(call[1]![2]).toBe(10);
     });
   });
 
   describe('deleteOldRecords', () => {
     it('debe ejecutar DELETE con fecha correcta', async () => {
-      (mockSqlClient.query as any).mockResolvedValueOnce({ rowCount: 5 });
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rowCount: 5 });
 
       const beforeDate = new Date('2026-06-20');
 
       const deleted = await repo.deleteOldRecords(beforeDate);
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
-      const call = (mockSqlClient.query as any).mock.calls[0];
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('DELETE FROM occupancy_records');
-      expect(call[1][0]).toBe('2026-06-20');
+      expect(call[1]![0]).toBe('2026-06-20');
 
       expect(deleted).toBe(5);
     });
 
     it('debe manejar respuesta sin rowCount', async () => {
-      (mockSqlClient.query as any).mockResolvedValueOnce({
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [{}, {}, {}],
       });
 
@@ -223,7 +231,7 @@ describe('SqlOccupancyRepository', () => {
 
   describe('getAllSnapshots', () => {
     beforeEach(() => {
-      (mockSqlClient.query as any).mockResolvedValueOnce({
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [
           {
             resourceId: 'r1',
@@ -241,7 +249,7 @@ describe('SqlOccupancyRepository', () => {
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
       expect(result).toHaveLength(1);
-      expect(result[0].resourceId).toBe('r1');
+      expect(result[0]!.resourceId).toBe('r1');
     });
   });
 });

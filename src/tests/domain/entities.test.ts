@@ -11,7 +11,7 @@ const makeResource = (
   id = 'r1',
   categoryId = 'cat-cabin',
   basePrice  = 100,
-  visualData: any = null,
+  visualData: Record<string, unknown> | null = null,
 ) => new BookableResource(id, 'Recurso Test', basePrice, categoryId, visualData);
 
 const makeSnapshot = (

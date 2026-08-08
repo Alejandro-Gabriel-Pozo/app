@@ -1,5 +1,5 @@
 import { ReservationStatus } from '../types/enums.js';
-import {
+import type {
   OccupancyRepository,
   OccupancySnapshot,
   OccupancyStats,
@@ -26,10 +26,6 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
     ) {
       return;
     }
-
-    // Calcular minutos ocupados
-    const bookedMinutes =
-      (endTime.getTime() - startTime.getTime()) / (1000 * 60);
 
     // Registrar por cada día que ocupe la reserva
     const currentDate = new Date(startTime);
