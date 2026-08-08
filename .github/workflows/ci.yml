@@ -18,10 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run tests with coverage
         run: npm run test:coverage
@@ -48,10 +47,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Typecheck & build
         run: npm run build
@@ -61,7 +59,6 @@ jobs:
   #
   # Corre en paralelo con test y typecheck.
   # --max-warnings 0: cualquier warning es error de CI.
-  # Atrapa: imports rotos, no-explicit-any, consistent-type-imports.
   # ------------------------------------------------------------
   lint:
     runs-on: ubuntu-latest
@@ -71,10 +68,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Lint
         run: npm run lint

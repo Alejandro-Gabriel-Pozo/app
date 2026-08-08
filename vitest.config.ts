@@ -4,7 +4,14 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Tests de integración excluidos del run por defecto:
+    // requieren TEST_DATABASE_URL (BD postgres real).
+    // Correrlos con: TEST_DATABASE_URL=... npx vitest run src/tests/integration
     include: ['src/**/*.test.ts'],
+    exclude: [
+      'src/tests/integration/**',
+      'node_modules/**',
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],

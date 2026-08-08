@@ -9,22 +9,18 @@ export default tseslint.config(
   // Base JS recomendado
   js.configs.recommended,
 
-  // TypeScript estricto
+  // TypeScript recomendado (sin type-aware rules — no requiere tsconfig)
+  // Las reglas type-aware (no-unsafe-*) se agregan cuando el CI tenga
+  // un tsconfig dedicado para ESLint que incluya tests y todos los archivos.
   ...tseslint.configs.recommended,
 
   {
-    languageOptions: {
-      parserOptions: {
-        project: './tsconfig.json',
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
     rules: {
       // ----------------------------------------------------------------
       // Reglas derivadas de bugs reales encontrados en code review
       // ----------------------------------------------------------------
 
-      // Prohíbe `any` explícito — obliga a tipar correctamente.
+      // Prohibe `any` explícito — obliga a tipar correctamente.
       // Detecta: parámetros sin tipo, retornos `any` en repositorios.
       '@typescript-eslint/no-explicit-any': 'error',
 
@@ -35,26 +31,19 @@ export default tseslint.config(
         { prefer: 'type-imports', fixStyle: 'separate-type-imports' },
       ],
 
-      // Prohíbe variables declaradas pero no usadas.
+      // Prohibe variables declaradas pero no usadas.
       // Detecta: imports muertos después de refactors.
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
 
-      // Prohíbe llamar métodos en valores posiblemente undefined/null
-      // sin chequeo previo.
-      // Detecta: `repository.findById()` cuando findById no existe
-      // en la interfaz (retorna undefined en TS strict).
-      '@typescript-eslint/no-unsafe-call': 'warn',
-      '@typescript-eslint/no-unsafe-member-access': 'warn',
-
-      // Prohíbe promesas flotantes (sin await ni .catch).
+      // Prohibe promesas flotantes (sin await ni .catch).
       // Detecta: errores async silenciosos en middleware.
-      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-floating-promises': 'off', // requiere type-aware — activar en próximo PR
 
       // Requiere return consistente en funciones async.
-      '@typescript-eslint/require-await': 'warn',
+      '@typescript-eslint/require-await': 'off', // requiere type-aware — activar en próximo PR
     },
   },
 );
