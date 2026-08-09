@@ -4,6 +4,8 @@ import { ReservationStatus } from '../types/enums.js';
 export interface OccupancySnapshot {
   resourceId: string;
   resourceName: string;
+  categoryId: string;
+  categoryName: string;
   date: Date;
   totalMinutes: number;
   bookedMinutes: number;
@@ -12,6 +14,8 @@ export interface OccupancySnapshot {
 export interface OccupancyStats {
   resourceId: string;
   resourceName: string;
+  categoryId: string;
+  categoryName: string;
   date: string;
   occupancyRate: number;
 }
@@ -26,10 +30,16 @@ export interface OccupancyRepository {
   /**
    * Registra una reserva cuando cambia de estado.
    * El repositorio mantiene un registro de ocupación por fecha/recurso.
+   *
+   * categoryId y categoryName se persisten junto al snapshot para que los
+   * reportes puedan agrupar por categoría real sin volver a consultar la
+   * tabla de recursos.
    */
   recordReservation(
     resourceId: string,
     resourceName: string,
+    categoryId: string,
+    categoryName: string,
     startTime: Date,
     endTime: Date,
     status: ReservationStatus,

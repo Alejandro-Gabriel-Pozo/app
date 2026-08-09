@@ -1,4 +1,4 @@
-import { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
+import type { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
 
 /**
  * Reporte de ocupación diaria
@@ -7,6 +7,8 @@ export interface OccupancyReportRow {
   date: string;
   resourceId: string;
   resourceName: string;
+  categoryId: string;
+  categoryName: string;
   totalMinutes: number;
   bookedMinutes: number;
   occupancyRate: number;
@@ -47,6 +49,8 @@ export class ReportService {
       date: snapshot.date.toISOString().split('T')[0] ?? '',
       resourceId: snapshot.resourceId,
       resourceName: snapshot.resourceName,
+      categoryId: snapshot.categoryId,
+      categoryName: snapshot.categoryName,
       totalMinutes: snapshot.totalMinutes,
       bookedMinutes: snapshot.bookedMinutes,
       occupancyRate: parseFloat(
@@ -102,7 +106,11 @@ export class ReportService {
   }
 
   /**
-   * Obtiene ocupación por tipo de recurso.
+   * Obtiene ocupación agrupada por categoría de recurso.
+   *
+   * Agrupa por categoryName real (dato persistido en cada snapshot junto
+   * con el recurso). No usa heurísticas de substring sobre el nombre del
+   * recurso — cualquier rubro funciona correctamente.
    */
   async generateOccupancyByResourceType(
     startDate: Date,
@@ -114,42 +122,21 @@ export class ReportService {
         endDate,
       );
 
-    // Agrupar por nombre de recurso para identificar tipo
-    const byType: Record<string, OccupancyStats[]> = {};
+    const byCategory: Record<string, OccupancyStats[]> = {};
 
     for (const stat of averageByResource) {
-      // Heurística simple: si el nombre contiene palabras clave, asumir tipo
-      let type = 'OTHER';
+      // categoryName es el dato real del Resource — sin heurísticas.
+      // Si por alguna razón llega vacío (datos migrados antes del fix),
+      // se agrupa bajo 'Sin categoría' para no perder el registro.
+      const key = stat.categoryName.trim() || 'Sin categoría';
 
-      if (
-        stat.resourceName.toLowerCase().includes('cabin') ||
-        stat.resourceName.toLowerCase().includes('cabaña')
-      ) {
-        type = 'CABIN';
-      } else if (
-        stat.resourceName.toLowerCase().includes('table') ||
-        stat.resourceName.toLowerCase().includes('mesa')
-      ) {
-        type = 'RESTAURANT_TABLE';
-      } else if (
-        stat.resourceName.toLowerCase().includes('spa') ||
-        stat.resourceName.toLowerCase().includes('masaje')
-      ) {
-        type = 'SPA';
-      } else if (
-        stat.resourceName.toLowerCase().includes('tour') ||
-        stat.resourceName.toLowerCase().includes('seat')
-      ) {
-        type = 'TOUR_SEAT';
+      if (!byCategory[key]) {
+        byCategory[key] = [];
       }
-
-      if (!byType[type]) {
-        byType[type] = [];
-      }
-      byType[type]!.push(stat);
+      byCategory[key]!.push(stat);
     }
 
-    return byType;
+    return byCategory;
   }
 
   /**
