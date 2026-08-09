@@ -10,6 +10,12 @@
  * - JWT_SECRET     — clave secreta (OBLIGATORIA, mínimo 32 chars)
  * - JWT_EXPIRES_IN — duración del token (opcional, default "24h")
  *
+ * ## authenticate() — firma
+ * `authenticate(resolveUser?)` — el parámetro es SIEMPRE opcional.
+ * No agregar parámetros obligatorios: el 99% de las rutas lo llaman
+ * como `authenticate()` sin argumentos. Si el parámetro fuera requerido
+ * rompería todos esos call-sites con TS2554.
+ *
  * ## Re-exports de utilidades de hashing
  * hashPassword y verifyPassword viven en user.store.ts.
  * Se re-exportan aquí para que los routers puedan importarlas desde
@@ -144,6 +150,18 @@ export function getJwtSecret(): string {
 // Middlewares
 // ---------------------------------------------------------------------------
 
+/**
+ * Middleware de autenticación.
+ *
+ * ## Parámetro `resolveUser` — SIEMPRE opcional
+ * No convertir en obligatorio. Todas las rutas llaman `authenticate()`
+ * sin argumentos. Si se vuelve requerido, rompe con TS2554 en cada
+ * call-site que no lo pase.
+ *
+ * @param resolveUser - Función opcional para resolver el usuario desde req
+ *   (usada en tests o en rutas que necesitan un resolver personalizado).
+ *   Si se omite, el usuario se extrae del header Authorization: Bearer.
+ */
 export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser | undefined) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (resolveUser) {

@@ -18,27 +18,42 @@
  * (inyectado por tenantMiddleware). No hay estado compartido entre tenants.
  *
  * ## exactOptionalPropertyTypes — Zod parse y DTOs opcionales
- * Con exactOptionalPropertyTypes=true en tsconfig, un objeto
- * `{ dayOfWeek: undefined }` NO es assignable a `{ dayOfWeek?: number }`.
- * Zod infiere las propiedades opcionales como `T | undefined` (la clave
- * siempre existe en el objeto parseado, con valor undefined si el campo
- * no vino en el body).
  *
- * Solución: usar `omitUndefined()` para producir un objeto donde las
- * claves con valor undefined directamente no existen.
+ * Con exactOptionalPropertyTypes=true en tsconfig, hay dos clases de problema:
+ *
+ * CLASE A — Zod infiere `{ description?: string | undefined }` pero el DTO
+ * espera `{ description?: string }` (sin `| undefined` explícito).
+ * Pasar el objeto crudo viola TS2379.
+ *
+ * CLASE B — omitUndefined<T>() que retorna `Partial<T>` también falla
+ * porque `Partial<T>` convierte `string` en `string | undefined`.
+ *
+ * Solución: `stripUndefined<T>()` — retorna `T` (no `Partial<T>`).
+ * El cast `as unknown as T` es seguro porque:
+ * 1. Las claves con valor undefined no están en el objeto resultante.
+ * 2. Un objeto sin una clave opcional ES assignable a un tipo con esa
+ *    clave como `prop?: string` (la clave ausente ≡ propiedad no presente).
+ * 3. Solo se usa en el límite router→servicio, no dentro de dominio.
  *
  * NO hacer:
- *   service.updateSchedule(id, body)  // body tiene { dayOfWeek: undefined } → TS2379
+ *   service.createService(body)                         // body.description: string|undefined → TS2379
+ *   service.updateService(id, omitUndefined(body))       // Partial<T>.categoryId: string|undefined → TS2379
  *
  * SÍ hacer:
- *   service.updateSchedule(id, omitUndefined(body))  // solo claves con valor
+ *   service.createService(stripUndefined(body))          // T sin claves undefined → ✅
+ *   service.updateService(id, stripUndefined(body))      // T sin claves undefined → ✅
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { authorize } from '../../security/auth.middleware.js';
 import { UserRole } from '../../types/enums.js';
-import { BookableServiceService, BookableServiceNotFoundError, ServiceScheduleNotFoundError, ScheduleConflictError } from '../../services/bookable-service.service.js';
+import {
+  BookableServiceService,
+  BookableServiceNotFoundError,
+  ServiceScheduleNotFoundError,
+  ScheduleConflictError,
+} from '../../services/bookable-service.service.js';
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
 import {
   CreateBookableServiceSchema,
@@ -49,15 +64,24 @@ import {
 import type { AppContainer } from '../../container.js';
 
 /**
- * Elimina las claves cuyo valor es `undefined` del objeto dado.
- * Necesario para cumplir exactOptionalPropertyTypes: el resultado solo
- * contiene claves con valor real, lo que lo hace assignable a un DTO
- * con propiedades opcionales.
+ * Elimina las claves cuyo valor es `undefined` del objeto dado y
+ * retorna el resultado como `T`.
+ *
+ * ## Por qué `T` en lugar de `Partial<T>`
+ * `Partial<T>` añade `| undefined` a cada propiedad, lo que vuelve a
+ * violar exactOptionalPropertyTypes al pasarlo a un servicio cuyo DTO
+ * tiene `prop?: string` (sin `| undefined`).
+ * Retornar `T` es correcto porque un objeto sin la clave `description`
+ * cumple `{ description?: string }` con exactOptionalPropertyTypes=true.
+ *
+ * El `as unknown as T` es un escape hatch controlado, solo en el límite
+ * router→servicio donde Zod puede generar claves con valor undefined.
+ * Nunca usar dentro de lógica de dominio.
  */
-function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
   return Object.fromEntries(
     Object.entries(obj).filter(([, v]) => v !== undefined),
-  ) as Partial<T>;
+  ) as unknown as T;
 }
 
 function buildService(req: Request): BookableServiceService {
@@ -86,7 +110,10 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.post('/', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const body    = CreateBookableServiceSchema.parse(req.body);
+      // stripUndefined: Zod puede parsear description como string|undefined
+      // (si el campo no vino en el body). CreateBookableServiceDTO.description?
+      // no acepta undefined con exactOptionalPropertyTypes.
+      const body    = stripUndefined(CreateBookableServiceSchema.parse(req.body));
       const service = await buildService(req).createService(body);
       res.status(201).json(service);
     } catch (err) {
@@ -113,7 +140,9 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.put('/:id', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const body    = omitUndefined(UpdateBookableServiceSchema.parse(req.body));
+      // stripUndefined: ver doc en cabecera. Retorna T (no Partial<T>)
+      // para cumplir UpdateBookableServiceDTO con exactOptionalPropertyTypes.
+      const body    = stripUndefined(UpdateBookableServiceSchema.parse(req.body));
       const service = await buildService(req).updateService(param(req, 'id'), body);
       res.json(service);
     } catch (err) {
@@ -170,10 +199,10 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   // -------------------------------------------------------------------------
   router.put('/:id/schedules/:scheduleId', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      // omitUndefined: Zod parsea campos opcionales ausentes como { key: undefined }.
-      // exactOptionalPropertyTypes rechaza eso — omitimos las claves undefined
-      // para producir un objeto que cumpla UpdateServiceScheduleDTO.
-      const body     = omitUndefined(UpdateServiceScheduleSchema.parse(req.body));
+      // stripUndefined: Zod parsea campos opcionales ausentes como { key: undefined }.
+      // exactOptionalPropertyTypes rechaza eso — stripUndefined elimina las claves
+      // undefined y retorna T (no Partial<T>) para cumplir UpdateServiceScheduleDTO.
+      const body     = stripUndefined(UpdateServiceScheduleSchema.parse(req.body));
       const schedule = await buildService(req).updateSchedule(param(req, 'scheduleId'), body);
       res.json(schedule);
     } catch (err) {
