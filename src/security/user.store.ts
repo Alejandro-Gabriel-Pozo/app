@@ -177,9 +177,9 @@ function readUserFromEnv(
  * | recepcion@demo.com       | recep123     | RECEPTIONIST |
  * | mesero@demo.com          | waiter123    | WAITER       |
  *
- * ⚠️  En demo, businessId apunta a 'demo-business-001'. Para producción
- *     define ADMIN_BUSINESS_ID (y RECEP_BUSINESS_ID) en Render Dashboard
- *     con el UUID real del negocio en tu BD.
+ * ⚠️  En demo, businessId apunta al negocio real 'biz-demo-01' en la BD central.
+ *     Para producción define ADMIN_BUSINESS_ID (y RECEP_BUSINESS_ID) en
+ *     Render Dashboard con el ID real del negocio.
  */
 export class InMemoryUserStore implements UserStore {
   private readonly users: Map<string, SystemUser>;
@@ -193,7 +193,7 @@ export class InMemoryUserStore implements UserStore {
  
     // Usuarios de demostración (contraseñas hasheadas con PBKDF2 — NO texto plano)
     // Generados con: await hashPassword('admin123') etc.
-    const DEMO_BUSINESS_ID = 'demo-business-001';
+    const DEMO_BUSINESS_ID = 'biz-demo-01';
     const demoUsers: SystemUser[] = envUsers.length > 0 ? [] : [
       {
         id: 'demo-admin-001',
