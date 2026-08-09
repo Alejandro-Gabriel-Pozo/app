@@ -1,6 +1,23 @@
 /**
  * @file bookable-service.types.ts
  * @description Tipos de dominio para servicios agendables y sus horarios.
+ *
+ * ## exactOptionalPropertyTypes — Convención de DTOs
+ *
+ * Con `exactOptionalPropertyTypes: true` en tsconfig, `prop?: string`
+ * significa que la clave puede ESTAR AUSENTE, pero NO puede estar
+ * presente con valor `undefined`.
+ *
+ * Esto conflictuúa con Zod, que infiere `.optional()` como `T | undefined`
+ * (la clave puede existir con valor undefined). Para que los DTOs sean
+ * assignables desde el output de Zod, las props opcionales deben declarar
+ * `prop?: string | undefined`.
+ *
+ * REGLA: todas las propiedades opcionales de DTOs que se asignan desde
+ * Zod deben incluir `| undefined` explícitamente.
+ *
+ * NO hacer: `description?: string`
+ * SÍ hacer: `description?: string | undefined`
  */
 
 // ---------------------------------------------------------------------------
@@ -17,7 +34,7 @@ export interface BookableService {
   id:              string;
   categoryId:      string;
   name:            string;
-  description?:    string;
+  description?:    string | undefined;
   bookingMode:     BookingMode;
   durationMinutes: number | null;
   price:           number;
@@ -25,13 +42,13 @@ export interface BookableService {
   createdAt:       Date;
   updatedAt:       Date;
   /** Schedules cargados inline en GET /:id */
-  schedules?:      ServiceSchedule[];
+  schedules?:      ServiceSchedule[] | undefined;
 }
 
 export interface ServiceSchedule {
   id:          string;
   serviceId:   string;
-  dayOfWeek:   number;  // 0 = lunes … 6 = domingo
+  dayOfWeek:   number;  // 0 = lunes ... 6 = domingo
   startTime:   string;  // HH:MM:SS
   maxCapacity: number;
   active:      boolean;
@@ -45,20 +62,20 @@ export interface CreateBookableServiceDTO {
   id:               string;
   categoryId:       string;
   name:             string;
-  description?:     string;
+  description?:     string | undefined;
   bookingMode:      BookingMode;
-  durationMinutes?: number | null;
+  durationMinutes?: number | null | undefined;
   price:            number;
 }
 
 export interface UpdateBookableServiceDTO {
-  categoryId?:      string;
-  name?:            string;
-  description?:     string;
-  bookingMode?:     BookingMode;
-  durationMinutes?: number | null;
-  price?:           number;
-  active?:          boolean;
+  categoryId?:      string | undefined;
+  name?:            string | undefined;
+  description?:     string | undefined;
+  bookingMode?:     BookingMode | undefined;
+  durationMinutes?: number | null | undefined;
+  price?:           number | undefined;
+  active?:          boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,8 +91,8 @@ export interface CreateServiceScheduleDTO {
 }
 
 export interface UpdateServiceScheduleDTO {
-  dayOfWeek?:   number;
-  startTime?:   string;
-  maxCapacity?: number;
-  active?:      boolean;
+  dayOfWeek?:   number | undefined;
+  startTime?:   string | undefined;
+  maxCapacity?: number | undefined;
+  active?:      boolean | undefined;
 }
