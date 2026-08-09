@@ -37,6 +37,7 @@ Algunos errores incluyen campos adicionales:
 | 400 | `VALIDATION_ERROR` | Body inválido (Zod) | Mostrar errores por campo |
 | 401 | `UNAUTHORIZED` | JWT ausente o inválido | Redirigir a login |
 | 401 | `TOKEN_EXPIRED` | JWT vencido | Redirigir a login con mensaje "sesión expirada" |
+| 401 | `TOKEN_MISSING_BUSINESS` | JWT válido pero sin `business_id` (token viejo o de cliente) | Forzar logout y redirigir a login con mensaje "sesión inválida" |
 | 402 | `PLAN_LIMIT_REACHED` | Límite del plan alcanzado | Mostrar `<UpgradePrompt plan={} limit={} />` |
 | 403 | `FORBIDDEN` | Rol insuficiente | Mostrar mensaje de acceso denegado |
 | 404 | `NOT_FOUND` / `*_NOT_FOUND` | Recurso inexistente | Mostrar estado vacío o redirigir |
@@ -58,6 +59,9 @@ Algunos errores incluyen campos adicionales:
 | POST | `/` | 201 | 400, 401, 402, 403, 503, 500 |
 | PUT | `/:id` | 200 | 400, 401, 403, 404, 503, 500 |
 | DELETE | `/:id` | 204 | 401, 403, 404, 503, 500 |
+
+> **Nota `POST /`:** el 401 puede tener code `UNAUTHORIZED`, `TOKEN_EXPIRED`
+> o `TOKEN_MISSING_BUSINESS`. Los tres deben redirigir a login.
 
 **Body del 402 en `POST /api/categories`:**
 ```json
@@ -152,15 +156,16 @@ type ErrorHandlers = {
 
 export function handleApiError(err: ApiError, handlers: ErrorHandlers): void {
   switch (err.code) {
-    case 'PLAN_LIMIT_REACHED':   return handlers.onPlanLimit?.(err);
+    case 'PLAN_LIMIT_REACHED':     return handlers.onPlanLimit?.(err);
     case 'PLATFORM_UNAVAILABLE':
-    case 'BUSINESS_NOT_READY':   return handlers.onRetry?.(err);
-    case 'VALIDATION_ERROR':     return handlers.onValidation?.(err);
+    case 'BUSINESS_NOT_READY':     return handlers.onRetry?.(err);
+    case 'VALIDATION_ERROR':       return handlers.onValidation?.(err);
     case 'TOKEN_EXPIRED':
-    case 'UNAUTHORIZED':         return handlers.onUnauth?.();
+    case 'TOKEN_MISSING_BUSINESS':
+    case 'UNAUTHORIZED':           return handlers.onUnauth?.();
     case 'NOT_FOUND':
-    case 'CATEGORY_NOT_FOUND':   return handlers.onNotFound?.(err);
-    default:                     return handlers.onGeneric?.(err);
+    case 'CATEGORY_NOT_FOUND':     return handlers.onNotFound?.(err);
+    default:                       return handlers.onGeneric?.(err);
   }
 }
 ```
@@ -211,3 +216,13 @@ Ante cualquier error al crear una categoría:
    ```
 5. Si `code` es `PLATFORM_UNAVAILABLE` → el `businessId` del JWT no existe en la BD
    de plataforma o la BD está caída.
+6. Si `code` es `TOKEN_MISSING_BUSINESS` → el token activo fue firmado antes del fix
+   que agrega `business_id` al JWT. **Solución:** forzar logout del usuario.
+   En la consola del browser:
+   ```js
+   localStorage.clear();
+   sessionStorage.clear();
+   location.href = '/login';
+   ```
+   Después de hacer login de nuevo el token nuevo ya incluye `business_id` y el
+   error desaparece.
