@@ -1,6 +1,6 @@
 {
   "name": "reservations-api",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Sistema de reservas multi-recurso (cabinas, mesas, spa, tours)",
   "private": true,
   "type": "module",
