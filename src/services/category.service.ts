@@ -6,6 +6,11 @@
  * - Validar límites de plan antes de crear categorías
  * - Delegar persistencia al repositorio
  * - Generar IDs deterministas a partir del nombre
+ *
+ * ## PlanLimitError
+ * Expone `plan`, `limit` y `resource` como campos públicos para que
+ * la capa HTTP (categories.routes.ts) los incluya en el body del 402
+ * sin necesidad de hardcodear valores en el frontend.
  */
 
 import type { ICategoryRepository } from '../repositories/category.repository.js';
@@ -25,8 +30,9 @@ export class PlanLimitError extends Error {
     public readonly resource: 'categories' | 'resources',
   ) {
     super(
-      `Tu plan ${plan} permite hasta ${limit === Infinity ? 'ilimitadas' : limit} ${resource}. ` +
-      `Actualizá tu plan para agregar más.`,
+      `Tu plan ${plan} permite hasta ${
+        limit === Infinity ? 'ilimitadas' : limit
+      } ${resource}. Actualizá tu plan para agregar más.`,
     );
     this.name = 'PlanLimitError';
   }
@@ -94,7 +100,7 @@ export class CategoryService {
     dto: Omit<CreateCategoryDTO, 'id'>,
     plan: BusinessPlan,
   ): Promise<ResourceCategory> {
-    const limits = PLAN_LIMITS[plan];
+    const limits  = PLAN_LIMITS[plan];
     const current = await this.categoryRepository.countActive();
 
     if (current >= limits.maxCategories) {
