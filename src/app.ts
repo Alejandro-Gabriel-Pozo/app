@@ -54,6 +54,7 @@ import { SqlHousekeepingRepository }     from './repositories/housekeeping.repos
 import { SqlStayRepository }             from './repositories/stay.repository.js';
 import { HousekeepingService }           from './services/housekeeping.service.js';
 import { StayService }                   from './services/stay.service.js';
+import { SqlResourceRepository }         from './repositories/sql.resource.repository.js';
 import { SqlReservationRepository }      from './repositories/sql.reservation.repository.js';
 import { SqlOccupancyRepository }        from './repositories/sql.occupancy.repository.js';
 import { ReportService }                 from './services/report.service.js';
@@ -158,7 +159,8 @@ export async function createApp(): Promise<{
   // Fase 2 — Check-in / Check-out
   app.use('/api/stays', (req: Request, _res: Response, next: NextFunction) => {
     const stayRepo         = new SqlStayRepository(req.db);
-    const reservationRepo  = new SqlReservationRepository(req.db);
+    const resourceRepo     = new SqlResourceRepository(req.db);
+    const reservationRepo  = new SqlReservationRepository(req.db, resourceRepo);
     const housekeepingRepo = new SqlHousekeepingRepository(req.db);
     const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
     const router = createStaysRouter(stayService);
