@@ -1,0 +1,12 @@
+<tipo>(<alcance>): <qué cambia, en una línea>
+
+# Por qué (obligatorio si no es trivial):
+
+
+# Checklist developing defensivo — borrá lo que no aplique, no dejes vacío:
+# [ ] Firma pública cambiada -> call sites y tests actualizados en este commit
+# [ ] Toca req.db / PLATFORM_DATABASE_URL / TransactionManager -> pool correcto verificado
+# [ ] Puede fallar a mitad de camino -> es atómico / hay rollback
+# [ ] Tests nuevos ejercitan wiring real, no solo mocks
+#
+# Ver docs/DEFENSIVE_DEVELOPING.md para el detalle de cada pregunta.
