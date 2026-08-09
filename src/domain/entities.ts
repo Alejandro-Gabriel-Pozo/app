@@ -14,6 +14,12 @@
  * - Product, Order, OrderItem y OrderStatus removidos de este archivo.
  *   Product vive en `product.entities.ts`.
  *   Order vive en `order.entities.ts`.
+ *
+ * ## Cambios v6 — fix/report-group-by-category
+ * - BookableResource agrega `categoryName: string | null` (parámetro
+ *   opcional con default null) para que reservation.service.ts pueda
+ *   pasarlo a OccupancyRepository.recordReservation() sin heurísticas.
+ *   El repositorio SQL lo lee vía JOIN con resource_categories.
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -100,6 +106,13 @@ export class BookableResource {
     public readonly capacity: number = 1,
     /** Descripción opcional visible al cliente */
     public readonly description: string | null = null,
+    /**
+     * Nombre legible de la categoría a la que pertenece el recurso.
+     * Poblado por SqlResourceRepository vía JOIN con resource_categories.
+     * null cuando el recurso se construye sin JOIN (ej. tests unitarios).
+     * Usado por OccupancyRepository para agrupar snapshots por categoría.
+     */
+    public readonly categoryName: string | null = null,
   ) {
     if (basePrice < 0) throw new Error('basePrice no puede ser negativo');
     if (!categoryId.trim()) throw new Error('categoryId es obligatorio');

@@ -3,10 +3,11 @@
  * @description Entry point — corre migraciones y arranca el servidor.
  *
  * ## Cambios en esta versión
- * - Arranca `outboxWorker` después de que el servidor HTTP está escuchando.
- * - Detiene `outboxWorker` en el graceful shutdown (SIGTERM/SIGINT).
+ * - El worker de outbox por tenant se arranca desde tenantMiddleware;
+ *   ya no hay un outboxWorker global en AppContainer ni en server.ts.
+ * - stopAllWorkers() se llama desde registerGracefulShutdown en app.ts.
  * - Cierra pools de tenants y plataforma en el graceful shutdown.
- * - Envuelve el arranque en `main()` con try/catch para capturar errores fatales.
+ * - Envuelve el arranque en main() con try/catch para capturar errores fatales.
  *
  * Migraciones automáticas al arrancar:
  * - PLATFORM_DATABASE_URL → platform.schema.sql (BD central, siempre requerida)
@@ -36,7 +37,7 @@ async function main(): Promise<void> {
     const { Pool } = pg;
     const pool = new Pool({
       connectionString: process.env.PLATFORM_DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
     });
     await pool.query(sql);
     await pool.end();
@@ -47,30 +48,23 @@ async function main(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
-  // Arranque del servidor + worker
+  // Arranque del servidor
+  // Los workers de outbox por tenant arrancan desde tenantMiddleware.
   // -------------------------------------------------------------------------
-  const { app, container } = await createApp();
+  const { app } = await createApp();
 
   const server = app.listen(PORT, () => {
     console.log(`\n🚀 Reservations API en http://localhost:${PORT}`);
     console.log(`   Swagger UI: http://localhost:${PORT}/docs`);
     console.log(`   Modo:       multi-tenant\n`);
-
-    if (container.outboxWorker) {
-      container.outboxWorker.start();
-      console.log('[outbox] ✅ Worker arrancado.');
-    }
   });
 
   // -------------------------------------------------------------------------
-  // Graceful shutdown: HTTP server → outbox worker → pools PostgreSQL
+  // Graceful shutdown: HTTP server → workers por tenant → pools PostgreSQL
+  // stopAllWorkers() y closeTenantPools() se llaman desde app.ts
   // -------------------------------------------------------------------------
   registerGracefulShutdown(server, {
     onShutdown: async () => {
-      if (container.outboxWorker) {
-        await container.outboxWorker.stop();
-        console.log('[outbox] Worker detenido.');
-      }
       await closeTenantPools();
       await closePlatformPool();
       console.log('[server] Pools PostgreSQL cerrados.');

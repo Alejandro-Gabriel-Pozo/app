@@ -10,12 +10,16 @@
  * Ahora:
  * - Rutas públicas (`register`/`login`/`availability`) reciben `:businessSlug`
  *   en la URL y resuelven el tenant en cada request vía
- *   `platformRepo.findBySlug()` + `getTenantClient()` — el mismo mecanismo
- *   que usa `tenantMiddleware`, reexportado desde ahí para no duplicar la
- *   lógica de caché de pools.
+ *   `platformRepo.findBySlug()` + `getTenantClient()` / `getTenantRawPool()`.
  * - Rutas autenticadas (`/me/*`) resuelven el tenant desde `business_id`
  *   en el JWT del cliente (ver `CustomerAuthService`), ya que el negocio
  *   no cambia dentro de una misma sesión.
+ *
+ * ## Cambios — fix/ts-compile-errors
+ * - buildService() ya no recibe `container.transactionManager` (removido
+ *   de AppContainer). Recibe el `pg.Pool` del tenant y construye el
+ *   TransactionManager vía buildTenantTransactionManager(pool) desde
+ *   tenant-context.ts, igual que reservations/orders.
  *
  * ## Rutas
  *
@@ -37,6 +41,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
+import type pg from 'pg';
 import { AppContainer } from '../../container.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
@@ -45,10 +50,12 @@ import { UserRole, ReservationStatus, BusinessStatus } from '../../types/enums.j
 import { PlatformRepository } from '../../platform/platform.repository.js';
 import {
   getTenantClient,
+  getTenantRawPool,
   TenantNotFoundError,
   TenantInactiveError,
   TenantNotReadyError,
 } from '../../platform/tenant.middleware.js';
+import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { SqlClient } from '../../repositories/sql.client.js';
 import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
 import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
@@ -140,7 +147,11 @@ const AvailabilityQuerySchema = z.object({
 // Helpers de resolución de tenant
 // ---------------------------------------------------------------------------
 
-function buildService(client: SqlClient, container: AppContainer) {
+/**
+ * Construye los repos y el ReservationService para un tenant dado su pool raw.
+ * El TransactionManager se construye aquí para que apunte a la BD del tenant.
+ */
+function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const resourceRepo    = new SqlResourceRepository(client);
   const reservationRepo = new SqlReservationRepository(client, resourceRepo);
   const customerRepo    = new SqlCustomerRepository(client);
@@ -154,25 +165,26 @@ function buildService(client: SqlClient, container: AppContainer) {
     occupancyRepo,
     categoryRepo,
     domainEventRepo,
-    container.transactionManager,
+    buildTenantTransactionManager(tenantPool),
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };
 }
 
-/** Resuelve el SqlClient del tenant a partir del slug en la URL pública. */
+/** Resuelve el SqlClient y el pool raw del tenant a partir del slug en la URL pública. */
 async function resolveTenantBySlug(
   slug: string,
   platformRepo: PlatformRepository,
-): Promise<{ client: SqlClient; businessId: string }> {
+): Promise<{ client: SqlClient; tenantPool: pg.Pool; businessId: string }> {
   const business = await platformRepo.findBySlug(slug);
   if (!business) throw new TenantNotFoundError(slug);
   if (business.status !== BusinessStatus.ACTIVE) {
     throw new TenantInactiveError(business.id, business.status);
   }
   if (!business.dbUrlEncrypted) throw new TenantNotReadyError(business.id);
-  const client = await getTenantClient(business.id, platformRepo);
-  return { client, businessId: business.id };
+  const client     = await getTenantClient(business.id, platformRepo);
+  const tenantPool = getTenantRawPool(business.id);
+  return { client, tenantPool, businessId: business.id };
 }
 
 type TenantError = TenantNotFoundError | TenantInactiveError | TenantNotReadyError;
@@ -234,7 +246,7 @@ export function createCustomerRouter(
         const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const body = RegisterCustomerSchema.parse(req.body);
-        const { customerRepo } = buildService(client, container);
+        const { customerRepo } = buildService(client, /* tenantPool needed only for ReservationService */ getTenantRawPool(businessId));
         const authService = new CustomerAuthService(customerRepo, businessId);
         const result = await authService.register(body);
 
@@ -268,7 +280,7 @@ export function createCustomerRouter(
         const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const body = LoginCustomerSchema.parse(req.body);
-        const { customerRepo } = buildService(client, container);
+        const { customerRepo } = buildService(client, getTenantRawPool(businessId));
         const authService = new CustomerAuthService(customerRepo, businessId);
         const result = await authService.login(body);
 
@@ -297,7 +309,7 @@ export function createCustomerRouter(
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const slug = String(req.params.businessSlug);
-        const { client } = await resolveTenantBySlug(slug, platformRepo);
+        const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const query = AvailabilityQuerySchema.parse(req.query);
         const startTime = new Date(query.startTime);
@@ -308,7 +320,7 @@ export function createCustomerRouter(
           return;
         }
 
-        const { resourceRepo, reservationRepo } = buildService(client, container);
+        const { resourceRepo, reservationRepo } = buildService(client, getTenantRawPool(businessId));
         let allResources = await resourceRepo.getAll();
 
         if (query.categoryId) {
@@ -381,7 +393,7 @@ export function createCustomerRouter(
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const { customerRepo } = buildService(req.db!, container);
+        const { customerRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const customer = await customerRepo.getById(customerId);
         if (!customer) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
@@ -404,7 +416,7 @@ export function createCustomerRouter(
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const { customerRepo } = buildService(req.db!, container);
+        const { customerRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const anonymized = await customerRepo.anonymize(customerId);
 
         if (!anonymized) {
@@ -437,7 +449,7 @@ export function createCustomerRouter(
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const { reservationRepo } = buildService(req.db!, container);
+        const { reservationRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const reservations = await reservationRepo.getByCustomerId(customerId);
         res.json(reservations.map(toReservationDto));
       } catch (err) {
@@ -458,7 +470,7 @@ export function createCustomerRouter(
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const { reservationService, customerRepo } = buildService(req.db!, container);
+        const { reservationService, customerRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const customerEntity = await customerRepo.getById(customerId);
         if (!customerEntity) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Cliente no encontrado' });
@@ -493,7 +505,7 @@ export function createCustomerRouter(
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
-        const { reservationService, reservationRepo } = buildService(req.db!, container);
+        const { reservationService, reservationRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const existing = await reservationRepo.getById(reservationId);
         if (!existing) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
@@ -552,7 +564,7 @@ export function createCustomerRouter(
 
         const businessId = req.user!.businessId!;
 
-        const { reservationService, reservationRepo } = buildService(req.db!, container);
+        const { reservationService, reservationRepo } = buildService(req.db!, getTenantRawPool(businessId));
         const reservation = await reservationRepo.getById(reservationId);
         if (!reservation) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
