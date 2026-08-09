@@ -35,6 +35,12 @@
  * - `recordOccupancy()` ahora pasa `resource.categoryId` y
  *   `resource.categoryName` a `recordReservation()` para que los
  *   snapshots puedan agruparse por categoría real sin heurísticas.
+ *
+ * ## Cambios — fix/ts-compile-errors
+ * - `recordOccupancy()` usa `?? ''` para coercionar `categoryName`
+ *   de `string | null` a `string`, ya que `OccupancyRepository`
+ *   exige `string`. El snapshot queda con cadena vacía cuando el
+ *   recurso fue cargado sin JOIN de categoría (tests, mocks).
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -325,7 +331,7 @@ export class ReservationService {
       reservation.resource.id,
       reservation.resource.name,
       reservation.resource.categoryId,
-      reservation.resource.categoryName,
+      reservation.resource.categoryName ?? '',
       reservation.startTime,
       reservation.endTime,
       reservation.status,
