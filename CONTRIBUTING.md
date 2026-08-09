@@ -198,6 +198,14 @@ importa es verificar que el servicio llama `saveWithClient` e
 
 ## 6. Commits
 
+> Antes que nada: ver `docs/DEFENSIVE_DEVELOPING.md`. Todo PR debe responder
+> el checklist de developing defensivo (el template de PR ya lo incluye).
+> Para que el checklist aparezca también al commitear localmente:
+>
+> ```bash
+> git config commit.template .gitmessage
+> ```
+
 Usar [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
