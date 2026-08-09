@@ -29,6 +29,15 @@
  * buildXxxService(req) que reciben req.db (SqlClient del tenant
  * inyectado por tenantMiddleware). Ver reservations.routes.ts y
  * products.routes.ts como referencia del patrón.
+ *
+ * ## getBusinessPlan — comportamiento ante businessId inválido
+ *
+ * Lanza un Error explícito si el negocio no se encuentra en la BD de
+ * plataforma. Antes retornaba FREE silenciosamente, lo cual enmascaraba
+ * registros incompletos y causaba 402 PLAN_LIMIT_REACHED confusos.
+ *
+ * El caller (categories.routes.ts y cualquier router que lo use) debe
+ * capturar el error y responder 503 PLATFORM_UNAVAILABLE.
  */
 
 import { PlatformRepository } from './platform/platform.repository.js';
@@ -78,7 +87,6 @@ export function createPlatformPool(): SqlClient {
 
 export function getPlatformRawPool(): InstanceType<typeof Pool> {
   if (!_platformPool) {
-    // Trigger pool creation via createPlatformPool
     createPlatformPool();
   }
   return _platformPool!;
@@ -116,9 +124,29 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const platformSqlClient  = createPlatformPool();
   const platformRepository = new PlatformRepository(platformSqlClient);
 
+  /**
+   * Obtiene el plan del negocio desde la BD de plataforma.
+   *
+   * Lanza un Error explícito si el negocio no existe, en vez de retornar
+   * FREE silenciosamente. Esto evita que negocios mal registrados operen
+   * con límites incorrectos y que el 402 aparezca sin razón aparente.
+   *
+   * El caller debe capturar el error y responder 503 PLATFORM_UNAVAILABLE.
+   *
+   * @throws Error si businessId no corresponde a ningún negocio registrado,
+   *         o si la BD de plataforma no está disponible.
+   */
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
     const business = await platformRepository.findById(businessId);
-    return (business?.plan ?? BusinessPlan.FREE) as BusinessPlan;
+
+    if (!business) {
+      throw new Error(
+        `[getBusinessPlan] businessId "${businessId}" no encontrado en la BD de plataforma. ` +
+        'Verificá que el negocio esté registrado correctamente y que el JWT contenga el business_id correcto.',
+      );
+    }
+
+    return (business.plan ?? BusinessPlan.FREE) as BusinessPlan;
   };
 
   console.log('[container] ✅ PostgreSQL listo.');
