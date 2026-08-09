@@ -16,10 +16,12 @@
  *   ADMIN_USER_ID       = "admin-001"
  *   ADMIN_USER_EMAIL    = "admin@tuempresa.com"
  *   ADMIN_PASSWORD_HASH = "<salida de hashPassword()>"
+ *   ADMIN_BUSINESS_ID   = "<uuid del negocio en la BD>"
  *
  *   RECEP_USER_ID       = "recep-001"
  *   RECEP_USER_EMAIL    = "recepcion@tuempresa.com"
  *   RECEP_PASSWORD_HASH = "<salida de hashPassword()>"
+ *   RECEP_BUSINESS_ID   = "<uuid del negocio en la BD>"
  *
  * ## Cómo generar un hash para Render
  *
@@ -151,13 +153,14 @@ function readUserFromEnv(
   prefix: string,
   role: UserRole,
 ): SystemUser | undefined {
-  const id = process.env[`${prefix}_USER_ID`];
-  const email = process.env[`${prefix}_USER_EMAIL`];
+  const id           = process.env[`${prefix}_USER_ID`];
+  const email        = process.env[`${prefix}_USER_EMAIL`];
   const passwordHash = process.env[`${prefix}_PASSWORD_HASH`];
+  const businessId   = process.env[`${prefix}_BUSINESS_ID`];
  
   if (!id || !email || !passwordHash) return undefined;
  
-  return { id, email, role, passwordHash };
+  return { id, email, role, passwordHash, ...(businessId && { businessId }) };
 }
  
 /**
@@ -174,7 +177,9 @@ function readUserFromEnv(
  * | recepcion@demo.com       | recep123     | RECEPTIONIST |
  * | mesero@demo.com          | waiter123    | WAITER       |
  *
- * ⚠️  Nunca uses usuarios demo en producción. Define siempre las env vars.
+ * ⚠️  En demo, businessId apunta a 'demo-business-001'. Para producción
+ *     define ADMIN_BUSINESS_ID (y RECEP_BUSINESS_ID) en Render Dashboard
+ *     con el UUID real del negocio en tu BD.
  */
 export class InMemoryUserStore implements UserStore {
   private readonly users: Map<string, SystemUser>;
@@ -188,11 +193,13 @@ export class InMemoryUserStore implements UserStore {
  
     // Usuarios de demostración (contraseñas hasheadas con PBKDF2 — NO texto plano)
     // Generados con: await hashPassword('admin123') etc.
+    const DEMO_BUSINESS_ID = 'demo-business-001';
     const demoUsers: SystemUser[] = envUsers.length > 0 ? [] : [
       {
         id: 'demo-admin-001',
         email: 'admin@demo.com',
         role: UserRole.ADMIN,
+        businessId: DEMO_BUSINESS_ID,
         // hash de "admin123" — solo para desarrollo
         passwordHash:
           'eacd2ec131cc27483111fd162a820d5a:' +
@@ -203,6 +210,7 @@ export class InMemoryUserStore implements UserStore {
         id: 'demo-recep-001',
         email: 'recepcion@demo.com',
         role: UserRole.RECEPTIONIST,
+        businessId: DEMO_BUSINESS_ID,
         passwordHash:
           '829280e6baa346e556e93a4aa1297ae0:' +
           '09293eff08b0114d7330e7a895c3770e65d7a2fe39bf2c480e92010fad0f029e' +
@@ -212,6 +220,7 @@ export class InMemoryUserStore implements UserStore {
         id: 'demo-waiter-001',
         email: 'mesero@demo.com',
         role: UserRole.WAITER,
+        businessId: DEMO_BUSINESS_ID,
         passwordHash:
           '55e9c9188fedb31713ea77573814e946:' +
           '6a1f9c19d673ac6103f7bc9b7c0b68c1b786a4bc56e1844017dd61c453c29c88' +
@@ -225,8 +234,8 @@ export class InMemoryUserStore implements UserStore {
     if (envUsers.length === 0) {
       console.warn(
         '[UserStore] ⚠️  Usando usuarios de DEMO. ' +
-        'Define ADMIN_USER_ID, ADMIN_USER_EMAIL, ADMIN_PASSWORD_HASH (y RECEP_/WAITER_) ' +
-        'en Render Dashboard para producción.',
+        'Define ADMIN_USER_ID, ADMIN_USER_EMAIL, ADMIN_PASSWORD_HASH, ADMIN_BUSINESS_ID ' +
+        '(y RECEP_/WAITER_) en Render Dashboard para producción.',
       );
     }
   }
@@ -235,4 +244,3 @@ export class InMemoryUserStore implements UserStore {
     return this.users.get(email.toLowerCase());
   }
 }
-
