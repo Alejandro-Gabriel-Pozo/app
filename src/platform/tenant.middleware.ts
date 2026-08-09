@@ -9,11 +9,13 @@
  * 4. Obtiene (o crea) un pool de conexiones para ese negocio
  * 5. Adjunta `req.db` al request
  * 6. Adjunta `req.businessId` al request
+ * 7. Arranca un OutboxWorker por tenant si aún no existe (fix C4)
  *
  * ## Pool cache
  * Los pools se cachean en `tenantPools` por business_id.
  * Cada entrada guarda tanto el SqlClient (interfaz usada por los repos)
- * como el Pool de pg (necesario para llamar pool.end() en shutdown).
+ * como el Pool de pg (necesario para llamar pool.end() en shutdown o
+ * para construir un PgTransactionManager — ver getTenantRawPool).
  *
  * Un negocio activo tiene exactamente un pool durante la vida del proceso.
  * Si el proceso se reinicia (Render deploy), los pools se recrean lazy.
@@ -48,6 +50,7 @@ import { SqlClient } from '../repositories/sql.client.js';
 import { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './supabase.provisioner.js';
 import { BusinessStatus, UserRole } from '../types/enums.js';
+import { ensureTenantWorker } from '../workers/outbox.registry.js';
 
 const { Pool } = pg;
 type PgPool = InstanceType<typeof Pool>;
@@ -58,8 +61,9 @@ type PgPool = InstanceType<typeof Pool>;
 
 /**
  * Entrada del cache de pools.
- * Se guarda el Pool de pg junto al SqlClient para poder cerrar la conexión
- * real en shutdown o al invalidar un tenant en caliente.
+ * Se guarda el Pool de pg junto al SqlClient para poder:
+ * - Cerrar la conexión real en shutdown o al invalidar un tenant.
+ * - Obtener el Pool raw para construir PgTransactionManager (fix C1).
  */
 interface TenantPoolEntry {
   client: SqlClient;
@@ -111,12 +115,16 @@ export async function getTenantClient(
   const connectionString = await decryptConnectionString(business.dbUrlEncrypted);
 
   // Crear pool para este tenant
+  // rejectUnauthorized: true en producción — igual que el pool de plataforma.
+  // No hay razón para no verificar certificados en Neon (válidos), y evita MITM.
   const pool = new Pool({
     connectionString,
     max: 5, // Pool pequeño por tenant — ajustar según plan
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
-    ssl: { rejectUnauthorized: false },
+    ssl: process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: true }
+      : { rejectUnauthorized: false },
   });
 
   pool.on('error', (err) => {
@@ -151,6 +159,29 @@ export async function getTenantClient(
 }
 
 /**
+ * Devuelve el pg.Pool raw del tenant desde el cache.
+ *
+ * Necesario para construir PgTransactionManager con el pool correcto (fix C1).
+ * El SqlClient que expone req.db solo tiene .query() — no sirve para abrir
+ * una transacción con conn.connect(). Este método expone el Pool subyacente.
+ *
+ * Lanza error explícito si el pool no está en cache (no debería ocurrir
+ * en requests normales que ya pasaron por tenantMiddleware).
+ *
+ * @param businessId - ID del tenant cuyo pool se quiere obtener.
+ */
+export function getTenantRawPool(businessId: string): PgPool {
+  const entry = tenantPools.get(businessId);
+  if (!entry) {
+    throw new Error(
+      `[tenant] getTenantRawPool: no hay pool cacheado para tenant "${businessId}". ` +
+      'Asegurate de llamar a getTenantRawPool solo después de que tenantMiddleware haya resuelto req.db.',
+    );
+  }
+  return entry.pool;
+}
+
+/**
  * Invalida el pool de un tenant en caliente.
  * Cierra la conexión real con Postgres y lo remueve del cache.
  * Útil para rotación de credenciales o deprovisioning de un negocio.
@@ -180,6 +211,7 @@ export async function evictTenantPool(businessId: string): Promise<void> {
 
 /**
  * Middleware que inyecta `req.db` y `req.businessId` con la conexión al tenant correcto.
+ * También arranca el OutboxWorker del tenant si aún no está corriendo (fix C4).
  * Debe montarse DESPUÉS de `authenticate()`.
  *
  * Los requests con `role: CUSTOMER` se dejan pasar sin modificar —
@@ -216,6 +248,11 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
     try {
       req.db         = await getTenantClient(req.user.businessId, platformRepo);
       req.businessId = req.user.businessId;
+
+      // fix C4: arrancar OutboxWorker por tenant bajo demanda.
+      // ensureTenantWorker es idempotente — no hace nada si ya existe el worker.
+      ensureTenantWorker(req.user.businessId, req.db);
+
       next();
     } catch (err) {
       if (err instanceof TenantNotFoundError) {

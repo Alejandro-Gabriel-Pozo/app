@@ -5,14 +5,25 @@
  * ## Qué vive aquí y qué no
  *
  * ✅ VIVE EN EL CONTAINER (stateless / cross-tenant):
- * - transactionManager: stateless, no guarda conexión.
- * - outboxWorker: procesa domain_events de la BD central de cada tenant
- *   a través del domainEventRepository inyectado.
  * - getBusinessPlan: consulta la BD de plataforma (PLATFORM_DATABASE_URL).
  *
  * ❌ NO VIVE EN EL CONTAINER (requieren req.db del tenant):
  * - ReservationService, ProductService, CategoryService, ReportService
  * - Todos los SqlXxxRepository de entidades de negocio
+ * - TransactionManager de tenant (ver src/db/tenant-context.ts)
+ * - OutboxWorker por tenant (arrancado desde tenantMiddleware, fix C4)
+ *
+ * ## Por qué se removió transactionManager y outboxWorker del container
+ *
+ * transactionManager: construido sobre getPlatformRawPool() apuntaba a
+ * PLATFORM_DATABASE_URL. Los repos de reservas/órdenes usan req.db (tenant).
+ * Correr el FOR UPDATE y el INSERT en BDs distintas rompe el aislamiento.
+ * La solución es buildTenantTransactionManager(req) en tenant-context.ts.
+ *
+ * outboxWorker: construido sobre platformSqlClient, nunca encontraba filas.
+ * Los domain events se escriben en la BD del tenant. La solución es
+ * ensureTenantWorker(businessId, req.db) en outbox.registry.ts, llamado
+ * desde tenantMiddleware (fix C4).
  *
  * Estos se construyen por request en cada router mediante funciones
  * buildXxxService(req) que reciben req.db (SqlClient del tenant
@@ -20,18 +31,7 @@
  * products.routes.ts como referencia del patrón.
  */
 
-import { TransactionManager }            from './db/transaction-manager.js';
-import { DomainEventRepository }         from './repositories/domain-event.repository.js';
-import { FinancialTransactionRepository } from './repositories/financial-transaction.repository.js';
-
-import { SqlDomainEventRepository }          from './repositories/sql.domain-event.repository.js';
-import { SqlFinancialTransactionRepository } from './repositories/sql.financial-transaction.repository.js';
-
-import { OutboxWorker }              from './workers/outbox.worker.js';
-import { registerFinancialHandlers } from './workers/outbox.handlers.js';
-
 import { PlatformRepository } from './platform/platform.repository.js';
-import { PgTransactionManager } from './db/pg.transaction-manager.js';
 import { BusinessPlan }        from './types/enums.js';
 import { SqlClient }           from './repositories/sql.client.js';
 import pg from 'pg';
@@ -96,8 +96,6 @@ export async function closePlatformPool(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export interface AppContainer {
-  transactionManager: TransactionManager;
-  outboxWorker: OutboxWorker;
   getBusinessPlan: (businessId: string) => Promise<BusinessPlan>;
   mode: 'postgresql';
 }
@@ -118,19 +116,6 @@ async function createPostgresContainer(): Promise<AppContainer> {
   const platformSqlClient  = createPlatformPool();
   const platformRepository = new PlatformRepository(platformSqlClient);
 
-  const domainEventRepository: DomainEventRepository =
-    new SqlDomainEventRepository(platformSqlClient);
-  const financialTransactionRepository: FinancialTransactionRepository =
-    new SqlFinancialTransactionRepository(platformSqlClient);
-
-  // PgTransactionManager necesita el Pool real (no el SqlClient wrapper)
-  // para poder hacer conn.connect() y gestionar transacciones.
-  const rawPool = getPlatformRawPool();
-  const transactionManager = new PgTransactionManager(rawPool);
-
-  const outboxWorker = new OutboxWorker(domainEventRepository);
-  registerFinancialHandlers(outboxWorker, financialTransactionRepository);
-
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
     const business = await platformRepository.findById(businessId);
     return (business?.plan ?? BusinessPlan.FREE) as BusinessPlan;
@@ -139,8 +124,6 @@ async function createPostgresContainer(): Promise<AppContainer> {
   console.log('[container] ✅ PostgreSQL listo.');
 
   return {
-    transactionManager,
-    outboxWorker,
     getBusinessPlan,
     mode: 'postgresql',
   };

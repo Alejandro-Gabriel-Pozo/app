@@ -14,6 +14,11 @@
  * El ReservationService se construye por request usando req.db (SqlClient
  * del tenant inyectado por tenantMiddleware). Patrón idéntico a housekeeping
  * y stays en app.ts.
+ *
+ * ## Transacciones (fix C1)
+ * buildReservationService usa buildTenantTransactionManager(req) —
+ * construido sobre el pool raw del TENANT, no el pool de plataforma.
+ * Ver src/db/tenant-context.ts para el detalle.
  */
 
 import { Router }                        from 'express';
@@ -25,8 +30,7 @@ import { SqlResourceRepository }         from '../../repositories/sql.resource.r
 import { SqlOccupancyRepository }        from '../../repositories/sql.occupancy.repository.js';
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
-import { PgTransactionManager }          from '../../db/pg.transaction-manager.js';
-import { getPlatformRawPool }            from '../../container.js';
+import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import type { AuthenticatedUser }        from '../../security/user.types.js';
 import { UserRole }                      from '../../types/enums.js';
 
@@ -37,7 +41,9 @@ function buildReservationService(req: import('express').Request): ReservationSer
   const occupancyRepo       = new SqlOccupancyRepository(db);
   const categoryRepo        = new SqlCategoryRepository(db);
   const domainEventRepo     = new SqlDomainEventRepository(db);
-  const transactionManager  = new PgTransactionManager(getPlatformRawPool());
+  // fix C1: usar el pool del TENANT, no el pool de plataforma.
+  // buildTenantTransactionManager obtiene el pool correcto vía getTenantRawPool(req.businessId).
+  const transactionManager  = buildTenantTransactionManager(req);
   return new ReservationService(
     reservationRepo,
     resourceRepo,

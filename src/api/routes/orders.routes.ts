@@ -16,6 +16,12 @@
  * buildOrderService(req) instancia SqlOrderRepository usando req.db
  * del tenant activo (inyectado por tenantMiddleware).
  *
+ * ## Transacción en createOrder (fix C1)
+ * OrderService recibe buildTenantTransactionManager(req) para envolver
+ * INSERT orders + INSERT order_items en un único BEGIN/COMMIT.
+ * Se usa el pool del TENANT (via tenant-context.ts), no container.transactionManager
+ * que apuntaba al pool de plataforma.
+ *
  * ## exactOptionalPropertyTypes — CreateOrderInput y CreateOrderItemInput
  * Con exactOptionalPropertyTypes=true:
  *   { notes: undefined }  ← NO assignable a CreateOrderInput.notes?: string|null
@@ -42,10 +48,6 @@
  *     ...(parsed.data.notes !== undefined && { notes: parsed.data.notes }),
  *   })
  *
- * ## Transacción en createOrder
- * OrderService recibe container.transactionManager para envolver
- * INSERT orders + INSERT order_items en un único BEGIN/COMMIT.
- *
  * ## Validación Zod
  * POST /api/orders             → CreateOrderSchema
  * POST /api/orders/:id/items   → CreateOrderItemSchema
@@ -61,6 +63,7 @@ import {
   InvalidOrderTransitionError,
 } from '../../services/order.service.js';
 import { SqlOrderRepository } from '../../repositories/sql.order.repository.js';
+import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { compact } from '../utils/compact.js';
 import type { OrderStatus, CreateOrderItemInput } from '../../domain/order.entities.js';
 import {
@@ -69,10 +72,12 @@ import {
   type CreateOrderItemBody,
 } from '../schemas/request.schemas.js';
 
-function buildOrderService(req: Request, container: AppContainer): OrderService {
+// fix C1: buildOrderService usa buildTenantTransactionManager(req) en vez de
+// container.transactionManager, que apuntaba al pool de plataforma.
+function buildOrderService(req: Request, _container: AppContainer): OrderService {
   return new OrderService(
     new SqlOrderRepository(req.db!),
-    container.transactionManager,
+    buildTenantTransactionManager(req),
   );
 }
 

@@ -3,21 +3,23 @@
  * @description Bootstrap de la aplicación Express — arquitectura multi-tenant.
  *
  * ## Orden de middlewares
- * 1. cors, express.json
- * 2. /health, /docs, /openapi.json  — rutas públicas
- * 3. /platform/*                    — gestión de plataforma (SUPERADMIN)
- * 4. POST /register                 — registro de negocios (público)
- * 5. POST /api/login                — login de empleados (público)
- * 6. /api/customer/*                — portal del cliente
- * 7. authenticate()                 — verifica JWT, protege /api/* restante
- * 8. /api/admin                     — mantenimiento (ADMIN, SIN tenantMiddleware)
+ * 1. trust proxy (Render/Cloudflare)
+ * 2. cors, express.json
+ * 3. /health, /docs, /openapi.json  — rutas públicas
+ * 4. /platform/*                    — gestión de plataforma (SUPERADMIN)
+ * 5. POST /register                 — registro de negocios (público)
+ * 6. POST /api/login                — login de empleados (público)
+ * 7. /api/customer/*                — portal del cliente
+ * 8. authenticate()                 — verifica JWT, protege /api/* restante
+ * 9. /api/admin                     — mantenimiento (ADMIN, SIN tenantMiddleware)
  *    ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
  *       necesita correr cuando la BD del tenant todavía no está activa.
- * 9. tenantMiddleware()             — inyecta req.db con la BD del negocio
- * 10. /api/resources, /reservations, /reports, /customers, /users,
+ * 10. tenantMiddleware()             — inyecta req.db con la BD del negocio
+ *                                      + arranca OutboxWorker por tenant (fix C4)
+ * 11. /api/resources, /reservations, /reports, /customers, /users,
  *     /categories, /products, /orders, /bookable-services,
  *     /housekeeping, /stays
- * 11. errorHandler
+ * 12. errorHandler
  */
 
 import express from 'express';
@@ -48,7 +50,7 @@ import { AuthService }                   from './security/auth.service.js';
 import { PlatformRepository }            from './platform/platform.repository.js';
 import { createPlatformContainer }       from './platform/platform.container.js';
 import { tenantMiddleware }              from './platform/tenant.middleware.js';
-import { createAppContainer, AppContainer, createPlatformPool } from './container.js';
+import { createAppContainer, AppContainer, createPlatformPool, closePlatformPool } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
 import { SqlHousekeepingRepository }     from './repositories/housekeeping.repository.js';
 import { SqlStayRepository }             from './repositories/stay.repository.js';
@@ -58,6 +60,8 @@ import { SqlResourceRepository }         from './repositories/sql.resource.repos
 import { SqlReservationRepository }      from './repositories/sql.reservation.repository.js';
 import { SqlOccupancyRepository }        from './repositories/sql.occupancy.repository.js';
 import { ReportService }                 from './services/report.service.js';
+import { closeTenantPools }              from './platform/tenant.middleware.js';
+import { stopAllWorkers }                from './workers/outbox.registry.js';
 import type { Request, Response, NextFunction } from 'express';
 
 export async function createApp(): Promise<{
@@ -65,6 +69,14 @@ export async function createApp(): Promise<{
   container: AppContainer;
 }> {
   const app = express();
+
+  // -------------------------------------------------------------------------
+  // trust proxy — DEBE ir primero, antes de cualquier middleware que lea req.ip
+  // (rate limiter, logging). Sin esto, en Render/Cloudflare req.ip resuelve
+  // a la IP interna del proxy → el rate limiter castiga a todos los usuarios
+  // por igual en vez de por IP real.
+  // -------------------------------------------------------------------------
+  app.set('trust proxy', 1);
 
   const platformClient = createPlatformPool();
   const platformRepo   = new PlatformRepository(platformClient);
@@ -120,7 +132,7 @@ export async function createApp(): Promise<{
   // /api/admin — ANTES de tenantMiddleware
   app.use('/api/admin', createAdminRouter(platformRepo));
 
-  // tenantMiddleware() — inyecta req.db
+  // tenantMiddleware() — inyecta req.db + arranca OutboxWorker por tenant (fix C4)
   app.use('/api', tenantMiddleware(platformRepo));
 
   // -------------------------------------------------------------------------
@@ -185,12 +197,31 @@ export function registerGracefulShutdown(
   const shutdown = async (signal: string) => {
     console.log(`\n[server] ${signal} recibido. Cerrando servidor...`);
 
+    // Detener todos los OutboxWorkers por tenant antes de cerrar pools
+    try {
+      await stopAllWorkers();
+    } catch (err) {
+      console.error('[server] Error al detener outbox workers:', err);
+    }
+
     if (onShutdown) {
       try {
         await onShutdown();
       } catch (err) {
         console.error('[server] Error en onShutdown:', err);
       }
+    }
+
+    // Cerrar pools de tenants y pool de plataforma
+    try {
+      await closeTenantPools();
+    } catch (err) {
+      console.error('[server] Error al cerrar tenant pools:', err);
+    }
+    try {
+      await closePlatformPool();
+    } catch (err) {
+      console.error('[server] Error al cerrar platform pool:', err);
     }
 
     server.close(() => {
