@@ -12,9 +12,18 @@
  * platformRepo.findById() — es más eficiente (solo trae el plan,
  * no el objeto completo) y evita una query innecesaria a la BD central.
  *
+ * ## Validación de businessId
+ * POST / valida explícitamente que req.user.businessId no esté vacío
+ * ANTES de llamar a getBusinessPlan. Si está vacío el JWT no tiene
+ * business_id (token viejo o token de cliente) → 401 TOKEN_MISSING_BUSINESS
+ * en lugar del 503 PLATFORM_UNAVAILABLE que se veía antes.
+ * El frontend puede tratar TOKEN_MISSING_BUSINESS igual que TOKEN_EXPIRED
+ * y redirigir a /login automáticamente.
+ *
  * ## Códigos HTTP de respuesta (POST /)
  * 201 — Categoría creada correctamente.
  * 400 — Body inválido (Zod). Body: { code: 'VALIDATION_ERROR', errors }
+ * 401 — JWT sin business_id. Body: { code: 'TOKEN_MISSING_BUSINESS', message }
  * 402 — Límite de plan alcanzado. Body: { code: 'PLAN_LIMIT_REACHED',
  *        message, plan, limit }
  * 503 — BD de plataforma no disponible al consultar el plan.
@@ -75,7 +84,19 @@ export function createCategoryRouter(container: AppContainer): Router {
   router.post('/', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body       = CreateCategorySchema.parse(req.body);
-      const businessId = String(req.user?.businessId ?? '');
+      const businessId = req.user?.businessId ?? '';
+
+      // Guard: si el JWT no incluye business_id el token es inválido para
+      // esta operación (fue firmado antes del fix o es un token de cliente).
+      // Respondemos 401 con un código específico para que el frontend lo
+      // trate igual que TOKEN_EXPIRED y redirija a /login.
+      if (!businessId) {
+        res.status(401).json({
+          code:    'TOKEN_MISSING_BUSINESS',
+          message: 'Tu sesión no contiene el ID del negocio. Cerrá sesión e ingresá de nuevo.',
+        });
+        return;
+      }
 
       // Usa getBusinessPlan() en lugar de platformRepo.findById() —
       // solo trae el plan (string), no el objeto completo del negocio.
