@@ -9,7 +9,8 @@ export const openApiSpec = {
     title: 'Reservations API — Multi-resource booking',
     version: '1.0.0',
     description:
-      'API de reservas multi-recurso: cabañas, mesas, spa y asientos de tour.\n\n' +
+      'API de reservas multi-recurso: cualquier tipo de recurso agendable ' +
+      '(cabañas, mesas, boxes de peluquería, salas, equipamiento, etc.).\n\n' +
       '## Autenticación\n\n' +
       '1. Usa `POST /api/login` con las credenciales demo para obtener un JWT.\n' +
       '2. Haz clic en el botón **Authorize** 🔒 e ingresa el token.\n' +
@@ -193,6 +194,14 @@ export const openApiSpec = {
                     basePrice: 15000,
                   },
                 },
+                sillaPeluqueria: {
+                  summary: 'Silla de peluquería',
+                  value: {
+                    name: 'Silla 3',
+                    categoryId: 'cat-peluqueria-01',
+                    basePrice: 0,
+                  },
+                },
               },
             },
           },
@@ -214,25 +223,9 @@ export const openApiSpec = {
       },
     },
 
-    '/api/resources/type/{type}': {
-      get: {
-        tags: ['Resources'],
-        summary: 'Listar recursos por tipo',
-        security: [{ BearerAuth: [] }],
-        parameters: [
-          {
-            name: 'type',
-            in: 'path',
-            required: true,
-            schema: { type: 'string', enum: ['CABIN', 'RESTAURANT_TABLE', 'SPA', 'TOUR_SEAT'] },
-          },
-        ],
-        responses: {
-          '200': { description: 'Lista filtrada por tipo' },
-          '401': { $ref: '#/components/responses/Unauthorized' },
-        },
-      },
-    },
+    // Nota: /api/resources/type/{type} fue eliminado.
+    // Los recursos se filtran por categoría usando /api/resources?categoryId=<id>
+    // o mediante GET /api/resources/{id}.
 
     '/api/resources/{id}': {
       get: {
