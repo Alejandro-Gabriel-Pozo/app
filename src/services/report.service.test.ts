@@ -11,6 +11,8 @@ class MockOccupancyRepository implements OccupancyRepository {
       {
         resourceId: 'r1',
         resourceName: 'Mesa Ventana',
+        categoryId: 'cat-restaurant',
+        categoryName: 'Mesas',
         date: new Date('2026-06-21'),
         totalMinutes: 1440,
         bookedMinutes: 360,
@@ -20,14 +22,14 @@ class MockOccupancyRepository implements OccupancyRepository {
 
   async getAverageOccupancyByResource(): Promise<OccupancyStats[]> {
     return [
-      { resourceId: 'r1', resourceName: 'Mesa Ventana', date: '', occupancyRate: 25.0 },
-      { resourceId: 'r2', resourceName: 'Mesa Interior', date: '', occupancyRate: 15.0 },
+      { resourceId: 'r1', resourceName: 'Mesa Ventana',  categoryId: 'cat-restaurant', categoryName: 'Mesas',   date: '', occupancyRate: 25.0 },
+      { resourceId: 'r2', resourceName: 'Mesa Interior', categoryId: 'cat-restaurant', categoryName: 'Mesas',   date: '', occupancyRate: 15.0 },
     ];
   }
 
   async getTopOccupiedResources(): Promise<OccupancyStats[]> {
     return [
-      { resourceId: 'r1', resourceName: 'Mesa Ventana', date: '', occupancyRate: 25.0 },
+      { resourceId: 'r1', resourceName: 'Mesa Ventana', categoryId: 'cat-restaurant', categoryName: 'Mesas', date: '', occupancyRate: 25.0 },
     ];
   }
 
@@ -61,13 +63,15 @@ describe('ReportService', () => {
         date: '2026-06-21',
         resourceId: 'r1',
         resourceName: 'Mesa Ventana',
+        categoryId: 'cat-restaurant',
+        categoryName: 'Mesas',
         totalMinutes: 1440,
         bookedMinutes: 360,
         occupancyRate: 25.0,
       });
     });
 
-    it('debe calcular ocupancyRate correctamente', async () => {
+    it('debe calcular occupancyRate correctamente', async () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
@@ -75,6 +79,8 @@ describe('ReportService', () => {
         {
           resourceId: 'r1',
           resourceName: 'Cabaña A',
+          categoryId: 'cat-cabanas',
+          categoryName: 'Cabañas',
           date: new Date('2026-06-21'),
           totalMinutes: 1440,
           bookedMinutes: 720, // 50%
@@ -123,6 +129,8 @@ describe('ReportService', () => {
         Array.from({ length: 20 }, (_, i) => ({
           resourceId: `r${i}`,
           resourceName: `Resource ${i}`,
+          categoryId: 'cat-x',
+          categoryName: 'Tipo X',
           date: '',
           occupancyRate: 50 - i,
         })),
@@ -131,6 +139,8 @@ describe('ReportService', () => {
         Array.from({ length: 3 }, (_, i) => ({
           resourceId: `r${i}`,
           resourceName: `Resource ${i}`,
+          categoryId: 'cat-x',
+          categoryName: 'Tipo X',
           date: '',
           occupancyRate: 50 - i,
         })),
@@ -156,11 +166,13 @@ describe('ReportService', () => {
   });
 
   describe('generateOccupancyByResourceType', () => {
-    it('debe agrupar recursos por tipo', async () => {
+    it('debe agrupar recursos por categoryName real', async () => {
       vi.spyOn(mockRepository, 'getAverageOccupancyByResource').mockResolvedValueOnce([
-        { resourceId: 'c1', resourceName: 'Cabin Suite', date: '', occupancyRate: 80 },
-        { resourceId: 't1', resourceName: 'Table Window', date: '', occupancyRate: 60 },
-        { resourceId: 's1', resourceName: 'Spa Massage', date: '', occupancyRate: 40 },
+        { resourceId: 'c1', resourceName: 'Suite Norte',    categoryId: 'cat-cabanas',    categoryName: 'Cabañas',    date: '', occupancyRate: 80 },
+        { resourceId: 'c2', resourceName: 'Suite Sur',      categoryId: 'cat-cabanas',    categoryName: 'Cabañas',    date: '', occupancyRate: 60 },
+        { resourceId: 't1', resourceName: 'Mesa Ventana',   categoryId: 'cat-mesas',      categoryName: 'Mesas',      date: '', occupancyRate: 55 },
+        { resourceId: 's1', resourceName: 'Box Masajes',    categoryId: 'cat-spa',        categoryName: 'Spa',        date: '', occupancyRate: 40 },
+        { resourceId: 'b1', resourceName: 'Cancha Tenis',   categoryId: 'cat-deportes',   categoryName: 'Deportes',   date: '', occupancyRate: 30 },
       ]);
 
       const startDate = new Date('2026-06-21');
@@ -168,18 +180,33 @@ describe('ReportService', () => {
 
       const result = await service.generateOccupancyByResourceType(startDate, endDate);
 
-      expect(result.CABIN).toHaveLength(1);
-      expect(result.RESTAURANT_TABLE).toHaveLength(1);
-      expect(result.SPA).toHaveLength(1);
+      expect(Object.keys(result)).toHaveLength(4); // Cabañas, Mesas, Spa, Deportes
+      expect(result['Cabañas']).toHaveLength(2);
+      expect(result['Mesas']).toHaveLength(1);
+      expect(result['Spa']).toHaveLength(1);
+      expect(result['Deportes']).toHaveLength(1);
+    });
+
+    it('debe agrupar como “Sin categoría” si categoryName está vacío (datos migrados)', async () => {
+      vi.spyOn(mockRepository, 'getAverageOccupancyByResource').mockResolvedValueOnce([
+        { resourceId: 'old1', resourceName: 'Recurso Legado', categoryId: '', categoryName: '', date: '', occupancyRate: 20 },
+      ]);
+
+      const startDate = new Date('2026-06-21');
+      const endDate = new Date('2026-06-22');
+
+      const result = await service.generateOccupancyByResourceType(startDate, endDate);
+
+      expect(result['Sin categoría']).toHaveLength(1);
     });
   });
 
   describe('getUnderutilizedResources', () => {
     it('debe retornar recursos con ocupación bajo umbral', async () => {
       vi.spyOn(mockRepository, 'getAverageOccupancyByResource').mockResolvedValueOnce([
-        { resourceId: 'r1', resourceName: 'R1', date: '', occupancyRate: 50 },
-        { resourceId: 'r2', resourceName: 'R2', date: '', occupancyRate: 20 }, // Bajo umbral
-        { resourceId: 'r3', resourceName: 'R3', date: '', occupancyRate: 10 }, // Bajo umbral
+        { resourceId: 'r1', resourceName: 'R1', categoryId: 'c1', categoryName: 'T1', date: '', occupancyRate: 50 },
+        { resourceId: 'r2', resourceName: 'R2', categoryId: 'c1', categoryName: 'T1', date: '', occupancyRate: 20 },
+        { resourceId: 'r3', resourceName: 'R3', categoryId: 'c1', categoryName: 'T1', date: '', occupancyRate: 10 },
       ]);
 
       const startDate = new Date('2026-06-21');
@@ -188,7 +215,7 @@ describe('ReportService', () => {
       const underutilized = await service.getUnderutilizedResources(
         startDate,
         endDate,
-        30, // Umbral 30%
+        30,
       );
 
       expect(underutilized).toHaveLength(2);
@@ -197,7 +224,7 @@ describe('ReportService', () => {
 
     it('debe usar umbral por defecto de 30%', async () => {
       vi.spyOn(mockRepository, 'getAverageOccupancyByResource').mockResolvedValueOnce([
-        { resourceId: 'r1', resourceName: 'R1', date: '', occupancyRate: 25 },
+        { resourceId: 'r1', resourceName: 'R1', categoryId: 'c1', categoryName: 'T1', date: '', occupancyRate: 25 },
       ]);
 
       const startDate = new Date('2026-06-21');

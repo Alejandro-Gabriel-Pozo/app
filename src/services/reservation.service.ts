@@ -30,6 +30,11 @@
  *   obligatorio y se valida con una guard explícita al inicio de cada
  *   método. Un businessId vacío lanza Error en lugar de persistir
  *   un evento de dominio con businessId: '' (bug silencioso).
+ *
+ * ## Cambios — fix/report-group-by-category
+ * - `recordOccupancy()` ahora pasa `resource.categoryId` y
+ *   `resource.categoryName` a `recordReservation()` para que los
+ *   snapshots puedan agruparse por categoría real sin heurísticas.
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -79,9 +84,6 @@ export class ReservationService {
     let reservation!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
-      // SELECT ... FOR UPDATE: bloquea las filas solapadas hasta COMMIT.
-      // Si otro request concurrente llegó primero y ya insertó, este
-      // verifica contra el dato commiteado — no contra el snapshot previo.
       const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
         ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
             client,
@@ -116,7 +118,6 @@ export class ReservationService {
         details:   params.details,
       });
 
-      // saveWithClient: usa el client transaccional (mismo BEGIN)
       await this.reservationRepository.saveWithClient(client, reservation);
     });
 
@@ -157,7 +158,6 @@ export class ReservationService {
     let updated!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
-      // SELECT ... FOR UPDATE: excluye la propia reserva (id) del chequeo.
       const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
         ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
             client,
@@ -175,7 +175,7 @@ export class ReservationService {
         newStartTime,
         newEndTime,
         activeReservations.map((r) => r.toSnapshot()),
-        id, // excluye la propia reserva del solapamiento
+        id,
       );
 
       if (!isAvailable) {
@@ -204,14 +204,6 @@ export class ReservationService {
     return updated;
   }
 
-  /**
-   * Confirma una reserva PENDING.
-   * Escribe reservation.confirmed en la misma transacción que el cambio de estado.
-   *
-   * @param id         - ID de la reserva a confirmar.
-   * @param businessId - ID del tenant activo (obligatorio). Proviene de req.businessId en el router.
-   *                     No se lee de process.env — el servicio es agnóstico al entorno.
-   */
   async confirmReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en confirmReservation');
 
@@ -239,14 +231,6 @@ export class ReservationService {
     return reservation;
   }
 
-  /**
-   * Cancela una reserva PENDING o CONFIRMED.
-   * Escribe reservation.cancelled en la misma transacción que el cambio de estado,
-   * de modo que el OutboxWorker pueda hacer VOID del CHARGE financiero asociado.
-   *
-   * @param id         - ID de la reserva a cancelar.
-   * @param businessId - ID del tenant activo (obligatorio). Proviene de req.businessId en el router.
-   */
   async cancelReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en cancelReservation');
 
@@ -272,13 +256,6 @@ export class ReservationService {
     return reservation;
   }
 
-  /**
-   * Completa una reserva CONFIRMED.
-   * Escribe reservation.completed en la misma transacción que el cambio de estado.
-   *
-   * @param id         - ID de la reserva a completar.
-   * @param businessId - ID del tenant activo (obligatorio). Proviene de req.businessId en el router.
-   */
   async completeReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en completeReservation');
 
@@ -316,8 +293,6 @@ export class ReservationService {
       throw new ResourceNotFoundError(resourceId);
     }
 
-    // GET /availability no requiere lock — es una consulta de solo lectura
-    // que no precede inmediatamente a un INSERT.
     const activeReservations =
       await this.reservationRepository.getActiveForResourceInRange(
         resourceId,
@@ -349,6 +324,8 @@ export class ReservationService {
     await this.occupancyRepository.recordReservation(
       reservation.resource.id,
       reservation.resource.name,
+      reservation.resource.categoryId,
+      reservation.resource.categoryName,
       reservation.startTime,
       reservation.endTime,
       reservation.status,

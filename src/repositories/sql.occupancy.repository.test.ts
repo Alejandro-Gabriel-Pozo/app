@@ -20,7 +20,7 @@ describe('SqlOccupancyRepository', () => {
       const start = new Date('2026-06-21T10:00:00');
       const end = new Date('2026-06-21T12:00:00');
 
-      await repo.recordReservation('r1', 'Mesa A', start, end, ReservationStatus.PENDING);
+      await repo.recordReservation('r1', 'Mesa A', 'cat-1', 'Mesas', start, end, ReservationStatus.PENDING);
 
       expect(mockSqlClient.query).not.toHaveBeenCalled();
     });
@@ -29,7 +29,7 @@ describe('SqlOccupancyRepository', () => {
       const start = new Date('2026-06-21T10:00:00');
       const end = new Date('2026-06-21T12:00:00');
 
-      await repo.recordReservation('r1', 'Mesa A', start, end, ReservationStatus.CONFIRMED);
+      await repo.recordReservation('r1', 'Mesa A', 'cat-1', 'Mesas', start, end, ReservationStatus.CONFIRMED);
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
       const mockQuery = vi.mocked(mockSqlClient.query);
@@ -38,13 +38,15 @@ describe('SqlOccupancyRepository', () => {
       expect(call[0]).toContain('ON CONFLICT');
       expect(call[1]).toContain('r1');
       expect(call[1]).toContain('Mesa A');
+      expect(call[1]).toContain('cat-1');
+      expect(call[1]).toContain('Mesas');
     });
 
     it('debe registrar una reserva completada', async () => {
       const start = new Date('2026-06-21T10:00:00');
       const end = new Date('2026-06-21T12:00:00');
 
-      await repo.recordReservation('r1', 'Mesa A', start, end, ReservationStatus.COMPLETED);
+      await repo.recordReservation('r1', 'Mesa A', 'cat-1', 'Mesas', start, end, ReservationStatus.COMPLETED);
 
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
     });
@@ -53,9 +55,8 @@ describe('SqlOccupancyRepository', () => {
       const start = new Date('2026-06-21T20:00:00');
       const end = new Date('2026-06-23T10:00:00');
 
-      await repo.recordReservation('r1', 'Cabaña A', start, end, ReservationStatus.CONFIRMED);
+      await repo.recordReservation('r1', 'Cabaña A', 'cat-cabanas', 'Cabañas', start, end, ReservationStatus.CONFIRMED);
 
-      // Debería haber 3 días: 21, 22 y 23
       expect(mockSqlClient.query).toHaveBeenCalledTimes(3);
     });
 
@@ -63,16 +64,16 @@ describe('SqlOccupancyRepository', () => {
       const start = new Date('2026-06-21T22:00:00');
       const end = new Date('2026-06-22T02:00:00');
 
-      await repo.recordReservation('r1', 'Mesa A', start, end, ReservationStatus.CONFIRMED);
+      await repo.recordReservation('r1', 'Mesa A', 'cat-1', 'Mesas', start, end, ReservationStatus.CONFIRMED);
 
       const mockQuery = vi.mocked(mockSqlClient.query);
       const calls = mockQuery.mock.calls;
 
-      // Día 1: 22:00 a 00:00 = 2 horas = 120 minutos
-      expect(calls[0]![1]![4]).toBe(120);
+      // Día 1: 22:00 a 00:00 = 2 horas = 120 minutos (posición 6 tras agregar categoryId/categoryName)
+      expect(calls[0]![1]![6]).toBe(120);
 
       // Día 2: 00:00 a 02:00 = 2 horas = 120 minutos
-      expect(calls[1]![1]![4]).toBe(120);
+      expect(calls[1]![1]![6]).toBe(120);
     });
   });
 
@@ -83,6 +84,8 @@ describe('SqlOccupancyRepository', () => {
           {
             resourceId: 'r1',
             resourceName: 'Mesa A',
+            categoryId: 'cat-1',
+            categoryName: 'Mesas',
             date: '2026-06-21',
             totalMinutes: 1440,
             bookedMinutes: 120,
@@ -90,6 +93,8 @@ describe('SqlOccupancyRepository', () => {
           {
             resourceId: 'r2',
             resourceName: 'Mesa B',
+            categoryId: 'cat-1',
+            categoryName: 'Mesas',
             date: '2026-06-21',
             totalMinutes: 1440,
             bookedMinutes: 60,
@@ -113,6 +118,7 @@ describe('SqlOccupancyRepository', () => {
 
       expect(result).toHaveLength(2);
       expect(result[0]!.resourceId).toBe('r1');
+      expect(result[0]!.categoryName).toBe('Mesas');
     });
 
     it('debe filtrar por resourceIds si se proporcionan', async () => {
@@ -135,11 +141,15 @@ describe('SqlOccupancyRepository', () => {
           {
             resourceId: 'r1',
             resourceName: 'Mesa A',
+            categoryId: 'cat-1',
+            categoryName: 'Mesas',
             occupancyRate: '25.50',
           },
           {
             resourceId: 'r2',
             resourceName: 'Mesa B',
+            categoryId: 'cat-1',
+            categoryName: 'Mesas',
             occupancyRate: '10.00',
           },
         ],
@@ -160,6 +170,7 @@ describe('SqlOccupancyRepository', () => {
 
       expect(result).toHaveLength(2);
       expect(result[0]!.occupancyRate).toBe(25.5);
+      expect(result[0]!.categoryName).toBe('Mesas');
     });
   });
 
@@ -170,6 +181,8 @@ describe('SqlOccupancyRepository', () => {
           {
             resourceId: 'r1',
             resourceName: 'Alta Ocupación',
+            categoryId: 'cat-1',
+            categoryName: 'Mesas',
             occupancyRate: '80.00',
           },
         ],
@@ -237,6 +250,8 @@ describe('SqlOccupancyRepository', () => {
           {
             resourceId: 'r1',
             resourceName: 'Mesa A',
+            categoryId: 'cat-1',
+            categoryName: 'Mesas',
             date: '2026-06-21',
             totalMinutes: 1440,
             bookedMinutes: 120,
@@ -251,6 +266,7 @@ describe('SqlOccupancyRepository', () => {
       expect(mockSqlClient.query).toHaveBeenCalledOnce();
       expect(result).toHaveLength(1);
       expect(result[0]!.resourceId).toBe('r1');
+      expect(result[0]!.categoryName).toBe('Mesas');
     });
   });
 });

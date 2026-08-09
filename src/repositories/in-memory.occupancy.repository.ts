@@ -15,6 +15,8 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
   async recordReservation(
     resourceId: string,
     resourceName: string,
+    categoryId: string,
+    categoryName: string,
     startTime: Date,
     endTime: Date,
     status: ReservationStatus,
@@ -27,7 +29,6 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       return;
     }
 
-    // Registrar por cada día que ocupe la reserva
     const currentDate = new Date(startTime);
     currentDate.setHours(0, 0, 0, 0);
 
@@ -36,7 +37,6 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       dayEnd.setDate(dayEnd.getDate() + 1);
       dayEnd.setHours(0, 0, 0, 0);
 
-      // Calcular minutos en este día específico
       const dayStart = new Date(currentDate);
       const effectiveEnd = Math.min(endTime.getTime(), dayEnd.getTime());
       const effectiveStart = Math.max(dayStart.getTime(), startTime.getTime());
@@ -57,6 +57,8 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
         this.snapshots.push({
           resourceId,
           resourceName,
+          categoryId,
+          categoryName,
           date: new Date(currentDate),
           totalMinutes: 24 * 60,
           bookedMinutes: _minInDay,
@@ -86,16 +88,17 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
   ): Promise<OccupancyStats[]> {
     const snapshots = await this.getOccupancyByDateRange(startDate, endDate);
 
-    // Agrupar por recurso
     const byResource = new Map<
       string,
-      { name: string; total: number; booked: number; count: number }
+      { name: string; categoryId: string; categoryName: string; total: number; booked: number; count: number }
     >();
 
     for (const snapshot of snapshots) {
       const key = snapshot.resourceId;
-      const current = byResource.get(key) || {
+      const current = byResource.get(key) ?? {
         name: snapshot.resourceName,
+        categoryId: snapshot.categoryId,
+        categoryName: snapshot.categoryName,
         total: 0,
         booked: 0,
         count: 0,
@@ -108,11 +111,12 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       byResource.set(key, current);
     }
 
-    // Convertir a estadísticas
     return Array.from(byResource.entries())
       .map(([resourceId, data]) => ({
         resourceId,
         resourceName: data.name,
+        categoryId: data.categoryId,
+        categoryName: data.categoryName,
         date: '',
         occupancyRate:
           data.count > 0
