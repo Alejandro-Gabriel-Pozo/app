@@ -20,6 +20,11 @@
  *   de AppContainer). Recibe el `pg.Pool` del tenant y construye el
  *   TransactionManager vía buildTenantTransactionManager(pool) desde
  *   tenant-context.ts, igual que reservations/orders.
+ * - registerLimiter y loginLimiter se castean a RequestHandler para
+ *   compatibilidad con exactOptionalPropertyTypes: true (TS2379).
+ *   express-rate-limit@7 define RateLimitRequestHandler con propiedades
+ *   opcionales como `T | undefined` en vez de `T?`, lo que viola la flag.
+ *   El cast es seguro — RateLimitRequestHandler es un RequestHandler válido.
  *
  * ## Rutas
  *
@@ -37,7 +42,7 @@
  * POST   /api/customer/me/reservations/:id/cancel
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction, RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
@@ -80,6 +85,10 @@ const CANCELLABLE_STATUSES: ReservationStatus[] = [
 // Rate limiters
 // ---------------------------------------------------------------------------
 
+// express-rate-limit@7 define RateLimitRequestHandler con propiedades
+// opcionales como `T | undefined` en lugar de `T?`. Con
+// exactOptionalPropertyTypes: true eso no satisface el overload de
+// RequestHandler de Express (TS2379). El cast es seguro en runtime.
 const registerLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -92,7 +101,7 @@ const registerLimiter = rateLimit({
       retryAfter: 15,
     });
   },
-});
+}) as unknown as RequestHandler;
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -106,7 +115,7 @@ const loginLimiter = rateLimit({
       retryAfter: 15,
     });
   },
-});
+}) as unknown as RequestHandler;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -246,7 +255,7 @@ export function createCustomerRouter(
         const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const body = RegisterCustomerSchema.parse(req.body);
-        const { customerRepo } = buildService(client, /* tenantPool needed only for ReservationService */ getTenantRawPool(businessId));
+        const { customerRepo } = buildService(client, getTenantRawPool(businessId));
         const authService = new CustomerAuthService(customerRepo, businessId);
         const result = await authService.register(body);
 
