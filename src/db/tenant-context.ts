@@ -18,14 +18,18 @@
  *
  * Este archivo es el único lugar autorizado para construir un
  * `PgTransactionManager` para rutas de tenant. Todos los routers deben
- * llamar `buildTenantTransactionManager(req)` en vez de instanciar
- * `PgTransactionManager` ni llamar `getPlatformRawPool()` directamente.
+ * llamar una de las dos funciones exportadas:
  *
- * Si en el futuro alguien agrega un router nuevo y olvida esto, el error
- * es explícito: getTenantRawPool lanza con un mensaje claro si el pool
- * del tenant no está en cache.
+ * - `buildTenantTransactionManager(req)` — para handlers que ya pasaron
+ *   por `tenantMiddleware` y tienen `req.businessId` disponible.
+ *   Usado por reservations, orders y cualquier router "staff".
  *
- * ## Uso
+ * - `buildTransactionManagerFromPool(pool)` — para callers que ya
+ *   resolvieron el pool del tenant por sus propios medios (ej. rutas
+ *   públicas de `customer.routes.ts` que usan `resolveTenantBySlug` o
+ *   `getTenantRawPool` directamente, sin pasar por `tenantMiddleware`).
+ *
+ * ## Uso — req-first (rutas de staff/tenant)
  *
  * ```ts
  * import { buildTenantTransactionManager } from '../../db/tenant-context.js';
@@ -34,13 +38,28 @@
  *   return new ReservationService(
  *     new SqlReservationRepository(req.db),
  *     // ...
- *     buildTenantTransactionManager(req),  // ← siempre así
+ *     buildTenantTransactionManager(req),  // ← req ya tiene businessId
+ *   );
+ * }
+ * ```
+ *
+ * ## Uso — pool-first (rutas públicas de customer)
+ *
+ * ```ts
+ * import { buildTransactionManagerFromPool } from '../../db/tenant-context.js';
+ *
+ * function buildService(client: SqlClient, tenantPool: pg.Pool) {
+ *   return new ReservationService(
+ *     new SqlReservationRepository(client),
+ *     // ...
+ *     buildTransactionManagerFromPool(tenantPool),  // ← pool ya resuelto
  *   );
  * }
  * ```
  */
 
 import { Request }              from 'express';
+import type pg                  from 'pg';
 import { PgTransactionManager } from './pg.transaction-manager.js';
 import { getTenantRawPool }     from '../platform/tenant.middleware.js';
 
@@ -63,4 +82,18 @@ export function buildTenantTransactionManager(req: Request): PgTransactionManage
   }
   const tenantPool = getTenantRawPool(businessId);
   return new PgTransactionManager(tenantPool);
+}
+
+/**
+ * Construye un PgTransactionManager a partir de un pg.Pool ya resuelto.
+ *
+ * Usar cuando el caller ya obtuvo el pool del tenant por sus propios medios
+ * (ej. `resolveTenantBySlug` en rutas públicas de customer, o
+ * `getTenantRawPool` en rutas autenticadas de customer que no pasan por
+ * tenantMiddleware). Evita el overhead de resolver el businessId de nuevo.
+ *
+ * @param pool - Pool de pg del tenant, ya inicializado y cacheado.
+ */
+export function buildTransactionManagerFromPool(pool: pg.Pool): PgTransactionManager {
+  return new PgTransactionManager(pool);
 }

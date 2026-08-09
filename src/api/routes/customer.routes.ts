@@ -16,10 +16,10 @@
  *   no cambia dentro de una misma sesión.
  *
  * ## Cambios — fix/ts-compile-errors
- * - buildService() ya no recibe `container.transactionManager` (removido
- *   de AppContainer). Recibe el `pg.Pool` del tenant y construye el
- *   TransactionManager vía buildTenantTransactionManager(pool) desde
- *   tenant-context.ts, igual que reservations/orders.
+ * - buildService() usa buildTransactionManagerFromPool(tenantPool) en vez
+ *   de buildTenantTransactionManager(req). customer.routes.ts resuelve el
+ *   pool directamente (sin tenantMiddleware), así que la variante pool-first
+ *   es la correcta aquí. Ver docs en tenant-context.ts.
  * - registerLimiter y loginLimiter se castean a RequestHandler para
  *   compatibilidad con exactOptionalPropertyTypes: true (TS2379).
  *   express-rate-limit@7 define RateLimitRequestHandler con propiedades
@@ -60,7 +60,7 @@ import {
   TenantInactiveError,
   TenantNotReadyError,
 } from '../../platform/tenant.middleware.js';
-import { buildTenantTransactionManager } from '../../db/tenant-context.js';
+import { buildTransactionManagerFromPool } from '../../db/tenant-context.js';
 import { SqlClient } from '../../repositories/sql.client.js';
 import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
 import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
@@ -158,7 +158,8 @@ const AvailabilityQuerySchema = z.object({
 
 /**
  * Construye los repos y el ReservationService para un tenant dado su pool raw.
- * El TransactionManager se construye aquí para que apunte a la BD del tenant.
+ * Usa buildTransactionManagerFromPool (variante pool-first) porque este router
+ * resuelve el pool directamente, sin pasar por tenantMiddleware.
  */
 function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const resourceRepo    = new SqlResourceRepository(client);
@@ -174,7 +175,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     occupancyRepo,
     categoryRepo,
     domainEventRepo,
-    buildTenantTransactionManager(tenantPool),
+    buildTransactionManagerFromPool(tenantPool),
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };
