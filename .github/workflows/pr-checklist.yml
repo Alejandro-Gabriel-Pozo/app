@@ -1,0 +1,103 @@
+name: PR Checklist — Developing Defensivo
+
+# Rechaza el PR si el checklist de docs/DEFENSIVE_DEVELOPING.md no está
+# completo en la descripción. Si el PR toca rutas/plataforma/workers
+# sensibles a multi-tenant, exige además la sub-sección específica.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-checklist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar checklist del PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            // ── 1. Sección genérica obligatoria ────────────────────────────
+            const genericMatch = body.match(
+              /## Checklist de developing defensivo([\s\S]*?)(\n##|\n### |$)/
+            );
+
+            if (!genericMatch) {
+              core.setFailed(
+                'Falta la sección "## Checklist de developing defensivo" en la ' +
+                'descripción del PR. Usá el template (.github/PULL_REQUEST_TEMPLATE.md) ' +
+                'y respondé cada ítem — ver docs/DEFENSIVE_DEVELOPING.md.'
+              );
+              return;
+            }
+
+            const genericItems = [...genericMatch[1].matchAll(/- \[( |x|X)\]/g)];
+            if (genericItems.length === 0) {
+              core.setFailed(
+                'La sección de checklist está vacía o no tiene formato de checkbox ' +
+                '("- [ ]" / "- [x]"). Revisá que no se haya borrado el template.'
+              );
+              return;
+            }
+
+            const genericUnchecked = genericItems.filter((m) => m[1] === ' ').length;
+            if (genericUnchecked > 0) {
+              core.setFailed(
+                `Quedan ${genericUnchecked} ítem(s) del checklist genérico sin marcar. ` +
+                'Completálos, o si no aplican, movélos a la sección "## N/A" con una ' +
+                'razón corta (no dejar el checkbox vacío sin explicación).'
+              );
+              return;
+            }
+
+            // ── 2. Sección extra si el PR toca código multi-tenant sensible ──
+            const sensitivePrefixes = [
+              'src/api/routes/',
+              'src/container.ts',
+              'src/platform/',
+              'src/workers/',
+            ];
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            const touchesSensitive = files.some((f) =>
+              sensitivePrefixes.some((p) => f.filename.startsWith(p))
+            );
+
+            if (touchesSensitive) {
+              const tenantMatch = body.match(
+                /### Si este PR toca[\s\S]*?(\n## |$)/
+              );
+
+              if (!tenantMatch) {
+                core.setFailed(
+                  'Este PR modifica archivos multi-tenant sensibles ' +
+                  `(${sensitivePrefixes.join(', ')}) pero falta la sub-sección ` +
+                  '"### Si este PR toca..." del template en la descripción.'
+                );
+                return;
+              }
+
+              const tenantItems = [...tenantMatch[0].matchAll(/- \[( |x|X)\]/g)];
+              const tenantUnchecked = tenantItems.filter((m) => m[1] === ' ').length;
+
+              if (tenantUnchecked > 0) {
+                core.setFailed(
+                  `Este PR toca código multi-tenant sensible: quedan ${tenantUnchecked} ` +
+                  'ítem(s) sin marcar en esa sección (pool tenant vs. plataforma, ' +
+                  'TransactionManager, domain events). Ver docs/DEFENSIVE_DEVELOPING.md §3.'
+                );
+                return;
+              }
+            }
+
+            core.info('Checklist de developing defensivo completo. ✅');
