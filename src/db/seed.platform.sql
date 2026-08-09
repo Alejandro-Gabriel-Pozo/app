@@ -1,17 +1,23 @@
 -- =============================================================================
 -- seed.platform.sql — BD central (PLATFORM_DATABASE_URL)
 -- =============================================================================
--- Ejecutar en el SQL Editor de Supabase (proyecto central / plataforma).
+-- Ejecutar en el SQL Editor de Neon (proyecto pdb-ppms / plataforma).
 --
 -- Crea:
 --   1 negocio demo  (id: biz-demo-01, slug: demo, plan: PRO, status: ACTIVE)
 --   1 usuario ADMIN (email: admin@demo.com, password: Admin1234!)
+--
+-- ✅  Idempotente: se puede ejecutar múltiples veces sin errores.
+--     Cubre conflictos tanto por `id` como por `slug` (UNIQUE).
 --
 -- ⚠️  Cambiá la contraseña después del primer login:
 --    PUT /api/users/usr-admin-01  { "password": "TuNuevaContraseña" }
 -- =============================================================================
 
 -- 1. Negocio demo
+--    ON CONFLICT DO NOTHING (sin target) cubre TODOS los constraints UNIQUE
+--    de la tabla: tanto (id) como (slug). Evita el error
+--    "duplicate key value violates unique constraint businesses_slug_key".
 INSERT INTO businesses (
   id,
   name,
@@ -32,7 +38,7 @@ VALUES (
   NULL,
   NULL
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- 2. Usuario ADMIN
 -- Hash PBKDF2 (formato "salt_hex:hash_hex", ver src/security/user.store.ts)
@@ -60,7 +66,7 @@ VALUES (
   'be293d28b2a3847ea467b099d31de843:d433ade61518da771b249c1ad83f41db53de020e1baea9de92fe95dedd9ee06c13711b9b8cb3af6e4731afd6f978646bef154c2d0589183d0fe00357b10267a9',
   TRUE
 )
-ON CONFLICT (email, business_id) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- Verificación
 SELECT 'businesses'     AS tabla, COUNT(*) AS filas FROM businesses
