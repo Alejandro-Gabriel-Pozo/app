@@ -550,6 +550,8 @@ export function createCustomerRouter(
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
 
+        const businessId = req.user!.businessId!;
+
         const { reservationService, reservationRepo } = buildService(req.db!, container);
         const reservation = await reservationRepo.getById(reservationId);
         if (!reservation) {
@@ -584,7 +586,7 @@ export function createCustomerRouter(
           }
         }
 
-        const cancelled = await reservationService.cancelReservation(reservationId);
+        const cancelled = await reservationService.cancelReservation(reservationId, businessId);
         res.json(toReservationDto(cancelled));
       } catch (err) {
         next(err);
