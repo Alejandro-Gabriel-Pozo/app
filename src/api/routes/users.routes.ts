@@ -16,6 +16,10 @@
  * El router recibe `platformRepo` como parámetro de fábrica para operar sobre
  * esa BD, en lugar de req.db (BD del tenant).
  *
+ * authenticate() fue removido de cada handler: app.ts lo aplica
+ * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
+ * causaba 401 UNAUTHORIZED al re-leer el header en el segundo pase.
+ *
  * ## Nombres de métodos de PlatformRepository
  * - listUsersByBusiness(businessId)              ← GET /
  * - findUserByIdAndBusiness(id, businessId)      ← GET /:id
@@ -25,7 +29,7 @@
  */
 
 import { Router } from 'express';
-import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { UserRole } from '../../types/enums.js';
 import { randomUUID } from 'node:crypto';
@@ -38,23 +42,19 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
   // ── GET /users ─────────────────────────────────────────────────────────────
   router.get(
     '/',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
         const users = await platformRepo.listUsersByBusiness(businessId);
         res.json(users);
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
   // ── GET /users/:id ─────────────────────────────────────────────────────────
   router.get(
     '/:id',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -68,16 +68,13 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           return;
         }
         res.json(user);
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
   // ── POST /users ────────────────────────────────────────────────────────────
   router.post(
     '/',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -100,16 +97,13 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           passwordHash,
         });
         res.status(201).json(user);
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
   // ── PUT /users/:id ─────────────────────────────────────────────────────────
   router.put(
     '/:id',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -135,25 +129,20 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           return;
         }
         res.json(updated);
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
   // ── DELETE /users/:id — solo OWNER ─────────────────────────────────────────
   router.delete(
     '/:id',
-    authenticate(),
     authorize(Roles.OWNER_ONLY),
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
         await platformRepo.deactivateUser(req.params['id'] as string, businessId);
         res.status(204).send();
-      } catch (err) {
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 

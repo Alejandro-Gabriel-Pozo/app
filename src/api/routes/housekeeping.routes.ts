@@ -18,26 +18,16 @@
  * | POST /housekeeping/:id/out-of-service | MANAGEMENT |
  * | POST /housekeeping/:id/reset     | MANAGEMENT |
  *
+ * authenticate() fue removido de cada handler: app.ts lo aplica
+ * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
+ * causaba 401 UNAUTHORIZED al re-leer el header en el segundo pase.
+ *
  * ## exactOptionalPropertyTypes — req.params
- * Express tipifica req.params[key] como `string | string[]` (puede ser un
- * array si la misma clave aparece repetida en la URL, ej. /a?x=1&x=2).
- * Con exactOptionalPropertyTypes=true el cast `as string` no alcanza cuando
- * el valor se pasa como argumento a una función que espera `string`.
- *
- * Regla: usar SIEMPRE `String(req.params['key'])` en lugar de
- * `req.params['key'] as string`. String() coerce cualquier valor primitivo
- * a string — incluso arrays — de forma segura y sin error de TS.
- *
- * NO hacer:
- *   service.startTask(req.params['id']!, businessId)   // TS2345
- *   service.startTask(req.params['id'] as string, businessId) // TS2345
- *
- * SÍ hacer:
- *   service.startTask(String(req.params['id']), businessId)   // ✅
+ * Usar SIEMPRE `String(req.params['key'])` en lugar de `as string`.
  */
 
 import { Router } from 'express';
-import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { HousekeepingService } from '../../services/housekeeping.service.js';
 import { HousekeepingStatus } from '../../domain/housekeeping-task.js';
@@ -48,7 +38,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── GET /housekeeping?date=YYYY-MM-DD ──────────────────────────────────────
   router.get(
     '/',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -65,7 +54,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── GET /housekeeping/me ─────────────────────────────────────────────────
   router.get(
     '/me',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -79,7 +67,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── GET /housekeeping/status/:status ─────────────────────────────────────
   router.get(
     '/status/:status',
-    authenticate(),
     authorize(Roles.HOUSEKEEPING_AND_MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -96,7 +83,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── GET /housekeeping/resource/:resourceId ──────────────────────────────
   router.get(
     '/resource/:resourceId',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -113,7 +99,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── GET /housekeeping/:id ───────────────────────────────────────────────
   router.get(
     '/:id',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -131,7 +116,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping ──────────────────────────────────────────────────
   router.post(
     '/',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -149,7 +133,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping/:id/assign ───────────────────────────────────────
   router.post(
     '/:id/assign',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -167,7 +150,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping/:id/start ─────────────────────────────────────────
   router.post(
     '/:id/start',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -181,7 +163,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping/:id/complete ──────────────────────────────────────
   router.post(
     '/:id/complete',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -199,7 +180,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping/:id/inspect ───────────────────────────────────────
   router.post(
     '/:id/inspect',
-    authenticate(),
     authorize(Roles.HOUSEKEEPING_AND_MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -218,7 +198,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping/:id/out-of-service ───────────────────────────────
   router.post(
     '/:id/out-of-service',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -236,7 +215,6 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
   // ── POST /housekeeping/:id/reset ─────────────────────────────────────────
   router.post(
     '/:id/reset',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {

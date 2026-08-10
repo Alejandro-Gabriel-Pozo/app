@@ -14,30 +14,17 @@
  * | POST /stays/:id/check-out          | FRONT_DESK | Check-out (cierra Stay) |
  * | POST /stays/:id/no-show            | FRONT_DESK | Marcar NO_SHOW |
  *
+ * authenticate() fue removido de cada handler: app.ts lo aplica
+ * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
+ * causaba 401 UNAUTHORIZED al re-leer el header en el segundo pase.
+ *
  * ## exactOptionalPropertyTypes — campos opcionales en DTOs
- * CheckOutInput define `notes?: string` y `nextCleaningShift?: string`
- * (propiedades opcionales SIN undefined explícito en el tipo).
- *
- * Con exactOptionalPropertyTypes=true:
- *   { notes: undefined }  ← NO assignable a CheckOutInput  → TS2379
- *   { notes: 'texto'  }  ← SÍ assignable
- *   {}                    ← SÍ assignable (clave ausente)
- *
- * Solución: spread condicional para incluir la clave solo si tiene valor.
- *
- * NO hacer:
- *   service.checkOut({ stayId, businessId, notes: req.body.notes })  // TS2379
- *
- * SÍ hacer:
- *   service.checkOut({
- *     stayId, businessId,
- *     ...(notes !== undefined && { notes }),
- *     ...(shift !== undefined && { nextCleaningShift: shift }),
- *   })
+ * Usar spread condicional: `...(notes !== undefined && { notes })`
+ * CheckOutInput.notes?: string no acepta `undefined` explícito.
  */
 
 import { Router } from 'express';
-import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { StayService } from '../../services/stay.service.js';
 
@@ -47,7 +34,6 @@ export function createStaysRouter(service: StayService): Router {
   // ── GET /stays (estadías activas) ───────────────────────────────────────────
   router.get(
     '/',
-    authenticate(),
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
@@ -60,7 +46,6 @@ export function createStaysRouter(service: StayService): Router {
   // ── GET /stays/reservation/:reservationId ───────────────────────────────
   router.get(
     '/reservation/:reservationId',
-    authenticate(),
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
@@ -80,7 +65,6 @@ export function createStaysRouter(service: StayService): Router {
   // ── GET /stays/resource/:resourceId ─────────────────────────────────────
   router.get(
     '/resource/:resourceId',
-    authenticate(),
     authorize(Roles.STAFF),
     async (req, res, next) => {
       try {
@@ -100,7 +84,6 @@ export function createStaysRouter(service: StayService): Router {
   // ── GET /stays/:id ──────────────────────────────────────────────────────────
   router.get(
     '/:id',
-    authenticate(),
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
@@ -120,7 +103,6 @@ export function createStaysRouter(service: StayService): Router {
   // ── POST /stays/check-in ─────────────────────────────────────────────────
   router.post(
     '/check-in',
-    authenticate(),
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
@@ -140,17 +122,13 @@ export function createStaysRouter(service: StayService): Router {
   // ── POST /stays/:id/check-out ─────────────────────────────────────────────
   router.post(
     '/:id/check-out',
-    authenticate(),
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        // Spread condicional obligatorio con exactOptionalPropertyTypes.
-        // Si notes o nextCleaningShift son undefined, NO incluir la clave
-        // en el objeto — CheckOutInput.notes?: string no acepta undefined.
         const notes = req.body.notes as string | undefined;
         const shift = req.body.nextCleaningShift as string | undefined;
         const stay = await service.checkOut({
-          stayId:    String(req.params['id']),
+          stayId:     String(req.params['id']),
           businessId: req.user!.businessId as string,
           ...(notes !== undefined && { notes }),
           ...(shift !== undefined && { nextCleaningShift: shift }),
@@ -163,7 +141,6 @@ export function createStaysRouter(service: StayService): Router {
   // ── POST /stays/:id/no-show ──────────────────────────────────────────────
   router.post(
     '/:id/no-show',
-    authenticate(),
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
