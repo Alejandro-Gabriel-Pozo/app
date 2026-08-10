@@ -2,34 +2,26 @@
  * @file pg.client.ts
  * @description Adaptador que conecta el driver `pg` con la interfaz `SqlClient`.
  *
- * ## Por qué un adaptador y no `pg` directo en los repositorios
+ * ## Variables de entorno
  *
- * Los repositorios dependen de `SqlClient` (interfaz genérica), no de `pg`
- * (implementación concreta). Esto permite:
- * - Testear repositorios con un mock de `SqlClient` sin levantar Postgres.
- * - Cambiar el driver (pg → mysql2 → better-sqlite3) sin tocar los repositorios.
- * - Este archivo es el único lugar del proyecto que conoce que estamos en `pg`.
- *
- * ## Configuración en Render
- *
- * Render inyecta automáticamente `DATABASE_URL` cuando enlazas un PostgreSQL
- * al servicio. El valor tiene el formato:
- *   postgresql://user:password@host:5432/dbname
- *
- * ## Variables de entorno (Render Dashboard)
- *
- * | Variable        | Obligatoria | Valor de ejemplo                          |
- * |-----------------|-------------|-------------------------------------------|
- * | DATABASE_URL    | ✅ Sí       | postgresql://user:pass@host:5432/db       |
- * | DB_POOL_MAX     | No          | 10 (default: 10)                          |
- * | DB_POOL_IDLE_MS | No          | 30000 (default: 30 000 ms)               |
+ * | Variable        | Obligatoria | Descripción                                   |
+ * |-----------------|-------------|-----------------------------------------------|
+ * | DATABASE_URL    | ✅ Sí       | Connection string de la BD de plataforma      |
+ * | NEON_SSL        | No          | 'true' para forzar SSL con rejectUnauthorized |
+ * | DB_POOL_MAX     | No          | Máx conexiones del pool (default: 10)          |
+ * | DB_POOL_IDLE_MS | No          | Idle timeout en ms (default: 30 000)          |
  *
  * ## SSL y Neon
  *
- * Neon provee certificados firmados por una CA pública. En producción se
- * usa rejectUnauthorized: true para validar el certificado completo.
- * La URL de Neon puede incluir ?sslmode=require — se elimina de la
- * connectionString para evitar conflictos con la opción ssl: del driver.
+ * Neon provee certificados válidos firmados por una CA pública.
+ * La URL puede incluir ?sslmode=require — se elimina con stripSslMode()
+ * para evitar conflictos con el objeto ssl: del driver `pg`, que es lo
+ * que provoca el warning:
+ *   "SSL modes 'require' are treated as aliases for 'verify-full'"
+ *
+ * En Render, agregar la variable NEON_SSL=true en Environment Variables
+ * para activar la validación completa del certificado.
+ * En local (sin NEON_SSL), el pool no usa SSL para conectar a Postgres local.
  */
 
 import pg from 'pg';
@@ -38,16 +30,15 @@ import { SqlClient } from '../repositories/sql.client.js';
 const { Pool } = pg;
 
 // ---------------------------------------------------------------------------
-// Helpers SSL
+// Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Elimina el parámetro ?sslmode=... de la URL para evitar conflictos con
- * la opción ssl: del driver. El driver `pg` acepta sslmode en la URL pero
- * puede ignorar el objeto ssl: si ambos están presentes, lo que provoca
- * SELF_SIGNED_CERT_IN_CHAIN en Neon.
+ * Elimina ?sslmode de la URL para que el driver `pg` no lo procese
+ * junto al objeto ssl:. De lo contrario Neon emite:
+ *   SECURITY WARNING: The SSL modes 'require' are treated as aliases for 'verify-full'
  */
-function stripSslMode(url: string): string {
+export function stripSslMode(url: string): string {
   try {
     const u = new URL(url);
     u.searchParams.delete('sslmode');
@@ -58,24 +49,22 @@ function stripSslMode(url: string): string {
 }
 
 /**
- * Configuración SSL ajustada al entorno.
+ * Configuración SSL para el pool.
  *
- * - producción : rejectUnauthorized: true  → valida el cert completo de Neon.
- * - desarrollo  : false                    → sin SSL para Postgres local.
+ * - NEON_SSL=true  → rejectUnauthorized: true  (Neon / producción)
+ * - Sin NEON_SSL   → false                      (Postgres local)
  *
- * Nota: tenant.middleware.ts aplica la misma lógica para los pools de tenant.
- * Cualquier cambio aquí debe replicarse allá.
+ * Se prefiere NEON_SSL a NODE_ENV porque en Render ambas variables
+ * deben setearse explícitamente y NODE_ENV puede no estar definida.
  */
 function sslConfig(): pg.PoolConfig['ssl'] {
-  return process.env.NODE_ENV === 'production'
+  return process.env.NEON_SSL === 'true'
     ? { rejectUnauthorized: true }
     : false;
 }
 
 // ---------------------------------------------------------------------------
-// Pool lazy — se crea solo la primera vez que se necesita, no al importar.
-// Esto evita que los tests unitarios exploten con
-// "DATABASE_URL no está definida" al importar el módulo.
+// Pool lazy
 // ---------------------------------------------------------------------------
 
 let _pool: InstanceType<typeof Pool> | null = null;
@@ -87,7 +76,7 @@ function getPool(): InstanceType<typeof Pool> {
   if (!rawUrl) {
     throw new Error(
       '[pg.client] DATABASE_URL no está definida. ' +
-      'Configúrala en Render Dashboard → Environment Variables.',
+      'Configurála en Render Dashboard → Environment Variables.',
     );
   }
 
@@ -95,8 +84,8 @@ function getPool(): InstanceType<typeof Pool> {
 
   _pool = new Pool({
     connectionString,
-    max: parseInt(process.env.DB_POOL_MAX ?? '10', 10),
-    idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_MS ?? '30000', 10),
+    max:                    parseInt(process.env.DB_POOL_MAX    ?? '10',    10),
+    idleTimeoutMillis:      parseInt(process.env.DB_POOL_IDLE_MS ?? '30000', 10),
     connectionTimeoutMillis: 5_000,
     ssl: sslConfig(),
   });
@@ -109,7 +98,7 @@ function getPool(): InstanceType<typeof Pool> {
 }
 
 // ---------------------------------------------------------------------------
-// Implementación de SqlClient
+// SqlClient
 // ---------------------------------------------------------------------------
 
 export const pgClient: SqlClient = {
@@ -123,7 +112,7 @@ export const pgClient: SqlClient = {
 };
 
 // ---------------------------------------------------------------------------
-// Soporte para transacciones
+// Transacciones
 // ---------------------------------------------------------------------------
 
 export async function withTransaction<T>(
@@ -153,7 +142,7 @@ export async function withTransaction<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Health check — usado en GET /health
+// Health check
 // ---------------------------------------------------------------------------
 
 export async function checkDatabaseHealth(): Promise<boolean> {
