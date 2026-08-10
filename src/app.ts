@@ -4,22 +4,24 @@
  *
  * ## Orden de middlewares
  * 1. trust proxy (Render/Cloudflare)
- * 2. cors, express.json
- * 3. /health, /docs, /openapi.json  — rutas públicas
- * 4. /platform/*                    — gestión de plataforma (SUPERADMIN)
- * 5. POST /register                 — registro de negocios (público)
- * 6. POST /api/login                — login de empleados (público)
- * 7. /api/customer/*                — portal del cliente
- * 8. authenticate()                 — verifica JWT, protege /api/* restante
- * 9. /api/admin                     — mantenimiento (ADMIN, SIN tenantMiddleware)
+ * 2. globalLimiter                   — baseline anti-DoS (500 req/min/IP)
+ * 3. cors, express.json
+ * 4. /health, /docs, /openapi.json  — rutas públicas
+ * 5. /platform/*                    — gestión de plataforma (SUPERADMIN) + platformLimiter
+ * 6. POST /register                 — registro de negocios (público) + authLimiter
+ * 7. POST /api/login                — login de empleados (público) + authLimiter
+ * 8. /api/customer/*                — portal del cliente
+ * 9. authenticate()                 — verifica JWT, protege /api/* restante
+ * 10. /api/admin                    — mantenimiento (ADMIN, SIN tenantMiddleware)
  *    ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
  *       necesita correr cuando la BD del tenant todavía no está activa.
- * 10. tenantMiddleware()             — inyecta req.db con la BD del negocio
- *                                      + arranca OutboxWorker por tenant (fix C4)
- * 11. /api/resources, /reservations, /reports, /customers, /users,
+ * 11. tenantMiddleware()            — inyecta req.db con la BD del negocio
+ *                                     + arranca OutboxWorker por tenant (fix C4)
+ * 12. apiLimiter                    — 200 req/min/IP sobre /api/* autenticado
+ * 13. /api/resources, /reservations, /reports, /customers, /users,
  *     /categories, /products, /orders, /bookable-services,
  *     /housekeeping, /stays
- * 12. errorHandler
+ * 14. errorHandler
  */
 
 import express from 'express';
@@ -44,6 +46,7 @@ import { createBookableServicesRouter }  from './api/routes/bookable-services.ro
 import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.js';
 import { createStaysRouter }             from './api/routes/stays.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
+import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
 import { openApiSpec }                   from './openapi/spec.js';
 import { authenticate }                  from './security/auth.middleware.js';
 import { AuthService }                   from './security/auth.service.js';
@@ -77,6 +80,13 @@ export async function createApp(): Promise<{
   // por igual en vez de por IP real.
   // -------------------------------------------------------------------------
   app.set('trust proxy', 1);
+
+  // -------------------------------------------------------------------------
+  // Global limiter — baseline anti-DoS ANTES de cualquier lógica de negocio.
+  // 500 req/min/IP cubre el uso normal más generoso; un atacante lo supera
+  // en segundos, un usuario legítimo nunca.
+  // -------------------------------------------------------------------------
+  app.use(globalLimiter);
 
   const platformClient = createPlatformPool();
   const platformRepo   = new PlatformRepository(platformClient);
@@ -113,17 +123,17 @@ export async function createApp(): Promise<{
     swaggerOptions: { persistAuthorization: true, docExpansion: 'list', filter: true },
   }));
 
-  // /platform/*
+  // /platform/* + platformLimiter (provisioning caro → límite estricto)
   const platformContainer = createPlatformContainer();
-  app.use('/platform', createPlatformRouter(platformContainer));
+  app.use('/platform', platformLimiter, createPlatformRouter(platformContainer));
 
-  // /register
-  app.use('/register', createBusinessRouter(platformRepo));
+  // /register + authLimiter (brute-force en creación de negocios)
+  app.use('/register', authLimiter, createBusinessRouter(platformRepo));
 
-  // /api/login
-  app.use('/api/login', createAuthRouter(authService));
+  // /api/login + authLimiter (brute-force de credenciales)
+  app.use('/api/login', authLimiter, createAuthRouter(authService));
 
-  // /api/customer
+  // /api/customer (portal cliente — sin authLimiter extra, ya cubierto por globalLimiter)
   app.use('/api/customer', createCustomerRouter(container, platformRepo));
 
   // authenticate() — protege /api/* desde aquí
@@ -134,6 +144,11 @@ export async function createApp(): Promise<{
 
   // tenantMiddleware() — inyecta req.db + arranca OutboxWorker por tenant (fix C4)
   app.use('/api', tenantMiddleware(platformRepo));
+
+  // apiLimiter — sobre /api/* ya autenticado y con tenant resuelto
+  // Se aplica DESPUÉS de authenticate() y tenantMiddleware() para que
+  // el key sea la IP real (trust proxy ya configurado arriba).
+  app.use('/api', apiLimiter);
 
   // -------------------------------------------------------------------------
   // Rutas protegidas de empleados (todas usan req.db del tenant)
