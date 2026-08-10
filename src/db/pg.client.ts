@@ -6,7 +6,8 @@
  *
  * | Variable        | Obligatoria | Descripción                                   |
  * |-----------------|-------------|-----------------------------------------------|
- * | DATABASE_URL    | ✅ Sí       | Connection string de la BD de plataforma      |
+ * | DATABASE_URL    | No          | Legado — solo se usa si checkDatabaseHealth()  |
+ * |                 |             | se llama sin argumento (tests, scripts)       |
  * | NEON_SSL        | No          | 'true' para forzar SSL con rejectUnauthorized |
  * | DB_POOL_MAX     | No          | Máx conexiones del pool (default: 10)          |
  * | DB_POOL_IDLE_MS | No          | Idle timeout en ms (default: 30 000)          |
@@ -15,13 +16,13 @@
  *
  * Neon provee certificados válidos firmados por una CA pública.
  * La URL puede incluir ?sslmode=require — se elimina con stripSslMode()
- * para evitar conflictos con el objeto ssl: del driver `pg`, que es lo
- * que provoca el warning:
- *   "SSL modes 'require' are treated as aliases for 'verify-full'"
+ * para evitar conflictos con el objeto ssl: del driver `pg`.
  *
- * En Render, agregar la variable NEON_SSL=true en Environment Variables
- * para activar la validación completa del certificado.
- * En local (sin NEON_SSL), el pool no usa SSL para conectar a Postgres local.
+ * ## checkDatabaseHealth
+ *
+ * Acepta un SqlClient opcional. Si se pasa (como en app.ts, donde se
+ * pasa platformClient), chequea ese pool. Si no, intenta usar el pool
+ * interno de DATABASE_URL (legado, útil en tests y scripts locales).
  */
 
 import pg from 'pg';
@@ -53,9 +54,6 @@ export function stripSslMode(url: string): string {
  *
  * - NEON_SSL=true  → rejectUnauthorized: true  (Neon / producción)
  * - Sin NEON_SSL   → false                      (Postgres local)
- *
- * Se prefiere NEON_SSL a NODE_ENV porque en Render ambas variables
- * deben setearse explícitamente y NODE_ENV puede no estar definida.
  */
 function sslConfig(): pg.PoolConfig['ssl'] {
   return process.env.NEON_SSL === 'true'
@@ -64,7 +62,7 @@ function sslConfig(): pg.PoolConfig['ssl'] {
 }
 
 // ---------------------------------------------------------------------------
-// Pool lazy
+// Pool lazy (legado — solo se instancia si se llama sin SqlClient)
 // ---------------------------------------------------------------------------
 
 let _pool: InstanceType<typeof Pool> | null = null;
@@ -76,7 +74,7 @@ function getPool(): InstanceType<typeof Pool> {
   if (!rawUrl) {
     throw new Error(
       '[pg.client] DATABASE_URL no está definida. ' +
-      'Configurála en Render Dashboard → Environment Variables.',
+      'En producción passá platformClient a checkDatabaseHealth().',
     );
   }
 
@@ -84,8 +82,8 @@ function getPool(): InstanceType<typeof Pool> {
 
   _pool = new Pool({
     connectionString,
-    max:                    parseInt(process.env.DB_POOL_MAX    ?? '10',    10),
-    idleTimeoutMillis:      parseInt(process.env.DB_POOL_IDLE_MS ?? '30000', 10),
+    max:                     parseInt(process.env.DB_POOL_MAX     ?? '10',    10),
+    idleTimeoutMillis:       parseInt(process.env.DB_POOL_IDLE_MS ?? '30000', 10),
     connectionTimeoutMillis: 5_000,
     ssl: sslConfig(),
   });
@@ -98,7 +96,7 @@ function getPool(): InstanceType<typeof Pool> {
 }
 
 // ---------------------------------------------------------------------------
-// SqlClient
+// SqlClient (legado)
 // ---------------------------------------------------------------------------
 
 export const pgClient: SqlClient = {
@@ -143,11 +141,19 @@ export async function withTransaction<T>(
 
 // ---------------------------------------------------------------------------
 // Health check
+//
+// Acepta un SqlClient opcional:
+//   - Con client (app.ts)  → chequea el pool real de plataforma
+//   - Sin client (tests)   → usa el pool interno de DATABASE_URL
 // ---------------------------------------------------------------------------
 
-export async function checkDatabaseHealth(): Promise<boolean> {
+export async function checkDatabaseHealth(client?: SqlClient): Promise<boolean> {
   try {
-    await getPool().query('SELECT 1');
+    if (client) {
+      await client.query('SELECT 1');
+    } else {
+      await getPool().query('SELECT 1');
+    }
     return true;
   } catch {
     return false;

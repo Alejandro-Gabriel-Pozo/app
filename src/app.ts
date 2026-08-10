@@ -7,7 +7,7 @@
  * 2.  helmetBase — security headers globales (sin CSP, se aplica por ruta)
  * 3.  globalLimiter — baseline anti-DoS (500 req/min/IP)
  * 4.  cors, express.json
- * 5.  /health               — helmetBase ya aplicado
+ * 5.  /health               — chequea platformClient (PLATFORM_DATABASE_URL)
  * 6.  /docs                 — helmetDocs (CSP permisiva para Swagger UI)
  * 7.  /openapi.json         — helmetBase ya aplicado
  * 8.  /platform/*           — helmetApi + platformLimiter (SUPERADMIN)
@@ -85,17 +85,16 @@ export async function createApp(): Promise<{
 
   // -------------------------------------------------------------------------
   // 2. Helmet base — security headers globales, sin CSP.
-  //    La CSP se aplica por ruta porque /docs necesita una permisiva
-  //    (Swagger UI carga JS/CSS de unpkg.com) y /api necesita la más estricta.
   // -------------------------------------------------------------------------
   app.use(helmetBase);
 
   // -------------------------------------------------------------------------
   // 3. Global limiter — baseline anti-DoS.
-  //    Va después de Helmet para que el 429 ya lleve los security headers.
   // -------------------------------------------------------------------------
   app.use(globalLimiter);
 
+  // platformClient se crea UNA sola vez y se reutiliza en toda la app,
+  // incluyendo el health check. Es el pool real de PLATFORM_DATABASE_URL.
   const platformClient = createPlatformPool();
   const platformRepo   = new PlatformRepository(platformClient);
 
@@ -117,10 +116,12 @@ export async function createApp(): Promise<{
   app.use(express.json());
 
   // -------------------------------------------------------------------------
-  // 5-7. Rutas públicas
+  // 5. /health — chequea platformClient (PLATFORM_DATABASE_URL), no DATABASE_URL.
+  //    Antes usaba el pool interno de pg.client.ts (DATABASE_URL legacy)
+  //    que no está seteada en Render → siempre retornaba db:"error".
   // -------------------------------------------------------------------------
   app.get('/health', async (_req, res) => {
-    const dbOk = await checkDatabaseHealth();
+    const dbOk = await checkDatabaseHealth(platformClient);
     res.json({
       status: 'ok',
       mode:   'multi-tenant',
@@ -150,13 +151,12 @@ export async function createApp(): Promise<{
   app.use('/api/login', ...helmetApi, authLimiter, createAuthRouter(authService));
 
   // -------------------------------------------------------------------------
-  // 11. /api/customer — portal del cliente (helmetApi ya cubre el prefijo /api)
+  // 11. /api/customer — portal del cliente
   // -------------------------------------------------------------------------
   app.use('/api/customer', createCustomerRouter(container, platformRepo));
 
   // -------------------------------------------------------------------------
   // 12. helmetApi sobre todo /api/* — cubre customer, admin y rutas de tenant.
-  //     Se monta ANTES de authenticate() para que 401/403 también lleven CSP.
   // -------------------------------------------------------------------------
   app.use('/api', ...helmetApi);
 
@@ -181,8 +181,8 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   // 16. Rutas protegidas de empleados (todas usan req.db del tenant)
   // -------------------------------------------------------------------------
-  app.use('/api/resources',   createResourcesRouter());
-  app.use('/api/reservations', createReservationsRouter());
+  app.use('/api/resources',         createResourcesRouter());
+  app.use('/api/reservations',      createReservationsRouter());
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));

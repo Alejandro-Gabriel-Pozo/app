@@ -13,36 +13,16 @@
  * - TransactionManager de tenant (ver src/db/tenant-context.ts)
  * - OutboxWorker por tenant (arrancado desde tenantMiddleware, fix C4)
  *
- * ## Por qué se removió transactionManager y outboxWorker del container
+ * ## SSL
  *
- * transactionManager: construido sobre getPlatformRawPool() apuntaba a
- * PLATFORM_DATABASE_URL. Los repos de reservas/órdenes usan req.db (tenant).
- * Correr el FOR UPDATE y el INSERT en BDs distintas rompe el aislamiento.
- * La solución es buildTenantTransactionManager(req) en tenant-context.ts.
- *
- * outboxWorker: construido sobre platformSqlClient, nunca encontraba filas.
- * Los domain events se escriben en la BD del tenant. La solución es
- * ensureTenantWorker(businessId, req.db) en outbox.registry.ts, llamado
- * desde tenantMiddleware (fix C4).
- *
- * Estos se construyen por request en cada router mediante funciones
- * buildXxxService(req) que reciben req.db (SqlClient del tenant
- * inyectado por tenantMiddleware). Ver reservations.routes.ts y
- * products.routes.ts como referencia del patrón.
- *
- * ## getBusinessPlan — comportamiento ante businessId inválido
- *
- * Lanza un Error explícito si el negocio no se encuentra en la BD de
- * plataforma. Antes retornaba FREE silenciosamente, lo cual enmascaraba
- * registros incompletos y causaba 402 PLAN_LIMIT_REACHED confusos.
- *
- * El caller (categories.routes.ts y cualquier router que lo use) debe
- * capturar el error y responder 503 PLATFORM_UNAVAILABLE.
+ * Usa NEON_SSL=true (igual que pg.client.ts) en vez de NODE_ENV.
+ * Agregá NEON_SSL=true en Render → Environment Variables.
  */
 
 import { PlatformRepository } from './platform/platform.repository.js';
 import { BusinessPlan }        from './types/enums.js';
 import { SqlClient }           from './repositories/sql.client.js';
+import { stripSslMode }        from './db/pg.client.js';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -54,8 +34,8 @@ const { Pool } = pg;
 let _platformPool: InstanceType<typeof Pool> | null = null;
 
 export function createPlatformPool(): SqlClient {
-  const url = process.env.PLATFORM_DATABASE_URL;
-  if (!url) {
+  const rawUrl = process.env.PLATFORM_DATABASE_URL;
+  if (!rawUrl) {
     throw new Error(
       '[container] PLATFORM_DATABASE_URL no está definida. ' +
       'Configurá la variable de entorno en Render Dashboard → Environment Variables.',
@@ -63,10 +43,11 @@ export function createPlatformPool(): SqlClient {
   }
 
   if (!_platformPool) {
+    const connectionString = stripSslMode(rawUrl);
     _platformPool = new Pool({
-      connectionString: url,
+      connectionString,
       max: 5,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+      ssl: process.env.NEON_SSL === 'true' ? { rejectUnauthorized: true } : false,
     });
     _platformPool.on('error', (err) => {
       console.error('[platform] Error en pool central:', err.message);
@@ -128,13 +109,9 @@ async function createPostgresContainer(): Promise<AppContainer> {
    * Obtiene el plan del negocio desde la BD de plataforma.
    *
    * Lanza un Error explícito si el negocio no existe, en vez de retornar
-   * FREE silenciosamente. Esto evita que negocios mal registrados operen
-   * con límites incorrectos y que el 402 aparezca sin razón aparente.
+   * FREE silenciosamente.
    *
    * El caller debe capturar el error y responder 503 PLATFORM_UNAVAILABLE.
-   *
-   * @throws Error si businessId no corresponde a ningún negocio registrado,
-   *         o si la BD de plataforma no está disponible.
    */
   const getBusinessPlan = async (businessId: string): Promise<BusinessPlan> => {
     const business = await platformRepository.findById(businessId);
