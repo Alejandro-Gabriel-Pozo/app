@@ -3,25 +3,27 @@
  * @description Bootstrap de la aplicación Express — arquitectura multi-tenant.
  *
  * ## Orden de middlewares
- * 1. trust proxy (Render/Cloudflare)
- * 2. globalLimiter                   — baseline anti-DoS (500 req/min/IP)
- * 3. cors, express.json
- * 4. /health, /docs, /openapi.json  — rutas públicas
- * 5. /platform/*                    — gestión de plataforma (SUPERADMIN) + platformLimiter
- * 6. POST /register                 — registro de negocios (público) + authLimiter
- * 7. POST /api/login                — login de empleados (público) + authLimiter
- * 8. /api/customer/*                — portal del cliente
- * 9. authenticate()                 — verifica JWT, protege /api/* restante
- * 10. /api/admin                    — mantenimiento (ADMIN, SIN tenantMiddleware)
- *    ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
- *       necesita correr cuando la BD del tenant todavía no está activa.
- * 11. tenantMiddleware()            — inyecta req.db con la BD del negocio
- *                                     + arranca OutboxWorker por tenant (fix C4)
- * 12. apiLimiter                    — 200 req/min/IP sobre /api/* autenticado
- * 13. /api/resources, /reservations, /reports, /customers, /users,
+ * 1.  trust proxy (Render/Cloudflare)
+ * 2.  helmetBase — security headers globales (sin CSP, se aplica por ruta)
+ * 3.  globalLimiter — baseline anti-DoS (500 req/min/IP)
+ * 4.  cors, express.json
+ * 5.  /health               — helmetBase ya aplicado
+ * 6.  /docs                 — helmetDocs (CSP permisiva para Swagger UI)
+ * 7.  /openapi.json         — helmetBase ya aplicado
+ * 8.  /platform/*           — helmetApi + platformLimiter (SUPERADMIN)
+ * 9.  POST /register        — helmetApi + authLimiter (público)
+ * 10. POST /api/login       — helmetApi + authLimiter (público)
+ * 11. /api/customer/*       — helmetApi (portal del cliente)
+ * 12. authenticate()        — verifica JWT, protege /api/* restante
+ * 13. /api/admin            — mantenimiento (ADMIN, SIN tenantMiddleware)
+ *     ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
+ *        necesita correr cuando la BD del tenant todavía no está activa.
+ * 14. tenantMiddleware()    — inyecta req.db + arranca OutboxWorker por tenant
+ * 15. apiLimiter            — 200 req/min/IP sobre /api/* autenticado
+ * 16. /api/resources, /reservations, /reports, /customers, /users,
  *     /categories, /products, /orders, /bookable-services,
  *     /housekeeping, /stays
- * 14. errorHandler
+ * 17. errorHandler
  */
 
 import express from 'express';
@@ -47,6 +49,7 @@ import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.
 import { createStaysRouter }             from './api/routes/stays.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
+import { helmetBase, helmetApi, helmetDocs } from './api/middleware/helmet.middleware.js';
 import { openApiSpec }                   from './openapi/spec.js';
 import { authenticate }                  from './security/auth.middleware.js';
 import { AuthService }                   from './security/auth.service.js';
@@ -74,17 +77,22 @@ export async function createApp(): Promise<{
   const app = express();
 
   // -------------------------------------------------------------------------
-  // trust proxy — DEBE ir primero, antes de cualquier middleware que lea req.ip
-  // (rate limiter, logging). Sin esto, en Render/Cloudflare req.ip resuelve
-  // a la IP interna del proxy → el rate limiter castiga a todos los usuarios
-  // por igual en vez de por IP real.
+  // 1. trust proxy — DEBE ir primero, antes de cualquier middleware que lea
+  //    req.ip (rate limiter, logging). Sin esto, en Render/Cloudflare req.ip
+  //    resuelve a la IP interna del proxy.
   // -------------------------------------------------------------------------
   app.set('trust proxy', 1);
 
   // -------------------------------------------------------------------------
-  // Global limiter — baseline anti-DoS ANTES de cualquier lógica de negocio.
-  // 500 req/min/IP cubre el uso normal más generoso; un atacante lo supera
-  // en segundos, un usuario legítimo nunca.
+  // 2. Helmet base — security headers globales, sin CSP.
+  //    La CSP se aplica por ruta porque /docs necesita una permisiva
+  //    (Swagger UI carga JS/CSS de unpkg.com) y /api necesita la más estricta.
+  // -------------------------------------------------------------------------
+  app.use(helmetBase);
+
+  // -------------------------------------------------------------------------
+  // 3. Global limiter — baseline anti-DoS.
+  //    Va después de Helmet para que el 429 ya lleve los security headers.
   // -------------------------------------------------------------------------
   app.use(globalLimiter);
 
@@ -94,72 +102,87 @@ export async function createApp(): Promise<{
   const authService = new AuthService(platformRepo);
   const container   = await createAppContainer();
 
-  // Middlewares globales
+  // -------------------------------------------------------------------------
+  // 4. CORS + body parser
+  // -------------------------------------------------------------------------
   const corsOrigin =
     process.env.CORS_ORIGIN ??
     (process.env.NODE_ENV === 'production' ? false : '*');
 
   app.use(cors({
-    origin: corsOrigin,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    origin:         corsOrigin,
+    methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
   app.use(express.json());
 
-  // Rutas públicas
+  // -------------------------------------------------------------------------
+  // 5-7. Rutas públicas
+  // -------------------------------------------------------------------------
   app.get('/health', async (_req, res) => {
     const dbOk = await checkDatabaseHealth();
     res.json({
       status: 'ok',
-      mode: 'multi-tenant',
-      db: dbOk ? 'connected' : 'error',
+      mode:   'multi-tenant',
+      db:     dbOk ? 'connected' : 'error',
     });
   });
 
   app.get('/', (_req, res) => res.redirect('/docs'));
   app.get('/openapi.json', (_req, res) => res.json(openApiSpec));
-  app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+
+  // /docs — CSP permisiva para que Swagger UI cargue sus assets de CDN
+  app.use('/docs', helmetDocs, swaggerUi.serve, swaggerUi.setup(openApiSpec, {
     customSiteTitle: 'Reservations API',
-    swaggerOptions: { persistAuthorization: true, docExpansion: 'list', filter: true },
+    swaggerOptions:  { persistAuthorization: true, docExpansion: 'list', filter: true },
   }));
 
-  // /platform/* + platformLimiter (provisioning caro → límite estricto)
+  // -------------------------------------------------------------------------
+  // 8. /platform/* — helmetApi (CSP estricta) + platformLimiter
+  // -------------------------------------------------------------------------
   const platformContainer = createPlatformContainer();
-  app.use('/platform', platformLimiter, createPlatformRouter(platformContainer));
+  app.use('/platform', ...helmetApi, platformLimiter, createPlatformRouter(platformContainer));
 
-  // /register + authLimiter (brute-force en creación de negocios)
-  app.use('/register', authLimiter, createBusinessRouter(platformRepo));
+  // -------------------------------------------------------------------------
+  // 9-10. /register + /api/login — helmetApi + authLimiter (anti brute-force)
+  // -------------------------------------------------------------------------
+  app.use('/register',  ...helmetApi, authLimiter, createBusinessRouter(platformRepo));
+  app.use('/api/login', ...helmetApi, authLimiter, createAuthRouter(authService));
 
-  // /api/login + authLimiter (brute-force de credenciales)
-  app.use('/api/login', authLimiter, createAuthRouter(authService));
-
-  // /api/customer (portal cliente — sin authLimiter extra, ya cubierto por globalLimiter)
+  // -------------------------------------------------------------------------
+  // 11. /api/customer — portal del cliente (helmetApi ya cubre el prefijo /api)
+  // -------------------------------------------------------------------------
   app.use('/api/customer', createCustomerRouter(container, platformRepo));
+
+  // -------------------------------------------------------------------------
+  // 12. helmetApi sobre todo /api/* — cubre customer, admin y rutas de tenant.
+  //     Se monta ANTES de authenticate() para que 401/403 también lleven CSP.
+  // -------------------------------------------------------------------------
+  app.use('/api', ...helmetApi);
 
   // authenticate() — protege /api/* desde aquí
   app.use('/api', authenticate());
 
-  // /api/admin — ANTES de tenantMiddleware
+  // -------------------------------------------------------------------------
+  // 13. /api/admin — ANTES de tenantMiddleware (repair-tenant-db lo requiere)
+  // -------------------------------------------------------------------------
   app.use('/api/admin', createAdminRouter(platformRepo));
 
-  // tenantMiddleware() — inyecta req.db + arranca OutboxWorker por tenant (fix C4)
+  // -------------------------------------------------------------------------
+  // 14. tenantMiddleware — inyecta req.db + arranca OutboxWorker por tenant
+  // -------------------------------------------------------------------------
   app.use('/api', tenantMiddleware(platformRepo));
 
-  // apiLimiter — sobre /api/* ya autenticado y con tenant resuelto
-  // Se aplica DESPUÉS de authenticate() y tenantMiddleware() para que
-  // el key sea la IP real (trust proxy ya configurado arriba).
+  // -------------------------------------------------------------------------
+  // 15. apiLimiter — después de autenticación y resolución de tenant
+  // -------------------------------------------------------------------------
   app.use('/api', apiLimiter);
 
   // -------------------------------------------------------------------------
-  // Rutas protegidas de empleados (todas usan req.db del tenant)
+  // 16. Rutas protegidas de empleados (todas usan req.db del tenant)
   // -------------------------------------------------------------------------
-
-  // /api/resources — patrón per-request, sin AppContainer
-  app.use('/api/resources', createResourcesRouter());
-
-  // /api/reservations — patrón per-request, sin AppContainer
+  app.use('/api/resources',   createResourcesRouter());
   app.use('/api/reservations', createReservationsRouter());
-
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));
@@ -167,7 +190,6 @@ export async function createApp(): Promise<{
   app.use('/api/orders',            createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
 
-  // /api/reports — construye ReportService por request con req.db del tenant
   app.use('/api/reports', (req: Request, _res: Response, next: NextFunction) => {
     const occupancyRepo = new SqlOccupancyRepository(req.db);
     const reportService = new ReportService(occupancyRepo);
@@ -175,25 +197,26 @@ export async function createApp(): Promise<{
     router(req, _res, next);
   });
 
-  // Fase 2 — Housekeeping
   app.use('/api/housekeeping', (req: Request, _res: Response, next: NextFunction) => {
-    const housekeepingRepo = new SqlHousekeepingRepository(req.db);
+    const housekeepingRepo    = new SqlHousekeepingRepository(req.db);
     const housekeepingService = new HousekeepingService(housekeepingRepo);
     const router = createHousekeepingRouter(housekeepingService);
     router(req, _res, next);
   });
 
-  // Fase 2 — Check-in / Check-out
   app.use('/api/stays', (req: Request, _res: Response, next: NextFunction) => {
-    const stayRepo         = new SqlStayRepository(req.db);
-    const resourceRepo     = new SqlResourceRepository(req.db);
-    const reservationRepo  = new SqlReservationRepository(req.db, resourceRepo);
+    const stayRepo        = new SqlStayRepository(req.db);
+    const resourceRepo    = new SqlResourceRepository(req.db);
+    const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
     const housekeepingRepo = new SqlHousekeepingRepository(req.db);
     const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
     const router = createStaysRouter(stayService);
     router(req, _res, next);
   });
 
+  // -------------------------------------------------------------------------
+  // 17. Error handler — siempre al final
+  // -------------------------------------------------------------------------
   app.use(errorHandler);
 
   return { app, container };
@@ -212,32 +235,19 @@ export function registerGracefulShutdown(
   const shutdown = async (signal: string) => {
     console.log(`\n[server] ${signal} recibido. Cerrando servidor...`);
 
-    // Detener todos los OutboxWorkers por tenant antes de cerrar pools
-    try {
-      await stopAllWorkers();
-    } catch (err) {
-      console.error('[server] Error al detener outbox workers:', err);
-    }
+    try { await stopAllWorkers(); }
+    catch (err) { console.error('[server] Error al detener outbox workers:', err); }
 
     if (onShutdown) {
-      try {
-        await onShutdown();
-      } catch (err) {
-        console.error('[server] Error en onShutdown:', err);
-      }
+      try { await onShutdown(); }
+      catch (err) { console.error('[server] Error en onShutdown:', err); }
     }
 
-    // Cerrar pools de tenants y pool de plataforma
-    try {
-      await closeTenantPools();
-    } catch (err) {
-      console.error('[server] Error al cerrar tenant pools:', err);
-    }
-    try {
-      await closePlatformPool();
-    } catch (err) {
-      console.error('[server] Error al cerrar platform pool:', err);
-    }
+    try { await closeTenantPools(); }
+    catch (err) { console.error('[server] Error al cerrar tenant pools:', err); }
+
+    try { await closePlatformPool(); }
+    catch (err) { console.error('[server] Error al cerrar platform pool:', err); }
 
     server.close(() => {
       console.log('[server] Servidor cerrado correctamente.');
