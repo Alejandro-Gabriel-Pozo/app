@@ -203,6 +203,8 @@ CREATE TABLE IF NOT EXISTS customer_tags (
 
 -- ---------------------------------------------------------------------------
 -- reservations
+-- IMPORTANTE: incluye service_id, party_size, notes, order_item_id
+-- que el repositorio SqlReservationRepository.baseSelect() requiere.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS reservations (
   id             VARCHAR(255)    PRIMARY KEY,
@@ -216,7 +218,10 @@ CREATE TABLE IF NOT EXISTS reservations (
                    CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED')),
   party_size     INTEGER         NOT NULL DEFAULT 1 CHECK (party_size >= 1),
   details        JSONB,
+  notes          TEXT,
   total_price    DECIMAL(10, 2)  NOT NULL CHECK (total_price >= 0),
+  service_id     VARCHAR(255)    REFERENCES bookable_services(id) ON DELETE SET NULL,
+  order_item_id  VARCHAR(255),
   created_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
   updated_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
@@ -227,6 +232,7 @@ CREATE INDEX IF NOT EXISTS idx_reservations_resource  ON reservations (resource_
 CREATE INDEX IF NOT EXISTS idx_reservations_customer  ON reservations (customer_id);
 CREATE INDEX IF NOT EXISTS idx_reservations_status    ON reservations (status);
 CREATE INDEX IF NOT EXISTS idx_reservations_times     ON reservations (start_time, end_time);
+CREATE INDEX IF NOT EXISTS idx_reservations_service   ON reservations (service_id) WHERE service_id IS NOT NULL;
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'reservations_updated_at') THEN
@@ -425,7 +431,48 @@ CREATE INDEX IF NOT EXISTS idx_stock_movements_order_item    ON stock_movements 
 CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by    ON stock_movements (created_by);
 
 -- ===========================================================================
--- BLOQUE 6 — INFRAESTRUCTURA / ANALYTICS
+-- BLOQUE 6 — STAYS (Check-in / Check-out)
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS stays (
+  id              VARCHAR(255)  PRIMARY KEY,
+  business_id     VARCHAR(255)  NOT NULL,
+  reservation_id  VARCHAR(255)  NOT NULL REFERENCES reservations(id) ON DELETE RESTRICT,
+  resource_id     VARCHAR(255)  NOT NULL REFERENCES resources(id)    ON DELETE RESTRICT,
+  customer_id     VARCHAR(255)  NOT NULL REFERENCES customers(id)    ON DELETE RESTRICT,
+  assigned_by     VARCHAR(255)  NOT NULL REFERENCES users(id)        ON DELETE RESTRICT,
+  status          VARCHAR(20)   NOT NULL DEFAULT 'CHECKED_IN'
+                    CHECK (status IN ('CHECKED_IN', 'CHECKED_OUT', 'NO_SHOW')),
+  checked_in_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  checked_out_at  TIMESTAMPTZ,
+  no_show_at      TIMESTAMPTZ,
+  notes           TEXT,
+  created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stays_reservation_active
+  ON stays (reservation_id) WHERE status = 'CHECKED_IN';
+
+CREATE INDEX IF NOT EXISTS idx_stays_business_status
+  ON stays (business_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_stays_resource_active
+  ON stays (resource_id, business_id) WHERE status = 'CHECKED_IN';
+
+CREATE INDEX IF NOT EXISTS idx_stays_customer
+  ON stays (customer_id, business_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'stays_updated_at') THEN
+    CREATE TRIGGER stays_updated_at
+      BEFORE UPDATE ON stays
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
+-- BLOQUE 7 — INFRAESTRUCTURA / ANALYTICS
 -- ===========================================================================
 
 CREATE TABLE IF NOT EXISTS domain_events (
