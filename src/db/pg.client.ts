@@ -23,12 +23,54 @@
  * | DATABASE_URL    | ✅ Sí       | postgresql://user:pass@host:5432/db       |
  * | DB_POOL_MAX     | No          | 10 (default: 10)                          |
  * | DB_POOL_IDLE_MS | No          | 30000 (default: 30 000 ms)               |
+ *
+ * ## SSL y Neon
+ *
+ * Neon provee certificados firmados por una CA pública. En producción se
+ * usa rejectUnauthorized: true para validar el certificado completo.
+ * La URL de Neon puede incluir ?sslmode=require — se elimina de la
+ * connectionString para evitar conflictos con la opción ssl: del driver.
  */
 
 import pg from 'pg';
 import { SqlClient } from '../repositories/sql.client.js';
 
 const { Pool } = pg;
+
+// ---------------------------------------------------------------------------
+// Helpers SSL
+// ---------------------------------------------------------------------------
+
+/**
+ * Elimina el parámetro ?sslmode=... de la URL para evitar conflictos con
+ * la opción ssl: del driver. El driver `pg` acepta sslmode en la URL pero
+ * puede ignorar el objeto ssl: si ambos están presentes, lo que provoca
+ * SELF_SIGNED_CERT_IN_CHAIN en Neon.
+ */
+function stripSslMode(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.delete('sslmode');
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Configuración SSL ajustada al entorno.
+ *
+ * - producción : rejectUnauthorized: true  → valida el cert completo de Neon.
+ * - desarrollo  : false                    → sin SSL para Postgres local.
+ *
+ * Nota: tenant.middleware.ts aplica la misma lógica para los pools de tenant.
+ * Cualquier cambio aquí debe replicarse allá.
+ */
+function sslConfig(): pg.PoolConfig['ssl'] {
+  return process.env.NODE_ENV === 'production'
+    ? { rejectUnauthorized: true }
+    : false;
+}
 
 // ---------------------------------------------------------------------------
 // Pool lazy — se crea solo la primera vez que se necesita, no al importar.
@@ -41,22 +83,22 @@ let _pool: InstanceType<typeof Pool> | null = null;
 function getPool(): InstanceType<typeof Pool> {
   if (_pool) return _pool;
 
-  const url = process.env.DATABASE_URL;
-  if (!url) {
+  const rawUrl = process.env.DATABASE_URL;
+  if (!rawUrl) {
     throw new Error(
       '[pg.client] DATABASE_URL no está definida. ' +
       'Configúrala en Render Dashboard → Environment Variables.',
     );
   }
 
+  const connectionString = stripSslMode(rawUrl);
+
   _pool = new Pool({
-    connectionString: url,
+    connectionString,
     max: parseInt(process.env.DB_POOL_MAX ?? '10', 10),
     idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_MS ?? '30000', 10),
     connectionTimeoutMillis: 5_000,
-    ssl: process.env.NODE_ENV === 'production'
-      ? { rejectUnauthorized: false }
-      : false,
+    ssl: sslConfig(),
   });
 
   _pool.on('error', (err) => {
