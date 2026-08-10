@@ -42,6 +42,12 @@
  * `:businessSlug` en las rutas públicas o de `business_id` en el JWT del
  * cliente para las rutas autenticadas. El guard de abajo es una segunda
  * defensa por si el orden de montaje cambiara en el futuro.
+ *
+ * ## SSL y Neon
+ * La connection string descifrada puede incluir ?sslmode=require.
+ * Se elimina antes de crear el pool para evitar conflictos con el objeto
+ * ssl: del driver. rejectUnauthorized: true en producción valida el cert
+ * completo de Neon (misma lógica que pg.client.ts).
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -81,6 +87,25 @@ const MAX_TENANT_POOLS = parseInt(process.env.MAX_TENANT_POOLS ?? '200', 10);
 const tenantPools = new Map<string, TenantPoolEntry>();
 
 // ---------------------------------------------------------------------------
+// Helper SSL — igual que pg.client.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * Elimina el parámetro ?sslmode de la URL para evitar que el driver `pg`
+ * lo procese junto al objeto ssl:, lo que puede provocar
+ * SELF_SIGNED_CERT_IN_CHAIN en Neon.
+ */
+function stripSslMode(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.delete('sslmode');
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Pool lifecycle
 // ---------------------------------------------------------------------------
 
@@ -111,15 +136,16 @@ export async function getTenantClient(
     throw new TenantNotReadyError(businessId);
   }
 
-  // Descifrar connection string
-  const connectionString = await decryptConnectionString(business.dbUrlEncrypted);
+  // Descifrar connection string y limpiar ?sslmode para evitar conflictos
+  const rawConnectionString = await decryptConnectionString(business.dbUrlEncrypted);
+  const connectionString    = stripSslMode(rawConnectionString);
 
-  // Crear pool para este tenant
-  // rejectUnauthorized: true en producción — igual que el pool de plataforma.
-  // No hay razón para no verificar certificados en Neon (válidos), y evita MITM.
+  // Crear pool para este tenant.
+  // rejectUnauthorized: true en producción — Neon tiene certs válidos;
+  // validar la cadena completa previene MITM y SELF_SIGNED_CERT_IN_CHAIN.
   const pool = new Pool({
     connectionString,
-    max: 5, // Pool pequeño por tenant — ajustar según plan
+    max: 5,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
     ssl: process.env.NODE_ENV === 'production'
@@ -129,9 +155,6 @@ export async function getTenantClient(
 
   pool.on('error', (err) => {
     console.error(`[tenant] Error en pool de ${businessId}:`, err.message);
-    // Remover del cache para forzar reconexión en el próximo request.
-    // No llamamos pool.end() aquí porque el error ya indica que el pool
-    // está en estado inconsistente y pg lo maneja internamente.
     tenantPools.delete(businessId);
   });
 
@@ -213,25 +236,9 @@ export async function evictTenantPool(businessId: string): Promise<void> {
  * Middleware que inyecta `req.db` y `req.businessId` con la conexión al tenant correcto.
  * También arranca el OutboxWorker del tenant si aún no está corriendo (fix C4).
  * Debe montarse DESPUÉS de `authenticate()`.
- *
- * Los requests con `role: CUSTOMER` se dejan pasar sin modificar —
- * sus rutas (`/customer/*`) no usan la BD del tenant y tienen su propio
- * pool. Ver nota en la cabecera del archivo.
- *
- * @param platformRepo - Repositorio de la BD central
- *
- * @example
- * ```ts
- * app.use('/api', authenticate());
- * app.use('/api', tenantMiddleware(platformRepo));
- * app.use('/api/reservations', createReservationsRouter(container));
- * ```
  */
 export function tenantMiddleware(platformRepo: PlatformRepository) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Guard: CUSTOMER resuelve su propio req.db en customer.routes.ts y no
-    // debería llegar hasta acá — esto es una segunda defensa, no el camino
-    // esperado. Ver nota en la cabecera del archivo.
     if (req.user?.role === UserRole.CUSTOMER) {
       next();
       return;
@@ -249,8 +256,6 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
       req.db         = await getTenantClient(req.user.businessId, platformRepo);
       req.businessId = req.user.businessId;
 
-      // fix C4: arrancar OutboxWorker por tenant bajo demanda.
-      // ensureTenantWorker es idempotente — no hace nada si ya existe el worker.
       ensureTenantWorker(req.user.businessId, req.db);
 
       next();
@@ -285,13 +290,6 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
 // Shutdown graceful — cerrar todos los pools
 // ---------------------------------------------------------------------------
 
-/**
- * Cierra todos los pools de tenants activos llamando pool.end() en cada uno.
- * Llamar en el shutdown del servidor (SIGTERM / SIGINT).
- *
- * Antes: solo hacía tenantPools.clear() — las conexiones TCP quedaban
- * abiertas en Postgres hasta el idle_timeout. Ahora se cierran correctamente.
- */
 export async function closeTenantPools(): Promise<void> {
   const entries = Array.from(tenantPools.entries());
   tenantPools.clear();
