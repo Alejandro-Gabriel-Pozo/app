@@ -11,7 +11,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { authorize } from '../middleware/auth.middleware.wrapper.js';
+import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString } from '../../platform/supabase.provisioner.js';
 import { UserRole } from '../../types/enums.js';
@@ -26,6 +26,7 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
   // valores fuera del servidor.
   router.post(
     '/repair-tenant-db',
+    authenticate(),
     authorize([UserRole.ADMIN]),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
