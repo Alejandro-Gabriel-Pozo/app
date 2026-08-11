@@ -20,6 +20,13 @@
  *   opcional con default null) para que reservation.service.ts pueda
  *   pasarlo a OccupancyRepository.recordReservation() sin heurísticas.
  *   El repositorio SQL lo lee vía JOIN con resource_categories.
+ *
+ * ## Cambios v7 — refactor/resources-rename
+ * - BookableResource renombrado a PhysicalResource para distinguirlo
+ *   de BookableService. PhysicalResource es la unidad de capacidad
+ *   física (habitación, silla, estilista) que un servicio bloquea.
+ * - Se mantiene alias `export { PhysicalResource as BookableResource }`
+ *   para compatibilidad mientras se migra el resto del codebase.
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -86,10 +93,10 @@ export class Customer {
 }
 
 // ---------------------------------------------------------------------------
-// BookableResource
+// PhysicalResource
 // ---------------------------------------------------------------------------
 
-export class BookableResource {
+export class PhysicalResource {
   constructor(
     public readonly id: string,
     public readonly name: string,
@@ -148,6 +155,12 @@ export class BookableResource {
     return Math.max(0, this.capacity - occupied);
   }
 }
+
+/**
+ * Alias de compatibilidad — usar PhysicalResource en código nuevo.
+ * @deprecated Reemplazar por PhysicalResource en todos los usos.
+ */
+export { PhysicalResource as BookableResource };
 
 // ---------------------------------------------------------------------------
 // BookableService

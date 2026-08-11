@@ -1,16 +1,16 @@
 /**
  * @file sql.resource.repository.ts
- * @description Implementación PostgreSQL del repositorio de recursos.
+ * @description Implementación PostgreSQL del repositorio de recursos físicos.
  *
  * ## Cambios — fix/report-group-by-category
  * - Las queries que devuelven recursos ahora hacen LEFT JOIN con
- *   resource_categories para poblar BookableResource.categoryName.
+ *   resource_categories para poblar PhysicalResource.categoryName.
  *   save() y delete() no se modifican (no leen la entidad de vuelta).
  */
 
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
-import { BookableResource } from '../domain/entities.js';
+import { PhysicalResource } from '../domain/entities.js';
 import { VisualMetadata } from '../types/visual.interface.js';
 
 interface ResourceRow {
@@ -39,7 +39,7 @@ const SELECT_WITH_CATEGORY = `
 export class SqlResourceRepository implements ResourceRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
-  async save(resource: BookableResource): Promise<void> {
+  async save(resource: PhysicalResource): Promise<void> {
     const visualData = resource.visualData
       ? JSON.stringify(resource.visualData)
       : null;
@@ -56,7 +56,7 @@ export class SqlResourceRepository implements ResourceRepository {
     );
   }
 
-  async getById(id: string): Promise<BookableResource | undefined> {
+  async getById(id: string): Promise<PhysicalResource | undefined> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY} WHERE r.id = $1 AND r.active IS NOT FALSE`,
       [id],
@@ -64,7 +64,7 @@ export class SqlResourceRepository implements ResourceRepository {
     return result.rows[0] ? this.rowToResource(result.rows[0]) : undefined;
   }
 
-  async getByCategory(categoryId: string): Promise<BookableResource[]> {
+  async getByCategory(categoryId: string): Promise<PhysicalResource[]> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY}
        WHERE r.category_id = $1 AND r.active IS NOT FALSE
@@ -74,14 +74,14 @@ export class SqlResourceRepository implements ResourceRepository {
     return result.rows.map((row) => this.rowToResource(row));
   }
 
-  async getAll(): Promise<BookableResource[]> {
+  async getAll(): Promise<PhysicalResource[]> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY} WHERE r.active IS NOT FALSE ORDER BY r.name ASC`,
     );
     return result.rows.map((row) => this.rowToResource(row));
   }
 
-  async getByName(name: string): Promise<BookableResource | undefined> {
+  async getByName(name: string): Promise<PhysicalResource | undefined> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY}
        WHERE LOWER(r.name) = LOWER($1) AND r.active IS NOT FALSE`,
@@ -105,7 +105,7 @@ export class SqlResourceRepository implements ResourceRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
-  private rowToResource(row: ResourceRow): BookableResource {
+  private rowToResource(row: ResourceRow): PhysicalResource {
     let visualData: VisualMetadata | null = null;
 
     if (row.visual_data != null) {
@@ -116,7 +116,7 @@ export class SqlResourceRepository implements ResourceRepository {
       visualData = raw as unknown as VisualMetadata;
     }
 
-    return new BookableResource(
+    return new PhysicalResource(
       row.id,
       row.name,
       Number(row.base_price),

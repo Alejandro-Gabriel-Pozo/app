@@ -13,7 +13,7 @@
  * - Validación Zod en POST y PUT (400 VALIDATION_ERROR estructurado).
  * - authenticate() removido de cada handler: app.ts ya lo aplica
  *   globalmente sobre /api antes de que estas rutas sean alcanzadas.
- * - Import estático de BookableResource (era dynamic import en cada handler).
+ * - Import estático de PhysicalResource (era BookableResource).
  * - POST y PUT verifican que categoryId exista y esté activa antes de save()
  *   usando repo.findById() (retorna null si no existe o está inactiva)
  *   → 422 INVALID_CATEGORY en lugar de 500 FK violation.
@@ -24,7 +24,7 @@ import { authorize }                      from '../../security/auth.middleware.j
 import { Roles }                          from '../../security/roles.js';
 import { SqlResourceRepository }         from '../../repositories/sql.resource.repository.js';
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
-import { BookableResource }              from '../../domain/entities.js';
+import { PhysicalResource }              from '../../domain/entities.js';
 import { randomUUID }                     from 'node:crypto';
 import { z, ZodError }                   from 'zod';
 import type { VisualMetadata }           from '../../types/visual.interface.js';
@@ -116,7 +116,7 @@ export function createResourcesRouter(): Router {
           return;
         }
 
-        const resource = new BookableResource(
+        const resource = new PhysicalResource(
           body.id        ?? randomUUID(),
           body.name,
           body.basePrice ?? body.base_price ?? 0,
@@ -165,7 +165,7 @@ export function createResourcesRouter(): Router {
           }
         }
 
-        const updated = new BookableResource(
+        const updated = new PhysicalResource(
           existing.id,
           body.name        ?? existing.name,
           body.basePrice   ?? body.base_price ?? existing.basePrice,
