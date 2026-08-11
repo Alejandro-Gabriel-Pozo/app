@@ -14,7 +14,7 @@ export class SqlResourceLockRepository implements IResourceLockRepository {
   constructor(private readonly db: SqlClient) {}
 
   async getByServiceId(serviceId: string): Promise<ResourceLock[]> {
-    const rows = await this.db.query<{
+    const result = await this.db.query<{
       service_id:  string;
       resource_id: string;
       sort_order:  number;
@@ -26,7 +26,7 @@ export class SqlResourceLockRepository implements IResourceLockRepository {
       [serviceId],
     );
 
-    return rows.map((r) => ({
+    return result.rows.map((r) => ({
       serviceId:  r.service_id,
       resourceId: r.resource_id,
       sortOrder:  r.sort_order,
