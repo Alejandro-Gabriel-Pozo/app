@@ -2,12 +2,15 @@
 
 Este documento recoge las convenciones y reglas del proyecto derivadas de
 experiencia real en code review. El objetivo es que los bugs ya encontrados
-**no vuelvan a aparecer**.
+**no vuelvan a aparecer** y que cualquier desarrollador (o el propietario
+del producto en el futuro) pueda tomar el proyecto sin depender de una
+persona específica.
 
 ---
 
 ## Índice
 
+0. [Principios de mantenibilidad](#0-principios-de-mantenibilidad)
 1. [Cambios de firma en servicios](#1-cambios-de-firma-en-servicios)
 2. [Imports de infraestructura](#2-imports-de-infraestructura)
 3. [Interfaces de repositorios](#3-interfaces-de-repositorios)
@@ -16,6 +19,70 @@ experiencia real en code review. El objetivo es que los bugs ya encontrados
 6. [Commits](#6-commits)
 7. [Schema SQL para tests de integración](#7-schema-sql-para-tests-de-integración)
 8. [Import type — regla de linter](#8-import-type--regla-de-linter)
+
+---
+
+## 0. Principios de mantenibilidad
+
+Estas reglas aplican a cualquier contribución, humana o asistida por IA.
+Su propósito es que el codebase sea legible, predecible y modificable
+por cualquier desarrollador que tome el proyecto.
+
+### 0.1 Buscar antes de crear
+
+> Antes de escribir cualquier función, helper, middleware o repositorio nuevo,
+> buscar si ya existe algo equivalente en el codebase. Si existe, extenderlo.
+> **Nunca duplicar lógica.**
+
+Buscar en:
+- `src/middleware/` — guards, validación, errores
+- `src/repositories/` — acceso a datos
+- `src/services/` — lógica de negocio
+- `src/utils/` o helpers existentes
+
+Si encontrás lógica similar en dos lugares, el segundo lugar tiene deuda
+técnica — documentarlo con un `// TODO:` y crear un issue.
+
+### 0.2 Camino mínimo
+
+> Elegir siempre el cambio más pequeño que resuelve el problema.
+
+- Un fix debe tocar **solo los archivos necesarios**.
+- Si la solución toca más de **3 archivos** o agrega más de **~100 líneas**,
+  justificar por escrito por qué no hay alternativa más pequeña antes de
+  proceder.
+- Si la solución requiere refactorizar algo que ya funciona, hacer el
+  refactor en un commit separado del fix.
+
+### 0.3 Leer el contrato antes de tocar
+
+Antes de modificar cualquier repositorio o servicio, leer primero su
+interfaz (`*.repository.ts` / `*.service.ts`) para no romper el contrato
+con el resto del sistema. Ver sección [3. Interfaces de repositorios](#3-interfaces-de-repositorios).
+
+### 0.4 Documentar decisiones y deuda
+
+Cada PR debe responder:
+
+- **¿Qué cambié y por qué este approach?**
+- **¿Qué deuda técnica queda pendiente?** Nombrarla explícitamente — nunca
+  dejarla implícita.
+- **¿Qué otros archivos o features podrían verse afectados?**
+
+### 0.5 Estilo consistente
+
+- Mantener el estilo del archivo existente antes de inventar uno nuevo.
+- Funciones con una sola responsabilidad.
+- Comentarios solo para el **"por qué"**, nunca para el "qué" (el código ya lo dice).
+- Nombres que explican intención, no implementación.
+
+```ts
+// MAL — describe implementación
+const arr2 = arr.filter(x => x.active === true);
+
+// BIEN — describe intención
+const activeCategories = categories.filter(c => c.active);
+```
 
 ---
 
