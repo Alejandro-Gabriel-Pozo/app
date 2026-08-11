@@ -76,8 +76,15 @@ function base64UrlDecode(input: string): Buffer {
   return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
 
-export function signToken(
-  payload: Omit<JwtPayload, 'iat' | 'exp'>,
+/**
+ * `signToken`/`verifyToken` son genéricos en el payload para poder reutilizar
+ * la misma implementación HMAC en tokens que no son `JwtPayload` (ej. el
+ * token corto de selección de negocio en el login multi-membership — ver
+ * `auth.service.ts`). Un solo camino de firma/verificación para todo el
+ * proyecto, en vez de reimplementar JWT por segunda vez.
+ */
+export function signToken<T extends object = Omit<JwtPayload, 'iat' | 'exp'>>(
+  payload: T,
   secret: string,
   expiresIn = 86_400,
 ): string {
@@ -93,7 +100,7 @@ export function signToken(
   return `${signingInput}.${signature}`;
 }
 
-export function verifyToken(token: string, secret: string): JwtPayload {
+export function verifyToken<T = JwtPayload>(token: string, secret: string): T & { iat: number; exp: number } {
   const parts = token.split('.');
   if (parts.length !== 3) {
     const err = new Error('Token malformado');
@@ -118,7 +125,7 @@ export function verifyToken(token: string, secret: string): JwtPayload {
     throw err;
   }
 
-  const payload = JSON.parse(base64UrlDecode(body).toString('utf8')) as JwtPayload;
+  const payload = JSON.parse(base64UrlDecode(body).toString('utf8')) as T & { iat: number; exp: number };
   const now = Math.floor(Date.now() / 1000);
 
   if (payload.exp < now) {

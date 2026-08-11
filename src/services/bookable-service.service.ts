@@ -12,29 +12,29 @@ import type {
   UpdateBookableServiceDTO,
   UpdateServiceScheduleDTO,
 } from '../types/bookable-service.types.js';
+import { DomainError } from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
+//
+// Extienden DomainError (no Error a secas) — ver nota en order.service.ts.
 // ---------------------------------------------------------------------------
 
-export class BookableServiceNotFoundError extends Error {
+export class BookableServiceNotFoundError extends DomainError {
   constructor(id: string) {
-    super(`Servicio agendable '${id}' no encontrado.`);
-    this.name = 'BookableServiceNotFoundError';
+    super(`Servicio agendable '${id}' no encontrado.`, 'BOOKABLE_SERVICE_NOT_FOUND');
   }
 }
 
-export class ServiceScheduleNotFoundError extends Error {
+export class ServiceScheduleNotFoundError extends DomainError {
   constructor(id: string) {
-    super(`Schedule '${id}' no encontrado.`);
-    this.name = 'ServiceScheduleNotFoundError';
+    super(`Schedule '${id}' no encontrado.`, 'SERVICE_SCHEDULE_NOT_FOUND');
   }
 }
 
-export class ScheduleConflictError extends Error {
+export class ScheduleConflictError extends DomainError {
   constructor(dayOfWeek: number, startTime: string) {
-    super(`Ya existe un schedule activo para día ${dayOfWeek} a las ${startTime}.`);
-    this.name = 'ScheduleConflictError';
+    super(`Ya existe un schedule activo para día ${dayOfWeek} a las ${startTime}.`, 'SCHEDULE_CONFLICT');
   }
 }
 

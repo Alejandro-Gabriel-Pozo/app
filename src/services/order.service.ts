@@ -27,29 +27,32 @@ import type {
 } from '../domain/order.entities.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient }          from '../repositories/sql.client.js';
+import { DomainError }             from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
+//
+// Extienden DomainError (no Error a secas) para que domainErrorStatus() en
+// error.middleware.ts sea una red de seguridad real si alguna ruta nueva
+// olvida capturarlas con `instanceof` — antes caían directo al 500 genérico
+// porque el errorHandler nunca las reconocía como DomainError.
 // ---------------------------------------------------------------------------
 
-export class OrderNotFoundError extends Error {
+export class OrderNotFoundError extends DomainError {
   constructor(id: string) {
-    super(`Orden no encontrada: ${id}`);
-    this.name = 'OrderNotFoundError';
+    super(`Orden no encontrada: ${id}`, 'ORDER_NOT_FOUND');
   }
 }
 
-export class OrderNotEditableError extends Error {
+export class OrderNotEditableError extends DomainError {
   constructor(id: string, status: OrderStatus) {
-    super(`La orden ${id} no se puede editar en estado ${status}.`);
-    this.name = 'OrderNotEditableError';
+    super(`La orden ${id} no se puede editar en estado ${status}.`, 'ORDER_NOT_EDITABLE');
   }
 }
 
-export class InvalidOrderTransitionError extends Error {
+export class InvalidOrderTransitionError extends DomainError {
   constructor(from: OrderStatus, to: OrderStatus) {
-    super(`Transición inválida: ${from} → ${to}.`);
-    this.name = 'InvalidOrderTransitionError';
+    super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');
   }
 }
 

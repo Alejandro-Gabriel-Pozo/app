@@ -22,7 +22,7 @@
 import { PlatformRepository } from './platform/platform.repository.js';
 import { BusinessPlan }        from './types/enums.js';
 import { SqlClient }           from './repositories/sql.client.js';
-import { stripSslMode }        from './db/pg.client.js';
+import { stripSslMode, sslConfig } from './db/pg.client.js';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -47,7 +47,7 @@ export function createPlatformPool(): SqlClient {
     _platformPool = new Pool({
       connectionString,
       max: 5,
-      ssl: process.env.NEON_SSL === 'true' ? { rejectUnauthorized: true } : false,
+      ssl: sslConfig(),
     });
     _platformPool.on('error', (err) => {
       console.error('[platform] Error en pool central:', err.message);

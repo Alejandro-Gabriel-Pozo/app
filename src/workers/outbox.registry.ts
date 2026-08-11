@@ -46,3 +46,16 @@ export async function stopAllWorkers(): Promise<void> {
   await Promise.allSettled([...workers.values()].map((w) => w.stop()));
   workers.clear();
 }
+
+/**
+ * Detiene y quita el worker de UN tenant puntual.
+ * Usado por tenant.middleware.ts al desalojar (LRU) o invalidar el pool
+ * de un negocio — el worker de outbox de ese tenant no tiene sentido
+ * seguir corriendo sin su pool.
+ */
+export async function stopTenantWorker(businessId: string): Promise<void> {
+  const worker = workers.get(businessId);
+  if (!worker) return;
+  workers.delete(businessId);
+  await worker.stop();
+}

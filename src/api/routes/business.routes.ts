@@ -4,13 +4,19 @@
  *
  * ## Flujo de POST /register
  * 1. Validar body con Zod
- * 2. Verificar que email y slug no existan
- * 3. Crear negocio en BD central (estado PENDING)
- * 4. Crear usuario ADMIN inicial
+ * 2. Verificar que el slug no exista
+ * 3. Resolver la identity del owner:
+ *    - Si el email ya tiene una identity (persona que ya usa la plataforma
+ *      en otro negocio), exigir que `ownerPassword` coincida con la
+ *      contraseña existente — así puede registrar un segundo negocio con
+ *      la misma cuenta en vez de fallar o pisar la contraseña de otro.
+ *    - Si no existe, crear la identity nueva.
+ * 4. Crear negocio en BD central (estado PENDING)
  * 5. Provisionar BD en Supabase (async — puede tardar 2-3 min)
  * 6. Ejecutar schema.sql en la nueva BD (via loadTenantSchema)
  * 7. Activar negocio en BD central (estado ACTIVE)
- * 8. Retornar JWT listo para usar
+ * 8. Crear membership ADMIN de la identity en el negocio nuevo
+ * 9. Retornar JWT listo para usar
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -23,7 +29,7 @@ import {
   encryptConnectionString,
   loadTenantSchema,
 } from '../../platform/supabase.provisioner.js';
-import { hashPassword } from '../../security/user.store.js';
+import { hashPassword, verifyPassword } from '../../security/user.store.js';
 import { signToken } from '../../security/auth.middleware.js';
 import { BusinessPlan, UserRole } from '../../types/enums.js';
 
@@ -86,13 +92,38 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
         const body = RegisterBusinessSchema.parse(req.body);
         const slug = generateSlug(body.businessName);
 
-        const exists = await platformRepo.existsByEmailOrSlug(body.ownerEmail, slug);
-        if (exists) {
+        const slugTaken = await platformRepo.findBySlug(slug);
+        if (slugTaken) {
           res.status(400).json({
             code: 'BUSINESS_ALREADY_EXISTS',
-            message: 'Ya existe un negocio con ese email o nombre',
+            message: 'Ya existe un negocio con ese nombre',
           });
           return;
+        }
+
+        // Resolver la identity del owner ANTES de crear nada — si el email
+        // ya existe y la contraseña no coincide, cortamos acá sin dejar
+        // ningún registro a medias.
+        const existingIdentity = await platformRepo.findIdentityByEmail(body.ownerEmail);
+        let identityId: string;
+
+        if (existingIdentity) {
+          const passwordMatches = await verifyPassword(body.ownerPassword, existingIdentity.passwordHash);
+          if (!passwordMatches) {
+            res.status(409).json({
+              code: 'EMAIL_ALREADY_REGISTERED',
+              message: 'Ese email ya tiene una cuenta en la plataforma. Iniciá sesión con tu contraseña actual para registrar un negocio nuevo.',
+            });
+            return;
+          }
+          identityId = existingIdentity.id;
+        } else {
+          const identity = await platformRepo.createIdentity({
+            id: randomUUID(),
+            email: body.ownerEmail,
+            passwordHash: await hashPassword(body.ownerPassword),
+          });
+          identityId = identity.id;
         }
 
         const businessId = randomUUID();
@@ -124,23 +155,20 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
         const dbUrlEncrypted = await encryptConnectionString(provisioned.connectionString);
         await platformRepo.activateBusiness(businessId, provisioned.projectId, dbUrlEncrypted);
 
-        const userId = randomUUID();
-        const passwordHash = await hashPassword(body.ownerPassword);
-        await platformRepo.createPlatformUser({
-          id: userId,
-          email: body.ownerEmail,
+        await platformRepo.createMembership({
+          id: randomUUID(),
+          identityId,
           businessId,
           role: UserRole.ADMIN,
-          passwordHash,
         });
 
         const jwtSecret = process.env.JWT_SECRET!;
         const token = signToken(
-          { sub: userId, role: UserRole.ADMIN, business_id: businessId },
+          { sub: identityId, role: UserRole.ADMIN, business_id: businessId },
           jwtSecret,
         );
 
-        console.log(`[register] ✅ Negocio ${businessId} activo — usuario admin creado`);
+        console.log(`[register] ✅ Negocio ${businessId} activo — membership admin creada`);
 
         res.status(201).json({
           message: 'Negocio registrado exitosamente',
@@ -148,7 +176,7 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           token,
           tokenType: 'Bearer',
           expiresIn: 86_400,
-          user: { id: userId, email: body.ownerEmail, role: UserRole.ADMIN },
+          user: { id: identityId, email: body.ownerEmail, role: UserRole.ADMIN },
         });
       } catch (err) {
         next(err);

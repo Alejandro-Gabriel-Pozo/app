@@ -2,49 +2,75 @@
  * @file auth.service.ts
  * @description Servicio de autenticación: valida credenciales y emite JWT.
  *
- * ## Por qué un servicio separado del middleware
+ * ## Modelo identity + membership
  *
- * `auth.middleware.ts` resuelve la identidad desde un token ya emitido (verificación).
- * `auth.service.ts` emite tokens nuevos validando credenciales (autenticación).
- * Son responsabilidades distintas y mantenerlas separadas facilita testear cada una.
+ * Separa "quién sos" (`Identity`: email + password, único en toda la
+ * plataforma) de "a qué negocio pertenecés y con qué rol" (`Membership`).
+ * Reemplaza el viejo modelo `platform_users`, donde el mismo email podía
+ * existir en negocios distintos y el login no tenía forma de desambiguar
+ * cuál de los dos elegir (hallazgo C1 del code review de agosto 2026).
+ *
+ * ## Flujo de login en dos pasos
+ *
+ * ```
+ * POST /api/login { email, password }
+ *   → identity resuelta sin ambigüedad (email es UNIQUE global)
+ *   → 1 sola membership activa → LoginResult directo (caso común, sin fricción)
+ *   → 2+ memberships activas   → BusinessSelectionRequired (identityToken corto)
+ *
+ * POST /api/login/select-business { identityToken, businessId }
+ *   → valida identityToken + membership activa en ese negocio
+ *   → LoginResult
+ * ```
  *
  * ## Seguridad del login
  *
- * 1. **Timing attack en "usuario no encontrado"**: si el lookup es más rápido
- *    que la verificación de contraseña, un atacante puede inferir si un email
- *    existe midiendo tiempos de respuesta. Lo resolvemos ejecutando siempre
- *    `verifyPassword` aunque el usuario no exista (contra un hash dummy).
- *
- * 2. **Mensaje de error genérico**: el endpoint devuelve siempre
- *    "Credenciales inválidas" tanto si el email no existe como si la contraseña
- *    es incorrecta. Nunca se revela cuál de las dos falló.
+ * 1. **Timing attack en "usuario no encontrado"**: se ejecuta siempre
+ *    `verifyPassword` aunque la identity no exista (contra un hash dummy).
+ * 2. **Mensaje de error genérico**: "Credenciales inválidas" tanto si el
+ *    email no existe como si la contraseña es incorrecta.
+ * 3. **identityToken de selección de negocio**: JWT de vida corta (5 min)
+ *    con `purpose: 'BUSINESS_SELECTION'`, firmado con el mismo JWT_SECRET
+ *    pero sin `role`/`business_id` — no sirve como token de acceso a la API,
+ *    solo como prueba de que el paso 1 (email+password) ya se completó.
  */
- 
-import { signToken } from './auth.middleware.js';
-import { UserStore, InMemoryUserStore, verifyPassword } from './user.store.js';
- 
+
+import { signToken, verifyToken } from './auth.middleware.js';
+import { verifyPassword } from './user.store.js';
+import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
+import { UserRole } from '../types/enums.js';
+
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
- 
-/**
- * Respuesta exitosa del login.
- */
+
+/** Respuesta exitosa del login — token de acceso listo para usar. */
 export interface LoginResult {
-  /** JWT firmado con HS256 */
   token: string;
-  /** Tipo de token — siempre "Bearer" para incluir en el header Authorization */
   tokenType: 'Bearer';
-  /** Segundos hasta la expiración del token */
   expiresIn: number;
-  /** Datos básicos del usuario autenticado (sin datos sensibles) */
   user: {
     id: string;
     email: string;
     role: string;
   };
 }
- 
+
+/** El email+password son correctos, pero hay más de un negocio para elegir. */
+export interface BusinessSelectionRequired {
+  needsBusinessSelection: true;
+  /** JWT de 5 min — se reenvía tal cual a POST /api/login/select-business */
+  identityToken: string;
+  businesses: Array<{ businessId: string; businessName: string; role: string }>;
+}
+
+export type LoginOutcome = LoginResult | BusinessSelectionRequired;
+
+interface IdentityTokenPayload {
+  sub: string;
+  purpose: 'BUSINESS_SELECTION';
+}
+
 // ---------------------------------------------------------------------------
 // Hash dummy para la comparación constante anti-timing
 // Formato válido: "salt_hex:hash_hex" de 16+64 bytes
@@ -53,92 +79,143 @@ const DUMMY_HASH =
   'ffffffffffffffffffffffffffffffff:' +
   'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' +
   'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
- 
+
+const IDENTITY_TOKEN_TTL_SECONDS = 5 * 60;
+
 // ---------------------------------------------------------------------------
 // Servicio
 // ---------------------------------------------------------------------------
- 
-/**
- * Servicio de autenticación.
- *
- * Recibe el `UserStore` por inyección (o null para fallback a InMemoryUserStore)
- * para facilitar tests y para que el router no dependa de una implementación concreta.
- */
+
 export class AuthService {
   /**
-   * Duración del token en segundos. Lee `JWT_EXPIRES_IN` del entorno:
-   * - "24h" → 86 400 s
-   * - "7d"  → 604 800 s
-   * - Número puro → se usa directamente en segundos
-   * - No definida → 86 400 s (24 horas)
+   * Duración del token de acceso en segundos. Lee `JWT_EXPIRES_IN` del
+   * entorno — ver `parseExpiresIn()`.
    */
   private readonly tokenTtlSeconds: number;
-  private readonly store: UserStore;
- 
-  constructor(userStore: UserStore | null) {
-    this.store = userStore ?? new InMemoryUserStore();
+
+  constructor(private readonly platformRepo: PlatformRepository) {
     this.tokenTtlSeconds = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
   }
- 
+
   /**
-   * Intenta autenticar con email + contraseña.
+   * Paso 1: valida email + password.
    *
-   * Siempre ejecuta `verifyPassword` para prevenir timing attacks,
-   * incluso si el email no existe.
-   *
-   * @param email    - Email del usuario (insensible a mayúsculas)
-   * @param password - Contraseña en texto plano
-   * @returns `LoginResult` con el JWT y datos básicos del usuario
-   * @throws `Error` con `code: 'INVALID_CREDENTIALS'` si las credenciales son incorrectas
-   *
-   * @example
-   * ```ts
-   * const result = await authService.login('admin@demo.com', 'admin123');
-   * // result.token → "eyJ..."
-   * // result.user  → { id: 'demo-admin-001', email: '...', role: 'ADMIN' }
-   * ```
+   * @throws `Error` con `code: 'INVALID_CREDENTIALS'` si las credenciales
+   *   son incorrectas, o si la identity no tiene ninguna membership activa
+   *   (mismo mensaje genérico — no revela cuál de los casos ocurrió).
    */
-  async login(email: string, password: string): Promise<LoginResult> {
-    const user = await this.store.findByEmail(email);
- 
-    // Siempre hasheamos — aunque el usuario no exista — para tiempo constante
-    const hashToVerify = user?.passwordHash ?? DUMMY_HASH;
+  async login(email: string, password: string): Promise<LoginOutcome> {
+    const identity = await this.platformRepo.findIdentityByEmail(email);
+
+    // Siempre hasheamos — aunque la identity no exista — para tiempo constante
+    const hashToVerify = identity?.passwordHash ?? DUMMY_HASH;
     const passwordMatches = await verifyPassword(password, hashToVerify);
- 
-    if (!user || !passwordMatches) {
-      const err = new Error('Credenciales inválidas');
-      (err as NodeJS.ErrnoException).code = 'INVALID_CREDENTIALS';
-      throw err;
+
+    if (!identity || !passwordMatches) {
+      throw invalidCredentialsError();
     }
- 
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      throw new Error('[AuthService] JWT_SECRET no está definida');
+
+    const memberships = await this.platformRepo.findActiveMembershipsByIdentityId(identity.id);
+
+    if (memberships.length === 0) {
+      throw invalidCredentialsError();
     }
- 
+
+    if (memberships.length === 1) {
+      return this.issueTenantToken(identity, memberships[0]!);
+    }
+
+    const identityToken = signToken<IdentityTokenPayload>(
+      { sub: identity.id, purpose: 'BUSINESS_SELECTION' },
+      requireJwtSecret(),
+      IDENTITY_TOKEN_TTL_SECONDS,
+    );
+
+    return {
+      needsBusinessSelection: true,
+      identityToken,
+      businesses: memberships.map((m) => ({
+        businessId: m.businessId,
+        businessName: m.businessName,
+        role: m.role,
+      })),
+    };
+  }
+
+  /**
+   * Paso 2 (solo si el login devolvió `needsBusinessSelection`): confirma
+   * el negocio elegido y emite el token de acceso tenant-scoped.
+   *
+   * @throws `Error` con `code: 'INVALID_BUSINESS_SELECTION'` si el
+   *   identityToken expiró/es inválido, o si la identity no tiene una
+   *   membership activa en ese negocio.
+   */
+  async selectBusiness(identityToken: string, businessId: string): Promise<LoginResult> {
+    let payload: IdentityTokenPayload & { exp: number; iat: number };
+    try {
+      payload = verifyToken<IdentityTokenPayload & { exp: number; iat: number }>(
+        identityToken,
+        requireJwtSecret(),
+      );
+    } catch {
+      throw invalidBusinessSelectionError();
+    }
+
+    if (payload.purpose !== 'BUSINESS_SELECTION') {
+      throw invalidBusinessSelectionError();
+    }
+
+    const identity = await this.platformRepo.findIdentityById(payload.sub);
+    if (!identity) throw invalidBusinessSelectionError();
+
+    const membership = await this.platformRepo.findMembership(identity.id, businessId);
+    if (!membership || !membership.active) throw invalidBusinessSelectionError();
+
+    return this.issueTenantToken(identity, membership);
+  }
+
+  private issueTenantToken(identity: Identity, membership: Membership): LoginResult {
     const token = signToken(
-      { sub: user.id, role: user.role, ...(user.businessId && { business_id: user.businessId }) },
-      jwtSecret,
+      { sub: identity.id, role: membership.role as UserRole, business_id: membership.businessId },
+      requireJwtSecret(),
       this.tokenTtlSeconds,
     );
- 
+
     return {
       token,
       tokenType: 'Bearer',
       expiresIn: this.tokenTtlSeconds,
       user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
+        id: identity.id,
+        email: identity.email,
+        role: membership.role,
       },
     };
   }
 }
- 
+
 // ---------------------------------------------------------------------------
-// Helper: parsear JWT_EXPIRES_IN
+// Helpers
 // ---------------------------------------------------------------------------
- 
+
+function requireJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('[AuthService] JWT_SECRET no está definida');
+  return secret;
+}
+
+function invalidCredentialsError(): Error {
+  const err = new Error('Credenciales inválidas');
+  (err as NodeJS.ErrnoException).code = 'INVALID_CREDENTIALS';
+  return err;
+}
+
+function invalidBusinessSelectionError(): Error {
+  const err = new Error('Selección de negocio inválida o expirada');
+  (err as NodeJS.ErrnoException).code = 'INVALID_BUSINESS_SELECTION';
+  return err;
+}
+
 /**
  * Convierte la cadena de `JWT_EXPIRES_IN` a segundos.
  *
@@ -154,7 +231,7 @@ export class AuthService {
 function parseExpiresIn(value: string): number {
   const lower = value.trim().toLowerCase();
   const num = parseFloat(lower);
- 
+
   let seconds: number;
   if (lower.endsWith('h')) {
     seconds = num * 3_600;
@@ -165,18 +242,17 @@ function parseExpiresIn(value: string): number {
   } else {
     seconds = num;
   }
- 
+
   if (!Number.isFinite(seconds) || seconds < 60) {
     console.warn(`[AuthService] JWT_EXPIRES_IN="${value}" inválido, usando 24h`);
     return 86_400;
   }
- 
+
   const MAX_TTL = 30 * 86_400;
   if (seconds > MAX_TTL) {
     console.warn(`[AuthService] JWT_EXPIRES_IN supera 30 días, limitando a 30d`);
     return MAX_TTL;
   }
- 
+
   return Math.floor(seconds);
 }
-

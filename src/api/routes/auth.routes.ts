@@ -109,6 +109,19 @@ const LoginBodySchema = z.object({
     .min(6, { message: 'password debe tener al menos 6 caracteres' }),
 });
 
+/**
+ * Body de `POST /api/login/select-business` — paso 2, solo cuando el login
+ * devolvió `needsBusinessSelection: true`.
+ */
+const SelectBusinessBodySchema = z.object({
+  identityToken: z
+    .string({ required_error: 'identityToken es obligatorio' })
+    .min(1, { message: 'identityToken es obligatorio' }),
+  businessId: z
+    .string({ required_error: 'businessId es obligatorio' })
+    .min(1, { message: 'businessId es obligatorio' }),
+});
+
 // ---------------------------------------------------------------------------
 // Factory del router
 // ---------------------------------------------------------------------------
@@ -197,7 +210,7 @@ export function createAuthRouter(authService: AuthService): Router {
         // 2. Delegar autenticación al servicio (401 si las credenciales son incorrectas)
         const result = await authService.login(body.email, body.password);
 
-        // 3. Responder con el token y datos del usuario
+        // 3. Responder con el token (o con la lista de negocios para elegir)
         res.status(200).json(result);
       } catch (err) {
         // Credenciales inválidas → 401 (no pasa por el errorHandler genérico)
@@ -210,6 +223,50 @@ export function createAuthRouter(authService: AuthService): Router {
           return;
         }
         // Cualquier otro error (ZodError, errores de sistema) → errorHandler global
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * @swagger
+   * /api/login/select-business:
+   *   post:
+   *     summary: Paso 2 del login — elegir negocio cuando el email tiene más de una membership activa
+   *     tags:
+   *       - Auth
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [identityToken, businessId]
+   *             properties:
+   *               identityToken: { type: string }
+   *               businessId: { type: string }
+   *     responses:
+   *       200:
+   *         description: Autenticación exitosa
+   *       401:
+   *         description: identityToken inválido/expirado o sin membership activa en ese negocio
+   */
+  router.post(
+    '/select-business',
+    loginRateLimiter,
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body = SelectBusinessBodySchema.parse(req.body);
+        const result = await authService.selectBusiness(body.identityToken, body.businessId);
+        res.status(200).json(result);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'INVALID_BUSINESS_SELECTION') {
+          res.status(401).json({
+            code: 'INVALID_BUSINESS_SELECTION',
+            message: 'Selección de negocio inválida o expirada. Iniciá sesión de nuevo.',
+          });
+          return;
+        }
         next(err);
       }
     },

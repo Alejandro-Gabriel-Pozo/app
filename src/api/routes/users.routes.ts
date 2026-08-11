@@ -12,29 +12,38 @@
  * Nota: el rol OWNER no puede ser asignado desde la API — se asigna al crear
  * el negocio en la plataforma. El endpoint de creación lo rechaza explícitamente.
  *
- * Los usuarios son entidades de plataforma (tabla `users` en PLATFORM_DATABASE_URL).
- * El router recibe `platformRepo` como parámetro de fábrica para operar sobre
- * esa BD, en lugar de req.db (BD del tenant).
+ * `:id` es el ID de la MEMBERSHIP (no de la identity) — un usuario es
+ * "una persona en este negocio, con este rol". Ver src/db/platform.schema.sql,
+ * bloque IDENTITY/MEMBERSHIP.
  *
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
  * causaba 401 UNAUTHORIZED al re-leer el header en el segundo pase.
- *
- * ## Nombres de métodos de PlatformRepository
- * - listUsersByBusiness(businessId)              ← GET /
- * - findUserByIdAndBusiness(id, businessId)      ← GET /:id
- * - createPlatformUser(input)                    ← POST /
- * - updateUser(userId, businessId, input)        ← PUT /:id  (orden: id, businessId, input)
- * - deactivateUser(userId, businessId)           ← DELETE /:id (soft-delete)
  */
 
 import { Router } from 'express';
+import { z, ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { UserRole } from '../../types/enums.js';
-import { randomUUID } from 'node:crypto';
-import { hashPassword } from '../../security/auth.middleware.js';
+import { hashPassword } from '../../security/user.store.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
+
+const MEMBER_ROLES = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
+
+const CreateUserBodySchema = z.object({
+  email: z.string({ required_error: 'email es obligatorio' }).email(),
+  password: z.string({ required_error: 'password es obligatorio' }).min(8, {
+    message: 'password debe tener al menos 8 caracteres',
+  }),
+  role: z.enum(MEMBER_ROLES, { required_error: 'role es obligatorio' }),
+});
+
+const UpdateUserBodySchema = z.object({
+  role: z.enum(MEMBER_ROLES).optional(),
+  password: z.string().min(8, { message: 'password debe tener al menos 8 caracteres' }).optional(),
+});
 
 export function createUsersRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
@@ -46,8 +55,8 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
-        const users = await platformRepo.listUsersByBusiness(businessId);
-        res.json(users);
+        const members = await platformRepo.listMembershipsByBusiness(businessId);
+        res.json(members);
       } catch (err) { next(err); }
     },
   );
@@ -59,15 +68,15 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
-        const user = await platformRepo.findUserByIdAndBusiness(
+        const member = await platformRepo.findMembershipByIdAndBusiness(
           req.params['id'] as string,
           businessId,
         );
-        if (!user) {
+        if (!member) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Usuario no encontrado' });
           return;
         }
-        res.json(user);
+        res.json(member);
       } catch (err) { next(err); }
     },
   );
@@ -79,25 +88,52 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
+        const body = CreateUserBodySchema.parse(req.body);
 
-        if (req.body.role === UserRole.OWNER) {
-          res.status(400).json({
-            code: 'INVALID_ROLE',
-            message: 'El rol OWNER se asigna automáticamente al crear el negocio.',
+        const existingIdentity = await platformRepo.findIdentityByEmail(body.email);
+
+        // Todavía no hay flujo de invitación (requeriría envío de emails).
+        // Rechazamos explícito en vez de pisar la contraseña de otra cuenta
+        // o crear una membership silenciosa con una password que el dueño
+        // real de esa identity no conoce.
+        if (existingIdentity) {
+          const alreadyMember = await platformRepo.findMembership(existingIdentity.id, businessId);
+          if (alreadyMember) {
+            res.status(409).json({
+              code: 'MEMBERSHIP_ALREADY_EXISTS',
+              message: 'Ese email ya es parte de este negocio.',
+            });
+            return;
+          }
+          res.status(409).json({
+            code: 'IDENTITY_ALREADY_EXISTS',
+            message: 'Ese email ya tiene una cuenta en la plataforma (en otro negocio). ' +
+              'Pedile a esa persona que inicie sesión — todavía no existe un flujo de invitación automático.',
           });
           return;
         }
 
-        const passwordHash = await hashPassword(req.body.password as string);
-        const user = await platformRepo.createPlatformUser({
-          id:           req.body.id ?? randomUUID(),
-          email:        req.body.email as string,
-          businessId,
-          role:         req.body.role as string,
-          passwordHash,
+        const identity = await platformRepo.createIdentity({
+          id: randomUUID(),
+          email: body.email,
+          passwordHash: await hashPassword(body.password),
         });
-        res.status(201).json(user);
-      } catch (err) { next(err); }
+
+        const member = await platformRepo.createMembership({
+          id: randomUUID(),
+          identityId: identity.id,
+          businessId,
+          role: body.role,
+        });
+
+        res.status(201).json({ ...member, email: identity.email });
+      } catch (err) {
+        if (err instanceof ZodError) {
+          res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
+          return;
+        }
+        next(err);
+      }
     },
   );
 
@@ -108,28 +144,47 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
-        const userId = req.params['id'] as string;
+        const membershipId = req.params['id'] as string;
+        const body = UpdateUserBodySchema.parse(req.body);
 
-        if (req.body.role === UserRole.OWNER) {
-          res.status(400).json({
-            code: 'INVALID_ROLE',
-            message: 'No se puede asignar el rol OWNER desde la API.',
-          });
-          return;
-        }
-
-        const input: { email?: string; role?: string; passwordHash?: string } = {};
-        if (req.body.email)    input.email = req.body.email as string;
-        if (req.body.role)     input.role  = req.body.role as string;
-        if (req.body.password) input.passwordHash = await hashPassword(req.body.password as string);
-
-        const updated = await platformRepo.updateUser(userId, businessId, input);
-        if (!updated) {
+        const member = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);
+        if (!member) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Usuario no encontrado' });
           return;
         }
+
+        if (body.role !== undefined) {
+          await platformRepo.updateMembershipRole(membershipId, businessId, body.role);
+        }
+
+        if (body.password !== undefined) {
+          // La password vive en la identity, compartida entre TODOS los
+          // negocios en los que esa persona es miembro. Si dejáramos que
+          // cualquier ADMIN de CUALQUIER negocio la cambie sin más, un
+          // negocio podría "resetear" sin querer (o a propósito) el acceso
+          // de esa persona a otro negocio distinto. Solo lo permitimos
+          // cuando esta es la única membership activa de la identity.
+          const memberships = await platformRepo.findActiveMembershipsByIdentityId(member.identityId);
+          if (memberships.length > 1) {
+            res.status(409).json({
+              code: 'SHARED_IDENTITY_PASSWORD',
+              message: 'Esta cuenta pertenece a más de un negocio — no se puede cambiar la ' +
+                'contraseña desde acá. Esa persona puede cambiarla ella misma cuando haya un flujo de perfil propio.',
+            });
+            return;
+          }
+          await platformRepo.updateIdentityPassword(member.identityId, await hashPassword(body.password));
+        }
+
+        const updated = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);
         res.json(updated);
-      } catch (err) { next(err); }
+      } catch (err) {
+        if (err instanceof ZodError) {
+          res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
+          return;
+        }
+        next(err);
+      }
     },
   );
 
@@ -140,7 +195,7 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
-        await platformRepo.deactivateUser(req.params['id'] as string, businessId);
+        await platformRepo.deactivateMembership(req.params['id'] as string, businessId);
         res.status(204).send();
       } catch (err) { next(err); }
     },

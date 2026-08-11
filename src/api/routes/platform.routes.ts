@@ -119,11 +119,11 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = CreateBusinessSchema.parse(req.body);
-        const exists = await platformRepository.existsByEmailOrSlug(body.ownerEmail, body.slug);
-        if (exists) {
+        const slugTaken = await platformRepository.findBySlug(body.slug);
+        if (slugTaken) {
           res.status(409).json({
             code: 'SLUG_OR_EMAIL_TAKEN',
-            message: 'Ya existe un negocio con ese slug o email de propietario.',
+            message: 'Ya existe un negocio con ese slug.',
           });
           return;
         }

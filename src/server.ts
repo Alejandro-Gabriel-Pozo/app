@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp, registerGracefulShutdown } from './app.js';
 import { closePlatformPool } from './container.js';
 import { closeTenantPools } from './platform/tenant.middleware.js';
+import { sslConfig } from './db/pg.client.js';
 import pg from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,11 @@ async function main(): Promise<void> {
     const { Pool } = pg;
     const pool = new Pool({
       connectionString: process.env.PLATFORM_DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+      // Misma fuente de verdad que el resto de los pools del proceso
+      // (container.ts, tenant.middleware.ts) — ver db/pg.client.ts.
+      // Antes decidía por NODE_ENV en vez de NEON_SSL, un tercer criterio
+      // distinto para la misma conexión.
+      ssl: sslConfig(),
     });
     await pool.query(sql);
     await pool.end();

@@ -12,6 +12,13 @@ services:
       - key: NODE_VERSION
         value: "20"
 
+      # SSL para TODOS los pools de Postgres del proceso (platform, tenant,
+      # legado) — ver db/pg.client.ts::sslConfig(). Sin esto, los pools caen
+      # a ssl:false y la conexión a Neon/Supabase falla. No es un secreto,
+      # pero si falta, el proceso no debe asumir un default en silencio.
+      - key: NEON_SSL
+        value: "true"
+
       # ---------------------------------------------------------------------------
       # Secretos — definir manualmente en Render Dashboard (sync: false = no commitear)
       # ---------------------------------------------------------------------------

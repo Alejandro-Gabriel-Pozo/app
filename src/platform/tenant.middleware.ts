@@ -16,8 +16,12 @@
  * Se elimina antes de crear el pool con stripSslMode() (importado de pg.client)
  * para evitar el warning de Neon:
  *   "SSL modes 'require' are treated as aliases for 'verify-full'"
- * La variable NEON_SSL=true controla si se valida el certificado completo.
- * Consistente con pg.client.ts.
+ * La config SSL (`sslConfig()`) se importa de pg.client.ts — misma fuente
+ * que usan el pool de plataforma (container.ts) y el legado. Antes este
+ * archivo tenía su propia función con un fallback distinto
+ * (`{ rejectUnauthorized: false }` en vez de `false`), que dejaba SSL
+ * activo sin validar certificado — vulnerable a MITM — pese a decir en
+ * un comentario que era "consistente con pg.client.ts".
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -26,33 +30,30 @@ import { SqlClient } from '../repositories/sql.client.js';
 import { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './supabase.provisioner.js';
 import { BusinessStatus, UserRole } from '../types/enums.js';
-import { ensureTenantWorker } from '../workers/outbox.registry.js';
-import { stripSslMode } from '../db/pg.client.js';
+import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';
+import { stripSslMode, sslConfig } from '../db/pg.client.js';
 
 const { Pool } = pg;
 type PgPool = InstanceType<typeof Pool>;
 
 // ---------------------------------------------------------------------------
 // Pool cache
+//
+// LRU real: al llegar a MAX_TENANT_POOLS, el pool (+ su worker de outbox)
+// menos usado recientemente se cierra ANTES de abrir uno nuevo. Antes de
+// este cambio, el límite solo emitía un warning y seguía creando pools sin
+// techo — en un proceso long-running (Render) eso es una fuga de conexiones
+// pg y de timers de 5s (uno por OutboxWorker) que nunca se libera sola.
 // ---------------------------------------------------------------------------
 
 interface TenantPoolEntry {
-  client: SqlClient;
-  pool:   PgPool;
+  client:     SqlClient;
+  pool:       PgPool;
+  lastUsedAt: number;
 }
 
 const MAX_TENANT_POOLS = parseInt(process.env.MAX_TENANT_POOLS ?? '200', 10);
 const tenantPools = new Map<string, TenantPoolEntry>();
-
-// ---------------------------------------------------------------------------
-// SSL config — misma lógica que pg.client.ts
-// ---------------------------------------------------------------------------
-
-function tenantSslConfig(): pg.PoolConfig['ssl'] {
-  return process.env.NEON_SSL === 'true'
-    ? { rejectUnauthorized: true }
-    : { rejectUnauthorized: false };
-}
 
 // ---------------------------------------------------------------------------
 // Pool lifecycle
@@ -63,7 +64,10 @@ export async function getTenantClient(
   platformRepo: PlatformRepository,
 ): Promise<SqlClient> {
   const cached = tenantPools.get(businessId);
-  if (cached) return cached.client;
+  if (cached) {
+    cached.lastUsedAt = Date.now();
+    return cached.client;
+  }
 
   const business = await platformRepo.findById(businessId);
 
@@ -80,12 +84,13 @@ export async function getTenantClient(
     max:                    5,
     idleTimeoutMillis:      30_000,
     connectionTimeoutMillis: 5_000,
-    ssl: tenantSslConfig(),
+    ssl: sslConfig(),
   });
 
   pool.on('error', (err) => {
     console.error(`[tenant] Error en pool de ${businessId}:`, err.message);
     tenantPools.delete(businessId);
+    void stopTenantWorker(businessId);
   });
 
   const client: SqlClient = {
@@ -99,15 +104,30 @@ export async function getTenantClient(
   };
 
   if (tenantPools.size >= MAX_TENANT_POOLS) {
-    console.warn(
-      `[tenant] ⚠️  Límite de pools alcanzado (${MAX_TENANT_POOLS}). ` +
-      `Tenants activos: ${tenantPools.size + 1}. ` +
-      'Considerar LRU o aumentar MAX_TENANT_POOLS.',
-    );
+    const lruBusinessId = findLeastRecentlyUsed();
+    if (lruBusinessId) {
+      console.warn(
+        `[tenant] Límite de pools alcanzado (${MAX_TENANT_POOLS}). ` +
+        `Desalojando el menos usado (${lruBusinessId}) para dar lugar a ${businessId}.`,
+      );
+      await evictTenantPool(lruBusinessId);
+    }
   }
 
-  tenantPools.set(businessId, { client, pool });
+  tenantPools.set(businessId, { client, pool, lastUsedAt: Date.now() });
   return client;
+}
+
+function findLeastRecentlyUsed(): string | undefined {
+  let oldestId: string | undefined;
+  let oldestAt = Infinity;
+  for (const [id, entry] of tenantPools) {
+    if (entry.lastUsedAt < oldestAt) {
+      oldestAt = entry.lastUsedAt;
+      oldestId = id;
+    }
+  }
+  return oldestId;
 }
 
 export function getTenantRawPool(businessId: string): PgPool {
@@ -121,10 +141,18 @@ export function getTenantRawPool(businessId: string): PgPool {
   return entry.pool;
 }
 
+/**
+ * Cierra el pool de un tenant y detiene su OutboxWorker. Se usa tanto para
+ * la invalidación manual (ej. admin.routes.ts tras cambiar la URL de la BD)
+ * como para el desalojo automático por LRU en getTenantClient().
+ */
 export async function evictTenantPool(businessId: string): Promise<void> {
   const entry = tenantPools.get(businessId);
   if (!entry) return;
   tenantPools.delete(businessId);
+
+  await stopTenantWorker(businessId);
+
   try {
     await entry.pool.end();
     console.log(`[tenant] Pool de ${businessId} invalidado.`);

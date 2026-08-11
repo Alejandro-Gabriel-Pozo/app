@@ -50,12 +50,20 @@ export function stripSslMode(url: string): string {
 }
 
 /**
- * Configuración SSL para el pool.
+ * Configuración SSL para el pool — ÚNICA fuente de verdad, usada por todos
+ * los pools del proceso (platform, tenant, y este legado): container.ts y
+ * platform/tenant.middleware.ts la importan de acá en vez de reimplementarla.
  *
- * - NEON_SSL=true  → rejectUnauthorized: true  (Neon / producción)
+ * - NEON_SSL=true  → rejectUnauthorized: true  (Neon/Supabase — producción)
  * - Sin NEON_SSL   → false                      (Postgres local)
+ *
+ * Deliberadamente NO existe un estado intermedio "SSL activo mas sin
+ * validar certificado" (`{ rejectUnauthorized: false }`): eso habilita SSL
+ * sin protección real contra MITM y antes solo lo usaba tenant.middleware.ts,
+ * de forma inconsistente con el resto de los pools del proceso pese a que
+ * su propio comentario decía ser consistente.
  */
-function sslConfig(): pg.PoolConfig['ssl'] {
+export function sslConfig(): pg.PoolConfig['ssl'] {
   return process.env.NEON_SSL === 'true'
     ? { rejectUnauthorized: true }
     : false;

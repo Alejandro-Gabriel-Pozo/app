@@ -11,8 +11,6 @@
 
 import { SqlClient } from '../repositories/sql.client.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
-import { UserStore, SystemUser } from '../security/user.store.js';
-import { UserRole } from '../types/enums.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -42,56 +40,42 @@ export interface CreateBusinessInput {
   ownerEmail: string;
 }
 
-export interface PlatformUser {
+export interface Identity {
   id: string;
   email: string;
-  businessId: string;
-  role: string;
   passwordHash: string;
+  createdAt: Date;
+}
+
+export interface CreateIdentityInput {
+  id: string;
+  email: string;
+  passwordHash: string;
+}
+
+export interface Membership {
+  id: string;
+  identityId: string;
+  businessId: string;
+  businessName: string;
+  role: string;
   active: boolean;
   createdAt: Date;
 }
 
-export interface CreatePlatformUserInput {
+export interface CreateMembershipInput {
   id: string;
-  email: string;
+  identityId: string;
   businessId: string;
   role: string;
-  passwordHash: string;
-}
-
-export interface UpdatePlatformUserInput {
-  email?: string;
-  role?: string;
-  passwordHash?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Repositorio
 // ---------------------------------------------------------------------------
 
-export class PlatformRepository implements UserStore {
+export class PlatformRepository {
   constructor(private readonly db: SqlClient) {}
-
-  // -------------------------------------------------------------------------
-  // UserStore — requerido por AuthService
-  // -------------------------------------------------------------------------
-
-  /**
-   * Implementa UserStore.findByEmail para que AuthService pueda usar
-   * PlatformRepository directamente.
-   */
-  async findByEmail(email: string): Promise<SystemUser | undefined> {
-    const platformUser = await this.findUserByEmail(email);
-    if (!platformUser) return undefined;
-    return {
-      id: platformUser.id,
-      email: platformUser.email,
-      role: platformUser.role as UserRole,
-      passwordHash: platformUser.passwordHash,
-      businessId: platformUser.businessId,
-    };
-  }
 
   // -------------------------------------------------------------------------
   // Businesses
@@ -152,15 +136,6 @@ export class PlatformRepository implements UserStore {
     return result.rows[0] ? this.rowToBusiness(result.rows[0]) : undefined;
   }
 
-  async existsByEmailOrSlug(email: string, slug: string): Promise<boolean> {
-    const result = await this.db.query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM businesses
-       WHERE owner_email = $1 OR slug = $2`,
-      [email, slug],
-    );
-    return parseInt(result.rows[0]!.count, 10) > 0;
-  }
-
   /**
    * Lista todos los negocios de la plataforma.
    * Solo para uso del SUPERADMIN — no filtrar por tenant.
@@ -173,148 +148,149 @@ export class PlatformRepository implements UserStore {
   }
 
   // -------------------------------------------------------------------------
-  // Platform users — auth
+  // Identities — "quién sos" (email + password, único en toda la plataforma)
   // -------------------------------------------------------------------------
 
-  /**
-   * Implementa UserStore.findByEmail para que AuthService pueda usar
-   * PlatformRepository directamente.
-   */
-  async createPlatformUser(input: CreatePlatformUserInput): Promise<PlatformUser> {
-    const result = await this.db.query<PlatformUser>(
-      `INSERT INTO platform_users (id, email, business_id, role, password_hash)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [input.id, input.email, input.businessId, input.role, input.passwordHash],
-    );
-    return this.rowToUser(result.rows[0]!);
-  }
-
-  async findUserByEmailAndBusiness(
-    email: string,
-    businessId: string,
-  ): Promise<PlatformUser | undefined> {
-    const result = await this.db.query<PlatformUser>(
-      `SELECT * FROM platform_users
-       WHERE email = $1 AND business_id = $2 AND active = TRUE`,
-      [email.toLowerCase(), businessId],
-    );
-    return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
-  }
-
-  async findUserByEmail(email: string): Promise<PlatformUser | undefined> {
-    const result = await this.db.query<PlatformUser>(
-      `SELECT * FROM platform_users
-       WHERE email = $1 AND active = TRUE
-       LIMIT 1`,
+  async findIdentityByEmail(email: string): Promise<Identity | undefined> {
+    const result = await this.db.query<IdentityRow>(
+      'SELECT * FROM identities WHERE email = $1',
       [email.toLowerCase()],
     );
-    return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
+    return result.rows[0] ? this.rowToIdentity(result.rows[0]) : undefined;
+  }
+
+  async findIdentityById(id: string): Promise<Identity | undefined> {
+    const result = await this.db.query<IdentityRow>(
+      'SELECT * FROM identities WHERE id = $1',
+      [id],
+    );
+    return result.rows[0] ? this.rowToIdentity(result.rows[0]) : undefined;
+  }
+
+  async createIdentity(input: CreateIdentityInput): Promise<Identity> {
+    const result = await this.db.query<IdentityRow>(
+      `INSERT INTO identities (id, email, password_hash)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [input.id, input.email.toLowerCase(), input.passwordHash],
+    );
+    return this.rowToIdentity(result.rows[0]!);
+  }
+
+  async updateIdentityPassword(identityId: string, passwordHash: string): Promise<void> {
+    await this.db.query(
+      'UPDATE identities SET password_hash = $1 WHERE id = $2',
+      [passwordHash, identityId],
+    );
   }
 
   // -------------------------------------------------------------------------
-  // Platform users — gestión por ADMIN
+  // Memberships — "a qué negocio pertenecés y con qué rol"
   // -------------------------------------------------------------------------
 
+  async createMembership(input: CreateMembershipInput): Promise<Membership> {
+    const result = await this.db.query<MembershipJoinRow>(
+      `INSERT INTO memberships (id, identity_id, business_id, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, identity_id, business_id, role, active, created_at,
+         (SELECT name FROM businesses WHERE id = $3) AS business_name`,
+      [input.id, input.identityId, input.businessId, input.role],
+    );
+    return this.rowToMembership(result.rows[0]!);
+  }
+
   /**
-   * Lista todos los usuarios activos e inactivos de un negocio.
+   * Membresías activas de una identity, con el nombre del negocio incluido
+   * (se usa para el selector de negocio cuando el login es ambiguo).
+   */
+  async findActiveMembershipsByIdentityId(identityId: string): Promise<Membership[]> {
+    const result = await this.db.query<MembershipJoinRow>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
+              b.name AS business_name
+       FROM memberships m
+       JOIN businesses b ON b.id = m.business_id
+       WHERE m.identity_id = $1 AND m.active = TRUE
+       ORDER BY m.created_at ASC`,
+      [identityId],
+    );
+    return result.rows.map((r) => this.rowToMembership(r));
+  }
+
+  async findMembership(identityId: string, businessId: string): Promise<Membership | undefined> {
+    const result = await this.db.query<MembershipJoinRow>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
+              b.name AS business_name
+       FROM memberships m
+       JOIN businesses b ON b.id = m.business_id
+       WHERE m.identity_id = $1 AND m.business_id = $2`,
+      [identityId, businessId],
+    );
+    return result.rows[0] ? this.rowToMembership(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Lista las membresías (con email de la identity) de un negocio.
    * Solo para uso del ADMIN del negocio — no expone passwordHash.
    */
-  async listUsersByBusiness(businessId: string): Promise<PlatformUser[]> {
-    const result = await this.db.query<PlatformUser>(
-      `SELECT * FROM platform_users
-       WHERE business_id = $1
-       ORDER BY created_at ASC`,
+  async listMembershipsByBusiness(businessId: string): Promise<(Membership & { email: string })[]> {
+    const result = await this.db.query<MembershipJoinRow & { email: string }>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
+              b.name AS business_name, i.email
+       FROM memberships m
+       JOIN businesses b ON b.id = m.business_id
+       JOIN identities i ON i.id = m.identity_id
+       WHERE m.business_id = $1
+       ORDER BY m.created_at ASC`,
       [businessId],
     );
-    return result.rows.map((r) => this.rowToUser(r));
+    return result.rows.map((r) => ({ ...this.rowToMembership(r), email: r.email }));
   }
 
   /**
-   * Busca un usuario por ID dentro de un negocio.
+   * Busca una membership por ID dentro de un negocio.
    * El `businessId` actúa como guardia multi-tenant: un ADMIN
-   * no puede acceder a usuarios de otro negocio.
+   * no puede acceder a membresías de otro negocio.
    */
-  async findUserByIdAndBusiness(
-    userId: string,
+  async findMembershipByIdAndBusiness(
+    membershipId: string,
     businessId: string,
-  ): Promise<PlatformUser | undefined> {
-    const result = await this.db.query<PlatformUser>(
-      `SELECT * FROM platform_users
-       WHERE id = $1 AND business_id = $2`,
-      [userId, businessId],
+  ): Promise<(Membership & { email: string }) | undefined> {
+    const result = await this.db.query<MembershipJoinRow & { email: string }>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
+              b.name AS business_name, i.email
+       FROM memberships m
+       JOIN businesses b ON b.id = m.business_id
+       JOIN identities i ON i.id = m.identity_id
+       WHERE m.id = $1 AND m.business_id = $2`,
+      [membershipId, businessId],
     );
-    return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
+    return result.rows[0] ? { ...this.rowToMembership(result.rows[0]), email: result.rows[0]!.email } : undefined;
   }
 
   /**
-   * Verifica si ya existe un usuario con ese email en el negocio.
+   * Actualiza el rol de una membership. El email/password viven en la
+   * identity (compartidos entre negocios) y se editan aparte —
+   * ver `updateIdentityPassword`.
    */
-  async existsUserByEmailInBusiness(
-    email: string,
-    businessId: string,
-    excludeUserId?: string,
-  ): Promise<boolean> {
-    const result = await this.db.query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM platform_users
-       WHERE email = $1 AND business_id = $2
-       ${excludeUserId ? 'AND id != $3' : ''}`,
-      excludeUserId
-        ? [email.toLowerCase(), businessId, excludeUserId]
-        : [email.toLowerCase(), businessId],
-    );
-    return parseInt(result.rows[0]!.count, 10) > 0;
-  }
-
-  /**
-   * Actualiza email, rol y/o contraseña de un usuario.
-   * Solo actualiza los campos presentes en el input.
-   */
-  async updateUser(
-    userId: string,
-    businessId: string,
-    input: UpdatePlatformUserInput,
-  ): Promise<PlatformUser | undefined> {
-    const setClauses: string[] = [];
-    const values: unknown[] = [];
-    let idx = 1;
-
-    if (input.email !== undefined) {
-      setClauses.push(`email = $${idx++}`);
-      values.push(input.email.toLowerCase());
-    }
-    if (input.role !== undefined) {
-      setClauses.push(`role = $${idx++}`);
-      values.push(input.role);
-    }
-    if (input.passwordHash !== undefined) {
-      setClauses.push(`password_hash = $${idx++}`);
-      values.push(input.passwordHash);
-    }
-
-    if (setClauses.length === 0) return this.findUserByIdAndBusiness(userId, businessId);
-
-    values.push(userId, businessId);
-    const result = await this.db.query<PlatformUser>(
-      `UPDATE platform_users
-       SET ${setClauses.join(', ')}
-       WHERE id = $${idx++} AND business_id = $${idx}
-       RETURNING *`,
-      values,
-    );
-    return result.rows[0] ? this.rowToUser(result.rows[0]) : undefined;
-  }
-
-  /**
-   * Desactiva (soft-delete) un usuario.
-   * No borra el registro para preservar historial de reservas.
-   */
-  async deactivateUser(userId: string, businessId: string): Promise<boolean> {
+  async updateMembershipRole(membershipId: string, businessId: string, role: string): Promise<boolean> {
     const result = await this.db.query(
-      `UPDATE platform_users
+      `UPDATE memberships SET role = $1 WHERE id = $2 AND business_id = $3`,
+      [role, membershipId, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Desactiva (soft-delete) una membership. No borra el registro
+   * ni toca la identity — la persona puede seguir usando su cuenta
+   * en otros negocios.
+   */
+  async deactivateMembership(membershipId: string, businessId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE memberships
        SET active = FALSE
        WHERE id = $1 AND business_id = $2 AND active = TRUE`,
-      [userId, businessId],
+      [membershipId, businessId],
     );
     return (result.rowCount ?? 0) > 0;
   }
@@ -339,16 +315,45 @@ export class PlatformRepository implements UserStore {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private rowToUser(row: any): PlatformUser {
+  private rowToIdentity(row: IdentityRow): Identity {
     return {
       id: row.id,
       email: row.email,
-      businessId: row.business_id,
-      role: row.role,
       passwordHash: row.password_hash,
+      createdAt: new Date(row.created_at),
+    };
+  }
+
+  private rowToMembership(row: MembershipJoinRow): Membership {
+    return {
+      id: row.id,
+      identityId: row.identity_id,
+      businessId: row.business_id,
+      businessName: row.business_name,
+      role: row.role,
       active: row.active,
       createdAt: new Date(row.created_at),
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Forma cruda de las filas devueltas por `pg` (snake_case)
+// ---------------------------------------------------------------------------
+
+interface IdentityRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  created_at: string;
+}
+
+interface MembershipJoinRow {
+  id: string;
+  identity_id: string;
+  business_id: string;
+  business_name: string;
+  role: string;
+  active: boolean;
+  created_at: string;
 }

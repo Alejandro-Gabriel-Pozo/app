@@ -104,10 +104,16 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESOURCE_NOT_FOUND':
     case 'RESERVATION_NOT_FOUND':
     case 'CATEGORY_NOT_FOUND':
+    case 'ORDER_NOT_FOUND':
+    case 'BOOKABLE_SERVICE_NOT_FOUND':
+    case 'SERVICE_SCHEDULE_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
     case 'INVALID_RESERVATION_CONFLICT':
+    case 'ORDER_NOT_EDITABLE':
+    case 'INVALID_TRANSITION':
+    case 'SCHEDULE_CONFLICT':
       return 409;
 
     // --- 503 Service Unavailable ---

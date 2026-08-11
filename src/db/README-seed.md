@@ -58,7 +58,7 @@ Crea una categoría "Mesa" con dos recursos (Mesa 1 y Mesa 2).
 
 **Vía API** (recomendado, con JWT del admin):
 ```http
-PUT /api/users/usr-admin-01
+PUT /api/users/mem-admin-01
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -72,6 +72,9 @@ Content-Type: application/json
 > `src/security/user.store.ts`. Un hash bcrypt (`$2b$12$...`) sembrado en
 > `password_hash` nunca va a matchear y el login fallará siempre con
 > `INVALID_CREDENTIALS`, sin importar la contraseña que pruebes.
+>
+> La contraseña vive en `identities`, no en `memberships` — es la cuenta de
+> la persona, compartida entre todos los negocios en los que participa.
 
 ```bash
 # 1. Generá el hash nuevo desde tu terminal (usa la función real del repo,
@@ -85,13 +88,7 @@ node -e "
 ```sql
 -- 2. Pegá el resultado (formato "salt_hex:hash_hex") acá y ejecutá en
 --    el SQL Editor de Supabase:
-UPDATE platform_users
+UPDATE identities
 SET password_hash = 'PEGÁ_ACÁ_EL_HASH_GENERADO'
-WHERE id = 'usr-admin-01';
-```
-
--- 2. Pegalo acá y ejecutá en Supabase SQL Editor:
-UPDATE platform_users
-SET password_hash = '$2b$12$NUEVO_HASH_AQUI'
-WHERE id = 'usr-admin-01';
+WHERE id = 'ident-admin-01';
 ```
