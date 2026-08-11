@@ -31,6 +31,7 @@ import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { HousekeepingService } from '../../services/housekeeping.service.js';
 import { HousekeepingStatus } from '../../domain/housekeeping-task.js';
+import { CreateHousekeepingTaskSchema, AssignHousekeepingTaskSchema } from '../schemas/housekeeping.schemas.js';
 
 export function createHousekeepingRouter(service: HousekeepingService): Router {
   const router = Router();
@@ -120,10 +121,13 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
+        const body = CreateHousekeepingTaskSchema.parse(req.body);
         const task = await service.createTask({
-          ...req.body,
           businessId,
-          scheduledFor: new Date(req.body.scheduledFor as string),
+          resourceId: body.resourceId,
+          shift: body.shift,
+          scheduledFor: new Date(body.scheduledFor),
+          ...(body.notes !== undefined && { notes: body.notes }),
         });
         res.status(201).json(task.toJSON());
       } catch (err) { next(err); }
@@ -137,9 +141,10 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
+        const body = AssignHousekeepingTaskSchema.parse(req.body);
         const task = await service.assignTask({
           taskId: String(req.params['id']),
-          userId: req.body.userId as string,
+          userId: body.userId,
           businessId,
         });
         res.json(task.toJSON());

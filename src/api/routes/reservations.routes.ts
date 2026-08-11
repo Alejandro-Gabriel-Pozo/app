@@ -30,6 +30,18 @@
  * confiar en un `req.body.id` que ni siquiera estaba documentado — antes,
  * si el caller no lo mandaba, `new Reservation({id: undefined, ...})`
  * explotaba con un TypeError crudo (`undefined.trim()`) en vez de un 400 claro.
+ *
+ * ## Respuestas — toReservationDto (encontrado al construir detalle/edición)
+ * Todos los handlers antes respondían con `res.json(reservation)` — el
+ * objeto de dominio crudo. `Reservation.status` es un getter sobre el campo
+ * privado `_status`; `JSON.stringify` de una clase NO serializa getters
+ * (solo propiedades propias), así que el JSON real tenía `_status`, nunca
+ * `status`. `customer` también viajaba como la instancia completa de
+ * `Customer` (con `displayName`/`contactMethods`, sin `fullName`/`email`
+ * planos — esos también son getters). El frontend esperaba `status` y
+ * `customer.fullName`/`email` desde siempre; nunca los recibió. Ahora todas
+ * las respuestas pasan por `toReservationDto()` (el mismo mapper que ya
+ * usaba customer.routes.ts).
  */
 
 import { Router }                        from 'express';
@@ -47,6 +59,7 @@ import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-s
 import { SqlCustomerRepository }         from '../../repositories/sql.customer.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../schemas/request.schemas.js';
+import { toReservationDto }              from '../mappers/reservation.mapper.js';
 
 function buildReservationService(req: import('express').Request): ReservationService {
   const db                    = req.db;
@@ -82,7 +95,7 @@ export function createReservationsRouter(): Router {
         const resourceRepo = new SqlResourceRepository(req.db);
         const repo         = new SqlReservationRepository(req.db, resourceRepo);
         const reservations = await repo.getAll();
-        res.json(reservations);
+        res.json(reservations.map(toReservationDto));
       } catch (err) { next(err); }
     },
   );
@@ -100,7 +113,7 @@ export function createReservationsRouter(): Router {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
           return;
         }
-        res.json(reservation);
+        res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
     },
   );
@@ -129,7 +142,7 @@ export function createReservationsRouter(): Router {
           ...(body.serviceId !== undefined && { serviceId: body.serviceId }),
           ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
         });
-        res.status(201).json(reservation);
+        res.status(201).json(toReservationDto(reservation));
       } catch (err) { next(err); }
     },
   );
@@ -147,7 +160,7 @@ export function createReservationsRouter(): Router {
           ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
           ...(body.details   !== undefined && { details: body.details }),
         });
-        res.json(updated);
+        res.json(toReservationDto(updated));
       } catch (err) { next(err); }
     },
   );
@@ -163,7 +176,7 @@ export function createReservationsRouter(): Router {
           req.params['id']!,
           req.user!.businessId as string,
         );
-        res.json(reservation);
+        res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
     },
   );
@@ -179,7 +192,7 @@ export function createReservationsRouter(): Router {
           req.params['id']!,
           req.user!.businessId as string,
         );
-        res.json(reservation);
+        res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
     },
   );
@@ -195,7 +208,7 @@ export function createReservationsRouter(): Router {
           req.params['id']!,
           req.user!.businessId as string,
         );
-        res.json(reservation);
+        res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
     },
   );

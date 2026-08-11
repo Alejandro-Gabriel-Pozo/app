@@ -12,6 +12,13 @@
 
 import { HousekeepingTask, HousekeepingStatus } from '../domain/housekeeping-task.js';
 import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
+import { DomainError } from '../domain/errors.js';
+
+export class HousekeepingTaskNotFoundError extends DomainError {
+  constructor(taskId: string) {
+    super(`Tarea de housekeeping no encontrada: ${taskId}`, 'HOUSEKEEPING_TASK_NOT_FOUND');
+  }
+}
 
 export interface CreateTaskInput {
   businessId: string;
@@ -127,9 +134,7 @@ export class HousekeepingService {
   private async getTaskOrThrow(taskId: string, businessId: string): Promise<HousekeepingTask> {
     const task = await this.housekeepingRepository.findById(taskId, businessId);
     if (!task) {
-      const err = new Error(`Tarea de housekeeping no encontrada: ${taskId}`);
-      (err as NodeJS.ErrnoException).code = 'HOUSEKEEPING_TASK_NOT_FOUND';
-      throw err;
+      throw new HousekeepingTaskNotFoundError(taskId);
     }
     return task;
   }

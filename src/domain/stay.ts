@@ -22,6 +22,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { DomainError } from './errors.js';
+
+/** Ver nota equivalente en domain/housekeeping-task.ts — antes era Error plano. */
+export class InvalidStayTransitionError extends DomainError {
+  constructor(message: string) {
+    super(message, 'INVALID_TRANSITION');
+  }
+}
 
 export type StayStatus = 'CHECKED_IN' | 'CHECKED_OUT' | 'NO_SHOW';
 
@@ -91,7 +99,7 @@ export class Stay {
 
   checkOut(notes?: string): void {
     if (this.props.status !== 'CHECKED_IN') {
-      throw new Error(
+      throw new InvalidStayTransitionError(
         `No se puede hacer check-out desde el estado ${this.props.status}.`,
       );
     }
@@ -103,7 +111,7 @@ export class Stay {
 
   markNoShow(): void {
     if (this.props.status !== 'CHECKED_IN') {
-      throw new Error(
+      throw new InvalidStayTransitionError(
         `Solo se puede marcar NO_SHOW desde CHECKED_IN. Estado actual: ${this.props.status}.`,
       );
     }

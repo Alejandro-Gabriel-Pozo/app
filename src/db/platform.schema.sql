@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS memberships (
   business_id   VARCHAR(255) NOT NULL
                   REFERENCES businesses(id) ON DELETE CASCADE,
   role          VARCHAR(50)  NOT NULL
-                  CHECK (role IN ('ADMIN', 'RECEPTIONIST', 'WAITER')),
+                  CHECK (role IN ('OWNER', 'ADMIN', 'RECEPTIONIST', 'WAITER')),
   active        BOOLEAN      NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS memberships (
   -- platform_users no podía resolver de forma segura).
   CONSTRAINT uq_memberships_identity_business UNIQUE (identity_id, business_id)
 );
+
+-- Amplía el CHECK para bases ya provisionadas con el schema viejo, que no
+-- incluía OWNER (bug encontrado el 11/08/2026: el registro de un negocio
+-- decía en un comentario "el rol OWNER se asigna al crear el negocio" pero
+-- en realidad creaba la membership con ADMIN — nadie tenía OWNER nunca,
+-- así que DELETE /api/users/:id, que exige OWNER, era inalcanzable).
+ALTER TABLE memberships DROP CONSTRAINT IF EXISTS memberships_role_check;
+ALTER TABLE memberships
+  ADD CONSTRAINT memberships_role_check
+    CHECK (role IN ('OWNER', 'ADMIN', 'RECEPTIONIST', 'WAITER'));
 
 CREATE INDEX IF NOT EXISTS idx_memberships_identity
   ON memberships (identity_id)

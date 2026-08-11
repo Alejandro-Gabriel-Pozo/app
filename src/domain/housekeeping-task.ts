@@ -17,6 +17,20 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { DomainError } from './errors.js';
+
+/**
+ * Transición de estado inválida (ej. completar una tarea que no está
+ * IN_PROGRESS). Extiende DomainError — antes esto era un `throw new Error`
+ * plano, así que el errorHandler global lo trataba como 500 no manejado y
+ * perdía el mensaje real, mostrando "Error interno del servidor" en vez de
+ * la razón real de negocio.
+ */
+export class InvalidHousekeepingTransitionError extends DomainError {
+  constructor(message: string) {
+    super(message, 'INVALID_TRANSITION');
+  }
+}
 
 export type HousekeepingStatus =
   | 'PENDING'
@@ -92,10 +106,10 @@ export class HousekeepingTask {
 
   assign(userId: string): void {
     if (this.props.status === 'OUT_OF_SERVICE') {
-      throw new Error('No se puede asignar una tarea de un recurso fuera de servicio.');
+      throw new InvalidHousekeepingTransitionError('No se puede asignar una tarea de un recurso fuera de servicio.');
     }
     if (this.props.status === 'INSPECTED') {
-      throw new Error('La tarea ya fue inspeccionada y cerrada.');
+      throw new InvalidHousekeepingTransitionError('La tarea ya fue inspeccionada y cerrada.');
     }
     this.props.assignedTo = userId;
     this.props.status = 'ASSIGNED';
@@ -104,7 +118,7 @@ export class HousekeepingTask {
 
   start(): void {
     if (this.props.status !== 'ASSIGNED' && this.props.status !== 'PENDING') {
-      throw new Error(`No se puede iniciar una tarea en estado ${this.props.status}.`);
+      throw new InvalidHousekeepingTransitionError(`No se puede iniciar una tarea en estado ${this.props.status}.`);
     }
     this.props.status = 'IN_PROGRESS';
     this.props.startedAt = new Date();
@@ -113,7 +127,7 @@ export class HousekeepingTask {
 
   complete(notes?: string): void {
     if (this.props.status !== 'IN_PROGRESS') {
-      throw new Error(`Solo se puede completar una tarea IN_PROGRESS. Estado actual: ${this.props.status}.`);
+      throw new InvalidHousekeepingTransitionError(`Solo se puede completar una tarea IN_PROGRESS. Estado actual: ${this.props.status}.`);
     }
     this.props.status = 'DONE';
     this.props.completedAt = new Date();
@@ -123,7 +137,7 @@ export class HousekeepingTask {
 
   inspect(inspectorId: string): void {
     if (this.props.status !== 'DONE') {
-      throw new Error(`Solo se puede inspeccionar una tarea DONE. Estado actual: ${this.props.status}.`);
+      throw new InvalidHousekeepingTransitionError(`Solo se puede inspeccionar una tarea DONE. Estado actual: ${this.props.status}.`);
     }
     this.props.status = 'INSPECTED';
     this.props.inspectedAt = new Date();
@@ -139,7 +153,7 @@ export class HousekeepingTask {
 
   resetToPending(): void {
     if (this.props.status !== 'OUT_OF_SERVICE') {
-      throw new Error('Solo se puede resetear a PENDING desde OUT_OF_SERVICE.');
+      throw new InvalidHousekeepingTransitionError('Solo se puede resetear a PENDING desde OUT_OF_SERVICE.');
     }
     this.props.status = 'PENDING';
     this.props.assignedTo = null;

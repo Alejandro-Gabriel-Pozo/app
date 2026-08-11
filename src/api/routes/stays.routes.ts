@@ -27,6 +27,7 @@ import { Router } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { StayService } from '../../services/stay.service.js';
+import { CheckInSchema, CheckOutSchema } from '../schemas/stay.schemas.js';
 
 export function createStaysRouter(service: StayService): Router {
   const router = Router();
@@ -106,13 +107,13 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const notes = req.body.notes as string | undefined;
+        const body = CheckInSchema.parse(req.body);
         const stay = await service.checkIn({
-          reservationId: req.body.reservationId as string,
-          resourceId:    req.body.resourceId as string,
+          reservationId: body.reservationId,
+          resourceId:    body.resourceId,
           businessId:    req.user!.businessId as string,
           assignedBy:    req.user!.id,
-          ...(notes !== undefined && { notes }),
+          ...(body.notes !== undefined && { notes: body.notes }),
         });
         res.status(201).json(stay.toJSON());
       } catch (err) { next(err); }
@@ -125,13 +126,12 @@ export function createStaysRouter(service: StayService): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
-        const notes = req.body.notes as string | undefined;
-        const shift = req.body.nextCleaningShift as string | undefined;
+        const body = CheckOutSchema.parse(req.body);
         const stay = await service.checkOut({
           stayId:     String(req.params['id']),
           businessId: req.user!.businessId as string,
-          ...(notes !== undefined && { notes }),
-          ...(shift !== undefined && { nextCleaningShift: shift }),
+          ...(body.notes !== undefined && { notes: body.notes }),
+          ...(body.nextCleaningShift !== undefined && { nextCleaningShift: body.nextCleaningShift }),
         });
         res.json(stay.toJSON());
       } catch (err) { next(err); }

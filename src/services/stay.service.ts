@@ -20,6 +20,28 @@ import type { StayRepository } from '../repositories/stay.repository.js';
 import type { ReservationRepository } from '../repositories/reservation.repository.js';
 import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
 import { HousekeepingTask } from '../domain/housekeeping-task.js';
+import { DomainError, ReservationNotFoundError } from '../domain/errors.js';
+
+export class StayNotFoundError extends DomainError {
+  constructor(stayId: string) {
+    super(`Estadía no encontrada: ${stayId}`, 'STAY_NOT_FOUND');
+  }
+}
+
+export class ReservationNotConfirmedError extends DomainError {
+  constructor(status: string) {
+    super(
+      `La reserva debe estar CONFIRMED para hacer check-in. Estado actual: ${status}`,
+      'RESERVATION_NOT_CONFIRMED',
+    );
+  }
+}
+
+export class ResourceOccupiedError extends DomainError {
+  constructor(resourceId: string) {
+    super(`La habitación ${resourceId} ya tiene un huésped en check-in.`, 'RESOURCE_OCCUPIED');
+  }
+}
 
 export interface CheckInInput {
   reservationId: string;
@@ -53,16 +75,10 @@ export class StayService {
       input.reservationId,
     );
     if (!reservation) {
-      const err = new Error(`Reserva no encontrada: ${input.reservationId}`);
-      (err as NodeJS.ErrnoException).code = 'RESERVATION_NOT_FOUND';
-      throw err;
+      throw new ReservationNotFoundError(input.reservationId);
     }
     if (reservation.status !== 'CONFIRMED') {
-      const err = new Error(
-        `La reserva debe estar CONFIRMED para hacer check-in. Estado actual: ${reservation.status}`,
-      );
-      (err as NodeJS.ErrnoException).code = 'RESERVATION_NOT_CONFIRMED';
-      throw err;
+      throw new ReservationNotConfirmedError(reservation.status);
     }
 
     const activeStay = await this.stayRepository.findActiveByResource(
@@ -70,11 +86,7 @@ export class StayService {
       input.businessId,
     );
     if (activeStay) {
-      const err = new Error(
-        `La habitación ${input.resourceId} ya tiene un huésped en check-in.`,
-      );
-      (err as NodeJS.ErrnoException).code = 'RESOURCE_OCCUPIED';
-      throw err;
+      throw new ResourceOccupiedError(input.resourceId);
     }
 
     // exactOptionalPropertyTypes: solo pasamos notes si está definido
@@ -158,9 +170,7 @@ export class StayService {
   private async getStayOrThrow(stayId: string, businessId: string): Promise<Stay> {
     const stay = await this.stayRepository.findById(stayId, businessId);
     if (!stay) {
-      const err = new Error(`Estadía no encontrada: ${stayId}`);
-      (err as NodeJS.ErrnoException).code = 'STAY_NOT_FOUND';
-      throw err;
+      throw new StayNotFoundError(stayId);
     }
     return stay;
   }

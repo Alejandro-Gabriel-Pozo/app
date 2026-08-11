@@ -136,16 +136,20 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           ownerEmail: body.ownerEmail,
         });
 
+        // OWNER, no ADMIN: es quien registra el negocio. Antes esto creaba
+        // ADMIN pese a que el resto del código (Roles.OWNER_ONLY,
+        // DELETE /api/users/:id) asume que alguien tiene OWNER — con ADMIN acá,
+        // nadie lo tenía nunca y esa ruta era inalcanzable para cualquiera.
         await platformRepo.createMembership({
           id: randomUUID(),
           identityId,
           businessId,
-          role: UserRole.ADMIN,
+          role: UserRole.OWNER,
         });
 
         const jwtSecret = process.env.JWT_SECRET!;
         const token = signToken(
-          { sub: identityId, role: UserRole.ADMIN, business_id: businessId },
+          { sub: identityId, role: UserRole.OWNER, business_id: businessId },
           jwtSecret,
         );
 
@@ -157,7 +161,7 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           token,
           tokenType: 'Bearer',
           expiresIn: 86_400,
-          user: { id: identityId, email: body.ownerEmail, role: UserRole.ADMIN },
+          user: { id: identityId, email: body.ownerEmail, role: UserRole.OWNER },
         });
       } catch (err) {
         next(err);

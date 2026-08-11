@@ -25,6 +25,7 @@ export interface ResourceDto {
 export interface ReservationDto {
   id: string;
   status: string;
+  resourceId: string;
   /** categoryId del recurso — reemplaza el antiguo campo `resourceType` */
   categoryId: string;
   resource: ResourceDto;
@@ -36,6 +37,9 @@ export interface ReservationDto {
   startTime: string;
   endTime: string;
   details: unknown;
+  serviceId: string | null;
+  partySize: number;
+  notes: string | null;
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -52,6 +56,7 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
   return {
     id:         reservation.id,
     status:     reservation.status,
+    resourceId: reservation.resource.id,
     categoryId: reservation.resource.categoryId,
     resource:   toResourceDto(reservation.resource),
     customer: {
@@ -62,5 +67,8 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     startTime: reservation.startTime.toISOString(),
     endTime:   reservation.endTime.toISOString(),
     details:   reservation.details,
+    serviceId: reservation.serviceId,
+    partySize: reservation.partySize,
+    notes:     reservation.notes,
   };
 }
