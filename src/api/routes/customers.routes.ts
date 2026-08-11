@@ -18,10 +18,8 @@ import { z } from 'zod';
 import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import { AppContainer } from '../../container.js';
 import { Customer, ContactMethod } from '../../domain/entities.js';
-import { UserRole } from '../../types/enums.js';
+import { Roles } from '../../security/roles.js';
 import { SqlCustomerRepository } from '../../repositories/sql.customer.repository.js';
-
-const MANAGERS = [UserRole.ADMIN, UserRole.RECEPTIONIST] as const;
 
 // ---------------------------------------------------------------------------
 // Schemas de validación
@@ -80,7 +78,7 @@ export function createCustomersRouter(_container: AppContainer): Router {
   // GET /customers/:id
   router.get(
     '/:id',
-    authorize(MANAGERS),
+    authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const repo = new SqlCustomerRepository(req.db!);
@@ -97,7 +95,7 @@ export function createCustomersRouter(_container: AppContainer): Router {
   // GET /customers?email=...  o  GET /customers?name=...
   router.get(
     '/',
-    authorize(MANAGERS),
+    authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const repo = new SqlCustomerRepository(req.db!);
@@ -126,7 +124,7 @@ export function createCustomersRouter(_container: AppContainer): Router {
   // POST /customers
   router.post(
     '/',
-    authorize(MANAGERS),
+    authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const repo = new SqlCustomerRepository(req.db!);

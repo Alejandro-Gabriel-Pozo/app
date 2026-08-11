@@ -42,8 +42,11 @@ const CreateResourceSchema = z.object({
   name:        z.string().min(1, 'name es obligatorio').max(120),
   basePrice:   z.number({ invalid_type_error: 'basePrice debe ser un número' }).min(0).optional().default(0),
   base_price:  z.number().min(0).optional(),
-  categoryId:  z.string().uuid('categoryId debe ser un UUID válido').optional(),
-  category_id: z.string().uuid().optional(),
+  // Las categorías NO usan ids UUID — CategoryService.createCategory() las
+  // genera como `cat-${slugify(nombre)}-${Date.now()}` (ver category.service.ts).
+  // Exigir formato UUID acá rechazaba toda categoría real que existe hoy.
+  categoryId:  z.string().min(1, 'categoryId es obligatorio').optional(),
+  category_id: z.string().min(1).optional(),
   capacity:    z.number().int().min(1).optional().default(1),
   description: z.string().max(500).nullable().optional(),
   visualData:  z.record(z.unknown()).nullable().optional(),
@@ -62,8 +65,8 @@ const UpdateResourceSchema = z.object({
   name:        z.string().min(1).max(120).optional(),
   basePrice:   z.number().min(0).optional(),
   base_price:  z.number().min(0).optional(),
-  categoryId:  z.string().uuid().optional(),
-  category_id: z.string().uuid().optional(),
+  categoryId:  z.string().min(1).optional(),
+  category_id: z.string().min(1).optional(),
   capacity:    z.number().int().min(1).optional(),
   description: z.string().max(500).nullable().optional(),
   visualData:  z.record(z.unknown()).nullable().optional(),

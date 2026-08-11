@@ -17,7 +17,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString } from '../../platform/tenant-db.setup.js';
-import { UserRole } from '../../types/enums.js';
+import { Roles } from '../../security/roles.js';
 
 export function createAdminRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
@@ -30,7 +30,7 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
   router.post(
     '/repair-tenant-db',
     authenticate(),
-    authorize([UserRole.ADMIN]),
+    authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const databaseUrl = process.env.DATABASE_URL;
@@ -83,7 +83,7 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
   router.post(
     '/set-tenant-url',
     authenticate(),
-    authorize([UserRole.ADMIN]),
+    authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const { databaseUrl } = req.body as { databaseUrl?: string };

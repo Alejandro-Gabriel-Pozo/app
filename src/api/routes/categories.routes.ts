@@ -32,7 +32,7 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
-import { UserRole } from '../../types/enums.js';
+import { Roles } from '../../security/roles.js';
 import {
   CategoryService,
   PlanLimitError,
@@ -81,7 +81,7 @@ export function createCategoryRouter(container: AppContainer): Router {
   // ---------------------------------------------------------------------------
   // POST /
   // ---------------------------------------------------------------------------
-  router.post('/', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  router.post('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body       = CreateCategorySchema.parse(req.body);
       const businessId = req.user?.businessId ?? '';
@@ -144,7 +144,7 @@ export function createCategoryRouter(container: AppContainer): Router {
   // ---------------------------------------------------------------------------
   // PUT /:id
   // ---------------------------------------------------------------------------
-  router.put('/:id', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  router.put('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body     = UpdateCategorySchema.parse(req.body);
       const service  = new CategoryService(new SqlCategoryRepository(req.db!));
@@ -165,7 +165,7 @@ export function createCategoryRouter(container: AppContainer): Router {
   // ---------------------------------------------------------------------------
   // DELETE /:id
   // ---------------------------------------------------------------------------
-  router.delete('/:id', authorize([UserRole.ADMIN]), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  router.delete('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const service = new CategoryService(new SqlCategoryRepository(req.db!));
       await service.deleteCategory(String(req.params['id']));
