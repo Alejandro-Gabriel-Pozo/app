@@ -32,6 +32,7 @@ import { SqlResourceRepository }         from '../../repositories/sql.resource.r
 import { SqlOccupancyRepository }        from '../../repositories/sql.occupancy.repository.js';
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
+import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import type { AuthenticatedUser }        from '../../security/user.types.js';
 import { UserRole }                      from '../../types/enums.js';
@@ -43,6 +44,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
   const occupancyRepo       = new SqlOccupancyRepository(db);
   const categoryRepo        = new SqlCategoryRepository(db);
   const domainEventRepo     = new SqlDomainEventRepository(db);
+  const resourceLockRepo    = new SqlResourceLockRepository(db);
   const transactionManager  = buildTenantTransactionManager(req);
   return new ReservationService(
     reservationRepo,
@@ -51,6 +53,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
     categoryRepo,
     domainEventRepo,
     transactionManager,
+    resourceLockRepo,
   );
 }
 

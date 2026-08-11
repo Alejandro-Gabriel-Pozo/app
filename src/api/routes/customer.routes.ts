@@ -26,6 +26,10 @@
  *   opcionales como `T | undefined` en vez de `T?`, lo que viola la flag.
  *   El cast es seguro — RateLimitRequestHandler es un RequestHandler válido.
  *
+ * ## Cambios — feat/resource-locks (Paso 3)
+ * - buildService() agrega SqlResourceLockRepository como séptimo argumento
+ *   de ReservationService.
+ *
  * ## Rutas
  *
  * ### Públicas (sin autenticación)
@@ -62,13 +66,14 @@ import {
 } from '../../platform/tenant.middleware.js';
 import { buildTransactionManagerFromPool } from '../../db/tenant-context.js';
 import { SqlClient } from '../../repositories/sql.client.js';
-import { SqlResourceRepository }    from '../../repositories/sql.resource.repository.js';
-import { SqlReservationRepository } from '../../repositories/sql.reservation.repository.js';
-import { SqlCustomerRepository }    from '../../repositories/sql.customer.repository.js';
-import { SqlOccupancyRepository }   from '../../repositories/sql.occupancy.repository.js';
-import { SqlCategoryRepository }    from '../../repositories/sql.category.repository.js';
-import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
-import { ReservationService }       from '../../services/reservation.service.js';
+import { SqlResourceRepository }     from '../../repositories/sql.resource.repository.js';
+import { SqlReservationRepository }  from '../../repositories/sql.reservation.repository.js';
+import { SqlCustomerRepository }     from '../../repositories/sql.customer.repository.js';
+import { SqlOccupancyRepository }    from '../../repositories/sql.occupancy.repository.js';
+import { SqlCategoryRepository }     from '../../repositories/sql.category.repository.js';
+import { SqlDomainEventRepository }  from '../../repositories/sql.domain-event.repository.js';
+import { SqlResourceLockRepository } from '../../repositories/sql.resource-lock.repository.js';
+import { ReservationService }        from '../../services/reservation.service.js';
 
 // ---------------------------------------------------------------------------
 // Política de cancelación
@@ -168,6 +173,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const occupancyRepo   = new SqlOccupancyRepository(client);
   const categoryRepo    = new SqlCategoryRepository(client);
   const domainEventRepo = new SqlDomainEventRepository(client);
+  const lockRepo        = new SqlResourceLockRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -176,6 +182,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     categoryRepo,
     domainEventRepo,
     buildTransactionManagerFromPool(tenantPool),
+    lockRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };

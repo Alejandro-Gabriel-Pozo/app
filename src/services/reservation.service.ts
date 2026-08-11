@@ -41,6 +41,17 @@
  *   de `string | null` a `string`, ya que `OccupancyRepository`
  *   exige `string`. El snapshot queda con cadena vacía cuando el
  *   recurso fue cargado sin JOIN de categoría (tests, mocks).
+ *
+ * ## Cambios — feat/resource-locks (Paso 3)
+ * - Recibe `IResourceLockRepository` como séptima dependencia (obligatoria).
+ * - `createReservation` y `updateReservation` consultan los locks del
+ *   servicio asociado a la reserva (si `serviceId` está presente) y
+ *   verifican disponibilidad de TODOS los recursos bloqueados dentro de
+ *   la misma transacción FOR UPDATE.
+ * - Si cualquier recurso bloqueado está ocupado, se lanza
+ *   `InvalidReservationError` con detalle del recurso en conflicto.
+ * - Si el servicio no tiene locks registrados (o no hay serviceId),
+ *   el comportamiento es idéntico al anterior (solo verifica resourceId).
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -56,6 +67,7 @@ import { ResourceRepository }           from '../repositories/resource.repositor
 import { OccupancyRepository }          from '../repositories/occupancy.repository.js';
 import { ICategoryRepository }          from '../repositories/category.repository.js';
 import { DomainEventRepository }        from '../repositories/domain-event.repository.js';
+import { IResourceLockRepository }      from '../repositories/resource-lock.repository.js';
 import { TransactionManager }           from '../db/transaction-manager.js';
 import { SqlClient }                    from '../repositories/sql.client.js';
 
@@ -67,6 +79,7 @@ export class ReservationService {
     private readonly categoryRepository:     ICategoryRepository,
     private readonly domainEventRepository:  DomainEventRepository,
     private readonly transactionManager:     TransactionManager,
+    private readonly resourceLockRepository: IResourceLockRepository,
   ) {}
 
   async createReservation(params: {
@@ -76,6 +89,7 @@ export class ReservationService {
     startTime: Date;
     endTime: Date;
     details: Record<string, unknown>;
+    serviceId?: string;
   }): Promise<Reservation> {
     const resource = await this.resourceRepository.getById(params.resourceId);
     if (!resource) {
@@ -87,33 +101,22 @@ export class ReservationService {
       validateDetailsAgainstFields(params.details, category.fields);
     }
 
+    // Obtener recursos adicionales bloqueados por el servicio (si aplica)
+    const lockedResourceIds = await this.resolveLockedResourceIds(
+      params.serviceId,
+      params.resourceId,
+    );
+
     let reservation!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
-      const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
-        ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
-            client,
-            params.resourceId,
-            params.startTime,
-            params.endTime,
-          )
-        : await this.reservationRepository.getActiveForResourceInRange(
-            params.resourceId,
-            params.startTime,
-            params.endTime,
-          );
-
-      const isAvailable = resource.isAvailable(
+      // Verificar disponibilidad de todos los recursos (principal + bloqueados)
+      await this.assertAllResourcesAvailable(
+        client,
+        lockedResourceIds,
         params.startTime,
         params.endTime,
-        activeReservations.map((r) => r.toSnapshot()),
       );
-
-      if (!isAvailable) {
-        throw new InvalidReservationError(
-          `El recurso ${params.resourceId} no está disponible en el rango solicitado`,
-        );
-      }
 
       reservation = new Reservation({
         id:        params.id,
@@ -161,34 +164,22 @@ export class ReservationService {
       validateDetailsAgainstFields(rawDetails, category.fields);
     }
 
+    // Obtener recursos bloqueados por el servicio original de la reserva
+    const lockedResourceIds = await this.resolveLockedResourceIds(
+      existing.serviceId ?? undefined,
+      existing.resource.id,
+    );
+
     let updated!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
-      const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
-        ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
-            client,
-            existing.resource.id,
-            newStartTime,
-            newEndTime,
-          )
-        : await this.reservationRepository.getActiveForResourceInRange(
-            existing.resource.id,
-            newStartTime,
-            newEndTime,
-          );
-
-      const isAvailable = existing.resource.isAvailable(
+      await this.assertAllResourcesAvailable(
+        client,
+        lockedResourceIds,
         newStartTime,
         newEndTime,
-        activeReservations.map((r) => r.toSnapshot()),
-        id,
+        id, // excluir la reserva actual del chequeo
       );
-
-      if (!isAvailable) {
-        throw new InvalidReservationError(
-          `El recurso ${existing.resource.id} no está disponible en el nuevo rango solicitado`,
-        );
-      }
 
       updated = Reservation.restore({
         id:            existing.id,
@@ -318,6 +309,10 @@ export class ReservationService {
     return this.reservationRepository.getById(id);
   }
 
+  // ---------------------------------------------------------------------------
+  // Helpers privados
+  // ---------------------------------------------------------------------------
+
   private async requireReservation(id: string): Promise<Reservation> {
     const reservation = await this.reservationRepository.getById(id);
     if (!reservation) {
@@ -336,5 +331,73 @@ export class ReservationService {
       reservation.endTime,
       reservation.status,
     );
+  }
+
+  /**
+   * Devuelve el conjunto de resourceIds a verificar: el recurso principal
+   * más los recursos bloqueados por el servicio (si existe serviceId).
+   * Usa un Set para evitar duplicados si el lock apunta al mismo recurso
+   * principal (configuración inusual pero posible).
+   */
+  private async resolveLockedResourceIds(
+    serviceId: string | undefined,
+    primaryResourceId: string,
+  ): Promise<string[]> {
+    const ids = new Set<string>([primaryResourceId]);
+
+    if (serviceId) {
+      const locks = await this.resourceLockRepository.getByServiceId(serviceId);
+      for (const lock of locks) {
+        ids.add(lock.resourceId);
+      }
+    }
+
+    return [...ids];
+  }
+
+  /**
+   * Verifica disponibilidad de todos los resourceIds dentro de una
+   * transacción activa (usa FOR UPDATE si está disponible).
+   * Lanza `InvalidReservationError` en el primer conflicto encontrado.
+   */
+  private async assertAllResourcesAvailable(
+    client: SqlClient,
+    resourceIds: string[],
+    startTime: Date,
+    endTime: Date,
+    excludeReservationId?: string,
+  ): Promise<void> {
+    for (const resourceId of resourceIds) {
+      const resource = await this.resourceRepository.getById(resourceId);
+      if (!resource) {
+        throw new ResourceNotFoundError(resourceId);
+      }
+
+      const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
+        ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
+            client,
+            resourceId,
+            startTime,
+            endTime,
+          )
+        : await this.reservationRepository.getActiveForResourceInRange(
+            resourceId,
+            startTime,
+            endTime,
+          );
+
+      const isAvailable = resource.isAvailable(
+        startTime,
+        endTime,
+        activeReservations.map((r) => r.toSnapshot()),
+        excludeReservationId,
+      );
+
+      if (!isAvailable) {
+        throw new InvalidReservationError(
+          `El recurso ${resourceId} no está disponible en el rango solicitado`,
+        );
+      }
+    }
   }
 }
