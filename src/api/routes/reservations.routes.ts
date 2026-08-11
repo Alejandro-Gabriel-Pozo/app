@@ -21,9 +21,19 @@
  * buildReservationService usa buildTenantTransactionManager(req) —
  * construido sobre el pool raw del TENANT, no el pool de plataforma.
  * Ver src/db/tenant-context.ts para el detalle.
+ *
+ * ## Validación (resource-locks, gestión + wiring)
+ * POST y PUT antes NO validaban con Zod — hacían `...req.body` directo
+ * hacia el service. Ahora usan CreateReservationSchema/UpdateReservationSchema
+ * (src/api/schemas/request.schemas.ts), que ya existían pero nunca se
+ * llamaban. De paso: `id` se genera server-side con randomUUID() en vez de
+ * confiar en un `req.body.id` que ni siquiera estaba documentado — antes,
+ * si el caller no lo mandaba, `new Reservation({id: undefined, ...})`
+ * explotaba con un TypeError crudo (`undefined.trim()`) en vez de un 400 claro.
  */
 
 import { Router }                        from 'express';
+import { randomUUID }                    from 'node:crypto';
 import { authorize }                     from '../../security/auth.middleware.js';
 import { Roles }                         from '../../security/roles.js';
 import { ReservationService }            from '../../services/reservation.service.js';
@@ -33,19 +43,21 @@ import { SqlOccupancyRepository }        from '../../repositories/sql.occupancy.
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
 import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
+import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
+import { SqlCustomerRepository }         from '../../repositories/sql.customer.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
-import type { AuthenticatedUser }        from '../../security/user.types.js';
-import { UserRole }                      from '../../types/enums.js';
+import { CreateReservationSchema, UpdateReservationSchema } from '../schemas/request.schemas.js';
 
 function buildReservationService(req: import('express').Request): ReservationService {
-  const db                  = req.db;
-  const resourceRepo        = new SqlResourceRepository(db);
-  const reservationRepo     = new SqlReservationRepository(db, resourceRepo);
-  const occupancyRepo       = new SqlOccupancyRepository(db);
-  const categoryRepo        = new SqlCategoryRepository(db);
-  const domainEventRepo     = new SqlDomainEventRepository(db);
-  const resourceLockRepo    = new SqlResourceLockRepository(db);
-  const transactionManager  = buildTenantTransactionManager(req);
+  const db                    = req.db;
+  const resourceRepo          = new SqlResourceRepository(db);
+  const reservationRepo       = new SqlReservationRepository(db, resourceRepo);
+  const occupancyRepo         = new SqlOccupancyRepository(db);
+  const categoryRepo          = new SqlCategoryRepository(db);
+  const domainEventRepo       = new SqlDomainEventRepository(db);
+  const resourceLockRepo      = new SqlResourceLockRepository(db);
+  const bookableServiceRepo   = new SqlBookableServiceRepository(db);
+  const transactionManager    = buildTenantTransactionManager(req);
   return new ReservationService(
     reservationRepo,
     resourceRepo,
@@ -54,6 +66,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
     domainEventRepo,
     transactionManager,
     resourceLockRepo,
+    bookableServiceRepo,
   );
 }
 
@@ -98,20 +111,23 @@ export function createReservationsRouter(): Router {
     authorize(Roles.BOOKING),
     async (req, res, next) => {
       try {
-        const user       = req.user as AuthenticatedUser;
-        const businessId = user.businessId as string;
+        const body = CreateReservationSchema.parse(req.body);
 
-        // CUSTOMER — el customerId viene del JWT, no del body (anti-IDOR)
-        const customerId =
-          user.role === UserRole.CUSTOMER
-            ? user.customerId!
-            : req.body.customerId;
+        const customer = await new SqlCustomerRepository(req.db).getById(body.customer.id);
+        if (!customer) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: `Cliente con id "${body.customer.id}" no encontrado` });
+          return;
+        }
 
-        const service     = buildReservationService(req);
+        const service = buildReservationService(req);
         const reservation = await service.createReservation({
-          ...req.body,
-          customerId,
-          businessId,
+          id:         randomUUID(),
+          resourceId: body.resourceId,
+          customer,
+          startTime:  new Date(body.startTime),
+          details:    body.details,
+          ...(body.serviceId !== undefined && { serviceId: body.serviceId }),
+          ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
         });
         res.status(201).json(reservation);
       } catch (err) { next(err); }
@@ -124,8 +140,13 @@ export function createReservationsRouter(): Router {
     authorize(Roles.FRONT_DESK),
     async (req, res, next) => {
       try {
+        const body = UpdateReservationSchema.parse(req.body);
         const service = buildReservationService(req);
-        const updated  = await service.updateReservation(req.params['id']!, req.body);
+        const updated = await service.updateReservation(req.params['id']!, {
+          ...(body.startTime !== undefined && { startTime: new Date(body.startTime) }),
+          ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
+          ...(body.details   !== undefined && { details: body.details }),
+        });
         res.json(updated);
       } catch (err) { next(err); }
     },

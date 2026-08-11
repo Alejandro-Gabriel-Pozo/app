@@ -13,6 +13,9 @@
  * PUT    /api/bookable-services/:id/schedules/:scheduleId   — MANAGEMENT
  * DELETE /api/bookable-services/:id/schedules/:scheduleId   — MANAGEMENT
  *
+ * GET    /api/bookable-services/:id/resource-locks           — STAFF (no BOOKING — no es visible para CUSTOMER)
+ * PUT    /api/bookable-services/:id/resource-locks           — MANAGEMENT (reemplaza el set completo)
+ *
  * ## Roles
  * - MANAGEMENT (OWNER, ADMIN): escritura — crear, editar, borrar servicios y schedules.
  * - BOOKING (OWNER, ADMIN, RECEPTIONIST, CUSTOMER): lectura — el portal del cliente
@@ -37,17 +40,32 @@ import {
   ServiceScheduleNotFoundError,
   ScheduleConflictError,
 } from '../../services/bookable-service.service.js';
+import { ResourceLockService } from '../../services/resource-lock.service.js';
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
+import { SqlResourceLockRepository }    from '../../repositories/sql.resource-lock.repository.js';
+import { SqlResourceRepository }        from '../../repositories/sql.resource.repository.js';
+import { buildTenantTransactionManager } from '../../db/tenant-context.js';
+import { ResourceNotFoundError } from '../../domain/errors.js';
 import {
   CreateBookableServiceSchema,
   UpdateBookableServiceSchema,
   CreateServiceScheduleSchema,
   UpdateServiceScheduleSchema,
 } from '../schemas/bookable-service.schemas.js';
+import { ReplaceResourceLocksSchema } from '../schemas/resource-lock.schemas.js';
 import type { AppContainer } from '../../container.js';
 
 function buildService(req: Request): BookableServiceService {
   return new BookableServiceService(new SqlBookableServiceRepository(req.db!));
+}
+
+function buildResourceLockService(req: Request): ResourceLockService {
+  return new ResourceLockService(
+    new SqlResourceLockRepository(req.db!),
+    new SqlBookableServiceRepository(req.db!),
+    new SqlResourceRepository(req.db!),
+    buildTenantTransactionManager(req),
+  );
 }
 
 function param(req: Request, key: string): string {
@@ -151,6 +169,34 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
       res.status(204).send();
     } catch (err) {
       if (err instanceof ServiceScheduleNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── GET /api/bookable-services/:id/resource-locks ──────────────────────────
+  // Roles.STAFF (no BOOKING): los recursos físicos bloqueados no son visibles
+  // para CUSTOMER — exponen nombres de recursos internos (ej. "Estilista Ana").
+  router.get('/:id/resource-locks', authorize(Roles.STAFF), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const locks = await buildResourceLockService(req).listForService(param(req, 'id'));
+      res.json(locks);
+    } catch (err) {
+      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/bookable-services/:id/resource-locks ──────────────────────────
+  // Reemplaza el set completo — el frontend siempre manda el set deseado
+  // entero (checkbox list), no altas/bajas puntuales.
+  router.put('/:id/resource-locks', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const body  = ReplaceResourceLocksSchema.parse(req.body);
+      const locks = await buildResourceLockService(req).replaceForService(param(req, 'id'), body.resourceIds);
+      res.json(locks);
+    } catch (err) {
+      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
+      if (err instanceof ResourceNotFoundError)        { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: err.message }); return; }
       next(err);
     }
   });

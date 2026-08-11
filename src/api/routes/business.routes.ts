@@ -11,24 +11,25 @@
  *      contraseña existente — así puede registrar un segundo negocio con
  *      la misma cuenta en vez de fallar o pisar la contraseña de otro.
  *    - Si no existe, crear la identity nueva.
- * 4. Crear negocio en BD central (estado PENDING)
- * 5. Provisionar BD en Supabase (async — puede tardar 2-3 min)
- * 6. Ejecutar schema.sql en la nueva BD (via loadTenantSchema)
- * 7. Activar negocio en BD central (estado ACTIVE)
- * 8. Crear membership ADMIN de la identity en el negocio nuevo
- * 9. Retornar JWT listo para usar
+ * 4. Crear negocio en BD central (queda en PENDING — sin BD propia todavía)
+ * 5. Crear membership ADMIN de la identity en el negocio nuevo
+ * 6. Retornar JWT listo para usar
+ *
+ * ## Sin auto-provisioning (code review agosto 2026)
+ * Antes este endpoint creaba automáticamente un proyecto Supabase. Ya no
+ * operan con Supabase y todavía no hay decidido un proveedor con API de
+ * auto-provisioning, así que el negocio queda en PENDING sin `req.db`
+ * hasta que alguien lo active a mano. El resto del sistema ya sabe manejar
+ * ese estado: `tenantMiddleware` responde 503 BUSINESS_NOT_READY en
+ * cualquier ruta de tenant hasta que un ADMIN llame a
+ * POST /api/admin/set-tenant-url con la connection string de una BD ya
+ * creada (y con schema.sql ya aplicado a mano).
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PlatformRepository } from '../../platform/platform.repository.js';
-import {
-  provisionBusinessDatabase,
-  runSchemaOnNewDatabase,
-  encryptConnectionString,
-  loadTenantSchema,
-} from '../../platform/supabase.provisioner.js';
 import { hashPassword, verifyPassword } from '../../security/user.store.js';
 import { signToken } from '../../security/auth.middleware.js';
 import { BusinessPlan, UserRole } from '../../types/enums.js';
@@ -79,11 +80,11 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
    *             $ref: '#/components/schemas/RegisterBusiness'
    *     responses:
    *       201:
-   *         description: Negocio registrado y BD provisionada
+   *         description: Negocio registrado (queda PENDING hasta que se active su BD manualmente)
    *       400:
-   *         description: Datos inválidos o email/slug ya en uso
-   *       503:
-   *         description: Error provisionando la BD en Supabase
+   *         description: Datos inválidos o slug ya en uso
+   *       409:
+   *         description: El email ya tiene una cuenta y la contraseña no coincide
    */
   router.post(
     '/',
@@ -135,26 +136,6 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           ownerEmail: body.ownerEmail,
         });
 
-        console.log(`[register] Negocio creado: ${businessId} — iniciando provisioning...`);
-
-        let provisioned;
-        try {
-          provisioned = await provisionBusinessDatabase(businessId, body.businessName);
-        } catch (err) {
-          console.error(`[register] Error provisionando BD para ${businessId}:`, err);
-          res.status(503).json({
-            code: 'PROVISIONING_ERROR',
-            message: 'Error creando la base de datos. Por favor contactá soporte.',
-          });
-          return;
-        }
-
-        const schemaSQL = await loadTenantSchema();
-        await runSchemaOnNewDatabase(provisioned.connectionString, schemaSQL);
-
-        const dbUrlEncrypted = await encryptConnectionString(provisioned.connectionString);
-        await platformRepo.activateBusiness(businessId, provisioned.projectId, dbUrlEncrypted);
-
         await platformRepo.createMembership({
           id: randomUUID(),
           identityId,
@@ -168,11 +149,11 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           jwtSecret,
         );
 
-        console.log(`[register] ✅ Negocio ${businessId} activo — membership admin creada`);
+        console.log(`[register] Negocio ${businessId} creado (PENDING) — falta activar su BD a mano.`);
 
         res.status(201).json({
-          message: 'Negocio registrado exitosamente',
-          business: { id: business.id, name: business.name, slug: business.slug, plan: business.plan },
+          message: 'Negocio registrado. Todavía falta activar su base de datos — contactá a soporte para completar el alta antes de operar.',
+          business: { id: business.id, name: business.name, slug: business.slug, plan: business.plan, status: business.status },
           token,
           tokenType: 'Bearer',
           expiresIn: 86_400,

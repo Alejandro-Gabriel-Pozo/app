@@ -30,6 +30,14 @@
  * - buildService() agrega SqlResourceLockRepository como séptimo argumento
  *   de ReservationService.
  *
+ * ## Cambios — reserva por duración (resource-locks, gestión + wiring)
+ * - buildService() agrega SqlBookableServiceRepository como octavo argumento.
+ * - CreateCustomerReservationSchema acepta `serviceId` opcional y `endTime`
+ *   pasa a opcional (se deriva de duration_minutes si no viene). Este es el
+ *   único flujo de reserva real hoy en producción — antes nunca mandaba
+ *   serviceId, así que resource_locks quedaba inerte pese a que el motor
+ *   de bloqueo ya funcionaba en ReservationService.
+ *
  * ## Rutas
  *
  * ### Públicas (sin autenticación)
@@ -73,6 +81,7 @@ import { SqlOccupancyRepository }    from '../../repositories/sql.occupancy.repo
 import { SqlCategoryRepository }     from '../../repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }  from '../../repositories/sql.domain-event.repository.js';
 import { SqlResourceLockRepository } from '../../repositories/sql.resource-lock.repository.js';
+import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
 import { ReservationService }        from '../../services/reservation.service.js';
 
 // ---------------------------------------------------------------------------
@@ -140,10 +149,18 @@ const LoginCustomerSchema = z.object({
 const CreateCustomerReservationSchema = z.object({
   categoryId: z.string().min(1),
   resourceId: z.string().min(1),
+  serviceId:  z.string().min(1).optional(),
   startTime:  z.string().datetime(),
-  endTime:    z.string().datetime(),
+  // Opcional: si no viene, se deriva de duration_minutes del serviceId.
+  endTime:    z.string().datetime().optional(),
   details:    z.record(z.unknown()).default({}),
-});
+}).refine(
+  (data) => data.endTime || data.serviceId,
+  { message: 'endTime es obligatorio si no se especifica serviceId (para derivar la duración)', path: ['endTime'] },
+).refine(
+  (data) => !data.endTime || new Date(data.endTime) > new Date(data.startTime),
+  { message: 'endTime debe ser posterior a startTime', path: ['endTime'] },
+);
 
 const UpdateCustomerReservationSchema = z.object({
   startTime: z.string().datetime().optional(),
@@ -174,6 +191,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const categoryRepo    = new SqlCategoryRepository(client);
   const domainEventRepo = new SqlDomainEventRepository(client);
   const lockRepo        = new SqlResourceLockRepository(client);
+  const bookableServiceRepo = new SqlBookableServiceRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -183,6 +201,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     domainEventRepo,
     buildTransactionManagerFromPool(tenantPool),
     lockRepo,
+    bookableServiceRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };
@@ -499,8 +518,9 @@ export function createCustomerRouter(
           resourceId: body.resourceId,
           customer:   customerEntity,
           startTime:  new Date(body.startTime),
-          endTime:    new Date(body.endTime),
           details:    body.details,
+          ...(body.serviceId !== undefined && { serviceId: body.serviceId }),
+          ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
         });
 
         res.status(201).json(toReservationDto(reservation));

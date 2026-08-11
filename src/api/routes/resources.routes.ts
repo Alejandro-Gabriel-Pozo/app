@@ -17,6 +17,8 @@
  * - POST y PUT verifican que categoryId exista y esté activa antes de save()
  *   usando repo.findById() (retorna null si no existe o está inactiva)
  *   → 422 INVALID_CATEGORY en lugar de 500 FK violation.
+ * - DELETE rechaza con 409 RESOURCE_LOCKED_BY_SERVICE si el recurso todavía
+ *   está bloqueado por algún bookable_service activo (resource_locks).
  */
 
 import { Router }                        from 'express';
@@ -24,6 +26,8 @@ import { authorize }                      from '../../security/auth.middleware.j
 import { Roles }                          from '../../security/roles.js';
 import { SqlResourceRepository }         from '../../repositories/sql.resource.repository.js';
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
+import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
+import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { PhysicalResource }              from '../../domain/entities.js';
 import { randomUUID }                     from 'node:crypto';
 import { z, ZodError }                   from 'zod';
@@ -187,12 +191,37 @@ export function createResourcesRouter(): Router {
   );
 
   // ── DELETE /resources/:id ──────────────────────────────────────────────────
+  // Guard: el delete es soft (active=FALSE) y por eso el ON DELETE CASCADE de
+  // resource_locks nunca dispara solo. Si no se bloquea acá, el próximo intento
+  // de reservar un servicio que todavía lo bloquea explota con
+  // ResourceNotFoundError de forma no obvia — mejor un 409 explícito ahora.
   router.delete(
     '/:id',
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const deleted = await new SqlResourceRepository(req.db).delete(req.params['id']!);
+        const resourceId = req.params['id']!;
+        const lockRepo    = new SqlResourceLockRepository(req.db);
+        const serviceRepo = new SqlBookableServiceRepository(req.db);
+
+        const locks = await lockRepo.getByResourceId(resourceId);
+        if (locks.length > 0) {
+          const services = await Promise.all(
+            locks.map((l) => serviceRepo.findById(l.serviceId)),
+          );
+          const activeServices = services.filter((s) => s?.active);
+          if (activeServices.length > 0) {
+            res.status(409).json({
+              code: 'RESOURCE_LOCKED_BY_SERVICE',
+              message: 'No se puede eliminar: está bloqueado por servicios activos. ' +
+                'Desasigná el recurso en esos servicios antes de eliminarlo.',
+              services: activeServices.map((s) => ({ id: s!.id, name: s!.name })),
+            });
+            return;
+          }
+        }
+
+        const deleted = await new SqlResourceRepository(req.db).delete(resourceId);
         if (!deleted) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
           return;

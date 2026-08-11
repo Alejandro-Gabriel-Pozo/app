@@ -88,7 +88,7 @@ export class SqlCustomerRepository implements CustomerRepository {
   async getByEmail(email: string): Promise<Customer | undefined> {
     const { rows } = await this.sqlClient.query<CustomerRow>(
       `${BASE_SELECT}
-       WHERE ccm.channel = 'EMAIL' AND LOWER(ccm.ccm_value) = LOWER($1)`,
+       WHERE ccm.channel = 'EMAIL' AND LOWER(ccm.value) = LOWER($1)`,
       [email],
     );
     return rows.length ? rowsToCustomer(rows) : undefined;
@@ -97,7 +97,7 @@ export class SqlCustomerRepository implements CustomerRepository {
   async getByEmailWithPassword(email: string): Promise<CustomerWithPassword | undefined> {
     const { rows } = await this.sqlClient.query<CustomerRow>(
       `${BASE_SELECT}
-       WHERE ccm.channel = 'EMAIL' AND LOWER(ccm.ccm_value) = LOWER($1)`,
+       WHERE ccm.channel = 'EMAIL' AND LOWER(ccm.value) = LOWER($1)`,
       [email],
     );
     if (!rows.length || !rows[0]?.password_hash) return undefined;

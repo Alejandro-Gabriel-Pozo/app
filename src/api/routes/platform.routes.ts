@@ -10,13 +10,7 @@ import { z } from 'zod';
 import type { PlatformContainer } from '../../../src/platform/platform.container.js';
 import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
 import { authenticatePlatform } from '../../security/platform.auth.middleware.js';
-import {
-  provisionBusinessDatabase,
-  runSchemaOnNewDatabase,
-  encryptConnectionString,
-  loadTenantSchema,
-} from '../../platform/supabase.provisioner.js';
-import type { PlatformRepository, Business } from '../../platform/platform.repository.js';
+import type { Business } from '../../platform/platform.repository.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -131,11 +125,12 @@ export function createPlatformRouter(container: PlatformContainer): Router {
         const business   = await platformRepository.createBusiness({
           id: businessId, name: body.name, slug: body.slug, plan: body.plan, ownerEmail: body.ownerEmail,
         });
-        provisionInBackground(businessId, body.name, platformRepository).catch((err) => {
-          console.error(`[platform] Error provisionando negocio ${businessId}:`, err);
-        });
-        res.status(202).json({
-          message: 'Negocio registrado. Provisionando base de datos en segundo plano (hasta 5 min).',
+        // Sin auto-provisioning (code review agosto 2026) — ver tenant-db.setup.ts.
+        // El negocio queda PENDING; alguien con acceso a la BD del ADMIN de este
+        // negocio debe llamar POST /api/admin/set-tenant-url con una connection
+        // string ya creada (y con schema.sql ya aplicado) para activarlo.
+        res.status(201).json({
+          message: 'Negocio registrado en estado PENDING. Falta activar su base de datos manualmente.',
           business: toBusinessDto(business),
         });
       } catch (err) { next(err); }
@@ -185,20 +180,6 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   );
 
   return router;
-}
-
-async function provisionInBackground(
-  businessId: string,
-  businessName: string,
-  platformRepository: PlatformRepository,
-): Promise<void> {
-  console.log(`[platform] Iniciando provisioning para negocio ${businessId}...`);
-  const provisioned = await provisionBusinessDatabase(businessId, businessName);
-  const schemaSQL   = await loadTenantSchema();
-  await runSchemaOnNewDatabase(provisioned.connectionString, schemaSQL);
-  const encrypted = await encryptConnectionString(provisioned.connectionString);
-  await platformRepository.activateBusiness(businessId, provisioned.projectId, encrypted);
-  console.log(`[platform] ✅ Negocio ${businessId} provisionado y activo.`);
 }
 
 function toBusinessDto(b: Business) {

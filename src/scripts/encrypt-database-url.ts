@@ -19,21 +19,19 @@
  *
  *   DB_ENCRYPTION_KEY=<hex> npm run encrypt-db-url -- "<connection-string>"
  *
- * ## Dónde obtener la connection string en Supabase
- * Supabase Dashboard → tu proyecto → Connect → Connection string
- * Usar "Session pooler" para conexiones persistentes desde Render.
+ * ## Dónde obtener la connection string
+ * Neon Dashboard → tu proyecto → Connect → usar el endpoint con `-pooler`
+ * para conexiones persistentes desde Render (ver docs/INCIDENT_LOG_2026-08-08.md).
  *
  * ## Cómo usar el resultado
- * Insertar el valor cifrado en la BD central:
+ * Pegarlo en POST /api/admin/set-tenant-url (ver admin.routes.ts) con el
+ * JWT del ADMIN del negocio, o insertarlo a mano en la BD central:
  *   UPDATE businesses
- *   SET db_url_encrypted = '<resultado>', status = 'active'
+ *   SET db_url_encrypted = '<resultado>', status = 'ACTIVE'
  *   WHERE id = '<business-id>';
- *
- * O bien mediante la ruta POST /platform/businesses/:id/activate
- * (ver platform.routes.ts) que lo hace automáticamente.
  */
 
-import { encryptConnectionString } from '../platform/supabase.provisioner.js';
+import { encryptConnectionString } from '../platform/tenant-db.setup.js';
 
 const args = process.argv.slice(2);
 const databaseUrl = args[0];

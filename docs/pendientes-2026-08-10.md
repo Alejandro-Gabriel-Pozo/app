@@ -12,25 +12,31 @@ El errorHandler ya lo captura como caso #1. Eliminar el `catch (ZodError)` inlin
 
 ## Diseño de Dominio
 
-### 2. Lógica de recursos compartidos / conflicto de disponibilidad
-Ver documento `logica-recursos-categorias-reservas.md` para el análisis completo.
+### 2. Lógica de recursos compartidos / conflicto de disponibilidad — ✅ RESUELTO
+Ver `plan-multirubro.md` (actualizado) — el diseño real terminó siendo distinto al
+que describía `logica-recursos-categorias-reservas.md` originalmente.
 
-**Decisión de arquitectura pendiente:**
-- ¿Se implementa el concepto de "recurso físico compartido" (silla, estilista) como una entidad nueva, o como una relación entre recursos existentes?
-- Opciones: `shared_resource_id` en `bookable_resources`, tabla de `resource_groups`, o tabla de `resource_constraints`.
-- Impacto en: query de disponibilidad, lógica de reservas, UI del frontend.
+Implementado vía `resource_locks` (`resources` = recurso físico, `bookable_services`
+con `duration_minutes`, tabla `resource_locks` service↔resource). Gestión completa
+(CRUD de locks, reserva por duración, `checkAvailability` consciente de locks) agregada
+en la sesión del 11/08/2026. Ver `ReservationService.resolveOccupyingReservations()`.
 
-**Antes de codificar:**
-- Definir si el tiempo de duración va en el recurso (predefinido) o en la reserva (configurable por caso).
-- Definir quién puede ver/editar la duración: solo MANAGEMENT o también RECEPTIONIST.
+**Deuda pendiente conocida, dejada afuera a propósito:** la disponibilidad del portal
+de clientes (`GET /api/customer/:businessSlug/availability`) tiene su propia lógica
+ad-hoc que todavía NO consulta `resource_locks` — no está scopeada por `serviceId` hoy
+(filtra por categoría), así que no hay forma de resolver los locks sin antes tener una
+UI de reserva por servicio en el portal público. Revisar cuando exista esa UI.
 
 ---
 
 ## Revisión Pendiente
 
-### 3. `domainErrorStatus()` en `error.middleware.ts` — códigos nuevos sin mapeo
-Los errores de `order.service.ts` (`ORDER_NOT_FOUND`, `ORDER_NOT_EDITABLE`, `INVALID_TRANSITION`) y de `bookable-service.service.ts` (`NOT_FOUND`, `SCHEDULE_CONFLICT`) se capturan localmente en sus rutas. Si alguna ruta nueva olvida capturarlos, caen al default 500.
-- **Acción:** Agregar estos códigos al switch de `domainErrorStatus()` como red de seguridad.
+### 3. `domainErrorStatus()` en `error.middleware.ts` — códigos nuevos sin mapeo — ✅ RESUELTO
+`OrderNotFoundError`, `OrderNotEditableError`, `InvalidOrderTransitionError`,
+`BookableServiceNotFoundError`, `ServiceScheduleNotFoundError` y `ScheduleConflictError`
+ahora extienden `DomainError` (antes extendían `Error` a secas, por lo que agregar
+el `case` al switch no habría hecho nada — nunca llegaban a `instanceof DomainError`).
+Agregados los `case` correspondientes.
 
 ### 4. Verificación del fix C1 (categoría borrada → 422)
 Confirmar que el flujo completo POST /resources con `categoryId` de categoría soft-deleted retorna 422 y no 500. Hacer un test manual o unitario.
@@ -44,10 +50,10 @@ Confirmar que el flujo completo POST /resources con `categoryId` de categoría s
 - Mostrar `fields` como formulario dinámico al crear/editar un recurso de esa categoría
 - Pendiente: definir UX para recursos con "recurso físico compartido" (ver punto 2)
 
-### 6. UI de servicios agendables (`bookable-services`)
-- Pantalla de gestión de servicios y sus horarios
-- Solo visible para MANAGEMENT
-- Los horarios (schedules) necesitan un picker de días de semana + rango horario
+### 6. UI de servicios agendables (`bookable-services`) — parcial
+- Pantalla de gestión de servicios (`/dashboard/servicios`) + asignación de recursos
+  físicos bloqueados agregada en la sesión del 11/08/2026.
+- Pendiente: UI de horarios (`service_schedules` — picker de día de semana + rango horario).
 
 ---
 

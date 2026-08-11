@@ -52,10 +52,24 @@
  *   `InvalidReservationError` con detalle del recurso en conflicto.
  * - Si el servicio no tiene locks registrados (o no hay serviceId),
  *   el comportamiento es idéntico al anterior (solo verifica resourceId).
+ *
+ * ## Cambios — reserva por duración (resource-locks, gestión + wiring)
+ * - Recibe `IBookableServiceRepository` como octava dependencia (obligatoria).
+ * - `endTime` pasa a opcional en `createReservation`. Si no viene, se deriva
+ *   de `duration_minutes` del servicio (`serviceId` obligatorio en ese caso).
+ *   Nunca se acepta un `endTime` manual junto a un `serviceId` con duración
+ *   fija — si hace falta otra duración, la regla del negocio es crear un
+ *   servicio distinto, no overridear esta.
+ * - `checkAvailability` acepta `serviceId` opcional al final de la firma
+ *   (no rompe callers existentes) y aplica la misma resolución de recursos
+ *   bloqueados que create/update — antes solo miraba el resourceId principal
+ *   y podía devolver "disponible" para un servicio que en realidad tenía
+ *   otro recurso bloqueado ocupado.
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
 import { Customer }                     from '../domain/entities.js';
+import { assertValidTimeRange }         from '../domain/availability.js';
 import {
   InvalidReservationError,
   ResourceNotFoundError,
@@ -68,18 +82,20 @@ import { OccupancyRepository }          from '../repositories/occupancy.reposito
 import { ICategoryRepository }          from '../repositories/category.repository.js';
 import { DomainEventRepository }        from '../repositories/domain-event.repository.js';
 import { IResourceLockRepository }      from '../repositories/resource-lock.repository.js';
+import type { IBookableServiceRepository } from '../repositories/bookable-service.repository.js';
 import { TransactionManager }           from '../db/transaction-manager.js';
 import { SqlClient }                    from '../repositories/sql.client.js';
 
 export class ReservationService {
   constructor(
-    private readonly reservationRepository:  ReservationRepository,
-    private readonly resourceRepository:     ResourceRepository,
-    private readonly occupancyRepository:    OccupancyRepository,
-    private readonly categoryRepository:     ICategoryRepository,
-    private readonly domainEventRepository:  DomainEventRepository,
-    private readonly transactionManager:     TransactionManager,
-    private readonly resourceLockRepository: IResourceLockRepository,
+    private readonly reservationRepository:   ReservationRepository,
+    private readonly resourceRepository:      ResourceRepository,
+    private readonly occupancyRepository:     OccupancyRepository,
+    private readonly categoryRepository:      ICategoryRepository,
+    private readonly domainEventRepository:   DomainEventRepository,
+    private readonly transactionManager:      TransactionManager,
+    private readonly resourceLockRepository:  IResourceLockRepository,
+    private readonly bookableServiceRepository: IBookableServiceRepository,
   ) {}
 
   async createReservation(params: {
@@ -87,7 +103,7 @@ export class ReservationService {
     resourceId: string;
     customer: Customer;
     startTime: Date;
-    endTime: Date;
+    endTime?: Date;
     details: Record<string, unknown>;
     serviceId?: string;
   }): Promise<Reservation> {
@@ -100,6 +116,8 @@ export class ReservationService {
     if (category) {
       validateDetailsAgainstFields(params.details, category.fields);
     }
+
+    const endTime = await this.resolveEndTime(params.serviceId, params.startTime, params.endTime);
 
     // Obtener recursos adicionales bloqueados por el servicio (si aplica)
     const lockedResourceIds = await this.resolveLockedResourceIds(
@@ -115,7 +133,7 @@ export class ReservationService {
         client,
         lockedResourceIds,
         params.startTime,
-        params.endTime,
+        endTime,
       );
 
       reservation = new Reservation({
@@ -123,14 +141,40 @@ export class ReservationService {
         customer:  params.customer,
         resource,
         startTime: params.startTime,
-        endTime:   params.endTime,
+        endTime,
         details:   params.details,
+        ...(params.serviceId !== undefined && { serviceId: params.serviceId }),
       });
 
       await this.reservationRepository.saveWithClient(client, reservation);
     });
 
     return reservation;
+  }
+
+  /**
+   * Resuelve el endTime efectivo: el que vino explícito, o derivado de
+   * `duration_minutes` del servicio si solo vino `startTime` + `serviceId`.
+   */
+  private async resolveEndTime(
+    serviceId: string | undefined,
+    startTime: Date,
+    endTime: Date | undefined,
+  ): Promise<Date> {
+    if (endTime) return endTime;
+
+    if (!serviceId) {
+      throw new InvalidReservationError('endTime es obligatorio cuando no se especifica serviceId');
+    }
+
+    const service = await this.bookableServiceRepository.findById(serviceId);
+    if (!service || service.durationMinutes == null) {
+      throw new InvalidReservationError(
+        `endTime es obligatorio: el servicio '${serviceId}' no tiene duration_minutes configurado`,
+      );
+    }
+
+    return new Date(startTime.getTime() + service.durationMinutes * 60_000);
   }
 
   async updateReservation(
@@ -279,30 +323,46 @@ export class ReservationService {
     return reservation;
   }
 
+  /**
+   * @param serviceId - Opcional. Si se especifica, además del `resourceId`
+   *   principal se verifican todos los recursos que ese servicio bloquea
+   *   (`resource_locks`) — sin esto, un servicio con recursos compartidos
+   *   podía reportarse "disponible" mirando solo su recurso primario.
+   */
   async checkAvailability(
     resourceId: string,
     startTime: Date,
     endTime: Date,
     excludeReservationId?: string,
+    serviceId?: string,
   ): Promise<boolean> {
+    assertValidTimeRange(startTime, endTime);
+
     const resource = await this.resourceRepository.getById(resourceId);
     if (!resource) {
       throw new ResourceNotFoundError(resourceId);
     }
 
-    const activeReservations =
-      await this.reservationRepository.getActiveForResourceInRange(
-        resourceId,
+    const lockedResourceIds = await this.resolveLockedResourceIds(serviceId, resourceId);
+
+    for (const id of lockedResourceIds) {
+      const lockedResource = id === resourceId ? resource : await this.resourceRepository.getById(id);
+      if (!lockedResource) {
+        throw new ResourceNotFoundError(id);
+      }
+
+      const activeReservations = await this.resolveOccupyingReservations(
+        undefined,
+        id,
         startTime,
         endTime,
       );
 
-    return resource.isAvailable(
-      startTime,
-      endTime,
-      activeReservations.map((r) => r.toSnapshot()),
-      excludeReservationId,
-    );
+      const conflicting = activeReservations.some((r) => r.id !== excludeReservationId);
+      if (conflicting) return false;
+    }
+
+    return true;
   }
 
   async getReservation(id: string): Promise<Reservation | undefined> {
@@ -373,7 +433,45 @@ export class ReservationService {
         throw new ResourceNotFoundError(resourceId);
       }
 
-      const activeReservations = this.reservationRepository.getActiveForResourceInRangeWithLock
+      const activeReservations = await this.resolveOccupyingReservations(
+        client,
+        resourceId,
+        startTime,
+        endTime,
+      );
+
+      const conflicting = activeReservations.some((r) => r.id !== excludeReservationId);
+      if (conflicting) {
+        throw new InvalidReservationError(
+          `El recurso ${resourceId} no está disponible en el rango solicitado`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Junta todas las reservas activas que "ocupan" un resourceId dado.
+   *
+   * No alcanza con mirar reservas cuyo `resourceId` primario ES el que
+   * estamos chequeando: si OTRO servicio también bloquea este mismo
+   * recurso vía `resource_locks`, sus reservas viven bajo SU PROPIO
+   * `resourceId` primario (nunca bajo el recurso compartido), así que
+   * `getActiveForResourceInRange(resourceId, ...)` solo no las encuentra.
+   * Por eso también se resuelve qué otros servicios bloquean este recurso
+   * (`resourceLockRepository.getByResourceId`) y se buscan sus reservas
+   * activas por `serviceId`.
+   *
+   * `client` es opcional: si se pasa (dentro de una transacción), usa las
+   * variantes `...WithLock` (FOR UPDATE) cuando el repo las implementa.
+   */
+  private async resolveOccupyingReservations(
+    client: SqlClient | undefined,
+    resourceId: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<Reservation[]> {
+    const byResource =
+      client && this.reservationRepository.getActiveForResourceInRangeWithLock
         ? await this.reservationRepository.getActiveForResourceInRangeWithLock(
             client,
             resourceId,
@@ -386,18 +484,31 @@ export class ReservationService {
             endTime,
           );
 
-      const isAvailable = resource.isAvailable(
-        startTime,
-        endTime,
-        activeReservations.map((r) => r.toSnapshot()),
-        excludeReservationId,
-      );
+    const lockingServices = await this.resourceLockRepository.getByResourceId(resourceId);
 
-      if (!isAvailable) {
-        throw new InvalidReservationError(
-          `El recurso ${resourceId} no está disponible en el rango solicitado`,
-        );
-      }
+    const byServiceLists = await Promise.all(
+      lockingServices.map((lock) =>
+        client && this.reservationRepository.getActiveForServiceInRangeWithLock
+          ? this.reservationRepository.getActiveForServiceInRangeWithLock(
+              client,
+              lock.serviceId,
+              startTime,
+              endTime,
+            )
+          : this.reservationRepository.getActiveForServiceInRange(
+              lock.serviceId,
+              startTime,
+              endTime,
+            ),
+      ),
+    );
+
+    const merged = new Map<string, Reservation>();
+    for (const r of byResource) merged.set(r.id, r);
+    for (const list of byServiceLists) {
+      for (const r of list) merged.set(r.id, r);
     }
+
+    return [...merged.values()];
   }
 }

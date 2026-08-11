@@ -16,7 +16,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
-import { encryptConnectionString } from '../../platform/supabase.provisioner.js';
+import { encryptConnectionString } from '../../platform/tenant-db.setup.js';
 import { UserRole } from '../../types/enums.js';
 
 export function createAdminRouter(platformRepo: PlatformRepository): Router {

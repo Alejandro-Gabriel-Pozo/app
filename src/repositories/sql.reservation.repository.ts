@@ -194,6 +194,45 @@ export class SqlReservationRepository implements ReservationRepository {
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
+  /** Ver doc en reservation.repository.ts — busca por r.service_id, no r.resource_id. */
+  async getActiveForServiceInRange(
+    serviceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Reservation[]> {
+    const blockingStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    const result = await this.sqlClient.query<ReservationRow>(
+      `${this.baseSelect()}
+       WHERE r.service_id = $1
+         AND r.status = ANY($4)
+         AND r.start_time < $3
+         AND r.end_time   > $2
+       ORDER BY r.start_time ASC`,
+      [serviceId, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
+    );
+    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  async getActiveForServiceInRangeWithLock(
+    client: SqlClient,
+    serviceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Reservation[]> {
+    const blockingStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    const result = await client.query<ReservationRow>(
+      `${this.baseSelect()}
+       WHERE r.service_id = $1
+         AND r.status = ANY($4)
+         AND r.start_time < $3
+         AND r.end_time   > $2
+       ORDER BY r.start_time ASC
+       FOR UPDATE`,
+      [serviceId, startDate.toISOString(), endDate.toISOString(), blockingStatuses],
+    );
+    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
   // -------------------------------------------------------------------------
   // Filtrado genérico + paginación
   // -------------------------------------------------------------------------

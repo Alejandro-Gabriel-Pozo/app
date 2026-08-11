@@ -1,5 +1,23 @@
 # Lógica de Recursos, Categorías y Reservas
 
+> ⚠️ **ACTUALIZACIÓN (11/08/2026):** este documento describe el diseño original
+> (Opción A: tablas nuevas `physical_resources` + `resource_physical_locks`,
+> endpoints `/resources/:id/physical-locks`). **Nunca se implementó tal cual.**
+> La versión real, ya en producción, reutiliza `resources` (ya es el recurso
+> físico — la clase de dominio se llama `PhysicalResource`) + `bookable_services`
+> (con `duration_minutes`) + una tabla `resource_locks(service_id, resource_id,
+> sort_order)`. La lógica de bloqueo vive en
+> `ReservationService.resolveLockedResourceIds()` /
+> `resolveOccupyingReservations()` (`src/services/reservation.service.ts`).
+> Gestión (CRUD de locks) en `ResourceLockService` +
+> `PUT /api/bookable-services/:id/resource-locks`. UI en
+> `appfrontend/src/app/dashboard/servicios`.
+>
+> Las respuestas a las "Preguntas abiertas" de este doc siguen siendo válidas
+> como decisión de producto (ver más abajo), pero el modelo de datos y los
+> nombres de tabla/endpoint descriptos en el resto del documento son historia,
+> no lo que hay que construir. No re-derivar Opción A desde cero.
+
 ## El problema central: recursos que bloquean recursos
 
 El modelo actual de `bookable_resources` asume que cada recurso es independiente.

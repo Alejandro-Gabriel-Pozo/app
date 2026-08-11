@@ -76,6 +76,25 @@ export class InMemoryReservationRepository implements ReservationRepository {
     );
   }
 
+  async getActiveForServiceInRange(
+    serviceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Reservation[]> {
+    const activeStatuses = [
+      ReservationStatus.PENDING,
+      ReservationStatus.CONFIRMED,
+    ];
+
+    return Array.from(this.reservations.values()).filter(
+      (r) =>
+        r.serviceId === serviceId &&
+        activeStatuses.includes(r.status) &&
+        r.startTime < endDate &&
+        r.endTime > startDate,
+    );
+  }
+
   async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
     let results = Array.from(this.reservations.values());
 

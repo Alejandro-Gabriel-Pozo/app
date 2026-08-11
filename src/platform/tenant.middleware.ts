@@ -28,7 +28,7 @@ import { Request, Response, NextFunction } from 'express';
 import pg from 'pg';
 import { SqlClient } from '../repositories/sql.client.js';
 import { PlatformRepository } from './platform.repository.js';
-import { decryptConnectionString } from './supabase.provisioner.js';
+import { decryptConnectionString } from './tenant-db.setup.js';
 import { BusinessStatus, UserRole } from '../types/enums.js';
 import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';

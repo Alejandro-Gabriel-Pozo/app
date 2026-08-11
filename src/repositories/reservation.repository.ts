@@ -51,6 +51,34 @@ export interface ReservationRepository {
     endDate: Date,
   ): Promise<Reservation[]>;
 
+  /**
+   * Devuelve reservas PENDING + CONFIRMED que solapan el rango, filtradas
+   * por `serviceId` en lugar de `resourceId`.
+   *
+   * ## Por qué existe
+   * `resource_locks` vincula un servicio con recursos ADICIONALES que
+   * bloquea (más allá del `resourceId` principal de cada reserva). Para
+   * saber si un recurso R está ocupado hay que mirar dos cosas: reservas
+   * cuyo `resourceId` primario ES R, Y reservas de cualquier OTRO servicio
+   * que también bloquee R vía `resource_locks` — esas reservas viven bajo
+   * SU PROPIO `resourceId` primario (nunca bajo R), así que
+   * `getActiveForResourceInRange(R, ...)` solo no las encuentra. Ver
+   * `ReservationService.resolveOccupyingReservations()`.
+   */
+  getActiveForServiceInRange(
+    serviceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Reservation[]>;
+
+  /** Igual que getActiveForServiceInRange pero con SELECT ... FOR UPDATE. */
+  getActiveForServiceInRangeWithLock?(
+    client: SqlClient,
+    serviceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Reservation[]>;
+
   // Filtrado genérico + paginación
   getFiltered(filters: ReservationFilters): Promise<Reservation[]>;
   countFiltered(filters: Omit<ReservationFilters, 'page' | 'limit'>): Promise<number>;

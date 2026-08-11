@@ -22,12 +22,20 @@ const CustomerSchema = z.object({
 
 export const CreateReservationSchema = z.object({
   resourceId: z.string().min(1),
+  serviceId:  z.string().min(1).optional(),
   customer:   CustomerSchema,
   startTime:  z.string().datetime(),
-  endTime:    z.string().datetime(),
+  // Opcional: si no viene, se deriva de duration_minutes del serviceId
+  // (ver ReservationService.resolveEndTime). No se acepta un endTime manual
+  // como "override" de la duración fija de un servicio — la regla de negocio
+  // es crear un servicio distinto si hace falta otra duración.
+  endTime:    z.string().datetime().optional(),
   details:    z.record(z.unknown()).default({}),
 }).refine(
-  (data) => new Date(data.endTime) > new Date(data.startTime),
+  (data) => data.endTime || data.serviceId,
+  { message: 'endTime es obligatorio si no se especifica serviceId (para derivar la duración)', path: ['endTime'] },
+).refine(
+  (data) => !data.endTime || new Date(data.endTime) > new Date(data.startTime),
   { message: 'endTime debe ser posterior a startTime', path: ['endTime'] },
 );
 

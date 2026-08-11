@@ -5,6 +5,8 @@ import { ReservationService } from './reservation.service.js';
 import { InMemoryReservationRepository } from '../repositories/in-memory.reservation.repository.js';
 import { InMemoryResourceRepository } from '../repositories/in-memory.resource.repository.js';
 import { InMemoryOccupancyRepository } from '../repositories/in-memory.occupancy.repository.js';
+import { InMemoryResourceLockRepository } from '../repositories/in-memory.resource-lock.repository.js';
+import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
 import { DomainEventRepository } from '../repositories/domain-event.repository.js';
@@ -64,6 +66,8 @@ describe('ReservationService', () => {
   let categoryRepo: NullCategoryRepository;
   let eventRepo: InMemoryDomainEventRepository;
   let txManager: InMemoryTransactionManager;
+  let lockRepo: InMemoryResourceLockRepository;
+  let bookableServiceRepo: InMemoryBookableServiceRepository;
   let service: ReservationService;
 
   const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
@@ -78,12 +82,14 @@ describe('ReservationService', () => {
   const customer = new Customer('cust-1', 'Ana García', 'ana@example.com');
 
   beforeEach(async () => {
-    reservationRepo = new InMemoryReservationRepository();
-    resourceRepo    = new InMemoryResourceRepository();
-    occupancyRepo   = new InMemoryOccupancyRepository();
-    categoryRepo    = new NullCategoryRepository();
-    eventRepo       = new InMemoryDomainEventRepository();
-    txManager       = new InMemoryTransactionManager();
+    reservationRepo      = new InMemoryReservationRepository();
+    resourceRepo         = new InMemoryResourceRepository();
+    occupancyRepo         = new InMemoryOccupancyRepository();
+    categoryRepo          = new NullCategoryRepository();
+    eventRepo             = new InMemoryDomainEventRepository();
+    txManager             = new InMemoryTransactionManager();
+    lockRepo              = new InMemoryResourceLockRepository();
+    bookableServiceRepo   = new InMemoryBookableServiceRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -92,6 +98,8 @@ describe('ReservationService', () => {
       categoryRepo,
       eventRepo,
       txManager,
+      lockRepo,
+      bookableServiceRepo,
     );
 
     await resourceRepo.save(table);
@@ -299,6 +307,198 @@ describe('ReservationService', () => {
       await expect(
         service.updateReservation('res-1', {}),
       ).rejects.toThrow(InvalidReservationError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('resource locks — recursos físicos compartidos', () => {
+    const silla1 = new BookableResource('silla-1', 'Silla 1', 30, 'cat-servicios', null);
+    const silla2 = new BookableResource('silla-2', 'Silla 2', 30, 'cat-servicios', null);
+    const estilista = new BookableResource('estilista-ana', 'Estilista Ana', 0, 'cat-servicios', null);
+
+    beforeEach(async () => {
+      await resourceRepo.save(silla1);
+      await resourceRepo.save(silla2);
+      await resourceRepo.save(estilista);
+
+      bookableServiceRepo.seed({
+        id: 'svc-corte', categoryId: 'cat-servicios', name: 'Corte',
+        bookingMode: 'slot', durationMinutes: 30, price: 20,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seed({
+        id: 'svc-tintura', categoryId: 'cat-servicios', name: 'Tintura',
+        bookingMode: 'slot', durationMinutes: 90, price: 50,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      // Ambos servicios comparten la estilista, aunque cada uno tiene su
+      // propia silla como recurso primario.
+      lockRepo.seed([
+        { serviceId: 'svc-corte',   resourceId: 'estilista-ana', sortOrder: 0 },
+        { serviceId: 'svc-tintura', resourceId: 'estilista-ana', sortOrder: 0 },
+      ]);
+    });
+
+    it('bloquea una reserva si el recurso físico compartido está ocupado, aunque el recurso primario esté libre', async () => {
+      await service.createReservation({
+        id: 'res-corte',
+        resourceId: 'silla-1',
+        serviceId: 'svc-corte',
+        customer,
+        startTime: new Date('2026-07-01T10:00:00'),
+        endTime:   new Date('2026-07-01T10:30:00'),
+        details: {},
+      });
+
+      // silla-2 (el recurso primario de Tintura) está libre — pero la
+      // estilista ya está ocupada por la reserva de Corte en ese rango.
+      await expect(
+        service.createReservation({
+          id: 'res-tintura',
+          resourceId: 'silla-2',
+          serviceId: 'svc-tintura',
+          customer,
+          startTime: new Date('2026-07-01T10:15:00'),
+          endTime:   new Date('2026-07-01T11:45:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('permite reservar si el recurso físico compartido está libre en ese rango', async () => {
+      await service.createReservation({
+        id: 'res-corte',
+        resourceId: 'silla-1',
+        serviceId: 'svc-corte',
+        customer,
+        startTime: new Date('2026-07-01T10:00:00'),
+        endTime:   new Date('2026-07-01T10:30:00'),
+        details: {},
+      });
+
+      const tintura = await service.createReservation({
+        id: 'res-tintura',
+        resourceId: 'silla-2',
+        serviceId: 'svc-tintura',
+        customer,
+        startTime: new Date('2026-07-01T11:00:00'), // después de que termina Corte
+        endTime:   new Date('2026-07-01T12:30:00'),
+        details: {},
+      });
+
+      expect(tintura.id).toBe('res-tintura');
+    });
+
+    it('un servicio sin locks registrados se comporta igual que antes (solo chequea el recurso primario)', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-sin-locks', categoryId: 'cat-servicios', name: 'Servicio simple',
+        bookingMode: 'slot', durationMinutes: 30, price: 10,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const reservation = await service.createReservation({
+        id: 'res-simple',
+        resourceId: 't1',
+        serviceId: 'svc-sin-locks',
+        customer,
+        startTime: new Date('2026-07-01T10:00:00'),
+        endTime:   new Date('2026-07-01T10:30:00'),
+        details: {},
+      });
+
+      expect(reservation.id).toBe('res-simple');
+    });
+
+    it('checkAvailability con serviceId considera los recursos bloqueados, no solo el primario', async () => {
+      await service.createReservation({
+        id: 'res-corte',
+        resourceId: 'silla-1',
+        serviceId: 'svc-corte',
+        customer,
+        startTime: new Date('2026-07-01T10:00:00'),
+        endTime:   new Date('2026-07-01T10:30:00'),
+        details: {},
+      });
+
+      // silla-2 en sí está libre, pero la estilista (bloqueada por svc-tintura) no.
+      const available = await service.checkAvailability(
+        'silla-2',
+        new Date('2026-07-01T10:15:00'),
+        new Date('2026-07-01T10:45:00'),
+        undefined,
+        'svc-tintura',
+      );
+
+      expect(available).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('reserva por duración (sin endTime explícito)', () => {
+    beforeEach(() => {
+      bookableServiceRepo.seed({
+        id: 'svc-60min', categoryId: 'cat-table', name: 'Servicio 60min',
+        bookingMode: 'slot', durationMinutes: 60, price: 20,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seed({
+        id: 'svc-sin-duracion', categoryId: 'cat-table', name: 'Servicio sin duración',
+        bookingMode: 'block', durationMinutes: null, price: 20,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+
+    it('calcula endTime a partir de duration_minutes cuando no se envía', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-1',
+        resourceId: 't1',
+        serviceId: 'svc-60min',
+        customer,
+        startTime: new Date('2026-07-01T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.endTime).toEqual(new Date('2026-07-01T11:00:00'));
+    });
+
+    it('rechaza si no hay endTime ni serviceId', async () => {
+      await expect(
+        service.createReservation({
+          id: 'res-1',
+          resourceId: 't1',
+          customer,
+          startTime: new Date('2026-07-01T10:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('rechaza si el serviceId no tiene duration_minutes configurado y no hay endTime', async () => {
+      await expect(
+        service.createReservation({
+          id: 'res-1',
+          resourceId: 't1',
+          serviceId: 'svc-sin-duracion',
+          customer,
+          startTime: new Date('2026-07-01T10:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('un endTime explícito siempre tiene prioridad sobre la duración derivada', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-1',
+        resourceId: 't1',
+        serviceId: 'svc-60min',
+        customer,
+        startTime: new Date('2026-07-01T10:00:00'),
+        endTime:   new Date('2026-07-01T10:20:00'),
+        details: {},
+      });
+
+      expect(reservation.endTime).toEqual(new Date('2026-07-01T10:20:00'));
     });
   });
 });

@@ -44,7 +44,7 @@ vi.mock('../workers/outbox.registry.js', () => ({
   stopTenantWorker: (businessId: string) => stopTenantWorkerMock(businessId),
 }));
 
-vi.mock('./supabase.provisioner.js', () => ({
+vi.mock('./tenant-db.setup.js', () => ({
   decryptConnectionString: vi.fn(async (enc: string) => `postgresql://fake-host/${enc}`),
 }));
 
