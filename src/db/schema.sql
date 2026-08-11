@@ -49,7 +49,7 @@ DO $$ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- resources
+-- resources  (entidad: PhysicalResource)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS resources (
   id            VARCHAR(255)    PRIMARY KEY,
@@ -96,6 +96,25 @@ CREATE TABLE IF NOT EXISTS bookable_services (
 
 CREATE INDEX IF NOT EXISTS idx_bookable_services_category
   ON bookable_services (category_id) WHERE active = TRUE;
+
+-- ---------------------------------------------------------------------------
+-- resource_locks
+-- Pivote: qué recursos físicos bloquea cada servicio al reservarse.
+-- Si un servicio no tiene filas aquí, solo bloquea reservations.resource_id.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS resource_locks (
+  service_id   VARCHAR(255) NOT NULL
+                 REFERENCES bookable_services(id) ON DELETE CASCADE,
+  resource_id  VARCHAR(255) NOT NULL
+                 REFERENCES resources(id)         ON DELETE CASCADE,
+  sort_order   SMALLINT     NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+  PRIMARY KEY (service_id, resource_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_resource_locks_resource
+  ON resource_locks (resource_id);
 
 -- ---------------------------------------------------------------------------
 -- service_schedules
@@ -166,8 +185,8 @@ CREATE TABLE IF NOT EXISTS customer_addresses (
   line2       VARCHAR(255),
   city        VARCHAR(120),
   state       VARCHAR(120),
-  country     VARCHAR(2)   NOT NULL,
   postal_code VARCHAR(20),
+  country     VARCHAR(2)   NOT NULL,
   is_primary  BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
@@ -246,7 +265,6 @@ END $$;
 -- BLOQUE 2 — STAFF / USUARIOS DEL PANEL
 -- ===========================================================================
 
--- Roles alineados con UserRole enum: ADMIN, RECEPTIONIST, WAITER
 CREATE TABLE IF NOT EXISTS users (
   id            VARCHAR(255)  PRIMARY KEY,
   business_id   VARCHAR(255)  NOT NULL,
