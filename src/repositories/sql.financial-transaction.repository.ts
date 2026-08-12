@@ -17,6 +17,7 @@ interface TransactionRow {
   amount: string; // DECIMAL llega como string en pg
   currency: string;
   status: TransactionStatus;
+  notes: string | null;
   created_at: Date;
 }
 
@@ -47,8 +48,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
       const result = await this.sqlClient.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, idempotency_key, type, amount, currency, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (id, business_id, customer_id, reservation_id, idempotency_key, type, amount, currency, status, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING *`,
         [
@@ -61,6 +62,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           tx.amount,
           tx.currency,
           tx.status,
+          tx.notes ?? null,
         ],
       );
       // RETURNING vacío = ON CONFLICT activado = fila ya existía = éxito silencioso.
@@ -70,8 +72,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto de id.
     const result = await this.sqlClient.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, type, amount, currency, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (id, business_id, customer_id, reservation_id, type, amount, currency, status, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         id,
@@ -82,9 +84,18 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.amount,
         tx.currency,
         tx.status,
+        tx.notes ?? null,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
+  }
+
+  async getByIdempotencyKey(idempotencyKey: string): Promise<FinancialTransaction | undefined> {
+    const result = await this.sqlClient.query<TransactionRow>(
+      `SELECT * FROM financial_transactions WHERE idempotency_key = $1`,
+      [idempotencyKey],
+    );
+    return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
   }
 
   async getByReservationId(reservationId: string): Promise<FinancialTransaction[]> {
@@ -165,6 +176,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       amount:          parseFloat(row.amount),
       currency:        row.currency,
       status:          row.status,
+      notes:           row.notes,
       createdAt:       row.created_at,
     };
   }

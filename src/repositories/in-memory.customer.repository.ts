@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { Customer } from '../domain/entities.js';
-import { CustomerRepository, CustomerWithPassword } from './customer.repository.js';
+import { CustomerRepository, CustomerWithPassword, Tag } from './customer.repository.js';
 import { SqlClient } from './sql.client.js';
 
 interface CustomerRecord {
@@ -14,6 +15,8 @@ interface CustomerRecord {
 export class InMemoryCustomerRepository implements CustomerRepository {
   private readonly store = new Map<string, CustomerRecord>();
   private readonly emailIndex = new Map<string, string>(); // email.lower → id
+  private readonly tags = new Map<string, Tag>(); // tagId → Tag
+  private readonly customerTags = new Map<string, Set<string>>(); // customerId → Set<tagId>
 
   async save(customer: Customer): Promise<void> {
     const existing = this.store.get(customer.id);
@@ -96,5 +99,49 @@ export class InMemoryCustomerRepository implements CustomerRepository {
 
     this.store.set(id, { customer: anonymizedCustomer, passwordHash: null });
     return true;
+  }
+
+  // ── Clientes especiales (kind/active/tags) ──────────────────────────────
+
+  async updateKindAndActive(customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void> {
+    const record = this.store.get(customerId);
+    if (!record) return;
+    const updated = new Customer(
+      record.customer.id,
+      record.customer.displayName,
+      record.customer.contactMethods,
+      kind,
+      active,
+    );
+    this.store.set(customerId, { customer: updated, passwordHash: record.passwordHash });
+  }
+
+  async getTagsByCustomerId(customerId: string): Promise<Tag[]> {
+    const ids = this.customerTags.get(customerId) ?? new Set<string>();
+    return Array.from(ids)
+      .map((id) => this.tags.get(id))
+      .filter((t): t is Tag => t !== undefined)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getAllTags(): Promise<Tag[]> {
+    return Array.from(this.tags.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async findOrCreateTagByName(name: string): Promise<Tag> {
+    const existing = Array.from(this.tags.values()).find((t) => t.name === name);
+    if (existing) return existing;
+    const tag: Tag = { id: `tag-${randomUUID()}`, name };
+    this.tags.set(tag.id, tag);
+    return tag;
+  }
+
+  async addTag(customerId: string, tagId: string): Promise<void> {
+    if (!this.customerTags.has(customerId)) this.customerTags.set(customerId, new Set());
+    this.customerTags.get(customerId)!.add(tagId);
+  }
+
+  async removeTag(customerId: string, tagId: string): Promise<void> {
+    this.customerTags.get(customerId)?.delete(tagId);
   }
 }

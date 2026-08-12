@@ -57,6 +57,7 @@ import { SqlDomainEventRepository }      from '../../repositories/sql.domain-eve
 import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRepository }         from '../../repositories/sql.customer.repository.js';
+import { SqlCustomerRateRepository }     from '../../repositories/sql.customer-rate.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../schemas/request.schemas.js';
 import { toReservationDto }              from '../mappers/reservation.mapper.js';
@@ -70,6 +71,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
   const domainEventRepo       = new SqlDomainEventRepository(db);
   const resourceLockRepo      = new SqlResourceLockRepository(db);
   const bookableServiceRepo   = new SqlBookableServiceRepository(db);
+  const customerRateRepo      = new SqlCustomerRateRepository(db);
   const transactionManager    = buildTenantTransactionManager(req);
   return new ReservationService(
     reservationRepo,
@@ -80,6 +82,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
     transactionManager,
     resourceLockRepo,
     bookableServiceRepo,
+    customerRateRepo,
   );
 }
 

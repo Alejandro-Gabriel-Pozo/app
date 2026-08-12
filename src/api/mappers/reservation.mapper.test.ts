@@ -30,6 +30,7 @@ describe('toReservationDto', () => {
     serviceId: 'svc-1',
     partySize: 2,
     notes: 'Pidió silla junto a la ventana',
+    totalPrice: 20,
   });
 
   it('el status sobrevive un roundtrip JSON real (antes se perdía: _status vs status)', () => {
@@ -51,10 +52,11 @@ describe('toReservationDto', () => {
     expect(roundtripped.customer.contactMethods).toBeUndefined();
   });
 
-  it('incluye serviceId, partySize y notes', () => {
+  it('incluye serviceId, partySize, notes y totalPrice', () => {
     const dto = toReservationDto(reservation);
     expect(dto.serviceId).toBe('svc-1');
     expect(dto.partySize).toBe(2);
     expect(dto.notes).toBe('Pidió silla junto a la ventana');
+    expect(dto.totalPrice).toBe(20);
   });
 });

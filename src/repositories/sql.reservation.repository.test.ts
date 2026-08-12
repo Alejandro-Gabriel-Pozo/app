@@ -20,6 +20,7 @@ describe('SqlReservationRepository', () => {
     start_time: '2026-07-01T20:00:00.000Z',
     end_time: '2026-07-01T22:00:00.000Z',
     details: { guests: 2 },
+    total_price: '50.00',
   };
 
   beforeEach(() => {

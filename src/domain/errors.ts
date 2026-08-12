@@ -79,3 +79,21 @@ export class CategoryNotFoundError extends DomainError {
     super(`Categoría con id "${id}" no encontrada`, 'CATEGORY_NOT_FOUND');
   }
 }
+
+export class CustomerNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Cliente con id "${id}" no encontrado`, 'CUSTOMER_NOT_FOUND');
+  }
+}
+
+export class CustomerRateConflictError extends DomainError {
+  constructor(message = 'Ya existe una tarifa especial activa para este cliente y recurso/servicio') {
+    super(message, 'CUSTOMER_RATE_CONFLICT');
+  }
+}
+
+export class CustomerRateNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Tarifa especial con id "${id}" no encontrada`, 'CUSTOMER_RATE_NOT_FOUND');
+  }
+}

@@ -109,6 +109,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'SERVICE_SCHEDULE_NOT_FOUND':
     case 'HOUSEKEEPING_TASK_NOT_FOUND':
     case 'STAY_NOT_FOUND':
+    case 'CUSTOMER_RATE_NOT_FOUND':
+    case 'CUSTOMER_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -118,6 +120,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'SCHEDULE_CONFLICT':
     case 'RESERVATION_NOT_CONFIRMED':
     case 'RESOURCE_OCCUPIED':
+    case 'CUSTOMER_RATE_CONFLICT':
       return 409;
 
     // --- 503 Service Unavailable ---

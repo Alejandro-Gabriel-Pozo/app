@@ -184,3 +184,43 @@ export const CreateOrderSchema = z.object({
 
 export type CreateOrderBody     = z.infer<typeof CreateOrderSchema>;
 export type CreateOrderItemBody = z.infer<typeof CreateOrderItemSchema>;
+
+// ---------------------------------------------------------------------------
+// Clientes especiales — PATCH /api/customers/:id, tags
+// ---------------------------------------------------------------------------
+
+export const UpdateCustomerSchema = z.object({
+  displayName: z.string().min(1).optional(),
+  kind:        z.enum(['INDIVIDUAL', 'COMPANY']).optional(),
+  active:      z.boolean().optional(),
+}).refine((data) => Object.keys(data).length > 0, {
+  message: 'Debés enviar al menos un campo para modificar',
+});
+
+export const AssignTagSchema = z.object({
+  tagName: z.string().min(1).max(100),
+});
+
+// ---------------------------------------------------------------------------
+// Tarifas especiales — POST /api/customers/:id/rates
+// ---------------------------------------------------------------------------
+
+export const CreateCustomerRateSchema = z.object({
+  resourceId: z.string().min(1).optional(),
+  serviceId:  z.string().min(1).optional(),
+  price:      z.number().min(0),
+  notes:      z.string().optional(),
+}).refine((data) => Boolean(data.resourceId) !== Boolean(data.serviceId), {
+  message: 'Debés especificar resourceId o serviceId, no ambos ni ninguno',
+  path: ['resourceId'],
+});
+
+// ---------------------------------------------------------------------------
+// Cuentas corrientes — POST /api/customers/:id/payments
+// ---------------------------------------------------------------------------
+
+export const RecordPaymentSchema = z.object({
+  amount:         z.number().positive('amount debe ser mayor a 0'),
+  idempotencyKey: z.string().min(1).optional(),
+  notes:          z.string().max(500).optional(),
+});

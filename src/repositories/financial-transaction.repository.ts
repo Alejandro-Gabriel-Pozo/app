@@ -22,6 +22,8 @@ export interface FinancialTransaction {
    * garantiza unicidad por evento de dominio + tipo de movimiento.
    */
   idempotencyKey?: string | null;
+  /** Memo libre — ej. "efectivo", "transferencia ref #123" en un pago manual. */
+  notes?: string | null;
   createdAt?: Date;
 }
 
@@ -42,6 +44,13 @@ export interface FinancialTransactionRepository {
 
   /** Obtiene todas las transacciones de un cliente. */
   getByCustomerId(customerId: string): Promise<FinancialTransaction[]>;
+
+  /**
+   * Busca por idempotencyKey. Usado cuando create() devuelve null (ya
+   * existía) y el caller necesita la fila real para devolverla igual —
+   * un reintento de red no debe verse como error.
+   */
+  getByIdempotencyKey(idempotencyKey: string): Promise<FinancialTransaction | undefined>;
 
   /**
    * Pasa a SETTLED todas las transacciones PENDING de una reserva.

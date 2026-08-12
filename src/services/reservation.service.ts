@@ -65,10 +65,26 @@
  *   bloqueados que create/update — antes solo miraba el resourceId principal
  *   y podía devolver "disponible" para un servicio que en realidad tenía
  *   otro recurso bloqueado ocupado.
+ *
+ * ## Cambios — cuentas corrientes / tarifas especiales
+ * - Recibe `ICustomerRateRepository` como novena dependencia (obligatoria).
+ * - `createReservation` resuelve `totalPrice` ANTES de construir la reserva
+ *   (antes no se resolvía nada — `reservations.total_price` es NOT NULL sin
+ *   default en la base, así que cada creación fallaba con un 500 crudo de
+ *   Postgres). Orden de resolución en `resolvePrice()`: tarifa especial de
+ *   cliente+servicio > precio de catálogo del servicio > tarifa especial de
+ *   cliente+recurso > precio base del recurso.
+ * - El `BookableService` se busca una sola vez (si hay `serviceId`) y se
+ *   reusa tanto para `resolveEndTime` como para `resolvePrice`, en vez de
+ *   consultarlo dos veces.
+ * - `confirmReservation` ahora manda `totalPrice` en el payload de
+ *   `reservation.confirmed` — antes faltaba pese a que
+ *   `workers/outbox.handlers.ts` ya lo leía, así que el CHARGE nunca se
+ *   creaba (se salteaba en silencio si `totalPrice` era null/≤0).
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
-import { Customer }                     from '../domain/entities.js';
+import { Customer, PhysicalResource }   from '../domain/entities.js';
 import { assertValidTimeRange }         from '../domain/availability.js';
 import {
   InvalidReservationError,
@@ -83,6 +99,8 @@ import { ICategoryRepository }          from '../repositories/category.repositor
 import { DomainEventRepository }        from '../repositories/domain-event.repository.js';
 import { IResourceLockRepository }      from '../repositories/resource-lock.repository.js';
 import type { IBookableServiceRepository } from '../repositories/bookable-service.repository.js';
+import type { BookableService } from '../types/bookable-service.types.js';
+import type { ICustomerRateRepository } from '../repositories/customer-rate.repository.js';
 import { TransactionManager }           from '../db/transaction-manager.js';
 import { SqlClient }                    from '../repositories/sql.client.js';
 
@@ -96,6 +114,7 @@ export class ReservationService {
     private readonly transactionManager:      TransactionManager,
     private readonly resourceLockRepository:  IResourceLockRepository,
     private readonly bookableServiceRepository: IBookableServiceRepository,
+    private readonly customerRateRepository:  ICustomerRateRepository,
   ) {}
 
   async createReservation(params: {
@@ -117,7 +136,24 @@ export class ReservationService {
       validateDetailsAgainstFields(params.details, category.fields);
     }
 
-    const endTime = await this.resolveEndTime(params.serviceId, params.startTime, params.endTime);
+    // Se busca una sola vez y se reusa para resolveEndTime Y resolvePrice —
+    // antes resolveEndTime la buscaba por su cuenta, y hoy además hace falta
+    // para cotizar la reserva.
+    const service = params.serviceId
+      ? await this.bookableServiceRepository.findById(params.serviceId)
+      : null;
+
+    const endTime = await this.resolveEndTime(params.serviceId, params.startTime, params.endTime, service);
+
+    const totalPrice = await this.resolvePrice({
+      customerId: params.customer.id,
+      resourceId: params.resourceId,
+      serviceId:  params.serviceId,
+      resource,
+      service,
+      startTime:  params.startTime,
+      endTime,
+    });
 
     // Obtener recursos adicionales bloqueados por el servicio (si aplica)
     const lockedResourceIds = await this.resolveLockedResourceIds(
@@ -144,6 +180,7 @@ export class ReservationService {
         endTime,
         details:   params.details,
         ...(params.serviceId !== undefined && { serviceId: params.serviceId }),
+        totalPrice,
       });
 
       await this.reservationRepository.saveWithClient(client, reservation);
@@ -155,11 +192,14 @@ export class ReservationService {
   /**
    * Resuelve el endTime efectivo: el que vino explícito, o derivado de
    * `duration_minutes` del servicio si solo vino `startTime` + `serviceId`.
+   * `service` ya viene resuelto por el caller (createReservation) — evita
+   * una segunda consulta al mismo servicio.
    */
   private async resolveEndTime(
     serviceId: string | undefined,
     startTime: Date,
     endTime: Date | undefined,
+    service: BookableService | null,
   ): Promise<Date> {
     if (endTime) return endTime;
 
@@ -167,7 +207,6 @@ export class ReservationService {
       throw new InvalidReservationError('endTime es obligatorio cuando no se especifica serviceId');
     }
 
-    const service = await this.bookableServiceRepository.findById(serviceId);
     if (!service || service.durationMinutes == null) {
       throw new InvalidReservationError(
         `endTime es obligatorio: el servicio '${serviceId}' no tiene duration_minutes configurado`,
@@ -175,6 +214,68 @@ export class ReservationService {
     }
 
     return new Date(startTime.getTime() + service.durationMinutes * 60_000);
+  }
+
+  /**
+   * Resuelve el precio a cobrar: tarifa especial de cliente+servicio >
+   * precio de catálogo del servicio > tarifa especial de cliente+recurso >
+   * precio base del recurso. Un override a nivel servicio es más específico
+   * que uno a nivel recurso cuando la reserva tiene serviceId.
+   *
+   * Si el servicio es `bookingMode: 'block'` (fechas completas — la noche de
+   * hotel es el caso de uso documentado en BookableService), el precio
+   * unitario se multiplica por la cantidad de noches. Para 'slot'/'event' o
+   * sin servicio, es una reserva de precio fijo (comportamiento anterior).
+   */
+  private async resolvePrice(params: {
+    customerId: string;
+    resourceId: string;
+    serviceId: string | undefined;
+    resource: PhysicalResource;
+    service: BookableService | null;
+    startTime: Date;
+    endTime: Date;
+  }): Promise<number> {
+    const units = params.service?.bookingMode === 'block'
+      ? this.calculateNights(params.startTime, params.endTime)
+      : 1;
+
+    if (params.serviceId) {
+      const serviceRate = await this.customerRateRepository.findActiveForCustomerAndService(
+        params.customerId,
+        params.serviceId,
+      );
+      if (serviceRate) return serviceRate.price * units;
+      if (params.service) return params.service.price * units;
+    }
+
+    const resourceRate = await this.customerRateRepository.findActiveForCustomerAndResource(
+      params.customerId,
+      params.resourceId,
+    );
+    if (resourceRate) return resourceRate.price * units;
+
+    return params.resource.basePrice * units;
+  }
+
+  /**
+   * Cantidad de noches entre dos fechas, contando por día calendario (no por
+   * bloques de 24hs exactas) — un check-in a las 15:00 y check-out a las
+   * 10:00 del día siguiente son 1 noche, no 0.79. Mínimo 1: una reserva de
+   * alojamiento con checkout el mismo día de checkin no es válida.
+   */
+  private calculateNights(startTime: Date, endTime: Date): number {
+    const start = Date.UTC(startTime.getFullYear(), startTime.getMonth(), startTime.getDate());
+    const end   = Date.UTC(endTime.getFullYear(), endTime.getMonth(), endTime.getDate());
+    const nights = Math.round((end - start) / 86_400_000);
+
+    if (nights < 1) {
+      throw new InvalidReservationError(
+        'Una reserva por noches debe tener al menos 1 noche (checkout posterior a checkin)',
+      );
+    }
+
+    return nights;
   }
 
   async updateReservation(
@@ -237,6 +338,10 @@ export class ReservationService {
         partySize:     existing.partySize,
         notes:         existing.notes,
         orderItemId:   existing.orderItemId,
+        // No se recalcula el precio al editar horario/detalles — fuera de
+        // alcance de esta fase, re-cotizar necesitaría su propia UX de
+        // confirmación explícita.
+        totalPrice:    existing.totalPrice,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -264,6 +369,9 @@ export class ReservationService {
           resourceId:    reservation.resource.id,
           startTime:     reservation.startTime.toISOString(),
           endTime:       reservation.endTime.toISOString(),
+          // outbox.handlers.ts lee esto para crear el CHARGE — antes faltaba
+          // acá, así que se salteaba en silencio (totalPrice null/≤0).
+          totalPrice:    reservation.totalPrice,
         },
       });
     });

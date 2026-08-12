@@ -82,6 +82,7 @@ import { SqlCategoryRepository }     from '../../repositories/sql.category.repos
 import { SqlDomainEventRepository }  from '../../repositories/sql.domain-event.repository.js';
 import { SqlResourceLockRepository } from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
+import { SqlCustomerRateRepository } from '../../repositories/sql.customer-rate.repository.js';
 import { ReservationService }        from '../../services/reservation.service.js';
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const domainEventRepo = new SqlDomainEventRepository(client);
   const lockRepo        = new SqlResourceLockRepository(client);
   const bookableServiceRepo = new SqlBookableServiceRepository(client);
+  const customerRateRepo = new SqlCustomerRateRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -202,6 +204,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     buildTransactionManagerFromPool(tenantPool),
     lockRepo,
     bookableServiceRepo,
+    customerRateRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };

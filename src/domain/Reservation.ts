@@ -14,6 +14,11 @@
  * - `+orderItemId`  : FK a `order_items`; NULL en reservas legacy pre-v4.
  * - `toSnapshot()`  : ahora incluye `serviceId` y `partySize` para cálculo de disponibilidad parcial.
  * - `restore()`     : firma extendida con los nuevos campos opcionales.
+ *
+ * ## Cambios v5 — Cuentas corrientes / tarifas especiales
+ * - `+totalPrice`   : obligatorio — `reservations.total_price` es NOT NULL en la
+ *   base sin default. Lo resuelve `ReservationService.resolvePrice()` (tarifa
+ *   especial de cliente > precio de catálogo) antes de construir la reserva.
  */
 
 import { ReservationStatus } from '../types/enums.js';
@@ -48,6 +53,8 @@ export interface ReservationProps {
   notes?: string | null;
   /** v4: FK a order_items; NULL en legacy */
   orderItemId?: string | null;
+  /** v5: precio resuelto (catálogo o tarifa especial) — obligatorio, >= 0 */
+  totalPrice: number;
 }
 
 export class Reservation {
@@ -57,6 +64,7 @@ export class Reservation {
   public readonly partySize: number;
   public readonly notes: string | null;
   public readonly orderItemId: string | null;
+  public readonly totalPrice: number;
 
   constructor(props: ReservationProps) {
     const {
@@ -71,6 +79,7 @@ export class Reservation {
       partySize = 1,
       notes = null,
       orderItemId = null,
+      totalPrice,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -79,6 +88,9 @@ export class Reservation {
       throw new InvalidReservationError(
         `partySize (${partySize}) supera la capacidad del recurso (${resource.capacity})`,
       );
+    }
+    if (totalPrice == null || Number.isNaN(totalPrice) || totalPrice < 0) {
+      throw new InvalidReservationError('totalPrice debe ser un número mayor o igual a 0');
     }
 
     assertValidTimeRange(startTime, endTime);
@@ -93,6 +105,7 @@ export class Reservation {
     this.partySize   = partySize;
     this.notes       = notes;
     this.orderItemId = orderItemId;
+    this.totalPrice  = totalPrice;
     this._status     = initialStatus;
   }
 

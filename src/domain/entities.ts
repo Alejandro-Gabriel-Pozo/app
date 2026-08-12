@@ -56,6 +56,10 @@ export class Customer {
     public readonly id: string,
     displayName: string,
     emailOrContacts: string | ContactMethod[] = [],
+    /** v2 clientes especiales: INDIVIDUAL (default) o COMPANY */
+    public readonly kind: 'INDIVIDUAL' | 'COMPANY' = 'INDIVIDUAL',
+    /** v2 clientes especiales: cuenta activa (soft-delete usa esto) */
+    public readonly active: boolean = true,
   ) {
     if (!id.trim()) throw new InvalidCustomerError('id es obligatorio');
     if (!displayName.trim()) throw new InvalidCustomerError('fullName es obligatorio');

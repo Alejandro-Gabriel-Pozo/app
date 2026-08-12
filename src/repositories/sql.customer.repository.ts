@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto';
 import { Customer, ContactMethod } from '../domain/entities.js';
 import { SqlClient } from './sql.client.js';
-import { CustomerRepository, CustomerWithPassword } from './customer.repository.js';
+import { CustomerRepository, CustomerWithPassword, Tag } from './customer.repository.js';
 
 // ── Tipos internos ──────────────────────────────────────────────────────────
 
@@ -21,6 +21,8 @@ interface CustomerRow {
   id:            string;
   display_name:  string;
   password_hash: string | null;
+  kind:          string;
+  active:        boolean;
   ccm_id:        string | null;
   channel:       string | null;
   ccm_value:     string | null;
@@ -35,6 +37,8 @@ const BASE_SELECT = `
     c.id,
     c.display_name,
     c.password_hash,
+    c.kind,
+    c.active,
     ccm.id          AS ccm_id,
     ccm.channel,
     ccm.value       AS ccm_value,
@@ -153,6 +157,66 @@ export class SqlCustomerRepository implements CustomerRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  // ── Clientes especiales (kind/active/tags) ──────────────────────────────
+
+  async updateKindAndActive(customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void> {
+    await this.sqlClient.query(
+      `UPDATE customers SET kind = $2, active = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [customerId, kind, active],
+    );
+  }
+
+  async getTagsByCustomerId(customerId: string): Promise<Tag[]> {
+    const { rows } = await this.sqlClient.query<Tag>(
+      `SELECT t.id, t.name
+       FROM tags t
+       JOIN customer_tags ct ON ct.tag_id = t.id
+       WHERE ct.customer_id = $1
+       ORDER BY t.name ASC`,
+      [customerId],
+    );
+    return rows;
+  }
+
+  async getAllTags(): Promise<Tag[]> {
+    const { rows } = await this.sqlClient.query<Tag>(
+      `SELECT id, name FROM tags ORDER BY name ASC`,
+    );
+    return rows;
+  }
+
+  async findOrCreateTagByName(name: string): Promise<Tag> {
+    const inserted = await this.sqlClient.query<Tag>(
+      `INSERT INTO tags (id, name) VALUES ($1, $2)
+       ON CONFLICT (name) DO NOTHING
+       RETURNING id, name`,
+      [`tag-${randomUUID()}`, name],
+    );
+    if (inserted.rows[0]) return inserted.rows[0];
+
+    // ON CONFLICT DO NOTHING no devuelve fila cuando ya existía — se busca aparte.
+    const existing = await this.sqlClient.query<Tag>(
+      `SELECT id, name FROM tags WHERE name = $1`,
+      [name],
+    );
+    return existing.rows[0]!;
+  }
+
+  async addTag(customerId: string, tagId: string): Promise<void> {
+    await this.sqlClient.query(
+      `INSERT INTO customer_tags (customer_id, tag_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [customerId, tagId],
+    );
+  }
+
+  async removeTag(customerId: string, tagId: string): Promise<void> {
+    await this.sqlClient.query(
+      `DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id = $2`,
+      [customerId, tagId],
+    );
+  }
+
   // ── Helpers privados ──────────────────────────────────────────────────────
 
   private async _upsertCustomer(
@@ -189,7 +253,7 @@ export class SqlCustomerRepository implements CustomerRepository {
 function rowsToCustomer(rows: CustomerRow[]): Customer {
   const first = rows[0];
   if (!first) throw new Error('rowsToCustomer llamado con array vacío');
-  const { id, display_name } = first;
+  const { id, display_name, kind, active } = first;
   const contactMethods: ContactMethod[] = rows
     .filter((r) => r.ccm_id !== null)
     .map((r) => ({
@@ -199,7 +263,7 @@ function rowsToCustomer(rows: CustomerRow[]): Customer {
       isPrimary: r.is_primary ?? false,
       ...(r.verified_at !== null && r.verified_at !== undefined && { verifiedAt: r.verified_at }),
     }));
-  return new Customer(id, display_name, contactMethods);
+  return new Customer(id, display_name, contactMethods, kind as 'INDIVIDUAL' | 'COMPANY', active);
 }
 
 function groupByCustomer(rows: CustomerRow[]): Customer[] {

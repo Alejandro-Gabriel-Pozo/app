@@ -20,6 +20,7 @@ interface ReservationRow {
   party_size?: number | null;
   notes?: string | null;
   order_item_id?: string | null;
+  total_price: string;
 }
 
 /**
@@ -58,20 +59,26 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.startTime.toISOString(),
       reservation.endTime.toISOString(),
       JSON.stringify(reservation.details),
+      reservation.totalPrice,
     ];
   }
 
+  // total_price es NOT NULL sin default en la tabla (db/schema.sql) — antes de
+  // este fix no estaba en esta lista y CADA INSERT fallaba con una violación
+  // de NOT NULL. También faltaba en el ON CONFLICT: un update de reserva
+  // nunca actualizaba el precio aunque cambiara.
   private readonly UPSERT_SQL = `
     INSERT INTO reservations (
       id, customer_id, customer_name, customer_email,
       resource_id, status,
-      start_time, end_time, details, updated_at
+      start_time, end_time, details, updated_at, total_price
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10)
     ON CONFLICT (id) DO UPDATE SET
-      status     = $6,
-      details    = $9,
-      updated_at = CURRENT_TIMESTAMP
+      status      = $6,
+      details     = $9,
+      updated_at  = CURRENT_TIMESTAMP,
+      total_price = $10
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -312,7 +319,7 @@ export class SqlReservationRepository implements ReservationRepository {
       SELECT
         r.id, r.customer_id, r.customer_name, r.customer_email,
         r.resource_id, r.status, r.start_time, r.end_time, r.details,
-        r.service_id, r.party_size, r.notes, r.order_item_id
+        r.service_id, r.party_size, r.notes, r.order_item_id, r.total_price
       FROM reservations r
     `;
   }
@@ -340,6 +347,7 @@ export class SqlReservationRepository implements ReservationRepository {
       partySize:     row.party_size    ?? 1,
       notes:         row.notes         ?? null,
       orderItemId:   row.order_item_id ?? null,
+      totalPrice:    parseFloat(row.total_price),
     });
   }
 }

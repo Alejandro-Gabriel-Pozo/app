@@ -10,6 +10,11 @@ export interface CustomerWithPassword {
   passwordHash: string;
 }
 
+export interface Tag {
+  id: string;
+  name: string;
+}
+
 /**
  * Contrato del repositorio de clientes.
  */
@@ -48,4 +53,19 @@ export interface CustomerRepository {
    * El ID se preserva para mantener integridad referencial con reservas.
    */
   anonymize(id: string): Promise<boolean>;
+
+  // ── Clientes especiales (kind/active/tags) ──────────────────────────────
+
+  /**
+   * Actualiza kind/active directamente — a propósito NO pasa por save()/
+   * _upsertCustomer(), que no toca estas columnas para no resetearlas a los
+   * defaults en cada guardado de displayName/contactMethods.
+   */
+  updateKindAndActive(customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void>;
+
+  getTagsByCustomerId(customerId: string): Promise<Tag[]>;
+  getAllTags(): Promise<Tag[]>;
+  findOrCreateTagByName(name: string): Promise<Tag>;
+  addTag(customerId: string, tagId: string): Promise<void>;
+  removeTag(customerId: string, tagId: string): Promise<void>;
 }

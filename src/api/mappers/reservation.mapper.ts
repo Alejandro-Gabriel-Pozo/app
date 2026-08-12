@@ -40,6 +40,7 @@ export interface ReservationDto {
   serviceId: string | null;
   partySize: number;
   notes: string | null;
+  totalPrice: number;
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -70,5 +71,6 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     serviceId: reservation.serviceId,
     partySize: reservation.partySize,
     notes:     reservation.notes,
+    totalPrice: reservation.totalPrice,
   };
 }

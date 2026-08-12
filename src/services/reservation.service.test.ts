@@ -7,6 +7,7 @@ import { InMemoryResourceRepository } from '../repositories/in-memory.resource.r
 import { InMemoryOccupancyRepository } from '../repositories/in-memory.occupancy.repository.js';
 import { InMemoryResourceLockRepository } from '../repositories/in-memory.resource-lock.repository.js';
 import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
+import { InMemoryCustomerRateRepository } from '../repositories/in-memory.customer-rate.repository.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
 import { DomainEventRepository } from '../repositories/domain-event.repository.js';
@@ -68,6 +69,7 @@ describe('ReservationService', () => {
   let txManager: InMemoryTransactionManager;
   let lockRepo: InMemoryResourceLockRepository;
   let bookableServiceRepo: InMemoryBookableServiceRepository;
+  let customerRateRepo: InMemoryCustomerRateRepository;
   let service: ReservationService;
 
   const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
@@ -90,6 +92,7 @@ describe('ReservationService', () => {
     txManager             = new InMemoryTransactionManager();
     lockRepo              = new InMemoryResourceLockRepository();
     bookableServiceRepo   = new InMemoryBookableServiceRepository();
+    customerRateRepo      = new InMemoryCustomerRateRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -100,6 +103,7 @@ describe('ReservationService', () => {
       txManager,
       lockRepo,
       bookableServiceRepo,
+      customerRateRepo,
     );
 
     await resourceRepo.save(table);
@@ -499,6 +503,148 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.endTime).toEqual(new Date('2026-07-01T10:20:00'));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('resolución de precio — tarifas especiales', () => {
+    it('sin tarifa especial y sin serviceId, usa el basePrice del recurso', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-precio-1',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T09:00:00'),
+        endTime:   new Date('2026-07-01T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(50); // table.basePrice
+    });
+
+    it('sin tarifa especial y con serviceId, usa el precio de catálogo del servicio', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-precio', categoryId: 'cat-table', name: 'Servicio con precio',
+        bookingMode: 'slot', durationMinutes: 30, price: 35,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const reservation = await service.createReservation({
+        id: 'res-precio-2',
+        resourceId: 't1',
+        serviceId: 'svc-precio',
+        customer,
+        startTime: new Date('2026-07-01T09:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(35);
+    });
+
+    it('con tarifa especial de cliente+recurso, la usa en vez del basePrice de catálogo', async () => {
+      customerRateRepo.seed([{
+        id: 'rate-1', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: 't1', serviceId: null, price: 40, active: true,
+      }]);
+
+      const reservation = await service.createReservation({
+        id: 'res-precio-3',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T09:00:00'),
+        endTime:   new Date('2026-07-01T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(40);
+    });
+
+    it('con tarifa especial de cliente+servicio, la prioriza sobre el precio de catálogo del servicio', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-precio-2', categoryId: 'cat-table', name: 'Servicio con precio 2',
+        bookingMode: 'slot', durationMinutes: 30, price: 35,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      customerRateRepo.seed([{
+        id: 'rate-2', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: null, serviceId: 'svc-precio-2', price: 15, active: true,
+      }]);
+
+      const reservation = await service.createReservation({
+        id: 'res-precio-4',
+        resourceId: 't1',
+        serviceId: 'svc-precio-2',
+        customer,
+        startTime: new Date('2026-07-01T09:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(15);
+    });
+
+    it('bookingMode "block" (alojamiento): multiplica el precio por la cantidad de noches', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-noche', categoryId: 'cat-table', name: 'Noche de hotel',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      // Check-in 10/07 15:00, check-out 13/07 10:00 = 3 noches por fecha
+      // calendario, aunque no sean 72hs exactas.
+      const reservation = await service.createReservation({
+        id: 'res-noche-1',
+        resourceId: 't1',
+        serviceId: 'svc-noche',
+        customer,
+        startTime: new Date('2026-07-10T15:00:00'),
+        endTime:   new Date('2026-07-13T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(300); // 100 * 3 noches
+    });
+
+    it('bookingMode "block": rechaza checkout el mismo día que checkin', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-noche-2', categoryId: 'cat-table', name: 'Noche de hotel 2',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      await expect(
+        service.createReservation({
+          id: 'res-noche-2',
+          resourceId: 't1',
+          serviceId: 'svc-noche-2',
+          customer,
+          startTime: new Date('2026-07-10T15:00:00'),
+          endTime:   new Date('2026-07-10T20:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('bookingMode "block" con tarifa especial: la tarifa también se multiplica por noches', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-noche-3', categoryId: 'cat-table', name: 'Noche de hotel 3',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      customerRateRepo.seed([{
+        id: 'rate-noche', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: null, serviceId: 'svc-noche-3', price: 80, active: true,
+      }]);
+
+      const reservation = await service.createReservation({
+        id: 'res-noche-3',
+        resourceId: 't1',
+        serviceId: 'svc-noche-3',
+        customer,
+        startTime: new Date('2026-07-10T15:00:00'),
+        endTime:   new Date('2026-07-12T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(160); // 80 * 2 noches
     });
   });
 });

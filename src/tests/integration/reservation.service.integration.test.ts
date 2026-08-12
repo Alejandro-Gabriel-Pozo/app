@@ -52,6 +52,9 @@ import { SqlResourceRepository }               from '../../repositories/sql.reso
 import { SqlOccupancyRepository }              from '../../repositories/sql.occupancy.repository.js';
 import { SqlCategoryRepository }              from '../../repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }           from '../../repositories/sql.domain-event.repository.js';
+import { SqlResourceLockRepository }          from '../../repositories/sql.resource-lock.repository.js';
+import { SqlBookableServiceRepository }       from '../../repositories/sql.bookable-service.repository.js';
+import { SqlCustomerRateRepository }          from '../../repositories/sql.customer-rate.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../services/reservation.service.js';
 import { Customer }                           from '../../domain/entities.js';
@@ -81,6 +84,9 @@ async function buildService() {
   const occupancyRepo   = new SqlOccupancyRepository(db);
   const categoryRepo    = new SqlCategoryRepository(db);
   const domainEventRepo = new SqlDomainEventRepository(db);
+  const resourceLockRepo = new SqlResourceLockRepository(db);
+  const bookableServiceRepo = new SqlBookableServiceRepository(db);
+  const customerRateRepo = new SqlCustomerRateRepository(db);
   const txManager       = new PostgresTransactionManager(pool);
 
   return new ReservationService(
@@ -90,6 +96,9 @@ async function buildService() {
     categoryRepo,
     domainEventRepo,
     txManager,
+    resourceLockRepo,
+    bookableServiceRepo,
+    customerRateRepo,
   );
 }
 
@@ -131,12 +140,37 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       });
 
       expect(reservation.status).toBe('PENDING');
+      // Regresión: total_price es NOT NULL sin default — antes de este fix
+      // este INSERT fallaba siempre con una violación de constraint.
+      expect(reservation.totalPrice).toBe(resource.basePrice);
 
       const row = await db.query(
-        'SELECT status FROM reservations WHERE id = $1',
+        'SELECT status, total_price FROM reservations WHERE id = $1',
         [reservation.id],
       );
       expect(row.rows[0]?.status).toBe('PENDING');
+      expect(Number(row.rows[0]?.total_price)).toBe(resource.basePrice);
+    });
+
+    it('usa la tarifa especial del cliente en vez del basePrice cuando existe una activa', async () => {
+      const { resource, customer, service } = await setupFixture();
+
+      await db.query(
+        `INSERT INTO customer_rates (id, business_id, customer_id, resource_id, price)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [randomUUID(), BUSINESS_ID, customer.id, resource.id, 42],
+      );
+
+      const reservation = await service.createReservation({
+        id:         randomUUID(),
+        resourceId: resource.id,
+        customer:   new Customer(customer.id, customer.fullName, customer.email),
+        startTime:  new Date('2030-06-01T14:00:00Z'),
+        endTime:    new Date('2030-06-01T16:00:00Z'),
+        details:    {},
+      });
+
+      expect(reservation.totalPrice).toBe(42);
     });
 
     it('lanza ResourceNotFoundError si el recurso no existe', async () => {
