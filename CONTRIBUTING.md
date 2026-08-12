@@ -301,33 +301,38 @@ fix: arreglo bug
 
 ## 7. Schema SQL para tests de integración
 
-> **Regla:** el archivo `db/schema.sql` debe existir en el repo y mantenerse
-> actualizado. **Nunca** borrarlo ni moverlo.
+> **Regla:** el archivo `src/db/schema.sql` debe existir en el repo y
+> mantenerse actualizado. **Nunca** borrarlo ni moverlo. Es el **único**
+> schema.sql del proyecto — no crear otro en `db/schema.sql` (raíz):
+> existió ahí hasta 2026-08-11, quedó desactualizado sin que nadie lo notara
+> (le faltaba `resource_locks`, entre otras tablas) porque ningún código lo
+> leía de verdad, y causaba bugs en negocios reales cuya tenant DB nunca
+> recibía las tablas nuevas. Se eliminó — ver el commit del 2026-08-11 que
+> unifica todo en `src/db/schema.sql`.
 
 ### ¿Qué es y para qué sirve?
 
-`src/tests/integration/helpers/db.ts` lee `db/schema.sql` con `readFileSync`
-**en el módulo top-level** (fuera de cualquier `beforeAll`). Esto significa
-que si el archivo no existe, el proceso de Vitest falla **antes de ejecutar
-cualquier test** con:
-
-```
-Error: ENOENT: no such file or directory, open '/home/runner/work/app/app/db/schema.sql'
-```
-
-La suite entera queda marcada como `FAIL` con 0 tests ejecutados.
+`src/tests/integration/helpers/db.ts` lee `src/db/schema.sql` con
+`readFileSync` **dentro de `createTestDatabase()`**, no en el top-level del
+módulo (así una suite sin `TEST_DATABASE_URL` se saltea en vez de explotar
+con `ENOENT`). Este mismo archivo es el que usa producción de verdad para
+provisionar la tenant DB de un negocio nuevo (`src/platform/tenant-db.setup.ts`,
+función `loadTenantSchema()`) — es el schema consolidado de TODA la base,
+tenants nuevos y tests de integración comparten exactamente el mismo archivo.
 
 ### Estructura de archivos SQL del proyecto
 
 ```
 repo/
-  db/
-    schema.sql              ← estado consolidado de TODA la BD  ✅ este es el que usan los tests
+  src/
+    db/
+      schema.sql             ← ÚNICO estado consolidado de TODA la BD
+                                (tests de integración + provisioning real)
   supabase/
     migrations/
-      001_init.sql          ← migration original (histórico)
+      001_init.sql           ← migration original (histórico)
   migrations/
-    003_add_customers.sql   ← migraciones incrementales
+    003_add_customers.sql    ← migraciones incrementales
     004_...sql
     00N_...sql
 ```
@@ -335,7 +340,7 @@ repo/
 ### Regla al agregar una migración
 
 Cada vez que se crea un archivo en `migrations/`, el mismo commit debe
-refleja el cambio también en `db/schema.sql`:
+reflejar el cambio también en `src/db/schema.sql`:
 
 ```bash
 # 1. Crear la migración incremental
@@ -343,18 +348,23 @@ touch migrations/009_add_nueva_tabla.sql
 # ... escribir ALTER TABLE / CREATE TABLE ...
 
 # 2. Reflejar el cambio en el schema consolidado
-#    (agregar la tabla/columna nueva al CREATE TABLE correspondiente en db/schema.sql)
-vim db/schema.sql
+#    (agregar la tabla/columna nueva al CREATE TABLE correspondiente en src/db/schema.sql)
+vim src/db/schema.sql
 
 # 3. Commitear ambos juntos
-git add migrations/009_add_nueva_tabla.sql db/schema.sql
+git add migrations/009_add_nueva_tabla.sql src/db/schema.sql
 git commit -m "feat(db): add nueva_tabla — migration + schema consolidado"
 ```
 
-### Contenido mínimo de db/schema.sql
+### Contenido mínimo de src/db/schema.sql
 
-El archivo debe ser **idempotente** (ejecutable múltiples veces sin error).
+El archivo debe ser **idempotente** (ejecutable múltiples veces sin error,
+incluso contra una base que ya tiene datos reales — `tenant-db.setup.ts`
+también lo re-aplica manualmente como herramienta de reparación).
 Usar siempre `CREATE TABLE IF NOT EXISTS` y `CREATE INDEX IF NOT EXISTS`.
+Para restricciones `UNIQUE`, usar `CREATE UNIQUE INDEX IF NOT EXISTS` — un
+`ALTER TABLE ... ADD CONSTRAINT ... UNIQUE ... NOT VALID` es SQL inválido
+(`NOT VALID` solo aplica a `CHECK`/`FOREIGN KEY`, nunca a `UNIQUE`).
 
 ```sql
 -- BIEN — idempotente
@@ -363,16 +373,19 @@ CREATE TABLE IF NOT EXISTS reservations (
   ...
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reservations_algo ON reservations (algo);
+
 -- MAL — rompe si se corre dos veces
 CREATE TABLE reservations (
   id UUID PRIMARY KEY,
   ...
 );
-```
 
-**Historial:** el archivo nunca existió en el repo. Los tests de integración
-fallaban con `ENOENT` en cada corrida del CI. Creado en
-`fix/add-db-schema-sql` (2026-08-08).
+-- MAL — NOT VALID no es válido en UNIQUE, ni siquiera dentro de un DO $$
+-- con EXCEPTION WHEN duplicate_object (el error es de sintaxis, no de
+-- objeto duplicado, así que ni el catch lo salva)
+ALTER TABLE reservations ADD CONSTRAINT uq_algo UNIQUE (algo) NOT VALID;
+```
 
 ---
 

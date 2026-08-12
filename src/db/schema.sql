@@ -517,12 +517,13 @@ CREATE TABLE IF NOT EXISTS occupancy_records (
   created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
-DO $$
-BEGIN
-  ALTER TABLE occupancy_records
-    ADD CONSTRAINT uq_occupancy_resource_date UNIQUE (resource_id, date) NOT VALID;
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+-- UNIQUE constraint vía índice (no soporta NOT VALID como CHECK/FOREIGN KEY,
+-- así que un ADD CONSTRAINT...NOT VALID acá es SQL inválido — se detectó
+-- al re-aplicar este archivo contra una tenant DB real). CREATE UNIQUE INDEX
+-- IF NOT EXISTS es idempotente y equivale a la misma restricción, mismo
+-- patrón que el resto de los UNIQUE de este archivo (products, variants, stays).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_occupancy_resource_date
+  ON occupancy_records (resource_id, date);
 
 CREATE INDEX IF NOT EXISTS idx_occupancy_date          ON occupancy_records (date);
 CREATE INDEX IF NOT EXISTS idx_occupancy_resource_date ON occupancy_records (resource_id, date);
