@@ -693,9 +693,10 @@ describe('ReservationService', () => {
 
       const slots = await service.getAvailableSlots('svc-corte-1h', 'barbero-1', LUNES);
 
+      // Horarios en hora de Argentina (UTC-3): 14:00 ART = 17:00 UTC.
       expect(slots).toHaveLength(4); // solo 14-18, no 8-18 del negocio
-      expect(slots[0]).toContain('T14:00');
-      expect(slots.every((s) => new Date(s).getUTCHours() >= 14)).toBe(true);
+      expect(slots[0]).toContain('T17:00');
+      expect(slots.every((s) => new Date(s).getUTCHours() >= 17)).toBe(true);
     });
 
     it('horario cortado (mañana + tarde) genera turnos en ambas ventanas', async () => {
@@ -713,18 +714,19 @@ describe('ReservationService', () => {
         { id: 'bh-1', dayOfWeek: 0, startTime: '09:00:00', endTime: '11:00:00' },
       ]);
 
+      // 09:00 ART (horario del negocio) = 12:00 UTC.
       await service.createReservation({
         id: 'res-ocupado',
         resourceId: 't1',
         serviceId: 'svc-corte-1h',
         customer,
-        startTime: new Date('2026-08-17T09:00:00.000Z'),
+        startTime: new Date('2026-08-17T12:00:00.000Z'),
         details: {},
       });
 
       const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
       expect(slots).toHaveLength(1);
-      expect(slots[0]).toContain('T10:00');
+      expect(slots[0]).toContain('T13:00');
     });
 
     it('rechaza si el servicio no es "slot" o no tiene duración configurada', async () => {

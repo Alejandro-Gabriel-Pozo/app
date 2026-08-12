@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { SqlOperatingHoursRepository } from '../../repositories/sql.operating-hours.repository.js';
+import { windowsOverlap } from '../../repositories/operating-hours.repository.js';
 import { CreateOperatingWindowSchema } from '../schemas/request.schemas.js';
 import type { AppContainer } from '../../container.js';
 
@@ -34,6 +35,17 @@ export function createBusinessHoursRouter(_container: AppContainer): Router {
     try {
       const body = CreateOperatingWindowSchema.parse(req.body);
       const repo = new SqlOperatingHoursRepository(req.db!);
+
+      const existing = await repo.getAllBusinessWindows();
+      const sameDay = existing.filter((w) => w.dayOfWeek === body.dayOfWeek);
+      if (sameDay.some((w) => windowsOverlap(w, body))) {
+        res.status(409).json({
+          code: 'OPERATING_WINDOW_OVERLAP',
+          message: 'Ya existe una franja horaria que se superpone con esa, para ese día.',
+        });
+        return;
+      }
+
       const window = await repo.createBusinessWindow({ id: randomUUID(), ...body });
       res.status(201).json(window);
     } catch (err) { next(err); }

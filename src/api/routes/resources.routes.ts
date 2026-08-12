@@ -29,6 +29,7 @@ import { SqlCategoryRepository }         from '../../repositories/sql.category.r
 import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
+import { windowsOverlap }                from '../../repositories/operating-hours.repository.js';
 import { PhysicalResource }              from '../../domain/entities.js';
 import { randomUUID }                     from 'node:crypto';
 import { z, ZodError }                   from 'zod';
@@ -257,10 +258,22 @@ export function createResourcesRouter(): Router {
     async (req, res, next) => {
       try {
         const body = CreateOperatingWindowSchema.parse(req.body);
+        const resourceId = req.params['id']!;
         const repo = new SqlOperatingHoursRepository(req.db);
+
+        const existing = await repo.getResourceWindows(resourceId);
+        const sameDay = existing.filter((w) => w.dayOfWeek === body.dayOfWeek);
+        if (sameDay.some((w) => windowsOverlap(w, body))) {
+          res.status(409).json({
+            code: 'OPERATING_WINDOW_OVERLAP',
+            message: 'Ya existe una franja horaria que se superpone con esa, para ese día.',
+          });
+          return;
+        }
+
         const window = await repo.createResourceWindow({
           id: randomUUID(),
-          resourceId: req.params['id']!,
+          resourceId,
           ...body,
         });
         res.status(201).json(window);

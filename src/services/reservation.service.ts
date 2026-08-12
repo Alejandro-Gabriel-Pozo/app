@@ -666,21 +666,25 @@ export class ReservationService {
 }
 
 /**
- * Combina la fecha calendario (en UTC, para no depender de la zona horaria
- * del proceso — mismo criterio que `calculateNights`) con una hora
- * "HH:MM" o "HH:MM:SS" (tal cual llega de una columna TIME de Postgres).
+ * Combina la fecha calendario (leída en UTC, para no depender de la zona
+ * horaria del proceso — mismo criterio que `calculateNights`) con una hora
+ * "HH:MM" o "HH:MM:SS" (tal cual llega de una columna TIME de Postgres),
+ * interpretando esa hora en huso horario de Argentina (UTC-3, sin horario
+ * de verano desde 2009).
+ *
+ * Antes se armaba con `Date.UTC(...)`, es decir "09:00" se guardaba como
+ * 09:00 UTC. Como el resto de la app (reservas, `toLocaleTimeString`
+ * 'es-AR') muestra los horarios convertidos a hora local del navegador,
+ * un negocio en Argentina veía el turno desplazado 3 horas para atrás
+ * (09:00 configurado aparecía como 06:00 al elegir turno).
  */
 function combineDateAndTime(date: Date, time: string): Date {
   const parts = time.split(':').map(Number);
-  const hours = parts[0] ?? 0;
-  const minutes = parts[1] ?? 0;
-  const seconds = parts[2] ?? 0;
-  return new Date(Date.UTC(
-    date.getUTCFullYear(),
-    date.getUTCMonth(),
-    date.getUTCDate(),
-    hours,
-    minutes,
-    seconds,
-  ));
+  const hours   = String(parts[0] ?? 0).padStart(2, '0');
+  const minutes = String(parts[1] ?? 0).padStart(2, '0');
+  const seconds = String(parts[2] ?? 0).padStart(2, '0');
+  const year  = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day   = String(date.getUTCDate()).padStart(2, '0');
+  return new Date(`${year}-${month}-${day}T${hours}:${minutes}:${seconds}-03:00`);
 }
