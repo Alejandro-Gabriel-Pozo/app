@@ -8,6 +8,7 @@ import { InMemoryOccupancyRepository } from '../repositories/in-memory.occupancy
 import { InMemoryResourceLockRepository } from '../repositories/in-memory.resource-lock.repository.js';
 import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
 import { InMemoryCustomerRateRepository } from '../repositories/in-memory.customer-rate.repository.js';
+import { InMemoryOperatingHoursRepository } from '../repositories/in-memory.operating-hours.repository.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
 import { DomainEventRepository } from '../repositories/domain-event.repository.js';
@@ -70,6 +71,7 @@ describe('ReservationService', () => {
   let lockRepo: InMemoryResourceLockRepository;
   let bookableServiceRepo: InMemoryBookableServiceRepository;
   let customerRateRepo: InMemoryCustomerRateRepository;
+  let operatingHoursRepo: InMemoryOperatingHoursRepository;
   let service: ReservationService;
 
   const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
@@ -93,6 +95,7 @@ describe('ReservationService', () => {
     lockRepo              = new InMemoryResourceLockRepository();
     bookableServiceRepo   = new InMemoryBookableServiceRepository();
     customerRateRepo      = new InMemoryCustomerRateRepository();
+    operatingHoursRepo    = new InMemoryOperatingHoursRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -104,6 +107,7 @@ describe('ReservationService', () => {
       lockRepo,
       bookableServiceRepo,
       customerRateRepo,
+      operatingHoursRepo,
     );
 
     await resourceRepo.save(table);
@@ -645,6 +649,94 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.totalPrice).toBe(160); // 80 * 2 noches
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('getAvailableSlots — horario de atención (negocio + override por recurso)', () => {
+    const barbero = new BookableResource('barbero-1', 'Barbero Juan', 20, 'cat-table', null);
+
+    beforeEach(async () => {
+      await resourceRepo.save(barbero);
+      bookableServiceRepo.seed({
+        id: 'svc-corte-1h', categoryId: 'cat-table', name: 'Corte',
+        bookingMode: 'slot', durationMinutes: 60, price: 20,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+
+    // Lunes 2026-08-17 — coincide con dayOfWeek=0 (lunes) en la resolución
+    // (date.getUTCDay() + 6) % 7 usada por getAvailableSlots.
+    const LUNES = new Date('2026-08-17T00:00:00.000Z');
+
+    it('sin horario configurado (ni recurso ni negocio) devuelve lista vacía', async () => {
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      expect(slots).toEqual([]);
+    });
+
+    it('usa el horario del negocio cuando el recurso no tiene uno propio', async () => {
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-1', dayOfWeek: 0, startTime: '09:00:00', endTime: '11:00:00' },
+      ]);
+
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      expect(slots).toHaveLength(2); // 09:00 y 10:00, turnos de 60min
+    });
+
+    it('el horario propio del recurso reemplaza al del negocio, no se combina', async () => {
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-1', dayOfWeek: 0, startTime: '08:00:00', endTime: '18:00:00' },
+      ]);
+      operatingHoursRepo.seedResource('barbero-1', [
+        { id: 'rh-1', dayOfWeek: 0, startTime: '14:00:00', endTime: '18:00:00' },
+      ]);
+
+      const slots = await service.getAvailableSlots('svc-corte-1h', 'barbero-1', LUNES);
+
+      expect(slots).toHaveLength(4); // solo 14-18, no 8-18 del negocio
+      expect(slots[0]).toContain('T14:00');
+      expect(slots.every((s) => new Date(s).getUTCHours() >= 14)).toBe(true);
+    });
+
+    it('horario cortado (mañana + tarde) genera turnos en ambas ventanas', async () => {
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-1', dayOfWeek: 0, startTime: '09:00:00', endTime: '13:00:00' },
+        { id: 'bh-2', dayOfWeek: 0, startTime: '14:00:00', endTime: '18:00:00' },
+      ]);
+
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      expect(slots).toHaveLength(8); // 4 + 4
+    });
+
+    it('un turno ya reservado no aparece entre los disponibles', async () => {
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-1', dayOfWeek: 0, startTime: '09:00:00', endTime: '11:00:00' },
+      ]);
+
+      await service.createReservation({
+        id: 'res-ocupado',
+        resourceId: 't1',
+        serviceId: 'svc-corte-1h',
+        customer,
+        startTime: new Date('2026-08-17T09:00:00.000Z'),
+        details: {},
+      });
+
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      expect(slots).toHaveLength(1);
+      expect(slots[0]).toContain('T10:00');
+    });
+
+    it('rechaza si el servicio no es "slot" o no tiene duración configurada', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-alojamiento', categoryId: 'cat-table', name: 'Noche',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      await expect(
+        service.getAvailableSlots('svc-alojamiento', 't1', LUNES),
+      ).rejects.toThrow(InvalidReservationError);
     });
   });
 });

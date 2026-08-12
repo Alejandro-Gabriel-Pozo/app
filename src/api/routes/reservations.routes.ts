@@ -58,6 +58,7 @@ import { SqlResourceLockRepository }     from '../../repositories/sql.resource-l
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRepository }         from '../../repositories/sql.customer.repository.js';
 import { SqlCustomerRateRepository }     from '../../repositories/sql.customer-rate.repository.js';
+import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../schemas/request.schemas.js';
 import { toReservationDto }              from '../mappers/reservation.mapper.js';
@@ -72,6 +73,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
   const resourceLockRepo      = new SqlResourceLockRepository(db);
   const bookableServiceRepo   = new SqlBookableServiceRepository(db);
   const customerRateRepo      = new SqlCustomerRateRepository(db);
+  const operatingHoursRepo    = new SqlOperatingHoursRepository(db);
   const transactionManager    = buildTenantTransactionManager(req);
   return new ReservationService(
     reservationRepo,
@@ -83,6 +85,7 @@ function buildReservationService(req: import('express').Request): ReservationSer
     resourceLockRepo,
     bookableServiceRepo,
     customerRateRepo,
+    operatingHoursRepo,
   );
 }
 

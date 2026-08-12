@@ -47,6 +47,7 @@ import { createOrdersRouter }            from './api/routes/orders.routes.js';
 import { createBookableServicesRouter }  from './api/routes/bookable-services.routes.js';
 import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.js';
 import { createStaysRouter }             from './api/routes/stays.routes.js';
+import { createBusinessHoursRouter }     from './api/routes/business-hours.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
 import { helmetBase, helmetApi, helmetDocs } from './api/middleware/helmet.middleware.js';
@@ -189,6 +190,7 @@ export async function createApp(): Promise<{
   app.use('/api/products',          createProductsRouter(container));
   app.use('/api/orders',            createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
+  app.use('/api/business-hours',    createBusinessHoursRouter(container));
 
   app.use('/api/reports', (req: Request, _res: Response, next: NextFunction) => {
     const occupancyRepo = new SqlOccupancyRepository(req.db);

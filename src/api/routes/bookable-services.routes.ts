@@ -44,8 +44,15 @@ import { ResourceLockService } from '../../services/resource-lock.service.js';
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
 import { SqlResourceLockRepository }    from '../../repositories/sql.resource-lock.repository.js';
 import { SqlResourceRepository }        from '../../repositories/sql.resource.repository.js';
+import { SqlReservationRepository }     from '../../repositories/sql.reservation.repository.js';
+import { SqlOccupancyRepository }       from '../../repositories/sql.occupancy.repository.js';
+import { SqlCategoryRepository }        from '../../repositories/sql.category.repository.js';
+import { SqlDomainEventRepository }     from '../../repositories/sql.domain-event.repository.js';
+import { SqlCustomerRateRepository }    from '../../repositories/sql.customer-rate.repository.js';
+import { SqlOperatingHoursRepository }  from '../../repositories/sql.operating-hours.repository.js';
+import { ReservationService }           from '../../services/reservation.service.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
-import { ResourceNotFoundError } from '../../domain/errors.js';
+import { ResourceNotFoundError, InvalidReservationError } from '../../domain/errors.js';
 import {
   CreateBookableServiceSchema,
   UpdateBookableServiceSchema,
@@ -65,6 +72,23 @@ function buildResourceLockService(req: Request): ResourceLockService {
     new SqlBookableServiceRepository(req.db!),
     new SqlResourceRepository(req.db!),
     buildTenantTransactionManager(req),
+  );
+}
+
+function buildReservationService(req: Request): ReservationService {
+  const db = req.db!;
+  const resourceRepo = new SqlResourceRepository(db);
+  return new ReservationService(
+    new SqlReservationRepository(db, resourceRepo),
+    resourceRepo,
+    new SqlOccupancyRepository(db),
+    new SqlCategoryRepository(db),
+    new SqlDomainEventRepository(db),
+    buildTenantTransactionManager(req),
+    new SqlResourceLockRepository(db),
+    new SqlBookableServiceRepository(db),
+    new SqlCustomerRateRepository(db),
+    new SqlOperatingHoursRepository(db),
   );
 }
 
@@ -197,6 +221,35 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
     } catch (err) {
       if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
       if (err instanceof ResourceNotFoundError)        { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── GET /api/bookable-services/:id/available-slots?resourceId=X&date=YYYY-MM-DD
+  // Roles.BOOKING (incluye CUSTOMER) — turnos libres para un servicio "slot"
+  // en un recurso puntual, ese día. Ver docs/conocimiento-del-negocio.md.
+  router.get('/:id/available-slots', authorize(Roles.BOOKING), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const resourceId = req.query['resourceId'];
+      const dateStr     = req.query['date'];
+      if (typeof resourceId !== 'string' || !resourceId) {
+        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'resourceId es obligatorio' });
+        return;
+      }
+      if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'date es obligatorio, formato YYYY-MM-DD' });
+        return;
+      }
+
+      const slots = await buildReservationService(req).getAvailableSlots(
+        param(req, 'id'),
+        resourceId,
+        new Date(`${dateStr}T00:00:00.000Z`),
+      );
+      res.json({ slots });
+    } catch (err) {
+      if (err instanceof ResourceNotFoundError)     { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: err.message }); return; }
+      if (err instanceof InvalidReservationError)   { res.status(400).json({ code: 'INVALID_RESERVATION', message: err.message }); return; }
       next(err);
     }
   });

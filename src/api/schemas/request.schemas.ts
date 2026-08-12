@@ -224,3 +224,18 @@ export const RecordPaymentSchema = z.object({
   idempotencyKey: z.string().min(1).optional(),
   notes:          z.string().max(500).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Horario de atención — POST /api/business-hours, POST /api/resources/:id/hours
+// ---------------------------------------------------------------------------
+
+const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+
+export const CreateOperatingWindowSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startTime: z.string().regex(TIME_REGEX, { message: 'startTime debe tener formato HH:MM o HH:MM:SS' }),
+  endTime:   z.string().regex(TIME_REGEX, { message: 'endTime debe tener formato HH:MM o HH:MM:SS' }),
+}).refine((data) => data.endTime > data.startTime, {
+  message: 'endTime debe ser posterior a startTime',
+  path: ['endTime'],
+});

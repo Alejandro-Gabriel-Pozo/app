@@ -101,6 +101,7 @@ import { IResourceLockRepository }      from '../repositories/resource-lock.repo
 import type { IBookableServiceRepository } from '../repositories/bookable-service.repository.js';
 import type { BookableService } from '../types/bookable-service.types.js';
 import type { ICustomerRateRepository } from '../repositories/customer-rate.repository.js';
+import type { IOperatingHoursRepository } from '../repositories/operating-hours.repository.js';
 import { TransactionManager }           from '../db/transaction-manager.js';
 import { SqlClient }                    from '../repositories/sql.client.js';
 
@@ -115,6 +116,7 @@ export class ReservationService {
     private readonly resourceLockRepository:  IResourceLockRepository,
     private readonly bookableServiceRepository: IBookableServiceRepository,
     private readonly customerRateRepository:  ICustomerRateRepository,
+    private readonly operatingHoursRepository: IOperatingHoursRepository,
   ) {}
 
   async createReservation(params: {
@@ -477,6 +479,48 @@ export class ReservationService {
     return this.reservationRepository.getById(id);
   }
 
+  /**
+   * Turnos disponibles de un servicio `slot` para un recurso puntual, un día
+   * dado. Resuelve el horario aplicable vía `operatingHoursRepository.
+   * getEffectiveWindows()` (propio del recurso si tiene, si no el del
+   * negocio), genera candidatos cada `durationMinutes` dentro de esas
+   * ventanas, y filtra los que ya están ocupados reusando `checkAvailability`
+   * (misma lógica de conflictos que create/update, incluye resource_locks).
+   */
+  async getAvailableSlots(serviceId: string, resourceId: string, date: Date): Promise<string[]> {
+    const service = await this.bookableServiceRepository.findById(serviceId);
+    if (!service || service.bookingMode !== 'slot' || service.durationMinutes == null) {
+      throw new InvalidReservationError('El servicio no tiene turnos por horario configurables');
+    }
+
+    const resource = await this.resourceRepository.getById(resourceId);
+    if (!resource) throw new ResourceNotFoundError(resourceId);
+
+    const dayOfWeek = (date.getUTCDay() + 6) % 7; // JS: domingo=0 → 0=lunes
+    const windows = await this.operatingHoursRepository.getEffectiveWindows(resourceId, dayOfWeek);
+    if (windows.length === 0) return [];
+
+    const durationMs = service.durationMinutes * 60_000;
+    const slots: Date[] = [];
+    for (const w of windows) {
+      let cursor = combineDateAndTime(date, w.startTime);
+      const windowEnd = combineDateAndTime(date, w.endTime);
+      while (cursor.getTime() + durationMs <= windowEnd.getTime()) {
+        slots.push(new Date(cursor));
+        cursor = new Date(cursor.getTime() + durationMs);
+      }
+    }
+
+    const available = await Promise.all(
+      slots.map(async (start) => {
+        const end = new Date(start.getTime() + durationMs);
+        const ok = await this.checkAvailability(resourceId, start, end, undefined, serviceId);
+        return ok ? start.toISOString() : null;
+      }),
+    );
+    return available.filter((s): s is string => s !== null);
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers privados
   // ---------------------------------------------------------------------------
@@ -619,4 +663,24 @@ export class ReservationService {
 
     return [...merged.values()];
   }
+}
+
+/**
+ * Combina la fecha calendario (en UTC, para no depender de la zona horaria
+ * del proceso — mismo criterio que `calculateNights`) con una hora
+ * "HH:MM" o "HH:MM:SS" (tal cual llega de una columna TIME de Postgres).
+ */
+function combineDateAndTime(date: Date, time: string): Date {
+  const parts = time.split(':').map(Number);
+  const hours = parts[0] ?? 0;
+  const minutes = parts[1] ?? 0;
+  const seconds = parts[2] ?? 0;
+  return new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    hours,
+    minutes,
+    seconds,
+  ));
 }

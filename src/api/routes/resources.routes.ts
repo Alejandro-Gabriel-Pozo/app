@@ -28,9 +28,11 @@ import { SqlResourceRepository }         from '../../repositories/sql.resource.r
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
 import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
+import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
 import { PhysicalResource }              from '../../domain/entities.js';
 import { randomUUID }                     from 'node:crypto';
 import { z, ZodError }                   from 'zod';
+import { CreateOperatingWindowSchema }   from '../schemas/request.schemas.js';
 import type { VisualMetadata }           from '../../types/visual.interface.js';
 
 // ---------------------------------------------------------------------------
@@ -229,6 +231,50 @@ export function createResourcesRouter(): Router {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Recurso no encontrado' });
           return;
         }
+        res.status(204).send();
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── Horario propio del recurso (override opcional del horario del negocio) ─
+  // Ver docs/conocimiento-del-negocio.md — ej. un barbero con horario propio
+  // distinto al del negocio. Vacío = hereda el default de /api/business-hours.
+
+  router.get(
+    '/:id/hours',
+    authorize(Roles.BOOKING),
+    async (req, res, next) => {
+      try {
+        const repo = new SqlOperatingHoursRepository(req.db);
+        res.json(await repo.getResourceWindows(req.params['id']!));
+      } catch (err) { next(err); }
+    },
+  );
+
+  router.post(
+    '/:id/hours',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const body = CreateOperatingWindowSchema.parse(req.body);
+        const repo = new SqlOperatingHoursRepository(req.db);
+        const window = await repo.createResourceWindow({
+          id: randomUUID(),
+          resourceId: req.params['id']!,
+          ...body,
+        });
+        res.status(201).json(window);
+      } catch (err) { next(err); }
+    },
+  );
+
+  router.delete(
+    '/:id/hours/:hourId',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const repo = new SqlOperatingHoursRepository(req.db);
+        await repo.deleteResourceWindow(req.params['hourId']!);
         res.status(204).send();
       } catch (err) { next(err); }
     },
