@@ -166,7 +166,7 @@ describe('SqlOccupancyRepository', () => {
       const mockQuery = vi.mocked(mockSqlClient.query);
       const call = mockQuery.mock.calls[0];
       expect(call[0]).toContain('GROUP BY resource_id');
-      expect(call[0]).toContain('ORDER BY occupancyRate DESC');
+      expect(call[0]).toContain('ORDER BY "occupancyRate" DESC');
 
       expect(result).toHaveLength(2);
       expect(result[0]!.occupancyRate).toBe(25.5);
