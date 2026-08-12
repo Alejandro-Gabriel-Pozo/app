@@ -341,7 +341,14 @@ CREATE INDEX IF NOT EXISTS idx_resource_hours_resource_day
 -- ===========================================================================
 -- BLOQUE 2 — STAFF / USUARIOS DEL PANEL
 -- ===========================================================================
-
+-- ⚠️ LEGACY, sin código que la lea ni escriba: el staff real vive en
+-- identities/memberships de la PLATFORM DB (src/db/platform.schema.sql),
+-- gestionado por PlatformRepository (ver users.routes.ts). No agregar FKs
+-- nuevas contra esta tabla — stock_movements.created_by y
+-- stays.assigned_by ya lo hicieron por error y esas features insertan
+-- siempre con un identity_id de la platform DB, que nunca existe acá:
+-- toda inserción viola la FK y explota. Se mantiene sin borrar por si algo
+-- no descubierto todavía depende de que exista la tabla (no del contenido).
 CREATE TABLE IF NOT EXISTS users (
   id            VARCHAR(255)  PRIMARY KEY,
   business_id   VARCHAR(255)  NOT NULL,
@@ -562,6 +569,68 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'stays_updated_at') THEN
     CREATE TRIGGER stays_updated_at
       BEFORE UPDATE ON stays
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
+-- BLOQUE 6.5 — HOUSEKEEPING (limpieza/preparación de habitaciones por turno)
+-- ===========================================================================
+-- Historia: el módulo (rutas, servicio, entidad de dominio) se implementó
+-- completo pero la tabla solo existía en src/db/migrations/005_housekeeping_
+-- tasks.sql — un directorio de migraciones paralelo que nada en el código
+-- lee (ver loadTenantSchema() en tenant-db.setup.ts, que solo lee ESTE
+-- archivo). Nunca llegó a este schema.sql ni a migrations/, así que ningún
+-- tenant (nuevo o viejo) tuvo la tabla. Ese directorio duplicado se borró —
+-- incorporado acá en su lugar, mismas columnas, tipos alineados al resto de
+-- este archivo (VARCHAR(255) en vez de UUID nativo, sin importar).
+--
+-- assigned_to / inspected_by SIN REFERENCES a propósito: guardan el
+-- identity_id de quien está autenticado (JWT `sub`, ver auth.service.ts),
+-- que vive en identities/memberships de la PLATFORM DB — una base
+-- distinta, imposible de referenciar con una FK real desde acá. La tabla
+-- `users` de este mismo archivo NO sirve para esto (ver comentario arriba,
+-- BLOQUE 2): está muerta, y agregar la FK contra ella rompería todo
+-- insert, igual que ya le pasa a stays.assigned_by.
+CREATE TABLE IF NOT EXISTS housekeeping_tasks (
+  id            VARCHAR(255)  PRIMARY KEY,
+  business_id   VARCHAR(255)  NOT NULL,
+  resource_id   VARCHAR(255)  NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+  assigned_to   VARCHAR(255),
+  status        VARCHAR(20)   NOT NULL DEFAULT 'PENDING'
+                  CHECK (status IN ('PENDING', 'ASSIGNED', 'IN_PROGRESS', 'DONE', 'INSPECTED', 'OUT_OF_SERVICE')),
+  notes         TEXT,
+  shift         VARCHAR(20)   NOT NULL CHECK (shift IN ('MORNING', 'AFTERNOON', 'NIGHT')),
+  scheduled_for TIMESTAMPTZ   NOT NULL,
+  started_at    TIMESTAMPTZ,
+  completed_at  TIMESTAMPTZ,
+  inspected_at  TIMESTAMPTZ,
+  inspected_by  VARCHAR(255),
+  created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- Sin cast a ::date: timestamptz → date depende del TimeZone de sesión, así
+-- que Postgres lo marca STABLE, no IMMUTABLE, y rechaza el índice funcional
+-- ("functions in index expression must be marked IMMUTABLE"). Se indexa la
+-- columna sin castear — sigue sirviendo al filtro por rango de
+-- SqlHousekeepingRepository.findByDate() vía range scan.
+CREATE INDEX IF NOT EXISTS idx_hk_tasks_business_date
+  ON housekeeping_tasks (business_id, scheduled_for);
+
+CREATE INDEX IF NOT EXISTS idx_hk_tasks_resource
+  ON housekeeping_tasks (resource_id, business_id);
+
+CREATE INDEX IF NOT EXISTS idx_hk_tasks_assignee
+  ON housekeeping_tasks (assigned_to, business_id) WHERE assigned_to IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_hk_tasks_status
+  ON housekeeping_tasks (business_id, status);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'housekeeping_tasks_updated_at') THEN
+    CREATE TRIGGER housekeeping_tasks_updated_at
+      BEFORE UPDATE ON housekeeping_tasks
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;

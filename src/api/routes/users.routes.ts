@@ -30,7 +30,7 @@ import { UserRole } from '../../types/enums.js';
 import { hashPassword } from '../../security/user.store.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 
-const MEMBER_ROLES = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER] as const;
+const MEMBER_ROLES = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER, UserRole.HOUSEKEEPING] as const;
 
 const CreateUserBodySchema = z.object({
   email: z.string({ required_error: 'email es obligatorio' }).email(),

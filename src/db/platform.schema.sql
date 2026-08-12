@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS memberships (
   business_id   VARCHAR(255) NOT NULL
                   REFERENCES businesses(id) ON DELETE CASCADE,
   role          VARCHAR(50)  NOT NULL
-                  CHECK (role IN ('OWNER', 'ADMIN', 'RECEPTIONIST', 'WAITER')),
+                  CHECK (role IN ('OWNER', 'ADMIN', 'RECEPTIONIST', 'WAITER', 'HOUSEKEEPING')),
   active        BOOLEAN      NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -131,10 +131,17 @@ CREATE TABLE IF NOT EXISTS memberships (
 -- decía en un comentario "el rol OWNER se asigna al crear el negocio" pero
 -- en realidad creaba la membership con ADMIN — nadie tenía OWNER nunca,
 -- así que DELETE /api/users/:id, que exige OWNER, era inalcanzable).
+--
+-- HOUSEKEEPING se agregó el 12/08/2026: el módulo de housekeeping (rutas,
+-- servicio, entidad de dominio, Roles.HOUSEKEEPING_AND_MANAGEMENT) esperaba
+-- este rol desde su implementación original, pero nunca se pudo crear un
+-- miembro con él porque el CHECK no lo incluía ni acá ni en MEMBER_ROLES
+-- (users.routes.ts) — el rol no existía en ningún lugar donde de verdad se
+-- crean cuentas.
 ALTER TABLE memberships DROP CONSTRAINT IF EXISTS memberships_role_check;
 ALTER TABLE memberships
   ADD CONSTRAINT memberships_role_check
-    CHECK (role IN ('OWNER', 'ADMIN', 'RECEPTIONIST', 'WAITER'));
+    CHECK (role IN ('OWNER', 'ADMIN', 'RECEPTIONIST', 'WAITER', 'HOUSEKEEPING'));
 
 CREATE INDEX IF NOT EXISTS idx_memberships_identity
   ON memberships (identity_id)
