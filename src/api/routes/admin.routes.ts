@@ -17,6 +17,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString } from '../../platform/tenant-db.setup.js';
+import { evictTenantPool } from '../../platform/tenant.middleware.js';
 import { Roles } from '../../security/roles.js';
 
 export function createAdminRouter(platformRepo: PlatformRepository): Router {
@@ -60,6 +61,9 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
 
         const encrypted = await encryptConnectionString(databaseUrl);
         await platformRepo.activateBusiness(businessId, 'manual-demo', encrypted);
+        // Sin esto, el pool cacheado en memoria (tenant.middleware.ts) sigue
+        // usando la connection string vieja hasta que el proceso reinicie.
+        await evictTenantPool(businessId);
 
         console.log(`[admin] ✅ Negocio ${businessId} activado correctamente.`);
 
@@ -111,6 +115,9 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
 
         const encrypted = await encryptConnectionString(databaseUrl);
         await platformRepo.activateBusiness(businessId, 'neon-tenant', encrypted);
+        // Sin esto, el pool cacheado en memoria (tenant.middleware.ts) sigue
+        // usando la connection string vieja hasta que el proceso reinicie.
+        await evictTenantPool(businessId);
 
         console.log(`[admin] ✅ Negocio ${businessId} apuntado a URL de Tenant DB.`);
 
