@@ -504,6 +504,11 @@ END $$;
 -- BLOQUE 5 — STOCK
 -- ===========================================================================
 
+-- ⚠️ Sin código que la lea ni escriba todavía (ver comentario en BLOQUE 2
+-- sobre la tabla `users` muerta) — nadie la implementó más allá del CREATE
+-- TABLE. Se deja la FK de created_by ya corregida de antemano para que,
+-- el día que se implemente, no repita el mismo bug que tenían stays y
+-- housekeeping_tasks.
 CREATE TABLE IF NOT EXISTS stock_movements (
   id                  VARCHAR(255)  PRIMARY KEY,
   business_id         VARCHAR(255)  NOT NULL,
@@ -513,7 +518,7 @@ CREATE TABLE IF NOT EXISTS stock_movements (
                         CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN')),
   quantity            INTEGER       NOT NULL CHECK (quantity > 0),
   order_item_id       VARCHAR(255)  REFERENCES order_items(id) ON DELETE RESTRICT,
-  created_by          VARCHAR(255)  NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_by          VARCHAR(255)  NOT NULL,
   notes               TEXT,
   created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
@@ -542,7 +547,12 @@ CREATE TABLE IF NOT EXISTS stays (
   reservation_id  VARCHAR(255)  NOT NULL REFERENCES reservations(id) ON DELETE RESTRICT,
   resource_id     VARCHAR(255)  NOT NULL REFERENCES resources(id)    ON DELETE RESTRICT,
   customer_id     VARCHAR(255)  NOT NULL REFERENCES customers(id)    ON DELETE RESTRICT,
-  assigned_by     VARCHAR(255)  NOT NULL REFERENCES users(id)        ON DELETE RESTRICT,
+  -- SIN FK a `users` a propósito — ver comentario en BLOQUE 2 (tabla
+  -- muerta). Guarda el identity_id de quien hizo el check-in (JWT `sub`),
+  -- que vive en la platform DB. Bug real hasta el 12/08/2026: con la FK,
+  -- todo check-in fallaba con "violates foreign key constraint" porque
+  -- ese id nunca existe en la tabla `users` del tenant (vacía siempre).
+  assigned_by     VARCHAR(255)  NOT NULL,
   status          VARCHAR(20)   NOT NULL DEFAULT 'CHECKED_IN'
                     CHECK (status IN ('CHECKED_IN', 'CHECKED_OUT', 'NO_SHOW')),
   checked_in_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
