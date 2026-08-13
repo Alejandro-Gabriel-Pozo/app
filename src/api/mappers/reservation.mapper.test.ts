@@ -59,4 +59,10 @@ describe('toReservationDto', () => {
     expect(dto.notes).toBe('Pidió silla junto a la ventana');
     expect(dto.totalPrice).toBe(20);
   });
+
+  it('allowedTransitions sobrevive un roundtrip JSON real (A3, deuda estructural)', () => {
+    // reservation está en PENDING (default) — PENDING → CONFIRMED | CANCELLED.
+    const roundtripped = JSON.parse(JSON.stringify(toReservationDto(reservation)));
+    expect(roundtripped.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED']);
+  });
 });

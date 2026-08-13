@@ -134,6 +134,15 @@ export class Reservation {
   }
 
   /**
+   * Transiciones válidas desde el estado actual — mismo mapa que usa
+   * transitionTo() internamente, expuesto para que el frontend deje de
+   * reimplementar esta máquina de estados a mano (deuda estructural A3).
+   */
+  get allowedTransitions(): readonly ReservationStatus[] {
+    return ALLOWED_TRANSITIONS[this._status];
+  }
+
+  /**
    * Reconstruye una Reservation desde una fila de persistencia.
    * Restaura cualquier status sin pasar por las validaciones de transición.
    */

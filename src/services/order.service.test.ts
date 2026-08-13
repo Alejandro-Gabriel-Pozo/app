@@ -71,6 +71,18 @@ describe('OrderService', () => {
       });
     });
 
+    it('allowedTransitions refleja las transiciones válidas por estado (A3)', async () => {
+      const id = await createDraftOrderWithItem(100);
+      const draft = await service.getOrder(id);
+      expect(draft?.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED']);
+
+      const confirmed = await service.confirmOrder(id);
+      expect(confirmed.allowedTransitions).toEqual(['COMPLETED', 'CANCELLED']);
+
+      const completed = await service.completeOrder(id);
+      expect(completed.allowedTransitions).toEqual([]);
+    });
+
     it('propaga stayId en el payload cuando la orden se creó con "cargo a la habitación" (A1, paso 4)', async () => {
       const order = await service.createOrder({
         businessId: TEST_BUSINESS_ID,

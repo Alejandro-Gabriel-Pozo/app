@@ -12,6 +12,7 @@
 import { Reservation } from '../../domain/Reservation.js';
 import { BookableResource } from '../../domain/entities.js';
 import { VisualMetadata } from '../../types/visual.interface.js';
+import { ReservationStatus } from '../../types/enums.js';
 
 export interface ReservationLineDto {
   id: string;
@@ -54,6 +55,12 @@ export interface ReservationDto {
    * expone para no tener que volver a tocar este DTO cuando lo haya.
    */
   lines: ReservationLineDto[];
+  /**
+   * Transiciones válidas desde `status` — el frontend debe usar esto en
+   * vez de reimplementar la máquina de estados a mano (deuda estructural
+   * A3, docs/pendientes-2026-08-13.md).
+   */
+  allowedTransitions: ReservationStatus[];
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -90,5 +97,6 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
       unitDate: line.unitDate.toISOString().slice(0, 10),
       price:    line.price,
     })),
+    allowedTransitions: [...reservation.allowedTransitions],
   };
 }

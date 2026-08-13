@@ -117,6 +117,16 @@ export interface Order {
   updatedAt:     Date;
 }
 
+/**
+ * `Order` + transiciones válidas desde `status` — lo que devuelve
+ * `OrderService` (no los repos: es derivado, no persistido). El frontend
+ * debe usar `allowedTransitions` en vez de reimplementar la máquina de
+ * estados a mano (deuda estructural A3, docs/pendientes-2026-08-13.md).
+ */
+export interface OrderWithTransitions extends Order {
+  allowedTransitions: OrderStatus[];
+}
+
 // ---------------------------------------------------------------------------
 // DTOs de creación / actualización
 // ---------------------------------------------------------------------------

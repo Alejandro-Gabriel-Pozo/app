@@ -117,13 +117,38 @@ de otros dueños) — no bloquea nada de lo que ya está en producción. Viene d
 la "segunda opinión" del gap analysis (2026-08-12), lente distinta a la
 original: "qué se encarece con el tiempo" en vez de "qué bloquea un vertical".
 
-### A3. Frontend duplica a mano las transiciones de estado
-`Reservation`/`HousekeepingTask`/`Order` tienen su máquina de estados
-reimplementada en el frontend (qué botón mostrar según estado) en vez de que
-el backend exponga `allowedTransitions[]` y el frontend solo renderice. Mismo
-origen que A2 (segunda opinión, 2026-08-12). Riesgo: el día que se agregue o
-cambie una transición en el backend, hay que acordarse de replicarla en el
-frontend a mano.
+### A3. Frontend duplica a mano las transiciones de estado — ✅ RESUELTO (13/08/2026)
+`Reservation`, `HousekeepingTask` y `Order` ahora exponen `allowedTransitions`
+(cada uno calculado distinto porque cada uno modela sus reglas distinto):
+- `Reservation`: ya tenía `ALLOWED_TRANSITIONS` declarativo, solo hubo que
+  exponerlo (`Reservation.allowedTransitions` getter → `ReservationDto`).
+- `HousekeepingTask`: los guards vivían sueltos en cada método. Se agregó
+  un mapa `ALLOWED_TRANSITIONS` de solo lectura que refleja esos guards
+  sin tocarlos (los métodos siguen validando por su cuenta, con sus
+  mensajes de error específicos).
+- `Order` no es una clase. Se agregó `OrderWithTransitions` (sin tocar
+  `Order`) + `ORDER_ALLOWED_TRANSITIONS` + `withAllowedTransitions()`,
+  usado en cada return de `OrderService`.
+
+**Hallazgo importante:** no todos los `status === 'X'` del frontend eran
+duplicación pura. Dos casos en `housekeeping/page.tsx` son restricciones
+de **UX deliberadamente más angostas** que lo que el dominio técnicamente
+permite — "Asignar" solo se ofrece desde `PENDING` (el dominio permite
+reasignar desde `ASSIGNED`/`IN_PROGRESS`/`DONE` también, pero esta UI no
+expone esa reasignación). Se dejó con su chequeo de `status` explícito,
+comentado, en vez de forzarlo a `allowedTransitions` (eso habría *ampliado*
+cuándo aparece el botón — un cambio de producto no pedido). "Fuera de
+servicio", en cambio, sí resultó ser un match exacto una vez calculado con
+precisión — se migró sin cambiar comportamiento.
+
+Frontend: `reservas/page.tsx` (6 botones), `ordenes/[id]/page.tsx` (3 —
+el editar-horario/editar-ítems NO se tocó, es permiso de edición, no
+transición de estado), `housekeeping/page.tsx` (4 de 6 botones).
+
+3 archivos de test tocados/nuevos (`reservation.mapper.test.ts`,
+`housekeeping-task.test.ts` nuevo con 7 tests, `order.service.test.ts`).
+274/275 verde backend, typecheck limpio en los dos repos, `next build`
+completo sin errores. No probado en navegador contra un backend real.
 
 ---
 

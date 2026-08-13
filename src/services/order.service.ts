@@ -22,6 +22,7 @@ import type {
   Order,
   OrderItem,
   OrderStatus,
+  OrderWithTransitions,
   CreateOrderInput,
   CreateOrderItemInput,
   UpdateOrderInput,
@@ -118,6 +119,24 @@ function buildOrderItemInput(
   };
 }
 
+/**
+ * Transiciones válidas por estado — refleja exactamente los guards de
+ * confirmOrder()/completeOrder()/cancelOrder() de abajo (deuda estructural
+ * A3). CANCELLED no figura como destino repetido si ya está CANCELLED —
+ * cancelOrder() solo bloquea desde COMPLETED, pero cancelar dos veces no
+ * es una transición real (el repo lo no-opea).
+ */
+const ORDER_ALLOWED_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
+  DRAFT:     ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['COMPLETED', 'CANCELLED'],
+  COMPLETED: [],
+  CANCELLED: [],
+};
+
+function withAllowedTransitions(order: Order): OrderWithTransitions {
+  return { ...order, allowedTransitions: [...ORDER_ALLOWED_TRANSITIONS[order.status]] };
+}
+
 // ---------------------------------------------------------------------------
 // OrderService
 // ---------------------------------------------------------------------------
@@ -129,15 +148,16 @@ export class OrderService {
     private readonly domainEventRepository: DomainEventRepository,
   ) {}
 
-  async listOrders(filter: ListOrdersFilter): Promise<Order[]> {
-    return this.orderRepo.getAll(filter);
+  async listOrders(filter: ListOrdersFilter): Promise<OrderWithTransitions[]> {
+    return (await this.orderRepo.getAll(filter)).map(withAllowedTransitions);
   }
 
-  async getOrder(id: string): Promise<Order | null> {
-    return (await this.orderRepo.getById(id)) ?? null;
+  async getOrder(id: string): Promise<OrderWithTransitions | null> {
+    const order = await this.orderRepo.getById(id);
+    return order ? withAllowedTransitions(order) : null;
   }
 
-  async createOrder(input: CreateOrderInput): Promise<Order> {
+  async createOrder(input: CreateOrderInput): Promise<OrderWithTransitions> {
     return this.transactionManager.run(async (client: SqlClient) => {
       // randomUUID importado desde node:crypto (no require())
       const id = randomUUID();
@@ -158,7 +178,7 @@ export class OrderService {
         );
       }
 
-      return { ...order, totalAmount: total, items };
+      return withAllowedTransitions({ ...order, totalAmount: total, items });
     });
   }
 
@@ -183,7 +203,7 @@ export class OrderService {
    * crea un CHARGE PENDING si totalAmount > 0, mismo patrón que
    * ReservationService.confirmReservation con reservation.confirmed.
    */
-  async confirmOrder(id: string): Promise<Order> {
+  async confirmOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
@@ -202,12 +222,12 @@ export class OrderService {
           stayId:      updated.stayId,
         },
       });
-      return updated;
+      return withAllowedTransitions(updated);
     });
   }
 
   /** CONFIRMED -> COMPLETED. Emite `order.completed` -> settea el CHARGE a SETTLED. */
-  async completeOrder(id: string): Promise<Order> {
+  async completeOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'CONFIRMED') throw new InvalidOrderTransitionError(order.status, 'COMPLETED');
@@ -221,12 +241,12 @@ export class OrderService {
         eventType:     'order.completed',
         payload: { orderId: updated.id },
       });
-      return updated;
+      return withAllowedTransitions(updated);
     });
   }
 
   /** DRAFT/CONFIRMED -> CANCELLED. Emite `order.cancelled` -> anula el CHARGE si existía. */
-  async cancelOrder(id: string): Promise<Order> {
+  async cancelOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status === 'COMPLETED') throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
@@ -240,14 +260,14 @@ export class OrderService {
         eventType:     'order.cancelled',
         payload: { orderId: updated.id },
       });
-      return updated;
+      return withAllowedTransitions(updated);
     });
   }
 
-  async updateNotes(id: string, notes: string | null): Promise<Order> {
+  async updateNotes(id: string, notes: string | null): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'DRAFT') throw new OrderNotEditableError(id, order.status);
-    return (await this.orderRepo.update(id, { notes }))!;
+    return withAllowedTransitions((await this.orderRepo.update(id, { notes }))!);
   }
 }

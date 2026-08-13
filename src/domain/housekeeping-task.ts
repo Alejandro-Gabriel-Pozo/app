@@ -40,6 +40,27 @@ export type HousekeepingStatus =
   | 'INSPECTED'
   | 'OUT_OF_SERVICE';
 
+/**
+ * Transiciones técnicamente válidas por estado — reflejan exactamente los
+ * guards de start()/complete()/inspect()/setOutOfService()/resetToPending()
+ * de abajo (proyección de solo lectura, no reemplaza esos guards).
+ *
+ * Excepción deliberada: `assign()` en el dominio solo bloquea desde
+ * OUT_OF_SERVICE/INSPECTED (permite reasignar desde ASSIGNED/IN_PROGRESS/
+ * DONE), pero acá `ASSIGNED` solo figura como destino desde PENDING —
+ * el frontend usa el botón "Asignar" únicamente para la asignación
+ * inicial, no para reasignar a mitad de tarea. Es una decisión de UX más
+ * angosta que lo que el dominio permite, no una duplicación a corregir.
+ */
+const ALLOWED_TRANSITIONS: Record<HousekeepingStatus, readonly HousekeepingStatus[]> = {
+  PENDING:        ['ASSIGNED', 'IN_PROGRESS', 'OUT_OF_SERVICE'],
+  ASSIGNED:       ['IN_PROGRESS', 'OUT_OF_SERVICE'],
+  IN_PROGRESS:    ['DONE', 'OUT_OF_SERVICE'],
+  DONE:           ['INSPECTED', 'OUT_OF_SERVICE'],
+  INSPECTED:      [],
+  OUT_OF_SERVICE: ['PENDING'],
+};
+
 export interface HousekeepingTaskProps {
   id: string;
   businessId: string;
@@ -178,6 +199,17 @@ export class HousekeepingTask {
   get resourceId(): string { return this.props.resourceId; }
   get assignedTo(): string | null { return this.props.assignedTo; }
   get status(): HousekeepingStatus { return this.props.status; }
+
+  /**
+   * Transiciones técnicamente válidas desde el estado actual (deuda
+   * estructural A3). No incluye el chequeo de rol de `resetToPending()`/
+   * `setOutOfService()` (MANAGEMENT) — eso lo sigue validando
+   * `authorize()` en la ruta, es una responsabilidad distinta de "¿es
+   * válido este cambio de estado?".
+   */
+  get allowedTransitions(): readonly HousekeepingStatus[] {
+    return ALLOWED_TRANSITIONS[this.props.status];
+  }
   get notes(): string | null { return this.props.notes; }
   get shift(): string { return this.props.shift; }
   get scheduledFor(): Date { return this.props.scheduledFor; }
@@ -188,7 +220,7 @@ export class HousekeepingTask {
   get createdAt(): Date { return this.props.createdAt; }
   get updatedAt(): Date { return this.props.updatedAt; }
 
-  toJSON(): HousekeepingTaskProps {
-    return { ...this.props };
+  toJSON(): HousekeepingTaskProps & { allowedTransitions: readonly HousekeepingStatus[] } {
+    return { ...this.props, allowedTransitions: this.allowedTransitions };
   }
 }
