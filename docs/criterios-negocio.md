@@ -72,6 +72,25 @@ negocio**. Sin eso, un ID arbitrario pasa.
 del negocio A, intenta leer y escribir cada recurso del negocio B. Se corre
 en CI y bloquea el merge. Es el único test que no se negocia.
 
+**A2.8 — Pools separados por tenant, no solo filtro por `businessId`.**
+Este proyecto usa un pool de conexión distinto por tenant además del
+filtrado lógico — un bug acá no es "vio datos de otro negocio", es
+"escribió contra la base equivocada". Todo cambio que toque
+`src/api/routes/`, `src/container.ts`, `src/platform/` o `src/workers/`
+responde tres preguntas antes de mergear:
+1. ¿Este código corre contra `req.db` (BD del **tenant**) o contra
+   `getPlatformRawPool()` / `PLATFORM_DATABASE_URL` (BD **central**)? ¿Es
+   el que corresponde?
+2. Si abre una transacción (`TransactionManager.run(...)`), ¿el pool con
+   el que se construyó ese `TransactionManager` es el mismo que el de los
+   repos que participan en esa transacción?
+3. Si emite o consume domain events, ¿el `DomainEventRepository` apunta a
+   la misma BD donde se escribió el evento?
+
+*Por qué existe esta regla:* los bugs críticos encontrados en el review de
+agosto 2026 fueron, en el fondo, la misma confusión repetida — mezclar el
+pool de plataforma con el del tenant.
+
 ---
 
 # 3. Dinero 🔴

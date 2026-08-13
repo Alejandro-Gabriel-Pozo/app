@@ -106,6 +106,19 @@ solo en GET/HEAD). Si vas a tocar código cerca de una de esas decisiones,
 no la "mejores" ni la refactorices sin que te lo pidan explícitamente —
 son áreas ya cerradas, no deuda pendiente.
 
+## Si esto se reusa en otro proyecto
+
+Estas reglas (clasificación maestro/transacción/documento, las nueve
+dimensiones de `criterios-negocio.md`) son genéricas a cualquier PMS/ERP/
+reservas — no son específicas de este repo. Si en algún momento se arma
+otro proyecto del mismo tipo, no copiar `criterios-datos.md`/
+`criterios-negocio.md` tal cual con los nombres de este código adentro:
+separar lo genérico (las reglas) de lo específico (qué tabla/archivo
+implementa cada una, estado de cumplimiento actual) en dos documentos
+distintos desde el principio. Mezclar ambas cosas en un solo archivo es lo
+que hace que, al reusarlo, haya que reescribirlo entero en vez de solo
+agregar el archivo de estado del proyecto nuevo.
+
 ## Si encontrás una regla nueva que falta
 
 No la implementes de una si no te la pidieron para el cambio puntual que
