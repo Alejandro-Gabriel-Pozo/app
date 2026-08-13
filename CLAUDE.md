@@ -6,16 +6,14 @@ y multirubro (hotelería, servicios, POS). Ver también el `CLAUDE.md` de
 
 ## Criterios de negocio — cumplimiento obligatorio
 
-Antes de implementar cualquier cambio, verificá el cumplimiento de
-`docs/criterios-datos.md` y `docs/criterios-negocio.md`.
-
-Declará explícitamente qué reglas aplican al cambio y cómo se cumplen. Si
-una regla se incumple a propósito, decilo y justificalo. No propongas
-cambios a las decisiones listadas ahí como ya correctas.
-
-Antes de crear o modificar una entidad, declará siempre si es MAESTRO,
-TRANSACCIÓN o DOCUMENTO (`docs/criterios-datos.md`, Parte 1), y justificá
-el cumplimiento de las reglas de esa clase.
+Antes de crear o modificar cualquier entidad, tabla, repositorio o
+servicio de dominio, usá la skill `criterios-negocio`
+(`.claude/skills/criterios-negocio/`). Formaliza el proceso de
+`docs/criterios-datos.md` y `docs/criterios-negocio.md`: clasificar la
+entidad (maestro/transacción/documento), chequear las reglas relevantes, y
+declarar explícitamente qué se cumple, qué se incumple a propósito y por
+qué. No propongas "mejorar" las decisiones que esos documentos ya marcan
+como correctas.
 
 Usá los nombres que ya existen en el código (`docs/criterios-negocio.md`,
 A5.5). Si una entidad se llama `Turno`, no la renombres a `BookingLine`.
