@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copy/Paste Detector Report</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #f7fafc; color: #2d3748; }
+    a { color: #3182ce; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .header { background: #fff; box-shadow: 0 1px 3px 0 rgba(0,0,0,.1), 0 1px 2px 0 rgba(0,0,0,.06); padding: 1rem 0; }
+    .header-inner { max-width: 80rem; margin: 0 auto; padding: 0 1rem; }
+    .header h1 { font-size: 1.875rem; font-weight: 600; color: #2d3748; margin: 0; }
+    .main { max-width: 80rem; margin: 2rem auto; padding: 0 1rem; }
+    .card { background: #fff; box-shadow: 0 1px 3px 0 rgba(0,0,0,.1), 0 1px 2px 0 rgba(0,0,0,.06); border-radius: 0.25rem; padding: 1.5rem; margin-bottom: 2rem; }
+    h2 { font-size: 1.5rem; font-weight: 600; color: #4a5568; margin: 0 0 1rem 0; }
+    .dashboard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+    .stat-card { padding: 1rem; border-radius: 0.25rem; text-align: center; }
+    .stat-card h3 { font-size: 1.125rem; font-weight: 600; margin: 0 0 0.5rem 0; }
+    .stat-card .val { font-size: 2.25rem; font-weight: 700; }
+    .stat-blue { background: #bee3f8; color: #2a4365; }
+    .stat-green { background: #c6f6d5; color: #276749; }
+    .stat-yellow { background: #fefcbf; color: #975a16; }
+    .stat-red { background: #fed7d7; color: #9b2c2c; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th { background: #edf2f7; color: #718096; text-transform: uppercase; font-size: 0.75rem; font-weight: 600; padding: 0.75rem 1.5rem; text-align: left; }
+    tbody td { padding: 0.75rem 1.5rem; border-bottom: 1px solid #edf2f7; font-size: 0.875rem; }
+    tbody tr:hover { background: #f7fafc; }
+    .clone-section { margin-bottom: 2rem; }
+    .clone-section h2 { border-bottom: 2px solid #edf2f7; padding-bottom: 0.5rem; }
+    .clone-item { padding: 1rem 0; border-bottom: 1px solid #edf2f7; }
+    .clone-item:last-child { border-bottom: none; }
+    .clone-info { color: #718096; font-size: 0.875rem; margin-bottom: 0.25rem; }
+    .toggle-btn { background: #a0aec0; color: #fff; border: none; padding: 0.125rem 0.5rem; font-size: 0.75rem; border-radius: 0.25rem; cursor: pointer; margin-left: 0.5rem; }
+    .toggle-btn:focus { outline: none; }
+    .code-block { background: #f7fafc; border: 1px solid #edf2f7; border-radius: 0.25rem; padding: 1rem; margin-top: 0.5rem; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 0.875rem; color: #2d3748; white-space: pre-wrap; overflow-x: auto; display: none; }
+    .code-block.visible { display: block; }
+    .no-dupes { color: #27ae60; font-weight: 700; font-size: 1.125rem; }
+    .footer { margin-top: 3rem; padding: 2rem 0; border-top: 1px solid #e0e0e0; text-align: center; font-family: -apple-system, sans-serif; color: #666; }
+    .footer p { margin: 0.5rem 0; font-size: 0.875rem; }
+    .footer a { color: #0066cc; }
+    .footer .small { font-size: 0.75rem; color: #999; }
+    @media (max-width: 768px) { .dashboard { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <h1>jscpd - copy/paste report</h1>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="card">
+      <section>
+        <h2>Dashboard</h2>
+        <div class="dashboard">
+          <div class="stat-card stat-blue">
+            <h3>Total Files</h3>
+            <div class="val">145</div>
+          </div>
+          <div class="stat-card stat-green">
+            <h3>Total Lines of Code</h3>
+            <div class="val">22828</div>
+          </div>
+          <div class="stat-card stat-yellow">
+            <h3>Number of Clones</h3>
+            <div class="val">78</div>
+          </div>
+          <div class="stat-card stat-red">
+            <h3>Duplicated Lines</h3>
+            <div class="val">711 (3.11%)</div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="card">
+      <section>
+        <h2>Formats with Duplications</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Files</th>
+              <th>Lines</th>
+              <th>Clones</th>
+              <th>Duplicated Lines</th>
+              <th>Duplicated Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+            <tr>
+              <td><a href="#markdown-clones">markdown</a></td>
+              <td>1</td>
+              <td>93</td>
+              <td>0</td>
+              <td>0 (0.00%)</td>
+              <td>0 (0.00%)</td>
+            </tr>
+            
+            <tr>
+              <td><a href="#sql-clones">sql</a></td>
+              <td>5</td>
+              <td>1452</td>
+              <td>2</td>
+              <td>16 (1.10%)</td>
+              <td>120 (1.82%)</td>
+            </tr>
+            
+            <tr>
+              <td><a href="#text-clones">text</a></td>
+              <td>1</td>
+              <td>52</td>
+              <td>0</td>
+              <td>0 (0.00%)</td>
+              <td>0 (0.00%)</td>
+            </tr>
+            
+            <tr>
+              <td><a href="#typescript-clones">typescript</a></td>
+              <td>138</td>
+              <td>21231</td>
+              <td>76</td>
+              <td>695 (3.27%)</td>
+              <td>5102 (4.87%)</td>
+            </tr>
+            
+            <tr style="font-weight: 700;">
+              <td>Total</td>
+              <td>145</td>
+              <td>22828</td>
+              <td>78</td>
+              <td>711 (3.11%)</td>
+              <td>5222 (4.66%)</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    
+    
+    <div class="card">
+      <section class="clone-section">
+        <a name="sql-clones"></a>
+        <h2>sql</h2>
+        <div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              db\migrate_resource_categories.sql (Line 20:1 - Line 28:3),
+              db\schema.sql (Line 86:1 - Line 94:3)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-sql-1')">Show code</button>
+            </div>
+            <pre id="code-sql-1" class="code-block">CREATE TABLE IF NOT EXISTS resource_categories (
+  id          VARCHAR(255)  PRIMARY KEY,
+  name        VARCHAR(100)  NOT NULL,
+  description TEXT,
+  fields      JSONB         NOT NULL DEFAULT &#39;[]&#39;,
+  active      BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              db\schema.sql (Line 557:57 - Line 565:34),
+              db\schema.sql (Line 585:62 - Line 593:34)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-sql-2')">Show code</button>
+            </div>
+            <pre id="code-sql-2" class="code-block">  has_variants     BOOLEAN        NOT NULL DEFAULT FALSE,
+  stock_quantity   INTEGER        NOT NULL DEFAULT 0 CHECK (stock_quantity &#62;= 0),
+  stock_min_alert  INTEGER        NOT NULL DEFAULT 0 CHECK (stock_min_alert &#62;= 0),
+  active           BOOLEAN        NOT NULL DEFAULT TRUE,
+  created_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_products_business_sku</pre>
+          </div>
+          
+        </div>
+      </section>
+    </div>
+    
+    <div class="card">
+      <section class="clone-section">
+        <a name="typescript-clones"></a>
+        <h2>typescript</h2>
+        <div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 101:45 - Line 107:12),
+              api\routes\business-hours.routes.ts (Line 24:42 - Line 29:12)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-1')">Show code</button>
+            </div>
+            <pre id="code-typescript-1" class="code-block">export function createBookableServicesRouter(_container: AppContainer): Router {
+  const router = Router();
+
+  // ── GET /api/bookable-services ─────────────────────────────────────────────
+  router.get(&#39;/&#39;, authorize(Roles.BOOKING), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+    try {
+      const services = await buildService(req).listServices();</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 108:24 - Line 115:22),
+              api\routes\business-hours.routes.ts (Line 30:50 - Line 36:19)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-2')">Show code</button>
+            </div>
+            <pre id="code-typescript-2" class="code-block">      res.json(services);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/bookable-services ────────────────────────────────────────────
+  router.post(&#39;/&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+    try {
+      const body    = CreateBookableServiceSchema.parse(req.body);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 124:78 - Line 133:10),
+              api\routes\bookable-services.routes.ts (Line 136:83 - Line 145:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-3')">Show code</button>
+            </div>
+            <pre id="code-typescript-3" class="code-block">      const service = await buildService(req).getServiceById(param(req, &#39;id&#39;));
+      res.json(service);
+    } catch (err) {
+      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/bookable-services/:id ─────────────────────────────────────────
+  router.put(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 125:23 - Line 133:10),
+              api\routes\bookable-services.routes.ts (Line 148:28 - Line 156:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-4')">Show code</button>
+            </div>
+            <pre id="code-typescript-4" class="code-block">      res.json(service);
+    } catch (err) {
+      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/bookable-services/:id ─────────────────────────────────────────
+  router.put(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 125:23 - Line 133:10),
+              api\routes\bookable-services.routes.ts (Line 159:25 - Line 167:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-5')">Show code</button>
+            </div>
+            <pre id="code-typescript-5" class="code-block">      res.json(service);
+    } catch (err) {
+      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/bookable-services/:id ─────────────────────────────────────────
+  router.put(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 125:23 - Line 133:14),
+              api\routes\bookable-services.routes.ts (Line 208:21 - Line 218:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-6')">Show code</button>
+            </div>
+            <pre id="code-typescript-6" class="code-block">      res.json(service);
+    } catch (err) {
+      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/bookable-services/:id ─────────────────────────────────────────
+  router.put(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 127:121 - Line 135:22),
+              api\routes\categories.routes.ts (Line 137:9 - Line 149:23)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-7')">Show code</button>
+            </div>
+            <pre id="code-typescript-7" class="code-block">      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/bookable-services/:id ─────────────────────────────────────────
+  router.put(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+    try {
+      const body    = UpdateBookableServiceSchema.parse(req.body);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 139:54 - Line 146:10),
+              api\routes\categories.routes.ts (Line 160:47 - Line 169:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-8')">Show code</button>
+            </div>
+            <pre id="code-typescript-8" class="code-block">      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── DELETE /api/bookable-services/:id ──────────────────────────────────────
+  router.delete(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+    try {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\bookable-services.routes.ts (Line 184:24 - Line 192:10),
+              api\routes\bookable-services.routes.ts (Line 195:28 - Line 205:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-9')">Show code</button>
+            </div>
+            <pre id="code-typescript-9" class="code-block">      res.json(schedule);
+    } catch (err) {
+      if (err instanceof ServiceScheduleNotFoundError) { res.status(404).json({ code: &#39;NOT_FOUND&#39;, message: err.message }); return; }
+      next(err);
+    }
+  });
+
+  // ── DELETE /api/bookable-services/:id/schedules/:scheduleId ───────────────
+  router.delete(&#39;/:id/schedules/:scheduleId&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\business-hours.routes.ts (Line 39:57 - Line 49:33),
+              api\routes\resources.routes.ts (Line 315:66 - Line 325:35)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-10')">Show code</button>
+            </div>
+            <pre id="code-typescript-10" class="code-block">      const existing = await repo.getAllBusinessWindows();
+      const sameDay = existing.filter((w) =&#62; w.dayOfWeek === body.dayOfWeek);
+      if (sameDay.some((w) =&#62; windowsOverlap(w, body))) {
+        res.status(409).json({
+          code: &#39;OPERATING_WINDOW_OVERLAP&#39;,
+          message: &#39;Ya existe una franja horaria que se superpone con esa, para ese día.&#39;,
+        });
+        return;
+      }
+
+      const window = await repo.createBusinessWindow({ id: randomUUID(), ...body });</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\business-modules.routes.ts (Line 21:60 - Line 30:6),
+              security\module.middleware.ts (Line 19:50 - Line 28:6)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-11')">Show code</button>
+            </div>
+            <pre id="code-typescript-11" class="code-block">  router.get(&#39;/&#39;, async (req: Request, res: Response, _next: NextFunction): Promise&#60;void&#62; =&#62; {
+    const businessId = req.user?.businessId ?? &#39;&#39;;
+
+    if (!businessId) {
+      res.status(401).json({
+        code:    &#39;TOKEN_MISSING_BUSINESS&#39;,
+        message: &#39;El token no tiene un negocio asociado.&#39;,
+      });
+      return;
+    }</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 155:43 - Line 161:12),
+              api\schemas\request.schemas.ts (Line 33:29 - Line 42:12)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-12')">Show code</button>
+            </div>
+            <pre id="code-typescript-12" class="code-block">  serviceId:  z.string().min(1).optional(),
+  startTime:  z.string().datetime(),
+  // Opcional: si no viene, se deriva de duration_minutes del serviceId.
+  endTime:    z.string().datetime().optional(),
+  details:    z.record(z.unknown()).default({}),
+}).refine(
+  (data) =&#62; data.endTime || data.serviceId,</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 160:2 - Line 166:3),
+              api\schemas\request.schemas.ts (Line 44:1 - Line 50:3)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-13')">Show code</button>
+            </div>
+            <pre id="code-typescript-13" class="code-block">}).refine(
+  (data) =&#62; data.endTime || data.serviceId,
+  { message: &#39;endTime es obligatorio si no se especifica serviceId (para derivar la duración)&#39;, path: [&#39;endTime&#39;] },
+).refine(
+  (data) =&#62; !data.endTime || new Date(data.endTime) &#62; new Date(data.startTime),
+  { message: &#39;endTime debe ser posterior a startTime&#39;, path: [&#39;endTime&#39;] },
+);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 245:68 - Line 253:4),
+              platform\tenant.middleware.ts (Line 207:19 - Line 215:8)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-14')">Show code</button>
+            </div>
+            <pre id="code-typescript-14" class="code-block">function respondTenantError(err: TenantError, res: Response): void {
+  if (err instanceof TenantNotFoundError) {
+    res.status(404).json({ code: &#39;BUSINESS_NOT_FOUND&#39;, message: &#39;Negocio no encontrado&#39; });
+    return;
+  }
+  if (err instanceof TenantInactiveError) {
+    res.status(403).json({ code: &#39;BUSINESS_INACTIVE&#39;, message: `Negocio inactivo (estado: ${err.status})` });
+    return;
+  }</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 287:20 - Line 293:21),
+              api\routes\customer.routes.ts (Line 321:17 - Line 327:21)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-15')">Show code</button>
+            </div>
+            <pre id="code-typescript-15" class="code-block">    registerLimiter,
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const slug = String(req.params.businessSlug);
+        const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
+
+        const body = RegisterCustomerSchema.parse(req.body);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 287:20 - Line 293:14),
+              api\routes\customer.routes.ts (Line 353:34 - Line 359:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-16')">Show code</button>
+            </div>
+            <pre id="code-typescript-16" class="code-block">    registerLimiter,
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const slug = String(req.params.businessSlug);
+        const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
+
+        const body = RegisterCustomerSchema.parse(req.body);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 300:11 - Line 307:21),
+              api\routes\customer.routes.ts (Line 333:11 - Line 340:21)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-17')">Show code</button>
+            </div>
+            <pre id="code-typescript-17" class="code-block">          token: result.token,
+          tokenType: &#39;Bearer&#39;,
+          customer: result.customer,
+        });
+      } catch (err) {
+        if (isTenantError(err)) { respondTenantError(err, res); return; }
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === &#39;EMAIL_TAKEN&#39;) {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 434:13 - Line 442:14),
+              api\routes\customer.routes.ts (Line 457:16 - Line 465:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-18')">Show code</button>
+            </div>
+            <pre id="code-typescript-18" class="code-block">  router.get(
+    &#39;/me&#39;,
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
+
+        const { customerRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
+        const customer = await customerRepo.getById(customerId);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 528:37 - Line 545:10),
+              api\routes\reservations.routes.ts (Line 176:19 - Line 188:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-19')">Show code</button>
+            </div>
+            <pre id="code-typescript-19" class="code-block">          customer:   customerEntity,
+          startTime:  new Date(body.startTime),
+          details:    body.details,
+          ...(body.serviceId !== undefined &#38;&#38; { serviceId: body.serviceId }),
+          ...(body.endTime   !== undefined &#38;&#38; { endTime: new Date(body.endTime) }),
+        });
+
+        res.status(201).json(toReservationDto(reservation));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /api/customer/me/reservations/:id
+  // -------------------------------------------------------------------------
+  router.patch(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 546:27 - Line 554:14),
+              api\routes\customer.routes.ts (Line 603:34 - Line 611:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-20')">Show code</button>
+            </div>
+            <pre id="code-typescript-20" class="code-block">    &#39;/me/reservations/:id&#39;,
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const reservationId = String(req.params.id);
+
+        const customerId = requireCustomerId(req, res);
+        if (!customerId) return;
+
+        const { reservationService, reservationRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customer.routes.ts (Line 584:24 - Line 589:12),
+              api\routes\reservations.routes.ts (Line 195:74 - Line 199:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-21')">Show code</button>
+            </div>
+            <pre id="code-typescript-21" class="code-block">          reservationId,
+          {
+            ...(body.startTime !== undefined &#38;&#38; { startTime: new Date(body.startTime) }),
+            ...(body.endTime   !== undefined &#38;&#38; { endTime:   new Date(body.endTime) }),
+            ...(body.details   !== undefined &#38;&#38; { details:   body.details }),
+          },</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customers.routes.ts (Line 93:13 - Line 100:14),
+              api\routes\customers.routes.ts (Line 112:15 - Line 119:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-22')">Show code</button>
+            </div>
+            <pre id="code-typescript-22" class="code-block">  router.get(
+    &#39;/:id&#39;,
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params[&#39;id&#39;]);
+        const customer = await repo.getById(id);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customers.routes.ts (Line 94:11 - Line 105:14),
+              api\routes\customers.routes.ts (Line 155:16 - Line 167:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-23')">Show code</button>
+            </div>
+            <pre id="code-typescript-23" class="code-block">    &#39;/:id&#39;,
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params[&#39;id&#39;]);
+        const customer = await repo.getById(id);
+        if (!customer) {
+          res.status(404).json({ code: &#39;CUSTOMER_NOT_FOUND&#39;, message: &#39;Cliente no encontrado&#39; });
+          return;
+        }
+        const tags = await repo.getTagsByCustomerId(id);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\customers.routes.ts (Line 94:11 - Line 99:45),
+              api\routes\customers.routes.ts (Line 179:23 - Line 184:45)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-24')">Show code</button>
+            </div>
+            <pre id="code-typescript-24" class="code-block">    &#39;/:id&#39;,
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise&#60;void&#62; =&#62; {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params[&#39;id&#39;]);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\housekeeping.routes.ts (Line 112:31 - Line 123:48),
+              api\routes\users.routes.ts (Line 79:24 - Line 90:48)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-25')">Show code</button>
+            </div>
+            <pre id="code-typescript-25" class="code-block">        res.json(task.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /housekeeping ──────────────────────────────────────────────────
+  router.post(
+    &#39;/&#39;,
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) =&#62; {
+      try {
+        const businessId = req.user!.businessId!;</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\locations.routes.ts (Line 50:38 - Line 59:5),
+              api\routes\resources.routes.ts (Line 179:38 - Line 188:5)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-26')">Show code</button>
+            </div>
+            <pre id="code-typescript-26" class="code-block">        res.status(201).json(location);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          res.status(400).json({ code: &#39;VALIDATION_ERROR&#39;, errors: err.errors });
+          return;
+        }
+        next(err);
+      }
+    },
+  );</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\locations.routes.ts (Line 50:38 - Line 61:16),
+              api\routes\resources.routes.ts (Line 239:25 - Line 255:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-27')">Show code</button>
+            </div>
+            <pre id="code-typescript-27" class="code-block">        res.status(201).json(location);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          res.status(400).json({ code: &#39;VALIDATION_ERROR&#39;, errors: err.errors });
+          return;
+        }
+        next(err);
+      }
+    },
+  );
+
+  return router;</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\orders.routes.ts (Line 100:39 - Line 105:12),
+              api\routes\orders.routes.ts (Line 182:43 - Line 187:12)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-28')">Show code</button>
+            </div>
+            <pre id="code-typescript-28" class="code-block">      const parsed = CreateOrderSchema.safeParse(req.body);
+      if (!parsed.success) {
+        validationError(res, parsed.error.errors.map((e) =&#62; ({ path: e.path.join(&#39;.&#39;), message: e.message })));
+        return;
+      }
+      const service = buildOrderService(req, container);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\orders.routes.ts (Line 132:73 - Line 142:15),
+              api\routes\orders.routes.ts (Line 144:74 - Line 154:15)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-29')">Show code</button>
+            </div>
+            <pre id="code-typescript-29" class="code-block">      const order = await buildOrderService(req, container).confirmOrder(param(req, &#39;id&#39;));
+      res.json(order);
+    } catch (err) {
+      if (err instanceof OrderNotFoundError)               res.status(404).json({ code: &#39;ORDER_NOT_FOUND&#39;,    message: (err as Error).message });
+      else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: &#39;INVALID_TRANSITION&#39;, message: (err as Error).message });
+      else next(err);
+    }
+  });
+
+  // ── POST /api/orders/:id/complete ────────────────────────────────────────────
+  router.post(&#39;/:id/complete&#39;, authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\orders.routes.ts (Line 132:73 - Line 142:10),
+              api\routes\orders.routes.ts (Line 156:72 - Line 166:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-30')">Show code</button>
+            </div>
+            <pre id="code-typescript-30" class="code-block">      const order = await buildOrderService(req, container).confirmOrder(param(req, &#39;id&#39;));
+      res.json(order);
+    } catch (err) {
+      if (err instanceof OrderNotFoundError)               res.status(404).json({ code: &#39;ORDER_NOT_FOUND&#39;,    message: (err as Error).message });
+      else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: &#39;INVALID_TRANSITION&#39;, message: (err as Error).message });
+      else next(err);
+    }
+  });
+
+  // ── POST /api/orders/:id/complete ────────────────────────────────────────────
+  router.post(&#39;/:id/complete&#39;, authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\orders.routes.ts (Line 170:21 - Line 180:10),
+              api\routes\orders.routes.ts (Line 191:32 - Line 200:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-31')">Show code</button>
+            </div>
+            <pre id="code-typescript-31" class="code-block">      res.json(order);
+    } catch (err) {
+      if (err instanceof OrderNotFoundError)         res.status(404).json({ code: &#39;ORDER_NOT_FOUND&#39;,    message: (err as Error).message });
+      else if (err instanceof OrderNotEditableError) res.status(409).json({ code: &#39;ORDER_NOT_EDITABLE&#39;, message: (err as Error).message });
+      else next(err);
+    }
+  });
+
+  // ── POST /api/orders/:id/items ────────────────────────────────────────────────
+  // BOOKING = el cliente puede agregar ítems a su orden en DRAFT
+  router.post(&#39;/:id/items&#39;, authorize(Roles.BOOKING), async (req: Request, res: Response, next: NextFunction) =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\orders.routes.ts (Line 170:21 - Line 176:6),
+              api\routes\orders.routes.ts (Line 203:28 - Line 209:6)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-32')">Show code</button>
+            </div>
+            <pre id="code-typescript-32" class="code-block">      res.json(order);
+    } catch (err) {
+      if (err instanceof OrderNotFoundError)         res.status(404).json({ code: &#39;ORDER_NOT_FOUND&#39;,    message: (err as Error).message });
+      else if (err instanceof OrderNotEditableError) res.status(409).json({ code: &#39;ORDER_NOT_EDITABLE&#39;, message: (err as Error).message });
+      else next(err);
+    }
+  });</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\products.routes.ts (Line 80:64 - Line 90:10),
+              api\routes\products.routes.ts (Line 93:77 - Line 103:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-33')">Show code</button>
+            </div>
+            <pre id="code-typescript-33" class="code-block">      const product = await service.getProduct(param(req, &#39;id&#39;));
+      if (!product) {
+        res.status(404).json({ code: &#39;PRODUCT_NOT_FOUND&#39;, message: &#39;Producto no encontrado.&#39; });
+        return;
+      }
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── PUT /api/products/:id ────────────────────────────────────────────────────
+  router.put(&#39;/:id&#39;, authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\products.routes.ts (Line 153:37 - Line 161:49),
+              api\routes\products.routes.ts (Line 168:57 - Line 176:49)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-34')">Show code</button>
+            </div>
+            <pre id="code-typescript-34" class="code-block">  router.post(&#39;/:id/stock/decrement&#39;, authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) =&#62; {
+    try {
+      const { quantity } = req.body as { quantity?: number };
+      if (!quantity || quantity &#60; 1) {
+        res.status(400).json({ code: &#39;INVALID_QUANTITY&#39;, message: &#39;quantity debe ser &#62;= 1.&#39; });
+        return;
+      }
+      const service = buildProductService(req);
+      await service.checkStock(param(req, &#39;id&#39;), undefined, quantity);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\reports.routes.ts (Line 21:17 - Line 27:38),
+              api\routes\reports.routes.ts (Line 65:29 - Line 71:38)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-35')">Show code</button>
+            </div>
+            <pre id="code-typescript-35" class="code-block">    &#39;/occupancy&#39;,
+    authenticate(),
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) =&#62; {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateOccupancyReport(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\reservations.routes.ts (Line 212:61 - Line 222:15),
+              api\routes\reservations.routes.ts (Line 228:60 - Line 238:15)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-36')">Show code</button>
+            </div>
+            <pre id="code-typescript-36" class="code-block">        const reservation = await service.confirmReservation(
+          req.params[&#39;id&#39;]!,
+          req.user!.businessId as string,
+        );
+        res.json(toReservationDto(reservation));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/cancel ───────────────────────────────────────
+  router.post(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\resources.routes.ts (Line 54:60 - Line 63:3),
+              api\routes\resources.routes.ts (Line 79:49 - Line 85:3)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-37')">Show code</button>
+            </div>
+            <pre id="code-typescript-37" class="code-block">  capacity:    z.number().int().min(1).optional().default(1),
+  description: z.string().max(500).nullable().optional(),
+  visualData:  z.record(z.unknown()).nullable().optional(),
+  visual_data: z.record(z.unknown()).nullable().optional(),
+  // Opcional a propósito: hoy no hay ningún selector de sucursal en el
+  // frontend. Si no viene, POST /resources resuelve la location por
+  // defecto del tenant (ver handler abajo) — no bloquea la creación.
+  locationId:  z.string().min(1).optional(),
+  location_id: z.string().min(1).optional(),
+}).superRefine((data, ctx) =&#62; {</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\resources.routes.ts (Line 149:9 - Line 163:10),
+              api\routes\resources.routes.ts (Line 210:11 - Line 224:12)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-38')">Show code</button>
+            </div>
+            <pre id="code-typescript-38" class="code-block">        const category = await new SqlCategoryRepository(req.db).findById(categoryId);
+        if (!category) {
+          res.status(422).json({
+            code:    &#39;INVALID_CATEGORY&#39;,
+            message: `La categoría &#39;${categoryId}&#39; no existe.`,
+          });
+          return;
+        }
+        if (!category.active) {
+          res.status(422).json({
+            code:    &#39;INVALID_CATEGORY&#39;,
+            message: `La categoría &#39;${categoryId}&#39; está desactivada — reactivala o elegí otra.`,
+          });
+          return;
+        }</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              api\routes\users.routes.ts (Line 129:66 - Line 141:10),
+              api\routes\users.routes.ts (Line 180:25 - Line 192:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-39')">Show code</button>
+            </div>
+            <pre id="code-typescript-39" class="code-block">        res.status(201).json({ ...member, email: identity.email });
+      } catch (err) {
+        if (err instanceof ZodError) {
+          res.status(400).json({ code: &#39;VALIDATION_ERROR&#39;, message: &#39;Datos inválidos&#39;, errors: err.flatten() });
+          return;
+        }
+        next(err);
+      }
+    },
+  );
+
+  // ── PUT /users/:id ─────────────────────────────────────────────────────────
+  router.put(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              domain\housekeeping-task.ts (Line 163:34 - Line 178:6),
+              domain\stay.ts (Line 119:37 - Line 134:6)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-40')">Show code</button>
+            </div>
+            <pre id="code-typescript-40" class="code-block">    this.props.inspectedBy = null;
+    this.props.updatedAt = new Date();
+  }
+
+  updateNotes(notes: string): void {
+    this.props.notes = notes;
+    this.props.updatedAt = new Date();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Getters
+  // ---------------------------------------------------------------------------
+
+  get id(): string { return this.props.id; }
+  get businessId(): string { return this.props.businessId; }
+  get resourceId(): string { return this.props.resourceId; }</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              openapi\spec.ts (Line 383:61 - Line 388:32),
+              openapi\spec.ts (Line 399:36 - Line 404:32)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-41')">Show code</button>
+            </div>
+            <pre id="code-typescript-41" class="code-block">        summary: &#39;Confirmar reserva (PENDING → CONFIRMED)&#39;,
+        description: &#39;Requiere rol **ADMIN** o **RECEPTIONIST**.&#39;,
+        security: [{ BearerAuth: [] }],
+        parameters: [{ name: &#39;id&#39;, in: &#39;path&#39;, required: true, schema: { type: &#39;string&#39; } }],
+        responses: {
+          &#39;200&#39;: { description: &#39;Reserva confirmada&#39; },</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              openapi\spec.ts (Line 449:51 - Line 454:18),
+              openapi\spec.ts (Line 466:42 - Line 471:18)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-42')">Show code</button>
+            </div>
+            <pre id="code-typescript-42" class="code-block">        summary: &#39;Resumen ejecutivo de ocupación&#39;,
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: &#39;startDate&#39;, in: &#39;query&#39;, required: true, schema: { type: &#39;string&#39;, format: &#39;date-time&#39; } },
+          { name: &#39;endDate&#39;,   in: &#39;query&#39;, required: true, schema: { type: &#39;string&#39;, format: &#39;date-time&#39; } },
+          { name: &#39;limit&#39;,     in: &#39;query&#39;, schema: { type: &#39;integer&#39;, minimum: 1, maximum: 100, default: 5 }, description: &#39;Máximo de recursos en cada ranking&#39; },</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              openapi\spec.ts (Line 593:92 - Line 604:17),
+              openapi\spec.ts (Line 725:92 - Line 736:17)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-43')">Show code</button>
+            </div>
+            <pre id="code-typescript-43" class="code-block">              &#39;application/json&#39;: { schema: { $ref: &#39;#/components/schemas/BookableService&#39; } },
+            },
+          },
+          &#39;400&#39;: { $ref: &#39;#/components/responses/ValidationError&#39; },
+          &#39;401&#39;: { $ref: &#39;#/components/responses/Unauthorized&#39; },
+          &#39;403&#39;: { $ref: &#39;#/components/responses/Forbidden&#39; },
+          &#39;404&#39;: { $ref: &#39;#/components/responses/NotFound&#39; },
+        },
+      },
+      delete: {
+        tags: [&#39;BookableServices&#39;],
+        summary: &#39;Desactivar servicio agendable&#39;,</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              openapi\spec.ts (Line 668:42 - Line 676:62),
+              openapi\spec.ts (Line 723:47 - Line 731:62)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-44')">Show code</button>
+            </div>
+            <pre id="code-typescript-44" class="code-block">            description: &#39;Horario creado&#39;,
+            content: {
+              &#39;application/json&#39;: { schema: { $ref: &#39;#/components/schemas/ServiceSchedule&#39; } },
+            },
+          },
+          &#39;400&#39;: { $ref: &#39;#/components/responses/ValidationError&#39; },
+          &#39;401&#39;: { $ref: &#39;#/components/responses/Unauthorized&#39; },
+          &#39;403&#39;: { $ref: &#39;#/components/responses/Forbidden&#39; },
+          &#39;404&#39;: { $ref: &#39;#/components/responses/NotFound&#39; },</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              openapi\spec.ts (Line 693:141 - Line 698:11),
+              openapi\spec.ts (Line 737:72 - Line 742:11)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-45')">Show code</button>
+            </div>
+            <pre id="code-typescript-45" class="code-block">        description: &#39;Actualización parcial del horario. Requiere rol **ADMIN**.\n\nUsá `{ &#34;active&#34;: false }` para desactivar sin borrar.&#39;,
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: &#39;id&#39;,         in: &#39;path&#39;, required: true, schema: { type: &#39;string&#39; }, description: &#39;ID del servicio&#39; },
+          { name: &#39;scheduleId&#39;, in: &#39;path&#39;, required: true, schema: { type: &#39;string&#39; }, description: &#39;ID del horario&#39; },
+        ],</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\in-memory.occupancy.repository.test.ts (Line 67:37 - Line 73:31),
+              repositories\in-memory.occupancy.repository.test.ts (Line 107:43 - Line 113:31)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-46')">Show code</button>
+            </div>
+            <pre id="code-typescript-46" class="code-block">  describe(&#39;getOccupancyByDateRange&#39;, () =&#62; {
+    beforeEach(async () =&#62; {
+      const start1 = new Date(&#39;2026-06-21T10:00:00&#39;);
+      const end1 = new Date(&#39;2026-06-21T12:00:00&#39;);
+      await repo.recordReservation(&#39;r1&#39;, &#39;Mesa A&#39;, CAT_ID, CAT_NAME, start1, end1, ReservationStatus.CONFIRMED);
+
+      const start2 = new Date(&#39;2026-06-22T14:00:00&#39;);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\in-memory.occupancy.repository.ts (Line 15:3 - Line 43:12),
+              repositories\sql.occupancy.repository.ts (Line 67:3 - Line 94:12)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-47')">Show code</button>
+            </div>
+            <pre id="code-typescript-47" class="code-block">  async recordReservation(
+    resourceId: string,
+    resourceName: string,
+    categoryId: string,
+    categoryName: string,
+    startTime: Date,
+    endTime: Date,
+    status: ReservationStatus,
+  ): Promise&#60;void&#62; {
+    // Solo registrar reservas confirmadas o completadas (las que ocupan espacio real)
+    if (
+      status !== ReservationStatus.CONFIRMED &#38;&#38;
+      status !== ReservationStatus.COMPLETED
+    ) {
+      return;
+    }
+
+    const currentDate = new Date(startTime);
+    currentDate.setHours(0, 0, 0, 0);
+
+    while (currentDate &#60; endTime) {
+      const dayEnd = new Date(currentDate);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      dayEnd.setHours(0, 0, 0, 0);
+
+      const dayStart = new Date(currentDate);
+      const effectiveEnd = Math.min(endTime.getTime(), dayEnd.getTime());
+      const effectiveStart = Math.max(dayStart.getTime(), startTime.getTime());
+      const _minInDay = Math.max(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\in-memory.reservation.repository.ts (Line 61:15 - Line 72:11),
+              repositories\in-memory.reservation.repository.ts (Line 80:14 - Line 91:11)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-48')">Show code</button>
+            </div>
+            <pre id="code-typescript-48" class="code-block">    resourceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise&#60;Reservation[]&#62; {
+    const activeStatuses = [
+      ReservationStatus.PENDING,
+      ReservationStatus.CONFIRMED,
+    ];
+
+    return Array.from(this.reservations.values()).filter(
+      (r) =&#62;
+        r.resource.id === resourceId &#38;&#38;</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.customer.repository.test.ts (Line 23:26 - Line 28:11),
+              repositories\sql.customer.repository.test.ts (Line 35:38 - Line 40:4)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-49')">Show code</button>
+            </div>
+            <pre id="code-typescript-49" class="code-block">    await repo.getByEmail(&#39;ana@example.com&#39;);
+
+    const call = (client.query as ReturnType&#60;typeof vi.fn&#62;).mock.calls[0];
+    expect(call[0]).not.toContain(&#39;ccm.ccm_value&#39;);
+    expect(call[0]).toContain(&#39;LOWER(ccm.value)&#39;);
+    expect(call[1]).toEqual([&#39;ana@example.com&#39;]);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.occupancy.repository.test.ts (Line 80:37 - Line 92:13),
+              repositories\sql.occupancy.repository.test.ts (Line 246:29 - Line 258:13)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-50')">Show code</button>
+            </div>
+            <pre id="code-typescript-50" class="code-block">  describe(&#39;getOccupancyByDateRange&#39;, () =&#62; {
+    beforeEach(() =&#62; {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [
+          {
+            resourceId: &#39;r1&#39;,
+            resourceName: &#39;Mesa A&#39;,
+            categoryId: &#39;cat-1&#39;,
+            categoryName: &#39;Mesas&#39;,
+            date: &#39;2026-06-21&#39;,
+            totalMinutes: 1440,
+            bookedMinutes: 120,
+          },</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.occupancy.repository.test.ts (Line 110:56 - Line 115:33),
+              repositories\sql.occupancy.repository.test.ts (Line 163:62 - Line 168:33)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-51')">Show code</button>
+            </div>
+            <pre id="code-typescript-51" class="code-block">      const result = await repo.getOccupancyByDateRange(startDate, endDate);
+
+      expect(mockSqlClient.query).toHaveBeenCalledOnce();
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0];
+      expect(call[0]).toContain(&#39;WHERE date &#62;=&#39;);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.occupancy.repository.ts (Line 152:72 - Line 163:4),
+              repositories\sql.occupancy.repository.ts (Line 262:64 - Line 273:4)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-52')">Show code</button>
+            </div>
+            <pre id="code-typescript-52" class="code-block">    const result = await this.sqlClient.query&#60;OccupancyRow&#62;(sql, params);
+
+    return result.rows.map((row) =&#62; ({
+      resourceId: row.resourceId,
+      resourceName: row.resourceName,
+      categoryId: row.categoryId,
+      categoryName: row.categoryName,
+      date: new Date(row.date),
+      totalMinutes: row.totalMinutes,
+      bookedMinutes: row.bookedMinutes,
+    }));
+  }</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.occupancy.repository.ts (Line 188:88 - Line 200:8),
+              repositories\sql.occupancy.repository.ts (Line 229:5 - Line 241:8)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-53')">Show code</button>
+            </div>
+            <pre id="code-typescript-53" class="code-block">    const result = await this.sqlClient.query&#60;OccupancyStatsRow&#62;(sql, [startStr, endStr]);
+
+    return result.rows.map((row) =&#62; ({
+      resourceId: row.resourceId,
+      resourceName: row.resourceName,
+      categoryId: row.categoryId,
+      categoryName: row.categoryName,
+      date: &#39;&#39;,
+      occupancyRate: parseFloat(String(row.occupancyRate)) || 0,
+    }));
+  }
+
+  async getTopOccupiedResources(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.order.repository.ts (Line 172:59 - Line 187:12),
+              services\order.service.ts (Line 124:70 - Line 139:14)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-54')">Show code</button>
+            </div>
+            <pre id="code-typescript-54" class="code-block">      const newItem = await this.addItemWithClient(this.db, id, {
+        itemType:         item.itemType,
+        productId:        item.productId        ?? null,
+        productVariantId: item.productVariantId ?? null,
+        reservationId:    item.reservationId    ?? null,
+        quantity:         item.quantity,
+        unitPrice:        item.unitPrice,
+        subtotal:         item.quantity * item.unitPrice,
+        notes:            null,
+      });
+      items.push(newItem);
+    }
+
+    const total = items.reduce((sum, i) =&#62; sum + i.subtotal, 0);
+    if (total &#62; 0) {
+      await this.db.query(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.order.repository.ts (Line 172:63 - Line 181:10),
+              services\order.service.ts (Line 154:42 - Line 163:8)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-55')">Show code</button>
+            </div>
+            <pre id="code-typescript-55" class="code-block">      const newItem = await this.addItemWithClient(this.db, id, {
+        itemType:         item.itemType,
+        productId:        item.productId        ?? null,
+        productVariantId: item.productVariantId ?? null,
+        reservationId:    item.reservationId    ?? null,
+        quantity:         item.quantity,
+        unitPrice:        item.unitPrice,
+        subtotal:         item.quantity * item.unitPrice,
+        notes:            null,
+      });</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.product.repository.ts (Line 37:48 - Line 44:2),
+              repositories\sql.product.repository.ts (Line 53:88 - Line 60:2)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-56')">Show code</button>
+            </div>
+            <pre id="code-typescript-56" class="code-block">    hasVariants:   Boolean(row[&#39;has_variants&#39;]),
+    stockQuantity: Number(row[&#39;stock_quantity&#39;]),
+    stockMinAlert: Number(row[&#39;stock_min_alert&#39;]),
+    active:        Boolean(row[&#39;active&#39;]),
+    createdAt:     new Date(row[&#39;created_at&#39;] as string),
+    updatedAt:     new Date(row[&#39;updated_at&#39;] as string),
+  };
+}</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.product.repository.ts (Line 195:5 - Line 202:67),
+              repositories\sql.product.repository.ts (Line 345:118 - Line 352:67)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-57')">Show code</button>
+            </div>
+            <pre id="code-typescript-57" class="code-block">    }
+
+    if (fields.length === 0) return this.getById(id);
+
+    fields.push(&#39;updated_at = NOW()&#39;);
+    params.push(id);
+
+    const { rows } = await this.db.query&#60;Record&#60;string, unknown&#62;&#62;(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.reservation.repository.ts (Line 177:15 - Line 183:27),
+              repositories\sql.reservation.repository.ts (Line 232:14 - Line 238:27)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-58')">Show code</button>
+            </div>
+            <pre id="code-typescript-58" class="code-block">    resourceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise&#60;Reservation[]&#62; {
+    const blockingStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    const result = await this.sqlClient.query&#60;ReservationRow&#62;(
+      `${this.baseSelect()}</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              repositories\sql.reservation.repository.ts (Line 210:15 - Line 218:27),
+              repositories\sql.reservation.repository.ts (Line 251:14 - Line 257:27)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-59')">Show code</button>
+            </div>
+            <pre id="code-typescript-59" class="code-block">    resourceId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise&#60;Reservation[]&#62; {
+    const blockingStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    // baseSelect() usa `this.sqlClient` internamente para rowToReservation,
+    // pero la QUERY de disponibilidad se emite sobre `client` (transaccional).
+    const result = await client.query&#60;ReservationRow&#62;(
+      `${this.baseSelect()}</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              security\auth.middleware.test.ts (Line 64:63 - Line 72:50),
+              security\auth.middleware.test.ts (Line 89:80 - Line 97:50)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-60')">Show code</button>
+            </div>
+            <pre id="code-typescript-60" class="code-block">    const isMembershipActive = vi.fn().mockResolvedValue(false);
+    const req = fakeReqWithToken(employeeToken());
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate(undefined, isMembershipActive)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              security\auth.middleware.ts (Line 82:1 - Line 99:7),
+              security\platform.auth.middleware.ts (Line 26:1 - Line 36:7)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-61')">Show code</button>
+            </div>
+            <pre id="code-typescript-61" class="code-block">function base64UrlEncode(input: string | Buffer): string {
+  const buf = typeof input === &#39;string&#39; ? Buffer.from(input) : input;
+  return buf.toString(&#39;base64&#39;).replace(/\+/g, &#39;-&#39;).replace(/\//g, &#39;_&#39;).replace(/=/g, &#39;&#39;);
+}
+
+function base64UrlDecode(input: string): Buffer {
+  const padded = input + &#39;===&#39;.slice((input.length + 3) % 4);
+  return Buffer.from(padded.replace(/-/g, &#39;+&#39;).replace(/_/g, &#39;/&#39;), &#39;base64&#39;);
+}
+
+/**
+ * `signToken`/`verifyToken` son genéricos en el payload para poder reutilizar
+ * la misma implementación HMAC en tokens que no son `JwtPayload` (ej. el
+ * token corto de selección de negocio en el login multi-membership — ver
+ * `auth.service.ts`). Un solo camino de firma/verificación para todo el
+ * proyecto, en vez de reimplementar JWT por segunda vez.
+ */
+export function signToken&#60;T extends object = Omit&#60;JwtPayload, &#39;iat&#39; | &#39;exp&#39;&#62;&#62;(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              security\auth.middleware.ts (Line 104:3 - Line 114:2),
+              security\platform.auth.middleware.ts (Line 71:3 - Line 81:2)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-62')">Show code</button>
+            </div>
+            <pre id="code-typescript-62" class="code-block">  const header = base64UrlEncode(JSON.stringify({ alg: &#39;HS256&#39;, typ: &#39;JWT&#39; }));
+  const now = Math.floor(Date.now() / 1000);
+  const body = base64UrlEncode(
+    JSON.stringify({ ...payload, iat: now, exp: now + expiresIn }),
+  );
+  const signingInput = `${header}.${body}`;
+  const signature = base64UrlEncode(
+    createHmac(&#39;sha256&#39;, secret).update(signingInput).digest(),
+  );
+  return `${signingInput}.${signature}`;
+}</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              security\auth.middleware.ts (Line 117:3 - Line 141:72),
+              security\platform.auth.middleware.ts (Line 85:3 - Line 109:72)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-63')">Show code</button>
+            </div>
+            <pre id="code-typescript-63" class="code-block">  const parts = token.split(&#39;.&#39;);
+  if (parts.length !== 3) {
+    const err = new Error(&#39;Token malformado&#39;);
+    (err as NodeJS.ErrnoException).code = &#39;JWT_MALFORMED&#39;;
+    throw err;
+  }
+
+  const [header, body, signature] = parts as [string, string, string];
+  const signingInput = `${header}.${body}`;
+  const expectedSig = base64UrlEncode(
+    createHmac(&#39;sha256&#39;, secret).update(signingInput).digest(),
+  );
+  const expectedBuf = Buffer.from(expectedSig);
+  const receivedBuf = Buffer.from(signature);
+
+  if (
+    expectedBuf.length !== receivedBuf.length ||
+    !timingSafeEqual(expectedBuf, receivedBuf)
+  ) {
+    const err = new Error(&#39;Firma inválida&#39;);
+    (err as NodeJS.ErrnoException).code = &#39;JWT_INVALID_SIGNATURE&#39;;
+    throw err;
+  }
+
+  const payload = JSON.parse(base64UrlDecode(body).toString(&#39;utf8&#39;)) as T &#38; { iat: number; exp: number };</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              security\auth.middleware.ts (Line 204:5 - Line 213:39),
+              security\platform.auth.middleware.ts (Line 129:5 - Line 138:39)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-64')">Show code</button>
+            </div>
+            <pre id="code-typescript-64" class="code-block">    const authHeader = req.headers[&#39;authorization&#39;];
+    if (!authHeader?.startsWith(&#39;Bearer &#39;)) {
+      res.status(401).json({
+        code: &#39;UNAUTHORIZED&#39;,
+        message: &#39;Se requiere header Authorization: Bearer &#60;token&#62;&#39;,
+      });
+      return;
+    }
+
+    const token = authHeader.slice(7);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              security\auth.middleware.ts (Line 217:50 - Line 224:82),
+              security\platform.auth.middleware.ts (Line 142:12 - Line 149:82)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-65')">Show code</button>
+            </div>
+            <pre id="code-typescript-65" class="code-block">      payload = verifyToken(token, getJwtSecret());
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? &#39;JWT_ERROR&#39;;
+      if (code === &#39;JWT_EXPIRED&#39;) {
+        res.status(401).json({ code: &#39;TOKEN_EXPIRED&#39;, message: &#39;El token ha expirado&#39; });
+        return;
+      }
+      res.status(401).json({ code: &#39;UNAUTHORIZED&#39;, message: &#39;Token inválido&#39; });</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\order.service.test.ts (Line 17:41 - Line 23:88),
+              services\reservation.service.test.ts (Line 42:27 - Line 53:58)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-66')">Show code</button>
+            </div>
+            <pre id="code-typescript-66" class="code-block">  async markDispatched(): Promise&#60;void&#62; {}
+}
+
+/** Ejecuta el work directamente sin abrir una transacción real — igual que en reservation.service.test.ts. */
+class InMemoryTransactionManager implements TransactionManager {
+  async run&#60;T&#62;(work: (client: SqlClient) =&#62; Promise&#60;T&#62;): Promise&#60;T&#62; {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\order.service.test.ts (Line 21:1 - Line 26:2),
+              services\resource-lock.service.test.ts (Line 12:1 - Line 17:2)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-67')">Show code</button>
+            </div>
+            <pre id="code-typescript-67" class="code-block">class InMemoryTransactionManager implements TransactionManager {
+  async run&#60;T&#62;(work: (client: SqlClient) =&#62; Promise&#60;T&#62;): Promise&#60;T&#62; {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\order.service.test.ts (Line 22:3 - Line 28:6),
+              services\resource-lock.service.test.ts (Line 13:3 - Line 19:9)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-68')">Show code</button>
+            </div>
+            <pre id="code-typescript-68" class="code-block">  async run&#60;T&#62;(work: (client: SqlClient) =&#62; Promise&#60;T&#62;): Promise&#60;T&#62; {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
+
+const TEST_BUSINESS_ID = &#39;biz-test&#39;;</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.test.ts (Line 198:71 - Line 204:46),
+              services\reservation.service.test.ts (Line 221:104 - Line 227:46)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-69')">Show code</button>
+            </div>
+            <pre id="code-typescript-69" class="code-block">    it(&#39;debe rechazar si el recurso está desactivado (active: false)&#39;, async () =&#62; {
+      const inactiveTable = new BookableResource(
+        &#39;t-inactive&#39;, &#39;Mesa Desactivada&#39;, 50, &#39;cat-table&#39;,
+        { shape: &#39;RECTANGLE&#39;, width: 120, height: 80, positionX: 0, positionY: 0, rotationDegrees: 0 },
+        1, null, null, null, /* active */ false,
+      );
+      await resourceRepo.save(inactiveTable);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.test.ts (Line 249:88 - Line 264:10),
+              services\reservation.service.test.ts (Line 291:77 - Line 301:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-70')">Show code</button>
+            </div>
+            <pre id="code-typescript-70" class="code-block">    it(&#39;devuelve el único recurso libre de la categoría cuando el otro está ocupado&#39;, async () =&#62; {
+      // t1 queda ocupada 20:00-22:00
+      await service.createReservation({
+        id: &#39;res-1&#39;,
+        resourceId: &#39;t1&#39;,
+        customer,
+        startTime: new Date(&#39;2026-07-01T20:00:00&#39;),
+        endTime:   new Date(&#39;2026-07-01T22:00:00&#39;),
+        details: {},
+      });
+
+      const found = await service.findAvailableResourceInCategory({
+        categoryId: &#39;cat-table&#39;,
+        startTime:  new Date(&#39;2026-07-01T20:00:00&#39;),
+        endTime:    new Date(&#39;2026-07-01T22:00:00&#39;),
+      });</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.test.ts (Line 253:25 - Line 269:19),
+              services\reservation.service.test.ts (Line 278:38 - Line 288:19)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-71')">Show code</button>
+            </div>
+            <pre id="code-typescript-71" class="code-block">        resourceId: &#39;t1&#39;,
+        customer,
+        startTime: new Date(&#39;2026-07-01T20:00:00&#39;),
+        endTime:   new Date(&#39;2026-07-01T22:00:00&#39;),
+        details: {},
+      });
+
+      const found = await service.findAvailableResourceInCategory({
+        categoryId: &#39;cat-table&#39;,
+        startTime:  new Date(&#39;2026-07-01T20:00:00&#39;),
+        endTime:    new Date(&#39;2026-07-01T22:00:00&#39;),
+      });
+
+      // Antes de este cambio, pedir directamente &#34;t1&#34; acá hubiera devuelto
+      // &#34;no disponible&#34; — el punto de este método es que la categoría sí
+      // tiene lugar (t2), aunque el primer candidato (t1) esté ocupado.
+      expect(found?.id).toBe(&#39;t2&#39;);</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.test.ts (Line 525:116 - Line 534:10),
+              services\reservation.service.test.ts (Line 551:84 - Line 560:10)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-72')">Show code</button>
+            </div>
+            <pre id="code-typescript-72" class="code-block">    it(&#39;bloquea una reserva si el recurso físico compartido está ocupado, aunque el recurso primario esté libre&#39;, async () =&#62; {
+      await service.createReservation({
+        id: &#39;res-corte&#39;,
+        resourceId: &#39;silla-1&#39;,
+        serviceId: &#39;svc-corte&#39;,
+        customer,
+        startTime: new Date(&#39;2026-07-01T10:00:00&#39;),
+        endTime:   new Date(&#39;2026-07-01T10:30:00&#39;),
+        details: {},
+      });</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.test.ts (Line 525:116 - Line 538:12),
+              services\reservation.service.test.ts (Line 595:96 - Line 607:12)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-73')">Show code</button>
+            </div>
+            <pre id="code-typescript-73" class="code-block">    it(&#39;bloquea una reserva si el recurso físico compartido está ocupado, aunque el recurso primario esté libre&#39;, async () =&#62; {
+      await service.createReservation({
+        id: &#39;res-corte&#39;,
+        resourceId: &#39;silla-1&#39;,
+        serviceId: &#39;svc-corte&#39;,
+        customer,
+        startTime: new Date(&#39;2026-07-01T10:00:00&#39;),
+        endTime:   new Date(&#39;2026-07-01T10:30:00&#39;),
+        details: {},
+      });
+
+      // silla-2 (el recurso primario de Tintura) está libre — pero la
+      // estilista ya está ocupada por la reserva de Corte en ese rango.
+      await expect(</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.ts (Line 428:24 - Line 436:19),
+              services\reservation.service.ts (Line 458:23 - Line 466:19)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-74')">Show code</button>
+            </div>
+            <pre id="code-typescript-74" class="code-block">    reservation.confirm();
+
+    await this.transactionManager.run(async (client: SqlClient) =&#62; {
+      await this.reservationRepository.saveWithClient(client, reservation);
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId,
+        aggregateType: &#39;RESERVATION&#39;,
+        aggregateId:   reservation.id,
+        eventType:     &#39;reservation.confirmed&#39;,</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              services\reservation.service.ts (Line 428:24 - Line 436:19),
+              services\reservation.service.ts (Line 483:25 - Line 491:19)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-75')">Show code</button>
+            </div>
+            <pre id="code-typescript-75" class="code-block">    reservation.confirm();
+
+    await this.transactionManager.run(async (client: SqlClient) =&#62; {
+      await this.reservationRepository.saveWithClient(client, reservation);
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId,
+        aggregateType: &#39;RESERVATION&#39;,
+        aggregateId:   reservation.id,
+        eventType:     &#39;reservation.confirmed&#39;,</pre>
+          </div>
+          
+          <div class="clone-item">
+            <div class="clone-info">
+              workers\outbox.worker.test.ts (Line 80:71 - Line 88:44),
+              workers\outbox.worker.test.ts (Line 191:92 - Line 202:44)
+            </div>
+            <div>
+              <button class="toggle-btn" onclick="toggle('code-typescript-76')">Show code</button>
+            </div>
+            <pre id="code-typescript-76" class="code-block">  it(&#39;despacha evento al handler registrado y lo marca como procesado&#39;, async () =&#62; {
+    repo.insert(makeEvent(&#39;reservation.confirmed&#39;));
+
+    const handler = vi.fn().mockResolvedValue(undefined);
+    worker.on(&#39;reservation.confirmed&#39;, handler);
+
+    await triggerPoll(worker);
+
+    expect(handler).toHaveBeenCalledOnce();</pre>
+          </div>
+          
+        </div>
+      </section>
+    </div>
+    
+    
+  </div>
+
+  <div class="footer">
+    <p>Generated by <a href="https://jscpd.dev" target="_blank">jscpd</a> v5.0.15 by <a href="https://github.com/kucherenko" target="_blank">Andrey Kucherenko</a></p>
+    <p><a href="https://www.npmjs.com/package/jscpd" target="_blank"><img src="https://img.shields.io/npm/dw/jscpd.svg?style=flat-square" alt="npm weekly downloads" style="vertical-align: middle;"></a></p>
+  </div>
+
+  <script>
+    function toggle(id) {
+      var el = document.getElementById(id);
+      if (el) { el.classList.toggle('visible'); }
+    }
+  </script>
+</body>
+</html>
