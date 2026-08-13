@@ -6,6 +6,18 @@
  * - Las queries que devuelven recursos ahora hacen LEFT JOIN con
  *   resource_categories para poblar PhysicalResource.categoryName.
  *   save() y delete() no se modifican (no leen la entidad de vuelta).
+ *
+ * ## Cambios — fix/catalog-integrity (13/08/2026, docs/criterios-datos.md)
+ * - getById() YA NO filtra por active. Antes filtraba `active IS NOT FALSE`
+ *   (que además colaba los NULL, inconsistente con category_repository) —
+ *   esto rompía SqlReservationRepository.rowToReservation(), que usa
+ *   getById() para reconstruir el resource de CUALQUIER reserva leída: una
+ *   reserva histórica cuyo recurso se desactivaba se volvía completamente
+ *   ilegible (ResourceNotFoundError al listar/leer). R2 + R10.
+ * - getAll()/getByCategory()/getByName()/countActive() excluyen
+ *   deleted_at IS NOT NULL — esos sí son listados, ahí el filtro corresponde.
+ * - rowToResource() ahora pasa `row.active` al dominio — antes la columna
+ *   se leía de la fila pero nunca llegaba a PhysicalResource.
  */
 
 import { SqlClient } from './sql.client.js';
@@ -64,9 +76,17 @@ export class SqlResourceRepository implements ResourceRepository {
     );
   }
 
+  /**
+   * NO filtra por active/deleted_at — ver docs/criterios-datos.md R2.
+   * Buscar por ID es "dame esta fila", no "dame esta fila si todavía me
+   * gusta". El caller decide qué hacer con un recurso pausado o borrado
+   * (ej. ReservationService rechaza explícitamente usarlo en una reserva
+   * NUEVA, pero una reserva EXISTENTE que ya lo referencia sigue
+   * pudiendo leerlo).
+   */
   async getById(id: string): Promise<PhysicalResource | undefined> {
     const result = await this.sqlClient.query<ResourceRow>(
-      `${SELECT_WITH_CATEGORY} WHERE r.id = $1 AND r.active IS NOT FALSE`,
+      `${SELECT_WITH_CATEGORY} WHERE r.id = $1`,
       [id],
     );
     return result.rows[0] ? this.rowToResource(result.rows[0]) : undefined;
@@ -75,7 +95,7 @@ export class SqlResourceRepository implements ResourceRepository {
   async getByCategory(categoryId: string): Promise<PhysicalResource[]> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY}
-       WHERE r.category_id = $1 AND r.active IS NOT FALSE
+       WHERE r.category_id = $1 AND r.active IS NOT FALSE AND r.deleted_at IS NULL
        ORDER BY r.name ASC`,
       [categoryId],
     );
@@ -84,7 +104,7 @@ export class SqlResourceRepository implements ResourceRepository {
 
   async getAll(): Promise<PhysicalResource[]> {
     const result = await this.sqlClient.query<ResourceRow>(
-      `${SELECT_WITH_CATEGORY} WHERE r.active IS NOT FALSE ORDER BY r.name ASC`,
+      `${SELECT_WITH_CATEGORY} WHERE r.active IS NOT FALSE AND r.deleted_at IS NULL ORDER BY r.name ASC`,
     );
     return result.rows.map((row) => this.rowToResource(row));
   }
@@ -92,7 +112,7 @@ export class SqlResourceRepository implements ResourceRepository {
   async getByName(name: string): Promise<PhysicalResource | undefined> {
     const result = await this.sqlClient.query<ResourceRow>(
       `${SELECT_WITH_CATEGORY}
-       WHERE LOWER(r.name) = LOWER($1) AND r.active IS NOT FALSE`,
+       WHERE LOWER(r.name) = LOWER($1) AND r.active IS NOT FALSE AND r.deleted_at IS NULL`,
       [name],
     );
     return result.rows[0] ? this.rowToResource(result.rows[0]) : undefined;
@@ -100,7 +120,7 @@ export class SqlResourceRepository implements ResourceRepository {
 
   async countActive(): Promise<number> {
     const result = await this.sqlClient.query<{ total: number }>(
-      `SELECT COUNT(*)::int AS total FROM resources WHERE active IS NOT FALSE`,
+      `SELECT COUNT(*)::int AS total FROM resources WHERE active IS NOT FALSE AND deleted_at IS NULL`,
     );
     return result.rows[0]?.total ?? 0;
   }
@@ -134,6 +154,7 @@ export class SqlResourceRepository implements ResourceRepository {
       /* description */ null,
       row.category_name ?? null,
       row.location_id,
+      row.active,
     );
   }
 }

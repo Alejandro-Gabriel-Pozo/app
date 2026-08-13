@@ -142,12 +142,22 @@ export function createResourcesRouter(): Router {
         const body       = CreateResourceSchema.parse(req.body);
         const categoryId = (body.categoryId ?? body.category_id)!;
 
-        // findById() filtra active=TRUE — retorna null si no existe O está inactiva
-        const catExists = await new SqlCategoryRepository(req.db).findById(categoryId);
-        if (!catExists) {
+        // findById() ya no filtra por estado (docs/criterios-datos.md R2) —
+        // el chequeo de "¿se puede usar para algo nuevo?" es explícito acá,
+        // distinguiendo no-existe de pausada/borrada (R15: fallar fuerte,
+        // no colapsar dos motivos de rechazo distintos en un mismo mensaje).
+        const category = await new SqlCategoryRepository(req.db).findById(categoryId);
+        if (!category) {
           res.status(422).json({
             code:    'INVALID_CATEGORY',
-            message: `La categoría '${categoryId}' no existe o fue eliminada.`,
+            message: `La categoría '${categoryId}' no existe.`,
+          });
+          return;
+        }
+        if (!category.active) {
+          res.status(422).json({
+            code:    'INVALID_CATEGORY',
+            message: `La categoría '${categoryId}' está desactivada — reactivala o elegí otra.`,
           });
           return;
         }
@@ -193,13 +203,22 @@ export function createResourcesRouter(): Router {
 
         const categoryId = body.categoryId ?? body.category_id ?? existing.categoryId;
 
-        // Solo verificamos si cambia la categoría
+        // Solo verificamos si cambia la categoría — mismo criterio que POST
+        // (docs/criterios-datos.md R2/R15): no-existe y pausada son
+        // motivos de rechazo distintos, con mensajes distintos.
         if (categoryId !== existing.categoryId) {
-          const catExists = await new SqlCategoryRepository(req.db).findById(categoryId);
-          if (!catExists) {
+          const category = await new SqlCategoryRepository(req.db).findById(categoryId);
+          if (!category) {
             res.status(422).json({
               code:    'INVALID_CATEGORY',
-              message: `La categoría '${categoryId}' no existe o fue eliminada.`,
+              message: `La categoría '${categoryId}' no existe.`,
+            });
+            return;
+          }
+          if (!category.active) {
+            res.status(422).json({
+              code:    'INVALID_CATEGORY',
+              message: `La categoría '${categoryId}' está desactivada — reactivala o elegí otra.`,
             });
             return;
           }

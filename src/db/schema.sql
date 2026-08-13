@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS resource_categories (
 CREATE INDEX IF NOT EXISTS idx_resource_categories_active
   ON resource_categories (active) WHERE active = TRUE;
 
+-- deleted_at: separa "borrado" (permanente, libera el nombre/código) de
+-- "pausado" (active = FALSE, temporal) — ver docs/criterios-datos.md R3.
+-- Antes de esto, active era la única columna y esa distinción se perdía en
+-- el momento de escribir, sin forma de recuperarla después.
+ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'resource_categories_updated_at') THEN
     CREATE TRIGGER resource_categories_updated_at
@@ -146,6 +152,10 @@ ALTER TABLE resources ALTER COLUMN location_id SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_resources_location
   ON resources (location_id) WHERE active = TRUE;
 
+-- deleted_at: ver comentario homólogo junto a resource_categories, mismo
+-- criterio (R3 de docs/criterios-datos.md).
+ALTER TABLE resources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
 -- ---------------------------------------------------------------------------
 -- bookable_services
 -- ---------------------------------------------------------------------------
@@ -166,6 +176,11 @@ CREATE TABLE IF NOT EXISTS bookable_services (
 
 CREATE INDEX IF NOT EXISTS idx_bookable_services_category
   ON bookable_services (category_id) WHERE active = TRUE;
+
+-- deleted_at: mismo criterio. bookable_services.findById() ya no filtraba
+-- por active (era el único de los tres maestros que cumplía R2 de entrada),
+-- pero le faltaba esta columna para distinguir borrado de pausado.
+ALTER TABLE bookable_services ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
 -- resource_locks

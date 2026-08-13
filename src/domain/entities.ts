@@ -136,6 +136,18 @@ export class PhysicalResource {
      * schema.sql — todo recurso real tiene una location asignada.
      */
     public readonly locationId: string | null = null,
+    /**
+     * Pausado/disponible — distinto de "borrado" (ver `deleted_at` en
+     * schema.sql y docs/criterios-datos.md R3). Antes este campo no existía
+     * en el dominio pese a que la columna sí existía en la BD: se leía en
+     * SqlResourceRepository pero nunca se pasaba al constructor, así que
+     * `getById()`/`checkAvailability()` no tenían forma de saber si un
+     * recurso estaba pausado — el único chequeo posible era el filtro
+     * implícito de active dentro del propio `getById()`, que R2 obligó a
+     * sacar de ahí. Default `true` para no romper ningún call site
+     * existente (mismo criterio que `locationId`/`categoryName`).
+     */
+    public readonly active: boolean = true,
   ) {
     if (basePrice < 0) throw new Error('basePrice no puede ser negativo');
     if (!categoryId.trim()) throw new Error('categoryId es obligatorio');

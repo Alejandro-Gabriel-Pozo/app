@@ -4,9 +4,15 @@
  * Usa SqlClient (interfaz genérica) en lugar del Pool de pg directamente.
  *
  * ## Cambios
- * - findById() filtra active = TRUE para no retornar categorías soft-deleted.
- *   Sin este filtro, un recurso podía crearse con una categoría borrada
- *   porque el check de FK en resources.routes.ts pasaba igual.
+ * - findById() YA NO filtra por active (docs/criterios-datos.md R2: "buscar
+ *   por ID nunca filtra por estado"). Antes filtraba active = TRUE, lo que
+ *   volvía invisible cualquier categoría desactivada — el bug de categorías
+ *   fantasma del 13/08/2026: un recurso apuntando a una categoría pausada
+ *   quedaba con una referencia que ningún código podía resolver. El chequeo
+ *   de "¿está disponible para algo nuevo?" ahora es explícito en el caller
+ *   (resources.routes.ts), no un efecto secundario de este método.
+ * - findAll()/countActive() excluyen deleted_at IS NOT NULL además de
+ *   active = TRUE — esos sí son listados/conteos, ahí el filtro corresponde.
  * - update() lanza CategoryNotFoundError (tipado) en vez de Error genérico
  *   para que el instanceof en categories.routes.ts lo capture como 404.
  * - create() y update() usan columnas explícitas en RETURNING en lugar
@@ -47,21 +53,24 @@ export class SqlCategoryRepository implements ICategoryRepository {
     const result = await this.sqlClient.query(
       `SELECT id, name, description, fields, active, created_at, updated_at
        FROM resource_categories
-       WHERE active = TRUE
+       WHERE active = TRUE AND deleted_at IS NULL
        ORDER BY created_at ASC`,
     );
     return (result.rows as Record<string, unknown>[]).map(mapRow);
   }
 
   /**
-   * Retorna null si la categoría no existe O si fue soft-deleted (active = FALSE).
-   * Esto evita que recursos se creen apuntando a categorías borradas.
+   * Retorna null solo si la fila no existe. NO filtra por active/deleted_at
+   * — ver docs/criterios-datos.md R2. Buscar por ID es "dame esta fila",
+   * no "dame esta fila si todavía me gusta". El caller decide qué hacer
+   * con una categoría pausada o borrada (ej. resources.routes.ts la
+   * rechaza explícitamente para altas nuevas).
    */
   async findById(id: string): Promise<ResourceCategory | null> {
     const result = await this.sqlClient.query(
       `SELECT id, name, description, fields, active, created_at, updated_at
        FROM resource_categories
-       WHERE id = $1 AND active = TRUE`,
+       WHERE id = $1`,
       [id],
     );
     const rows = result.rows as Record<string, unknown>[];
@@ -70,7 +79,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
 
   async countActive(): Promise<number> {
     const result = await this.sqlClient.query(
-      `SELECT COUNT(*)::int AS total FROM resource_categories WHERE active = TRUE`,
+      `SELECT COUNT(*)::int AS total FROM resource_categories WHERE active = TRUE AND deleted_at IS NULL`,
     );
     const rows = result.rows as Array<{ total: number }>;
     return rows[0]?.total ?? 0;
@@ -104,10 +113,14 @@ export class SqlCategoryRepository implements ICategoryRepository {
     }
 
     values.push(id);
+    // Sin "AND active = TRUE": editar (o reactivar, vía dto.active = true)
+    // una categoría pausada tiene que funcionar — antes quedaba atrapada
+    // como "no encontrada" en cuanto se desactivaba, sin forma de arreglarla
+    // salvo escribiendo SQL a mano.
     const result = await this.sqlClient.query(
       `UPDATE resource_categories
        SET ${setClauses.join(', ')}
-       WHERE id = $${idx} AND active = TRUE
+       WHERE id = $${idx}
        RETURNING ${RETURNING_COLS}`,
       values,
     );

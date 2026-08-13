@@ -191,6 +191,49 @@ describe('ReservationService', () => {
         }),
       ).rejects.toThrow(InvalidReservationError);
     });
+
+    // docs/criterios-datos.md R2/R11: getById() ya no filtra por active,
+    // así que este chequeo tiene que ser explícito en el servicio — antes
+    // lo hacía gratis (y sin querer) el filtro implícito de getById().
+    it('debe rechazar si el recurso está desactivado (active: false)', async () => {
+      const inactiveTable = new BookableResource(
+        't-inactive', 'Mesa Desactivada', 50, 'cat-table',
+        { shape: 'RECTANGLE', width: 120, height: 80, positionX: 0, positionY: 0, rotationDegrees: 0 },
+        1, null, null, null, /* active */ false,
+      );
+      await resourceRepo.save(inactiveTable);
+
+      await expect(
+        service.createReservation({
+          id: 'res-1',
+          resourceId: 't-inactive',
+          customer,
+          startTime: new Date('2026-07-01T20:00:00'),
+          endTime:   new Date('2026-07-01T22:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('checkAvailability — recurso desactivado', () => {
+    it('devuelve false (no lanza) para un recurso con active: false, mismo contrato que OUT_OF_SERVICE', async () => {
+      const inactiveTable = new BookableResource(
+        't-inactive', 'Mesa Desactivada', 50, 'cat-table',
+        { shape: 'RECTANGLE', width: 120, height: 80, positionX: 0, positionY: 0, rotationDegrees: 0 },
+        1, null, null, null, /* active */ false,
+      );
+      await resourceRepo.save(inactiveTable);
+
+      const available = await service.checkAvailability(
+        't-inactive',
+        new Date('2026-07-01T20:00:00'),
+        new Date('2026-07-01T22:00:00'),
+      );
+
+      expect(available).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------

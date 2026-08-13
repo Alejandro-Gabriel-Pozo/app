@@ -142,6 +142,15 @@ export class ReservationService {
     if (!resource) {
       throw new ResourceNotFoundError(params.resourceId);
     }
+    // getById() ya no filtra por active (docs/criterios-datos.md R2) — un
+    // recurso pausado no se puede usar en una reserva NUEVA (R11), chequeo
+    // explícito acá. assertAllResourcesAvailable() más abajo repite este
+    // chequeo para los recursos bloqueados por el servicio, pero ESTE
+    // fetch pasa por acá primero para construir el precio/la entidad, así
+    // que falla rápido sin esperar a la transacción.
+    if (!resource.active) {
+      throw new InvalidReservationError(`El recurso ${params.resourceId} está desactivado.`);
+    }
 
     const category = await this.categoryRepository.findById(resource.categoryId);
     if (category) {
@@ -521,6 +530,13 @@ export class ReservationService {
         throw new ResourceNotFoundError(id);
       }
 
+      // getById() ya no filtra por active (R2) — un recurso pausado no está
+      // "disponible" para una reserva nueva, mismo contrato que el chequeo
+      // de OUT_OF_SERVICE de abajo (retorna false, no lanza).
+      if (!lockedResource.active) {
+        return false;
+      }
+
       if (await this.housekeepingRepository.isOutOfService(id)) {
         return false;
       }
@@ -695,6 +711,12 @@ export class ReservationService {
       const resource = await this.resourceRepository.getById(resourceId);
       if (!resource) {
         throw new ResourceNotFoundError(resourceId);
+      }
+
+      // getById() ya no filtra por active (R2) — mismo contrato que el
+      // chequeo de OUT_OF_SERVICE de abajo: lanza, no degrada en silencio.
+      if (!resource.active) {
+        throw new InvalidReservationError(`El recurso ${resourceId} está desactivado.`);
       }
 
       if (await this.housekeepingRepository.isOutOfService(resourceId)) {
