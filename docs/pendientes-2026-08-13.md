@@ -110,12 +110,26 @@ en el paso 3/4. Vale la pena evaluar si conviene un `tsconfig.test.json`
 sin el exclude, corrido aparte en CI, aunque sea sin bloquear el build
 todavía (dado el volumen de errores preexistentes).
 
-### A2. `Owner` / liquidación a terceros — sin modelar
+### A2. `Owner` / liquidación a terceros — sin modelar, en pausa a propósito
 Falta el concepto de dueño de un recurso y liquidación de lo cobrado. Solo
 bloquea un vertical de "gestión de terceros" (ej. alquiler de canchas/deptos
 de otros dueños) — no bloquea nada de lo que ya está en producción. Viene de
 la "segunda opinión" del gap analysis (2026-08-12), lente distinta a la
 original: "qué se encarece con el tiempo" en vez de "qué bloquea un vertical".
+Se decidió no diseñarla todavía (sin caso de uso real) — retomar recién
+cuando aparezca.
+
+**Chequeo rápido hecho el 13/08/2026 (no es diseño de A2, solo evitar que
+el modelo de hoy obligue a una migración dolorosa más adelante):** se
+verificó ausencia de acoplamiento a single-owner en `resources` y
+`financial_transactions` — ninguna de las dos asume en su schema ni en su
+lógica que el negocio es el único dueño. `resources` no tiene ningún campo
+de propiedad hoy; `financial_transactions` no registra "a quién le
+pertenece el cobro", solo de dónde vino (`reservation_id`/`order_id`/
+`stay_id`, que ya enlazan a `resource_id`). Conclusión: agregar
+`resources.owner_id` nullable (mismo patrón aditivo que `stay_id`/
+`order_id`/`company_customer_id`, sin backfill) alcanza el día que
+aparezca el caso de uso — no hace falta re-investigar esto de nuevo.
 
 ### A3. Frontend duplica a mano las transiciones de estado — ✅ RESUELTO (13/08/2026)
 `Reservation`, `HousekeepingTask` y `Order` ahora exponen `allowedTransitions`
