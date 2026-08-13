@@ -1,8 +1,9 @@
 import { ReservationStatus } from '../types/enums.js';
-import type {
-  OccupancyRepository,
-  OccupancySnapshot,
-  OccupancyStats,
+import {
+  splitDateRangeIntoDailyMinutes,
+  type OccupancyRepository,
+  type OccupancySnapshot,
+  type OccupancyStats,
 } from './occupancy.repository.js';
 
 /**
@@ -29,42 +30,24 @@ export class InMemoryOccupancyRepository implements OccupancyRepository {
       return;
     }
 
-    const currentDate = new Date(startTime);
-    currentDate.setHours(0, 0, 0, 0);
-
-    while (currentDate < endTime) {
-      const dayEnd = new Date(currentDate);
-      dayEnd.setDate(dayEnd.getDate() + 1);
-      dayEnd.setHours(0, 0, 0, 0);
-
-      const dayStart = new Date(currentDate);
-      const effectiveEnd = Math.min(endTime.getTime(), dayEnd.getTime());
-      const effectiveStart = Math.max(dayStart.getTime(), startTime.getTime());
-      const _minInDay = Math.max(
-        0,
-        (effectiveEnd - effectiveStart) / (1000 * 60),
-      );
-
+    for (const { date, minutes } of splitDateRangeIntoDailyMinutes(startTime, endTime)) {
       const existingIndex = this.snapshots.findIndex(
-        (s) =>
-          s.resourceId === resourceId &&
-          s.date.toDateString() === currentDate.toDateString(),
+        (s) => s.resourceId === resourceId && s.date.toDateString() === date.toDateString(),
       );
 
       if (existingIndex >= 0) {
-        this.snapshots[existingIndex]!.bookedMinutes += _minInDay;
+        this.snapshots[existingIndex]!.bookedMinutes += minutes;
       } else {
         this.snapshots.push({
           resourceId,
           resourceName,
           categoryId,
           categoryName,
-          date: new Date(currentDate),
+          date,
           totalMinutes: 24 * 60,
-          bookedMinutes: _minInDay,
+          bookedMinutes: minutes,
         });
       }
-      currentDate.setDate(currentDate.getDate() + 1);
     }
   }
 

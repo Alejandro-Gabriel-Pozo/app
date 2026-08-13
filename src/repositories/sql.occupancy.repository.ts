@@ -1,8 +1,9 @@
 import { ReservationStatus } from '../types/enums.js';
-import type {
-  OccupancyRepository,
-  OccupancySnapshot,
-  OccupancyStats,
+import {
+  splitDateRangeIntoDailyMinutes,
+  type OccupancyRepository,
+  type OccupancySnapshot,
+  type OccupancyStats,
 } from './occupancy.repository.js';
 import type { SqlClient } from './sql.client.js';
 
@@ -80,31 +81,16 @@ export class SqlOccupancyRepository implements OccupancyRepository {
       return;
     }
 
-    const currentDate = new Date(startTime);
-    currentDate.setHours(0, 0, 0, 0);
+    const sql = `
+      INSERT INTO occupancy_records
+        (resource_id, resource_name, category_id, category_name, date, total_minutes, booked_minutes)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (resource_id, date) DO UPDATE
+      SET booked_minutes = occupancy_records.booked_minutes + $7
+    `.trim();
 
-    while (currentDate < endTime) {
-      const dayEnd = new Date(currentDate);
-      dayEnd.setDate(dayEnd.getDate() + 1);
-      dayEnd.setHours(0, 0, 0, 0);
-
-      const dayStart = new Date(currentDate);
-      const effectiveEnd = Math.min(endTime.getTime(), dayEnd.getTime());
-      const effectiveStart = Math.max(dayStart.getTime(), startTime.getTime());
-      const minInDay = Math.max(
-        0,
-        (effectiveEnd - effectiveStart) / (1000 * 60),
-      );
-
-      const dateStr = currentDate.toISOString().split('T')[0];
-      const sql = `
-        INSERT INTO occupancy_records 
-          (resource_id, resource_name, category_id, category_name, date, total_minutes, booked_minutes)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (resource_id, date) DO UPDATE
-        SET booked_minutes = occupancy_records.booked_minutes + $7
-      `.trim();
-
+    for (const { date, minutes } of splitDateRangeIntoDailyMinutes(startTime, endTime)) {
+      const dateStr = date.toISOString().split('T')[0];
       await this.sqlClient.query(sql, [
         resourceId,
         resourceName,
@@ -112,10 +98,8 @@ export class SqlOccupancyRepository implements OccupancyRepository {
         categoryName,
         dateStr,
         24 * 60,
-        minInDay,
+        minutes,
       ]);
-
-      currentDate.setDate(currentDate.getDate() + 1);
     }
   }
 

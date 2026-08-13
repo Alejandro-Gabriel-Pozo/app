@@ -168,16 +168,28 @@ completo sin errores. No probado en navegador contra un backend real.
 
 ## B. Seguridad (`appfrontend-main`)
 
-### B1. Vulnerabilidades npm — Next.js 14.2.3 (1 crítica + 7 high)
-`npm audit` (13/08) encontró una vulnerabilidad **crítica** en `next`
-(cache poisoning, varias de DoS, SSRF, XSS — ver detalle completo corriendo
-`npm audit` en `appfrontend-main`) más `glob`/`minimatch`/`postcss`
-transitivas. Todas preexistentes — no las trajo `jscpd`/`dependency-cruiser`/
-`ts-prune`, confirmado comparando `git diff package.json`. El fix
-(`npm audit fix --force`) instala `next@14.2.35`, fuera del rango declarado
-en `package.json` — es upgrade real de versión mayor del framework, no un
-parche. **Diferido a propósito** a una sesión dedicada con su propio testeo
-(no se corrió hoy).
+### B1. Vulnerabilidades npm — Next.js
+`npm audit` (13/08) encontró 1 vulnerabilidad **crítica** en `next` +
+`glob`/`minimatch`/`postcss` transitivas (7 `high`). Todas preexistentes —
+no las trajo `jscpd`/`dependency-cruiser`/`ts-prune`.
+
+**✅ Parte resuelta (13/08/2026):** el resumen original decía que el fix
+"instala `next@14.2.35`, fuera del rango declarado — upgrade real de
+versión mayor" — **no es así**: `package.json` fija `"next": "14.2.3"`
+sin `^`/`~`, así que npm marca *cualquier* versión distinta como "fuera de
+rango", aunque sea un patch dentro de la misma rama 14.2.x. Se instaló
+`next@14.2.35` directo (`npm install next@14.2.35 --save-exact`) — resolvió
+la crítica completa y `postcss` (transitiva). Typecheck limpio, `next build`
+completo sin errores (21 rutas), sin tocar `--force`.
+
+**Sigue diferido a propósito, esto sí es una decisión mayor:** los 7 `high`
+restantes (`next` + `glob`/`eslint-config-next`) **todos** requieren el
+mismo salto — Next.js 14→16 (dos versiones mayores) o `eslint-config-next`
+a 16.x — ninguno se resuelve con un patch. No hay ESLint configurado
+todavía en este repo (`next lint` pide setup interactivo la primera vez),
+así que el impacto práctico de no arreglar `glob`/`eslint-config-next` hoy
+es bajo (dev-only, sin uso activo). El upgrade de Next 14→16 sí necesita su
+propia sesión con testeo dedicado — no se tocó.
 
 ---
 
@@ -200,17 +212,28 @@ como el resto de las rutas. Sin tests dedicados a esta ruta (no hay
 (265/266 verde, sin regresiones). Falta confirmar en el navegador que el
 resaltado de campo ahora sí aparece.
 
-### C2. Rutas — boilerplate `try/catch` + contrato de `code: 'NOT_FOUND'`
-El cascarón `try { } catch (err) { if (err instanceof X) {...}; next(err); }`
-se repite handler por handler en varios routers (`bookable-services`,
-`resources`, `users`, `customers`, `orders`). Un `asyncHandler` wrapper
-sacaría el cascarón de los handlers simples. **Pero** los `instanceof` que
-devuelven `res.status(404).json({ code: 'NOT_FOUND', ... })` no son borrado
-seguro sin decisión previa: el frontend tiene `isNotFound(err)`
-(`appfrontend-main/src/lib/apiErrors.ts:55-57`) que compara contra el string
-genérico `'NOT_FOUND'`, mientras que el `errorHandler` central emitiría el
-código específico del `DomainError` (ej. `BOOKABLE_SERVICE_NOT_FOUND`).
-Requiere decidir el contrato antes de tocar código.
+### C2. Rutas — boilerplate `try/catch` + contrato de `code: 'NOT_FOUND'` — ✅ PARCIAL (13/08/2026)
+La decisión pendiente se resolvió sola: se confirmó que `isNotFound(err)`
+(`appfrontend-main/src/lib/apiErrors.ts:55-57`) **está definida pero no se
+usa en ningún lado del frontend** — no hay ningún consumidor activo de
+`code: 'NOT_FOUND'` genérico ni de los códigos específicos
+(`BOOKABLE_SERVICE_NOT_FOUND`, etc.), así que cambiar de uno a otro no
+rompe nada hoy. Se verificó además que los 5 errores usados en
+`bookable-services.routes.ts` (`BookableServiceNotFoundError`,
+`ServiceScheduleNotFoundError`, `ScheduleConflictError`,
+`ResourceNotFoundError`, `InvalidReservationError`) ya estaban mapeados en
+`domainErrorStatus()` con el mismo status que el `instanceof` local —
+sacar los 9 bloques redundantes de ese archivo (reemplazados por
+`catch (err) { next(err); }`) no cambia ningún status HTTP, solo el string
+de `code` (de `'NOT_FOUND'` genérico al específico del `DomainError`).
+Typecheck limpio, 281/282 verde (no hay tests de rutas en este repo, se
+verificó por inspección + suite completa).
+
+**Quedó parcial a propósito:** el mismo patrón existe en `users.routes.ts`,
+`categories.routes.ts`, `auth.routes.ts` y `locations.routes.ts` — no se
+auditaron ni tocaron en esta pasada (cada uno necesita el mismo chequeo
+uno por uno contra `domainErrorStatus()` antes de sacar el `instanceof`,
+no asumir que aplica igual sin verificar).
 
 ### C3. `order.service.ts` — mapeo de `OrderItem` duplicado — ✅ RESUELTO (13/08/2026)
 Extraído `buildOrderItemInput(item)` como función privada del módulo, usada
@@ -218,30 +241,66 @@ en `createOrder` y `addItem`. Sin cambio de comportamiento — mismo cálculo
 de `subtotal`. 265/266 verde (mismos 9 tests de `order.service.test.ts`
 pasando), typecheck limpio.
 
-### C4. Repos de ocupación — algoritmo de date-splitting duplicado SQL/in-memory
-El clon más grande de todo el reporte (29 líneas):
-`in-memory.occupancy.repository.ts:15-43` vs
-`sql.occupancy.repository.ts:67-94`. Es lógica de negocio real (partir un
-rango de fechas en buckets de minutos por día), no solo firma de interfaz —
-duplicada entre las dos implementaciones. Extraer
-`splitDateRangeIntoDailyMinutes()` a un util compartido.
+### C4. Repos de ocupación — algoritmo de date-splitting duplicado SQL/in-memory — ✅ RESUELTO (13/08/2026)
+Era el clon más grande de todo el reporte (29 líneas). Extraído
+`splitDateRangeIntoDailyMinutes(startTime, endTime)` a `occupancy.repository.ts`
+(el archivo de la interfaz, ya importado por las dos implementaciones) —
+función pura, sin cambio de comportamiento. Los 28 tests existentes de
+`sql.occupancy.repository.test.ts` + `in-memory.occupancy.repository.test.ts`
+pasaron sin modificarlos, confirmando que el comportamiento no cambió.
 
-### C5. `sql.reservation.repository.ts` / `in-memory.reservation.repository.ts` — duplicación interna
-Las variantes `ForResource`/`ForService` (con/sin `FOR UPDATE` en el caso
-SQL) son casi idénticas dentro del mismo archivo — no es duplicación
-SQL↔in-memory como C4, es dentro de cada implementación. Parametrizable con
-un query-builder interno. Menor prioridad que C4.
+### C5. `sql.reservation.repository.ts` / `in-memory.reservation.repository.ts` — duplicación interna — ✅ RESUELTO (13/08/2026)
+Extraído un query-builder privado `getActiveInRange()` en la versión SQL
+(parametrizado por columna `resource_id`/`service_id` y `forUpdate`
+boolean) y un filtro privado `getActiveInRange()` equivalente en la
+versión in-memory (parametrizado por un predicado `matches`). Las 4/2
+variantes públicas quedaron como wrappers de una línea. Sin tests
+dedicados a estos métodos — verificado con typecheck + suite completa.
 
-### C6. `auth.middleware.ts` vs `platform.auth.middleware.ts` — sin revisar en profundidad
-Segundo cluster de duplicación más grande del reporte completo (72 líneas
-en 5 clones) — más grande que cualquiera de las 3 áreas pedidas explícitamente
-salvo C4. No se revisó en detalle todavía.
+### C6. `auth.middleware.ts` vs `platform.auth.middleware.ts` — ✅ RESUELTO (13/08/2026)
+No era solo duplicación de estilo: `platform.auth.middleware.ts`
+**reimplementaba JWT desde cero** (`base64UrlEncode`/`base64UrlDecode`,
+firma HMAC manual) en vez de usar `signToken`/`verifyToken` de
+`auth.middleware.ts`, que ya son genéricos en el payload y reciben el
+`secret` como parámetro — exactamente pensados para este caso según su
+propio comentario de archivo ("un solo camino de firma/verificación...
+en vez de reimplementar JWT por segunda vez"). `signPlatformToken`/
+`verifyPlatformToken` ahora delegan a esas funciones — el aislamiento de
+claves (`PLATFORM_JWT_SECRET` separado de `JWT_SECRET`) sigue intacto,
+solo se dejó de reimplementar el algoritmo. No había ningún test para
+este archivo — se agregó `platform.auth.middleware.test.ts` (7 tests:
+round-trip de firma, token vencido, secret distinto, sin header,
+`authorizePlatform` con rol permitido/denegado/sin autenticar). 281/282
+verde, typecheck limpio.
 
-### C7. `ts-prune` — mayoría probable falsos positivos
-`docs/analysis/dead-code.txt` (105 líneas) — a simple vista varios
-"no usados" son clases `InMemory*Repository` que solo se instancian por
-nombre vía DI/tests, no exports realmente muertos. Necesita triage manual
-antes de borrar nada.
+### C7. `ts-prune` — auditado (13/08/2026), la suposición original era incorrecta
+Se dijo "mayoría probable falsos positivos" sin verificar — **al chequear 3
+casos puntuales, 2 de 3 resultaron ser deuda real, no falsos positivos**:
+
+- **`CreateResourceSchema` duplicado, uno muerto.** Hay dos definiciones
+  con el mismo nombre: `request.schemas.ts:79` (exportada, la que ts-prune
+  marca como no usada — correctamente, nadie la importa) y otra **local**
+  dentro de `resources.routes.ts:49`, que es la que realmente se usa
+  (`resources.routes.ts:147`). No se tocó — hay que decidir cuál es la
+  canónica antes de borrar la otra, no asumir.
+- **`routeParam` (`api/utils/params.ts:1`) — muerta de verdad.** Nunca se
+  llama en ningún lado. Cada archivo de rutas define su propio `param(req,
+  key)` local en su lugar (otra duplicación chica, sin catalogar todavía).
+- **El re-export de `hashPassword`/`verifyPassword` en `auth.middleware.ts:61`
+  está desactualizado.** El comentario de ese archivo dice que
+  `users.routes.ts` los importa "desde auth.middleware para no acoplarse a
+  user.store directamente" — pero el código real
+  (`users.routes.ts:30`, `business.routes.ts:33`) los importa **directo
+  desde `user.store.js`**, no desde el re-export. El re-export en sí está
+  muerto; el comentario que lo justifica ya no es cierto.
+
+Las clases `InMemory*Repository` sí parecen ser el caso de falso positivo
+esperado (se instancian solo desde tests, que `tsconfig.json` excluye del
+análisis — mismo problema de raíz que el hallazgo de tests sin tipar, más
+abajo) — pero no se verificó cada una individualmente. **No se tocó nada
+de esto todavía** — son 3+ hallazgos reales que requieren su propia
+decisión (cuál `CreateResourceSchema` es la canónica, si actualizar o
+borrar el comentario de auth.middleware.ts, etc.), no un borrado mecánico.
 
 ### C8. `dependency-cruiser` — corrió con ruleset débil
 `npx depcruise --init` no pudo completarse (pregunta interactiva sobre ESM,

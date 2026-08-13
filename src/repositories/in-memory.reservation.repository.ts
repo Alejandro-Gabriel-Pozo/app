@@ -57,23 +57,28 @@ export class InMemoryReservationRepository implements ReservationRepository {
     );
   }
 
+  /**
+   * Reservas PENDING/CONFIRMED que solapan un rango, filtradas por lo que
+   * indique `matches` — único filtro para las variantes por recurso y por
+   * servicio de abajo (antes duplicado, jscpd C5).
+   */
+  private getActiveInRange(
+    matches: (r: Reservation) => boolean,
+    startDate: Date,
+    endDate: Date,
+  ): Reservation[] {
+    const activeStatuses = [ReservationStatus.PENDING, ReservationStatus.CONFIRMED];
+    return Array.from(this.reservations.values()).filter(
+      (r) => matches(r) && activeStatuses.includes(r.status) && r.startTime < endDate && r.endTime > startDate,
+    );
+  }
+
   async getActiveForResourceInRange(
     resourceId: string,
     startDate: Date,
     endDate: Date,
   ): Promise<Reservation[]> {
-    const activeStatuses = [
-      ReservationStatus.PENDING,
-      ReservationStatus.CONFIRMED,
-    ];
-
-    return Array.from(this.reservations.values()).filter(
-      (r) =>
-        r.resource.id === resourceId &&
-        activeStatuses.includes(r.status) &&
-        r.startTime < endDate &&
-        r.endTime > startDate,
-    );
+    return this.getActiveInRange((r) => r.resource.id === resourceId, startDate, endDate);
   }
 
   async getActiveForServiceInRange(
@@ -81,18 +86,7 @@ export class InMemoryReservationRepository implements ReservationRepository {
     startDate: Date,
     endDate: Date,
   ): Promise<Reservation[]> {
-    const activeStatuses = [
-      ReservationStatus.PENDING,
-      ReservationStatus.CONFIRMED,
-    ];
-
-    return Array.from(this.reservations.values()).filter(
-      (r) =>
-        r.serviceId === serviceId &&
-        activeStatuses.includes(r.status) &&
-        r.startTime < endDate &&
-        r.endTime > startDate,
-    );
+    return this.getActiveInRange((r) => r.serviceId === serviceId, startDate, endDate);
   }
 
   async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {

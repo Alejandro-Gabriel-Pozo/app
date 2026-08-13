@@ -13,25 +13,17 @@
  * - Un token de empleado comprometido no puede usarse en /platform/*
  * - Un token de SUPERADMIN no puede usarse en rutas de tenant
  * - Permite rotar cada clave independientemente
+ *
+ * ## signToken/verifyToken importados de auth.middleware.ts
+ * No rompe el aislamiento de arriba: son genéricos en el payload y reciben
+ * el secret como parámetro, así que acá se usan con `PLATFORM_JWT_SECRET`
+ * — la separación de claves sigue intacta, solo se reusa el algoritmo de
+ * firma/verificación HMAC (antes reimplementado acá desde cero, jscpd C6).
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { PlatformRole } from '../types/enums.js';
-
-// ---------------------------------------------------------------------------
-// JWT helpers (misma implementación que auth.middleware.ts — sin librerías)
-// ---------------------------------------------------------------------------
-
-function base64UrlEncode(input: string | Buffer): string {
-  const buf = typeof input === 'string' ? Buffer.from(input) : input;
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function base64UrlDecode(input: string): Buffer {
-  const padded = input + '==='.slice((input.length + 3) % 4);
-  return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-}
+import { signToken, verifyToken } from './auth.middleware.js';
 
 export interface PlatformJwtPayload {
   sub: string;
@@ -67,53 +59,11 @@ export function signPlatformToken(
   payload: Omit<PlatformJwtPayload, 'iat' | 'exp'>,
   expiresIn = 3_600,
 ): string {
-  const secret = getPlatformJwtSecret();
-  const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const now = Math.floor(Date.now() / 1000);
-  const body = base64UrlEncode(
-    JSON.stringify({ ...payload, iat: now, exp: now + expiresIn }),
-  );
-  const signingInput = `${header}.${body}`;
-  const signature = base64UrlEncode(
-    createHmac('sha256', secret).update(signingInput).digest(),
-  );
-  return `${signingInput}.${signature}`;
+  return signToken(payload, getPlatformJwtSecret(), expiresIn);
 }
 
 function verifyPlatformToken(token: string): PlatformJwtPayload {
-  const secret = getPlatformJwtSecret();
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    const err = new Error('Token malformado');
-    (err as NodeJS.ErrnoException).code = 'JWT_MALFORMED';
-    throw err;
-  }
-
-  const [header, body, signature] = parts as [string, string, string];
-  const signingInput = `${header}.${body}`;
-  const expectedSig = base64UrlEncode(
-    createHmac('sha256', secret).update(signingInput).digest(),
-  );
-  const expectedBuf = Buffer.from(expectedSig);
-  const receivedBuf = Buffer.from(signature);
-
-  if (
-    expectedBuf.length !== receivedBuf.length ||
-    !timingSafeEqual(expectedBuf, receivedBuf)
-  ) {
-    const err = new Error('Firma inválida');
-    (err as NodeJS.ErrnoException).code = 'JWT_INVALID_SIGNATURE';
-    throw err;
-  }
-
-  const payload = JSON.parse(base64UrlDecode(body).toString('utf8')) as PlatformJwtPayload;
-  if (payload.exp < Math.floor(Date.now() / 1000)) {
-    const err = new Error('Token expirado');
-    (err as NodeJS.ErrnoException).code = 'JWT_EXPIRED';
-    throw err;
-  }
-
-  return payload;
+  return verifyToken<Omit<PlatformJwtPayload, 'iat' | 'exp'>>(token, getPlatformJwtSecret());
 }
 
 // ---------------------------------------------------------------------------

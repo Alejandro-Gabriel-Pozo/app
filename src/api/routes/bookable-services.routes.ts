@@ -21,10 +21,15 @@
  * - BOOKING (OWNER, ADMIN, RECEPTIONIST, CUSTOMER): lectura — el portal del cliente
  *   necesita listar servicios disponibles para armar una reserva.
  *
- * ## Validación
+ * ## Validación y errores de dominio
  * ZodError se propaga con next(err) al errorHandler global (error.middleware.ts),
  * que lo captura como primer caso y devuelve 400 VALIDATION_ERROR con err.flatten().
- * No se maneja inline para evitar duplicación de lógica.
+ * Los DomainError (BookableServiceNotFoundError, ScheduleConflictError, etc.)
+ * también se propagan con next(err) — domainErrorStatus() en error.middleware.ts
+ * ya mapea cada code al status HTTP correcto. Antes cada handler repetía un
+ * `if (err instanceof X) res.status(...).json(...)` que duplicaba ese mapeo
+ * (jscpd C2, docs/analysis/duplication/) — sacado el 13/08/2026. No agregar
+ * de vuelta: si un code nuevo necesita status, el lugar es domainErrorStatus().
  *
  * ## Aislamiento multi-tenant
  * buildService() instancia SqlBookableServiceRepository con req.db
@@ -34,12 +39,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles }     from '../../security/roles.js';
-import {
-  BookableServiceService,
-  BookableServiceNotFoundError,
-  ServiceScheduleNotFoundError,
-  ScheduleConflictError,
-} from '../../services/bookable-service.service.js';
+import { BookableServiceService } from '../../services/bookable-service.service.js';
 import { ResourceLockService } from '../../services/resource-lock.service.js';
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
 import { SqlResourceLockRepository }    from '../../repositories/sql.resource-lock.repository.js';
@@ -53,7 +53,6 @@ import { SqlOperatingHoursRepository }  from '../../repositories/sql.operating-h
 import { SqlHousekeepingRepository }    from '../../repositories/housekeeping.repository.js';
 import { ReservationService }           from '../../services/reservation.service.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
-import { ResourceNotFoundError, InvalidReservationError } from '../../domain/errors.js';
 import {
   CreateBookableServiceSchema,
   UpdateBookableServiceSchema,
@@ -123,10 +122,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
     try {
       const service = await buildService(req).getServiceById(param(req, 'id'));
       res.json(service);
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── PUT /api/bookable-services/:id ─────────────────────────────────────────
@@ -135,10 +131,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
       const body    = UpdateBookableServiceSchema.parse(req.body);
       const service = await buildService(req).updateService(param(req, 'id'), body);
       res.json(service);
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── DELETE /api/bookable-services/:id ──────────────────────────────────────
@@ -146,10 +139,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
     try {
       await buildService(req).deleteService(param(req, 'id'));
       res.status(204).send();
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── GET /api/bookable-services/:id/schedules ───────────────────────────────
@@ -157,10 +147,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
     try {
       const schedules = await buildService(req).listSchedules(param(req, 'id'));
       res.json(schedules);
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── POST /api/bookable-services/:id/schedules ──────────────────────────────
@@ -169,11 +156,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
       const body     = CreateServiceScheduleSchema.parse(req.body);
       const schedule = await buildService(req).addSchedule(param(req, 'id'), body);
       res.status(201).json(schedule);
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      if (err instanceof ScheduleConflictError)        { res.status(409).json({ code: 'SCHEDULE_CONFLICT', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── PUT /api/bookable-services/:id/schedules/:scheduleId ──────────────────
@@ -182,10 +165,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
       const body     = UpdateServiceScheduleSchema.parse(req.body);
       const schedule = await buildService(req).updateSchedule(param(req, 'scheduleId'), body);
       res.json(schedule);
-    } catch (err) {
-      if (err instanceof ServiceScheduleNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── DELETE /api/bookable-services/:id/schedules/:scheduleId ───────────────
@@ -193,10 +173,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
     try {
       await buildService(req).removeSchedule(param(req, 'scheduleId'));
       res.status(204).send();
-    } catch (err) {
-      if (err instanceof ServiceScheduleNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── GET /api/bookable-services/:id/resource-locks ──────────────────────────
@@ -206,10 +183,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
     try {
       const locks = await buildResourceLockService(req).listForService(param(req, 'id'));
       res.json(locks);
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── PUT /api/bookable-services/:id/resource-locks ──────────────────────────
@@ -220,11 +194,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
       const body  = ReplaceResourceLocksSchema.parse(req.body);
       const locks = await buildResourceLockService(req).replaceForService(param(req, 'id'), body.resourceIds);
       res.json(locks);
-    } catch (err) {
-      if (err instanceof BookableServiceNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      if (err instanceof ResourceNotFoundError)        { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ── GET /api/bookable-services/:id/available-slots?resourceId=X&date=YYYY-MM-DD
@@ -249,11 +219,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
         new Date(`${dateStr}T00:00:00.000Z`),
       );
       res.json({ slots });
-    } catch (err) {
-      if (err instanceof ResourceNotFoundError)     { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: err.message }); return; }
-      if (err instanceof InvalidReservationError)   { res.status(400).json({ code: 'INVALID_RESERVATION', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   return router;
