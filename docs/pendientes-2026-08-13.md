@@ -12,13 +12,39 @@ no borrar la fila — mismo criterio que el archivo del 10/08.
 
 ## A. Deuda estructural (`app-main`) — prioridad
 
-### A1. Account/Folio — sin iniciar
+### A1. Account/Folio — en curso (paso 1/6 hecho, 2026-08-13)
 `Order` + `Stay` + `Reservation` no convergen en una cuenta liquidable única.
 Último ítem grande del gap analysis original (`Gap analysis - booking
 multirubro vs modelo actual.md`) — los otros tres (OUT_OF_SERVICE, Location
 Fase 1, `Reservation.totalPrice` → `ReservationLine`) ya se cerraron el
-2026-08-12. Cada reserva/orden/estadía nueva sin este modelo es trabajo de
-migración futura. No arrancado — es invasivo, pedir luz verde antes de tocar.
+2026-08-12. No es una entidad nueva: extiende `FinancialTransaction`
+(ya TRANSACCIÓN) con un FK adicional, mismo patrón que `reservation_id`/
+`order_id`. "Empresa" (para la Cuenta por Cobrar del paso 2) reusa
+`customers.kind = 'COMPANY'` — no hace falta tabla nueva para eso.
+
+Plan completo (6 pasos, acordado 2026-08-13):
+1. ✅ Columnas `stay_id` en `financial_transactions` y `orders` +
+   `getByStayId`/`getNetBalanceByStayId` en `FinancialTransactionRepository`.
+   Tests nuevos en `sql.financial-transaction.repository.test.ts` (6/6
+   verde). 246/246 tests del repo en verde, typecheck limpio.
+2. Tabla `accounts_receivable` (TRANSACCIÓN) + repo + servicio de
+   transferencia de saldo (rol `Roles.MANAGEMENT`).
+3. Gate de checkout: `StayService.checkOut()` bloquea si
+   `getNetBalanceByStayId(stayId) > 0`, salvo transferencia a AR ya hecha.
+4. "Cargo a la habitación": `CreateOrderInput.stayId` opcional.
+5. Reporte por empresa/período (agregación sobre `accounts_receivable`).
+6. Frontend: folio en check-out, pantalla de transferencia a AR, reporte.
+
+**Hallazgo para el paso 3, todavía sin resolver — no lo pierdas de vista:**
+el `CHARGE` de una Reservation se crea en `reservation.confirmed`, **antes**
+de que exista la Stay (el flujo es confirmar → check-in). Ese `CHARGE`
+nunca queda con `stay_id` seteado, así que `getNetBalanceByStayId` NO
+va a contarlo — el gate de checkout subestimaría el saldo si no se corrige.
+Opción más limpia pensada hasta ahora: al hacer `checkIn()`, un
+`UPDATE financial_transactions SET stay_id = $1 WHERE reservation_id = $2`
+para adoptar el cargo ya existente (no cambia de quién es el cargo, solo
+lo agrupa bajo la estadía — no viola R9). Decidir esto al llegar al paso 3,
+no antes.
 
 ### A2. `Owner` / liquidación a terceros — sin modelar
 Falta el concepto de dueño de un recurso y liquidación de lo cobrado. Solo

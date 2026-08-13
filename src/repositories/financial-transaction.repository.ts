@@ -9,6 +9,8 @@ export interface FinancialTransaction {
   reservationId?: string | null;
   /** Null para cargos no asociados a una orden (ej: CHARGE de una reserva). */
   orderId?: string | null;
+  /** Null para cargos no asociados a una estadía (ej: consumo del portal sin check-in). */
+  stayId?: string | null;
   type: TransactionType;
   amount: number;
   currency: string;
@@ -50,6 +52,9 @@ export interface FinancialTransactionRepository {
   /** Obtiene todas las transacciones de un cliente. */
   getByCustomerId(customerId: string): Promise<FinancialTransaction[]>;
 
+  /** Obtiene todas las transacciones de una estadía. */
+  getByStayId(stayId: string): Promise<FinancialTransaction[]>;
+
   /**
    * Busca por idempotencyKey. Usado cuando create() devuelve null (ya
    * existía) y el caller necesita la fila real para devolverla igual —
@@ -87,4 +92,13 @@ export interface FinancialTransactionRepository {
 
   /** Balance neto de un cliente: suma(CHARGE + ADJUSTMENT) - suma(PAYMENT + REFUND), solo SETTLED. */
   getNetBalanceByCustomerId(customerId: string): Promise<number>;
+
+  /**
+   * Balance neto de una estadía puntual (mismo cálculo que
+   * getNetBalanceByCustomerId, pero acotado a un `stay_id`). Es lo que
+   * StayService.checkOut() consulta para decidir si hay saldo pendiente —
+   * el balance del cliente completo mezclaría estadías/órdenes históricas
+   * ya saldadas con la actual.
+   */
+  getNetBalanceByStayId(stayId: string): Promise<number>;
 }

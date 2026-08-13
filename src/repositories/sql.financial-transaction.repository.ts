@@ -13,6 +13,7 @@ interface TransactionRow {
   customer_id: string;
   reservation_id: string | null;
   order_id: string | null;
+  stay_id: string | null;
   idempotency_key: string | null;
   type: TransactionType;
   amount: string; // DECIMAL llega como string en pg
@@ -49,8 +50,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
       const result = await this.sqlClient.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, order_id, idempotency_key, type, amount, currency, status, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING *`,
         [
@@ -59,6 +60,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           tx.customerId,
           tx.reservationId ?? null,
           tx.orderId ?? null,
+          tx.stayId ?? null,
           idempotencyKey,
           tx.type,
           tx.amount,
@@ -74,8 +76,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto de id.
     const result = await this.sqlClient.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, order_id, type, amount, currency, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         id,
@@ -83,6 +85,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.customerId,
         tx.reservationId ?? null,
         tx.orderId ?? null,
+        tx.stayId ?? null,
         tx.type,
         tx.amount,
         tx.currency,
@@ -127,6 +130,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
        WHERE customer_id = $1
        ORDER BY created_at DESC`,
       [customerId],
+    );
+    return result.rows.map((r) => this.rowToEntity(r));
+  }
+
+  async getByStayId(stayId: string): Promise<FinancialTransaction[]> {
+    const result = await this.sqlClient.query<TransactionRow>(
+      `SELECT * FROM financial_transactions
+       WHERE stay_id = $1
+       ORDER BY created_at ASC`,
+      [stayId],
     );
     return result.rows.map((r) => this.rowToEntity(r));
   }
@@ -196,6 +209,27 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return parseFloat(result.rows[0]?.net ?? '0');
   }
 
+  async getNetBalanceByStayId(stayId: string): Promise<number> {
+    const result = await this.sqlClient.query<{ net: string }>(
+      `SELECT
+         COALESCE(
+           SUM(
+             CASE type
+               WHEN 'CHARGE'     THEN  amount
+               WHEN 'ADJUSTMENT' THEN  amount
+               WHEN 'PAYMENT'    THEN -amount
+               WHEN 'REFUND'     THEN -amount
+             END
+           ), 0
+         ) AS net
+       FROM financial_transactions
+       WHERE stay_id = $1
+         AND status = 'SETTLED'`,
+      [stayId],
+    );
+    return parseFloat(result.rows[0]?.net ?? '0');
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers privados
   // ---------------------------------------------------------------------------
@@ -207,6 +241,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       customerId:      row.customer_id,
       reservationId:   row.reservation_id,
       orderId:         row.order_id,
+      stayId:          row.stay_id,
       idempotencyKey:  row.idempotency_key,
       type:            row.type,
       amount:          parseFloat(row.amount),

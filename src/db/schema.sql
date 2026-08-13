@@ -882,6 +882,25 @@ ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS notes VARCHAR(500);
 ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS order_id VARCHAR(255)
   REFERENCES orders(id) ON DELETE SET NULL;
 
+-- stay_id: paso 1 de la convergencia Order+Stay+Reservation en un folio
+-- liquidable (deuda estructural, item A1). StayService.checkOut() hoy no
+-- mira el ledger en absoluto -- esta columna es lo que le permite calcular
+-- el saldo pendiente de una estadia puntual (getNetBalanceByStayId), en vez
+-- de solo el saldo total del cliente (que mezcla todas sus estadias/ordenes
+-- historicas). Mismo patron que reservation_id/order_id: nullable, ON DELETE
+-- SET NULL, sin migrar filas existentes. `stays` ya existe en este punto del
+-- script (BLOQUE 6, mas arriba), por eso la FK puede ir directo aca.
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS stay_id VARCHAR(255)
+  REFERENCES stays(id) ON DELETE SET NULL;
+
+-- orders.stay_id: permite asociar un pedido de POS a una estadia activa
+-- ("cargo a la habitacion" -- item A1, paso 4, todavia sin escribir desde
+-- OrderService). Se agrega la columna ahora para no tener que volver a
+-- tocar el schema despues; queda NULL en todo pedido hasta que ese paso se
+-- implemente.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_id VARCHAR(255)
+  REFERENCES stays(id) ON DELETE SET NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_idempotency_key
   ON financial_transactions (idempotency_key)
   WHERE idempotency_key IS NOT NULL;
@@ -894,9 +913,17 @@ CREATE INDEX IF NOT EXISTS idx_ft_reservation
   ON financial_transactions (reservation_id)
   WHERE reservation_id IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS idx_ft_stay
+  ON financial_transactions (stay_id)
+  WHERE stay_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_ft_customer
   ON financial_transactions (customer_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_ft_business_status
   ON financial_transactions (business_id, status)
   WHERE status = 'PENDING';
+
+CREATE INDEX IF NOT EXISTS idx_orders_stay
+  ON orders (stay_id)
+  WHERE stay_id IS NOT NULL;
