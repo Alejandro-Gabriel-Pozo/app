@@ -2,6 +2,7 @@ import type { SqlClient } from './sql.client.js';
 import type {
   AccountReceivable,
   AccountsReceivableRepository,
+  AccountsReceivableReportRow,
   AccountsReceivableStatus,
 } from './accounts-receivable.repository.js';
 
@@ -95,6 +96,43 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
       [id],
     );
     return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
+  }
+
+  async getReportByPeriod(from: Date, to: Date): Promise<AccountsReceivableReportRow[]> {
+    const result = await this.sqlClient.query<{
+      company_customer_id: string;
+      company_name: string;
+      count: string;
+      total_amount: string;
+      pending_amount: string;
+      invoiced_amount: string;
+      collected_amount: string;
+    }>(
+      `SELECT
+         ar.company_customer_id,
+         c.display_name AS company_name,
+         COUNT(*) AS count,
+         SUM(ar.amount) AS total_amount,
+         SUM(ar.amount) FILTER (WHERE ar.status = 'PENDIENTE_FACTURAR') AS pending_amount,
+         SUM(ar.amount) FILTER (WHERE ar.status = 'FACTURADO')          AS invoiced_amount,
+         SUM(ar.amount) FILTER (WHERE ar.status = 'COBRADO')            AS collected_amount
+       FROM accounts_receivable ar
+       JOIN customers c ON c.id = ar.company_customer_id
+       WHERE ar.created_at >= $1 AND ar.created_at <= $2
+       GROUP BY ar.company_customer_id, c.display_name
+       ORDER BY total_amount DESC`,
+      [from, to],
+    );
+
+    return result.rows.map((row) => ({
+      companyCustomerId: row.company_customer_id,
+      companyName:       row.company_name,
+      count:              parseInt(row.count, 10),
+      totalAmount:        parseFloat(row.total_amount),
+      pendingAmount:      parseFloat(row.pending_amount ?? '0'),
+      invoicedAmount:     parseFloat(row.invoiced_amount ?? '0'),
+      collectedAmount:    parseFloat(row.collected_amount ?? '0'),
+    }));
   }
 
   private rowToEntity(row: AccountsReceivableRow): AccountReceivable {

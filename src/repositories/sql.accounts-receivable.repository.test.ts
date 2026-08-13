@@ -64,6 +64,22 @@ describe('SqlAccountsReceivableRepository', () => {
     expect(params).toEqual(['ar-1']);
   });
 
+  it('getReportByPeriod agrupa por empresa con FILTER por status (A1, paso 5)', async () => {
+    const from = new Date('2026-08-01');
+    const to = new Date('2026-08-31');
+
+    await repo.getReportByPeriod(from, to);
+
+    const mockQuery = vi.mocked(mockSqlClient.query);
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('JOIN customers c ON c.id = ar.company_customer_id');
+    expect(sql).toContain('GROUP BY ar.company_customer_id, c.display_name');
+    expect(sql).toContain("FILTER (WHERE ar.status = 'PENDIENTE_FACTURAR')");
+    expect(sql).toContain("FILTER (WHERE ar.status = 'FACTURADO')");
+    expect(sql).toContain("FILTER (WHERE ar.status = 'COBRADO')");
+    expect(params).toEqual([from, to]);
+  });
+
   it('getByCompanyCustomerId ordena por created_at DESC', async () => {
     await repo.getByCompanyCustomerId('cust-empresa');
 

@@ -106,6 +106,27 @@ export function createReportsRouter(service: ReportService): Router {
     },
   );
 
+  // ── GET /reports/accounts-receivable ──────────────────────────────────────
+  // Cuentas por cobrar agrupadas por empresa, para el cierre de mes (A1, paso 5).
+  // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
+  router.get(
+    '/accounts-receivable',
+    authenticate(),
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateAccountsReceivableReport(
+          new Date(from),
+          new Date(to),
+        );
+        res.json(report);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   // ── DELETE /reports/occupancy/purge ───────────────────────────────────────
   // Elimina registros de ocupación anteriores a una fecha.
   // Query params: before=YYYY-MM-DD

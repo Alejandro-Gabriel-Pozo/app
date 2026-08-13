@@ -1,4 +1,8 @@
 import type { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
+import type {
+  AccountsReceivableRepository,
+  AccountsReceivableReportRow,
+} from '../repositories/accounts-receivable.repository.js';
 
 /**
  * Reporte de ocupación diaria
@@ -31,7 +35,10 @@ export interface OccupancySummary {
  * Utiliza el repositorio para generar insights sobre disponibilidad.
  */
 export class ReportService {
-  constructor(private readonly occupancyRepository: OccupancyRepository) {}
+  constructor(
+    private readonly occupancyRepository: OccupancyRepository,
+    private readonly accountsReceivableRepository: AccountsReceivableRepository,
+  ) {}
 
   /**
    * Genera reporte diario de ocupación en un período.
@@ -163,5 +170,17 @@ export class ReportService {
    */
   async purgeOldRecords(beforeDate: Date): Promise<number> {
     return await this.occupancyRepository.deleteOldRecords(beforeDate);
+  }
+
+  /**
+   * Reporte de cuentas por cobrar agrupado por empresa, para el cierre de
+   * mes (A1, paso 5). Emisión de la factura sigue siendo manual — este
+   * reporte da el detalle (monto por estado) para hacerla a mano.
+   */
+  async generateAccountsReceivableReport(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<AccountsReceivableReportRow[]> {
+    return this.accountsReceivableRepository.getReportByPeriod(startDate, endDate);
   }
 }

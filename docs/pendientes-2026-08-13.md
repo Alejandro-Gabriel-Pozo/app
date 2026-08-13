@@ -58,7 +58,16 @@ Plan completo (6 pasos, acordado 2026-08-13):
    así `getNetBalanceByStayId` lo cuenta. 4 tests nuevos (propagación en
    `order.service.test.ts` + `outbox.handlers.test.ts`). 262/263 verde,
    typecheck limpio.
-5. Reporte por empresa/período (agregación sobre `accounts_receivable`).
+5. ✅ Reporte por empresa/período: `AccountsReceivableRepository.
+   getReportByPeriod(from, to)` (JOIN con `customers` para el nombre, GROUP
+   BY empresa con `FILTER` por status → total/pendiente/facturado/cobrado).
+   `ReportService.generateAccountsReceivableReport()` (gana
+   `AccountsReceivableRepository` como 2da dependencia — único call site en
+   `app.ts`, actualizado junto con su test). Ruta `GET /reports/accounts-
+   receivable` (`authorize(Roles.MANAGEMENT)`, mismo patrón que el resto de
+   `/api/reports`). Sin `businessId` en la query — mismo criterio que
+   `OccupancyRepository`, el aislamiento ya lo da el pool del tenant, no un
+   filtro de columna. 5 tests nuevos. 264/265 verde, typecheck limpio.
 6. Frontend: folio en check-out, pantalla de transferencia a AR, reporte.
 
 **Hallazgo nuevo, no relacionado a A1 — sumar a la sección C (calidad de

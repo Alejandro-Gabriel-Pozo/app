@@ -26,6 +26,17 @@ export interface AccountReceivable {
   collectedAt?: Date | null;
 }
 
+/** Fila del reporte por empresa/período — cierre de mes (A1, paso 5). */
+export interface AccountsReceivableReportRow {
+  companyCustomerId: string;
+  companyName: string;
+  count: number;
+  totalAmount: number;
+  pendingAmount: number;   // suma de filas PENDIENTE_FACTURAR
+  invoicedAmount: number;  // suma de filas FACTURADO
+  collectedAmount: number; // suma de filas COBRADO
+}
+
 export interface AccountsReceivableRepository {
   /**
    * Crea la fila dentro de una transacción ya abierta — siempre se crea
@@ -51,4 +62,11 @@ export interface AccountsReceivableRepository {
 
   /** FACTURADO → COBRADO. No-op (retorna undefined) si no está en ese estado. */
   markCollected(id: string): Promise<AccountReceivable | undefined>;
+
+  /**
+   * Reporte agrupado por empresa para un período — base del cierre de mes.
+   * Sin `businessId`: igual que `OccupancyRepository`, el aislamiento ya lo
+   * da el pool del tenant (`req.db`), no un filtro de columna acá.
+   */
+  getReportByPeriod(from: Date, to: Date): Promise<AccountsReceivableReportRow[]>;
 }

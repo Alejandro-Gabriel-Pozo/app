@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReportService } from './report.service.js';
 import type { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
+import type {
+  AccountsReceivableRepository,
+  AccountsReceivableReportRow,
+} from '../repositories/accounts-receivable.repository.js';
+
+/** Fake mínimo — solo lo que ReportService llama. */
+class FakeAccountsReceivableRepository implements Pick<AccountsReceivableRepository, 'getReportByPeriod'> {
+  public rows: AccountsReceivableReportRow[] = [];
+  async getReportByPeriod(): Promise<AccountsReceivableReportRow[]> { return this.rows; }
+}
 
 // Mock repository
 class MockOccupancyRepository implements OccupancyRepository {
@@ -44,11 +54,13 @@ class MockOccupancyRepository implements OccupancyRepository {
 
 describe('ReportService', () => {
   let mockRepository: OccupancyRepository;
+  let arRepository: FakeAccountsReceivableRepository;
   let service: ReportService;
 
   beforeEach(() => {
     mockRepository = new MockOccupancyRepository();
-    service = new ReportService(mockRepository);
+    arRepository = new FakeAccountsReceivableRepository();
+    service = new ReportService(mockRepository, arRepository as unknown as AccountsReceivableRepository);
   });
 
   describe('generateOccupancyReport', () => {
@@ -246,6 +258,32 @@ describe('ReportService', () => {
 
       expect(spy).toHaveBeenCalledWith(beforeDate);
       expect(deleted).toBe(10);
+    });
+  });
+
+  describe('generateAccountsReceivableReport (A1, paso 5)', () => {
+    it('delega en AccountsReceivableRepository.getReportByPeriod', async () => {
+      const spy = vi.spyOn(arRepository, 'getReportByPeriod').mockResolvedValueOnce([
+        {
+          companyCustomerId: 'cust-empresa',
+          companyName: 'Empresa SA',
+          count: 3,
+          totalAmount: 45000,
+          pendingAmount: 15000,
+          invoicedAmount: 20000,
+          collectedAmount: 10000,
+        },
+      ]);
+
+      const startDate = new Date('2026-08-01');
+      const endDate = new Date('2026-08-31');
+
+      const report = await service.generateAccountsReceivableReport(startDate, endDate);
+
+      expect(spy).toHaveBeenCalledWith(startDate, endDate);
+      expect(report).toHaveLength(1);
+      expect(report[0]?.companyName).toBe('Empresa SA');
+      expect(report[0]?.totalAmount).toBe(45000);
     });
   });
 });
