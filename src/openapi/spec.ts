@@ -360,7 +360,7 @@ export const openApiSpec = {
           '400': { $ref: '#/components/responses/ValidationError' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '403': { $ref: '#/components/responses/Forbidden' },
-          '409': { description: 'Recurso no disponible en el rango solicitado' },
+          '409': { description: 'Recurso no disponible en el rango solicitado, o (con categoryId) ningún recurso de esa categoría está libre — NO_RESOURCE_AVAILABLE' },
         },
       },
     },
@@ -882,9 +882,15 @@ export const openApiSpec = {
       // Usado por POST /api/reservations
       CreateReservation: {
         type: 'object',
-        required: ['resourceId', 'customer', 'startTime', 'endTime'],
+        description: 'Se requiere exactamente uno de resourceId o categoryId (no ambos).',
+        required: ['customer', 'startTime', 'endTime'],
         properties: {
-          resourceId: { type: 'string', example: 'table-001' },
+          resourceId: { type: 'string', example: 'table-001', description: 'Recurso puntual — flujo de siempre.' },
+          categoryId: {
+            type: 'string',
+            example: 'cat-table',
+            description: 'Asignación diferida: el servidor elige el primer recurso libre de esta categoría en vez de uno puntual.',
+          },
           customer: {
             type: 'object',
             required: ['id'],

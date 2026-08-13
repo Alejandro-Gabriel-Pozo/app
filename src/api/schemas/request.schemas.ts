@@ -21,7 +21,14 @@ const CustomerSchema = z.object({
 });
 
 export const CreateReservationSchema = z.object({
-  resourceId: z.string().min(1),
+  // Uno de los dos es obligatorio (ver .refine más abajo): resourceId para
+  // el flujo de siempre (recurso puntual elegido de antemano), categoryId
+  // para "asignación diferida" — el servicio elige el primer recurso libre
+  // de esa categoría (ver ReservationService.findAvailableResourceInCategory,
+  // auditoría de deuda estructural item #4). Nunca los dos juntos: si el
+  // caller ya sabe qué recurso quiere, categoryId no tiene sentido.
+  resourceId: z.string().min(1).optional(),
+  categoryId: z.string().min(1).optional(),
   serviceId:  z.string().min(1).optional(),
   customer:   CustomerSchema,
   startTime:  z.string().datetime(),
@@ -32,6 +39,9 @@ export const CreateReservationSchema = z.object({
   endTime:    z.string().datetime().optional(),
   details:    z.record(z.unknown()).default({}),
 }).refine(
+  (data) => Boolean(data.resourceId) !== Boolean(data.categoryId),
+  { message: 'Se requiere exactamente uno de resourceId o categoryId', path: ['resourceId'] },
+).refine(
   (data) => data.endTime || data.serviceId,
   { message: 'endTime es obligatorio si no se especifica serviceId (para derivar la duración)', path: ['endTime'] },
 ).refine(

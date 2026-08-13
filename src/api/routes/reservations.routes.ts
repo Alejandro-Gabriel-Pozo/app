@@ -31,6 +31,13 @@
  * si el caller no lo mandaba, `new Reservation({id: undefined, ...})`
  * explotaba con un TypeError crudo (`undefined.trim()`) en vez de un 400 claro.
  *
+ * ## Asignación diferida (auditoría de deuda estructural, item #4)
+ * POST /reservations acepta `resourceId` (recurso puntual, flujo de
+ * siempre) O `categoryId` (el servicio elige el primer recurso libre de
+ * esa categoría vía ReservationService.findAvailableResourceInCategory).
+ * Si no hay ninguno libre, responde 409 NO_RESOURCE_AVAILABLE en vez de
+ * crear la reserva.
+ *
  * ## Respuestas — toReservationDto (encontrado al construir detalle/edición)
  * Todos los handlers antes respondían con `res.json(reservation)` — el
  * objeto de dominio crudo. `Reservation.status` es un getter sobre el campo
@@ -142,9 +149,30 @@ export function createReservationsRouter(): Router {
         }
 
         const service = buildReservationService(req);
+
+        // resourceId directo (flujo de siempre) o resuelto por categoría
+        // (asignación diferida — ver findAvailableResourceInCategory).
+        let resourceId = body.resourceId;
+        if (!resourceId && body.categoryId) {
+          const available = await service.findAvailableResourceInCategory({
+            categoryId: body.categoryId,
+            startTime:  new Date(body.startTime),
+            ...(body.serviceId !== undefined && { serviceId: body.serviceId }),
+            ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
+          });
+          if (!available) {
+            res.status(409).json({
+              code:    'NO_RESOURCE_AVAILABLE',
+              message: `No hay ningún recurso disponible de la categoría "${body.categoryId}" en ese rango.`,
+            });
+            return;
+          }
+          resourceId = available.id;
+        }
+
         const reservation = await service.createReservation({
           id:         randomUUID(),
-          resourceId: body.resourceId,
+          resourceId: resourceId!, // garantizado por el refine de CreateReservationSchema + el bloque anterior
           customer,
           startTime:  new Date(body.startTime),
           details:    body.details,

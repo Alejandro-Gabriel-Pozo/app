@@ -194,6 +194,83 @@ describe('ReservationService', () => {
   });
 
   // -------------------------------------------------------------------------
+  describe('findAvailableResourceInCategory', () => {
+    const table2 = new BookableResource('t2', 'Mesa Patio', 50, 'cat-table', {
+      shape: 'RECTANGLE', width: 120, height: 80, positionX: 0, positionY: 0, rotationDegrees: 0,
+    });
+
+    beforeEach(async () => {
+      await resourceRepo.save(table2);
+    });
+
+    it('devuelve el único recurso libre de la categoría cuando el otro está ocupado', async () => {
+      // t1 queda ocupada 20:00-22:00
+      await service.createReservation({
+        id: 'res-1',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+      });
+
+      const found = await service.findAvailableResourceInCategory({
+        categoryId: 'cat-table',
+        startTime:  new Date('2026-07-01T20:00:00'),
+        endTime:    new Date('2026-07-01T22:00:00'),
+      });
+
+      // Antes de este cambio, pedir directamente "t1" acá hubiera devuelto
+      // "no disponible" — el punto de este método es que la categoría sí
+      // tiene lugar (t2), aunque el primer candidato (t1) esté ocupado.
+      expect(found?.id).toBe('t2');
+    });
+
+    it('devuelve null si ningún recurso de la categoría está libre', async () => {
+      await service.createReservation({
+        id: 'res-1', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      await service.createReservation({
+        id: 'res-2', resourceId: 't2', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+
+      const found = await service.findAvailableResourceInCategory({
+        categoryId: 'cat-table',
+        startTime:  new Date('2026-07-01T20:00:00'),
+        endTime:    new Date('2026-07-01T22:00:00'),
+      });
+
+      expect(found).toBeNull();
+    });
+
+    it('el resourceId encontrado se puede usar directo en createReservation', async () => {
+      await service.createReservation({
+        id: 'res-1', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+
+      const found = await service.findAvailableResourceInCategory({
+        categoryId: 'cat-table',
+        startTime:  new Date('2026-07-01T20:00:00'),
+        endTime:    new Date('2026-07-01T22:00:00'),
+      });
+
+      const reservation = await service.createReservation({
+        id: 'res-2',
+        resourceId: found!.id,
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+      });
+
+      expect(reservation.resource.id).toBe('t2');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe('confirmReservation', () => {
     it('debe confirmar, registrar ocupación y emitir evento', async () => {
       await service.createReservation({

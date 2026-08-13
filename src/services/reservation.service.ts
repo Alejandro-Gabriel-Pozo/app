@@ -544,6 +544,54 @@ export class ReservationService {
   }
 
   /**
+   * Busca el primer recurso disponible de una categoría en el rango dado —
+   * "asignación diferida" a nivel de búsqueda (auditoría de deuda
+   * estructural, item #4): el caller ya no necesita saber de antemano cuál
+   * resourceId concreto está libre. Antes, pedir la 101 cuando estaba
+   * ocupada devolvía "no disponible" aunque la 102 (misma categoría)
+   * estuviera libre — ahora se puede pedir por categoría directamente.
+   *
+   * Reusa `checkAvailability()` por cada candidato (mismas reglas que
+   * create/update: resource_locks del servicio, OUT_OF_SERVICE, etc.) en
+   * vez de reimplementar el chequeo — un recurso "disponible" acá es
+   * exactamente lo mismo que un recurso disponible para reservar directo.
+   *
+   * No cambia el contrato de `Reservation` ni de `createReservation`: el
+   * resourceId que devuelve se pasa tal cual, como si el caller lo hubiera
+   * elegido a mano. La concurrencia (dos búsquedas concluyen "102 libre" y
+   * ambas intentan reservarlo) la sigue resolviendo el mismo FOR UPDATE de
+   * `assertAllResourcesAvailable` dentro de `createReservation` — no es una
+   * carrera nueva que este método introduzca, es la misma que ya existía
+   * para dos reservas concurrentes de un resourceId conocido de antemano.
+   *
+   * @returns el primer `PhysicalResource` libre, o `null` si ninguno lo está.
+   */
+  async findAvailableResourceInCategory(params: {
+    categoryId: string;
+    startTime: Date;
+    endTime?: Date;
+    serviceId?: string;
+  }): Promise<PhysicalResource | null> {
+    const service = params.serviceId
+      ? await this.bookableServiceRepository.findById(params.serviceId)
+      : null;
+    const endTime = await this.resolveEndTime(params.serviceId, params.startTime, params.endTime, service);
+
+    const candidates = await this.resourceRepository.getByCategory(params.categoryId);
+    for (const resource of candidates) {
+      const available = await this.checkAvailability(
+        resource.id,
+        params.startTime,
+        endTime,
+        undefined,
+        params.serviceId,
+      );
+      if (available) return resource;
+    }
+    return null;
+  }
+
+  /**
    * Turnos disponibles de un servicio `slot` para un recurso puntual, un día
    * dado. Resuelve el horario aplicable vía `operatingHoursRepository.
    * getEffectiveWindows()` (propio del recurso si tiene, si no el del
