@@ -42,13 +42,27 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
   async create(
     tx: Omit<FinancialTransaction, 'createdAt'>,
   ): Promise<FinancialTransaction | null> {
+    return this.insert(this.sqlClient, tx);
+  }
+
+  async createWithClient(
+    client: SqlClient,
+    tx: Omit<FinancialTransaction, 'createdAt'>,
+  ): Promise<FinancialTransaction | null> {
+    return this.insert(client, tx);
+  }
+
+  private async insert(
+    client: SqlClient,
+    tx: Omit<FinancialTransaction, 'createdAt'>,
+  ): Promise<FinancialTransaction | null> {
     const id = tx.id ?? randomUUID();
     const idempotencyKey = tx.idempotencyKey ?? null;
 
     if (idempotencyKey !== null) {
       // Path idempotente: el worker usa esto para evitar duplicados en reintentos.
       // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
-      const result = await this.sqlClient.query<TransactionRow>(
+      const result = await client.query<TransactionRow>(
         `INSERT INTO financial_transactions
            (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -74,7 +88,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     }
 
     // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto de id.
-    const result = await this.sqlClient.query<TransactionRow>(
+    const result = await client.query<TransactionRow>(
       `INSERT INTO financial_transactions
          (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)

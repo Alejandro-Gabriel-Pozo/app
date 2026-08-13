@@ -16,3 +16,8 @@ export const CheckOutSchema = z.object({
   notes: z.string().max(500).optional(),
   nextCleaningShift: z.enum(['MORNING', 'AFTERNOON', 'NIGHT']).optional(),
 });
+
+export const TransferToReceivableSchema = z.object({
+  companyCustomerId: z.string().min(1, 'companyCustomerId es obligatorio'),
+  notes: z.string().max(500).optional(),
+});

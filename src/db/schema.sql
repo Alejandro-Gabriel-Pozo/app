@@ -927,3 +927,46 @@ CREATE INDEX IF NOT EXISTS idx_ft_business_status
 CREATE INDEX IF NOT EXISTS idx_orders_stay
   ON orders (stay_id)
   WHERE stay_id IS NOT NULL;
+
+-- ===========================================================================
+-- BLOQUE 9 — CUENTAS POR COBRAR (deuda estructural A1, paso 2)
+-- ===========================================================================
+-- Cuando el checkout de una estadia se salda transfiriendo el saldo a una
+-- empresa (cliente con kind='COMPANY' -- no hace falta tabla de "Empresa"
+-- aparte, ver customers.kind) en vez de cobrarse en el momento. TRANSACCION:
+-- un hecho que ocurrio (la transferencia), nunca se edita, solo avanza de
+-- estado (R12). "Empresa" se resuelve via customer_tax_profiles, que ya
+-- tiene razon social/CUIT/condicion IVA -- no se duplica aca.
+--
+-- ON DELETE RESTRICT (no SET NULL como reservation_id/order_id en
+-- financial_transactions): esta fila ES el registro de la deuda, no una
+-- referencia opcional -- perder de vista a quien se le transfirio o de que
+-- estadia vino la vuelve inutil. Ni stays ni customers se hard-borran
+-- (R2/R3), asi que RESTRICT nunca deberia dispararse en la practica.
+CREATE TABLE IF NOT EXISTS accounts_receivable (
+  id                   VARCHAR(255)   PRIMARY KEY,
+  business_id          VARCHAR(255)   NOT NULL,
+  stay_id              VARCHAR(255)   NOT NULL REFERENCES stays(id)     ON DELETE RESTRICT,
+  company_customer_id  VARCHAR(255)   NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+  amount               DECIMAL(12,2)  NOT NULL CHECK (amount > 0),
+  currency             VARCHAR(3)     NOT NULL DEFAULT 'ARS',
+  status               VARCHAR(20)    NOT NULL DEFAULT 'PENDIENTE_FACTURAR'
+                          CHECK (status IN ('PENDIENTE_FACTURAR', 'FACTURADO', 'COBRADO')),
+  -- identity_id (JWT sub) de quien autorizo la transferencia. SIN FK a
+  -- `users` a proposito -- misma razon que stays.assigned_by (BLOQUE 6):
+  -- identity vive en la platform DB, `users` del tenant esta muerta.
+  transferred_by       VARCHAR(255)   NOT NULL,
+  notes                VARCHAR(500),
+  created_at           TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  invoiced_at          TIMESTAMPTZ,
+  collected_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_ar_business_status
+  ON accounts_receivable (business_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_ar_company_period
+  ON accounts_receivable (company_customer_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ar_stay
+  ON accounts_receivable (stay_id);

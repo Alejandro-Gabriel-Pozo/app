@@ -72,6 +72,11 @@ import { SqlReservationRepository }      from './repositories/sql.reservation.re
 import { SqlOccupancyRepository }        from './repositories/sql.occupancy.repository.js';
 import { ReportService }                 from './services/report.service.js';
 import { closeTenantPools }              from './platform/tenant.middleware.js';
+import { SqlFinancialTransactionRepository } from './repositories/sql.financial-transaction.repository.js';
+import { SqlAccountsReceivableRepository }   from './repositories/sql.accounts-receivable.repository.js';
+import { SqlCustomerRepository }             from './repositories/sql.customer.repository.js';
+import { AccountsReceivableService }         from './services/accounts-receivable.service.js';
+import { buildTenantTransactionManager }     from './db/tenant-context.js';
 import { stopAllWorkers }                from './workers/outbox.registry.js';
 import type { Request, Response, NextFunction } from 'express';
 
@@ -238,7 +243,16 @@ export async function createApp(): Promise<{
       const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
       const housekeepingRepo = new SqlHousekeepingRepository(req.db);
       const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
-      const router = createStaysRouter(stayService);
+
+      const arService = new AccountsReceivableService(
+        new SqlAccountsReceivableRepository(req.db),
+        new SqlFinancialTransactionRepository(req.db),
+        stayRepo,
+        new SqlCustomerRepository(req.db),
+        buildTenantTransactionManager(req),
+      );
+
+      const router = createStaysRouter(stayService, arService);
       router(req, _res, next);
     },
   );

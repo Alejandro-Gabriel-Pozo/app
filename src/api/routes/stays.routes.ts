@@ -13,6 +13,7 @@
  * | POST /stays/check-in               | FRONT_DESK | Check-in (crea Stay) |
  * | POST /stays/:id/check-out          | FRONT_DESK | Check-out (cierra Stay) |
  * | POST /stays/:id/no-show            | FRONT_DESK | Marcar NO_SHOW |
+ * | POST /stays/:id/transfer-to-receivable | MANAGEMENT | Transfiere el saldo pendiente a cuenta por cobrar de una empresa (A1, paso 2) |
  *
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
@@ -27,9 +28,13 @@ import { Router } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { StayService } from '../../services/stay.service.js';
-import { CheckInSchema, CheckOutSchema } from '../schemas/stay.schemas.js';
+import type { AccountsReceivableService } from '../../services/accounts-receivable.service.js';
+import { CheckInSchema, CheckOutSchema, TransferToReceivableSchema } from '../schemas/stay.schemas.js';
 
-export function createStaysRouter(service: StayService): Router {
+export function createStaysRouter(
+  service: StayService,
+  arService: AccountsReceivableService,
+): Router {
   const router = Router();
 
   // ── GET /stays (estadías activas) ───────────────────────────────────────────
@@ -149,6 +154,27 @@ export function createStaysRouter(service: StayService): Router {
           req.user!.businessId as string,
         );
         res.json(stay.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /stays/:id/transfer-to-receivable ──────────────────────────────
+  // Solo MANAGEMENT (OWNER, ADMIN) puede autorizar esta transferencia —
+  // decisión explícita del dueño del proyecto (A1, paso 2).
+  router.post(
+    '/:id/transfer-to-receivable',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const body = TransferToReceivableSchema.parse(req.body);
+        const ar = await arService.transferStayBalanceToReceivable({
+          stayId:            String(req.params['id']),
+          businessId:        req.user!.businessId as string,
+          companyCustomerId: body.companyCustomerId,
+          transferredBy:     req.user!.id,
+          notes:             body.notes ?? null,
+        });
+        res.status(201).json(ar);
       } catch (err) { next(err); }
     },
   );

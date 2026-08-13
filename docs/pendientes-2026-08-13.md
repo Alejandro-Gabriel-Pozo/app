@@ -27,8 +27,17 @@ Plan completo (6 pasos, acordado 2026-08-13):
    `getByStayId`/`getNetBalanceByStayId` en `FinancialTransactionRepository`.
    Tests nuevos en `sql.financial-transaction.repository.test.ts` (6/6
    verde). 246/246 tests del repo en verde, typecheck limpio.
-2. Tabla `accounts_receivable` (TRANSACCIÓN) + repo + servicio de
-   transferencia de saldo (rol `Roles.MANAGEMENT`).
+2. ✅ Tabla `accounts_receivable` (TRANSACCIÓN, BLOQUE 9 de `schema.sql`) +
+   `AccountsReceivableRepository`/`SqlAccountsReceivableRepository` +
+   `AccountsReceivableService.transferStayBalanceToReceivable()` +
+   `POST /api/stays/:id/transfer-to-receivable` (`authorize(Roles.MANAGEMENT)`).
+   "Empresa" reusa `customers.kind = 'COMPANY'` — no se creó tabla nueva
+   para eso. El folio se salda con un `PAYMENT` SETTLED (mismo criterio que
+   `CustomerAccountService.recordPayment`) y la fila de AR se crea en la
+   misma transacción (`FinancialTransactionRepository.createWithClient` +
+   `AccountsReceivableRepository.createWithClient`, nuevo — antes el repo
+   financiero no tenía variante transaccional). 9 tests nuevos (5 servicio +
+   4 repo), 255/256 tests totales en verde, typecheck limpio.
 3. Gate de checkout: `StayService.checkOut()` bloquea si
    `getNetBalanceByStayId(stayId) > 0`, salvo transferencia a AR ya hecha.
 4. "Cargo a la habitación": `CreateOrderInput.stayId` opcional.

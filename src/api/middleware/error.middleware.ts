@@ -85,6 +85,12 @@ function domainErrorStatus(error: DomainError): number {
     case 'VALIDATION_ERROR':
       return 400;
 
+    // --- 422 Unprocessable Entity ---
+    // El request es válido pero viola una regla de negocio (mismo criterio
+    // que INVALID_CATEGORY en resources.routes.ts).
+    case 'COMPANY_CUSTOMER_REQUIRED':
+      return 422;
+
     // --- 401 Unauthorized ---
     case 'AUTH_ERROR':
     case 'UNAUTHORIZED':
@@ -121,6 +127,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESERVATION_NOT_CONFIRMED':
     case 'RESOURCE_OCCUPIED':
     case 'CUSTOMER_RATE_CONFLICT':
+    case 'NO_BALANCE_TO_TRANSFER':
       return 409;
 
     // --- 503 Service Unavailable ---

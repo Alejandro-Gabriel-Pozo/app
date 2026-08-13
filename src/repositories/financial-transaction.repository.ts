@@ -1,3 +1,5 @@
+import type { SqlClient } from './sql.client.js';
+
 export type TransactionType = 'CHARGE' | 'PAYMENT' | 'REFUND' | 'ADJUSTMENT';
 export type TransactionStatus = 'PENDING' | 'SETTLED' | 'FAILED' | 'VOIDED';
 
@@ -40,6 +42,18 @@ export interface FinancialTransactionRepository {
    * - Si `idempotencyKey` está ausente: INSERT normal — lanza si el id ya existe.
    */
   create(
+    tx: Omit<FinancialTransaction, 'createdAt'>,
+  ): Promise<FinancialTransaction | null>;
+
+  /**
+   * Igual que `create()`, pero corre sobre un `SqlClient` de una transacción
+   * ya abierta (`TransactionManager.run(...)`). Usado por
+   * `AccountsReceivableService.transferStayBalanceToReceivable()` — el
+   * PAYMENT que salda el folio y la fila de `accounts_receivable` deben
+   * confirmarse juntos o no confirmarse ninguno.
+   */
+  createWithClient(
+    client: SqlClient,
     tx: Omit<FinancialTransaction, 'createdAt'>,
   ): Promise<FinancialTransaction | null>;
 
