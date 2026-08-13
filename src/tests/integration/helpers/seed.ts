@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { SqlClient } from '../../../repositories/sql.client.js';
+import type { SqlClient } from '../../../repositories/sql.client.js';
 
 // ---------------------------------------------------------------------------
 // Tipos de retorno

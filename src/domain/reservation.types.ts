@@ -1,4 +1,4 @@
-import { ReservationStatus } from '../types/enums.js';
+import type { ReservationStatus } from '../types/enums.js';
 
 /**
  * Vista mínima de una reserva para comprobar disponibilidad

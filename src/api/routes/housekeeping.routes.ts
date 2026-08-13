@@ -30,7 +30,7 @@ import { Router } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { HousekeepingService } from '../../services/housekeeping.service.js';
-import { HousekeepingStatus } from '../../domain/housekeeping-task.js';
+import type { HousekeepingStatus } from '../../domain/housekeeping-task.js';
 import { CreateHousekeepingTaskSchema, AssignHousekeepingTaskSchema } from '../schemas/housekeeping.schemas.js';
 
 export function createHousekeepingRouter(service: HousekeepingService): Router {

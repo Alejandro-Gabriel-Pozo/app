@@ -1,4 +1,4 @@
-import pg from 'pg';
+import type pg from 'pg';
 
 /**
  * Interfaz genérica para un cliente SQL (adaptador).

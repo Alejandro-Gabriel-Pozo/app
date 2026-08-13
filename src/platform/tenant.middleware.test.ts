@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BusinessStatus } from '../types/enums.js';
+import type { PlatformRepository } from './platform.repository.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -65,7 +66,7 @@ function fakePlatformRepo(overrides?: { schemaVersion: number | null }) {
       dbUrlEncrypted: `enc-${id}`,
       schemaVersion,
     })),
-  } as unknown as import('./platform.repository.js').PlatformRepository;
+  } as unknown as PlatformRepository;
 }
 
 describe('tenant.middleware — LRU de pools', () => {

@@ -52,6 +52,7 @@
  */
 
 import { Router }                        from 'express';
+import type { Request }                  from 'express';
 import { randomUUID }                    from 'node:crypto';
 import { authorize }                     from '../../security/auth.middleware.js';
 import { Roles }                         from '../../security/roles.js';
@@ -71,7 +72,7 @@ import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../schemas/request.schemas.js';
 import { toReservationDto }              from '../mappers/reservation.mapper.js';
 
-function buildReservationService(req: import('express').Request): ReservationService {
+function buildReservationService(req: Request): ReservationService {
   const db                    = req.db;
   const resourceRepo          = new SqlResourceRepository(db);
   const reservationRepo       = new SqlReservationRepository(db, resourceRepo);

@@ -26,10 +26,11 @@
  * creada (y con schema.sql ya aplicado a mano).
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { PlatformRepository } from '../../platform/platform.repository.js';
+import type { PlatformRepository } from '../../platform/platform.repository.js';
 import { hashPassword, verifyPassword } from '../../security/user.store.js';
 import { signToken } from '../../security/auth.middleware.js';
 import { BusinessPlan, UserRole } from '../../types/enums.js';

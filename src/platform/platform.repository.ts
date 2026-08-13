@@ -9,8 +9,9 @@
  * Ver src/db/platform.schema.sql
  */
 
-import { SqlClient } from '../repositories/sql.client.js';
-import { BusinessPlan, BusinessStatus, ModuleKey } from '../types/enums.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+import type { BusinessPlan} from '../types/enums.js';
+import { BusinessStatus, ModuleKey } from '../types/enums.js';
 
 // ---------------------------------------------------------------------------
 // Tipos

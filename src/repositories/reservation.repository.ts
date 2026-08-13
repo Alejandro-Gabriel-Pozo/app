@@ -1,6 +1,6 @@
-import { Reservation } from '../domain/Reservation.js';
-import { ReservationStatus } from '../types/enums.js';
-import { SqlClient } from './sql.client.js';
+import type { Reservation } from '../domain/Reservation.js';
+import type { ReservationStatus } from '../types/enums.js';
+import type { SqlClient } from './sql.client.js';
 
 export interface ReservationFilters {
   status?:     ReservationStatus;

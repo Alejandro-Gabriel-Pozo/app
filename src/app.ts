@@ -29,7 +29,7 @@
 import express from 'express';
 import cors    from 'cors';
 import swaggerUi from 'swagger-ui-express';
-import http from 'node:http';
+import type http from 'node:http';
 
 import { createResourcesRouter }         from './api/routes/resources.routes.js';
 import { createLocationsRouter }         from './api/routes/locations.routes.js';
@@ -61,7 +61,8 @@ import { AuthService }                   from './security/auth.service.js';
 import { PlatformRepository }            from './platform/platform.repository.js';
 import { createPlatformContainer }       from './platform/platform.container.js';
 import { tenantMiddleware }              from './platform/tenant.middleware.js';
-import { createAppContainer, AppContainer, createPlatformPool, closePlatformPool } from './container.js';
+import type { AppContainer} from './container.js';
+import { createAppContainer, createPlatformPool, closePlatformPool } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
 import { SqlHousekeepingRepository }     from './repositories/housekeeping.repository.js';
 import { SqlStayRepository }             from './repositories/stay.repository.js';

@@ -25,7 +25,8 @@
 import { randomUUID, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { signToken, getJwtSecret } from './auth.middleware.js';
-import { PlatformRole, UserRole } from '../types/enums.js';
+import type { UserRole } from '../types/enums.js';
+import { PlatformRole } from '../types/enums.js';
 
 const pbkdf2Async = promisify(pbkdf2);
 

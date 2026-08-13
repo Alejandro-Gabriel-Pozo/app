@@ -24,8 +24,9 @@
  * Ver comentarios originales sobre CreateOrderInput, notas y stripItemUndefined.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
-import { AppContainer } from '../../container.js';
+import type { Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
+import type { AppContainer } from '../../container.js';
 import {
   OrderService,
   OrderNotFoundError,

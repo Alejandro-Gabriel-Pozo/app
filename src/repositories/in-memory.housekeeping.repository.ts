@@ -3,8 +3,8 @@
  * @description Implementación in-memory de HousekeepingRepository — para tests.
  */
 
-import { HousekeepingRepository } from './housekeeping.repository.js';
-import { HousekeepingTask, HousekeepingStatus } from '../domain/housekeeping-task.js';
+import type { HousekeepingRepository } from './housekeeping.repository.js';
+import type { HousekeepingTask, HousekeepingStatus } from '../domain/housekeeping-task.js';
 
 export class InMemoryHousekeepingRepository implements HousekeepingRepository {
   private readonly tasks = new Map<string, HousekeepingTask>();

@@ -31,9 +31,9 @@
 
 import { ReservationStatus } from '../types/enums.js';
 import { assertValidTimeRange } from './availability.js';
-import { BookableResource, Customer } from './entities.js';
+import type { BookableResource, Customer } from './entities.js';
 import { InvalidReservationError } from './errors.js';
-import { ReservationSnapshot, ReservationLine } from './reservation.types.js';
+import type { ReservationSnapshot, ReservationLine } from './reservation.types.js';
 
 const ALLOWED_TRANSITIONS: Record<
   ReservationStatus,

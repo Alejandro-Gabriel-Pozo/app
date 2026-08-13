@@ -10,9 +10,9 @@
  * y no importan nada de pg.client.ts directamente.
  */
 
-import pg from 'pg';
-import { TransactionManager } from './transaction-manager.js';
-import { SqlClient }          from '../repositories/sql.client.js';
+import type pg from 'pg';
+import type { TransactionManager } from './transaction-manager.js';
+import type { SqlClient }          from '../repositories/sql.client.js';
 
 type PgPool = InstanceType<typeof pg.Pool>;
 

@@ -19,9 +19,10 @@
  * y se devuelve 500. Agregar el case correspondiente en domainErrorStatus.
  */
 
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { ZodError }                        from 'zod';
-import { DomainError, ValidationError, DomainIssue } from '../../domain/errors.js';
+import type { DomainIssue } from '../../domain/errors.js';
+import { DomainError, ValidationError } from '../../domain/errors.js';
 
 export function errorHandler(
   err: unknown,

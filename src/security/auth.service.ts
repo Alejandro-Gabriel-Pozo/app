@@ -38,7 +38,7 @@
 import { signToken, verifyToken } from './auth.middleware.js';
 import { verifyPassword } from './user.store.js';
 import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
-import { UserRole } from '../types/enums.js';
+import type { UserRole } from '../types/enums.js';
 
 // ---------------------------------------------------------------------------
 // Tipos

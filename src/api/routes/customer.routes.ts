@@ -54,17 +54,18 @@
  * POST   /api/customer/me/reservations/:id/cancel
  */
 
-import { Router, Request, Response, NextFunction, RequestHandler } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import type pg from 'pg';
-import { AppContainer } from '../../container.js';
+import type { AppContainer } from '../../container.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
 import { UserRole, ReservationStatus, BusinessStatus } from '../../types/enums.js';
-import { PlatformRepository } from '../../platform/platform.repository.js';
+import type { PlatformRepository } from '../../platform/platform.repository.js';
 import {
   getTenantClient,
   getTenantRawPool,
@@ -73,7 +74,7 @@ import {
   TenantNotReadyError,
 } from '../../platform/tenant.middleware.js';
 import { buildTransactionManagerFromPool } from '../../db/tenant-context.js';
-import { SqlClient } from '../../repositories/sql.client.js';
+import type { SqlClient } from '../../repositories/sql.client.js';
 import { SqlResourceRepository }     from '../../repositories/sql.resource.repository.js';
 import { SqlReservationRepository }  from '../../repositories/sql.reservation.repository.js';
 import { SqlCustomerRepository }     from '../../repositories/sql.customer.repository.js';

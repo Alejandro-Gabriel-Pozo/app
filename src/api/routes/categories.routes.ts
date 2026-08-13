@@ -103,7 +103,7 @@ export function createCategoryRouter(container: AppContainer): Router {
       let plan;
       try {
         plan = await container.getBusinessPlan(businessId);
-      } catch (platformErr) {
+      } catch {
         // La BD de plataforma no respondió. El tenant sigue operativo pero
         // no podemos verificar el límite de plan. Respondemos 503 con un
         // código explícito para que el frontend lo trate diferente a un 500.

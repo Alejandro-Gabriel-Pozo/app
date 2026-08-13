@@ -8,7 +8,7 @@
  * y se inyecta desde container.ts.
  */
 
-import { SqlClient } from '../repositories/sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface TransactionManager {
   run<T>(work: (client: SqlClient) => Promise<T>): Promise<T>;

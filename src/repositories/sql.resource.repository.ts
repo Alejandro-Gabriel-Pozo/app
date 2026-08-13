@@ -20,10 +20,10 @@
  *   se leía de la fila pero nunca llegaba a PhysicalResource.
  */
 
-import { SqlClient } from './sql.client.js';
-import { ResourceRepository } from './resource.repository.js';
+import type { SqlClient } from './sql.client.js';
+import type { ResourceRepository } from './resource.repository.js';
 import { PhysicalResource } from '../domain/entities.js';
-import { VisualMetadata } from '../types/visual.interface.js';
+import type { VisualMetadata } from '../types/visual.interface.js';
 
 interface ResourceRow {
   id: string;

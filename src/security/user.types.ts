@@ -1,4 +1,4 @@
-import { UserRole } from '../types/enums.js';
+import type { UserRole } from '../types/enums.js';
  
 /**
  * Usuario autenticado adjuntado a req.user por authenticate().

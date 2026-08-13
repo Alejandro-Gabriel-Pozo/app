@@ -21,8 +21,8 @@
  * firma/verificación HMAC (antes reimplementado acá desde cero, jscpd C6).
  */
 
-import { Request, Response, NextFunction } from 'express';
-import { PlatformRole } from '../types/enums.js';
+import type { Request, Response, NextFunction } from 'express';
+import type { PlatformRole } from '../types/enums.js';
 import { signToken, verifyToken } from './auth.middleware.js';
 
 export interface PlatformJwtPayload {

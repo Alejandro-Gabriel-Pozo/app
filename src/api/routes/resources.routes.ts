@@ -27,6 +27,7 @@
  */
 
 import { Router }                        from 'express';
+import type { Request }                  from 'express';
 import { authorize }                      from '../../security/auth.middleware.js';
 import { Roles }                          from '../../security/roles.js';
 import { SqlResourceRepository }         from '../../repositories/sql.resource.repository.js';
@@ -97,7 +98,7 @@ const UpdateResourceSchema = z.object({
  * válido y hay que pedir la location explícitamente (o resolverla por
  * algún otro criterio) en vez de asumir la primera.
  */
-async function resolveLocationId(req: import('express').Request, explicit: string | undefined): Promise<string> {
+async function resolveLocationId(req: Request, explicit: string | undefined): Promise<string> {
   if (explicit) return explicit;
   const locations = await new SqlLocationRepository(req.db).findAll();
   const [first] = locations;

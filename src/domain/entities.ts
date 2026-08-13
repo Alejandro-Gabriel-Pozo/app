@@ -35,10 +35,10 @@
  *   no todos los repos la seleccionan todavía.
  */
 
-import { VisualMetadata } from '../types/visual.interface.js';
+import type { VisualMetadata } from '../types/visual.interface.js';
 import { InvalidCustomerError } from './errors.js';
 import { isResourceAvailable } from './availability.js';
-import { ReservationSnapshot } from './reservation.types.js';
+import type { ReservationSnapshot } from './reservation.types.js';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

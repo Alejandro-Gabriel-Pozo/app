@@ -7,8 +7,8 @@
  * (futuras verificaciones inversas). Esta query filtra por service_id.
  */
 
-import { IResourceLockRepository, ResourceLock } from './resource-lock.repository.js';
-import { SqlClient }                               from './sql.client.js';
+import type { IResourceLockRepository, ResourceLock } from './resource-lock.repository.js';
+import type { SqlClient }                               from './sql.client.js';
 
 export class SqlResourceLockRepository implements IResourceLockRepository {
   constructor(private readonly db: SqlClient) {}

@@ -12,14 +12,16 @@
  * - Se puede crear un cliente sin email (ej: walk-in con solo nombre y teléfono).
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import { requireModule } from '../../security/module.middleware.js';
 import { ModuleKey } from '../../types/enums.js';
-import { AppContainer } from '../../container.js';
-import { Customer, ContactMethod } from '../../domain/entities.js';
+import type { AppContainer } from '../../container.js';
+import type { ContactMethod } from '../../domain/entities.js';
+import { Customer } from '../../domain/entities.js';
 import { Roles } from '../../security/roles.js';
 import { SqlCustomerRepository } from '../../repositories/sql.customer.repository.js';
 import { SqlCustomerRateRepository } from '../../repositories/sql.customer-rate.repository.js';

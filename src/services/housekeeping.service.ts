@@ -10,7 +10,8 @@
  * - Consultar tablero por fecha, recurso o empleado asignado
  */
 
-import { HousekeepingTask, HousekeepingStatus } from '../domain/housekeeping-task.js';
+import type { HousekeepingStatus } from '../domain/housekeeping-task.js';
+import { HousekeepingTask } from '../domain/housekeeping-task.js';
 import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
 import { DomainError } from '../domain/errors.js';
 

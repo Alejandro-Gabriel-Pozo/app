@@ -26,7 +26,7 @@
  */
 
 import pg from 'pg';
-import { SqlClient } from '../repositories/sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 const { Pool } = pg;
 

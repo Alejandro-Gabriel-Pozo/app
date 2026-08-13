@@ -17,9 +17,10 @@
  * mano por psql/SQL Editor como antes. Ver tenant-db.setup.ts.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
-import { PlatformRepository } from '../../platform/platform.repository.js';
+import type { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString, applyTenantSchema } from '../../platform/tenant-db.setup.js';
 import { evictTenantPool } from '../../platform/tenant.middleware.js';
 import { Roles } from '../../security/roles.js';

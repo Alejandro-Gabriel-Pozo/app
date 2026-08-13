@@ -1,6 +1,6 @@
 import type { SqlClient }          from './sql.client.js';
 import { ReservationStatus }        from '../types/enums.js';
-import { Reservation }              from '../domain/Reservation.js';
+import type { Reservation }              from '../domain/Reservation.js';
 import type {
   ReservationRepository,
   ReservationFilters,

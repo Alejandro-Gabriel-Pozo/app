@@ -38,10 +38,10 @@
  * justificaba, desactualizado (jscpd C7 / ts-prune). Sacado.
  */
 
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { UserRole } from '../types/enums.js';
-import { AuthenticatedUser } from './user.types.js';
+import type { AuthenticatedUser } from './user.types.js';
 
 // ---------------------------------------------------------------------------
 // JWT Payload

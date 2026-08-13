@@ -22,9 +22,10 @@
  * el header `X-Forwarded-For`.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { Router } from 'express';
 import { z } from 'zod';
-import { AuthService } from '../../security/auth.service.js';
+import type { AuthService } from '../../security/auth.service.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiter — protección anti fuerza bruta

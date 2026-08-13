@@ -28,10 +28,10 @@
  * un comentario que era "consistente con pg.client.ts".
  */
 
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import pg from 'pg';
-import { SqlClient } from '../repositories/sql.client.js';
-import { PlatformRepository } from './platform.repository.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+import type { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString, CURRENT_SCHEMA_VERSION } from './tenant-db.setup.js';
 import { BusinessStatus, UserRole } from '../types/enums.js';
 import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';

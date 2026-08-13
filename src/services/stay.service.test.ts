@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { StayService, StayBalanceOwedError, ResourceOccupiedError } from './stay.service.js';
-import { Stay } from '../domain/stay.js';
+import type { Stay } from '../domain/stay.js';
 import { Reservation } from '../domain/Reservation.js';
 import { Customer, PhysicalResource } from '../domain/entities.js';
 import { ReservationStatus } from '../types/enums.js';

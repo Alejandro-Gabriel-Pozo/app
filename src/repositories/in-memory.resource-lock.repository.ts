@@ -3,8 +3,8 @@
  * @description Implementación in-memory de IResourceLockRepository — para tests.
  */
 
-import { IResourceLockRepository, ResourceLock } from './resource-lock.repository.js';
-import { SqlClient } from './sql.client.js';
+import type { IResourceLockRepository, ResourceLock } from './resource-lock.repository.js';
+import type { SqlClient } from './sql.client.js';
 
 export class InMemoryResourceLockRepository implements IResourceLockRepository {
   private readonly locks: ResourceLock[] = [];
@@ -21,7 +21,7 @@ export class InMemoryResourceLockRepository implements IResourceLockRepository {
       .sort((a, b) => a.serviceId.localeCompare(b.serviceId));
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+   
   async replaceForServiceWithClient(_client: SqlClient, serviceId: string, resourceIds: string[]): Promise<ResourceLock[]> {
     for (let i = this.locks.length - 1; i >= 0; i--) {
       if (this.locks[i]!.serviceId === serviceId) this.locks.splice(i, 1);

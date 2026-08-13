@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { CustomerRepository } from '../repositories/customer.repository.js';
+import type { CustomerRepository } from '../repositories/customer.repository.js';
 import { Customer } from '../domain/entities.js';
 import { hashPassword, verifyPassword } from './user.store.js';
 import { signToken } from './auth.middleware.js';

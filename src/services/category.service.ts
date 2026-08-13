@@ -21,7 +21,7 @@ import type {
   CategoryField,
 } from '../types/resource-category.types.js';
 import { PLAN_LIMITS } from '../config/plan-limits.js';
-import { BusinessPlan } from '../types/enums.js';
+import type { BusinessPlan } from '../types/enums.js';
 
 export class PlanLimitError extends Error {
   constructor(

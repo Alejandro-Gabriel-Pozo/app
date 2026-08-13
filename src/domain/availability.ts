@@ -1,6 +1,6 @@
 import { ReservationStatus } from '../types/enums.js';
 import { InvalidReservationError } from './errors.js';
-import { ReservationSnapshot } from './reservation.types.js';
+import type { ReservationSnapshot } from './reservation.types.js';
 
 export function hasTimeOverlap(
   aStart: Date,

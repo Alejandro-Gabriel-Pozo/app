@@ -9,8 +9,8 @@
  * - PhysicalResource reemplaza a BookableResource (alias mantenido en entities.ts).
  */
 
-import { PhysicalResource } from '../domain/entities.js';
-import { ResourceRepository } from './resource.repository.js';
+import type { PhysicalResource } from '../domain/entities.js';
+import type { ResourceRepository } from './resource.repository.js';
 
 export class InMemoryResourceRepository implements ResourceRepository {
   private readonly resources = new Map<string, PhysicalResource>();

@@ -92,7 +92,7 @@
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
-import { Customer, PhysicalResource }   from '../domain/entities.js';
+import type { Customer, PhysicalResource }   from '../domain/entities.js';
 import { assertValidTimeRange }         from '../domain/availability.js';
 import {
   InvalidReservationError,
@@ -100,19 +100,19 @@ import {
   ReservationNotFoundError,
 } from '../domain/errors.js';
 import { validateDetailsAgainstFields } from './category.service.js';
-import { ReservationRepository }        from '../repositories/reservation.repository.js';
-import { ResourceRepository }           from '../repositories/resource.repository.js';
-import { OccupancyRepository }          from '../repositories/occupancy.repository.js';
-import { ICategoryRepository }          from '../repositories/category.repository.js';
-import { DomainEventRepository }        from '../repositories/domain-event.repository.js';
-import { IResourceLockRepository }      from '../repositories/resource-lock.repository.js';
+import type { ReservationRepository }        from '../repositories/reservation.repository.js';
+import type { ResourceRepository }           from '../repositories/resource.repository.js';
+import type { OccupancyRepository }          from '../repositories/occupancy.repository.js';
+import type { ICategoryRepository }          from '../repositories/category.repository.js';
+import type { DomainEventRepository }        from '../repositories/domain-event.repository.js';
+import type { IResourceLockRepository }      from '../repositories/resource-lock.repository.js';
 import type { IBookableServiceRepository } from '../repositories/bookable-service.repository.js';
 import type { BookableService } from '../types/bookable-service.types.js';
 import type { ICustomerRateRepository } from '../repositories/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../repositories/operating-hours.repository.js';
 import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
-import { TransactionManager }           from '../db/transaction-manager.js';
-import { SqlClient }                    from '../repositories/sql.client.js';
+import type { TransactionManager }           from '../db/transaction-manager.js';
+import type { SqlClient }                    from '../repositories/sql.client.js';
 
 export class ReservationService {
   constructor(

@@ -58,7 +58,7 @@
  * ```
  */
 
-import { Request }              from 'express';
+import type { Request }              from 'express';
 import type pg                  from 'pg';
 import { PgTransactionManager } from './pg.transaction-manager.js';
 import { getTenantRawPool }     from '../platform/tenant.middleware.js';

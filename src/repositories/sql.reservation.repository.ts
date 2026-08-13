@@ -1,10 +1,10 @@
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
-import { ReservationRepository, ReservationFilters } from './reservation.repository.js';
+import type { ReservationRepository, ReservationFilters } from './reservation.repository.js';
 import { Customer } from '../domain/entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
-import { SqlClient } from './sql.client.js';
-import { ResourceRepository } from './resource.repository.js';
+import type { SqlClient } from './sql.client.js';
+import type { ResourceRepository } from './resource.repository.js';
 import type { ReservationLine } from '../domain/reservation.types.js';
 
 interface ReservationRow {

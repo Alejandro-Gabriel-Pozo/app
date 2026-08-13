@@ -12,10 +12,10 @@ import { InMemoryOperatingHoursRepository } from '../repositories/in-memory.oper
 import { InMemoryHousekeepingRepository } from '../repositories/in-memory.housekeeping.repository.js';
 import { HousekeepingTask } from '../domain/housekeeping-task.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
-import { ICategoryRepository } from '../repositories/category.repository.js';
-import { DomainEventRepository } from '../repositories/domain-event.repository.js';
-import { TransactionManager } from '../db/transaction-manager.js';
-import { SqlClient } from '../repositories/sql.client.js';
+import type { ICategoryRepository } from '../repositories/category.repository.js';
+import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 // ---------------------------------------------------------------------------
 // Mocks mínimos para dependencias de infraestructura

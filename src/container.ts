@@ -21,7 +21,7 @@
 
 import { PlatformRepository } from './platform/platform.repository.js';
 import { BusinessPlan }        from './types/enums.js';
-import { SqlClient }           from './repositories/sql.client.js';
+import type { SqlClient }           from './repositories/sql.client.js';
 import { stripSslMode, sslConfig } from './db/pg.client.js';
 import pg from 'pg';
 

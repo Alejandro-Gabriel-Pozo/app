@@ -11,7 +11,7 @@
  *        Body: { code: 'PLATFORM_UNAVAILABLE', message }
  */
 
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import type { AppContainer } from '../container.js';
 import type { ModuleKey } from '../types/enums.js';
 

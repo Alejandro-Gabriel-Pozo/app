@@ -25,9 +25,9 @@
  * ```
  */
 
-import { UserRole }          from './enums.js';
-import { SqlClient }         from '../repositories/sql.client.js';
-import { TransactionManager } from '../db/transaction-manager.js';
+import type { UserRole }          from './enums.js';
+import type { SqlClient }         from '../repositories/sql.client.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
 
 declare global {
   namespace Express {

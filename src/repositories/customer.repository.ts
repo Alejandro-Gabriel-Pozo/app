@@ -1,5 +1,5 @@
-import { Customer } from '../domain/entities.js';
-import { SqlClient } from './sql.client.js';
+import type { Customer } from '../domain/entities.js';
+import type { SqlClient } from './sql.client.js';
 
 /**
  * Registro de cliente con contraseña (solo para autenticación interna).

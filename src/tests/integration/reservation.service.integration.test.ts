@@ -41,12 +41,12 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import pg from 'pg';
+import type pg from 'pg';
 
 import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
 import { seedCategory, seedResource, seedCustomer, seedReservation } from './helpers/seed.js';
 
-import { SqlClient }                            from '../../repositories/sql.client.js';
+import type { SqlClient }                            from '../../repositories/sql.client.js';
 import { SqlReservationRepository }             from '../../repositories/sql.reservation.repository.js';
 import { SqlResourceRepository }               from '../../repositories/sql.resource.repository.js';
 import { SqlOccupancyRepository }              from '../../repositories/sql.occupancy.repository.js';
