@@ -10,7 +10,12 @@
  * DELETE /resources/:id    — MANAGEMENT
  *
  * ## Cambios
- * - Validación Zod en POST y PUT (400 VALIDATION_ERROR estructurado).
+ * - Validación Zod en POST y PUT. ZodError se propaga con next(err) al
+ *   errorHandler central (igual que el resto de las rutas) en vez de
+ *   manejarse inline — la versión inline mandaba err.errors sin
+ *   .flatten(), así que extractFieldErrors() del frontend (que lee
+ *   errors.fieldErrors) nunca encontraba nada y el resaltado de campo en
+ *   el formulario de recursos no funcionaba (jscpd C1, 13/08/2026).
  * - authenticate() removido de cada handler: app.ts ya lo aplica
  *   globalmente sobre /api antes de que estas rutas sean alcanzadas.
  * - Import estático de PhysicalResource (era BookableResource).
@@ -33,7 +38,7 @@ import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-
 import { windowsOverlap }                from '../../repositories/operating-hours.repository.js';
 import { PhysicalResource }              from '../../domain/entities.js';
 import { randomUUID }                     from 'node:crypto';
-import { z, ZodError }                   from 'zod';
+import { z }                              from 'zod';
 import { CreateOperatingWindowSchema }   from '../schemas/request.schemas.js';
 import type { VisualMetadata }           from '../../types/visual.interface.js';
 
@@ -177,13 +182,7 @@ export function createResourcesRouter(): Router {
         );
         await new SqlResourceRepository(req.db).save(resource);
         res.status(201).json(resource);
-      } catch (err) {
-        if (err instanceof ZodError) {
-          res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-          return;
-        }
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 
@@ -237,13 +236,7 @@ export function createResourcesRouter(): Router {
         );
         await repo.save(updated);
         res.json(updated);
-      } catch (err) {
-        if (err instanceof ZodError) {
-          res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
-          return;
-        }
-        next(err);
-      }
+      } catch (err) { next(err); }
     },
   );
 

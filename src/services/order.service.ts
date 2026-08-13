@@ -94,6 +94,31 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Arma el input de un OrderItem a partir de lo que manda el caller.
+ * Antes estaba duplicado entre createOrder() y addItem() — jscpd lo marcó
+ * (docs/analysis/duplication/, C3). subtotal = quantity * unitPrice, igual
+ * en los dos casos.
+ */
+function buildOrderItemInput(
+  item: CreateOrderItemInput,
+): Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'> {
+  return {
+    itemType:         item.itemType,
+    productId:        item.productId        ?? null,
+    productVariantId: item.productVariantId ?? null,
+    reservationId:    item.reservationId    ?? null,
+    quantity:         item.quantity,
+    unitPrice:        item.unitPrice,
+    subtotal:         item.quantity * item.unitPrice,
+    notes:            null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // OrderService
 // ---------------------------------------------------------------------------
 
@@ -121,16 +146,7 @@ export class OrderService {
 
       const items: OrderItem[] = [];
       for (const item of input.items ?? []) {
-        const newItem = await this.orderRepo.addItemWithClient(client, id, {
-          itemType:         item.itemType,
-          productId:        item.productId        ?? null,
-          productVariantId: item.productVariantId ?? null,
-          reservationId:    item.reservationId    ?? null,
-          quantity:         item.quantity,
-          unitPrice:        item.unitPrice,
-          subtotal:         item.quantity * item.unitPrice,
-          notes:            null,
-        });
+        const newItem = await this.orderRepo.addItemWithClient(client, id, buildOrderItemInput(item));
         items.push(newItem);
       }
 
@@ -151,16 +167,7 @@ export class OrderService {
     if (!order) throw new OrderNotFoundError(orderId);
     if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
 
-    return this.orderRepo.addItem(orderId, {
-      itemType:         item.itemType,
-      productId:        item.productId        ?? null,
-      productVariantId: item.productVariantId ?? null,
-      reservationId:    item.reservationId    ?? null,
-      quantity:         item.quantity,
-      unitPrice:        item.unitPrice,
-      subtotal:         item.quantity * item.unitPrice,
-      notes:            null,
-    });
+    return this.orderRepo.addItem(orderId, buildOrderItemInput(item));
   }
 
   async removeItem(orderId: string, itemId: string): Promise<void> {

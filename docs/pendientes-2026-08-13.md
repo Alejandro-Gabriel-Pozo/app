@@ -147,14 +147,19 @@ parche. **Diferido a propósito** a una sesión dedicada con su propio testeo
 Del análisis con `jscpd` + `dependency-cruiser` + `ts-prune` sobre `src/`
 (13/08/2026), reportes completos en `docs/analysis/`.
 
-### C1. `resources.routes.ts` — ZodError inline — conocido desde el 10/08, nunca resuelto
-Ya estaba anotado en `pendientes-2026-08-10.md` ítem #1 y sigue igual hoy
-(confirmado por `jscpd` de forma independiente). `POST`/`PUT` manejan
-`ZodError` localmente (`resources.routes.ts:180-186`) con una forma de
-respuesta distinta (`{ code: 'VALIDATION_ERROR', errors: err.errors }`, sin
-`message`, sin `.flatten()`) a la que arma el `errorHandler` central. El
-resto de las rutas ya delega a `next(err)`. Bajo riesgo, listo para
-resolver — es el más viejo de la lista.
+### C1. `resources.routes.ts` — ZodError inline — ✅ RESUELTO (13/08/2026)
+Estaba anotado desde `pendientes-2026-08-10.md` ítem #1. Al resolverlo se
+encontró que **no era solo inconsistencia de estilo, era un bug real**:
+`extractFieldErrors()` del frontend (`appfrontend-main/src/lib/api.ts`) lee
+`err.errors.fieldErrors` — la forma que arma `.flatten()` — pero el inline
+mandaba `err.errors` crudo (el array de `ZodIssue` sin flatten), así que
+`fieldErrors` siempre daba `undefined` y **el resaltado de campo en rojo
+del formulario de recursos nunca funcionó**. Se sacaron los dos `catch`
+inline (POST y PUT) para que `next(err)` delegue al `errorHandler` central
+como el resto de las rutas. Sin tests dedicados a esta ruta (no hay
+`resources.routes.test.ts`) — verificado con typecheck + suite completa
+(265/266 verde, sin regresiones). Falta confirmar en el navegador que el
+resaltado de campo ahora sí aparece.
 
 ### C2. Rutas — boilerplate `try/catch` + contrato de `code: 'NOT_FOUND'`
 El cascarón `try { } catch (err) { if (err instanceof X) {...}; next(err); }`
@@ -168,11 +173,11 @@ genérico `'NOT_FOUND'`, mientras que el `errorHandler` central emitiría el
 código específico del `DomainError` (ej. `BOOKABLE_SERVICE_NOT_FOUND`).
 Requiere decidir el contrato antes de tocar código.
 
-### C3. `order.service.ts` — mapeo de `OrderItem` duplicado
-El objeto de 8 campos que arma un `OrderItem` está repetido literal entre
-`createOrder` (líneas 124-133) y `addItem` (líneas 154-163). Duplicación
-real de regla de negocio, no boilerplate. Extraer
-`buildOrderItemInput(item)`. Bajo riesgo, listo para resolver.
+### C3. `order.service.ts` — mapeo de `OrderItem` duplicado — ✅ RESUELTO (13/08/2026)
+Extraído `buildOrderItemInput(item)` como función privada del módulo, usada
+en `createOrder` y `addItem`. Sin cambio de comportamiento — mismo cálculo
+de `subtotal`. 265/266 verde (mismos 9 tests de `order.service.test.ts`
+pasando), typecheck limpio.
 
 ### C4. Repos de ocupación — algoritmo de date-splitting duplicado SQL/in-memory
 El clon más grande de todo el reporte (29 líneas):
