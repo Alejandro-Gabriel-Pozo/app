@@ -236,9 +236,43 @@ así que un XSS no puede robarlo.
 - Necesita el endpoint `POST /api/auth/refresh` que `ARCHITECTURE.md` ya
   proponía (para renovar la cookie sin forzar re-login cada `JWT_EXPIRES_IN`).
 
-**Estado:** decidido arrancar el 13/08/2026, en progreso — ver el resto de
-esta sesión para lo que se alcanzó a hacer. Si quedó a medias, retomar
-desde acá antes de asumir que está completo.
+**Paso 1/N — proxy same-origin — ✅ HECHO (13/08/2026, `appfrontend-main`
+commit `b44222a`, pusheado a producción):**
+Confirmado primero el problema real: frontend (`admin-panel`) y backend
+(`reservations-api`) son dos servicios Render en **dominios distintos**, no
+subdominios de una raíz compartida (`docs/auditoria-dominios.md`). Una
+cookie `httpOnly` del backend nunca llegaría al browser en un fetch
+cross-origin normal salvo con `SameSite=None`, cada vez más bloqueada como
+cookie de tercero. Solución: `next.config.js` en `appfrontend-main` agrega
+`async rewrites()` que reenvía todo `/api/:path*` al backend real
+(`NEXT_PUBLIC_API_URL`) server-side — el browser ve todo same-origin.
+`lib/api.ts`, `lib/customerApi.ts`, `login/page.tsx`, `admin/page.tsx`
+pasan de URL absoluta a `BASE = ''` (relativo).
+
+Este paso **no cambia el mecanismo de auth todavía** — el header
+`Authorization` sigue viajando igual, solo que ahora pasa por el proxy.
+Es prerequisito puro para que la cookie tenga sentido.
+
+Trampa encontrada y corregida: `rewrites()` se resuelve en **build time**,
+no en `next start` — si `NEXT_PUBLIC_API_URL` no está seteada cuando corre
+`npm run build`, el rewrite queda grabado vacío en el manifest y
+`next start` no lo recalcula aunque la variable esté puesta en runtime (me
+pasó probándolo local: primer intento devolvió 404 de Next, no del
+backend). En Render no es un problema — las `envVars` de `render.yaml` están
+disponibles tanto en `buildCommand` como en `startCommand` — pero si se
+vuelve a testear local, rebuildear con la variable puesta antes de
+`next start`. Probado en runtime local (no solo build estático): GET y POST
+a `/api/*` vía `localhost` devolvieron respuestas reales del backend de
+producción (400 de validación Zod, 401 de auth), no 404 de Next.
+
+**Estado:** decidido arrancar el 13/08/2026. Paso 1 (proxy) hecho y en
+producción. Quedan pendientes, no arrancados: `Set-Cookie` en login/register
+del backend, `GET /api/auth/me`, `POST /api/auth/refresh`, reescribir
+`apiFetch`/`AuthContext.tsx` a `credentials: 'include'` (deja de usar
+`localStorage`/header manual), decisión de protección CSRF (con same-origin
+ya resuelto, `SameSite=Strict` debería alcanzar — confirmar), y decidir si
+se migran los 3 sistemas de auth juntos o se arranca solo por staff. Si
+quedó a medias, retomar desde acá antes de asumir que está completo.
 
 ---
 
