@@ -128,6 +128,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESOURCE_OCCUPIED':
     case 'CUSTOMER_RATE_CONFLICT':
     case 'NO_BALANCE_TO_TRANSFER':
+    case 'STAY_BALANCE_OWED':
       return 409;
 
     // --- 503 Service Unavailable ---

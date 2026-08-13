@@ -223,6 +223,17 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return parseFloat(result.rows[0]?.net ?? '0');
   }
 
+  async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
+    const result = await this.sqlClient.query(
+      `UPDATE financial_transactions
+       SET stay_id = $1
+       WHERE reservation_id = $2
+         AND stay_id IS NULL`,
+      [stayId, reservationId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   async getNetBalanceByStayId(stayId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
       `SELECT

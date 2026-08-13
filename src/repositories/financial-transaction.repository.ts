@@ -115,4 +115,16 @@ export interface FinancialTransactionRepository {
    * ya saldadas con la actual.
    */
   getNetBalanceByStayId(stayId: string): Promise<number>;
+
+  /**
+   * Adopta bajo `stay_id` los cargos que ya existían para una reserva antes
+   * de que la Stay existiera. El CHARGE de una Reservation se crea en
+   * `reservation.confirmed` (outbox), que corre ANTES del check-in — nunca
+   * queda con `stay_id`, así que sin este paso getNetBalanceByStayId lo
+   * subestimaría. No reasigna `customer_id` (R9) — solo agrupa el cargo ya
+   * existente bajo la estadía que recién se creó. Llamado desde
+   * StayService.checkIn() una sola vez, justo después de crear la Stay.
+   * Idempotente: solo toca filas con `stay_id IS NULL`.
+   */
+  linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number>;
 }

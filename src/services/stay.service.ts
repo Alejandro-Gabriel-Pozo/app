@@ -13,12 +13,22 @@
  *   El flujo correcto es: ReservationService.confirmReservation() → StayService.checkIn().
  * - Al hacer check-out, StayService crea automáticamente una HousekeepingTask PENDING
  *   para el turno siguiente (coordinación entre módulos).
+ *
+ * ## Ledger (A1, paso 3 — deuda estructural)
+ * - checkIn(): adopta bajo `stay_id` los CHARGE que ya existían para la
+ *   reserva (se crean en `reservation.confirmed`, antes de que la Stay
+ *   exista) — ver `FinancialTransactionRepository.linkStayToReservationCharges`.
+ * - checkOut(): bloquea si `getNetBalanceByStayId(stayId) > 0`. La única
+ *   forma de saldar sin cobrar en el momento es
+ *   `AccountsReceivableService.transferStayBalanceToReceivable` (rol
+ *   MANAGEMENT), que deja el folio en $0 antes de reintentar el check-out.
  */
 
 import { Stay } from '../domain/stay.js';
 import type { StayRepository } from '../repositories/stay.repository.js';
 import type { ReservationRepository } from '../repositories/reservation.repository.js';
 import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
+import type { FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
 import { HousekeepingTask } from '../domain/housekeeping-task.js';
 import { DomainError, ReservationNotFoundError } from '../domain/errors.js';
 
@@ -43,6 +53,16 @@ export class ResourceOccupiedError extends DomainError {
   }
 }
 
+export class StayBalanceOwedError extends DomainError {
+  constructor(stayId: string, balance: number) {
+    super(
+      `No se puede hacer check-out: la estadía ${stayId} tiene un saldo pendiente de ${balance}. ` +
+      `Cobrá el saldo o transferilo a cuenta por cobrar antes de reintentar.`,
+      'STAY_BALANCE_OWED',
+    );
+  }
+}
+
 export interface CheckInInput {
   reservationId: string;
   resourceId: string;    // habitación específica asignada (puede diferir del recurso reservado)
@@ -64,6 +84,7 @@ export class StayService {
     private readonly stayRepository: StayRepository,
     private readonly reservationRepository: ReservationRepository,
     private readonly housekeepingRepository: HousekeepingRepository,
+    private readonly financialRepository: FinancialTransactionRepository,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -100,6 +121,15 @@ export class StayService {
     });
 
     await this.stayRepository.save(stay);
+
+    // Adopta el CHARGE que ya se creó en reservation.confirmed (antes de
+    // que esta Stay existiera) — sin esto, getNetBalanceByStayId lo
+    // subestimaría porque nunca quedó con stay_id.
+    await this.financialRepository.linkStayToReservationCharges(
+      stay.id,
+      input.reservationId,
+    );
+
     return stay;
   }
 
@@ -109,6 +139,12 @@ export class StayService {
 
   async checkOut(input: CheckOutInput): Promise<Stay> {
     const stay = await this.getStayOrThrow(input.stayId, input.businessId);
+
+    const balance = await this.financialRepository.getNetBalanceByStayId(stay.id);
+    if (balance > 0) {
+      throw new StayBalanceOwedError(stay.id, balance);
+    }
+
     stay.checkOut(input.notes);
     await this.stayRepository.update(stay);
 

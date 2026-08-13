@@ -242,11 +242,12 @@ export async function createApp(): Promise<{
       const resourceRepo    = new SqlResourceRepository(req.db);
       const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
       const housekeepingRepo = new SqlHousekeepingRepository(req.db);
-      const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
+      const financialRepo   = new SqlFinancialTransactionRepository(req.db);
+      const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo);
 
       const arService = new AccountsReceivableService(
         new SqlAccountsReceivableRepository(req.db),
-        new SqlFinancialTransactionRepository(req.db),
+        financialRepo,
         stayRepo,
         new SqlCustomerRepository(req.db),
         buildTenantTransactionManager(req),

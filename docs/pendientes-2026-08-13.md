@@ -38,22 +38,21 @@ Plan completo (6 pasos, acordado 2026-08-13):
    `AccountsReceivableRepository.createWithClient`, nuevo — antes el repo
    financiero no tenía variante transaccional). 9 tests nuevos (5 servicio +
    4 repo), 255/256 tests totales en verde, typecheck limpio.
-3. Gate de checkout: `StayService.checkOut()` bloquea si
-   `getNetBalanceByStayId(stayId) > 0`, salvo transferencia a AR ya hecha.
+3. ✅ Gate de checkout: `StayService.checkOut()` bloquea con
+   `StayBalanceOwedError` (409 `STAY_BALANCE_OWED`) si
+   `getNetBalanceByStayId(stayId) > 0`. Resuelto también el hallazgo
+   pendiente del paso 2 (ver abajo): `checkIn()` ahora llama
+   `linkStayToReservationCharges(stayId, reservationId)`, que adopta bajo
+   `stay_id` el `CHARGE` que `reservation.confirmed` creó antes de que la
+   Stay existiera (`UPDATE ... WHERE reservation_id = $2 AND stay_id IS NULL`
+   — no reasigna `customer_id`, R9 intacto). `StayService` ahora recibe
+   `FinancialTransactionRepository` como 4ta dependencia (único call site:
+   `app.ts`, sin tests previos que actualizar). 4 tests nuevos en
+   `stay.service.test.ts` (primer test file que tiene este servicio). 259/260
+   tests totales en verde, typecheck limpio.
 4. "Cargo a la habitación": `CreateOrderInput.stayId` opcional.
 5. Reporte por empresa/período (agregación sobre `accounts_receivable`).
 6. Frontend: folio en check-out, pantalla de transferencia a AR, reporte.
-
-**Hallazgo para el paso 3, todavía sin resolver — no lo pierdas de vista:**
-el `CHARGE` de una Reservation se crea en `reservation.confirmed`, **antes**
-de que exista la Stay (el flujo es confirmar → check-in). Ese `CHARGE`
-nunca queda con `stay_id` seteado, así que `getNetBalanceByStayId` NO
-va a contarlo — el gate de checkout subestimaría el saldo si no se corrige.
-Opción más limpia pensada hasta ahora: al hacer `checkIn()`, un
-`UPDATE financial_transactions SET stay_id = $1 WHERE reservation_id = $2`
-para adoptar el cargo ya existente (no cambia de quién es el cargo, solo
-lo agrupa bajo la estadía — no viola R9). Decidir esto al llegar al paso 3,
-no antes.
 
 ### A2. `Owner` / liquidación a terceros — sin modelar
 Falta el concepto de dueño de un recurso y liquidación de lo cobrado. Solo
