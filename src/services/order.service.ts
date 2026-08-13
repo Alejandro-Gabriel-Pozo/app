@@ -24,10 +24,12 @@ import type {
   OrderStatus,
   CreateOrderInput,
   CreateOrderItemInput,
+  UpdateOrderInput,
 } from '../domain/order.entities.js';
-import type { TransactionManager } from '../db/transaction-manager.js';
-import type { SqlClient }          from '../repositories/sql.client.js';
-import { DomainError }             from '../domain/errors.js';
+import type { TransactionManager }      from '../db/transaction-manager.js';
+import type { SqlClient }               from '../repositories/sql.client.js';
+import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
+import { DomainError }                  from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
@@ -72,6 +74,23 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
     orderId: string,
     item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
   ): Promise<OrderItem>;
+
+  /**
+   * Variantes transaccionales de update/complete/cancel — necesarias para
+   * que confirmOrder/completeOrder/cancelOrder puedan emitir su domain
+   * event (order.confirmed/completed/cancelled) atómicamente junto con la
+   * transición de estado, mismo patrón que ReservationService usa con
+   * saveWithClient + domainEventRepository.insertWithClient.
+   */
+  updateWithClient(
+    client: SqlClient,
+    id: string,
+    input: UpdateOrderInput,
+  ): Promise<Order | undefined>;
+
+  completeWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
+
+  cancelWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +101,7 @@ export class OrderService {
   constructor(
     private readonly orderRepo: IOrderRepositoryWithClient,
     private readonly transactionManager: TransactionManager,
+    private readonly domainEventRepository: DomainEventRepository,
   ) {}
 
   async listOrders(filter: ListOrdersFilter): Promise<Order[]> {
@@ -150,25 +170,70 @@ export class OrderService {
     await this.orderRepo.removeItem(itemId, orderId);
   }
 
+  /**
+   * DRAFT -> CONFIRMED. Emite `order.confirmed` en la misma transacción que
+   * la transición de estado — el handler del outbox (outbox.handlers.ts)
+   * crea un CHARGE PENDING si totalAmount > 0, mismo patrón que
+   * ReservationService.confirmReservation con reservation.confirmed.
+   */
   async confirmOrder(id: string): Promise<Order> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
-    return (await this.orderRepo.update(id, { status: 'CONFIRMED' }))!;
+
+    return this.transactionManager.run(async (client: SqlClient) => {
+      const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId:    order.businessId,
+        aggregateType: 'ORDER',
+        aggregateId:   updated.id,
+        eventType:     'order.confirmed',
+        payload: {
+          orderId:     updated.id,
+          customerId:  updated.customerId,
+          totalAmount: updated.totalAmount,
+        },
+      });
+      return updated;
+    });
   }
 
+  /** CONFIRMED -> COMPLETED. Emite `order.completed` -> settea el CHARGE a SETTLED. */
   async completeOrder(id: string): Promise<Order> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'CONFIRMED') throw new InvalidOrderTransitionError(order.status, 'COMPLETED');
-    return (await this.orderRepo.complete(id))!;
+
+    return this.transactionManager.run(async (client: SqlClient) => {
+      const updated = (await this.orderRepo.completeWithClient(client, id))!;
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId:    order.businessId,
+        aggregateType: 'ORDER',
+        aggregateId:   updated.id,
+        eventType:     'order.completed',
+        payload: { orderId: updated.id },
+      });
+      return updated;
+    });
   }
 
+  /** DRAFT/CONFIRMED -> CANCELLED. Emite `order.cancelled` -> anula el CHARGE si existía. */
   async cancelOrder(id: string): Promise<Order> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status === 'COMPLETED') throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
-    return (await this.orderRepo.cancel(id))!;
+
+    return this.transactionManager.run(async (client: SqlClient) => {
+      const updated = (await this.orderRepo.cancelWithClient(client, id))!;
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId:    order.businessId,
+        aggregateType: 'ORDER',
+        aggregateId:   updated.id,
+        eventType:     'order.cancelled',
+        payload: { orderId: updated.id },
+      });
+      return updated;
+    });
   }
 
   async updateNotes(id: string, notes: string | null): Promise<Order> {

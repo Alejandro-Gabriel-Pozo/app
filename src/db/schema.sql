@@ -856,9 +856,24 @@ CREATE TABLE IF NOT EXISTS financial_transactions (
 -- de arriba (CREATE TABLE IF NOT EXISTS no la agrega si la tabla ya existe).
 ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS notes VARCHAR(500);
 
+-- order_id: cierra el gap de "Order nunca toca el ledger" (auditoria de
+-- deuda estructural, item #3). Hasta ahora solo reservation_id existia,
+-- asi que el consumo de POS (Order) era completamente invisible en el
+-- estado de cuenta del cliente (CustomerAccountService.getStatement lee
+-- financial_transactions por customer_id, sin filtrar por origen -- una
+-- vez que el CHARGE se crea con el customer_id correcto, aparece solo,
+-- sin tocar ese servicio). Mismo patron que reservation_id: nullable,
+-- ON DELETE SET NULL, sin migrar filas existentes.
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS order_id VARCHAR(255)
+  REFERENCES orders(id) ON DELETE SET NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_idempotency_key
   ON financial_transactions (idempotency_key)
   WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ft_order
+  ON financial_transactions (order_id)
+  WHERE order_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_ft_reservation
   ON financial_transactions (reservation_id)

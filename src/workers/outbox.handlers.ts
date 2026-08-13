@@ -17,6 +17,9 @@
  * - `reservation.confirmed`  → crea CHARGE PENDING en financial_transactions
  * - `reservation.completed`  → pasa CHARGE a SETTLED
  * - `reservation.cancelled`  → pasa CHARGE a VOIDED (si existía)
+ * - `order.confirmed`        → crea CHARGE PENDING (mismo mecanismo, por order_id)
+ * - `order.completed`        → pasa CHARGE a SETTLED
+ * - `order.cancelled`        → pasa CHARGE a VOIDED (si existía)
  */
 
 import { randomUUID } from 'crypto';
@@ -41,7 +44,10 @@ export function registerFinancialHandlers(
   worker
     .on('reservation.confirmed', handleReservationConfirmed(financialRepo))
     .on('reservation.completed', handleReservationCompleted(financialRepo))
-    .on('reservation.cancelled', handleReservationCancelled(financialRepo));
+    .on('reservation.cancelled', handleReservationCancelled(financialRepo))
+    .on('order.confirmed',       handleOrderConfirmed(financialRepo))
+    .on('order.completed',       handleOrderCompleted(financialRepo))
+    .on('order.cancelled',       handleOrderCancelled(financialRepo));
 }
 
 // ---------------------------------------------------------------------------
@@ -93,5 +99,56 @@ export function handleReservationCancelled(
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId } = event.payload as { reservationId: string };
     await financialRepo.voidByReservationId(reservationId);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Handlers de Order — cierra el gap de "Order nunca toca el ledger"
+// (auditoría de deuda estructural, item #3). Mismo mecanismo que Reservation:
+// CHARGE PENDING al confirmar, SETTLED al completar, VOIDED al cancelar.
+// ---------------------------------------------------------------------------
+
+export function handleOrderConfirmed(
+  financialRepo: FinancialTransactionRepository,
+) {
+  return async (event: DomainEvent): Promise<void> => {
+    const { orderId, customerId, totalAmount } = event.payload as {
+      orderId: string;
+      customerId: string;
+      totalAmount: number | undefined;
+    };
+
+    // Orden sin ítems con precio (ej. solo notas) → no hay movimiento financiero.
+    if (totalAmount == null || totalAmount <= 0) return;
+
+    await financialRepo.create({
+      id:             randomUUID(),
+      businessId:     event.businessId,
+      customerId,
+      orderId,
+      type:           'CHARGE',
+      amount:         totalAmount,
+      currency:       'ARS',
+      status:         'PENDING',
+      idempotencyKey: `${event.id}:CHARGE`,
+    });
+  };
+}
+
+export function handleOrderCompleted(
+  financialRepo: FinancialTransactionRepository,
+) {
+  return async (event: DomainEvent): Promise<void> => {
+    const { orderId } = event.payload as { orderId: string };
+    await financialRepo.settleByOrderId(orderId);
+  };
+}
+
+export function handleOrderCancelled(
+  financialRepo: FinancialTransactionRepository,
+) {
+  return async (event: DomainEvent): Promise<void> => {
+    const { orderId } = event.payload as { orderId: string };
+    await financialRepo.voidByOrderId(orderId);
   };
 }

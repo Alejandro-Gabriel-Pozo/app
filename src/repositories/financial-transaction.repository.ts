@@ -7,6 +7,8 @@ export interface FinancialTransaction {
   customerId: string;
   /** Null para cargos no asociados a una reserva (ej: consumos de minibar). */
   reservationId?: string | null;
+  /** Null para cargos no asociados a una orden (ej: CHARGE de una reserva). */
+  orderId?: string | null;
   type: TransactionType;
   amount: number;
   currency: string;
@@ -42,6 +44,9 @@ export interface FinancialTransactionRepository {
   /** Obtiene todas las transacciones de una reserva. */
   getByReservationId(reservationId: string): Promise<FinancialTransaction[]>;
 
+  /** Obtiene todas las transacciones de una orden. */
+  getByOrderId(orderId: string): Promise<FinancialTransaction[]>;
+
   /** Obtiene todas las transacciones de un cliente. */
   getByCustomerId(customerId: string): Promise<FinancialTransaction[]>;
 
@@ -65,6 +70,20 @@ export interface FinancialTransactionRepository {
    * Retorna la cantidad de filas actualizadas.
    */
   voidByReservationId(reservationId: string): Promise<number>;
+
+  /**
+   * Pasa a SETTLED todas las transacciones PENDING de una orden.
+   * Idempotente: si ya están SETTLED, no hace nada.
+   * Retorna la cantidad de filas actualizadas.
+   */
+  settleByOrderId(orderId: string): Promise<number>;
+
+  /**
+   * Pasa a VOIDED todas las transacciones PENDING/SETTLED de una orden.
+   * Usado cuando se cancela una orden confirmada.
+   * Retorna la cantidad de filas actualizadas.
+   */
+  voidByOrderId(orderId: string): Promise<number>;
 
   /** Balance neto de un cliente: suma(CHARGE + ADJUSTMENT) - suma(PAYMENT + REFUND), solo SETTLED. */
   getNetBalanceByCustomerId(customerId: string): Promise<number>;

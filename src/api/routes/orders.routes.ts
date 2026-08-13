@@ -33,6 +33,7 @@ import {
   InvalidOrderTransitionError,
 } from '../../services/order.service.js';
 import { SqlOrderRepository }            from '../../repositories/sql.order.repository.js';
+import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { compact }                       from '../utils/compact.js';
 import { authorize }                     from '../../security/auth.middleware.js';
@@ -48,6 +49,7 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
   return new OrderService(
     new SqlOrderRepository(req.db!),
     buildTenantTransactionManager(req),
+    new SqlDomainEventRepository(req.db!),
   );
 }
 

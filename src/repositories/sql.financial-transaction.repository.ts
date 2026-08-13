@@ -12,6 +12,7 @@ interface TransactionRow {
   business_id: string;
   customer_id: string;
   reservation_id: string | null;
+  order_id: string | null;
   idempotency_key: string | null;
   type: TransactionType;
   amount: string; // DECIMAL llega como string en pg
@@ -48,8 +49,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
       const result = await this.sqlClient.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, idempotency_key, type, amount, currency, status, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           (id, business_id, customer_id, reservation_id, order_id, idempotency_key, type, amount, currency, status, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING *`,
         [
@@ -57,6 +58,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           tx.businessId,
           tx.customerId,
           tx.reservationId ?? null,
+          tx.orderId ?? null,
           idempotencyKey,
           tx.type,
           tx.amount,
@@ -72,14 +74,15 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto de id.
     const result = await this.sqlClient.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, type, amount, currency, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (id, business_id, customer_id, reservation_id, order_id, type, amount, currency, status, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         id,
         tx.businessId,
         tx.customerId,
         tx.reservationId ?? null,
+        tx.orderId ?? null,
         tx.type,
         tx.amount,
         tx.currency,
@@ -104,6 +107,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
        WHERE reservation_id = $1
        ORDER BY created_at ASC`,
       [reservationId],
+    );
+    return result.rows.map((r) => this.rowToEntity(r));
+  }
+
+  async getByOrderId(orderId: string): Promise<FinancialTransaction[]> {
+    const result = await this.sqlClient.query<TransactionRow>(
+      `SELECT * FROM financial_transactions
+       WHERE order_id = $1
+       ORDER BY created_at ASC`,
+      [orderId],
     );
     return result.rows.map((r) => this.rowToEntity(r));
   }
@@ -140,6 +153,28 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
+  async settleByOrderId(orderId: string): Promise<number> {
+    const result = await this.sqlClient.query(
+      `UPDATE financial_transactions
+       SET status = 'SETTLED'
+       WHERE order_id = $1
+         AND status = 'PENDING'`,
+      [orderId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async voidByOrderId(orderId: string): Promise<number> {
+    const result = await this.sqlClient.query(
+      `UPDATE financial_transactions
+       SET status = 'VOIDED'
+       WHERE order_id = $1
+         AND status IN ('PENDING', 'SETTLED')`,
+      [orderId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   async getNetBalanceByCustomerId(customerId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
       `SELECT
@@ -171,6 +206,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       businessId:      row.business_id,
       customerId:      row.customer_id,
       reservationId:   row.reservation_id,
+      orderId:         row.order_id,
       idempotencyKey:  row.idempotency_key,
       type:            row.type,
       amount:          parseFloat(row.amount),

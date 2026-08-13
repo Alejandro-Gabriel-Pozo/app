@@ -84,13 +84,24 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // -------------------------------------------------------------------------
 
   async getById(id: string): Promise<Order | undefined> {
-    const { rows: orderRows } = await this.db.query<Record<string, unknown>>(
+    return this.getByIdWithClient(this.db, id);
+  }
+
+  /**
+   * Variante de getById() que acepta un client externo — usada por
+   * updateWithClient/completeWithClient/cancelWithClient para releer la
+   * fila dentro de la MISMA transacción (si se usara this.db acá, una
+   * transacción todavía no comiteada podría no ver su propia escritura,
+   * según el nivel de aislamiento).
+   */
+  private async getByIdWithClient(client: SqlClient, id: string): Promise<Order | undefined> {
+    const { rows: orderRows } = await client.query<Record<string, unknown>>(
       'SELECT * FROM orders WHERE id = $1 LIMIT 1',
       [id],
     );
     if (!orderRows[0]) return undefined;
 
-    const { rows: itemRows } = await this.db.query<Record<string, unknown>>(
+    const { rows: itemRows } = await client.query<Record<string, unknown>>(
       'SELECT * FROM order_items WHERE order_id = $1 ORDER BY created_at ASC',
       [id],
     );
@@ -205,23 +216,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // -------------------------------------------------------------------------
 
   async update(id: string, input: UpdateOrderInput): Promise<Order | undefined> {
-    const fields: string[] = [];
-    const params: unknown[] = [];
-    let idx = 1;
-
-    if (input.status !== undefined) { fields.push(`status = $${idx++}`); params.push(input.status); }
-    if (input.notes  !== undefined) { fields.push(`notes = $${idx++}`);  params.push(input.notes); }
-
-    if (fields.length === 0) return this.getById(id);
-
-    fields.push('updated_at = NOW()');
-    params.push(id);
-
-    await this.db.query(
-      `UPDATE orders SET ${fields.join(', ')} WHERE id = $${idx}`,
-      params,
-    );
-    return this.getById(id);
+    return this.updateWithClient(this.db, id, input);
   }
 
   // -------------------------------------------------------------------------
@@ -229,13 +224,17 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // -------------------------------------------------------------------------
 
   async cancel(id: string): Promise<Order | undefined> {
-    await this.db.query(
+    return this.cancelWithClient(this.db, id);
+  }
+
+  async cancelWithClient(client: SqlClient, id: string): Promise<Order | undefined> {
+    await client.query(
       `UPDATE orders
        SET status = 'CANCELLED', cancelled_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND status NOT IN ('CANCELLED', 'COMPLETED')`,
       [id],
     );
-    return this.getById(id);
+    return this.getByIdWithClient(client, id);
   }
 
   // -------------------------------------------------------------------------
@@ -243,13 +242,45 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // -------------------------------------------------------------------------
 
   async complete(id: string): Promise<Order | undefined> {
-    await this.db.query(
+    return this.completeWithClient(this.db, id);
+  }
+
+  async completeWithClient(client: SqlClient, id: string): Promise<Order | undefined> {
+    await client.query(
       `UPDATE orders
        SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND status = 'CONFIRMED'`,
       [id],
     );
-    return this.getById(id);
+    return this.getByIdWithClient(client, id);
+  }
+
+  // -------------------------------------------------------------------------
+  // updateWithClient — variante transaccional de update()
+  // -------------------------------------------------------------------------
+
+  async updateWithClient(
+    client: SqlClient,
+    id: string,
+    input: UpdateOrderInput,
+  ): Promise<Order | undefined> {
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (input.status !== undefined) { fields.push(`status = $${idx++}`); params.push(input.status); }
+    if (input.notes  !== undefined) { fields.push(`notes = $${idx++}`);  params.push(input.notes); }
+
+    if (fields.length === 0) return this.getByIdWithClient(client, id);
+
+    fields.push('updated_at = NOW()');
+    params.push(id);
+
+    await client.query(
+      `UPDATE orders SET ${fields.join(', ')} WHERE id = $${idx}`,
+      params,
+    );
+    return this.getByIdWithClient(client, id);
   }
 
   // -------------------------------------------------------------------------
