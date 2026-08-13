@@ -86,6 +86,7 @@ export async function closePlatformPool(): Promise<void> {
 
 export interface AppContainer {
   getBusinessPlan: (businessId: string) => Promise<BusinessPlan>;
+  getBusinessModules: (businessId: string) => Promise<Record<string, boolean>>;
   mode: 'postgresql';
 }
 
@@ -126,10 +127,32 @@ async function createPostgresContainer(): Promise<AppContainer> {
     return (business.plan ?? BusinessPlan.FREE) as BusinessPlan;
   };
 
+  /**
+   * Entitlements del negocio (qué módulos tiene habilitados), desde la BD
+   * de plataforma. Mismo contrato de error que getBusinessPlan: lanza si el
+   * negocio no existe, en vez de devolver "todo deshabilitado" en silencio
+   * — el caller debe distinguir "negocio inexistente" (503) de "módulo
+   * deshabilitado" (402), y solo platformRepository.getBusinessModules
+   * sabe cuál de los dos es.
+   */
+  const getBusinessModules = async (businessId: string): Promise<Record<string, boolean>> => {
+    const business = await platformRepository.findById(businessId);
+
+    if (!business) {
+      throw new Error(
+        `[getBusinessModules] businessId "${businessId}" no encontrado en la BD de plataforma. ` +
+        'Verificá que el negocio esté registrado correctamente y que el JWT contenga el business_id correcto.',
+      );
+    }
+
+    return platformRepository.getBusinessModules(businessId);
+  };
+
   console.log('[container] ✅ PostgreSQL listo.');
 
   return {
     getBusinessPlan,
+    getBusinessModules,
     mode: 'postgresql',
   };
 }

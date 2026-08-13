@@ -46,18 +46,24 @@ vi.mock('../workers/outbox.registry.js', () => ({
 
 vi.mock('./tenant-db.setup.js', () => ({
   decryptConnectionString: vi.fn(async (enc: string) => `postgresql://fake-host/${enc}`),
+  CURRENT_SCHEMA_VERSION: 1,
 }));
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fakePlatformRepo() {
+function fakePlatformRepo(overrides?: { schemaVersion: number | null }) {
+  // 1 = CURRENT_SCHEMA_VERSION mockeada arriba. `??` no sirve acá porque
+  // "no pasaron overrides" y "pasaron schemaVersion: null" tienen que dar
+  // resultados distintos.
+  const schemaVersion = overrides ? overrides.schemaVersion : 1;
   return {
     findById: vi.fn(async (id: string) => ({
       id,
       status: BusinessStatus.ACTIVE,
       dbUrlEncrypted: `enc-${id}`,
+      schemaVersion,
     })),
   } as unknown as import('./platform.repository.js').PlatformRepository;
 }
@@ -106,5 +112,49 @@ describe('tenant.middleware — LRU de pools', () => {
     expect(platformRepo.findById).toHaveBeenCalledOnce();
 
     delete process.env.MAX_TENANT_POOLS;
+  });
+});
+
+describe('tenant.middleware — chequeo de schema_version (fail-soft)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    poolInstances.length = 0;
+  });
+
+  it('no advierte cuando schema_version coincide con CURRENT_SCHEMA_VERSION', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { getTenantClient } = await import('./tenant.middleware.js');
+    const platformRepo = fakePlatformRepo({ schemaVersion: 1 });
+
+    await getTenantClient('biz-al-dia', platformRepo);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('advierte (sin bloquear) cuando schema_version es null — tenant nunca migrado', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { getTenantClient } = await import('./tenant.middleware.js');
+    const platformRepo = fakePlatformRepo({ schemaVersion: null });
+
+    const client = await getTenantClient('biz-sin-migrar', platformRepo);
+
+    expect(client).toBeDefined(); // no lanza — la request sigue
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0]![0]).toContain('schema_version=null');
+    warnSpy.mockRestore();
+  });
+
+  it('advierte (sin bloquear) cuando schema_version está desactualizada', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { getTenantClient } = await import('./tenant.middleware.js');
+    const platformRepo = fakePlatformRepo({ schemaVersion: 0 });
+
+    const client = await getTenantClient('biz-desactualizado', platformRepo);
+
+    expect(client).toBeDefined();
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0]![0]).toContain('schema_version=0');
+    warnSpy.mockRestore();
   });
 });

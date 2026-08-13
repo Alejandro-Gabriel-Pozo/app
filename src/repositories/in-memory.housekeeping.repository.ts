@@ -1,0 +1,59 @@
+/**
+ * @file in-memory.housekeeping.repository.ts
+ * @description Implementación in-memory de HousekeepingRepository — para tests.
+ */
+
+import { HousekeepingRepository } from './housekeeping.repository.js';
+import { HousekeepingTask, HousekeepingStatus } from '../domain/housekeeping-task.js';
+
+export class InMemoryHousekeepingRepository implements HousekeepingRepository {
+  private readonly tasks = new Map<string, HousekeepingTask>();
+
+  async save(task: HousekeepingTask): Promise<void> {
+    this.tasks.set(task.id, task);
+  }
+
+  async update(task: HousekeepingTask): Promise<void> {
+    this.tasks.set(task.id, task);
+  }
+
+  async findById(id: string, businessId: string): Promise<HousekeepingTask | null> {
+    const task = this.tasks.get(id);
+    return task && task.businessId === businessId ? task : null;
+  }
+
+  async findByResource(resourceId: string, businessId: string): Promise<HousekeepingTask[]> {
+    return [...this.tasks.values()].filter(
+      (t) => t.resourceId === resourceId && t.businessId === businessId,
+    );
+  }
+
+  async findByDate(businessId: string, date: Date): Promise<HousekeepingTask[]> {
+    return [...this.tasks.values()].filter(
+      (t) => t.businessId === businessId && t.scheduledFor.toDateString() === date.toDateString(),
+    );
+  }
+
+  async findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]> {
+    return [...this.tasks.values()].filter(
+      (t) => t.assignedTo === userId && t.businessId === businessId,
+    );
+  }
+
+  async findByStatus(businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]> {
+    return [...this.tasks.values()].filter(
+      (t) => t.businessId === businessId && t.status === status,
+    );
+  }
+
+  async isOutOfService(resourceId: string): Promise<boolean> {
+    return [...this.tasks.values()].some(
+      (t) => t.resourceId === resourceId && t.status === 'OUT_OF_SERVICE',
+    );
+  }
+
+  /** Helper de test — carga una tarea directo sin pasar por save(). */
+  seed(task: HousekeepingTask): void {
+    this.tasks.set(task.id, task);
+  }
+}

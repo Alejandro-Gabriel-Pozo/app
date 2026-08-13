@@ -19,13 +19,21 @@
  * - `+totalPrice`   : obligatorio — `reservations.total_price` es NOT NULL en la
  *   base sin default. Lo resuelve `ReservationService.resolvePrice()` (tarifa
  *   especial de cliente > precio de catálogo) antes de construir la reserva.
+ *
+ * ## Cambios v6 — reservation_lines
+ * - `+lines`: opcional, default `[]`. Desglose por unidad temporal (noche
+ *   en bookingMode='block', única unidad en slot/event) — `totalPrice`
+ *   sigue siendo la suma ya calculada, no se deriva en runtime desde acá.
+ *   Ver `ReservationService.resolvePrice()`/`buildLines()` para cómo se
+ *   arman, y el comentario de `reservation_lines` en db/schema.sql para
+ *   los límites del modelo (sin estado propio, no se regeneran al editar).
  */
 
 import { ReservationStatus } from '../types/enums.js';
 import { assertValidTimeRange } from './availability.js';
 import { BookableResource, Customer } from './entities.js';
 import { InvalidReservationError } from './errors.js';
-import { ReservationSnapshot } from './reservation.types.js';
+import { ReservationSnapshot, ReservationLine } from './reservation.types.js';
 
 const ALLOWED_TRANSITIONS: Record<
   ReservationStatus,
@@ -55,6 +63,8 @@ export interface ReservationProps {
   orderItemId?: string | null;
   /** v5: precio resuelto (catálogo o tarifa especial) — obligatorio, >= 0 */
   totalPrice: number;
+  /** v6: desglose por unidad temporal — opcional, default [] */
+  lines?: ReservationLine[];
 }
 
 export class Reservation {
@@ -65,6 +75,7 @@ export class Reservation {
   public readonly notes: string | null;
   public readonly orderItemId: string | null;
   public readonly totalPrice: number;
+  public readonly lines: ReservationLine[];
 
   constructor(props: ReservationProps) {
     const {
@@ -80,6 +91,7 @@ export class Reservation {
       notes = null,
       orderItemId = null,
       totalPrice,
+      lines = [],
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -106,6 +118,7 @@ export class Reservation {
     this.notes       = notes;
     this.orderItemId = orderItemId;
     this.totalPrice  = totalPrice;
+    this.lines       = lines;
     this._status     = initialStatus;
   }
 

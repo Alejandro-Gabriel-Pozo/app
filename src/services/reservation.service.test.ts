@@ -9,6 +9,8 @@ import { InMemoryResourceLockRepository } from '../repositories/in-memory.resour
 import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
 import { InMemoryCustomerRateRepository } from '../repositories/in-memory.customer-rate.repository.js';
 import { InMemoryOperatingHoursRepository } from '../repositories/in-memory.operating-hours.repository.js';
+import { InMemoryHousekeepingRepository } from '../repositories/in-memory.housekeeping.repository.js';
+import { HousekeepingTask } from '../domain/housekeeping-task.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
 import { ICategoryRepository } from '../repositories/category.repository.js';
 import { DomainEventRepository } from '../repositories/domain-event.repository.js';
@@ -72,6 +74,7 @@ describe('ReservationService', () => {
   let bookableServiceRepo: InMemoryBookableServiceRepository;
   let customerRateRepo: InMemoryCustomerRateRepository;
   let operatingHoursRepo: InMemoryOperatingHoursRepository;
+  let housekeepingRepo: InMemoryHousekeepingRepository;
   let service: ReservationService;
 
   const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
@@ -96,6 +99,7 @@ describe('ReservationService', () => {
     bookableServiceRepo   = new InMemoryBookableServiceRepository();
     customerRateRepo      = new InMemoryCustomerRateRepository();
     operatingHoursRepo    = new InMemoryOperatingHoursRepository();
+    housekeepingRepo      = new InMemoryHousekeepingRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -108,6 +112,7 @@ describe('ReservationService', () => {
       bookableServiceRepo,
       customerRateRepo,
       operatingHoursRepo,
+      housekeepingRepo,
     );
 
     await resourceRepo.save(table);
@@ -160,6 +165,28 @@ describe('ReservationService', () => {
           customer,
           startTime: new Date('2026-07-01T21:00:00'),
           endTime:   new Date('2026-07-01T23:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('debe rechazar si el recurso está marcado OUT_OF_SERVICE por housekeeping', async () => {
+      const task = HousekeepingTask.create({
+        businessId: TEST_BUSINESS_ID,
+        resourceId: 't1',
+        shift: 'MORNING',
+        scheduledFor: new Date('2026-07-01T08:00:00'),
+      });
+      task.setOutOfService('Cañería rota');
+      housekeepingRepo.seed(task);
+
+      await expect(
+        service.createReservation({
+          id: 'res-1',
+          resourceId: 't1',
+          customer,
+          startTime: new Date('2026-07-01T20:00:00'),
+          endTime:   new Date('2026-07-01T22:00:00'),
           details: {},
         }),
       ).rejects.toThrow(InvalidReservationError);
@@ -238,6 +265,25 @@ describe('ReservationService', () => {
 
       expect(available).toBe(false);
     });
+
+    it('debe retornar false cuando el recurso está OUT_OF_SERVICE, sin conflicto de horario', async () => {
+      const task = HousekeepingTask.create({
+        businessId: TEST_BUSINESS_ID,
+        resourceId: 't1',
+        shift: 'MORNING',
+        scheduledFor: new Date('2026-07-01T08:00:00'),
+      });
+      task.setOutOfService();
+      housekeepingRepo.seed(task);
+
+      const available = await service.checkAvailability(
+        't1',
+        new Date('2026-07-01T20:00:00'),
+        new Date('2026-07-01T22:00:00'),
+      );
+
+      expect(available).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -280,6 +326,14 @@ describe('ReservationService', () => {
       });
       expect(updated.startTime).toEqual(new Date('2026-08-01T17:00:00Z'));
       expect(updated.endTime).toEqual(new Date('2026-08-01T19:00:00Z'));
+    });
+
+    it('no regenera reservation_lines al editar horario — quedan igual que al crear', async () => {
+      const created = await createBase();
+      const updated = await service.updateReservation('res-1', {
+        startTime: new Date('2026-08-01T18:00:00Z'),
+      });
+      expect(updated.lines).toEqual(created.lines);
     });
 
     it('debe rechazar si endTime <= startTime (solo startTime enviado)', async () => {
@@ -605,6 +659,30 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.totalPrice).toBe(300); // 100 * 3 noches
+
+      // reservation_lines: una fila por noche, todas al mismo precio
+      // unitario hoy (no hay motor de tarifas por temporada todavía), y la
+      // suma debe coincidir exacto con totalPrice.
+      expect(reservation.lines).toHaveLength(3);
+      expect(reservation.lines.every(l => l.price === 100)).toBe(true);
+      expect(reservation.lines.reduce((sum, l) => sum + l.price, 0)).toBe(300);
+      expect(reservation.lines.map(l => l.unitDate.toISOString().slice(0, 10))).toEqual([
+        '2026-07-10', '2026-07-11', '2026-07-12',
+      ]);
+    });
+
+    it('bookingMode "slot" (o sin servicio): una única línea, igual al totalPrice', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-linea-unica',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+      });
+
+      expect(reservation.lines).toHaveLength(1);
+      expect(reservation.lines[0].price).toBe(reservation.totalPrice);
     });
 
     it('bookingMode "block": rechaza checkout el mismo día que checkin', async () => {

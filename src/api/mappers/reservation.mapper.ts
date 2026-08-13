@@ -13,6 +13,12 @@ import { Reservation } from '../../domain/Reservation.js';
 import { BookableResource } from '../../domain/entities.js';
 import { VisualMetadata } from '../../types/visual.interface.js';
 
+export interface ReservationLineDto {
+  id: string;
+  unitDate: string;
+  price: number;
+}
+
 export interface ResourceDto {
   id: string;
   name: string;
@@ -41,6 +47,13 @@ export interface ReservationDto {
   partySize: number;
   notes: string | null;
   totalPrice: number;
+  /**
+   * Desglose por unidad temporal (una noche en bookingMode='block', una
+   * única línea para el resto) — informativo, `totalPrice` sigue siendo
+   * la suma ya calculada. Sin consumidor en el frontend todavía; se
+   * expone para no tener que volver a tocar este DTO cuando lo haya.
+   */
+  lines: ReservationLineDto[];
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -72,5 +85,10 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     partySize: reservation.partySize,
     notes:     reservation.notes,
     totalPrice: reservation.totalPrice,
+    lines: reservation.lines.map((line) => ({
+      id:       line.id,
+      unitDate: line.unitDate.toISOString().slice(0, 10),
+      price:    line.price,
+    })),
   };
 }

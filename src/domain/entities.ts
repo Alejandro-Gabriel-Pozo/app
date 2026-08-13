@@ -27,6 +27,12 @@
  *   física (habitación, silla, estilista) que un servicio bloquea.
  * - Se mantiene alias `export { PhysicalResource as BookableResource }`
  *   para compatibilidad mientras se migra el resto del codebase.
+ *
+ * ## Cambios v8 — locations (sucursales)
+ * - `+locationId`: último parámetro, opcional (default null) para no romper
+ *   ningún call site existente — mismo criterio que `categoryName`. En la
+ *   BD la columna es NOT NULL (ver schema.sql); acá queda nullable porque
+ *   no todos los repos la seleccionan todavía.
  */
 
 import { VisualMetadata } from '../types/visual.interface.js';
@@ -124,6 +130,12 @@ export class PhysicalResource {
      * Usado por OccupancyRepository para agrupar snapshots por categoría.
      */
     public readonly categoryName: string | null = null,
+    /**
+     * FK a `locations.id`. Nullable en el dominio (no todos los code paths
+     * lo seleccionan), pero NOT NULL en la BD desde el bloque LOCATIONS de
+     * schema.sql — todo recurso real tiene una location asignada.
+     */
+    public readonly locationId: string | null = null,
   ) {
     if (basePrice < 0) throw new Error('basePrice no puede ser negativo');
     if (!categoryId.trim()) throw new Error('categoryId es obligatorio');

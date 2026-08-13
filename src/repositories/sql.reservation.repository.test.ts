@@ -39,6 +39,11 @@ describe('SqlReservationRepository', () => {
             ],
           };
         }
+        // rowToReservation() consulta reservation_lines por cada fila —
+        // sin desglose en este fixture, no afecta lo que estos tests verifican.
+        if (sql.includes('FROM reservation_lines')) {
+          return { rows: [] };
+        }
         return { rows: [reservationRow] };
       }),
     };

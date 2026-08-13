@@ -10,7 +10,7 @@
  */
 
 import { SqlClient } from '../repositories/sql.client.js';
-import { BusinessPlan, BusinessStatus } from '../types/enums.js';
+import { BusinessPlan, BusinessStatus, ModuleKey } from '../types/enums.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -28,6 +28,8 @@ export interface Business {
   supabaseProjectId: string | null;
   /** Connection string cifrada con AES-256-GCM */
   dbUrlEncrypted: string | null;
+  /** Versión de schema.sql aplicada en la tenant DB — null = nunca aplicada vía applyTenantSchema() */
+  schemaVersion: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -88,7 +90,65 @@ export class PlatformRepository {
        RETURNING *`,
       [input.id, input.name, input.slug, input.plan, BusinessStatus.PENDING, input.ownerEmail],
     );
-    return this.rowToBusiness(result.rows[0]!);
+    const business = this.rowToBusiness(result.rows[0]!);
+    await this.provisionDefaultModules(business.id);
+    return business;
+  }
+
+  /**
+   * Inserta una fila en business_modules por cada módulo del catálogo.
+   * Vive DENTRO de createBusiness (no en cada caller del endpoint de
+   * registro) a propósito: getBusinessModules es fail-closed, así que un
+   * negocio sin estas filas queda sin ningún módulo. Poniéndolo acá es
+   * imposible que un caller nuevo se olvide de provisionar.
+   *
+   * Default: solo ALOJAMIENTO habilitado — el resto arranca deshabilitado
+   * hasta que exista una pantalla de selección/pago por módulo (decisión
+   * de producto, agosto 2026). Antes de esta tabla, todo estaba disponible
+   * gratis para todos; los negocios que ya existían se migran aparte con
+   * TODO habilitado (ver backfill en platform.schema.sql) para no cortarles
+   * nada de un día para el otro.
+   */
+  private async provisionDefaultModules(businessId: string): Promise<void> {
+    const catalog = await this.db.query<{ module_key: string }>(
+      `SELECT module_key FROM modules`,
+    );
+    for (const { module_key: moduleKey } of catalog.rows) {
+      const enabled = moduleKey === ModuleKey.ALOJAMIENTO;
+      await this.db.query(
+        `INSERT INTO business_modules (business_id, module_key, enabled)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (business_id, module_key) DO NOTHING`,
+        [businessId, moduleKey, enabled],
+      );
+    }
+  }
+
+  /**
+   * Entitlements del negocio, FAIL-CLOSED: un module_key del catálogo que
+   * no tenga fila en business_modules se devuelve como `false`, nunca
+   * `true`. Así, si se agrega un módulo nuevo al catálogo después, no
+   * queda gratis por accidente para negocios que nunca lo pidieron — ver
+   * el bloque ENTITLEMENTS en platform.schema.sql.
+   */
+  async getBusinessModules(businessId: string): Promise<Record<string, boolean>> {
+    const [catalog, entitlements] = await Promise.all([
+      this.db.query<{ module_key: string }>(`SELECT module_key FROM modules`),
+      this.db.query<{ module_key: string; enabled: boolean }>(
+        `SELECT module_key, enabled FROM business_modules WHERE business_id = $1`,
+        [businessId],
+      ),
+    ]);
+
+    const enabledByKey = new Map(
+      entitlements.rows.map(row => [row.module_key, row.enabled]),
+    );
+
+    const modules: Record<string, boolean> = {};
+    for (const { module_key: moduleKey } of catalog.rows) {
+      modules[moduleKey] = enabledByKey.get(moduleKey) ?? false;
+    }
+    return modules;
   }
 
   async activateBusiness(
@@ -101,6 +161,19 @@ export class PlatformRepository {
        SET status = $1, supabase_project_id = $2, db_url_encrypted = $3, updated_at = NOW()
        WHERE id = $4`,
       [BusinessStatus.ACTIVE, supabaseProjectId, dbUrlEncrypted, businessId],
+    );
+  }
+
+  /**
+   * Registra la versión de schema.sql aplicada en la tenant DB de este
+   * negocio. Llamada por applyTenantSchema() (tenant-db.setup.ts) después
+   * de correr el schema, y por src/scripts/migrate-tenants.ts para el
+   * backfill masivo. Ver columna businesses.schema_version.
+   */
+  async updateSchemaVersion(businessId: string, version: number): Promise<void> {
+    await this.db.query(
+      `UPDATE businesses SET schema_version = $1, updated_at = NOW() WHERE id = $2`,
+      [version, businessId],
     );
   }
 
@@ -310,6 +383,7 @@ export class PlatformRepository {
       ownerEmail: row.owner_email,
       supabaseProjectId: row.supabase_project_id ?? null,
       dbUrlEncrypted: row.db_url_encrypted ?? null,
+      schemaVersion: row.schema_version ?? null,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

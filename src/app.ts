@@ -32,6 +32,7 @@ import swaggerUi from 'swagger-ui-express';
 import http from 'node:http';
 
 import { createResourcesRouter }         from './api/routes/resources.routes.js';
+import { createLocationsRouter }         from './api/routes/locations.routes.js';
 import { createReservationsRouter }      from './api/routes/reservations.routes.js';
 import { createReportsRouter }           from './api/routes/reports.routes.js';
 import { createAuthRouter }              from './api/routes/auth.routes.js';
@@ -48,11 +49,14 @@ import { createBookableServicesRouter }  from './api/routes/bookable-services.ro
 import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.js';
 import { createStaysRouter }             from './api/routes/stays.routes.js';
 import { createBusinessHoursRouter }     from './api/routes/business-hours.routes.js';
+import { createBusinessModulesRouter }   from './api/routes/business-modules.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
 import { helmetBase, helmetApi, helmetDocs } from './api/middleware/helmet.middleware.js';
 import { openApiSpec }                   from './openapi/spec.js';
 import { authenticate }                  from './security/auth.middleware.js';
+import { requireModule }                 from './security/module.middleware.js';
+import { ModuleKey }                     from './types/enums.js';
 import { AuthService }                   from './security/auth.service.js';
 import { PlatformRepository }            from './platform/platform.repository.js';
 import { createPlatformContainer }       from './platform/platform.container.js';
@@ -161,13 +165,23 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   app.use('/api', ...helmetApi);
 
-  // authenticate() — protege /api/* desde aquí
-  app.use('/api', authenticate());
+  // authenticate() — protege /api/* desde aquí. Se le pasa un chequeo de
+  // memberships.active para que un empleado desactivado (Roles.MANAGEMENT
+  // los desactiva desde /api/users) pierda el acceso de inmediato, no recién
+  // cuando el JWT expire (hasta JWT_EXPIRES_IN, default 24h).
+  app.use('/api', authenticate(undefined, async (identityId, businessId) => {
+    const membership = await platformRepo.findMembership(identityId, businessId);
+    return membership?.active ?? false;
+  }));
 
   // -------------------------------------------------------------------------
   // 13. /api/admin — ANTES de tenantMiddleware (repair-tenant-db lo requiere)
   // -------------------------------------------------------------------------
   app.use('/api/admin', createAdminRouter(platformRepo));
+
+  // /api/business/modules — tampoco necesita req.db (consulta la BD de
+  // plataforma vía container), así que va antes de tenantMiddleware.
+  app.use('/api/business/modules', createBusinessModulesRouter(container));
 
   // -------------------------------------------------------------------------
   // 14. tenantMiddleware — inyecta req.db + arranca OutboxWorker por tenant
@@ -183,38 +197,51 @@ export async function createApp(): Promise<{
   // 16. Rutas protegidas de empleados (todas usan req.db del tenant)
   // -------------------------------------------------------------------------
   app.use('/api/resources',         createResourcesRouter());
+  app.use('/api/locations',         createLocationsRouter());
   app.use('/api/reservations',      createReservationsRouter());
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));
-  app.use('/api/products',          createProductsRouter(container));
-  app.use('/api/orders',            createOrdersRouter(container));
+  app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));
+  app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
 
-  app.use('/api/reports', (req: Request, _res: Response, next: NextFunction) => {
-    const occupancyRepo = new SqlOccupancyRepository(req.db);
-    const reportService = new ReportService(occupancyRepo);
-    const router = createReportsRouter(reportService);
-    router(req, _res, next);
-  });
+  app.use(
+    '/api/reports',
+    requireModule(container, ModuleKey.REPORTES),
+    (req: Request, _res: Response, next: NextFunction) => {
+      const occupancyRepo = new SqlOccupancyRepository(req.db);
+      const reportService = new ReportService(occupancyRepo);
+      const router = createReportsRouter(reportService);
+      router(req, _res, next);
+    },
+  );
 
-  app.use('/api/housekeeping', (req: Request, _res: Response, next: NextFunction) => {
-    const housekeepingRepo    = new SqlHousekeepingRepository(req.db);
-    const housekeepingService = new HousekeepingService(housekeepingRepo);
-    const router = createHousekeepingRouter(housekeepingService);
-    router(req, _res, next);
-  });
+  app.use(
+    '/api/housekeeping',
+    requireModule(container, ModuleKey.HOUSEKEEPING),
+    (req: Request, _res: Response, next: NextFunction) => {
+      const housekeepingRepo    = new SqlHousekeepingRepository(req.db);
+      const housekeepingService = new HousekeepingService(housekeepingRepo);
+      const router = createHousekeepingRouter(housekeepingService);
+      router(req, _res, next);
+    },
+  );
 
-  app.use('/api/stays', (req: Request, _res: Response, next: NextFunction) => {
-    const stayRepo        = new SqlStayRepository(req.db);
-    const resourceRepo    = new SqlResourceRepository(req.db);
-    const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
-    const housekeepingRepo = new SqlHousekeepingRepository(req.db);
-    const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
-    const router = createStaysRouter(stayService);
-    router(req, _res, next);
-  });
+  app.use(
+    '/api/stays',
+    requireModule(container, ModuleKey.ALOJAMIENTO),
+    (req: Request, _res: Response, next: NextFunction) => {
+      const stayRepo        = new SqlStayRepository(req.db);
+      const resourceRepo    = new SqlResourceRepository(req.db);
+      const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
+      const housekeepingRepo = new SqlHousekeepingRepository(req.db);
+      const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo);
+      const router = createStaysRouter(stayService);
+      router(req, _res, next);
+    },
+  );
 
   // -------------------------------------------------------------------------
   // 17. Error handler — siempre al final

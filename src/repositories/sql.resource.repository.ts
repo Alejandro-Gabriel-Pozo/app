@@ -21,6 +21,7 @@ interface ResourceRow {
   base_price: number | string;
   visual_data: Record<string, unknown> | string | null;
   active: boolean;
+  location_id: string | null;
 }
 
 const SELECT_WITH_CATEGORY = `
@@ -31,7 +32,8 @@ const SELECT_WITH_CATEGORY = `
     rc.name AS category_name,
     r.base_price,
     r.visual_data,
-    r.active
+    r.active,
+    r.location_id
   FROM resources r
   LEFT JOIN resource_categories rc ON rc.id = r.category_id
 `;
@@ -44,15 +46,21 @@ export class SqlResourceRepository implements ResourceRepository {
       ? JSON.stringify(resource.visualData)
       : null;
 
+    // location_id: en el INSERT, `resource.locationId` nulo cae a
+    // 'loc-default' (red de seguridad si algún caller no lo resolvió antes
+    // de llegar acá — resources.routes.ts sí lo hace). En el UPDATE
+    // (ON CONFLICT) un valor nulo NO pisa la location ya guardada — evita
+    // que un PUT que no toca locationId resetee el recurso a la default.
     await this.sqlClient.query(
-      `INSERT INTO resources (id, name, category_id, base_price, visual_data)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO resources (id, name, category_id, base_price, visual_data, location_id)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'loc-default'))
        ON CONFLICT (id) DO UPDATE SET
          name        = EXCLUDED.name,
          category_id = EXCLUDED.category_id,
          base_price  = EXCLUDED.base_price,
-         visual_data = COALESCE(EXCLUDED.visual_data, resources.visual_data)`,
-      [resource.id, resource.name, resource.categoryId, resource.basePrice, visualData],
+         visual_data = COALESCE(EXCLUDED.visual_data, resources.visual_data),
+         location_id = COALESCE(EXCLUDED.location_id, resources.location_id)`,
+      [resource.id, resource.name, resource.categoryId, resource.basePrice, visualData, resource.locationId],
     );
   }
 
@@ -125,6 +133,7 @@ export class SqlResourceRepository implements ResourceRepository {
       /* capacity    */ 1,
       /* description */ null,
       row.category_name ?? null,
+      row.location_id,
     );
   }
 }

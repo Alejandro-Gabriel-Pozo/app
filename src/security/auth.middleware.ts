@@ -11,10 +11,23 @@
  * - JWT_EXPIRES_IN — duración del token (opcional, default "24h")
  *
  * ## authenticate() — firma
- * `authenticate(resolveUser?)` — el parámetro es SIEMPRE opcional.
- * No agregar parámetros obligatorios: el 99% de las rutas lo llaman
- * como `authenticate()` sin argumentos. Si el parámetro fuera requerido
- * rompería todos esos call-sites con TS2554.
+ * `authenticate(resolveUser?, isMembershipActive?)` — ambos parámetros son
+ * SIEMPRE opcionales. No agregar parámetros obligatorios: el 99% de las
+ * rutas lo llaman como `authenticate()` sin argumentos. Si alguno fuera
+ * requerido rompería todos esos call-sites con TS2554.
+ *
+ * ## Revocación de acceso — `isMembershipActive`
+ * Verificar la firma y el `exp` del JWT NO alcanza: un empleado desactivado
+ * (`memberships.active = false`) conserva un token válido hasta que expira
+ * (`JWT_EXPIRES_IN`, default 24h). `isMembershipActive` es el hook que
+ * cierra ese hueco — se le pasa una vez en el mount global de app.ts
+ * (`authenticate(undefined, checker)`) y desde ahí protege TODO /api/*,
+ * incluidas las rutas que vuelven a llamar `authenticate()` sin argumentos
+ * más abajo (esas son redundantes pero inofensivas: si la membership ya
+ * fue rechazada acá, la request nunca llega a la segunda verificación).
+ * Solo aplica a tokens de empleado (`business_id` presente, role≠CUSTOMER):
+ * la revocación de clientes es un caso distinto (vive en la tenant DB, no
+ * en `memberships` de plataforma) y queda fuera de este cambio.
  *
  * ## Re-exports de utilidades de hashing
  * hashPassword y verifyPassword viven en user.store.ts.
@@ -160,17 +173,23 @@ export function getJwtSecret(): string {
 /**
  * Middleware de autenticación.
  *
- * ## Parámetro `resolveUser` — SIEMPRE opcional
- * No convertir en obligatorio. Todas las rutas llaman `authenticate()`
- * sin argumentos. Si se vuelve requerido, rompe con TS2554 en cada
+ * ## Parámetros — SIEMPRE opcionales
+ * No convertir ninguno en obligatorio. Todas las rutas llaman `authenticate()`
+ * sin argumentos. Si alguno se vuelve requerido, rompe con TS2554 en cada
  * call-site que no lo pase.
  *
  * @param resolveUser - Función opcional para resolver el usuario desde req
  *   (usada en tests o en rutas que necesitan un resolver personalizado).
  *   Si se omite, el usuario se extrae del header Authorization: Bearer.
+ * @param isMembershipActive - Chequeo opcional contra `memberships.active`
+ *   para tokens de empleado (ver comentario de archivo). Si se omite, el
+ *   middleware se comporta como antes (solo firma + expiración).
  */
-export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser | undefined) => {
-  return (req: Request, res: Response, next: NextFunction): void => {
+export const authenticate = (
+  resolveUser?: (req: Request) => AuthenticatedUser | undefined,
+  isMembershipActive?: (identityId: string, businessId: string) => Promise<boolean>,
+) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (resolveUser) {
       const user = resolveUser(req);
       if (!user) {
@@ -193,15 +212,9 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
 
     const token = authHeader.slice(7);
 
+    let payload: JwtPayload;
     try {
-      const payload = verifyToken(token, getJwtSecret());
-      req.user = {
-        id: payload.sub,
-        role: payload.role,
-        ...(payload.business_id !== undefined && { businessId: payload.business_id }),
-        ...(payload.customer_id !== undefined && { customerId: payload.customer_id }),
-      };
-      next();
+      payload = verifyToken(token, getJwtSecret());
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? 'JWT_ERROR';
       if (code === 'JWT_EXPIRED') {
@@ -209,7 +222,32 @@ export const authenticate = (resolveUser?: (req: Request) => AuthenticatedUser |
         return;
       }
       res.status(401).json({ code: 'UNAUTHORIZED', message: 'Token inválido' });
+      return;
     }
+
+    if (isMembershipActive && payload.role !== UserRole.CUSTOMER && payload.business_id) {
+      try {
+        const active = await isMembershipActive(payload.sub, payload.business_id);
+        if (!active) {
+          res.status(401).json({
+            code: 'MEMBERSHIP_INACTIVE',
+            message: 'Tu acceso a este negocio fue desactivado.',
+          });
+          return;
+        }
+      } catch {
+        res.status(401).json({ code: 'UNAUTHORIZED', message: 'No se pudo verificar el acceso.' });
+        return;
+      }
+    }
+
+    req.user = {
+      id: payload.sub,
+      role: payload.role,
+      ...(payload.business_id !== undefined && { businessId: payload.business_id }),
+      ...(payload.customer_id !== undefined && { customerId: payload.customer_id }),
+    };
+    next();
   };
 };
 

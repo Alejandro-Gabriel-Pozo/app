@@ -56,6 +56,7 @@ import { SqlResourceLockRepository }          from '../../repositories/sql.resou
 import { SqlBookableServiceRepository }       from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRateRepository }          from '../../repositories/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }        from '../../repositories/sql.operating-hours.repository.js';
+import { SqlHousekeepingRepository }          from '../../repositories/housekeeping.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../services/reservation.service.js';
 import { Customer }                           from '../../domain/entities.js';
@@ -89,6 +90,7 @@ async function buildService() {
   const bookableServiceRepo = new SqlBookableServiceRepository(db);
   const customerRateRepo = new SqlCustomerRateRepository(db);
   const operatingHoursRepo = new SqlOperatingHoursRepository(db);
+  const housekeepingRepo = new SqlHousekeepingRepository(db);
   const txManager       = new PostgresTransactionManager(pool);
 
   return new ReservationService(
@@ -102,6 +104,7 @@ async function buildService() {
     bookableServiceRepo,
     customerRateRepo,
     operatingHoursRepo,
+    housekeepingRepo,
   );
 }
 

@@ -1,7 +1,9 @@
 -- =============================================================================
 -- schema.sql — DDL completo del tenant (PMS + Commerce)
 -- =============================================================================
--- Aplicado en cada BD nueva al provisionar un negocio (runSchemaOnNewDatabase).
+-- Aplicado en cada tenant DB, nueva o existente, vía applyTenantSchema()
+-- (src/platform/tenant-db.setup.ts) — ver CURRENT_SCHEMA_VERSION ahí y la
+-- tabla schema_migrations más abajo.
 -- Idempotente: usa IF NOT EXISTS / ADD COLUMN IF NOT EXISTS.
 -- Compatible con PostgreSQL 14+.
 -- Sincronizado con migraciones 001 → 007.
@@ -19,6 +21,60 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ===========================================================================
+-- BLOQUE SCHEMA_MIGRATIONS — versionado de este archivo por tenant
+-- ===========================================================================
+-- No es un sistema de migraciones numeradas — schema.sql sigue siendo un
+-- único archivo idempotente que se re-aplica entero (mismo patrón de
+-- siempre: CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS). Esta
+-- tabla solo registra QUÉ VERSIÓN de ese archivo terminó de aplicarse en
+-- esta BD — antes no había ninguna forma de saberlo sin inspeccionar el
+-- esquema a mano tenant por tenant. Ver CURRENT_SCHEMA_VERSION en
+-- tenant-db.setup.ts (la fuente de verdad del número) y
+-- applyTenantSchema() (quien hace el INSERT después de correr este
+-- archivo completo).
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version     INT         PRIMARY KEY,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ===========================================================================
+-- BLOQUE 0 — LOCATIONS (sucursales)
+-- ===========================================================================
+-- Va antes que todo lo demás porque `resources` la referencia (ver ALTER
+-- más abajo, junto a la tabla `resources`). Cada tenant (una BD = un
+-- negocio) arranca con exactamente una location — no hay "businesses"
+-- local en esta BD para iterar, así que el backfill es simplemente
+-- "insertar una si no hay ninguna todavía".
+--
+-- Estructural, no una feature de multi-sucursal terminada: hoy no hay
+-- ningún router que permita elegir entre locations al reservar/vender, ni
+-- UI que las liste. Lo que esto resuelve por ahora es que `resources` deje
+-- de crearse sin saber a qué location pertenece — así el día que se
+-- construya selección real de sucursal, no hay que migrar filas viejas.
+-- `business_hours`, `products`, `orders`, `stays` y `housekeeping_tasks`
+-- quedan deliberadamente fuera de este pase — mismo criterio, próxima
+-- iteración (ver Gap analysis en la carpeta "Lógica de negocio").
+CREATE TABLE IF NOT EXISTS locations (
+  id          VARCHAR(255)  PRIMARY KEY,
+  name        VARCHAR(255)  NOT NULL,
+  active      BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO locations (id, name)
+SELECT 'loc-default', 'Principal'
+WHERE NOT EXISTS (SELECT 1 FROM locations);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'locations_updated_at') THEN
+    CREATE TRIGGER locations_updated_at
+      BEFORE UPDATE ON locations
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
 
 -- ===========================================================================
 -- BLOQUE 1 — RECURSOS Y RESERVAS
@@ -75,6 +131,20 @@ DO $$ BEGIN
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
+
+-- location_id: agregado después de que `resources` ya existía en tenants
+-- reales, así que va como ALTER (mismo patrón que financial_transactions.notes
+-- más abajo) en vez de una columna más del CREATE TABLE de arriba. Nullable
+-- primero, backfill a la location por defecto del tenant, y recién ahí
+-- NOT NULL — así funciona tanto en una BD nueva (0 filas, los tres pasos son
+-- no-ops después del primero) como en una existente con recursos ya cargados.
+ALTER TABLE resources ADD COLUMN IF NOT EXISTS location_id VARCHAR(255)
+  REFERENCES locations(id);
+UPDATE resources SET location_id = 'loc-default' WHERE location_id IS NULL;
+ALTER TABLE resources ALTER COLUMN location_id SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_resources_location
+  ON resources (location_id) WHERE active = TRUE;
 
 -- ---------------------------------------------------------------------------
 -- bookable_services
@@ -259,6 +329,88 @@ DO $$ BEGIN
       BEFORE UPDATE ON reservations
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- reservation_lines
+-- Una fila por unidad temporal de la reserva: una noche si el servicio es
+-- bookingMode='block' (alojamiento), una única línea para todo lo demás
+-- (slot/event/sin servicio — ahí la reserva ya es una sola unidad). Ver
+-- ReservationService.resolvePrice()/buildLines().
+--
+-- `reservations.total_price` SIGUE siendo la columna que lee todo lo demás
+-- (FinancialTransaction vía outbox, el mapper, el frontend) — se mantiene
+-- como el total ya calculado (SUM de estas líneas), no se reemplaza. Estas
+-- líneas son la estructura que permite, más adelante, que un motor de
+-- tarifas por temporada les dé precios distintos entre sí; hoy todas las
+-- líneas de una misma reserva tienen el mismo precio porque no existe
+-- (todavía) nada que las haga variar por fecha.
+--
+-- Sin estado propio: viven y mueren con la reserva completa. El dominio no
+-- soporta cancelar/completar una noche suelta de una reserva de varias —
+-- eso sigue siendo una operación sobre toda la Reservation, no sobre una
+-- línea. `updateReservation` no las regenera si cambian las fechas (mismo
+-- criterio ya existente de "no se recalcula el precio al editar horario").
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reservation_lines (
+  id             VARCHAR(255)   PRIMARY KEY,
+  reservation_id VARCHAR(255)   NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  unit_date      DATE           NOT NULL,
+  price          DECIMAL(10,2)  NOT NULL CHECK (price >= 0),
+  created_at     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT uq_reservation_lines_reservation_date UNIQUE (reservation_id, unit_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reservation_lines_reservation
+  ON reservation_lines (reservation_id);
+
+-- ---------------------------------------------------------------------------
+-- Backfill: reservas existentes no tienen líneas todavía. Corre una sola
+-- vez por reserva (el filtro NOT EXISTS de la CTE hace que sea idempotente
+-- entre corridas de este schema). Para bookingMode='block' de varias
+-- noches es una APROXIMACIÓN (total_price / noches, con el resto del
+-- redondeo en la última noche para que la suma cierre exacto) — no hay
+-- forma de saber retroactivamente si una estadía vieja tuvo tarifa
+-- distinta por noche. Para todo lo demás (1 noche o sin varias unidades)
+-- es exacto: una sola línea con el total_price real, sin aproximar nada.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  r RECORD;
+  nights INT;
+  per_unit DECIMAL(10,2);
+  last_unit DECIMAL(10,2);
+  i INT;
+BEGIN
+  FOR r IN
+    SELECT id, total_price, start_time, end_time
+    FROM reservations
+    WHERE NOT EXISTS (
+      SELECT 1 FROM reservation_lines WHERE reservation_id = reservations.id
+    )
+  LOOP
+    nights := GREATEST(1, (r.end_time::date - r.start_time::date));
+
+    IF nights <= 1 THEN
+      INSERT INTO reservation_lines (id, reservation_id, unit_date, price)
+      VALUES (r.id || '-L1', r.id, r.start_time::date, r.total_price)
+      ON CONFLICT DO NOTHING;
+    ELSE
+      per_unit  := ROUND(r.total_price / nights, 2);
+      last_unit := r.total_price - per_unit * (nights - 1);
+      FOR i IN 0..nights - 1 LOOP
+        INSERT INTO reservation_lines (id, reservation_id, unit_date, price)
+        VALUES (
+          r.id || '-L' || (i + 1),
+          r.id,
+          r.start_time::date + i,
+          CASE WHEN i = nights - 1 THEN last_unit ELSE per_unit END
+        )
+        ON CONFLICT DO NOTHING;
+      END LOOP;
+    END IF;
+  END LOOP;
 END $$;
 
 -- ---------------------------------------------------------------------------

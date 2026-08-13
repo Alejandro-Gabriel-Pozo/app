@@ -26,3 +26,17 @@ export interface ReservationSnapshot {
   /** v4: FK a order_items; null en reservas legacy pre-v4 */
   orderItemId: string | null;
 }
+
+/**
+ * Una unidad temporal facturable de la reserva: una noche (bookingMode
+ * 'block') o la única unidad de un turno/evento (slot/event). Ver el
+ * comentario de `reservation_lines` en db/schema.sql para el porqué de
+ * este modelo y sus límites actuales (sin estado propio, sin
+ * recotización al editar fechas).
+ */
+export interface ReservationLine {
+  id: string;
+  reservationId: string;
+  unitDate: Date;
+  price: number;
+}

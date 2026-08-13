@@ -5,6 +5,7 @@ import { Customer } from '../domain/entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
 import { SqlClient } from './sql.client.js';
 import { ResourceRepository } from './resource.repository.js';
+import type { ReservationLine } from '../domain/reservation.types.js';
 
 interface ReservationRow {
   id: string;
@@ -83,10 +84,35 @@ export class SqlReservationRepository implements ReservationRepository {
 
   async save(reservation: Reservation): Promise<void> {
     await this.sqlClient.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
+    await this.syncLines(this.sqlClient, reservation);
   }
 
   async saveWithClient(client: SqlClient, reservation: Reservation): Promise<void> {
     await client.query(this.UPSERT_SQL, this.buildSaveParams(reservation));
+    await this.syncLines(client, reservation);
+  }
+
+  /**
+   * Sincroniza reservation_lines con `reservation.lines`: borra lo que
+   * había y reinserta. Se llama en CADA save/saveWithClient (incluidas
+   * transiciones de estado que no tocan las líneas) — reinserta filas
+   * idénticas en esos casos, intencionalmente simple en vez de optimizado
+   * (son pocas filas por reserva, no vale la pena comparar antes de
+   * escribir). Si `reservation.lines` viene vacío no toca nada — pasa en
+   * reservas legacy restauradas antes del backfill de reservation_lines,
+   * o en tests que construyen una Reservation sin pasar `lines`.
+   */
+  private async syncLines(client: SqlClient, reservation: Reservation): Promise<void> {
+    if (reservation.lines.length === 0) return;
+
+    await client.query(`DELETE FROM reservation_lines WHERE reservation_id = $1`, [reservation.id]);
+    for (const line of reservation.lines) {
+      await client.query(
+        `INSERT INTO reservation_lines (id, reservation_id, unit_date, price)
+         VALUES ($1, $2, $3, $4)`,
+        [line.id, reservation.id, line.unitDate.toISOString().slice(0, 10), line.price],
+      );
+    }
   }
 
   async delete(id: string): Promise<boolean> {
@@ -335,6 +361,8 @@ export class SqlReservationRepository implements ReservationRepository {
     const details =
       typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
 
+    const lines = await this.getLines(row.id);
+
     return Reservation.restore({
       id:            row.id,
       customer,
@@ -348,6 +376,28 @@ export class SqlReservationRepository implements ReservationRepository {
       notes:         row.notes         ?? null,
       orderItemId:   row.order_item_id ?? null,
       totalPrice:    parseFloat(row.total_price),
+      lines,
     });
+  }
+
+  /**
+   * N+1 a propósito — mismo criterio que `resourceRepository.getById()`
+   * unas líneas más arriba en este mismo método: son pocas filas por
+   * reserva y esto ya no es la primera consulta N+1 de `rowToReservation`.
+   * Si en algún momento esto pesa, se resuelve con un JOIN + agregación,
+   * no antes.
+   */
+  private async getLines(reservationId: string): Promise<ReservationLine[]> {
+    const result = await this.sqlClient.query<{ id: string; unit_date: string; price: string }>(
+      `SELECT id, unit_date, price FROM reservation_lines
+       WHERE reservation_id = $1 ORDER BY unit_date ASC`,
+      [reservationId],
+    );
+    return result.rows.map((row) => ({
+      id:            row.id,
+      reservationId,
+      unitDate:      new Date(row.unit_date),
+      price:         parseFloat(row.price),
+    }));
   }
 }

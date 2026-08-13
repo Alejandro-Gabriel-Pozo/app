@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS businesses (
 -- no podía registrar un segundo negocio con su propio email.
 ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_owner_email_key;
 
+-- Espejo en la BD central de la versión de schema.sql aplicada en la BD del
+-- tenant (ver schema_migrations en schema.sql — esta columna es la que
+-- permite listar "qué tenant está desactualizado" sin conectarse una por
+-- una a cada tenant DB). NULL = todavía no se aplicó vía applyTenantSchema()
+-- (tenant.middleware.ts) — es el estado real de todo negocio existente
+-- hasta que corra el runner (src/scripts/migrate-tenants.ts).
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS schema_version INT;
+
 CREATE INDEX IF NOT EXISTS idx_businesses_slug
   ON businesses (slug);
 
@@ -226,70 +234,94 @@ DO $$ BEGIN
 END $$;
 
 -- ===========================================================================
--- BLOQUE OUTBOX — domain_events (outbox pattern, tabla global de plataforma)
+-- domain_events / financial_transactions — NO viven en esta BD
 -- ===========================================================================
--- El OutboxWorker en container.ts usa platformSqlClient (PLATFORM_DATABASE_URL)
--- para leer y marcar domain_events. Por eso esta tabla vive en la BD central
--- y no en la BD de cada tenant.
+-- Estas dos tablas existieron acá hasta el 12/08/2026, con un comentario que
+-- decía que el OutboxWorker las usaba vía platformSqlClient. Eso dejó de ser
+-- cierto cuando el worker pasó a ser por-tenant (outbox.registry.ts): hoy se
+-- instancia con el pool de cada TENANT DB, y las tablas reales están
+-- definidas en src/db/schema.sql. Las copias de acá quedaron huérfanas —
+-- ningún código las leía ni escribía — y se borraron de este archivo.
+-- No resucitarlas: si algún día hace falta un ledger u outbox consolidado
+-- cross-tenant, es un diseño aparte, no estas tablas.
+-- ---------------------------------------------------------------------------
+
+-- ===========================================================================
+-- BLOQUE ENTITLEMENTS — modules + business_modules (add-ons modulares)
+-- ===========================================================================
+-- Reemplaza el modelo de plan lineal (businesses.plan: FREE/STARTER/PRO,
+-- todavía en uso) por gating por módulo independiente: cada feature
+-- (Reportes, Housekeeping, Cuentas Corrientes, POS-restaurante,
+-- Facturación, Alojamiento) es su propio on/off por negocio.
 --
--- business_id identifica a qué tenant pertenece cada evento, permitiendo
--- que un único worker global los procese en orden (id ASC).
--- Cuando el sistema escale, se puede migrar a un worker por tenant.
+-- `modules` es un catálogo, no un CHECK constraint: agregar un módulo nuevo
+-- es un INSERT, no una migración de schema.
+--
+-- Semántica FAIL-CLOSED: si no existe fila en business_modules para un
+-- (business_id, module_key), el módulo está DESHABILITADO. Esto es a
+-- propósito — así un módulo agregado al catálogo después no queda gratis
+-- por accidente para negocios viejos que nunca lo pidieron. Ver
+-- PlatformRepository.getBusinessModules().
+--
+-- Todo negocio se provisiona SIEMPRE con una fila por módulo del catálogo
+-- al crearse — ver PlatformRepository.createBusiness(). No depender de
+-- otro caller para provisionar: si se olvida, el fail-closed de arriba
+-- deja al negocio sin módulos en vez de fallar ruidosamente.
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS domain_events (
-  id              BIGSERIAL     PRIMARY KEY,
-  business_id     VARCHAR(255)  NOT NULL,
-  aggregate_type  VARCHAR(50)   NOT NULL,
-  aggregate_id    VARCHAR(255)  NOT NULL,
-  event_type      VARCHAR(100)  NOT NULL,
-  payload         JSONB         NOT NULL DEFAULT '{}',
-  occurred_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-  dispatched_at   TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS modules (
+  module_key   VARCHAR(50)   PRIMARY KEY,
+  name         VARCHAR(100)  NOT NULL,
+  description  TEXT,
+  created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_domain_events_pending
-  ON domain_events (id) WHERE dispatched_at IS NULL;
+INSERT INTO modules (module_key, name, description) VALUES
+  ('REPORTES',           'Reportes',            'Reportes de ocupación y estadísticas operativas'),
+  ('HOUSEKEEPING',       'Housekeeping',        'Gestión de tareas de limpieza y estado de habitaciones'),
+  ('CUENTAS_CORRIENTES', 'Cuentas Corrientes',  'Cuenta corriente y cobros a clientes'),
+  ('POS_RESTAURANTE',    'POS Restaurante',     'Punto de venta de consumo (órdenes, productos)'),
+  ('FACTURACION',        'Facturación',         'Emisión de comprobantes fiscales'),
+  ('ALOJAMIENTO',        'Alojamiento',         'Reservas, estadías y check-in/check-out')
+ON CONFLICT (module_key) DO NOTHING;
 
-CREATE INDEX IF NOT EXISTS idx_domain_events_business
-  ON domain_events (business_id, id);
+CREATE TABLE IF NOT EXISTS business_modules (
+  business_id  VARCHAR(255) NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  module_key   VARCHAR(50)  NOT NULL REFERENCES modules(module_key),
+  enabled      BOOLEAN      NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (business_id, module_key)
+);
 
--- ===========================================================================
--- BLOQUE FINANZAS — financial_transactions (ledger global de plataforma)
--- ===========================================================================
--- SqlFinancialTransactionRepository también se instancia con platformSqlClient
--- en container.ts (outbox.handlers.ts). Por eso la tabla vive aquí y no
--- en la BD de cada tenant.
+CREATE INDEX IF NOT EXISTS idx_business_modules_business
+  ON business_modules (business_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_modules_updated_at') THEN
+    CREATE TRIGGER business_modules_updated_at
+      BEFORE UPDATE ON business_modules
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- Backfill: negocios creados ANTES de este bloque no tienen filas en
+-- business_modules — con fail-closed quedarían sin ningún módulo de un día
+-- para el otro. Se los "grandfatherea" con TODO habilitado (lo que ya
+-- usaban gratis, ahora registrado explícitamente). Idempotente
+-- (ON CONFLICT DO NOTHING) — corre en cada boot, solo inserta lo que falte.
+--
+-- Los negocios creados DESPUÉS de este bloque nunca pasan por acá: ya
+-- salen provisionados desde PlatformRepository.createBusiness() con los
+-- defaults nuevos (solo ALOJAMIENTO=true).
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS financial_transactions (
-  id               VARCHAR(255)    PRIMARY KEY,
-  business_id      VARCHAR(255)    NOT NULL,
-  customer_id      VARCHAR(255)    NOT NULL,
-  reservation_id   VARCHAR(255),
-  idempotency_key  VARCHAR(255),
-  type             VARCHAR(50)     NOT NULL
-                     CHECK (type IN ('CHARGE', 'PAYMENT', 'REFUND', 'ADJUSTMENT')),
-  amount           DECIMAL(10, 2)  NOT NULL CHECK (amount >= 0),
-  currency         VARCHAR(10)     NOT NULL DEFAULT 'ARS',
-  status           VARCHAR(50)     NOT NULL DEFAULT 'PENDING'
-                     CHECK (status IN ('PENDING', 'SETTLED', 'VOIDED')),
-  created_at       TIMESTAMPTZ     NOT NULL DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_idempotency_key
-  ON financial_transactions (idempotency_key)
-  WHERE idempotency_key IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_ft_reservation
-  ON financial_transactions (reservation_id)
-  WHERE reservation_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_ft_customer
-  ON financial_transactions (customer_id);
-
-CREATE INDEX IF NOT EXISTS idx_ft_business
-  ON financial_transactions (business_id);
+INSERT INTO business_modules (business_id, module_key, enabled)
+SELECT b.id, m.module_key, TRUE
+FROM businesses b
+CROSS JOIN modules m
+ON CONFLICT (business_id, module_key) DO NOTHING;
 
 -- =============================================================================
 -- Fin del schema central

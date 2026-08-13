@@ -84,6 +84,7 @@ import { SqlResourceLockRepository } from '../../repositories/sql.resource-lock.
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRateRepository } from '../../repositories/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository } from '../../repositories/sql.operating-hours.repository.js';
+import { SqlHousekeepingRepository } from '../../repositories/housekeeping.repository.js';
 import { ReservationService }        from '../../services/reservation.service.js';
 
 // ---------------------------------------------------------------------------
@@ -196,6 +197,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const bookableServiceRepo = new SqlBookableServiceRepository(client);
   const customerRateRepo = new SqlCustomerRateRepository(client);
   const operatingHoursRepo = new SqlOperatingHoursRepository(client);
+  const housekeepingRepo = new SqlHousekeepingRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -208,6 +210,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     bookableServiceRepo,
     customerRateRepo,
     operatingHoursRepo,
+    housekeepingRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };

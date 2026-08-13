@@ -11,14 +11,17 @@
  *    `businesses.db_url_encrypted` (BD central).
  * 2. Carga de `src/db/schema.sql` para aplicarlo a una BD de tenant nueva.
  *
- * ## Flujo actual de alta de un negocio (manual, sin decisión de proveedor
- * automático todavía)
+ * ## Flujo actual de alta de un negocio (creación de BD manual, resto ya no)
  * 1. Se crea el negocio vía POST /register o POST /platform/businesses —
  *    queda en estado PENDING, sin BD asignada.
- * 2. Alguien crea la BD del negocio a mano (hoy: un proyecto Neon) y corre
- *    schema.sql contra ella (SQL Editor o psql).
- * 3. El ADMIN del negocio llama POST /api/admin/set-tenant-url con la
- *    connection string ya lista — acá se cifra y se guarda.
+ * 2. Alguien crea la BD del negocio a mano (hoy: un proyecto Neon) — vacía,
+ *    sin schema todavía.
+ * 3. El ADMIN del negocio llama POST /api/admin/set-tenant-url (o
+ *    repair-tenant-db) con la connection string. Desde ahí el propio
+ *    endpoint llama a applyTenantSchema() — corre schema.sql y registra la
+ *    versión (ver CURRENT_SCHEMA_VERSION más abajo) antes de cifrar y
+ *    guardar la connection string. Ya no hace falta correr schema.sql a
+ *    mano por SQL Editor/psql como antes.
  *
  * ## Variables de entorno requeridas
  * | Variable          | Descripción                                      |
@@ -101,13 +104,39 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 }
 
 // ---------------------------------------------------------------------------
-// Aplicar schema a una BD de tenant ya creada (independiente del proveedor)
+// Versionado y aplicación de schema.sql por tenant
 // ---------------------------------------------------------------------------
 
-export async function runSchemaOnNewDatabase(
-  connectionString: string,
-  schemaSQL: string,
-): Promise<void> {
+/**
+ * Versión actual de src/db/schema.sql. Única fuente de verdad — bumpear a
+ * mano cada vez que schema.sql cambie de forma que valga la pena rastrear
+ * (nueva tabla/columna, backfill nuevo). No hay migraciones numeradas
+ * separadas: el archivo entero se re-aplica siempre, así que esta versión
+ * es solo una etiqueta de "hasta qué cambio llegó esta tenant DB".
+ *
+ * Consumida por applyTenantSchema() (acá abajo, quien la persiste) y por
+ * tenant.middleware.ts (quien la compara contra businesses.schema_version
+ * para advertir sobre tenants desactualizados).
+ */
+export const CURRENT_SCHEMA_VERSION = 1;
+
+/**
+ * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
+ * registra CURRENT_SCHEMA_VERSION en su tabla `schema_migrations`.
+ *
+ * Reemplaza al flujo manual ("alguien corre schema.sql a mano por SQL
+ * Editor o psql" — ver comentario de archivo) en los dos puntos donde el
+ * código ya conoce la connection string de un tenant: los endpoints de
+ * admin (`repair-tenant-db`, `set-tenant-url`) y el runner masivo
+ * (src/scripts/migrate-tenants.ts). Segura de re-correr: mismo criterio
+ * idempotente que el resto de schema.sql.
+ *
+ * @returns la versión máxima registrada en `schema_migrations` después de
+ *   aplicar — normalmente CURRENT_SCHEMA_VERSION, pero se lee con MAX() por
+ *   si un proceso con código más viejo corre esto contra una BD que un
+ *   proceso más nuevo ya migró: nunca reporta un número menor al real.
+ */
+export async function applyTenantSchema(connectionString: string): Promise<number> {
   const { default: pg } = await import('pg');
   const client = new pg.Client({
     connectionString,
@@ -116,8 +145,16 @@ export async function runSchemaOnNewDatabase(
   });
   try {
     await client.connect();
+    const schemaSQL = await loadTenantSchema();
     await client.query(schemaSQL);
-    console.log('[tenant-db.setup] ✅ Schema aplicado en la nueva BD');
+    await client.query(
+      `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [CURRENT_SCHEMA_VERSION],
+    );
+    const result = await client.query<{ max: number }>(
+      `SELECT MAX(version)::int AS max FROM schema_migrations`,
+    );
+    return result.rows[0]?.max ?? CURRENT_SCHEMA_VERSION;
   } finally {
     await client.end();
   }

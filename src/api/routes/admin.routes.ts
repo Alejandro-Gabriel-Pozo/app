@@ -11,12 +11,16 @@
  *
  * ⚠️  `POST /set-tenant-url` permite apuntar manualmente el negocio a una
  * URL de BD específica (útil para Neon Tenant DB separada). Solo ADMIN.
+ *
+ * Ambas rutas corren applyTenantSchema() (schema.sql completo, idempotente)
+ * contra la URL antes de activar el negocio — ya no hace falta correrlo a
+ * mano por psql/SQL Editor como antes. Ver tenant-db.setup.ts.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
-import { encryptConnectionString } from '../../platform/tenant-db.setup.js';
+import { encryptConnectionString, applyTenantSchema } from '../../platform/tenant-db.setup.js';
 import { evictTenantPool } from '../../platform/tenant.middleware.js';
 import { Roles } from '../../security/roles.js';
 
@@ -59,16 +63,23 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
 
         console.log(`[admin] repair-tenant-db iniciado para negocio ${businessId}`);
 
+        // Corre schema.sql (idempotente) y registra la versión ANTES de
+        // activar el negocio — si la BD no responde o el schema falla, mejor
+        // no dejar el negocio apuntando a una tenant DB sin verificar.
+        const schemaVersion = await applyTenantSchema(databaseUrl);
+
         const encrypted = await encryptConnectionString(databaseUrl);
         await platformRepo.activateBusiness(businessId, 'manual-demo', encrypted);
+        await platformRepo.updateSchemaVersion(businessId, schemaVersion);
         // Sin esto, el pool cacheado en memoria (tenant.middleware.ts) sigue
         // usando la connection string vieja hasta que el proceso reinicie.
         await evictTenantPool(businessId);
 
-        console.log(`[admin] ✅ Negocio ${businessId} activado correctamente.`);
+        console.log(`[admin] ✅ Negocio ${businessId} activado correctamente (schema v${schemaVersion}).`);
 
         res.json({
           message: `Negocio ${businessId} activado y apuntado a DATABASE_URL.`,
+          schemaVersion,
         });
       } catch (err) {
         console.error('[admin] repair-tenant-db ERROR:', err);
@@ -113,16 +124,22 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
 
         console.log(`[admin] set-tenant-url iniciado para negocio ${businessId}`);
 
+        // Mismo criterio que repair-tenant-db: aplicar y verificar el schema
+        // antes de activar el negocio contra esta URL.
+        const schemaVersion = await applyTenantSchema(databaseUrl);
+
         const encrypted = await encryptConnectionString(databaseUrl);
         await platformRepo.activateBusiness(businessId, 'neon-tenant', encrypted);
+        await platformRepo.updateSchemaVersion(businessId, schemaVersion);
         // Sin esto, el pool cacheado en memoria (tenant.middleware.ts) sigue
         // usando la connection string vieja hasta que el proceso reinicie.
         await evictTenantPool(businessId);
 
-        console.log(`[admin] ✅ Negocio ${businessId} apuntado a URL de Tenant DB.`);
+        console.log(`[admin] ✅ Negocio ${businessId} apuntado a URL de Tenant DB (schema v${schemaVersion}).`);
 
         res.json({
           message: `Negocio ${businessId} apuntado a la Tenant DB correctamente.`,
+          schemaVersion,
         });
       } catch (err) {
         console.error('[admin] set-tenant-url ERROR:', err);

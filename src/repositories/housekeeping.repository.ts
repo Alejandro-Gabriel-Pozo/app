@@ -18,6 +18,15 @@ export interface HousekeepingRepository {
   findByDate(businessId: string, date: Date): Promise<HousekeepingTask[]>;
   findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]>;
   findByStatus(businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]>;
+  /**
+   * True si el recurso tiene alguna tarea de housekeeping en estado
+   * OUT_OF_SERVICE. Sin `businessId`: igual que `ResourceRepository.getById`,
+   * un `resourceId` ya está scoped al tenant (una BD por negocio, sin
+   * columna `business_id` en `resources`) — no hace falta el filtro extra.
+   * Usado por ReservationService para no ofrecer/aceptar reservas sobre un
+   * recurso que housekeeping marcó fuera de servicio.
+   */
+  isOutOfService(resourceId: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,5 +138,13 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
       [businessId, status],
     );
     return result.rows.map(rowToTask);
+  }
+
+  async isOutOfService(resourceId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1 FROM housekeeping_tasks WHERE resource_id=$1 AND status='OUT_OF_SERVICE' LIMIT 1`,
+      [resourceId],
+    );
+    return (result.rowCount ?? result.rows.length) > 0;
   }
 }

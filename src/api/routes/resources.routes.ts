@@ -26,6 +26,7 @@ import { authorize }                      from '../../security/auth.middleware.j
 import { Roles }                          from '../../security/roles.js';
 import { SqlResourceRepository }         from '../../repositories/sql.resource.repository.js';
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
+import { SqlLocationRepository }         from '../../repositories/location.repository.js';
 import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
@@ -54,6 +55,11 @@ const CreateResourceSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   visualData:  z.record(z.unknown()).nullable().optional(),
   visual_data: z.record(z.unknown()).nullable().optional(),
+  // Opcional a propósito: hoy no hay ningún selector de sucursal en el
+  // frontend. Si no viene, POST /resources resuelve la location por
+  // defecto del tenant (ver handler abajo) — no bloquea la creación.
+  locationId:  z.string().min(1).optional(),
+  location_id: z.string().min(1).optional(),
 }).superRefine((data, ctx) => {
   if (!data.categoryId && !data.category_id) {
     ctx.addIssue({
@@ -74,7 +80,27 @@ const UpdateResourceSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   visualData:  z.record(z.unknown()).nullable().optional(),
   visual_data: z.record(z.unknown()).nullable().optional(),
+  locationId:  z.string().min(1).optional(),
+  location_id: z.string().min(1).optional(),
 });
+
+/**
+ * Resuelve la location a usar cuando el caller no mandó una explícita.
+ * Hoy todo tenant tiene exactamente una (`loc-default`, ver bloque
+ * LOCATIONS de schema.sql) — `findAll()[0]` es determinístico mientras
+ * eso siga siendo cierto. El día que exista más de una, esto deja de ser
+ * válido y hay que pedir la location explícitamente (o resolverla por
+ * algún otro criterio) en vez de asumir la primera.
+ */
+async function resolveLocationId(req: import('express').Request, explicit: string | undefined): Promise<string> {
+  if (explicit) return explicit;
+  const locations = await new SqlLocationRepository(req.db).findAll();
+  const [first] = locations;
+  if (!first) {
+    throw new Error('[resources.routes] El tenant no tiene ninguna location — revisar que schema.sql corrió el backfill.');
+  }
+  return first.id;
+}
 
 export function createResourcesRouter(): Router {
   const router = Router();
@@ -126,6 +152,8 @@ export function createResourcesRouter(): Router {
           return;
         }
 
+        const locationId = await resolveLocationId(req, body.locationId ?? body.location_id);
+
         const resource = new PhysicalResource(
           body.id        ?? randomUUID(),
           body.name,
@@ -134,6 +162,8 @@ export function createResourcesRouter(): Router {
           (body.visualData ?? body.visual_data ?? null) as VisualMetadata | null,
           body.capacity  ?? 1,
           body.description ?? null,
+          /* categoryName */ null,
+          locationId,
         );
         await new SqlResourceRepository(req.db).save(resource);
         res.status(201).json(resource);
@@ -183,6 +213,8 @@ export function createResourcesRouter(): Router {
           (body.visualData ?? body.visual_data ?? existing.visualData) as VisualMetadata | null,
           body.capacity    ?? existing.capacity,
           body.description !== undefined ? body.description : existing.description,
+          existing.categoryName,
+          body.locationId ?? body.location_id ?? existing.locationId,
         );
         await repo.save(updated);
         res.json(updated);

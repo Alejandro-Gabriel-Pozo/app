@@ -769,8 +769,9 @@ export const openApiSpec = {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
             examples: {
-              missingToken: { summary: 'Sin token',      value: { code: 'UNAUTHORIZED',  message: 'Se requiere header Authorization: Bearer <token>' } },
-              expiredToken: { summary: 'Token expirado', value: { code: 'TOKEN_EXPIRED', message: 'El token ha expirado' } },
+              missingToken:         { summary: 'Sin token',                  value: { code: 'UNAUTHORIZED',         message: 'Se requiere header Authorization: Bearer <token>' } },
+              expiredToken:         { summary: 'Token expirado',              value: { code: 'TOKEN_EXPIRED',        message: 'El token ha expirado' } },
+              membershipDeactivated: { summary: 'Membership desactivada', value: { code: 'MEMBERSHIP_INACTIVE', message: 'Tu acceso a este negocio fue desactivado.' } },
             },
           },
         },

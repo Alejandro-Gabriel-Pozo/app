@@ -5,6 +5,10 @@
  * ## Flujo
  * 1. Lee `req.user.businessId` (inyectado por authenticate())
  * 2. Busca el negocio en la BD central → obtiene db_url_encrypted
+ * 2b. Compara business.schema_version contra CURRENT_SCHEMA_VERSION
+ *     (tenant-db.setup.ts) — solo warn-only por ahora, ver comentario
+ *     junto al chequeo en getTenantClient(). Solo corre al crear el pool
+ *     (cache miss), no en cada request.
  * 3. Descifra la connection string
  * 4. Obtiene (o crea) un pool de conexiones para ese negocio
  * 5. Adjunta `req.db` al request
@@ -28,7 +32,7 @@ import { Request, Response, NextFunction } from 'express';
 import pg from 'pg';
 import { SqlClient } from '../repositories/sql.client.js';
 import { PlatformRepository } from './platform.repository.js';
-import { decryptConnectionString } from './tenant-db.setup.js';
+import { decryptConnectionString, CURRENT_SCHEMA_VERSION } from './tenant-db.setup.js';
 import { BusinessStatus, UserRole } from '../types/enums.js';
 import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
@@ -74,6 +78,21 @@ export async function getTenantClient(
   if (!business)              throw new TenantNotFoundError(businessId);
   if (business.status !== BusinessStatus.ACTIVE) throw new TenantInactiveError(businessId, business.status);
   if (!business.dbUrlEncrypted) throw new TenantNotReadyError(businessId);
+
+  // Chequeo fail-SOFT (a propósito): solo advierte, no bloquea la request.
+  // Hoy la mayoría de los negocios activos tiene schema_version = NULL
+  // (nunca pasaron por applyTenantSchema — ver 0.1 en la auditoría de deuda
+  // estructural), así que un fail-fast real acá tumbaría tráfico real hasta
+  // correr `npm run migrate:tenants` sobre toda la flota. Subir esto a
+  // fail-fast (lanzar en vez de solo loguear) es un paso deliberado
+  // posterior, una vez confirmado que todos los tenants activos ya fueron
+  // migrados al menos una vez.
+  if (business.schemaVersion !== CURRENT_SCHEMA_VERSION) {
+    console.warn(
+      `[tenant] ${businessId}: schema_version=${business.schemaVersion ?? 'null'} ` +
+      `≠ CURRENT_SCHEMA_VERSION=${CURRENT_SCHEMA_VERSION}. Corré \`npm run migrate:tenants\`.`,
+    );
+  }
 
   // Descifrar y limpiar ?sslmode para evitar conflictos con el objeto ssl:
   const rawConnectionString = await decryptConnectionString(business.dbUrlEncrypted);

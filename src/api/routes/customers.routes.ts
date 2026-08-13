@@ -16,6 +16,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { authorize } from '../middleware/auth.middleware.wrapper.js';
+import { requireModule } from '../../security/module.middleware.js';
+import { ModuleKey } from '../../types/enums.js';
 import { AppContainer } from '../../container.js';
 import { Customer, ContactMethod } from '../../domain/entities.js';
 import { Roles } from '../../security/roles.js';
@@ -84,7 +86,7 @@ function toCustomerDto(customer: Customer) {
 // Router
 // ---------------------------------------------------------------------------
 
-export function createCustomersRouter(_container: AppContainer): Router {
+export function createCustomersRouter(container: AppContainer): Router {
   const router = Router();
 
   // GET /customers/:id
@@ -350,6 +352,7 @@ export function createCustomersRouter(_container: AppContainer): Router {
   router.get(
     '/:id/account',
     authorize(Roles.FRONT_DESK),
+    requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const service = new CustomerAccountService(
@@ -366,6 +369,7 @@ export function createCustomersRouter(_container: AppContainer): Router {
   router.post(
     '/:id/payments',
     authorize(Roles.FRONT_DESK),
+    requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = RecordPaymentSchema.parse(req.body);

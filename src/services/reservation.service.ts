@@ -81,6 +81,14 @@
  *   `reservation.confirmed` — antes faltaba pese a que
  *   `workers/outbox.handlers.ts` ya lo leía, así que el CHARGE nunca se
  *   creaba (se salteaba en silencio si `totalPrice` era null/≤0).
+ *
+ * ## Cambios — fix/out-of-service-blocks-availability
+ * - Recibe `HousekeepingRepository` como onceava dependencia (obligatoria).
+ * - `checkAvailability` y `assertAllResourcesAvailable` (usado por
+ *   create/updateReservation) ahora consultan `isOutOfService()` antes de
+ *   aceptar un recurso: antes, un recurso marcado OUT_OF_SERVICE por
+ *   housekeeping se seguía pudiendo reservar sin ningún aviso — los dos
+ *   módulos nunca se comunicaban entre sí.
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
@@ -102,6 +110,7 @@ import type { IBookableServiceRepository } from '../repositories/bookable-servic
 import type { BookableService } from '../types/bookable-service.types.js';
 import type { ICustomerRateRepository } from '../repositories/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../repositories/operating-hours.repository.js';
+import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
 import { TransactionManager }           from '../db/transaction-manager.js';
 import { SqlClient }                    from '../repositories/sql.client.js';
 
@@ -117,6 +126,7 @@ export class ReservationService {
     private readonly bookableServiceRepository: IBookableServiceRepository,
     private readonly customerRateRepository:  ICustomerRateRepository,
     private readonly operatingHoursRepository: IOperatingHoursRepository,
+    private readonly housekeepingRepository:  HousekeepingRepository,
   ) {}
 
   async createReservation(params: {
@@ -147,7 +157,7 @@ export class ReservationService {
 
     const endTime = await this.resolveEndTime(params.serviceId, params.startTime, params.endTime, service);
 
-    const totalPrice = await this.resolvePrice({
+    const { totalPrice, lines } = await this.resolvePrice({
       customerId: params.customer.id,
       resourceId: params.resourceId,
       serviceId:  params.serviceId,
@@ -183,6 +193,12 @@ export class ReservationService {
         details:   params.details,
         ...(params.serviceId !== undefined && { serviceId: params.serviceId }),
         totalPrice,
+        lines: lines.map((line, i) => ({
+          id:            `${params.id}-L${i + 1}`,
+          reservationId: params.id,
+          unitDate:      line.unitDate,
+          price:         line.price,
+        })),
       });
 
       await this.reservationRepository.saveWithClient(client, reservation);
@@ -219,15 +235,19 @@ export class ReservationService {
   }
 
   /**
-   * Resuelve el precio a cobrar: tarifa especial de cliente+servicio >
-   * precio de catálogo del servicio > tarifa especial de cliente+recurso >
-   * precio base del recurso. Un override a nivel servicio es más específico
-   * que uno a nivel recurso cuando la reserva tiene serviceId.
+   * Resuelve el precio a cobrar Y su desglose en `ReservationLine`s (una
+   * por noche si `bookingMode: 'block'`, una única línea para todo lo
+   * demás — ver reservation_lines en db/schema.sql).
    *
-   * Si el servicio es `bookingMode: 'block'` (fechas completas — la noche de
-   * hotel es el caso de uso documentado en BookableService), el precio
-   * unitario se multiplica por la cantidad de noches. Para 'slot'/'event' o
-   * sin servicio, es una reserva de precio fijo (comportamiento anterior).
+   * El precio UNITARIO (por noche o por turno) se resuelve con el mismo
+   * orden que antes: tarifa especial de cliente+servicio > precio de
+   * catálogo del servicio > tarifa especial de cliente+recurso > precio
+   * base del recurso. Todas las líneas de una misma reserva reciben hoy el
+   * mismo precio unitario — no existe (todavía) nada que lo varíe por
+   * fecha dentro de la misma reserva; `buildLines()` es la estructura que
+   * lo permitiría el día que exista un motor de tarifas por temporada, no
+   * ese motor en sí. `totalPrice` es la suma de las líneas, no un cálculo
+   * aparte — evita que las dos cosas puedan desincronizarse.
    */
   private async resolvePrice(params: {
     customerId: string;
@@ -237,27 +257,63 @@ export class ReservationService {
     service: BookableService | null;
     startTime: Date;
     endTime: Date;
-  }): Promise<number> {
+  }): Promise<{ totalPrice: number; lines: Array<{ unitDate: Date; price: number }> }> {
     const units = params.service?.bookingMode === 'block'
       ? this.calculateNights(params.startTime, params.endTime)
       : 1;
 
+    const unitPrice = await this.resolveUnitPrice(params);
+    const lines = this.buildLines(params.startTime, units, unitPrice);
+    const totalPrice = lines.reduce((sum, line) => sum + line.price, 0);
+
+    return { totalPrice, lines };
+  }
+
+  private async resolveUnitPrice(params: {
+    customerId: string;
+    resourceId: string;
+    serviceId: string | undefined;
+    resource: PhysicalResource;
+    service: BookableService | null;
+  }): Promise<number> {
     if (params.serviceId) {
       const serviceRate = await this.customerRateRepository.findActiveForCustomerAndService(
         params.customerId,
         params.serviceId,
       );
-      if (serviceRate) return serviceRate.price * units;
-      if (params.service) return params.service.price * units;
+      if (serviceRate) return serviceRate.price;
+      if (params.service) return params.service.price;
     }
 
     const resourceRate = await this.customerRateRepository.findActiveForCustomerAndResource(
       params.customerId,
       params.resourceId,
     );
-    if (resourceRate) return resourceRate.price * units;
+    if (resourceRate) return resourceRate.price;
 
-    return params.resource.basePrice * units;
+    return params.resource.basePrice;
+  }
+
+  /**
+   * `unitDate` de cada línea: día calendario de `startTime` + i. Se calcula
+   * en UTC — mismo criterio que `calculateNights()` — para no depender de
+   * la zona horaria del proceso.
+   */
+  private buildLines(
+    startTime: Date,
+    units: number,
+    unitPrice: number,
+  ): Array<{ unitDate: Date; price: number }> {
+    const lines: Array<{ unitDate: Date; price: number }> = [];
+    for (let i = 0; i < units; i++) {
+      const unitDate = new Date(Date.UTC(
+        startTime.getFullYear(),
+        startTime.getMonth(),
+        startTime.getDate() + i,
+      ));
+      lines.push({ unitDate, price: unitPrice });
+    }
+    return lines;
   }
 
   /**
@@ -342,8 +398,12 @@ export class ReservationService {
         orderItemId:   existing.orderItemId,
         // No se recalcula el precio al editar horario/detalles — fuera de
         // alcance de esta fase, re-cotizar necesitaría su propia UX de
-        // confirmación explícita.
+        // confirmación explícita. Mismo criterio para las líneas: no se
+        // regeneran si cambian las fechas (regenerar el COUNT sin
+        // recotizar dejaría líneas con fechas que no corresponden a
+        // ningún precio real) — se preservan tal cual estaban.
         totalPrice:    existing.totalPrice,
+        lines:         existing.lines,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -459,6 +519,10 @@ export class ReservationService {
       const lockedResource = id === resourceId ? resource : await this.resourceRepository.getById(id);
       if (!lockedResource) {
         throw new ResourceNotFoundError(id);
+      }
+
+      if (await this.housekeepingRepository.isOutOfService(id)) {
+        return false;
       }
 
       const activeReservations = await this.resolveOccupyingReservations(
@@ -583,6 +647,12 @@ export class ReservationService {
       const resource = await this.resourceRepository.getById(resourceId);
       if (!resource) {
         throw new ResourceNotFoundError(resourceId);
+      }
+
+      if (await this.housekeepingRepository.isOutOfService(resourceId)) {
+        throw new InvalidReservationError(
+          `El recurso ${resourceId} está fuera de servicio.`,
+        );
       }
 
       const activeReservations = await this.resolveOccupyingReservations(

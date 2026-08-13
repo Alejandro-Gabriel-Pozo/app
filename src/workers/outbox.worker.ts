@@ -125,8 +125,8 @@ export class OutboxWorker {
       if (!this.missingTableWarned) {
         this.missingTableWarned = true;
         console.warn(
-          '[OutboxWorker] ⚠️  La tabla domain_events no existe en la BD central.\n' +
-          '               Ejecutá src/db/platform.schema.sql en PLATFORM_DATABASE_URL.\n' +
+          '[OutboxWorker] ⚠️  La tabla domain_events no existe en la tenant DB.\n' +
+          '               Ejecutá src/db/schema.sql contra esa tenant DB.\n' +
           '               El worker queda en pausa hasta que se llame a worker.start() de nuevo.',
         );
         // Detener polling para no llenar los logs

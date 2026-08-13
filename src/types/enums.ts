@@ -54,3 +54,25 @@ export enum BusinessStatus {
   SUSPENDED = 'SUSPENDED',
   CANCELLED = 'CANCELLED',
 }
+
+/**
+ * Módulos habilitables por negocio (add-ons de facturación modular).
+ * Ver src/db/platform.schema.sql (tablas `modules` y `business_modules`)
+ * y src/platform/platform.repository.ts (getBusinessModules).
+ *
+ * POS_RESTAURANTE y ALOJAMIENTO son módulos comercialmente distintos aunque
+ * convivan en un mismo negocio (ej. un hotel con su propio restaurante) —
+ * no conflacionar en un solo módulo "hospitalidad".
+ *
+ * ALOJAMIENTO es el único que se habilita por defecto en negocios nuevos
+ * (ver PlatformRepository.createBusiness) — el resto arranca deshabilitado
+ * hasta que exista una pantalla de selección/pago.
+ */
+export enum ModuleKey {
+  REPORTES            = 'REPORTES',
+  HOUSEKEEPING        = 'HOUSEKEEPING',
+  CUENTAS_CORRIENTES  = 'CUENTAS_CORRIENTES',
+  POS_RESTAURANTE     = 'POS_RESTAURANTE',
+  FACTURACION         = 'FACTURACION',
+  ALOJAMIENTO         = 'ALOJAMIENTO',
+}
