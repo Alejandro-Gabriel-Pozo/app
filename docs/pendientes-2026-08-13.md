@@ -191,6 +191,55 @@ así que el impacto práctico de no arreglar `glob`/`eslint-config-next` hoy
 es bajo (dev-only, sin uso activo). El upgrade de Next 14→16 sí necesita su
 propia sesión con testeo dedicado — no se tocó.
 
+### B2. Migrar auth de localStorage a httpOnly cookie — EN CURSO (13/08/2026)
+Contexto: hoy se diagnosticó un 401 real (`POST /api/customers` fallaba en
+una pestaña nueva porque el token vivía en `sessionStorage`, exclusivo de
+cada pestaña) y se migró `AuthContext.tsx`/`CustomerAuthContext.tsx`
+(`appfrontend-main`) a `localStorage` como fix inmediato. Verificado que
+ninguna de las dos opciones (`sessionStorage` ni `localStorage`) mitiga XSS
+mejor que la otra — ambas son igual de legibles por JS malicioso. El fix
+real ya estaba señalado en `appfrontend-main/ARCHITECTURE.md` desde antes
+de esta sesión: **httpOnly cookie + `POST /api/auth/refresh`** — el
+navegador guarda el token de forma que ni el JS de la página puede leerlo,
+así que un XSS no puede robarlo.
+
+**Por qué es más grande de lo que parece — alcance real, no asumir que es
+"cambiar dos líneas":**
+- Hay **tres sistemas de auth separados** en este código, cada uno con su
+  propio secret: staff/negocio (`JWT_SECRET`, `auth.middleware.ts`),
+  portal de clientes (`CustomerAuthContext` — verificar si es JWT real o
+  otra cosa) y plataforma/SUPERADMIN (`PLATFORM_JWT_SECRET`,
+  `platform.auth.middleware.ts`). Decidir si se migran los tres juntos o
+  se arranca por staff (el que causó el bug de hoy) y se evalúa el resto
+  después.
+- El backend tiene que **setear la cookie** en la respuesta de login/
+  register (`Set-Cookie`, `httpOnly`, `Secure`, `SameSite`), no devolver
+  el token en el body como ahora.
+- Con la cookie viajando sola en cada request, hace falta **protección
+  CSRF** — hoy el header `Authorization: Bearer` la evita gratis (un
+  `<form>` malicioso de otro sitio no puede setear ese header), una cookie
+  sí viaja automática en cualquier request al dominio. `SameSite=Strict`
+  puede alcanzar si front y back comparten dominio/subdominio — confirmar
+  la topología real antes de asumirlo.
+- **CORS necesita `credentials: true` + origin explícito** (no `*`) para
+  que el browser mande la cookie entre `appfrontend` y `app-main` si están
+  en dominios distintos — revisar `CORS_ORIGIN` actual.
+- El frontend hoy decodifica el JWT client-side (`parseJwt()`) para saber
+  el rol y mostrar la UI (badges, `isManagement`). **Con httpOnly la
+  cookie no se puede leer desde JS** — hace falta un endpoint tipo
+  `GET /api/auth/me` que devuelva `{email, role, businessId}` como JSON
+  legible, consumido una vez al cargar la app, en vez de decodificar el
+  token a mano.
+- `apiFetch()` en `lib/api.ts` deja de armar el header `Authorization` a
+  mano y pasa a mandar `credentials: 'include'` en cada fetch — toca
+  literalmente todos los llamados a la API.
+- Necesita el endpoint `POST /api/auth/refresh` que `ARCHITECTURE.md` ya
+  proponía (para renovar la cookie sin forzar re-login cada `JWT_EXPIRES_IN`).
+
+**Estado:** decidido arrancar el 13/08/2026, en progreso — ver el resto de
+esta sesión para lo que se alcanzó a hacer. Si quedó a medias, retomar
+desde acá antes de asumir que está completo.
+
 ---
 
 ## C. Calidad de código / duplicación (`app-main`) — no compone, se puede diferir
