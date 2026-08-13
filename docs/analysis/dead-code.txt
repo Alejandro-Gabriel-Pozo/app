@@ -1,4 +1,4 @@
-\src\app.ts:254 - GracefulShutdownOptions (used in module)
+\src\app.ts:270 - GracefulShutdownOptions (used in module)
 \src\container.ts:69 - getPlatformRawPool
 \src\config\plan-limits.ts:13 - PlanLimits (used in module)
 \src\db\postgres-transaction-manager.ts:12 - PostgresTransactionManager
@@ -26,27 +26,31 @@
 \src\repositories\in-memory.customer.repository.ts:15 - InMemoryCustomerRepository
 \src\repositories\in-memory.housekeeping.repository.ts:9 - InMemoryHousekeepingRepository
 \src\repositories\in-memory.location.repository.ts:8 - InMemoryLocationRepository
-\src\repositories\in-memory.occupancy.repository.ts:12 - InMemoryOccupancyRepository
+\src\repositories\in-memory.occupancy.repository.ts:13 - InMemoryOccupancyRepository
 \src\repositories\in-memory.operating-hours.repository.ts:17 - InMemoryOperatingHoursRepository
 \src\repositories\in-memory.order.repository.ts:20 - InMemoryOrderRepository
 \src\repositories\in-memory.reservation.repository.ts:20 - InMemoryReservationRepository
 \src\repositories\in-memory.resource-lock.repository.ts:9 - InMemoryResourceLockRepository
 \src\repositories\in-memory.resource.repository.ts:15 - InMemoryResourceRepository
-\src\security\auth.middleware.ts:61 - hashPassword
-\src\security\auth.middleware.ts:61 - verifyPassword
-\src\security\auth.middleware.ts:67 - JwtPayload (used in module)
+\src\repositories\occupancy.repository.ts:23 - DailyMinutesSplit (used in module)
+\src\security\auth.middleware.ts:50 - JwtPayload (used in module)
 \src\security\auth.service.ts:48 - LoginResult (used in module)
 \src\security\auth.service.ts:60 - BusinessSelectionRequired (used in module)
 \src\security\auth.service.ts:67 - LoginOutcome (used in module)
 \src\security\customer.auth.service.ts:13 - CustomerRegistrationInput (used in module)
 \src\security\customer.auth.service.ts:19 - CustomerLoginInput (used in module)
 \src\security\customer.auth.service.ts:24 - CustomerAuthResult (used in module)
-\src\security\platform.auth.middleware.ts:66 - signPlatformToken
-\src\security\platform.auth.middleware.ts:158 - authorizePlatform
-\src\security\platform.auth.middleware.ts:36 - PlatformJwtPayload (used in module)
-\src\security\platform.auth.middleware.ts:44 - AuthenticatedPlatformUser (used in module)
+\src\security\platform.auth.middleware.ts:58 - signPlatformToken
+\src\security\platform.auth.middleware.ts:108 - authorizePlatform
+\src\security\platform.auth.middleware.ts:28 - PlatformJwtPayload (used in module)
+\src\security\platform.auth.middleware.ts:36 - AuthenticatedPlatformUser (used in module)
 \src\security\platform.auth.service.ts:36 - PlatformLoginInput (used in module)
 \src\security\platform.auth.service.ts:41 - PlatformLoginResult (used in module)
+\src\services\accounts-receivable.service.ts:30 - CompanyCustomerRequiredError (used in module)
+\src\services\accounts-receivable.service.ts:39 - NoBalanceToTransferError (used in module)
+\src\services\accounts-receivable.service.ts:45 - TransferStayBalanceInput (used in module)
+\src\services\bookable-service.service.ts:29 - ServiceScheduleNotFoundError (used in module)
+\src\services\bookable-service.service.ts:35 - ScheduleConflictError (used in module)
 \src\services\customer-account.service.ts:18 - CustomerStatement (used in module)
 \src\services\housekeeping.service.ts:17 - HousekeepingTaskNotFoundError (used in module)
 \src\services\housekeeping.service.ts:23 - CreateTaskInput (used in module)
@@ -55,13 +59,14 @@
 \src\services\product.service.ts:43 - VariantNotFoundError (used in module)
 \src\services\product.service.ts:50 - VariantRequiredError (used in module)
 \src\services\product.service.ts:60 - InsufficientStockError (used in module)
-\src\services\report.service.ts:6 - OccupancyReportRow (used in module)
-\src\services\report.service.ts:20 - OccupancySummary (used in module)
-\src\services\stay.service.ts:25 - StayNotFoundError (used in module)
-\src\services\stay.service.ts:31 - ReservationNotConfirmedError (used in module)
-\src\services\stay.service.ts:40 - ResourceOccupiedError (used in module)
-\src\services\stay.service.ts:46 - CheckInInput (used in module)
-\src\services\stay.service.ts:54 - CheckOutInput (used in module)
+\src\services\report.service.ts:10 - OccupancyReportRow (used in module)
+\src\services\report.service.ts:24 - OccupancySummary (used in module)
+\src\services\stay.service.ts:41 - ReservationNotConfirmedError (used in module)
+\src\services\stay.service.ts:50 - ResourceOccupiedError (used in module)
+\src\services\stay.service.ts:56 - StayBalanceOwedError (used in module)
+\src\services\stay.service.ts:66 - CheckInInput (used in module)
+\src\services\stay.service.ts:74 - StayFolio (used in module)
+\src\services\stay.service.ts:80 - CheckOutInput (used in module)
 \src\types\preferences.types.ts:13 - PreferenceDetailsByResource
 \src\types\resource-category.types.ts:15 - CategoryFieldType (used in module)
 \src\types\visual.interface.ts:36 - OccupancyStatus (used in module)
@@ -71,25 +76,15 @@
 \src\workers\outbox.handlers.ts:87 - handleReservationCompleted (used in module)
 \src\workers\outbox.handlers.ts:96 - handleReservationCancelled (used in module)
 \src\workers\outbox.handlers.ts:111 - handleOrderConfirmed (used in module)
-\src\workers\outbox.handlers.ts:138 - handleOrderCompleted (used in module)
-\src\workers\outbox.handlers.ts:147 - handleOrderCancelled (used in module)
+\src\workers\outbox.handlers.ts:142 - handleOrderCompleted (used in module)
+\src\workers\outbox.handlers.ts:151 - handleOrderCancelled (used in module)
 \src\workers\outbox.worker.ts:3 - EventHandler (used in module)
-\src\api\mappers\reservation.mapper.ts:59 - toResourceDto (used in module)
-\src\api\mappers\reservation.mapper.ts:16 - ReservationLineDto (used in module)
-\src\api\mappers\reservation.mapper.ts:22 - ResourceDto (used in module)
-\src\api\mappers\reservation.mapper.ts:31 - ReservationDto (used in module)
+\src\api\mappers\reservation.mapper.ts:66 - toResourceDto (used in module)
+\src\api\mappers\reservation.mapper.ts:17 - ReservationLineDto (used in module)
+\src\api\mappers\reservation.mapper.ts:23 - ResourceDto (used in module)
+\src\api\mappers\reservation.mapper.ts:32 - ReservationDto (used in module)
 \src\api\schemas\category.schemas.ts:10 - CategoryFieldSchema (used in module)
-\src\api\schemas\request.schemas.ts:65 - AvailabilityQuerySchema
-\src\api\schemas\request.schemas.ts:70 - VisualMetadataSchema (used in module)
-\src\api\schemas\request.schemas.ts:79 - CreateResourceSchema
-\src\api\schemas\request.schemas.ts:87 - DateRangeQuerySchema (used in module)
-\src\api\schemas\request.schemas.ts:92 - SummaryQuerySchema
-\src\api\schemas\request.schemas.ts:97 - UnderutilizedQuerySchema
-\src\api\schemas\request.schemas.ts:109 - ReservationListQuerySchema (used in module)
-\src\api\schemas\request.schemas.ts:129 - ReservationListQuery
-\src\api\schemas\request.schemas.ts:195 - CreateOrderBody
 \src\api\utils\compact.ts:18 - RequiredDefined (used in module)
-\src\api\utils\params.ts:1 - routeParam
 \src\tests\integration\helpers\db.ts:86 - createTestDatabase
 \src\tests\integration\helpers\db.ts:131 - dropTestDatabase
 \src\tests\integration\helpers\db.ts:75 - skipIfNoDb

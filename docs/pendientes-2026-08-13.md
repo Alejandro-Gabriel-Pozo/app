@@ -273,41 +273,73 @@ round-trip de firma, token vencido, secret distinto, sin header,
 `authorizePlatform` con rol permitido/denegado/sin autenticar). 281/282
 verde, typecheck limpio.
 
-### C7. `ts-prune` — auditado (13/08/2026), la suposición original era incorrecta
-Se dijo "mayoría probable falsos positivos" sin verificar — **al chequear 3
-casos puntuales, 2 de 3 resultaron ser deuda real, no falsos positivos**:
+### C7. `ts-prune` — ✅ RESUELTO (13/08/2026)
+Se había dicho "mayoría probable falsos positivos" sin verificar — la
+suposición era incorrecta. Los 3 hallazgos puntuales resultaron ser deuda
+real, ya resueltos:
 
-- **`CreateResourceSchema` duplicado, uno muerto.** Hay dos definiciones
-  con el mismo nombre: `request.schemas.ts:79` (exportada, la que ts-prune
-  marca como no usada — correctamente, nadie la importa) y otra **local**
-  dentro de `resources.routes.ts:49`, que es la que realmente se usa
-  (`resources.routes.ts:147`). No se tocó — hay que decidir cuál es la
-  canónica antes de borrar la otra, no asumir.
-- **`routeParam` (`api/utils/params.ts:1`) — muerta de verdad.** Nunca se
-  llama en ningún lado. Cada archivo de rutas define su propio `param(req,
-  key)` local en su lugar (otra duplicación chica, sin catalogar todavía).
-- **El re-export de `hashPassword`/`verifyPassword` en `auth.middleware.ts:61`
-  está desactualizado.** El comentario de ese archivo dice que
-  `users.routes.ts` los importa "desde auth.middleware para no acoplarse a
-  user.store directamente" — pero el código real
-  (`users.routes.ts:30`, `business.routes.ts:33`) los importa **directo
-  desde `user.store.js`**, no desde el re-export. El re-export en sí está
-  muerto; el comentario que lo justifica ya no es cierto.
+- **`CreateResourceSchema`/`VisualMetadataSchema`/`AvailabilityQuerySchema`
+  duplicados, la versión exportada muerta.** `request.schemas.ts` tenía
+  versiones viejas y más simples de estos schemas, abandonadas — cada
+  router terminó definiendo su propia versión local, más completa
+  (`resources.routes.ts`, `customer.routes.ts`), sin que nadie borrara la
+  original. Sacadas las 3 (+ `DateRangeQuerySchema`/`SummaryQuerySchema`/
+  `UnderutilizedQuerySchema`/`ReservationListQuerySchema`/`ReservationListQuery`/
+  `CreateOrderBody`, que ni siquiera tenían duplicado — simplemente nunca
+  se conectaron a ninguna ruta). 9 exports muertos sacados de
+  `request.schemas.ts` en total, con nota en el header del archivo
+  explicando qué pasó para que no se asuma que siguen vigentes.
+- **`routeParam` (`api/utils/params.ts`) — archivo entero borrado.** Nunca
+  se llamaba en ningún lado; cada router ya tiene su propio `param(req,
+  key)` local.
+- **Re-export muerto de `hashPassword`/`verifyPassword` en
+  `auth.middleware.ts` — sacado.** Ningún caller real los importaba desde
+  ahí (todos importan directo de `user.store.js`) — el comentario que
+  justificaba el re-export estaba desactualizado. Reemplazado por una nota
+  explicando qué pasó, para que no se reintroduzca por la misma razón que
+  ya no aplica.
 
-Las clases `InMemory*Repository` sí parecen ser el caso de falso positivo
-esperado (se instancian solo desde tests, que `tsconfig.json` excluye del
-análisis — mismo problema de raíz que el hallazgo de tests sin tipar, más
-abajo) — pero no se verificó cada una individualmente. **No se tocó nada
-de esto todavía** — son 3+ hallazgos reales que requieren su propia
-decisión (cuál `CreateResourceSchema` es la canónica, si actualizar o
-borrar el comentario de auth.middleware.ts, etc.), no un borrado mecánico.
+`docs/analysis/dead-code.txt` re-generado (105 → 100 líneas) — confirmado
+que ninguno de estos 3 hallazgos aparece más. Typecheck limpio, 281/282
+verde, sin tocar ningún comportamiento (los 9 exports de schemas y
+`routeParam` no tenían ningún caller; el re-export tampoco).
 
-### C8. `dependency-cruiser` — corrió con ruleset débil
-`npx depcruise --init` no pudo completarse (pregunta interactiva sobre ESM,
-sin Graphviz instalado para el gráfico visual). Se corrió con `--no-config`:
-"no dependency violations found" sobre 454 módulos, pero sin reglas reales
-como `no-circular`. Para que este chequeo valga algo hay que instalar
-Graphviz y armar un `.dependency-cruiser.js` con reglas explícitas.
+**Quedó afuera a propósito, hallazgo nuevo y menor:** `platform.auth.service.ts`
+define su propia implementación local de `hashPassword`/`verifyPassword`
+(líneas 56, 62) en vez de reusar la de `user.store.ts` — un tercer lugar
+con la misma lógica. No se tocó (fuera del alcance de esta pasada).
+
+Las clases `InMemory*Repository` siguen sin verificarse una por una — el
+supuesto sigue siendo que son falso positivo (se instancian solo desde
+tests, que `tsconfig.json` excluye del análisis), pero no se confirmó
+caso por caso.
+
+### C8. `dependency-cruiser` — ✅ PARCIAL (13/08/2026)
+Agregado `.dependency-cruiser.cjs` con reglas reales (`no-circular`,
+`no-orphans`, `not-to-unresolvable`) en vez de `--no-config` — `.cjs`
+explícito porque `package.json` tiene `"type": "module"` y un
+`.dependency-cruiser.js` se interpretaría como ESM, rompiendo el
+`require()` interno. Resultado sobre 151 módulos:
+
+- **0 dependencias circulares** — la única regla que de verdad importaba
+  no encontró nada.
+- **1 `not-to-unresolvable`:** `src/repositories/supabase.occupancy.repository.ts`
+  importa `../config/supabase.js`, que no existe. Es scaffolding vieja de
+  una integración con Supabase abandonada — **ya está excluida en
+  `tsconfig.json`** (`exclude`), así que esto confirma que la exclusión
+  está justificada, no es una alarma nueva. No se borró el archivo — es
+  una decisión de "¿lo tiramos o lo dejamos de referencia", no mecánica.
+- **5 `no-orphans` nuevos, sin triage todavía:** `types/preferences.types.ts`,
+  `services/validation.registry.ts`, `services/validation.factory.ts`,
+  `security/jwt.service.ts`, `schemas/preferences.schemas.ts` — nada los
+  importa. Podrían ser scaffolding de una feature que no llegó a
+  conectarse (similar al hallazgo de C7 en `request.schemas.ts`) o falsos
+  positivos. Sin verificar todavía.
+
+**Sigue sin la parte visual:** no se instaló Graphviz (software de
+sistema) — `docs/analysis/dependency-graph.dot` sigue crudo, sin
+convertir a SVG. La parte que importa (detectar violaciones reales) ya
+funciona sin eso.
 
 ---
 

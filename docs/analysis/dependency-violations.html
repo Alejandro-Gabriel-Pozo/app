@@ -213,16 +213,16 @@
     </svg> Summary</h2>
   <p>
     <div style="float:left;padding-right:20px">
-      <strong>454</strong> modules
+      <strong>151</strong> modules
     </div>
     <div style="float:left;padding-right:20px">
-      <strong>1020</strong> dependencies
+      <strong>540</strong> dependencies
     </div>
     <div style="float:left;padding-right:20px">
-      <strong>0</strong> errors
+      <strong>1</strong> errors
     </div>
     <div style="float:left;padding-right:20px">
-      <strong>0</strong> warnings
+      <strong>5</strong> warnings
     </div>
     <div style="float:left;padding-right:20px">
       <strong>0</strong> informational
@@ -244,7 +244,42 @@
           <th>explanation</th>
         </tr>
       </thead>
-      
+      <tr>
+    <td><span class="warn">&cross;</span></td>
+    <td>warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-instance"
+         id="no-orphans-definition" 
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><strong>5</strong></td>
+    <td><strong>0</strong></td>
+    <td>Archivo que nada importa — candidato a dead code. Puede haber falsos positivos legítimos (entry points, tipos usados solo por el compilador).</td>
+  </tr>
+<tr>
+    <td><span class="error">&cross;</span></td>
+    <td>error</td>
+    <td class="nowrap">
+      <a href="#not-to-unresolvable-instance"
+         id="not-to-unresolvable-definition" 
+         class="noiseless">not-to-unresolvable</a>
+    </td>
+    <td><strong>1</strong></td>
+    <td><strong>0</strong></td>
+    <td>Import que no resuelve a ningún módulo real — típicamente una ruta rota o un typo.</td>
+  </tr>
+<tr class="unviolated">
+    <td><span class="ok">&check;</span></td>
+    <td>error</td>
+    <td class="nowrap">
+      <a href="#no-circular-instance"
+         id="no-circular-definition" 
+         class="noiseless">no-circular</a>
+    </td>
+    <td><strong>0</strong></td>
+    <td><strong>0</strong></td>
+    <td>Dependencia circular entre módulos — dificulta razonar sobre el orden de carga y suele esconder un problema de diseño (dos módulos que deberían ser uno, o una responsabilidad mal ubicada).</td>
+  </tr>
       <tr>
         <td colspan="6" class="controls">
           <div id="show-unviolated">
@@ -259,11 +294,96 @@
   </table>
   </span>
 
-      <h2><span aria-hidden="true">&hearts;</span> No violations found</h2>
-    <p>Get gummy bears to celebrate.</p>
+  <span id="show-ignored-violations">
+      <h2><svg class="p__svg--inline" viewBox="0 0 12 16" version="1.1" aria-hidden="true">
+        <path fill-rule="evenodd"
+          d="M5.05.31c.81 2.17.41 3.38-.52 4.31C3.55 5.67 1.98 6.45.9 7.98c-1.45 2.05-1.7 6.53 3.53 7.7-2.2-1.16-2.67-4.52-.3-6.61-.61 2.03.53 3.33 1.94 2.86 1.39-.47 2.3.53 2.27 1.67-.02.78-.31 1.44-1.13 1.81 3.42-.59 4.78-3.42 4.78-5.56 0-2.84-2.53-3.22-1.25-5.61-1.52.13-2.03 1.13-1.89 2.75.09 1.08-1.02 1.8-1.86 1.33-.67-.41-.66-1.19-.06-1.78C8.18 5.31 8.68 2.45 5.05.32L5.03.3l.02.01z">
+        </path>
+      </svg> All violations</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>severity</th>
+          <th>rule</th>
+          <th>from</th>
+          <th>types</th>
+          <th>to</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+    <td class="error">error</td>
+    <td class="nowrap">
+      <a href="#not-to-unresolvable-definition" 
+         id="not-to-unresolvable-instance"
+         class="noiseless">not-to-unresolvable</a>
+    </td>
+    <td><a href="src/repositories/supabase.occupancy.repository.ts">src/repositories/supabase.occupancy.repository.ts</a></td>
+    <td><span class="dependency-type unknown" title="dependency types: unknown"></span></td>
+    <td>../config/supabase.js</td>
+  </tr>
+  <tr>
+    <td class="warn">warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-definition" 
+         id="no-orphans-instance"
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><a href="src/schemas/preferences.schemas.ts">src/schemas/preferences.schemas.ts</a></td>
+    <td><span class="dependency-type " title="dependency types: "></span></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td class="warn">warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-definition" 
+         id="no-orphans-instance"
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><a href="src/security/jwt.service.ts">src/security/jwt.service.ts</a></td>
+    <td><span class="dependency-type " title="dependency types: "></span></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td class="warn">warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-definition" 
+         id="no-orphans-instance"
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><a href="src/services/validation.factory.ts">src/services/validation.factory.ts</a></td>
+    <td><span class="dependency-type " title="dependency types: "></span></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td class="warn">warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-definition" 
+         id="no-orphans-instance"
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><a href="src/services/validation.registry.ts">src/services/validation.registry.ts</a></td>
+    <td><span class="dependency-type " title="dependency types: "></span></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td class="warn">warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-definition" 
+         id="no-orphans-instance"
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><a href="src/types/preferences.types.ts">src/types/preferences.types.ts</a></td>
+    <td><span class="dependency-type " title="dependency types: "></span></td>
+    <td></td>
+  </tr>
+      
+      </tbody>
+    </table>
+    </span>
   <footer>
     <p><a href="https://github.com/sverweij/dependency-cruiser">dependency-cruiser@18.2.0</a> /
-      2026-08-13T17:17:11.978Z</p>
+      2026-08-13T20:33:33.890Z</p>
   </footer>
 </body>
 </html>
