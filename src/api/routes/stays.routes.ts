@@ -14,6 +14,7 @@
  * | POST /stays/:id/check-out          | FRONT_DESK | Check-out (cierra Stay) |
  * | POST /stays/:id/no-show            | FRONT_DESK | Marcar NO_SHOW |
  * | POST /stays/:id/transfer-to-receivable | MANAGEMENT | Transfiere el saldo pendiente a cuenta por cobrar de una empresa (A1, paso 2) |
+ * | GET  /stays/:id/folio               | FRONT_DESK | Saldo + transacciones de la estadía (A1, paso 6) |
  *
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
@@ -154,6 +155,21 @@ export function createStaysRouter(
           req.user!.businessId as string,
         );
         res.json(stay.toJSON());
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /stays/:id/folio ─────────────────────────────────────────────────
+  router.get(
+    '/:id/folio',
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const folio = await service.getFolio(
+          String(req.params['id']),
+          req.user!.businessId as string,
+        );
+        res.json(folio);
       } catch (err) { next(err); }
     },
   );

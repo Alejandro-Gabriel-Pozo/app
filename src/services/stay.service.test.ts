@@ -148,4 +148,19 @@ describe('StayService — ledger (A1, paso 3)', () => {
       }),
     ).rejects.toThrow(ResourceOccupiedError);
   });
+
+  it('getFolio() devuelve saldo + transacciones de la estadía (A1, paso 6)', async () => {
+    const stay = await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+    financialRepo.netBalanceByStay = 15000;
+
+    const folio = await service.getFolio(stay.id, TEST_BUSINESS_ID);
+
+    expect(folio.stayId).toBe(stay.id);
+    expect(folio.balance).toBe(15000);
+  });
 });

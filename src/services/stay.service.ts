@@ -71,6 +71,12 @@ export interface CheckInInput {
   notes?: string;
 }
 
+export interface StayFolio {
+  stayId: string;
+  balance: number;
+  transactions: Awaited<ReturnType<FinancialTransactionRepository['getByStayId']>>;
+}
+
 export interface CheckOutInput {
   stayId: string;
   businessId: string;
@@ -197,6 +203,21 @@ export class StayService {
 
   async getStaysByCustomer(customerId: string, businessId: string): Promise<Stay[]> {
     return this.stayRepository.findActiveByCustomer(customerId, businessId);
+  }
+
+  /**
+   * Folio de una estadía: saldo + transacciones asociadas. Lo consulta el
+   * frontend antes de intentar el check-out, para mostrar el saldo
+   * pendiente en vez de que el usuario se entere recién con el 409 de
+   * checkOut() (A1, paso 6).
+   */
+  async getFolio(stayId: string, businessId: string): Promise<StayFolio> {
+    const stay = await this.getStayOrThrow(stayId, businessId);
+    const [balance, transactions] = await Promise.all([
+      this.financialRepository.getNetBalanceByStayId(stay.id),
+      this.financialRepository.getByStayId(stay.id),
+    ]);
+    return { stayId: stay.id, balance, transactions };
   }
 
   // ---------------------------------------------------------------------------

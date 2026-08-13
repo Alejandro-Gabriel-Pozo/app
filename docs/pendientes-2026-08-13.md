@@ -68,7 +68,31 @@ Plan completo (6 pasos, acordado 2026-08-13):
    `/api/reports`). Sin `businessId` en la query — mismo criterio que
    `OccupancyRepository`, el aislamiento ya lo da el pool del tenant, no un
    filtro de columna. 5 tests nuevos. 264/265 verde, typecheck limpio.
-6. Frontend: folio en check-out, pantalla de transferencia a AR, reporte.
+6. ✅ Frontend (`appfrontend-main`): folio en check-out, transferencia a AR,
+   reporte. Hizo falta un endpoint nuevo en el backend que no estaba en el
+   plan original: `GET /stays/:id/folio` (`StayService.getFolio`,
+   `authorize(Roles.FRONT_DESK)`) — sin esto el frontend solo se enteraba
+   del saldo pendiente cuando el checkout ya fallaba con 409, en vez de
+   mostrarlo antes. Test nuevo en `stay.service.test.ts`.
+   - `estadias/page.tsx`: el modal de check-out carga el folio al abrirse;
+     si `balance > 0` el botón "Confirmar check-out" queda deshabilitado y
+     (solo si `isManagement`, mismo patrón ya usado en
+     `housekeeping/page.tsx`) aparece "Transferir a cuenta por cobrar",
+     que abre un modal para elegir un cliente `kind='COMPANY'` (ya
+     cargados en la página, sin fetch nuevo) y notas.
+   - `reportes/page.tsx`: nuevo bloque `ApiSection` "Cuentas por cobrar
+     por empresa", mismo patrón crudo (from/to → JSON) que los demás
+     reportes de esa página — no se inventó una pantalla nueva de diseño.
+   - `lib/types.ts`/`lib/api.ts`: `StayFolio`, `AccountReceivable`,
+     `AccountsReceivableReportRow`, `staysApi.getFolio/transferToReceivable`,
+     `reportsApi.accountsReceivable`.
+   - Verificado con `tsc --noEmit` (limpio) y `next build` completo
+     (compila y pasa el lint incorporado de Next.js) — no se pudo probar
+     en navegador contra un backend real dentro de esta sesión.
+
+**A1 completo (backend + frontend).** Los 4 ítems del gap analysis original
+quedan cerrados: OUT_OF_SERVICE, Location Fase 1, `ReservationLine`, y ahora
+Account/Folio.
 
 **Hallazgo nuevo, no relacionado a A1 — sumar a la sección C (calidad de
 código) cuando se reagrupe:** `tsconfig.json` excluye `src/**/*.test.ts`
