@@ -71,6 +71,19 @@ describe('OrderService', () => {
       });
     });
 
+    it('propaga stayId en el payload cuando la orden se creó con "cargo a la habitación" (A1, paso 4)', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID,
+        customerId: TEST_CUSTOMER_ID,
+        stayId:     'stay-1',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1, unitPrice: 100 }],
+      });
+
+      await service.confirmOrder(order.id);
+
+      expect(eventRepo.events[0]).toMatchObject({ payload: { stayId: 'stay-1' } });
+    });
+
     it('rechaza confirmar una orden que no está en DRAFT', async () => {
       const id = await createDraftOrderWithItem(100);
       await service.confirmOrder(id);

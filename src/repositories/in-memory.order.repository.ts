@@ -45,6 +45,7 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
       status:      'DRAFT',
       totalAmount: 0,
       notes:       input.notes ?? null,
+      stayId:      input.stayId ?? null,
       items:       [],
       confirmedAt: null,
       cancelledAt: null,

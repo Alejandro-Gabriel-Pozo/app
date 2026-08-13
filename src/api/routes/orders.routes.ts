@@ -107,7 +107,8 @@ export function createOrdersRouter(container: AppContainer): Router {
         businessId: req.businessId!,
         customerId: parsed.data.customerId,
         items:      parsed.data.items.map(stripItemUndefined),
-        ...(parsed.data.notes !== undefined && { notes: parsed.data.notes }),
+        ...(parsed.data.notes  !== undefined && { notes: parsed.data.notes }),
+        ...(parsed.data.stayId !== undefined && { stayId: parsed.data.stayId }),
       });
       res.status(201).json(order);
     } catch (err) { next(err); }

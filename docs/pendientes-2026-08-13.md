@@ -50,9 +50,32 @@ Plan completo (6 pasos, acordado 2026-08-13):
    `app.ts`, sin tests previos que actualizar). 4 tests nuevos en
    `stay.service.test.ts` (primer test file que tiene este servicio). 259/260
    tests totales en verde, typecheck limpio.
-4. "Cargo a la habitación": `CreateOrderInput.stayId` opcional.
+4. ✅ "Cargo a la habitación": `CreateOrderInput.stayId` opcional (`Order`
+   gana `stayId: string | null`). Fluye POST /api/orders → `OrderService.
+   createOrder` → `SqlOrderRepository.createWithClient` (columna ya
+   existía desde el paso 1) → evento `order.confirmed` ahora incluye
+   `stayId` en el payload → `handleOrderConfirmed` lo hereda en el `CHARGE`,
+   así `getNetBalanceByStayId` lo cuenta. 4 tests nuevos (propagación en
+   `order.service.test.ts` + `outbox.handlers.test.ts`). 262/263 verde,
+   typecheck limpio.
 5. Reporte por empresa/período (agregación sobre `accounts_receivable`).
 6. Frontend: folio en check-out, pantalla de transferencia a AR, reporte.
+
+**Hallazgo nuevo, no relacionado a A1 — sumar a la sección C (calidad de
+código) cuando se reagrupe:** `tsconfig.json` excluye `src/**/*.test.ts`
+del typecheck (`tsc --noEmit`), y `npm run build` usa el mismo tsconfig —
+o sea, **ningún test se tipa-chequea nunca**, ni en local ni presumiblemente
+en CI. Confirmado corriendo `tsc` con ese exclude removido: decenas de
+errores preexistentes en `sql.occupancy.repository.test.ts`,
+`sql.customer.repository.test.ts`, `sql.reservation.repository.test.ts`
+(mocks de `SqlClient.query` con tipos incompatibles, `Object is possibly
+undefined`) — nada de esto lo causó esta sesión, ya estaba así. Además,
+`outbox.handlers.test.ts` tenía un fake de `FinancialTransactionRepository`
+que quedó incompleto después de los pasos 1 y 3 de A1 (le faltaban 4
+métodos nuevos de la interfaz) y nadie lo iba a notar nunca — ya corregido
+en el paso 3/4. Vale la pena evaluar si conviene un `tsconfig.test.json`
+sin el exclude, corrido aparte en CI, aunque sea sin bloquear el build
+todavía (dado el volumen de errores preexistentes).
 
 ### A2. `Owner` / liquidación a terceros — sin modelar
 Falta el concepto de dueño de un recurso y liquidación de lo cobrado. Solo

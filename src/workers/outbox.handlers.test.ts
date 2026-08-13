@@ -9,6 +9,7 @@ import type {
   FinancialTransaction,
   FinancialTransactionRepository,
 } from '../repositories/financial-transaction.repository.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 /** Fake mínimo — solo lo que estos handlers usan. */
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
@@ -20,15 +21,21 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
     this.created.push(tx);
     return { ...tx, createdAt: new Date() };
   }
+  async createWithClient(_client: SqlClient, tx: Omit<FinancialTransaction, 'createdAt'>) {
+    return this.create(tx);
+  }
   async getByOrderId() { return []; }
   async getByReservationId() { return []; }
   async getByCustomerId() { return []; }
+  async getByStayId() { return []; }
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
   async settleByOrderId(orderId: string) { this.settledOrderIds.push(orderId); return 1; }
   async voidByOrderId(orderId: string) { this.voidedOrderIds.push(orderId); return 1; }
   async getNetBalanceByCustomerId() { return 0; }
+  async getNetBalanceByStayId() { return 0; }
+  async linkStayToReservationCharges() { return 0; }
 }
 
 function fakeEvent(payload: Record<string, unknown>): DomainEvent {
@@ -65,6 +72,22 @@ describe('outbox.handlers — Order', () => {
         status:         'PENDING',
         idempotencyKey: '42:CHARGE',
       });
+    });
+
+    it('hereda stayId del payload — "cargo a la habitación" (A1, paso 4)', async () => {
+      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300, stayId: 'stay-1' });
+
+      await handleOrderConfirmed(financialRepo)(event);
+
+      expect(financialRepo.created[0]).toMatchObject({ stayId: 'stay-1' });
+    });
+
+    it('stayId queda null si la orden no se asoció a una estadía', async () => {
+      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
+
+      await handleOrderConfirmed(financialRepo)(event);
+
+      expect(financialRepo.created[0]).toMatchObject({ stayId: null });
     });
 
     it('no crea nada si totalAmount es 0 o null', async () => {

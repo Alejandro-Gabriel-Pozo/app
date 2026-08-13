@@ -192,6 +192,7 @@ export class OrderService {
           orderId:     updated.id,
           customerId:  updated.customerId,
           totalAmount: updated.totalAmount,
+          stayId:      updated.stayId,
         },
       });
       return updated;

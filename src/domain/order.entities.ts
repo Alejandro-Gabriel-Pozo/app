@@ -107,6 +107,8 @@ export interface Order {
   status:        OrderStatus;
   totalAmount:   number;
   notes:         string | null;
+  /** FK a stays.id — "cargo a la habitación" (A1, paso 4). Null si no se asoció a una estadía. */
+  stayId:        string | null;
   items:         OrderItem[];
   confirmedAt:   Date | null;
   cancelledAt:   Date | null;
@@ -132,6 +134,8 @@ export interface CreateOrderInput {
   businessId:  string;
   customerId:  string;
   notes?:      string | null;
+  /** "Cargo a la habitación" (A1, paso 4) — asocia el pedido a una estadía activa. */
+  stayId?:     string | null;
   items:       CreateOrderItemInput[];
 }
 

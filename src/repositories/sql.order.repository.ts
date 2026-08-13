@@ -63,6 +63,7 @@ function rowToOrder(row: Record<string, unknown>, items: OrderItem[]): Order {
     status:      row['status'] as OrderStatus,
     totalAmount: Number(row['total_amount']),
     notes:       (row['notes'] as string | null) ?? null,
+    stayId:      (row['stay_id'] as string | null) ?? null,
     confirmedAt: row['confirmed_at'] ? new Date(row['confirmed_at'] as string) : null,
     cancelledAt: row['cancelled_at'] ? new Date(row['cancelled_at'] as string) : null,
     completedAt: row['completed_at'] ? new Date(row['completed_at'] as string) : null,
@@ -203,10 +204,10 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     id: string,
   ): Promise<Order> {
     const { rows } = await client.query<Record<string, unknown>>(
-      `INSERT INTO orders (id, business_id, customer_id, notes)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO orders (id, business_id, customer_id, notes, stay_id)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [id, input.businessId, input.customerId, input.notes ?? null],
+      [id, input.businessId, input.customerId, input.notes ?? null, input.stayId ?? null],
     );
     return rowToOrder(rows[0]!, []);
   }

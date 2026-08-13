@@ -112,10 +112,11 @@ export function handleOrderConfirmed(
   financialRepo: FinancialTransactionRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { orderId, customerId, totalAmount } = event.payload as {
+    const { orderId, customerId, totalAmount, stayId } = event.payload as {
       orderId: string;
       customerId: string;
       totalAmount: number | undefined;
+      stayId?: string | null;
     };
 
     // Orden sin ítems con precio (ej. solo notas) → no hay movimiento financiero.
@@ -126,6 +127,9 @@ export function handleOrderConfirmed(
       businessId:     event.businessId,
       customerId,
       orderId,
+      // "Cargo a la habitación" (A1, paso 4) — si la orden se asoció a una
+      // Stay, el CHARGE hereda stayId para que getNetBalanceByStayId lo cuente.
+      stayId:         stayId ?? null,
       type:           'CHARGE',
       amount:         totalAmount,
       currency:       'ARS',

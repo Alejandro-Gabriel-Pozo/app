@@ -189,6 +189,8 @@ export const CreateOrderItemSchema = z.object({
 export const CreateOrderSchema = z.object({
   customerId: z.string().min(1, 'customerId es obligatorio'),
   notes:      z.string().nullable().optional(),
+  /** "Cargo a la habitación" (A1, paso 4) — id de una Stay activa. */
+  stayId:     z.string().nullable().optional(),
   items:      z.array(CreateOrderItemSchema).optional().default([]),
 });
 
