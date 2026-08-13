@@ -217,18 +217,32 @@ CREATE TABLE IF NOT EXISTS service_schedules (
 -- ---------------------------------------------------------------------------
 -- customers
 -- ---------------------------------------------------------------------------
+-- password_hash nullable: un cliente walk-in creado por el staff (POST
+-- /api/customers, ver comentario en customers.routes.ts "se puede crear
+-- un cliente sin email") no tiene contraseña -- no accede al portal hasta
+-- que (si alguna vez) se registra ahí. Antes NOT NULL rompía CADA alta de
+-- cliente por staff con un 500 crudo de Postgres (violates not-null
+-- constraint), sin pasar por ningún DomainError -- bug real encontrado
+-- 13/08/2026, no una regla de negocio. getByEmailWithPassword() ya
+-- esperaba este caso (chequea `!rows[0]?.password_hash`), así que el
+-- resto del código ya estaba preparado para esto.
 CREATE TABLE IF NOT EXISTS customers (
   id            VARCHAR(255)  PRIMARY KEY,
   full_name     VARCHAR(255),
   display_name  VARCHAR(255)  NOT NULL,
   email         VARCHAR(255)  UNIQUE,
-  password_hash TEXT          NOT NULL,
+  password_hash TEXT,
   kind          VARCHAR(20)   NOT NULL DEFAULT 'INDIVIDUAL'
                   CHECK (kind IN ('INDIVIDUAL', 'COMPANY')),
   active        BOOLEAN       NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- Para tenant DBs creadas antes de este fix, donde la tabla ya existe con
+-- password_hash NOT NULL. Idempotente: si la columna ya es nullable, esto
+-- no hace nada (no tira error al re-ejecutarse).
+ALTER TABLE customers ALTER COLUMN password_hash DROP NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_customers_email
   ON customers (email) WHERE active = TRUE;
