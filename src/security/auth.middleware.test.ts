@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { authenticate, signToken } from './auth.middleware.js';
+import { authenticate, signToken, setAuthCookie, clearAuthCookie, AUTH_COOKIE_NAME } from './auth.middleware.js';
 import { UserRole } from '../types/enums.js';
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
@@ -30,6 +30,10 @@ function fakeReqWithToken(token: string): Request {
   return { headers: { authorization: `Bearer ${token}` } } as unknown as Request;
 }
 
+function fakeReqWithCookie(token: string): Request {
+  return { headers: { cookie: `${AUTH_COOKIE_NAME}=${token}` } } as unknown as Request;
+}
+
 function fakeRes(): Response & { statusCode?: number; body?: unknown } {
   const res = {} as Response & { statusCode?: number; body?: unknown };
   res.status = vi.fn((code: number) => {
@@ -40,6 +44,8 @@ function fakeRes(): Response & { statusCode?: number; body?: unknown } {
     res.body = body;
     return res;
   }) as unknown as Response['json'];
+  res.cookie = vi.fn(() => res) as unknown as Response['cookie'];
+  res.clearCookie = vi.fn(() => res) as unknown as Response['clearCookie'];
   return res;
 }
 
@@ -121,5 +127,68 @@ describe('authenticate() — isMembershipActive', () => {
     await authenticate()(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
+  });
+});
+
+describe('authenticate() — cookie httpOnly (B2)', () => {
+  const employeeToken = () =>
+    signToken({ sub: 'identity-1', role: UserRole.ADMIN, business_id: 'biz-1' }, SECRET);
+
+  it('acepta el token desde la cookie AUTH_COOKIE_NAME si no vino header Authorization', async () => {
+    const req = fakeReqWithCookie(employeeToken());
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate()(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ id: 'identity-1', role: UserRole.ADMIN, businessId: 'biz-1' });
+  });
+
+  it('prioriza el header Authorization sobre la cookie si ambos están presentes', async () => {
+    const headerToken = employeeToken();
+    const cookieToken = 'token-de-cookie-que-no-deberia-usarse';
+    const req = {
+      headers: {
+        authorization: `Bearer ${headerToken}`,
+        cookie: `${AUTH_COOKIE_NAME}=${cookieToken}`,
+      },
+    } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate()(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ id: 'identity-1' });
+  });
+
+  it('responde 401 si no hay ni header ni cookie', async () => {
+    const req = { headers: {} } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    await authenticate()(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('setAuthCookie setea httpOnly + el maxAge pedido en segundos convertido a ms', () => {
+    const res = fakeRes();
+    setAuthCookie(res, 'un-token', 3600);
+
+    expect(res.cookie).toHaveBeenCalledWith(
+      AUTH_COOKIE_NAME,
+      'un-token',
+      expect.objectContaining({ httpOnly: true, sameSite: 'strict', path: '/', maxAge: 3_600_000 }),
+    );
+  });
+
+  it('clearAuthCookie limpia la cookie con el mismo nombre', () => {
+    const res = fakeRes();
+    clearAuthCookie(res);
+
+    expect(res.clearCookie).toHaveBeenCalledWith(AUTH_COOKIE_NAME, expect.objectContaining({ httpOnly: true }));
   });
 });

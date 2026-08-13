@@ -36,6 +36,7 @@ import { createLocationsRouter }         from './api/routes/locations.routes.js'
 import { createReservationsRouter }      from './api/routes/reservations.routes.js';
 import { createReportsRouter }           from './api/routes/reports.routes.js';
 import { createAuthRouter }              from './api/routes/auth.routes.js';
+import { createMeRouter }                from './api/routes/me.routes.js';
 import { createBusinessRouter }          from './api/routes/business.routes.js';
 import { createCustomerRouter }          from './api/routes/customer.routes.js';
 import { createCustomersRouter }         from './api/routes/customers.routes.js';
@@ -184,6 +185,10 @@ export async function createApp(): Promise<{
   // 13. /api/admin — ANTES de tenantMiddleware (repair-tenant-db lo requiere)
   // -------------------------------------------------------------------------
   app.use('/api/admin', createAdminRouter(platformRepo));
+
+  // /api/auth/me + /api/auth/logout (B2) — solo lee req.user, tampoco
+  // necesita req.db de tenant.
+  app.use('/api/auth', createMeRouter());
 
   // /api/business/modules — tampoco necesita req.db (consulta la BD de
   // plataforma vía container), así que va antes de tenantMiddleware.

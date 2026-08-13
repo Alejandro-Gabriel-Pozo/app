@@ -29,6 +29,15 @@
  * la revocación de clientes es un caso distinto (vive en la tenant DB, no
  * en `memberships` de plataforma) y queda fuera de este cambio.
  *
+ * ## Cookie httpOnly (B2, docs/pendientes-2026-08-13.md)
+ * `authenticate()` acepta el token de DOS formas, en este orden: header
+ * `Authorization: Bearer <token>` (como siempre) o, si no vino, la cookie
+ * `AUTH_COOKIE_NAME`. Es un fallback, no un reemplazo — cualquier cliente
+ * que ya mande el header (apps, Postman, la doc de Swagger) sigue
+ * funcionando exactamente igual. `setAuthCookie`/`clearAuthCookie` viven acá
+ * para que login/logout no dupliquen las opciones de la cookie
+ * (httpOnly/secure/sameSite/path) en dos archivos.
+ *
  * ## hashPassword / verifyPassword
  * Viven en user.store.ts — importarlas de ahí directamente. Hasta el
  * 13/08/2026 este archivo las re-exportaba "para que los routers no se
@@ -134,6 +143,58 @@ export function verifyToken<T = JwtPayload>(token: string, secret: string): T & 
 }
 
 // ---------------------------------------------------------------------------
+// Cookie httpOnly — fallback de authenticate(), usada por login/logout
+// ---------------------------------------------------------------------------
+
+export const AUTH_COOKIE_NAME = 'rh_token';
+
+/**
+ * Parser mínimo del header `Cookie`. No se agregó `cookie-parser` como
+ * dependencia por una sola cookie de lectura — mismo criterio que el JWT
+ * hecho a mano con `node:crypto` en vez de una lib externa.
+ */
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (!key) continue;
+    try {
+      out[key] = decodeURIComponent(part.slice(idx + 1).trim());
+    } catch {
+      out[key] = part.slice(idx + 1).trim();
+    }
+  }
+  return out;
+}
+
+/**
+ * Setea la cookie de sesión. `secure` solo en producción: en desarrollo
+ * local (http, sin TLS) el browser descarta silenciosamente una cookie
+ * `Secure` y rompería el login local.
+ */
+export function setAuthCookie(res: Response, token: string, maxAgeSeconds: number): void {
+  res.cookie(AUTH_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+    maxAge: maxAgeSeconds * 1000,
+  });
+}
+
+export function clearAuthCookie(res: Response): void {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Configuración — LAZY: se lee en tiempo de uso, no al importar
 // ---------------------------------------------------------------------------
 
@@ -185,15 +246,17 @@ export const authenticate = (
     }
 
     const authHeader = req.headers['authorization'];
-    if (!authHeader?.startsWith('Bearer ')) {
+    const token = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : parseCookies(req.headers['cookie'])[AUTH_COOKIE_NAME];
+
+    if (!token) {
       res.status(401).json({
         code: 'UNAUTHORIZED',
         message: 'Se requiere header Authorization: Bearer <token>',
       });
       return;
     }
-
-    const token = authHeader.slice(7);
 
     let payload: JwtPayload;
     try {

@@ -26,6 +26,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { AuthService } from '../../security/auth.service.js';
+import { setAuthCookie } from '../../security/auth.middleware.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiter — protección anti fuerza bruta
@@ -211,6 +212,13 @@ export function createAuthRouter(authService: AuthService): Router {
         // 2. Delegar autenticación al servicio (401 si las credenciales son incorrectas)
         const result = await authService.login(body.email, body.password);
 
+        // 2.5. Cookie httpOnly (B2) — fallback además del token en el body,
+        // no en su reemplazo todavía. Solo cuando el login se resolvió del
+        // todo (needsBusinessSelection no trae token).
+        if ('token' in result) {
+          setAuthCookie(res, result.token, result.expiresIn);
+        }
+
         // 3. Responder con el token (o con la lista de negocios para elegir)
         res.status(200).json(result);
       } catch (err) {
@@ -259,6 +267,7 @@ export function createAuthRouter(authService: AuthService): Router {
       try {
         const body = SelectBusinessBodySchema.parse(req.body);
         const result = await authService.selectBusiness(body.identityToken, body.businessId);
+        setAuthCookie(res, result.token, result.expiresIn);
         res.status(200).json(result);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'INVALID_BUSINESS_SELECTION') {
