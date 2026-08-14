@@ -677,3 +677,25 @@ tomadas todavía sobre proveedor de mail ni alcance exacto de qué eventos
 disparan un correo. Requiere sesión aparte, con las credenciales/cuentas
 reales del proveedor elegido antes de empezar (Google Cloud Console para
 OAuth, cuenta del proveedor de mail).
+
+### E6. Auditar y remodelar el frontend "según estándar de innovación"
+
+Pedido del usuario, textual: auditar y remodelar el frontend siguiendo un
+estándar de innovación. Queda anotado tal cual porque **no hay información
+suficiente todavía para acotarlo** — "estándar de innovación" no está
+definido (¿visual/diseño? ¿UX de flujos? ¿stack tecnológico — seguir en
+Next.js 14 con estilos inline como hoy, o migrar a algo distinto?
+¿benchmarking contra qué productos puntuales?). Antes de tocar código hace
+falta que el usuario responda al menos:
+- ¿Es una referencia visual concreta (otro producto, un moodboard, una
+  paleta) o es más sobre flujos/UX (cuántos clics para reservar, por
+  ejemplo)?
+- ¿Alcance: todo el panel de una sola vez, o empezar por una pantalla
+  piloto (ej. Reservas o Estadías, que son las más usadas)?
+- ¿Convive con lo que ya funciona (fix incremental, pantalla por pantalla)
+  o es un rediseño de una sola vez?
+
+Sin esas respuestas, cualquier propuesta que se arme acá sería inventada,
+no una lectura real del pedido. Retomar cuando el usuario traiga más
+precisión — no es tarea para "resolver solo con lo que ya sabemos del
+código", a diferencia de E1-E5.
