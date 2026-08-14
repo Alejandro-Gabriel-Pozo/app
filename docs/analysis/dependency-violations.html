@@ -216,13 +216,13 @@
       <strong>151</strong> modules
     </div>
     <div style="float:left;padding-right:20px">
-      <strong>540</strong> dependencies
+      <strong>585</strong> dependencies
     </div>
     <div style="float:left;padding-right:20px">
       <strong>1</strong> errors
     </div>
     <div style="float:left;padding-right:20px">
-      <strong>5</strong> warnings
+      <strong>0</strong> warnings
     </div>
     <div style="float:left;padding-right:20px">
       <strong>0</strong> informational
@@ -245,18 +245,6 @@
         </tr>
       </thead>
       <tr>
-    <td><span class="warn">&cross;</span></td>
-    <td>warn</td>
-    <td class="nowrap">
-      <a href="#no-orphans-instance"
-         id="no-orphans-definition" 
-         class="noiseless">no-orphans</a>
-    </td>
-    <td><strong>5</strong></td>
-    <td><strong>0</strong></td>
-    <td>Archivo que nada importa — candidato a dead code. Puede haber falsos positivos legítimos (entry points, tipos usados solo por el compilador).</td>
-  </tr>
-<tr>
     <td><span class="error">&cross;</span></td>
     <td>error</td>
     <td class="nowrap">
@@ -279,6 +267,18 @@
     <td><strong>0</strong></td>
     <td><strong>0</strong></td>
     <td>Dependencia circular entre módulos — dificulta razonar sobre el orden de carga y suele esconder un problema de diseño (dos módulos que deberían ser uno, o una responsabilidad mal ubicada).</td>
+  </tr>
+<tr class="unviolated">
+    <td><span class="ok">&check;</span></td>
+    <td>warn</td>
+    <td class="nowrap">
+      <a href="#no-orphans-instance"
+         id="no-orphans-definition" 
+         class="noiseless">no-orphans</a>
+    </td>
+    <td><strong>0</strong></td>
+    <td><strong>0</strong></td>
+    <td>Archivo que nada importa — candidato a dead code. Puede haber falsos positivos legítimos (entry points, tipos usados solo por el compilador).</td>
   </tr>
       <tr>
         <td colspan="6" class="controls">
@@ -322,68 +322,13 @@
     <td><span class="dependency-type unknown" title="dependency types: unknown"></span></td>
     <td>../config/supabase.js</td>
   </tr>
-  <tr>
-    <td class="warn">warn</td>
-    <td class="nowrap">
-      <a href="#no-orphans-definition" 
-         id="no-orphans-instance"
-         class="noiseless">no-orphans</a>
-    </td>
-    <td><a href="src/schemas/preferences.schemas.ts">src/schemas/preferences.schemas.ts</a></td>
-    <td><span class="dependency-type " title="dependency types: "></span></td>
-    <td></td>
-  </tr>
-  <tr>
-    <td class="warn">warn</td>
-    <td class="nowrap">
-      <a href="#no-orphans-definition" 
-         id="no-orphans-instance"
-         class="noiseless">no-orphans</a>
-    </td>
-    <td><a href="src/security/jwt.service.ts">src/security/jwt.service.ts</a></td>
-    <td><span class="dependency-type " title="dependency types: "></span></td>
-    <td></td>
-  </tr>
-  <tr>
-    <td class="warn">warn</td>
-    <td class="nowrap">
-      <a href="#no-orphans-definition" 
-         id="no-orphans-instance"
-         class="noiseless">no-orphans</a>
-    </td>
-    <td><a href="src/services/validation.factory.ts">src/services/validation.factory.ts</a></td>
-    <td><span class="dependency-type " title="dependency types: "></span></td>
-    <td></td>
-  </tr>
-  <tr>
-    <td class="warn">warn</td>
-    <td class="nowrap">
-      <a href="#no-orphans-definition" 
-         id="no-orphans-instance"
-         class="noiseless">no-orphans</a>
-    </td>
-    <td><a href="src/services/validation.registry.ts">src/services/validation.registry.ts</a></td>
-    <td><span class="dependency-type " title="dependency types: "></span></td>
-    <td></td>
-  </tr>
-  <tr>
-    <td class="warn">warn</td>
-    <td class="nowrap">
-      <a href="#no-orphans-definition" 
-         id="no-orphans-instance"
-         class="noiseless">no-orphans</a>
-    </td>
-    <td><a href="src/types/preferences.types.ts">src/types/preferences.types.ts</a></td>
-    <td><span class="dependency-type " title="dependency types: "></span></td>
-    <td></td>
-  </tr>
       
       </tbody>
     </table>
     </span>
   <footer>
     <p><a href="https://github.com/sverweij/dependency-cruiser">dependency-cruiser@18.2.0</a> /
-      2026-08-13T20:33:33.890Z</p>
+      2026-08-14T18:01:57.729Z</p>
   </footer>
 </body>
 </html>
