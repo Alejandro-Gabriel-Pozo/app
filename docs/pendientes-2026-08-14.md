@@ -222,10 +222,32 @@ sin coordinar:**
   página) **no se rompe** — sigue devolviendo `role` como el nombre
   resuelto, sin cambios ahí.
 
-Decisión pendiente del dueño del proyecto: pushear app-main ya y aceptar
-`/dashboard/usuarios` degradado hasta coordinar el frontend, o
-coordinar los dos repos en la misma sesión antes de pushear cualquiera de
-los dos.
+**✅ Coordinado (14/08/2026):** se actualizó `appfrontend-main` en la misma
+sesión, antes de pushear cualquiera de los dos repos.
+
+- `lib/types.ts`: `TeamMember.role` → `roleId`/`roleName`; nuevo tipo
+  `Role`; `CreateTeamMemberInput`/`UpdateTeamMemberInput` usan `roleId`.
+  `EmployeeRole`/`AssignableEmployeeRole` (enum de 5 valores fijos)
+  eliminados.
+- `lib/api.ts`: nuevo `rolesApi` (`GET/POST/PUT/DELETE /api/roles`).
+- `dashboard/usuarios/page.tsx`: carga `roles` junto con `members`
+  (`Promise.all`), el `<select>` de rol pasa a poblarse dinámicamente desde
+  `assignableRoles` (cualquier rol del negocio salvo OWNER — ya no una
+  lista hardcodeada de 4) en vez de un array fijo, los dos guards de OWNER
+  (botón borrar, ocultar selector al editar) pasan a comparar
+  `roleName !== 'OWNER'`.
+- **Hallazgo extra, fuera de esta página:** `dashboard/housekeeping/page.tsx`
+  también leía `m.role === 'HOUSEKEEPING'` (dos lugares, para poblar el
+  selector de "asignar tarea") — no apareció en el grep inicial porque no
+  usaba los tipos `EmployeeRole`/`AssignableEmployeeRole`, solo el campo
+  suelto. Corregido a `m.roleName === 'HOUSEKEEPING'`. Sirve de recordatorio:
+  un grep por tipo no alcanza para encontrar todos los consumidores de un
+  campo — hay que grepear el campo en sí también.
+
+Verificado: `tsc --noEmit` limpio y `next build` completo (21 rutas) en
+`appfrontend-main`. Sin probar en navegador contra un backend real dentro
+de esta sesión (mismo criterio que el resto de los cambios de frontend de
+hoy). Ambos repos listos para pushear juntos.
 
 ---
 
