@@ -265,14 +265,60 @@ vuelve a testear local, rebuildear con la variable puesta antes de
 a `/api/*` vía `localhost` devolvieron respuestas reales del backend de
 producción (400 de validación Zod, 401 de auth), no 404 de Next.
 
-**Estado:** decidido arrancar el 13/08/2026. Paso 1 (proxy) hecho y en
-producción. Quedan pendientes, no arrancados: `Set-Cookie` en login/register
-del backend, `GET /api/auth/me`, `POST /api/auth/refresh`, reescribir
-`apiFetch`/`AuthContext.tsx` a `credentials: 'include'` (deja de usar
-`localStorage`/header manual), decisión de protección CSRF (con same-origin
-ya resuelto, `SameSite=Strict` debería alcanzar — confirmar), y decidir si
-se migran los 3 sistemas de auth juntos o se arranca solo por staff. Si
-quedó a medias, retomar desde acá antes de asumir que está completo.
+**Paso 2/N — backend: cookie httpOnly + `/api/auth/me` + `/api/auth/logout`
+— ✅ HECHO (13/08/2026, `app-main` commit `ff161d7`, pusheado a
+producción, deploy confirmado con `GET /api/auth/me` → 401 en vez de 404):**
+Alcance: **solo staff** (el sistema que causó el bug original), no se tocó
+el portal de clientes ni plataforma/SUPERADMIN todavía — decisión tomada
+para no mezclar los tres frentes en un mismo paso.
+
+- `authenticate()` (`src/security/auth.middleware.ts`) ahora acepta el
+  token también desde una cookie `rh_token`, como **fallback** del header
+  `Authorization: Bearer` — no lo reemplaza. Se prueba primero el header;
+  si no vino, se lee la cookie. Ningún cliente existente (apps, Postman,
+  Swagger) se rompe. Parser de cookie hecho a mano (no se agregó
+  `cookie-parser` como dependencia) — mismo criterio que el JWT con
+  `node:crypto` en vez de una lib externa.
+- `POST /api/login` y `POST /api/login/select-business`
+  (`src/api/routes/auth.routes.ts`) setean la cookie con `setAuthCookie()`
+  además de devolver el token en el body de siempre — coexisten. Opciones
+  de la cookie: `httpOnly`, `secure` solo en producción (en dev local sobre
+  http el browser descartaría una cookie `Secure`), `SameSite=Strict`
+  (válido porque el tráfico del browser ya es same-origin gracias al proxy
+  del paso 1), `path=/`, `maxAge` = el mismo `expiresIn` del JWT.
+- Nuevo `GET /api/auth/me` (`src/api/routes/me.routes.ts`, montado en
+  `/api/auth` después del `authenticate()` global, antes de
+  `tenantMiddleware` — no necesita `req.db`): devuelve
+  `{id, role, businessId?, customerId?}` en JSON. Hace falta porque con
+  httpOnly el frontend **no puede leer el JWT con `parseJwt()`
+  client-side** — es el punto entero de httpOnly. El frontend todavía no lo
+  consume (eso es el paso 3).
+- Nuevo `POST /api/auth/logout`: limpia la cookie con `clearAuthCookie()`.
+  Necesario para cuando el paso 3 saque el `localStorage` — con httpOnly,
+  JS no puede borrar la cookie por su cuenta.
+- 5 tests nuevos en `auth.middleware.test.ts` (fallback de cookie, prioridad
+  del header sobre la cookie, 401 sin ninguno de los dos, opciones de
+  `setAuthCookie`/`clearAuthCookie`). Suite completa: 286/287 verde
+  (el 1 que falta es un `.todo` preexistente, no relacionado). Typecheck y
+  lint limpios en los 4 archivos tocados.
+- **No se tocó el frontend en este paso.** `AuthContext.tsx` sigue leyendo
+  `localStorage` y armando el header a mano — la cookie ya se está
+  seteando en cada login pero nadie la usa todavía. Es aditivo puro: cero
+  riesgo de romper el login actual mientras el paso 3 no arranque.
+
+**Estado:** decidido arrancar el 13/08/2026. Pasos 1 (proxy) y 2 (backend:
+cookie + `/api/auth/me` + `/api/auth/logout`) hechos y en producción.
+Sigue el **paso 3** — el más grande —: reescribir
+`appfrontend-main/src/lib/api.ts` (`apiFetch`) y
+`appfrontend-main/src/context/AuthContext.tsx` para dejar de usar
+`localStorage`/header `Authorization` manual y pasar a `credentials:
+'include'` (la cookie viaja sola) + consumir `GET /api/auth/me` al cargar
+la app en vez de `parseJwt()`. También falta: `POST /api/auth/refresh`
+(`ARCHITECTURE.md` ya lo proponía, para renovar la cookie sin forzar
+re-login cada `JWT_EXPIRES_IN`) y decidir si el portal de clientes
+(`CustomerAuthContext`) y plataforma/SUPERADMIN se migran después con el
+mismo patrón o quedan en `localStorage` por ahora. Si quedó a medias,
+retomar desde acá antes de asumir que está completo.
 
 ---
 
