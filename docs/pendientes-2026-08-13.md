@@ -699,3 +699,76 @@ Sin esas respuestas, cualquier propuesta que se arme acá sería inventada,
 no una lectura real del pedido. Retomar cuando el usuario traiga más
 precisión — no es tarea para "resolver solo con lo que ya sabemos del
 código", a diferencia de E1-E5.
+
+### E7. Rutas de backend sin UI en el frontend — auditoría completa (13/08/2026)
+
+Auditoría sistemática (agente Explore) de las 20 rutas de `app-main/src/api/
+routes/*.ts` contra los consumidores reales en `appfrontend-main` (`lib/
+api.ts`, `lib/customerApi.ts`, `/dashboard/**`, y la consola de debug
+`/admin`). Se excluyó `me.routes.ts` (recién conectado esta sesión, B2).
+Reporte completo con file:line en el historial de esta sesión — acá el
+resumen accionable, agrupado por qué tipo de gap es.
+
+**a) Funcionalidad de backend lista, sin pantalla — gaps reales de producto:**
+- **Horarios de servicios reservables**: `GET/POST/PUT/DELETE /api/bookable-
+  services/:id/schedules[...]` (4 endpoints) — el backend soporta gestionar
+  el horario semanal de un servicio, no hay ninguna pantalla que lo use.
+- **Housekeeping — vistas por usuario/estado**: `GET /api/housekeeping/me`
+  (tareas del housekeeper logueado) y `GET /api/housekeeping/status/:status`
+  (tablero filtrado) — hoy `dashboard/housekeeping/page.tsx` solo usa
+  `listByDate` y filtra client-side; estas dos rutas armarían pantallas
+  más naturales para un housekeeper individual.
+- **Descuento de stock en POS**: `POST /api/products/:id/stock/decrement` y
+  su equivalente de variante — **no lo llama ni el frontend ni
+  `orders.routes.ts` del propio backend**. Cuando se confirma una orden con
+  productos, el stock nunca baja. Es un hueco en el flujo de negocio, no
+  solo de UI — evaluar si corresponde engancharlo a `OrderService.
+  confirmOrder()` server-side en vez de esperar un botón nuevo en el
+  frontend.
+- **Alta de negocio nuevo**: `POST /register` — no hay pantalla de registro
+  de negocio en este frontend; los negocios se deben estar dando de alta
+  por fuera (¿a mano, por SQL?). Bajo impacto mientras haya un solo
+  negocio real (ver A4).
+- **`locations`**: `GET/POST /api/locations` sin UI — confirmado por
+  comentario del propio backend (`locations.routes.ts:8-12`) que es
+  scaffolding a propósito, no selección real de sucursal todavía. Ya
+  cubierto conceptualmente en el roadmap multirubro, no es un hallazgo
+  nuevo.
+- **Stays — lookups puntuales**: `GET /api/stays/reservation/:id`,
+  `/resource/:id`, `/:id` — sin consumidor. Bajo impacto: `dashboard/
+  estadias/page.tsx` ya deriva todo esto de `listActive()` client-side, así
+  que probablemente no haga falta construir pantallas nuevas para esto.
+
+**b) Backend-only a propósito — no son gaps, no tocar:**
+`POST /api/admin/set-tenant-url`, `DELETE /api/reports/occupancy/purge`
+(purga de datos, ejecución manual), y las 6 rutas de `/platform/*`
+(consola de operaciones de plataforma, pensada para un ops console
+separado — no de este frontend).
+
+**c) Código muerto en el frontend (funciones definidas, nunca llamadas) —
+prioridad baja, junto con C2/C7 cuando se retomen:** `resourcesApi` no
+tiene `get(id)`, `categoriesApi` no tiene `get(id)`, `bookableServicesApi.
+get`, `usersApi.get`, y **los 4 wrappers de `reportsApi`** (`occupancy`/
+`summary`/`underutilized`/`accountsReceivable`) — `dashboard/reportes/
+page.tsx` los ignora todos y llama a `apiFetch` directo con las rutas
+correctas.
+
+**d) Bug real, de bajo riesgo porque está en código muerto:**
+`reportsApi.underutilized` (`lib/api.ts:405-408`) apunta a
+`/api/reports/underutilized`, que **no existe** — la ruta real es
+`/api/reports/occupancy/underutilized`. Daría 404 garantizado si algo
+alguna vez la llamara. No afecta hoy porque nada la usa (ver c), pero es
+código roto, no solo sin uso.
+
+**e) La consola de debug `/admin` (`appfrontend-main/src/app/admin/
+page.tsx`) está desactualizada** respecto al backend actual: llama a dos
+rutas que ya no existen (`GET /api/resources/type/:type`,
+`GET /api/resources/:id/availability` con esa forma) y a dos paths de
+reportes con el mismo bug que (d) (`/api/reports/summary`,
+`/api/reports/underutilized` en vez de sus equivalentes bajo
+`/occupancy/`). Es una herramienta de testing manual, no producción — bajo
+impacto, pero confunde si alguien la usa para debuggear asumiendo que
+refleja el backend real.
+
+No implementado nada de esto — es auditoría pura, a la espera de que se
+priorice qué ítems de (a) vale la pena construir.
