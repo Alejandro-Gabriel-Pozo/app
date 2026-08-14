@@ -122,7 +122,9 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // Bumpeado a mano acá mismo, junto con el cambio de schema.sql que lo
 // motiva — es justamente el paso que pendientes-2026-08-13.md (A4) marcó
 // como "hay que acordarse a mano" y que se saltó la sesión anterior.
-export const CURRENT_SCHEMA_VERSION = 2;
+// v3 (14/08/2026): BLOQUE 11 — tabla cash_register_shifts nueva +
+// financial_transactions.payment_method/shift_id (Gap analysis Tango #2).
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

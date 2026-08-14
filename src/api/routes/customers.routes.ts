@@ -383,6 +383,7 @@ export function createCustomersRouter(container: AppContainer): Router {
           customerId: String(req.params['id']),
           businessId: req.user!.businessId as string,
           amount: body.amount,
+          ...(body.paymentMethod && { paymentMethod: body.paymentMethod }),
           ...(body.notes && { notes: body.notes }),
           ...(body.idempotencyKey && { idempotencyKey: body.idempotencyKey }),
         });

@@ -53,6 +53,7 @@ import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.
 import { createStaysRouter }             from './api/routes/stays.routes.js';
 import { createBusinessHoursRouter }     from './api/routes/business-hours.routes.js';
 import { createBusinessModulesRouter }   from './api/routes/business-modules.routes.js';
+import { createCashRegisterRouter }      from './api/routes/cash-register.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
 import { helmetBase, helmetApi, helmetDocs } from './api/middleware/helmet.middleware.js';
@@ -224,6 +225,11 @@ export async function createApp(): Promise<{
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
   app.use('/api/audit-log',         createAuditLogRouter());
+  app.use(
+    '/api/cash-register',
+    requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
+    createCashRegisterRouter(container),
+  );
 
   app.use(
     '/api/reports',

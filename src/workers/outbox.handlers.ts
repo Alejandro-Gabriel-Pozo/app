@@ -24,7 +24,7 @@
 
 import { randomUUID } from 'crypto';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
-import type { FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
+import type { FinancialTransactionRepository, PaymentMethod } from '../repositories/financial-transaction.repository.js';
 import type { OutboxWorker } from './outbox.worker.js';
 
 /**
@@ -143,8 +143,14 @@ export function handleOrderCompleted(
   financialRepo: FinancialTransactionRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { orderId } = event.payload as { orderId: string };
-    await financialRepo.settleByOrderId(orderId);
+    const { orderId, paymentMethod } = event.payload as {
+      orderId: string;
+      paymentMethod?: PaymentMethod | null;
+    };
+    // paymentMethod viaja desde OrderService.completeOrder() — si es 'CASH'
+    // y hay un turno OPEN para el negocio, settleByOrderId vincula el CHARGE
+    // al turno en la misma UPDATE (Gap analysis Tango #2).
+    await financialRepo.settleByOrderId(orderId, paymentMethod ?? null);
   };
 }
 

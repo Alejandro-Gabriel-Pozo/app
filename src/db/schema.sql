@@ -1025,3 +1025,73 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity
   ON audit_log (entity, entity_id, changed_at DESC);
+
+-- ===========================================================================
+-- BLOQUE 11 — CAJA / TURNO (Gap analysis Tango #2)
+-- ===========================================================================
+-- TRANSACCION (docs/criterios-datos.md Parte 1): abrir/cerrar un turno de
+-- caja es un hecho que ocurre una vez y avanza de estado, nunca se edita
+-- despues de confirmado -- mismo trato que reservations/orders (R9-R13),
+-- no un maestro. changed_by/opened_by/closed_by son identity_id (JWT sub)
+-- de la platform DB, SIN FK a `users` -- mismo criterio que
+-- stays.assigned_by (BLOQUE 6) y audit_log.changed_by (BLOQUE 10).
+--
+-- A8.2 (invariantes como constraint, no validacion): "un solo turno OPEN
+-- por negocio" se garantiza con un indice unico parcial, no con un
+-- SELECT-antes-de-INSERT en el service -- dos aperturas concurrentes del
+-- mismo negocio nunca pueden pasar las dos.
+--
+-- A6.5 (toda transicion deja rastro): opened_by/opened_at y closed_by/
+-- closed_at registran quien y cuando en cada extremo del turno.
+--
+-- expected_cash_amount/variance se calculan al cerrar (CashRegisterService,
+-- no en SQL) a partir de opening_amount + los financial_transactions en
+-- efectivo (payment_method='CASH') vinculados a este turno via
+-- financial_transactions.shift_id -- ver mas abajo. Se persisten (no se
+-- recalculan al leer, A3.4) porque son el resultado de un arqueo puntual:
+-- si despues se linkea un cargo tardio al turno ya cerrado, el arqueo
+-- historico no debe cambiar solo.
+CREATE TABLE IF NOT EXISTS cash_register_shifts (
+  id                     VARCHAR(255)   PRIMARY KEY,
+  business_id            VARCHAR(255)   NOT NULL,
+  opened_by              VARCHAR(255)   NOT NULL,
+  opened_at              TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  opening_amount         DECIMAL(12,2)  NOT NULL DEFAULT 0 CHECK (opening_amount >= 0),
+  currency               VARCHAR(3)     NOT NULL DEFAULT 'ARS',
+  status                 VARCHAR(20)    NOT NULL DEFAULT 'OPEN'
+                            CHECK (status IN ('OPEN', 'CLOSED')),
+  closed_by              VARCHAR(255),
+  closed_at              TIMESTAMPTZ,
+  closing_amount_counted DECIMAL(12,2)  CHECK (closing_amount_counted IS NULL OR closing_amount_counted >= 0),
+  expected_cash_amount   DECIMAL(12,2),
+  variance               DECIMAL(12,2),
+  notes                  VARCHAR(500)
+);
+
+-- A8.2: constraint, no validacion de service. WHERE status = 'OPEN' permite
+-- N turnos CLOSED historicos por negocio pero nunca dos OPEN simultaneos.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_shift_one_open_per_business
+  ON cash_register_shifts (business_id)
+  WHERE status = 'OPEN';
+
+CREATE INDEX IF NOT EXISTS idx_cash_shift_business_status
+  ON cash_register_shifts (business_id, status);
+
+-- payment_method: nullable a proposito -- todo financial_transactions
+-- existente (CHARGE creado por el outbox, PAYMENT viejo) no tiene medio de
+-- pago capturado y no se migra con un valor inventado (mismo criterio que
+-- order_id/stay_id, BLOQUE 8: nullable, sin backfill de filas viejas).
+-- shift_id: solo se completa cuando payment_method = 'CASH' y habia un
+-- turno OPEN al momento de crear/settlear la transaccion (ver
+-- CashRegisterService y SqlFinancialTransactionRepository.insert()/
+-- settleByOrderId()) -- pagos con tarjeta/transferencia no pasan por caja
+-- fisica, quedan con shift_id NULL siempre.
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)
+  CHECK (payment_method IS NULL OR payment_method IN ('CASH', 'CARD', 'TRANSFER', 'OTHER'));
+
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS shift_id VARCHAR(255)
+  REFERENCES cash_register_shifts(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ft_shift
+  ON financial_transactions (shift_id)
+  WHERE shift_id IS NOT NULL;

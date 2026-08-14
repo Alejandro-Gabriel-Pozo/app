@@ -30,6 +30,7 @@ import type {
 import type { TransactionManager }      from '../db/transaction-manager.js';
 import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
+import type { PaymentMethod }           from '../repositories/financial-transaction.repository.js';
 import { DomainError }                  from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -226,8 +227,14 @@ export class OrderService {
     });
   }
 
-  /** CONFIRMED -> COMPLETED. Emite `order.completed` -> settea el CHARGE a SETTLED. */
-  async completeOrder(id: string): Promise<OrderWithTransitions> {
+  /**
+   * CONFIRMED -> COMPLETED. Emite `order.completed` -> settea el CHARGE a
+   * SETTLED. `paymentMethod` viaja en el payload del evento (no se persiste
+   * en `orders` — vive en `financial_transactions`, ver handleOrderCompleted
+   * en outbox.handlers.ts) para que el settle sepa si vincular el CHARGE a
+   * un turno de caja (Gap analysis Tango #2).
+   */
+  async completeOrder(id: string, paymentMethod?: PaymentMethod | null): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'CONFIRMED') throw new InvalidOrderTransitionError(order.status, 'COMPLETED');
@@ -239,7 +246,7 @@ export class OrderService {
         aggregateType: 'ORDER',
         aggregateId:   updated.id,
         eventType:     'order.completed',
-        payload: { orderId: updated.id },
+        payload: { orderId: updated.id, paymentMethod: paymentMethod ?? null },
       });
       return withAllowedTransitions(updated);
     });

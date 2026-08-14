@@ -43,6 +43,7 @@ import type { OrderStatus, CreateOrderItemInput } from '../../domain/order.entit
 import {
   CreateOrderSchema,
   CreateOrderItemSchema,
+  CompleteOrderSchema,
   type CreateOrderItemBody,
 } from '../schemas/request.schemas.js';
 
@@ -141,9 +142,19 @@ export function createOrdersRouter(container: AppContainer): Router {
   });
 
   // ── POST /api/orders/:id/complete ────────────────────────────────────────────
+  // body opcional { paymentMethod? } — 'CASH' vincula el CHARGE al turno de
+  // caja OPEN del negocio, si hay uno (Gap analysis Tango #2).
   router.post('/:id/complete', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req, container).completeOrder(param(req, 'id'));
+      const parsed = CompleteOrderSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
+        return;
+      }
+      const order = await buildOrderService(req, container).completeOrder(
+        param(req, 'id'),
+        parsed.data.paymentMethod ?? null,
+      );
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });

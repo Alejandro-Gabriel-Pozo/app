@@ -175,10 +175,31 @@ export const CreateCustomerRateSchema = z.object({
 // Cuentas corrientes — POST /api/customers/:id/payments
 // ---------------------------------------------------------------------------
 
+export const PaymentMethodSchema = z.enum(['CASH', 'CARD', 'TRANSFER', 'OTHER']);
+
 export const RecordPaymentSchema = z.object({
   amount:         z.number().positive('amount debe ser mayor a 0'),
+  paymentMethod:  PaymentMethodSchema.optional(),
   idempotencyKey: z.string().min(1).optional(),
   notes:          z.string().max(500).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Caja / turno — POST /api/cash-register/open, /close
+// ---------------------------------------------------------------------------
+
+export const OpenShiftSchema = z.object({
+  openingAmount: z.number().min(0, 'openingAmount no puede ser negativo'),
+  notes:         z.string().max(500).optional(),
+});
+
+export const CloseShiftSchema = z.object({
+  closingAmountCounted: z.number().min(0, 'closingAmountCounted no puede ser negativo'),
+  notes:                z.string().max(500).optional(),
+});
+
+export const CompleteOrderSchema = z.object({
+  paymentMethod: PaymentMethodSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------

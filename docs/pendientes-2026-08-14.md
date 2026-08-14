@@ -148,9 +148,9 @@ F):**
   ajuste de permisos requiere tocar código y redeployar. Se cruza con
   E4a (estandarizar ABM/usuarios) — no es un ítem nuevo aislado, es
   evidencia concreta de por qué E4a importa.
-- **Sin concepto de caja/turno** (apertura, cierre, saldo). Relevante si el
-  POS se vende como reemplazo real de caja registradora, no solo carrito de
-  cobro.
+- ✅ RESUELTO (14/08/2026) — **Sin concepto de caja/turno** (apertura,
+  cierre, saldo). Relevante si el POS se vende como reemplazo real de caja
+  registradora, no solo carrito de cobro. Ver sección J.
 - **`FinancialTransaction` no modela medios de pago con cuotas/recargo por
   tarjeta.** Un cobro con tarjeta en 3 cuotas no tiene dónde vivir ese
   desglose hoy.
@@ -285,6 +285,63 @@ en el script vendored (`WinError 10038`, 100% de las consultas fallan),
 no relacionado a esta skill. Se descartó el intento sin aplicar cambios
 (confirmado que no tocó `SKILL.md`) — la descripción quedó escrita a mano
 siguiendo las pautas de skill-creator.
+
+---
+
+### J. Caja/turno — ✅ HECHO (14/08/2026)
+
+Segundo gap de Tango implementado (sección D). TRANSACCIÓN (Parte 1 de
+`criterios-datos.md`): abrir/cerrar un turno es un hecho que ocurre una vez
+y avanza de estado, nunca se edita después de confirmado — mismo trato que
+`reservations`/`orders`, no un maestro.
+
+**Schema (BLOQUE 11):** tabla `cash_register_shifts` nueva
+(`opened_by`/`opened_at`, `closed_by`/`closed_at`, `opening_amount`,
+`closing_amount_counted`, `expected_cash_amount`, `variance` — estos dos
+últimos calculados en el service al cerrar y persistidos, no recalculados
+al leer, A3.4) + `financial_transactions.payment_method` (CASH/CARD/
+TRANSFER/OTHER, nullable) + `financial_transactions.shift_id` (nullable,
+`ON DELETE SET NULL`). Un solo turno OPEN por negocio garantizado por
+índice único parcial (A8.2 — constraint, no `SELECT` previo en el
+service). `CURRENT_SCHEMA_VERSION` 2→3.
+
+**Vínculo automático turno↔movimiento:** cuando `payment_method = 'CASH'`
+y el caller no pasa un `shiftId` explícito, tanto
+`SqlFinancialTransactionRepository.insert()` (usado por
+`CustomerAccountService.recordPayment`) como `settleByOrderId()` (usado
+por el outbox al procesar `order.completed`) resuelven el turno OPEN del
+negocio con una subquery en la misma sentencia — nunca un
+`SELECT`-antes-de-`UPDATE`/`INSERT` separado. `paymentMethod` viaja desde
+`OrderService.completeOrder()` en el payload del evento de dominio hasta
+`handleOrderCompleted`.
+
+**Alcance deliberadamente afuera:** `settleByReservationId` (reservas
+completadas) no recibió el mismo tratamiento — las reservas típicamente se
+cobran vía `recordPayment`/folio, no vía auto-settle del outbox. Si en el
+futuro hay un flujo de reserva que cobra en efectivo directo al
+completarse, hay que revisar esto.
+
+**Endpoints nuevos:** `GET /api/cash-register/current`, `GET
+/api/cash-register`, `GET /api/cash-register/:id` (detalle + movimientos),
+`POST /api/cash-register/open`, `POST /api/cash-register/close` — todos
+`Roles.FRONT_DESK`, gateados por `ModuleKey.CUENTAS_CORRIENTES` (no se creó
+un módulo nuevo — evita otra decisión de pricing sin definir, ver
+`modular_addon_pricing_architecture` en memoria).
+
+**Probado contra un branch descartable de Neon** (proyecto `DB-APP-PPMS`,
+BD de tenant): 3 corridas idempotentes del bloque nuevo sin error, más
+verificación funcional — el índice único bloquea un segundo turno OPEN
+concurrente, el `INSERT`/`UPDATE` con la subquery vincula correctamente un
+movimiento CASH al turno abierto, y el cálculo de `getCashMovementsTotal`
+da el neto esperado. Branch borrado al terminar.
+
+~30 tests nuevos entre `sql.financial-transaction.repository.test.ts`,
+`sql.cash-register-shift.repository.test.ts`, `cash-register.service.test.ts`,
+`customer-account.service.test.ts` (nuevo), `order.service.test.ts` y
+`outbox.handlers.test.ts`. 356/356 tests (+1 todo ya existente), typecheck y lint limpios.
+
+**Pendiente:** el tercer gap de Tango — medios de pago con cuotas/recargo
+por tarjeta (sección D) — no se tocó en esta sesión.
 
 ---
 

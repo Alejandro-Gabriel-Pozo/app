@@ -2,6 +2,7 @@ import type { SqlClient } from './sql.client.js';
 
 export type TransactionType = 'CHARGE' | 'PAYMENT' | 'REFUND' | 'ADJUSTMENT';
 export type TransactionStatus = 'PENDING' | 'SETTLED' | 'FAILED' | 'VOIDED';
+export type PaymentMethod = 'CASH' | 'CARD' | 'TRANSFER' | 'OTHER';
 
 export interface FinancialTransaction {
   id: string;
@@ -30,6 +31,20 @@ export interface FinancialTransaction {
   idempotencyKey?: string | null;
   /** Memo libre — ej. "efectivo", "transferencia ref #123" en un pago manual. */
   notes?: string | null;
+  /**
+   * Medio de pago. Null para filas viejas (nunca se capturó) y para CHARGE
+   * PENDING que todavía no se saldó (se completa recién al settlear, ver
+   * `settleByOrderId`). Determina si la fila puede vincularse a un turno de
+   * caja — solo 'CASH' pasa por `shiftId`.
+   */
+  paymentMethod?: PaymentMethod | null;
+  /**
+   * Turno de caja (`cash_register_shifts`) al que pertenece este movimiento.
+   * Se completa solo cuando `paymentMethod === 'CASH'` y había un turno OPEN
+   * del negocio al momento de crear/settlear la fila — pagos con
+   * tarjeta/transferencia no pasan por caja física.
+   */
+  shiftId?: string | null;
   createdAt?: Date;
 }
 
@@ -93,9 +108,18 @@ export interface FinancialTransactionRepository {
   /**
    * Pasa a SETTLED todas las transacciones PENDING de una orden.
    * Idempotente: si ya están SETTLED, no hace nada.
+   *
+   * Si se pasa `paymentMethod`, se persiste en las filas actualizadas. Si
+   * además es `'CASH'` y hay un turno OPEN para el negocio de la orden, esas
+   * filas se vinculan a ese turno (`shiftId`) en la misma UPDATE — ver
+   * `SqlFinancialTransactionRepository.settleByOrderId`.
+   *
    * Retorna la cantidad de filas actualizadas.
    */
-  settleByOrderId(orderId: string): Promise<number>;
+  settleByOrderId(orderId: string, paymentMethod?: PaymentMethod | null): Promise<number>;
+
+  /** Obtiene todas las transacciones de un turno de caja. */
+  getByShiftId(shiftId: string): Promise<FinancialTransaction[]>;
 
   /**
    * Pasa a VOIDED todas las transacciones PENDING/SETTLED de una orden.

@@ -8,6 +8,7 @@ import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type {
   FinancialTransaction,
   FinancialTransactionRepository,
+  PaymentMethod,
 } from '../repositories/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
@@ -15,6 +16,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
   public created: Omit<FinancialTransaction, 'createdAt'>[] = [];
   public settledOrderIds: string[] = [];
+  public settledOrderPaymentMethods: (PaymentMethod | null | undefined)[] = [];
   public voidedOrderIds: string[] = [];
 
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) {
@@ -28,10 +30,15 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByReservationId() { return []; }
   async getByCustomerId() { return []; }
   async getByStayId() { return []; }
+  async getByShiftId() { return []; }
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
-  async settleByOrderId(orderId: string) { this.settledOrderIds.push(orderId); return 1; }
+  async settleByOrderId(orderId: string, paymentMethod?: PaymentMethod | null) {
+    this.settledOrderIds.push(orderId);
+    this.settledOrderPaymentMethods.push(paymentMethod);
+    return 1;
+  }
   async voidByOrderId(orderId: string) { this.voidedOrderIds.push(orderId); return 1; }
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
@@ -102,6 +109,16 @@ describe('outbox.handlers — Order', () => {
     it('settea el CHARGE de la orden a SETTLED', async () => {
       await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' }));
       expect(financialRepo.settledOrderIds).toEqual(['order-1']);
+    });
+
+    it('propaga paymentMethod del payload a settleByOrderId (Gap Tango #2)', async () => {
+      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1', paymentMethod: 'CASH' }));
+      expect(financialRepo.settledOrderPaymentMethods).toEqual(['CASH']);
+    });
+
+    it('paymentMethod queda null si no viene en el payload', async () => {
+      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' }));
+      expect(financialRepo.settledOrderPaymentMethods).toEqual([null]);
     });
   });
 

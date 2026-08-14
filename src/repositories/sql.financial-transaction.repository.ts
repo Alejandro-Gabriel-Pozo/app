@@ -3,6 +3,7 @@ import type { SqlClient } from './sql.client.js';
 import type {
   FinancialTransaction,
   FinancialTransactionRepository,
+  PaymentMethod,
   TransactionStatus,
   TransactionType,
 } from './financial-transaction.repository.js';
@@ -20,6 +21,8 @@ interface TransactionRow {
   currency: string;
   status: TransactionStatus;
   notes: string | null;
+  payment_method: PaymentMethod | null;
+  shift_id: string | null;
   created_at: Date;
 }
 
@@ -58,14 +61,24 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
   ): Promise<FinancialTransaction | null> {
     const id = tx.id ?? randomUUID();
     const idempotencyKey = tx.idempotencyKey ?? null;
+    const paymentMethod = tx.paymentMethod ?? null;
+    const explicitShiftId = tx.shiftId ?? null;
 
     if (idempotencyKey !== null) {
       // Path idempotente: el worker usa esto para evitar duplicados en reintentos.
       // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
+      //
+      // shift_id: si el caller no lo pasó explícito ($14) y el medio de pago
+      // ($13) es 'CASH', se resuelve al turno OPEN del negocio ($2) en la
+      // misma sentencia (A8.2 — constraint/subquery, no un SELECT previo en
+      // el service). Tarjeta/transferencia o sin turno abierto: queda NULL.
       const result = await client.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+           COALESCE($14, CASE WHEN $13 = 'CASH'
+             THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2 AND status = 'OPEN')
+             ELSE NULL END))
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING *`,
         [
@@ -81,17 +94,23 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           tx.currency,
           tx.status,
           tx.notes ?? null,
+          paymentMethod,
+          explicitShiftId,
         ],
       );
       // RETURNING vacío = ON CONFLICT activado = fila ya existía = éxito silencioso.
       return result.rows[0] ? this.rowToEntity(result.rows[0]) : null;
     }
 
-    // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto de id.
+    // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto
+    // de id. Mismo criterio de shift_id que el path idempotente (ver arriba).
     const result = await client.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+         COALESCE($13, CASE WHEN $12 = 'CASH'
+           THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2 AND status = 'OPEN')
+           ELSE NULL END))
        RETURNING *`,
       [
         id,
@@ -105,6 +124,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.currency,
         tx.status,
         tx.notes ?? null,
+        paymentMethod,
+        explicitShiftId,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
@@ -158,6 +179,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rows.map((r) => this.rowToEntity(r));
   }
 
+  async getByShiftId(shiftId: string): Promise<FinancialTransaction[]> {
+    const result = await this.sqlClient.query<TransactionRow>(
+      `SELECT * FROM financial_transactions
+       WHERE shift_id = $1
+       ORDER BY created_at ASC`,
+      [shiftId],
+    );
+    return result.rows.map((r) => this.rowToEntity(r));
+  }
+
   async settleByReservationId(reservationId: string): Promise<number> {
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
@@ -180,13 +211,21 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
-  async settleByOrderId(orderId: string): Promise<number> {
+  async settleByOrderId(orderId: string, paymentMethod?: PaymentMethod | null): Promise<number> {
+    const method = paymentMethod ?? null;
+    // shift_id: mismo criterio que insert() — solo se vincula si el medio de
+    // pago es 'CASH' y hay un turno OPEN para el negocio de esta fila
+    // (business_id ya está en la fila, no hace falta que el caller lo pase).
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
-       SET status = 'SETTLED'
+       SET status = 'SETTLED',
+           payment_method = COALESCE($2, payment_method),
+           shift_id = CASE WHEN $2 = 'CASH'
+             THEN (SELECT id FROM cash_register_shifts WHERE business_id = financial_transactions.business_id AND status = 'OPEN')
+             ELSE shift_id END
        WHERE order_id = $1
          AND status = 'PENDING'`,
-      [orderId],
+      [orderId, method],
     );
     return result.rowCount ?? 0;
   }
@@ -273,6 +312,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       currency:        row.currency,
       status:          row.status,
       notes:           row.notes,
+      paymentMethod:   row.payment_method,
+      shiftId:         row.shift_id,
       createdAt:       row.created_at,
     };
   }

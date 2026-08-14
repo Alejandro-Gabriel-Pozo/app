@@ -127,6 +127,30 @@ describe('OrderService', () => {
       const id = await createDraftOrderWithItem(50);
       await expect(service.completeOrder(id)).rejects.toThrow(InvalidOrderTransitionError);
     });
+
+    it('propaga paymentMethod al payload de order.completed (Gap Tango #2 — caja/turno)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id);
+
+      await service.completeOrder(id, 'CASH');
+
+      expect(eventRepo.events[1]).toMatchObject({
+        eventType: 'order.completed',
+        payload:   { orderId: id, paymentMethod: 'CASH' },
+      });
+    });
+
+    it('paymentMethod queda null en el payload si no se pasa', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id);
+
+      await service.completeOrder(id);
+
+      expect(eventRepo.events[1]).toMatchObject({
+        eventType: 'order.completed',
+        payload:   { orderId: id, paymentMethod: null },
+      });
+    });
   });
 
   describe('cancelOrder', () => {
