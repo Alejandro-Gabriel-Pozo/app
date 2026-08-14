@@ -24,6 +24,7 @@ import { PLAN_LIMITS } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
+import { CategoryNotFoundError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'resource_categories';
 
@@ -42,12 +43,15 @@ export class PlanLimitError extends Error {
   }
 }
 
-export class CategoryNotFoundError extends Error {
-  constructor(id: string) {
-    super(`Categoría "${id}" no encontrada.`);
-    this.name = 'CategoryNotFoundError';
-  }
-}
+// CategoryNotFoundError vive en domain/errors.ts (extiende DomainError,
+// code CATEGORY_NOT_FOUND, ya mapeado a 404 en error.middleware.ts).
+// Hasta el 14/08/2026 este archivo definía una clase local homónima que
+// extendía Error a secas — dos clases con el mismo nombre, la de acá sin
+// `.code`, así que categories.routes.ts no podía dejar de capturarla
+// localmente sin que un 404 real cayera al 500 genérico (C2,
+// pendientes-2026-08-13.md). Se unificó en una sola — sql.category.
+// repository.ts y categories.routes.ts ahora importan directo de
+// domain/errors.ts, no de acá (mismo criterio que C7: sin re-exports).
 
 /** Genera un id slug a partir del nombre: "Turno de Baño" → "turno-de-bano" */
 function slugify(name: string): string {

@@ -27,7 +27,7 @@ import type {
   UpdateCategoryDTO,
   CategoryField,
 } from '../types/resource-category.types.js';
-import { CategoryNotFoundError } from '../services/category.service.js';
+import { CategoryNotFoundError } from '../domain/errors.js';
 
 const RETURNING_COLS = `
   id, name, description, fields, active, created_at, updated_at

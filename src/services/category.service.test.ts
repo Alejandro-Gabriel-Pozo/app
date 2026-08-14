@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { CategoryService, CategoryNotFoundError } from './category.service.js';
+import { CategoryService } from './category.service.js';
+import { CategoryNotFoundError } from '../domain/errors.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import type { ICategoryRepository } from '../repositories/category.repository.js';
 import type {

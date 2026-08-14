@@ -36,8 +36,11 @@ import { Roles } from '../../security/roles.js';
 import {
   CategoryService,
   PlanLimitError,
-  CategoryNotFoundError,
 } from '../../services/category.service.js';
+// CategoryNotFoundError vive en domain/errors.ts, no en category.service.ts
+// (ver nota ahí) — desde acá ya no hace falta capturarla a mano: es un
+// DomainError real con code CATEGORY_NOT_FOUND, mapeado a 404 en
+// error.middleware.ts (docs/pendientes-2026-08-13.md, C2).
 import {
   CreateCategorySchema,
   UpdateCategorySchema,
@@ -77,13 +80,7 @@ export function createCategoryRouter(container: AppContainer): Router {
       const service  = buildService(req);
       const category = await service.getCategoryById(String(req.params['id']));
       res.json(category);
-    } catch (err) {
-      if (err instanceof CategoryNotFoundError) {
-        res.status(404).json({ code: 'NOT_FOUND', message: err.message });
-        return;
-      }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   // ---------------------------------------------------------------------------
@@ -168,8 +165,7 @@ export function createCategoryRouter(container: AppContainer): Router {
       );
       res.json(category);
     } catch (err) {
-      if (err instanceof ZodError)               { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
-      if (err instanceof CategoryNotFoundError)  { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
       next(err);
     }
   });
@@ -182,10 +178,7 @@ export function createCategoryRouter(container: AppContainer): Router {
       const service = buildService(req);
       await service.deleteCategory(String(req.params['id']));
       res.status(204).send();
-    } catch (err) {
-      if (err instanceof CategoryNotFoundError) { res.status(404).json({ code: 'NOT_FOUND', message: err.message }); return; }
-      next(err);
-    }
+    } catch (err) { next(err); }
   });
 
   return router;
