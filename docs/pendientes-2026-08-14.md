@@ -30,12 +30,35 @@ simulado sin bump como fallo. Usa `grep -E` (no `-P`) a propósito — `-P`
 depende de PCRE y falla con "supports only unibyte and UTF-8 locales" en
 algunos entornos (confirmado en Git Bash local), `-E` es portable.
 
-**Sigue sin la opción (b)** (correr `migrate:tenants` automáticamente en
-el deploy de Render) — deliberado, es un cambio de pipeline de producción
-más grande, no se implementó sin decisión explícita. Con (a) puesto, el
-riesgo de "nadie se acuerda de bumpear" ya está cerrado — (b) solo
-ahorraría el paso manual de correr `migrate:tenants` después de mergear,
-que sigue siendo necesario.
+### A4 — opción (b) también implementada (14/08/2026): ✅ CERRADO POR COMPLETO
+`render.yaml` corre `npm run migrate:tenants` al final de `buildCommand`,
+en cada deploy. **No usa `preDeployCommand`** — se investigó primero
+(WebFetch contra la doc oficial de Render) y ese campo **requiere plan
+pago**; este servicio está en `plan: free`. La doc de Render confirma
+textual que el camino correcto en Free es meterlo en `buildCommand`, así
+que se hizo así.
+
+Si el script falla, el build entero falla y Render no promueve la versión
+nueva — sigue sirviendo la anterior (fail loud, R15). Riesgo aceptado y
+documentado en el propio `render.yaml`: con 1 solo tenant hoy, un tenant
+caído bloquea el deploy de todos — revisar ese acoplamiento si el número
+de tenants crece.
+
+**Bug encontrado y corregido antes de activar esto:** `createPlatformPool()`
+(`src/container.ts`) no tenía `connectionTimeoutMillis` — si la BD de
+plataforma no respondía, el pool esperaba indefinidamente. Sin arreglar
+esto, un Neon caído habría colgado el build de Render para siempre,
+bloqueando todo deploy futuro sin ni siquiera fallar. Agregado
+`connectionTimeoutMillis: 10_000`, mismo valor que ya usa
+`applyTenantSchema()` por tenant.
+
+Verificado: `npm run migrate:tenants` sin credenciales falla limpio (exit
+1, mensaje claro) — confirma que el build fallaría fuerte, no en
+silencio, si faltara `PLATFORM_DATABASE_URL` en Render. Como
+`businesses.schema_version` ya está en 2 (aplicado a mano en F2), el
+próximo deploy real va a correr esto como no-op seguro (todo tenant "ya
+al día"), sin riesgo de tocar nada. Typecheck, lint y suite completa
+(309/310) verdes.
 
 ---
 

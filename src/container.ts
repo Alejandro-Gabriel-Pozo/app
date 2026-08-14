@@ -48,6 +48,13 @@ export function createPlatformPool(): SqlClient {
       connectionString,
       max: 5,
       ssl: sslConfig(),
+      // Sin esto, `pg` espera indefinidamente si la BD de plataforma no
+      // responde (default de la librería: sin timeout). Encontrado al
+      // blindar A4 (pendientes-2026-08-14.md): migrate:tenants pasó a
+      // correr en cada build de Render, y sin timeout acá un Neon caído
+      // colgaría el build para siempre, bloqueando todo deploy futuro.
+      // Mismo valor que ya usa applyTenantSchema() por tenant.
+      connectionTimeoutMillis: 10_000,
     });
     _platformPool.on('error', (err) => {
       console.error('[platform] Error en pool central:', err.message);

@@ -30,6 +30,14 @@
  *     npx tsx src/scripts/migrate-tenants.ts
  *
  * O vía npm script: `npm run migrate:tenants`
+ *
+ * ## Automático en cada deploy (14/08/2026, A4 opción b)
+ * `render.yaml` lo agrega al final de `buildCommand` — corre en cada
+ * deploy de Render, después de `npm run build`. Si falla (`process.exit(1)`
+ * más abajo), el build entero falla y Render no promueve la versión nueva.
+ * No confundir con el uso manual de arriba: ese sigue siendo válido para
+ * correrlo a mano contra la BD real cuando haga falta (ej. sin esperar al
+ * próximo deploy, o para reintentar un tenant que falló).
  */
 
 import { createPlatformPool, closePlatformPool } from '../container.js';
