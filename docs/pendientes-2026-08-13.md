@@ -12,7 +12,7 @@ no borrar la fila — mismo criterio que el archivo del 10/08.
 
 ## A. Deuda estructural (`app-main`) — prioridad
 
-### A1. Account/Folio — en curso (paso 1/6 hecho, 2026-08-13)
+### A1. Account/Folio — ✅ RESUELTO (6/6 pasos, 2026-08-13)
 `Order` + `Stay` + `Reservation` no convergen en una cuenta liquidable única.
 Último ítem grande del gap analysis original (`Gap analysis - booking
 multirubro vs modelo actual.md`) — los otros tres (OUT_OF_SERVICE, Location
@@ -530,3 +530,15 @@ funciona sin eso.
 - **FACTURACION** (módulo de entitlements) sin ninguna ruta que gatear
   todavía — no existe emisión de comprobantes en el código. Ver
   `docs/roadmap-pms-multirubro.md` y memoria `modular_addon_pricing_architecture`.
+- **Filtro de rubro en `resource_categories`**: hoy un recurso no-alojamiento
+  (ej. "Barbero Isahía") aparece en el dropdown de check-in/check-out de
+  Estadías junto con las habitaciones — no rompe nada, pero confunde.
+  Diseño ya acordado con el usuario (13/08/2026): agregar un campo tipo
+  `resource_type`/`rubro` a `resource_categories` y filtrar por él en la UI
+  de Estadías. Deferido a propósito ese día para priorizar "bugs primero"
+  (401, 500 de clientes) — no se retomó todavía.
+- **`tsconfig.json` excluye `src/**/*.test.ts` del typecheck** (hallazgo de
+  A1, ver ahí el detalle): ningún test se tipa-chequea, ni local ni en CI.
+  Hay errores preexistentes reales si se saca el exclude (mocks de
+  `SqlClient.query` mal tipados en varios repos). Evaluar un
+  `tsconfig.test.json` separado en CI, sin bloquear el build todavía.
