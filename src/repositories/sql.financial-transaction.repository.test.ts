@@ -147,33 +147,107 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     });
   });
 
+  describe('create — card_installments / card_surcharge_amount (Gap Tango #3)', () => {
+    it('incluye card_installments y card_surcharge_amount en el INSERT normal', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-6', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: null, stay_id: null,
+          idempotency_key: null, type: 'PAYMENT', amount: '1150', currency: 'ARS',
+          status: 'SETTLED', notes: null, payment_method: 'CARD', shift_id: null,
+          card_installments: 6, card_surcharge_amount: '150', created_at: new Date(),
+        }],
+      } as unknown as QueryResult<Record<string, unknown>>);
+
+      const created = await repo.create({
+        id: 'tx-6',
+        businessId: 'biz-1',
+        customerId: 'cust-1',
+        type: 'PAYMENT',
+        amount: 1150,
+        currency: 'ARS',
+        status: 'SETTLED',
+        paymentMethod: 'CARD',
+        cardInstallments: 6,
+        cardSurchargeAmount: 150,
+      });
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('card_installments');
+      expect(sql).toContain('card_surcharge_amount');
+      expect(params).toContain(6);
+      expect(params).toContain(150);
+      expect(created?.cardInstallments).toBe(6);
+      expect(created?.cardSurchargeAmount).toBe(150);
+    });
+
+    it('quedan null cuando no se pasan (compatibilidad con callers viejos)', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-7', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: null, stay_id: null,
+          idempotency_key: null, type: 'PAYMENT', amount: '100', currency: 'ARS',
+          status: 'SETTLED', notes: null, payment_method: 'CASH', shift_id: null,
+          card_installments: null, card_surcharge_amount: null, created_at: new Date(),
+        }],
+      } as unknown as QueryResult<Record<string, unknown>>);
+
+      const created = await repo.create({
+        id: 'tx-7',
+        businessId: 'biz-1',
+        customerId: 'cust-1',
+        type: 'PAYMENT',
+        amount: 100,
+        currency: 'ARS',
+        status: 'SETTLED',
+        paymentMethod: 'CASH',
+      });
+
+      expect(created?.cardInstallments).toBeNull();
+      expect(created?.cardSurchargeAmount).toBeNull();
+    });
+  });
+
   describe('settleByOrderId — payment_method / shift_id (Gap Tango #2)', () => {
     it('persiste paymentMethod y vincula el turno OPEN cuando es CASH', async () => {
-      await repo.settleByOrderId('order-1', 'CASH');
+      await repo.settleByOrderId('order-1', { paymentMethod: 'CASH' });
 
       const mockQuery = vi.mocked(mockSqlClient.query);
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain("SET status = 'SETTLED'");
       expect(sql).toContain('payment_method');
       expect(sql).toContain('cash_register_shifts');
-      expect(params).toEqual(['order-1', 'CASH']);
+      expect(params).toEqual(['order-1', 'CASH', null, null]);
     });
 
     it('no toca shift_id cuando paymentMethod no es CASH', async () => {
-      await repo.settleByOrderId('order-1', 'CARD');
+      await repo.settleByOrderId('order-1', { paymentMethod: 'CARD' });
 
       const mockQuery = vi.mocked(mockSqlClient.query);
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain('ELSE shift_id END');
-      expect(params).toEqual(['order-1', 'CARD']);
+      expect(params).toEqual(['order-1', 'CARD', null, null]);
     });
 
-    it('sigue funcionando sin paymentMethod (compatibilidad con callers viejos)', async () => {
+    it('sigue funcionando sin paymentInfo (compatibilidad con callers viejos)', async () => {
       await repo.settleByOrderId('order-1');
 
       const mockQuery = vi.mocked(mockSqlClient.query);
       const [, params] = mockQuery.mock.calls[0]!;
-      expect(params).toEqual(['order-1', null]);
+      expect(params).toEqual(['order-1', null, null, null]);
+    });
+  });
+
+  describe('settleByOrderId — card_installments / card_surcharge_amount (Gap Tango #3)', () => {
+    it('persiste cardInstallments y cardSurchargeAmount cuando es CARD', async () => {
+      await repo.settleByOrderId('order-1', { paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 });
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('card_installments');
+      expect(sql).toContain('card_surcharge_amount');
+      expect(params).toEqual(['order-1', 'CARD', 6, 150]);
     });
   });
 

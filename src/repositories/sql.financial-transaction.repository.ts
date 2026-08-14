@@ -3,6 +3,7 @@ import type { SqlClient } from './sql.client.js';
 import type {
   FinancialTransaction,
   FinancialTransactionRepository,
+  PaymentInfo,
   PaymentMethod,
   TransactionStatus,
   TransactionType,
@@ -23,6 +24,8 @@ interface TransactionRow {
   notes: string | null;
   payment_method: PaymentMethod | null;
   shift_id: string | null;
+  card_installments: number | null;
+  card_surcharge_amount: string | null; // DECIMAL llega como string en pg
   created_at: Date;
 }
 
@@ -63,6 +66,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     const idempotencyKey = tx.idempotencyKey ?? null;
     const paymentMethod = tx.paymentMethod ?? null;
     const explicitShiftId = tx.shiftId ?? null;
+    const cardInstallments = tx.cardInstallments ?? null;
+    const cardSurchargeAmount = tx.cardSurchargeAmount ?? null;
 
     if (idempotencyKey !== null) {
       // Path idempotente: el worker usa esto para evitar duplicados en reintentos.
@@ -72,13 +77,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // ($13) es 'CASH', se resuelve al turno OPEN del negocio ($2) en la
       // misma sentencia (A8.2 — constraint/subquery, no un SELECT previo en
       // el service). Tarjeta/transferencia o sin turno abierto: queda NULL.
+      // card_installments/card_surcharge_amount ($15/$16) son puramente
+      // descriptivos (Gap Tango #3) — el CHECK de BD exige payment_method
+      // = 'CARD' para que no sean NULL, no hace falta replicar esa lógica acá.
       const result = await client.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id)
+           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
            COALESCE($14, CASE WHEN $13 = 'CASH'
              THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2 AND status = 'OPEN')
-             ELSE NULL END))
+             ELSE NULL END), $15, $16)
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING *`,
         [
@@ -96,6 +104,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           tx.notes ?? null,
           paymentMethod,
           explicitShiftId,
+          cardInstallments,
+          cardSurchargeAmount,
         ],
       );
       // RETURNING vacío = ON CONFLICT activado = fila ya existía = éxito silencioso.
@@ -103,14 +113,14 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     }
 
     // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto
-    // de id. Mismo criterio de shift_id que el path idempotente (ver arriba).
+    // de id. Mismo criterio de shift_id/card_* que el path idempotente (ver arriba).
     const result = await client.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id)
+         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
          COALESCE($13, CASE WHEN $12 = 'CASH'
            THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2 AND status = 'OPEN')
-           ELSE NULL END))
+           ELSE NULL END), $14, $15)
        RETURNING *`,
       [
         id,
@@ -126,6 +136,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.notes ?? null,
         paymentMethod,
         explicitShiftId,
+        cardInstallments,
+        cardSurchargeAmount,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
@@ -211,21 +223,28 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
-  async settleByOrderId(orderId: string, paymentMethod?: PaymentMethod | null): Promise<number> {
-    const method = paymentMethod ?? null;
+  async settleByOrderId(orderId: string, paymentInfo?: PaymentInfo): Promise<number> {
+    const method = paymentInfo?.paymentMethod ?? null;
+    const cardInstallments = paymentInfo?.cardInstallments ?? null;
+    const cardSurchargeAmount = paymentInfo?.cardSurchargeAmount ?? null;
     // shift_id: mismo criterio que insert() — solo se vincula si el medio de
     // pago es 'CASH' y hay un turno OPEN para el negocio de esta fila
     // (business_id ya está en la fila, no hace falta que el caller lo pase).
+    // card_installments/card_surcharge_amount: se persisten tal cual vienen
+    // (Gap Tango #3) — el CHECK de BD exige payment_method = 'CARD' cuando
+    // no son NULL.
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
        SET status = 'SETTLED',
            payment_method = COALESCE($2, payment_method),
            shift_id = CASE WHEN $2 = 'CASH'
              THEN (SELECT id FROM cash_register_shifts WHERE business_id = financial_transactions.business_id AND status = 'OPEN')
-             ELSE shift_id END
+             ELSE shift_id END,
+           card_installments = COALESCE($3, card_installments),
+           card_surcharge_amount = COALESCE($4, card_surcharge_amount)
        WHERE order_id = $1
          AND status = 'PENDING'`,
-      [orderId, method],
+      [orderId, method, cardInstallments, cardSurchargeAmount],
     );
     return result.rowCount ?? 0;
   }
@@ -314,6 +333,8 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       notes:           row.notes,
       paymentMethod:   row.payment_method,
       shiftId:         row.shift_id,
+      cardInstallments:    row.card_installments,
+      cardSurchargeAmount: row.card_surcharge_amount !== null ? parseFloat(row.card_surcharge_amount) : null,
       createdAt:       row.created_at,
     };
   }

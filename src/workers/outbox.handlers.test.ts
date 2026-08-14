@@ -8,7 +8,7 @@ import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type {
   FinancialTransaction,
   FinancialTransactionRepository,
-  PaymentMethod,
+  PaymentInfo,
 } from '../repositories/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
@@ -16,7 +16,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
   public created: Omit<FinancialTransaction, 'createdAt'>[] = [];
   public settledOrderIds: string[] = [];
-  public settledOrderPaymentMethods: (PaymentMethod | null | undefined)[] = [];
+  public settledOrderPaymentInfos: (PaymentInfo | undefined)[] = [];
   public voidedOrderIds: string[] = [];
 
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) {
@@ -34,9 +34,9 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
-  async settleByOrderId(orderId: string, paymentMethod?: PaymentMethod | null) {
+  async settleByOrderId(orderId: string, paymentInfo?: PaymentInfo) {
     this.settledOrderIds.push(orderId);
-    this.settledOrderPaymentMethods.push(paymentMethod);
+    this.settledOrderPaymentInfos.push(paymentInfo);
     return 1;
   }
   async voidByOrderId(orderId: string) { this.voidedOrderIds.push(orderId); return 1; }
@@ -113,12 +113,31 @@ describe('outbox.handlers — Order', () => {
 
     it('propaga paymentMethod del payload a settleByOrderId (Gap Tango #2)', async () => {
       await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1', paymentMethod: 'CASH' }));
-      expect(financialRepo.settledOrderPaymentMethods).toEqual(['CASH']);
+      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({ paymentMethod: 'CASH' });
     });
 
     it('paymentMethod queda null si no viene en el payload', async () => {
       await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' }));
-      expect(financialRepo.settledOrderPaymentMethods).toEqual([null]);
+      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({ paymentMethod: null });
+    });
+
+    it('propaga cardInstallments/cardSurchargeAmount del payload (Gap Tango #3)', async () => {
+      await handleOrderCompleted(financialRepo)(
+        fakeEvent({ orderId: 'order-1', paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 }),
+      );
+      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({
+        paymentMethod: 'CARD',
+        cardInstallments: 6,
+        cardSurchargeAmount: 150,
+      });
+    });
+
+    it('cardInstallments/cardSurchargeAmount quedan null si no vienen en el payload', async () => {
+      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1', paymentMethod: 'CASH' }));
+      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({
+        cardInstallments: null,
+        cardSurchargeAmount: null,
+      });
     });
   });
 

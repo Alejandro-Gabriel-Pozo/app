@@ -144,19 +144,18 @@ Sin cambios: FACTURACION sin ruta, filtro de rubro en `resource_categories`
 — gaps de producto, no de reglas (esos ya se resolvieron hoy, ver sección
 F):**
 
-- **Roles como entidad configurable, no enum de código.** Hoy cualquier
-  ajuste de permisos requiere tocar código y redeployar. Se cruza con
-  E4a (estandarizar ABM/usuarios) — no es un ítem nuevo aislado, es
-  evidencia concreta de por qué E4a importa.
+- ✅ RESUELTO (14/08/2026) — **Roles como entidad configurable, no enum de
+  código.** Hoy cualquier ajuste de permisos requiere tocar código y
+  redeployar. Se cruza con E4a (estandarizar ABM/usuarios). Ver sección H.
 - ✅ RESUELTO (14/08/2026) — **Sin concepto de caja/turno** (apertura,
   cierre, saldo). Relevante si el POS se vende como reemplazo real de caja
   registradora, no solo carrito de cobro. Ver sección J.
-- **`FinancialTransaction` no modela medios de pago con cuotas/recargo por
-  tarjeta.** Un cobro con tarjeta en 3 cuotas no tiene dónde vivir ese
-  desglose hoy.
+- ✅ RESUELTO (14/08/2026) — **`FinancialTransaction` no modela medios de
+  pago con cuotas/recargo por tarjeta.** Un cobro con tarjeta en 3 cuotas no
+  tenía dónde vivir ese desglose. Ver sección K.
 
-Ninguno de los tres se diseñó ni se implementó — quedan anotados para
-priorizar cuando corresponda.
+Los 3 gaps de producto de esta lista quedaron resueltos en la misma sesión
+(14/08/2026) — ver secciones H, J, K para el detalle de cada implementación.
 
 ### H. Roles como entidad configurable — ✅ HECHO en app-main, ⚠️ rompe appfrontend-main sin coordinar (14/08/2026)
 
@@ -340,8 +339,66 @@ da el neto esperado. Branch borrado al terminar.
 `customer-account.service.test.ts` (nuevo), `order.service.test.ts` y
 `outbox.handlers.test.ts`. 356/356 tests (+1 todo ya existente), typecheck y lint limpios.
 
-**Pendiente:** el tercer gap de Tango — medios de pago con cuotas/recargo
-por tarjeta (sección D) — no se tocó en esta sesión.
+---
+
+### K. Medios de pago con cuotas/recargo por tarjeta — ✅ HECHO (14/08/2026)
+
+Tercer y último gap de Tango implementado en esta sesión. El propio
+análisis marca esto "no bloqueante" y "subsistema propio (plan de tarjeta,
+coeficiente por cuotas, conciliación de cupones)" — a propósito **no** se
+modeló ese subsistema completo. Se evaluaron dos diseños y el dueño del
+proyecto eligió el de menor superficie: metadata descriptiva en la misma
+fila, no un movimiento contable separado para el recargo.
+
+**Schema:** `financial_transactions.card_installments` (SMALLINT) +
+`card_surcharge_amount` (DECIMAL). `amount` sigue siendo el total ya
+cobrado, sin cambio de semántica — `card_surcharge_amount` es cuánto de ese
+total es recargo financiero (decomposición descriptiva, espíritu de A3.5,
+sin inventar un CHARGE nuevo). Ambas columnas solo tienen sentido con
+`payment_method = 'CARD'`, garantizado por `CHECK` (A8.2), no por
+validación de service — igual que `card_surcharge_amount <= amount`.
+`CURRENT_SCHEMA_VERSION` 3→4.
+
+**Validación en dos capas:** Zod (`RecordPaymentSchema`/
+`CompleteOrderSchema`) rechaza con 400 claro si faltan campos o si
+`cardSurchargeAmount > amount` — pero en `completeOrder` el total de la
+orden no lo tiene el schema (vive en la orden, cargada recién en el
+service), así que ese chequeo puntual se repite en `OrderService.
+completeOrder()` (nuevo `InvalidPaymentInfoError`) **antes** de emitir el
+evento de dominio — si no, la violación del `CHECK` de BD reventaría recién
+en el outbox worker (async, sin manera de devolverle un 400 al usuario que
+completó el pedido).
+
+**Refactor de paso:** `settleByOrderId`/`completeOrder` pasaron de tomar
+`paymentMethod` como segundo parámetro posicional (así quedó en la sección
+J de hoy mismo) a un objeto `PaymentInfo { paymentMethod, cardInstallments,
+cardSurchargeAmount }` — se hizo ahora, antes de que un tercer campo
+posicional lo hiciera más incómodo, no se dejó para después.
+
+**Alcance deliberadamente afuera:** plan de tarjeta/coeficiente por banco,
+conciliación de cupones con el procesador — el propio gap analysis lo llama
+"subsistema propio", costo medio-alto. Quien cobra tipea manualmente cuántas
+cuotas y cuánto es el recargo (mismo criterio que `closingAmountCounted` en
+caja/turno, sección J).
+
+**Probado contra un branch descartable de Neon** (mismo proyecto que
+sección J): 3 corridas idempotentes sin error, más verificación funcional
+— una fila CARD válida se acepta, `card_installments` con
+`payment_method != 'CARD'` se rechaza, `card_surcharge_amount > amount` se
+rechaza, y el `UPDATE` de `settleByOrderId` persiste ambos campos
+correctamente. Branch borrado al terminar. **Nota aparte, no bloqueante:**
+al preparar este branch se notó que el branch por defecto de ese proyecto
+Neon todavía no tenía aplicado el BLOQUE 11 (caja/turno) de esta misma
+sesión — vale la pena confirmar que el deploy de Render corrió
+`migrate:tenants` correctamente antes de dar por cerrado el día.
+
+~26 tests nuevos entre `sql.financial-transaction.repository.test.ts`,
+`request.schemas.test.ts` (nuevo), `customer-account.service.test.ts`,
+`order.service.test.ts` y `outbox.handlers.test.ts`. 373/373 tests (+1 todo
+ya existente), typecheck y lint limpios.
+
+Con esto, los 3 gaps de producto de `Gap analysis - Tango ERP vs modelo
+actual.md` quedan resueltos (secciones H, J, K).
 
 ---
 

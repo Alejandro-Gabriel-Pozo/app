@@ -55,6 +55,10 @@ export class CustomerAccountService {
     businessId: string;
     amount: number;
     paymentMethod?: PaymentMethod;
+    /** Cuotas de un pago con tarjeta — solo tiene efecto si paymentMethod es 'CARD' (Gap Tango #3). */
+    cardInstallments?: number;
+    /** Cuánto de `amount` es recargo financiero por tarjeta — solo con 'CARD'. */
+    cardSurchargeAmount?: number;
     notes?: string;
     idempotencyKey?: string;
   }): Promise<FinancialTransaction> {
@@ -75,6 +79,8 @@ export class CustomerAccountService {
       idempotencyKey: params.idempotencyKey ?? null,
       notes: params.notes ?? null,
       paymentMethod: params.paymentMethod ?? null,
+      cardInstallments: params.cardInstallments ?? null,
+      cardSurchargeAmount: params.cardSurchargeAmount ?? null,
     });
 
     if (created) return created;

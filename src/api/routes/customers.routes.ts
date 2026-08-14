@@ -384,6 +384,8 @@ export function createCustomersRouter(container: AppContainer): Router {
           businessId: req.user!.businessId as string,
           amount: body.amount,
           ...(body.paymentMethod && { paymentMethod: body.paymentMethod }),
+          ...(body.cardInstallments !== undefined && { cardInstallments: body.cardInstallments }),
+          ...(body.cardSurchargeAmount !== undefined && { cardSurchargeAmount: body.cardSurchargeAmount }),
           ...(body.notes && { notes: body.notes }),
           ...(body.idempotencyKey && { idempotencyKey: body.idempotencyKey }),
         });

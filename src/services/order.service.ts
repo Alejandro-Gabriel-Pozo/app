@@ -30,7 +30,7 @@ import type {
 import type { TransactionManager }      from '../db/transaction-manager.js';
 import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
-import type { PaymentMethod }           from '../repositories/financial-transaction.repository.js';
+import type { PaymentInfo }             from '../repositories/financial-transaction.repository.js';
 import { DomainError }                  from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,20 @@ export class OrderNotEditableError extends DomainError {
 export class InvalidOrderTransitionError extends DomainError {
   constructor(from: OrderStatus, to: OrderStatus) {
     super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');
+  }
+}
+
+/**
+ * cardSurchargeAmount no puede superar el total de la orden (mismo
+ * invariante que el CHECK de BD en financial_transactions, BLOQUE 12 —
+ * Gap Tango #3). Se valida acá, síncrono, para no dejar que la violación
+ * del constraint reviente recién en el outbox worker (async, sin manera de
+ * avisarle al usuario que su pedido de card_surcharge_amount inválido no
+ * se pudo completar).
+ */
+export class InvalidPaymentInfoError extends DomainError {
+  constructor(message: string) {
+    super(message, 'VALIDATION_ERROR');
   }
 }
 
@@ -229,15 +243,28 @@ export class OrderService {
 
   /**
    * CONFIRMED -> COMPLETED. Emite `order.completed` -> settea el CHARGE a
-   * SETTLED. `paymentMethod` viaja en el payload del evento (no se persiste
+   * SETTLED. `paymentInfo` viaja en el payload del evento (no se persiste
    * en `orders` — vive en `financial_transactions`, ver handleOrderCompleted
    * en outbox.handlers.ts) para que el settle sepa si vincular el CHARGE a
-   * un turno de caja (Gap analysis Tango #2).
+   * un turno de caja (Gap Tango #2) y/o guardar cuotas/recargo de tarjeta
+   * (Gap Tango #3).
    */
-  async completeOrder(id: string, paymentMethod?: PaymentMethod | null): Promise<OrderWithTransitions> {
+  async completeOrder(id: string, paymentInfo?: PaymentInfo): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'CONFIRMED') throw new InvalidOrderTransitionError(order.status, 'COMPLETED');
+
+    // Mismo invariante que el CHECK de BD (BLOQUE 12) — validado acá antes
+    // de emitir el evento para que el error sea síncrono (400 al request
+    // que completa la orden), no una excepción perdida en el outbox worker.
+    if (
+      paymentInfo?.cardSurchargeAmount != null &&
+      paymentInfo.cardSurchargeAmount > order.totalAmount
+    ) {
+      throw new InvalidPaymentInfoError(
+        `cardSurchargeAmount (${paymentInfo.cardSurchargeAmount}) no puede ser mayor que el total de la orden (${order.totalAmount}).`,
+      );
+    }
 
     return this.transactionManager.run(async (client: SqlClient) => {
       const updated = (await this.orderRepo.completeWithClient(client, id))!;
@@ -246,7 +273,12 @@ export class OrderService {
         aggregateType: 'ORDER',
         aggregateId:   updated.id,
         eventType:     'order.completed',
-        payload: { orderId: updated.id, paymentMethod: paymentMethod ?? null },
+        payload: {
+          orderId:             updated.id,
+          paymentMethod:       paymentInfo?.paymentMethod ?? null,
+          cardInstallments:    paymentInfo?.cardInstallments ?? null,
+          cardSurchargeAmount: paymentInfo?.cardSurchargeAmount ?? null,
+        },
       });
       return withAllowedTransitions(updated);
     });

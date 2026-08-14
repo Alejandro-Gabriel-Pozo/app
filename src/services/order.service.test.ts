@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { OrderService, OrderNotFoundError, InvalidOrderTransitionError } from './order.service.js';
+import { OrderService, OrderNotFoundError, InvalidOrderTransitionError, InvalidPaymentInfoError } from './order.service.js';
 import { InMemoryOrderRepository } from '../repositories/in-memory.order.repository.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -132,7 +132,7 @@ describe('OrderService', () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id);
 
-      await service.completeOrder(id, 'CASH');
+      await service.completeOrder(id, { paymentMethod: 'CASH' });
 
       expect(eventRepo.events[1]).toMatchObject({
         eventType: 'order.completed',
@@ -150,6 +150,27 @@ describe('OrderService', () => {
         eventType: 'order.completed',
         payload:   { orderId: id, paymentMethod: null },
       });
+    });
+
+    it('propaga cardInstallments/cardSurchargeAmount al payload (Gap Tango #3)', async () => {
+      const id = await createDraftOrderWithItem(500); // total 1000
+      await service.confirmOrder(id);
+
+      await service.completeOrder(id, { paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 });
+
+      expect(eventRepo.events[1]).toMatchObject({
+        eventType: 'order.completed',
+        payload:   { orderId: id, paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 },
+      });
+    });
+
+    it('rechaza cardSurchargeAmount mayor al total de la orden (Gap Tango #3)', async () => {
+      const id = await createDraftOrderWithItem(50); // total 100
+      await service.confirmOrder(id);
+
+      await expect(
+        service.completeOrder(id, { paymentMethod: 'CARD', cardSurchargeAmount: 200 }),
+      ).rejects.toThrow(InvalidPaymentInfoError);
     });
   });
 

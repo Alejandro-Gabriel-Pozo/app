@@ -45,7 +45,29 @@ export interface FinancialTransaction {
    * tarjeta/transferencia no pasan por caja física.
    */
   shiftId?: string | null;
+  /**
+   * Cantidad de cuotas de un pago con tarjeta. Solo tiene sentido con
+   * `paymentMethod === 'CARD'` (constraint en BD, no solo tipo — ver BLOQUE
+   * 12 de schema.sql). Puramente descriptivo: no dispara ninguna lógica de
+   * plan de cuotas/coeficiente por banco, eso quedó fuera de alcance a
+   * propósito (Gap analysis Tango #3 — "subsistema propio").
+   */
+  cardInstallments?: number | null;
+  /**
+   * Cuánto de `amount` (que sigue siendo el total ya cobrado, sin cambios
+   * de semántica) es recargo financiero por tarjeta. Decomposición
+   * descriptiva (A3.5) — no genera un movimiento contable separado a
+   * propósito, ver comentario de BLOQUE 12 en schema.sql.
+   */
+  cardSurchargeAmount?: number | null;
   createdAt?: Date;
+}
+
+/** Metadata de medio de pago que puede acompañar un settle (Gap Tango #3). */
+export interface PaymentInfo {
+  paymentMethod?: PaymentMethod | null;
+  cardInstallments?: number | null;
+  cardSurchargeAmount?: number | null;
 }
 
 export interface FinancialTransactionRepository {
@@ -109,14 +131,15 @@ export interface FinancialTransactionRepository {
    * Pasa a SETTLED todas las transacciones PENDING de una orden.
    * Idempotente: si ya están SETTLED, no hace nada.
    *
-   * Si se pasa `paymentMethod`, se persiste en las filas actualizadas. Si
-   * además es `'CASH'` y hay un turno OPEN para el negocio de la orden, esas
-   * filas se vinculan a ese turno (`shiftId`) en la misma UPDATE — ver
-   * `SqlFinancialTransactionRepository.settleByOrderId`.
+   * Si se pasa `paymentInfo.paymentMethod`, se persiste en las filas
+   * actualizadas. Si además es `'CASH'` y hay un turno OPEN para el negocio
+   * de la orden, esas filas se vinculan a ese turno (`shiftId`) en la misma
+   * UPDATE. Si es `'CARD'`, `cardInstallments`/`cardSurchargeAmount`
+   * también se persisten — ver `SqlFinancialTransactionRepository.settleByOrderId`.
    *
    * Retorna la cantidad de filas actualizadas.
    */
-  settleByOrderId(orderId: string, paymentMethod?: PaymentMethod | null): Promise<number>;
+  settleByOrderId(orderId: string, paymentInfo?: PaymentInfo): Promise<number>;
 
   /** Obtiene todas las transacciones de un turno de caja. */
   getByShiftId(shiftId: string): Promise<FinancialTransaction[]>;

@@ -177,12 +177,28 @@ export const CreateCustomerRateSchema = z.object({
 
 export const PaymentMethodSchema = z.enum(['CASH', 'CARD', 'TRANSFER', 'OTHER']);
 
+// cardInstallments/cardSurchargeAmount (Gap Tango #3): solo tienen sentido
+// con paymentMethod = 'CARD' — mismo invariante que el CHECK de BD (BLOQUE
+// 12 de schema.sql), validado acá también para devolver un 400 claro en
+// vez de dejar que la BD lo rechace con un error de constraint genérico.
+const CARD_FIELDS_REQUIRE_CARD_METHOD = {
+  message: 'cardInstallments/cardSurchargeAmount solo aplican con paymentMethod = \'CARD\'',
+  path: ['paymentMethod'],
+};
+
 export const RecordPaymentSchema = z.object({
-  amount:         z.number().positive('amount debe ser mayor a 0'),
-  paymentMethod:  PaymentMethodSchema.optional(),
-  idempotencyKey: z.string().min(1).optional(),
-  notes:          z.string().max(500).optional(),
-});
+  amount:               z.number().positive('amount debe ser mayor a 0'),
+  paymentMethod:        PaymentMethodSchema.optional(),
+  cardInstallments:     z.number().int().min(1).optional(),
+  cardSurchargeAmount:  z.number().min(0).optional(),
+  idempotencyKey:       z.string().min(1).optional(),
+  notes:                z.string().max(500).optional(),
+})
+  .refine((data) => (data.cardInstallments === undefined && data.cardSurchargeAmount === undefined) || data.paymentMethod === 'CARD', CARD_FIELDS_REQUIRE_CARD_METHOD)
+  .refine((data) => data.cardSurchargeAmount === undefined || data.cardSurchargeAmount <= data.amount, {
+    message: 'cardSurchargeAmount no puede ser mayor que amount',
+    path: ['cardSurchargeAmount'],
+  });
 
 // ---------------------------------------------------------------------------
 // Caja / turno — POST /api/cash-register/open, /close
@@ -199,8 +215,11 @@ export const CloseShiftSchema = z.object({
 });
 
 export const CompleteOrderSchema = z.object({
-  paymentMethod: PaymentMethodSchema.optional(),
-});
+  paymentMethod:       PaymentMethodSchema.optional(),
+  cardInstallments:    z.number().int().min(1).optional(),
+  cardSurchargeAmount: z.number().min(0).optional(),
+})
+  .refine((data) => (data.cardInstallments === undefined && data.cardSurchargeAmount === undefined) || data.paymentMethod === 'CARD', CARD_FIELDS_REQUIRE_CARD_METHOD);
 
 // ---------------------------------------------------------------------------
 // Horario de atención — POST /api/business-hours, POST /api/resources/:id/hours

@@ -32,6 +32,7 @@ import {
   OrderNotFoundError,
   OrderNotEditableError,
   InvalidOrderTransitionError,
+  InvalidPaymentInfoError,
 } from '../../services/order.service.js';
 import { SqlOrderRepository }            from '../../repositories/sql.order.repository.js';
 import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
@@ -142,8 +143,10 @@ export function createOrdersRouter(container: AppContainer): Router {
   });
 
   // ── POST /api/orders/:id/complete ────────────────────────────────────────────
-  // body opcional { paymentMethod? } — 'CASH' vincula el CHARGE al turno de
-  // caja OPEN del negocio, si hay uno (Gap analysis Tango #2).
+  // body opcional { paymentMethod?, cardInstallments?, cardSurchargeAmount? } —
+  // 'CASH' vincula el CHARGE al turno de caja OPEN del negocio, si hay uno
+  // (Gap Tango #2); cardInstallments/cardSurchargeAmount solo con 'CARD'
+  // (Gap Tango #3, puramente descriptivo — no dispara plan de cuotas).
   router.post('/:id/complete', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const parsed = CompleteOrderSchema.safeParse(req.body ?? {});
@@ -153,12 +156,17 @@ export function createOrdersRouter(container: AppContainer): Router {
       }
       const order = await buildOrderService(req, container).completeOrder(
         param(req, 'id'),
-        parsed.data.paymentMethod ?? null,
+        {
+          paymentMethod:       parsed.data.paymentMethod ?? null,
+          cardInstallments:    parsed.data.cardInstallments ?? null,
+          cardSurchargeAmount: parsed.data.cardSurchargeAmount ?? null,
+        },
       );
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
+      else if (err instanceof InvalidPaymentInfoError)     res.status(400).json({ code: 'VALIDATION_ERROR',   message: (err as Error).message });
       else next(err);
     }
   });

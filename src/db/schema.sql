@@ -1095,3 +1095,33 @@ ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS shift_id VARCHAR(255
 CREATE INDEX IF NOT EXISTS idx_ft_shift
   ON financial_transactions (shift_id)
   WHERE shift_id IS NOT NULL;
+
+-- ===========================================================================
+-- BLOQUE 12 — MEDIOS DE PAGO CON CUOTAS/RECARGO (Gap analysis Tango #3)
+-- ===========================================================================
+-- "Un cobro con tarjeta en 3 cuotas no tiene dónde vivir ese desglose" —
+-- Gap analysis - Tango ERP vs modelo actual.md marca esto explícitamente
+-- como "no bloqueante" y "subsistema propio (plan de tarjeta, coeficiente
+-- por cuotas, conciliación de cupones)" -- por eso acá NO se modela plan de
+-- tarjeta/coeficiente por banco ni conciliación de cupones (eso es un
+-- proyecto aparte). Lo que se agrega es metadata descriptiva sobre la fila
+-- que ya existía: `amount` sigue siendo el total cobrado (sin cambios de
+-- semántica, decisión del dueño del proyecto) -- `card_surcharge_amount` es
+-- cuánto de ese total ya cobrado es recargo financiero, mismo espíritu que
+-- A3.5 ("guardar solo el total impide responder ¿por qué me cobraste
+-- esto?") pero sin inventar un movimiento contable nuevo (se evaluó y se
+-- descartó a propósito la alternativa de una fila CHARGE separada para el
+-- recargo -- más superficie de bug para una funcionalidad ya marcada no
+-- bloqueante).
+--
+-- A8.2: ambas columnas solo tienen sentido con payment_method = 'CARD' --
+-- se garantiza con CHECK, no con validación de service.
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS card_installments SMALLINT
+  CHECK (card_installments IS NULL OR (card_installments >= 1 AND payment_method = 'CARD'));
+
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS card_surcharge_amount DECIMAL(12,2)
+  CHECK (card_surcharge_amount IS NULL OR (
+    card_surcharge_amount >= 0
+    AND card_surcharge_amount <= amount
+    AND payment_method = 'CARD'
+  ));

@@ -60,4 +60,19 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
 
     expect(financialRepo.created[0]).toMatchObject({ paymentMethod: null });
   });
+
+  it('persiste cardInstallments/cardSurchargeAmount cuando se pasan (Gap Tango #3)', async () => {
+    await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 1150,
+      paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150,
+    });
+
+    expect(financialRepo.created[0]).toMatchObject({ cardInstallments: 6, cardSurchargeAmount: 150 });
+  });
+
+  it('cardInstallments/cardSurchargeAmount quedan null si no se pasan', async () => {
+    await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100, paymentMethod: 'CASH' });
+
+    expect(financialRepo.created[0]).toMatchObject({ cardInstallments: null, cardSurchargeAmount: null });
+  });
 });
