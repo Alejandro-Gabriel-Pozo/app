@@ -247,7 +247,44 @@ sesión, antes de pushear cualquiera de los dos repos.
 Verificado: `tsc --noEmit` limpio y `next build` completo (21 rutas) en
 `appfrontend-main`. Sin probar en navegador contra un backend real dentro
 de esta sesión (mismo criterio que el resto de los cambios de frontend de
-hoy). Ambos repos listos para pushear juntos.
+hoy).
+
+**✅ PUSHEADO (14/08/2026):** `app-main` (`6f16bf1`..`ba157b6`, incluye
+también el CI de A4 y la skill nueva de revisión de PR — ver sección I)
+y `appfrontend-main` (`0b58e22`). `GET /health` responde 200 después del
+deploy.
+
+---
+
+### I. Skill nueva — `revision-pr-pms-erp` (14/08/2026)
+
+Pedido explícito del usuario, fuera del hilo de los 3 gaps de Tango:
+skill de revisión de PRs para dueño de negocio sin perfil técnico, que
+depende de `criterios-negocio` (precedencia de reglas de dominio sobre un
+checklist genérico), delimita dominio PMS/ERP vs infra, no inventa
+contexto faltante, y devuelve resumen ejecutivo en lenguaje de negocio +
+checklist técnico completo. Vive en
+`app-main/.claude/skills/revision-pr-pms-erp/`, commiteada en `ba157b6`.
+
+Validada con `skill-creator` contra 2 commits reales de este repo (no
+sintéticos, a pedido explícito del usuario): `591ca1e` (positivo, limpio)
+y `08c506f` (negativo — resultó tener un build roto real de 31 errores de
+TypeScript, no solo el bug de R2 que se buscaba). La primera iteración
+calibró mal la urgencia (trató un commit intermedio de una secuencia
+rápida de pushes directos a `main` como si fuera un PR mergeado roto en
+producción) — se corrigió con una instrucción explícita de chequear
+commits posteriores cercanos antes de calibrar urgencia, sin bajar la
+severidad técnica. La segunda iteración confirmó el fix con precisión:
+diferenció que solo 2 de los problemas se resolvieron en 3 minutos,
+mientras el resto (incluido un hallazgo de R16/A8.3 que sigue sin
+resolver hoy) siguió roto por días.
+
+**No se pudo completar:** la optimización automática de triggering de
+skill-creator (`run_loop.py`) — bug de compatibilidad Windows/subprocess
+en el script vendored (`WinError 10038`, 100% de las consultas fallan),
+no relacionado a esta skill. Se descartó el intento sin aplicar cambios
+(confirmado que no tocó `SKILL.md`) — la descripción quedó escrita a mano
+siguiendo las pautas de skill-creator.
 
 ---
 
