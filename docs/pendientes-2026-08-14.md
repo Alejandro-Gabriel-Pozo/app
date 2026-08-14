@@ -14,21 +14,28 @@ implementar. Marcar `✅ RESUELTO` in-place al cerrar un ítem.
 Sin cambios desde 13/08. Bloquea solo el vertical de gestión de terceros
 (deptos/canchas de otros dueños) — retomar cuando aparezca el caso de uso.
 
-### A4. Gap de proceso de `migrate:tenants` — parcialmente mitigado hoy, sigue sin blindaje automático
-Hoy, al agregar `audit_log` a `schema.sql`, se bumpeó `CURRENT_SCHEMA_VERSION`
-(1→2) **en el mismo commit** que el cambio de schema, y se aplicó a mano
-contra la tenant DB real (`DB-APP-PPMS`, vía Neon MCP) + se actualizó
-`businesses.schema_version` en la BD de plataforma (`pdb-ppms`) —
-confirmado con evidencia (columnas de `audit_log`, fila en
-`schema_migrations`, `schema_version=2`). Esto evitó repetir el incidente
-del 13/08.
+### A4. Gap de proceso de `migrate:tenants` — ✅ opción (a) implementada (14/08/2026)
+Antes: al agregar `audit_log` a `schema.sql`, se bumpeó `CURRENT_SCHEMA_VERSION`
+(1→2) a mano en el mismo commit y se aplicó contra la tenant DB real vía
+Neon MCP — evitó repetir el incidente del 13/08, pero seguía dependiendo
+de acordarse.
 
-**Lo que sigue sin resolver — sigue siendo un gap de proceso, no de esta
-sesión puntual:** nada en el pipeline fuerza el bump ni la migración
-automáticamente. Se hizo bien hoy porque se acordó a mano, igual que el
-13/08 se hizo mal por lo mismo. Alternativas ya anotadas en el archivo
-anterior (chequeo en CI, `migrate:tenants` en el deploy de Render) — siguen
-sin decidir.
+**Ahora blindado con CI:** nuevo job `schema-version-check` en
+`.github/workflows/ci.yml` — si `src/db/schema.sql` cambia en el diff
+(push a `main` o PR) pero `CURRENT_SCHEMA_VERSION`
+(`src/platform/tenant-db.setup.ts`) no cambió de valor, el job falla con
+un mensaje explícito. Probado localmente contra la historia real: detecta
+correctamente el bump de hoy (1→2, commit `0e92baf`) como OK, y un caso
+simulado sin bump como fallo. Usa `grep -E` (no `-P`) a propósito — `-P`
+depende de PCRE y falla con "supports only unibyte and UTF-8 locales" en
+algunos entornos (confirmado en Git Bash local), `-E` es portable.
+
+**Sigue sin la opción (b)** (correr `migrate:tenants` automáticamente en
+el deploy de Render) — deliberado, es un cambio de pipeline de producción
+más grande, no se implementó sin decisión explícita. Con (a) puesto, el
+riesgo de "nadie se acuerda de bumpear" ya está cerrado — (b) solo
+ahorraría el paso manual de correr `migrate:tenants` después de mergear,
+que sigue siendo necesario.
 
 ---
 

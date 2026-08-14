@@ -86,3 +86,63 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+  # ------------------------------------------------------------
+  # Job 4 — Chequeo de versión de schema (A4, pendientes-2026-08-13.md)
+  #
+  # El incidente del 13/08/2026: schema.sql cambió (accounts_receivable +
+  # stay_id) pero nadie bumpeó CURRENT_SCHEMA_VERSION a mano, así que
+  # migrate:tenants se reportó a sí mismo "al día" sin aplicar nada contra
+  # la tenant DB real — el sitio quedó roto en producción hasta que se
+  # detectó y se corrigió a mano vía Neon MCP. Este job hace imposible que
+  # el mismo olvido vuelva a pasar sin que alguien lo note antes de mergear.
+  # ------------------------------------------------------------
+  schema-version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar que CURRENT_SCHEMA_VERSION se bumpeó si schema.sql cambió
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          HEAD="${{ github.sha }}"
+
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "Sin commit anterior para comparar (branch/historia nueva) — se salta el chequeo."
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+
+          if ! echo "$CHANGED" | grep -qx 'src/db/schema.sql'; then
+            echo "schema.sql no cambió en este rango — nada que chequear."
+            exit 0
+          fi
+
+          # -E (POSIX extended), no -P: -P depende de PCRE y falla con
+          # "supports only unibyte and UTF-8 locales" en algunos entornos
+          # (confirmado localmente en Git Bash / MSYS2) — -E es portable.
+          OLD_VERSION=$(git show "$BASE:src/platform/tenant-db.setup.ts" 2>/dev/null \
+            | grep -oE 'CURRENT_SCHEMA_VERSION[[:space:]]*=[[:space:]]*[0-9]+' \
+            | grep -oE '[0-9]+$' || true)
+          NEW_VERSION=$(git show "$HEAD:src/platform/tenant-db.setup.ts" 2>/dev/null \
+            | grep -oE 'CURRENT_SCHEMA_VERSION[[:space:]]*=[[:space:]]*[0-9]+' \
+            | grep -oE '[0-9]+$' || true)
+
+          if [ -z "$NEW_VERSION" ]; then
+            echo "::error::No se pudo leer CURRENT_SCHEMA_VERSION en src/platform/tenant-db.setup.ts — revisar que la constante sigue existiendo con ese nombre."
+            exit 1
+          fi
+
+          if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+            echo "::error::src/db/schema.sql cambió pero CURRENT_SCHEMA_VERSION (src/platform/tenant-db.setup.ts) sigue en $NEW_VERSION. Bumpeala en este mismo commit y, después de mergear, corré 'npm run migrate:tenants' contra la BD real (o aplicá el cambio a mano vía Neon MCP) — ver docs/criterios-datos.md y docs/pendientes-2026-08-13.md (A4)."
+            exit 1
+          fi
+
+          echo "schema.sql cambió y CURRENT_SCHEMA_VERSION pasó de $OLD_VERSION a $NEW_VERSION — OK."
