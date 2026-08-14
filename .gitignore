@@ -8,3 +8,6 @@ coverage/
 Thumbs.db
 src/.db
 src/package
+
+# Material de prueba de skills (revision-pr-pms-erp y futuras) -- no es parte del repo
+*-workspace/

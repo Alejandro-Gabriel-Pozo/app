@@ -1,0 +1,17 @@
+{
+  "skill_name": "revision-pr-pms-erp",
+  "evals": [
+    {
+      "id": "positivo-c2",
+      "prompt": "Revisá el commit 591ca1e de este repo (app-main) como si fuera un PR a punto de mergear. Soy el dueño del negocio, no programador.",
+      "expected_output": "Revisión limpia: sin hallazgos de severidad alta. Debe reconocer que unifica CategoryNotFoundError (bug real de raíz corregido), que tiene tests nuevos, y que el diff toca dominio (categorías). Resumen ejecutivo en lenguaje de negocio, checklist completado sin ítems vacíos.",
+      "files": []
+    },
+    {
+      "id": "negativo-categorias-fantasma",
+      "prompt": "Revisá el commit 08c506f de este repo (app-main) como si fuera un PR a punto de mergear. Soy el dueño del negocio, no programador.",
+      "expected_output": "Debe detectar que findById en sql.category.repository.ts filtra por active=TRUE (violación real de R2, docs/criterios-datos.md) — este es el commit que originalmente introdujo el bug de 'categorías fantasma' que causó un incidente real el 13/08/2026. El hallazgo debe explicarse en términos de negocio (una categoría desactivada se vuelve invisible/rompe referencias), no solo como 'findById filtra por estado'.",
+      "files": []
+    }
+  ]
+}
