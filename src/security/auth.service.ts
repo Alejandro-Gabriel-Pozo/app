@@ -38,7 +38,6 @@
 import { signToken, verifyToken } from './auth.middleware.js';
 import { verifyPassword } from './user.store.js';
 import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
-import type { UserRole } from '../types/enums.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -137,7 +136,7 @@ export class AuthService {
       businesses: memberships.map((m) => ({
         businessId: m.businessId,
         businessName: m.businessName,
-        role: m.role,
+        role: m.roleName,
       })),
     };
   }
@@ -174,9 +173,16 @@ export class AuthService {
     return this.issueTenantToken(identity, membership);
   }
 
+  /**
+   * El JWT de staff YA NO lleva `role` (14/08/2026, ver security/roles.ts)
+   * — solo `sub`/`business_id`. Los permisos se resuelven en cada request
+   * contra `role_permission_groups`, no se congelan acá. `user.role` en la
+   * respuesta sigue existiendo (es solo texto para mostrar en la UI, nunca
+   * se usó como fuente de autorización desde el frontend).
+   */
   private issueTenantToken(identity: Identity, membership: Membership): LoginResult {
     const token = signToken(
-      { sub: identity.id, role: membership.role as UserRole, business_id: membership.businessId },
+      { sub: identity.id, business_id: membership.businessId },
       requireJwtSecret(),
       this.tokenTtlSeconds,
     );
@@ -188,7 +194,7 @@ export class AuthService {
       user: {
         id: identity.id,
         email: identity.email,
-        role: membership.role,
+        role: membership.roleName,
       },
     };
   }

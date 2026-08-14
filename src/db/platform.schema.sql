@@ -158,6 +158,103 @@ CREATE INDEX IF NOT EXISTS idx_memberships_identity
 CREATE INDEX IF NOT EXISTS idx_memberships_business
   ON memberships (business_id);
 
+-- ===========================================================================
+-- BLOQUE ROLES — reemplaza el enum hardcodeado de rol por una entidad
+-- configurable (Gap analysis - Tango ERP vs modelo actual.md, hallazgo #2;
+-- pendientes-2026-08-14.md)
+-- ===========================================================================
+-- MAESTRO (docs/criterios-datos.md Parte 1): un rol existe con independencia
+-- de lo que pase, se desactiva, nunca se hard-borra (R2/R3). Código de
+-- negocio = (business_id, name) UNIQUE (R1/R6).
+--
+-- role_permission_groups es junction/config, mismo trato que
+-- business_modules — no es MAESTRO/TRANSACCIÓN/DOCUMENTO.
+--
+-- `permission_group` NO tiene FK a una tabla catálogo, a propósito: son las
+-- ~7 claves fijas de security/roles.ts (MANAGEMENT, FRONT_DESK, STAFF,
+-- ORDERS, HOUSEKEEPING_AND_MANAGEMENT, OWNER_ONLY, BOOKING). A diferencia de
+-- `modules` (agregar un módulo nuevo es un INSERT), agregar un grupo de
+-- permisos nuevo SIEMPRE implica código nuevo (una ruta nueva con un
+-- `Roles.X` nuevo) — no tiene sentido que sea editable por negocio. Lo
+-- editable es la ASIGNACIÓN rol→grupo, no el catálogo de grupos en sí.
+-- `CUSTOMER_ONLY` queda afuera de este catálogo: los clientes no tienen fila
+-- en `roles` (no son staff), ese caso se resuelve en código
+-- (auth.middleware.ts) sin tocar la BD.
+--
+-- Va ACÁ (antes del backfill legado de platform_users→memberships, más
+-- abajo) y no después, a propósito — encontrado probando idempotencia en
+-- un branch de Neon (14/08/2026, no en producción): ese backfill legado
+-- necesita insertar filas en `memberships` con `role_id` ya completo (ver
+-- comentario ahí), así que `roles` y la columna role_id tienen que existir
+-- ANTES de que ese INSERT corra, no después.
+CREATE TABLE IF NOT EXISTS roles (
+  id          VARCHAR(255)  PRIMARY KEY,
+  business_id VARCHAR(255)  NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  name        VARCHAR(100)  NOT NULL,
+  is_system   BOOLEAN       NOT NULL DEFAULT FALSE,
+  active      BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_roles_business_name UNIQUE (business_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_roles_business
+  ON roles (business_id)
+  WHERE active = TRUE;
+
+CREATE TABLE IF NOT EXISTS role_permission_groups (
+  role_id          VARCHAR(255) NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  permission_group VARCHAR(50)  NOT NULL,
+  PRIMARY KEY (role_id, permission_group)
+);
+
+-- ---------------------------------------------------------------------------
+-- Backfill: seedea los 5 roles "sistema" para TODO negocio existente, con
+-- los mismos permission_groups que hoy hardcodea security/roles.ts — cero
+-- cambio de comportamiento el día que esto se activa. id determinístico
+-- (role-<business_id>-<nombre en minúscula>) para poder referenciarlo en el
+-- mismo script sin round-trip. Idempotente (ON CONFLICT DO NOTHING) — corre
+-- en cada boot, solo inserta lo que falte. Los negocios creados DESPUÉS de
+-- este bloque no dependen de él: PlatformRepository.createBusiness() los
+-- provisiona directo (mismo criterio que business_modules) — ver ahí.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO roles (id, business_id, name, is_system)
+SELECT 'role-' || b.id || '-owner',        b.id, 'OWNER',        TRUE FROM businesses b
+UNION ALL
+SELECT 'role-' || b.id || '-admin',        b.id, 'ADMIN',        TRUE FROM businesses b
+UNION ALL
+SELECT 'role-' || b.id || '-receptionist', b.id, 'RECEPTIONIST', TRUE FROM businesses b
+UNION ALL
+SELECT 'role-' || b.id || '-housekeeping', b.id, 'HOUSEKEEPING', TRUE FROM businesses b
+UNION ALL
+SELECT 'role-' || b.id || '-waiter',       b.id, 'WAITER',       TRUE FROM businesses b
+ON CONFLICT (business_id, name) DO NOTHING;
+
+INSERT INTO role_permission_groups (role_id, permission_group)
+SELECT 'role-' || b.id || '-owner', g FROM businesses b,
+  UNNEST(ARRAY['OWNER_ONLY','MANAGEMENT','STAFF','FRONT_DESK','HOUSEKEEPING_AND_MANAGEMENT','ORDERS','BOOKING']) AS g
+UNION ALL
+SELECT 'role-' || b.id || '-admin', g FROM businesses b,
+  UNNEST(ARRAY['MANAGEMENT','STAFF','FRONT_DESK','HOUSEKEEPING_AND_MANAGEMENT','ORDERS','BOOKING']) AS g
+UNION ALL
+SELECT 'role-' || b.id || '-receptionist', g FROM businesses b,
+  UNNEST(ARRAY['STAFF','FRONT_DESK','BOOKING']) AS g
+UNION ALL
+SELECT 'role-' || b.id || '-housekeeping', g FROM businesses b,
+  UNNEST(ARRAY['STAFF','HOUSEKEEPING_AND_MANAGEMENT']) AS g
+UNION ALL
+SELECT 'role-' || b.id || '-waiter', g FROM businesses b,
+  UNNEST(ARRAY['STAFF','ORDERS']) AS g
+ON CONFLICT (role_id, permission_group) DO NOTHING;
+
+-- memberships.role_id: FK real hacia roles. Nullable en el ALTER (Postgres
+-- no permite agregar NOT NULL con backfill en el mismo statement) — se pasa
+-- a NOT NULL más abajo, después de TODOS los backfills que escriben en
+-- memberships (este Y el legado de platform_users, más abajo). Mismo
+-- patrón 2 pasos que resources.location_id (schema.sql, "Location Fase 1").
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS role_id VARCHAR(255) REFERENCES roles(id);
+
 -- ---------------------------------------------------------------------------
 -- Backfill: migra las filas existentes de platform_users a identities +
 -- memberships. Idempotente (ON CONFLICT DO NOTHING) — corre en cada boot
@@ -177,17 +274,51 @@ FROM platform_users
 GROUP BY email
 ON CONFLICT (email) DO NOTHING;
 
-INSERT INTO memberships (id, identity_id, business_id, role, active, created_at)
+-- role_id se completa acá también (no solo en el backfill genérico de
+-- abajo) por una razón encontrada probando idempotencia en un branch de
+-- Neon (14/08/2026, no en producción): Postgres valida el NOT NULL de
+-- role_id al CONSTRUIR la fila candidata, antes de evaluar el ON CONFLICT
+-- — así que aunque la fila termine descartada por conflicto, el INSERT
+-- explota igual si role_id queda NULL una vez que la columna sea NOT NULL.
+-- Con `platform_users` desactualizada (fila sin migrar a `memberships`
+-- todavía) esto tira el servidor entero en CUALQUIER boot posterior al que
+-- agregó el NOT NULL, no solo el primero — por eso `roles` y esta columna
+-- ya existen ANTES de este INSERT (ver el bloque de arriba).
+INSERT INTO memberships (id, identity_id, business_id, role, role_id, active, created_at)
 SELECT
   'mem-' || pu.id,
   i.id,
   pu.business_id,
   pu.role,
+  'role-' || pu.business_id || '-' || LOWER(pu.role),
   pu.active,
   pu.created_at
 FROM platform_users pu
 JOIN identities i ON i.email = pu.email
 ON CONFLICT (identity_id, business_id) DO NOTHING;
+
+-- Backfill genérico: cualquier membership que exista sin role_id (creadas
+-- por el flujo real de identities/memberships antes de que este bloque
+-- existiera — no solo las migradas de platform_users arriba).
+UPDATE memberships m
+SET role_id = 'role-' || m.business_id || '-' || LOWER(m.role)
+WHERE m.role_id IS NULL;
+
+ALTER TABLE memberships ALTER COLUMN role_id SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memberships_role
+  ON memberships (role_id);
+
+-- `role` (VARCHAR) queda en la tabla pero DEJA DE SER la fuente de permisos
+-- — eso es role_id → role_permission_groups. Se mantiene sin uso, sin
+-- CHECK (el que la restringía a 5 valores fijos ya no tiene sentido con
+-- roles custom) como colchón de seguridad de este cambio: nada la lee ni
+-- la escribe desde el código nuevo, así que borrarla es opcional y de bajo
+-- riesgo cuando esto lleve un tiempo estable en producción — no se borró
+-- hoy a propósito, para no combinar en un mismo deploy un cambio de
+-- comportamiento grande (autorización) con uno estructural irreversible
+-- (DROP COLUMN) sin necesidad.
+ALTER TABLE memberships DROP CONSTRAINT IF EXISTS memberships_role_check;
 
 -- ---------------------------------------------------------------------------
 -- Trigger updated_at (reutiliza la función si ya existe)
@@ -229,6 +360,14 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'memberships_updated_at') THEN
     CREATE TRIGGER memberships_updated_at
       BEFORE UPDATE ON memberships
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'roles_updated_at') THEN
+    CREATE TRIGGER roles_updated_at
+      BEFORE UPDATE ON roles
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;

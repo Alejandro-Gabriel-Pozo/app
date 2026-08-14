@@ -26,22 +26,28 @@ import { z, ZodError } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
-import { UserRole } from '../../types/enums.js';
 import { hashPassword } from '../../security/user.store.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 
-const MEMBER_ROLES = [UserRole.ADMIN, UserRole.RECEPTIONIST, UserRole.WAITER, UserRole.HOUSEKEEPING] as const;
-
+/**
+ * `roleId` reemplaza el enum fijo `role` (14/08/2026, ver security/roles.ts
+ * — roles pasaron a ser filas de `roles`, editables por negocio sin
+ * deploy). Ya no se puede validar el valor con un z.enum estático: se
+ * valida en el handler contra `platformRepo.getRoleById(roleId, businessId)`
+ * — así también se puede rechazar OWNER con un mensaje específico (ver
+ * comentario en POST más abajo) y roles de otro negocio/inexistentes con
+ * 404 en vez de aceptarlos en silencio.
+ */
 const CreateUserBodySchema = z.object({
   email: z.string({ required_error: 'email es obligatorio' }).email(),
   password: z.string({ required_error: 'password es obligatorio' }).min(8, {
     message: 'password debe tener al menos 8 caracteres',
   }),
-  role: z.enum(MEMBER_ROLES, { required_error: 'role es obligatorio' }),
+  roleId: z.string({ required_error: 'roleId es obligatorio' }).min(1),
 });
 
 const UpdateUserBodySchema = z.object({
-  role: z.enum(MEMBER_ROLES).optional(),
+  roleId: z.string().min(1).optional(),
   password: z.string().min(8, { message: 'password debe tener al menos 8 caracteres' }).optional(),
 });
 
@@ -113,6 +119,22 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           return;
         }
 
+        // roleId debe existir en ESTE negocio (guardia multi-tenant, mismo
+        // criterio que findMembershipByIdAndBusiness) y no puede ser OWNER
+        // — ese rol solo se asigna al registrar el negocio (business.routes.ts),
+        // nunca desde acá. Antes esto lo garantizaba el z.enum que excluía
+        // OWNER de MEMBER_ROLES; con roleId dinámico el chequeo se mueve
+        // acá porque ya no hay forma de expresarlo en el schema de Zod.
+        const role = await platformRepo.getRoleById(body.roleId, businessId);
+        if (!role || !role.active) {
+          res.status(422).json({ code: 'INVALID_ROLE', message: `El rol '${body.roleId}' no existe o está desactivado en este negocio.` });
+          return;
+        }
+        if (role.name === 'OWNER') {
+          res.status(422).json({ code: 'CANNOT_ASSIGN_OWNER', message: 'El rol OWNER no se puede asignar desde acá — se asigna al registrar el negocio.' });
+          return;
+        }
+
         const identity = await platformRepo.createIdentity({
           id: randomUUID(),
           email: body.email,
@@ -123,7 +145,7 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           id: randomUUID(),
           identityId: identity.id,
           businessId,
-          role: body.role,
+          roleId: role.id,
         });
 
         res.status(201).json({ ...member, email: identity.email });
@@ -153,8 +175,17 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           return;
         }
 
-        if (body.role !== undefined) {
-          await platformRepo.updateMembershipRole(membershipId, businessId, body.role);
+        if (body.roleId !== undefined) {
+          const role = await platformRepo.getRoleById(body.roleId, businessId);
+          if (!role || !role.active) {
+            res.status(422).json({ code: 'INVALID_ROLE', message: `El rol '${body.roleId}' no existe o está desactivado en este negocio.` });
+            return;
+          }
+          if (role.name === 'OWNER') {
+            res.status(422).json({ code: 'CANNOT_ASSIGN_OWNER', message: 'El rol OWNER no se puede asignar desde acá.' });
+            return;
+          }
+          await platformRepo.updateMembershipRole(membershipId, businessId, role.id);
         }
 
         if (body.password !== undefined) {

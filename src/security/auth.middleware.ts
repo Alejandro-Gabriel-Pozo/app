@@ -51,6 +51,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { UserRole } from '../types/enums.js';
 import type { AuthenticatedUser } from './user.types.js';
+import type { PermissionGroup } from './roles.js';
+import { CUSTOMER_PERMISSION_GROUPS } from './roles.js';
 
 // ---------------------------------------------------------------------------
 // JWT Payload
@@ -58,7 +60,15 @@ import type { AuthenticatedUser } from './user.types.js';
 
 export interface JwtPayload {
   sub: string;
-  role: UserRole;
+  /**
+   * Presente SOLO en tokens CUSTOMER (14/08/2026 — ver security/roles.ts).
+   * El staff ya no lleva su rol acá: `role_id` vive en `memberships`, se
+   * resuelve en cada request contra `role_permission_groups`, nunca se
+   * embebe en el JWT (mismo motivo que `isMembershipActive` no se cachea
+   * ahí — un cambio de permisos debe tener efecto inmediato, no recién al
+   * expirar el token).
+   */
+  role?: UserRole;
   /** ID del negocio al que pertenece el usuario (multi-tenant) */
   business_id?: string;
   /** ID del Customer entity — presente solo en tokens CUSTOMER */
@@ -215,6 +225,20 @@ export function getJwtSecret(): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Resultado de resolver una membership de staff — usado por el hook
+ * `resolveMembershipContext` de `authenticate()` (ver abajo). Combina en
+ * una sola consulta lo que antes era solo `isMembershipActive`: además de
+ * si la membership sigue activa, trae el `role_id` actual y los
+ * `permissionGroups` que ese rol tiene AHORA MISMO — nunca cacheados en el
+ * JWT, resueltos de nuevo en cada request (14/08/2026, security/roles.ts).
+ */
+export interface MembershipContext {
+  active: boolean;
+  roleId: string;
+  permissionGroups: string[];
+}
+
+/**
  * Middleware de autenticación.
  *
  * ## Parámetros — SIEMPRE opcionales
@@ -225,13 +249,17 @@ export function getJwtSecret(): string {
  * @param resolveUser - Función opcional para resolver el usuario desde req
  *   (usada en tests o en rutas que necesitan un resolver personalizado).
  *   Si se omite, el usuario se extrae del header Authorization: Bearer.
- * @param isMembershipActive - Chequeo opcional contra `memberships.active`
- *   para tokens de empleado (ver comentario de archivo). Si se omite, el
- *   middleware se comporta como antes (solo firma + expiración).
+ * @param resolveMembershipContext - Chequeo opcional que reemplaza al viejo
+ *   `isMembershipActive` (14/08/2026): además de si la membership sigue
+ *   activa, resuelve `roleId` + `permissionGroups` — la fuente real de
+ *   autorización que usa `authorize()` de acá en más. Si se omite (rutas
+ *   sin este hook), `req.user.permissionGroups` queda `undefined` y
+ *   `authorize()` rechaza con 403 cualquier grupo que no sea uno de los
+ *   que un CUSTOMER puede cumplir — fail-closed, no fail-open.
  */
 export const authenticate = (
   resolveUser?: (req: Request) => AuthenticatedUser | undefined,
-  isMembershipActive?: (identityId: string, businessId: string) => Promise<boolean>,
+  resolveMembershipContext?: (identityId: string, businessId: string) => Promise<MembershipContext | null>,
 ) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (resolveUser) {
@@ -271,25 +299,33 @@ export const authenticate = (
       return;
     }
 
-    if (isMembershipActive && payload.role !== UserRole.CUSTOMER && payload.business_id) {
+    let roleId: string | undefined;
+    let permissionGroups: string[] | undefined;
+
+    if (resolveMembershipContext && payload.role !== UserRole.CUSTOMER && payload.business_id) {
+      let context: MembershipContext | null;
       try {
-        const active = await isMembershipActive(payload.sub, payload.business_id);
-        if (!active) {
-          res.status(401).json({
-            code: 'MEMBERSHIP_INACTIVE',
-            message: 'Tu acceso a este negocio fue desactivado.',
-          });
-          return;
-        }
+        context = await resolveMembershipContext(payload.sub, payload.business_id);
       } catch {
         res.status(401).json({ code: 'UNAUTHORIZED', message: 'No se pudo verificar el acceso.' });
         return;
       }
+      if (!context || !context.active) {
+        res.status(401).json({
+          code: 'MEMBERSHIP_INACTIVE',
+          message: 'Tu acceso a este negocio fue desactivado.',
+        });
+        return;
+      }
+      roleId = context.roleId;
+      permissionGroups = context.permissionGroups;
     }
 
     req.user = {
       id: payload.sub,
-      role: payload.role,
+      ...(payload.role !== undefined && { role: payload.role }),
+      ...(roleId !== undefined && { roleId }),
+      ...(permissionGroups !== undefined && { permissionGroups }),
       ...(payload.business_id !== undefined && { businessId: payload.business_id }),
       ...(payload.customer_id !== undefined && { customerId: payload.customer_id }),
     };
@@ -297,16 +333,30 @@ export const authenticate = (
   };
 };
 
-export const authorize = (allowedRoles: readonly UserRole[]) => {
+/**
+ * `authorize(Roles.X)` — SIN CAMBIOS en la firma que ven las rutas
+ * (14/08/2026, ver security/roles.ts para el porqué). Antes comparaba
+ * `req.user.role` contra un array de `UserRole` fijo; ahora chequea si el
+ * `permissionGroup` requerido está en `req.user.permissionGroups`,
+ * resuelto por `authenticate()` contra la BD en este mismo request — o,
+ * para tokens CUSTOMER, contra la lista fija `CUSTOMER_PERMISSION_GROUPS`
+ * (los clientes no tienen `role_id`).
+ */
+export const authorize = (requiredGroup: PermissionGroup) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
       res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado' });
       return;
     }
-    if (!allowedRoles.includes(req.user.role)) {
+
+    const allowed = req.user.role === UserRole.CUSTOMER
+      ? CUSTOMER_PERMISSION_GROUPS.includes(requiredGroup)
+      : (req.user.permissionGroups ?? []).includes(requiredGroup);
+
+    if (!allowed) {
       res.status(403).json({
         code: 'FORBIDDEN',
-        message: `Acceso denegado. Roles permitidos: ${allowedRoles.join(', ')}`,
+        message: `Acceso denegado. Se requiere el permiso: ${requiredGroup}`,
       });
       return;
     }

@@ -43,6 +43,7 @@ import { createCustomersRouter }         from './api/routes/customers.routes.js'
 import { createCategoryRouter }          from './api/routes/categories.routes.js';
 import { createAuditLogRouter }          from './api/routes/audit-log.routes.js';
 import { createUsersRouter }             from './api/routes/users.routes.js';
+import { createRolesRouter }             from './api/routes/roles.routes.js';
 import { createPlatformRouter }          from './api/routes/platform.routes.js';
 import { createAdminRouter }             from './api/routes/admin.routes.js';
 import { createProductsRouter }          from './api/routes/products.routes.js';
@@ -173,14 +174,17 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   app.use('/api', ...helmetApi);
 
-  // authenticate() — protege /api/* desde aquí. Se le pasa un chequeo de
-  // memberships.active para que un empleado desactivado (Roles.MANAGEMENT
-  // los desactiva desde /api/users) pierda el acceso de inmediato, no recién
-  // cuando el JWT expire (hasta JWT_EXPIRES_IN, default 24h).
-  app.use('/api', authenticate(undefined, async (identityId, businessId) => {
-    const membership = await platformRepo.findMembership(identityId, businessId);
-    return membership?.active ?? false;
-  }));
+  // authenticate() — protege /api/* desde aquí. Se le pasa
+  // resolveMembershipContext (14/08/2026, reemplaza al viejo chequeo
+  // booleano de memberships.active) para que además de la revocación
+  // inmediata de acceso (Roles.MANAGEMENT desactiva desde /api/users), los
+  // permisos del rol actual (role_id → role_permission_groups) también se
+  // resuelvan en cada request — un cambio de permisos hecho por el dueño
+  // del negocio tiene efecto de inmediato, no recién cuando el JWT expire
+  // (hasta JWT_EXPIRES_IN, default 24h). Ver security/auth.middleware.ts.
+  app.use('/api', authenticate(undefined, (identityId, businessId) =>
+    platformRepo.getMembershipContext(identityId, businessId),
+  ));
 
   // -------------------------------------------------------------------------
   // 13. /api/admin — ANTES de tenantMiddleware (repair-tenant-db lo requiere)
@@ -213,6 +217,7 @@ export async function createApp(): Promise<{
   app.use('/api/reservations',      createReservationsRouter());
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo));
+  app.use('/api/roles',             createRolesRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));

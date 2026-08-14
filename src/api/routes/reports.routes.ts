@@ -4,10 +4,19 @@
  * Permisos:
  * - Reportes operativos (ocupación) — MANAGEMENT (OWNER, ADMIN)
  * - HOUSEKEEPING y RECEPTIONIST no tienen acceso a reportes
+ *
+ * `authenticate()` local sacado de cada handler (14/08/2026): app.ts ya lo
+ * aplica globalmente sobre /api/* antes de tenantMiddleware — mismo fix
+ * que ya tenían housekeeping/reservations/resources/stays/users.routes.ts.
+ * Acá quedó pendiente y se volvió un bug real recién con el cambio de
+ * roles (security/roles.ts): el authenticate() global resuelve
+ * permissionGroups vía un hook; un authenticate() local sin ese hook
+ * pisaba req.user y los dejaba undefined, así que authorize(Roles.X)
+ * rechazaba con 403 a todo el mundo.
  */
 
 import { Router } from 'express';
-import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { ReportService } from '../../services/report.service.js';
 
@@ -19,7 +28,6 @@ export function createReportsRouter(service: ReportService): Router {
   // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
   router.get(
     '/occupancy',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -40,7 +48,6 @@ export function createReportsRouter(service: ReportService): Router {
   // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD, limit=5 (opcional)
   router.get(
     '/occupancy/summary',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -63,7 +70,6 @@ export function createReportsRouter(service: ReportService): Router {
   // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
   router.get(
     '/occupancy/by-category',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -84,7 +90,6 @@ export function createReportsRouter(service: ReportService): Router {
   // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD, threshold=30 (opcional, %)
   router.get(
     '/occupancy/underutilized',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -111,7 +116,6 @@ export function createReportsRouter(service: ReportService): Router {
   // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
   router.get(
     '/accounts-receivable',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
@@ -132,7 +136,6 @@ export function createReportsRouter(service: ReportService): Router {
   // Query params: before=YYYY-MM-DD
   router.delete(
     '/occupancy/purge',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {

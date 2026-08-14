@@ -33,7 +33,7 @@ import { z } from 'zod';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 import { hashPassword, verifyPassword } from '../../security/user.store.js';
 import { signToken } from '../../security/auth.middleware.js';
-import { BusinessPlan, UserRole } from '../../types/enums.js';
+import { BusinessPlan } from '../../types/enums.js';
 
 /**
  * @swagger
@@ -141,16 +141,28 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
         // ADMIN pese a que el resto del código (Roles.OWNER_ONLY,
         // DELETE /api/users/:id) asume que alguien tiene OWNER — con ADMIN acá,
         // nadie lo tenía nunca y esa ruta era inalcanzable para cualquiera.
+        //
+        // El rol "sistema" OWNER ya existe acá — createBusiness() lo
+        // provisiona internamente (provisionSystemRoles(), 14/08/2026,
+        // mismo criterio que provisionDefaultModules()) antes de retornar.
+        const roles = await platformRepo.listRolesByBusiness(businessId);
+        const ownerRole = roles.find((r) => r.name === 'OWNER');
+        if (!ownerRole) {
+          throw new Error(`[register] El negocio ${businessId} no tiene rol OWNER provisionado — revisar provisionSystemRoles().`);
+        }
+
         await platformRepo.createMembership({
           id: randomUUID(),
           identityId,
           businessId,
-          role: UserRole.OWNER,
+          roleId: ownerRole.id,
         });
 
+        // El JWT de staff ya no lleva `role` (ver security/roles.ts) — los
+        // permisos se resuelven en cada request contra role_permission_groups.
         const jwtSecret = process.env.JWT_SECRET!;
         const token = signToken(
-          { sub: identityId, role: UserRole.OWNER, business_id: businessId },
+          { sub: identityId, business_id: businessId },
           jwtSecret,
         );
 
@@ -162,7 +174,7 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           token,
           tokenType: 'Bearer',
           expiresIn: 86_400,
-          user: { id: identityId, email: body.ownerEmail, role: UserRole.OWNER },
+          user: { id: identityId, email: body.ownerEmail, role: ownerRole.name },
         });
       } catch (err) {
         next(err);

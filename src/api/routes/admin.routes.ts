@@ -15,11 +15,14 @@
  * Ambas rutas corren applyTenantSchema() (schema.sql completo, idempotente)
  * contra la URL antes de activar el negocio — ya no hace falta correrlo a
  * mano por psql/SQL Editor como antes. Ver tenant-db.setup.ts.
+ *
+ * `authenticate()` local sacado de cada handler (14/08/2026) — mismo fix
+ * y mismo motivo que reports.routes.ts, ver ese archivo para el detalle.
  */
 
 import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
-import { authenticate, authorize } from '../middleware/auth.middleware.wrapper.js';
+import { authorize } from '../middleware/auth.middleware.wrapper.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 import { encryptConnectionString, applyTenantSchema } from '../../platform/tenant-db.setup.js';
 import { evictTenantPool } from '../../platform/tenant.middleware.js';
@@ -35,7 +38,6 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
   // valores fuera del servidor.
   router.post(
     '/repair-tenant-db',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
@@ -98,7 +100,6 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
   // ⚠️  La URL nunca se devuelve en la respuesta — solo se cifra y almacena.
   router.post(
     '/set-tenant-url',
-    authenticate(),
     authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {

@@ -158,6 +158,75 @@ F):**
 Ninguno de los tres se diseñó ni se implementó — quedan anotados para
 priorizar cuando corresponda.
 
+### H. Roles como entidad configurable — ✅ HECHO en app-main, ⚠️ rompe appfrontend-main sin coordinar (14/08/2026)
+
+Primer gap de Tango implementado (Opción 2 elegida por el dueño del
+proyecto: reemplazo completo `role` → `role_id`, no un campo de
+compatibilidad — "no tener que volver a hacer esto en el futuro").
+
+**Diseño:** 2 tablas nuevas en `platform.schema.sql` (`roles` MAESTRO,
+`role_permission_groups` junction) + `memberships.role_id` (FK real,
+reemplaza `memberships.role` como fuente de autorización). Los 8 grupos de
+`security/roles.ts` (`MANAGEMENT`, `FRONT_DESK`, `STAFF`, etc.) siguen
+fijos en código — lo editable es qué rol pertenece a qué grupo(s), no el
+catálogo de grupos. Esto evitó tocar los ~101 call-sites de
+`authorize(Roles.X)` en las rutas.
+
+**JWT de staff ya no lleva `role`** — se resuelve `roleId` +
+`permissionGroups` en cada request (`authenticate()`, nuevo hook
+`resolveMembershipContext`, mismo patrón anti-staleness que ya usaba
+`isMembershipActive`, ahora fusionado en un solo lookup). Tokens CUSTOMER
+no cambian.
+
+**Bug real encontrado probando idempotencia en un branch de Neon (no en
+producción):** Postgres valida el `NOT NULL` de `role_id` al construir la
+fila candidata de un INSERT, antes de evaluar `ON CONFLICT DO NOTHING` —
+el backfill legado `platform_users→memberships` (preexistente, no tocado
+hasta hoy) habría tirado el servidor entero en **cualquier boot posterior**
+al primero si algún día queda una fila de `platform_users` sin migrar,
+porque no completaba `role_id`. Encontrado y corregido reordenando el
+bloque completo (tablas `roles`/`role_permission_groups` antes del backfill
+legado) + completando `role_id` explícitamente en ese INSERT. Probado:
+fresh install + 3 corridas idempotentes seguidas contra un branch
+descartable de la BD real de plataforma, sin errores.
+
+**RoleService** (`role.service.ts`) — CRUD completo con R1/R5 (nombre único
+por negocio, roles "sistema" no se pueden desactivar, roles con memberships
+activas tampoco) y auditoría conectada (R8, `AuditLogRepository` de F2).
+`GET/POST/PUT/DELETE /api/roles`. 28 tests nuevos entre
+`auth.middleware.test.ts` (reescrito), `role.service.test.ts` y ajustes en
+`bookable-service.service.test.ts`. 326/327 tests, typecheck y lint
+limpios.
+
+**Efecto colateral encontrado y corregido:** `admin.routes.ts` y
+`reports.routes.ts` tenían `authenticate()` local redundante (bug latente
+preexistente, inofensivo hasta hoy porque el JWT viejo llevaba `role`
+embebido) — con el nuevo diseño esto pisaba `permissionGroups` y devolvía
+403 a todo el mundo. Sacado, mismo fix que ya tenían housekeeping/
+reservations/resources/stays/users.routes.ts.
+
+**⚠️ NO PUSHEADO TODAVÍA — rompe `appfrontend-main/src/app/dashboard/usuarios/page.tsx`
+sin coordinar:**
+- `POST/PUT /api/users` esperan `roleId`, no `role` — el formulario de
+  alta/edición de empleado (`<select>` con los 5 valores fijos) manda
+  `role`, el backend lo rechaza con 400 `VALIDATION_ERROR`.
+- `GET /api/users` (listado) ya no devuelve `role` en cada membership —
+  devuelve `roleId`/`roleName`. La página usa `m.role` para el badge
+  (`ROLE_LABEL[m.role]`, queda en blanco) **y** para dos guards de UI
+  (`isOwner && m.role !== 'OWNER'` en el botón de borrar, `editing?.role
+  !== 'OWNER'` en el modal) — con `m.role` siempre `undefined`, ambos
+  guards se evalúan `true` sin querer: el botón de borrar y el selector de
+  rol aparecerían también para la fila del OWNER, que antes estaban
+  ocultos a propósito.
+- `GET /api/auth/me` (usado por `AuthContext`/`isOwner` en esta misma
+  página) **no se rompe** — sigue devolviendo `role` como el nombre
+  resuelto, sin cambios ahí.
+
+Decisión pendiente del dueño del proyecto: pushear app-main ya y aceptar
+`/dashboard/usuarios` degradado hasta coordinar el frontend, o
+coordinar los dos repos en la misma sesión antes de pushear cualquiera de
+los dos.
+
 ---
 
 ## E. Observaciones post-deploy del usuario — sin cambios esta sesión

@@ -63,8 +63,9 @@ import type pg from 'pg';
 import type { AppContainer } from '../../container.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { authenticate, authorize } from '../../security/auth.middleware.js';
+import { Roles } from '../../security/roles.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
-import { UserRole, ReservationStatus, BusinessStatus } from '../../types/enums.js';
+import { ReservationStatus, BusinessStatus } from '../../types/enums.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 import {
   getTenantClient,
@@ -409,7 +410,7 @@ export function createCustomerRouter(
   // -------------------------------------------------------------------------
   // A partir de aquí: requieren JWT con role=CUSTOMER (business_id incluido)
   // -------------------------------------------------------------------------
-  router.use(authenticate(), authorize([UserRole.CUSTOMER]));
+  router.use(authenticate(), authorize(Roles.CUSTOMER_ONLY));
 
   // Resuelve req.db para el negocio del cliente autenticado — mismo campo
   // que usa tenantMiddleware, aunque ese middleware nunca llega a correr

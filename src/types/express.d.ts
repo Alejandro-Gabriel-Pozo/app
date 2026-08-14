@@ -25,7 +25,7 @@
  * ```
  */
 
-import type { UserRole }          from './enums.js';
+import type { AuthenticatedUser } from '../security/user.types.js';
 import type { SqlClient }         from '../repositories/sql.client.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 
@@ -33,17 +33,15 @@ declare global {
   namespace Express {
     interface Request {
       /**
-       * Payload del JWT autenticado.
-       * Presente en todas las rutas que pasan por authenticate().
+       * Payload del JWT autenticado, resuelto por authenticate().
+       * Reusa AuthenticatedUser (security/user.types.ts) en vez de
+       * declarar su propia forma acá — hasta el 14/08/2026 este archivo
+       * tenía una copia inline que había que mantener sincronizada a mano
+       * con user.types.ts (mismo tipo de duplicación que ya causó un bug
+       * real con CategoryNotFoundError esa misma sesión, ver
+       * pendientes-2026-08-14.md C2).
        */
-      user?: {
-        id: string;
-        role: UserRole;
-        /** ID del negocio (multi-tenant). Presente en tokens de empleados. */
-        businessId?: string;
-        /** ID del cliente (portal de clientes). Presente en tokens CUSTOMER. */
-        customerId?: string;
-      };
+      user?: AuthenticatedUser;
 
       /**
        * SqlClient conectado a la base de datos del tenant activo.

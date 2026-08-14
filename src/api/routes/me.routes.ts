@@ -11,13 +11,18 @@
  * `parseJwt()` client-side (esa es la idea de httpOnly) — este endpoint
  * reemplaza esa lectura.
  *
- * El JWT de empleado nunca llevó `email` en el payload (solo `sub`, `role`,
+ * El JWT de empleado nunca llevó `email` en el payload (solo `sub`,
  * `business_id` — ver auth.middleware.ts JwtPayload). El frontend viejo
  * decodificaba el token igual y hacía `payload.email ?? payload.sub`, así
  * que en la práctica siempre mostraba el UUID de la identity como "email"
  * en el sidebar. Acá se resuelve bien: un lookup a `platformRepo` para
  * roles de empleado (no CUSTOMER — ese token no tiene identity de
  * plataforma, es un flujo separado, fuera de alcance de este paso).
+ *
+ * `role` en la respuesta (14/08/2026): tampoco viene ya del JWT — para
+ * staff, `req.user.role` es `undefined` (solo los tokens CUSTOMER lo
+ * llevan, ver security/roles.ts). Se resuelve el nombre del rol actual
+ * vía `roleId` + un lookup a `roles`, mismo patrón que el email.
  * 200 — { id, role, businessId?, customerId?, email? }
  *
  * ## POST /api/auth/logout
@@ -42,14 +47,20 @@ export function createMeRouter(platformRepo: PlatformRepository): Router {
     }
 
     let email: string | undefined;
+    let roleName: string | undefined = req.user.role;
     if (req.user.role !== UserRole.CUSTOMER) {
       const identity = await platformRepo.findIdentityById(req.user.id);
       email = identity?.email;
+
+      if (req.user.roleId !== undefined && req.user.businessId !== undefined) {
+        const role = await platformRepo.getRoleById(req.user.roleId, req.user.businessId);
+        roleName = role?.name;
+      }
     }
 
     res.status(200).json({
       id: req.user.id,
-      role: req.user.role,
+      ...(roleName !== undefined && { role: roleName }),
       ...(email !== undefined && { email }),
       ...(req.user.businessId !== undefined && { businessId: req.user.businessId }),
       ...(req.user.customerId !== undefined && { customerId: req.user.customerId }),

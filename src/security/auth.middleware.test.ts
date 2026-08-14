@@ -1,14 +1,24 @@
 /**
  * @file auth.middleware.test.ts
- * @description Tests unitarios para `authenticate()`, en particular el
- * chequeo opcional de `isMembershipActive` (revocación de acceso antes de
- * que el JWT expire — ver comentario de archivo en auth.middleware.ts).
+ * @description Tests unitarios para `authenticate()` (en particular el
+ * hook `resolveMembershipContext` — revocación de acceso y resolución de
+ * permisos antes de que el JWT expire) y `authorize()` (14/08/2026, ver
+ * comentario de archivo en auth.middleware.ts y security/roles.ts).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { authenticate, signToken, setAuthCookie, clearAuthCookie, AUTH_COOKIE_NAME } from './auth.middleware.js';
+import {
+  authenticate,
+  authorize,
+  signToken,
+  setAuthCookie,
+  clearAuthCookie,
+  AUTH_COOKIE_NAME,
+} from './auth.middleware.js';
+import type { MembershipContext } from './auth.middleware.js';
 import { UserRole } from '../types/enums.js';
+import { Roles } from './roles.js';
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 const SECRET = 'test-secret-32-characters-minimum!!';
@@ -49,30 +59,42 @@ function fakeRes(): Response & { statusCode?: number; body?: unknown } {
   return res;
 }
 
-describe('authenticate() — isMembershipActive', () => {
-  const employeeToken = () =>
-    signToken({ sub: 'identity-1', role: UserRole.ADMIN, business_id: 'biz-1' }, SECRET);
+/**
+ * Token de staff — YA NO lleva `role` (14/08/2026, ver security/roles.ts).
+ * El único payload real es sub + business_id; los permisos se resuelven
+ * en authenticate() vía resolveMembershipContext, no acá.
+ */
+const employeeToken = () => signToken({ sub: 'identity-1', business_id: 'biz-1' }, SECRET);
 
-  it('deja pasar cuando isMembershipActive resuelve true', async () => {
-    const isMembershipActive = vi.fn().mockResolvedValue(true);
+describe('authenticate() — resolveMembershipContext', () => {
+  it('deja pasar y adjunta roleId + permissionGroups cuando la membership está activa', async () => {
+    const context: MembershipContext = { active: true, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT', 'STAFF'] };
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
     const req = fakeReqWithToken(employeeToken());
     const res = fakeRes();
     const next = vi.fn() as NextFunction;
 
-    await authenticate(undefined, isMembershipActive)(req, res, next);
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
 
-    expect(isMembershipActive).toHaveBeenCalledWith('identity-1', 'biz-1');
+    expect(resolveMembershipContext).toHaveBeenCalledWith('identity-1', 'biz-1');
     expect(next).toHaveBeenCalledOnce();
-    expect(req.user).toMatchObject({ id: 'identity-1', role: UserRole.ADMIN, businessId: 'biz-1' });
+    expect(req.user).toMatchObject({
+      id: 'identity-1',
+      roleId: 'role-biz-1-admin',
+      permissionGroups: ['MANAGEMENT', 'STAFF'],
+      businessId: 'biz-1',
+    });
+    expect(req.user?.role).toBeUndefined();
   });
 
   it('rechaza con 401 MEMBERSHIP_INACTIVE cuando la membership fue desactivada', async () => {
-    const isMembershipActive = vi.fn().mockResolvedValue(false);
+    const context: MembershipContext = { active: false, roleId: 'role-biz-1-admin', permissionGroups: ['MANAGEMENT'] };
+    const resolveMembershipContext = vi.fn().mockResolvedValue(context);
     const req = fakeReqWithToken(employeeToken());
     const res = fakeRes();
     const next = vi.fn() as NextFunction;
 
-    await authenticate(undefined, isMembershipActive)(req, res, next);
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
@@ -80,31 +102,31 @@ describe('authenticate() — isMembershipActive', () => {
   });
 
   it('rechaza con 401 si la membership ya no existe (borrada, no solo desactivada)', async () => {
-    const isMembershipActive = vi.fn().mockResolvedValue(undefined);
+    const resolveMembershipContext = vi.fn().mockResolvedValue(null);
     const req = fakeReqWithToken(employeeToken());
     const res = fakeRes();
     const next = vi.fn() as NextFunction;
 
-    await authenticate(undefined, (id, biz) => isMembershipActive(id, biz).then((v: unknown) => v ?? false))(req, res, next);
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
   it('no rompe la request si el checker lanza — responde 401 en vez de 500', async () => {
-    const isMembershipActive = vi.fn().mockRejectedValue(new Error('DB caída'));
+    const resolveMembershipContext = vi.fn().mockRejectedValue(new Error('DB caída'));
     const req = fakeReqWithToken(employeeToken());
     const res = fakeRes();
     const next = vi.fn() as NextFunction;
 
-    await authenticate(undefined, isMembershipActive)(req, res, next);
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
-  it('no llama isMembershipActive para tokens CUSTOMER — la revocación de clientes es otro flujo', async () => {
-    const isMembershipActive = vi.fn().mockResolvedValue(false);
+  it('no llama resolveMembershipContext para tokens CUSTOMER — la revocación de clientes es otro flujo', async () => {
+    const resolveMembershipContext = vi.fn().mockResolvedValue({ active: false, roleId: 'x', permissionGroups: [] });
     const customerToken = signToken(
       { sub: 'customer-1', role: UserRole.CUSTOMER, customer_id: 'customer-1', business_id: 'biz-1' },
       SECRET,
@@ -113,13 +135,14 @@ describe('authenticate() — isMembershipActive', () => {
     const res = fakeRes();
     const next = vi.fn() as NextFunction;
 
-    await authenticate(undefined, isMembershipActive)(req, res, next);
+    await authenticate(undefined, resolveMembershipContext)(req, res, next);
 
-    expect(isMembershipActive).not.toHaveBeenCalled();
+    expect(resolveMembershipContext).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledOnce();
+    expect(req.user).toMatchObject({ id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1' });
   });
 
-  it('sin isMembershipActive se comporta como antes: solo firma + expiración', async () => {
+  it('sin resolveMembershipContext se comporta como antes: solo firma + expiración, sin permissionGroups', async () => {
     const req = fakeReqWithToken(employeeToken());
     const res = fakeRes();
     const next = vi.fn() as NextFunction;
@@ -127,13 +150,81 @@ describe('authenticate() — isMembershipActive', () => {
     await authenticate()(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
+    expect(req.user?.permissionGroups).toBeUndefined();
+  });
+});
+
+describe('authorize()', () => {
+  function reqWithUser(user: Partial<NonNullable<Request['user']>>): Request {
+    return { user } as unknown as Request;
+  }
+
+  it('deja pasar si permissionGroups incluye el grupo requerido', () => {
+    const req = reqWithUser({ id: 'identity-1', permissionGroups: ['MANAGEMENT', 'STAFF'] });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorize(Roles.MANAGEMENT)(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('rechaza con 403 si permissionGroups no incluye el grupo requerido', () => {
+    const req = reqWithUser({ id: 'identity-1', permissionGroups: ['STAFF'] });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorize(Roles.MANAGEMENT)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('rechaza con 403 (fail-closed) si permissionGroups es undefined — ej. authenticate() sin el hook', () => {
+    const req = reqWithUser({ id: 'identity-1' });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorize(Roles.MANAGEMENT)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('un token CUSTOMER pasa Roles.BOOKING/CUSTOMER_ONLY sin permissionGroups ni role_id', () => {
+    const req = reqWithUser({ id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1' });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorize(Roles.BOOKING)(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('un token CUSTOMER rechaza un grupo que no le corresponde (ej. MANAGEMENT)', () => {
+    const req = reqWithUser({ id: 'customer-1', role: UserRole.CUSTOMER, customerId: 'customer-1' });
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorize(Roles.MANAGEMENT)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('responde 401 si no hay req.user', () => {
+    const req = { user: undefined } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn() as NextFunction;
+
+    authorize(Roles.STAFF)(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
   });
 });
 
 describe('authenticate() — cookie httpOnly (B2)', () => {
-  const employeeToken = () =>
-    signToken({ sub: 'identity-1', role: UserRole.ADMIN, business_id: 'biz-1' }, SECRET);
-
   it('acepta el token desde la cookie AUTH_COOKIE_NAME si no vino header Authorization', async () => {
     const req = fakeReqWithCookie(employeeToken());
     const res = fakeRes();
@@ -142,7 +233,7 @@ describe('authenticate() — cookie httpOnly (B2)', () => {
     await authenticate()(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
-    expect(req.user).toMatchObject({ id: 'identity-1', role: UserRole.ADMIN, businessId: 'biz-1' });
+    expect(req.user).toMatchObject({ id: 'identity-1', businessId: 'biz-1' });
   });
 
   it('prioriza el header Authorization sobre la cookie si ambos están presentes', async () => {

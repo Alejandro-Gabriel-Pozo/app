@@ -61,7 +61,10 @@ export interface Membership {
   identityId: string;
   businessId: string;
   businessName: string;
-  role: string;
+  /** FK a roles.id — fuente de permisos (14/08/2026, ver security/roles.ts) */
+  roleId: string;
+  /** Nombre del rol (roles.name), solo para mostrar — no se usa para autorizar */
+  roleName: string;
   active: boolean;
   createdAt: Date;
 }
@@ -70,7 +73,38 @@ export interface CreateMembershipInput {
   id: string;
   identityId: string;
   businessId: string;
-  role: string;
+  roleId: string;
+}
+
+// ---------------------------------------------------------------------------
+// Roles — entidad configurable que reemplaza el enum hardcodeado de rol
+// (14/08/2026, Gap analysis - Tango ERP vs modelo actual.md #2)
+// ---------------------------------------------------------------------------
+
+export interface Role {
+  id: string;
+  businessId: string;
+  name: string;
+  /** Uno de los 5 roles seedeados al crear el negocio — no se puede desactivar */
+  isSystem: boolean;
+  active: boolean;
+  permissionGroups: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateRoleInput {
+  id: string;
+  businessId: string;
+  name: string;
+  permissionGroups: string[];
+}
+
+/** Resultado combinado para el hook de authenticate() — ver auth.middleware.ts */
+export interface MembershipContext {
+  active: boolean;
+  roleId: string;
+  permissionGroups: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +127,45 @@ export class PlatformRepository {
     );
     const business = this.rowToBusiness(result.rows[0]!);
     await this.provisionDefaultModules(business.id);
+    await this.provisionSystemRoles(business.id);
     return business;
+  }
+
+  /**
+   * Inserta los 5 roles "sistema" (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/
+   * WAITER) con los mismos permission_groups que hoy hardcodea
+   * security/roles.ts — mismo criterio y mismo motivo que
+   * provisionDefaultModules(): vive DENTRO de createBusiness() para que
+   * sea imposible que un caller nuevo se olvide de provisionarlos. Los
+   * negocios que ya existían antes de este bloque se migran aparte en el
+   * backfill de platform.schema.sql (BLOQUE ROLES).
+   */
+  private async provisionSystemRoles(businessId: string): Promise<void> {
+    const systemRoles: { suffix: string; name: string; groups: string[] }[] = [
+      { suffix: 'owner', name: 'OWNER', groups: ['OWNER_ONLY', 'MANAGEMENT', 'STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] },
+      { suffix: 'admin', name: 'ADMIN', groups: ['MANAGEMENT', 'STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] },
+      { suffix: 'receptionist', name: 'RECEPTIONIST', groups: ['STAFF', 'FRONT_DESK', 'BOOKING'] },
+      { suffix: 'housekeeping', name: 'HOUSEKEEPING', groups: ['STAFF', 'HOUSEKEEPING_AND_MANAGEMENT'] },
+      { suffix: 'waiter', name: 'WAITER', groups: ['STAFF', 'ORDERS'] },
+    ];
+
+    for (const { suffix, name, groups } of systemRoles) {
+      const roleId = `role-${businessId}-${suffix}`;
+      await this.db.query(
+        `INSERT INTO roles (id, business_id, name, is_system)
+         VALUES ($1, $2, $3, TRUE)
+         ON CONFLICT (business_id, name) DO NOTHING`,
+        [roleId, businessId, name],
+      );
+      for (const group of groups) {
+        await this.db.query(
+          `INSERT INTO role_permission_groups (role_id, permission_group)
+           VALUES ($1, $2)
+           ON CONFLICT (role_id, permission_group) DO NOTHING`,
+          [roleId, group],
+        );
+      }
+    }
   }
 
   /**
@@ -264,11 +336,12 @@ export class PlatformRepository {
 
   async createMembership(input: CreateMembershipInput): Promise<Membership> {
     const result = await this.db.query<MembershipJoinRow>(
-      `INSERT INTO memberships (id, identity_id, business_id, role)
+      `INSERT INTO memberships (id, identity_id, business_id, role_id)
        VALUES ($1, $2, $3, $4)
-       RETURNING id, identity_id, business_id, role, active, created_at,
-         (SELECT name FROM businesses WHERE id = $3) AS business_name`,
-      [input.id, input.identityId, input.businessId, input.role],
+       RETURNING id, identity_id, business_id, role_id, active, created_at,
+         (SELECT name FROM businesses WHERE id = $3) AS business_name,
+         (SELECT name FROM roles WHERE id = $4) AS role_name`,
+      [input.id, input.identityId, input.businessId, input.roleId],
     );
     return this.rowToMembership(result.rows[0]!);
   }
@@ -279,10 +352,11 @@ export class PlatformRepository {
    */
   async findActiveMembershipsByIdentityId(identityId: string): Promise<Membership[]> {
     const result = await this.db.query<MembershipJoinRow>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
-              b.name AS business_name
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
+              b.name AS business_name, r.name AS role_name
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
+       JOIN roles r ON r.id = m.role_id
        WHERE m.identity_id = $1 AND m.active = TRUE
        ORDER BY m.created_at ASC`,
       [identityId],
@@ -292,14 +366,36 @@ export class PlatformRepository {
 
   async findMembership(identityId: string, businessId: string): Promise<Membership | undefined> {
     const result = await this.db.query<MembershipJoinRow>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
-              b.name AS business_name
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
+              b.name AS business_name, r.name AS role_name
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
+       JOIN roles r ON r.id = m.role_id
        WHERE m.identity_id = $1 AND m.business_id = $2`,
       [identityId, businessId],
     );
     return result.rows[0] ? this.rowToMembership(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Contexto de autorización para authenticate() — reemplaza al viejo
+   * isMembershipActive() (14/08/2026). LEFT JOIN a role_permission_groups
+   * a propósito: un rol recién creado sin ningún grupo asignado todavía
+   * debe resolver `permissionGroups: []`, no "membership no encontrada".
+   */
+  async getMembershipContext(identityId: string, businessId: string): Promise<MembershipContext | null> {
+    const result = await this.db.query<{ active: boolean; role_id: string; permission_groups: string[] }>(
+      `SELECT m.active, m.role_id,
+              COALESCE(ARRAY_AGG(rpg.permission_group) FILTER (WHERE rpg.permission_group IS NOT NULL), ARRAY[]::text[]) AS permission_groups
+       FROM memberships m
+       LEFT JOIN role_permission_groups rpg ON rpg.role_id = m.role_id
+       WHERE m.identity_id = $1 AND m.business_id = $2
+       GROUP BY m.active, m.role_id`,
+      [identityId, businessId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return { active: row.active, roleId: row.role_id, permissionGroups: row.permission_groups };
   }
 
   /**
@@ -308,10 +404,11 @@ export class PlatformRepository {
    */
   async listMembershipsByBusiness(businessId: string): Promise<(Membership & { email: string })[]> {
     const result = await this.db.query<MembershipJoinRow & { email: string }>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
-              b.name AS business_name, i.email
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
+              b.name AS business_name, r.name AS role_name, i.email
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
+       JOIN roles r ON r.id = m.role_id
        JOIN identities i ON i.id = m.identity_id
        WHERE m.business_id = $1
        ORDER BY m.created_at ASC`,
@@ -330,10 +427,11 @@ export class PlatformRepository {
     businessId: string,
   ): Promise<(Membership & { email: string }) | undefined> {
     const result = await this.db.query<MembershipJoinRow & { email: string }>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role, m.active, m.created_at,
-              b.name AS business_name, i.email
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
+              b.name AS business_name, r.name AS role_name, i.email
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
+       JOIN roles r ON r.id = m.role_id
        JOIN identities i ON i.id = m.identity_id
        WHERE m.id = $1 AND m.business_id = $2`,
       [membershipId, businessId],
@@ -342,16 +440,109 @@ export class PlatformRepository {
   }
 
   /**
-   * Actualiza el rol de una membership. El email/password viven en la
-   * identity (compartidos entre negocios) y se editan aparte —
-   * ver `updateIdentityPassword`.
+   * Actualiza el rol de una membership (ahora vía roleId, no un string de
+   * enum). El email/password viven en la identity (compartidos entre
+   * negocios) y se editan aparte — ver `updateIdentityPassword`.
    */
-  async updateMembershipRole(membershipId: string, businessId: string, role: string): Promise<boolean> {
+  async updateMembershipRole(membershipId: string, businessId: string, roleId: string): Promise<boolean> {
     const result = await this.db.query(
-      `UPDATE memberships SET role = $1 WHERE id = $2 AND business_id = $3`,
-      [role, membershipId, businessId],
+      `UPDATE memberships SET role_id = $1 WHERE id = $2 AND business_id = $3`,
+      [roleId, membershipId, businessId],
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Roles — CRUD de la entidad configurable (14/08/2026)
+  // -------------------------------------------------------------------------
+
+  async listRolesByBusiness(businessId: string): Promise<Role[]> {
+    const result = await this.db.query<RoleJoinRow>(
+      `SELECT r.id, r.business_id, r.name, r.is_system, r.active, r.created_at, r.updated_at,
+              COALESCE(ARRAY_AGG(rpg.permission_group) FILTER (WHERE rpg.permission_group IS NOT NULL), ARRAY[]::text[]) AS permission_groups
+       FROM roles r
+       LEFT JOIN role_permission_groups rpg ON rpg.role_id = r.id
+       WHERE r.business_id = $1
+       GROUP BY r.id
+       ORDER BY r.is_system DESC, r.created_at ASC`,
+      [businessId],
+    );
+    return result.rows.map((r) => this.rowToRole(r));
+  }
+
+  /** `businessId` es guardia multi-tenant — mismo criterio que findMembershipByIdAndBusiness. */
+  async getRoleById(roleId: string, businessId: string): Promise<Role | undefined> {
+    const result = await this.db.query<RoleJoinRow>(
+      `SELECT r.id, r.business_id, r.name, r.is_system, r.active, r.created_at, r.updated_at,
+              COALESCE(ARRAY_AGG(rpg.permission_group) FILTER (WHERE rpg.permission_group IS NOT NULL), ARRAY[]::text[]) AS permission_groups
+       FROM roles r
+       LEFT JOIN role_permission_groups rpg ON rpg.role_id = r.id
+       WHERE r.id = $1 AND r.business_id = $2
+       GROUP BY r.id`,
+      [roleId, businessId],
+    );
+    return result.rows[0] ? this.rowToRole(result.rows[0]) : undefined;
+  }
+
+  async createRole(input: CreateRoleInput): Promise<Role> {
+    await this.db.query(
+      `INSERT INTO roles (id, business_id, name, is_system) VALUES ($1, $2, $3, FALSE)`,
+      [input.id, input.businessId, input.name],
+    );
+    for (const group of input.permissionGroups) {
+      await this.db.query(
+        `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, $2)`,
+        [input.id, group],
+      );
+    }
+    return (await this.getRoleById(input.id, input.businessId))!;
+  }
+
+  /**
+   * Reemplaza el set completo de permission_groups de un rol — mismo
+   * patrón que `PUT .../resource-locks` (resource-lock.service.ts):
+   * borra todo lo que tenía y escribe el set nuevo, más simple que un
+   * diff y suficiente para el volumen de filas de esta tabla.
+   */
+  async updateRolePermissionGroups(roleId: string, businessId: string, permissionGroups: string[]): Promise<Role> {
+    await this.db.query(`DELETE FROM role_permission_groups WHERE role_id = $1`, [roleId]);
+    for (const group of permissionGroups) {
+      await this.db.query(
+        `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, $2)`,
+        [roleId, group],
+      );
+    }
+    return (await this.getRoleById(roleId, businessId))!;
+  }
+
+  async renameRole(roleId: string, businessId: string, name: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE roles SET name = $1 WHERE id = $2 AND business_id = $3`,
+      [name, roleId, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Soft-delete. El guard "no desactivar un rol sistema" y "no desactivar
+   * si tiene memberships activas" (docs/criterios-datos.md R5) viven en
+   * RoleService, no acá — este método solo ejecuta.
+   */
+  async deactivateRole(roleId: string, businessId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE roles SET active = FALSE WHERE id = $1 AND business_id = $2 AND active = TRUE`,
+      [roleId, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** Cuenta memberships activas usando un rol — usado por el guard de deactivateRole. */
+  async countActiveMembershipsByRole(roleId: string): Promise<number> {
+    const result = await this.db.query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total FROM memberships WHERE role_id = $1 AND active = TRUE`,
+      [roleId],
+    );
+    return result.rows[0]?.total ?? 0;
   }
 
   /**
@@ -405,9 +596,23 @@ export class PlatformRepository {
       identityId: row.identity_id,
       businessId: row.business_id,
       businessName: row.business_name,
-      role: row.role,
+      roleId: row.role_id,
+      roleName: row.role_name,
       active: row.active,
       createdAt: new Date(row.created_at),
+    };
+  }
+
+  private rowToRole(row: RoleJoinRow): Role {
+    return {
+      id: row.id,
+      businessId: row.business_id,
+      name: row.name,
+      isSystem: row.is_system,
+      active: row.active,
+      permissionGroups: row.permission_groups,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
     };
   }
 }
@@ -428,7 +633,19 @@ interface MembershipJoinRow {
   identity_id: string;
   business_id: string;
   business_name: string;
-  role: string;
+  role_id: string;
+  role_name: string;
   active: boolean;
   created_at: string;
+}
+
+interface RoleJoinRow {
+  id: string;
+  business_id: string;
+  name: string;
+  is_system: boolean;
+  active: boolean;
+  permission_groups: string[];
+  created_at: string;
+  updated_at: string;
 }
