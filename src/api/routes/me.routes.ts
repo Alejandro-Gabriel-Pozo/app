@@ -1,15 +1,24 @@
 /**
  * @file me.routes.ts
  * @description Sesión del usuario autenticado (B2, docs/pendientes-2026-08-13.md).
- * No requiere req.db de tenant — lee solo req.user, montado antes de
- * tenantMiddleware, igual que /api/admin y /api/business/modules.
+ * No requiere req.db de tenant — lee solo req.user (+ un lookup puntual de
+ * identity para el email), montado antes de tenantMiddleware, igual que
+ * /api/admin y /api/business/modules.
  *
  * ## GET /api/auth/me
  * Devuelve el usuario decodificado del token como JSON legible. Existe
  * porque con la cookie httpOnly el frontend deja de poder leer el JWT con
  * `parseJwt()` client-side (esa es la idea de httpOnly) — este endpoint
  * reemplaza esa lectura.
- * 200 — { id, role, businessId?, customerId? }
+ *
+ * El JWT de empleado nunca llevó `email` en el payload (solo `sub`, `role`,
+ * `business_id` — ver auth.middleware.ts JwtPayload). El frontend viejo
+ * decodificaba el token igual y hacía `payload.email ?? payload.sub`, así
+ * que en la práctica siempre mostraba el UUID de la identity como "email"
+ * en el sidebar. Acá se resuelve bien: un lookup a `platformRepo` para
+ * roles de empleado (no CUSTOMER — ese token no tiene identity de
+ * plataforma, es un flujo separado, fuera de alcance de este paso).
+ * 200 — { id, role, businessId?, customerId?, email? }
  *
  * ## POST /api/auth/logout
  * Limpia la cookie de sesión. No hace nada con localStorage — de eso se
@@ -20,18 +29,28 @@
 
 import { Router, type Request, type Response } from 'express';
 import { clearAuthCookie } from '../../security/auth.middleware.js';
+import { UserRole } from '../../types/enums.js';
+import type { PlatformRepository } from '../../platform/platform.repository.js';
 
-export function createMeRouter(): Router {
+export function createMeRouter(platformRepo: PlatformRepository): Router {
   const router = Router();
 
-  router.get('/me', (req: Request, res: Response): void => {
+  router.get('/me', async (req: Request, res: Response): Promise<void> => {
     if (!req.user) {
       res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado' });
       return;
     }
+
+    let email: string | undefined;
+    if (req.user.role !== UserRole.CUSTOMER) {
+      const identity = await platformRepo.findIdentityById(req.user.id);
+      email = identity?.email;
+    }
+
     res.status(200).json({
       id: req.user.id,
       role: req.user.role,
+      ...(email !== undefined && { email }),
       ...(req.user.businessId !== undefined && { businessId: req.user.businessId }),
       ...(req.user.customerId !== undefined && { customerId: req.user.customerId }),
     });
