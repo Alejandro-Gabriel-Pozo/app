@@ -51,6 +51,7 @@ import { SqlDomainEventRepository }     from '../../repositories/sql.domain-even
 import { SqlCustomerRateRepository }    from '../../repositories/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }  from '../../repositories/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }    from '../../repositories/housekeeping.repository.js';
+import { SqlAuditLogRepository }        from '../../repositories/audit-log.repository.js';
 import { ReservationService }           from '../../services/reservation.service.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import {
@@ -63,7 +64,10 @@ import { ReplaceResourceLocksSchema } from '../schemas/resource-lock.schemas.js'
 import type { AppContainer } from '../../container.js';
 
 function buildService(req: Request): BookableServiceService {
-  return new BookableServiceService(new SqlBookableServiceRepository(req.db!));
+  return new BookableServiceService(
+    new SqlBookableServiceRepository(req.db!),
+    new SqlAuditLogRepository(req.db!),
+  );
 }
 
 function buildResourceLockService(req: Request): ResourceLockService {
@@ -129,7 +133,7 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   router.put('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body    = UpdateBookableServiceSchema.parse(req.body);
-      const service = await buildService(req).updateService(param(req, 'id'), body);
+      const service = await buildService(req).updateService(param(req, 'id'), body, req.user!.id);
       res.json(service);
     } catch (err) { next(err); }
   });

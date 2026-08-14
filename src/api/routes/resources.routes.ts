@@ -42,6 +42,10 @@ import { randomUUID }                     from 'node:crypto';
 import { z }                              from 'zod';
 import { CreateOperatingWindowSchema }   from '../schemas/request.schemas.js';
 import type { VisualMetadata }           from '../../types/visual.interface.js';
+import { SqlAuditLogRepository }         from '../../repositories/audit-log.repository.js';
+import { diffFields }                    from '../../domain/audit.js';
+
+const AUDIT_ENTITY_RESOURCE = 'resources';
 
 // ---------------------------------------------------------------------------
 // Schemas de validación
@@ -236,6 +240,36 @@ export function createResourcesRouter(): Router {
           body.locationId ?? body.location_id ?? existing.locationId,
         );
         await repo.save(updated);
+
+        // Auditoría (R8/A9.4) — diff contra lo que realmente vino en el
+        // body, no contra el objeto merged de arriba (si no cambió no debe
+        // quedar como "cambio"). visualData queda afuera a propósito: es
+        // posición en el plano, no un dato de negocio que alguien vaya a
+        // disputar — auditarlo generaría ruido en cada drag-and-drop.
+        // Sin ResourceService propio (ver comentario de archivo), se
+        // audita acá directo, mismo patrón que CategoryService/
+        // ProductService/BookableServiceService.
+        const changes = diffFields(existing, {
+          name:        body.name,
+          basePrice:   body.basePrice ?? body.base_price,
+          categoryId:  body.categoryId ?? body.category_id,
+          capacity:    body.capacity,
+          description: body.description,
+          locationId:  body.locationId ?? body.location_id,
+        });
+        if (changes.length > 0) {
+          await new SqlAuditLogRepository(req.db).record(
+            changes.map((c) => ({
+              entity: AUDIT_ENTITY_RESOURCE,
+              entityId: existing.id,
+              field: c.field,
+              oldValue: c.oldValue,
+              newValue: c.newValue,
+              changedBy: req.user!.id,
+            })),
+          );
+        }
+
         res.json(updated);
       } catch (err) { next(err); }
     },

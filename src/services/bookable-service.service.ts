@@ -13,6 +13,10 @@ import type {
   UpdateServiceScheduleDTO,
 } from '../types/bookable-service.types.js';
 import { DomainError } from '../domain/errors.js';
+import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import { diffFields } from '../domain/audit.js';
+
+const AUDIT_ENTITY = 'bookable_services';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
@@ -43,7 +47,11 @@ export class ScheduleConflictError extends DomainError {
 // ---------------------------------------------------------------------------
 
 export class BookableServiceService {
-  constructor(private readonly repo: IBookableServiceRepository) {}
+  constructor(
+    private readonly repo: IBookableServiceRepository,
+    /** Requerido para que updateService() deje rastro (R8/A9.4). */
+    private readonly auditLogRepo: AuditLogRepository,
+  ) {}
 
   async listServices(): Promise<BookableService[]> {
     return this.repo.findAll();
@@ -59,10 +67,38 @@ export class BookableServiceService {
     return this.repo.create({ ...data, id: randomUUID() });
   }
 
-  async updateService(id: string, data: UpdateBookableServiceDTO): Promise<BookableService> {
+  /**
+   * `changedBy` es el identity_id (JWT sub) de quien hace el cambio — ver
+   * docs/criterios-datos.md R8. createService()/deleteService() quedan
+   * fuera de esta pasada, deliberado (mismo criterio que CategoryService/
+   * ProductService). Schedules tampoco se auditan — son una entidad propia,
+   * más chica, sin el caso de uso de precio que motivó R8.
+   */
+  async updateService(
+    id: string,
+    data: UpdateBookableServiceDTO,
+    changedBy: string,
+  ): Promise<BookableService> {
     const existing = await this.repo.findById(id);
     if (!existing) throw new BookableServiceNotFoundError(id);
-    return this.repo.update(id, data);
+
+    const updated = await this.repo.update(id, data);
+
+    const changes = diffFields(existing, data);
+    if (changes.length > 0) {
+      await this.auditLogRepo.record(
+        changes.map((c) => ({
+          entity: AUDIT_ENTITY,
+          entityId: id,
+          field: c.field,
+          oldValue: c.oldValue,
+          newValue: c.newValue,
+          changedBy,
+        })),
+      );
+    }
+
+    return updated;
   }
 
   async deleteService(id: string): Promise<void> {

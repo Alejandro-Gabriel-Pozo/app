@@ -102,15 +102,32 @@ Aplicado contra la tenant DB real y deployado (commits `0e92baf`/`552d307`,
 pusheados a `origin/main`).
 
 **Deliberadamente fuera de alcance — no asumir que está cubierto:**
-- `PhysicalResource` (`resources.routes.ts`, sin `ResourceService` propio)
-  y `BookableService` **no están auditados todavía** — son los otros dos
-  maestros con precio, mismo criterio que motivó R8 ("cuando un cliente
-  discuta un precio"). Candidato natural para la próxima ampliación.
 - `create`/`deactivate` no dejan rastro, solo `update`.
 - La escritura del audit log **no es transaccional** con el UPDATE
   principal (dos queries separadas) — si el insert de auditoría falla
   después de un update exitoso, el cambio queda sin rastro. Límite
   conocido, no resuelto.
+
+### F4. Ampliar auditoría a PhysicalResource y BookableService — ✅ HECHO (14/08/2026)
+Los otros dos maestros con precio, cerrando la lista que motivó R8.
+`BookableServiceService.updateService` sigue el mismo patrón que
+Category/Product (constructor gana `AuditLogRepository`, `changedBy` como
+3er parámetro). `resources.routes.ts` **no tiene `ResourceService` propio**
+(la lógica vive directo en el router) — se auditó ahí mismo, mismo patrón,
+sin crear un service nuevo solo para esto. `visualData` (posición en el
+plano) quedó explícitamente afuera del diff — es metadata de UI, no un
+dato de negocio disputable, auditarlo generaría ruido en cada
+drag-and-drop.
+
+3 tests nuevos (`bookable-service.service.test.ts`, con fake mínimo del
+repositorio — no hay `InMemoryBookableServiceRepository` en el repo
+todavía). Sin test dedicado para `resources.routes.ts` — no hay ningún
+test de rutas en este repo (mismo hallazgo que C1/C2), verificado con
+typecheck + suite completa en su lugar. 309/310 tests verdes, typecheck y
+lint limpios. **Sin aplicar todavía contra la tenant DB real ni deployado**
+— este cambio no toca `schema.sql` (reusa la tabla `audit_log` de F2), así
+que no hace falta bump de versión ni `migrate:tenants`, pero sí falta el
+commit + push + confirmar el deploy en Render.
 
 ### F3. Verificar el deploy en Render — ✅ RESUELTO (14/08/2026)
 `curl https://app-chny.onrender.com/api/audit-log?entity=x&entityId=y` sin
