@@ -299,7 +299,9 @@ es inútil.
 
 **A9.4 — Un audit log separado del outbox.** `domain_events` se despacha y
 se marca; un audit log es append-only y nadie lo consume en tiempo real.
-Son dos cosas.
+Son dos cosas. *Mismo hallazgo que R8 de `criterios-datos.md` — confirmado
+de nuevo el 14/08/2026 sin tabla equivalente en `schema.sql`, con validación
+externa contra Tango (`Gap analysis - Tango ERP vs modelo actual.md`).*
 
 **A9.5 — Alertas sobre lo que rompe plata o confianza:** outbox con eventos
 sin despachar hace más de X minutos, transacciones financieras que no

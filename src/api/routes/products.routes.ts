@@ -35,6 +35,7 @@ import {
   SqlProductRepository,
   SqlProductVariantRepository,
 } from '../../repositories/sql.product.repository.js';
+import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles }     from '../../security/roles.js';
 
@@ -43,6 +44,7 @@ function buildProductService(req: Request): ProductService {
   return new ProductService(
     new SqlProductRepository(db),
     new SqlProductVariantRepository(db),
+    new SqlAuditLogRepository(db),
   );
 }
 
@@ -91,7 +93,7 @@ export function createProductsRouter(_container: AppContainer): Router {
   router.put('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const service = buildProductService(req);
-      const product = await service.updateProduct(param(req, 'id'), req.body);
+      const product = await service.updateProduct(param(req, 'id'), req.body, req.user!.id);
       if (!product) {
         res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: 'Producto no encontrado.' });
         return;
@@ -131,7 +133,7 @@ export function createProductsRouter(_container: AppContainer): Router {
   router.put('/:id/variants/:variantId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const service = buildProductService(req);
-      const variant = await service.updateVariant(param(req, 'variantId'), req.body);
+      const variant = await service.updateVariant(param(req, 'variantId'), req.body, req.user!.id);
       if (!variant) {
         res.status(404).json({ code: 'VARIANT_NOT_FOUND', message: 'Variante no encontrada.' });
         return;

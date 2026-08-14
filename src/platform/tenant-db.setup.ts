@@ -118,7 +118,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
  * tenant.middleware.ts (quien la compara contra businesses.schema_version
  * para advertir sobre tenants desactualizados).
  */
-export const CURRENT_SCHEMA_VERSION = 1;
+// v2 (14/08/2026): BLOQUE 10 de schema.sql — tabla audit_log nueva (R8/A9.4).
+// Bumpeado a mano acá mismo, junto con el cambio de schema.sql que lo
+// motiva — es justamente el paso que pendientes-2026-08-13.md (A4) marcó
+// como "hay que acordarse a mano" y que se saltó la sesión anterior.
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

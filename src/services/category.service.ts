@@ -22,6 +22,10 @@ import type {
 } from '../types/resource-category.types.js';
 import { PLAN_LIMITS } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
+import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import { diffFields } from '../domain/audit.js';
+
+const AUDIT_ENTITY = 'resource_categories';
 
 export class PlanLimitError extends Error {
   constructor(
@@ -84,7 +88,15 @@ export function validateDetailsAgainstFields(
 }
 
 export class CategoryService {
-  constructor(private readonly categoryRepository: ICategoryRepository) {}
+  constructor(
+    private readonly categoryRepository: ICategoryRepository,
+    /**
+     * Requerido para que updateCategory() deje rastro (R8/A9.4). No se
+     * exigió también en create/deactivate en esta primera pasada — ver nota
+     * en updateCategory().
+     */
+    private readonly auditLogRepository: AuditLogRepository,
+  ) {}
 
   async listCategories(): Promise<ResourceCategory[]> {
     return this.categoryRepository.findAll();
@@ -111,12 +123,36 @@ export class CategoryService {
     return this.categoryRepository.create({ ...dto, id });
   }
 
+  /**
+   * `changedBy` es el identity_id (JWT sub) de quien hace el cambio — ver
+   * docs/criterios-datos.md R8. Solo se audita esta operación por ahora:
+   * create() no compara contra nada previo (es el valor inicial, ya cubierto
+   * por created_at) y deactivate()/delete() quedan fuera de esta primera
+   * pasada, deliberado — ampliar cuando haga falta auditar bajas también.
+   */
   async updateCategory(
     id: string,
     dto: UpdateCategoryDTO,
+    changedBy: string,
   ): Promise<ResourceCategory> {
-    await this.getCategoryById(id); // throws if not found
-    return this.categoryRepository.update(id, dto);
+    const before = await this.getCategoryById(id); // throws if not found
+    const updated = await this.categoryRepository.update(id, dto);
+
+    const changes = diffFields(before, dto);
+    if (changes.length > 0) {
+      await this.auditLogRepository.record(
+        changes.map((c) => ({
+          entity: AUDIT_ENTITY,
+          entityId: id,
+          field: c.field,
+          oldValue: c.oldValue,
+          newValue: c.newValue,
+          changedBy,
+        })),
+      );
+    }
+
+    return updated;
   }
 
   async deleteCategory(id: string): Promise<void> {

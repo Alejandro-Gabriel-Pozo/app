@@ -28,6 +28,11 @@ import type {
   UpdateProductVariantInput,
 } from '../domain/product.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import { diffFields } from '../domain/audit.js';
+
+const AUDIT_ENTITY_PRODUCT = 'products';
+const AUDIT_ENTITY_VARIANT = 'product_variants';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
@@ -76,6 +81,8 @@ export class ProductService {
   constructor(
     private readonly productRepo: IProductRepository,
     private readonly variantRepo: IProductVariantRepository,
+    /** Requerido para que updateProduct()/updateVariant() dejen rastro (R8/A9.4). */
+    private readonly auditLogRepo: AuditLogRepository,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -97,8 +104,38 @@ export class ProductService {
     return this.productRepo.create(input);
   }
 
-  async updateProduct(id: string, input: UpdateProductInput): Promise<Product | null> {
-    return (await this.productRepo.update(id, input)) ?? null;
+  /**
+   * `changedBy` es el identity_id (JWT sub) de quien hace el cambio — ver
+   * docs/criterios-datos.md R8. createProduct()/deleteProduct() quedan
+   * fuera de esta primera pasada, deliberado (mismo criterio que
+   * CategoryService.updateCategory).
+   */
+  async updateProduct(
+    id: string,
+    input: UpdateProductInput,
+    changedBy: string,
+  ): Promise<Product | null> {
+    const before = await this.productRepo.getById(id);
+    if (!before) return null;
+
+    const updated = await this.productRepo.update(id, input);
+    if (!updated) return null;
+
+    const changes = diffFields(before, input);
+    if (changes.length > 0) {
+      await this.auditLogRepo.record(
+        changes.map((c) => ({
+          entity: AUDIT_ENTITY_PRODUCT,
+          entityId: id,
+          field: c.field,
+          oldValue: c.oldValue,
+          newValue: c.newValue,
+          changedBy,
+        })),
+      );
+    }
+
+    return updated;
   }
 
   async deleteProduct(id: string): Promise<void> {
@@ -131,8 +168,29 @@ export class ProductService {
   async updateVariant(
     variantId: string,
     input: UpdateProductVariantInput,
+    changedBy: string,
   ): Promise<ProductVariant | null> {
-    return (await this.variantRepo.update(variantId, input)) ?? null;
+    const before = await this.variantRepo.getById(variantId);
+    if (!before) return null;
+
+    const updated = await this.variantRepo.update(variantId, input);
+    if (!updated) return null;
+
+    const changes = diffFields(before, input);
+    if (changes.length > 0) {
+      await this.auditLogRepo.record(
+        changes.map((c) => ({
+          entity: AUDIT_ENTITY_VARIANT,
+          entityId: variantId,
+          field: c.field,
+          oldValue: c.oldValue,
+          newValue: c.newValue,
+          changedBy,
+        })),
+      );
+    }
+
+    return updated;
   }
 
   async deleteVariant(variantId: string): Promise<void> {

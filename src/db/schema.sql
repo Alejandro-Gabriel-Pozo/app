@@ -984,3 +984,44 @@ CREATE INDEX IF NOT EXISTS idx_ar_company_period
 
 CREATE INDEX IF NOT EXISTS idx_ar_stay
   ON accounts_receivable (stay_id);
+
+-- ===========================================================================
+-- BLOQUE 10 — AUDIT LOG (docs/criterios-datos.md R8, docs/criterios-negocio.md A9.4)
+-- ===========================================================================
+-- "Todo cambio de maestro deja rastro: quien, cuando, que campo, valor
+-- anterior y nuevo" -- hallazgo del 13/08/2026, confirmado sin implementar
+-- de nuevo el 14/08/2026 via comparacion externa (Tango, ver
+-- "Gap analysis - Tango ERP vs modelo actual.md"). No es MAESTRO/TRANSACCION/
+-- DOCUMENTO (Parte 1 de criterios-datos.md) -- es una tabla de sistema,
+-- append-only, mismo trato que domain_events: nunca se edita ni se borra
+-- una fila ya escrita.
+--
+-- Una fila por CAMPO que cambio (no una fila por operacion de UPDATE) --
+-- permite responder "¿quien cambio el precio y cuando?" sin tener que
+-- reconstruirlo comparando snapshots completos.
+--
+-- Sin business_id a proposito: mismo criterio que resource_categories/
+-- resources/bookable_services (BLOQUE 1) -- el aislamiento de tenant ya lo
+-- da el pool de conexion por tenant (docs/criterios-negocio.md A2.8), no
+-- hace falta una columna de filtro en tablas puramente internas del tenant.
+-- changed_by es un identity_id (JWT sub) de la platform DB, SIN FK a
+-- `users` a proposito -- misma razon que stays.assigned_by (BLOQUE 6).
+--
+-- Alcance actual (14/08/2026): solo wireado en CategoryService.updateCategory
+-- y ProductService.updateProduct/updateVariant -- los maestros que motivaron
+-- R8 ("cuando un cliente discuta un precio"). PhysicalResource,
+-- BookableService y el resto de los maestros quedan sin auditar todavia,
+-- deliberado -- ver nota en category.service.ts/product.service.ts.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          VARCHAR(255)  PRIMARY KEY,
+  entity      VARCHAR(50)   NOT NULL,
+  entity_id   VARCHAR(255)  NOT NULL,
+  field       VARCHAR(100)  NOT NULL,
+  old_value   TEXT,
+  new_value   TEXT,
+  changed_by  VARCHAR(255)  NOT NULL,
+  changed_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity
+  ON audit_log (entity, entity_id, changed_at DESC);

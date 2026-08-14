@@ -23,13 +23,24 @@ declarar a qué clase pertenece.**
 | Ejemplos tuyos | `Customer`, `PhysicalResource`, `ResourceCategory`, `BookableService`, `Product`, `Tag`, `Business` | `Reservation`, `Stay`, `Order`, `HousekeepingTask`, `StockMovement`, `FinancialTransaction` | Facturas AFIP, notas de crédito *(aún no existen)* |
 | ¿Se borra? | **Nunca.** Se desactiva o se marca borrado | **Nunca.** Se cancela o se revierte | **Jamás.** Se anula con otro documento |
 | ¿Se edita? | Sí, con auditoría del valor anterior | Solo antes de confirmarse | Nunca, ni un carácter |
-| Identidad | ID técnico + **código de negocio** | ID técnico + correlativo | **Numeración correlativa e irrompible** |
+| Identidad | ID técnico + **código de negocio** | ID técnico + correlativo | **Numeración correlativa e irrompible**¹ |
 | Tiene vigencia | Sí (`válido desde/hasta`) | No, ocurrió y punto | No |
 | Depende del presente | Sí, refleja el estado actual | **No.** Congela lo que necesitó | No |
 
 **El error de raíz:** tratás a `ResourceCategory` (maestro) con la misma
 lógica que a cualquier fila. Un maestro tiene reglas de ciclo de vida que una
 fila común no tiene, y ahí es donde se te escapó.
+
+¹ *Confirmado por comparación externa (14/08/2026, ver
+`Gap analysis - Tango ERP vs modelo actual.md`): en un ERP con esta regla ya
+madura (Tango), la numeración correlativa es **por talonario**, es decir por
+tipo de comprobante — Factura A, Factura B, Nota de Crédito son secuencias
+independientes, no una sola numeración global. Cuando exista el primer
+DOCUMENTO real (facturación AFIP, `ModuleKey.FACTURACION`), la tabla que lo
+implemente necesita esa granularidad desde el diseño inicial, no como
+migración posterior — cambiar de "una secuencia" a "una secuencia por tipo"
+después de tener comprobantes emitidos es mucho más caro que decidirlo antes
+de la primera fila.*
 
 ---
 
@@ -170,7 +181,16 @@ un precio, la respuesta *"no sé quién lo cambió"* no sirve.
 `domain_events` **no cubre esto**: es un outbox, se despacha y se marca. Un
 log de auditoría es una tabla append-only que nadie consume en tiempo real.
 
-*Estado: no implementado. Backlog — "este mes".*
+*Estado: no implementado. Backlog — "este mes". Confirmado de nuevo el
+14/08/2026 contra `schema.sql` real: no existe ninguna tabla `audit_log` ni
+equivalente — comparación externa contra Tango (ver
+`Gap analysis - Tango ERP vs modelo actual.md`) usada como validación
+independiente de que esta regla, ya escrita acá, es exactamente la que un
+ERP maduro no deja pendiente. Nivel mínimo viable si se prioriza: no hace
+falta el modelo completo de Tango (auditoría configurable campo por campo,
+`CampoAuditable`) — alcanza con una tabla genérica
+`(entity, entity_id, field, old_value, new_value, changed_by, changed_at)`
+poblada desde la capa de repositorio, no por-entidad.*
 
 ---
 

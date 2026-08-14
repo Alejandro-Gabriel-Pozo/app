@@ -45,17 +45,25 @@ import {
 import type { CategoryField } from '../../types/resource-category.types.js';
 import { ZodError } from 'zod';
 import { SqlCategoryRepository } from '../../repositories/sql.category.repository.js';
+import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import type { AppContainer } from '../../container.js';
 
 export function createCategoryRouter(container: AppContainer): Router {
   const router = Router();
+
+  function buildService(req: Request): CategoryService {
+    return new CategoryService(
+      new SqlCategoryRepository(req.db!),
+      new SqlAuditLogRepository(req.db!),
+    );
+  }
 
   // ---------------------------------------------------------------------------
   // GET /
   // ---------------------------------------------------------------------------
   router.get('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const service = new CategoryService(new SqlCategoryRepository(req.db!));
+      const service = buildService(req);
       const categories = await service.listCategories();
       res.json(categories);
     } catch (err) { next(err); }
@@ -66,7 +74,7 @@ export function createCategoryRouter(container: AppContainer): Router {
   // ---------------------------------------------------------------------------
   router.get('/:id', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const service  = new CategoryService(new SqlCategoryRepository(req.db!));
+      const service  = buildService(req);
       const category = await service.getCategoryById(String(req.params['id']));
       res.json(category);
     } catch (err) {
@@ -114,7 +122,7 @@ export function createCategoryRouter(container: AppContainer): Router {
         return;
       }
 
-      const service  = new CategoryService(new SqlCategoryRepository(req.db!));
+      const service  = buildService(req);
       const category = await service.createCategory(
         { name: body.name, fields: body.fields as CategoryField[], ...(body.description !== undefined && { description: body.description }) },
         plan,
@@ -147,13 +155,17 @@ export function createCategoryRouter(container: AppContainer): Router {
   router.put('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body     = UpdateCategorySchema.parse(req.body);
-      const service  = new CategoryService(new SqlCategoryRepository(req.db!));
-      const category = await service.updateCategory(String(req.params['id']), {
-        ...(body.name        !== undefined && { name:        body.name }),
-        ...(body.description !== undefined && { description: body.description }),
-        ...(body.fields      !== undefined && { fields:      body.fields as CategoryField[] }),
-        ...(body.active      !== undefined && { active:      body.active }),
-      });
+      const service  = buildService(req);
+      const category = await service.updateCategory(
+        String(req.params['id']),
+        {
+          ...(body.name        !== undefined && { name:        body.name }),
+          ...(body.description !== undefined && { description: body.description }),
+          ...(body.fields      !== undefined && { fields:      body.fields as CategoryField[] }),
+          ...(body.active      !== undefined && { active:      body.active }),
+        },
+        req.user!.id,
+      );
       res.json(category);
     } catch (err) {
       if (err instanceof ZodError)               { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
@@ -167,7 +179,7 @@ export function createCategoryRouter(container: AppContainer): Router {
   // ---------------------------------------------------------------------------
   router.delete('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const service = new CategoryService(new SqlCategoryRepository(req.db!));
+      const service = buildService(req);
       await service.deleteCategory(String(req.params['id']));
       res.status(204).send();
     } catch (err) {

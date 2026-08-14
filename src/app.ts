@@ -41,6 +41,7 @@ import { createBusinessRouter }          from './api/routes/business.routes.js';
 import { createCustomerRouter }          from './api/routes/customer.routes.js';
 import { createCustomersRouter }         from './api/routes/customers.routes.js';
 import { createCategoryRouter }          from './api/routes/categories.routes.js';
+import { createAuditLogRouter }          from './api/routes/audit-log.routes.js';
 import { createUsersRouter }             from './api/routes/users.routes.js';
 import { createPlatformRouter }          from './api/routes/platform.routes.js';
 import { createAdminRouter }             from './api/routes/admin.routes.js';
@@ -188,7 +189,7 @@ export async function createApp(): Promise<{
 
   // /api/auth/me + /api/auth/logout (B2) — solo lee req.user, tampoco
   // necesita req.db de tenant.
-  app.use('/api/auth', createMeRouter());
+  app.use('/api/auth', createMeRouter(platformRepo));
 
   // /api/business/modules — tampoco necesita req.db (consulta la BD de
   // plataforma vía container), así que va antes de tenantMiddleware.
@@ -217,6 +218,7 @@ export async function createApp(): Promise<{
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
+  app.use('/api/audit-log',         createAuditLogRouter());
 
   app.use(
     '/api/reports',
