@@ -60,6 +60,14 @@ próximo deploy real va a correr esto como no-op seguro (todo tenant "ya
 al día"), sin riesgo de tocar nada. Typecheck, lint y suite completa
 (309/310) verdes.
 
+**Límite real de esta verificación — no confirmado todavía:** pusheado
+(`2cfadea`) y `GET /health` responde 200, pero como el cambio es al
+*proceso de build*, no a comportamiento de la app, un curl no puede
+distinguir "el build nuevo con migrate:tenants corrió bien" de "el build
+falló y Render sigue sirviendo la versión anterior" (que también daría
+200). Falta confirmar en el dashboard de Render que el log del build más
+reciente muestra la salida de `[migrate-tenants]` sin errores.
+
 ---
 
 ## B. Seguridad (`appfrontend-main`) — sin cambios esta sesión
