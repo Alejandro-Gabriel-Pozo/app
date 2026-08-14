@@ -112,10 +112,8 @@ pusheados a `origin/main`).
   después de un update exitoso, el cambio queda sin rastro. Límite
   conocido, no resuelto.
 
-### F3. Verificar el deploy en Render — ⚠️ SIN CONFIRMAR
-Se pusheó a `origin/main` pero no se verificó que Render haya
-redeployado ni que `GET /api/audit-log` responda en producción. La tabla
-y `schema_version` ya están confirmados en la base real (independiente del
-deploy del código), pero el código nuevo no tiene efecto hasta que el
-deploy termine. **Primer ítem a retomar la próxima sesión si no se hizo
-antes.**
+### F3. Verificar el deploy en Render — ✅ RESUELTO (14/08/2026)
+`curl https://app-chny.onrender.com/api/audit-log?entity=x&entityId=y` sin
+auth devolvió `401` (rechazo por falta de token), no `404` — confirma que
+el router nuevo ya está montado en producción, el deploy de `d60de60`
+terminó. `GET /health` respondió `200`.
