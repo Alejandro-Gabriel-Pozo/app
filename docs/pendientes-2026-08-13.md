@@ -637,3 +637,43 @@ vez de sustituirlo, (3) migrar las filas existentes de `customer_rates` si
 las hay (hoy la tabla está vacía en la tenant DB real, según lo verificado
 en A4 — sin datos que migrar todavía, buen momento para cambiarlo si se
 decide). No implementado — es una decisión de modelo, no un bug.
+
+### E5. Login con Google (staff y clientes) + envío de mails de reservas
+
+Pedido del usuario: hoy inicia sesión con una cuenta hardcodeada de un
+mail que no existe — quiere poder loguearse con un correo real
+(corporativo o personal, ej. Gmail) en vez de eso, y que el sistema mande
+mails reales sobre las reservas. Mismo pedido de login aplica también al
+portal de clientes, no solo a staff.
+
+Confirmado contra el código (13/08/2026): **no hay nada de esto hoy.**
+- Auth es 100% email+password propio (`identities.password_hash` con
+  bcrypt, `auth.service.ts`/`customer.auth.service.ts`) — no existe
+  ninguna dependencia de OAuth/OIDC/Google/Passport en `package.json` ni
+  código que hable con un proveedor externo de identidad.
+- No hay ninguna librería ni integración de envío de mail (nodemailer,
+  Resend, SendGrid, SES, Mailgun, SMTP) en ningún lado del repo. Las
+  "notificaciones" de reservas hoy son 100% dentro de la app (nada sale
+  por mail ni por ningún otro canal).
+
+Son dos features independientes, cada una no trivial:
+1. **Login con Google**: agregar un flujo OAuth 2.0/OIDC contra Google,
+   que resuelva o cree una `identity` a partir del email verificado de la
+   cuenta de Google (sin password local para esas cuentas), conviviendo
+   con el login por password que ya existe — no reemplazarlo de entrada,
+   para no romper las cuentas que ya tienen contraseña. Aplica a los dos
+   sistemas de auth de staff/plataforma y, por separado, al portal de
+   clientes (`customer.auth.service.ts`) si también se quiere ahí.
+2. **Envío de mails transaccionales**: elegir un proveedor (Resend/SendGrid/
+   SES son las opciones estándar), agregar el env var de API key,
+   plantillas para al menos confirmación de reserva (y eventualmente
+   check-in/check-out, cancelación), y decidir en qué punto del flujo se
+   dispara — probablemente enganchado al mismo mecanismo de `domain_events`/
+   outbox que ya existe para otros efectos secundarios (`outbox.worker.ts`),
+   en vez de mandarlo síncrono desde la ruta.
+
+No implementado — dos integraciones externas nuevas, sin decisiones
+tomadas todavía sobre proveedor de mail ni alcance exacto de qué eventos
+disparan un correo. Requiere sesión aparte, con las credenciales/cuentas
+reales del proveedor elegido antes de empezar (Google Cloud Console para
+OAuth, cuenta del proveedor de mail).
