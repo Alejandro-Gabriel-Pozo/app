@@ -124,10 +124,16 @@ repositorio — no hay `InMemoryBookableServiceRepository` en el repo
 todavía). Sin test dedicado para `resources.routes.ts` — no hay ningún
 test de rutas en este repo (mismo hallazgo que C1/C2), verificado con
 typecheck + suite completa en su lugar. 309/310 tests verdes, typecheck y
-lint limpios. **Sin aplicar todavía contra la tenant DB real ni deployado**
-— este cambio no toca `schema.sql` (reusa la tabla `audit_log` de F2), así
-que no hace falta bump de versión ni `migrate:tenants`, pero sí falta el
-commit + push + confirmar el deploy en Render.
+lint limpios. Commiteado y pusheado (`6bb84be`) — no toca `schema.sql`, sin bump de
+versión ni `migrate:tenants` necesarios.
+
+**Verificación pendiente, distinta a la de F3:** a diferencia del endpoint
+nuevo de F2 (verificable sin login, esperando 401 vs 404), esto modifica
+el comportamiento de rutas que ya existen y requieren sesión MANAGEMENT
+— no verificable con un curl sin credenciales. Falta confirmar en el
+navegador: editar un recurso o un servicio agendable en producción y
+chequear que `GET /api/audit-log?entity=resources&entityId=...` (o
+`bookable_services`) devuelva la fila nueva.
 
 ### F3. Verificar el deploy en Render — ✅ RESUELTO (14/08/2026)
 `curl https://app-chny.onrender.com/api/audit-log?entity=x&entityId=y` sin
