@@ -42,12 +42,58 @@ sin decidir.
 
 ---
 
-## C. Calidad de código (`app-main`) — sin cambios esta sesión
+## C. Calidad de código (`app-main`)
 
-- C2. Boilerplate try/catch — sigue parcial (falta auditar
-  `users`/`categories`/`auth`/`locations` routes).
-- C8. `dependency-cruiser` — sigue con 5 `no-orphans` sin triage y sin
-  Graphviz para el grafo visual.
+### C2. Boilerplate try/catch + contrato `NOT_FOUND` — ✅ RESUELTO (14/08/2026)
+Auditados los 4 archivos que quedaban pendientes, uno por uno contra
+`domainErrorStatus()` — el hallazgo real fue que la premisa original ("mismo
+patrón en los 4 archivos") era parcialmente incorrecta:
+
+- **`categories.routes.ts` — sí tenía el patrón, y arreglarlo destapó un bug
+  de raíz:** existían **dos clases `CategoryNotFoundError` distintas** —
+  una en `domain/errors.ts` (`DomainError` real, code `CATEGORY_NOT_FOUND`,
+  ya mapeada a 404 en `error.middleware.ts`, pero **nunca importada por
+  nadie**) y otra en `category.service.ts` (`extends Error` a secas, sin
+  `.code`) que era la que realmente se usaba en todo el código
+  (`sql.category.repository.ts`, `category.service.ts`,
+  `categories.routes.ts`). Por eso no se podía sacar el `instanceof` sin
+  que un 404 real cayera al 500 genérico. Se unificaron en la de
+  `domain/errors.ts` (la correcta), se actualizaron los 2 imports, y se
+  sacaron los 3 bloques `instanceof CategoryNotFoundError` de
+  `categories.routes.ts` — ahora responden `CATEGORY_NOT_FOUND` en vez de
+  `NOT_FOUND` genérico. Confirmado contra `appfrontend-main` que
+  `isNotFound()` (el único consumidor posible de `NOT_FOUND` genérico)
+  sigue sin ningún caller — no rompe nada.
+- **`users.routes.ts` — no tenía el patrón.** Sus 404 son chequeos
+  manuales (`if (!member) res.status(404)...`) sin lanzar ningún error de
+  dominio — no hay ninguna clase para migrar. No es deuda de C2, es un
+  estilo distinto (más simple, funciona bien para este archivo).
+- **`auth.routes.ts` — no tenía el patrón.** Su manejo local es específico
+  de `INVALID_CREDENTIALS`/`INVALID_BUSINESS_SELECTION` (401, no 404) —
+  mensajes de auth deliberadamente genéricos por seguridad, correcto que
+  se manejen ahí y no en `domainErrorStatus()`.
+- **`locations.routes.ts` — no tenía el patrón.** Sin ningún manejo de
+  `DomainError`, solo `ZodError`. Nada que tocar.
+
+1 test ajustado (import de `CategoryNotFoundError` movido a
+`domain/errors.ts`), 309/310 suite verde, typecheck y lint limpios.
+
+### C8. `dependency-cruiser` — ✅ RESUELTO (14/08/2026)
+Los 5 `no-orphans` resultaron ser restos de migraciones anteriores, **ya
+vaciados a propósito** (`export {}`) y documentados como deprecados en su
+propio header: `types/preferences.types.ts`, `services/validation.registry.ts`,
+`services/validation.factory.ts`, `security/jwt.service.ts`,
+`schemas/preferences.schemas.ts`. Confirmado con grep que ningún otro
+archivo los referencia (ni por import ni por nombre de símbolo) antes de
+borrarlos. `depcruise` post-borrado: 0 `no-orphans`, solo queda la 1
+violación ya conocida y justificada (`supabase.occupancy.repository.ts`,
+excluida en `tsconfig.json`, scaffolding de una integración abandonada).
+`docs/analysis/dependency-graph.dot` y `dependency-violations.html`
+regenerados. Typecheck, lint y suite completa (309/310) verdes.
+
+**Sigue sin la parte visual** (sin Graphviz instalado, software de
+sistema) — no se tocó, es lo que ya estaba documentado como fuera de
+alcance.
 
 ---
 
