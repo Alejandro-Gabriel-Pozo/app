@@ -166,6 +166,59 @@ completo sin errores. No probado en navegador contra un backend real.
 
 ---
 
+### A4. `migrate-tenants` puede saltear cambios reales sin avisar — ✅ RESUELTO puntualmente, gap de proceso sigue abierto (13/08/2026)
+
+**Síntoma real reportado por el usuario:** no podía crear clientes ni
+reservas en producción, después de que el fix de `customers.password_hash`
+(ver más abajo, bug del mismo día) ya estaba pusheado y desplegado.
+
+**Causa raíz, confirmada consultando la base real (Neon, proyecto
+`DB-APP-PPMS`, no solo el código):** el fix de `password_hash` — y de paso
+toda la BLOQUE 9 de `accounts_receivable` + `financial_transactions.stay_id`
++ `orders.stay_id` de A1 — se agregó a `schema.sql`, pero **nunca se aplicó
+a la tenant DB real**. `schema.sql` cambia con cada feature, pero solo se
+re-corre contra una tenant DB ya provisionada en dos casos: los endpoints
+de `/api/admin` (pensados para otro escenario, seedeo directo por SQL) o
+`npm run migrate:tenants` corrido a mano. Ninguno de los dos se ejecutó
+esta sesión.
+
+Y aunque se hubiera corrido `migrate:tenants`, **tampoco habría aplicado el
+cambio**: ese script salta cualquier tenant cuyo `schema_version` ya
+coincida con `CURRENT_SCHEMA_VERSION` (`tenant-db.setup.ts`), y ese número
+**no se bumpeó** cuando `schema.sql` cambió esta sesión — seguía en `1`.
+El gate de versión asume que todo cambio de `schema.sql` viene acompañado
+de un bump manual; eso no pasó, así que el script se habría reportado a sí
+mismo como "ya estaba al día" sin aplicar nada.
+
+**Fix aplicado hoy, directo contra la base real vía MCP de Neon** (sin
+Render Shell): se corrió el `schema.sql` completo (121 sentencias, en una
+sola transacción) contra el proyecto `DB-APP-PPMS`
+(`ancient-king-17098519`), y se verificó después con una consulta aparte
+que `password_hash` quedó nullable, `accounts_receivable` existe, y ambos
+`stay_id` están presentes. `businesses.schema_version` en la BD de
+plataforma (`pdb-ppms`, `morning-unit-50056927`) ya decía `1`, coincide con
+`CURRENT_SCHEMA_VERSION` — sin acción ahí. De paso se confirmó que no hacía
+falta vaciar ninguna tabla operativa: `customers`/`reservations`/`stays`/
+`orders`/`financial_transactions`/etc. ya estaban todas en 0 filas —
+lógico, nada pudo crearse mientras `password_hash` bloqueaba el alta de
+clientes. Solo había datos de catálogo (2 `resources`, 7
+`resource_categories`, 3 `bookable_services`), que no se tocaron.
+
+**Lo que queda abierto — gap de proceso, no de esta tenant puntual:** el
+día que `schema.sql` cambie de nuevo, hay que **acordarse a mano** de
+bumpear `CURRENT_SCHEMA_VERSION` en `tenant-db.setup.ts` y correr
+`migrate:tenants` (o repetir esto a mano contra Neon) — nada del pipeline
+actual lo fuerza ni lo recuerda. Con un solo tenant real hoy el costo de
+olvidarlo es bajo, pero escala mal: el día que haya varios negocios, un
+cambio de schema que "se probó y anduvo" en local puede quedar
+silenciosamente sin aplicar en producción, exactamente como pasó acá.
+Alternativas a evaluar en otra sesión, no decidido: (a) un chequeo en CI
+que falle si `schema.sql` cambió en el diff pero `CURRENT_SCHEMA_VERSION`
+no, (b) correr `migrate:tenants` automáticamente como parte del deploy de
+Render (`postDeploy` o similar) en vez de a mano.
+
+---
+
 ## B. Seguridad (`appfrontend-main`)
 
 ### B1. Vulnerabilidades npm — Next.js
