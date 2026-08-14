@@ -530,15 +530,110 @@ funciona sin eso.
 - **FACTURACION** (módulo de entitlements) sin ninguna ruta que gatear
   todavía — no existe emisión de comprobantes en el código. Ver
   `docs/roadmap-pms-multirubro.md` y memoria `modular_addon_pricing_architecture`.
-- **Filtro de rubro en `resource_categories`**: hoy un recurso no-alojamiento
-  (ej. "Barbero Isahía") aparece en el dropdown de check-in/check-out de
-  Estadías junto con las habitaciones — no rompe nada, pero confunde.
-  Diseño ya acordado con el usuario (13/08/2026): agregar un campo tipo
-  `resource_type`/`rubro` a `resource_categories` y filtrar por él en la UI
-  de Estadías. Deferido a propósito ese día para priorizar "bugs primero"
-  (401, 500 de clientes) — no se retomó todavía.
+- **Filtro de rubro en `resource_categories`** — ⚠️ alcance ampliado, ver E1
+  más abajo: lo que empezó como "agregar un filtro al dropdown de Estadías"
+  ahora el usuario lo plantea como separar PMS y Servicios en dos paneles
+  independientes, no solo ocultar categorías de un select. Diseño original
+  (13/08/2026) queda como piso mínimo, no como la solución acordada final.
 - **`tsconfig.json` excluye `src/**/*.test.ts` del typecheck** (hallazgo de
   A1, ver ahí el detalle): ningún test se tipa-chequea, ni local ni en CI.
   Hay errores preexistentes reales si se saca el exclude (mocks de
   `SqlClient.query` mal tipados en varios repos). Evaluar un
   `tsconfig.test.json` separado en CI, sin bloquear el build todavía.
+
+---
+
+## E. Observaciones post-deploy del usuario (13/08/2026, sin implementar)
+
+Lote de 4 observaciones entregadas después de probar el sistema ya en
+producción (post B2). Se documentan tal como se plantearon — donde hay
+información concreta del código que ayuda a acotar el problema se agrega,
+donde no, queda anotado como pregunta abierta en vez de inventar una
+respuesta.
+
+### E1. Separar panel de PMS (Estadías) del panel de Servicios
+
+Síntoma reportado: una reserva de un servicio (ej. corte de pelo) impacta
+en el panel de Estadías, donde debería verse solo lo de alojamiento.
+Mismo síntoma de fondo que el ítem de backlog D "Barbero Isahía en el
+dropdown de check-in" (13/08/2026), pero el usuario ahora pide una
+solución más fuerte: **dos paneles/vistas independientes** — uno exclusivo
+de PMS/ocupación (Estadías) y otro de gestión de Servicios — en vez de
+solo filtrar categorías dentro del panel único actual.
+
+Lo que hace falta definir antes de tocar código (no se decidió todavía):
+- ¿"Separar" es una ruta/página nueva (`/dashboard/servicios-reservas` o
+  similar) que reemplace el uso de "Reservas" para servicios, dejando
+  "Estadías" 100% alojamiento? ¿O es más profundo — un `resource_type`/
+  `rubro` en `resource_categories` (ver diseño ya acordado, backlog D) que
+  determine en qué panel aparece cada recurso, alimentando ambas vistas
+  desde ese campo?
+- ¿El nav del dashboard cambia (dos ítems separados en vez de "Estadías" +
+  "Reservas" genérico)? Hoy `resource_categories` no distingue rubro en
+  absoluto — todo pasa por el mismo modelo de `Resource`/`BookableService`.
+- Sin esta definición no se puede estimar el tamaño del cambio — puede ser
+  un filtro de UI (chico) o un rediseño de navegación + queries por rubro
+  (mediano/grande). Retomar con el usuario antes de empezar a picar código.
+
+### E2. ABM de clientes insuficiente para B2B/facturación
+
+Confirmado contra el código (13/08/2026): `customers.routes.ts` solo
+expone `displayName` + `contactMethods` (nombre/email/teléfono) al crear o
+editar un cliente, más tags, tarifas especiales y cuenta corriente. Las
+tablas `customer_tax_profiles` (razón social, CUIT, tipo de CUIT,
+condición IVA — `schema.sql` BLOQUE 1) y `customer_addresses` **ya existen
+en la base desde antes de esta sesión, pero no tienen ningún endpoint ni
+UI que las lea o escriba** — es capacidad de datos sin capa de aplicación
+arriba, no un gap de modelado.
+
+`customers.kind` (`INDIVIDUAL`/`COMPANY`) sí existe y se usa (A1 lo usa
+para "Empresa" en cuentas por cobrar), pero no hay forma de cargar los
+datos fiscales de esa empresa una vez marcada como `COMPANY`.
+
+**Decisión explícita del usuario:** este ABM se refactoriza completo
+recién cuando arranque el desarrollo del módulo FACTURACION (ver backlog
+D) — no antes. Queda anotado acá para que ese día no haga falta
+redescubrir que las tablas ya existen.
+
+### E3. Auditoría de cuentas corrientes
+
+Pedido tal como lo planteó el usuario: revisar y reestructurar la lógica
+operativa del módulo de cuentas corrientes. No se hizo ningún análisis
+todavía en esta sesión — el único trabajo tocado este módulo fue A1 (folio
+de estadía transferido a cuenta por cobrar), que es un flujo distinto
+(deuda de una empresa por una estadía puntual, no el estado de cuenta
+corriente general). Punto de partida para cuando se audite:
+`CustomerAccountService` (`src/services/customer-account.service.ts`),
+rutas `GET/POST /api/customers/:id/account` y `/payments`
+(`customers.routes.ts`). Sin alcance ni lista de problemas concretos
+todavía — falta que el usuario indique qué específicamente no funciona
+como espera.
+
+### E4. Estandarizar ABM/usuarios + revisar tarifa especial como % en vez de precio fijo
+
+Dos pedidos distintos en el mismo punto:
+
+**a) Estandarización general de ABM y alta de usuarios**, investigando
+patrones de ERPs consolidados y validando contra normativa nacional real
+(evitar "flujos ficticios" sin aplicabilidad comercial). Es un pedido de
+investigación/diseño amplio, sin alcance concreto de código todavía — no
+hay hallazgo del repo que acotarlo por ahora. Requiere una sesión aparte
+de research antes de tocar código.
+
+**b) Tarifas especiales (`customer_rates`) como descuento relativo, no
+precio fijo.** Confirmado contra el schema: hoy `customer_rates.price` es
+`DECIMAL(10,2) NOT NULL CHECK (price >= 0)` — un **precio de reemplazo
+absoluto** (reemplaza el precio de catálogo entero), no un porcentaje de
+descuento. `ReservationService.resolvePrice()` la usa así: tarifa de
+cliente+servicio > precio de catálogo del servicio > tarifa de
+cliente+recurso > precio base del recurso — sustitución completa, no un
+cálculo relativo sobre el precio base.
+
+Cambiar a relativo (ej. "-15%") requeriría: (1) decidir si reemplaza el
+modelo actual o convive con él (¿un `discount_type` `FIXED`/`PERCENT` +
+`discount_value`, en vez de `price`?), (2) tocar
+`ReservationService.resolvePrice()` para calcular sobre el precio base en
+vez de sustituirlo, (3) migrar las filas existentes de `customer_rates` si
+las hay (hoy la tabla está vacía en la tenant DB real, según lo verificado
+en A4 — sin datos que migrar todavía, buen momento para cambiarlo si se
+decide). No implementado — es una decisión de modelo, no un bug.
