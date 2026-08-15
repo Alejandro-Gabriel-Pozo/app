@@ -776,3 +776,78 @@ de E/F, este punto no requería tocar la base, así que no ameritó el mismo
 paso de verificación contra Neon real; sí valdría un login real de staff
 después del próximo deploy para confirmar que la cookie se renueva de
 punta a punta (mismo criterio que B2 en sesiones anteriores).
+
+---
+
+## I. FACTURACION — investigado, sin implementar (punto 4, 15/08/2026)
+
+Alcance confirmado por el dueño: **facturación electrónica real**, no un
+placeholder ni un listado — comprobantes con CAE contra AFIP (WSFEv1), más
+un "modo simular" que corre el mismo flujo de venta sin disparar la
+llamada real a AFIP (genera un comprobante interno en su lugar, misma
+numeración/estructura). Se investigó el alcance completo antes de tocar
+código — **nada se implementó todavía**, queda documentado para retomar.
+
+**Clasificación (criterios-datos.md Parte 1):** el comprobante es
+**DOCUMENTO** — la tercera clase que el propio documento ya nombraba
+("facturas AFIP, notas de crédito — aún no existen") pero nunca
+implementó. Reglas que le van a aplicar cuando se construya: nunca se
+edita ni se borra (se anula con otro documento), numeración correlativa e
+irrompible **por talonario** (tipo de comprobante × punto de venta son
+secuencias independientes — decidido en el diseño desde el día uno, no
+migrado después, según la nota del propio documento).
+
+**Confirmado contra el código real:**
+- Cero código de AFIP/facturación hoy — sin dependencias de SOAP/
+  certificados en `package.json`, sin ninguna tabla ni entidad relacionada.
+  Se parte de cero.
+- `customer_tax_profiles` ya existe (razón social, CUIT, `tax_condition`)
+  pero `tax_condition` es texto libre sin validar contra las categorías
+  reales de AFIP.
+- El enganche natural para emitir el comprobante es `order.completed`
+  (mismo patrón que ya usa `financial_transactions`: CHARGE PENDING al
+  confirmar, SETTLED al completar).
+- 🔴 **Bloqueante real de modelado:** no existe NINGÚN campo de IVA en
+  todo el sistema — `products.base_price`, `order_items.unit_price/
+  subtotal`, `financial_transactions.amount` son montos planos. AFIP
+  exige que el comprobante declare `ImpNeto + ImpIVA + ImpTrib =
+  ImpTotal` exacto — sin desglose de IVA no hay forma de armar la llamada
+  real a `FECAESolicitar`, más allá de qué SDK se use.
+
+**Decisión del dueño sobre cómo resolver el bloqueante (15/08/2026):**
+no se define acá como un valor único — se resuelve como parte de
+reconstruir dos ABMs que hoy están incompletos para esto:
+
+- ❌ **ABM de Producto** — hay que revisarlo para poder cargar IVA por
+  producto (alícuota — los valores reales de AFIP son 0%, 2.5%, 5%,
+  10.5%, 21%, 27% — y si el precio cargado incluye IVA o es neto). Hoy
+  `products`/`product_variants` no tienen ningún campo de impuesto.
+- ❌ **ABM de Empresa** — no existe como tal todavía. "Mi Negocio" en el
+  dashboard hoy SOLO gestiona horario de atención
+  (`appfrontend-main/dashboard/mi-negocio/page.tsx` → `business_hours`).
+  No hay ninguna tabla ni pantalla para el perfil fiscal del negocio
+  (razón social, CUIT, condición frente al IVA, domicilio fiscal, punto
+  de venta, ambiente AFIP). Hay que construirlo desde cero, no extenderlo.
+
+**Ambiente AFIP confirmado:** arrancar por **homologación** (testing) —
+no cargar credenciales de producción hasta tener todo el flujo probado
+ahí primero.
+
+**Orden sugerido para cuando se retome** (no decidido en firme, es la
+secuencia lógica según las dependencias encontradas):
+1. ABM de Empresa (perfil fiscal) — bloqueante para saber qué tipo de
+   comprobante puede emitir el negocio (Responsable Inscripto → Factura
+   A/B; Monotributista → Factura C).
+2. ABM de Producto (IVA por producto/variante) — bloqueante para poder
+   calcular `ImpNeto`/`ImpIVA` de cada línea.
+3. Entidad DOCUMENTO (comprobante) — numeración por talonario, inmutable.
+4. Cliente AFIP (WSAA + WSFEv1) contra homologación, con el "modo
+   simular" desde el diseño inicial (mismo flujo de venta, la única
+   diferencia es si al final dispara o no la llamada real).
+5. Enganche en `order.completed` + UI de facturación en el frontend.
+
+**Lo que hace falta del dueño para poder avanzar con el punto 3 en
+adelante** (no bloquea 1-2): CUIT real del negocio, punto de venta ya
+habilitado en AFIP, certificado (`.crt`) + clave privada (`.key`)
+generados en AFIP para homologación — las credenciales de producción se
+cargan recién cuando todo el flujo esté probado en homologación.
