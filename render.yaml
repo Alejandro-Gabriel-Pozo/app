@@ -59,22 +59,37 @@ services:
       - key: CORS_ORIGIN
         sync: false
 
+      # SUPERADMIN (/platform/*) — clave separada de JWT_SECRET a propósito
+      # (security/platform.auth.middleware.ts). No estaban declaradas acá
+      # antes del 15/08/2026 — si no están seteadas en el dashboard de
+      # Render, el login de superadmin da 503 PLATFORM_AUTH_NOT_CONFIGURED
+      # (PLATFORM_ADMIN_EMAIL/PASSWORD) o 500 (PLATFORM_JWT_SECRET), nunca
+      # falla en silencio.
+      - key: PLATFORM_JWT_SECRET
+        sync: false
+      - key: PLATFORM_ADMIN_EMAIL
+        sync: false
+      - key: PLATFORM_ADMIN_PASSWORD
+        sync: false
+
       # ---------------------------------------------------------------------------
-      # Supabase — provisioning automático de BD por negocio
+      # Neon — provisioning automático de BD por negocio (15/08/2026)
+      # Reemplaza el bloque de Supabase que quedó sin usar tras el code
+      # review de agosto 2026 (ver platform/tenant-db.setup.ts) — mismo
+      # propósito ("crear la BD del tenant sin que nadie entre a la consola
+      # a mano"), proveedor real, no aspiracional.
       # ---------------------------------------------------------------------------
 
-      # Personal access token (Supabase Dashboard → Account → Access Tokens)
-      - key: SUPABASE_ACCESS_TOKEN
+      # Neon Console → Account Settings → API Keys
+      - key: NEON_API_KEY
         sync: false
 
-      # Organization ID de tu cuenta Supabase
-      - key: SUPABASE_ORG_ID
-        sync: false
+      # Proyecto donde viven todos los tenants (hoy: DB-APP-PPMS)
+      - key: NEON_PROJECT_ID
+        value: ancient-king-17098519
 
-      # Salt para derivar passwords únicos por negocio
-      - key: SUPABASE_DB_PASSWORD_SALT
+      # Branch siempre vacío del que ramifican los tenants nuevos — ver
+      # platform/neon-provisioning.ts para el porqué. Completar después de
+      # crearlo (no autogenerado por este archivo).
+      - key: NEON_TEMPLATE_BRANCH_ID
         sync: false
-
-      # Región para nuevos proyectos Supabase (default: us-east-1)
-      - key: SUPABASE_REGION
-        value: us-east-1

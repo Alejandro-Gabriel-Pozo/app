@@ -3,20 +3,15 @@
  * @description Autenticación exclusiva para el rol SUPERADMIN de plataforma.
  *
  * Separado de AuthService (empleados de negocio) y CustomerAuthService (clientes)
- * para que sus tokens tengan claim `platform_role` en lugar de `role` o `customer_id`.
- *
- * ## JWT generado
- * ```json
- * {
- *   "sub":           "<userId>",
- *   "platform_role": "SUPERADMIN",
- *   "iat":           1234567890,
- *   "exp":           1234567890
- * }
- * ```
+ * — usa PLATFORM_JWT_SECRET (no JWT_SECRET) vía signPlatformToken()
+ * (platform.auth.middleware.ts), la misma función que authenticatePlatform()
+ * usa para verificar. Antes (hasta el 15/08/2026) esto firmaba con
+ * JWT_SECRET y un payload {platform_role} propio, distinto del que
+ * authenticatePlatform() esperaba — el login "funcionaba" (devolvía 200)
+ * pero el token nunca pasaba la verificación de la siguiente request.
  *
  * ## Variables de entorno requeridas
- * - JWT_SECRET              — clave compartida con el resto de la API
+ * - PLATFORM_JWT_SECRET     — ver platform.auth.middleware.ts
  * - PLATFORM_ADMIN_EMAIL    — email del superadmin (bootstrap)
  * - PLATFORM_ADMIN_PASSWORD — contraseña en texto plano para el primer deploy
  *                             (se hashea en runtime; no se guarda en disco)
@@ -24,8 +19,7 @@
 
 import { randomUUID, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { signToken, getJwtSecret } from './auth.middleware.js';
-import type { UserRole } from '../types/enums.js';
+import { signPlatformToken } from './platform.auth.middleware.js';
 import { PlatformRole } from '../types/enums.js';
 
 const pbkdf2Async = promisify(pbkdf2);
@@ -121,11 +115,14 @@ export class PlatformAuthService {
 
     const userId = randomUUID();
 
-    // platform_role no forma parte de UserRole — lo casteamos para que
-    // signToken lo incluya en el payload sin modificar la interfaz JwtPayload.
-    const token = signToken(
-      { sub: userId, role: 'SUPERADMIN' as unknown as UserRole, platform_role: PlatformRole.SUPERADMIN } as Parameters<typeof signToken>[0],
-      getJwtSecret(),
+    // Antes esto firmaba con getJwtSecret() (JWT_SECRET, el de empleados) y
+    // un payload {platform_role} — authenticatePlatform() verifica contra
+    // PLATFORM_JWT_SECRET y espera {role, email}, así que NINGÚN token
+    // emitido acá pasaba la verificación de firma en la siguiente request.
+    // signPlatformToken() ya existe para esto (platform.auth.middleware.ts)
+    // y usa la clave/payload correctos — no reimplementarlo acá.
+    const token = signPlatformToken(
+      { sub: userId, role: PlatformRole.SUPERADMIN, email: creds.email },
       this.TOKEN_TTL_SECONDS,
     );
 

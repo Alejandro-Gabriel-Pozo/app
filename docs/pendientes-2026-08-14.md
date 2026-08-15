@@ -6,6 +6,12 @@ Mismo criterio de agrupación que el archivo anterior: deuda estructural
 primero, seguridad después, calidad de código, backlog, observaciones sin
 implementar. Marcar `✅ RESUELTO` in-place al cerrar un ítem.
 
+> ⚠️ La sesión del 15/08/2026 se escribió por descuido dentro de este
+> archivo (varias secciones fechadas "(15/08/2026)" más abajo). A partir
+> de acá el registro del día vive en `pendientes-2026-08-15.md` — no se
+> movió lo ya escrito acá (es historial), pero para el resumen ordenado
+> del 15/08 ir directo a ese archivo.
+
 ---
 
 ## A. Deuda estructural (`app-main`)
@@ -60,23 +66,164 @@ próximo deploy real va a correr esto como no-op seguro (todo tenant "ya
 al día"), sin riesgo de tocar nada. Typecheck, lint y suite completa
 (309/310) verdes.
 
-**Límite real de esta verificación — no confirmado todavía:** pusheado
-(`2cfadea`) y `GET /health` responde 200, pero como el cambio es al
-*proceso de build*, no a comportamiento de la app, un curl no puede
-distinguir "el build nuevo con migrate:tenants corrió bien" de "el build
-falló y Render sigue sirviendo la versión anterior" (que también daría
-200). Falta confirmar en el dashboard de Render que el log del build más
-reciente muestra la salida de `[migrate-tenants]` sin errores.
+**✅ CONFIRMADO (15/08/2026):** un curl a `/health` no alcanzaba para
+distinguir "build nuevo con migrate:tenants corrió bien" de "build falló
+y Render sigue sirviendo la versión anterior" (ambos dan 200) — se
+verificó en su lugar consultando directo la tenant DB real (proyecto Neon
+`DB-APP-PPMS`, rama default, no un branch descartable). `schema_migrations`
+tiene `version: 4, applied_at: 2026-08-14T23:46:00.646Z`, y las tablas/
+columnas de los BLOQUEs 11 y 12 (`cash_register_shifts`,
+`financial_transactions.payment_method/shift_id/card_installments/
+card_surcharge_amount`) existen en la base real. Como las versiones 3 y 4
+se pushearon el 14/08 y **nadie las aplicó a mano en producción** (a
+diferencia de la v2 en F2), la única forma de que estén ahí es que
+`migrate:tenants` corrió dentro de un `buildCommand` real de Render y
+terminó sin error. A4 queda cerrado por completo, opción (a) y (b)
+verificadas de punta a punta.
+
+### Render huérfano — ✅ RESUELTO (15/08/2026)
+El servicio `admin-panel` que describe `appfrontend-main/render.yaml` **no
+existe en Render** — confirmado por el usuario mirando el dashboard
+directamente. No hay recurso huérfano gastando el free tier. El
+`render.yaml` del frontend quedó aspiracional, sin conectar a ningún
+deploy real (el real está en Vercel, ver `docs/auditoria-dominios.md`) —
+vale la pena borrarlo o marcarlo como no usado en una limpieza futura,
+no es urgente.
 
 ---
 
-## B. Seguridad (`appfrontend-main`) — sin cambios esta sesión
+## B. Seguridad (`appfrontend-main`)
 
-- B1. 7 vulnerabilidades `high` restantes (Next 14→16) — sigue diferido a
-  propósito.
-- B2. Migración de auth a httpOnly cookie — **paso 3/N sigue sin empezar**
-  (reescribir `api.ts`/`AuthContext.tsx`, `/api/auth/refresh`, decidir
-  portal clientes/plataforma). Nada tocado hoy.
+- B1. ✅ RESUELTO (15/08/2026) — ver detalle abajo.
+- B2. Migración de auth a httpOnly cookie — **corrección (15/08/2026): el
+  paso 3/N NO estaba "sin empezar"** como decía este archivo desde que se
+  escribió. Ver detalle abajo.
+
+### B2 — corrección de estado (15/08/2026)
+
+El paso 3/N (el más grande) **ya estaba hecho y pusheado** desde el
+13/08/2026 21:13 (commit `42060c2`, mensaje: "feat(auth): migrar
+AuthContext/apiFetch de localStorage a cookie httpOnly (B2, paso 3/N)") —
+en una sesión posterior al cierre de `pendientes-2026-08-13.md` que nunca
+se volcó a ningún pendientes doc. Este archivo (14/08) copió el estado
+"sin empezar" del archivo del día anterior sin chequear el log de git, y
+quedó mal desde su primera versión.
+
+**Confirmado leyendo el diff real del commit** (`git show 42060c2`, 5
+archivos, +78/-110):
+- `AuthContext.tsx` y `apiFetch` (`lib/api.ts`) dejan `localStorage` y
+  `parseJwt()` client-side, pasan a `GET /api/auth/me` con `credentials:
+  'include'`.
+- Efecto colateral bueno documentado en el propio commit: corrigió un bug
+  donde el sidebar mostraba el UUID de la identity como "email" (el JWT
+  nunca llevó el email real en el payload; `/api/auth/me` sí lo trae) — y
+  de paso resolvió el 401-en-pestaña-nueva de raíz (ya no depende de un
+  listener de `storage` entre pestañas).
+- `login/page.tsx` y `dashboard/layout.tsx` actualizados al nuevo flujo.
+- Portal de clientes (`CustomerAuthContext`) y plataforma/SUPERADMIN
+  quedaron **deliberadamente afuera**, decidido de entrada — confirmado
+  que `CustomerAuthContext.tsx` sigue existiendo separado, sin tocar.
+
+**Lo que de verdad sigue faltando** (grepeado en `app-main/src/api/routes/`,
+no solo lo que decía este doc):
+- `POST /api/auth/refresh` — no existe. Sigue pendiente para no forzar
+  re-login cada `JWT_EXPIRES_IN` (default 24h — no es urgente hoy, sesión
+  dura un día entero).
+- Decidir si portal de clientes y plataforma/SUPERADMIN se migran con el
+  mismo patrón o quedan en `localStorage`.
+
+**✅ Camino feliz confirmado (15/08/2026):** el propio commit admitía que
+no se había probado el login exitoso en el navegador. Se probó ahora
+contra la URL real de producción (`reservasapp-teal.vercel.app` —
+**hallazgo aparte: el frontend real corre en Vercel, no en Render, ver
+`docs/auditoria-dominios.md`**) con la cuenta OWNER real
+(`admin@demo.com`): login entra bien, dashboard carga con los datos
+correctos. Dos mensajes en la consola del navegador al cargar la página
+por primera vez, ambos benignos, no bugs:
+- `api/auth/me → 401`: comportamiento diseñado — `src/app/page.tsx` le
+  pregunta al backend si hay sesión válida antes de decidir
+  `/dashboard` vs `/login`; sin cookie todavía, el 401 es la respuesta
+  correcta.
+- `404`: no hay ningún `favicon.ico` (no existe `public/` en el repo,
+  confirmado con `curl`) — cosmético, la pestaña del navegador queda sin
+  ícono, cero relación con auth. No arreglado, prioridad baja.
+
+Con esto, B2 paso 3/N queda **verificado de punta a punta**, no solo
+"pusheado".
+
+**✅ RESUELTO (15/08/2026):** `git push`/`git fetch` fallaban en los dos
+repos con `Invalid username or token` — el credential helper de
+`github.com` estaba encadenado a `gh auth git-credential`
+(`~/.gitconfig`, seguramente de un `gh auth setup-git` viejo) y el token
+guardado en el keyring de `gh` estaba inválido. Se generó un token nuevo
+(vence 14/09/2026) y, en vez de re-loguear `gh` (rechazó el token por
+falta del scope `read:org`, que ni git ni el push necesitan), se cambió
+el helper de `github.com` a `manager` (Windows Credential Manager, cifrado
+por DPAPI) y se guardó el token ahí con `git credential approve` — nunca
+tocó ningún archivo del repo ni memoria en texto plano.
+
+**`git fetch` confirmó ambos repos al día con `origin/main` real** — o
+sea que los "✅ PUSHEADO" de este archivo (A4, sección H) eran correctos
+desde el principio; lo que fallaba era solo la referencia local cacheada
+de `origin/main`, desactualizada por el mismo problema de credenciales.
+No hacía falta re-pushear nada.
+
+### B1 — Next 14→16, resuelto (15/08/2026)
+
+Antes de tocar código se auditó el riesgo real: la app es casi 100%
+client components (`'use client'` en todas las páginas salvo el
+`layout.tsx` raíz, trivial), sin route handlers en `app/api`, sin
+`next/image`, sin `next/font`, sin `middleware.ts`, sin `params`/
+`searchParams`/`cookies()`/`headers()` server-side, sin patrones legacy de
+React (`defaultProps`, `propTypes`, refs de string). El salto de versión
+mayor resultó bajo riesgo real, no solo bajo esfuerzo.
+
+**Hecho:**
+- `npx @next/codemod@canary upgrade latest` → `next@16.3.1`,
+  `react@19.2.8`, `react-dom@19.2.8`, `eslint-config-next@16.3.1`.
+- `npx @next/codemod@canary next-lint-to-eslint-cli .` — `next lint` se
+  eliminó en v16; ahora hay `eslint.config.mjs` (flat config) real y
+  `"lint": "eslint ."` funcional **por primera vez en este repo** (antes
+  ni estaba configurado, pedía setup interactivo).
+- **Bug de peer-deps encontrado y corregido:** el codemod fijó
+  `eslint@10.8.1`, pero el `eslint-plugin-react` que trae adentro
+  `eslint-config-next@16.3.1` solo declara soporte hasta `eslint@^9.7`
+  (`eslint-config-next` declara `>=9.0.0` sin techo, de ahí el bug — no es
+  algo de este repo). Corrido con `eslint@10` tiraba
+  `TypeError: contextOrFilename.getFilename is not a function` al cargar
+  `react/display-name`. Bajado a `"eslint": "^9.7"` en `package.json`,
+  resuelto.
+- `tsconfig.json` — reescrito automáticamente por el propio `next build`
+  (cambio obligatorio de la migración, no manual): `jsx: "react-jsx"`
+  (antes `"preserve"`, Next 16 usa el runtime automático de React),
+  `target: "ES2017"`, incluye `.next/dev/types/**/*.ts`.
+
+**Verificado:**
+- `npm audit` → **0 vulnerabilidades** (las 7 `high` que quedaban).
+- `npx tsc --noEmit` limpio.
+- `npm run build` (Turbopack, default en v16) — 21 rutas compilan.
+- Smoke test real con Playwright contra el build de producción corriendo
+  local (`npm run start`): `/login` renderiza bien (2 inputs, 1 botón,
+  capturado en screenshot), cero errores de página, cero errores de
+  consola más allá del 404 de favicon ya conocido (cosmético, sin
+  relación).
+
+**Encontrado pero deliberadamente NO tocado — nuevo backlog, ver sección
+D:** `npm run lint` funcionando por primera vez destapó **24 errores
+reales**, la mayoría `react-hooks/set-state-in-effect` (regla nueva,
+más estricta, de la versión de `eslint-plugin-react-hooks` que trae
+`eslint-config-next@16`) en `AuthContext.tsx`, `CustomerAuthContext.tsx`,
+`ResourceLockPicker.tsx`, `portal/[businessSlug]/cuenta/reservas/page.tsx`,
+y un warning `@next/next/no-location-assign-relative-destination` en
+`lib/api.ts`. Son patrones preexistentes, no algo que rompió este upgrade
+— pero **no se tocaron** a propósito: `AuthContext`/`CustomerAuthContext`
+se acababan de verificar funcionando de punta a punta en producción (B2)
+en esta misma sesión, no es el momento de meterles mano sin plan.
+
+**⚠️ No commiteado ni pusheado todavía** — cambios en el working tree de
+`appfrontend-main` (`package.json`, `package-lock.json`, `tsconfig.json`,
+`eslint.config.mjs`), pendiente de confirmación del usuario antes de
+pushear un bump de versión mayor de React a producción.
 
 ---
 
@@ -139,6 +286,46 @@ alcance.
 
 Sin cambios: FACTURACION sin ruta, filtro de rubro en `resource_categories`
 (ver E1), `tsconfig.json` excluye tests del typecheck.
+
+**Nuevo (15/08/2026):** el dueño trajo una hoja de ruta de arquitectura
+multi-cliente (portal por slug, Vercel+Render, aislamiento de datos). Se
+contrastó contra el código real antes de guardarla —
+`docs/roadmap-multi-cliente-arquitectura.md` tiene el detalle completo.
+Resumen: la mayoría de lo que el documento marcaba como "pendiente de
+confirmar" ya está resuelto (proxy de Vercel, ruta dinámica
+`portal/[businessSlug]`, aislamiento por sesión nunca por slug — verificado
+línea por línea). Genuinamente pendiente: conectar el dominio propio en
+Vercel (hoy sirve desde `reservasapp-teal.vercel.app`) y automatizar el
+aprovisionamiento de BD del tenant tras el registro (hoy autoservicio
+hasta `PENDING`, activación manual). El modelo de datos propuesto
+(`cliente_id` en tablas compartidas) **no aplica** — el aislamiento real
+es una base de datos Postgres separada por tenant, más fuerte que ese
+modelo.
+
+**Nuevo (15/08/2026), destapado por B1 (`appfrontend-main`):** `npm run
+lint` corre por primera vez en este repo y encontró **24 errores, 3
+warnings** — no se tocaron, ver detalle en B1. Principal:
+`react-hooks/set-state-in-effect` (llamar a `setState` sincrónicamente
+dentro de un `useEffect`, sin pasar por un callback async/subscripción)
+en `AuthContext.tsx:70`, `CustomerAuthContext.tsx:49`,
+`ResourceLockPicker.tsx:47`, `portal/[businessSlug]/cuenta/reservas/page.tsx:92`,
+y en la página de usuarios (roles). Más un warning de
+`@next/next/no-location-assign-relative-destination` en `lib/api.ts:99`
+(usa `window.location.href` para navegar en vez de `router.push()`).
+Nada de esto es urgente — son patrones que funcionan hoy, la regla nueva
+solo señala que no siguen el patrón recomendado por React — pero
+`AuthContext`/`CustomerAuthContext` conviene tocarlos con cuidado dado
+que recién se verificó el login de punta a punta (B2).
+
+**✅ Resueltos los 4 triviales (15/08/2026, commit `24f67fe`):** de los 27
+hallazgos, 4 eran de riesgo cero y se corrigieron — `router`/`useRouter`
+sin usar y `updated` descartado a propósito (comentario ya lo explicaba)
+en `ordenes/[id]/page.tsx`, comillas sin escapar en `recursos/page.tsx`.
+Verificado con `tsc --noEmit` y `next build`. **Quedan 22
+`react-hooks/set-state-in-effect` + 1 warning de `lib/api.ts`,
+deliberadamente sin tocar** (ver razones arriba) — no son urgentes,
+retomar si en algún momento se decide encarar el patrón de
+carga-al-montar en todo el dashboard como una tarea propia.
 
 **Nuevos (14/08/2026), de `Gap analysis - Tango ERP vs modelo actual.md`
 — gaps de producto, no de reglas (esos ya se resolvieron hoy, ver sección
@@ -248,10 +435,13 @@ Verificado: `tsc --noEmit` limpio y `next build` completo (21 rutas) en
 de esta sesión (mismo criterio que el resto de los cambios de frontend de
 hoy).
 
-**✅ PUSHEADO (14/08/2026):** `app-main` (`6f16bf1`..`ba157b6`, incluye
-también el CI de A4 y la skill nueva de revisión de PR — ver sección I)
-y `appfrontend-main` (`0b58e22`). `GET /health` responde 200 después del
-deploy.
+**✅ PUSHEADO, reconfirmado con `git fetch` real (15/08/2026):** `app-main`
+(`6f16bf1`..`ba157b6`, incluye también el CI de A4 y la skill nueva de
+revisión de PR — ver sección I) y `appfrontend-main` (`0b58e22`). Se
+había dudado de esto por un problema de credenciales de git que impedía
+hacer `fetch` (ver corrección en sección B2) — arreglado el 15/08, y
+`git fetch` en ambos repos confirma `origin/main` al día con el HEAD
+local. Sin dudas pendientes.
 
 ---
 
@@ -391,6 +581,9 @@ al preparar este branch se notó que el branch por defecto de ese proyecto
 Neon todavía no tenía aplicado el BLOQUE 11 (caja/turno) de esta misma
 sesión — vale la pena confirmar que el deploy de Render corrió
 `migrate:tenants` correctamente antes de dar por cerrado el día.
+**✅ Confirmado (15/08/2026), ver A4:** la rama default de `DB-APP-PPMS`
+ya tiene `schema_migrations.version = 4` y las columnas de los BLOQUEs 11
+y 12 — el deploy de Render corrió `migrate:tenants` bien.
 
 ~26 tests nuevos entre `sql.financial-transaction.repository.test.ts`,
 `request.schemas.test.ts` (nuevo), `customer-account.service.test.ts`,

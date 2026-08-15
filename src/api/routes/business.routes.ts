@@ -15,15 +15,21 @@
  * 5. Crear membership ADMIN de la identity en el negocio nuevo
  * 6. Retornar JWT listo para usar
  *
- * ## Sin auto-provisioning (code review agosto 2026)
- * Antes este endpoint creaba automáticamente un proyecto Supabase. Ya no
- * operan con Supabase y todavía no hay decidido un proveedor con API de
- * auto-provisioning, así que el negocio queda en PENDING sin `req.db`
- * hasta que alguien lo active a mano. El resto del sistema ya sabe manejar
- * ese estado: `tenantMiddleware` responde 503 BUSINESS_NOT_READY en
- * cualquier ruta de tenant hasta que un ADMIN llame a
- * POST /api/admin/set-tenant-url con la connection string de una BD ya
- * creada (y con schema.sql ya aplicado a mano).
+ * ## Auto-provisioning con Neon (15/08/2026)
+ * Hasta acá el negocio quedaba en PENDING sin `req.db` hasta que un ADMIN
+ * activaba la BD a mano con POST /api/admin/set-tenant-url (requería crear
+ * el branch de Neon a mano primero, en la consola). Ahora, después de
+ * crear la membership, se llama a provisionTenantDatabase() +
+ * applyTenantSchema() + activateBusiness() automáticamente — ver
+ * neon-provisioning.ts para el porqué del branch plantilla.
+ *
+ * **Fail-open a propósito:** si el aprovisionamiento falla (rate limit de
+ * Neon, API caída), el negocio queda PENDING — el mismo estado que era el
+ * único resultado posible antes de este cambio, no un modo de falla nuevo.
+ * `set-tenant-url`/`repair-tenant-db` (admin.routes.ts) siguen andando
+ * igual que siempre como red de seguridad manual, y
+ * POST /platform/businesses/:id/provision permite reintentar desde el
+ * panel de superadmin sin tocar la base.
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -33,7 +39,9 @@ import { z } from 'zod';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 import { hashPassword, verifyPassword } from '../../security/user.store.js';
 import { signToken } from '../../security/auth.middleware.js';
-import { BusinessPlan } from '../../types/enums.js';
+import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
+import { provisionTenantDatabase } from '../../platform/neon-provisioning.js';
+import { applyTenantSchema, encryptConnectionString } from '../../platform/tenant-db.setup.js';
 
 /**
  * @swagger
@@ -158,6 +166,22 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           roleId: ownerRole.id,
         });
 
+        // Aprovisionamiento automático — ver comentario de archivo. No
+        // relanzar en el catch: el negocio queda PENDING (mismo resultado
+        // que antes de este cambio) y sigue siendo reintentable a mano o
+        // desde el panel de superadmin.
+        let finalStatus: BusinessStatus = business.status;
+        try {
+          const { connectionString } = await provisionTenantDatabase(business.slug);
+          const schemaVersion = await applyTenantSchema(connectionString);
+          const encrypted     = await encryptConnectionString(connectionString);
+          await platformRepo.activateBusiness(businessId, 'neon-branch', encrypted);
+          await platformRepo.updateSchemaVersion(businessId, schemaVersion);
+          finalStatus = BusinessStatus.ACTIVE;
+        } catch (provisionErr) {
+          console.error(`[register] Aprovisionamiento falló para ${businessId}, queda PENDING:`, provisionErr);
+        }
+
         // El JWT de staff ya no lleva `role` (ver security/roles.ts) — los
         // permisos se resuelven en cada request contra role_permission_groups.
         const jwtSecret = process.env.JWT_SECRET!;
@@ -166,11 +190,17 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           jwtSecret,
         );
 
-        console.log(`[register] Negocio ${businessId} creado (PENDING) — falta activar su BD a mano.`);
+        const message = finalStatus === BusinessStatus.ACTIVE
+          ? 'Negocio registrado y listo para usar.'
+          : 'Negocio registrado. Todavía falta activar su base de datos — contactá a soporte para completar el alta antes de operar.';
+
+        if (finalStatus !== BusinessStatus.ACTIVE) {
+          console.log(`[register] Negocio ${businessId} creado (PENDING) — falta activar su BD.`);
+        }
 
         res.status(201).json({
-          message: 'Negocio registrado. Todavía falta activar su base de datos — contactá a soporte para completar el alta antes de operar.',
-          business: { id: business.id, name: business.name, slug: business.slug, plan: business.plan, status: business.status },
+          message,
+          business: { id: business.id, name: business.name, slug: business.slug, plan: business.plan, status: finalStatus },
           token,
           tokenType: 'Bearer',
           expiresIn: 86_400,

@@ -11,6 +11,8 @@ import type { PlatformContainer } from '../../../src/platform/platform.container
 import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
 import { authenticatePlatform } from '../../security/platform.auth.middleware.js';
 import type { Business } from '../../platform/platform.repository.js';
+import { provisionTenantDatabase } from '../../platform/neon-provisioning.js';
+import { applyTenantSchema, encryptConnectionString } from '../../platform/tenant-db.setup.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -179,6 +181,38 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
+  // POST /platform/businesses/:id/provision — le da al superadmin un botón
+  // de "reintentar" para un negocio que quedó PENDING (registro público con
+  // el auto-provisioning de business.routes.ts caído, o un negocio creado
+  // acá mismo vía POST /businesses, que nunca auto-provisiona). Misma
+  // secuencia que business.routes.ts: provisionTenantDatabase() →
+  // applyTenantSchema() → encryptConnectionString() → activateBusiness().
+  router.post(
+    '/businesses/:id/provision',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const business = await platformRepository.findById(String(req.params['id']));
+        if (!business) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Negocio no encontrado' });
+          return;
+        }
+        if (business.dbUrlEncrypted) {
+          res.status(400).json({ code: 'ALREADY_PROVISIONED', message: 'Este negocio ya tiene una base de datos asignada.' });
+          return;
+        }
+
+        const { connectionString } = await provisionTenantDatabase(business.slug);
+        const schemaVersion = await applyTenantSchema(connectionString);
+        const encrypted     = await encryptConnectionString(connectionString);
+        await platformRepository.activateBusiness(business.id, 'neon-branch', encrypted);
+        await platformRepository.updateSchemaVersion(business.id, schemaVersion);
+
+        const updated = await platformRepository.findById(business.id);
+        res.json({ message: 'Base de datos aprovisionada y negocio activado.', business: updated ? toBusinessDto(updated) : null });
+      } catch (err) { next(err); }
+    },
+  );
+
   return router;
 }
 
@@ -186,6 +220,7 @@ function toBusinessDto(b: Business) {
   return {
     id: b.id, name: b.name, slug: b.slug, plan: b.plan, status: b.status,
     ownerEmail: b.ownerEmail, supabaseProjectId: b.supabaseProjectId,
+    hasTenantDb: b.dbUrlEncrypted !== null,
     createdAt: b.createdAt, updatedAt: b.updatedAt,
   };
 }
