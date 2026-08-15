@@ -320,6 +320,16 @@ CREATE INDEX IF NOT EXISTS idx_memberships_role
 -- (DROP COLUMN) sin necesidad.
 ALTER TABLE memberships DROP CONSTRAINT IF EXISTS memberships_role_check;
 
+-- Bug encontrado el 15/08/2026 registrando un negocio de prueba: esta
+-- migración sacó el CHECK de `role` (arriba) pero se olvidó el NOT NULL
+-- original de la columna (línea ~125) — createMembership()
+-- (platform.repository.ts) ya no completa `role`, solo `role_id`, así que
+-- CUALQUIER membership nueva (registro de negocio, alta desde el panel de
+-- superadmin) fallaba con "null value in column role violates not-null
+-- constraint" y el negocio quedaba PENDING con un 500 genérico. Nadie lo
+-- notó porque no se había registrado ningún negocio nuevo desde el 14/08.
+ALTER TABLE memberships ALTER COLUMN role DROP NOT NULL;
+
 -- ---------------------------------------------------------------------------
 -- Trigger updated_at (reutiliza la función si ya existe)
 -- ---------------------------------------------------------------------------
