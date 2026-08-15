@@ -904,9 +904,16 @@ Verificado: `tsc --noEmit` limpio (los dos repos), `npm test` 418/419
 mockeando `fetch`, `email.handlers.test.ts` con los tres casos —
 remitente del negocio, default de plataforma, cliente sin mail), lint
 limpio en los dos repos, `next build` limpio (22 rutas). **Sin probar en
-vivo** — no hay cuenta de Resend todavía (confirmado por el dueño:
-"ninguna de las dos credenciales todavía"), así que queda con
+vivo el envío real** — no hay cuenta de Resend todavía (confirmado por el
+dueño: "ninguna de las dos credenciales todavía"), así que queda con
 `NoopEmailSender` hasta que se cargue `RESEND_API_KEY` en Render.
+
+**`business_profile` (schema v9) sí se aplicó y verificó contra
+`production` real** (mismo proceso que D1/F: branch temporal de Neon
+primero, los 3 statements probados con un `UPDATE` real incluido el
+trigger `updated_at`, branch borrado, después aplicado igual contra
+`production` y reconfirmado con `SELECT * FROM business_profile` — la
+fila `'default'` existe, `schema_migrations` en versión 9).
 
 **Pendiente real para poder mandar un mail de verdad:** cuenta de Resend
 (o el proveedor que se termine eligiendo) + dominio verificado (SPF/DKIM)
