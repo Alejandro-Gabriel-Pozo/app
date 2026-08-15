@@ -220,6 +220,31 @@ el detalle completo. Resumen:
 
 ---
 
+## B6. Hoja de ruta — sitios corporativos por cliente + motor de reservas — solo documentado (15/08/2026)
+
+El dueño trajo una segunda hoja de ruta, más grande: sitio público por
+cliente (dominio propio vía API de Vercel + fallback por path) y motor de
+reservas con guest checkout + cuenta de cliente final. Contrastada contra
+el código real, ver `docs/roadmap-sitios-corporativos-reservas.md` para
+el detalle completo por fase. Resumen:
+
+- Los 4 puntos de "contexto ya resuelto" del documento — ✅ verificados,
+  correctos.
+- ❌ Genuinamente nuevo: `custom_domain`/`domain_status` en `businesses`,
+  resolución de tenant por hostname, integración con la API de dominios
+  de Vercel, guest checkout (hoy **todas** las rutas de reserva del
+  portal requieren cuenta, confirmado en `customer.routes.ts`), magic
+  link.
+- ✅ Ya existe, no hay que construirlo de nuevo: resolución por path,
+  fallback (consecuencia gratis de lo anterior), cuenta de cliente
+  final (email+password), historial de reservas del cliente.
+- 🔗 **El "vincular reserva guest a cuenta después" (Fase 6) es el mismo
+  mecanismo de `claim`/`merge`** que el gap de B5 de hoy ("reclamar un
+  cliente que el negocio cargó a mano") — no diseñarlos por separado,
+  es un solo mecanismo con dos disparadores distintos.
+
+---
+
 ## C. Backlog sin cambios (heredado, sigue abierto)
 
 - `POST /api/auth/refresh` — no existe, sesión de staff dura 24h fijo.
