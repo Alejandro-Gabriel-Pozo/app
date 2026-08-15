@@ -225,7 +225,7 @@ export class ProductService {
         product,
         variant,
         effectivePrice: variant.priceOverride ?? product.basePrice,
-        availableStock: variant.stockQuantity,
+        availableStock: variant.stockQuantity - variant.reservedQuantity,
       };
     }
 
@@ -233,7 +233,7 @@ export class ProductService {
       product,
       variant:        undefined,
       effectivePrice: product.basePrice,
-      availableStock: product.stockQuantity,
+      availableStock: product.stockQuantity - product.reservedQuantity,
     };
   }
 
@@ -275,6 +275,60 @@ export class ProductService {
       await this.productRepo.incrementStock(client, productId, quantity);
     } else {
       await this.variantRepo.incrementStock(client, variantId, quantity);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Reserva de stock (D1, 15/08/2026 — criterios-negocio.md A8.7/A8.8)
+  // -------------------------------------------------------------------------
+
+  /**
+   * "Hard commit" de confirmOrder(): reserva atómica dentro de la
+   * transacción del caller. Si no alcanza, lanza InsufficientStockError —
+   * mismo error tipado que antes usaba checkStock(), mismo contrato externo
+   * (A8.8: endurecer el chequeo no debe cambiar qué ve el frontend).
+   */
+  async reserveStock(
+    client: SqlClient,
+    productId: string,
+    variantId: string | undefined,
+    quantity: number,
+  ): Promise<void> {
+    const ok = variantId
+      ? await this.variantRepo.reserveStock(client, variantId, quantity)
+      : await this.productRepo.reserveStock(client, productId, quantity);
+
+    if (!ok) {
+      const target = await this.resolveTarget(productId, variantId);
+      throw new InsufficientStockError(target.availableStock, quantity);
+    }
+  }
+
+  /** Consolida una reserva ya hecha — llamado por el handler de inventario del outbox. */
+  async commitReservedStock(
+    client: SqlClient,
+    productId: string,
+    variantId: string | undefined,
+    quantity: number,
+  ): Promise<void> {
+    if (!variantId) {
+      await this.productRepo.commitReservedStock(client, productId, quantity);
+    } else {
+      await this.variantRepo.commitReservedStock(client, variantId, quantity);
+    }
+  }
+
+  /** Libera una reserva sin consolidar — orden cancelada antes de que el outbox llegue. */
+  async releaseReservedStock(
+    client: SqlClient,
+    productId: string,
+    variantId: string | undefined,
+    quantity: number,
+  ): Promise<void> {
+    if (!variantId) {
+      await this.productRepo.releaseReservedStock(client, productId, quantity);
+    } else {
+      await this.variantRepo.releaseReservedStock(client, variantId, quantity);
     }
   }
 }

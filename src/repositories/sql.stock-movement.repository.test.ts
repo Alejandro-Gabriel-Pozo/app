@@ -11,7 +11,7 @@ describe('SqlStockMovementRepository', () => {
     repo = new SqlStockMovementRepository();
   });
 
-  it('inserta con ON CONFLICT DO NOTHING sobre (order_item_id, movement_type) y devuelve true si insertó', async () => {
+  it('inserta con ON CONFLICT DO NOTHING (sin target -- atrapa cualquiera de los dos índices únicos, D1 15/08/2026) y devuelve true si insertó', async () => {
     vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [{ id: 'mov-1' }] });
 
     const inserted = await repo.createWithClient(mockSqlClient, 'mov-1', {
@@ -28,8 +28,7 @@ describe('SqlStockMovementRepository', () => {
     expect(inserted).toBe(true);
     const mockQuery = vi.mocked(mockSqlClient.query);
     const [sql, params] = mockQuery.mock.calls[0]!;
-    expect(sql).toContain('ON CONFLICT (order_item_id, movement_type)');
-    expect(sql).toContain('DO NOTHING');
+    expect(sql).toContain('ON CONFLICT DO NOTHING');
     expect(params).toEqual(['mov-1', 'biz-1', 'prod-1', null, 'OUT', 3, 'oi-1', 'system:outbox', null]);
   });
 
@@ -48,5 +47,25 @@ describe('SqlStockMovementRepository', () => {
     });
 
     expect(inserted).toBe(false);
+  });
+
+  it('hasMovement: true si existe un movimiento de ese tipo para ese order_item', async () => {
+    vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [{ id: 'mov-1' }] });
+
+    const exists = await repo.hasMovement(mockSqlClient, 'oi-1', 'RESERVATION_RELEASED');
+
+    expect(exists).toBe(true);
+    const mockQuery = vi.mocked(mockSqlClient.query);
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('WHERE order_item_id = $1 AND movement_type = $2');
+    expect(params).toEqual(['oi-1', 'RESERVATION_RELEASED']);
+  });
+
+  it('hasMovement: false si no existe', async () => {
+    vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [] });
+
+    const exists = await repo.hasMovement(mockSqlClient, 'oi-1', 'OUT');
+
+    expect(exists).toBe(false);
   });
 });

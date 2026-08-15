@@ -576,6 +576,24 @@ CREATE TABLE IF NOT EXISTS products (
   updated_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
+-- D1 (15/08/2026, criterios-negocio.md A8.7/A8.8): reserved_quantity separa
+-- "comprometido por una orden CONFIRMED" de "físicamente en el depósito".
+-- disponible = stock_quantity - reserved_quantity. confirmOrder() reserva
+-- atómicamente (ProductService.reserveStock); el outbox consolida
+-- (commitReservedStock: stock_quantity Y reserved_quantity bajan juntos) o
+-- libera (releaseReservedStock, si se cancela antes de consolidar) — nunca
+-- una lectura seguida de un UPDATE en memoria (A8.2).
+ALTER TABLE products ADD COLUMN IF NOT EXISTS reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0);
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_reserved_not_exceeds_stock'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT chk_products_reserved_not_exceeds_stock
+      CHECK (reserved_quantity <= stock_quantity);
+  END IF;
+END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_products_business_sku
   ON products (business_id, sku) WHERE sku IS NOT NULL;
 
@@ -603,6 +621,18 @@ CREATE TABLE IF NOT EXISTS product_variants (
   created_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
+
+-- Mismo criterio que products.reserved_quantity (ver comentario arriba).
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0);
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_product_variants_reserved_not_exceeds_stock'
+  ) THEN
+    ALTER TABLE product_variants ADD CONSTRAINT chk_product_variants_reserved_not_exceeds_stock
+      CHECK (reserved_quantity <= stock_quantity);
+  END IF;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_product_variants_product_sku
   ON product_variants (product_id, sku) WHERE sku IS NOT NULL;
@@ -743,6 +773,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_type
   WHERE order_item_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by    ON stock_movements (created_by);
 
+-- D1 (15/08/2026) — 'RESERVATION_RELEASED': NO es un movimiento físico (no
+-- representa un cambio real de stock_quantity, a diferencia de IN/OUT/
+-- ADJUSTMENT/RETURN) -- registra que una reserva (reserved_quantity) se
+-- liberó sin haber llegado a consolidarse en un descuento real. Se guarda
+-- acá (y no en otro lado) porque necesita el mismo mecanismo de idempotencia
+-- por order_item que el resto -- ver ux_stock_movements_order_item_resolution
+-- abajo para el porqué. Si el día de mañana se reporta % de merma u otro
+-- análisis de movimientos físicos (D2, manual de inventario pendiente),
+-- este tipo debe excluirse de esos reportes explícitamente.
+DO $$
+DECLARE
+  c RECORD;
+BEGIN
+  FOR c IN
+    SELECT conname FROM pg_constraint
+    WHERE conrelid = 'stock_movements'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%movement_type%IN%'
+  LOOP
+    EXECUTE format('ALTER TABLE stock_movements DROP CONSTRAINT %I', c.conname);
+  END LOOP;
+
+  ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
+    CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED'));
+END $$;
+
+-- OUT (consolidación real) y RESERVATION_RELEASED (liberación sin consolidar)
+-- compiten por el MISMO casillero por order_item -- el que se inserta
+-- primero gana, el que pierde ve el conflicto y no vuelve a tocar stock.
+-- Es lo que resuelve la falta de garantía de orden entre order.confirmed y
+-- order.cancelled del mismo agregado (OutboxWorker no la da -- ver
+-- pendientes-2026-08-15.md, punto 1, y comentario en inventory.handlers.ts).
+-- Coexiste con ux_stock_movements_order_item_type de arriba (que sigue
+-- gobernando RETURN, que sí puede convivir con un OUT ya existente).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_resolution
+  ON stock_movements (order_item_id)
+  WHERE order_item_id IS NOT NULL AND movement_type IN ('OUT', 'RESERVATION_RELEASED');
+
 -- ===========================================================================
 -- BLOQUE 6 — STAYS (Check-in / Check-out)
 -- ===========================================================================
@@ -866,8 +934,25 @@ CREATE TABLE IF NOT EXISTS domain_events (
   dispatched_at   TIMESTAMPTZ
 );
 
+-- A9.5/A8.7 (criterios-negocio.md, 15/08/2026): antes de esto un evento que
+-- fallaba se reintentaba cada poll para siempre, en silencio. retry_count +
+-- failed_at agregan un tercer estado explícito (dead-letter) a la máquina
+-- PENDING/DISPATCHED que antes era solo dispatched_at NULL/NOT NULL (A6.1).
+-- last_error guarda SOLO la categoría del fallo (código Postgres o nombre
+-- de excepción), nunca el mensaje completo -- A7.1, el mensaje puede traer
+-- un dato de cliente adentro (ej. "duplicate key ... email@...").
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS failed_at   TIMESTAMPTZ;
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS last_error  VARCHAR(255);
+
+-- dead-letter (failed_at IS NOT NULL) sale de la cola de pendientes: el
+-- worker ya no lo reintenta solo, queda esperando reintento manual.
+DROP INDEX IF EXISTS idx_domain_events_pending;
 CREATE INDEX IF NOT EXISTS idx_domain_events_pending
-  ON domain_events (id) WHERE dispatched_at IS NULL;
+  ON domain_events (id) WHERE dispatched_at IS NULL AND failed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_domain_events_dead_letter
+  ON domain_events (business_id) WHERE failed_at IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS occupancy_records (
   id             SERIAL        PRIMARY KEY,

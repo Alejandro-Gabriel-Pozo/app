@@ -297,6 +297,19 @@ no alcanza; hace falta TTL de expiración o un límite de reintentos que
 libere la reserva al agotarse. *Hallazgo del 15/08/2026, caso concreto en
 `pendientes-2026-08-15.md` D1 (inventario/`reserved_quantity`).*
 
+✅ *Implementado (15/08/2026) — `products`/`product_variants.reserved_quantity`
+(schema.sql BLOQUE 3, schema v8). `confirmOrder()` reserva atómicamente
+(`ProductService.reserveStock`) dentro de su propia transacción; el outbox
+consolida (`commitReservedStock`) o libera (`releaseReservedStock`) según
+quién gana la carrera del casillero compartido OUT/RESERVATION_RELEASED en
+`stock_movements` (ver docblock de `inventory.handlers.ts`). **Parcial**:
+resuelve la pérdida silenciosa de la reserva (ya no se pierde el hold ni se
+consolida dos veces), pero el TTL/límite de reintentos que libere una
+reserva colgada si el consolidador queda en dead-letter sigue sin
+implementarse — hoy esa reserva queda tomada hasta que alguien reintente el
+evento manualmente desde el panel (visible gracias al punto 2 de
+`pendientes-2026-08-15.md`, no auto-liberada.*
+
 **A8.8 — Endurecer una validación read-then-write a una UPDATE atómica
 (`WHERE ... AND condición`, 0 filas = falla) no debe cambiar el contrato
 de error externo.** El punto de falla se mueve (de una comparación en
@@ -305,6 +318,11 @@ otro servicio) no debería notar la diferencia — mapear "0 filas
 afectadas" de vuelta al mismo error tipado que existía antes de
 endurecer el chequeo, mismo código/mensaje. *Mismo hallazgo del
 15/08/2026 que A8.7.*
+
+✅ *Implementado (15/08/2026) — `reserveStock()` mapea "0 filas" de vuelta a
+`InsufficientStockError`/`INSUFFICIENT_STOCK`, exactamente el mismo error
+que usaba el `checkStock()` de lectura que reemplazó. `orders.routes.ts` no
+cambió — el catch de `/confirm` sigue viendo el mismo código.*
 
 ---
 
@@ -327,6 +345,20 @@ externa contra Tango (`Gap analysis - Tango ERP vs modelo actual.md`).*
 **A9.5 — Alertas sobre lo que rompe plata o confianza:** outbox con eventos
 sin despachar hace más de X minutos, transacciones financieras que no
 cuadran, picos de 402/403.
+
+✅ *Parcialmente cumplido (15/08/2026) — solo la pata de outbox: `domain_events`
+gana `retry_count`/`failed_at`/`last_error` (schema.sql BLOQUE 7, schema v7).
+`OutboxWorker` pasa un evento a dead-letter tras `maxRetries` fallos (~5 min
+a `pollIntervalMs`=5s) en vez de reintentar para siempre en silencio —
+cumple también A8.7, el hallazgo que motivó esto. Visible en
+`GET /api/system/outbox/dead-letter` y como aviso real en el dashboard
+(`OutboxAlertBanner`, `appfrontend-main/dashboard/layout.tsx`), con
+reintento manual por evento (`POST /api/system/outbox/:id/retry`). `last_error`
+guarda solo la categoría del fallo, nunca el mensaje completo (A7.1). El
+rastro de quién reintentó queda en el log del servidor, no en `audit_log`
+(A9.4 ya nota que ese mecanismo hoy solo cubre precios — extenderlo queda
+pendiente). Todavía sin implementar: transacciones financieras que no
+cuadran, picos de 402/403.*
 
 **A9.6 — Health check que verifique la versión de esquema del tenant**, no
 solo que la BD responda.

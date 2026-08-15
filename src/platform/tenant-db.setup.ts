@@ -131,7 +131,14 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // enganchado al outbox, ver docs/arquitectura-monolito-modular.md).
 // v6 (15/08/2026): BLOQUE 14 — orders.served_at, para que cancelOrder()
 // sepa si el bien ya se consumió físicamente antes de restaurar stock.
-export const CURRENT_SCHEMA_VERSION = 6;
+// v7 (15/08/2026): BLOQUE 7 — domain_events.retry_count/failed_at/last_error
+// + índice de dead-letter, dead-letter/alertas del outbox (A9.5/A8.7,
+// pendientes-2026-08-15.md punto 2).
+// v8 (15/08/2026): BLOQUE 3 — products/product_variants.reserved_quantity +
+// CHECK reserved<=stock. BLOQUE 5/13 — stock_movements gana el tipo
+// RESERVATION_RELEASED + índice de exclusión mutua con OUT por order_item.
+// Carrera de stock en confirmOrder(), pendientes-2026-08-15.md punto 1.
+export const CURRENT_SCHEMA_VERSION = 8;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

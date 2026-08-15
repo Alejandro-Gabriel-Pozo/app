@@ -34,6 +34,7 @@ import type { PaymentInfo }             from '../repositories/financial-transact
 import { DomainError }                  from '../domain/errors.js';
 import type { ProductService }          from './product.service.js';
 import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';
+import { canonicalStockItemOrder }      from '../workers/inventory.handlers.js';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
@@ -262,12 +263,21 @@ export class OrderService {
    * reservation.confirmed. Desde el 15/08/2026 también dispara el handler
    * de inventario (workers/inventory.handlers.ts), que descuenta stock.
    *
-   * El chequeo de stock (checkStock) se hace ACÁ, síncrono, ANTES de abrir
-   * la transacción — mismo criterio que InvalidPaymentInfoError en
-   * completeOrder(): si no hay stock suficiente, el mesero ve un 400 al
-   * confirmar, en vez de que la violación reviente recién en el outbox
-   * worker (async, sin forma de avisarle a nadie, y ahí sí reintentando
-   * cada 5s para siempre — el OutboxWorker no tiene dead-letter).
+   * El stock se RESERVA acá (D1, 15/08/2026 — criterios-negocio.md A8.7/
+   * A8.8), dentro de la misma transacción que la transición de estado —
+   * UPDATE atómica condicionada (ProductService.reserveStock), no un
+   * checkStock() de lectura seguido de un decremento en memoria: dos
+   * confirmOrder() concurrentes para el último ítem ya no pueden pasar las
+   * dos. Si no alcanza, InsufficientStockError revienta ACÁ y hace rollback
+   * de toda la transacción — el mesero ve un 400 al confirmar, en vez de
+   * que la violación reviente recién en el outbox worker (async, sin forma
+   * de avisarle a nadie). El outbox (workers/inventory.handlers.ts) ya no
+   * decrementa desde cero — CONSOLIDA esta misma reserva.
+   *
+   * Orden canónico (canonicalStockItemOrder, mismo criterio que
+   * inventory.handlers.ts) antes de reservar — evita deadlock entre dos
+   * confirmOrder() concurrentes que tocan los mismos productos en distinto
+   * orden.
    *
    * El payload del evento lleva los ítems (A10.2, "payload autocontenido")
    * — el handler de inventario no debe volver a consultar order_items,
@@ -279,11 +289,12 @@ export class OrderService {
     if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
 
     const stockItems = toStockItems(order.items);
-    for (const item of stockItems) {
-      await this.productService.checkStock(item.productId, item.productVariantId ?? undefined, item.quantity);
-    }
 
     return this.transactionManager.run(async (client: SqlClient) => {
+      for (const item of canonicalStockItemOrder(stockItems)) {
+        await this.productService.reserveStock(client, item.productId, item.productVariantId ?? undefined, item.quantity);
+      }
+
       const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
       await this.domainEventRepository.insertWithClient(client, {
         businessId:    order.businessId,

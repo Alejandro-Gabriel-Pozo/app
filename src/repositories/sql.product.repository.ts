@@ -36,6 +36,7 @@ function rowToProduct(row: Record<string, unknown>): Product {
     sku:           (row['sku'] as string | null) ?? null,
     hasVariants:   Boolean(row['has_variants']),
     stockQuantity: Number(row['stock_quantity']),
+    reservedQuantity: Number(row['reserved_quantity']),
     stockMinAlert: Number(row['stock_min_alert']),
     active:        Boolean(row['active']),
     createdAt:     new Date(row['created_at'] as string),
@@ -52,6 +53,7 @@ function rowToVariant(row: Record<string, unknown>): ProductVariant {
     sku:           (row['sku'] as string | null) ?? null,
     priceOverride: row['price_override'] != null ? Number(row['price_override']) : null,
     stockQuantity: Number(row['stock_quantity']),
+    reservedQuantity: Number(row['reserved_quantity']),
     stockMinAlert: Number(row['stock_min_alert']),
     active:        Boolean(row['active']),
     createdAt:     new Date(row['created_at'] as string),
@@ -232,6 +234,52 @@ export class SqlProductRepository implements IProductRepository {
     );
   }
 
+  async reserveStock(client: SqlClient, productId: string, quantity: number): Promise<boolean> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE products
+       SET reserved_quantity = reserved_quantity + $1,
+           updated_at        = NOW()
+       WHERE id = $2
+         AND has_variants = false
+         AND (stock_quantity - reserved_quantity) >= $1
+       RETURNING id`,
+      [quantity, productId],
+    );
+    return rows.length > 0;
+  }
+
+  async commitReservedStock(client: SqlClient, productId: string, quantity: number): Promise<void> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE products
+       SET stock_quantity    = stock_quantity - $1,
+           reserved_quantity = reserved_quantity - $1,
+           updated_at        = NOW()
+       WHERE id = $2
+         AND stock_quantity >= $1
+         AND reserved_quantity >= $1
+       RETURNING id`,
+      [quantity, productId],
+    );
+    if (!rows[0]) {
+      throw new Error(`No se pudo consolidar la reserva de stock (id=${productId}, quantity=${quantity}).`);
+    }
+  }
+
+  async releaseReservedStock(client: SqlClient, productId: string, quantity: number): Promise<void> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE products
+       SET reserved_quantity = reserved_quantity - $1,
+           updated_at        = NOW()
+       WHERE id = $2
+         AND reserved_quantity >= $1
+       RETURNING id`,
+      [quantity, productId],
+    );
+    if (!rows[0]) {
+      throw new Error(`No se pudo liberar la reserva de stock (id=${productId}, quantity=${quantity}).`);
+    }
+  }
+
   async delete(id: string): Promise<boolean> {
     const { rows } = await this.db.query<Record<string, unknown>>(
       `UPDATE products SET active = false, updated_at = NOW()
@@ -379,6 +427,51 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
        WHERE id = $2`,
       [quantity, variantId],
     );
+  }
+
+  async reserveStock(client: SqlClient, variantId: string, quantity: number): Promise<boolean> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE product_variants
+       SET reserved_quantity = reserved_quantity + $1,
+           updated_at        = NOW()
+       WHERE id = $2
+         AND (stock_quantity - reserved_quantity) >= $1
+       RETURNING id`,
+      [quantity, variantId],
+    );
+    return rows.length > 0;
+  }
+
+  async commitReservedStock(client: SqlClient, variantId: string, quantity: number): Promise<void> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE product_variants
+       SET stock_quantity    = stock_quantity - $1,
+           reserved_quantity = reserved_quantity - $1,
+           updated_at        = NOW()
+       WHERE id = $2
+         AND stock_quantity >= $1
+         AND reserved_quantity >= $1
+       RETURNING id`,
+      [quantity, variantId],
+    );
+    if (!rows[0]) {
+      throw new Error(`No se pudo consolidar la reserva de stock (variantId=${variantId}, quantity=${quantity}).`);
+    }
+  }
+
+  async releaseReservedStock(client: SqlClient, variantId: string, quantity: number): Promise<void> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      `UPDATE product_variants
+       SET reserved_quantity = reserved_quantity - $1,
+           updated_at        = NOW()
+       WHERE id = $2
+         AND reserved_quantity >= $1
+       RETURNING id`,
+      [quantity, variantId],
+    );
+    if (!rows[0]) {
+      throw new Error(`No se pudo liberar la reserva de stock (variantId=${variantId}, quantity=${quantity}).`);
+    }
   }
 
   async delete(id: string): Promise<boolean> {

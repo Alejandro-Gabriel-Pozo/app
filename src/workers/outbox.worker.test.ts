@@ -20,7 +20,7 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
   private nextId = 1;
 
   insert(event: Omit<DomainEvent, 'id' | 'occurredAt' | 'dispatchedAt'>): void {
-    this.events.push({ ...event, id: this.nextId++, dispatchedAt: null });
+    this.events.push({ ...event, id: this.nextId++, dispatchedAt: null, retryCount: 0, failedAt: null, lastError: null });
   }
 
   async insertWithClient(
@@ -32,13 +32,38 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
 
   async getPending(limit: number): Promise<DomainEvent[]> {
     return this.events
-      .filter((e) => !e.dispatchedAt)
+      .filter((e) => !e.dispatchedAt && !e.failedAt)
       .slice(0, limit);
   }
 
   async markDispatched(id: number): Promise<void> {
     const event = this.events.find((e) => e.id === id);
     if (event) event.dispatchedAt = new Date();
+  }
+
+  async recordFailure(id: number, errorCategory: string, maxRetries: number): Promise<boolean> {
+    const event = this.events.find((e) => e.id === id);
+    if (!event) return false;
+    event.retryCount = (event.retryCount ?? 0) + 1;
+    event.lastError = errorCategory;
+    if (event.retryCount >= maxRetries) event.failedAt = new Date();
+    return event.failedAt != null;
+  }
+
+  async countDeadLettered(): Promise<number> {
+    return this.events.filter((e) => e.failedAt != null).length;
+  }
+
+  async getDeadLettered(limit: number): Promise<DomainEvent[]> {
+    return this.events.filter((e) => e.failedAt != null).slice(0, limit);
+  }
+
+  async retryDeadLettered(id: number): Promise<void> {
+    const event = this.events.find((e) => e.id === id);
+    if (!event) return;
+    event.failedAt = null;
+    event.retryCount = 0;
+    event.lastError = null;
   }
 
   getAll(): DomainEvent[] { return this.events; }
@@ -208,6 +233,71 @@ describe('OutboxWorker', () => {
     await triggerPoll(worker);
     expect(handler).toHaveBeenCalledTimes(2);
     // Pero al final queda marcado
+    expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Dead-letter (A9.5/A8.7, 15/08/2026)
+  // -------------------------------------------------------------------------
+
+  it('pasa a dead-letter tras agotar maxRetries y deja de reintentarse solo', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 2);
+    repo.insert(makeEvent('reservation.confirmed'));
+
+    deadLetterWorker.on('reservation.confirmed', async () => {
+      throw new Error('fallo persistente');
+    });
+
+    await triggerPoll(deadLetterWorker); // intento 1/2
+    expect(repo.getAll()[0]!.failedAt).toBeNull();
+    expect(repo.getAll()[0]!.retryCount).toBe(1);
+
+    await triggerPoll(deadLetterWorker); // intento 2/2 → dead-letter
+    expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+    expect(repo.getAll()[0]!.retryCount).toBe(2);
+
+    // Ya en dead-letter: un tercer poll no lo vuelve a intentar (getPending lo excluye)
+    const handler = vi.fn().mockRejectedValue(new Error('no debería llamarse'));
+    const anotherWorker = new OutboxWorker(repo, 5_000, 2);
+    anotherWorker.on('reservation.confirmed', handler);
+    await triggerPoll(anotherWorker);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('no guarda el mensaje de error completo — solo una categoría segura (A7.1)', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 1);
+    repo.insert(makeEvent('reservation.confirmed'));
+
+    deadLetterWorker.on('reservation.confirmed', async () => {
+      throw new Error('duplicate key value violates unique constraint "email@cliente.com"');
+    });
+
+    await triggerPoll(deadLetterWorker);
+
+    const stored = repo.getAll()[0]!.lastError;
+    expect(stored).toBe('Error');
+    expect(stored).not.toContain('email@cliente.com');
+  });
+
+  it('retryDeadLettered vuelve el evento a pendiente y lo despacha en el siguiente poll', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 1);
+    repo.insert(makeEvent('reservation.confirmed'));
+
+    let shouldFail = true;
+    deadLetterWorker.on('reservation.confirmed', async () => {
+      if (shouldFail) throw new Error('fallo transitorio');
+    });
+
+    await triggerPoll(deadLetterWorker);
+    expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+
+    // Reintento manual (lo que dispara POST /api/system/outbox/:id/retry)
+    shouldFail = false;
+    await repo.retryDeadLettered(repo.getAll()[0]!.id!);
+    expect(repo.getAll()[0]!.failedAt).toBeNull();
+    expect(repo.getAll()[0]!.retryCount).toBe(0);
+
+    await triggerPoll(deadLetterWorker);
     expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
   });
 });

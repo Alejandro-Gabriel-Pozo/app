@@ -27,6 +27,8 @@ export interface ProductVariant {
    */
   priceOverride: number | null;
   stockQuantity: number;
+  /** Comprometido por órdenes CONFIRMED aún no consolidadas — D1, 15/08/2026. */
+  reservedQuantity: number;
   stockMinAlert: number;
   active: boolean;
   createdAt: Date;
@@ -53,6 +55,8 @@ export interface Product {
   hasVariants: boolean;
   /** Solo relevante cuando hasVariants === false */
   stockQuantity: number;
+  /** Comprometido por órdenes CONFIRMED aún no consolidadas — D1, 15/08/2026. */
+  reservedQuantity: number;
   stockMinAlert: number;
   active: boolean;
   createdAt: Date;
@@ -123,6 +127,6 @@ export interface ResolvedProductTarget {
   variant: ProductVariant | undefined;
   /** Precio efectivo a usar en la transacción */
   effectivePrice: number;
-  /** Stock disponible según el target correcto */
+  /** Stock disponible = stockQuantity - reservedQuantity (D1, 15/08/2026) */
   availableStock: number;
 }

@@ -10,6 +10,25 @@ interface DomainEventRow {
   payload: Record<string, unknown>;
   occurred_at: Date;
   dispatched_at: Date | null;
+  retry_count: number;
+  failed_at: Date | null;
+  last_error: string | null;
+}
+
+function toDomainEvent(row: DomainEventRow): DomainEvent {
+  return {
+    id:            row.id,
+    businessId:    row.business_id,
+    aggregateType: row.aggregate_type,
+    aggregateId:   row.aggregate_id,
+    eventType:     row.event_type,
+    payload:       row.payload,
+    occurredAt:    row.occurred_at,
+    dispatchedAt:  row.dispatched_at,
+    retryCount:    row.retry_count,
+    failedAt:      row.failed_at,
+    lastError:     row.last_error,
+  };
 }
 
 /**
@@ -18,23 +37,9 @@ interface DomainEventRow {
  * Recibe SqlClient (no pg.Pool directo) para mantener la inversión
  * de dependencias consistente con el resto de los repositorios.
  *
- * Schema esperado (PostgreSQL):
- * ```sql
- * CREATE TABLE domain_events (
- *   id              BIGSERIAL     PRIMARY KEY,
- *   business_id     VARCHAR(255)  NOT NULL REFERENCES businesses(id),
- *   aggregate_type  VARCHAR(50)   NOT NULL,
- *   aggregate_id    VARCHAR(255)  NOT NULL,
- *   event_type      VARCHAR(100)  NOT NULL,
- *   payload         JSONB         NOT NULL,
- *   occurred_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
- *   dispatched_at   TIMESTAMPTZ
- * );
- *
- * CREATE INDEX idx_domain_events_pending
- *   ON domain_events (id)
- *   WHERE dispatched_at IS NULL;
- * ```
+ * Schema esperado (PostgreSQL) — ver src/db/schema.sql BLOQUE 7 para la
+ * versión completa con retry_count/failed_at/last_error (A9.5/A8.7,
+ * 15/08/2026).
  */
 export class SqlDomainEventRepository implements DomainEventRepository {
   constructor(private readonly sqlClient: SqlClient) {}
@@ -60,24 +65,16 @@ export class SqlDomainEventRepository implements DomainEventRepository {
   async getPending(limit = 50): Promise<DomainEvent[]> {
     const result = await this.sqlClient.query<DomainEventRow>(
       `SELECT id, business_id, aggregate_type, aggregate_id,
-              event_type, payload, occurred_at, dispatched_at
+              event_type, payload, occurred_at, dispatched_at,
+              retry_count, failed_at, last_error
        FROM domain_events
-       WHERE dispatched_at IS NULL
+       WHERE dispatched_at IS NULL AND failed_at IS NULL
        ORDER BY id ASC
        LIMIT $1`,
       [limit],
     );
 
-    return result.rows.map((row) => ({
-      id:            row.id,
-      businessId:    row.business_id,
-      aggregateType: row.aggregate_type,
-      aggregateId:   row.aggregate_id,
-      eventType:     row.event_type,
-      payload:       row.payload,
-      occurredAt:    row.occurred_at,
-      dispatchedAt:  row.dispatched_at,
-    }));
+    return result.rows.map(toDomainEvent);
   }
 
   async markDispatched(id: number): Promise<void> {
@@ -85,6 +82,56 @@ export class SqlDomainEventRepository implements DomainEventRepository {
       `UPDATE domain_events
        SET dispatched_at = NOW()
        WHERE id = $1 AND dispatched_at IS NULL`,
+      [id],
+    );
+  }
+
+  /**
+   * UPDATE atómica: el incremento y la decisión de pasar a dead-letter son
+   * la misma operación (A8.2 — no SELECT retry_count seguido de un IF en
+   * memoria, que dos ciclos de poll solapados podrían leer a la vez).
+   */
+  async recordFailure(id: number, errorCategory: string, maxRetries: number): Promise<boolean> {
+    const result = await this.sqlClient.query<{ failed_at: Date | null }>(
+      `UPDATE domain_events
+       SET retry_count = retry_count + 1,
+           last_error  = $2,
+           failed_at   = CASE WHEN retry_count + 1 >= $3 THEN NOW() ELSE failed_at END
+       WHERE id = $1
+       RETURNING failed_at`,
+      [id, errorCategory.slice(0, 255), maxRetries],
+    );
+
+    return result.rows[0]?.failed_at != null;
+  }
+
+  async countDeadLettered(): Promise<number> {
+    const result = await this.sqlClient.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM domain_events WHERE failed_at IS NOT NULL`,
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async getDeadLettered(limit = 50): Promise<DomainEvent[]> {
+    const result = await this.sqlClient.query<DomainEventRow>(
+      `SELECT id, business_id, aggregate_type, aggregate_id,
+              event_type, payload, occurred_at, dispatched_at,
+              retry_count, failed_at, last_error
+       FROM domain_events
+       WHERE failed_at IS NOT NULL
+       ORDER BY failed_at DESC
+       LIMIT $1`,
+      [limit],
+    );
+
+    return result.rows.map(toDomainEvent);
+  }
+
+  async retryDeadLettered(id: number): Promise<void> {
+    await this.sqlClient.query(
+      `UPDATE domain_events
+       SET failed_at = NULL, retry_count = 0, last_error = NULL
+       WHERE id = $1 AND failed_at IS NOT NULL`,
       [id],
     );
   }

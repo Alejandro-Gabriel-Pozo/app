@@ -35,6 +35,7 @@ import { createResourcesRouter }         from './api/routes/resources.routes.js'
 import { createLocationsRouter }         from './api/routes/locations.routes.js';
 import { createReservationsRouter }      from './api/routes/reservations.routes.js';
 import { createReportsRouter }           from './api/routes/reports.routes.js';
+import { createSystemRouter }            from './api/routes/system.routes.js';
 import { createAuthRouter }              from './api/routes/auth.routes.js';
 import { createMeRouter }                from './api/routes/me.routes.js';
 import { createBusinessRouter }          from './api/routes/business.routes.js';
@@ -75,6 +76,7 @@ import { StayService }                   from './services/stay.service.js';
 import { SqlResourceRepository }         from './repositories/sql.resource.repository.js';
 import { SqlReservationRepository }      from './repositories/sql.reservation.repository.js';
 import { SqlOccupancyRepository }        from './repositories/sql.occupancy.repository.js';
+import { SqlDomainEventRepository }      from './repositories/sql.domain-event.repository.js';
 import { ReportService }                 from './services/report.service.js';
 import { closeTenantPools }              from './platform/tenant.middleware.js';
 import { SqlFinancialTransactionRepository } from './repositories/sql.financial-transaction.repository.js';
@@ -239,6 +241,17 @@ export async function createApp(): Promise<{
       const accountsReceivableRepo = new SqlAccountsReceivableRepository(req.db);
       const reportService = new ReportService(occupancyRepo, accountsReceivableRepo);
       const router = createReportsRouter(reportService);
+      router(req, _res, next);
+    },
+  );
+
+  // Sin requireModule() a propósito — observabilidad de infraestructura,
+  // no un módulo de negocio (mismo criterio que /api/audit-log).
+  app.use(
+    '/api/system',
+    (req: Request, _res: Response, next: NextFunction) => {
+      const domainEventRepo = new SqlDomainEventRepository(req.db);
+      const router = createSystemRouter(domainEventRepo);
       router(req, _res, next);
     },
   );

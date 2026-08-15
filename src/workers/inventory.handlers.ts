@@ -12,22 +12,41 @@
  * (CONFIRMED -> COMPLETED) — entre confirmar y cobrar el producto ya se
  * está usando.
  *
- * ## Por qué no hay try/catch para "sin stock" acá
- * OrderService.confirmOrder() ya valida stock disponible ANTES de emitir
- * el evento (checkStock, síncrono) — para cuando este handler corre, la
- * falta de stock ya debería ser imposible salvo una condición de carrera
- * genuina entre el chequeo y el decremento real. Si decrementStock() igual
- * falla acá, el evento queda sin despachar y el OutboxWorker lo reintenta
- * cada 5s indefinidamente (no tiene dead-letter, ver A9.5 en
- * criterios-negocio.md — alertar sobre esto es un gap ya conocido, no
- * introducido por este handler).
+ * ## Reserva de dos pasos (D1, 15/08/2026 — criterios-negocio.md A8.7/A8.8)
+ * OrderService.confirmOrder() ya no solo valida: RESERVA stock atómicamente
+ * (reserved_quantity) dentro de su propia transacción, antes de emitir el
+ * evento. Este handler ya no decrementa stock desde cero — CONSOLIDA la
+ * reserva que confirmOrder() ya tomó (stock_quantity y reserved_quantity
+ * bajan juntos, ProductService.commitReservedStock). Si la reserva no
+ * alcanza acá (0 filas en la UPDATE), es una inconsistencia real — no un
+ * chequeo de negocio esperable — y el evento queda sin despachar (dead-
+ * letter tras maxRetries, ver A9.5/outbox.worker.ts).
+ *
+ * ## Orden entre order.confirmed y order.cancelled del MISMO agregado
+ * El OutboxWorker pide los eventos ordenados por id ASC, pero NO garantiza
+ * que uno termine de procesarse antes de que el siguiente empiece a
+ * intentarse — un order.confirmed trabado reintentando (o ya en
+ * dead-letter) no bloquea que order.cancelled de la misma orden se
+ * despache antes. Sin coordinación, eso podía dejar la reserva liberada
+ * dos veces, o consolidada después de haber sido liberada. Se resuelve sin
+ * tocar el worker: OUT (consolidación) y RESERVATION_RELEASED (liberación
+ * sin consolidar) compiten por el MISMO casillero en stock_movements
+ * (índice único parcial por order_item_id, schema.sql BLOQUE 13) — el que
+ * llega primero gana, el que pierde ve el conflicto (createWithClient
+ * devuelve false) y no vuelve a tocar stock. Mismo patrón insert-then-act
+ * de siempre, aplicado una vez más.
+ *
+ * ## Orden canónico de locks (deadlock)
+ * canonicalStockItemOrder() ordena los ítems de una orden por
+ * (variantId ?? productId) antes de reservar/consolidar/liberar — mismo
+ * criterio en OrderService.confirmOrder() y acá, para que dos transacciones
+ * concurrentes que tocan los mismos productos siempre pidan los locks en el
+ * mismo orden global.
  *
  * ## Idempotencia
- * Insert-then-act: primero se intenta insertar la fila en stock_movements
- * (ON CONFLICT DO NOTHING sobre (order_item_id, movement_type)). Si la
- * fila NO se insertó (ya existía — reintento del at-least-once), NO se
- * vuelve a tocar stock. Esto evita el problema clásico de "decrementar dos
- * veces porque el evento se reprocesó".
+ * Insert-then-act: primero se intenta insertar la fila en stock_movements.
+ * Si la fila NO se insertó (ya existía — reintento del at-least-once, o
+ * perdió la carrera del casillero compartido), NO se vuelve a tocar stock.
  */
 
 import { randomUUID } from 'crypto';
@@ -48,6 +67,20 @@ export interface StockItemSnapshot {
   productId: string;
   productVariantId: string | null;
   quantity: number;
+}
+
+/**
+ * Orden canónico por (variantId ?? productId) — evita deadlock entre
+ * transacciones concurrentes que tocan los mismos productos en distinto
+ * orden (confirmOrder(), este handler, y el resto de la reserva de dos
+ * pasos de D1). Usado tanto acá como en OrderService.confirmOrder().
+ */
+export function canonicalStockItemOrder<T extends { productId: string; productVariantId: string | null }>(
+  items: T[],
+): T[] {
+  return [...items].sort((a, b) =>
+    (a.productVariantId ?? a.productId).localeCompare(b.productVariantId ?? b.productId),
+  );
 }
 
 export function registerInventoryHandlers(
@@ -75,7 +108,9 @@ export function handleOrderConfirmedStock(
     if (!items || items.length === 0) return; // orden sin productos (ej. solo cargo a la habitación)
 
     await transactionManager.run(async (client) => {
-      for (const item of items) {
+      for (const item of canonicalStockItemOrder(items)) {
+        // Compite con RESERVATION_RELEASED (handleOrderCancelledStock) por
+        // el mismo casillero (order_item_id) -- el que inserta primero gana.
         const inserted = await stockMovementRepo.createWithClient(client, randomUUID(), {
           businessId:       event.businessId,
           productId:        item.productVariantId ? null : item.productId,
@@ -87,10 +122,11 @@ export function handleOrderConfirmedStock(
           notes:            null,
         });
 
-        // false = ya existía este movimiento (reintento at-least-once) -- no tocar stock de nuevo.
+        // false = ya existía OUT (reintento) o perdió la carrera contra un
+        // RESERVATION_RELEASED (la orden se canceló antes) -- no consolidar.
         if (!inserted) continue;
 
-        await productService.decrementStock(
+        await productService.commitReservedStock(
           client,
           item.productId,
           item.productVariantId ?? undefined,
@@ -113,15 +149,49 @@ export function handleOrderCancelledStock(
       items?: StockItemSnapshot[];
     };
 
-    // Si la orden nunca pasó por CONFIRMED, el stock nunca bajó -- nada que restaurar.
-    // Si ya se sirvió (wasServed), el bien se consumió físicamente -- cancelar
-    // después no debe restaurar stock de algo que ya no existe (regla de oro,
-    // manual de inventario sección 5: "se restaura stock solo si el bien
-    // físico no se llegó a usar").
-    if (previousStatus !== 'CONFIRMED' || wasServed || !items || items.length === 0) return;
+    // Si la orden nunca pasó por CONFIRMED, nunca se reservó -- nada que liberar ni restaurar.
+    if (previousStatus !== 'CONFIRMED' || !items || items.length === 0) return;
 
     await transactionManager.run(async (client) => {
-      for (const item of items) {
+      for (const item of canonicalStockItemOrder(items)) {
+        // Intenta reclamar el mismo casillero que OUT (handleOrderConfirmedStock).
+        // Gana quien llega primero -- no depende de qué evento se despache antes.
+        const releasedReservation = await stockMovementRepo.createWithClient(client, randomUUID(), {
+          businessId:       event.businessId,
+          productId:        item.productVariantId ? null : item.productId,
+          productVariantId: item.productVariantId,
+          movementType:     'RESERVATION_RELEASED',
+          quantity:         item.quantity,
+          orderItemId:      item.orderItemId,
+          createdBy:        SYSTEM_ACTOR,
+          notes:            null,
+        });
+
+        if (releasedReservation) {
+          // Ganamos la carrera: el outbox todavía no había consolidado esta
+          // reserva. Nunca se tocó stock físico -- solo se libera el hold.
+          await productService.releaseReservedStock(
+            client,
+            item.productId,
+            item.productVariantId ?? undefined,
+            item.quantity,
+          );
+          continue;
+        }
+
+        // No se insertó -- pero eso solo no distingue POR QUÉ: puede ser un
+        // reintento de este mismo RESERVATION_RELEASED (at-least-once, ya
+        // liberado, nada más que hacer) o que OUT ganó el casillero (sí hay
+        // que evaluar restaurar). Desambiguar antes de decidir.
+        const alreadyReleased = await stockMovementRepo.hasMovement(client, item.orderItemId, 'RESERVATION_RELEASED');
+        if (alreadyReleased) continue;
+
+        // OUT ganó el casillero -- la reserva ya se consolidó (stock físico
+        // ya bajó). Si el bien ya se sirvió (wasServed), se consumió
+        // físicamente -- no restaurar (regla de oro, manual de inventario
+        // sección 5).
+        if (wasServed) continue;
+
         const inserted = await stockMovementRepo.createWithClient(client, randomUUID(), {
           businessId:       event.businessId,
           productId:        item.productVariantId ? null : item.productId,
@@ -133,7 +203,7 @@ export function handleOrderCancelledStock(
           notes:            null,
         });
 
-        if (!inserted) continue;
+        if (!inserted) continue; // ya restaurado -- reintento at-least-once
 
         await productService.incrementStock(
           client,

@@ -69,6 +69,32 @@ export interface IProductRepository {
     quantity: number,
   ): Promise<void>;
 
+  // --- Reserva de stock (D1, 15/08/2026 — criterios-negocio.md A8.7/A8.8) ---
+
+  /**
+   * Reserva stock atómicamente: UPDATE condicionada
+   * `(stock_quantity - reserved_quantity) >= quantity`, nunca una lectura
+   * seguida de un UPDATE en memoria (A8.2).
+   * @returns false si no había disponible — el caller (ProductService)
+   *   decide cómo reportarlo (InsufficientStockError).
+   */
+  reserveStock(client: SqlClient, productId: string, quantity: number): Promise<boolean>;
+
+  /**
+   * Consolida una reserva ya hecha (el outbox, tras confirmOrder): baja
+   * stock_quantity Y reserved_quantity en la misma UPDATE. Lanza si la
+   * reserva no alcanza — es una inconsistencia real (alguien liberó la
+   * reserva antes), no un chequeo de negocio esperable.
+   */
+  commitReservedStock(client: SqlClient, productId: string, quantity: number): Promise<void>;
+
+  /**
+   * Libera una reserva sin haber tocado stock físico (orden cancelada antes
+   * de que el outbox llegue a consolidarla). Lanza si no había reserva
+   * suficiente para liberar.
+   */
+  releaseReservedStock(client: SqlClient, productId: string, quantity: number): Promise<void>;
+
   delete(id: string): Promise<boolean>;
 }
 
@@ -107,6 +133,12 @@ export interface IProductVariantRepository {
     variantId: string,
     quantity: number,
   ): Promise<void>;
+
+  // --- Reserva de stock (D1, 15/08/2026) — ver IProductRepository ---
+
+  reserveStock(client: SqlClient, variantId: string, quantity: number): Promise<boolean>;
+  commitReservedStock(client: SqlClient, variantId: string, quantity: number): Promise<void>;
+  releaseReservedStock(client: SqlClient, variantId: string, quantity: number): Promise<void>;
 
   delete(id: string): Promise<boolean>;
 }

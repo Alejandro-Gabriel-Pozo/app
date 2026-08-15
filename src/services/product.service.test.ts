@@ -58,6 +58,7 @@ class FakeProductRepository implements IProductRepository {
       sku: input.sku ?? null,
       hasVariants: input.hasVariants ?? false,
       stockQuantity: input.stockQuantity ?? 0,
+      reservedQuantity: 0,
       stockMinAlert: input.stockMinAlert ?? 0,
       active: true,
       createdAt: now,
@@ -77,6 +78,9 @@ class FakeProductRepository implements IProductRepository {
 
   async decrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
   async incrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
+  async reserveStock(_client: SqlClient, _productId: string, _quantity: number): Promise<boolean> { return true; }
+  async commitReservedStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
+  async releaseReservedStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
 
   async delete(id: string): Promise<boolean> {
     return this.rows.delete(id);
@@ -116,6 +120,7 @@ class FakeProductVariantRepository implements IProductVariantRepository {
       sku: input.sku ?? null,
       priceOverride: input.priceOverride ?? null,
       stockQuantity: input.stockQuantity ?? 0,
+      reservedQuantity: 0,
       stockMinAlert: input.stockMinAlert ?? 0,
       active: true,
       createdAt: now,
@@ -135,6 +140,9 @@ class FakeProductVariantRepository implements IProductVariantRepository {
 
   async decrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
   async incrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
+  async reserveStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<boolean> { return true; }
+  async commitReservedStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
+  async releaseReservedStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
 
   async delete(id: string): Promise<boolean> {
     return this.rows.delete(id);
@@ -164,6 +172,7 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
       sku: 'COCA-500',
       hasVariants: false,
       stockQuantity: 10,
+      reservedQuantity: 0,
       stockMinAlert: 2,
       active: true,
       createdAt: now,
@@ -177,6 +186,7 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
       sku: null,
       priceOverride: null,
       stockQuantity: 5,
+      reservedQuantity: 0,
       stockMinAlert: 1,
       active: true,
       createdAt: now,

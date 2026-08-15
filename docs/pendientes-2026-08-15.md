@@ -561,3 +561,160 @@ bug después:
   persistido como archivo aparte — si se retoma alguno de estos puntos,
   pedir que lo repita o buscarlo en el historial de conversación del
   15/08/2026.
+
+---
+
+## E. Dead-letter + alertas del outbox — ✅ HECHO Y VERIFICADO (15/08/2026)
+
+Cierra el punto 2 de la auditoría de urgencia de hoy (adelante del punto 1,
+`reserved_quantity` de D1, a pedido explícito del dueño: "cualquier otro fix
+de concurrencia sigue fallando en silencio sin esto primero"). Cumple A9.5
+(alertas) y A8.7 (liberar/visibilizar si el consolidador async falla) de
+`criterios-negocio.md` — detalle completo de cumplimiento anotado ahí mismo,
+bajo A9.5.
+
+- `domain_events` gana `retry_count`/`failed_at`/`last_error` (schema.sql
+  BLOQUE 7, `CURRENT_SCHEMA_VERSION` 6 → 7). Tercer estado explícito
+  (`PENDING → DISPATCHED` o `PENDING → FAILED`) en vez del booleano
+  implícito que era `dispatched_at NULL/NOT NULL` (A6.1).
+- `OutboxWorker`: nuevo parámetro `maxRetries` (default 60, ~5 min de
+  fallas seguidas a `pollIntervalMs`=5s). Al agotarlo, `recordFailure()`
+  marca dead-letter en la misma UPDATE que incrementa (atómica, A8.2 — no
+  lectura + decisión en memoria). El evento sale de `getPending` y deja de
+  reintentarse solo.
+- `last_error` guarda **solo la categoría** del fallo (código Postgres o
+  nombre de excepción), nunca el mensaje completo — A7.1, el mensaje puede
+  traer un dato de cliente adentro.
+- `GET /api/system/outbox/dead-letter` + `POST /api/system/outbox/:id/retry`
+  (`system.routes.ts`, nuevo, `authorize(Roles.MANAGEMENT)`, montado después
+  de `tenantMiddleware` mismo patrón que `/api/reports`). Sin
+  `requireModule()` a propósito — observabilidad de infraestructura, no un
+  módulo de negocio, mismo criterio que `/api/audit-log`.
+- Frontend: `OutboxAlertBanner` en `dashboard/layout.tsx` — visible en
+  cualquier página del panel para OWNER/ADMIN mientras haya eventos en
+  dead-letter, con detalle expandible y botón "Reintentar" por evento. Ya
+  no es solo un log que nadie lee.
+- **Deliberadamente afuera:** el reintento manual no queda en `audit_log`
+  (A9.4 ya documenta que ese mecanismo hoy solo cubre cambios de precio),
+  solo en el log del servidor (quién, cuándo, qué evento). Extender
+  `audit_log` a esto es un cambio más grande, queda para cuando haga falta.
+  Tampoco cubre las otras dos alertas que pide A9.5 completo (transacciones
+  financieras que no cuadran, picos de 402/403).
+
+Verificado: `tsc --noEmit` limpio (backend y frontend), `npm test` 398/399
+(+3 tests nuevos en `outbox.worker.test.ts`: dead-letter tras agotar
+reintentos, categoría de error sin PII, reintento manual), lint limpio en
+los dos repos (2 warnings ya documentados como falsos positivos, sin
+cambios), `next build` limpio (22 rutas, mismo conteo — el aviso vive en el
+layout compartido).
+
+---
+
+## F. `reserved_quantity` — carrera de stock en confirmOrder() — ✅ HECHO Y VERIFICADO (15/08/2026)
+
+Cierra el punto 1 de la auditoría de urgencia de hoy (D1, gap de
+concurrencia documentado el 15/08 más temprano). Cumple A8.7/A8.8 de
+`criterios-negocio.md` (detalle de cumplimiento anotado ahí mismo) —
+**A8.7 queda parcial a propósito**: el TTL/límite de reintentos que libere
+sola una reserva colgada si el consolidador queda en dead-letter no se
+implementó — hoy esa reserva queda tomada hasta un reintento manual desde
+el panel (visible gracias al punto E de hoy, no auto-liberada). Decisión
+explícita, no descubierta después.
+
+- `products`/`product_variants` ganan `reserved_quantity` (schema.sql
+  BLOQUE 3, `CURRENT_SCHEMA_VERSION` 7 → 8) + `CHECK (reserved_quantity <=
+  stock_quantity)`. `disponible = stock_quantity - reserved_quantity`
+  (`ProductService.resolveTarget()`) — de yapa, `checkStock()` (usado por
+  los endpoints manuales de `products.routes.ts`) queda más correcto
+  también, sin tocarlo: ahora cuenta lo comprometido por órdenes CONFIRMED
+  aún no consolidadas.
+- `confirmOrder()`: el chequeo de stock pasó de una lectura antes de la
+  transacción a una reserva atómica (`ProductService.reserveStock` →
+  `UPDATE ... WHERE (stock_quantity - reserved_quantity) >= qty`) DENTRO de
+  la transacción — dos `confirmOrder()` simultáneas para el último ítem ya
+  no pueden pasar las dos.
+- El outbox (`handleOrderConfirmedStock`) ya no decrementa desde cero —
+  CONSOLIDA la reserva (`commitReservedStock`: `stock_quantity` y
+  `reserved_quantity` bajan juntos, misma UPDATE).
+- **Hallazgo nuevo, no estaba en el diseño original** (nombrado antes de
+  implementarlo, no descubierto después): el `OutboxWorker` nunca garantizó
+  que `order.confirmed` termine de procesarse antes que `order.cancelled`
+  de la misma orden empiece — un `order.confirmed` trabado reintentando (o
+  ya en dead-letter, gracias al punto E de hoy eso ahora es posible sin
+  bloquear lo demás) no bloquea que `order.cancelled` se despache antes.
+  Sin coordinación, eso podía consolidar una reserva que ya se había
+  liberado, o liberarla dos veces. Resuelto sin tocar el worker: `OUT`
+  (consolidación) y el tipo de movimiento nuevo `RESERVATION_RELEASED`
+  (liberación sin consolidar) compiten por el MISMO casillero en
+  `stock_movements` — índice único parcial nuevo por `order_item_id`
+  (schema.sql BLOQUE 13) — el que llega primero gana, el que pierde ve el
+  conflicto y no vuelve a tocar stock. Mismo patrón insert-then-act que ya
+  usaba el archivo, aplicado una vez más — no una decisión de producto
+  nueva, una extensión del patrón existente.
+  - Nuevo método `StockMovementRepository.hasMovement()` — necesario para
+    desambiguar, del lado que pierde la carrera, entre "perdí contra el
+    otro tipo" (sí hay que actuar) y "esto ya lo inserté yo en un reintento
+    at-least-once" (no hacer nada más) — un `createWithClient` que
+    devuelve `false` no alcanza para distinguir los dos casos.
+  - `SqlStockMovementRepository.createWithClient`: `ON CONFLICT DO
+    NOTHING` sin target explícito (antes apuntaba solo al índice viejo) —
+    con dos índices únicos parciales que pueden disparar el conflicto, un
+    target fijo dejaba pasar un error real si chocaba contra el otro.
+- Orden canónico por `(variantId ?? productId)` antes de tocar stock, tanto
+  en `confirmOrder()` como en los dos handlers del outbox
+  (`canonicalStockItemOrder()`, nuevo en `inventory.handlers.ts`) — evita
+  deadlock entre transacciones concurrentes que tocan los mismos productos
+  en distinto orden.
+- Tests nuevos/reescritos: `inventory.handlers.test.ts` (11 casos, incluye
+  el escenario de la carrera fuera de orden en los dos sentidos),
+  `sql.stock-movement.repository.test.ts` (+2, `hasMovement`),
+  `order.service.test.ts`/`product.service.test.ts` (fakes actualizados
+  con la lógica real de reserva/consolidación/liberación, no solo stubs).
+
+Verificado: `tsc --noEmit` limpio, `npm test` 403/404 (+5 desde el punto E
+de hoy — mismo resultado esperado, ningún test preexistente cambió de
+comportamiento salvo los que testeaban directamente el chequeo de stock,
+reescritos a propósito), lint limpio.
+
+**Sigue sin implementarse** (decisión explícita, no de esta sesión): TTL/
+límite de reintentos que libere sola una reserva colgada en dead-letter
+(A8.7 parcial, ver arriba).
+
+---
+
+## G. Resuelto de forma dudosa hoy (15/08/2026) — verificar antes de confiar del todo
+
+A diferencia del resto de la sesión (que sí se verificó contra producción
+real — B1, B2), los puntos E y F (dead-letter del outbox + `reserved_quantity`)
+**se verificaron solo con `tsc`/`npm test` (fakes en memoria) y `npm run
+build`. Nunca se corrió `schema.sql` contra una tenant DB de verdad.** Antes
+de dar esto por cerrado del todo:
+
+- ❓ **El bloque dinámico que reemplaza el CHECK de `movement_type`**
+  (schema.sql BLOQUE 13) busca la constraint vieja por patrón
+  (`pg_get_constraintdef(oid) LIKE '%movement_type%IN%'`) en vez de por
+  nombre exacto, porque el nombre real que Postgres le puso a esa
+  constraint inline nunca se confirmó contra la base real (se asumió la
+  convención estándar `stock_movements_movement_type_check`, no se leyó).
+  Si el patrón no matchea como se espera, quedarían DOS constraints
+  activas (la vieja de 4 valores + la nueva de 5) y cualquier insert de
+  `RESERVATION_RELEASED` fallaría con una violación de CHECK real en
+  producción — un error ruidoso (falla fuerte, no silencioso), pero igual
+  hay que confirmarlo antes de que dependa de esto una orden real.
+- ❓ **El fix de la carrera `order.confirmed`/`order.cancelled` fuera de
+  orden** (el casillero compartido OUT/RESERVATION_RELEASED) está probado
+  con handlers ejecutados secuencialmente contra fakes en memoria — nunca
+  contra dos transacciones de Postgres realmente concurrentes. La lógica
+  se pensó para eso (por diseño, no por casualidad), pero "pensado para"
+  no es lo mismo que "confirmado contra la base", que es el criterio que
+  se usó para todo lo demás hoy.
+- ❓ El umbral `maxRetries=60` (~5 min de fallas seguidas antes de
+  dead-letter) es una estimación, no algo calibrado contra el patrón real
+  de fallas transitorias de Neon/Render.
+
+**Antes de la próxima sesión real con carga:** aplicar `schema.sql` contra
+la tenant DB real (mismo mecanismo que `POST /api/admin/repair-tenant-db`,
+que ya lo hace en cada activación) y confirmar con una query directa que
+`ux_stock_movements_order_item_resolution` y el CHECK de 5 valores quedaron
+como se espera — no dar por buena la migración solo porque el deploy no
+tiró error (mismo criterio que ya usa este documento para todo lo demás).

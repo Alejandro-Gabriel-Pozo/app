@@ -17,6 +17,15 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  *   idempotentes (usar el aggregateId + eventType + occurredAt como clave).
  * - No entrega out-of-order dentro del mismo aggregate: getPending ordena por id ASC.
  *
+ * ## Dead-letter (A9.5/A8.7, 15/08/2026)
+ * Antes de esto, un evento que fallaba se reintentaba cada `pollIntervalMs`
+ * para siempre, en silencio (hallazgo `pendientes-2026-08-15.md` punto 2).
+ * Ahora cada fallo cuenta contra `maxRetries`; al agotarlo el evento pasa a
+ * dead-letter (`failed_at` seteado en la misma UPDATE que incrementa, ver
+ * `SqlDomainEventRepository.recordFailure`) y sale de `getPending` — deja de
+ * reintentarse solo. Vuelve a la cola con un reintento manual
+ * (`retryDeadLettered`, expuesto en `GET/POST /api/system/outbox/...`).
+ *
  * ## Arranque diferido
  * Si la tabla domain_events todavía no existe en la BD (p.ej. primer deploy
  * antes de correr las migraciones), el worker loguea un aviso único y
@@ -46,6 +55,8 @@ export class OutboxWorker {
   constructor(
     private readonly eventRepository: DomainEventRepository,
     private readonly pollIntervalMs = 5_000,
+    /** ~5 min de fallas seguidas a pollIntervalMs=5s antes de dead-letter. */
+    private readonly maxRetries = 60,
   ) {}
 
   /**
@@ -154,11 +165,36 @@ export class OutboxWorker {
       await Promise.all(handlers.map((h) => h(event)));
       await this.eventRepository.markDispatched(event.id!);
     } catch (err) {
-      // No marcar → se reintenta al próximo ciclo
+      // No marcar dispatched → se reintenta al próximo ciclo, hasta maxRetries.
       console.error(
         `[OutboxWorker] Error despachando evento id=${event.id} (${event.eventType}):`,
         err,
       );
+
+      const deadLettered = await this.eventRepository.recordFailure(
+        event.id!,
+        categorizeError(err),
+        this.maxRetries,
+      );
+
+      if (deadLettered) {
+        console.error(
+          `[OutboxWorker] ⚠️  Evento id=${event.id} (${event.eventType}) pasó a dead-letter ` +
+          `tras ${this.maxRetries} intentos. Requiere reintento manual (panel de negocio).`,
+        );
+      }
     }
   }
+}
+
+/**
+ * Categoría segura del error para persistir en last_error — nunca el
+ * mensaje completo (A7.1: puede traer un dato de cliente adentro, ej.
+ * "duplicate key ... email@...").
+ */
+function categorizeError(err: unknown): string {
+  const pgCode = (err as NodeJS.ErrnoException)?.code;
+  if (pgCode) return `PG_${pgCode}`;
+  if (err instanceof Error) return err.constructor.name;
+  return 'UNKNOWN_ERROR';
 }

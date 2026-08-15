@@ -1,14 +1,19 @@
 import type { SqlClient } from './sql.client.js';
-import type { StockMovementRepository, CreateStockMovementInput } from './stock-movement.repository.js';
+import type { StockMovementRepository, CreateStockMovementInput, StockMovementType } from './stock-movement.repository.js';
 
 /**
  * Implementación SQL de stock_movements — primer código que escribe en esta
  * tabla (existía solo como CREATE TABLE desde antes, ver comentario en
  * schema.sql BLOQUE 5).
  *
- * ON CONFLICT DO NOTHING sobre `ux_stock_movements_order_item_type`
- * (UNIQUE (order_item_id, movement_type) WHERE order_item_id IS NOT NULL,
- * schema.sql BLOQUE 13) — mismo mecanismo que
+ * ON CONFLICT DO NOTHING sin target explícito (15/08/2026 — antes apuntaba
+ * solo a `ux_stock_movements_order_item_type`) — desde D1 hay DOS índices
+ * únicos parciales que pueden disparar el conflicto: ese mismo (order_item_id,
+ * movement_type), y `ux_stock_movements_order_item_resolution` (order_item_id
+ * solo, entre OUT y RESERVATION_RELEASED — ver schema.sql BLOQUE 13). Un
+ * ON CONFLICT sin target atrapa la violación de CUALQUIERA de los dos; con
+ * un target fijo, un conflicto contra el otro índice tiraría un error real
+ * en vez de no-opear. Mismo mecanismo de idempotencia que
  * SqlFinancialTransactionRepository con idempotencyKey.
  */
 export class SqlStockMovementRepository implements StockMovementRepository {
@@ -18,8 +23,7 @@ export class SqlStockMovementRepository implements StockMovementRepository {
          (id, business_id, product_id, product_variant_id, movement_type,
           quantity, order_item_id, created_by, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (order_item_id, movement_type) WHERE order_item_id IS NOT NULL
-       DO NOTHING
+       ON CONFLICT DO NOTHING
        RETURNING id`,
       [
         id,
@@ -34,6 +38,14 @@ export class SqlStockMovementRepository implements StockMovementRepository {
       ],
     );
 
+    return rows.length > 0;
+  }
+
+  async hasMovement(client: SqlClient, orderItemId: string, movementType: StockMovementType): Promise<boolean> {
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT id FROM stock_movements WHERE order_item_id = $1 AND movement_type = $2 LIMIT 1`,
+      [orderItemId, movementType],
+    );
     return rows.length > 0;
   }
 }

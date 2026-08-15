@@ -41,6 +41,10 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
 
   async getPending() { return []; }
   async markDispatched() {}
+  async recordFailure() { return false; }
+  async countDeadLettered() { return 0; }
+  async getDeadLettered() { return []; }
+  async retryDeadLettered() {}
 }
 
 /**
