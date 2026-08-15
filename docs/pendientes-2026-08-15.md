@@ -43,7 +43,7 @@ real — la mayoría ya estaba resuelto, ver
 evidencia de código. De ahí salieron dos pedidos concretos que sí se
 implementaron hoy:
 
-### B1. Aprovisionamiento automático de tenants (Neon) — ✅ HECHO, falta un secreto para probar en vivo
+### B1. Aprovisionamiento automático de tenants (Neon) — ✅ HECHO Y VERIFICADO EN PRODUCCIÓN REAL
 
 **Hallazgo bloqueante encontrado antes de tocar nada:** el sistema
 SUPERADMIN (`/platform/*`) existía en el código pero estaba **roto de
@@ -80,18 +80,47 @@ ya existía pero nunca ejercitaba `login()` de verdad).
   declaradas) `PLATFORM_JWT_SECRET`/`PLATFORM_ADMIN_EMAIL`/
   `PLATFORM_ADMIN_PASSWORD`.
 
-**❌ Falta para poder probar en producción — acción del dueño, no mía:**
-- Generar `NEON_API_KEY` en Neon Console → Account Settings → API Keys y
-  cargarlo en Render (secreto — no lo puedo generar yo, no hay endpoint
-  para eso en el MCP que uso).
-- Cargar `NEON_TEMPLATE_BRANCH_ID = br-polished-hill-axn1uibp` en Render.
-- Confirmar si `PLATFORM_JWT_SECRET`/`PLATFORM_ADMIN_EMAIL`/
-  `PLATFORM_ADMIN_PASSWORD` ya estaban cargadas en Render antes de hoy —
-  si no, el login de superadmin da 503/500 en vez del bug de firma que
-  arreglamos (el bug tapaba este problema, si existía).
+**Secretos cargados por el dueño en Render** (`NEON_API_KEY`,
+`NEON_TEMPLATE_BRANCH_ID`, y — encontrado en el momento — `NEON_PROJECT_ID`
+que no se auto-cargaba solo desde `render.yaml` porque el servicio no es
+un Blueprint sincronizado; `PLATFORM_JWT_SECRET`/`PLATFORM_ADMIN_EMAIL`/
+`PLATFORM_ADMIN_PASSWORD` nunca habían existido en Render, cargados hoy
+por primera vez).
 
-**Verificado sin esos secretos** (todo lo que se podía probar sin ellos):
-`tsc --noEmit` limpio, `npm test` 378/379 (+5 tests nuevos: 2 de
+**Dos bugs más encontrados y arreglados probando el flujo real** (ninguno
+relacionado con el código de hoy en sí, salvo el segundo):
+
+1. **`memberships.role` seguía `NOT NULL`** — la migración de roles del
+   14/08 (sección H) sacó el `CHECK` de esa columna pero se olvidó el
+   `NOT NULL` original; `createMembership()` ya no la completa (solo
+   `role_id`, como corresponde al diseño nuevo). Resultado: **cualquier
+   alta de negocio nueva desde el 14/08 tiraba 500**, no solo las de hoy.
+   Nadie lo había notado porque no se había registrado ningún negocio
+   nuevo desde ese deploy. Fix: `ALTER TABLE memberships ALTER COLUMN
+   role DROP NOT NULL` en `platform.schema.sql` (se aplica solo, corre en
+   cada boot). Commit `bc1db54`.
+2. **Endpoint de Neon equivocado** — `neon-provisioning.ts` usaba `GET
+   /branches/{id}/connection_uris` (plural, anidado) para pedir el
+   connection string; ese endpoint no existe (404 real de la API de
+   Neon). El real es a nivel de proyecto, singular:
+   `GET /projects/{id}/connection_uri?branch_id=...&role_name=...&
+   database_name=...&pooled=true`. La doc oficial de Neon dio resultados
+   contradictorios consultada varias veces — se terminó de confirmar
+   empírico, registrando negocios de prueba reales contra producción
+   hasta ver el error exacto en los logs de Render. Commit `d1fc676`.
+
+**Verificado end-to-end contra producción real** (`app-chny.onrender.com`,
+proyecto Neon `DB-APP-PPMS`), con negocios de prueba descartables
+(borrados de la BD de plataforma y de Neon después de cada verificación):
+`POST /register` real → responde `"status":"ACTIVE"` → branch de Neon
+nuevo confirmado (ramificado del plantilla, nunca del tenant real) → BD
+del branch confirmada con las 32 tablas del schema aplicadas,
+`schema_version = 4`, **0 filas en `resources`/`customers`** (vacía, sin
+fuga de datos del tenant real). El flujo completo — registro público →
+aprovisionamiento automático → negocio operativo — funciona de punta a
+punta hoy.
+
+Además: `tsc --noEmit` limpio, `npm test` 378/379 (+5 tests nuevos: 2 de
 `platform.auth.service.test.ts`, 3 de `tenant-isolation.test.ts`),
 `next build` limpio (22 rutas).
 
@@ -110,8 +139,8 @@ el rewrite viejo no lo cubría).
 
 Verificado: `tsc --noEmit` limpio, `next build` limpio, smoke test con
 Playwright de `/superadmin/login` (renderiza bien, sin errores de
-consola más allá del favicon de siempre). **No probado el login real**
-— necesita las credenciales de superadmin en Render (ver arriba).
+consola más allá del favicon de siempre). **✅ Login real confirmado por
+el dueño** — entró al panel con las credenciales cargadas en Render.
 
 ### B3. Test de aislamiento A/B — ✅ HECHO
 
@@ -156,10 +185,11 @@ componente).
 Verificado: `npm run lint` → 0 errores, 2 warnings (los dos falsos
 positivos documentados). `tsc --noEmit` y `next build` limpios.
 
-**⚠️ Nada de la sección B está commiteado ni pusheado todavía** — son
-cambios grandes (auth de plataforma, aprovisionamiento automático,
-panel nuevo, ~20 archivos de lint) en el working tree de los dos repos,
-pendiente de confirmación del dueño antes de pushear.
+**✅ Todo pusheado y verificado en producción real**
+(`app-main`: `ee0c34d`, `bc1db54`, `d1fc676` — feature +
+2 bugs encontrados probando en vivo; `appfrontend-main`: `3f70aae`,
+`e34e431` — panel + lint). Ver B1 arriba para el detalle del flujo
+completo verificado end-to-end.
 
 ---
 
