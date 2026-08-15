@@ -287,13 +287,25 @@ commit `01296b7`.
   (`startDate`/`endDate` en vez de `from`/`to`, que es lo que
   `reports.routes.ts` realmente lee) — confirmado contra el backend real
   y corregidos los 3.
-- ❌ **`tsconfig.json` — intentado y revertido.** Sacar la exclusión de
-  tests del typecheck no era el cambio de una línea que parecía —
-  destapa **89 errores de tipos reales** acumulados en archivos de test
-  (mocks mal tipados contra `pg.QueryResult`, accesos posiblemente
-  `undefined`). Es trabajo real, no encaja en "corto" — se dejó la
-  exclusión como estaba. Si se quiere encarar, es su propio ítem de
-  backlog, no una limpieza de una línea.
+- ✅ **`tsconfig.json` — resuelto (encarado aparte, no era "corto").**
+  Los 89 errores de tipos que destapaba sacar la exclusión de tests ya
+  están arreglados — tres categorías: mocks tipados contra
+  `QueryResult` de `pg` en vez del shape real de `SqlClient`
+  (`{rows: T[], rowCount?: number}`); mocks de `vi.fn()` con tipo
+  concreto asignados a un método genérico (`as unknown as
+  SqlClient['query']`); accesos a arrays sin chequear bajo
+  `noUncheckedIndexedAccess` (`mock.calls[0]!`, `getAll()[0]!`).
+  De paso, drift real entre fakes de test y las interfaces actuales
+  (no solo tipado): `FakeAccountsReceivableRepository`/
+  `FakeFinancialTransactionRepository` les faltaban métodos nuevos
+  (`getReportByPeriod`, `getByShiftId`, `linkStayToReservationCharges`),
+  `CustomerAuthService` ganó un `businessId` que dos tests nunca
+  pasaban, `ReservationSnapshot`/`VisualMetadata` cambiaron de forma y
+  los helpers de fixtures no se habían actualizado. `tsconfig.json`
+  ahora incluye los tests en el typecheck de verdad. Verificado:
+  `tsc --noEmit` limpio, `npm test` 378/379 (mismo resultado que
+  antes — ningún test cambió de comportamiento), lint limpio. Commit
+  `ae52311`.
 
 **Sigue sin tocar** (necesitan una decisión del dueño primero, no son
 "cortos"):
