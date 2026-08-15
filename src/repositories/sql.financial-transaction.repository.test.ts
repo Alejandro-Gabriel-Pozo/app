@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SqlFinancialTransactionRepository } from './sql.financial-transaction.repository.js';
 import type { SqlClient } from './sql.client.js';
-import type { QueryResult } from 'pg';
 
 describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
   let mockSqlClient: SqlClient;
@@ -9,7 +8,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
 
   beforeEach(() => {
     mockSqlClient = {
-      query: vi.fn(async () => ({ rows: [] } as unknown as QueryResult<Record<string, unknown>>)),
+      query: vi.fn(async () => ({ rows: [] })),
     };
     repo = new SqlFinancialTransactionRepository(mockSqlClient);
   });
@@ -23,7 +22,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
           idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
           status: 'PENDING', notes: null, created_at: new Date(),
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       await repo.create({
         id: 'tx-1',
@@ -70,7 +69,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
           idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
           status: 'PENDING', notes: null, created_at: new Date(),
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       await repo.create({
         id: 'tx-3',
@@ -98,7 +97,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
           status: 'SETTLED', notes: null, payment_method: 'CASH', shift_id: 'shift-1',
           created_at: new Date(),
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       await repo.create({
         id: 'tx-4',
@@ -127,7 +126,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
           status: 'SETTLED', notes: null, payment_method: 'CASH', shift_id: 'shift-explicit',
           created_at: new Date(),
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       await repo.create({
         id: 'tx-5',
@@ -157,7 +156,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
           status: 'SETTLED', notes: null, payment_method: 'CARD', shift_id: null,
           card_installments: 6, card_surcharge_amount: '150', created_at: new Date(),
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       const created = await repo.create({
         id: 'tx-6',
@@ -191,7 +190,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
           status: 'SETTLED', notes: null, payment_method: 'CASH', shift_id: null,
           card_installments: null, card_surcharge_amount: null, created_at: new Date(),
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       const created = await repo.create({
         id: 'tx-7',

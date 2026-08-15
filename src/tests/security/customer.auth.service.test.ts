@@ -38,7 +38,7 @@ afterEach(() => {
 
 const makeService = () => {
   const repo = new InMemoryCustomerRepository();
-  const service = new CustomerAuthService(repo);
+  const service = new CustomerAuthService(repo, 'biz-test-1');
   return { repo, service };
 };
 
@@ -51,7 +51,7 @@ describe('CustomerAuthService — constructor', () => {
   it('lanza Error si JWT_SECRET no está definida (Bug 1)', () => {
     delete process.env.JWT_SECRET;
     const repo = new InMemoryCustomerRepository();
-    expect(() => new CustomerAuthService(repo)).toThrow(
+    expect(() => new CustomerAuthService(repo, 'biz-test-1')).toThrow(
       '[CustomerAuthService] JWT_SECRET no está definida',
     );
   });

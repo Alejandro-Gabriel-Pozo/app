@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { BookableResource } from '../../domain/entities.js';
 import { ReservationStatus } from '../../types/enums.js';
 import type { ReservationSnapshot } from '../../domain/reservation.types.js';
+import type { VisualMetadata } from '../../types/visual.interface.js';
 
 const NO_RESERVATIONS: ReservationSnapshot[] = [];
 const start = new Date('2025-01-10T10:00:00Z');
@@ -11,7 +12,7 @@ const makeResource = (
   id = 'r1',
   categoryId = 'cat-cabin',
   basePrice  = 100,
-  visualData: Record<string, unknown> | null = null,
+  visualData: VisualMetadata | null = null,
 ) => new BookableResource(id, 'Recurso Test', basePrice, categoryId, visualData);
 
 const makeSnapshot = (
@@ -22,6 +23,9 @@ const makeSnapshot = (
   status: ReservationStatus.PENDING,
   startTime: start,
   endTime:   end,
+  serviceId: null,
+  partySize: 1,
+  orderItemId: null,
   ...overrides,
 });
 
@@ -39,7 +43,7 @@ describe('BookableResource — construcción', () => {
   });
 
   it('acepta visualData cuando se provee', () => {
-    const vd = { x: 10, y: 20, width: 50, height: 50, rotation: 0 };
+    const vd: VisualMetadata = { shape: 'SQUARE', width: 50, height: 50, positionX: 10, positionY: 20, rotationDegrees: 0 };
     const r = makeResource('r1', 'cat-table', 50, vd);
     expect(r.visualData).toEqual(vd);
   });

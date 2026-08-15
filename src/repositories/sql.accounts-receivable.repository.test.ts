@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SqlAccountsReceivableRepository } from './sql.accounts-receivable.repository.js';
 import type { SqlClient } from './sql.client.js';
-import type { QueryResult } from 'pg';
 
 describe('SqlAccountsReceivableRepository', () => {
   let mockSqlClient: SqlClient;
@@ -9,7 +8,7 @@ describe('SqlAccountsReceivableRepository', () => {
 
   beforeEach(() => {
     mockSqlClient = {
-      query: vi.fn(async () => ({ rows: [] } as unknown as QueryResult<Record<string, unknown>>)),
+      query: vi.fn(async () => ({ rows: [] })),
     };
     repo = new SqlAccountsReceivableRepository(mockSqlClient);
   });
@@ -23,7 +22,7 @@ describe('SqlAccountsReceivableRepository', () => {
           status: 'PENDIENTE_FACTURAR', transferred_by: 'user-1', notes: null,
           created_at: new Date(), invoiced_at: null, collected_at: null,
         }],
-      } as unknown as QueryResult<Record<string, unknown>>)),
+      })) as unknown as SqlClient['query'],
     };
 
     const result = await repo.createWithClient(otherClient, {

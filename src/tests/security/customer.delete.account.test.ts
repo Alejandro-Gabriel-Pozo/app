@@ -26,7 +26,7 @@ afterEach(() => {
 
 const setup = async () => {
   const repo = new InMemoryCustomerRepository();
-  const service = new CustomerAuthService(repo);
+  const service = new CustomerAuthService(repo, 'biz-test-1');
   const { customer, token } = await service.register({
     fullName: 'Juan Pérez',
     email: 'juan@test.com',

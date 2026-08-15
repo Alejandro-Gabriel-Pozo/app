@@ -14,5 +14,5 @@
     "declaration": true
   },
   "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.ts", "src/repositories/supabase.occupancy.repository.ts"]
+  "exclude": ["src/repositories/supabase.occupancy.repository.ts"]
 }

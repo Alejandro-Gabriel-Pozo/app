@@ -43,7 +43,7 @@ describe('InMemoryCustomerRepository', () => {
       await repo.save(updated);
 
       // El hash debe seguir siendo el original
-      const record = await repo.getByEmailWithPassword(c.email);
+      const record = await repo.getByEmailWithPassword(c.email!);
       expect(record?.passwordHash).toBe('hash-secreto');
       expect(record?.customer.fullName).toBe('Ana García Updated');
     });
@@ -54,7 +54,7 @@ describe('InMemoryCustomerRepository', () => {
     it('encuentra customer por email (exacto)', async () => {
       const c = makeCustomer();
       await repo.save(c);
-      expect(await repo.getByEmail(c.email)).toEqual(c);
+      expect(await repo.getByEmail(c.email!)).toEqual(c);
     });
 
     it('es case-insensitive', async () => {
@@ -74,7 +74,7 @@ describe('InMemoryCustomerRepository', () => {
     it('devuelve customer + hash para cliente con contraseña', async () => {
       const c = makeCustomer();
       await repo.saveWithPassword(c, 'hash-abc');
-      const record = await repo.getByEmailWithPassword(c.email);
+      const record = await repo.getByEmailWithPassword(c.email!);
       expect(record).toBeDefined();
       expect(record!.customer).toEqual(c);
       expect(record!.passwordHash).toBe('hash-abc');
@@ -83,7 +83,7 @@ describe('InMemoryCustomerRepository', () => {
     it('devuelve undefined para cliente sin contraseña (guardado con save)', async () => {
       const c = makeCustomer();
       await repo.save(c);
-      expect(await repo.getByEmailWithPassword(c.email)).toBeUndefined();
+      expect(await repo.getByEmailWithPassword(c.email!)).toBeUndefined();
     });
 
     it('es case-insensitive en el email', async () => {
@@ -122,7 +122,7 @@ describe('InMemoryCustomerRepository', () => {
       const ok = await repo.delete(c.id);
       expect(ok).toBe(true);
       expect(await repo.getById(c.id)).toBeUndefined();
-      expect(await repo.getByEmail(c.email)).toBeUndefined();
+      expect(await repo.getByEmail(c.email!)).toBeUndefined();
     });
 
     it('devuelve false si el id no existe', async () => {

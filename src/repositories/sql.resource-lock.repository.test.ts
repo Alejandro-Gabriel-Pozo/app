@@ -4,7 +4,7 @@ import type { SqlClient } from './sql.client.js';
 
 describe('SqlResourceLockRepository', () => {
   function mockClient(rows: unknown[] = []): SqlClient {
-    return { query: vi.fn(async () => ({ rows })) };
+    return { query: vi.fn(async () => ({ rows })) as unknown as SqlClient['query'] };
   }
 
   it('getByServiceId filtra por service_id', async () => {
@@ -13,7 +13,7 @@ describe('SqlResourceLockRepository', () => {
 
     await repo.getByServiceId('svc-1');
 
-    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(call[0]).toContain('WHERE  service_id = $1');
     expect(call[1]).toEqual(['svc-1']);
   });
@@ -24,7 +24,7 @@ describe('SqlResourceLockRepository', () => {
 
     await repo.getByResourceId('silla-1');
 
-    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(call[0]).toContain('WHERE  resource_id = $1');
     expect(call[1]).toEqual(['silla-1']);
   });

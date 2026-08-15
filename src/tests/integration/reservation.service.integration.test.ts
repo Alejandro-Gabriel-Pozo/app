@@ -150,7 +150,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       // este INSERT fallaba siempre con una violación de constraint.
       expect(reservation.totalPrice).toBe(resource.basePrice);
 
-      const row = await db.query(
+      const row = await db.query<{ status: string; total_price: string }>(
         'SELECT status, total_price FROM reservations WHERE id = $1',
         [reservation.id],
       );
@@ -254,7 +254,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       expect(rejected).toHaveLength(1);
 
       // Solo 1 fila en BD para ese slot
-      const count = await db.query(
+      const count = await db.query<{ count: string }>(
         `SELECT COUNT(*) FROM reservations
          WHERE resource_id = $1
            AND start_time = $2
@@ -279,14 +279,14 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       expect(confirmed.status).toBe('CONFIRMED');
 
       // Verifica en BD
-      const row = await db.query(
+      const row = await db.query<{ status: string }>(
         'SELECT status FROM reservations WHERE id = $1',
         [seeded.id],
       );
       expect(row.rows[0]?.status).toBe('CONFIRMED');
 
       // Verifica evento de dominio
-      const event = await db.query(
+      const event = await db.query<{ event_type: string; business_id: string }>(
         `SELECT event_type, business_id FROM domain_events
          WHERE aggregate_id = $1 AND event_type = 'reservation.confirmed'`,
         [seeded.id],
@@ -408,7 +408,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       expect(updated.startTime).toEqual(newStart);
       expect(updated.endTime).toEqual(newEnd);
 
-      const row = await db.query(
+      const row = await db.query<{ start_time: string; end_time: string }>(
         'SELECT start_time, end_time FROM reservations WHERE id = $1',
         [seeded.id],
       );

@@ -8,7 +8,7 @@ import { StayNotFoundError } from './stay.service.js';
 import { CustomerNotFoundError } from '../domain/errors.js';
 import { Customer } from '../domain/entities.js';
 import { Stay } from '../domain/stay.js';
-import type { AccountsReceivableRepository, AccountReceivable } from '../repositories/accounts-receivable.repository.js';
+import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivableReportRow } from '../repositories/accounts-receivable.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
 import type { StayRepository } from '../repositories/stay.repository.js';
 import type { CustomerRepository } from '../repositories/customer.repository.js';
@@ -37,6 +37,7 @@ class FakeAccountsReceivableRepository implements AccountsReceivableRepository {
   async getByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
   async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
   async markCollected(): Promise<AccountReceivable | undefined> { return undefined; }
+  async getReportByPeriod(): Promise<AccountsReceivableReportRow[]> { return []; }
 }
 
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
@@ -63,6 +64,8 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async voidByOrderId(): Promise<number> { return 0; }
   async getNetBalanceByCustomerId(): Promise<number> { return 0; }
   async getNetBalanceByStayId(): Promise<number> { return this.netBalanceByStay; }
+  async getByShiftId(): Promise<FinancialTransaction[]> { return []; }
+  async linkStayToReservationCharges(): Promise<number> { return 0; }
 }
 
 class FakeStayRepository implements StayRepository {

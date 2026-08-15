@@ -23,11 +23,12 @@ import type { SqlClient } from '../repositories/sql.client.js';
 
 /** No valida categorías — permite tests que no necesiten esa lógica. */
 class NullCategoryRepository implements ICategoryRepository {
-  async findById() { return undefined; }
+  async findById() { return null; }
   async findAll() { return []; }
-  async findByBusinessId() { return []; }
-  async save() {}
-  async delete() {}
+  async countActive() { return 0; }
+  async create(): Promise<never> { throw new Error('NullCategoryRepository.create() no implementado — no debería llamarse en estos tests.'); }
+  async update(): Promise<never> { throw new Error('NullCategoryRepository.update() no implementado — no debería llamarse en estos tests.'); }
+  async deactivate() {}
 }
 
 /** Acumula eventos en memoria para poder inspeccionarlos en los tests. */
@@ -39,7 +40,7 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
   }
 
   async getPending() { return []; }
-  async markAsProcessed() {}
+  async markDispatched() {}
 }
 
 /**
@@ -333,7 +334,7 @@ describe('ReservationService', () => {
 
       const snapshots = await occupancyRepo.getAllSnapshots();
       expect(snapshots.length).toBeGreaterThan(0);
-      expect(snapshots[0].resourceId).toBe('t1');
+      expect(snapshots[0]!.resourceId).toBe('t1');
 
       expect(eventRepo.events).toHaveLength(1);
       expect((eventRepo.events[0] as { eventType: string }).eventType)
@@ -802,7 +803,7 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.lines).toHaveLength(1);
-      expect(reservation.lines[0].price).toBe(reservation.totalPrice);
+      expect(reservation.lines[0]!.price).toBe(reservation.totalPrice);
     });
 
     it('bookingMode "block": rechaza checkout el mismo día que checkin', async () => {

@@ -53,6 +53,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async voidByOrderId(): Promise<number> { return 0; }
   async getNetBalanceByCustomerId(): Promise<number> { return 0; }
   async getNetBalanceByStayId(): Promise<number> { return this.netBalanceByStay; }
+  async getByShiftId(): Promise<FinancialTransaction[]> { return []; }
   async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
     this.linkedCalls.push({ stayId, reservationId });
     return 1;

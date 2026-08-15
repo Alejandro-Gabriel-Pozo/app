@@ -45,7 +45,7 @@ describe('SqlReservationRepository', () => {
           return { rows: [] };
         }
         return { rows: [reservationRow] };
-      }),
+      }) as unknown as SqlClient['query'],
     };
     resourceRepo = new SqlResourceRepository(mockSqlClient);
     repo = new SqlReservationRepository(mockSqlClient, resourceRepo);
@@ -68,7 +68,7 @@ describe('SqlReservationRepository', () => {
       new Date('2026-07-02T00:00:00'),
     );
 
-    const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(call[0]).toContain('status = ANY');
     expect(call[1][3]).toEqual([
       ReservationStatus.PENDING,

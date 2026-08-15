@@ -34,7 +34,7 @@ describe('InMemoryResourceRepository', () => {
     const all = await repo.getAll();
     const cabins = all.filter(r => r.categoryId === 'cat-cabin');
     expect(cabins).toHaveLength(1);
-    expect(cabins[0].id).toBe('c1');
+    expect(cabins[0]!.id).toBe('c1');
   });
 
   it('debe eliminar un recurso', async () => {

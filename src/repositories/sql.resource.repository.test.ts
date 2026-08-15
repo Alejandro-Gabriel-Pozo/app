@@ -27,7 +27,7 @@ describe('SqlResourceRepository', () => {
     await repo.save(table);
 
     expect(mockSqlClient.query).toHaveBeenCalledOnce();
-    const [sql, params] = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const [sql, params] = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(sql).toContain('INSERT INTO resources');
     expect(params[0]).toBe('t1');
     expect(JSON.parse(params[4] as string).shape).toBe('SQUARE');
@@ -70,7 +70,7 @@ describe('SqlResourceRepository', () => {
     const deleted = await repo.delete('t1');
 
     expect(deleted).toBe(true);
-    const [sql] = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const [sql] = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(sql).toContain('active = FALSE');
   });
 });

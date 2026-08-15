@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SqlCashRegisterShiftRepository } from './sql.cash-register-shift.repository.js';
 import type { SqlClient } from './sql.client.js';
-import type { QueryResult } from 'pg';
 
 describe('SqlCashRegisterShiftRepository — caja/turno (Gap Tango #2)', () => {
   let mockSqlClient: SqlClient;
@@ -17,7 +16,7 @@ describe('SqlCashRegisterShiftRepository — caja/turno (Gap Tango #2)', () => {
 
   beforeEach(() => {
     mockSqlClient = {
-      query: vi.fn(async () => ({ rows: [] } as unknown as QueryResult<Record<string, unknown>>)),
+      query: vi.fn(async () => ({ rows: [] })),
     };
     repo = new SqlCashRegisterShiftRepository(mockSqlClient);
   });
@@ -42,7 +41,7 @@ describe('SqlCashRegisterShiftRepository — caja/turno (Gap Tango #2)', () => {
     it('inserta con opening_amount y notes, parsea el DECIMAL de vuelta a number', async () => {
       vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [row],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       const shift = await repo.open({
         id: 'shift-1', businessId: 'biz-1', openedBy: 'user-1', openingAmount: 500,
@@ -83,7 +82,7 @@ describe('SqlCashRegisterShiftRepository — caja/turno (Gap Tango #2)', () => {
           ...row, status: 'CLOSED', closed_by: 'user-2', closed_at: new Date(),
           closing_amount_counted: '600', expected_cash_amount: '580', variance: '20',
         }],
-      } as unknown as QueryResult<Record<string, unknown>>);
+      });
 
       const closed = await repo.close('shift-1', {
         closedBy: 'user-2', closingAmountCounted: 600, expectedCashAmount: 580, variance: 20,

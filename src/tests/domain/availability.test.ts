@@ -25,6 +25,9 @@ const makeSnapshot = (
   status: ReservationStatus.PENDING,
   startTime: d('2025-01-10T10:00:00Z'),
   endTime: d('2025-01-10T12:00:00Z'),
+  serviceId: null,
+  partySize: 1,
+  orderItemId: null,
   ...overrides,
 });
 

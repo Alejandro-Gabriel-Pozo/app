@@ -86,8 +86,8 @@ describe('OutboxWorker', () => {
     await triggerPoll(worker);
 
     expect(handler).toHaveBeenCalledOnce();
-    expect(handler.mock.calls[0][0].eventType).toBe('reservation.confirmed');
-    expect(repo.getAll()[0].dispatchedAt).not.toBeNull();
+    expect(handler.mock.calls[0]![0].eventType).toBe('reservation.confirmed');
+    expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -113,7 +113,7 @@ describe('OutboxWorker', () => {
     await triggerPoll(worker);
 
     // No debe marcar como despachado — se reintenta al próximo ciclo
-    expect(repo.getAll()[0].dispatchedAt).toBeNull();
+    expect(repo.getAll()[0]!.dispatchedAt).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -124,7 +124,7 @@ describe('OutboxWorker', () => {
     await triggerPoll(worker);
 
     // Sin handler → no bloquea la cola, se marca igual
-    expect(repo.getAll()[0].dispatchedAt).not.toBeNull();
+    expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -140,7 +140,7 @@ describe('OutboxWorker', () => {
 
     expect(h1).toHaveBeenCalledOnce();
     expect(h2).toHaveBeenCalledOnce();
-    expect(repo.getAll()[0].dispatchedAt).not.toBeNull();
+    expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -202,12 +202,12 @@ describe('OutboxWorker', () => {
     expect(handler).toHaveBeenCalledOnce();
 
     // Simular que dispatched_at fue reseteado (proceso reiniciado antes del mark)
-    repo.getAll()[0].dispatchedAt = null;
+    repo.getAll()[0]!.dispatchedAt = null;
 
     // Segundo ciclo: handler vuelve a ejecutarse (at-least-once)
     await triggerPoll(worker);
     expect(handler).toHaveBeenCalledTimes(2);
     // Pero al final queda marcado
-    expect(repo.getAll()[0].dispatchedAt).not.toBeNull();
+    expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
   });
 });

@@ -13,7 +13,7 @@ import type { SqlClient } from './sql.client.js';
 
 describe('SqlCustomerRepository', () => {
   function mockClient(rows: unknown[] = []): SqlClient {
-    return { query: vi.fn(async () => ({ rows })) };
+    return { query: vi.fn(async () => ({ rows })) as unknown as SqlClient['query'] };
   }
 
   it('getByEmail no referencia la columna inexistente ccm.ccm_value', async () => {
@@ -22,7 +22,7 @@ describe('SqlCustomerRepository', () => {
 
     await repo.getByEmail('ana@example.com');
 
-    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(call[0]).not.toContain('ccm.ccm_value');
     expect(call[0]).toContain('LOWER(ccm.value)');
     expect(call[1]).toEqual(['ana@example.com']);
@@ -34,7 +34,7 @@ describe('SqlCustomerRepository', () => {
 
     await repo.getByEmailWithPassword('ana@example.com');
 
-    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(call[0]).not.toContain('ccm.ccm_value');
     expect(call[0]).toContain('LOWER(ccm.value)');
   });
