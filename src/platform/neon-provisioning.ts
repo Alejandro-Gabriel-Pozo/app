@@ -16,13 +16,23 @@
  *
  * ## Dos llamadas a la API de Neon, no una
  * 1. POST /branches — crea el branch + un compute endpoint read_write.
- *    Hereda el rol/base de datos del branch plantilla (copy-on-write), así
- *    que no hace falta pasar role_name/database_name.
- * 2. GET /branches/{id}/connection_uris?pooled=true — el connection string
- *    completo (con password) no viene en la respuesta de (1). `pooled=true`
- *    porque el resto del código (tenant.middleware.ts, INCIDENT_LOG del
- *    08/08) ya exige el endpoint con sufijo -pooler en producción — Render
- *    no mantiene conexiones persistentes, sin pooler la conexión falla.
+ *    Hereda el rol/base de datos del branch plantilla (copy-on-write).
+ * 2. GET /projects/{id}/connection_uri?branch_id=...&pooled=true — el
+ *    connection string completo (con password) no viene en la respuesta
+ *    de (1). Es un endpoint a nivel de PROYECTO, no anidado bajo
+ *    /branches/{id}/ — versión anterior de este archivo (15/08/2026,
+ *    verificada rota en producción registrando un negocio real) usaba
+ *    `GET /branches/{id}/connection_uris` (plural, anidado), que no existe
+ *    — la API devolvía 404 "this route does not exist" y el negocio
+ *    quedaba PENDING vía el fail-open. `pooled=true` porque el resto del
+ *    código (tenant.middleware.ts, INCIDENT_LOG del 08/08) ya exige el
+ *    endpoint con sufijo -pooler en producción — Render no mantiene
+ *    conexiones persistentes, sin pooler la conexión falla.
+ *    `role_name`/`database_name` hardcodeados a `neondb_owner`/`neondb` —
+ *    son los que trae por defecto cualquier proyecto Neon creado desde la
+ *    consola (confirmado en este proyecto, DB-APP-PPMS, vía
+ *    get_connection_string del MCP), y el branch plantilla nunca se tocó
+ *    para tener otros.
  *
  * ## Variables de entorno requeridas
  * - NEON_API_KEY          — API key de cuenta/proyecto (Neon Console →
@@ -54,11 +64,17 @@ interface CreateBranchResponse {
   branch: { id: string };
 }
 
-interface ConnectionUrisResponse {
-  connection_uris: { connection_uri: string }[];
+// Nombre de la respuesta no 100% confirmado contra la doc (la doc oficial
+// de Neon dio resultados contradictorios entre sí al consultarla) — por
+// eso neonApiFetch() más abajo devuelve el body crudo además de parseado,
+// para poder loguear el shape real la primera vez que esto corra contra
+// producción si `uri`/`connection_uri` no están donde se espera.
+interface ConnectionUriResponse {
+  uri?: string;
+  connection_uri?: string;
 }
 
-async function neonApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function neonApiFetch<T>(path: string, init?: RequestInit): Promise<{ data: T; raw: string }> {
   const apiKey = requireEnv('NEON_API_KEY');
   const res = await fetch(`${NEON_API_BASE}${path}`, {
     ...init,
@@ -70,12 +86,13 @@ async function neonApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
 
+  const raw = await res.text();
+
   if (!res.ok) {
-    const body = await res.text().catch(() => '<sin body>');
-    throw new NeonProvisioningError(`Neon API ${init?.method ?? 'GET'} ${path} → ${res.status}: ${body.slice(0, 300)}`);
+    throw new NeonProvisioningError(`Neon API ${init?.method ?? 'GET'} ${path} → ${res.status}: ${raw.slice(0, 300)}`);
   }
 
-  return res.json() as Promise<T>;
+  return { data: JSON.parse(raw) as T, raw };
 }
 
 /**
@@ -91,7 +108,7 @@ export async function provisionTenantDatabase(businessSlug: string): Promise<{ c
   const projectId = requireEnv('NEON_PROJECT_ID');
   const templateBranchId = requireEnv('NEON_TEMPLATE_BRANCH_ID');
 
-  const { branch } = await neonApiFetch<CreateBranchResponse>(`/projects/${projectId}/branches`, {
+  const { data: created } = await neonApiFetch<CreateBranchResponse>(`/projects/${projectId}/branches`, {
     method: 'POST',
     body: JSON.stringify({
       branch: {
@@ -101,14 +118,23 @@ export async function provisionTenantDatabase(businessSlug: string): Promise<{ c
       endpoints: [{ type: 'read_write' }],
     }),
   });
+  const branchId = created.branch.id;
 
-  const { connection_uris } = await neonApiFetch<ConnectionUrisResponse>(
-    `/projects/${projectId}/branches/${branch.id}/connection_uris?pooled=true`,
+  const qs = new URLSearchParams({
+    branch_id: branchId,
+    database_name: 'neondb',
+    role_name: 'neondb_owner',
+    pooled: 'true',
+  });
+  const { data: conn, raw } = await neonApiFetch<ConnectionUriResponse>(
+    `/projects/${projectId}/connection_uri?${qs.toString()}`,
   );
 
-  const connectionString = connection_uris[0]?.connection_uri;
+  const connectionString = conn.uri ?? conn.connection_uri;
   if (!connectionString) {
-    throw new NeonProvisioningError(`Branch ${branch.id} creado pero la API no devolvió connection_uris.`);
+    throw new NeonProvisioningError(
+      `Branch ${branchId} creado pero no se pudo extraer el connection string de la respuesta. Body crudo: ${raw.slice(0, 300)}`,
+    );
   }
 
   return { connectionString };
