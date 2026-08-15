@@ -67,6 +67,7 @@ function rowToOrder(row: Record<string, unknown>, items: OrderItem[]): Order {
     confirmedAt: row['confirmed_at'] ? new Date(row['confirmed_at'] as string) : null,
     cancelledAt: row['cancelled_at'] ? new Date(row['cancelled_at'] as string) : null,
     completedAt: row['completed_at'] ? new Date(row['completed_at'] as string) : null,
+    servedAt:    row['served_at']    ? new Date(row['served_at']    as string) : null,
     createdAt:   new Date(row['created_at'] as string),
     updatedAt:   new Date(row['updated_at'] as string),
     items,
@@ -254,6 +255,20 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
       [id],
     );
     return this.getByIdWithClient(client, id);
+  }
+
+  // -------------------------------------------------------------------------
+  // markServed
+  // -------------------------------------------------------------------------
+
+  async markServed(id: string): Promise<Order | undefined> {
+    await this.db.query(
+      `UPDATE orders
+       SET served_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND status = 'CONFIRMED' AND served_at IS NULL`,
+      [id],
+    );
+    return this.getByIdWithClient(this.db, id);
   }
 
   // -------------------------------------------------------------------------

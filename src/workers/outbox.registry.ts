@@ -12,10 +12,17 @@
  * o migrar el outbox a LISTEN/NOTIFY.
  */
 
+import type pg                                 from 'pg';
 import { OutboxWorker }                        from './outbox.worker.js';
 import { SqlDomainEventRepository }            from '../repositories/sql.domain-event.repository.js';
 import { SqlFinancialTransactionRepository }   from '../repositories/sql.financial-transaction.repository.js';
 import { registerFinancialHandlers }           from './outbox.handlers.js';
+import { SqlStockMovementRepository }          from '../repositories/sql.stock-movement.repository.js';
+import { SqlProductRepository, SqlProductVariantRepository } from '../repositories/sql.product.repository.js';
+import { SqlAuditLogRepository }               from '../repositories/audit-log.repository.js';
+import { ProductService }                      from '../services/product.service.js';
+import { PgTransactionManager }                from '../db/pg.transaction-manager.js';
+import { registerInventoryHandlers }           from './inventory.handlers.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
 
 const workers = new Map<string, OutboxWorker>();
@@ -23,15 +30,31 @@ const workers = new Map<string, OutboxWorker>();
 /**
  * Arranca un worker de outbox para el tenant dado si aún no existe.
  * Llamar desde tenantMiddleware después de resolver req.db.
+ *
+ * `rawPool` (además de `db`, el SqlClient) es necesario para el handler de
+ * inventario: necesita un TransactionManager real (BEGIN/COMMIT/ROLLBACK
+ * span decrementStock() + el insert de stock_movements), y
+ * PgTransactionManager exige el pool crudo, no el wrapper SqlClient. No se
+ * importa getTenantRawPool() de tenant.middleware.ts acá a propósito —
+ * ese archivo ya importa este (ensureTenantWorker/stopTenantWorker) y
+ * cerraría un ciclo de imports (dependency-cruiser no-circular). El
+ * caller (tenant.middleware.ts) ya tiene el pool, se lo pasa directo.
  */
-export function ensureTenantWorker(businessId: string, db: SqlClient): void {
+export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: pg.Pool): void {
   if (workers.has(businessId)) return;
 
   const domainEventRepo          = new SqlDomainEventRepository(db);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
+  const stockMovementRepo        = new SqlStockMovementRepository();
+  const productRepo              = new SqlProductRepository(db);
+  const productVariantRepo       = new SqlProductVariantRepository(db);
+  const auditLogRepo             = new SqlAuditLogRepository(db);
+  const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo);
+  const transactionManager       = new PgTransactionManager(rawPool);
 
   const worker = new OutboxWorker(domainEventRepo);
   registerFinancialHandlers(worker, financialTransactionRepo);
+  registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
   worker.start();
 
   workers.set(businessId, worker);

@@ -202,7 +202,7 @@ export function tenantMiddleware(platformRepo: PlatformRepository) {
     try {
       req.db         = await getTenantClient(req.user.businessId, platformRepo);
       req.businessId = req.user.businessId;
-      ensureTenantWorker(req.user.businessId, req.db);
+      ensureTenantWorker(req.user.businessId, req.db, getTenantRawPool(req.user.businessId));
       next();
     } catch (err) {
       if (err instanceof TenantNotFoundError) {

@@ -1,9 +1,78 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { OrderService, OrderNotFoundError, InvalidOrderTransitionError, InvalidPaymentInfoError } from './order.service.js';
+import {
+  OrderService,
+  OrderNotFoundError,
+  InvalidOrderTransitionError,
+  InvalidPaymentInfoError,
+  OrderNotServableError,
+  OrderAlreadyServedError,
+} from './order.service.js';
+import { ProductService, InsufficientStockError } from './product.service.js';
 import { InMemoryOrderRepository } from '../repositories/in-memory.order.repository.js';
+import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { IProductRepository, IProductVariantRepository, ListProductsFilter, ListVariantsFilter } from '../repositories/product.repository.js';
+import type { Product, ProductVariant, CreateProductInput, UpdateProductInput, CreateProductVariantInput, UpdateProductVariantInput } from '../domain/product.entities.js';
+
+/**
+ * Fake mínimo de IProductRepository — solo lo que ProductService.checkStock()
+ * necesita (getById), con stock suficiente para no interferir con los tests
+ * de OrderService que no son sobre inventario (mismo criterio que
+ * product.service.test.ts, que ya tiene su propio fake local).
+ */
+class FakeProductRepository implements IProductRepository {
+  private readonly rows = new Map<string, Product>();
+
+  seed(p: Product): void { this.rows.set(p.id, p); }
+  async getById(id: string): Promise<Product | undefined> { return this.rows.get(id); }
+  async getAll(_filter: ListProductsFilter): Promise<Product[]> { return [...this.rows.values()]; }
+  async getBySku(): Promise<Product | undefined> { return undefined; }
+  async save(product: Product): Promise<void> { this.rows.set(product.id, product); }
+  async create(input: CreateProductInput): Promise<Product> {
+    const now = new Date();
+    const product: Product = {
+      id: `prod-${this.rows.size + 1}`, businessId: input.businessId, categoryId: input.categoryId ?? null,
+      name: input.name, description: input.description ?? null, basePrice: input.basePrice,
+      sku: input.sku ?? null, hasVariants: input.hasVariants ?? false,
+      stockQuantity: input.stockQuantity ?? 0, stockMinAlert: input.stockMinAlert ?? 0,
+      active: true, createdAt: now, updatedAt: now,
+    };
+    this.rows.set(product.id, product);
+    return product;
+  }
+  async update(id: string, input: UpdateProductInput): Promise<Product | undefined> {
+    const current = this.rows.get(id);
+    if (!current) return undefined;
+    const updated: Product = { ...current, ...input, updatedAt: new Date() };
+    this.rows.set(id, updated);
+    return updated;
+  }
+  async decrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
+  async incrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
+  async delete(id: string): Promise<boolean> { return this.rows.delete(id); }
+}
+
+class FakeProductVariantRepository implements IProductVariantRepository {
+  async getById(_id: string): Promise<ProductVariant | undefined> { return undefined; }
+  async getByProduct(_filter: ListVariantsFilter): Promise<ProductVariant[]> { return []; }
+  async getBySku(): Promise<ProductVariant | undefined> { return undefined; }
+  async save(_variant: ProductVariant): Promise<void> {}
+  async create(input: CreateProductVariantInput): Promise<ProductVariant> {
+    const now = new Date();
+    return {
+      id: 'var-1', productId: input.productId, name: input.name, attributes: input.attributes ?? {},
+      sku: input.sku ?? null, priceOverride: input.priceOverride ?? null,
+      stockQuantity: input.stockQuantity ?? 0, stockMinAlert: input.stockMinAlert ?? 0,
+      active: true, createdAt: now, updatedAt: now,
+    };
+  }
+  async update(_id: string, _input: UpdateProductVariantInput): Promise<ProductVariant | undefined> { return undefined; }
+  async decrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
+  async incrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
+  async delete(_id: string): Promise<boolean> { return false; }
+}
 
 /** Acumula eventos en memoria para poder inspeccionarlos — mismo patrón que reservation.service.test.ts. */
 class InMemoryDomainEventRepository implements DomainEventRepository {
@@ -32,13 +101,24 @@ describe('OrderService', () => {
   let orderRepo: InMemoryOrderRepository;
   let eventRepo: InMemoryDomainEventRepository;
   let txManager: InMemoryTransactionManager;
+  let productRepo: FakeProductRepository;
+  let productService: ProductService;
   let service: OrderService;
 
   beforeEach(() => {
-    orderRepo  = new InMemoryOrderRepository();
-    eventRepo  = new InMemoryDomainEventRepository();
-    txManager  = new InMemoryTransactionManager();
-    service    = new OrderService(orderRepo, txManager, eventRepo);
+    orderRepo      = new InMemoryOrderRepository();
+    eventRepo      = new InMemoryDomainEventRepository();
+    txManager      = new InMemoryTransactionManager();
+    productRepo    = new FakeProductRepository();
+    productService = new ProductService(productRepo, new FakeProductVariantRepository(), new InMemoryAuditLogRepository());
+    service        = new OrderService(orderRepo, txManager, eventRepo, productService);
+
+    const now = new Date();
+    productRepo.seed({
+      id: 'prod-1', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Producto de prueba',
+      description: null, basePrice: 10, sku: null, hasVariants: false,
+      stockQuantity: 1000, stockMinAlert: 0, active: true, createdAt: now, updatedAt: now,
+    });
   });
 
   async function createDraftOrderWithItem(unitPrice: number): Promise<string> {
@@ -203,6 +283,82 @@ describe('OrderService', () => {
       await service.completeOrder(id);
 
       await expect(service.cancelOrder(id)).rejects.toThrow(InvalidOrderTransitionError);
+    });
+
+    it('payload lleva wasServed=false al cancelar una orden CONFIRMED que no se sirvió', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id);
+
+      await service.cancelOrder(id);
+
+      expect(eventRepo.events[1]).toMatchObject({
+        eventType: 'order.cancelled',
+        payload:   { previousStatus: 'CONFIRMED', wasServed: false },
+      });
+    });
+
+    it('payload lleva wasServed=true al cancelar una orden ya servida (no debe restaurar stock)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id);
+      await service.markServed(id);
+
+      await service.cancelOrder(id);
+
+      expect(eventRepo.events[1]).toMatchObject({
+        eventType: 'order.cancelled',
+        payload:   { previousStatus: 'CONFIRMED', wasServed: true },
+      });
+    });
+
+    it('payload lleva previousStatus=DRAFT y wasServed=false al cancelar desde DRAFT', async () => {
+      const id = await createDraftOrderWithItem(50);
+
+      await service.cancelOrder(id);
+
+      expect(eventRepo.events[0]).toMatchObject({
+        eventType: 'order.cancelled',
+        payload:   { previousStatus: 'DRAFT', wasServed: false },
+      });
+    });
+  });
+
+  describe('confirmOrder — chequeo de stock (síncrono, antes de emitir el evento)', () => {
+    it('rechaza confirmar si no hay stock suficiente', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID,
+        customerId: TEST_CUSTOMER_ID,
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 5000, unitPrice: 10 }],
+      });
+
+      await expect(service.confirmOrder(order.id)).rejects.toThrow(InsufficientStockError);
+      expect(eventRepo.events).toHaveLength(0); // no se emitió order.confirmed
+    });
+  });
+
+  describe('markServed', () => {
+    it('marca servedAt sin cambiar status ni emitir un domain event', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id);
+
+      const served = await service.markServed(id);
+
+      expect(served.status).toBe('CONFIRMED');
+      expect(served.servedAt).not.toBeNull();
+      expect(eventRepo.events).toHaveLength(1); // solo order.confirmed, markServed no emite nada
+    });
+
+    it('rechaza marcar como servida una orden que no está CONFIRMED', async () => {
+      const id = await createDraftOrderWithItem(50); // sigue en DRAFT
+
+      await expect(service.markServed(id)).rejects.toThrow(OrderNotServableError);
+    });
+
+    it('rechaza marcar como servida una orden ya servida', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id);
+      await service.markServed(id);
+
+      await expect(service.markServed(id)).rejects.toThrow(OrderAlreadyServedError);
     });
   });
 });

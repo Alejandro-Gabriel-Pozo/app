@@ -113,6 +113,13 @@ export interface Order {
   confirmedAt:   Date | null;
   cancelledAt:   Date | null;
   completedAt:   Date | null;
+  /**
+   * Cuándo se marcó la orden como servida/entregada — independiente de
+   * `status`. Null mientras no se marcó. Se usa para decidir si
+   * cancelOrder() debe restaurar stock (solo si sigue null, ver
+   * schema.sql BLOQUE 14).
+   */
+  servedAt:      Date | null;
   createdAt:     Date;
   updatedAt:     Date;
 }

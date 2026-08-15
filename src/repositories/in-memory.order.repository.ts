@@ -50,6 +50,7 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
       confirmedAt: null,
       cancelledAt: null,
       completedAt: null,
+      servedAt:    null,
       createdAt:   new Date(),
       updatedAt:   new Date(),
     };
@@ -128,6 +129,14 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
     if (!order || order.status !== 'CONFIRMED') return order;
     order.status = 'COMPLETED';
     order.completedAt = new Date();
+    order.updatedAt = new Date();
+    return order;
+  }
+
+  async markServed(id: string): Promise<Order | undefined> {
+    const order = this.orders.get(id);
+    if (!order || order.status !== 'CONFIRMED' || order.servedAt) return order;
+    order.servedAt = new Date();
     order.updatedAt = new Date();
     return order;
   }

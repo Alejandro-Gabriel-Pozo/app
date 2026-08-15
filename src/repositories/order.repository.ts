@@ -30,6 +30,13 @@ export interface IOrderRepository {
   /** CONFIRMED → COMPLETED y pone completed_at=NOW() */
   complete(id: string): Promise<Order | undefined>;
   /**
+   * Marca la orden como servida/entregada (served_at=NOW()) — no toca
+   * `status`. El guard (solo desde CONFIRMED, solo si no estaba servida ya)
+   * vive en OrderService.markServed(), igual que el resto de las
+   * transiciones.
+   */
+  markServed(id: string): Promise<Order | undefined>;
+  /**
    * Agrega una línea a una orden existente en estado DRAFT.
    * La implementación debe usar SELECT FOR UPDATE sobre la fila de `orders`
    * para evitar race conditions en total_amount con concurrencia.

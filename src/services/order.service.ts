@@ -32,6 +32,8 @@ import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
 import type { PaymentInfo }             from '../repositories/financial-transaction.repository.js';
 import { DomainError }                  from '../domain/errors.js';
+import type { ProductService }          from './product.service.js';
+import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
@@ -57,6 +59,23 @@ export class OrderNotEditableError extends DomainError {
 export class InvalidOrderTransitionError extends DomainError {
   constructor(from: OrderStatus, to: OrderStatus) {
     super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');
+  }
+}
+
+/**
+ * markServed() no es una transición de `status` (servedAt es independiente,
+ * ver schema.sql BLOQUE 14) — por eso tiene su propio error en vez de
+ * reusar InvalidOrderTransitionError, que espera un OrderStatus de destino.
+ */
+export class OrderNotServableError extends DomainError {
+  constructor(id: string, status: OrderStatus) {
+    super(`La orden ${id} no se puede marcar como servida en estado ${status} (requiere CONFIRMED).`, 'ORDER_NOT_SERVABLE');
+  }
+}
+
+export class OrderAlreadyServedError extends DomainError {
+  constructor(id: string) {
+    super(`La orden ${id} ya fue marcada como servida.`, 'ORDER_ALREADY_SERVED');
   }
 }
 
@@ -152,6 +171,22 @@ function withAllowedTransitions(order: Order): OrderWithTransitions {
   return { ...order, allowedTransitions: [...ORDER_ALLOWED_TRANSITIONS[order.status]] };
 }
 
+/**
+ * Subconjunto de OrderItem que el handler de inventario necesita — ítems
+ * RESERVATION (cargo a la habitación) no tocan stock, se excluyen acá para
+ * que el payload del evento no cargue de más (A10.2).
+ */
+function toStockItems(items: OrderItem[]): StockItemSnapshot[] {
+  return items
+    .filter((i) => i.itemType === 'PRODUCT' || i.itemType === 'PRODUCT_VARIANT')
+    .map((i) => ({
+      orderItemId:      i.id,
+      productId:        i.productId!,
+      productVariantId: i.productVariantId,
+      quantity:         i.quantity,
+    }));
+}
+
 // ---------------------------------------------------------------------------
 // OrderService
 // ---------------------------------------------------------------------------
@@ -161,6 +196,13 @@ export class OrderService {
     private readonly orderRepo: IOrderRepositoryWithClient,
     private readonly transactionManager: TransactionManager,
     private readonly domainEventRepository: DomainEventRepository,
+    /**
+     * Requerido para chequear stock ANTES de confirmar (ver comentario en
+     * confirmOrder) — no para tocar stock acá, eso lo hace el handler de
+     * inventario del outbox (workers/inventory.handlers.ts) de forma
+     * asíncrona pero idempotente.
+     */
+    private readonly productService: ProductService,
   ) {}
 
   async listOrders(filter: ListOrdersFilter): Promise<OrderWithTransitions[]> {
@@ -214,14 +256,32 @@ export class OrderService {
 
   /**
    * DRAFT -> CONFIRMED. Emite `order.confirmed` en la misma transacción que
-   * la transición de estado — el handler del outbox (outbox.handlers.ts)
-   * crea un CHARGE PENDING si totalAmount > 0, mismo patrón que
-   * ReservationService.confirmReservation con reservation.confirmed.
+   * la transición de estado — el handler financiero del outbox
+   * (outbox.handlers.ts) crea un CHARGE PENDING si totalAmount > 0, mismo
+   * patrón que ReservationService.confirmReservation con
+   * reservation.confirmed. Desde el 15/08/2026 también dispara el handler
+   * de inventario (workers/inventory.handlers.ts), que descuenta stock.
+   *
+   * El chequeo de stock (checkStock) se hace ACÁ, síncrono, ANTES de abrir
+   * la transacción — mismo criterio que InvalidPaymentInfoError en
+   * completeOrder(): si no hay stock suficiente, el mesero ve un 400 al
+   * confirmar, en vez de que la violación reviente recién en el outbox
+   * worker (async, sin forma de avisarle a nadie, y ahí sí reintentando
+   * cada 5s para siempre — el OutboxWorker no tiene dead-letter).
+   *
+   * El payload del evento lleva los ítems (A10.2, "payload autocontenido")
+   * — el handler de inventario no debe volver a consultar order_items,
+   * para cuando corra la orden ya pudo cambiar.
    */
   async confirmOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
+
+    const stockItems = toStockItems(order.items);
+    for (const item of stockItems) {
+      await this.productService.checkStock(item.productId, item.productVariantId ?? undefined, item.quantity);
+    }
 
     return this.transactionManager.run(async (client: SqlClient) => {
       const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
@@ -235,6 +295,7 @@ export class OrderService {
           customerId:  updated.customerId,
           totalAmount: updated.totalAmount,
           stayId:      updated.stayId,
+          items:       stockItems,
         },
       });
       return withAllowedTransitions(updated);
@@ -284,11 +345,29 @@ export class OrderService {
     });
   }
 
-  /** DRAFT/CONFIRMED -> CANCELLED. Emite `order.cancelled` -> anula el CHARGE si existía. */
+  /**
+   * DRAFT/CONFIRMED -> CANCELLED. Emite `order.cancelled` -> anula el CHARGE
+   * si existía. Desde el 15/08/2026 también dispara el handler de
+   * inventario para restaurar stock, pero SOLO si `previousStatus` es
+   * CONFIRMED (cancelar desde DRAFT nunca decrementó nada) Y `wasServed` es
+   * false.
+   *
+   * `wasServed` (servedAt !== null al momento de cancelar) es la señal
+   * real: una orden CONFIRMED puede terminar CANCELLED tanto porque se
+   * anuló antes de salir de cocina (ahí sí hay que restaurar) como porque
+   * hubo un problema de cobro DESPUÉS de que el cliente ya comió (ahí NO
+   * hay que restaurar — el bien ya no existe físicamente, lo que queda es
+   * un problema financiero, no de inventario). `previousStatus` por sí solo
+   * no alcanza para distinguir esos dos casos porque ambos son la misma
+   * transición CONFIRMED → CANCELLED.
+   */
   async cancelOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status === 'COMPLETED') throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
+
+    const previousStatus = order.status;
+    const wasServed      = order.servedAt !== null;
 
     return this.transactionManager.run(async (client: SqlClient) => {
       const updated = (await this.orderRepo.cancelWithClient(client, id))!;
@@ -297,10 +376,32 @@ export class OrderService {
         aggregateType: 'ORDER',
         aggregateId:   updated.id,
         eventType:     'order.cancelled',
-        payload: { orderId: updated.id },
+        payload: {
+          orderId:        updated.id,
+          previousStatus,
+          wasServed,
+          items:          toStockItems(order.items),
+        },
       });
       return withAllowedTransitions(updated);
     });
+  }
+
+  /**
+   * CONFIRMED -> (sin cambio de status) marca servedAt=NOW(). Señal de "el
+   * bien se consumió físicamente" que cancelOrder() usa para decidir si
+   * restaurar stock (ver comentario ahí y schema.sql BLOQUE 14). No emite
+   * domain event: hoy nada más reacciona a esto, es solo el dato que
+   * cancelOrder() lee más tarde.
+   */
+  async markServed(id: string): Promise<OrderWithTransitions> {
+    const order = await this.orderRepo.getById(id);
+    if (!order) throw new OrderNotFoundError(id);
+    if (order.status !== 'CONFIRMED') throw new OrderNotServableError(id, order.status);
+    if (order.servedAt) throw new OrderAlreadyServedError(id);
+
+    const updated = (await this.orderRepo.markServed(id))!;
+    return withAllowedTransitions(updated);
   }
 
   async updateNotes(id: string, notes: string | null): Promise<OrderWithTransitions> {

@@ -8,6 +8,7 @@
  * POST   /api/orders/:id/confirm        — ORDERS
  * POST   /api/orders/:id/complete       — ORDERS
  * POST   /api/orders/:id/cancel         — ORDERS
+ * POST   /api/orders/:id/serve          — ORDERS (marca servedAt, no cambia status)
  * PATCH  /api/orders/:id/notes          — ORDERS
  * POST   /api/orders/:id/items          — BOOKING (el cliente puede agregar ítems en DRAFT)
  * DELETE /api/orders/:id/items/:itemId  — ORDERS
@@ -33,9 +34,20 @@ import {
   OrderNotEditableError,
   InvalidOrderTransitionError,
   InvalidPaymentInfoError,
+  OrderNotServableError,
+  OrderAlreadyServedError,
 } from '../../services/order.service.js';
+import {
+  ProductService,
+  ProductNotFoundError,
+  VariantNotFoundError,
+  VariantRequiredError,
+  InsufficientStockError,
+} from '../../services/product.service.js';
 import { SqlOrderRepository }            from '../../repositories/sql.order.repository.js';
 import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
+import { SqlProductRepository, SqlProductVariantRepository } from '../../repositories/sql.product.repository.js';
+import { SqlAuditLogRepository }         from '../../repositories/audit-log.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { compact }                       from '../utils/compact.js';
 import { authorize }                     from '../../security/auth.middleware.js';
@@ -53,6 +65,11 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
     new SqlOrderRepository(req.db!),
     buildTenantTransactionManager(req),
     new SqlDomainEventRepository(req.db!),
+    new ProductService(
+      new SqlProductRepository(req.db!),
+      new SqlProductVariantRepository(req.db!),
+      new SqlAuditLogRepository(req.db!),
+    ),
   );
 }
 
@@ -136,8 +153,27 @@ export function createOrdersRouter(container: AppContainer): Router {
       const order = await buildOrderService(req, container).confirmOrder(param(req, 'id'));
       res.json(order);
     } catch (err) {
-      if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
-      else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
+      if (err instanceof OrderNotFoundError)                res.status(404).json({ code: 'ORDER_NOT_FOUND',       message: (err as Error).message });
+      else if (err instanceof InvalidOrderTransitionError)  res.status(409).json({ code: 'INVALID_TRANSITION',    message: (err as Error).message });
+      else if (err instanceof InsufficientStockError)       res.status(400).json({ code: 'INSUFFICIENT_STOCK',    message: (err as Error).message });
+      else if (err instanceof VariantRequiredError)         res.status(400).json({ code: 'VARIANT_REQUIRED',      message: (err as Error).message });
+      else if (err instanceof ProductNotFoundError)         res.status(404).json({ code: 'PRODUCT_NOT_FOUND',     message: (err as Error).message });
+      else if (err instanceof VariantNotFoundError)         res.status(404).json({ code: 'VARIANT_NOT_FOUND',     message: (err as Error).message });
+      else next(err);
+    }
+  });
+
+  // ── POST /api/orders/:id/serve ───────────────────────────────────────────────
+  // Marca servedAt=NOW() — no cambia `status`. Señal de "se consumió
+  // físicamente" que cancelOrder() usa para decidir si restaurar stock.
+  router.post('/:id/serve', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const order = await buildOrderService(req, container).markServed(param(req, 'id'));
+      res.json(order);
+    } catch (err) {
+      if (err instanceof OrderNotFoundError)          res.status(404).json({ code: 'ORDER_NOT_FOUND',      message: (err as Error).message });
+      else if (err instanceof OrderNotServableError)  res.status(409).json({ code: 'ORDER_NOT_SERVABLE',   message: (err as Error).message });
+      else if (err instanceof OrderAlreadyServedError) res.status(409).json({ code: 'ORDER_ALREADY_SERVED', message: (err as Error).message });
       else next(err);
     }
   });

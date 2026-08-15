@@ -630,6 +630,17 @@ CREATE TABLE IF NOT EXISTS orders (
   confirmed_at  TIMESTAMPTZ,
   cancelled_at  TIMESTAMPTZ,
   completed_at  TIMESTAMPTZ,
+  -- BLOQUE 14 (15/08/2026): "¿se sirvió/entregó?" desacoplado de `status` a
+  -- propósito -- no es un estado nuevo del enum (A6.1: la máquina de
+  -- estados se declara una sola vez, no se le agregan ramas para esto).
+  -- El consumo físico real (se cocinó, se sirvió, se entregó) puede pasar
+  -- mucho antes del cobro (COMPLETED) y es independiente de él. Sirve para
+  -- que cancelOrder() decida si corresponde restaurar stock: solo si
+  -- served_at sigue NULL al cancelar (el bien nunca se usó). Si ya se
+  -- sirvió y después aparece un problema de cobro, la orden puede terminar
+  -- CANCELLED igual, pero NO hay que restaurar stock de algo que ya se
+  -- comió -- eso es un problema financiero, no de inventario.
+  served_at     TIMESTAMPTZ,
   created_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
@@ -715,7 +726,21 @@ CREATE TABLE IF NOT EXISTS stock_movements (
 CREATE INDEX IF NOT EXISTS idx_stock_movements_business_date ON stock_movements (business_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_movements_product       ON stock_movements (product_id)          WHERE product_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_stock_movements_variant       ON stock_movements (product_variant_id)  WHERE product_variant_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_stock_movements_order_item    ON stock_movements (order_item_id)       WHERE order_item_id IS NOT NULL;
+
+-- BLOQUE 13 (15/08/2026) — primer uso real de stock_movements: engancha
+-- order.confirmed/order.cancelled al outbox (docs/arquitectura-monolito-
+-- modular.md, "Inventario recibe eventos"). Idempotencia (A8.5/R13,
+-- criterios-negocio.md/criterios-datos.md): un mismo order_item puede
+-- generar como máximo UN movimiento OUT (al confirmar) y UN RETURN (si se
+-- cancela después de confirmada) -- por eso el índice único es sobre el
+-- PAR (order_item_id, movement_type), no solo order_item_id: permite las
+-- dos filas de un mismo ítem sin permitir que el mismo evento se aplique
+-- dos veces (at-least-once del OutboxWorker). Reemplaza el índice no-único
+-- que existía sin ningún consumidor real.
+DROP INDEX IF EXISTS idx_stock_movements_order_item;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_type
+  ON stock_movements (order_item_id, movement_type)
+  WHERE order_item_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by    ON stock_movements (created_by);
 
 -- ===========================================================================

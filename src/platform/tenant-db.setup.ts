@@ -126,7 +126,12 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // financial_transactions.payment_method/shift_id (Gap analysis Tango #2).
 // v4 (14/08/2026): BLOQUE 12 — financial_transactions.card_installments/
 // card_surcharge_amount (Gap analysis Tango #3).
-export const CURRENT_SCHEMA_VERSION = 4;
+// v5 (15/08/2026): BLOQUE 13 — índice único (order_item_id, movement_type)
+// en stock_movements, primer uso real de la tabla (handler de inventario
+// enganchado al outbox, ver docs/arquitectura-monolito-modular.md).
+// v6 (15/08/2026): BLOQUE 14 — orders.served_at, para que cancelOrder()
+// sepa si el bien ya se consumió físicamente antes de restaurar stock.
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

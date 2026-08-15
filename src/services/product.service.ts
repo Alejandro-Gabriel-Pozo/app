@@ -30,6 +30,7 @@ import type {
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
+import { DomainError } from '../domain/errors.js';
 
 const AUDIT_ENTITY_PRODUCT = 'products';
 const AUDIT_ENTITY_VARIANT = 'product_variants';
@@ -62,12 +63,18 @@ export class VariantRequiredError extends Error {
   }
 }
 
-export class InsufficientStockError extends Error {
+/**
+ * Extiende DomainError (no Error a secas) por el mismo motivo que
+ * InvalidPaymentInfoError en order.service.ts: para poder chequearla
+ * síncronamente en confirmOrder() antes de emitir order.confirmed, en vez
+ * de dejar que reviente recién en el outbox worker (async, sin forma de
+ * devolverle un 400 al usuario que confirmó el pedido).
+ */
+export class InsufficientStockError extends DomainError {
   readonly available: number;
   readonly requested: number;
   constructor(available: number, requested: number) {
-    super(`Stock insuficiente: disponible ${available}, solicitado ${requested}.`);
-    this.name      = 'InsufficientStockError';
+    super(`Stock insuficiente: disponible ${available}, solicitado ${requested}.`, 'INSUFFICIENT_STOCK');
     this.available = available;
     this.requested = requested;
   }

@@ -382,3 +382,89 @@ del patrón.
 - E1-E7 (`pendientes-2026-08-13.md`) — cada uno pide una definición de
   alcance del dueño antes de poder estimarse, salvo lo ya resuelto acá
   (E7c/d/e).
+
+### D1. Handler de inventario enganchado al outbox — ✅ HECHO Y VERIFICADO (15/08/2026)
+
+Cierra el gap E7a: el stock ya baja al confirmar una orden y se restaura
+al cancelarla, cuando corresponde.
+
+- Disparador: `order.confirmed` (no `order.completed`) — el stock se
+  compromete cuando se manda a cocina/se confirma, no cuando se cobra.
+  Falla síncrona: `confirmOrder()` llama `ProductService.checkStock()`
+  ANTES de abrir la transacción — sin stock, 400 (`INSUFFICIENT_STOCK`)
+  al mesero al confirmar, nunca un reintento infinito en el outbox
+  (no tiene dead-letter).
+- Idempotencia: `stock_movements` tiene `UNIQUE(order_item_id,
+  movement_type)` (schema.sql BLOQUE 13) — insert-then-act, el handler
+  solo toca stock si la fila se insertó de nuevo (no en un reintento
+  at-least-once).
+- **`servedAt` (schema.sql BLOQUE 14, `orders.served_at`)** — durante el
+  diseño, el dueño trajo un manual completo de reglas de negocio de
+  inventario (hotelería/gastronomía/e-commerce) y señaló el caso real:
+  `CONFIRMED → CANCELLED` es la misma transición tanto si se anula antes
+  de servir (hay que restaurar stock) como si hay un lío de cobro
+  DESPUÉS de que el cliente ya comió (NO hay que restaurar — el bien ya
+  no existe físicamente). `previousStatus` solo no alcanza para
+  distinguir los dos casos. Se agregó `orders.served_at` (timestamp
+  nullable, independiente de `status` — no es un estado nuevo del enum,
+  A6.1) + `POST /api/orders/:id/serve` (marca servida una orden
+  CONFIRMED) + `cancelOrder()` ahora manda `wasServed` en el payload de
+  `order.cancelled` — el handler solo restaura si `previousStatus ===
+  'CONFIRMED' && !wasServed`.
+- Tests nuevos: `order.service.test.ts` (markServed + wasServed en el
+  payload), `inventory.handlers.test.ts` (nuevo, 8 casos), 
+  `sql.stock-movement.repository.test.ts` (nuevo). 395/395 tests, tsc
+  limpio, lint limpio.
+- **Frontend: sin UI para `POST /:id/serve` todavía** — el botón
+  "marcar como servido" en el panel de POS/cocina queda pendiente,
+  sesión futura.
+- **Gap de concurrencia conocido, sin test, no arreglado hoy** (chequeado
+  a pedido del dueño el 15/08/2026): `checkStock()` en `confirmOrder()`
+  es una lectura sin lock, separada en el tiempo del decremento real
+  (que pasa después, async, vía outbox). Dos confirmaciones simultáneas
+  para el último ítem pueden pasar las dos el chequeo síncrono (las dos
+  reciben 200/CONFIRMED). El decremento físico SÍ es atómico y seguro
+  (`sql.product.repository.ts`, `UPDATE ... WHERE stock_quantity >= $1
+  RETURNING id` — preexistente, no tocado hoy), así que el stock nunca
+  queda negativo. Pero la orden "perdedora" de la carrera queda CONFIRMED
+  para siempre con una promesa de stock que no existe: `decrementStock()`
+  tira, `PgTransactionManager.run()` hace ROLLBACK (deshace también el
+  insert de idempotencia en `stock_movements`), y `OutboxWorker.dispatch()`
+  no marca el evento como despachado → se reintenta cada 5s indefinidamente
+  en silencio (mismo gap ya documentado como A9.5, sin dead-letter). No es
+  corrupción de datos, es una orden CONFIRMED permanentemente desincronizada
+  del stock real, sin ninguna señal visible para un humano más allá del log.
+  Arreglarlo de raíz implica un cambio de diseño (`SELECT ... FOR UPDATE`
+  durante el chequeo, o mover el decremento a la misma transacción del
+  confirm) — no se improvisó ahora, queda para cuando el dueño decida
+  priorizarlo.
+
+### D2. Manual de reglas de negocio de inventario — puntos que quedan afuera a propósito (15/08/2026)
+
+El dueño aportó un manual completo (hotelería/gastronomía/e-commerce,
+con fundamentos de manufactura) para evaluar antes de escribir la regla
+de D1. Del punto 11 del manual (preguntas para resolver como negocio):
+`servedAt` (pregunta 1) ya se resolvió en D1. El resto queda anotado,
+no implementado — decisión explícita de alcance, no descubierto como
+bug después:
+
+- **Mermas como tipo de movimiento propio** (`stock_movements` necesita
+  distinguir `sale`/`waste`/`count_adjustment`/`purchase`/`transfer`,
+  no solo `IN/OUT/ADJUSTMENT/RETURN`). El dueño lo marcó como
+  "fundamental" pero no bloqueante para D1 — hoy `ADJUSTMENT` exige
+  `notes` (schema.sql, `chk_adjustment_requires_notes`) pero no separa
+  el motivo. Hace falta antes de poder reportar % de merma por período.
+- **Clasificación de producto** (`RAW_MATERIAL` / `COMPOSITE` /
+  `RETAIL`, BOM multinivel para recetas de cocina). Hoy `Product` no
+  distingue esto — vender un producto siempre descuenta ese mismo
+  producto, no explota una receta. Necesario el día que se quiera
+  modelar "una hamburguesa descuenta pan + carne + queso", no antes.
+- **COGS teórico vs. real** — pospuesto explícitamente por el dueño,
+  pero con una condición: si se empieza a guardar costo por ingrediente
+  + rendimiento (yield) en las recetas desde que se implementen (D2
+  arriba), el cálculo de COGS no obliga a rehacer el modelado después.
+- Documento de referencia completo (el manual entero, con las 11
+  secciones): pegado por el dueño en el chat de esa sesión, no
+  persistido como archivo aparte — si se retoma alguno de estos puntos,
+  pedir que lo repita o buscarlo en el historial de conversación del
+  15/08/2026.
