@@ -502,6 +502,36 @@ al cancelarla, cuando corresponde.
     reserva provisoria de punta a punta. Sigue sin implementarse, sigue
     siendo decisión del dueño cuándo priorizarlo.
 
+  **Dos detalles más del diseño de `reserved_quantity`, chequeados por
+  el dueño el 15/08/2026 antes de que se implemente (para no volver a
+  dejar la mitad afuera, como pasó con el lock) — se generalizaron como
+  reglas nuevas en `criterios-negocio.md` (A8.7/A8.8) porque no son
+  específicas de este caso:**
+  - **Liberar la reserva también si el outbox falla en consolidarla**
+    (A8.7), no solo si la orden se cancela explícitamente. Si
+    `handleOrderConfirmedStock` empieza a fallar por algo no relacionado
+    a stock (ej. un error transitorio de DB) y el evento queda
+    reintentando indefinidamente (A9.5, sin dead-letter), la reserva
+    queda tomada todo ese tiempo — ya no se pierde la promesa de stock
+    (eso lo arregla `reserved_quantity`), pero aparece un producto
+    "reservado" que nadie más puede comprar mientras el reintento cuelga
+    en silencio. Necesita TTL o límite de reintentos que libere al
+    agotarse — `cancelOrder()` liberando la reserva no cubre este
+    camino.
+  - **Preservar el contrato de error del 400 síncrono** (A8.8):
+    `checkStock()` deja de ser una lectura — pasa a ser la UPDATE
+    atómica misma (`reserved_quantity = reserved_quantity + $qty WHERE
+    ... RETURNING id`). El nuevo lugar donde se dispara la falla es "0
+    filas afectadas" en esa UPDATE, no una comparación en memoria — hay
+    que mapearlo de vuelta al mismo `InsufficientStockError`
+    (`code: 'INSUFFICIENT_STOCK'`) que ya usa `orders.routes.ts` en el
+    catch de `/confirm`, no dejar que se filtre un error distinto.
+    Chequeado contra el código real: el frontend (`appfrontend-main`)
+    todavía **no** consume `INSUFFICIENT_STOCK` hoy (grep sin
+    resultados) — el chequeo síncrono es de esta misma sesión y no hay
+    UI que lo use todavía — pero el principio aplica igual para cuando
+    exista esa UI.
+
 ### D2. Manual de reglas de negocio de inventario — puntos que quedan afuera a propósito (15/08/2026)
 
 El dueño aportó un manual completo (hotelería/gastronomía/e-commerce,

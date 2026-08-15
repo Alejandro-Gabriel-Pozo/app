@@ -285,6 +285,27 @@ cliente: el último pisa al primero y nadie se entera.
 **A8.6 — Nunca reintentar automáticamente una mutación.** *Ya cumplido:
 retry solo en GET/HEAD.*
 
+**A8.7 — Toda reserva provisoria con consolidación asíncrona se libera
+también si el consolidador falla, no solo si el usuario cancela
+explícitamente.** Un patrón "reservar ahora (síncrono, atómico), confirmar
+de verdad después (async, vía outbox)" resuelve la carrera de lectura
+concurrente, pero abre un modo de falla nuevo: si el paso async entra en
+el mismo gap de A9.5 (reintento infinito sin dead-letter), la reserva
+queda tomada todo ese tiempo — un recurso que nadie puede vender ni
+liberar, en silencio. Liberar solo en el camino de cancelación explícita
+no alcanza; hace falta TTL de expiración o un límite de reintentos que
+libere la reserva al agotarse. *Hallazgo del 15/08/2026, caso concreto en
+`pendientes-2026-08-15.md` D1 (inventario/`reserved_quantity`).*
+
+**A8.8 — Endurecer una validación read-then-write a una UPDATE atómica
+(`WHERE ... AND condición`, 0 filas = falla) no debe cambiar el contrato
+de error externo.** El punto de falla se mueve (de una comparación en
+memoria a una condición SQL), pero quien consume la respuesta (frontend,
+otro servicio) no debería notar la diferencia — mapear "0 filas
+afectadas" de vuelta al mismo error tipado que existía antes de
+endurecer el chequeo, mismo código/mensaje. *Mismo hallazgo del
+15/08/2026 que A8.7.*
+
 ---
 
 # 9. Observabilidad 🟡
