@@ -307,6 +307,39 @@ commit `01296b7`.
   antes — ningún test cambió de comportamiento), lint limpio. Commit
   `ae52311`.
 
+---
+
+## D. Monolito modular vs. microservicios — reflexión de arquitectura (15/08/2026)
+
+El dueño planteó que fuimos meticulosos con la modularidad
+(`ModuleKey`/feature flags) pero no pensamos una arquitectura por API
+(microservicios). Documentado con evidencia real en
+`docs/arquitectura-monolito-modular.md` — resumen:
+
+- Hoy es un monolito modular de verdad, nunca decidido explícitamente
+  así. El aislamiento fuerte que sí existe es por otro eje: BD-por-tenant
+  (Neon), no separación de servicios.
+- **Recomendación: no migrar ahora** — un tenant real, equipo de una
+  persona + IA, microservicios cambiarían velocidad por escalabilidad
+  que no hace falta todavía. Condiciones documentadas para cuando sí
+  valga la pena reconsiderarlo.
+- **Auditoría con `dependency-cruiser`** (ya instalado, no a ojo):
+  agrupé archivos por dominio de negocio y conté imports cruzados. La
+  mayoría del acoplamiento encontrado es legítimo (una reserva necesita
+  su recurso/categoría, una estadía nace de una reserva, una orden
+  genera un movimiento financiero) — no es código mal ubicado.
+- **Hallazgo real y accionable el día que haga falta:**
+  `reservation.service.ts` importa repositorios de otros dominios
+  directo (categorías, tarifas, housekeeping, horarios, recursos) en vez
+  de pasar por la capa de servicio pública de esos dominios — es el
+  primer lugar a limpiar si `reservas` alguna vez se separa como
+  servicio propio. `customer.routes.ts` toca seis dominios en un solo
+  archivo, pero es esperable — es la costura natural de un futuro API
+  Gateway/BFF, no un problema.
+
+**Pendiente:** preguntarle al dueño qué error/caso puntual disparó esta
+reflexión, para no quedarse en lo genérico si hay algo concreto detrás.
+
 **Sigue sin tocar** (necesitan una decisión del dueño primero, no son
 "cortos"):
 - `POST /api/auth/refresh` — no existe, sesión de staff dura 24h fijo.
