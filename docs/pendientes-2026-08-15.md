@@ -740,3 +740,39 @@ DB de verdad. **Cerrado más tarde el mismo día, ver abajo.**
 - ❓ El umbral `maxRetries=60` (~5 min de fallas seguidas antes de
   dead-letter) sigue siendo una estimación, no algo calibrado contra el
   patrón real de fallas transitorias de Neon/Render.
+
+---
+
+## H. Refresh de sesión de staff — ✅ HECHO (punto 3, 15/08/2026)
+
+Cierra el punto 3 de la auditoría de urgencia: la sesión de staff duraba
+24h fijas (`JWT_EXPIRES_IN`) sin ninguna forma de extenderla — cualquiera
+que se quedara trabajando más de un turno tenía que volver a loguearse en
+medio del día.
+
+- `AuthService.refreshTenantToken(identityId, businessId)` — re-firma con
+  el mismo secret/TTL que `login()`, sin re-pedir credenciales.
+  `authenticate()` ya confirmó, para la request que llega a `/refresh`,
+  que la membership sigue activa (`resolveMembershipContext` del
+  middleware global) — no se repite esa consulta.
+- `POST /api/auth/refresh` (`me.routes.ts`) — **solo staff**: rechaza con
+  401 si no hay `req.user`, si falta `businessId`, o si el token es del
+  portal de clientes (`customerId` presente). El portal es un flujo de
+  auth aparte, fuera de alcance de este punto.
+- Frontend (`AuthContext.tsx`): mientras haya sesión activa, llama a
+  `/api/auth/refresh` cada 20 min en segundo plano (bien por debajo del
+  TTL de 24h). Silencioso a propósito — si falla, no redirige ahí mismo;
+  el próximo fetch real a un endpoint protegido ya dispara el interceptor
+  de 401 existente en `lib/api.ts`.
+- **No tocado:** el login del panel de superadmin (`PlatformAuthService`,
+  JWT distinto) — no estaba en el alcance de este punto, sesión aparte.
+
+Verificado: `tsc --noEmit` limpio (los dos repos), `npm test` 409/410
+(+6 tests nuevos: `auth.service.test.ts` con el round-trip real
+`refreshTenantToken()` → `verifyToken()`, `me.routes.test.ts` con los tres
+casos de `POST /refresh`), lint limpio en los dos repos, `next build`
+limpio (22 rutas). **Sin probar en vivo contra producción** — a diferencia
+de E/F, este punto no requería tocar la base, así que no ameritó el mismo
+paso de verificación contra Neon real; sí valdría un login real de staff
+después del próximo deploy para confirmar que la cookie se renueva de
+punta a punta (mismo criterio que B2 en sesiones anteriores).

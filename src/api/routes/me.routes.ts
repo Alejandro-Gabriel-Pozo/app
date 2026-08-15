@@ -30,14 +30,25 @@
  * sigue encargando el frontend (clearToken()) para el período de
  * transición en que todavía coexisten los dos mecanismos.
  * 204 — sin body
+ *
+ * ## POST /api/auth/refresh (punto 3, pendientes-2026-08-15.md)
+ * Re-firma el token del usuario YA autenticado con un `exp` nuevo — antes
+ * la sesión de staff duraba 24h fijas sin forma de extenderla, así que
+ * cualquiera que se quedara trabajando más de un turno tenía que volver a
+ * loguearse en medio del día. Solo para staff (token con `business_id`,
+ * sin `customer_id` — el portal de clientes es un flujo de auth aparte,
+ * fuera de alcance acá). El frontend lo llama periódicamente en segundo
+ * plano (AuthContext) mientras la pestaña sigue abierta.
+ * 200 — { token, tokenType, expiresIn }
  */
 
 import { Router, type Request, type Response } from 'express';
-import { clearAuthCookie } from '../../security/auth.middleware.js';
+import { clearAuthCookie, setAuthCookie } from '../../security/auth.middleware.js';
 import { UserRole } from '../../types/enums.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
+import type { AuthService } from '../../security/auth.service.js';
 
-export function createMeRouter(platformRepo: PlatformRepository): Router {
+export function createMeRouter(platformRepo: PlatformRepository, authService: AuthService): Router {
   const router = Router();
 
   router.get('/me', async (req: Request, res: Response): Promise<void> => {
@@ -70,6 +81,17 @@ export function createMeRouter(platformRepo: PlatformRepository): Router {
   router.post('/logout', (_req: Request, res: Response): void => {
     clearAuthCookie(res);
     res.status(204).end();
+  });
+
+  router.post('/refresh', (req: Request, res: Response): void => {
+    if (!req.user || req.user.businessId === undefined || req.user.customerId !== undefined) {
+      res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado' });
+      return;
+    }
+
+    const result = authService.refreshTenantToken(req.user.id, req.user.businessId);
+    setAuthCookie(res, result.token, result.expiresIn);
+    res.status(200).json(result);
   });
 
   return router;

@@ -174,6 +174,23 @@ export class AuthService {
   }
 
   /**
+   * Renueva el token de un usuario YA autenticado — mismo secret/TTL que
+   * login, sin re-pedir credenciales (punto 3, pendientes-2026-08-15.md:
+   * la sesión duraba 24h fijas sin forma de extenderla). `authenticate()`
+   * ya confirmó, para ESTA request, que la membership sigue activa
+   * (`resolveMembershipContext` en el middleware global) — no hace falta
+   * repetir esa consulta acá, solo re-firmar con un `exp` nuevo.
+   */
+  refreshTenantToken(identityId: string, businessId: string): { token: string; tokenType: 'Bearer'; expiresIn: number } {
+    const token = signToken(
+      { sub: identityId, business_id: businessId },
+      requireJwtSecret(),
+      this.tokenTtlSeconds,
+    );
+    return { token, tokenType: 'Bearer', expiresIn: this.tokenTtlSeconds };
+  }
+
+  /**
    * El JWT de staff YA NO lleva `role` (14/08/2026, ver security/roles.ts)
    * — solo `sub`/`business_id`. Los permisos se resuelven en cada request
    * contra `role_permission_groups`, no se congelan acá. `user.role` en la

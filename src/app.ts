@@ -196,7 +196,7 @@ export async function createApp(): Promise<{
 
   // /api/auth/me + /api/auth/logout (B2) — solo lee req.user, tampoco
   // necesita req.db de tenant.
-  app.use('/api/auth', createMeRouter(platformRepo));
+  app.use('/api/auth', createMeRouter(platformRepo, authService));
 
   // /api/business/modules — tampoco necesita req.db (consulta la BD de
   // plataforma vía container), así que va antes de tenantMiddleware.
