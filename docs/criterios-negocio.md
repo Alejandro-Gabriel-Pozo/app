@@ -91,6 +91,36 @@ responde tres preguntas antes de mergear:
 agosto 2026 fueron, en el fondo, la misma confusión repetida — mezclar el
 pool de plataforma con el del tenant.
 
+**A2.9 — Ningún dato fiscal/impositivo, ni ninguna política o catálogo que
+refleje cómo opera un negocio puntual, es una constante del sistema.**
+Condición frente al IVA, tipo de comprobante habilitado, moneda, si un
+precio incluye impuesto o es neto, alícuota por producto — todo eso es
+configuración **por tenant** (o por producto/servicio dentro del tenant),
+nunca un valor fijo asumido a nivel de código, de "cómo lo hace la
+mayoría" o de lo que parezca razonable para un caso típico. La línea que
+separa qué va en código de qué va en configuración: lo técnico-mecánico
+del sistema (cómo se firma un JWT, cómo se resuelve el pool por tenant,
+cómo se calcula un CAE una vez que se sabe el tipo de comprobante) es del
+sistema; cualquier dato o política que describa una decisión de ESE
+negocio puntual (qué puede facturar, en qué moneda vende, cómo carga sus
+precios) es config, no código — ni siquiera como default implícito sin
+campo que lo respalde. Relacionado con A3.2 (toda cifra lleva moneda) y
+A3.7 (el impuesto se congela con la transacción) — ahí ya estaba el
+principio para el caso puntual de dinero; esta regla lo generaliza a
+cualquier dato de esta naturaleza, no solo a los montos.
+
+*Hallazgo del 15/08/2026 — al diseñar FACTURACION (comprobantes AFIP), dos
+de las tres preguntas que se le plantearon al dueño para "decidir un
+valor" eran en realidad preguntas mal hechas: la condición frente al IVA
+del negocio y si los precios ya cargados incluyen IVA no debían resolverse
+como una respuesta única y global — son configuración real
+(`docs/pendientes-2026-08-15.md` sección I: ABM de Empresa, ABM de
+Producto), no una constante para fijar una sola vez en una conversación.
+Antes de plantear un valor como "hay que decidir esto" en cualquier
+auditoría futura, primero preguntar si en realidad es un dato que varía
+por tenant o por producto — si lo es, la respuesta correcta nunca es un
+valor, es un campo.*
+
 ---
 
 # 3. Dinero 🔴

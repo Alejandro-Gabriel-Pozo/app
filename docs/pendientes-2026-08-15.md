@@ -851,3 +851,12 @@ adelante** (no bloquea 1-2): CUIT real del negocio, punto de venta ya
 habilitado en AFIP, certificado (`.crt`) + clave privada (`.key`)
 generados en AFIP para homologación — las credenciales de producción se
 cargan recién cuando todo el flujo esté probado en homologación.
+
+**Regla general nueva agregada a `criterios-negocio.md` (A2.9, 15/08/2026)
+a partir de este hallazgo:** ningún dato fiscal/impositivo ni ninguna
+política/catálogo que refleje cómo opera un negocio puntual es una
+constante del sistema — es configuración por tenant o por producto, nunca
+un valor fijo. Aplica a cualquier auditoría futura, no solo a
+facturación — ver la regla completa para el criterio de "esto es config,
+no código" y el porqué (dos de las tres preguntas que se le hicieron al
+dueño hoy para esta sección eran, en el fondo, la misma confusión).
