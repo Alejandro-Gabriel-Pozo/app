@@ -463,6 +463,45 @@ al cancelarla, cuando corresponde.
     en el vacío). El único consumidor de inventario que seguiría
     viviendo en el outbox sería `handleOrderCancelledStock`.
 
+  **Corrección sobre la opción 1 (15/08/2026) — la primera recomendación
+  estaba incompleta.** Se había recomendado `SELECT ... FOR UPDATE`
+  durante el chequeo + orden canónico de locks para el deadlock, dado
+  por cerrado. El dueño encontró el hueco: el lock se libera al hacer
+  commit de `confirmOrder()`, **antes** de que el stock físico se haya
+  movido (eso sigue pasando después, async, vía outbox) — así que una
+  segunda `confirmOrder()` puede tomar el lock ya liberado y leer el
+  mismo `disponible` sin cambios. El lock por sí solo protege contra dos
+  lecturas simultáneas, no contra "lectura, commit, y recién después el
+  movimiento real" — que es justo el diseño elegido para no fusionar
+  Order e Inventory en una sola transacción.
+
+  El fix real es el tercer número que ya estaba nombrado en el manual de
+  inventario del dueño (sección 1: físico / disponible / **comprometido**,
+  `disponible = físico − comprometido`) pero nunca se modeló como
+  columna: agregar `reserved_quantity` a `products`/`product_variants`.
+  - `confirmOrder()`, dentro de su propia transacción, hace el "hard
+    commit" (manual, sección 4) con una UPDATE atómica:
+    `SET reserved_quantity = reserved_quantity + $qty WHERE id = $id
+    AND (stock_quantity - reserved_quantity) >= $qty RETURNING id` — el
+    chequeo y la reserva son la misma operación, no una lectura seguida
+    de una validación en memoria. Sigue haciendo falta el orden canónico
+    de items por `productId`/`variantId` para el mismo riesgo de
+    deadlock ya identificado.
+  - El outbox (`handleOrderConfirmedStock`) deja de "decrementar stock"
+    y pasa a **consolidar la reserva**: `stock_quantity -= qty` y
+    `reserved_quantity -= qty` en la misma UPDATE — ya no re-valida
+    nada, la disponibilidad ya quedó comprometida atómicamente en el
+    confirm.
+  - `handleOrderCancelledStock` gana una responsabilidad nueva: si la
+    orden se cancela ANTES de que el outbox consolide la reserva, hay
+    que liberar `reserved_quantity` (no `stock_quantity`, que en ese
+    punto todavía no bajó).
+  - Alcance real de este fix: columna nueva en dos tablas + tocar
+    `checkStock`, `confirmOrder()` y los dos handlers de inventario —
+    no es "agregar `FOR UPDATE` al SELECT que ya existe", es una
+    reserva provisoria de punta a punta. Sigue sin implementarse, sigue
+    siendo decisión del dueño cuándo priorizarlo.
+
 ### D2. Manual de reglas de negocio de inventario — puntos que quedan afuera a propósito (15/08/2026)
 
 El dueño aportó un manual completo (hotelería/gastronomía/e-commerce,
