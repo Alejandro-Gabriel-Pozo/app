@@ -337,8 +337,41 @@ El dueño planteó que fuimos meticulosos con la modularidad
   archivo, pero es esperable — es la costura natural de un futuro API
   Gateway/BFF, no un problema.
 
-**Pendiente:** preguntarle al dueño qué error/caso puntual disparó esta
-reflexión, para no quedarse en lo genérico si hay algo concreto detrás.
+**El dueño confirmó el caso puntual (15/08/2026):** el planteo real era
+"Reservas + Web + Menú + POS + Inventario equivale a un ERP/PMS
+completo del rubro" — la respuesta ideal actual en ingeniería para ese
+escenario es Monolito Modular con bounded contexts DDD, ni monolito
+tradicional ni microservicios puros desde el día uno. Confirmado contra
+el código, con evidencia concreta y no solo teórica:
+
+- `order.service.ts` y `reservation.service.ts` **ya no se importan
+  entre sí** — cero acoplamiento directo, confirmado con grep. Se
+  conectan solo por `orderItemId` (referencia por ID, el patrón correcto
+  entre bounded contexts).
+- El patrón "Inventario recibe eventos de venta y recalcula stock" que
+  describió el dueño **ya tiene la infraestructura lista, sin usar**:
+  el outbox ya dispara `order.completed`, hoy solo lo escucha
+  `registerFinancialHandlers()` (caja). No hay ningún handler de
+  inventario — es exactamente el gap ya documentado como E7a
+  (`pendientes-2026-08-13.md`): el stock nunca baja al confirmar una
+  orden.
+- La brecha real: `src/` está organizado por **capa técnica**
+  (`services/`, `repositories/`, `api/routes/` todos mezclando
+  dominios), no por **bounded context** — la separación lógica existe
+  por disciplina, no porque la estructura la obligue.
+
+**Agregado a `docs/arquitectura-monolito-modular.md` sección 4**: plan
+completo de reorganización por dominio (`reservas/`, `pms-estadias/`,
+`pos-menu/`, `inventario/` — nuevo, no existe hoy, hoy son campos
+sueltos en `product.entities.ts` —, `clientes-finanzas/`,
+`usuarios-roles/`, `plataforma/`, `reportes/`, `portal-cliente/` como
+BFF), mapeado archivo por archivo. Bloqueante encontrado:
+`domain/entities.ts` mezcla `Customer` + `PhysicalResource` +
+`BookableService` — tres bounded contexts en un solo archivo, hay que
+partirlo antes de mover cualquier otra cosa. **Solo diseño, no
+ejecutado** — el dueño pidió esto primero, y después volver a la opción
+de enganchar el handler de inventario al outbox como primer caso real
+del patrón.
 
 **Sigue sin tocar** (necesitan una decisión del dueño primero, no son
 "cortos"):

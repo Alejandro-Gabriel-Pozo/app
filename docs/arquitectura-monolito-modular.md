@@ -114,11 +114,150 @@ que se estaba respondiendo ("¿está todo mezclado sin criterio, o hay una
 estructura de dominio real debajo?") — la respuesta es que sí hay una
 estructura real, solo que vive dentro de un solo proceso.
 
-## 4. Conclusión
+## 4. Plan de reorganización por dominio (15/08/2026, solo diseño — no ejecutado)
+
+Confirmado con el dueño (ver sección 3): la separación lógica entre
+dominios ya existe en buena parte por disciplina (`order.service.ts` y
+`reservation.service.ts` no se importan entre sí, por ejemplo), pero
+`src/` está organizado por **capa técnica** (`services/`, `repositories/`,
+`api/routes/`, todos mezclando los dominios) en vez de por **bounded
+context** (DDD). Esto documenta cómo se vería la reorganización — mapeo
+archivo por archivo — sin ejecutarla todavía.
+
+### Contextos propuestos y qué archivo va en cada uno
+
+**`reservas/`** — el núcleo compartido entre rubros (ver
+`docs/roadmap-pms-multirubro.md`): fechas, disponibilidad, recursos,
+categorías.
+- Services: `reservation.service.ts`, `resource-lock.service.ts`,
+  `bookable-service.service.ts`, `category.service.ts`
+- Repositories: `reservation.repository.ts` (+ `sql.`/`in-memory.`),
+  `resource.repository.ts` (+ variantes), `resource-lock.repository.ts`
+  (+ variantes), `bookable-service.repository.ts` (+ variantes),
+  `category.repository.ts` (+ variantes), `occupancy.repository.ts` (+
+  variantes; `supabase.occupancy.repository.ts` es scaffolding
+  abandonado — candidato a borrar en vez de mover, ver C8 en
+  `pendientes-2026-08-14.md`)
+- Routes: `reservations.routes.ts`, `resources.routes.ts`,
+  `bookable-services.routes.ts`, `categories.routes.ts`
+- Domain: `Reservation.ts`, `availability.ts`, `reservation.types.ts`, y
+  **la parte de `entities.ts` que es `PhysicalResource`/`BookableService`**
+  (ver "archivos a partir primero" abajo)
+
+**`pms-estadias/`** — específico de alojamiento (no todos los rubros lo
+usan).
+- Services: `stay.service.ts`, `housekeeping.service.ts`
+- Repositories: `stay.repository.ts`, `housekeeping.repository.ts` (+
+  variante)
+- Routes: `stays.routes.ts`, `housekeeping.routes.ts`
+- Domain: `stay.ts`, `housekeeping-task.ts`
+
+**`pos-menu/`** — punto de venta, específico de gastronomía/retail.
+- Services: `order.service.ts`, `product.service.ts`
+- Repositories: `order.repository.ts` (+ variantes), `product.repository.ts`
+  (+ variante sql)
+- Routes: `orders.routes.ts`, `products.routes.ts`
+- Domain: `order.entities.ts`, `product.entities.ts`
+
+**`inventario/`** — ❌ **no existe como módulo separado hoy.** `stockQuantity`/
+`stockMinAlert` son campos sueltos dentro de `product.entities.ts`, y el
+decremento de stock (`ProductRepository.decrementStock`) existe pero
+nunca se llama (E7a). Carve-out real, no solo mover archivos: decidir si
+Inventario pasa a ser su propio agregado (tabla/repositorio propio que
+referencia `product_id`) con su propio service que es el único que
+escribe stock, escuchando `order.completed` vía el outbox — es más
+consistente con "recibe eventos, recalcula stock" que dejarlo como
+métodos sueltos en `ProductRepository`. Esto es exactamente lo que se
+resolvería primero si se retoma la opción 1 (enganchar el handler).
+
+**`clientes-finanzas/`** — CRM, cuenta corriente, caja.
+- Services: `accounts-receivable.service.ts`, `customer-account.service.ts`,
+  `cash-register.service.ts`
+- Repositories: `accounts-receivable.repository.ts` (+ sql),
+  `customer.repository.ts` (+ variantes), `customer-rate.repository.ts`
+  (+ variantes), `financial-transaction.repository.ts` (+ sql),
+  `cash-register-shift.repository.ts` (+ sql)
+- Routes: `customers.routes.ts` (CRM interno), `cash-register.routes.ts`
+- Domain: **la parte de `entities.ts` que es `Customer`/`ContactMethod`**
+
+**`usuarios-roles/`** — staff, auth, RBAC.
+- Services: `role.service.ts`
+- Routes: `roles.routes.ts`, `users.routes.ts`, `auth.routes.ts`,
+  `me.routes.ts`
+- Security: `auth.middleware.ts`, `auth.service.ts`, `roles.ts`,
+  `user.store.ts`, `user.types.ts`, `module.middleware.ts`
+
+**`plataforma/`** — multi-tenant, superadmin, aprovisionamiento. Ya está
+bastante bien aislado hoy (carpeta `platform/` propia) — el que menos
+trabajo daría.
+- Todo `platform/*` ya vive junto.
+- Routes: `business.routes.ts`, `business-hours.routes.ts`,
+  `business-modules.routes.ts`, `platform.routes.ts`, `admin.routes.ts`
+- Repositories de config de negocio (¿quedan acá o en su propio
+  `catalogo-config/`? — decisión abierta): `location.repository.ts` (+
+  variantes), `operating-hours.repository.ts` (+ variantes)
+- Security: `platform.auth.middleware.ts`, `platform.auth.service.ts`
+
+**`reportes/`** — naturalmente cross-cutting (lee de todos los demás),
+no es un dominio de escritura. Se queda como "read model" que importa
+de los demás a propósito — no tiene sentido forzarlo a no depender de
+nadie.
+- `report.service.ts`, `reports.routes.ts`
+
+**`portal-cliente/`** (BFF) — hoy `customer.routes.ts` toca seis
+dominios en un archivo (hallazgo de la sección 3). Si se reorganiza,
+este archivo pasaría a ser un agregador delgado que llama a los
+services de `reservas`/`pos-menu`/`clientes-finanzas` en vez de
+importar sus repositorios directo — es el punto exacto donde hoy se ve
+más el costo de no tener bounded contexts explícitos.
+- Routes: `customer.routes.ts`
+- Security: `customer.auth.service.ts`
+
+**Infraestructura compartida (kernel) — no pertenece a ningún dominio,
+se queda en la raíz de `src/`:** `workers/*` (outbox — lo usan todos los
+dominios que emiten eventos), `domain-event.repository.ts` (+ sql),
+`audit-log.repository.ts` (+ in-memory) + `audit-log.routes.ts` +
+`audit.ts`, `sql.client.ts`, `db/*` (transaction managers, pg client,
+tenant-context), `container.ts`, `app.ts`, `server.ts`, `enums.ts`.
+
+### Archivos a partir primero (bloquean el resto)
+
+`domain/entities.ts` mezcla **tres bounded contexts en un solo archivo**:
+`Customer`/`ContactMethod` (clientes-finanzas), `PhysicalResource`
+(reservas), `BookableService`/`ServiceSchedule` (reservas). Ningún
+archivo puede moverse a su carpeta de dominio mientras este archivo siga
+mezclado — es el primer paso literal antes de mover cualquier otra cosa,
+no una limpieza opcional.
+
+### Orden recomendado si se ejecuta
+
+1. Partir `entities.ts` (bloqueante, ver arriba).
+2. `plataforma/` primero — ya está casi aislado, sirve como ensayo de
+   bajo riesgo del proceso de migración (actualizar imports, correr
+   `tsc`+tests, confirmar) antes de tocar dominios con más cruces.
+3. `pms-estadias/` y `pos-menu/` — pocos cruces salientes cada uno (ver
+   sección 3), riesgo bajo.
+4. `reservas/` y `clientes-finanzas/` al final — son los que más
+   cruzan entre sí, requieren que los otros ya estén acomodados para
+   que sus imports "hacia afuera" apunten a carpetas ya estables.
+5. `inventario/` se construye nuevo (no es un move, es un carve-out),
+   en paralelo con el punto 1 de la sección 3 (enganchar el handler del
+   outbox) — son la misma tarea vista desde dos ángulos.
+
+**No estimado el esfuerzo en horas** — toca las rutas de import de
+~150 archivos. Se haría dominio por dominio, verificando `tsc --noEmit`
++ suite completa después de cada uno (mismo criterio que ya se usó hoy
+para el fix de `tsconfig.json`), nunca en un solo commit gigante.
+
+## 5. Conclusión
 
 No hay una arquitectura rota para arreglar — hay una decisión de
 arquitectura (monolito modular) tomada implícitamente, que resultó ser
-razonable para la etapa actual, con un único punto de acoplamiento
-directo entre dominios (`reservation.service.ts` → repositorios ajenos)
-que valdría la pena limpiar el día que haya una razón real de negocio
-para separar servicios — no antes.
+razonable para la etapa actual. La separación lógica entre dominios ya
+existe en gran parte (confirmado: `order.service.ts` y
+`reservation.service.ts` no se importan entre sí), pero no está hecha
+explícita en la estructura de carpetas — sección 4 documenta cómo se
+vería llevarla a bounded contexts reales, sin ejecutarlo todavía.
+Próximo paso acordado con el dueño: retomar la opción de enganchar
+Inventario al outbox (sección 3) como primer caso real del patrón, antes
+de mover ningún archivo.
