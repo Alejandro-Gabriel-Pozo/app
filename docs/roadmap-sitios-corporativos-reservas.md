@@ -123,11 +123,95 @@ que resuelve ambos casos.
 
 ## Fase 7 — CMS del sitio corporativo
 
-❌ **Nuevo, sin decisión tomada.** Correcto que es independiente de las
+❌ **Nuevo, sin decisión tomada.** Sigue siendo independiente de las
 fases 1-6 salvo por depender del mismo mecanismo de resolución de tenant
-(Fase 2). La pregunta abierta del documento (CMS propio vs. headless de
-terceros) es una decisión de producto, no técnica — no hay elementos en
-el código actual que inclinen la balanza para un lado u otro.
+(Fase 2) — nada de lo de abajo cambia esa conclusión, solo la afina.
+Actualizado 15/08/2026 con el análisis del dueño:
+
+**Dos necesidades distintas, no una sola herramienta:**
+- **Contenido estructurado** — texto, descripción, políticas, horarios.
+- **Imágenes** — manejo, optimización, entrega.
+
+No resolverlas con la misma pieza — mezclar las dos en una sola decisión
+es lo que llevaría a elegir mal cualquiera de las dos.
+
+### Contenido estructurado
+
+Prioridad: que el cliente vea **vista previa en vivo** mientras edita —
+entender qué está cambiando importa más que la prolijidad del editor en
+sí, para un dueño de negocio sin perfil técnico (mismo público que ya
+maneja el panel de gestión hoy).
+
+Dos caminos, no mutuamente excluyentes en el tiempo (se puede arrancar
+con uno y migrar):
+- **Panel propio**, reutilizando el login que ya existe (`AuthContext`/
+  sesión de staff) — campos a medida por rubro (hotelería ≠ barbería).
+  Requiere tiempo de desarrollo real, pero es consistente con el resto
+  del producto y no agrega una dependencia externa a la arquitectura.
+- **Sanity Studio** como atajo tercerizado — tiene vista previa en vivo
+  real (Presentation) y nivel gratuito viable para un sitio chico.
+  Camino más rápido si no hay tiempo de desarrollo ahora.
+
+**Contentful descartado explícitamente** — dos motivos: sus planes
+pagos escalan rápido en precio a medida que crece el uso, mal ajuste
+para una base de negocios chicos; y Salesforce anunció en junio 2026 el
+acuerdo para adquirirlo, lo que mete incertidumbre de roadmap del
+proveedor justo en un componente que sostendría contenido de todos los
+clientes.
+
+### Imágenes
+
+**Cloudinary** (o equivalente) con upload widget + optimización
+automática — nivel gratuito alcanza para arrancar. **Si se elige
+Sanity** para el contenido estructurado, evaluar primero su pipeline de
+imágenes propio antes de sumar Cloudinary aparte — evitar tener dos
+herramientas de imágenes por decisiones tomadas en momentos distintos
+sin cruzarlas.
+
+**Nada de esto se investigó ni se decidió hoy** — es la línea de
+pensamiento del dueño, documentada tal cual para no perderla, no una
+recomendación verificada contra el código o probada en la práctica.
+
+---
+
+## Consideración abierta — empresas multipropiedad (portal → sub-portales)
+
+Traída por el dueño el 15/08/2026, todavía sin encajar en ninguna fase
+numerada de arriba — es un cambio de modelo más de fondo, no una tarea
+puntual. El caso: una empresa dueña de **varias propiedades/locales**
+(ej. una cadena de hospedajes, una franquicia de barberías) tendría **su
+propio portal** (marca/empresa), y desde ahí, **sub-portales por
+propiedad** — cada sub-portal con su propia reserva, menú, productos (si
+vende productos).
+
+**Chequeado contra el modelo real de hoy — esto NO es lo mismo que
+`locations`:** existe una tabla `locations` (`schema.sql:59-65`,
+`id/name/active`), pero vive **adentro** de la BD de un tenant — sirve
+para algo tipo "sucursal/salón dentro de UN negocio", no para agrupar
+varios negocios independientes bajo una empresa madre. Cada `business`
+hoy es una unidad completamente aislada (su propia BD de Neon, su
+propio slug, su propio portal) — no hay ningún concepto de "empresa"
+por encima que agrupe varios `business`.
+
+**Por qué esto importa para la arquitectura ya construida hoy (branch
+por tenant, sección B1 de `pendientes-2026-08-15.md`):** el instinto
+fácil sería "fusionar las propiedades de una empresa en una sola BD" —
+sería un paso atrás. El camino que preserva el aislamiento que ya existe
+(y que además es más barato/simple de construir) es agregar el
+agrupamiento **a nivel de plataforma, no de datos del tenant**: una
+entidad `empresa`/`company` nueva en la BD central (mismo lugar que
+`businesses`), con `businesses.company_id` opcional apuntando a ella.
+Cada propiedad sigue siendo un `business` independiente con su propia
+BD — lo único nuevo es un portal "empresa" que lista/enlaza a los
+sub-portales de sus propiedades, sin tocar el aislamiento por tenant que
+ya está probado en producción hoy.
+
+No diseñado en detalle — queda para cuando haya un caso de uso real
+(mismo criterio que A2, Owner/liquidación a terceros, en
+`pendientes-2026-08-14.md`: no construir sin un cliente concreto que lo
+necesite). Vale la pena tenerlo en la cabeza al diseñar la Fase 1 de
+arriba, para no dejar `businesses` con una forma que después cueste
+agruparle una empresa por encima.
 
 ---
 

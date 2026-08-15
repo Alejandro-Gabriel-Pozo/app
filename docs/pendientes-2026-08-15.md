@@ -242,6 +242,24 @@ el detalle completo por fase. Resumen:
   mecanismo de `claim`/`merge`** que el gap de B5 de hoy ("reclamar un
   cliente que el negocio cargó a mano") — no diseñarlos por separado,
   es un solo mecanismo con dos disparadores distintos.
+- **Fase 7 (CMS) ampliada** con el análisis del dueño: contenido
+  estructurado y manejo de imágenes son problemas distintos, no la
+  misma herramienta. Para contenido, prioridad a vista previa en vivo
+  (panel propio reutilizando el login existente, o Sanity Studio como
+  atajo). Contentful descartado (precio + incertidumbre por la
+  adquisición de Salesforce anunciada en junio 2026). Para imágenes,
+  Cloudinary — evaluar el pipeline propio de Sanity primero si se elige
+  Sanity, para no duplicar herramientas.
+- **Nueva consideración, sin encajar todavía en ninguna fase:** empresas
+  multipropiedad (portal de empresa → sub-portales por propiedad, cada
+  uno con su reserva/menú/productos). Confirmado que `locations`
+  (`schema.sql`) no sirve para esto — vive adentro de UN tenant, no
+  agrupa varios. El camino que no rompe el aislamiento por tenant que ya
+  está en producción (branch de Neon por negocio): una entidad
+  `empresa`/`company` nueva en la BD central, con `businesses.company_id`
+  opcional — cada propiedad sigue siendo su propio tenant aislado, el
+  portal de empresa solo enlaza a los sub-portales. Sin diseñar en
+  detalle, mismo criterio que A2 (no construir sin caso de uso real).
 
 ---
 
