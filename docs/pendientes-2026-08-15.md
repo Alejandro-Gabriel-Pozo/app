@@ -860,3 +860,71 @@ un valor fijo. Aplica a cualquier auditoría futura, no solo a
 facturación — ver la regla completa para el criterio de "esto es config,
 no código" y el porqué (dos de las tres preguntas que se le hicieron al
 dueño hoy para esta sección eran, en el fondo, la misma confusión).
+
+---
+
+## J. Mails de reserva confirmada — ✅ HECHO, mitad del punto 5 (15/08/2026)
+
+Punto 5 (E5) dividido en dos partes independientes — esta sección cierra
+la mitad de **mails**. **Login con Google queda pendiente**, sin tocar
+(ver abajo) — son dos dominios de auth distintos (staff + portal), alcance
+propio.
+
+- `business_profile` (schema.sql BLOQUE 15, schema v9) — MAESTRO
+  singleton nuevo, mismo patrón que `locations`. Arranca mínimo a
+  propósito: `display_name` + `contact_email`, solo lo que necesita el
+  remitente del mail. Los campos fiscales que va a pedir FACTURACION
+  (CUIT, condición IVA — ver sección I) se agregan después sobre esta
+  MISMA tabla, no una nueva — mismo criterio que `financial_transactions`
+  creciendo de a columnas en varias sesiones.
+- `GET/PUT /api/business-profile` (`Roles.MANAGEMENT`) + sección nueva
+  "Identidad del negocio" en `dashboard/mi-negocio` (frontend).
+- `email/email.sender.ts` — interfaz `EmailSender` + `ResendEmailSender`
+  (un solo `fetch`, sin SDK — mismo criterio que el JWT hecho a mano) +
+  `NoopEmailSender` (sin `RESEND_API_KEY`/`RESEND_FROM_EMAIL`, loguea y no
+  falla — fail-open, mismo patrón que el aprovisionamiento de Neon).
+- **Remitente por A2.9:** la cuenta de envío (API key, dominio verificado)
+  es infraestructura de la plataforma — un dominio propio por tenant no es
+  realista. El nombre que ve el cliente (`fromName`) y el reply-to salen
+  de `business_profile`, por negocio.
+- Enganchado a `reservation.confirmed` vía el outbox (mismo patrón que
+  todo lo demás) — `email.handlers.ts`. Si el cliente no tiene mail
+  cargado (solo teléfono), no se envía nada, no es un error.
+- **Límite conocido, aceptado a propósito:** el envío NO tiene protección
+  de idempotencia (a diferencia de `stock_movements`) — si otro handler
+  del mismo evento falla y el outbox reintenta, el mail se puede reenviar.
+  Riesgo aceptado: peor caso es un mail duplicado, no pérdida de dinero/
+  stock. Documentado en el docblock de `email.sender.ts` con la solución
+  si algún día hace falta (tabla de envíos con índice único).
+- `render.yaml` — `RESEND_API_KEY`/`RESEND_FROM_EMAIL` declaradas
+  (`sync: false`, sin cargar todavía).
+
+Verificado: `tsc --noEmit` limpio (los dos repos), `npm test` 418/419
+(+9 tests nuevos: `email.sender.test.ts` con el adapter de Resend
+mockeando `fetch`, `email.handlers.test.ts` con los tres casos —
+remitente del negocio, default de plataforma, cliente sin mail), lint
+limpio en los dos repos, `next build` limpio (22 rutas). **Sin probar en
+vivo** — no hay cuenta de Resend todavía (confirmado por el dueño:
+"ninguna de las dos credenciales todavía"), así que queda con
+`NoopEmailSender` hasta que se cargue `RESEND_API_KEY` en Render.
+
+**Pendiente real para poder mandar un mail de verdad:** cuenta de Resend
+(o el proveedor que se termine eligiendo) + dominio verificado (SPF/DKIM)
++ cargar las dos variables en Render.
+
+### Login con Google — sin empezar, sigue pendiente
+
+Alcance confirmado por el dueño: aplica a **staff y portal de clientes**,
+los dos. No se tocó nada todavía — es un bloque de trabajo propio,
+separado del de mails:
+- Verificación de ID token de Google (JWKS + RS256, mismo criterio de
+  minimizar dependencias que ya usa el JWT propio con `node:crypto` — no
+  hace falta una librería para esto).
+- Vínculo con `identities` (staff) — hoy el login es 100% email+password,
+  hay que decidir cómo conviven las dos formas de entrar a la misma
+  cuenta (¿un email de Google que ya tiene contraseña local qué hace?).
+- Lo mismo para el portal de clientes (`customer.auth.service.ts`),
+  sistema de auth separado (A2.4 — los dos dominios no se cruzan).
+- Credenciales de Google Cloud Console (Client ID/Secret) — confirmado
+  que todavía no existen, hay que crearlas.
+- Botón de Google Sign-In en el frontend (panel y portal).

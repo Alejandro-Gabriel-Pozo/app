@@ -443,6 +443,11 @@ export class ReservationService {
           // outbox.handlers.ts lee esto para crear el CHARGE — antes faltaba
           // acá, así que se salteaba en silencio (totalPrice null/≤0).
           totalPrice:    reservation.totalPrice,
+          // email.handlers.ts (punto 5/E5, 15/08/2026) — payload autocontenido
+          // (A10.2): no relee customer/resource, ya los tiene acá.
+          customerEmail: reservation.customer.email ?? null,
+          customerName:  reservation.customer.displayName,
+          resourceName:  reservation.resource.name,
         },
       });
     });

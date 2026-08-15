@@ -53,6 +53,7 @@ import { createBookableServicesRouter }  from './api/routes/bookable-services.ro
 import { createHousekeepingRouter }      from './api/routes/housekeeping.routes.js';
 import { createStaysRouter }             from './api/routes/stays.routes.js';
 import { createBusinessHoursRouter }     from './api/routes/business-hours.routes.js';
+import { createBusinessProfileRouter }   from './api/routes/business-profile.routes.js';
 import { createBusinessModulesRouter }   from './api/routes/business-modules.routes.js';
 import { createCashRegisterRouter }      from './api/routes/cash-register.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
@@ -226,6 +227,7 @@ export async function createApp(): Promise<{
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
+  app.use('/api/business-profile',  createBusinessProfileRouter());
   app.use('/api/audit-log',         createAuditLogRouter());
   app.use(
     '/api/cash-register',

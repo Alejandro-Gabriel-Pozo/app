@@ -138,7 +138,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // CHECK reserved<=stock. BLOQUE 5/13 — stock_movements gana el tipo
 // RESERVATION_RELEASED + índice de exclusión mutua con OUT por order_item.
 // Carrera de stock en confirmOrder(), pendientes-2026-08-15.md punto 1.
-export const CURRENT_SCHEMA_VERSION = 8;
+// v9 (15/08/2026): BLOQUE 15 — business_profile (MAESTRO singleton) nueva,
+// identidad del negocio para el remitente de mails (punto 5/E5,
+// pendientes-2026-08-15.md).
+export const CURRENT_SCHEMA_VERSION = 9;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

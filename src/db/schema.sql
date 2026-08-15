@@ -1228,3 +1228,38 @@ ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS card_surcharge_amoun
     AND card_surcharge_amount <= amount
     AND payment_method = 'CARD'
   ));
+
+-- ===========================================================================
+-- BLOQUE 15 — PERFIL DEL NEGOCIO (identidad, 15/08/2026)
+-- ===========================================================================
+-- MAESTRO singleton -- mismo patrón que `locations` (BLOQUE 0): una BD de
+-- tenant = un negocio, así que esta tabla vive con exactamente una fila
+-- ('default'). Arranca mínima a propósito: solo lo que necesita el punto 5
+-- (E5, pendientes-2026-08-15.md) para que el mail de reserva confirmada
+-- salga con la identidad del negocio, no la de la plataforma (A2.9 —
+-- nombre/contacto de ESE negocio es config por tenant, nunca constante).
+--
+-- Los campos fiscales que va a necesitar FACTURACION más adelante (CUIT,
+-- condición frente al IVA, domicilio fiscal — ver pendientes-2026-08-15.md
+-- sección I, "ABM de Empresa") se agregan después como ALTER TABLE ADD
+-- COLUMN sobre esta MISMA tabla cuando se retome ese punto, no una tabla
+-- nueva — mismo criterio que financial_transactions creciendo de a
+-- columnas en varias sesiones (BLOQUE 8/11/12).
+CREATE TABLE IF NOT EXISTS business_profile (
+  id             VARCHAR(255)  PRIMARY KEY DEFAULT 'default',
+  display_name   VARCHAR(255),
+  contact_email  VARCHAR(255),
+  created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO business_profile (id)
+SELECT 'default' WHERE NOT EXISTS (SELECT 1 FROM business_profile);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_profile_updated_at') THEN
+    CREATE TRIGGER business_profile_updated_at
+      BEFORE UPDATE ON business_profile
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;

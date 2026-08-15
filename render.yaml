@@ -93,3 +93,20 @@ services:
       # crearlo (no autogenerado por este archivo).
       - key: NEON_TEMPLATE_BRANCH_ID
         sync: false
+
+      # ---------------------------------------------------------------------------
+      # Mails transaccionales (punto 5/E5, pendientes-2026-08-15.md)
+      # Sin estas dos, email/email.sender.ts usa NoopEmailSender (loguea, no
+      # falla) — el negocio queda operativo sin esta feature puntual, fail-open
+      # a propósito, mismo criterio que el aprovisionamiento de Neon.
+      # ---------------------------------------------------------------------------
+
+      # Resend → API Keys. Infraestructura de la plataforma, no por tenant
+      # (A2.9, criterios-negocio.md) — el nombre que ve el cliente sale de
+      # business_profile de cada negocio, no de acá.
+      - key: RESEND_API_KEY
+        sync: false
+
+      # Dirección verificada (SPF/DKIM) en Resend — ej. notificaciones@zuluhub.com.ar
+      - key: RESEND_FROM_EMAIL
+        sync: false

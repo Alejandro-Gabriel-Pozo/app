@@ -23,9 +23,17 @@ import { SqlAuditLogRepository }               from '../repositories/audit-log.r
 import { ProductService }                      from '../services/product.service.js';
 import { PgTransactionManager }                from '../db/pg.transaction-manager.js';
 import { registerInventoryHandlers }           from './inventory.handlers.js';
+import { registerEmailHandlers }               from './email.handlers.js';
+import { createEmailSender }                   from '../email/email.sender.js';
+import { SqlBusinessProfileRepository }        from '../repositories/sql.business-profile.repository.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
 
 const workers = new Map<string, OutboxWorker>();
+
+// Un solo EmailSender para todo el proceso -- no es config por tenant
+// (A2.9: la cuenta de envío es infraestructura de la plataforma, ver
+// email/email.sender.ts). Se crea una vez, no por cada worker de tenant.
+const emailSender = createEmailSender();
 
 /**
  * Arranca un worker de outbox para el tenant dado si aún no existe.
@@ -51,10 +59,12 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   const auditLogRepo             = new SqlAuditLogRepository(db);
   const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo);
   const transactionManager       = new PgTransactionManager(rawPool);
+  const businessProfileRepo      = new SqlBusinessProfileRepository(db);
 
   const worker = new OutboxWorker(domainEventRepo);
   registerFinancialHandlers(worker, financialTransactionRepo);
   registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
+  registerEmailHandlers(worker, emailSender, businessProfileRepo);
   worker.start();
 
   workers.set(businessId, worker);

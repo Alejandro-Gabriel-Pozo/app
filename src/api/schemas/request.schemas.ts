@@ -235,3 +235,12 @@ export const CreateOperatingWindowSchema = z.object({
   message: 'endTime debe ser posterior a startTime',
   path: ['endTime'],
 });
+
+// ---------------------------------------------------------------------------
+// Perfil del negocio — PUT /api/business-profile (punto 5/E5, 15/08/2026)
+// ---------------------------------------------------------------------------
+
+export const UpdateBusinessProfileSchema = z.object({
+  displayName:  z.string().trim().min(1).max(255).nullable().optional(),
+  contactEmail: z.string().trim().email({ message: 'contactEmail debe tener formato válido' }).nullable().optional(),
+});
