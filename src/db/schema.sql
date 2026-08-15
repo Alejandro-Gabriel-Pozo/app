@@ -782,22 +782,15 @@ CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by    ON stock_movements 
 -- abajo para el porqué. Si el día de mañana se reporta % de merma u otro
 -- análisis de movimientos físicos (D2, manual de inventario pendiente),
 -- este tipo debe excluirse de esos reportes explícitamente.
-DO $$
-DECLARE
-  c RECORD;
-BEGIN
-  FOR c IN
-    SELECT conname FROM pg_constraint
-    WHERE conrelid = 'stock_movements'::regclass
-      AND contype = 'c'
-      AND pg_get_constraintdef(oid) LIKE '%movement_type%IN%'
-  LOOP
-    EXECUTE format('ALTER TABLE stock_movements DROP CONSTRAINT %I', c.conname);
-  END LOOP;
-
-  ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
-    CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED'));
-END $$;
+--
+-- Nombre de constraint confirmado contra la tenant DB real (15/08/2026,
+-- proyecto Neon DB-APP-PPMS, branch production) -- es el que Postgres le
+-- puso solo al CHECK inline original (convención estándar
+-- `<tabla>_<columna>_check`), no una suposición sin verificar.
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS stock_movements_movement_type_check;
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
+  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED'));
 
 -- OUT (consolidación real) y RESERVATION_RELEASED (liberación sin consolidar)
 -- compiten por el MISMO casillero por order_item -- el que se inserta

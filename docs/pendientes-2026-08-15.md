@@ -682,39 +682,61 @@ límite de reintentos que libere sola una reserva colgada en dead-letter
 
 ---
 
-## G. Resuelto de forma dudosa hoy (15/08/2026) — verificar antes de confiar del todo
+## G. Resuelto de forma dudosa hoy (15/08/2026) — parcialmente verificado después contra producción real
 
 A diferencia del resto de la sesión (que sí se verificó contra producción
 real — B1, B2), los puntos E y F (dead-letter del outbox + `reserved_quantity`)
-**se verificaron solo con `tsc`/`npm test` (fakes en memoria) y `npm run
-build`. Nunca se corrió `schema.sql` contra una tenant DB de verdad.** Antes
-de dar esto por cerrado del todo:
+se habían verificado inicialmente solo con `tsc`/`npm test` (fakes en
+memoria) y `npm run build`, sin correr nunca `schema.sql` contra una tenant
+DB de verdad. **Cerrado más tarde el mismo día, ver abajo.**
 
-- ❓ **El bloque dinámico que reemplaza el CHECK de `movement_type`**
-  (schema.sql BLOQUE 13) busca la constraint vieja por patrón
-  (`pg_get_constraintdef(oid) LIKE '%movement_type%IN%'`) en vez de por
-  nombre exacto, porque el nombre real que Postgres le puso a esa
-  constraint inline nunca se confirmó contra la base real (se asumió la
-  convención estándar `stock_movements_movement_type_check`, no se leyó).
-  Si el patrón no matchea como se espera, quedarían DOS constraints
-  activas (la vieja de 4 valores + la nueva de 5) y cualquier insert de
-  `RESERVATION_RELEASED` fallaría con una violación de CHECK real en
-  producción — un error ruidoso (falla fuerte, no silencioso), pero igual
-  hay que confirmarlo antes de que dependa de esto una orden real.
-- ❓ **El fix de la carrera `order.confirmed`/`order.cancelled` fuera de
-  orden** (el casillero compartido OUT/RESERVATION_RELEASED) está probado
-  con handlers ejecutados secuencialmente contra fakes en memoria — nunca
-  contra dos transacciones de Postgres realmente concurrentes. La lógica
-  se pensó para eso (por diseño, no por casualidad), pero "pensado para"
-  no es lo mismo que "confirmado contra la base", que es el criterio que
-  se usó para todo lo demás hoy.
+- ✅ **RESUELTO — el nombre real de la constraint del `movement_type`
+  quedó confirmado contra la base real** (proyecto Neon `DB-APP-PPMS`,
+  branch `production` = `br-snowy-tree-ax5wmq70`): es
+  `stock_movements_movement_type_check`, la convención estándar que se
+  había asumido sin leer. `schema.sql` ya no usa el bloque dinámico que
+  buscaba la constraint por patrón (`pg_get_constraintdef(oid) LIKE
+  '%movement_type%IN%'`) — se reemplazó por dos `DROP CONSTRAINT IF
+  EXISTS` con el nombre exacto (el viejo y el nuevo, para que sea
+  idempotente entre corridas), sin adivinar nada.
+- ✅ **RESUELTO — `schema.sql` completo (BLOQUE 3/5/7/13, schema v8) se
+  aplicó y verificó contra `production` real (15/08/2026, misma sesión).**
+  Proceso: se creó un branch temporal de Neon ramificado de `production`
+  (`verify-schema-v8-d1`, borrado después de usarlo), se corrieron ahí los
+  14 statements nuevos uno por uno (el MCP de Neon no acepta scripts
+  multi-statement — no es el mismo camino que `applyTenantSchema()` en
+  producción, que sí puede por usar `pg` directo), y se probaron los
+  invariantes reales con datos de prueba insertados a mano (limpiados
+  después): `reserveStock()` reserva y rechaza sin stock disponible
+  (0 filas, se mapea a `InsufficientStockError`); `commitReservedStock()`
+  baja `stock_quantity`/`reserved_quantity` juntos; el `CHECK
+  (reserved_quantity <= stock_quantity)` rechazó un intento directo de
+  romperlo; **y el hallazgo central del día — el índice de exclusión mutua
+  `ux_stock_movements_order_item_resolution` — se probó de verdad: insertar
+  `OUT` para un `order_item` y después `RESERVATION_RELEASED` para el
+  mismo ítem devolvió 0 filas (rechazado), mientras que `RETURN` sí pudo
+  convivir con el `OUT` ya existente.** Confirmado igual en el branch
+  `production` real después de aplicar: `domain_events` con las 3 columnas
+  nuevas + los 2 índices nuevos, `schema_migrations` con la versión 8
+  registrada.
+- ❓ **Sigue sin confirmar — `businesses.schema_version` en la PLATFORM DB**
+  (no tocada hoy, es una base distinta a la tenant DB — `PLATFORM_DATABASE_URL`
+  separada de `DATABASE_URL`, no se identificó cuál proyecto/branch de Neon
+  la hostea en esta sesión). El mecanismo real de producción
+  (`POST /api/admin/repair-tenant-db`) actualiza ese campo además de correr
+  `schema.sql` — hoy quedó desincronizado: la tenant DB ya está en v8 pero
+  `businesses.schema_version` probablemente sigue en v6. Consecuencia
+  conocida, acotada: `tenant.middleware.ts` podría advertir "tenant
+  desactualizado" de forma incorrecta hasta que se corra
+  `repair-tenant-db` (que es idempotente, no rompe nada re-correrlo) o se
+  actualice ese campo a mano.
+- ❓ **Sigue sin confirmar — el fix de la carrera `order.confirmed`/
+  `order.cancelled` fuera de orden bajo concurrencia REAL.** Lo que se
+  probó hoy contra Postgres real fue el mecanismo de base (el índice
+  rechaza la segunda inserción) con dos INSERTs secuenciales a mano — no
+  dos transacciones de la aplicación disparadas de verdad en simultáneo
+  contra el backend desplegado. El mecanismo de la base está confirmado;
+  el flujo completo de la app bajo concurrencia real, no.
 - ❓ El umbral `maxRetries=60` (~5 min de fallas seguidas antes de
-  dead-letter) es una estimación, no algo calibrado contra el patrón real
-  de fallas transitorias de Neon/Render.
-
-**Antes de la próxima sesión real con carga:** aplicar `schema.sql` contra
-la tenant DB real (mismo mecanismo que `POST /api/admin/repair-tenant-db`,
-que ya lo hace en cada activación) y confirmar con una query directa que
-`ux_stock_movements_order_item_resolution` y el CHECK de 5 valores quedaron
-como se espera — no dar por buena la migración solo porque el deploy no
-tiró error (mismo criterio que ya usa este documento para todo lo demás).
+  dead-letter) sigue siendo una estimación, no algo calibrado contra el
+  patrón real de fallas transitorias de Neon/Render.
