@@ -263,16 +263,44 @@ el detalle completo por fase. Resumen:
 
 ---
 
-## C. Backlog sin cambios (heredado, sigue abierto)
+## C. Limpieza de backlog corto (15/08/2026)
 
+Pedido explícito: de todo el backlog abierto, hacer solo lo genuinamente
+corto y accionable sin depender de una decisión del dueño. `appfrontend-main`
+commit `01296b7`.
+
+- ✅ **`appfrontend-main/render.yaml` borrado** — describía un servicio de
+  Render que nunca existió (o se borró sin dejar rastro); el frontend
+  real corre en Vercel. Solo lo referenciaba `README.md`, ya documentado
+  aparte como desactualizado.
+- ✅ **`reportsApi` entero eliminado de `lib/api.ts`** (E7c/d) — resultó
+  ser código muerto completo (cero usos en todo el repo, confirmado con
+  grep), no solo la URL rota de `underutilized` que se había detectado.
+  `dashboard/reportes/page.tsx` ya llama `apiFetch` directo con las
+  rutas correctas. Mismo criterio para `bookableServicesApi.get` y
+  `usersApi.get` (definidos, nunca llamados) — eliminados.
+- ✅ **Consola de debug `/admin` corregida** (E7e) — dos `ApiBlock` sin
+  reemplazo real hoy (`GET /api/resources/type/:type`,
+  `GET /api/resources/:id/availability`) se sacaron. Los 3 bloques de
+  reportes tenían **dos bugs cada uno**, no uno: la URL vieja
+  (destapada por E7d) y además los nombres de parámetro
+  (`startDate`/`endDate` en vez de `from`/`to`, que es lo que
+  `reports.routes.ts` realmente lee) — confirmado contra el backend real
+  y corregidos los 3.
+- ❌ **`tsconfig.json` — intentado y revertido.** Sacar la exclusión de
+  tests del typecheck no era el cambio de una línea que parecía —
+  destapa **89 errores de tipos reales** acumulados en archivos de test
+  (mocks mal tipados contra `pg.QueryResult`, accesos posiblemente
+  `undefined`). Es trabajo real, no encaja en "corto" — se dejó la
+  exclusión como estaba. Si se quiere encarar, es su propio ítem de
+  backlog, no una limpieza de una línea.
+
+**Sigue sin tocar** (necesitan una decisión del dueño primero, no son
+"cortos"):
 - `POST /api/auth/refresh` — no existe, sesión de staff dura 24h fijo.
 - Decidir si portal de clientes/plataforma migran a cookie httpOnly o
-  quedan como están (localStorage/sessionStorage).
-- `appfrontend-main/render.yaml` — sigue describiendo un servicio de
-  Render que no existe, sin borrar (no urgente).
+  quedan como están.
 - FACTURACION sin ruta en el frontend.
-- Filtro de rubro en `resource_categories` (ver E1 en
-  `pendientes-2026-08-13.md`).
-- `tsconfig.json` excluye tests del typecheck.
-- E1-E7 (observaciones post-deploy, ver `pendientes-2026-08-13.md`) —
-  sin tocar.
+- E1-E7 (`pendientes-2026-08-13.md`) — cada uno pide una definición de
+  alcance del dueño antes de poder estimarse, salvo lo ya resuelto acá
+  (E7c/d/e).
