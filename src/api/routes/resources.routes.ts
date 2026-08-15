@@ -37,7 +37,7 @@ import { SqlResourceLockRepository }     from '../../repositories/sql.resource-l
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
 import { windowsOverlap }                from '../../repositories/operating-hours.repository.js';
-import { PhysicalResource }              from '../../domain/entities.js';
+import { PhysicalResource }              from '../../domain/resource.entities.js';
 import { randomUUID }                     from 'node:crypto';
 import { z }                              from 'zod';
 import { CreateOperatingWindowSchema }   from '../schemas/request.schemas.js';

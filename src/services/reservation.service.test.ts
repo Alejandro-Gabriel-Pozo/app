@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ReservationStatus } from '../types/enums.js';
-import { BookableResource, Customer } from '../domain/entities.js';
+import { BookableResource } from '../domain/resource.entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import { ReservationService } from './reservation.service.js';
 import { InMemoryReservationRepository } from '../repositories/in-memory.reservation.repository.js';
 import { InMemoryResourceRepository } from '../repositories/in-memory.resource.repository.js';

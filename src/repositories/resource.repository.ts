@@ -9,7 +9,7 @@
  * - PhysicalResource reemplaza a BookableResource (alias mantenido en entities.ts).
  */
 
-import type { PhysicalResource } from '../domain/entities.js';
+import type { PhysicalResource } from '../domain/resource.entities.js';
 
 export interface ResourceRepository {
   save(resource: PhysicalResource): Promise<void>;

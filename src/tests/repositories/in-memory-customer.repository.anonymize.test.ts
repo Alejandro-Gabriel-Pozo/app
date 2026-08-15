@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { InMemoryCustomerRepository } from '../../repositories/in-memory.customer.repository.js';
-import { Customer } from '../../domain/entities.js';
+import { Customer } from '../../domain/customer.entities.js';
 
 const makeCustomer = (overrides: Partial<{ id: string; fullName: string; email: string }> = {}) =>
   new Customer(

@@ -1,4 +1,4 @@
-import type { Customer } from '../domain/entities.js';
+import type { Customer } from '../domain/customer.entities.js';
 import type { SqlClient } from './sql.client.js';
 
 /**

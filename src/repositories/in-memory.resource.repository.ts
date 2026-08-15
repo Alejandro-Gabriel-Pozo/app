@@ -9,7 +9,7 @@
  * - PhysicalResource reemplaza a BookableResource (alias mantenido en entities.ts).
  */
 
-import type { PhysicalResource } from '../domain/entities.js';
+import type { PhysicalResource } from '../domain/resource.entities.js';
 import type { ResourceRepository } from './resource.repository.js';
 
 export class InMemoryResourceRepository implements ResourceRepository {

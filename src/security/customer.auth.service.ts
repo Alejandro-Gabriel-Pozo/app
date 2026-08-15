@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { CustomerRepository } from '../repositories/customer.repository.js';
-import { Customer } from '../domain/entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import { hashPassword, verifyPassword } from './user.store.js';
 import { signToken } from './auth.middleware.js';
 import { verifyGoogleIdToken } from './google-oauth.js';

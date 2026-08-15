@@ -92,7 +92,8 @@
  */
 
 import { Reservation }                  from '../domain/Reservation.js';
-import type { Customer, PhysicalResource }   from '../domain/entities.js';
+import type { Customer }         from '../domain/customer.entities.js';
+import type { PhysicalResource } from '../domain/resource.entities.js';
 import { assertValidTimeRange }         from '../domain/availability.js';
 import {
   InvalidReservationError,

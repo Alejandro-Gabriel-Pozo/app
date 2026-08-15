@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CustomerAccountService } from './customer-account.service.js';
-import { Customer } from '../domain/entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import type { CustomerRepository } from '../repositories/customer.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';

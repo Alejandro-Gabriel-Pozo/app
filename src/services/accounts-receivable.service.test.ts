@@ -6,7 +6,7 @@ import {
 } from './accounts-receivable.service.js';
 import { StayNotFoundError } from './stay.service.js';
 import { CustomerNotFoundError } from '../domain/errors.js';
-import { Customer } from '../domain/entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import { Stay } from '../domain/stay.js';
 import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivableReportRow } from '../repositories/accounts-receivable.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';

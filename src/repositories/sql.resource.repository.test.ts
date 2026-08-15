@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { BookableResource } from '../domain/entities.js';
+import { BookableResource } from '../domain/resource.entities.js';
 import { SqlResourceRepository } from './sql.resource.repository.js';
 import type { SqlClient } from './sql.client.js';
 

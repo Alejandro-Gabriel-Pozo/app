@@ -22,7 +22,7 @@
 
 import type { SqlClient } from './sql.client.js';
 import type { ResourceRepository } from './resource.repository.js';
-import { PhysicalResource } from '../domain/entities.js';
+import { PhysicalResource } from '../domain/resource.entities.js';
 import type { VisualMetadata } from '../types/visual.interface.js';
 
 interface ResourceRow {

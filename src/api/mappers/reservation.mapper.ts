@@ -10,7 +10,7 @@
  */
 
 import type { Reservation } from '../../domain/Reservation.js';
-import type { BookableResource } from '../../domain/entities.js';
+import type { BookableResource } from '../../domain/resource.entities.js';
 import type { VisualMetadata } from '../../types/visual.interface.js';
 import type { ReservationStatus } from '../../types/enums.js';
 

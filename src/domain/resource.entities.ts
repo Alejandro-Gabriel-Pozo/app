@@ -1,19 +1,10 @@
 /**
- * @file entities.ts
- * @description Entidades de dominio — bounded context de Reservas.
+ * @file resource.entities.ts
+ * @description Entidad de dominio — bounded context de Reservas.
  *
- * ## Cambios v2 — Customer como agregado
- * - ContactMethod interface: canal de contacto tipado (EMAIL, PHONE, WHATSAPP)
- * - Constructor sobrecargado: acepta string (legacy) o ContactMethod[]
- * - Getters email/fullName para compatibilidad con código existente
- *
- * ## Cambios v3
- * - `email` getter retorna `string | undefined` en lugar de ''.
- *
- * ## Cambios v5 — Limpieza de bounded contexts
- * - Product, Order, OrderItem y OrderStatus removidos de este archivo.
- *   Product vive en `product.entities.ts`.
- *   Order vive en `order.entities.ts`.
+ * Partido de `entities.ts` (15/08/2026, docs/arquitectura-monolito-modular.md
+ * sección 4, paso 1 del plan de reorganización por dominio) — ver
+ * customer.entities.ts para el motivo completo del split.
  *
  * ## Cambios v6 — fix/report-group-by-category
  * - BookableResource agrega `categoryName: string | null` (parámetro
@@ -36,75 +27,8 @@
  */
 
 import type { VisualMetadata } from '../types/visual.interface.js';
-import { InvalidCustomerError } from './errors.js';
 import { isResourceAvailable } from './availability.js';
 import type { ReservationSnapshot } from './reservation.types.js';
-
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// ---------------------------------------------------------------------------
-// Customer
-// ---------------------------------------------------------------------------
-
-export interface ContactMethod {
-  id: string;
-  channel: 'EMAIL' | 'PHONE' | 'WHATSAPP';
-  value: string;
-  isPrimary: boolean;
-  verifiedAt?: Date;
-}
-
-export class Customer {
-  public readonly displayName: string;
-  public readonly contactMethods: ContactMethod[];
-
-  constructor(
-    public readonly id: string,
-    displayName: string,
-    emailOrContacts: string | ContactMethod[] = [],
-    /** v2 clientes especiales: INDIVIDUAL (default) o COMPANY */
-    public readonly kind: 'INDIVIDUAL' | 'COMPANY' = 'INDIVIDUAL',
-    /** v2 clientes especiales: cuenta activa (soft-delete usa esto) */
-    public readonly active: boolean = true,
-  ) {
-    if (!id.trim()) throw new InvalidCustomerError('id es obligatorio');
-    if (!displayName.trim()) throw new InvalidCustomerError('fullName es obligatorio');
-
-    this.displayName = displayName;
-
-    if (typeof emailOrContacts === 'string') {
-      if (!EMAIL_PATTERN.test(emailOrContacts)) {
-        throw new InvalidCustomerError('email inválido');
-      }
-      this.contactMethods = [
-        { id: `ccm-${id}`, channel: 'EMAIL', value: emailOrContacts, isPrimary: true },
-      ];
-    } else {
-      for (const cm of emailOrContacts) {
-        if (cm.channel === 'EMAIL' && !EMAIL_PATTERN.test(cm.value)) {
-          throw new InvalidCustomerError('email inválido');
-        }
-      }
-      this.contactMethods = emailOrContacts;
-    }
-  }
-
-  get email(): string | undefined {
-    return (
-      this.contactMethods.find((c) => c.channel === 'EMAIL' && c.isPrimary)?.value ??
-      this.contactMethods.find((c) => c.channel === 'EMAIL')?.value
-    );
-  }
-
-  /** Alias de displayName — compatibilidad con tests y servicios */
-  get fullName(): string {
-    return this.displayName;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PhysicalResource
-// ---------------------------------------------------------------------------
 
 export class PhysicalResource {
   constructor(
@@ -189,45 +113,3 @@ export class PhysicalResource {
  * @deprecated Reemplazar por PhysicalResource en todos los usos.
  */
 export { PhysicalResource as BookableResource };
-
-// ---------------------------------------------------------------------------
-// BookableService
-// ---------------------------------------------------------------------------
-
-/** Modo de reserva que define la semántica de tiempo del servicio. */
-export type BookingMode = 'slot' | 'block' | 'event';
-
-/**
- * Servicio ofrecido sobre un recurso (corte, masaje, tour, noche de hotel, etc.).
- * Pertenece a una `resource_category` y puede estar restringido a ciertos resources
- * mediante la tabla `resource_services`.
- */
-export interface BookableService {
-  id: string;
-  categoryId: string;
-  name: string;
-  description: string | null;
-  /**
-   * Duración en minutos.
-   * - `slot`: obligatorio (define el bloqueo en el calendario).
-   * - `block`: ignorado — la duración se calcula por fechas completas.
-   * - `event`: ignorado — el horario lo fija `ServiceSchedule`.
-   */
-  durationMinutes: number | null;
-  price: number;
-  active: boolean;
-}
-
-/**
- * Turno fijo de un servicio con `bookingMode = 'event'`.
- * Mapea a la tabla `service_schedules`.
- */
-export interface ServiceSchedule {
-  id: string;
-  serviceId: string;
-  /** 0 = Domingo … 6 = Sábado */
-  dayOfWeek: 0 | 1 | 2 | 3 | 4 | 5 | 6;
-  startTime: string; // 'HH:MM:SS'
-  maxCapacity: number;
-  active: boolean;
-}

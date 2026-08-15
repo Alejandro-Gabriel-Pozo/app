@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { BookableResource } from '../domain/entities.js';
+import { BookableResource } from '../domain/resource.entities.js';
 import { InMemoryResourceRepository } from './in-memory.resource.repository.js';
 
 describe('InMemoryResourceRepository', () => {

@@ -11,8 +11,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { ContactMethod } from '../domain/entities.js';
-import { Customer } from '../domain/entities.js';
+import type { ContactMethod } from '../domain/customer.entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import type { SqlClient } from './sql.client.js';
 import type { CustomerRepository, CustomerWithPassword, Tag } from './customer.repository.js';
 

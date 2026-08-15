@@ -59,7 +59,7 @@ import { SqlOperatingHoursRepository }        from '../../repositories/sql.opera
 import { SqlHousekeepingRepository }          from '../../repositories/housekeeping.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../services/reservation.service.js';
-import { Customer }                           from '../../domain/entities.js';
+import { Customer }                           from '../../domain/customer.entities.js';
 import {
   InvalidReservationError,
   ResourceNotFoundError,

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Customer } from '../domain/entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import type { CustomerRepository, CustomerWithPassword, Tag } from './customer.repository.js';
 import type { SqlClient } from './sql.client.js';
 

@@ -14,7 +14,7 @@ import { generateKeyPairSync, createSign, type KeyObject } from 'node:crypto';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { InMemoryCustomerRepository } from '../../repositories/in-memory.customer.repository.js';
 import { __resetGoogleJwksCacheForTests } from '../../security/google-oauth.js';
-import { Customer } from '../../domain/entities.js';
+import { Customer } from '../../domain/customer.entities.js';
 
 // ---------------------------------------------------------------------------
 // Setup de entorno

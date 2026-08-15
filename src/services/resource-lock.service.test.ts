@@ -5,7 +5,7 @@ import { ResourceNotFoundError } from '../domain/errors.js';
 import { InMemoryResourceLockRepository } from '../repositories/in-memory.resource-lock.repository.js';
 import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
 import { InMemoryResourceRepository } from '../repositories/in-memory.resource.repository.js';
-import { BookableResource } from '../domain/entities.js';
+import { BookableResource } from '../domain/resource.entities.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 

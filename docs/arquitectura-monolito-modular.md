@@ -229,6 +229,26 @@ archivo puede moverse a su carpeta de dominio mientras este archivo siga
 mezclado — es el primer paso literal antes de mover cualquier otra cosa,
 no una limpieza opcional.
 
+✅ **HECHO (15/08/2026).** Partido en `domain/customer.entities.ts`
+(`Customer`/`ContactMethod`) y `domain/resource.entities.ts`
+(`PhysicalResource` + el alias `BookableResource`, todavía usado en
+~8 archivos de test — no se tocó ese uso, es una limpieza aparte). Los
+27 archivos que importaban de `entities.js` se actualizaron.
+
+**Hallazgo real en el camino, no solo mover archivos:** `BookableService`/
+`ServiceSchedule`/`BookingMode` que vivían en `entities.ts` eran una
+**definición duplicada y muerta** — confirmado por grep exhaustivo, cero
+imports en todo el repo fuera del propio archivo. La definición real y
+usada (con `createdAt`/`updatedAt`/DTOs, más completa) ya vivía en
+`types/bookable-service.types.ts`. Se borraron en vez de moverlas — mover
+código muerto a la carpeta nueva solo hubiera arrastrado la confusión.
+
+Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo resultado
+que antes del split — ningún test cambió de comportamiento),
+`dependency-cruiser` sin violaciones nuevas (el único hallazgo,
+`supabase.occupancy.repository.ts`, es preexistente y no relacionado —
+ver C8 en `pendientes-2026-08-14.md`).
+
 ### Orden recomendado si se ejecuta
 
 1. Partir `entities.ts` (bloqueante, ver arriba).

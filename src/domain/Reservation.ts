@@ -31,7 +31,8 @@
 
 import { ReservationStatus } from '../types/enums.js';
 import { assertValidTimeRange } from './availability.js';
-import type { BookableResource, Customer } from './entities.js';
+import type { BookableResource } from './resource.entities.js';
+import type { Customer } from './customer.entities.js';
 import { InvalidReservationError } from './errors.js';
 import type { ReservationSnapshot, ReservationLine } from './reservation.types.js';
 

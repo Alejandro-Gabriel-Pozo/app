@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BookableResource } from '../../domain/entities.js';
+import { PhysicalResource } from '../../domain/resource.entities.js';
 import { ReservationStatus } from '../../types/enums.js';
 import type { ReservationSnapshot } from '../../domain/reservation.types.js';
 import type { VisualMetadata } from '../../types/visual.interface.js';
@@ -13,7 +13,7 @@ const makeResource = (
   categoryId = 'cat-cabin',
   basePrice  = 100,
   visualData: VisualMetadata | null = null,
-) => new BookableResource(id, 'Recurso Test', basePrice, categoryId, visualData);
+) => new PhysicalResource(id, 'Recurso Test', basePrice, categoryId, visualData);
 
 const makeSnapshot = (
   overrides: Partial<ReservationSnapshot> = {},
@@ -30,7 +30,7 @@ const makeSnapshot = (
 });
 
 // ---------------------------------------------------------------------------
-describe('BookableResource — construcción', () => {
+describe('PhysicalResource — construcción', () => {
   it('crea instancia con categoryId correcto', () => {
     const r = makeResource('r1', 'cat-spa');
     expect(r.categoryId).toBe('cat-spa');
@@ -49,20 +49,20 @@ describe('BookableResource — construcción', () => {
   });
 
   it('lanza si basePrice es negativo', () => {
-    expect(() => new BookableResource('r1', 'X', -1, 'cat-x')).toThrow(
+    expect(() => new PhysicalResource('r1', 'X', -1, 'cat-x')).toThrow(
       'basePrice no puede ser negativo',
     );
   });
 
   it('lanza si categoryId está vacío', () => {
-    expect(() => new BookableResource('r1', 'X', 0, '   ')).toThrow(
+    expect(() => new PhysicalResource('r1', 'X', 0, '   ')).toThrow(
       'categoryId es obligatorio',
     );
   });
 });
 
 // ---------------------------------------------------------------------------
-describe('BookableResource — isAvailable', () => {
+describe('PhysicalResource — isAvailable', () => {
   it('devuelve true cuando no hay reservas', () => {
     const r = makeResource();
     expect(r.isAvailable(start, end, NO_RESERVATIONS)).toBe(true);

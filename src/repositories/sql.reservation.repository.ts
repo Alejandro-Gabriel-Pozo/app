@@ -1,7 +1,7 @@
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from '../domain/Reservation.js';
 import type { ReservationRepository, ReservationFilters } from './reservation.repository.js';
-import { Customer } from '../domain/entities.js';
+import { Customer } from '../domain/customer.entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
 import type { SqlClient } from './sql.client.js';
 import type { ResourceRepository } from './resource.repository.js';

@@ -990,3 +990,51 @@ OAuth Client ID en Google Cloud Console (tipo "Web application", origen
 autorizado = el dominio real del frontend) y cargar `GOOGLE_CLIENT_ID`
 (Render) + `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (Vercel, mismo valor) — confirmado
 que todavía no existen.
+
+---
+
+## K. Reorganización de `src/` por dominio — paso 1 hecho (punto 6, 15/08/2026)
+
+El plan completo ya existía (`docs/arquitectura-monolito-modular.md`
+sección 4, diseñado el 15/08 más temprano) — no se rediseñó nada, se
+ejecutó tal cual el paso 1 que el propio documento marcaba como
+bloqueante: **partir `domain/entities.ts`**, que mezclaba tres bounded
+contexts en un solo archivo. Se sigue el criterio explícito del plan:
+"dominio por dominio... nunca en un solo commit gigante" — este commit es
+solo el paso 1, no la reorganización completa (pasos 2-5: mover
+`plataforma/`, `pms-estadias/`, `pos-menu/`, `reservas/`,
+`clientes-finanzas/` a carpetas propias — siguen sin ejecutar, ~150
+archivos de import a actualizar según la propia estimación del plan).
+
+- `domain/entities.ts` → `domain/customer.entities.ts` (`Customer`/
+  `ContactMethod`) + `domain/resource.entities.ts` (`PhysicalResource` +
+  alias `BookableResource`). 27 archivos que importaban del archivo viejo,
+  actualizados.
+- **Hallazgo real en el camino:** `BookableService`/`ServiceSchedule`/
+  `BookingMode` que vivían en `entities.ts` eran una definición
+  **duplicada y muerta** — cero imports reales en todo el repo (confirmado
+  por grep exhaustivo), superada hace tiempo por la definición real en
+  `types/bookable-service.types.ts` (más completa: `createdAt`/
+  `updatedAt`/DTOs). Se borraron en vez de moverlas a la carpeta nueva —
+  mover código muerto solo arrastra la confusión un paso más.
+- `tests/domain/entities.test.ts` renombrado a
+  `tests/domain/resource.entities.test.ts`, migrado de `BookableResource`
+  (alias `@deprecated`) a `PhysicalResource` directo — es el único archivo
+  de los ~8 que todavía usan el alias que se tocó, porque ya se estaba
+  moviendo igual. Los otros ~7 quedan con el alias tal cual, sin tocar
+  (limpieza aparte, no pedida).
+
+Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo resultado
+que antes del split — cero tests cambiaron de comportamiento), lint
+limpio, `dependency-cruiser` sin violaciones nuevas (el único hallazgo es
+preexistente y no relacionado — `supabase.occupancy.repository.ts`, ya
+documentado en `pendientes-2026-08-14.md` C8).
+
+**Siguen sin ejecutar, mismo criterio "dominio por dominio" del plan:**
+mover `plataforma/` (paso 2, el de menor riesgo — casi ya aislado, sirve
+de ensayo del proceso), `pms-estadias/`/`pos-menu/` (paso 3), `reservas/`/
+`clientes-finanzas/` (paso 4, al final — son los que más cruzan entre sí),
+y el carve-out de `inventario/` como agregado propio (paso 5 — nota: el
+handler de outbox que motivaba este paso ya se enganchó hoy, D1 de
+`pendientes-2026-08-15.md` sección F; falta la parte de convertirlo en
+módulo separado, no solo el enganche).
