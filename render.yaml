@@ -110,3 +110,17 @@ services:
       # Dirección verificada (SPF/DKIM) en Resend — ej. notificaciones@zuluhub.com.ar
       - key: RESEND_FROM_EMAIL
         sync: false
+
+      # ---------------------------------------------------------------------------
+      # Login con Google (punto 5/E5, segunda mitad — pendientes-2026-08-15.md)
+      # Sin esto, POST /api/login/google y /api/customer/:slug/login/google
+      # rechazan con un error claro (fail-closed a propósito, es un camino de
+      # auth, no como el mail) — google-oauth.ts, security/auth.service.ts.
+      # ---------------------------------------------------------------------------
+
+      # Google Cloud Console → APIs & Services → Credentials → OAuth client ID.
+      # El MISMO Client ID que NEXT_PUBLIC_GOOGLE_CLIENT_ID en el frontend
+      # (Vercel) -- es público por diseño de OAuth, no es un secreto, pero
+      # igual va acá para no tenerlo hardcodeado en el código del backend.
+      - key: GOOGLE_CLIENT_ID
+        sync: false

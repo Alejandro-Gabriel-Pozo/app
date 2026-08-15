@@ -116,6 +116,17 @@ CREATE TABLE IF NOT EXISTS identities (
 CREATE INDEX IF NOT EXISTS idx_identities_email
   ON identities (email);
 
+-- Login con Google (punto 5/E5, 15/08/2026) — método ADICIONAL sobre una
+-- identity que ya existe (creada por un admin vía el ABM de usuarios), no
+-- auto-crea cuentas de staff nuevas. `sub` es el ID estable de la cuenta de
+-- Google (nunca cambia, a diferencia del email) — se matchea primero por
+-- `sub`, y solo la primera vez (sin `sub` guardado todavía) por email
+-- verificado. Nullable: la gran mayoría de las identities no lo usan.
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_identities_google_sub
+  ON identities (google_sub) WHERE google_sub IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS memberships (
   id            VARCHAR(255) PRIMARY KEY,
   identity_id   VARCHAR(255) NOT NULL

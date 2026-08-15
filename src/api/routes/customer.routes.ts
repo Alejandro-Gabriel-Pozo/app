@@ -151,6 +151,11 @@ const LoginCustomerSchema = z.object({
   password: z.string().min(1),
 });
 
+/** Body de POST /:businessSlug/login/google (punto 5/E5, 15/08/2026). */
+const GoogleLoginCustomerSchema = z.object({
+  idToken: z.string().min(1, { message: 'idToken es obligatorio' }),
+});
+
 const CreateCustomerReservationSchema = z.object({
   categoryId: z.string().min(1),
   resourceId: z.string().min(1),
@@ -341,6 +346,42 @@ export function createCustomerRouter(
         const code = (err as NodeJS.ErrnoException).code;
         if (code === 'INVALID_CREDENTIALS') {
           res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Email o contraseña incorrectos' });
+          return;
+        }
+        next(err);
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/customer/:businessSlug/login/google (punto 5/E5, 15/08/2026)
+  // A diferencia de /login, SÍ auto-crea un customer nuevo si el email no
+  // existe todavía (self-service) — ver docblock de
+  // CustomerAuthService.loginWithGoogle().
+  // -------------------------------------------------------------------------
+  router.post(
+    '/:businessSlug/login/google',
+    loginLimiter,
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const slug = String(req.params.businessSlug);
+        const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
+
+        const body = GoogleLoginCustomerSchema.parse(req.body);
+        const { customerRepo } = buildService(client, getTenantRawPool(businessId));
+        const authService = new CustomerAuthService(customerRepo, businessId);
+        const result = await authService.loginWithGoogle(body.idToken);
+
+        res.json({
+          token: result.token,
+          tokenType: 'Bearer',
+          customer: result.customer,
+        });
+      } catch (err) {
+        if (isTenantError(err)) { respondTenantError(err, res); return; }
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'GOOGLE_TOKEN_INVALID') {
+          res.status(401).json({ code, message: 'El token de Google no es válido.' });
           return;
         }
         next(err);

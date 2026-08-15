@@ -124,6 +124,13 @@ const SelectBusinessBodySchema = z.object({
     .min(1, { message: 'businessId es obligatorio' }),
 });
 
+/** Body de `POST /api/login/google` (punto 5/E5, 15/08/2026). */
+const GoogleLoginBodySchema = z.object({
+  idToken: z
+    .string({ required_error: 'idToken es obligatorio' })
+    .min(1, { message: 'idToken es obligatorio' }),
+});
+
 // ---------------------------------------------------------------------------
 // Factory del router
 // ---------------------------------------------------------------------------
@@ -275,6 +282,56 @@ export function createAuthRouter(authService: AuthService): Router {
             code: 'INVALID_BUSINESS_SELECTION',
             message: 'Selección de negocio inválida o expirada. Iniciá sesión de nuevo.',
           });
+          return;
+        }
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * @swagger
+   * /api/login/google:
+   *   post:
+   *     summary: Login con Google (staff) — método adicional sobre una identity que ya existe
+   *     tags:
+   *       - Auth
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [idToken]
+   *             properties:
+   *               idToken: { type: string }
+   *     responses:
+   *       200:
+   *         description: Autenticación exitosa (mismo shape que POST /api/login)
+   *       401:
+   *         description: Token de Google inválido, o ninguna cuenta de staff con ese email
+   */
+  router.post(
+    '/google',
+    loginRateLimiter,
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body = GoogleLoginBodySchema.parse(req.body);
+        const result = await authService.loginWithGoogle(body.idToken);
+
+        if ('token' in result) {
+          setAuthCookie(res, result.token, result.expiresIn);
+        }
+
+        res.status(200).json(result);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'GOOGLE_TOKEN_INVALID') {
+          res.status(401).json({ code, message: 'El token de Google no es válido.' });
+          return;
+        }
+        if (code === 'GOOGLE_ACCOUNT_NOT_LINKED') {
+          res.status(401).json({ code, message: (err as Error).message });
           return;
         }
         next(err);

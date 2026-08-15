@@ -44,6 +44,21 @@ export interface CustomerRepository {
    */
   getByEmailWithPassword(email: string): Promise<CustomerWithPassword | undefined>;
 
+  // ── Login con Google del portal (punto 5/E5, 15/08/2026) ────────────────
+
+  /** Matchea por `google_sub` — estable de por vida, ver schema.sql para el porqué. */
+  getByGoogleSub(sub: string): Promise<Customer | undefined>;
+
+  /** Primer login con Google de un customer ya existente (manual o con password) — vincula el `sub`. */
+  linkGoogleSub(customerId: string, sub: string): Promise<void>;
+
+  /**
+   * Alta por Google Sign-In — sin password (a diferencia de
+   * saveWithPassword). Solo para customers genuinamente nuevos, nunca
+   * llamar si ya existe uno con ese email (usar linkGoogleSub en ese caso).
+   */
+  saveWithGoogle(customer: Customer, googleSub: string): Promise<void>;
+
   searchByName(name: string): Promise<Customer[]>;
   delete(id: string): Promise<boolean>;
 

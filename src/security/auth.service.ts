@@ -37,6 +37,7 @@
 
 import { signToken, verifyToken } from './auth.middleware.js';
 import { verifyPassword } from './user.store.js';
+import { verifyGoogleIdToken } from './google-oauth.js';
 import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
 
 // ---------------------------------------------------------------------------
@@ -114,6 +115,42 @@ export class AuthService {
       throw invalidCredentialsError();
     }
 
+    return this.resolveLoginOutcome(identity);
+  }
+
+  /**
+   * Login con Google (punto 5/E5, pendientes-2026-08-15.md) — método
+   * ADICIONAL sobre una identity que YA existe (creada por un admin vía el
+   * ABM de usuarios). No auto-crea cuentas de staff nuevas: a diferencia
+   * del portal de clientes, un alta de staff es una decisión del negocio,
+   * no self-service.
+   *
+   * Matchea primero por `google_sub` (estable de por vida); si es la
+   * primera vez, por el email verificado de Google y recién ahí vincula el
+   * `sub` — ver platform.schema.sql para el porqué de las dos vías.
+   *
+   * @throws `Error` con `code: 'GOOGLE_ACCOUNT_NOT_LINKED'` si no hay
+   *   ninguna identity de staff con ese email — a diferencia de
+   *   INVALID_CREDENTIALS, acá SÍ tiene sentido decir la verdad: Google ya
+   *   probó que el email es real, no es una superficie de adivinar
+   *   contraseñas.
+   */
+  async loginWithGoogle(idToken: string): Promise<LoginOutcome> {
+    const google = await verifyGoogleIdToken(idToken);
+
+    let identity = await this.platformRepo.findIdentityByGoogleSub(google.sub);
+
+    if (!identity) {
+      identity = await this.platformRepo.findIdentityByEmail(google.email);
+      if (!identity) throw googleAccountNotLinkedError();
+      await this.platformRepo.linkGoogleAccount(identity.id, google.sub);
+    }
+
+    return this.resolveLoginOutcome(identity);
+  }
+
+  /** Común a login() y loginWithGoogle() una vez resuelta la identity. */
+  private async resolveLoginOutcome(identity: Identity): Promise<LoginOutcome> {
     const memberships = await this.platformRepo.findActiveMembershipsByIdentityId(identity.id);
 
     if (memberships.length === 0) {
@@ -230,6 +267,12 @@ function requireJwtSecret(): string {
 function invalidCredentialsError(): Error {
   const err = new Error('Credenciales inválidas');
   (err as NodeJS.ErrnoException).code = 'INVALID_CREDENTIALS';
+  return err;
+}
+
+function googleAccountNotLinkedError(): Error {
+  const err = new Error('No hay ninguna cuenta de staff con ese email. Pedile a un administrador que te dé de alta primero.');
+  (err as NodeJS.ErrnoException).code = 'GOOGLE_ACCOUNT_NOT_LINKED';
   return err;
 }
 

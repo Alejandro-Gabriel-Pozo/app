@@ -109,6 +109,45 @@ export class SqlCustomerRepository implements CustomerRepository {
     return { customer: rowsToCustomer(rows), passwordHash: rows[0].password_hash };
   }
 
+  async getByGoogleSub(sub: string): Promise<Customer | undefined> {
+    const { rows } = await this.sqlClient.query<CustomerRow>(
+      `${BASE_SELECT} WHERE c.google_sub = $1`,
+      [sub],
+    );
+    return rows.length ? rowsToCustomer(rows) : undefined;
+  }
+
+  async linkGoogleSub(customerId: string, sub: string): Promise<void> {
+    await this.sqlClient.query(
+      `UPDATE customers SET google_sub = $1, updated_at = NOW() WHERE id = $2`,
+      [sub, customerId],
+    );
+  }
+
+  async saveWithGoogle(customer: Customer, googleSub: string): Promise<void> {
+    await this.sqlClient.query(
+      `INSERT INTO customers (id, display_name, full_name, email, google_sub)
+       VALUES ($1, $2, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET
+         display_name = $2,
+         full_name    = $2,
+         email        = $3,
+         google_sub   = $4,
+         updated_at   = CURRENT_TIMESTAMP`,
+      [customer.id, customer.displayName, customer.email, googleSub],
+    );
+    for (const cm of customer.contactMethods) {
+      await this.sqlClient.query(
+        `INSERT INTO customer_contact_methods
+           (id, customer_id, channel, value, is_primary)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (customer_id, channel, value) DO UPDATE SET
+           is_primary = EXCLUDED.is_primary`,
+        [cm.id ?? `ccm-${randomUUID()}`, customer.id, cm.channel, cm.value, cm.isPrimary],
+      );
+    }
+  }
+
   async searchByName(name: string): Promise<Customer[]> {
     const { rows } = await this.sqlClient.query<CustomerRow>(
       `${BASE_SELECT}
@@ -149,6 +188,7 @@ export class SqlCustomerRepository implements CustomerRepository {
            full_name     = '[eliminado]',
            email         = $1,
            password_hash = NULL,
+           google_sub    = NULL,
            updated_at    = CURRENT_TIMESTAMP
          WHERE id = $2
            AND display_name != '[eliminado]'`,

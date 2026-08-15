@@ -919,19 +919,74 @@ fila `'default'` existe, `schema_migrations` en versión 9).
 (o el proveedor que se termine eligiendo) + dominio verificado (SPF/DKIM)
 + cargar las dos variables en Render.
 
-### Login con Google — sin empezar, sigue pendiente
+### Login con Google — ✅ HECHO, mitad 2 del punto 5 (15/08/2026)
 
-Alcance confirmado por el dueño: aplica a **staff y portal de clientes**,
-los dos. No se tocó nada todavía — es un bloque de trabajo propio,
-separado del de mails:
-- Verificación de ID token de Google (JWKS + RS256, mismo criterio de
-  minimizar dependencias que ya usa el JWT propio con `node:crypto` — no
-  hace falta una librería para esto).
-- Vínculo con `identities` (staff) — hoy el login es 100% email+password,
-  hay que decidir cómo conviven las dos formas de entrar a la misma
-  cuenta (¿un email de Google que ya tiene contraseña local qué hace?).
-- Lo mismo para el portal de clientes (`customer.auth.service.ts`),
-  sistema de auth separado (A2.4 — los dos dominios no se cruzan).
-- Credenciales de Google Cloud Console (Client ID/Secret) — confirmado
-  que todavía no existen, hay que crearlas.
-- Botón de Google Sign-In en el frontend (panel y portal).
+Alcance confirmado por el dueño: staff y portal de clientes, los dos.
+
+- `security/google-oauth.ts` — `verifyGoogleIdToken()`: JWKS + RS256 con
+  `node:crypto` (`createPublicKey`/`createVerify` importando el JWK
+  nativo, sin parsear PEM a mano) — mismo criterio de minimizar
+  dependencias que el JWT propio. Valida firma, `exp`, `iss`, `aud`
+  (`GOOGLE_CLIENT_ID`, obligatoria — sin esto cualquier token de Google
+  válido para OTRA app pasaría) y `email_verified`. Reintento con refresh
+  forzado del JWKS si el `kid` no aparece en la cache (Google rotó
+  claves) — mejora real encontrada escribiendo los tests, no solo un
+  parche para que pasen (ver más abajo).
+- **STAFF** (`AuthService.loginWithGoogle()`, `POST /api/login/google`):
+  método ADICIONAL sobre una identity que YA existe — no auto-crea
+  cuentas de staff (alta de empleado sigue siendo decisión del negocio,
+  vía el ABM de usuarios). Matchea primero por `google_sub`
+  (`identities.google_sub`, platform DB), y solo la primera vez por email
+  verificado — ahí vincula. Si no hay ninguna identity con ese email,
+  `GOOGLE_ACCOUNT_NOT_LINKED` (a diferencia de `INVALID_CREDENTIALS`, acá
+  sí tiene sentido decir la verdad: Google ya probó que el email es real).
+- **PORTAL** (`CustomerAuthService.loginWithGoogle()`,
+  `POST /api/customer/:slug/login/google`): SÍ auto-crea si el email no
+  existe (self-service, `customers.google_sub`, tenant DB). Si ya existe
+  un customer con ese email (cargado a mano por el negocio, o
+  autoregistrado antes por password) lo VINCULA en vez de duplicar —
+  **este es el camino de "reclamo" que la sección B5 de hoy dejaba sin
+  diseñar.** No la cierra del todo (sigue sin existir fusión de
+  historial si hiciera falta), pero resuelve el caso concreto más común:
+  hoy `register()` rechaza con `EMAIL_TAKEN` sin ofrecer ninguna salida a
+  un cliente que el negocio ya cargó — Google, al probar la propiedad del
+  email, la ofrece.
+- `GoogleSignInButton` (frontend, compartido entre panel y portal) — no
+  renderiza nada sin `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (no un botón roto).
+- **A7.4** (anonimizar de verdad): de paso, encontrado y corregido un
+  descuido que YA existía antes de esta sesión — `anonymize()` de
+  clientes limpiaba `password_hash` pero no `google_sub` (ni en la
+  versión SQL real ni en la in-memory de tests). Un cliente anonimizado
+  hubiera quedado con un identificador externo vivo, pudiendo re-vincular
+  la cuenta "eliminada". Corregido en los dos.
+
+**Hallazgo de calidad de tests, corregido antes de confiar en la
+cobertura:** la cache de JWKS es a nivel de módulo (deliberada en
+producción, para no pegarle a Google en cada login) — sin resetearla
+entre tests, 6 de los 7 casos de `google-oauth.test.ts` "pasaban" por la
+razón equivocada (cualquier fallo de firma devuelve el mismo código de
+error, así que una cache contaminada de OTRO test y un token realmente
+inválido eran indistinguibles para las aserciones). Se agregó
+`__resetGoogleJwksCacheForTests()`, usado en los tres archivos de test
+que ejercitan esto.
+
+**Schema:** `identities.google_sub` (platform DB) — se aplica solo en el
+próximo deploy, `server.ts` corre `platform.schema.sql` en cada boot, sin
+versionado propio. `customers.google_sub` (tenant DB, schema v10) **sí se
+aplicó y verificó contra `production` real** hoy (mismo proceso que
+`business_profile`/D1/F: branch temporal primero — incluyendo un intento
+real de insertar dos customers con el mismo `google_sub`, rechazado por
+el índice único — después aplicado igual contra `production` y
+reconfirmado).
+
+Verificado: `tsc --noEmit` limpio (los dos repos), `npm test` 433/434
+(+29 tests nuevos entre `google-oauth.test.ts`, `auth.service.test.ts` y
+`customer.auth.service.test.ts` — incluye el round-trip criptográfico real
+con un par RSA generado en el test, sin credenciales de Google), lint
+limpio en los dos repos, `next build` limpio (22 rutas).
+
+**Pendiente real para poder loguearse con Google de verdad:** crear el
+OAuth Client ID en Google Cloud Console (tipo "Web application", origen
+autorizado = el dominio real del frontend) y cargar `GOOGLE_CLIENT_ID`
+(Render) + `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (Vercel, mismo valor) — confirmado
+que todavía no existen.

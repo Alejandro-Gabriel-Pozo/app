@@ -47,6 +47,8 @@ export interface Identity {
   id: string;
   email: string;
   passwordHash: string;
+  /** Login con Google (punto 5/E5) — null hasta que se vincule. */
+  googleSub: string | null;
   createdAt: Date;
 }
 
@@ -311,6 +313,26 @@ export class PlatformRepository {
       [id],
     );
     return result.rows[0] ? this.rowToIdentity(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Login con Google — matchear primero por `sub` (estable de por vida),
+   * ver docblock de la columna en platform.schema.sql para el porqué.
+   */
+  async findIdentityByGoogleSub(sub: string): Promise<Identity | undefined> {
+    const result = await this.db.query<IdentityRow>(
+      'SELECT * FROM identities WHERE google_sub = $1',
+      [sub],
+    );
+    return result.rows[0] ? this.rowToIdentity(result.rows[0]) : undefined;
+  }
+
+  /** Primer login con Google de una identity existente — vincula el `sub`. */
+  async linkGoogleAccount(identityId: string, sub: string): Promise<void> {
+    await this.db.query(
+      'UPDATE identities SET google_sub = $1, updated_at = NOW() WHERE id = $2',
+      [sub, identityId],
+    );
   }
 
   async createIdentity(input: CreateIdentityInput): Promise<Identity> {
@@ -586,6 +608,7 @@ export class PlatformRepository {
       id: row.id,
       email: row.email,
       passwordHash: row.password_hash,
+      googleSub: row.google_sub,
       createdAt: new Date(row.created_at),
     };
   }
@@ -625,6 +648,7 @@ interface IdentityRow {
   id: string;
   email: string;
   password_hash: string;
+  google_sub: string | null;
   created_at: string;
 }
 

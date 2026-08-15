@@ -141,7 +141,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v9 (15/08/2026): BLOQUE 15 — business_profile (MAESTRO singleton) nueva,
 // identidad del negocio para el remitente de mails (punto 5/E5,
 // pendientes-2026-08-15.md).
-export const CURRENT_SCHEMA_VERSION = 9;
+// v10 (15/08/2026): customers.google_sub — login con Google del portal
+// (punto 5/E5, segunda mitad). identities.google_sub (staff) vive en
+// platform.schema.sql, sin versionado propio — se reaplica en cada boot.
+export const CURRENT_SCHEMA_VERSION = 10;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

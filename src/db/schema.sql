@@ -244,6 +244,16 @@ CREATE TABLE IF NOT EXISTS customers (
 -- no hace nada (no tira error al re-ejecutarse).
 ALTER TABLE customers ALTER COLUMN password_hash DROP NOT NULL;
 
+-- Login con Google del portal (punto 5/E5, 15/08/2026) — a diferencia de
+-- identities (staff), acá SÍ se auto-crea un customer nuevo si el email no
+-- existe todavía (self-service, mismo criterio que el registro actual).
+-- Mismo patrón sub-primero-email-después que identities.google_sub — ver
+-- ese comentario para el porqué.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_google_sub
+  ON customers (google_sub) WHERE google_sub IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_customers_email
   ON customers (email) WHERE active = TRUE;
 

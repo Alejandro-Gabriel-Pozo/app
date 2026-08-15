@@ -10,8 +10,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { generateKeyPairSync, createSign, type KeyObject } from 'node:crypto';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { InMemoryCustomerRepository } from '../../repositories/in-memory.customer.repository.js';
+import { __resetGoogleJwksCacheForTests } from '../../security/google-oauth.js';
+import { Customer } from '../../domain/entities.js';
 
 // ---------------------------------------------------------------------------
 // Setup de entorno
@@ -152,5 +155,92 @@ describe('CustomerAuthService — login', () => {
     await service.register({ fullName: 'Case Test', email: 'Case@Example.COM', password: 'pass1234' });
     const result = await service.login({ email: 'case@example.com', password: 'pass1234' });
     expect(result.token).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loginWithGoogle() — punto 5/E5, 15/08/2026
+// ---------------------------------------------------------------------------
+
+function base64Url(input: Buffer | string): string {
+  const buf = typeof input === 'string' ? Buffer.from(input) : input;
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function signGoogleIdToken(privateKey: KeyObject, payload: Record<string, unknown>, kid: string): string {
+  const header = base64Url(JSON.stringify({ alg: 'RS256', kid, typ: 'JWT' }));
+  const body = base64Url(JSON.stringify(payload));
+  const signer = createSign('RSA-SHA256');
+  signer.update(`${header}.${body}`);
+  return `${header}.${body}.${base64Url(signer.sign(privateKey))}`;
+}
+
+describe('CustomerAuthService.loginWithGoogle()', () => {
+  const KID = 'test-kid';
+  const ORIGINAL_GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const originalFetch = global.fetch;
+  let privateKey: KeyObject;
+
+  beforeEach(() => {
+    __resetGoogleJwksCacheForTests();
+    process.env.GOOGLE_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+
+    const { publicKey, privateKey: priv } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    privateKey = priv;
+    const jwk = { ...publicKey.export({ format: 'jwk' }), kid: KID, alg: 'RS256' };
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ keys: [jwk] }) }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (ORIGINAL_GOOGLE_CLIENT_ID !== undefined) process.env.GOOGLE_CLIENT_ID = ORIGINAL_GOOGLE_CLIENT_ID;
+    else delete process.env.GOOGLE_CLIENT_ID;
+  });
+
+  function googleToken(overrides: Record<string, unknown> = {}) {
+    const now = Math.floor(Date.now() / 1000);
+    return signGoogleIdToken(privateKey, {
+      sub: 'google-sub-1', email: 'nuevo@example.com', email_verified: true, name: 'Cliente Nuevo',
+      iss: 'https://accounts.google.com', aud: 'test-client-id.apps.googleusercontent.com',
+      iat: now, exp: now + 3600, ...overrides,
+    }, KID);
+  }
+
+  it('auto-crea un customer nuevo si el email no existe todavía (self-service)', async () => {
+    const { repo, service } = makeService();
+    const result = await service.loginWithGoogle(googleToken());
+
+    expect(result.customer.email).toBe('nuevo@example.com');
+    expect(result.customer.fullName).toBe('Cliente Nuevo');
+    const stored = await repo.getByGoogleSub('google-sub-1');
+    expect(stored?.id).toBe(result.customer.id);
+  });
+
+  it('vincula (no duplica) un customer que el negocio ya cargó a mano con ese email', async () => {
+    const { repo, service } = makeService();
+    await repo.save(
+      new Customer('cust-manual-1', 'Cliente Cargado a Mano', [
+        { id: 'ccm-1', channel: 'EMAIL', value: 'nuevo@example.com', isPrimary: true },
+      ]),
+    );
+
+    const result = await service.loginWithGoogle(googleToken());
+
+    expect(result.customer.id).toBe('cust-manual-1');
+    expect((await repo.getAll())).toHaveLength(1); // no duplicó
+  });
+
+  it('segunda vez: matchea directo por google_sub', async () => {
+    const { repo, service } = makeService();
+    const first = await service.loginWithGoogle(googleToken());
+    const second = await service.loginWithGoogle(googleToken());
+
+    expect(second.customer.id).toBe(first.customer.id);
+    expect((await repo.getAll())).toHaveLength(1);
+  });
+
+  it('propaga GOOGLE_TOKEN_INVALID si la verificación del token falla', async () => {
+    const { service } = makeService();
+    await expect(service.loginWithGoogle('token-malformado')).rejects.toMatchObject({ code: 'GOOGLE_TOKEN_INVALID' });
   });
 });

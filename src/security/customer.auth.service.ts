@@ -8,6 +8,7 @@ import type { CustomerRepository } from '../repositories/customer.repository.js'
 import { Customer } from '../domain/entities.js';
 import { hashPassword, verifyPassword } from './user.store.js';
 import { signToken } from './auth.middleware.js';
+import { verifyGoogleIdToken } from './google-oauth.js';
 import { UserRole } from '../types/enums.js';
 
 export interface CustomerRegistrationInput {
@@ -91,6 +92,40 @@ export class CustomerAuthService {
         email:    record.customer.email ?? '',
       },
     };
+  }
+
+  /**
+   * Login con Google del portal (punto 5/E5, pendientes-2026-08-15.md) —
+   * a diferencia del staff, SÍ auto-crea un customer nuevo si el email no
+   * existe todavía (self-service, mismo criterio que register()).
+   *
+   * Matchea primero por `google_sub`; si es la primera vez, por el email
+   * verificado de Google. Si YA existe un customer con ese email (cargado
+   * a mano por el negocio, o autoregistrado antes por password) lo VINCULA
+   * en vez de crear uno nuevo — es el camino de "reclamo" que hoy no
+   * existe por otra vía (`register()` rechaza con `EMAIL_TAKEN` en ese
+   * caso, sin ofrecer ninguna salida).
+   */
+  async loginWithGoogle(idToken: string): Promise<CustomerAuthResult> {
+    const google = await verifyGoogleIdToken(idToken);
+
+    let customer = await this.customerRepository.getByGoogleSub(google.sub);
+
+    if (!customer) {
+      customer = await this.customerRepository.getByEmail(google.email);
+      if (customer) {
+        await this.customerRepository.linkGoogleSub(customer.id, google.sub);
+      } else {
+        const id = randomUUID();
+        customer = new Customer(id, google.name ?? google.email, [
+          { id: `ccm-${id}`, channel: 'EMAIL', value: google.email, isPrimary: true },
+        ]);
+        await this.customerRepository.saveWithGoogle(customer, google.sub);
+      }
+    }
+
+    const token = this.issueToken(customer.id);
+    return { token, customer: { id: customer.id, fullName: customer.fullName, email: customer.email ?? '' } };
   }
 
   private issueToken(customerId: string): string {

@@ -6,6 +6,7 @@ import type { SqlClient } from './sql.client.js';
 interface CustomerRecord {
   customer: Customer;
   passwordHash: string | null;
+  googleSub: string | null;
 }
 
 /**
@@ -15,21 +16,44 @@ interface CustomerRecord {
 export class InMemoryCustomerRepository implements CustomerRepository {
   private readonly store = new Map<string, CustomerRecord>();
   private readonly emailIndex = new Map<string, string>(); // email.lower → id
+  private readonly googleSubIndex = new Map<string, string>(); // google_sub → id
   private readonly tags = new Map<string, Tag>(); // tagId → Tag
   private readonly customerTags = new Map<string, Set<string>>(); // customerId → Set<tagId>
 
   async save(customer: Customer): Promise<void> {
     const existing = this.store.get(customer.id);
     const passwordHash = existing?.passwordHash ?? null;
-    this.store.set(customer.id, { customer, passwordHash });
+    const googleSub = existing?.googleSub ?? null;
+    this.store.set(customer.id, { customer, passwordHash, googleSub });
     const email = customer.email;
     if (email) this.emailIndex.set(email.toLowerCase(), customer.id);
   }
 
   async saveWithPassword(customer: Customer, passwordHash: string): Promise<void> {
-    this.store.set(customer.id, { customer, passwordHash });
+    const existing = this.store.get(customer.id);
+    this.store.set(customer.id, { customer, passwordHash, googleSub: existing?.googleSub ?? null });
     const email = customer.email;
     if (email) this.emailIndex.set(email.toLowerCase(), customer.id);
+  }
+
+  async getByGoogleSub(sub: string): Promise<Customer | undefined> {
+    const id = this.googleSubIndex.get(sub);
+    return id ? this.store.get(id)?.customer : undefined;
+  }
+
+  async linkGoogleSub(customerId: string, sub: string): Promise<void> {
+    const record = this.store.get(customerId);
+    if (!record) return;
+    this.store.set(customerId, { ...record, googleSub: sub });
+    this.googleSubIndex.set(sub, customerId);
+  }
+
+  async saveWithGoogle(customer: Customer, googleSub: string): Promise<void> {
+    const existing = this.store.get(customer.id);
+    this.store.set(customer.id, { customer, passwordHash: existing?.passwordHash ?? null, googleSub });
+    const email = customer.email;
+    if (email) this.emailIndex.set(email.toLowerCase(), customer.id);
+    this.googleSubIndex.set(googleSub, customer.id);
   }
 
   async saveWithClient(
@@ -90,6 +114,7 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     }
 
     if (currentEmail) this.emailIndex.delete(currentEmail.toLowerCase());
+    if (record.googleSub) this.googleSubIndex.delete(record.googleSub);
 
     const anonymizedCustomer = new Customer(
       id,
@@ -97,7 +122,9 @@ export class InMemoryCustomerRepository implements CustomerRepository {
       `deleted-${id}@anon.local`,
     );
 
-    this.store.set(id, { customer: anonymizedCustomer, passwordHash: null });
+    // googleSub también se limpia -- A7.4 (anonimizar de verdad, no dejar
+    // ningún identificador externo vivo que pueda re-vincular la cuenta).
+    this.store.set(id, { customer: anonymizedCustomer, passwordHash: null, googleSub: null });
     return true;
   }
 
@@ -113,7 +140,7 @@ export class InMemoryCustomerRepository implements CustomerRepository {
       kind,
       active,
     );
-    this.store.set(customerId, { customer: updated, passwordHash: record.passwordHash });
+    this.store.set(customerId, { customer: updated, passwordHash: record.passwordHash, googleSub: record.googleSub });
   }
 
   async getTagsByCustomerId(customerId: string): Promise<Tag[]> {
