@@ -439,6 +439,30 @@ al cancelarla, cuando corresponde.
   confirm) — no se improvisó ahora, queda para cuando el dueño decida
   priorizarlo.
 
+  **Trade-offs de las dos opciones (análisis del dueño, 15/08/2026,
+  dejado anotado para cuando se retome):**
+  - **`SELECT ... FOR UPDATE` durante el chequeo** — más simple de
+    implementar, pero el lock se sostiene durante toda la validación. Si
+    `checkStock()` valida varios ítems de productos distintos en la
+    misma orden, cada uno necesita su propio lock, y hay que cuidar el
+    orden en que se piden esos locks entre requests concurrentes — si
+    dos órdenes piden los mismos dos productos en orden distinto, hay
+    riesgo de deadlock.
+  - **Mover el decremento a la transacción de `confirmOrder()`** —
+    cambio más de fondo: deja de ser "chequeo síncrono + decremento
+    async vía outbox" y pasa a ser todo atómico en un solo commit.
+    Elimina el gap de raíz (ya no hay ventana entre chequeo y
+    decremento). Verificado qué más escucha `order.confirmed` hoy (solo
+    dos consumidores, `handleOrderConfirmed` financiero y
+    `handleOrderConfirmedStock`, corren en paralelo vía `Promise.all` en
+    `OutboxWorker.dispatch()`, el financiero no depende de inventario) —
+    **el ajuste real no es solo "revisar el orden"**: `registerInventoryHandlers`
+    ya no debe registrar un handler para `order.confirmed` (el índice
+    único de `stock_movements` evitaría un doble descuento real vía
+    `ON CONFLICT DO NOTHING`, pero el handler quedaría muerto, insertando
+    en el vacío). El único consumidor de inventario que seguiría
+    viviendo en el outbox sería `handleOrderCancelledStock`.
+
 ### D2. Manual de reglas de negocio de inventario — puntos que quedan afuera a propósito (15/08/2026)
 
 El dueño aportó un manual completo (hotelería/gastronomía/e-commerce,
