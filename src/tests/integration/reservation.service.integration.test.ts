@@ -55,7 +55,7 @@ import { SqlDomainEventRepository }           from '../../repositories/sql.domai
 import { SqlResourceLockRepository }          from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository }       from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRateRepository }          from '../../repositories/sql.customer-rate.repository.js';
-import { SqlOperatingHoursRepository }        from '../../repositories/sql.operating-hours.repository.js';
+import { SqlOperatingHoursRepository }        from '../../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }          from '../../repositories/housekeeping.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../services/reservation.service.js';

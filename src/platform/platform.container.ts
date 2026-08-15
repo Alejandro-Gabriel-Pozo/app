@@ -9,7 +9,7 @@
  */
 
 import { PlatformRepository } from './platform.repository.js';
-import { PlatformAuthService } from '../security/platform.auth.service.js';
+import { PlatformAuthService } from './platform.auth.service.js';
 import { createPlatformPool } from '../container.js';
 
 export interface PlatformContainer {

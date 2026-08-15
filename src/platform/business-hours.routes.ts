@@ -14,12 +14,12 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
-import { authorize } from '../../security/auth.middleware.js';
-import { Roles } from '../../security/roles.js';
-import { SqlOperatingHoursRepository } from '../../repositories/sql.operating-hours.repository.js';
-import { windowsOverlap } from '../../repositories/operating-hours.repository.js';
-import { CreateOperatingWindowSchema } from '../schemas/request.schemas.js';
-import type { AppContainer } from '../../container.js';
+import { authorize } from '../security/auth.middleware.js';
+import { Roles } from '../security/roles.js';
+import { SqlOperatingHoursRepository } from './sql.operating-hours.repository.js';
+import { windowsOverlap } from './operating-hours.repository.js';
+import { CreateOperatingWindowSchema } from '../api/schemas/request.schemas.js';
+import type { AppContainer } from '../container.js';
 
 export function createBusinessHoursRouter(_container: AppContainer): Router {
   const router = Router();

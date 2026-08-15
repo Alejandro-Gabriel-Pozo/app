@@ -6,7 +6,7 @@
  * de sucursal en el resto de la app todavía).
  */
 
-import type { SqlClient } from './sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface Location {
   id: string;

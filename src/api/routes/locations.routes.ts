@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
-import { SqlLocationRepository } from '../../repositories/location.repository.js';
+import { SqlLocationRepository } from '../../platform/location.repository.js';
 
 const CreateLocationSchema = z.object({
   name: z.string().min(1, 'name es obligatorio').max(120),

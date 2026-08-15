@@ -9,7 +9,7 @@ import { InMemoryOccupancyRepository } from '../repositories/in-memory.occupancy
 import { InMemoryResourceLockRepository } from '../repositories/in-memory.resource-lock.repository.js';
 import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
 import { InMemoryCustomerRateRepository } from '../repositories/in-memory.customer-rate.repository.js';
-import { InMemoryOperatingHoursRepository } from '../repositories/in-memory.operating-hours.repository.js';
+import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
 import { InMemoryHousekeepingRepository } from '../repositories/in-memory.housekeeping.repository.js';
 import { HousekeepingTask } from '../domain/housekeeping-task.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';

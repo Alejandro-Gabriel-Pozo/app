@@ -22,11 +22,11 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
-import { authorize } from '../middleware/auth.middleware.wrapper.js';
-import type { PlatformRepository } from '../../platform/platform.repository.js';
-import { encryptConnectionString, applyTenantSchema } from '../../platform/tenant-db.setup.js';
-import { evictTenantPool } from '../../platform/tenant.middleware.js';
-import { Roles } from '../../security/roles.js';
+import { authorize } from '../api/middleware/auth.middleware.wrapper.js';
+import type { PlatformRepository } from './platform.repository.js';
+import { encryptConnectionString, applyTenantSchema } from './tenant-db.setup.js';
+import { evictTenantPool } from './tenant.middleware.js';
+import { Roles } from '../security/roles.js';
 
 export function createAdminRouter(platformRepo: PlatformRepository): Router {
   const router = Router();

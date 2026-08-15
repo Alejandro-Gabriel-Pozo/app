@@ -13,7 +13,7 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import type { AppContainer } from '../../container.js';
+import type { AppContainer } from '../container.js';
 
 export function createBusinessModulesRouter(container: AppContainer): Router {
   const router = Router();

@@ -7,12 +7,12 @@ import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { PlatformContainer } from '../../../src/platform/platform.container.js';
-import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
-import { authenticatePlatform } from '../../security/platform.auth.middleware.js';
-import type { Business } from '../../platform/platform.repository.js';
-import { provisionTenantDatabase } from '../../platform/neon-provisioning.js';
-import { applyTenantSchema, encryptConnectionString } from '../../platform/tenant-db.setup.js';
+import type { PlatformContainer } from './platform.container.js';
+import { BusinessPlan, BusinessStatus } from '../types/enums.js';
+import { authenticatePlatform } from './platform.auth.middleware.js';
+import type { Business } from './platform.repository.js';
+import { provisionTenantDatabase } from './neon-provisioning.js';
+import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),

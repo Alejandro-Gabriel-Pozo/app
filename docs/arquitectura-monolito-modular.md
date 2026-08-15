@@ -255,6 +255,25 @@ ver C8 en `pendientes-2026-08-14.md`).
 2. `plataforma/` primero — ya está casi aislado, sirve como ensayo de
    bajo riesgo del proceso de migración (actualizar imports, correr
    `tsc`+tests, confirmar) antes de tocar dominios con más cruces.
+
+   ✅ **HECHO (15/08/2026).** Movidos a `src/platform/` (nombre real en
+   código, no `plataforma/` — el término ya establecido en todo el stack
+   es "platform", A5.1): `admin.routes.ts`, `business.routes.ts`,
+   `business-hours.routes.ts`, `business-modules.routes.ts`,
+   `platform.routes.ts` (desde `api/routes/`); `location.repository.ts`,
+   `in-memory.location.repository.ts` (+ test), `operating-hours.
+   repository.ts`, `sql.operating-hours.repository.ts`, `in-memory.
+   operating-hours.repository.ts` (desde `repositories/`);
+   `platform.auth.middleware.ts`, `platform.auth.service.ts` (+ tests,
+   desde `security/`). 15 archivos movidos con `git mv` (historial
+   preservado), ~20 archivos externos con imports corregidos (`app.ts`,
+   rutas de otros dominios que todavía consumen `operating-hours.
+   repository.ts` — `bookable-services`/`reservations`/`resources`/
+   `customer.routes.ts` — sin mover ellas mismas, siguen en `api/routes/`
+   hasta que les toque su propio paso del plan).
+   Verificado: `tsc --noEmit` limpio a la primera pasada, `npm test`
+   433/434 (mismo resultado, tests corriendo desde su nueva ubicación),
+   lint limpio, `dependency-cruiser` sin violaciones nuevas.
 3. `pms-estadias/` y `pos-menu/` — pocos cruces salientes cada uno (ver
    sección 3), riesgo bajo.
 4. `reservas/` y `clientes-finanzas/` al final — son los que más

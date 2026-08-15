@@ -66,7 +66,7 @@ import { SqlResourceLockRepository }     from '../../repositories/sql.resource-l
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRepository }         from '../../repositories/sql.customer.repository.js';
 import { SqlCustomerRateRepository }     from '../../repositories/sql.customer-rate.repository.js';
-import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
+import { SqlOperatingHoursRepository }   from '../../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }     from '../../repositories/housekeeping.repository.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../schemas/request.schemas.js';

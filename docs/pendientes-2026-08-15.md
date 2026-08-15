@@ -1030,11 +1030,42 @@ limpio, `dependency-cruiser` sin violaciones nuevas (el único hallazgo es
 preexistente y no relacionado — `supabase.occupancy.repository.ts`, ya
 documentado en `pendientes-2026-08-14.md` C8).
 
+### Paso 2 (`platform/`) — ✅ HECHO el mismo día (15/08/2026)
+
+Se siguió adelante en la misma sesión (el dueño lo pidió explícitamente
+después de ver el paso 1 verificado). 15 archivos movidos con `git mv`
+a `src/platform/` (nombre real en código — la doc habla de "plataforma/"
+como bounded context, pero el término ya establecido en todo el stack es
+"platform", A5.1, no se rebautiza):
+- Rutas (desde `api/routes/`): `admin.routes.ts`, `business.routes.ts`,
+  `business-hours.routes.ts`, `business-modules.routes.ts`,
+  `platform.routes.ts`.
+- Repositorios (desde `repositories/`): `location.repository.ts`,
+  `in-memory.location.repository.ts` (+ test), `operating-hours.
+  repository.ts`, `sql.operating-hours.repository.ts`, `in-memory.
+  operating-hours.repository.ts`.
+- Security (desde `security/`): `platform.auth.middleware.ts`,
+  `platform.auth.service.ts` (+ tests de los dos).
+
+~20 archivos externos con imports corregidos — `app.ts` (5 rutas
+montadas) y, notablemente, rutas de OTROS dominios que todavía consumen
+`operating-hours.repository.ts` sin haberse movido ellas mismas
+(`bookable-services.routes.ts`, `reservations.routes.ts`,
+`resources.routes.ts`, `customer.routes.ts`, `reservation.service.ts` +
+sus tests) — exactamente el tipo de cruce entre dominios que el propio
+plan anticipaba como motivo para dejar `reservas/` para el final (paso 4).
+
+Verificado: `tsc --noEmit` limpio **a la primera pasada** (sin idas y
+vueltas), `npm test` 433/434 (mismo resultado que antes de mover — los
+tests de `platform.auth.service`/`in-memory.location.repository` corren
+igual desde su nueva ubicación), lint limpio, `dependency-cruiser` sin
+violaciones nuevas.
+
 **Siguen sin ejecutar, mismo criterio "dominio por dominio" del plan:**
-mover `plataforma/` (paso 2, el de menor riesgo — casi ya aislado, sirve
-de ensayo del proceso), `pms-estadias/`/`pos-menu/` (paso 3), `reservas/`/
-`clientes-finanzas/` (paso 4, al final — son los que más cruzan entre sí),
-y el carve-out de `inventario/` como agregado propio (paso 5 — nota: el
-handler de outbox que motivaba este paso ya se enganchó hoy, D1 de
-`pendientes-2026-08-15.md` sección F; falta la parte de convertirlo en
-módulo separado, no solo el enganche).
+`pms-estadias/`/`pos-menu/` (paso 3, pocos cruces salientes cada uno,
+riesgo bajo), `reservas/`/`clientes-finanzas/` (paso 4, al final — son
+los que más cruzan entre sí, el paso 2 ya mostró cómo se ve ese cruce en
+la práctica), y el carve-out de `inventario/` como agregado propio (paso
+5 — nota: el handler de outbox que motivaba este paso ya se enganchó hoy,
+D1 de `pendientes-2026-08-15.md` sección F; falta la parte de convertirlo
+en módulo separado, no solo el enganche).

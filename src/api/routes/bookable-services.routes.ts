@@ -49,7 +49,7 @@ import { SqlOccupancyRepository }       from '../../repositories/sql.occupancy.r
 import { SqlCategoryRepository }        from '../../repositories/sql.category.repository.js';
 import { SqlDomainEventRepository }     from '../../repositories/sql.domain-event.repository.js';
 import { SqlCustomerRateRepository }    from '../../repositories/sql.customer-rate.repository.js';
-import { SqlOperatingHoursRepository }  from '../../repositories/sql.operating-hours.repository.js';
+import { SqlOperatingHoursRepository }  from '../../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }    from '../../repositories/housekeeping.repository.js';
 import { SqlAuditLogRepository }        from '../../repositories/audit-log.repository.js';
 import { ReservationService }           from '../../services/reservation.service.js';

@@ -36,12 +36,12 @@ import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { PlatformRepository } from '../../platform/platform.repository.js';
-import { hashPassword, verifyPassword } from '../../security/user.store.js';
-import { signToken } from '../../security/auth.middleware.js';
-import { BusinessPlan, BusinessStatus } from '../../types/enums.js';
-import { provisionTenantDatabase } from '../../platform/neon-provisioning.js';
-import { applyTenantSchema, encryptConnectionString } from '../../platform/tenant-db.setup.js';
+import type { PlatformRepository } from './platform.repository.js';
+import { hashPassword, verifyPassword } from '../security/user.store.js';
+import { signToken } from '../security/auth.middleware.js';
+import { BusinessPlan, BusinessStatus } from '../types/enums.js';
+import { provisionTenantDatabase } from './neon-provisioning.js';
+import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
 
 /**
  * @swagger

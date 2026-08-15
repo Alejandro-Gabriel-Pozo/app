@@ -32,11 +32,11 @@ import { authorize }                      from '../../security/auth.middleware.j
 import { Roles }                          from '../../security/roles.js';
 import { SqlResourceRepository }         from '../../repositories/sql.resource.repository.js';
 import { SqlCategoryRepository }         from '../../repositories/sql.category.repository.js';
-import { SqlLocationRepository }         from '../../repositories/location.repository.js';
+import { SqlLocationRepository }         from '../../platform/location.repository.js';
 import { SqlResourceLockRepository }     from '../../repositories/sql.resource-lock.repository.js';
 import { SqlBookableServiceRepository }  from '../../repositories/sql.bookable-service.repository.js';
-import { SqlOperatingHoursRepository }   from '../../repositories/sql.operating-hours.repository.js';
-import { windowsOverlap }                from '../../repositories/operating-hours.repository.js';
+import { SqlOperatingHoursRepository }   from '../../platform/sql.operating-hours.repository.js';
+import { windowsOverlap }                from '../../platform/operating-hours.repository.js';
 import { PhysicalResource }              from '../../domain/resource.entities.js';
 import { randomUUID }                     from 'node:crypto';
 import { z }                              from 'zod';

@@ -10,7 +10,7 @@ import type {
   CreateBusinessWindowDto,
   CreateResourceWindowDto,
 } from './operating-hours.repository.js';
-import type { SqlClient } from './sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 interface WindowRow {
   id: string;
