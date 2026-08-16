@@ -1,8 +1,8 @@
-import type { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
+import type { OccupancyRepository, OccupancyStats } from '../reservas/occupancy.repository.js';
 import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
-} from '../repositories/accounts-receivable.repository.js';
+} from '../clientes-finanzas/accounts-receivable.repository.js';
 
 /**
  * Reporte de ocupación diaria

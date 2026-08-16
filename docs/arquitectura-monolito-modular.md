@@ -313,6 +313,67 @@ ver C8 en `pendientes-2026-08-14.md`).
 4. `reservas/` y `clientes-finanzas/` al final — son los que más
    cruzan entre sí, requieren que los otros ya estén acomodados para
    que sus imports "hacia afuera" apunten a carpetas ya estables.
+
+   ✅ **HECHO (15/08/2026).** `src/reservas/` (40 archivos):
+   `reservation.service.ts`, `resource-lock.service.ts`, `bookable-
+   service.service.ts`, `category.service.ts` (+ tests, desde
+   `services/`); `reservation.repository.ts`, `resource.repository.ts`,
+   `resource-lock.repository.ts`, `bookable-service.repository.ts`,
+   `category.repository.ts`, `occupancy.repository.ts`,
+   `supabase.occupancy.repository.ts` (+ variantes `sql.`/`in-memory.` y
+   tests, desde `repositories/`); `reservations.routes.ts`,
+   `resources.routes.ts`, `bookable-services.routes.ts`,
+   `categories.routes.ts` (desde `api/routes/`); `Reservation.ts`,
+   `availability.ts`, `reservation.types.ts`, `resource.entities.ts`
+   (desde `domain/`). `src/clientes-finanzas/` (24 archivos):
+   `accounts-receivable.service.ts`, `customer-account.service.ts`,
+   `cash-register.service.ts` (+ tests, desde `services/`); `accounts-
+   receivable.repository.ts`, `customer.repository.ts`, `customer-
+   rate.repository.ts`, `financial-transaction.repository.ts`, `cash-
+   register-shift.repository.ts` (+ variantes y tests, desde
+   `repositories/`); `customers.routes.ts`, `cash-register.routes.ts`
+   (desde `api/routes/`); `customer.entities.ts` (desde `domain/`).
+
+   Un archivo se había quedado afuera de la lista original de la
+   sección 4 (`sql.customer-rate.repository.ts` no estaba enumerado
+   junto a sus dos hermanos) — encontrado por inspección manual antes
+   de mover, no por `tsc`, y movido igual a `clientes-finanzas/`.
+
+   Externos con imports corregidos: `app.ts` (construye y monta ambos
+   dominios enteros), `api/mappers/reservation.mapper.ts` (+ test),
+   `api/routes/customer.routes.ts` (portal-cliente BFF — sigue sin
+   moverse, es de `portal-cliente/`, un paso no planificado todavía),
+   `pms-estadias/stay.service.ts` (+ test) y `stays.routes.ts` (Stay
+   depende de Reservation/Customer y de accounts-receivable),
+   `pos-menu/order.service.ts` (depende de financial-transaction),
+   `security/customer.auth.service.ts`, `services/report.service.ts`
+   (+ test — cross-cutting a propósito, lee de todos los dominios),
+   varios tests en `tests/domain/`, `tests/repositories/`,
+   `tests/security/`, `tests/integration/`, y `workers/outbox.
+   handlers.ts` (+ test) + `workers/outbox.registry.ts`.
+
+   **Hallazgo en el camino:** `tsconfig.json` tenía un `exclude`
+   hardcodeado a la ruta vieja de `supabase.occupancy.repository.ts`
+   (el scaffolding abandonado marcado como candidato a borrar en la
+   sección 3, C8 de `pendientes-2026-08-14.md`). Al moverlo, el
+   `exclude` dejó de matchear y `tsc` empezó a compilarlo de verdad,
+   sacando a la luz que su import a `../config/supabase.js` apunta a un
+   archivo que no existe (`src/config/` no tiene ningún `supabase.ts`) —
+   confirma que es scaffolding muerto, no solo "no conectado". Se
+   actualizó el `exclude` a la nueva ruta (mismo comportamiento de
+   antes, sin tocar la decisión de borrarlo, que sigue abierta como C8).
+   También se encontraron y corrigieron dos imports relativos
+   same-directory rotos por el propio move (mismo patrón que en el
+   paso 1): `availability.ts` y `Reservation.ts` importaban `./errors.js`
+   y (`Reservation.ts`) `./customer.entities.js` asumiendo que seguían
+   viviendo junto a `domain/errors.ts`/`domain/customer.entities.ts` —
+   corregidos a `../domain/errors.js` y `../clientes-finanzas/
+   customer.entities.js` respectivamente.
+
+   Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo
+   resultado), lint limpio, `dependency-cruiser` sin violaciones nuevas
+   (solo la preexistente de `supabase.occupancy.repository.ts`, con la
+   ruta ya actualizada).
 5. `inventario/` se construye nuevo (no es un move, es un carve-out),
    en paralelo con el punto 1 de la sección 3 (enganchar el handler del
    outbox) — son la misma tarea vista desde dos ángulos.

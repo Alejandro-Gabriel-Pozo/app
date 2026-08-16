@@ -47,19 +47,19 @@ import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.j
 import { seedCategory, seedResource, seedCustomer, seedReservation } from './helpers/seed.js';
 
 import type { SqlClient }                            from '../../repositories/sql.client.js';
-import { SqlReservationRepository }             from '../../repositories/sql.reservation.repository.js';
-import { SqlResourceRepository }               from '../../repositories/sql.resource.repository.js';
-import { SqlOccupancyRepository }              from '../../repositories/sql.occupancy.repository.js';
-import { SqlCategoryRepository }              from '../../repositories/sql.category.repository.js';
+import { SqlReservationRepository }             from '../../reservas/sql.reservation.repository.js';
+import { SqlResourceRepository }               from '../../reservas/sql.resource.repository.js';
+import { SqlOccupancyRepository }              from '../../reservas/sql.occupancy.repository.js';
+import { SqlCategoryRepository }              from '../../reservas/sql.category.repository.js';
 import { SqlDomainEventRepository }           from '../../repositories/sql.domain-event.repository.js';
-import { SqlResourceLockRepository }          from '../../repositories/sql.resource-lock.repository.js';
-import { SqlBookableServiceRepository }       from '../../repositories/sql.bookable-service.repository.js';
-import { SqlCustomerRateRepository }          from '../../repositories/sql.customer-rate.repository.js';
+import { SqlResourceLockRepository }          from '../../reservas/sql.resource-lock.repository.js';
+import { SqlBookableServiceRepository }       from '../../reservas/sql.bookable-service.repository.js';
+import { SqlCustomerRateRepository }          from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }        from '../../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }          from '../../pms-estadias/housekeeping.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
-import { ReservationService }                 from '../../services/reservation.service.js';
-import { Customer }                           from '../../domain/customer.entities.js';
+import { ReservationService }                 from '../../reservas/reservation.service.js';
+import { Customer }                           from '../../clientes-finanzas/customer.entities.js';
 import {
   InvalidReservationError,
   ResourceNotFoundError,

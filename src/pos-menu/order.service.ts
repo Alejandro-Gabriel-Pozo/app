@@ -30,7 +30,7 @@ import type {
 import type { TransactionManager }      from '../db/transaction-manager.js';
 import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
-import type { PaymentInfo }             from '../repositories/financial-transaction.repository.js';
+import type { PaymentInfo }             from '../clientes-finanzas/financial-transaction.repository.js';
 import { DomainError }                  from '../domain/errors.js';
 import type { ProductService }          from './product.service.js';
 import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';

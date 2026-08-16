@@ -26,9 +26,9 @@
 
 import { Stay } from './stay.js';
 import type { StayRepository } from './stay.repository.js';
-import type { ReservationRepository } from '../repositories/reservation.repository.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { HousekeepingRepository } from './housekeeping.repository.js';
-import type { FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
+import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 import { DomainError, ReservationNotFoundError } from '../domain/errors.js';
 

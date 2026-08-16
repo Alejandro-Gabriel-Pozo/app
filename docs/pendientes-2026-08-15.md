@@ -1099,10 +1099,77 @@ Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo resultado),
 lint limpio, `dependency-cruiser` sin violaciones nuevas (solo la
 preexistente de `supabase.occupancy.repository.ts`, C8).
 
-**Siguen sin ejecutar:** `reservas/`/`clientes-finanzas/` (paso 4, al
-final — son los que más cruzan entre sí, los pasos 2 y 3 ya mostraron
-cómo se ve ese cruce en la práctica), y el carve-out de `inventario/`
-como agregado propio (paso 5 — nota: el handler de outbox que motivaba
-este paso ya se enganchó el 15/08, D1 de `pendientes-2026-08-15.md`
-sección F; falta la parte de convertirlo en módulo separado, no solo el
-enganche).
+### Paso 4 (`reservas/` y `clientes-finanzas/`) — ✅ HECHO el mismo día (15/08/2026)
+
+64 archivos movidos con `git mv` — el paso más grande de los cuatro,
+tal como el propio plan anticipaba ("son los que más cruzan entre sí").
+`src/reservas/` (40): services `reservation`/`resource-lock`/`bookable-
+service`/`category`; repositories `reservation`/`resource`/`resource-
+lock`/`bookable-service`/`category`/`occupancy`/`supabase.occupancy`
+(+ variantes `sql.`/`in-memory.` y tests); routes `reservations`/
+`resources`/`bookable-services`/`categories`; domain `Reservation.ts`/
+`availability.ts`/`reservation.types.ts`/`resource.entities.ts`.
+`src/clientes-finanzas/` (24): services `accounts-receivable`/
+`customer-account`/`cash-register`; repositories `accounts-receivable`/
+`customer`/`customer-rate`/`financial-transaction`/`cash-register-
+shift` (+ variantes y tests); routes `customers`/`cash-register`;
+domain `customer.entities.ts`.
+
+**Hallazgo en el camino (1):** `sql.customer-rate.repository.ts` no
+estaba en la lista original de la sección 4 del plan (sus dos hermanos
+sí) — detectado por inspección manual antes de mover, no por `tsc`.
+Movido igual a `clientes-finanzas/`.
+
+**Hallazgo en el camino (2):** `tsconfig.json` tenía un `exclude`
+hardcodeado a `src/repositories/supabase.occupancy.repository.ts` (el
+scaffolding abandonado ya trackeado como C8 en
+`pendientes-2026-08-14.md`). Al moverlo a `src/reservas/`, el
+`exclude` dejó de aplicar y `tsc` lo compiló de verdad por primera vez
+en mucho tiempo — confirmó que su import a `../config/supabase.js`
+apunta a un archivo **que no existe** (no hay ningún `supabase.ts` en
+`src/config/`), es decir que es código muerto de verdad, no solo
+código desconectado. Se actualizó el `exclude` a la ruta nueva (mismo
+comportamiento que antes, la decisión de borrarlo sigue abierta y
+sigue siendo C8, no se tomó acá).
+
+**Hallazgo en el camino (3):** dos imports relativos same-directory
+rotos por el propio move (mismo patrón encontrado en el paso 1 con
+`Reservation.ts`/`./entities.js`): `availability.ts` importaba
+`./errors.js` y `Reservation.ts` importaba `./errors.js` y
+`./customer.entities.js`, ambos asumiendo que seguían viviendo junto a
+`domain/errors.ts`/`domain/customer.entities.ts`. Encontrados por
+inspección manual del grep de imports (antes de correr `tsc`, que los
+habría atrapado igual). Corregidos a `../domain/errors.js` y
+`../clientes-finanzas/customer.entities.js`.
+
+Externos con imports corregidos: `app.ts` (construye y monta los dos
+dominios enteros), `api/mappers/reservation.mapper.ts` (+ test),
+`api/routes/customer.routes.ts` (BFF del portal de clientes — sigue
+sin moverse, sería `portal-cliente/`, un paso que ni siquiera está en
+el "orden recomendado" original de la sección 4), `pms-estadias/
+stay.service.ts` (+ test) y `stays.routes.ts`, `pos-menu/
+order.service.ts`, `security/customer.auth.service.ts`, `services/
+report.service.ts` (+ test — se queda cross-cutting a propósito, lee
+de todos los dominios, tal como marca la sección 4), varios tests en
+`tests/domain/`, `tests/repositories/`, `tests/security/`, `tests/
+integration/`, y `workers/outbox.handlers.ts` (+ test) + `workers/
+outbox.registry.ts`.
+
+Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo
+resultado), lint limpio, `dependency-cruiser` sin violaciones nuevas
+(solo la preexistente de `supabase.occupancy.repository.ts`, C8, con
+la ruta ya actualizada).
+
+**Con esto se completó el plan de reorganización de la sección 4** —
+los 5 pasos de `arquitectura-monolito-modular.md` sección 4 quedaron:
+1 (split entities.ts) ✅, 2 (`platform/`) ✅, 3 (`pms-estadias/`+
+`pos-menu/`) ✅, 4 (`reservas/`+`clientes-finanzas/`) ✅. El paso 5
+(carve-out de `inventario/` como agregado propio) sigue sin ejecutar
+porque no es un simple move — es diseño nuevo (ver sección 4 del plan:
+decidir si Inventario pasa a ser su propio agregado con su propio
+service escuchando `order.completed` vía outbox). `usuarios-roles/`,
+`plataforma-config` (dudas sobre `location`/`operating-hours`),
+`reportes/` y `portal-cliente/` quedaron mencionados en el plan pero
+nunca estuvieron en el "orden recomendado" de 5 pasos — no son
+pendientes de esta reorganización, son extensiones del plan que no se
+pidieron.

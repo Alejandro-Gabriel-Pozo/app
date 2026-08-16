@@ -14,5 +14,5 @@
     "declaration": true
   },
   "include": ["src/**/*"],
-  "exclude": ["src/repositories/supabase.occupancy.repository.ts"]
+  "exclude": ["src/reservas/supabase.occupancy.repository.ts"]
 }

@@ -9,8 +9,8 @@
  * - `customer.email` es `string | undefined` — se normaliza a `string` con ?? ''
  */
 
-import type { Reservation } from '../../domain/Reservation.js';
-import type { BookableResource } from '../../domain/resource.entities.js';
+import type { Reservation } from '../../reservas/Reservation.js';
+import type { BookableResource } from '../../reservas/resource.entities.js';
 import type { VisualMetadata } from '../../types/visual.interface.js';
 import type { ReservationStatus } from '../../types/enums.js';
 

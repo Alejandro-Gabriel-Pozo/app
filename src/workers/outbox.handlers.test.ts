@@ -9,7 +9,7 @@ import type {
   FinancialTransaction,
   FinancialTransactionRepository,
   PaymentInfo,
-} from '../repositories/financial-transaction.repository.js';
+} from '../clientes-finanzas/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
 /** Fake mínimo — solo lo que estos handlers usan. */

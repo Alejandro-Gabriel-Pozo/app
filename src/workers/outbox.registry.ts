@@ -15,7 +15,7 @@
 import type pg                                 from 'pg';
 import { OutboxWorker }                        from './outbox.worker.js';
 import { SqlDomainEventRepository }            from '../repositories/sql.domain-event.repository.js';
-import { SqlFinancialTransactionRepository }   from '../repositories/sql.financial-transaction.repository.js';
+import { SqlFinancialTransactionRepository }   from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { registerFinancialHandlers }           from './outbox.handlers.js';
 import { SqlStockMovementRepository }          from '../repositories/sql.stock-movement.repository.js';
 import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';

@@ -9,10 +9,10 @@ import {
   isBlockingStatus,
   isResourceAvailable,
   assertValidTimeRange,
-} from '../../domain/availability.js';
+} from '../../reservas/availability.js';
 import { ReservationStatus } from '../../types/enums.js';
 import { InvalidReservationError } from '../../domain/errors.js';
-import type { ReservationSnapshot } from '../../domain/reservation.types.js';
+import type { ReservationSnapshot } from '../../reservas/reservation.types.js';
 
 // Helpers
 const d = (iso: string) => new Date(iso);

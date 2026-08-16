@@ -13,9 +13,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { toReservationDto } from './reservation.mapper.js';
-import { Reservation } from '../../domain/Reservation.js';
-import { Customer } from '../../domain/customer.entities.js';
-import { PhysicalResource } from '../../domain/resource.entities.js';
+import { Reservation } from '../../reservas/Reservation.js';
+import { Customer } from '../../clientes-finanzas/customer.entities.js';
+import { PhysicalResource } from '../../reservas/resource.entities.js';
 
 describe('toReservationDto', () => {
   const resource = new PhysicalResource('silla-1', 'Silla 1', 20, 'cat-1', null, 2);

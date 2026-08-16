@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Customer } from '../../domain/customer.entities.js';
+import { Customer } from '../../clientes-finanzas/customer.entities.js';
 import { InvalidCustomerError } from '../../domain/errors.js';
 
 describe('Customer entity', () => {

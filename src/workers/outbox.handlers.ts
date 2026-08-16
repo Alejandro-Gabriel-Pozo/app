@@ -24,7 +24,7 @@
 
 import { randomUUID } from 'crypto';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
-import type { FinancialTransactionRepository, PaymentInfo, PaymentMethod } from '../repositories/financial-transaction.repository.js';
+import type { FinancialTransactionRepository, PaymentInfo, PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { OutboxWorker } from './outbox.worker.js';
 
 /**

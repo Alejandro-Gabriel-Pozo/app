@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { PhysicalResource } from '../../domain/resource.entities.js';
+import { PhysicalResource } from '../../reservas/resource.entities.js';
 import { ReservationStatus } from '../../types/enums.js';
-import type { ReservationSnapshot } from '../../domain/reservation.types.js';
+import type { ReservationSnapshot } from '../../reservas/reservation.types.js';
 import type { VisualMetadata } from '../../types/visual.interface.js';
 
 const NO_RESERVATIONS: ReservationSnapshot[] = [];

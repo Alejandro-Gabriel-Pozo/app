@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReportService } from './report.service.js';
-import type { OccupancyRepository, OccupancyStats } from '../repositories/occupancy.repository.js';
+import type { OccupancyRepository, OccupancyStats } from '../reservas/occupancy.repository.js';
 import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
-} from '../repositories/accounts-receivable.repository.js';
+} from '../clientes-finanzas/accounts-receivable.repository.js';
 
 /** Fake mínimo — solo lo que ReportService llama. */
 class FakeAccountsReceivableRepository implements Pick<AccountsReceivableRepository, 'getReportByPeriod'> {

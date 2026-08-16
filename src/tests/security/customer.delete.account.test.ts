@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { InMemoryCustomerRepository } from '../../repositories/in-memory.customer.repository.js';
+import { InMemoryCustomerRepository } from '../../clientes-finanzas/in-memory.customer.repository.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
