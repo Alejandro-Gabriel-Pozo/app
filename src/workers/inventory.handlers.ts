@@ -52,7 +52,7 @@
 import { randomUUID } from 'crypto';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type { StockMovementRepository } from '../repositories/stock-movement.repository.js';
-import type { ProductService } from '../services/product.service.js';
+import type { ProductService } from '../pos-menu/product.service.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { OutboxWorker } from './outbox.worker.js';
 

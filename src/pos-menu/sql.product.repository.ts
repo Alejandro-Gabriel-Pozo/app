@@ -5,7 +5,7 @@
 // =============================================================================
 
 import { randomUUID } from 'crypto';
-import type { SqlClient } from './sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type {
   IProductRepository,
   IProductVariantRepository,
@@ -19,7 +19,7 @@ import type {
   UpdateProductInput,
   CreateProductVariantInput,
   UpdateProductVariantInput,
-} from '../domain/product.entities.js';
+} from './product.entities.js';
 
 // ---------------------------------------------------------------------------
 // Helpers de mapeo DB → dominio

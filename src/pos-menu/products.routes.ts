@@ -29,15 +29,15 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
-import type { AppContainer } from '../../container.js';
-import { ProductService } from '../../services/product.service.js';
+import type { AppContainer } from '../container.js';
+import { ProductService } from './product.service.js';
 import {
   SqlProductRepository,
   SqlProductVariantRepository,
-} from '../../repositories/sql.product.repository.js';
-import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
-import { authorize } from '../../security/auth.middleware.js';
-import { Roles }     from '../../security/roles.js';
+} from './sql.product.repository.js';
+import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
+import { authorize } from '../security/auth.middleware.js';
+import { Roles }     from '../security/roles.js';
 
 function buildProductService(req: Request): ProductService {
   const db = req.db!;

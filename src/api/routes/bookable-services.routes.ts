@@ -50,7 +50,7 @@ import { SqlCategoryRepository }        from '../../repositories/sql.category.re
 import { SqlDomainEventRepository }     from '../../repositories/sql.domain-event.repository.js';
 import { SqlCustomerRateRepository }    from '../../repositories/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }  from '../../platform/sql.operating-hours.repository.js';
-import { SqlHousekeepingRepository }    from '../../repositories/housekeeping.repository.js';
+import { SqlHousekeepingRepository }    from '../../pms-estadias/housekeeping.repository.js';
 import { SqlAuditLogRepository }        from '../../repositories/audit-log.repository.js';
 import { ReservationService }           from '../../services/reservation.service.js';
 import { buildTenantTransactionManager } from '../../db/tenant-context.js';

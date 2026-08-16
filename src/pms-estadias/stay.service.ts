@@ -24,12 +24,12 @@
  *   MANAGEMENT), que deja el folio en $0 antes de reintentar el check-out.
  */
 
-import { Stay } from '../domain/stay.js';
-import type { StayRepository } from '../repositories/stay.repository.js';
+import { Stay } from './stay.js';
+import type { StayRepository } from './stay.repository.js';
 import type { ReservationRepository } from '../repositories/reservation.repository.js';
-import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
+import type { HousekeepingRepository } from './housekeeping.repository.js';
 import type { FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
-import { HousekeepingTask } from '../domain/housekeeping-task.js';
+import { HousekeepingTask } from './housekeeping-task.js';
 import { DomainError, ReservationNotFoundError } from '../domain/errors.js';
 
 export class StayNotFoundError extends DomainError {

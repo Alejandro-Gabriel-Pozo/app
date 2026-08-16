@@ -22,9 +22,9 @@
 import { randomUUID } from 'crypto';
 import pg from 'pg';
 import type { Pool } from 'pg';
-import type { SqlClient } from './sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type { ListOrdersFilter } from './order.repository.js';
-import type { IOrderRepositoryWithClient } from '../services/order.service.js';
+import type { IOrderRepositoryWithClient } from './order.service.js';
 import type {
   Order,
   OrderItem,
@@ -32,7 +32,7 @@ import type {
   OrderItemType,
   CreateOrderInput,
   UpdateOrderInput,
-} from '../domain/order.entities.js';
+} from './order.entities.js';
 
 // ---------------------------------------------------------------------------
 // Helpers de mapeo DB → dominio

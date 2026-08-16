@@ -10,9 +10,9 @@
  * - Consultar tablero por fecha, recurso o empleado asignado
  */
 
-import type { HousekeepingStatus } from '../domain/housekeeping-task.js';
-import { HousekeepingTask } from '../domain/housekeeping-task.js';
-import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
+import type { HousekeepingStatus } from './housekeeping-task.js';
+import { HousekeepingTask } from './housekeeping-task.js';
+import type { HousekeepingRepository } from './housekeeping.repository.js';
 import { DomainError } from '../domain/errors.js';
 
 export class HousekeepingTaskNotFoundError extends DomainError {

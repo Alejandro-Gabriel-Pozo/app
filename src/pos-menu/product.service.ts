@@ -17,7 +17,7 @@
 import type {
   IProductRepository,
   IProductVariantRepository,
-} from '../repositories/product.repository.js';
+} from './product.repository.js';
 import type {
   Product,
   ProductVariant,
@@ -26,7 +26,7 @@ import type {
   UpdateProductInput,
   CreateProductVariantInput,
   UpdateProductVariantInput,
-} from '../domain/product.entities.js';
+} from './product.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';

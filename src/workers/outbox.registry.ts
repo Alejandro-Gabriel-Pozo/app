@@ -18,9 +18,9 @@ import { SqlDomainEventRepository }            from '../repositories/sql.domain-
 import { SqlFinancialTransactionRepository }   from '../repositories/sql.financial-transaction.repository.js';
 import { registerFinancialHandlers }           from './outbox.handlers.js';
 import { SqlStockMovementRepository }          from '../repositories/sql.stock-movement.repository.js';
-import { SqlProductRepository, SqlProductVariantRepository } from '../repositories/sql.product.repository.js';
+import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';
 import { SqlAuditLogRepository }               from '../repositories/audit-log.repository.js';
-import { ProductService }                      from '../services/product.service.js';
+import { ProductService }                      from '../pos-menu/product.service.js';
 import { PgTransactionManager }                from '../db/pg.transaction-manager.js';
 import { registerInventoryHandlers }           from './inventory.handlers.js';
 import { registerEmailHandlers }               from './email.handlers.js';

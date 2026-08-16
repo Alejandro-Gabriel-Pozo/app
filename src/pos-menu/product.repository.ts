@@ -9,8 +9,8 @@ import type {
   UpdateProductInput,
   CreateProductVariantInput,
   UpdateProductVariantInput,
-} from '../domain/product.entities.js';
-import type { SqlClient } from './sql.client.js';
+} from './product.entities.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 // ---------------------------------------------------------------------------
 // Filtros de listado

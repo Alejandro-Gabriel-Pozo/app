@@ -1061,11 +1061,48 @@ tests de `platform.auth.service`/`in-memory.location.repository` corren
 igual desde su nueva ubicación), lint limpio, `dependency-cruiser` sin
 violaciones nuevas.
 
-**Siguen sin ejecutar, mismo criterio "dominio por dominio" del plan:**
-`pms-estadias/`/`pos-menu/` (paso 3, pocos cruces salientes cada uno,
-riesgo bajo), `reservas/`/`clientes-finanzas/` (paso 4, al final — son
-los que más cruzan entre sí, el paso 2 ya mostró cómo se ve ese cruce en
-la práctica), y el carve-out de `inventario/` como agregado propio (paso
-5 — nota: el handler de outbox que motivaba este paso ya se enganchó hoy,
-D1 de `pendientes-2026-08-15.md` sección F; falta la parte de convertirlo
-en módulo separado, no solo el enganche).
+### Paso 3 (`pms-estadias/` y `pos-menu/`) — ✅ HECHO el mismo día (15/08/2026)
+
+24 archivos movidos con `git mv`. `src/pms-estadias/` (11): `housekeeping.
+service.ts`, `stay.service.ts` (+ test, desde `services/`); `housekeeping.
+repository.ts`, `in-memory.housekeeping.repository.ts`, `stay.
+repository.ts` (desde `repositories/`); `housekeeping.routes.ts`, `stays.
+routes.ts` (desde `api/routes/`); `housekeeping-task.ts` (+ test), `stay.
+ts` (desde `domain/`). `src/pos-menu/` (13): `order.service.ts`, `product.
+service.ts` (+ tests, desde `services/`); `in-memory.order.repository.ts`,
+`order.repository.ts`, `product.repository.ts`, `sql.order.repository.ts`,
+`sql.product.repository.ts` (desde `repositories/`); `orders.routes.ts`,
+`products.routes.ts` (desde `api/routes/`); `order.entities.ts`, `product.
+entities.ts` (desde `domain/`).
+
+Externos con imports corregidos: `app.ts` (construye ambos repos/servicios
+y monta las 4 rutas movidas), rutas de otros dominios que consumen
+`housekeeping.repository.ts` sin moverse ellas mismas
+(`bookable-services`/`customer`/`reservations.routes.ts`), `reservation.
+service.ts` (+ test, + integration test), `accounts-receivable.
+service.ts` (+ test — usa `stay.repository`/`stay.service`/`stay.js`),
+`workers/inventory.handlers.ts` (+ test) y `workers/outbox.registry.ts`
+(reponen stock desde eventos de compra vía `product.service`/`product.
+repository`/`sql.product.repository`).
+
+**Hallazgo en el camino:** 4 archivos movidos a `pos-menu/`
+(`in-memory.order.repository.ts`, `product.repository.ts`, `sql.
+order.repository.ts`, `sql.product.repository.ts`) quedaron con
+`import ... from './sql.client.js'` sin actualizar tras el `git mv` —
+correcto cuando vivían junto a `sql.client.ts` en `repositories/` (que es
+kernel compartido y no se mueve), roto después. Corregido a `'../
+repositories/sql.client.js'`. Encontrado por `tsc`, no por revisión manual
+— confirma que vale la pena correr `tsc --noEmit` como paso obligatorio
+después de cada dominio, no solo al final.
+
+Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo resultado),
+lint limpio, `dependency-cruiser` sin violaciones nuevas (solo la
+preexistente de `supabase.occupancy.repository.ts`, C8).
+
+**Siguen sin ejecutar:** `reservas/`/`clientes-finanzas/` (paso 4, al
+final — son los que más cruzan entre sí, los pasos 2 y 3 ya mostraron
+cómo se ve ese cruce en la práctica), y el carve-out de `inventario/`
+como agregado propio (paso 5 — nota: el handler de outbox que motivaba
+este paso ya se enganchó el 15/08, D1 de `pendientes-2026-08-15.md`
+sección F; falta la parte de convertirlo en módulo separado, no solo el
+enganche).

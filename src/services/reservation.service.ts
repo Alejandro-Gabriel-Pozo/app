@@ -111,7 +111,7 @@ import type { IBookableServiceRepository } from '../repositories/bookable-servic
 import type { BookableService } from '../types/bookable-service.types.js';
 import type { ICustomerRateRepository } from '../repositories/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
-import type { HousekeepingRepository } from '../repositories/housekeeping.repository.js';
+import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
 import type { TransactionManager }           from '../db/transaction-manager.js';
 import type { SqlClient }                    from '../repositories/sql.client.js';
 

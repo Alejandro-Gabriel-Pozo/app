@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { DomainError } from './errors.js';
+import { DomainError } from '../domain/errors.js';
 
 /**
  * Transición de estado inválida (ej. completar una tarea que no está

@@ -276,6 +276,40 @@ ver C8 en `pendientes-2026-08-14.md`).
    lint limpio, `dependency-cruiser` sin violaciones nuevas.
 3. `pms-estadias/` y `pos-menu/` — pocos cruces salientes cada uno (ver
    sección 3), riesgo bajo.
+
+   ✅ **HECHO (15/08/2026).** `src/pms-estadias/` (11 archivos):
+   `housekeeping.service.ts`, `stay.service.ts` (+ test, desde
+   `services/`); `housekeeping.repository.ts`, `in-memory.housekeeping.
+   repository.ts`, `stay.repository.ts` (desde `repositories/`);
+   `housekeeping.routes.ts`, `stays.routes.ts` (desde `api/routes/`);
+   `housekeeping-task.ts` (+ test), `stay.ts` (desde `domain/`).
+   `src/pos-menu/` (13 archivos): `order.service.ts`, `product.service.ts`
+   (+ tests, desde `services/`); `in-memory.order.repository.ts`, `order.
+   repository.ts`, `product.repository.ts`, `sql.order.repository.ts`,
+   `sql.product.repository.ts` (desde `repositories/`); `orders.
+   routes.ts`, `products.routes.ts` (desde `api/routes/`); `order.
+   entities.ts`, `product.entities.ts` (desde `domain/`). 24 archivos
+   movidos con `git mv`. Externos con imports corregidos: `app.ts`
+   (construye ambos repos/servicios y monta las 4 rutas), rutas de otros
+   dominios que consumen `housekeeping.repository.ts` sin mover ellas
+   mismas (`bookable-services`/`customer`/`reservations.routes.ts`),
+   `reservation.service.ts` (+ test, + integration test — usa
+   housekeeping como dependencia de estadías), `accounts-receivable.
+   service.ts` (+ test — usa `stay.repository`/`stay.service`/`stay.js`),
+   `workers/inventory.handlers.ts` (+ test) y `workers/outbox.
+   registry.ts` (usan `product.service`/`product.repository`/`sql.
+   product.repository` para reponer stock desde eventos de compra).
+   Encontrado y corregido en el camino: 4 archivos movidos a `pos-menu/`
+   (`in-memory.order.repository.ts`, `product.repository.ts`, `sql.
+   order.repository.ts`, `sql.product.repository.ts`) habían quedado con
+   `import ... from './sql.client.js'` sin actualizar — correcto cuando
+   vivían en `repositories/` (junto a `sql.client.ts`, que es kernel
+   compartido y no se mueve), roto tras la mudanza. Corregido a `'../
+   repositories/sql.client.js'`.
+   Verificado: `tsc --noEmit` limpio, `npm test` 433/434 (mismo
+   resultado), lint limpio, `dependency-cruiser` sin violaciones nuevas
+   (solo la preexistente de `supabase.occupancy.repository.ts`, ya
+   trackeada aparte).
 4. `reservas/` y `clientes-finanzas/` al final — son los que más
    cruzan entre sí, requieren que los otros ya estén acomodados para
    que sus imports "hacia afuera" apunten a carpetas ya estables.

@@ -27,7 +27,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
-import type { AppContainer } from '../../container.js';
+import type { AppContainer } from '../container.js';
 import {
   OrderService,
   OrderNotFoundError,
@@ -36,29 +36,29 @@ import {
   InvalidPaymentInfoError,
   OrderNotServableError,
   OrderAlreadyServedError,
-} from '../../services/order.service.js';
+} from './order.service.js';
 import {
   ProductService,
   ProductNotFoundError,
   VariantNotFoundError,
   VariantRequiredError,
   InsufficientStockError,
-} from '../../services/product.service.js';
-import { SqlOrderRepository }            from '../../repositories/sql.order.repository.js';
-import { SqlDomainEventRepository }      from '../../repositories/sql.domain-event.repository.js';
-import { SqlProductRepository, SqlProductVariantRepository } from '../../repositories/sql.product.repository.js';
-import { SqlAuditLogRepository }         from '../../repositories/audit-log.repository.js';
-import { buildTenantTransactionManager } from '../../db/tenant-context.js';
-import { compact }                       from '../utils/compact.js';
-import { authorize }                     from '../../security/auth.middleware.js';
-import { Roles }                         from '../../security/roles.js';
-import type { OrderStatus, CreateOrderItemInput } from '../../domain/order.entities.js';
+} from './product.service.js';
+import { SqlOrderRepository }            from './sql.order.repository.js';
+import { SqlDomainEventRepository }      from '../repositories/sql.domain-event.repository.js';
+import { SqlProductRepository, SqlProductVariantRepository } from './sql.product.repository.js';
+import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
+import { compact }                       from '../api/utils/compact.js';
+import { authorize }                     from '../security/auth.middleware.js';
+import { Roles }                         from '../security/roles.js';
+import type { OrderStatus, CreateOrderItemInput } from './order.entities.js';
 import {
   CreateOrderSchema,
   CreateOrderItemSchema,
   CompleteOrderSchema,
   type CreateOrderItemBody,
-} from '../schemas/request.schemas.js';
+} from '../api/schemas/request.schemas.js';
 
 function buildOrderService(req: Request, _container: AppContainer): OrderService {
   return new OrderService(

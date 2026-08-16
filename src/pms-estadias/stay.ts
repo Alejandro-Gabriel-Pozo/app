@@ -22,7 +22,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { DomainError } from './errors.js';
+import { DomainError } from '../domain/errors.js';
 
 /** Ver nota equivalente en domain/housekeeping-task.ts — antes era Error plano. */
 export class InvalidStayTransitionError extends DomainError {

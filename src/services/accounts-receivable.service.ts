@@ -21,11 +21,11 @@
 import { randomUUID } from 'node:crypto';
 import type { AccountsReceivableRepository, AccountReceivable } from '../repositories/accounts-receivable.repository.js';
 import type { FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
-import type { StayRepository } from '../repositories/stay.repository.js';
+import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { CustomerRepository } from '../repositories/customer.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import { DomainError, CustomerNotFoundError } from '../domain/errors.js';
-import { StayNotFoundError } from './stay.service.js';
+import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 
 export class CompanyCustomerRequiredError extends DomainError {
   constructor(customerId: string) {

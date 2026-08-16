@@ -26,11 +26,11 @@
  */
 
 import { Router } from 'express';
-import { authorize } from '../../security/auth.middleware.js';
-import { Roles } from '../../security/roles.js';
-import type { StayService } from '../../services/stay.service.js';
-import type { AccountsReceivableService } from '../../services/accounts-receivable.service.js';
-import { CheckInSchema, CheckOutSchema, TransferToReceivableSchema } from '../schemas/stay.schemas.js';
+import { authorize } from '../security/auth.middleware.js';
+import { Roles } from '../security/roles.js';
+import type { StayService } from './stay.service.js';
+import type { AccountsReceivableService } from '../services/accounts-receivable.service.js';
+import { CheckInSchema, CheckOutSchema, TransferToReceivableSchema } from '../api/schemas/stay.schemas.js';
 
 export function createStaysRouter(
   service: StayService,

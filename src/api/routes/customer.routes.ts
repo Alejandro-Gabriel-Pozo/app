@@ -86,7 +86,7 @@ import { SqlResourceLockRepository } from '../../repositories/sql.resource-lock.
 import { SqlBookableServiceRepository } from '../../repositories/sql.bookable-service.repository.js';
 import { SqlCustomerRateRepository } from '../../repositories/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository } from '../../platform/sql.operating-hours.repository.js';
-import { SqlHousekeepingRepository } from '../../repositories/housekeeping.repository.js';
+import { SqlHousekeepingRepository } from '../../pms-estadias/housekeeping.repository.js';
 import { ReservationService }        from '../../services/reservation.service.js';
 
 // ---------------------------------------------------------------------------

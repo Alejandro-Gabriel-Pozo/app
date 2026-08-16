@@ -27,11 +27,11 @@
  */
 
 import { Router } from 'express';
-import { authorize } from '../../security/auth.middleware.js';
-import { Roles } from '../../security/roles.js';
-import type { HousekeepingService } from '../../services/housekeeping.service.js';
-import type { HousekeepingStatus } from '../../domain/housekeeping-task.js';
-import { CreateHousekeepingTaskSchema, AssignHousekeepingTaskSchema } from '../schemas/housekeeping.schemas.js';
+import { authorize } from '../security/auth.middleware.js';
+import { Roles } from '../security/roles.js';
+import type { HousekeepingService } from './housekeeping.service.js';
+import type { HousekeepingStatus } from './housekeeping-task.js';
+import { CreateHousekeepingTaskSchema, AssignHousekeepingTaskSchema } from '../api/schemas/housekeeping.schemas.js';
 
 export function createHousekeepingRouter(service: HousekeepingService): Router {
   const router = Router();

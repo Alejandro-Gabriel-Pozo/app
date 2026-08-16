@@ -4,8 +4,8 @@
  */
 
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { HousekeepingTaskProps, HousekeepingStatus } from '../domain/housekeeping-task.js';
-import { HousekeepingTask } from '../domain/housekeeping-task.js';
+import type { HousekeepingTaskProps, HousekeepingStatus } from './housekeeping-task.js';
+import { HousekeepingTask } from './housekeeping-task.js';
 
 // ---------------------------------------------------------------------------
 // Interfaz del repositorio (puerto — independiente de infraestructura)

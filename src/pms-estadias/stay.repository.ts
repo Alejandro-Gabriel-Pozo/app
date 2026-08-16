@@ -3,9 +3,9 @@
  * @description Interfaz del repositorio de Stays + implementación PostgreSQL.
  */
 
-import type { SqlClient } from './sql.client.js';
-import type { StayProps, StayStatus } from '../domain/stay.js';
-import { Stay } from '../domain/stay.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+import type { StayProps, StayStatus } from './stay.js';
+import { Stay } from './stay.js';
 
 // ---------------------------------------------------------------------------
 // Interfaz del repositorio (puerto)

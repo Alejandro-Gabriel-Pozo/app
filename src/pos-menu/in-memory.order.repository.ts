@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { IOrderRepositoryWithClient } from '../services/order.service.js';
+import type { IOrderRepositoryWithClient } from './order.service.js';
 import type { ListOrdersFilter } from './order.repository.js';
-import type { SqlClient } from './sql.client.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type {
   Order,
   OrderItem,
   CreateOrderInput,
   UpdateOrderInput,
-} from '../domain/order.entities.js';
+} from './order.entities.js';
 
 /**
  * Test double en memoria de IOrderRepositoryWithClient — mismo criterio que

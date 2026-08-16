@@ -10,8 +10,8 @@ import { InMemoryResourceLockRepository } from '../repositories/in-memory.resour
 import { InMemoryBookableServiceRepository } from '../repositories/in-memory.bookable-service.repository.js';
 import { InMemoryCustomerRateRepository } from '../repositories/in-memory.customer-rate.repository.js';
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
-import { InMemoryHousekeepingRepository } from '../repositories/in-memory.housekeeping.repository.js';
-import { HousekeepingTask } from '../domain/housekeeping-task.js';
+import { InMemoryHousekeepingRepository } from '../pms-estadias/in-memory.housekeeping.repository.js';
+import { HousekeepingTask } from '../pms-estadias/housekeeping-task.js';
 import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
 import type { ICategoryRepository } from '../repositories/category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';

@@ -4,13 +4,13 @@ import {
   CompanyCustomerRequiredError,
   NoBalanceToTransferError,
 } from './accounts-receivable.service.js';
-import { StayNotFoundError } from './stay.service.js';
+import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 import { CustomerNotFoundError } from '../domain/errors.js';
 import { Customer } from '../domain/customer.entities.js';
-import { Stay } from '../domain/stay.js';
+import { Stay } from '../pms-estadias/stay.js';
 import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivableReportRow } from '../repositories/accounts-receivable.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
-import type { StayRepository } from '../repositories/stay.repository.js';
+import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { CustomerRepository } from '../repositories/customer.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';

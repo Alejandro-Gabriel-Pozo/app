@@ -8,7 +8,7 @@ import type {
   OrderStatus,
   CreateOrderInput,
   UpdateOrderInput,
-} from '../domain/order.entities.js';
+} from './order.entities.js';
 
 export interface ListOrdersFilter {
   businessId:  string;

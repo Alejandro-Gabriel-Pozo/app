@@ -17,7 +17,7 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto';
-import type { IOrderRepository, ListOrdersFilter } from '../repositories/order.repository.js';
+import type { IOrderRepository, ListOrdersFilter } from './order.repository.js';
 import type {
   Order,
   OrderItem,
@@ -26,7 +26,7 @@ import type {
   CreateOrderInput,
   CreateOrderItemInput,
   UpdateOrderInput,
-} from '../domain/order.entities.js';
+} from './order.entities.js';
 import type { TransactionManager }      from '../db/transaction-manager.js';
 import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';

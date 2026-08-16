@@ -8,13 +8,13 @@ import {
   OrderAlreadyServedError,
 } from './order.service.js';
 import { ProductService, InsufficientStockError } from './product.service.js';
-import { InMemoryOrderRepository } from '../repositories/in-memory.order.repository.js';
+import { InMemoryOrderRepository } from './in-memory.order.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { IProductRepository, IProductVariantRepository, ListProductsFilter, ListVariantsFilter } from '../repositories/product.repository.js';
-import type { Product, ProductVariant, CreateProductInput, UpdateProductInput, CreateProductVariantInput, UpdateProductVariantInput } from '../domain/product.entities.js';
+import type { IProductRepository, IProductVariantRepository, ListProductsFilter, ListVariantsFilter } from './product.repository.js';
+import type { Product, ProductVariant, CreateProductInput, UpdateProductInput, CreateProductVariantInput, UpdateProductVariantInput } from './product.entities.js';
 
 /**
  * Fake mínimo de IProductRepository — solo lo que ProductService.checkStock()

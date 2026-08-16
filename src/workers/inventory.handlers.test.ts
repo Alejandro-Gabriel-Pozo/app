@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleOrderConfirmedStock, handleOrderCancelledStock } from './inventory.handlers.js';
-import { ProductService } from '../services/product.service.js';
+import { ProductService } from '../pos-menu/product.service.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type { StockMovementRepository, CreateStockMovementInput } from '../repositories/stock-movement.repository.js';
@@ -11,7 +11,7 @@ import type {
   IProductVariantRepository,
   ListProductsFilter,
   ListVariantsFilter,
-} from '../repositories/product.repository.js';
+} from '../pos-menu/product.repository.js';
 import type {
   Product,
   ProductVariant,
@@ -19,7 +19,7 @@ import type {
   UpdateProductInput,
   CreateProductVariantInput,
   UpdateProductVariantInput,
-} from '../domain/product.entities.js';
+} from '../pos-menu/product.entities.js';
 
 /** Fakes mínimos — mismo criterio que order.service.test.ts / product.service.test.ts. */
 class FakeProductRepository implements IProductRepository {

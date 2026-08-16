@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { StayService, StayBalanceOwedError, ResourceOccupiedError } from './stay.service.js';
-import type { Stay } from '../domain/stay.js';
+import type { Stay } from './stay.js';
 import { Reservation } from '../domain/Reservation.js';
 import { Customer } from '../domain/customer.entities.js';
 import { PhysicalResource } from '../domain/resource.entities.js';
 import { ReservationStatus } from '../types/enums.js';
 import { InMemoryReservationRepository } from '../repositories/in-memory.reservation.repository.js';
-import { InMemoryHousekeepingRepository } from '../repositories/in-memory.housekeeping.repository.js';
-import type { StayRepository } from '../repositories/stay.repository.js';
+import { InMemoryHousekeepingRepository } from './in-memory.housekeeping.repository.js';
+import type { StayRepository } from './stay.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../repositories/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
