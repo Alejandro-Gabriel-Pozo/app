@@ -5,6 +5,12 @@
 > priorizado para que futuras sesiones (con o sin IA) sepan qué falta y no
 > tengan que re-derivarlo. El estado de cada ítem está evaluado contra el
 > código real a esa fecha, no contra intención.
+>
+> **Actualizado 17/08/2026** — solo la fila de inventario/ingredientes del
+> bloque F&B, que tuvo desarrollo real desde el 11/08 (carve-out de
+> inventario completo, 3 fases, ver `docs/diseno-inventario-carve-out.md`).
+> El resto del documento no se revalidó contra el código en esta pasada —
+> no asumir que sigue exacto en todo lo demás.
 
 ## Cómo leer esto
 
@@ -113,13 +119,13 @@ negocios que combinan hospedaje con bar/restaurante propio.
 | Cargo a la habitación | ❌ — no hay forma de asociar una `order` a una `Stay` activa y facturarla junto al check-out |
 | Varias listas de precios / sectorizado | ❌ — un solo `price` por producto |
 | Promociones | ❌ |
-| Ingredientes y recetas (control de stock real) | ❌ — `products` tiene `stockQuantity` simple, no hay receta que descuente ingredientes al vender un plato |
-| Pre-elaborados | ❌ |
-| Trazabilidad de movimientos de ingredientes | ❌ |
-| Transferencia entre depósitos | ❌ — no existe el concepto de depósito/warehouse |
-| Órdenes de compra, proveedores, remitos | ❌ |
+| Ingredientes y recetas (control de stock real) | ✅ **Resuelto (17/08/2026)** — `recipe_items` (BOM multinivel, prevención de ciclos), `RecipeService.explodeRecipe()` explota la receta y descuenta cada ingrediente al confirmar la venta, no el plato. Ver `docs/diseno-inventario-carve-out.md` Fase 3 |
+| Pre-elaborados | ✅ **Resuelto (17/08/2026)** — concepto "Producción vs. armado al momento" (`products.assemble_on_demand=false`): un producto se produce por adelantado (`POST /api/products/stock/production`, ej. pan congelado) y consume ese stock propio al vender, en vez de explotar la receta en vivo |
+| Trazabilidad de movimientos de ingredientes | ⚠️ Parcial — `stock_movements` trackea IN/OUT/ADJUSTMENT/RETURN/TRANSFER/WASTE/PRODUCTION a nivel producto, con motivo obligatorio en mermas. Lo que falta: una fila propia por CADA ingrediente consumido dentro de un evento de Producción (hoy se aplica directo a `inventory_levels` sin registro individual) — pospuesto junto con el costeo teórico-vs-real (ver fila de Reportes de producción/costeo, abajo) |
+| Transferencia entre depósitos | ✅ **Resuelto (17/08/2026)** — `locations`/`inventory_levels` por ubicación, `POST /api/products/stock/transfer` como operación atómica entre dos ubicaciones del mismo negocio. Ver Fase 1 del carve-out |
+| Órdenes de compra, proveedores, remitos | ❌ — identificado como fase propia y separada del carve-out de inventario (incluye conversión de unidad de medida, kg comprado → g consumido), sin arrancar |
 | Recuento físico de inventario | ❌ |
-| Reportes de producción/costeo/ranking de mozos | ❌ |
+| Reportes de producción/costeo/ranking de mozos | ❌ — el dato base para costeo (`recipe_items.cost_per_unit`/`yield_percentage`) ya se captura desde el 17/08, pero el cálculo de COGS teórico-vs-real y el reporte en sí quedaron pospuestos a propósito |
 
 ---
 
