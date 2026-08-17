@@ -621,6 +621,34 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- Fase 3 del carve-out de inventario (17/08/2026, docs/diseno-inventario-
+-- carve-out.md) — clasificación del producto + si su receta se explota en
+-- vivo al vender o necesita Producción previa (ver BLOQUE 18 más abajo).
+-- Nullable-primero + backfill + NOT NULL: mismo patrón de siempre, así
+-- funciona igual en una BD nueva que en una con productos ya cargados.
+-- Default 'RETAIL'/false = comportamiento de hoy para todo producto
+-- existente (sin receta, stock directo) — cero cambio de comportamiento.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS product_type VARCHAR(20);
+UPDATE products SET product_type = 'RETAIL' WHERE product_type IS NULL;
+ALTER TABLE products ALTER COLUMN product_type SET NOT NULL;
+ALTER TABLE products ALTER COLUMN product_type SET DEFAULT 'RETAIL';
+ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_product_type;
+ALTER TABLE products ADD CONSTRAINT chk_products_product_type
+  CHECK (product_type IN ('RAW_MATERIAL', 'COMPOSITE', 'RETAIL'));
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS assemble_on_demand BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Solo tiene sentido en COMPOSITE — chequeable con un CHECK de una sola
+-- fila (no necesita mirar otra tabla), así que se cierra acá en vez de
+-- confiar solo en la validación de RecipeService (defensa en profundidad,
+-- mismo criterio que chk_products_assemble_on_demand con recipe_items más
+-- abajo).
+ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_assemble_on_demand;
+ALTER TABLE products ADD CONSTRAINT chk_products_assemble_on_demand
+  CHECK (assemble_on_demand = FALSE OR product_type = 'COMPOSITE');
+
+CREATE INDEX IF NOT EXISTS idx_products_type ON products (product_type) WHERE product_type != 'RETAIL';
+
 -- ===========================================================================
 -- BLOQUE 16 — INVENTORY_LEVELS (Fase 1 del carve-out de inventario, 16/08/2026)
 -- ===========================================================================
@@ -730,6 +758,71 @@ ALTER TABLE product_variants DROP COLUMN IF EXISTS reserved_quantity;
 ALTER TABLE product_variants DROP COLUMN IF EXISTS stock_min_alert;
 
 -- ===========================================================================
+-- BLOQUE 18 — RECIPE_ITEMS (Fase 3 del carve-out de inventario, 17/08/2026)
+-- ===========================================================================
+-- docs/diseno-inventario-carve-out.md Fase 3. BOM multinivel: un componente
+-- puede ser a su vez otro COMPOSITE (ej. "salsa base" es receta propia e
+-- ingrediente de "pizza"). parent_product_id siempre un producto (nunca una
+-- variante -- las recetas se definen a nivel producto, no por variante,
+-- simplificación deliberada: los ejemplos reales del diseño -- pan,
+-- sándwich, pizza -- son productos simples sin variantes).
+--
+-- Prevención de ciclos: NO se puede expresar como CHECK de una sola fila
+-- (necesita mirar transitivamente el resto de la tabla) -- vive en
+-- RecipeService.wouldCreateCycle() vía CTE recursiva, antes de cada
+-- INSERT/UPDATE. El único caso de ciclo de UN salto (un producto se
+-- referencia a sí mismo) sí se cierra acá con un CHECK, defensa en
+-- profundidad barata.
+--
+-- cost_per_unit/yield_percentage: se capturan desde el día uno aunque el
+-- cálculo de COGS teórico-vs-real siga pospuesto (condición que el dueño
+-- puso el 15/08/2026 para no remodelar la tabla cuando se retome esa
+-- métrica, pendientes-2026-08-15.md D2).
+CREATE TABLE IF NOT EXISTS recipe_items (
+  id                    VARCHAR(255)   PRIMARY KEY,
+  parent_product_id     VARCHAR(255)   NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  component_product_id  VARCHAR(255)   REFERENCES products(id)         ON DELETE RESTRICT,
+  component_variant_id  VARCHAR(255)   REFERENCES product_variants(id) ON DELETE RESTRICT,
+  quantity_per_unit      DECIMAL(10,4) NOT NULL CHECK (quantity_per_unit > 0),
+  cost_per_unit           DECIMAL(10,2) CHECK (cost_per_unit >= 0),
+  yield_percentage        DECIMAL(5,2)  CHECK (yield_percentage > 0 AND yield_percentage <= 100),
+  created_at            TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_recipe_item_component CHECK (
+    (component_product_id IS NOT NULL AND component_variant_id IS NULL)
+    OR (component_variant_id IS NOT NULL AND component_product_id IS NULL)
+  ),
+  -- Ciclo de un solo salto (un producto se referencia a sí mismo como su
+  -- propio componente) -- los ciclos multinivel los cierra RecipeService.
+  CONSTRAINT chk_recipe_item_not_self CHECK (
+    component_product_id IS NULL OR component_product_id != parent_product_id
+  )
+);
+
+-- Un mismo componente no puede aparecer dos veces en la receta de un mismo
+-- producto (evita "harina" listada dos veces con cantidades distintas,
+-- ambigüedad de datos, no una decisión organizacional -- R2/integridad).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_recipe_items_parent_component_product
+  ON recipe_items (parent_product_id, component_product_id) WHERE component_product_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_recipe_items_parent_component_variant
+  ON recipe_items (parent_product_id, component_variant_id) WHERE component_variant_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_recipe_items_parent ON recipe_items (parent_product_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_items_component_product
+  ON recipe_items (component_product_id) WHERE component_product_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_recipe_items_component_variant
+  ON recipe_items (component_variant_id) WHERE component_variant_id IS NOT NULL;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'recipe_items_updated_at') THEN
+    CREATE TRIGGER recipe_items_updated_at
+      BEFORE UPDATE ON recipe_items
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
 -- BLOQUE 4 — ÓRDENES
 -- ===========================================================================
 
@@ -814,6 +907,66 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'order_items_updated_at') THEN
     CREATE TRIGGER order_items_updated_at
       BEFORE UPDATE ON order_items
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- Fase 3 del carve-out de inventario (17/08/2026) — snapshot de a qué
+-- componentes se reservó/consolidó stock realmente para este ítem, cuando
+-- OrderService.confirmOrder() tuvo que explotar su receta (producto
+-- assemble_on_demand=true). NULL para todo ítem que NO explotó (la enorme
+-- mayoría: productos simples, sigue leyendo product_id/product_variant_id
+-- directo, cero cambio de comportamiento).
+--
+-- Por qué existe: la receta puede cambiar con el tiempo (agregar/sacar un
+-- ingrediente, cambiar cantidades). Si cancelOrder() volviera a explotar la
+-- receta ACTUAL en vez de leer qué se reservó de verdad al confirmar,
+-- liberaría/restauraría stock de componentes distintos a los que realmente
+-- se tocaron -- silenciosamente inconsistente. Guardar el snapshot en el
+-- mismo INSERT/UPDATE transaccional que hace la reserva (mismo criterio de
+-- siempre: nunca dos escrituras separadas que puedan quedar a mitad de
+-- camino) es la única forma de que cancelOrder() revierta EXACTAMENTE lo
+-- que confirmOrder() reservó, sin importar si la receta cambió después.
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS stock_snapshot JSONB;
+
+-- ===========================================================================
+-- BLOQUE 17 — WASTE_REASONS (Fase 2 del carve-out de inventario, 17/08/2026)
+-- ===========================================================================
+-- MAESTRO: catálogo de motivos de merma propio por negocio, no un CHECK fijo
+-- en el código. docs/diseno-inventario-carve-out.md Fase 2 -- confirmado
+-- explícitamente el 16/08/2026: el manual de inventario daba
+-- expired/waste_prep/count_adjustment como ejemplos típicos, no como lista
+-- cerrada. Imponerla en código sería la misma clase de decisión
+-- organizacional que la memoria de sesión (técnico vs. organizacional) dice
+-- que no nos toca fijar. Vive físicamente acá (antes de BLOQUE 5) porque
+-- stock_movements.waste_reason_id (más abajo) la referencia.
+--
+-- Mismo patrón que `products` (BLOQUE 3), no el de `resource_categories`
+-- (BLOQUE 1, sin business_id -- predata la convención de columna explícita
+-- pese al aislamiento por pool, A2.8). Sin `deleted_at`: mismo criterio que
+-- `products`, que tampoco lo tiene -- el bug de R3 (borrado vs. pausado) se
+-- corrigió puntualmente en las 3 tablas del incidente del 13/08/2026
+-- (resource_categories/resources/bookable_services), no es un mandato para
+-- todo maestro nuevo. R1/R6 (código de negocio, unicidad normalizada del
+-- nombre) siguen sin implementarse en NINGÚN maestro del proyecto todavía
+-- (backlog "esta semana" de docs/criterios-datos.md) -- no se agregan acá
+-- en soledad, quedan con el resto para cuando se resuelva en conjunto.
+CREATE TABLE IF NOT EXISTS waste_reasons (
+  id           VARCHAR(255)  PRIMARY KEY,
+  business_id  VARCHAR(255)  NOT NULL,
+  name         VARCHAR(255)  NOT NULL,
+  active       BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_waste_reasons_business_active
+  ON waste_reasons (business_id) WHERE active = TRUE;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'waste_reasons_updated_at') THEN
+    CREATE TRIGGER waste_reasons_updated_at
+      BEFORE UPDATE ON waste_reasons
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
@@ -936,6 +1089,87 @@ ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_location CHECK (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_movements_location ON stock_movements (location_id) WHERE location_id IS NOT NULL;
+
+-- Fase 2 del carve-out de inventario (17/08/2026, docs/diseno-inventario-
+-- carve-out.md) — 'WASTE' como movement_type propio (no una categoría de
+-- ADJUSTMENT: son operativamente distintos -- ADJUSTMENT corrige un conteo,
+-- WASTE registra una baja física real). waste_reason_id: motivo obligatorio
+-- cuando movement_type = 'WASTE', mismo criterio que
+-- chk_adjustment_requires_notes ya existente para ADJUSTMENT/notes.
+-- ON DELETE RESTRICT: un motivo de merma nunca se hard-borra estando en uso
+-- (waste_reasons no tiene hard-delete de todos modos, solo deactivate()).
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS waste_reason_id VARCHAR(255)
+  REFERENCES waste_reasons(id) ON DELETE RESTRICT;
+
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
+  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER', 'WASTE'));
+
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_waste_requires_reason;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_waste_requires_reason CHECK (
+  movement_type != 'WASTE' OR waste_reason_id IS NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_waste_reason
+  ON stock_movements (waste_reason_id) WHERE waste_reason_id IS NOT NULL;
+
+-- Fase 3 del carve-out de inventario (17/08/2026, docs/diseno-inventario-
+-- carve-out.md) — 'PRODUCTION': "producir N unidades de producto X",
+-- explota su receta una vez, decrementa inventory_levels de cada
+-- componente e incrementa inventory_levels del producto producido, todo en
+-- una transacción atómica. Se registra UNA fila (la del producto
+-- producido, igual que IN/OUT reflejan el movimiento del producto propio)
+-- -- el consumo de cada componente se aplica directo sobre inventory_levels
+-- sin fila propia por componente, mismo criterio que ya se aplicó con
+-- cost_per_unit/yield_percentage en BLOQUE 18: la auditoría fila-por-
+-- componente de una Producción es parte del COGS teórico-vs-real, pospuesto
+-- a propósito (si se retoma esa métrica, ahí se decide si hace falta un
+-- registro más granular -- hoy alcanza con recipe_items + esta fila para
+-- reconstruir qué se consumió, salvo que la receta haya cambiado después).
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
+  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER', 'WASTE', 'PRODUCTION'));
+
+-- Explosión de receta al vender (assemble_on_demand=true, BLOQUE 18): un
+-- mismo order_item puede ahora generar UN OUT/RESERVATION_RELEASED/RETURN
+-- POR COMPONENTE, no uno solo -- "el pan lleva harina Y levadura" son dos
+-- filas para el mismo order_item_id. Los dos índices de BLOQUE 13/D1
+-- asumían 1:1 order_item↔movimiento; se amplían acá para que la
+-- idempotencia (A8.5) sea por (order_item, producto/variante), no solo por
+-- order_item -- así conviven las N filas de un mismo ítem compuesto sin
+-- perder la protección contra el doble movimiento del MISMO componente.
+-- Para un producto simple (el 99% de los casos hasta hoy) esto es
+-- exactamente la misma garantía que antes: un item_type PRODUCT solo tiene
+-- una fila posible con su propio product_id, cero cambio de comportamiento.
+--
+-- DOS índices parciales, no uno combinado -- mismo patrón polimórfico que
+-- uq_inventory_levels_product/uq_inventory_levels_variant (BLOQUE 16).
+-- Probado contra Postgres real (17/08/2026): un ÚNICO índice sobre
+-- (order_item_id, product_id, product_variant_id, movement_type) NO
+-- funciona -- Postgres trata cada NULL como distinto de cualquier otro
+-- NULL, así que dos filas con el mismo order_item_id+product_id pero
+-- product_variant_id NULL en ambas (el caso normal, sin variante) no
+-- colisionan entre sí y el índice no bloquea el duplicado. Se detectó
+-- insertando duplicados reales que deberían haber sido rechazados y no lo
+-- fueron -- por eso la corrección quedó documentada acá, no es una
+-- preferencia de estilo.
+DROP INDEX IF EXISTS ux_stock_movements_order_item_type;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_type_product
+  ON stock_movements (order_item_id, product_id, movement_type)
+  WHERE order_item_id IS NOT NULL AND product_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_type_variant
+  ON stock_movements (order_item_id, product_variant_id, movement_type)
+  WHERE order_item_id IS NOT NULL AND product_variant_id IS NOT NULL;
+
+DROP INDEX IF EXISTS ux_stock_movements_order_item_resolution;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_resolution_product
+  ON stock_movements (order_item_id, product_id)
+  WHERE order_item_id IS NOT NULL AND product_id IS NOT NULL
+    AND movement_type IN ('OUT', 'RESERVATION_RELEASED');
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_resolution_variant
+  ON stock_movements (order_item_id, product_variant_id)
+  WHERE order_item_id IS NOT NULL AND product_variant_id IS NOT NULL
+    AND movement_type IN ('OUT', 'RESERVATION_RELEASED');
 
 -- ===========================================================================
 -- BLOQUE 6 — STAYS (Check-in / Check-out)

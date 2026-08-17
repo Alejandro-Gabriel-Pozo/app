@@ -9,6 +9,14 @@
 export type ProductId = string;
 export type ProductVariantId = string;
 
+/**
+ * Fase 3 del carve-out de inventario (17/08/2026,
+ * docs/diseno-inventario-carve-out.md) — clasificación del producto.
+ * RAW_MATERIAL/RETAIL nunca explotan receta (son hojas). COMPOSITE puede
+ * (ver `assembleOnDemand`). Default 'RETAIL' = comportamiento de hoy.
+ */
+export type ProductType = 'RAW_MATERIAL' | 'COMPOSITE' | 'RETAIL';
+
 // ---------------------------------------------------------------------------
 // ProductVariant
 // ---------------------------------------------------------------------------
@@ -50,6 +58,16 @@ export interface Product {
    */
   hasVariants: boolean;
   active: boolean;
+  productType: ProductType;
+  /**
+   * Solo aplica cuando `productType === 'COMPOSITE'` (chk_products_
+   * assemble_on_demand en schema.sql cierra esto también a nivel BD).
+   * true  → la receta se explota EN VIVO al confirmar la orden (sándwich).
+   * false → necesita stock propio, producido de antemano vía PRODUCTION
+   *         (pan congelado) — si no hay, la venta falla por falta de
+   *         stock, sin intentar explotar la receta en vivo.
+   */
+  assembleOnDemand: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -78,6 +96,9 @@ export interface CreateProductInput {
   /** Ver nota de Fase 1 arriba -- siembra InventoryLevel, no persiste en products. */
   initialStockQuantity?: number;
   initialStockMinAlert?: number;
+  /** Default 'RETAIL'/false si no se especifica (comportamiento de hoy). */
+  productType?: ProductType;
+  assembleOnDemand?: boolean;
 }
 
 export interface UpdateProductInput {
@@ -88,6 +109,8 @@ export interface UpdateProductInput {
   sku?: string | null;
   hasVariants?: boolean;
   active?: boolean;
+  productType?: ProductType;
+  assembleOnDemand?: boolean;
 }
 
 export interface CreateProductVariantInput {

@@ -22,8 +22,8 @@ export class SqlStockMovementRepository implements StockMovementRepository {
       `INSERT INTO stock_movements
          (id, business_id, product_id, product_variant_id, movement_type,
           quantity, order_item_id, created_by, notes,
-          location_id, from_location_id, to_location_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          location_id, from_location_id, to_location_id, waste_reason_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -39,16 +39,30 @@ export class SqlStockMovementRepository implements StockMovementRepository {
         input.locationId,
         input.fromLocationId ?? null,
         input.toLocationId ?? null,
+        input.wasteReasonId ?? null,
       ],
     );
 
     return rows.length > 0;
   }
 
-  async hasMovement(client: SqlClient, orderItemId: string, movementType: StockMovementType): Promise<boolean> {
+  async hasMovement(
+    client: SqlClient,
+    orderItemId: string,
+    productId: string | null,
+    productVariantId: string | null,
+    movementType: StockMovementType,
+  ): Promise<boolean> {
+    // IS NOT DISTINCT FROM, no "=": product_id/product_variant_id son
+    // polimórficos (uno de los dos siempre NULL) -- "=" nunca matchea NULL.
     const { rows } = await client.query<{ id: string }>(
-      `SELECT id FROM stock_movements WHERE order_item_id = $1 AND movement_type = $2 LIMIT 1`,
-      [orderItemId, movementType],
+      `SELECT id FROM stock_movements
+       WHERE order_item_id = $1
+         AND product_id IS NOT DISTINCT FROM $2
+         AND product_variant_id IS NOT DISTINCT FROM $3
+         AND movement_type = $4
+       LIMIT 1`,
+      [orderItemId, productId, productVariantId, movementType],
     );
     return rows.length > 0;
   }

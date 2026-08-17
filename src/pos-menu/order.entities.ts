@@ -84,6 +84,14 @@ export interface OrderItem {
   /** quantity * unitPrice */
   subtotal:           number;
   notes:              string | null;
+  /**
+   * Fase 3 del carve-out de inventario (17/08/2026) — a qué componentes se
+   * reservó/consolidó stock realmente para este ítem, cuando confirmOrder()
+   * tuvo que explotar su receta (producto assembleOnDemand=true). NULL para
+   * todo ítem que no explotó (la enorme mayoría). Ver comentario completo
+   * en schema.sql, columna order_items.stock_snapshot.
+   */
+  stockSnapshot:      Array<{ productId: string; productVariantId: string | null; quantity: number }> | null;
   createdAt:          Date;
   updatedAt:          Date;
 }

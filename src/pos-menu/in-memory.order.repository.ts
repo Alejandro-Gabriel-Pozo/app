@@ -61,7 +61,7 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
 
   async addItem(
     orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
   ): Promise<OrderItem> {
     return this.addItemWithClient({} as SqlClient, orderId, item);
   }
@@ -69,21 +69,37 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
   async addItemWithClient(
     _client: SqlClient,
     orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
   ): Promise<OrderItem> {
     const order = this.orders.get(orderId);
     if (!order) throw new Error(`InMemoryOrderRepository: orden ${orderId} no existe`);
 
     const newItem: OrderItem = {
       ...item,
-      id:        randomUUID(),
+      id:            randomUUID(),
       orderId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      stockSnapshot: null,
+      createdAt:     new Date(),
+      updatedAt:     new Date(),
     };
     order.items.push(newItem);
     order.totalAmount = order.items.reduce((sum, i) => sum + i.subtotal, 0);
     return newItem;
+  }
+
+  async setItemStockSnapshotWithClient(
+    _client: SqlClient,
+    orderItemId: string,
+    snapshot: OrderItem['stockSnapshot'],
+  ): Promise<void> {
+    for (const order of this.orders.values()) {
+      const item = order.items.find((i) => i.id === orderItemId);
+      if (item) {
+        item.stockSnapshot = snapshot;
+        item.updatedAt = new Date();
+        return;
+      }
+    }
   }
 
   async removeItem(orderItemId: string, orderId: string): Promise<boolean> {

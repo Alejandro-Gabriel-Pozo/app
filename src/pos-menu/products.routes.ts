@@ -13,19 +13,26 @@
  * PUT    /api/products/:id/variants/:variantId            — MANAGEMENT
  * DELETE /api/products/:id/variants/:variantId            — MANAGEMENT
  *
+ * GET    /api/products/:id/recipe-items                  — MANAGEMENT
+ * POST   /api/products/:id/recipe-items                  — MANAGEMENT
+ * PUT    /api/products/:id/recipe-items/:itemId           — MANAGEMENT
+ * DELETE /api/products/:id/recipe-items/:itemId           — MANAGEMENT
+ *
  * POST   /api/products/:id/stock/decrement               — ORDERS (OWNER, ADMIN, WAITER)
  * POST   /api/products/:id/variants/:variantId/stock/decrement — ORDERS
  * POST   /api/products/stock/transfer                     — MANAGEMENT
+ * POST   /api/products/stock/waste                        — MANAGEMENT
+ * POST   /api/products/stock/production                   — MANAGEMENT
  *
  * ## Rationale de roles
  * Los productos son configuración de catálogo del negocio:
  * solo OWNER y ADMIN los crean, editan y eliminan (MANAGEMENT).
  * El WAITER necesita decrementar stock al confirmar una orden, de ahí ORDERS
- * en los endpoints de stock. La transferencia entre ubicaciones queda en
- * MANAGEMENT — sin flujo de aprobación propio: cada negocio decide quién
- * puede transferir asignando ese rol, no es una decisión técnica nuestra
- * (16/08/2026, ver memoria de la sesión sobre decisiones técnicas vs.
- * organizacionales).
+ * en los endpoints de stock. La transferencia entre ubicaciones y el
+ * registro de mermas quedan en MANAGEMENT — sin flujo de aprobación propio:
+ * cada negocio decide quién puede transferir/registrar mermas asignando ese
+ * rol, no es una decisión técnica nuestra (16/08/2026, ver memoria de la
+ * sesión sobre decisiones técnicas vs. organizacionales).
  *
  * ## Aislamiento multi-tenant
  * buildProductService() instancia SqlProductRepository usando req.db
@@ -44,7 +51,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
 import type { AppContainer } from '../container.js';
-import { ProductService } from './product.service.js';
+import { ProductService, InsufficientStockError } from './product.service.js';
 import {
   SqlProductRepository,
   SqlProductVariantRepository,
@@ -52,6 +59,7 @@ import {
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { SqlInventoryLevelRepository } from '../repositories/sql.inventory-level.repository.js';
 import { SqlStockMovementRepository } from '../repositories/sql.stock-movement.repository.js';
+import { SqlWasteReasonRepository } from '../repositories/sql.waste-reason.repository.js';
 import { resolveDefaultLocationId } from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { authorize } from '../security/auth.middleware.js';
@@ -61,6 +69,14 @@ import { z, ZodError } from 'zod';
 import type { Product, ProductVariant, CreateProductInput, CreateProductVariantInput } from './product.entities.js';
 import type { InventoryLevel } from '../repositories/inventory-level.repository.js';
 import { compact } from '../api/utils/compact.js';
+import { RecordWasteSchema } from '../api/schemas/waste.schemas.js';
+import { RecipeService } from './recipe.service.js';
+import { SqlRecipeItemRepository } from '../repositories/sql.recipe-item.repository.js';
+import {
+  CreateRecipeItemSchema,
+  UpdateRecipeItemSchema,
+  RecordProductionSchema,
+} from '../api/schemas/recipe.schemas.js';
 
 function buildProductService(req: Request): ProductService {
   const db = req.db!;
@@ -69,6 +85,15 @@ function buildProductService(req: Request): ProductService {
     new SqlProductVariantRepository(db),
     new SqlAuditLogRepository(db),
     new SqlInventoryLevelRepository(db),
+  );
+}
+
+function buildRecipeService(req: Request): RecipeService {
+  const db = req.db!;
+  return new RecipeService(
+    new SqlRecipeItemRepository(db),
+    new SqlProductRepository(db),
+    new SqlProductVariantRepository(db),
   );
 }
 
@@ -236,6 +261,68 @@ export function createProductsRouter(_container: AppContainer): Router {
     } catch (err) { next(err); }
   });
 
+  // ── GET /api/products/:id/recipe-items ──────────────────────────────────────
+  // Fase 3 del carve-out de inventario (17/08/2026) — receta (BOM) de un
+  // producto COMPOSITE. MANAGEMENT, mismo criterio de roles que variantes:
+  // configuración de catálogo, no una operación del día a día del mostrador.
+  router.get('/:id/recipe-items', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const service = buildRecipeService(req);
+      const items   = await service.listRecipe(param(req, 'id'));
+      res.json(items);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/recipe-items ─────────────────────────────────────
+  router.post('/:id/recipe-items', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = CreateRecipeItemSchema.parse(req.body);
+      const service = buildRecipeService(req);
+      const item = await service.addRecipeItem({
+        parentProductId:     param(req, 'id'),
+        componentProductId:  body.componentProductId  ?? null,
+        componentVariantId:  body.componentVariantId  ?? null,
+        quantityPerUnit:     body.quantityPerUnit,
+        costPerUnit:         body.costPerUnit         ?? null,
+        yieldPercentage:     body.yieldPercentage     ?? null,
+      });
+      res.status(201).json(item);
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
+  });
+
+  // ── PUT /api/products/:id/recipe-items/:itemId ──────────────────────────────
+  router.put('/:id/recipe-items/:itemId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = UpdateRecipeItemSchema.parse(req.body);
+      const service = buildRecipeService(req);
+      const item = await service.updateRecipeItem(param(req, 'itemId'), {
+        ...(body.quantityPerUnit !== undefined && { quantityPerUnit: body.quantityPerUnit }),
+        ...(body.costPerUnit     !== undefined && { costPerUnit: body.costPerUnit }),
+        ...(body.yieldPercentage !== undefined && { yieldPercentage: body.yieldPercentage }),
+      });
+      res.json(item);
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
+  });
+
+  // ── DELETE /api/products/:id/recipe-items/:itemId ───────────────────────────
+  router.delete('/:id/recipe-items/:itemId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const service = buildRecipeService(req);
+      const deleted = await service.removeRecipeItem(param(req, 'itemId'));
+      if (!deleted) {
+        res.status(404).json({ code: 'RECIPE_ITEM_NOT_FOUND', message: 'Ítem de receta no encontrado.' });
+        return;
+      }
+      res.status(204).send();
+    } catch (err) { next(err); }
+  });
+
   // ── POST /api/products/:id/stock/decrement ─────────────────────────────────
   // ORDERS = OWNER, ADMIN, WAITER — el mozo decrementa stock al confirmar
   router.post('/:id/stock/decrement', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
@@ -295,6 +382,23 @@ export function createProductsRouter(_container: AppContainer): Router {
         return;
       }
 
+      const service = buildProductService(req);
+      if (body.productId) {
+        const product = await service.getProduct(body.productId);
+        if (!product) {
+          res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Producto ${body.productId} no encontrado.` });
+          return;
+        }
+        if (product.hasVariants) {
+          res.status(400).json({
+            code: 'PRODUCT_HAS_VARIANTS',
+            message: `El producto ${body.productId} maneja stock por variante (has_variants=true). ` +
+              'Especificá productVariantId, no productId.',
+          });
+          return;
+        }
+      }
+
       const stockMovementRepo   = new SqlStockMovementRepository();
       const inventoryLevelRepo  = new SqlInventoryLevelRepository(req.db!);
       const transactionManager  = buildTenantTransactionManager(req);
@@ -324,6 +428,169 @@ export function createProductsRouter(_container: AppContainer): Router {
       });
 
       res.status(201).json({ movementId });
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // ── POST /api/products/stock/waste ────────────────────────────────────────
+  // Fase 2 del carve-out de inventario (17/08/2026) — da de baja stock por
+  // merma real (no un ajuste de conteo: por eso WASTE es un movement_type
+  // propio, no una categoría de ADJUSTMENT). Misma mecánica atómica que
+  // /stock/transfer: movementId opcional, insert-then-act (A8.5). Decrementa
+  // contra lo DISPONIBLE (stock - reservado), nunca stock ya comprometido con
+  // una orden confirmada — mismo criterio que transferStock(). MANAGEMENT,
+  // sin flujo de aprobación propio (mismo razonamiento técnico-vs-
+  // organizacional que /stock/transfer).
+  router.post('/stock/waste', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body        = RecordWasteSchema.parse(req.body);
+      const locationId  = await resolveLocation(req);
+      const service     = buildProductService(req);
+
+      if (body.productId) {
+        const product = await service.getProduct(body.productId);
+        if (!product) {
+          res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Producto ${body.productId} no encontrado.` });
+          return;
+        }
+        if (product.hasVariants) {
+          res.status(400).json({
+            code: 'PRODUCT_HAS_VARIANTS',
+            message: `El producto ${body.productId} maneja stock por variante (has_variants=true). ` +
+              'Especificá productVariantId, no productId.',
+          });
+          return;
+        }
+      }
+
+      const wasteReasonRepo = new SqlWasteReasonRepository(req.db!);
+      const reason = await wasteReasonRepo.findById(body.wasteReasonId);
+      if (!reason) {
+        res.status(404).json({ code: 'WASTE_REASON_NOT_FOUND', message: `Motivo de merma ${body.wasteReasonId} no encontrado.` });
+        return;
+      }
+      if (!reason.active) {
+        res.status(400).json({ code: 'WASTE_REASON_INACTIVE', message: `El motivo de merma ${body.wasteReasonId} está desactivado.` });
+        return;
+      }
+
+      const inventoryLevelRepo = new SqlInventoryLevelRepository(req.db!);
+      const key = { productId: body.productId ?? null, productVariantId: body.productVariantId ?? null, locationId };
+
+      const stockMovementRepo  = new SqlStockMovementRepository();
+      const transactionManager = buildTenantTransactionManager(req);
+      const movementId          = body.movementId ?? randomUUID();
+
+      await transactionManager.run(async (client) => {
+        const inserted = await stockMovementRepo.createWithClient(client, movementId, {
+          businessId:       req.businessId!,
+          productId:        body.productId ?? null,
+          productVariantId: body.productVariantId ?? null,
+          movementType:     'WASTE',
+          quantity:         body.quantity,
+          orderItemId:      null,
+          createdBy:        req.user!.id,
+          notes:            body.notes ?? null,
+          locationId,
+          wasteReasonId:    body.wasteReasonId,
+        });
+
+        if (!inserted) return; // reintento con el mismo movementId -- ya aplicada, no-op
+
+        // Pre-check informativo DENTRO del insert-then-act -- corre solo en el
+        // intento real, nunca en un reintento (si corriera antes del chequeo de
+        // `inserted`, un reintento legítimo vería el stock YA descontado por el
+        // intento anterior y fallaría con "insuficiente" en vez de no-opear).
+        // decrementAvailableStock() abajo sigue siendo la guarda atómica real.
+        const level = await inventoryLevelRepo.get(key);
+        const available = (level?.stockQuantity ?? 0) - (level?.reservedQuantity ?? 0);
+        if (available < body.quantity) {
+          throw new InsufficientStockError(available, body.quantity);
+        }
+
+        await inventoryLevelRepo.decrementAvailableStock(client, key, body.quantity);
+      });
+
+      res.status(201).json({ movementId });
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // ── POST /api/products/stock/production ─────────────────────────────────────
+  // Fase 3 del carve-out de inventario (17/08/2026) — "producir N unidades
+  // de producto X": explota su receta una vez (RecipeService.
+  // explodeRecipeForProduction, SIEMPRE, sin mirar el assembleOnDemand del
+  // propio producto -- ver comentario ahí), decrementa inventory_levels de
+  // cada componente contra lo DISPONIBLE (no solo físico -- mismo criterio
+  // que WASTE/transfer, nunca consume stock ya comprometido con una orden
+  // confirmada) e incrementa inventory_levels del producto producido, todo
+  // en una transacción atómica. Insert-then-act (A8.5, movementId opcional)
+  // -- igual que transfer/waste, sin pre-check de disponibilidad separado
+  // (mismo motivo que transferStock(): la UPDATE condicionada de
+  // decrementAvailableStock() ya es la guarda atómica real; un pre-check
+  // ANTES del chequeo de idempotencia rompería reintentos legítimos, ver
+  // patrones-recurrentes.md 17/08/2026).
+  //
+  // UNA fila en stock_movements (el producto producido) -- el consumo de
+  // cada componente se aplica directo a inventory_levels sin fila propia
+  // (ver comentario en schema.sql BLOQUE 5 sobre por qué eso queda pospuesto
+  // junto con COGS teórico-vs-real). MANAGEMENT, sin flujo de aprobación
+  // propio (mismo razonamiento técnico-vs-organizacional que /stock/transfer
+  // y /stock/waste).
+  router.post('/stock/production', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body        = RecordProductionSchema.parse(req.body);
+      const locationId  = await resolveLocation(req);
+
+      const components = await buildRecipeService(req).explodeRecipeForProduction(body.productId, body.quantity);
+
+      const stockMovementRepo  = new SqlStockMovementRepository();
+      const inventoryLevelRepo = new SqlInventoryLevelRepository(req.db!);
+      const transactionManager = buildTenantTransactionManager(req);
+      const movementId          = body.movementId ?? randomUUID();
+
+      await transactionManager.run(async (client) => {
+        const inserted = await stockMovementRepo.createWithClient(client, movementId, {
+          businessId:       req.businessId!,
+          productId:        body.productId,
+          productVariantId: null,
+          movementType:     'PRODUCTION',
+          quantity:         body.quantity,
+          orderItemId:      null,
+          createdBy:        req.user!.id,
+          notes:            body.notes ?? null,
+          locationId,
+        });
+
+        if (!inserted) return; // reintento con el mismo movementId -- ya aplicada, no-op
+
+        for (const component of components) {
+          const key = {
+            productId:        component.productVariantId ? null : component.productId,
+            productVariantId: component.productVariantId,
+            locationId,
+          };
+          await inventoryLevelRepo.decrementAvailableStock(client, key, component.quantity);
+        }
+
+        await inventoryLevelRepo.incrementStock(
+          client, req.businessId!,
+          { productId: body.productId, productVariantId: null, locationId },
+          body.quantity,
+        );
+      });
+
+      res.status(201).json({ movementId, components });
     } catch (err) {
       if (err instanceof ZodError) {
         res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });

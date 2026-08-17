@@ -43,7 +43,7 @@ export interface IOrderRepository {
    */
   addItem(
     orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
   ): Promise<OrderItem>;
   /**
    * Elimina una línea de la orden y recalcula total_amount.

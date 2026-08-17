@@ -21,7 +21,7 @@
  * 14. tenantMiddleware()    — inyecta req.db + arranca OutboxWorker por tenant
  * 15. apiLimiter            — 200 req/min/IP sobre /api/* autenticado
  * 16. /api/resources, /reservations, /reports, /customers, /users,
- *     /categories, /products, /orders, /bookable-services,
+ *     /categories, /products, /orders, /waste-reasons, /bookable-services,
  *     /housekeeping, /stays
  * 17. errorHandler
  */
@@ -48,6 +48,7 @@ import { createRolesRouter }             from './api/routes/roles.routes.js';
 import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
 import { createProductsRouter }          from './pos-menu/products.routes.js';
+import { createWasteReasonsRouter }      from './pos-menu/waste-reasons.routes.js';
 import { createOrdersRouter }            from './pos-menu/orders.routes.js';
 import { createBookableServicesRouter }  from './reservas/bookable-services.routes.js';
 import { createHousekeepingRouter }      from './pms-estadias/housekeeping.routes.js';
@@ -225,6 +226,7 @@ export async function createApp(): Promise<{
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));
+  app.use('/api/waste-reasons', requireModule(container, ModuleKey.POS_RESTAURANTE), createWasteReasonsRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
   app.use('/api/business-profile',  createBusinessProfileRouter());

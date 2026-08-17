@@ -50,6 +50,7 @@ function rowToOrderItem(row: Record<string, unknown>): OrderItem {
     unitPrice:        Number(row['unit_price']),
     subtotal:         Number(row['subtotal']),
     notes:            (row['notes'] as string | null) ?? null,
+    stockSnapshot:    (row['stock_snapshot'] as OrderItem['stockSnapshot']) ?? null,
     createdAt:        new Date(row['created_at'] as string),
     updatedAt:        new Date(row['updated_at'] as string),
   };
@@ -306,7 +307,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
 
   async addItem(
     orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
   ): Promise<OrderItem> {
     const pool = (this.db as unknown as { _pool?: InstanceType<typeof Pool> })._pool;
 
@@ -368,7 +369,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   async addItemWithClient(
     client: SqlClient,
     orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
   ): Promise<OrderItem> {
     const id = randomUUID();
     const { rows } = await client.query<Record<string, unknown>>(
@@ -387,6 +388,21 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
       ],
     );
     return rowToOrderItem(rows[0]!);
+  }
+
+  // -------------------------------------------------------------------------
+  // setItemStockSnapshotWithClient
+  // -------------------------------------------------------------------------
+
+  async setItemStockSnapshotWithClient(
+    client: SqlClient,
+    orderItemId: string,
+    snapshot: OrderItem['stockSnapshot'],
+  ): Promise<void> {
+    await client.query(
+      `UPDATE order_items SET stock_snapshot = $1, updated_at = NOW() WHERE id = $2`,
+      [snapshot === null ? null : JSON.stringify(snapshot), orderItemId],
+    );
   }
 
   // -------------------------------------------------------------------------

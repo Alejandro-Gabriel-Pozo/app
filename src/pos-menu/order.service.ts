@@ -33,6 +33,7 @@ import type { DomainEventRepository }   from '../repositories/domain-event.repos
 import type { PaymentInfo }             from '../clientes-finanzas/financial-transaction.repository.js';
 import { DomainError }                  from '../domain/errors.js';
 import type { ProductService }          from './product.service.js';
+import type { RecipeService }           from './recipe.service.js';
 import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';
 import { canonicalStockItemOrder }      from '../workers/inventory.handlers.js';
 
@@ -108,7 +109,7 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
   addItemWithClient(
     client: SqlClient,
     orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
   ): Promise<OrderItem>;
 
   /**
@@ -127,6 +128,19 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
   completeWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
 
   cancelWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
+
+  /**
+   * Persiste el snapshot de componentes exploded (Fase 3, 17/08/2026) para
+   * un order_item — dentro de la MISMA transacción que reservó contra
+   * ellos, así cancelOrder() puede revertir exactamente lo que se reservó
+   * aunque la receta cambie después. Ver comentario completo en
+   * schema.sql, columna order_items.stock_snapshot.
+   */
+  setItemStockSnapshotWithClient(
+    client: SqlClient,
+    orderItemId: string,
+    snapshot: OrderItem['stockSnapshot'],
+  ): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +155,7 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
  */
 function buildOrderItemInput(
   item: CreateOrderItemInput,
-): Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt'> {
+): Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'> {
   return {
     itemType:         item.itemType,
     productId:        item.productId        ?? null,
@@ -173,19 +187,89 @@ function withAllowedTransitions(order: Order): OrderWithTransitions {
 }
 
 /**
- * Subconjunto de OrderItem que el handler de inventario necesita — ítems
- * RESERVATION (cargo a la habitación) no tocan stock, se excluyen acá para
- * que el payload del evento no cargue de más (A10.2).
+ * Explota la receta de cada ítem si hace falta (Fase 3 del carve-out de
+ * inventario, 17/08/2026, RecipeService.explodeRecipe) y devuelve tanto la
+ * lista plana a reservar (un ítem puede generar varias filas para el MISMO
+ * orderItemId, una por componente) como qué ítems necesitan que se les
+ * persista el snapshot resultante — solo los que de verdad explotaron a
+ * algo distinto de sí mismos, así un producto simple sigue sin tocar
+ * `stock_snapshot` (NULL, cero cambio de comportamiento). Ítems
+ * PRODUCT_VARIANT nunca explotan — las recetas se definen a nivel
+ * producto, no por variante (ver recipe.service.ts). Ítems RESERVATION
+ * (cargo a la habitación) no tocan stock, se excluyen (A10.2).
+ *
+ * Usada SOLO por confirmOrder() — es la única vez que se decide qué se
+ * reserva de verdad; cancelOrder() nunca vuelve a llamar esto, lee el
+ * snapshot ya persistido (expandStockItemsFromSnapshot más abajo).
  */
-function toStockItems(items: OrderItem[]): StockItemSnapshot[] {
-  return items
-    .filter((i) => i.itemType === 'PRODUCT' || i.itemType === 'PRODUCT_VARIANT')
-    .map((i) => ({
-      orderItemId:      i.id,
-      productId:        i.productId!,
-      productVariantId: i.productVariantId,
-      quantity:         i.quantity,
-    }));
+async function resolveConfirmStockItems(
+  items: OrderItem[],
+  recipeService: RecipeService,
+): Promise<{ stockItems: StockItemSnapshot[]; snapshots: Map<string, OrderItem['stockSnapshot']> }> {
+  const stockItems: StockItemSnapshot[] = [];
+  const snapshots = new Map<string, OrderItem['stockSnapshot']>();
+
+  for (const item of items) {
+    if (item.itemType !== 'PRODUCT' && item.itemType !== 'PRODUCT_VARIANT') continue;
+
+    if (item.productVariantId) {
+      stockItems.push({
+        orderItemId: item.id, productId: item.productId!,
+        productVariantId: item.productVariantId, quantity: item.quantity,
+      });
+      continue;
+    }
+
+    const exploded = await recipeService.explodeRecipe(item.productId!, item.quantity);
+    const trivial = exploded.length === 1
+      && exploded[0]!.productId === item.productId
+      && exploded[0]!.productVariantId === null;
+
+    if (trivial) {
+      stockItems.push({ orderItemId: item.id, productId: item.productId!, productVariantId: null, quantity: item.quantity });
+      continue;
+    }
+
+    snapshots.set(item.id, exploded);
+    for (const component of exploded) {
+      stockItems.push({
+        orderItemId: item.id, productId: component.productId,
+        productVariantId: component.productVariantId, quantity: component.quantity,
+      });
+    }
+  }
+
+  return { stockItems, snapshots };
+}
+
+/**
+ * Simétrico de resolveConfirmStockItems() para cancelOrder() — NUNCA
+ * vuelve a consultar recipe_items. Para cada ítem con stockSnapshot
+ * persistido, expande exactamente esos componentes (lo que confirmOrder()
+ * reservó de verdad, aunque la receta haya cambiado después). Para el
+ * resto (la mayoría), mismo comportamiento que toStockItems() de siempre.
+ */
+function expandStockItemsFromSnapshot(items: OrderItem[]): StockItemSnapshot[] {
+  const result: StockItemSnapshot[] = [];
+  for (const item of items) {
+    if (item.itemType !== 'PRODUCT' && item.itemType !== 'PRODUCT_VARIANT') continue;
+
+    if (item.stockSnapshot) {
+      for (const component of item.stockSnapshot) {
+        result.push({
+          orderItemId: item.id, productId: component.productId,
+          productVariantId: component.productVariantId, quantity: component.quantity,
+        });
+      }
+      continue;
+    }
+
+    result.push({
+      orderItemId: item.id, productId: item.productId!,
+      productVariantId: item.productVariantId, quantity: item.quantity,
+    });
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +288,12 @@ export class OrderService {
      * asíncrona pero idempotente.
      */
     private readonly productService: ProductService,
+    /**
+     * Fase 3 del carve-out de inventario (17/08/2026) — explota la receta
+     * de un ítem assembleOnDemand=true al confirmar (ver
+     * resolveConfirmStockItems). No se usa en ningún otro método.
+     */
+    private readonly recipeService: RecipeService,
   ) {}
 
   async listOrders(filter: ListOrdersFilter): Promise<OrderWithTransitions[]> {
@@ -282,19 +372,32 @@ export class OrderService {
    * El payload del evento lleva los ítems (A10.2, "payload autocontenido")
    * — el handler de inventario no debe volver a consultar order_items,
    * para cuando corra la orden ya pudo cambiar.
+   *
+   * ## Fase 3 del carve-out de inventario (17/08/2026) — explosión de receta
+   * Un ítem cuyo producto es COMPOSITE + assembleOnDemand=true no reserva
+   * contra sí mismo — resolveConfirmStockItems() lo explota (recursivo,
+   * RecipeService) a sus componentes hoja ANTES de reservar, y persiste el
+   * resultado en `order_items.stock_snapshot` (misma transacción) para que
+   * cancelOrder() revierta exacto eso, no lo que la receta diga en ese
+   * momento. Un ítem simple (la mayoría) sigue exactamente igual que antes
+   * — resolveConfirmStockItems() lo detecta trivial y no persiste nada.
    */
   async confirmOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
 
-    const stockItems = toStockItems(order.items);
+    const { stockItems, snapshots } = await resolveConfirmStockItems(order.items, this.recipeService);
 
     return this.transactionManager.run(async (client: SqlClient) => {
       for (const item of canonicalStockItemOrder(stockItems)) {
         await this.productService.reserveStock(
           client, order.businessId, item.productId, item.productVariantId ?? undefined, order.locationId, item.quantity,
         );
+      }
+
+      for (const [orderItemId, snapshot] of snapshots) {
+        await this.orderRepo.setItemStockSnapshotWithClient(client, orderItemId, snapshot);
       }
 
       const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
@@ -374,6 +477,12 @@ export class OrderService {
    * un problema financiero, no de inventario). `previousStatus` por sí solo
    * no alcanza para distinguir esos dos casos porque ambos son la misma
    * transición CONFIRMED → CANCELLED.
+   *
+   * Fase 3 del carve-out de inventario (17/08/2026) — expandStockItemsFromSnapshot()
+   * en vez de toStockItems(): para un ítem que explotó su receta al
+   * confirmar, libera/restaura EXACTO lo que se reservó entonces (lee
+   * `stock_snapshot`, nunca vuelve a consultar recipe_items) — la receta
+   * pudo haber cambiado desde que se confirmó esta orden.
    */
   async cancelOrder(id: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
@@ -395,7 +504,7 @@ export class OrderService {
           previousStatus,
           wasServed,
           locationId:     updated.locationId,
-          items:          toStockItems(order.items),
+          items:          expandStockItemsFromSnapshot(order.items),
         },
       });
       return withAllowedTransitions(updated);

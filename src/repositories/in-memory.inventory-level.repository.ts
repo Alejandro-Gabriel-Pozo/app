@@ -86,6 +86,15 @@ export class InMemoryInventoryLevelRepository implements InventoryLevelRepositor
     row.updatedAt = new Date();
   }
 
+  async decrementAvailableStock(_client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void> {
+    const row = this.rows.get(keyString(key));
+    if (!row || row.stockQuantity - row.reservedQuantity < quantity) {
+      throw new Error(`Stock disponible insuficiente (${JSON.stringify(key)}, quantity=${quantity}).`);
+    }
+    row.stockQuantity -= quantity;
+    row.updatedAt = new Date();
+  }
+
   async transferStock(
     client: SqlClient,
     businessId: string,

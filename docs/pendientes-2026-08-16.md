@@ -57,30 +57,32 @@ reserva/consolidación/liberación y transferencia probados con datos
 reales, no solo con fakes en memoria. `tsc`/lint/tests (442/443)/build
 limpios. Revisado con la skill `revision-pr-pms-erp` antes de commitear.
 
-**❌ Hallazgo de la revisión, sin aplicar todavía** — `POST /api/products/stock/transfer`
-no valida que, cuando se pasa `productId` (en vez de `productVariantId`),
-ese producto tenga `hasVariants=false`. Si alguien transfiere stock de un
-producto que en realidad maneja stock por variante, se crea una fila de
-`inventory_levels` a nivel producto que ninguna venta real toca — el
-stock queda invisible ahí, nunca se vende ni se cuenta bien. Fix acotado:
-mismo chequeo que ya existe en `ProductService.createVariant()` (buscar
-el producto, rechazar si `hasVariants !== false` cuando viene `productId`).
-Archivo: `src/pos-menu/products.routes.ts`, endpoint de transferencia.
-Decisión del dueño (16/08/2026): commitear igual, resolver después.
+**✅ RESUELTO (17/08/2026) — hallazgo de la revisión aplicado.**
+`POST /api/products/stock/transfer` ahora valida, cuando se pasa
+`productId`, que ese producto exista (404 si no) y tenga
+`hasVariants=false` (400 `PRODUCT_HAS_VARIANTS` si no) — mismo chequeo que
+ya existía en `ProductService.createVariant()`. Archivo:
+`src/pos-menu/products.routes.ts`, endpoint de transferencia. `tsc`/lint/
+tests (442/443) limpios tras el cambio.
 
-**⚠️ Revisión de diff incompleta** — la skill `revision-pr-pms-erp` cubrió
-`schema.sql`, `product.service.ts`, `inventory.handlers.ts`,
-`products.routes.ts` (incl. transferencia), `order.service.ts`/
-`orders.routes.ts`/`order.entities.ts`/`sql.order.repository.ts`,
-`location.repository.ts`, `stock-movement.repository.ts`. **Sin revisar
-todavía:** `product.repository.ts`/`sql.product.repository.ts` (remoción
-de métodos de stock), `product.entities.ts`, y los 3 archivos nuevos de
-`InventoryLevelRepository` (`inventory-level.repository.ts`,
-`sql.inventory-level.repository.ts`, `in-memory.inventory-level.repository.ts`)
-— cortada por límite de uso de la sesión, no por decisión de saltarla.
+**✅ RESUELTO (17/08/2026) — revisión de diff completada.** Los archivos
+que habían quedado sin revisar (`product.repository.ts`,
+`sql.product.repository.ts`, `product.entities.ts`,
+`inventory-level.repository.ts`, `sql.inventory-level.repository.ts`,
+`in-memory.inventory-level.repository.ts`) están limpios: `getById` nunca
+filtra por `active` (R2), patrón insert-then-act atómico en todo
+reserve/commit/release/decrement/transfer (A8.2). La falta de filtro
+`business_id` en los `UPDATE` de `InventoryLevelRepository` no es un gap
+nuevo — mismo patrón que `sql.stock-movement.repository.ts` ya tenía
+(A2.8: aislamiento real por pool de conexión por tenant, no por columna).
 
-**Fases 2 (mermas) y 3 (recetas/BOM + Producción) siguen sin implementar**
-— diseño acordado, no ejecutado.
+**Fase 1 del carve-out de inventario: completamente cerrada.**
+
+**✅ RESUELTO (17/08/2026) — Fase 2 (mermas) implementada y verificada.**
+Detalle completo en `pendientes-2026-08-17.md`.
+
+**Fase 3 (recetas/BOM + Producción) sigue sin implementar** — diseño
+acordado, no ejecutado.
 
 ## C. Empresas multipropiedad + catálogo compartido entre sucursales — nuevo, deliberadamente separado (16/08/2026)
 

@@ -265,7 +265,11 @@ export function handleOrderCancelledStock(
         // reintento de este mismo RESERVATION_RELEASED (at-least-once, ya
         // liberado, nada más que hacer) o que OUT ganó el casillero (sí hay
         // que evaluar restaurar). Desambiguar antes de decidir.
-        const alreadyReleased = await stockMovementRepo.hasMovement(client, item.orderItemId, 'RESERVATION_RELEASED');
+        const alreadyReleased = await stockMovementRepo.hasMovement(
+          client, item.orderItemId,
+          item.productVariantId ? null : item.productId, item.productVariantId,
+          'RESERVATION_RELEASED',
+        );
         if (alreadyReleased) continue;
 
         // OUT ganó el casillero -- la reserva ya se consolidó (stock físico

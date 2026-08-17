@@ -11,6 +11,8 @@ import { ProductService, InsufficientStockError } from './product.service.js';
 import { InMemoryOrderRepository } from './in-memory.order.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
+import { RecipeService } from './recipe.service.js';
+import { InMemoryRecipeItemRepository } from '../repositories/in-memory.recipe-item.repository.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
@@ -37,6 +39,7 @@ class FakeProductRepository implements IProductRepository {
       id: `prod-${this.rows.size + 1}`, businessId: input.businessId, categoryId: input.categoryId ?? null,
       name: input.name, description: input.description ?? null, basePrice: input.basePrice,
       sku: input.sku ?? null, hasVariants: input.hasVariants ?? false,
+      productType: input.productType ?? 'RETAIL', assembleOnDemand: input.assembleOnDemand ?? false,
       active: true, createdAt: now, updatedAt: now,
     };
     this.rows.set(product.id, product);
@@ -103,6 +106,7 @@ describe('OrderService', () => {
   let txManager: InMemoryTransactionManager;
   let productRepo: FakeProductRepository;
   let inventoryLevelRepo: InMemoryInventoryLevelRepository;
+  let recipeItemRepo: InMemoryRecipeItemRepository;
   let productService: ProductService;
   let service: OrderService;
 
@@ -112,13 +116,16 @@ describe('OrderService', () => {
     txManager          = new InMemoryTransactionManager();
     productRepo        = new FakeProductRepository();
     inventoryLevelRepo = new InMemoryInventoryLevelRepository();
+    recipeItemRepo      = new InMemoryRecipeItemRepository();
     productService      = new ProductService(productRepo, new FakeProductVariantRepository(), new InMemoryAuditLogRepository(), inventoryLevelRepo);
-    service             = new OrderService(orderRepo, txManager, eventRepo, productService);
+    const recipeService = new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository());
+    service             = new OrderService(orderRepo, txManager, eventRepo, productService, recipeService);
 
     const now = new Date();
     productRepo.seed({
       id: 'prod-1', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Producto de prueba',
       description: null, basePrice: 10, sku: null, hasVariants: false,
+      productType: 'RETAIL', assembleOnDemand: false,
       active: true, createdAt: now, updatedAt: now,
     });
     inventoryLevelRepo.seed({
@@ -327,6 +334,102 @@ describe('OrderService', () => {
         eventType: 'order.cancelled',
         payload:   { previousStatus: 'DRAFT', wasServed: false },
       });
+    });
+  });
+
+  describe('Fase 3 — explosión de receta (assembleOnDemand) en confirmOrder/cancelOrder', () => {
+    beforeEach(() => {
+      const now = new Date();
+      productRepo.seed({
+        id: 'prod-sandwich', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Sándwich',
+        description: null, basePrice: 100, sku: null, hasVariants: false,
+        productType: 'COMPOSITE', assembleOnDemand: true,
+        active: true, createdAt: now, updatedAt: now,
+      });
+      productRepo.seed({
+        id: 'prod-jamon', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Jamón',
+        description: null, basePrice: 5, sku: null, hasVariants: false,
+        productType: 'RAW_MATERIAL', assembleOnDemand: false,
+        active: true, createdAt: now, updatedAt: now,
+      });
+      inventoryLevelRepo.seed({
+        id: 'lvl-jamon', businessId: TEST_BUSINESS_ID, productId: 'prod-jamon', productVariantId: null,
+        locationId: 'loc-default', stockQuantity: 1000, reservedQuantity: 0, stockMinAlert: 0,
+      });
+    });
+
+    async function createSandwichDraftOrder(quantity: number): Promise<string> {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID,
+        customerId: TEST_CUSTOMER_ID,
+        locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-sandwich', quantity, unitPrice: 100 }],
+      });
+      return order.id;
+    }
+
+    it('confirmOrder() reserva contra el componente explotado, no contra el producto compuesto', async () => {
+      await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
+      const id = await createSandwichDraftOrder(3);
+
+      await service.confirmOrder(id);
+
+      const jamonLevel = await inventoryLevelRepo.get({ productId: 'prod-jamon', productVariantId: null, locationId: 'loc-default' });
+      expect(jamonLevel?.reservedQuantity).toBe(6); // 2 por unidad * 3 unidades
+    });
+
+    it('confirmOrder() persiste stock_snapshot en el order_item con los componentes reservados', async () => {
+      await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
+      const id = await createSandwichDraftOrder(3);
+
+      await service.confirmOrder(id);
+
+      const order = await service.getOrder(id);
+      expect(order?.items[0]!.stockSnapshot).toEqual([{ productId: 'prod-jamon', productVariantId: null, quantity: 6 }]);
+    });
+
+    it('el payload de order.confirmed lleva los componentes explotados, no el producto compuesto', async () => {
+      await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
+      const id = await createSandwichDraftOrder(3);
+
+      await service.confirmOrder(id);
+
+      const payload = eventRepo.events[0]!.payload as { items: Array<{ productId: string; quantity: number }> };
+      expect(payload.items).toHaveLength(1);
+      expect(payload.items[0]).toMatchObject({ productId: 'prod-jamon', quantity: 6 });
+    });
+
+    it('un ítem simple (sin receta) NO persiste stock_snapshot -- cero cambio de comportamiento', async () => {
+      const id = await createDraftOrderWithItem(100); // prod-1, RETAIL simple
+
+      await service.confirmOrder(id);
+
+      const order = await service.getOrder(id);
+      expect(order?.items[0]!.stockSnapshot).toBeNull();
+    });
+
+    it('el payload de order.cancelled usa el componente SNAPSHOTEADO al confirmar, aunque la receta haya cambiado después', async () => {
+      // La liberación real de stock la hace el handler async del outbox
+      // (workers/inventory.handlers.ts, ya testeado aparte) -- lo que le
+      // toca a OrderService es emitir el payload correcto para que ese
+      // handler libere lo que de verdad se reservó, no lo que la receta
+      // diga ahora. Ver order_items.stock_snapshot en schema.sql.
+      await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
+      const id = await createSandwichDraftOrder(3);
+      await service.confirmOrder(id);
+
+      // La receta cambia DESPUÉS de confirmar -- ahora usa el doble de jamón.
+      const [item] = await recipeItemRepo.getByParent('prod-sandwich');
+      await recipeItemRepo.update(item!.id, { quantityPerUnit: 4 });
+
+      await service.cancelOrder(id);
+
+      // Si cancelOrder() re-explotara con la receta ACTUAL, el payload
+      // llevaría 12 (4*3). Debe llevar exactamente lo reservado al
+      // confirmar: 6.
+      const payload = eventRepo.events[1]!.payload as { items: Array<{ productId: string; quantity: number }> };
+      expect(payload.items).toHaveLength(1);
+      expect(payload.items[0]).toMatchObject({ productId: 'prod-jamon', quantity: 6 });
     });
   });
 

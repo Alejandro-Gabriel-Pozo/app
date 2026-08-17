@@ -49,6 +49,8 @@ import { SqlDomainEventRepository }      from '../repositories/sql.domain-event.
 import { SqlProductRepository, SqlProductVariantRepository } from './sql.product.repository.js';
 import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
 import { SqlInventoryLevelRepository }   from '../repositories/sql.inventory-level.repository.js';
+import { RecipeService }                 from './recipe.service.js';
+import { SqlRecipeItemRepository }       from '../repositories/sql.recipe-item.repository.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -72,6 +74,11 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
       new SqlProductVariantRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
       new SqlInventoryLevelRepository(req.db!),
+    ),
+    new RecipeService(
+      new SqlRecipeItemRepository(req.db!),
+      new SqlProductRepository(req.db!),
+      new SqlProductVariantRepository(req.db!),
     ),
   );
 }

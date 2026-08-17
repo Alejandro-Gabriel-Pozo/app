@@ -19,6 +19,7 @@ import type {
 import type {
   Product,
   ProductVariant,
+  ProductType,
   CreateProductInput,
   UpdateProductInput,
   CreateProductVariantInput,
@@ -40,6 +41,8 @@ function rowToProduct(row: Record<string, unknown>): Product {
     sku:           (row['sku'] as string | null) ?? null,
     hasVariants:   Boolean(row['has_variants']),
     active:        Boolean(row['active']),
+    productType:      row['product_type'] as ProductType,
+    assembleOnDemand: Boolean(row['assemble_on_demand']),
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
   };
@@ -124,21 +127,24 @@ export class SqlProductRepository implements IProductRepository {
     await this.db.query(
       `INSERT INTO products (
          id, business_id, category_id, name, description,
-         base_price, sku, has_variants, active
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         base_price, sku, has_variants, active, product_type, assemble_on_demand
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        ON CONFLICT (id) DO UPDATE SET
-         category_id     = EXCLUDED.category_id,
-         name            = EXCLUDED.name,
-         description     = EXCLUDED.description,
-         base_price      = EXCLUDED.base_price,
-         sku             = EXCLUDED.sku,
-         has_variants    = EXCLUDED.has_variants,
-         active          = EXCLUDED.active,
-         updated_at      = NOW()`,
+         category_id        = EXCLUDED.category_id,
+         name               = EXCLUDED.name,
+         description        = EXCLUDED.description,
+         base_price         = EXCLUDED.base_price,
+         sku                = EXCLUDED.sku,
+         has_variants       = EXCLUDED.has_variants,
+         active             = EXCLUDED.active,
+         product_type       = EXCLUDED.product_type,
+         assemble_on_demand = EXCLUDED.assemble_on_demand,
+         updated_at         = NOW()`,
       [
         product.id, product.businessId, product.categoryId,
         product.name, product.description, product.basePrice,
         product.sku, product.hasVariants, product.active,
+        product.productType, product.assembleOnDemand,
       ],
     );
   }
@@ -148,8 +154,8 @@ export class SqlProductRepository implements IProductRepository {
     const { rows } = await this.db.query<Record<string, unknown>>(
       `INSERT INTO products (
          id, business_id, category_id, name, description,
-         base_price, sku, has_variants
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         base_price, sku, has_variants, product_type, assemble_on_demand
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING *`,
       [
         id,
@@ -160,6 +166,8 @@ export class SqlProductRepository implements IProductRepository {
         input.basePrice,
         input.sku         ?? null,
         input.hasVariants ?? false,
+        input.productType ?? 'RETAIL',
+        input.assembleOnDemand ?? false,
       ],
     );
     return rowToProduct(rows[0]!);
@@ -178,6 +186,8 @@ export class SqlProductRepository implements IProductRepository {
       ['sku',           'sku'],
       ['hasVariants',   'has_variants'],
       ['active',        'active'],
+      ['productType',       'product_type'],
+      ['assembleOnDemand',  'assemble_on_demand'],
     ];
 
     for (const [key, col] of map) {

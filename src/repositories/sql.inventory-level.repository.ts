@@ -145,6 +145,22 @@ export class SqlInventoryLevelRepository implements InventoryLevelRepository {
     }
   }
 
+  async decrementAvailableStock(client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void> {
+    const target = whereTarget(key, 3);
+    const { rows } = await client.query<{ id: string }>(
+      `UPDATE inventory_levels
+       SET stock_quantity = stock_quantity - $1,
+           updated_at     = NOW()
+       WHERE location_id = $2 AND ${target.clause}
+         AND (stock_quantity - reserved_quantity) >= $1
+       RETURNING id`,
+      [quantity, key.locationId, target.param],
+    );
+    if (!rows[0]) {
+      throw new Error(`Stock disponible insuficiente (${JSON.stringify(key)}, quantity=${quantity}).`);
+    }
+  }
+
   async transferStock(
     client: SqlClient,
     businessId: string,

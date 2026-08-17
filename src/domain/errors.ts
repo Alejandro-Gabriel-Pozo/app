@@ -97,3 +97,50 @@ export class CustomerRateNotFoundError extends DomainError {
     super(`Tarifa especial con id "${id}" no encontrada`, 'CUSTOMER_RATE_NOT_FOUND');
   }
 }
+
+export class WasteReasonNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Motivo de merma con id "${id}" no encontrado`, 'WASTE_REASON_NOT_FOUND');
+  }
+}
+
+export class RecipeItemNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Ítem de receta con id "${id}" no encontrado`, 'RECIPE_ITEM_NOT_FOUND');
+  }
+}
+
+export class ProductNotCompositeError extends DomainError {
+  constructor(productId: string) {
+    super(
+      `El producto ${productId} no es COMPOSITE (product_type). Solo un producto COMPOSITE puede tener receta.`,
+      'PRODUCT_NOT_COMPOSITE',
+    );
+  }
+}
+
+export class RecipeCycleError extends DomainError {
+  constructor(parentProductId: string, componentProductId: string) {
+    super(
+      `Agregar ${componentProductId} como componente de ${parentProductId} crearía un ciclo ` +
+      '(la receta terminaría refiriéndose a sí misma, directa o transitivamente).',
+      'RECIPE_CYCLE',
+    );
+  }
+}
+
+/**
+ * Un producto COMPOSITE sin ninguna línea de receta explotaría a una lista
+ * vacía de componentes -- la venta (assemble_on_demand=true) o la
+ * Producción reservaría/consumiría CERO stock real (bug de integridad
+ * grave, no un caso de negocio). Se corta acá antes de que eso pase.
+ */
+export class RecipeNotDefinedError extends DomainError {
+  constructor(productId: string) {
+    super(
+      `El producto ${productId} es COMPOSITE pero no tiene receta definida (recipe_items vacío). ` +
+      'No se puede vender (assemble_on_demand=true) ni producir así.',
+      'RECIPE_NOT_DEFINED',
+    );
+  }
+}

@@ -60,12 +60,20 @@ class FakeProductVariantRepository implements IProductVariantRepository {
 }
 
 /**
- * Replica los DOS índices únicos parciales reales (schema.sql BLOQUE 13):
- * (orderItemId, movementType) para idempotencia normal, y un casillero
- * COMPARTIDO entre OUT/RESERVATION_RELEASED por orderItemId solo (D1,
- * 15/08/2026) — el que inserta primero de esos dos gana.
+ * Replica los DOS índices únicos parciales reales (schema.sql BLOQUE 13,
+ * ampliados en Fase 3 17/08/2026 a (orderItemId, producto/variante, tipo)):
+ * uno para idempotencia normal, y un casillero COMPARTIDO entre
+ * OUT/RESERVATION_RELEASED por (orderItemId, producto/variante) — D1,
+ * 15/08/2026 — el que inserta primero de esos dos gana. La clave incluye
+ * producto/variante (no solo orderItemId) porque un ítem compuesto
+ * (receta explotada) puede generar varios componentes bajo el MISMO
+ * orderItemId, cada uno con su propio casillero independiente.
  */
 const SHARED_SLOT_TYPES = new Set(['OUT', 'RESERVATION_RELEASED']);
+
+function componentKey(input: { orderItemId: string | null; productId: string | null; productVariantId: string | null }): string {
+  return `${input.orderItemId}:${input.productId ?? ''}:${input.productVariantId ?? ''}`;
+}
 
 class FakeStockMovementRepository implements StockMovementRepository {
   public inserted: CreateStockMovementInput[] = [];
@@ -73,12 +81,13 @@ class FakeStockMovementRepository implements StockMovementRepository {
   private readonly seenSharedSlot = new Set<string>();
 
   async createWithClient(_client: SqlClient, _id: string, input: CreateStockMovementInput): Promise<boolean> {
-    const typeKey = `${input.orderItemId}:${input.movementType}`;
+    const typeKey = `${componentKey(input)}:${input.movementType}`;
     if (this.seenByTypeKey.has(typeKey)) return false;
 
     if (input.orderItemId && SHARED_SLOT_TYPES.has(input.movementType)) {
-      if (this.seenSharedSlot.has(input.orderItemId)) return false;
-      this.seenSharedSlot.add(input.orderItemId);
+      const sharedKey = componentKey(input);
+      if (this.seenSharedSlot.has(sharedKey)) return false;
+      this.seenSharedSlot.add(sharedKey);
     }
 
     this.seenByTypeKey.add(typeKey);
@@ -86,8 +95,14 @@ class FakeStockMovementRepository implements StockMovementRepository {
     return true;
   }
 
-  async hasMovement(_client: SqlClient, orderItemId: string, movementType: string): Promise<boolean> {
-    return this.seenByTypeKey.has(`${orderItemId}:${movementType}`);
+  async hasMovement(
+    _client: SqlClient,
+    orderItemId: string,
+    productId: string | null,
+    productVariantId: string | null,
+    movementType: string,
+  ): Promise<boolean> {
+    return this.seenByTypeKey.has(`${componentKey({ orderItemId, productId, productVariantId })}:${movementType}`);
   }
 }
 
@@ -291,6 +306,83 @@ describe('inventory.handlers', () => {
 
       const level = await levelOf('prod-1', null);
       expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 })); // no liberó dos veces
+    });
+  });
+
+  describe('Fase 3 (17/08/2026) — ítem compuesto: varios componentes bajo el MISMO orderItemId', () => {
+    beforeEach(() => {
+      inventoryLevelRepo.seed({
+        id: 'lvl-flour', businessId: 'biz-test', productId: 'prod-flour', productVariantId: null,
+        locationId: LOC, stockQuantity: 20, reservedQuantity: 5, stockMinAlert: 0,
+      });
+      inventoryLevelRepo.seed({
+        id: 'lvl-cheese', businessId: 'biz-test', productId: 'prod-cheese', productVariantId: null,
+        locationId: LOC, stockQuantity: 15, reservedQuantity: 4, stockMinAlert: 0,
+      });
+    });
+
+    it('handleOrderConfirmedStock consolida CADA componente por separado, con su propia fila OUT', async () => {
+      const handler = handleOrderConfirmedStock(productService, stockMovementRepo, txManager);
+      const event = fakeEvent('order.confirmed', {
+        items: [
+          { orderItemId: 'oi-composite', productId: 'prod-flour',  productVariantId: null, quantity: 2 },
+          { orderItemId: 'oi-composite', productId: 'prod-cheese', productVariantId: null, quantity: 1 },
+        ],
+      });
+
+      await handler(event);
+
+      expect(await levelOf('prod-flour', null)).toEqual(expect.objectContaining({ stockQuantity: 18, reservedQuantity: 3 }));
+      expect(await levelOf('prod-cheese', null)).toEqual(expect.objectContaining({ stockQuantity: 14, reservedQuantity: 3 }));
+      expect(stockMovementRepo.inserted).toHaveLength(2);
+      // canonicalStockItemOrder ordena por productId -- 'prod-cheese' < 'prod-flour'.
+      expect(stockMovementRepo.inserted).toEqual([
+        expect.objectContaining({ orderItemId: 'oi-composite', productId: 'prod-cheese', movementType: 'OUT', quantity: 1 }),
+        expect.objectContaining({ orderItemId: 'oi-composite', productId: 'prod-flour',  movementType: 'OUT', quantity: 2 }),
+      ]);
+    });
+
+    it('idempotente por componente: reintentar el evento entero no duplica NINGÚN componente', async () => {
+      const handler = handleOrderConfirmedStock(productService, stockMovementRepo, txManager);
+      const event = fakeEvent('order.confirmed', {
+        items: [
+          { orderItemId: 'oi-composite', productId: 'prod-flour',  productVariantId: null, quantity: 2 },
+          { orderItemId: 'oi-composite', productId: 'prod-cheese', productVariantId: null, quantity: 1 },
+        ],
+      });
+
+      await handler(event);
+      await handler(event); // reintento at-least-once del outbox
+
+      expect(await levelOf('prod-flour', null)).toEqual(expect.objectContaining({ stockQuantity: 18 }));
+      expect(await levelOf('prod-cheese', null)).toEqual(expect.objectContaining({ stockQuantity: 14 }));
+      expect(stockMovementRepo.inserted).toHaveLength(2); // no 4
+    });
+
+    it('handleOrderCancelledStock libera/restaura CADA componente según su propio casillero, no el del ítem entero', async () => {
+      // La harina ya se consolidó (OUT real, stock físico bajó); el queso
+      // todavía no (sigue en RESERVATION_RELEASED puro) -- simula que
+      // confirmed alcanzó a consolidar un componente antes de que llegue
+      // la cancelación.
+      const confirmHandler = handleOrderConfirmedStock(productService, stockMovementRepo, txManager);
+      await confirmHandler(fakeEvent('order.confirmed', {
+        items: [{ orderItemId: 'oi-composite', productId: 'prod-flour', productVariantId: null, quantity: 2 }],
+      }));
+
+      const cancelHandler = handleOrderCancelledStock(productService, stockMovementRepo, txManager);
+      await cancelHandler(fakeEvent('order.cancelled', {
+        previousStatus: 'CONFIRMED',
+        wasServed:      false,
+        items: [
+          { orderItemId: 'oi-composite', productId: 'prod-flour',  productVariantId: null, quantity: 2 },
+          { orderItemId: 'oi-composite', productId: 'prod-cheese', productVariantId: null, quantity: 1 },
+        ],
+      }));
+
+      // Harina: OUT ya había ganado el casillero -- se restaura (RETURN) el stock físico consumido.
+      expect(await levelOf('prod-flour', null)).toEqual(expect.objectContaining({ stockQuantity: 20, reservedQuantity: 3 }));
+      // Queso: nunca se consolidó -- solo se libera la reserva, stock físico intacto.
+      expect(await levelOf('prod-cheese', null)).toEqual(expect.objectContaining({ stockQuantity: 15, reservedQuantity: 3 }));
     });
   });
 

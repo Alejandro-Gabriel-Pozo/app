@@ -150,7 +150,19 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // reserved_quantity/stock_min_alert (dropeadas, con backfill previo a
 // loc-default). `orders.location_id` nuevo. `stock_movements` gana
 // location_id/from_location_id/to_location_id + movement_type TRANSFER.
-export const CURRENT_SCHEMA_VERSION = 11;
+// v12 (17/08/2026): Fase 2 del carve-out de inventario — tabla
+// `waste_reasons` nueva (BLOQUE 17, maestro de catálogo propio por
+// negocio). `stock_movements` gana movement_type WASTE + waste_reason_id
+// (obligatorio cuando movement_type = 'WASTE').
+// v13 (17/08/2026): Fase 3 del carve-out de inventario — `products` gana
+// product_type/assemble_on_demand. Tabla `recipe_items` nueva (BLOQUE 18,
+// BOM multinivel). `order_items.stock_snapshot` nuevo (persiste qué
+// componentes se reservaron de verdad, para que cancelOrder() revierta
+// exacto aunque la receta cambie después). `stock_movements` gana
+// movement_type PRODUCTION; los índices únicos de idempotencia por
+// order_item (BLOQUE 13/D1) se amplían a (order_item, producto/variante,
+// tipo) para soportar N componentes por ítem compuesto.
+export const CURRENT_SCHEMA_VERSION = 13;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

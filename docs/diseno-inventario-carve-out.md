@@ -1,9 +1,12 @@
 # Diseño — carve-out de `inventario/` como agregado propio
 
-**Estado: Fase 1 implementada y verificada (16/08/2026).** Fases 2/3
-siguen en diseño, sin implementar. Ver `pendientes-2026-08-16.md` sección B
-para el resumen y `docs/manual-inventario.md` para el marco conceptual que
-lo sustenta.
+**Estado: Fases 1, 2 y 3 completamente cerradas (17/08/2026)** —
+implementadas y verificadas contra Postgres real. El carve-out de
+inventario está completo según este diseño (Compras/Proveedores y
+Empresas multipropiedad quedan fuera, ver sección al final). Ver
+`pendientes-2026-08-16.md` sección B y `pendientes-2026-08-17.md` para el
+resumen de cada fase, y `docs/manual-inventario.md` para el marco
+conceptual que lo sustenta.
 
 Cierra el paso 5 de `docs/arquitectura-monolito-modular.md` sección 4
 (único paso de la reorganización de `src/` por dominio que seguía sin
@@ -127,7 +130,7 @@ camino crítico donde se cerró la carrera de stock el 15/08 (A8.7/A8.8).
 
 ---
 
-## Fase 2 — mermas
+## Fase 2 — mermas — ✅ HECHA Y VERIFICADA (17/08/2026)
 
 - **`WASTE`** como `movement_type` propio (no una categoría de
   `ADJUSTMENT`).
@@ -141,9 +144,140 @@ camino crítico donde se cerró la carrera de stock el 15/08 (A8.7/A8.8).
   waste_reason_id` (FK, requerido cuando `movement_type = 'WASTE'`,
   mismo criterio que `chk_adjustment_requires_notes` hoy).
 
+**Implementado:**
+- `waste_reasons` nueva (schema v12, BLOQUE 17) — MAESTRO por negocio,
+  mismo patrón que `products` (con `business_id`, sin `deleted_at`: ese
+  gap de R3 solo se cerró en las 3 tablas del incidente del 13/08/2026,
+  no es mandato para todo maestro nuevo). R1/R6 (código de negocio,
+  unicidad normalizada) siguen sin implementar en NINGÚN maestro del
+  proyecto — backlog "esta semana" de `criterios-datos.md`, no se resuelve
+  en soledad acá.
+- `stock_movements` gana `movement_type = 'WASTE'` + `waste_reason_id`
+  (FK `ON DELETE RESTRICT`) + `chk_waste_requires_reason`.
+- `WasteReasonRepository`/`SqlWasteReasonRepository`/
+  `InMemoryWasteReasonRepository` (`src/repositories/`) + `WasteReasonService`
+  (`src/pos-menu/waste-reason.service.ts`, CRUD + auditoría R8/A9.4, mismo
+  patrón que `CategoryService`, sin límites de plan).
+- `InventoryLevelRepository.decrementAvailableStock()` (método nuevo) —
+  decrementa stock físico condicionado a lo DISPONIBLE (stock - reservado),
+  no solo a `stock_quantity` como `decrementStock()` — mismo criterio que
+  ya usaba `transferStock()` para no dar de baja stock comprometido con una
+  orden confirmada.
+- `GET/POST/PUT/DELETE /api/waste-reasons` (`Roles.MANAGEMENT`, gateado
+  por `ModuleKey.POS_RESTAURANTE` igual que `/api/products`).
+- `POST /api/products/stock/waste` (`Roles.MANAGEMENT`, sin flujo de
+  aprobación propio — misma decisión técnica-vs-organizacional que
+  `/stock/transfer`). Idempotente vía `movementId` opcional (A8.5). Valida
+  `hasVariants=false` cuando viene `productId` (mismo chequeo agregado a
+  `/stock/transfer` el 17/08/2026) y que el `wasteReasonId` exista y esté
+  activo.
+- De paso, `INSUFFICIENT_STOCK` (ya existía en `product.service.ts`) suma
+  case en `error.middleware.ts` (400) — no tenía mapeo y caía al 500
+  genérico salvo que el router la capturara localmente; cierra el mismo
+  hueco latente en `/:id/stock/decrement`.
+
+**Verificado contra Postgres real** (proyecto Neon `DB-APP-PPMS`, branch
+temporal `verify-schema-v12-waste-reasons` ramificado de `production`,
+borrado después de usarlo): tabla `waste_reasons` creada, `WASTE` sin
+`waste_reason_id` rechazado por `chk_waste_requires_reason`, `WASTE` con
+motivo válido insertado, `WASTE` con motivo inexistente rechazado por FK,
+`ADJUSTMENT` sigue exigiendo `notes` (constraint vieja intacta),
+desactivar un motivo en uso no rompe la FK (soft-delete), y el UPDATE
+atómico de `decrementAvailableStock()` probado con datos reales: pedir más
+que lo disponible (stock=10, reservado=3 → disponible=7) afecta 0 filas,
+pedir exactamente lo disponible sí se aplica.
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 453/454 (+11 tests nuevos: `WasteReasonService` y
+`decrementAvailableStock()`), `npm run build` limpio.
+
+**Backend únicamente** — sin UI en `appfrontend-main` todavía (catálogo de
+motivos ni pantalla para registrar una merma).
+
 ---
 
-## Fase 3 — recetas/BOM (multinivel + Producción)
+## Fase 3 — recetas/BOM (multinivel + Producción) — ✅ HECHA Y VERIFICADA (17/08/2026)
+
+**Implementado** (backend únicamente, `app-main`), sobre el diseño de abajo
+tal cual estaba acordado, con tres decisiones técnicas que el diseño
+original no dejaba pinneadas y se resolvieron al implementar (lo técnico
+es decisión de ingeniería, ver regla de trabajo arriba):
+
+- `products.product_type`/`assemble_on_demand` (schema v13, con
+  `chk_products_assemble_on_demand`: `assemble_on_demand=true` exige
+  `product_type='COMPOSITE'` a nivel BD, no solo en el service).
+- `recipe_items` nueva (BLOQUE 18) — `RecipeItemRepository`/
+  `SqlRecipeItemRepository`/`InMemoryRecipeItemRepository` +
+  `RecipeService` (`src/pos-menu/recipe.service.ts`): CRUD + prevención de
+  ciclos vía CTE recursiva (`wouldCreateCycle`) + explosión recursiva
+  (`explodeRecipe`/`explodeRecipeForProduction`).
+- **Decisión técnica 1 — dos entry points de explosión, no uno.** El
+  diseño original no distinguía "explotar para vender" de "explotar para
+  producir". `explodeRecipe()` (venta/armado en vivo) mira el
+  `assemble_on_demand` del propio producto antes de explotar;
+  `explodeRecipeForProduction()` (Producción manual) explota siempre que
+  sea `COMPOSITE`, sin mirar su propio flag — producir por adelantado ES
+  exactamente lo que `assemble_on_demand=false` pide, y nada impide
+  producir en lote algo normalmente `assemble_on_demand=true` también.
+  Los componentes de adentro siguen la MISMA regla de recursión en los dos
+  casos (para en un componente `COMPOSITE` con `assemble_on_demand=false`,
+  sigue de largo en uno con `true`).
+- **Decisión técnica 2 — `order_items.stock_snapshot` (columna nueva, no
+  prevista en el diseño original).** Necesaria porque `cancelOrder()` es
+  una llamada separada, potencialmente mucho después de `confirmOrder()`
+  — si volviera a explotar la receta ACTUAL en vez de leer qué se reservó
+  de verdad al confirmar, liberaría/restauraría componentes distintos a
+  los reservados si la receta cambió en el medio (silenciosamente
+  inconsistente). Se persiste el resultado de la explosión en la misma
+  transacción que reserva, `cancelOrder()` nunca vuelve a consultar
+  `recipe_items`.
+- **Decisión técnica 3 — índices únicos de idempotencia ampliados
+  (schema v13).** `ux_stock_movements_order_item_type`/`_resolution`
+  (BLOQUE 13/D1) asumían 1:1 order_item↔movimiento; un ítem compuesto
+  ahora puede generar VARIOS componentes bajo el mismo `order_item_id`.
+  Ampliados a incluir producto/variante, partidos en DOS índices parciales
+  cada uno (no uno combinado — ver hallazgo de `patrones-recurrentes.md`
+  17/08/2026: Postgres no bloquea duplicados si se combina una columna
+  polimórfica NULL con otras en un solo índice). `hasMovement()` gana los
+  mismos parámetros para desambiguar por componente en
+  `handleOrderCancelledStock`.
+- `OrderService.confirmOrder()`/`cancelOrder()` integran la explosión
+  (`resolveConfirmStockItems`/`expandStockItemsFromSnapshot`) — un ítem
+  simple (la enorme mayoría) sigue exactamente igual que antes, cero
+  cambio de comportamiento.
+- `POST /api/products/stock/production` — mismo mecanismo insert-then-act
+  que transfer/waste (`movementId` opcional), decrementa cada componente
+  contra lo DISPONIBLE (`decrementAvailableStock`, reusado de Fase 2) e
+  incrementa el producto producido, todo atómico. Registra UNA fila en
+  `stock_movements` (el producto producido) — el consumo de cada
+  componente se aplica directo a `inventory_levels` sin fila propia,
+  mismo criterio que `cost_per_unit`/`yield_percentage`: la auditoría
+  fila-por-componente es parte de COGS teórico-vs-real, pospuesto.
+- `GET/POST/PUT/DELETE /api/products/:id/recipe-items` — CRUD del BOM,
+  `MANAGEMENT`.
+
+**Verificado contra Postgres real** (proyecto Neon `DB-APP-PPMS`, tres
+branches temporales sucesivos, borrados después): CHECKs (`assemble_on_
+demand` sin `COMPOSITE`, auto-referencia, unicidad de componente)
+rechazados correctamente; el índice único combinado ORIGINAL no bloqueaba
+duplicados (bug real encontrado y corregido, ver arriba); tras la
+corrección, un duplicado directo SÍ se rechaza; simulación completa de un
+pedido con un producto compuesto de dos componentes (sándwich = jamón +
+queso) — reserva, consolidación con dos filas `OUT` independientes bajo el
+mismo `order_item_id`, reintento idempotente sin duplicar ningún
+componente, y cancelación que restaura exactamente lo reservado leyendo
+`stock_snapshot` — probado end-to-end con datos reales, vuelve al estado
+inicial exacto.
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 481/482 (+27 tests nuevos: `RecipeService` completo, integración
+de explosión en `OrderService`, escenario multi-componente en
+`inventory.handlers`), `npm run build` limpio. Revisión propia estilo
+`revision-pr-pms-erp` — un hallazgo real (índice combinado) encontrado y
+corregido antes de cerrar, logueado en `patrones-recurrentes.md`.
+
+**Backend únicamente** — sin UI en `appfrontend-main` todavía (marcar
+producto como COMPOSITE, armar receta, ni pantalla de Producción).
 
 ### Clasificación de producto
 
@@ -249,5 +383,7 @@ armarse siempre al momento (el sándwich: `assemble_on_demand = true`).
    (recursión, prevención de ciclos), sobre una base de ubicaciones ya
    estable.
 
-Sin arrancar implementación todavía — a la espera de confirmación para
-empezar por la Fase 1.
+Fases 1, 2 y 3 hechas y verificadas (16 y 17/08/2026). Carve-out de
+inventario completo según este diseño — quedan fuera, cada una su propia
+conversación futura: Compras/Proveedores, Empresas multipropiedad, y COGS
+teórico-vs-real (ver sección de arriba).

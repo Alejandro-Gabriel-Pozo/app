@@ -60,6 +60,15 @@ export interface InventoryLevelRepository {
   decrementStock(client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void>;
 
   /**
+   * Decrementa stock físico condicionado a lo DISPONIBLE (stock - reservado),
+   * no solo a stock_quantity — a diferencia de decrementStock(). Usado por
+   * merma (Fase 2 del carve-out, 17/08/2026): mismo criterio que
+   * transferStock() (no se puede dar de baja por merma stock ya comprometido
+   * con una reserva/orden confirmada). Lanza si no alcanza.
+   */
+  decrementAvailableStock(client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void>;
+
+  /**
    * Transferencia atómica entre dos ubicaciones del mismo producto/variante
    * (manual-inventario.md sección 8 — par simétrico, una sola operación).
    * Crea las filas en 0/0 en origen y destino si no existían. Lanza si no

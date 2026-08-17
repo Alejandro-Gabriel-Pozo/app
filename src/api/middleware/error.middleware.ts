@@ -79,11 +79,21 @@ function domainErrorStatus(error: DomainError): number {
   switch (error.code) {
 
     // --- 400 Bad Request ---
+    // INSUFFICIENT_STOCK (product.service.ts) no tenía case acá -- caía al
+    // 500 genérico salvo que el router la capturara localmente (como ya
+    // hacía orders.routes.ts). La agrega el endpoint de merma (Fase 2,
+    // 17/08/2026, docs/diseno-inventario-carve-out.md) porque también la
+    // lanza; de paso cierra el mismo hueco en /:id/stock/decrement, que no
+    // la capturaba localmente y dependía de esta red de seguridad.
     case 'INVALID_RESERVATION':
     case 'INVALID_CUSTOMER':
     case 'INVALID_RESOURCE':
     case 'UNSUPPORTED_RESOURCE_TYPE':
     case 'VALIDATION_ERROR':
+    case 'INSUFFICIENT_STOCK':
+    case 'PRODUCT_NOT_COMPOSITE':
+    case 'RECIPE_CYCLE':
+    case 'RECIPE_NOT_DEFINED':
       return 400;
 
     // --- 422 Unprocessable Entity ---
@@ -118,6 +128,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'STAY_NOT_FOUND':
     case 'CUSTOMER_RATE_NOT_FOUND':
     case 'CUSTOMER_NOT_FOUND':
+    case 'WASTE_REASON_NOT_FOUND':
+    case 'RECIPE_ITEM_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
