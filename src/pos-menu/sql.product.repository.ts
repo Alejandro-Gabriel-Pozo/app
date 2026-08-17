@@ -2,6 +2,10 @@
 // repositories/sql.product.repository.ts — Implementación PostgreSQL
 // Usa SqlClient.query(sql, params) — compatible con pg (node-postgres).
 // NO usa tagged templates ni APIs de postgres.js (.unsafe, .json, etc.).
+//
+// Fase 1 del carve-out de inventario (16/08/2026): sin métodos de stock —
+// stock_quantity/reserved_quantity/stock_min_alert ya no viven en products/
+// product_variants, ver repositories/sql.inventory-level.repository.ts.
 // =============================================================================
 
 import { randomUUID } from 'crypto';
@@ -35,9 +39,6 @@ function rowToProduct(row: Record<string, unknown>): Product {
     basePrice:     Number(row['base_price']),
     sku:           (row['sku'] as string | null) ?? null,
     hasVariants:   Boolean(row['has_variants']),
-    stockQuantity: Number(row['stock_quantity']),
-    reservedQuantity: Number(row['reserved_quantity']),
-    stockMinAlert: Number(row['stock_min_alert']),
     active:        Boolean(row['active']),
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
@@ -52,9 +53,6 @@ function rowToVariant(row: Record<string, unknown>): ProductVariant {
     attributes:    (row['attributes'] as Record<string, string>) ?? {},
     sku:           (row['sku'] as string | null) ?? null,
     priceOverride: row['price_override'] != null ? Number(row['price_override']) : null,
-    stockQuantity: Number(row['stock_quantity']),
-    reservedQuantity: Number(row['reserved_quantity']),
-    stockMinAlert: Number(row['stock_min_alert']),
     active:        Boolean(row['active']),
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
@@ -126,8 +124,8 @@ export class SqlProductRepository implements IProductRepository {
     await this.db.query(
       `INSERT INTO products (
          id, business_id, category_id, name, description,
-         base_price, sku, has_variants, stock_quantity, stock_min_alert, active
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         base_price, sku, has_variants, active
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (id) DO UPDATE SET
          category_id     = EXCLUDED.category_id,
          name            = EXCLUDED.name,
@@ -135,15 +133,12 @@ export class SqlProductRepository implements IProductRepository {
          base_price      = EXCLUDED.base_price,
          sku             = EXCLUDED.sku,
          has_variants    = EXCLUDED.has_variants,
-         stock_quantity  = EXCLUDED.stock_quantity,
-         stock_min_alert = EXCLUDED.stock_min_alert,
          active          = EXCLUDED.active,
          updated_at      = NOW()`,
       [
         product.id, product.businessId, product.categoryId,
         product.name, product.description, product.basePrice,
-        product.sku, product.hasVariants, product.stockQuantity,
-        product.stockMinAlert, product.active,
+        product.sku, product.hasVariants, product.active,
       ],
     );
   }
@@ -153,8 +148,8 @@ export class SqlProductRepository implements IProductRepository {
     const { rows } = await this.db.query<Record<string, unknown>>(
       `INSERT INTO products (
          id, business_id, category_id, name, description,
-         base_price, sku, has_variants, stock_quantity, stock_min_alert
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         base_price, sku, has_variants
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        RETURNING *`,
       [
         id,
@@ -165,8 +160,6 @@ export class SqlProductRepository implements IProductRepository {
         input.basePrice,
         input.sku         ?? null,
         input.hasVariants ?? false,
-        input.stockQuantity ?? 0,
-        input.stockMinAlert ?? 0,
       ],
     );
     return rowToProduct(rows[0]!);
@@ -184,8 +177,6 @@ export class SqlProductRepository implements IProductRepository {
       ['basePrice',     'base_price'],
       ['sku',           'sku'],
       ['hasVariants',   'has_variants'],
-      ['stockQuantity', 'stock_quantity'],
-      ['stockMinAlert', 'stock_min_alert'],
       ['active',        'active'],
     ];
 
@@ -206,78 +197,6 @@ export class SqlProductRepository implements IProductRepository {
       params,
     );
     return rows[0] ? rowToProduct(rows[0]) : undefined;
-  }
-
-  async decrementStock(client: SqlClient, productId: string, quantity: number): Promise<void> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE products
-       SET stock_quantity = stock_quantity - $1,
-           updated_at     = NOW()
-       WHERE id = $2
-         AND has_variants = false
-         AND stock_quantity >= $1
-       RETURNING id`,
-      [quantity, productId],
-    );
-    if (!rows[0]) {
-      throw new Error(`Stock insuficiente o producto usa variantes (id=${productId}).`);
-    }
-  }
-
-  async incrementStock(client: SqlClient, productId: string, quantity: number): Promise<void> {
-    await client.query(
-      `UPDATE products
-       SET stock_quantity = stock_quantity + $1,
-           updated_at     = NOW()
-       WHERE id = $2 AND has_variants = false`,
-      [quantity, productId],
-    );
-  }
-
-  async reserveStock(client: SqlClient, productId: string, quantity: number): Promise<boolean> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE products
-       SET reserved_quantity = reserved_quantity + $1,
-           updated_at        = NOW()
-       WHERE id = $2
-         AND has_variants = false
-         AND (stock_quantity - reserved_quantity) >= $1
-       RETURNING id`,
-      [quantity, productId],
-    );
-    return rows.length > 0;
-  }
-
-  async commitReservedStock(client: SqlClient, productId: string, quantity: number): Promise<void> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE products
-       SET stock_quantity    = stock_quantity - $1,
-           reserved_quantity = reserved_quantity - $1,
-           updated_at        = NOW()
-       WHERE id = $2
-         AND stock_quantity >= $1
-         AND reserved_quantity >= $1
-       RETURNING id`,
-      [quantity, productId],
-    );
-    if (!rows[0]) {
-      throw new Error(`No se pudo consolidar la reserva de stock (id=${productId}, quantity=${quantity}).`);
-    }
-  }
-
-  async releaseReservedStock(client: SqlClient, productId: string, quantity: number): Promise<void> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE products
-       SET reserved_quantity = reserved_quantity - $1,
-           updated_at        = NOW()
-       WHERE id = $2
-         AND reserved_quantity >= $1
-       RETURNING id`,
-      [quantity, productId],
-    );
-    if (!rows[0]) {
-      throw new Error(`No se pudo liberar la reserva de stock (id=${productId}, quantity=${quantity}).`);
-    }
   }
 
   async delete(id: string): Promise<boolean> {
@@ -336,23 +255,19 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
   async save(variant: ProductVariant): Promise<void> {
     await this.db.query(
       `INSERT INTO product_variants (
-         id, product_id, name, attributes, sku,
-         price_override, stock_quantity, stock_min_alert, active
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         id, product_id, name, attributes, sku, price_override, active
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (id) DO UPDATE SET
          name            = EXCLUDED.name,
          attributes      = EXCLUDED.attributes,
          sku             = EXCLUDED.sku,
          price_override  = EXCLUDED.price_override,
-         stock_quantity  = EXCLUDED.stock_quantity,
-         stock_min_alert = EXCLUDED.stock_min_alert,
          active          = EXCLUDED.active,
          updated_at      = NOW()`,
       [
         variant.id, variant.productId, variant.name,
         JSON.stringify(variant.attributes), variant.sku,
-        variant.priceOverride, variant.stockQuantity,
-        variant.stockMinAlert, variant.active,
+        variant.priceOverride, variant.active,
       ],
     );
   }
@@ -361,9 +276,8 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
     const id = randomUUID();
     const { rows } = await this.db.query<Record<string, unknown>>(
       `INSERT INTO product_variants (
-         id, product_id, name, attributes, sku,
-         price_override, stock_quantity, stock_min_alert
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         id, product_id, name, attributes, sku, price_override
+       ) VALUES ($1,$2,$3,$4,$5,$6)
        RETURNING *`,
       [
         id,
@@ -372,8 +286,6 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
         JSON.stringify(input.attributes ?? {}),
         input.sku          ?? null,
         input.priceOverride ?? null,
-        input.stockQuantity ?? 0,
-        input.stockMinAlert ?? 0,
       ],
     );
     return rowToVariant(rows[0]!);
@@ -388,8 +300,6 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
     if (input.attributes    !== undefined) { fields.push(`attributes = $${idx++}`);       params.push(JSON.stringify(input.attributes)); }
     if (input.sku           !== undefined) { fields.push(`sku = $${idx++}`);              params.push(input.sku); }
     if (input.priceOverride !== undefined) { fields.push(`price_override = $${idx++}`);   params.push(input.priceOverride); }
-    if (input.stockQuantity !== undefined) { fields.push(`stock_quantity = $${idx++}`);   params.push(input.stockQuantity); }
-    if (input.stockMinAlert !== undefined) { fields.push(`stock_min_alert = $${idx++}`);  params.push(input.stockMinAlert); }
     if (input.active        !== undefined) { fields.push(`active = $${idx++}`);           params.push(input.active); }
 
     if (fields.length === 0) return this.getById(id);
@@ -402,76 +312,6 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
       params,
     );
     return rows[0] ? rowToVariant(rows[0]) : undefined;
-  }
-
-  async decrementStock(client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE product_variants
-       SET stock_quantity = stock_quantity - $1,
-           updated_at     = NOW()
-       WHERE id = $2
-         AND stock_quantity >= $1
-       RETURNING id`,
-      [quantity, variantId],
-    );
-    if (!rows[0]) {
-      throw new Error(`Stock insuficiente en variante (id=${variantId}).`);
-    }
-  }
-
-  async incrementStock(client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    await client.query(
-      `UPDATE product_variants
-       SET stock_quantity = stock_quantity + $1,
-           updated_at     = NOW()
-       WHERE id = $2`,
-      [quantity, variantId],
-    );
-  }
-
-  async reserveStock(client: SqlClient, variantId: string, quantity: number): Promise<boolean> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE product_variants
-       SET reserved_quantity = reserved_quantity + $1,
-           updated_at        = NOW()
-       WHERE id = $2
-         AND (stock_quantity - reserved_quantity) >= $1
-       RETURNING id`,
-      [quantity, variantId],
-    );
-    return rows.length > 0;
-  }
-
-  async commitReservedStock(client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE product_variants
-       SET stock_quantity    = stock_quantity - $1,
-           reserved_quantity = reserved_quantity - $1,
-           updated_at        = NOW()
-       WHERE id = $2
-         AND stock_quantity >= $1
-         AND reserved_quantity >= $1
-       RETURNING id`,
-      [quantity, variantId],
-    );
-    if (!rows[0]) {
-      throw new Error(`No se pudo consolidar la reserva de stock (variantId=${variantId}, quantity=${quantity}).`);
-    }
-  }
-
-  async releaseReservedStock(client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    const { rows } = await client.query<Record<string, unknown>>(
-      `UPDATE product_variants
-       SET reserved_quantity = reserved_quantity - $1,
-           updated_at        = NOW()
-       WHERE id = $2
-         AND reserved_quantity >= $1
-       RETURNING id`,
-      [quantity, variantId],
-    );
-    if (!rows[0]) {
-      throw new Error(`No se pudo liberar la reserva de stock (variantId=${variantId}, quantity=${quantity}).`);
-    }
   }
 
   async delete(id: string): Promise<boolean> {

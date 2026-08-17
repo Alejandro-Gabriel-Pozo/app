@@ -144,7 +144,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v10 (15/08/2026): customers.google_sub — login con Google del portal
 // (punto 5/E5, segunda mitad). identities.google_sub (staff) vive en
 // platform.schema.sql, sin versionado propio — se reaplica en cada boot.
-export const CURRENT_SCHEMA_VERSION = 10;
+// v11 (16/08/2026): Fase 1 del carve-out de inventario
+// (docs/diseno-inventario-carve-out.md) — tabla `inventory_levels` nueva
+// (BLOQUE 16), reemplaza products/product_variants.stock_quantity/
+// reserved_quantity/stock_min_alert (dropeadas, con backfill previo a
+// loc-default). `orders.location_id` nuevo. `stock_movements` gana
+// location_id/from_location_id/to_location_id + movement_type TRANSFER.
+export const CURRENT_SCHEMA_VERSION = 11;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

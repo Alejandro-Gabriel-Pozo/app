@@ -26,10 +26,6 @@ export interface ProductVariant {
    * En dominio siempre es resuelto: ver ProductService.resolvePrice().
    */
   priceOverride: number | null;
-  stockQuantity: number;
-  /** Comprometido por órdenes CONFIRMED aún no consolidadas — D1, 15/08/2026. */
-  reservedQuantity: number;
-  stockMinAlert: number;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -53,11 +49,6 @@ export interface Product {
    * false → stock y precio directamente en el producto.
    */
   hasVariants: boolean;
-  /** Solo relevante cuando hasVariants === false */
-  stockQuantity: number;
-  /** Comprometido por órdenes CONFIRMED aún no consolidadas — D1, 15/08/2026. */
-  reservedQuantity: number;
-  stockMinAlert: number;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -66,6 +57,15 @@ export interface Product {
 // ---------------------------------------------------------------------------
 // DTOs de creación / actualización
 // ---------------------------------------------------------------------------
+//
+// Fase 1 del carve-out de inventario (16/08/2026): stockQuantity/
+// stockMinAlert salieron de acá — el stock ya no es un campo del producto,
+// vive en InventoryLevel (repositories/inventory-level.repository.ts), con
+// una fila por ubicación. `initialStockQuantity` en los Create* de abajo es
+// lo más parecido que queda: ProductService.createProduct()/createVariant()
+// lo usa para sembrar la fila de InventoryLevel en la ubicación por defecto
+// al momento de dar de alta el producto — no se persiste en products/
+// product_variants.
 
 export interface CreateProductInput {
   businessId: string;
@@ -75,8 +75,9 @@ export interface CreateProductInput {
   basePrice: number;
   sku?: string | null;
   hasVariants?: boolean;
-  stockQuantity?: number;
-  stockMinAlert?: number;
+  /** Ver nota de Fase 1 arriba -- siembra InventoryLevel, no persiste en products. */
+  initialStockQuantity?: number;
+  initialStockMinAlert?: number;
 }
 
 export interface UpdateProductInput {
@@ -86,8 +87,6 @@ export interface UpdateProductInput {
   basePrice?: number;
   sku?: string | null;
   hasVariants?: boolean;
-  stockQuantity?: number;
-  stockMinAlert?: number;
   active?: boolean;
 }
 
@@ -97,8 +96,9 @@ export interface CreateProductVariantInput {
   attributes?: Record<string, string>;
   sku?: string | null;
   priceOverride?: number | null;
-  stockQuantity?: number;
-  stockMinAlert?: number;
+  /** Ver nota de Fase 1 arriba -- siembra InventoryLevel, no persiste en product_variants. */
+  initialStockQuantity?: number;
+  initialStockMinAlert?: number;
 }
 
 export interface UpdateProductVariantInput {
@@ -106,8 +106,6 @@ export interface UpdateProductVariantInput {
   attributes?: Record<string, string>;
   sku?: string | null;
   priceOverride?: number | null;
-  stockQuantity?: number;
-  stockMinAlert?: number;
   active?: boolean;
 }
 

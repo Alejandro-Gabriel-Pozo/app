@@ -332,13 +332,29 @@ libere la reserva al agotarse. *Hallazgo del 15/08/2026, caso concreto en
 (`ProductService.reserveStock`) dentro de su propia transacción; el outbox
 consolida (`commitReservedStock`) o libera (`releaseReservedStock`) según
 quién gana la carrera del casillero compartido OUT/RESERVATION_RELEASED en
-`stock_movements` (ver docblock de `inventory.handlers.ts`). **Parcial**:
-resuelve la pérdida silenciosa de la reserva (ya no se pierde el hold ni se
-consolida dos veces), pero el TTL/límite de reintentos que libere una
-reserva colgada si el consolidador queda en dead-letter sigue sin
-implementarse — hoy esa reserva queda tomada hasta que alguien reintente el
-evento manualmente desde el panel (visible gracias al punto 2 de
-`pendientes-2026-08-15.md`, no auto-liberada.*
+`stock_movements` (ver docblock de `inventory.handlers.ts`).*
+
+✅ *Completo (16/08/2026) — el límite de reintentos que faltaba: `OutboxWorker`
+gana `onDeadLetter(eventType, handler)`, un hook que corre una sola vez en el
+mismo ciclo en que un evento agota `maxRetries` y cae en dead-letter (no un
+poller de TTL aparte). `registerInventoryHandlers` registra
+`handleOrderConfirmedDeadLetterRelease` para `order.confirmed` — reusa el
+mismo mecanismo insert-then-act (`releaseReservationHold`, extraído de
+`handleOrderCancelledStock`) para reclamar el casillero compartido
+OUT/RESERVATION_RELEASED: si la reserva nunca se consolidó, la libera; si ya
+se había consolidado (ej. la orden de inventario tuvo éxito pero el evento
+siguió fallando por el handler financiero), pierde la carrera y no hace
+nada — el índice único ya lo protege de un doble movimiento. **Trade-off
+aceptado a propósito**: si más tarde alguien reintenta ese evento
+manualmente y esta vez no falla, la consolidación pierde la carrera contra
+la liberación ya hecha y el stock nunca baja para esa orden — preferible a
+dejar el producto bloqueado sin límite; la orden queda con su stock
+permanentemente desincronizado (gap ya documentado), pero deja de tomar
+rehenes al resto del inventario. No implementa un TTL por tiempo real, solo
+el límite de reintentos — alcanza la letra de la regla ("TTL de expiración
+O límite de reintentos"). Tests: `outbox.worker.test.ts` (4 nuevos, el hook
+genérico) + `inventory.handlers.test.ts` (5 nuevos, el compensador de
+stock). Ver `pendientes-2026-08-15.md` sección D1 para el detalle completo.*
 
 **A8.8 — Endurecer una validación read-then-write a una UPDATE atómica
 (`WHERE ... AND condición`, 0 filas = falla) no debe cambiar el contrato

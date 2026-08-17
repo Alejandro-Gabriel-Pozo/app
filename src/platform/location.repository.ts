@@ -45,6 +45,24 @@ function rowToLocation(row: LocationRow): Location {
   };
 }
 
+/**
+ * Resuelve la ubicación a usar cuando el caller no especificó una
+ * explícita — la primera activa del tenant (hoy siempre `loc-default`
+ * para un negocio de una sola ubicación). Mismo criterio que
+ * `resolveLocationId()` en reservas/resources.routes.ts, compartido acá
+ * para pos-menu/órdenes e inventario (Fase 1 del carve-out, 16/08/2026)
+ * sin duplicarlo una tercera vez.
+ */
+export async function resolveDefaultLocationId(db: SqlClient, explicit?: string): Promise<string> {
+  if (explicit) return explicit;
+  const locations = await new SqlLocationRepository(db).findAll();
+  const [first] = locations;
+  if (!first) {
+    throw new Error('[location.repository] El tenant no tiene ninguna location — revisar que schema.sql corrió el backfill.');
+  }
+  return first.id;
+}
+
 export class SqlLocationRepository implements LocationRepository {
   constructor(private readonly db: SqlClient) {}
 

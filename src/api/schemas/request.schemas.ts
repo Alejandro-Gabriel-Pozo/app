@@ -136,6 +136,8 @@ export const CreateOrderSchema = z.object({
   notes:      z.string().nullable().optional(),
   /** "Cargo a la habitación" (A1, paso 4) — id de una Stay activa. */
   stayId:     z.string().nullable().optional(),
+  /** Fase 1 del carve-out de inventario (16/08/2026) — si no viene, la ruta resuelve la ubicación por defecto del tenant. */
+  locationId: z.string().min(1).optional(),
   items:      z.array(CreateOrderItemSchema).optional().default([]),
 });
 

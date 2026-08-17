@@ -8,7 +8,7 @@ import type { SqlClient } from './sql.client.js';
  * outbox la procesara). Ver schema.sql BLOQUE 5/13 para el índice de
  * exclusión mutua con OUT que lo usa.
  */
-export type StockMovementType = 'IN' | 'OUT' | 'ADJUSTMENT' | 'RETURN' | 'RESERVATION_RELEASED';
+export type StockMovementType = 'IN' | 'OUT' | 'ADJUSTMENT' | 'RETURN' | 'RESERVATION_RELEASED' | 'TRANSFER';
 
 export interface StockMovement {
   id: string;
@@ -21,9 +21,22 @@ export interface StockMovement {
   createdBy: string;
   notes: string | null;
   createdAt: Date;
+  /**
+   * Fase 1 del carve-out de inventario (16/08/2026) — ubicación del
+   * movimiento. NULL solo para TRANSFER (usa fromLocationId/toLocationId
+   * en su lugar), obligatorio para el resto — ver chk_stock_movements_location
+   * en schema.sql BLOQUE 5.
+   */
+  locationId: string | null;
+  fromLocationId: string | null;
+  toLocationId: string | null;
 }
 
-export type CreateStockMovementInput = Omit<StockMovement, 'id' | 'createdAt'>;
+export type CreateStockMovementInput = Omit<StockMovement, 'id' | 'createdAt' | 'fromLocationId' | 'toLocationId'> & {
+  /** Solo TRANSFER los usa — el resto de los tipos los deja undefined (se guardan NULL). */
+  fromLocationId?: string | null;
+  toLocationId?: string | null;
+};
 
 export interface StockMovementRepository {
   /**

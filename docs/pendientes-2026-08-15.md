@@ -261,6 +261,35 @@ el detalle completo por fase. Resumen:
   portal de empresa solo enlaza a los sub-portales. Sin diseñar en
   detalle, mismo criterio que A2 (no construir sin caso de uso real).
 
+**Caso de uso concreto encontrado (16/08/2026, durante el diseño del
+carve-out de `inventario/`):** el dueño trajo el ejemplo real — una
+empresa con 5 sucursales (ej. 5 spa), cada una su propio tenant hoy.
+Necesitan compartir **identidad de maestros** entre sucursales de la
+misma empresa: mismo producto = mismo ID/nombre en las 5 bases, mismo
+proveedor = mismo ID/nombre en las 5 bases (cargar un proveedor nuevo en
+una sucursal lo suma automáticamente a las otras 4, sin reingreso
+manual). Precios y recetas también candidatos a compartirse. **Lo que
+NUNCA se comparte: stock, reservas, movimientos, pedidos** — eso sigue
+100% local a cada tenant, sin excepción (confirmado explícitamente por el
+dueño: "que compartan el dato del proveedor no significa que compartan
+inventario, solo la identificación").
+
+Esto convierte la idea abstracta de arriba en un requisito concreto:
+un **catálogo canónico por empresa** (productos/proveedores/recetas/
+precios) en la BD central, con un mecanismo de **sincronización hacia
+`products`/`recipe_items`/proveedores locales de cada tenant linkeado**
+(mismo ID propagado, nunca una lectura cruzada en vivo entre bases de
+tenants — eso rompería el aislamiento y metería acoplamiento en el
+camino crítico de `confirmOrder()`). **Decisión explícita del dueño
+(16/08/2026): queda como conversación de diseño propia, separada del
+carve-out de `inventario/`** (locations/mermas/recetas dentro de UN
+tenant, ver `pendientes-2026-08-16.md`) — no se diseña en detalle hoy,
+mismo criterio de siempre (no construir sin la conversación dedicada).
+Compras/Proveedores como flujo operativo completo (órdenes de compra,
+recepción) también queda deliberadamente afuera de esta ronda —
+señalado por el dueño el 16/08/2026 como fase separada, posterior al
+carve-out de inventario.
+
 ---
 
 ## C. Limpieza de backlog corto (15/08/2026)
@@ -615,11 +644,9 @@ layout compartido).
 Cierra el punto 1 de la auditoría de urgencia de hoy (D1, gap de
 concurrencia documentado el 15/08 más temprano). Cumple A8.7/A8.8 de
 `criterios-negocio.md` (detalle de cumplimiento anotado ahí mismo) —
-**A8.7 queda parcial a propósito**: el TTL/límite de reintentos que libere
-sola una reserva colgada si el consolidador queda en dead-letter no se
-implementó — hoy esa reserva queda tomada hasta un reintento manual desde
-el panel (visible gracias al punto E de hoy, no auto-liberada). Decisión
-explícita, no descubierta después.
+**A8.7 quedó parcial a propósito el 15/08** (el TTL/límite de reintentos
+que libere sola una reserva colgada en dead-letter no se había
+implementado). **Completado el 16/08/2026** — ver D1 más abajo.
 
 - `products`/`product_variants` ganan `reserved_quantity` (schema.sql
   BLOQUE 3, `CURRENT_SCHEMA_VERSION` 7 → 8) + `CHECK (reserved_quantity <=
@@ -676,9 +703,16 @@ de hoy — mismo resultado esperado, ningún test preexistente cambió de
 comportamiento salvo los que testeaban directamente el chequeo de stock,
 reescritos a propósito), lint limpio.
 
-**Sigue sin implementarse** (decisión explícita, no de esta sesión): TTL/
-límite de reintentos que libere sola una reserva colgada en dead-letter
-(A8.7 parcial, ver arriba).
+**✅ RESUELTO (16/08/2026)** — TTL/límite de reintentos que libera sola una
+reserva colgada en dead-letter. `OutboxWorker.onDeadLetter()` (hook nuevo,
+corre una vez al agotar `maxRetries`) + `handleOrderConfirmedDeadLetterRelease`
+(`workers/inventory.handlers.ts`), que reusa el mecanismo insert-then-act
+ya existente (`releaseReservationHold`, extraído de `handleOrderCancelledStock`)
+para liberar `reserved_quantity` sin doble movimiento posible (protegido
+por el mismo índice único OUT/RESERVATION_RELEASED de F). Detalle completo,
+trade-offs y tests nuevos en `criterios-negocio.md` A8.7. Verificado:
+`tsc --noEmit` limpio, `npm test` 442/443 (+9 tests nuevos), lint limpio.
+Cierra A8.7 al 100% (antes parcial).
 
 ---
 
@@ -719,17 +753,22 @@ DB de verdad. **Cerrado más tarde el mismo día, ver abajo.**
   `production` real después de aplicar: `domain_events` con las 3 columnas
   nuevas + los 2 índices nuevos, `schema_migrations` con la versión 8
   registrada.
-- ❓ **Sigue sin confirmar — `businesses.schema_version` en la PLATFORM DB**
-  (no tocada hoy, es una base distinta a la tenant DB — `PLATFORM_DATABASE_URL`
-  separada de `DATABASE_URL`, no se identificó cuál proyecto/branch de Neon
-  la hostea en esta sesión). El mecanismo real de producción
-  (`POST /api/admin/repair-tenant-db`) actualiza ese campo además de correr
-  `schema.sql` — hoy quedó desincronizado: la tenant DB ya está en v8 pero
-  `businesses.schema_version` probablemente sigue en v6. Consecuencia
-  conocida, acotada: `tenant.middleware.ts` podría advertir "tenant
-  desactualizado" de forma incorrecta hasta que se corra
-  `repair-tenant-db` (que es idempotente, no rompe nada re-correrlo) o se
-  actualice ese campo a mano.
+- ✅ **RESUELTO (16/08/2026) — `businesses.schema_version` en la PLATFORM DB**
+  confirmado desincronizado de verdad: proyecto Neon `pdb-ppms` (Platform
+  DB, `PLATFORM_DATABASE_URL`, branch `production` =
+  `br-royal-mouse-aybe2ai3`, distinto del proyecto `DB-APP-PPMS` de las
+  tenant DBs) tenía `businesses.schema_version = 6` para `biz-demo-01`
+  mientras la tenant DB real (`DB-APP-PPMS`, branch `production` =
+  `br-snowy-tree-ax5wmq70`) ya estaba en `schema_migrations` versión 10
+  (confirmado con `SELECT MAX(version)`, coincide con
+  `CURRENT_SCHEMA_VERSION` del código). Sin `.env` local con
+  `PLATFORM_DATABASE_URL`/`DB_ENCRYPTION_KEY` para correr
+  `npm run migrate:tenants` de verdad, se corrigió con el mismo `UPDATE`
+  de una fila que hace `PlatformRepository.updateSchemaVersion()`
+  (`UPDATE businesses SET schema_version = 10, updated_at = NOW() WHERE
+  id = 'biz-demo-01'`), confirmado con `SELECT` posterior. `tenant.
+  middleware.ts` ya no debería loguear "tenant desactualizado" para este
+  negocio.
 - ❓ **Sigue sin confirmar — el fix de la carrera `order.confirmed`/
   `order.cancelled` fuera de orden bajo concurrencia REAL.** Lo que se
   probó hoy contra Postgres real fue el mecanismo de base (el índice

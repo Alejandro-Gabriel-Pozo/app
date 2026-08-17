@@ -18,6 +18,7 @@ import { SqlDomainEventRepository }            from '../repositories/sql.domain-
 import { SqlFinancialTransactionRepository }   from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { registerFinancialHandlers }           from './outbox.handlers.js';
 import { SqlStockMovementRepository }          from '../repositories/sql.stock-movement.repository.js';
+import { SqlInventoryLevelRepository }         from '../repositories/sql.inventory-level.repository.js';
 import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';
 import { SqlAuditLogRepository }               from '../repositories/audit-log.repository.js';
 import { ProductService }                      from '../pos-menu/product.service.js';
@@ -57,7 +58,8 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   const productRepo              = new SqlProductRepository(db);
   const productVariantRepo       = new SqlProductVariantRepository(db);
   const auditLogRepo             = new SqlAuditLogRepository(db);
-  const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo);
+  const inventoryLevelRepo       = new SqlInventoryLevelRepository(db);
+  const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo, inventoryLevelRepo);
   const transactionManager       = new PgTransactionManager(rawPool);
   const businessProfileRepo      = new SqlBusinessProfileRepository(db);
 

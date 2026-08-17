@@ -47,6 +47,37 @@
  * Insert-then-act: primero se intenta insertar la fila en stock_movements.
  * Si la fila NO se insertó (ya existía — reintento del at-least-once, o
  * perdió la carrera del casillero compartido), NO se vuelve a tocar stock.
+ *
+ * ## Liberación automática si order.confirmed cae en dead-letter (A8.7, 16/08/2026)
+ * Hasta acá, si `handleOrderConfirmedStock` fallaba las `maxRetries` veces
+ * seguidas (ej. la tenant DB caída un rato largo), el evento pasaba a
+ * dead-letter (punto 2 de `pendientes-2026-08-15.md`) pero la reserva de
+ * stock quedaba tomada indefinidamente — nadie más podía vender ese
+ * producto hasta un reintento manual desde el panel. `handleOrderConfirmedDeadLetterRelease`
+ * (registrado vía `OutboxWorker.onDeadLetter`, no vía `.on()`) reusa el
+ * MISMO mecanismo de `releaseReservationHold` que ya usaba
+ * `handleOrderCancelledStock`: intenta reclamar el casillero
+ * OUT/RESERVATION_RELEASED de cada ítem. Dos resultados posibles:
+ * - Gana la carrera (el OUT nunca se había insertado, la reserva nunca se
+ *   consolidó) → libera `reserved_quantity`, el producto vuelve a estar
+ *   disponible para otra orden.
+ * - Pierde la carrera (el OUT SÍ se había insertado — ej. la consolidación
+ *   de este mismo evento tuvo éxito en un intento anterior, pero el
+ *   evento completo siguió fallando por OTRO handler en el mismo
+ *   `Promise.all`, como el financiero) → no hace nada más, el índice único
+ *   ya lo protege de un doble movimiento.
+ *
+ * **Trade-off aceptado a propósito (documentado en A8.7):** si más tarde
+ * alguien reintenta manualmente ese `order.confirmed` ya dead-letrado y
+ * esta vez el intento no falla, `handleOrderConfirmedStock` va a perder la
+ * carrera del casillero (ya lo ganó `RESERVATION_RELEASED`) y NO va a
+ * consolidar — el evento se marca despachado igual, pero el stock nunca
+ * baja para esa orden. Es preferible a dejar el producto bloqueado sin
+ * límite: la orden queda con su stock permanentemente desincronizado (ya
+ * documentado como gap conocido), pero deja de tomar rehenes al resto del
+ * inventario. No cubre el TTL por tiempo real, solo el límite de
+ * reintentos — alcanza la letra de A8.7 ("TTL de expiración O límite de
+ * reintentos").
  */
 
 import { randomUUID } from 'crypto';
@@ -54,9 +85,19 @@ import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type { StockMovementRepository } from '../repositories/stock-movement.repository.js';
 import type { ProductService } from '../pos-menu/product.service.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type { OutboxWorker } from './outbox.worker.js';
 
 const SYSTEM_ACTOR = 'system:outbox';
+
+/**
+ * Fallback para eventos encolados antes de la Fase 1 del carve-out de
+ * inventario (16/08/2026) que todavía no tienen `locationId` en su
+ * payload (pendientes o en dead-letter al momento del deploy). Mismo valor
+ * que usa el backfill de schema.sql — todo lo que existía antes de esta
+ * migración vivía en `loc-default`.
+ */
+const DEFAULT_LOCATION_ID = 'loc-default';
 
 /**
  * Subconjunto de OrderItem relevante para stock — viaja en el payload de
@@ -91,12 +132,65 @@ export function registerInventoryHandlers(
 ): void {
   worker
     .on('order.confirmed', handleOrderConfirmedStock(productService, stockMovementRepo, transactionManager))
-    .on('order.cancelled', handleOrderCancelledStock(productService, stockMovementRepo, transactionManager));
+    .on('order.cancelled', handleOrderCancelledStock(productService, stockMovementRepo, transactionManager))
+    .onDeadLetter(
+      'order.confirmed',
+      handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, transactionManager),
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Handlers individuales (exportados para testear en aislamiento)
 // ---------------------------------------------------------------------------
+
+/**
+ * Intenta reclamar el casillero compartido OUT/RESERVATION_RELEASED de un
+ * ítem e, insertar RESERVATION_RELEASED y ganar la carrera. Si gana,
+ * libera la reserva (`reserved_quantity`) sin tocar `stock_quantity` — el
+ * bien nunca se consumió físicamente. Si pierde (ya había un OUT, o un
+ * RESERVATION_RELEASED de un intento anterior), no hace nada más: el
+ * índice único ya evita el doble movimiento.
+ *
+ * Compartido por `handleOrderCancelledStock` (cancelación explícita) y
+ * `handleOrderConfirmedDeadLetterRelease` (A8.7, la reserva nunca terminó
+ * de consolidarse) — misma operación, dos disparadores distintos.
+ *
+ * @returns true si ganó la carrera y liberó la reserva; false si el
+ *   casillero ya estaba tomado (por un RESERVATION_RELEASED anterior o por
+ *   un OUT que ya consolidó) — el caller decide qué hacer con ese caso.
+ */
+async function releaseReservationHold(
+  client: SqlClient,
+  productService: ProductService,
+  stockMovementRepo: StockMovementRepository,
+  businessId: string,
+  locationId: string,
+  item: StockItemSnapshot,
+  notes: string | null,
+): Promise<boolean> {
+  const released = await stockMovementRepo.createWithClient(client, randomUUID(), {
+    businessId,
+    productId:        item.productVariantId ? null : item.productId,
+    productVariantId: item.productVariantId,
+    movementType:     'RESERVATION_RELEASED',
+    quantity:         item.quantity,
+    orderItemId:      item.orderItemId,
+    createdBy:        SYSTEM_ACTOR,
+    notes,
+    locationId,
+  });
+
+  if (!released) return false; // ya liberado antes, o el OUT ya ganó el casillero -- nada más que hacer
+
+  await productService.releaseReservedStock(
+    client,
+    item.productId,
+    item.productVariantId ?? undefined,
+    locationId,
+    item.quantity,
+  );
+  return true;
+}
 
 export function handleOrderConfirmedStock(
   productService: ProductService,
@@ -104,8 +198,9 @@ export function handleOrderConfirmedStock(
   transactionManager: TransactionManager,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { items } = event.payload as { items?: StockItemSnapshot[] };
+    const { items, locationId } = event.payload as { items?: StockItemSnapshot[]; locationId?: string };
     if (!items || items.length === 0) return; // orden sin productos (ej. solo cargo a la habitación)
+    const loc = locationId ?? DEFAULT_LOCATION_ID;
 
     await transactionManager.run(async (client) => {
       for (const item of canonicalStockItemOrder(items)) {
@@ -120,6 +215,7 @@ export function handleOrderConfirmedStock(
           orderItemId:      item.orderItemId,
           createdBy:        SYSTEM_ACTOR,
           notes:            null,
+          locationId:       loc,
         });
 
         // false = ya existía OUT (reintento) o perdió la carrera contra un
@@ -130,6 +226,7 @@ export function handleOrderConfirmedStock(
           client,
           item.productId,
           item.productVariantId ?? undefined,
+          loc,
           item.quantity,
         );
       }
@@ -143,41 +240,26 @@ export function handleOrderCancelledStock(
   transactionManager: TransactionManager,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { previousStatus, wasServed, items } = event.payload as {
+    const { previousStatus, wasServed, items, locationId } = event.payload as {
       previousStatus?: string;
       wasServed?: boolean;
       items?: StockItemSnapshot[];
+      locationId?: string;
     };
 
     // Si la orden nunca pasó por CONFIRMED, nunca se reservó -- nada que liberar ni restaurar.
     if (previousStatus !== 'CONFIRMED' || !items || items.length === 0) return;
+    const loc = locationId ?? DEFAULT_LOCATION_ID;
 
     await transactionManager.run(async (client) => {
       for (const item of canonicalStockItemOrder(items)) {
         // Intenta reclamar el mismo casillero que OUT (handleOrderConfirmedStock).
         // Gana quien llega primero -- no depende de qué evento se despache antes.
-        const releasedReservation = await stockMovementRepo.createWithClient(client, randomUUID(), {
-          businessId:       event.businessId,
-          productId:        item.productVariantId ? null : item.productId,
-          productVariantId: item.productVariantId,
-          movementType:     'RESERVATION_RELEASED',
-          quantity:         item.quantity,
-          orderItemId:      item.orderItemId,
-          createdBy:        SYSTEM_ACTOR,
-          notes:            null,
-        });
+        const releasedReservation = await releaseReservationHold(
+          client, productService, stockMovementRepo, event.businessId, loc, item, null,
+        );
 
-        if (releasedReservation) {
-          // Ganamos la carrera: el outbox todavía no había consolidado esta
-          // reserva. Nunca se tocó stock físico -- solo se libera el hold.
-          await productService.releaseReservedStock(
-            client,
-            item.productId,
-            item.productVariantId ?? undefined,
-            item.quantity,
-          );
-          continue;
-        }
+        if (releasedReservation) continue; // ganamos la carrera -- nunca se tocó stock físico
 
         // No se insertó -- pero eso solo no distingue POR QUÉ: puede ser un
         // reintento de este mismo RESERVATION_RELEASED (at-least-once, ya
@@ -201,15 +283,50 @@ export function handleOrderCancelledStock(
           orderItemId:      item.orderItemId,
           createdBy:        SYSTEM_ACTOR,
           notes:            null,
+          locationId:       loc,
         });
 
         if (!inserted) continue; // ya restaurado -- reintento at-least-once
 
         await productService.incrementStock(
           client,
+          event.businessId,
           item.productId,
           item.productVariantId ?? undefined,
+          loc,
           item.quantity,
+        );
+      }
+    });
+  };
+}
+
+/**
+ * Compensación de dead-letter para `order.confirmed` (A8.7, 16/08/2026).
+ * Registrada vía `OutboxWorker.onDeadLetter`, no vía `.on()` — corre una
+ * sola vez, cuando el evento ya agotó `maxRetries` y `handleOrderConfirmedStock`
+ * nunca logró consolidar (o si consolidó, `releaseReservationHold` va a
+ * perder la carrera y no hacer nada, ver docblock del archivo).
+ *
+ * No revierte la orden ni el evento — solo libera el hold de stock para
+ * que otra orden pueda usarlo. El evento queda en dead-letter, visible en
+ * el panel (`GET /api/system/outbox/dead-letter`) para diagnóstico manual.
+ */
+export function handleOrderConfirmedDeadLetterRelease(
+  productService: ProductService,
+  stockMovementRepo: StockMovementRepository,
+  transactionManager: TransactionManager,
+) {
+  return async (event: DomainEvent): Promise<void> => {
+    const { items, locationId } = event.payload as { items?: StockItemSnapshot[]; locationId?: string };
+    if (!items || items.length === 0) return;
+    const loc = locationId ?? DEFAULT_LOCATION_ID;
+
+    await transactionManager.run(async (client) => {
+      for (const item of canonicalStockItemOrder(items)) {
+        await releaseReservationHold(
+          client, productService, stockMovementRepo, event.businessId, loc, item,
+          `auto-release: order.confirmed en dead-letter (evento id=${event.id ?? '?'})`,
         );
       }
     });

@@ -109,6 +109,13 @@ export interface Order {
   notes:         string | null;
   /** FK a stays.id — "cargo a la habitación" (A1, paso 4). Null si no se asoció a una estadía. */
   stayId:        string | null;
+  /**
+   * De qué ubicación sale la venta — Fase 1 del carve-out de inventario
+   * (16/08/2026, docs/diseno-inventario-carve-out.md). Determina en qué
+   * InventoryLevel se reserva/consolida el stock de los ítems de esta
+   * orden. Nunca null en BD (NOT NULL con backfill a loc-default).
+   */
+  locationId:    string;
   items:         OrderItem[];
   confirmedAt:   Date | null;
   cancelledAt:   Date | null;
@@ -153,6 +160,8 @@ export interface CreateOrderInput {
   notes?:      string | null;
   /** "Cargo a la habitación" (A1, paso 4) — asocia el pedido a una estadía activa. */
   stayId?:     string | null;
+  /** Resuelto en la capa de rutas (mismo criterio que resources.routes.ts) — nunca opcional para cuando llega acá. */
+  locationId:  string;
   items:       CreateOrderItemInput[];
 }
 

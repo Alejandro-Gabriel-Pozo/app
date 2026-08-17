@@ -26,6 +26,21 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  * reintentarse solo. Vuelve a la cola con un reintento manual
  * (`retryDeadLettered`, expuesto en `GET/POST /api/system/outbox/...`).
  *
+ * ## Compensación automática al caer en dead-letter (A8.7, 16/08/2026)
+ * `onDeadLetter()` registra una acción a correr UNA VEZ, en el mismo ciclo
+ * en que `recordFailure()` confirma que el evento agotó `maxRetries` — no
+ * un poller ni un TTL de tiempo real aparte. Sirve para el caso de A8.7
+ * ("toda reserva provisoria con consolidación asíncrona se libera también
+ * si el consolidador falla, no solo si el usuario cancela"): sin esto, un
+ * `order.confirmed` que nunca termina de consolidar deja la reserva de
+ * stock tomada indefinidamente hasta un reintento manual desde el panel
+ * (`pendientes-2026-08-15.md` D1). El handler de dead-letter corre
+ * DESPUÉS de que el evento ya quedó marcado dead-letter — su única
+ * responsabilidad es la compensación, no decide si el evento pasa o no a
+ * dead-letter. Si el propio compensador falla, se loguea y no se
+ * relanza — el evento ya está en dead-letter y visible en el panel de
+ * todos modos, un reintento manual sigue disponible.
+ *
  * ## Arranque diferido
  * Si la tabla domain_events todavía no existe en la BD (p.ej. primer deploy
  * antes de correr las migraciones), el worker loguea un aviso único y
@@ -46,6 +61,7 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  */
 export class OutboxWorker {
   private readonly handlers = new Map<string, EventHandler[]>();
+  private readonly deadLetterHandlers = new Map<string, EventHandler[]>();
   private intervalId: ReturnType<typeof setInterval> | undefined = undefined;
   private polling = false;
 
@@ -66,6 +82,18 @@ export class OutboxWorker {
   on(eventType: string, handler: EventHandler): this {
     const existing = this.handlers.get(eventType) ?? [];
     this.handlers.set(eventType, [...existing, handler]);
+    return this;
+  }
+
+  /**
+   * Registra una acción compensatoria a correr cuando un evento de este
+   * tipo agota `maxRetries` y cae en dead-letter (A8.7). Corre una sola
+   * vez por transición a dead-letter — no en cada poll, no en los
+   * reintentos normales. Chainable, igual que `on()`.
+   */
+  onDeadLetter(eventType: string, handler: EventHandler): this {
+    const existing = this.deadLetterHandlers.get(eventType) ?? [];
+    this.deadLetterHandlers.set(eventType, [...existing, handler]);
     return this;
   }
 
@@ -181,6 +209,29 @@ export class OutboxWorker {
         console.error(
           `[OutboxWorker] ⚠️  Evento id=${event.id} (${event.eventType}) pasó a dead-letter ` +
           `tras ${this.maxRetries} intentos. Requiere reintento manual (panel de negocio).`,
+        );
+        await this.runDeadLetterHandlers(event);
+      }
+    }
+  }
+
+  /**
+   * Corre las acciones compensatorias registradas para este eventType
+   * (A8.7). Cada handler se aísla del resto — uno que falle no evita que
+   * los demás corran, ni revierte la marca de dead-letter (ya persistida
+   * antes de llegar acá).
+   */
+  private async runDeadLetterHandlers(event: DomainEvent): Promise<void> {
+    const handlers = this.deadLetterHandlers.get(event.eventType) ?? [];
+    if (handlers.length === 0) return;
+
+    const results = await Promise.allSettled(handlers.map((h) => h(event)));
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error(
+          `[OutboxWorker] Falló la compensación de dead-letter para evento id=${event.id} ` +
+          `(${event.eventType}):`,
+          result.reason,
         );
       }
     }

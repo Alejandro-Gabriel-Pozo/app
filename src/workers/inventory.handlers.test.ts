@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleOrderConfirmedStock, handleOrderCancelledStock } from './inventory.handlers.js';
+import {
+  handleOrderConfirmedStock,
+  handleOrderCancelledStock,
+  handleOrderConfirmedDeadLetterRelease,
+} from './inventory.handlers.js';
 import { ProductService } from '../pos-menu/product.service.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type { StockMovementRepository, CreateStockMovementInput } from '../repositories/stock-movement.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -21,14 +26,17 @@ import type {
   UpdateProductVariantInput,
 } from '../pos-menu/product.entities.js';
 
-/** Fakes mínimos — mismo criterio que order.service.test.ts / product.service.test.ts. */
+const LOC = 'loc-default';
+
+/**
+ * Fakes mínimos — mismo criterio que order.service.test.ts / product.service.test.ts.
+ * Fase 1 del carve-out de inventario (16/08/2026): ya no cargan stock — solo
+ * lo necesario para que ProductService.resolveTarget() resuelva hasVariants/
+ * precio. El stock vive en InMemoryInventoryLevelRepository (seedeado más
+ * abajo, en el `beforeEach` de cada describe).
+ */
 class FakeProductRepository implements IProductRepository {
   private readonly rows = new Map<string, Product>();
-  public decrementCalls: { productId: string; quantity: number }[] = [];
-  public incrementCalls: { productId: string; quantity: number }[] = [];
-  public commitCalls: { productId: string; quantity: number }[] = [];
-  public releaseCalls: { productId: string; quantity: number }[] = [];
-
   seed(p: Product): void { this.rows.set(p.id, p); }
   async getById(id: string): Promise<Product | undefined> { return this.rows.get(id); }
   async getAll(_filter: ListProductsFilter): Promise<Product[]> { return [...this.rows.values()]; }
@@ -36,38 +44,11 @@ class FakeProductRepository implements IProductRepository {
   async save(product: Product): Promise<void> { this.rows.set(product.id, product); }
   async create(_input: CreateProductInput): Promise<Product> { throw new Error('no usado en estos tests'); }
   async update(_id: string, _input: UpdateProductInput): Promise<Product | undefined> { return undefined; }
-  async decrementStock(_client: SqlClient, productId: string, quantity: number): Promise<void> {
-    this.decrementCalls.push({ productId, quantity });
-  }
-  async incrementStock(_client: SqlClient, productId: string, quantity: number): Promise<void> {
-    this.incrementCalls.push({ productId, quantity });
-  }
-  async reserveStock(_client: SqlClient, productId: string, quantity: number): Promise<boolean> {
-    const row = this.rows.get(productId);
-    if (!row || (row.stockQuantity - row.reservedQuantity) < quantity) return false;
-    row.reservedQuantity += quantity;
-    return true;
-  }
-  async commitReservedStock(_client: SqlClient, productId: string, quantity: number): Promise<void> {
-    this.commitCalls.push({ productId, quantity });
-    const row = this.rows.get(productId);
-    if (row) { row.stockQuantity -= quantity; row.reservedQuantity -= quantity; }
-  }
-  async releaseReservedStock(_client: SqlClient, productId: string, quantity: number): Promise<void> {
-    this.releaseCalls.push({ productId, quantity });
-    const row = this.rows.get(productId);
-    if (row) row.reservedQuantity -= quantity;
-  }
   async delete(_id: string): Promise<boolean> { return false; }
 }
 
 class FakeProductVariantRepository implements IProductVariantRepository {
   private readonly rows = new Map<string, ProductVariant>();
-  public decrementCalls: { variantId: string; quantity: number }[] = [];
-  public incrementCalls: { variantId: string; quantity: number }[] = [];
-  public commitCalls: { variantId: string; quantity: number }[] = [];
-  public releaseCalls: { variantId: string; quantity: number }[] = [];
-
   seed(v: ProductVariant): void { this.rows.set(v.id, v); }
   async getById(id: string): Promise<ProductVariant | undefined> { return this.rows.get(id); }
   async getByProduct(_filter: ListVariantsFilter): Promise<ProductVariant[]> { return [...this.rows.values()]; }
@@ -75,28 +56,6 @@ class FakeProductVariantRepository implements IProductVariantRepository {
   async save(variant: ProductVariant): Promise<void> { this.rows.set(variant.id, variant); }
   async create(_input: CreateProductVariantInput): Promise<ProductVariant> { throw new Error('no usado en estos tests'); }
   async update(_id: string, _input: UpdateProductVariantInput): Promise<ProductVariant | undefined> { return undefined; }
-  async decrementStock(_client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    this.decrementCalls.push({ variantId, quantity });
-  }
-  async incrementStock(_client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    this.incrementCalls.push({ variantId, quantity });
-  }
-  async reserveStock(_client: SqlClient, variantId: string, quantity: number): Promise<boolean> {
-    const row = this.rows.get(variantId);
-    if (!row || (row.stockQuantity - row.reservedQuantity) < quantity) return false;
-    row.reservedQuantity += quantity;
-    return true;
-  }
-  async commitReservedStock(_client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    this.commitCalls.push({ variantId, quantity });
-    const row = this.rows.get(variantId);
-    if (row) { row.stockQuantity -= quantity; row.reservedQuantity -= quantity; }
-  }
-  async releaseReservedStock(_client: SqlClient, variantId: string, quantity: number): Promise<void> {
-    this.releaseCalls.push({ variantId, quantity });
-    const row = this.rows.get(variantId);
-    if (row) row.reservedQuantity -= quantity;
-  }
   async delete(_id: string): Promise<boolean> { return false; }
 }
 
@@ -147,16 +106,34 @@ describe('inventory.handlers', () => {
   let productRepo: FakeProductRepository;
   let variantRepo: FakeProductVariantRepository;
   let productService: ProductService;
+  let inventoryLevelRepo: InMemoryInventoryLevelRepository;
   let stockMovementRepo: FakeStockMovementRepository;
   let txManager: FakeTransactionManager;
 
   beforeEach(() => {
-    productRepo       = new FakeProductRepository();
-    variantRepo       = new FakeProductVariantRepository();
-    productService    = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository());
-    stockMovementRepo = new FakeStockMovementRepository();
-    txManager         = new FakeTransactionManager();
+    productRepo        = new FakeProductRepository();
+    variantRepo         = new FakeProductVariantRepository();
+    inventoryLevelRepo  = new InMemoryInventoryLevelRepository();
+    productService      = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository(), inventoryLevelRepo);
+    stockMovementRepo   = new FakeStockMovementRepository();
+    txManager           = new FakeTransactionManager();
+
+    // Reserva ya tomada por confirmOrder() ANTES de que el outbox procese el
+    // evento -- mismo punto de partida que D1 (15/08/2026): reservedQuantity
+    // ya refleja el "hard commit" síncrono, el handler solo consolida/libera.
+    inventoryLevelRepo.seed({
+      id: 'lvl-prod-1', businessId: 'biz-test', productId: 'prod-1', productVariantId: null,
+      locationId: LOC, stockQuantity: 10, reservedQuantity: 3, stockMinAlert: 0,
+    });
+    inventoryLevelRepo.seed({
+      id: 'lvl-var-1', businessId: 'biz-test', productId: null, productVariantId: 'var-1',
+      locationId: LOC, stockQuantity: 10, reservedQuantity: 2, stockMinAlert: 0,
+    });
   });
+
+  async function levelOf(productId: string | null, variantId: string | null) {
+    return inventoryLevelRepo.get({ productId, productVariantId: variantId, locationId: LOC });
+  }
 
   describe('handleOrderConfirmedStock', () => {
     it('consolida la reserva (stock_quantity + reserved_quantity) e inserta un movimiento OUT por cada ítem PRODUCT', async () => {
@@ -167,11 +144,12 @@ describe('inventory.handlers', () => {
 
       await handler(event);
 
-      expect(productRepo.commitCalls).toEqual([{ productId: 'prod-1', quantity: 3 }]);
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 7, reservedQuantity: 0 }));
       expect(stockMovementRepo.inserted).toEqual([
         expect.objectContaining({
           orderItemId: 'oi-1', movementType: 'OUT', quantity: 3,
-          productId: 'prod-1', productVariantId: null,
+          productId: 'prod-1', productVariantId: null, locationId: LOC,
         }),
       ]);
     });
@@ -184,8 +162,10 @@ describe('inventory.handlers', () => {
 
       await handler(event);
 
-      expect(variantRepo.commitCalls).toEqual([{ variantId: 'var-1', quantity: 2 }]);
-      expect(productRepo.commitCalls).toHaveLength(0);
+      const variantLevel = await levelOf(null, 'var-1');
+      expect(variantLevel).toEqual(expect.objectContaining({ stockQuantity: 8, reservedQuantity: 0 }));
+      const productLevel = await levelOf('prod-1', null);
+      expect(productLevel).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 3 })); // sin tocar
     });
 
     it('idempotente: si el movimiento OUT ya existía (reintento at-least-once), no vuelve a consolidar', async () => {
@@ -197,14 +177,14 @@ describe('inventory.handlers', () => {
       await handler(event);
       await handler(event);
 
-      expect(productRepo.commitCalls).toHaveLength(1);
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 7, reservedQuantity: 0 })); // no bajó dos veces
     });
 
     it('no hace nada si la orden no tiene ítems (ej. solo cargo a la habitación)', async () => {
       const handler = handleOrderConfirmedStock(productService, stockMovementRepo, txManager);
       await handler(fakeEvent('order.confirmed', { items: [] }));
 
-      expect(productRepo.commitCalls).toHaveLength(0);
       expect(stockMovementRepo.inserted).toHaveLength(0);
     });
 
@@ -217,8 +197,9 @@ describe('inventory.handlers', () => {
       await cancelHandler(fakeEvent('order.cancelled', { previousStatus: 'CONFIRMED', wasServed: false, items }));
       await confirmHandler(fakeEvent('order.confirmed', { items }));
 
-      expect(productRepo.releaseCalls).toEqual([{ productId: 'prod-1', quantity: 3 }]);
-      expect(productRepo.commitCalls).toHaveLength(0); // perdió la carrera del casillero -- no consolida
+      const level = await levelOf('prod-1', null);
+      // La cancelación liberó la reserva (10/3 -> 10/0); el confirm perdió la carrera, no vuelve a tocar stock_quantity.
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 }));
     });
   });
 
@@ -228,11 +209,11 @@ describe('inventory.handlers', () => {
       const cancelHandler  = handleOrderCancelledStock(productService, stockMovementRepo, txManager);
       const items = [{ orderItemId: 'oi-1', productId: 'prod-1', productVariantId: null, quantity: 3 }];
 
-      await confirmHandler(fakeEvent('order.confirmed', { items })); // consolida primero -- caso normal
+      await confirmHandler(fakeEvent('order.confirmed', { items })); // consolida primero -- caso normal (10/3 -> 7/0)
       await cancelHandler(fakeEvent('order.cancelled', { previousStatus: 'CONFIRMED', wasServed: false, items }));
 
-      expect(productRepo.incrementCalls).toEqual([{ productId: 'prod-1', quantity: 3 }]);
-      expect(productRepo.releaseCalls).toHaveLength(0); // ya estaba consolidada, no había reserva que liberar
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 })); // RETURN restaura físico
       expect(stockMovementRepo.inserted).toEqual([
         expect.objectContaining({ orderItemId: 'oi-1', movementType: 'OUT', quantity: 3 }),
         expect.objectContaining({ orderItemId: 'oi-1', movementType: 'RETURN', quantity: 3 }),
@@ -249,8 +230,8 @@ describe('inventory.handlers', () => {
 
       await handler(event);
 
-      expect(productRepo.releaseCalls).toEqual([{ productId: 'prod-1', quantity: 3 }]);
-      expect(productRepo.incrementCalls).toHaveLength(0); // stock físico nunca bajó -- nada que restaurar
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 })); // solo se liberó el hold
       expect(stockMovementRepo.inserted).toEqual([
         expect.objectContaining({ orderItemId: 'oi-1', movementType: 'RESERVATION_RELEASED', quantity: 3 }),
       ]);
@@ -261,10 +242,11 @@ describe('inventory.handlers', () => {
       const cancelHandler  = handleOrderCancelledStock(productService, stockMovementRepo, txManager);
       const items = [{ orderItemId: 'oi-1', productId: 'prod-1', productVariantId: null, quantity: 3 }];
 
-      await confirmHandler(fakeEvent('order.confirmed', { items })); // ya consolidada
+      await confirmHandler(fakeEvent('order.confirmed', { items })); // ya consolidada (10/3 -> 7/0)
       await cancelHandler(fakeEvent('order.cancelled', { previousStatus: 'CONFIRMED', wasServed: true, items }));
 
-      expect(productRepo.incrementCalls).toHaveLength(0);
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 7, reservedQuantity: 0 })); // sin restaurar
       // Solo el OUT del confirm -- el intento de RETURN nunca se inserta (wasServed corta antes)
       expect(stockMovementRepo.inserted).toHaveLength(1);
     });
@@ -279,8 +261,8 @@ describe('inventory.handlers', () => {
 
       await handler(event);
 
-      expect(productRepo.incrementCalls).toHaveLength(0);
-      expect(productRepo.releaseCalls).toHaveLength(0);
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 3 })); // sin cambios
     });
 
     it('idempotente: si el movimiento RETURN ya existía, no vuelve a restaurar stock', async () => {
@@ -292,7 +274,8 @@ describe('inventory.handlers', () => {
       await cancelHandler(fakeEvent('order.cancelled', { previousStatus: 'CONFIRMED', wasServed: false, items }));
       await cancelHandler(fakeEvent('order.cancelled', { previousStatus: 'CONFIRMED', wasServed: false, items }));
 
-      expect(productRepo.incrementCalls).toHaveLength(1);
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 })); // no restauró dos veces
     });
 
     it('idempotente: si el movimiento RESERVATION_RELEASED ya existía, no vuelve a liberar', async () => {
@@ -306,7 +289,75 @@ describe('inventory.handlers', () => {
       await handler(event);
       await handler(event);
 
-      expect(productRepo.releaseCalls).toHaveLength(1);
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 })); // no liberó dos veces
+    });
+  });
+
+  describe('handleOrderConfirmedDeadLetterRelease (A8.7, 16/08/2026)', () => {
+    it('libera la reserva si order.confirmed nunca llegó a consolidar (OUT nunca insertado)', async () => {
+      const handler = handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, txManager);
+      const event = fakeEvent('order.confirmed', {
+        items: [{ orderItemId: 'oi-1', productId: 'prod-1', productVariantId: null, quantity: 3 }],
+      });
+
+      await handler(event);
+
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 }));
+      expect(stockMovementRepo.inserted).toEqual([
+        expect.objectContaining({ orderItemId: 'oi-1', movementType: 'RESERVATION_RELEASED', quantity: 3 }),
+      ]);
+    });
+
+    it('libera la reserva de la variante cuando el ítem tiene productVariantId', async () => {
+      const handler = handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, txManager);
+      const event = fakeEvent('order.confirmed', {
+        items: [{ orderItemId: 'oi-1', productId: 'prod-1', productVariantId: 'var-1', quantity: 2 }],
+      });
+
+      await handler(event);
+
+      const variantLevel = await levelOf(null, 'var-1');
+      expect(variantLevel).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 }));
+      const productLevel = await levelOf('prod-1', null);
+      expect(productLevel).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 3 })); // sin tocar
+    });
+
+    it('NO hace nada si la consolidación ya había ganado el casillero (OUT ya insertado) — pierde la carrera', async () => {
+      const confirmHandler    = handleOrderConfirmedStock(productService, stockMovementRepo, txManager);
+      const deadLetterRelease = handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, txManager);
+      const items = [{ orderItemId: 'oi-1', productId: 'prod-1', productVariantId: null, quantity: 3 }];
+
+      // Escenario real: la consolidación de inventario tuvo éxito en un intento
+      // anterior, pero el evento completo siguió fallando por OTRO handler
+      // (ej. el financiero) hasta agotar maxRetries y caer en dead-letter.
+      await confirmHandler(fakeEvent('order.confirmed', { items })); // 10/3 -> 7/0
+      await deadLetterRelease(fakeEvent('order.confirmed', { items }));
+
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 7, reservedQuantity: 0 })); // el OUT ya había ganado -- nada que liberar
+      expect(stockMovementRepo.inserted).toHaveLength(1); // solo el OUT, el intento de RESERVATION_RELEASED no se insertó
+    });
+
+    it('idempotente: llamarlo dos veces no libera la reserva dos veces', async () => {
+      const handler = handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, txManager);
+      const event = fakeEvent('order.confirmed', {
+        items: [{ orderItemId: 'oi-1', productId: 'prod-1', productVariantId: null, quantity: 3 }],
+      });
+
+      await handler(event); // ej. si retryDeadLettered() vuelve a fallar y cae en dead-letter de nuevo
+      await handler(event);
+
+      const level = await levelOf('prod-1', null);
+      expect(level).toEqual(expect.objectContaining({ stockQuantity: 10, reservedQuantity: 0 })); // no liberó dos veces
+    });
+
+    it('no hace nada si la orden no tiene ítems', async () => {
+      const handler = handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, txManager);
+      await handler(fakeEvent('order.confirmed', { items: [] }));
+
+      expect(stockMovementRepo.inserted).toHaveLength(0);
     });
   });
 });

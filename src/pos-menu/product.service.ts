@@ -6,12 +6,19 @@
  *
  * has_variants = false
  *   → effectivePrice = product.basePrice
- *   → stock          = product.stockQuantity
+ *   → stock          = InventoryLevel del producto en la ubicación dada
  *
  * has_variants = true
  *   → product_variant_id REQUERIDO
  *   → effectivePrice = variant.priceOverride ?? product.basePrice
- *   → stock          = variant.stockQuantity
+ *   → stock          = InventoryLevel de la variante en la ubicación dada
+ *
+ * ## Fase 1 del carve-out de inventario (16/08/2026)
+ * El stock dejó de ser un campo de Product/ProductVariant — vive en
+ * InventoryLevelRepository, con una fila por (producto|variante, ubicación).
+ * Todo método de stock de acá abajo recibe `locationId` explícito: este
+ * service no decide ubicaciones por defecto, esa resolución vive en la capa
+ * de rutas (mismo criterio que `resolveLocationId()` en resources.routes.ts).
  */
 
 import type {
@@ -29,6 +36,7 @@ import type {
 } from './product.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import type { InventoryLevelRepository, InventoryLevelKey } from '../repositories/inventory-level.repository.js';
 import { diffFields } from '../domain/audit.js';
 import { DomainError } from '../domain/errors.js';
 
@@ -90,6 +98,7 @@ export class ProductService {
     private readonly variantRepo: IProductVariantRepository,
     /** Requerido para que updateProduct()/updateVariant() dejen rastro (R8/A9.4). */
     private readonly auditLogRepo: AuditLogRepository,
+    private readonly inventoryLevelRepo: InventoryLevelRepository,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -104,11 +113,25 @@ export class ProductService {
     return (await this.productRepo.getById(id)) ?? null;
   }
 
-  async createProduct(input: CreateProductInput): Promise<Product> {
-    if (input.hasVariants) {
-      input = { ...input, stockQuantity: 0 };
+  /**
+   * Crea el producto y, si hasVariants=false, siembra su InventoryLevel en
+   * `locationId` con `initialStockQuantity`/`initialStockMinAlert` (default
+   * 0) — mismo alcance de stock inicial que antes aceptaba `stockQuantity`
+   * en el body, ahora resuelto contra la tabla nueva en vez de una columna
+   * del producto. Si hasVariants=true, no siembra nada acá — cada variante
+   * siembra la suya en createVariant().
+   */
+  async createProduct(input: CreateProductInput, client: SqlClient, locationId: string): Promise<Product> {
+    const product = await this.productRepo.create(input);
+
+    if (!product.hasVariants) {
+      const key: InventoryLevelKey = { productId: product.id, productVariantId: null, locationId };
+      if ((input.initialStockQuantity ?? 0) > 0) {
+        await this.inventoryLevelRepo.incrementStock(client, product.businessId, key, input.initialStockQuantity!);
+      }
     }
-    return this.productRepo.create(input);
+
+    return product;
   }
 
   /**
@@ -160,6 +183,8 @@ export class ProductService {
   async createVariant(
     productId: string,
     input: Omit<CreateProductVariantInput, 'productId'>,
+    client: SqlClient,
+    locationId: string,
   ): Promise<ProductVariant> {
     const product = await this.productRepo.getById(productId);
     if (!product) throw new ProductNotFoundError(productId);
@@ -169,7 +194,14 @@ export class ProductService {
         'Activalo antes de crear variantes.',
       );
     }
-    return this.variantRepo.create({ ...input, productId });
+    const variant = await this.variantRepo.create({ ...input, productId });
+
+    if ((input.initialStockQuantity ?? 0) > 0) {
+      const key: InventoryLevelKey = { productId: null, productVariantId: variant.id, locationId };
+      await this.inventoryLevelRepo.incrementStock(client, product.businessId, key, input.initialStockQuantity!);
+    }
+
+    return variant;
   }
 
   async updateVariant(
@@ -210,7 +242,8 @@ export class ProductService {
 
   async resolveTarget(
     productId: string,
-    variantId?: string,
+    variantId: string | undefined,
+    locationId: string,
   ): Promise<ResolvedProductTarget> {
     const product = await this.productRepo.getById(productId);
     if (!product) throw new ProductNotFoundError(productId);
@@ -221,19 +254,21 @@ export class ProductService {
       const variant = await this.variantRepo.getById(variantId);
       if (!variant) throw new VariantNotFoundError(variantId);
 
+      const level = await this.inventoryLevelRepo.get({ productId: null, productVariantId: variantId, locationId });
       return {
         product,
         variant,
         effectivePrice: variant.priceOverride ?? product.basePrice,
-        availableStock: variant.stockQuantity - variant.reservedQuantity,
+        availableStock: (level?.stockQuantity ?? 0) - (level?.reservedQuantity ?? 0),
       };
     }
 
+    const level = await this.inventoryLevelRepo.get({ productId, productVariantId: null, locationId });
     return {
       product,
       variant:        undefined,
       effectivePrice: product.basePrice,
-      availableStock: product.stockQuantity - product.reservedQuantity,
+      availableStock: (level?.stockQuantity ?? 0) - (level?.reservedQuantity ?? 0),
     };
   }
 
@@ -244,9 +279,10 @@ export class ProductService {
   async checkStock(
     productId: string,
     variantId: string | undefined,
+    locationId: string,
     quantity: number,
   ): Promise<void> {
-    const target = await this.resolveTarget(productId, variantId);
+    const target = await this.resolveTarget(productId, variantId, locationId);
     if (target.availableStock < quantity) {
       throw new InsufficientStockError(target.availableStock, quantity);
     }
@@ -256,26 +292,30 @@ export class ProductService {
     client: SqlClient,
     productId: string,
     variantId: string | undefined,
+    locationId: string,
     quantity: number,
   ): Promise<void> {
-    if (!variantId) {
-      await this.productRepo.decrementStock(client, productId, quantity);
-    } else {
-      await this.variantRepo.decrementStock(client, variantId, quantity);
-    }
+    await this.inventoryLevelRepo.decrementStock(
+      client,
+      { productId: variantId ? null : productId, productVariantId: variantId ?? null, locationId },
+      quantity,
+    );
   }
 
   async incrementStock(
     client: SqlClient,
+    businessId: string,
     productId: string,
     variantId: string | undefined,
+    locationId: string,
     quantity: number,
   ): Promise<void> {
-    if (!variantId) {
-      await this.productRepo.incrementStock(client, productId, quantity);
-    } else {
-      await this.variantRepo.incrementStock(client, variantId, quantity);
-    }
+    await this.inventoryLevelRepo.incrementStock(
+      client,
+      businessId,
+      { productId: variantId ? null : productId, productVariantId: variantId ?? null, locationId },
+      quantity,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -290,16 +330,17 @@ export class ProductService {
    */
   async reserveStock(
     client: SqlClient,
+    businessId: string,
     productId: string,
     variantId: string | undefined,
+    locationId: string,
     quantity: number,
   ): Promise<void> {
-    const ok = variantId
-      ? await this.variantRepo.reserveStock(client, variantId, quantity)
-      : await this.productRepo.reserveStock(client, productId, quantity);
+    const key: InventoryLevelKey = { productId: variantId ? null : productId, productVariantId: variantId ?? null, locationId };
+    const ok = await this.inventoryLevelRepo.reserveStock(client, businessId, key, quantity);
 
     if (!ok) {
-      const target = await this.resolveTarget(productId, variantId);
+      const target = await this.resolveTarget(productId, variantId, locationId);
       throw new InsufficientStockError(target.availableStock, quantity);
     }
   }
@@ -309,13 +350,14 @@ export class ProductService {
     client: SqlClient,
     productId: string,
     variantId: string | undefined,
+    locationId: string,
     quantity: number,
   ): Promise<void> {
-    if (!variantId) {
-      await this.productRepo.commitReservedStock(client, productId, quantity);
-    } else {
-      await this.variantRepo.commitReservedStock(client, variantId, quantity);
-    }
+    await this.inventoryLevelRepo.commitReservedStock(
+      client,
+      { productId: variantId ? null : productId, productVariantId: variantId ?? null, locationId },
+      quantity,
+    );
   }
 
   /** Libera una reserva sin consolidar — orden cancelada antes de que el outbox llegue. */
@@ -323,12 +365,13 @@ export class ProductService {
     client: SqlClient,
     productId: string,
     variantId: string | undefined,
+    locationId: string,
     quantity: number,
   ): Promise<void> {
-    if (!variantId) {
-      await this.productRepo.releaseReservedStock(client, productId, quantity);
-    } else {
-      await this.variantRepo.releaseReservedStock(client, variantId, quantity);
-    }
+    await this.inventoryLevelRepo.releaseReservedStock(
+      client,
+      { productId: variantId ? null : productId, productVariantId: variantId ?? null, locationId },
+      quantity,
+    );
   }
 }

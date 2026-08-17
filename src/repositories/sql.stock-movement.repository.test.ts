@@ -23,13 +23,14 @@ describe('SqlStockMovementRepository', () => {
       orderItemId:      'oi-1',
       createdBy:        'system:outbox',
       notes:            null,
+      locationId:       'loc-default',
     });
 
     expect(inserted).toBe(true);
     const mockQuery = vi.mocked(mockSqlClient.query);
     const [sql, params] = mockQuery.mock.calls[0]!;
     expect(sql).toContain('ON CONFLICT DO NOTHING');
-    expect(params).toEqual(['mov-1', 'biz-1', 'prod-1', null, 'OUT', 3, 'oi-1', 'system:outbox', null]);
+    expect(params).toEqual(['mov-1', 'biz-1', 'prod-1', null, 'OUT', 3, 'oi-1', 'system:outbox', null, 'loc-default', null, null]);
   });
 
   it('devuelve false si el movimiento ya existía (reintento at-least-once del OutboxWorker)', async () => {
@@ -44,6 +45,7 @@ describe('SqlStockMovementRepository', () => {
       orderItemId:      'oi-1',
       createdBy:        'system:outbox',
       notes:            null,
+      locationId:       'loc-default',
     });
 
     expect(inserted).toBe(false);

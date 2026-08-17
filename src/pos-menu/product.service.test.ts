@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ProductService } from './product.service.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
 import type {
   IProductRepository,
   IProductVariantRepository,
@@ -15,13 +16,13 @@ import type {
   CreateProductVariantInput,
   UpdateProductVariantInput,
 } from './product.entities.js';
-import type { SqlClient } from '../repositories/sql.client.js';
 
 /**
  * Fakes mínimos — no hay InMemoryProductRepository en el repo todavía.
  * Alcanza con esto para probar el wiring de auditoría de ProductService,
- * sin depender de una BD. decrementStock/incrementStock no se ejercitan
- * en estos tests (son de otro flujo, ver order.service.test.ts).
+ * sin depender de una BD. Fase 1 del carve-out de inventario (16/08/2026):
+ * ya no cargan stock — eso vive en InMemoryInventoryLevelRepository, ver
+ * inventory.handlers.test.ts para los tests que sí ejercitan ese flujo.
  */
 class FakeProductRepository implements IProductRepository {
   private readonly rows = new Map<string, Product>();
@@ -57,9 +58,6 @@ class FakeProductRepository implements IProductRepository {
       basePrice: input.basePrice,
       sku: input.sku ?? null,
       hasVariants: input.hasVariants ?? false,
-      stockQuantity: input.stockQuantity ?? 0,
-      reservedQuantity: 0,
-      stockMinAlert: input.stockMinAlert ?? 0,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -75,12 +73,6 @@ class FakeProductRepository implements IProductRepository {
     this.rows.set(id, updated);
     return updated;
   }
-
-  async decrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
-  async incrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
-  async reserveStock(_client: SqlClient, _productId: string, _quantity: number): Promise<boolean> { return true; }
-  async commitReservedStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
-  async releaseReservedStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
 
   async delete(id: string): Promise<boolean> {
     return this.rows.delete(id);
@@ -119,9 +111,6 @@ class FakeProductVariantRepository implements IProductVariantRepository {
       attributes: input.attributes ?? {},
       sku: input.sku ?? null,
       priceOverride: input.priceOverride ?? null,
-      stockQuantity: input.stockQuantity ?? 0,
-      reservedQuantity: 0,
-      stockMinAlert: input.stockMinAlert ?? 0,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -138,12 +127,6 @@ class FakeProductVariantRepository implements IProductVariantRepository {
     return updated;
   }
 
-  async decrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-  async incrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-  async reserveStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<boolean> { return true; }
-  async commitReservedStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-  async releaseReservedStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-
   async delete(id: string): Promise<boolean> {
     return this.rows.delete(id);
   }
@@ -159,7 +142,7 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
     productRepo = new FakeProductRepository();
     variantRepo = new FakeProductVariantRepository();
     auditRepo   = new InMemoryAuditLogRepository();
-    service     = new ProductService(productRepo, variantRepo, auditRepo);
+    service     = new ProductService(productRepo, variantRepo, auditRepo, new InMemoryInventoryLevelRepository());
 
     const now = new Date();
     productRepo.seed({
@@ -171,9 +154,6 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
       basePrice: 100,
       sku: 'COCA-500',
       hasVariants: false,
-      stockQuantity: 10,
-      reservedQuantity: 0,
-      stockMinAlert: 2,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -185,9 +165,6 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
       attributes: { talle: 'M' },
       sku: null,
       priceOverride: null,
-      stockQuantity: 5,
-      reservedQuantity: 0,
-      stockMinAlert: 1,
       active: true,
       createdAt: now,
       updatedAt: now,

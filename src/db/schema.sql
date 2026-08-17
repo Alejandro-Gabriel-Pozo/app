@@ -579,30 +579,10 @@ CREATE TABLE IF NOT EXISTS products (
   base_price       DECIMAL(10,2)  NOT NULL CHECK (base_price >= 0),
   sku              VARCHAR(100),
   has_variants     BOOLEAN        NOT NULL DEFAULT FALSE,
-  stock_quantity   INTEGER        NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
-  stock_min_alert  INTEGER        NOT NULL DEFAULT 0 CHECK (stock_min_alert >= 0),
   active           BOOLEAN        NOT NULL DEFAULT TRUE,
   created_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
-
--- D1 (15/08/2026, criterios-negocio.md A8.7/A8.8): reserved_quantity separa
--- "comprometido por una orden CONFIRMED" de "físicamente en el depósito".
--- disponible = stock_quantity - reserved_quantity. confirmOrder() reserva
--- atómicamente (ProductService.reserveStock); el outbox consolida
--- (commitReservedStock: stock_quantity Y reserved_quantity bajan juntos) o
--- libera (releaseReservedStock, si se cancela antes de consolidar) — nunca
--- una lectura seguida de un UPDATE en memoria (A8.2).
-ALTER TABLE products ADD COLUMN IF NOT EXISTS reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0);
-
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'chk_products_reserved_not_exceeds_stock'
-  ) THEN
-    ALTER TABLE products ADD CONSTRAINT chk_products_reserved_not_exceeds_stock
-      CHECK (reserved_quantity <= stock_quantity);
-  END IF;
-END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_products_business_sku
   ON products (business_id, sku) WHERE sku IS NOT NULL;
@@ -625,24 +605,10 @@ CREATE TABLE IF NOT EXISTS product_variants (
   attributes       JSONB          NOT NULL DEFAULT '{}',
   sku              VARCHAR(100),
   price_override   DECIMAL(10,2)  CHECK (price_override >= 0),
-  stock_quantity   INTEGER        NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
-  stock_min_alert  INTEGER        NOT NULL DEFAULT 0 CHECK (stock_min_alert >= 0),
   active           BOOLEAN        NOT NULL DEFAULT TRUE,
   created_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
-
--- Mismo criterio que products.reserved_quantity (ver comentario arriba).
-ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0);
-
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'chk_product_variants_reserved_not_exceeds_stock'
-  ) THEN
-    ALTER TABLE product_variants ADD CONSTRAINT chk_product_variants_reserved_not_exceeds_stock
-      CHECK (reserved_quantity <= stock_quantity);
-  END IF;
-END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_product_variants_product_sku
   ON product_variants (product_id, sku) WHERE sku IS NOT NULL;
@@ -654,6 +620,114 @@ DO $$ BEGIN
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
+
+-- ===========================================================================
+-- BLOQUE 16 — INVENTORY_LEVELS (Fase 1 del carve-out de inventario, 16/08/2026)
+-- ===========================================================================
+-- docs/diseno-inventario-carve-out.md. Reemplaza products/product_variants.
+-- stock_quantity/reserved_quantity/stock_min_alert (dropeadas más abajo,
+-- después del backfill) como fuente de verdad — el stock deja de ser una
+-- columna del producto y pasa a ser "cuánto hay de este producto/variante,
+-- en esta ubicación". Vive físicamente acá (dentro de BLOQUE 3, no al final
+-- del archivo) porque el backfill necesita las columnas viejas de products/
+-- product_variants todavía presentes — mismo criterio ya usado con BLOQUE 13/
+-- 14 (el número refleja cuándo se pensó, no dónde vive en el archivo).
+--
+-- Mismo patrón polimórfico que stock_movements (uno de los dos FK, nunca
+-- los dos) y mismo CHECK reserved<=stock que ya tenían products/
+-- product_variants antes de esta migración.
+--
+-- Sin fila para un (producto|variante, ubicación) no tocado todavía = stock
+-- 0 ahí (no existe fila fantasma para cada combinación posible desde el día
+-- uno). ProductService/InventoryLevelRepository crean la fila en 0/0 la
+-- primera vez que hace falta (INSERT ... ON CONFLICT DO NOTHING) antes de
+-- cualquier UPDATE atómica sobre ella — mismo criterio A8.2 de siempre,
+-- nunca una lectura-y-decisión en memoria.
+CREATE TABLE IF NOT EXISTS inventory_levels (
+  id                  VARCHAR(255)  PRIMARY KEY,
+  business_id         VARCHAR(255)  NOT NULL,
+  product_id          VARCHAR(255)  REFERENCES products(id)         ON DELETE RESTRICT,
+  product_variant_id  VARCHAR(255)  REFERENCES product_variants(id) ON DELETE RESTRICT,
+  location_id         VARCHAR(255)  NOT NULL REFERENCES locations(id),
+  stock_quantity      INTEGER       NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
+  reserved_quantity   INTEGER       NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+  stock_min_alert     INTEGER       NOT NULL DEFAULT 0 CHECK (stock_min_alert >= 0),
+  created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_inventory_levels_target CHECK (
+    (product_id IS NOT NULL AND product_variant_id IS NULL)
+    OR (product_variant_id IS NOT NULL AND product_id IS NULL)
+  ),
+  CONSTRAINT chk_inventory_levels_reserved_not_exceeds_stock
+    CHECK (reserved_quantity <= stock_quantity)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_levels_product
+  ON inventory_levels (product_id, location_id) WHERE product_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_levels_variant
+  ON inventory_levels (product_variant_id, location_id) WHERE product_variant_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_levels_business ON inventory_levels (business_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'inventory_levels_updated_at') THEN
+    CREATE TRIGGER inventory_levels_updated_at
+      BEFORE UPDATE ON inventory_levels
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- Backfill (16/08/2026): todo producto/variante con stock existente antes de
+-- esta migración pasa a tener su fila en `loc-default` con los mismos
+-- valores — no se pierde ningún dato al cortar sobre la tabla nueva.
+-- Guardado detrás de un chequeo de information_schema porque en una BD
+-- nueva (o en un re-run después de que el DROP COLUMN de abajo ya corrió
+-- una vez) esas columnas ya no existen — un SELECT directo sobre ellas
+-- rompería la migración entera en vez de ser el no-op idempotente que
+-- necesita (mismo espíritu que el resto de schema.sql, pensado para
+-- correr una y otra vez sin romper).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'products' AND column_name = 'stock_quantity'
+  ) THEN
+    INSERT INTO inventory_levels
+      (id, business_id, product_id, location_id, stock_quantity, reserved_quantity, stock_min_alert)
+    SELECT gen_random_uuid()::text, business_id, id, 'loc-default',
+           stock_quantity, reserved_quantity, stock_min_alert
+    FROM products
+    ON CONFLICT (product_id, location_id) WHERE product_id IS NOT NULL DO NOTHING;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'product_variants' AND column_name = 'stock_quantity'
+  ) THEN
+    INSERT INTO inventory_levels
+      (id, business_id, product_variant_id, location_id, stock_quantity, reserved_quantity, stock_min_alert)
+    SELECT gen_random_uuid()::text, p.business_id, v.id, 'loc-default',
+           v.stock_quantity, v.reserved_quantity, v.stock_min_alert
+    FROM product_variants v
+    JOIN products p ON p.id = v.product_id
+    ON CONFLICT (product_variant_id, location_id) WHERE product_variant_id IS NOT NULL DO NOTHING;
+  END IF;
+END $$;
+
+-- Recién ahora, con el backfill hecho, se dropean las columnas viejas — no
+-- se dejan de lado sin usar: convivir con dos fuentes de verdad es peor que
+-- migrar de una vez, mismo criterio que se usó para reemplazar el índice
+-- viejo de stock_movements en vez de dejarlo muerto al lado del nuevo
+-- (BLOQUE 13).
+ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_reserved_not_exceeds_stock;
+ALTER TABLE products DROP COLUMN IF EXISTS stock_quantity;
+ALTER TABLE products DROP COLUMN IF EXISTS reserved_quantity;
+ALTER TABLE products DROP COLUMN IF EXISTS stock_min_alert;
+
+ALTER TABLE product_variants DROP CONSTRAINT IF EXISTS chk_product_variants_reserved_not_exceeds_stock;
+ALTER TABLE product_variants DROP COLUMN IF EXISTS stock_quantity;
+ALTER TABLE product_variants DROP COLUMN IF EXISTS reserved_quantity;
+ALTER TABLE product_variants DROP COLUMN IF EXISTS stock_min_alert;
 
 -- ===========================================================================
 -- BLOQUE 4 — ÓRDENES
@@ -685,9 +759,21 @@ CREATE TABLE IF NOT EXISTS orders (
   updated_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
+-- Fase 1 del carve-out de inventario (16/08/2026) — de qué ubicación sale la
+-- venta, para reservar/consolidar stock en el `inventory_levels` correcto.
+-- Mismo patrón que `resources.location_id` (BLOQUE 1): nullable + backfill
+-- a `loc-default` + NOT NULL, así funciona tanto en una BD nueva (0 filas,
+-- los tres pasos son no-ops después del primero) como en una existente con
+-- órdenes ya cargadas.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS location_id VARCHAR(255)
+  REFERENCES locations(id);
+UPDATE orders SET location_id = 'loc-default' WHERE location_id IS NULL;
+ALTER TABLE orders ALTER COLUMN location_id SET NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_orders_business_status   ON orders (business_id, status);
 CREATE INDEX IF NOT EXISTS idx_orders_business_customer ON orders (business_id, customer_id) WHERE customer_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_orders_created_at        ON orders (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_location          ON orders (location_id);
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'orders_updated_at') THEN
@@ -813,6 +899,43 @@ ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
 CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_resolution
   ON stock_movements (order_item_id)
   WHERE order_item_id IS NOT NULL AND movement_type IN ('OUT', 'RESERVATION_RELEASED');
+
+-- Fase 1 del carve-out de inventario (16/08/2026, docs/diseno-inventario-
+-- carve-out.md) — location_id: en qué ubicación pasó el movimiento (todos
+-- los tipos salvo TRANSFER). from_location_id/to_location_id: el par
+-- atómico de una transferencia (manual-inventario.md sección 8 — "un par
+-- simétrico que debería registrarse como una sola operación", nunca dos
+-- filas independientes que puedan quedar inconsistentes si una falla).
+-- Backfill a `loc-default` para movimientos históricos (todos, ninguno era
+-- TRANSFER antes de hoy).
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS location_id VARCHAR(255)
+  REFERENCES locations(id);
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS from_location_id VARCHAR(255)
+  REFERENCES locations(id);
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS to_location_id VARCHAR(255)
+  REFERENCES locations(id);
+UPDATE stock_movements SET location_id = 'loc-default'
+  WHERE location_id IS NULL AND movement_type != 'TRANSFER';
+
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
+  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER'));
+
+-- Mismo espíritu polimórfico que chk_order_item_polymorphic (BLOQUE 4):
+-- TRANSFER usa el par origen/destino y nunca location_id; el resto de los
+-- tipos usa location_id y nunca el par.
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_location;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_location CHECK (
+  (movement_type = 'TRANSFER'
+    AND location_id IS NULL
+    AND from_location_id IS NOT NULL AND to_location_id IS NOT NULL
+    AND from_location_id != to_location_id)
+  OR (movement_type != 'TRANSFER'
+    AND location_id IS NOT NULL
+    AND from_location_id IS NULL AND to_location_id IS NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_location ON stock_movements (location_id) WHERE location_id IS NOT NULL;
 
 -- ===========================================================================
 -- BLOQUE 6 — STAYS (Check-in / Check-out)
@@ -1273,3 +1396,4 @@ DO $$ BEGIN
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
+

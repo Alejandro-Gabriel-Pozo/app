@@ -21,8 +21,9 @@ export class SqlStockMovementRepository implements StockMovementRepository {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO stock_movements
          (id, business_id, product_id, product_variant_id, movement_type,
-          quantity, order_item_id, created_by, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          quantity, order_item_id, created_by, notes,
+          location_id, from_location_id, to_location_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -35,6 +36,9 @@ export class SqlStockMovementRepository implements StockMovementRepository {
         input.orderItemId,
         input.createdBy,
         input.notes,
+        input.locationId,
+        input.fromLocationId ?? null,
+        input.toLocationId ?? null,
       ],
     );
 

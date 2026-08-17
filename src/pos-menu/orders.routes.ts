@@ -48,6 +48,8 @@ import { SqlOrderRepository }            from './sql.order.repository.js';
 import { SqlDomainEventRepository }      from '../repositories/sql.domain-event.repository.js';
 import { SqlProductRepository, SqlProductVariantRepository } from './sql.product.repository.js';
 import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
+import { SqlInventoryLevelRepository }   from '../repositories/sql.inventory-level.repository.js';
+import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
 import { authorize }                     from '../security/auth.middleware.js';
@@ -69,6 +71,7 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
       new SqlProductRepository(req.db!),
       new SqlProductVariantRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
+      new SqlInventoryLevelRepository(req.db!),
     ),
   );
 }
@@ -122,10 +125,12 @@ export function createOrdersRouter(container: AppContainer): Router {
         validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
         return;
       }
-      const service = buildOrderService(req, container);
+      const service    = buildOrderService(req, container);
+      const locationId = await resolveDefaultLocationId(req.db!, parsed.data.locationId);
       const order = await service.createOrder({
         businessId: req.businessId!,
         customerId: parsed.data.customerId,
+        locationId,
         items:      parsed.data.items.map(stripItemUndefined),
         ...(parsed.data.notes  !== undefined && { notes: parsed.data.notes }),
         ...(parsed.data.stayId !== undefined && { stayId: parsed.data.stayId }),

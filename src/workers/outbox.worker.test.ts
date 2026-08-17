@@ -300,4 +300,59 @@ describe('OutboxWorker', () => {
     await triggerPoll(deadLetterWorker);
     expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
   });
+
+  // -------------------------------------------------------------------------
+  // onDeadLetter (A8.7, 16/08/2026)
+  // -------------------------------------------------------------------------
+
+  it('corre el handler de onDeadLetter cuando el evento agota maxRetries', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 1);
+    repo.insert(makeEvent('order.confirmed'));
+
+    deadLetterWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); });
+    const compensator = vi.fn().mockResolvedValue(undefined);
+    deadLetterWorker.onDeadLetter('order.confirmed', compensator);
+
+    await triggerPoll(deadLetterWorker);
+
+    expect(compensator).toHaveBeenCalledTimes(1);
+    expect(compensator).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'order.confirmed' }));
+  });
+
+  it('NO corre el handler de onDeadLetter en reintentos normales, solo al caer en dead-letter', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 3);
+    repo.insert(makeEvent('order.confirmed'));
+
+    deadLetterWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); });
+    const compensator = vi.fn().mockResolvedValue(undefined);
+    deadLetterWorker.onDeadLetter('order.confirmed', compensator);
+
+    await triggerPoll(deadLetterWorker); // intento 1/3
+    await triggerPoll(deadLetterWorker); // intento 2/3
+    expect(compensator).not.toHaveBeenCalled();
+
+    await triggerPoll(deadLetterWorker); // intento 3/3 -> dead-letter
+    expect(compensator).toHaveBeenCalledTimes(1);
+  });
+
+  it('un handler de onDeadLetter que falla no impide que el evento quede marcado dead-letter', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 1);
+    repo.insert(makeEvent('order.confirmed'));
+
+    deadLetterWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); });
+    deadLetterWorker.onDeadLetter('order.confirmed', async () => { throw new Error('compensación también falló'); });
+
+    await triggerPoll(deadLetterWorker);
+
+    expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+  });
+
+  it('no corre ningún handler de onDeadLetter si no hay ninguno registrado para ese eventType', async () => {
+    const deadLetterWorker = new OutboxWorker(repo, 5_000, 1);
+    repo.insert(makeEvent('order.confirmed'));
+    deadLetterWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); });
+
+    await expect(triggerPoll(deadLetterWorker)).resolves.not.toThrow();
+    expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+  });
 });

@@ -10,6 +10,7 @@ import {
 import { ProductService, InsufficientStockError } from './product.service.js';
 import { InMemoryOrderRepository } from './in-memory.order.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
@@ -36,7 +37,6 @@ class FakeProductRepository implements IProductRepository {
       id: `prod-${this.rows.size + 1}`, businessId: input.businessId, categoryId: input.categoryId ?? null,
       name: input.name, description: input.description ?? null, basePrice: input.basePrice,
       sku: input.sku ?? null, hasVariants: input.hasVariants ?? false,
-      stockQuantity: input.stockQuantity ?? 0, reservedQuantity: 0, stockMinAlert: input.stockMinAlert ?? 0,
       active: true, createdAt: now, updatedAt: now,
     };
     this.rows.set(product.id, product);
@@ -48,31 +48,6 @@ class FakeProductRepository implements IProductRepository {
     const updated: Product = { ...current, ...input, updatedAt: new Date() };
     this.rows.set(id, updated);
     return updated;
-  }
-  async decrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
-  async incrementStock(_client: SqlClient, _productId: string, _quantity: number): Promise<void> {}
-
-  /** Replica la UPDATE atómica condicionada real (D1) — no lectura+validación en memoria separadas. */
-  async reserveStock(_client: SqlClient, productId: string, quantity: number): Promise<boolean> {
-    const row = this.rows.get(productId);
-    if (!row || (row.stockQuantity - row.reservedQuantity) < quantity) return false;
-    row.reservedQuantity += quantity;
-    return true;
-  }
-  async commitReservedStock(_client: SqlClient, productId: string, quantity: number): Promise<void> {
-    const row = this.rows.get(productId);
-    if (!row || row.stockQuantity < quantity || row.reservedQuantity < quantity) {
-      throw new Error(`No se pudo consolidar la reserva de stock (id=${productId}).`);
-    }
-    row.stockQuantity -= quantity;
-    row.reservedQuantity -= quantity;
-  }
-  async releaseReservedStock(_client: SqlClient, productId: string, quantity: number): Promise<void> {
-    const row = this.rows.get(productId);
-    if (!row || row.reservedQuantity < quantity) {
-      throw new Error(`No se pudo liberar la reserva de stock (id=${productId}).`);
-    }
-    row.reservedQuantity -= quantity;
   }
 
   async delete(id: string): Promise<boolean> { return this.rows.delete(id); }
@@ -88,16 +63,10 @@ class FakeProductVariantRepository implements IProductVariantRepository {
     return {
       id: 'var-1', productId: input.productId, name: input.name, attributes: input.attributes ?? {},
       sku: input.sku ?? null, priceOverride: input.priceOverride ?? null,
-      stockQuantity: input.stockQuantity ?? 0, reservedQuantity: 0, stockMinAlert: input.stockMinAlert ?? 0,
       active: true, createdAt: now, updatedAt: now,
     };
   }
   async update(_id: string, _input: UpdateProductVariantInput): Promise<ProductVariant | undefined> { return undefined; }
-  async decrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-  async incrementStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-  async reserveStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<boolean> { return true; }
-  async commitReservedStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
-  async releaseReservedStock(_client: SqlClient, _variantId: string, _quantity: number): Promise<void> {}
   async delete(_id: string): Promise<boolean> { return false; }
 }
 
@@ -133,22 +102,28 @@ describe('OrderService', () => {
   let eventRepo: InMemoryDomainEventRepository;
   let txManager: InMemoryTransactionManager;
   let productRepo: FakeProductRepository;
+  let inventoryLevelRepo: InMemoryInventoryLevelRepository;
   let productService: ProductService;
   let service: OrderService;
 
   beforeEach(() => {
-    orderRepo      = new InMemoryOrderRepository();
-    eventRepo      = new InMemoryDomainEventRepository();
-    txManager      = new InMemoryTransactionManager();
-    productRepo    = new FakeProductRepository();
-    productService = new ProductService(productRepo, new FakeProductVariantRepository(), new InMemoryAuditLogRepository());
-    service        = new OrderService(orderRepo, txManager, eventRepo, productService);
+    orderRepo          = new InMemoryOrderRepository();
+    eventRepo          = new InMemoryDomainEventRepository();
+    txManager          = new InMemoryTransactionManager();
+    productRepo        = new FakeProductRepository();
+    inventoryLevelRepo = new InMemoryInventoryLevelRepository();
+    productService      = new ProductService(productRepo, new FakeProductVariantRepository(), new InMemoryAuditLogRepository(), inventoryLevelRepo);
+    service             = new OrderService(orderRepo, txManager, eventRepo, productService);
 
     const now = new Date();
     productRepo.seed({
       id: 'prod-1', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Producto de prueba',
       description: null, basePrice: 10, sku: null, hasVariants: false,
-      stockQuantity: 1000, reservedQuantity: 0, stockMinAlert: 0, active: true, createdAt: now, updatedAt: now,
+      active: true, createdAt: now, updatedAt: now,
+    });
+    inventoryLevelRepo.seed({
+      id: 'lvl-prod-1', businessId: TEST_BUSINESS_ID, productId: 'prod-1', productVariantId: null,
+      locationId: 'loc-default', stockQuantity: 1000, reservedQuantity: 0, stockMinAlert: 0,
     });
   });
 
@@ -156,6 +131,7 @@ describe('OrderService', () => {
     const order = await service.createOrder({
       businessId: TEST_BUSINESS_ID,
       customerId: TEST_CUSTOMER_ID,
+      locationId: 'loc-default',
       items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2, unitPrice }],
     });
     return order.id;
@@ -199,6 +175,7 @@ describe('OrderService', () => {
         businessId: TEST_BUSINESS_ID,
         customerId: TEST_CUSTOMER_ID,
         stayId:     'stay-1',
+        locationId: 'loc-default',
         items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1, unitPrice: 100 }],
       });
 
@@ -358,6 +335,7 @@ describe('OrderService', () => {
       const order = await service.createOrder({
         businessId: TEST_BUSINESS_ID,
         customerId: TEST_CUSTOMER_ID,
+        locationId: 'loc-default',
         items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 5000, unitPrice: 10 }],
       });
 

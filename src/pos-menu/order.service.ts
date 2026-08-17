@@ -292,7 +292,9 @@ export class OrderService {
 
     return this.transactionManager.run(async (client: SqlClient) => {
       for (const item of canonicalStockItemOrder(stockItems)) {
-        await this.productService.reserveStock(client, item.productId, item.productVariantId ?? undefined, item.quantity);
+        await this.productService.reserveStock(
+          client, order.businessId, item.productId, item.productVariantId ?? undefined, order.locationId, item.quantity,
+        );
       }
 
       const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
@@ -306,6 +308,7 @@ export class OrderService {
           customerId:  updated.customerId,
           totalAmount: updated.totalAmount,
           stayId:      updated.stayId,
+          locationId:  updated.locationId,
           items:       stockItems,
         },
       });
@@ -391,6 +394,7 @@ export class OrderService {
           orderId:        updated.id,
           previousStatus,
           wasServed,
+          locationId:     updated.locationId,
           items:          toStockItems(order.items),
         },
       });
