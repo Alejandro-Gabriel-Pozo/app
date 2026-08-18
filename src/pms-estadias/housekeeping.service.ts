@@ -112,7 +112,14 @@ export class HousekeepingService {
     return this.housekeepingRepository.findById(taskId, businessId);
   }
 
-  async getTasksByDate(businessId: string, date: Date): Promise<HousekeepingTask[]> {
+  /**
+   * `date` es una fecha de negocio (día calendario, A4 de criterios-negocio.md),
+   * no un instante — se recibe y se pasa como string 'YYYY-MM-DD', nunca como
+   * `Date`. Un `Date` de medianoche UTC round-tripeado por el serializador de
+   * `pg` (que usa la zona horaria LOCAL del proceso) corría la fecha un día
+   * para atrás según el huso del server — bug real encontrado el 18/08/2026.
+   */
+  async getTasksByDate(businessId: string, date: string): Promise<HousekeepingTask[]> {
     return this.housekeepingRepository.findByDate(businessId, date);
   }
 

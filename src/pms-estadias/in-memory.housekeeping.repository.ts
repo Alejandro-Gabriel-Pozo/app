@@ -28,9 +28,12 @@ export class InMemoryHousekeepingRepository implements HousekeepingRepository {
     );
   }
 
-  async findByDate(businessId: string, date: Date): Promise<HousekeepingTask[]> {
+  async findByDate(businessId: string, date: string): Promise<HousekeepingTask[]> {
+    // `date` es 'YYYY-MM-DD' — comparar contra el UTC del instante guardado
+    // (toISOString().slice(0,10)), no contra toDateString() (usa la zona
+    // horaria LOCAL del proceso, mismo bug de fondo que tenía la versión SQL).
     return [...this.tasks.values()].filter(
-      (t) => t.businessId === businessId && t.scheduledFor.toDateString() === date.toDateString(),
+      (t) => t.businessId === businessId && t.scheduledFor.toISOString().slice(0, 10) === date,
     );
   }
 

@@ -43,9 +43,22 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId!;
-        const date = req.query['date']
-          ? new Date(req.query['date'] as string)
-          : new Date();
+        // `date` es una fecha de negocio ('YYYY-MM-DD'), no un instante —
+        // se pasa como string tal cual, nunca se envuelve en `Date` (A4.1
+        // de criterios-negocio.md). Antes esto hacía `new Date(dateParam)`
+        // y el `Date` resultante se serializaba en la SQL vía `pg` usando
+        // la zona horaria LOCAL del proceso — con un `date` explícito, la
+        // fecha llegaba corrida un día y la consulta no encontraba nada
+        // (bug real encontrado el 18/08/2026, ver housekeeping.repository.ts).
+        const rawDate = req.query['date'];
+        if (rawDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(rawDate as string)) {
+          res.status(400).json({
+            code: 'INVALID_DATE',
+            message: 'El parámetro "date" debe tener formato YYYY-MM-DD.',
+          });
+          return;
+        }
+        const date = (rawDate as string | undefined) ?? new Date().toISOString().slice(0, 10);
         const tasks = await service.getTasksByDate(businessId, date);
         res.json(tasks.map(t => t.toJSON()));
       } catch (err) { next(err); }

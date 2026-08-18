@@ -16,7 +16,8 @@ export interface HousekeepingRepository {
   update(task: HousekeepingTask): Promise<void>;
   findById(id: string, businessId: string): Promise<HousekeepingTask | null>;
   findByResource(resourceId: string, businessId: string): Promise<HousekeepingTask[]>;
-  findByDate(businessId: string, date: Date): Promise<HousekeepingTask[]>;
+  /** `date` es 'YYYY-MM-DD' (fecha de negocio, A4) — nunca un `Date`, ver housekeeping.service.ts. */
+  findByDate(businessId: string, date: string): Promise<HousekeepingTask[]>;
   findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]>;
   findByStatus(businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]>;
   /**
@@ -111,7 +112,13 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
     return result.rows.map(rowToTask);
   }
 
-  async findByDate(businessId: string, date: Date): Promise<HousekeepingTask[]> {
+  async findByDate(businessId: string, date: string): Promise<HousekeepingTask[]> {
+    // `date` viaja como string 'YYYY-MM-DD' — nunca como `Date` de JS. Un
+    // `Date` acá se serializaría vía `pg` en la zona horaria LOCAL del
+    // proceso, corriendo la fecha un día para atrás/adelante según el huso
+    // del server (bug real: date=2026-08-18 no encontraba tareas de esa
+    // fecha exacta). Postgres compara el literal de texto contra `::date`
+    // sin ambigüedad, sin pasar por ningún objeto Date.
     const result = await this.db.query<Record<string, unknown>>(
       `SELECT ${COLUMNS} FROM housekeeping_tasks
        WHERE business_id=$1 AND scheduled_for::date = $2::date
