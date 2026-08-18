@@ -77,6 +77,15 @@ para el detalle completo de cada uno:
   `permissionGroups` de un rol de sistema hoy vía `PUT /api/roles/:id`.
 - Decidir si portal de clientes/plataforma migra a cookie httpOnly o
   queda como está.
+- **Empresas multipropiedad (`companies`) sin gate de plan** — aclarado
+  por el dueño (18/08, noche): la idea es que sea la feature que define un
+  plan **Enterprise** (planes comunes = todo separado por negocio;
+  Enterprise = varios negocios agrupados con catálogo compartido). Hoy
+  `POST /api/companies`/`POST /api/companies/link`
+  (`platform/companies.routes.ts`) no chequean plan — cualquier plan puede
+  crear/unirse a una empresa. Mismo bucket que F2(c)/F3 — sin decidir
+  todavía si/cuándo se gatea. Detalle en memoria
+  `modular_addon_pricing_architecture`.
 
 ### Decisiones que necesitan al dueño
 - E1–E7 de `pendientes-2026-08-13.md` (salvo E7c/d/e, ya resueltos) —
