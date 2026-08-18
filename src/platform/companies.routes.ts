@@ -10,8 +10,15 @@
  * depende de req.db — solo toca la BD central de plataforma, por eso se
  * monta junto a admin.routes.ts, antes de tenantMiddleware.
  *
+ * GET  /api/companies/me      — MANAGEMENT — empresa a la que pertenece el negocio propio (o null)
  * POST /api/companies         — MANAGEMENT — crea una company y vincula el negocio propio
  * POST /api/companies/link    — MANAGEMENT — vincula el negocio propio a una company existente
+ *
+ * GET /me existe porque, sin él, el frontend no tiene forma de saber si el
+ * negocio ya pertenece a una empresa antes de ofrecer "crear"/"vincular" —
+ * el riesgo real es que alguien cree una empresa nueva sin saber que ya
+ * estaba vinculado a otra, desvinculándola sin darse cuenta (linkBusinessToCompany
+ * simplemente sobreescribe company_id, no hay confirmación en el medio).
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -27,6 +34,18 @@ const LinkCompanySchema   = z.object({ companyId: z.string().min(1) });
 
 export function createCompaniesRouter(platformRepo: PlatformRepository, companyRepo: CompanyRepository): Router {
   const router = Router();
+
+  router.get('/me', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const business = await platformRepo.findById(req.user!.businessId!);
+      if (!business?.companyId) {
+        res.json({ companyId: null, companyName: null });
+        return;
+      }
+      const company = await companyRepo.findCompanyById(business.companyId);
+      res.json({ companyId: business.companyId, companyName: company?.name ?? null });
+    } catch (err) { next(err); }
+  });
 
   router.post('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

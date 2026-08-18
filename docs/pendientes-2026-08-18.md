@@ -100,14 +100,61 @@ para el detalle completo de cada uno:
 - Sitios corporativos (dominio propio) + guest checkout + magic link —
   solo documentado.
 
-### Frontend faltante (backend ya listo)
-- Botón "marcar como servido" en POS/cocina (`POST /:id/serve` ya existe
-  en backend).
-- UI para el catálogo de motivos de merma y para registrar una merma.
-- UI para marcar un producto COMPOSITE, armar su receta y registrar una
-  Producción.
-- UI completa de empresas multipropiedad — compartir un producto,
-  resolver revisiones pendientes, alta de `companies`.
+### Frontend faltante — ✅ RESUELTO (18/08/2026, noche)
+
+Los cuatro ítems de este bloque se implementaron y verificaron end-to-end
+contra el backend real (Playwright + `owner@refinetest.local`), en el
+orden pedido por el dueño. Detalle:
+
+- ✅ **Botón "marcar como servido"** en Órdenes (`POST /:id/serve`, ya
+  existía en backend). Se agregó `servedAt` a `Order` (faltaba en el tipo
+  del frontend) y el botón condicionado a `status === 'CONFIRMED' &&
+  !servedAt`. Verificado: confirmar → servir → badge "✓ Servida" → completar.
+- ✅ **Catálogo de motivos de merma + registrar merma** — pantalla nueva
+  `Motivos de Merma` (CRUD simple, acento clay) + botón "Merma" en
+  Productos (solo productos sin variantes) que abre un modal y llama
+  `POST /api/products/stock/waste`. Verificado: stock decrementado
+  exactamente lo esperado (100→94 con cantidad 6, etc.), confirmado contra
+  la API directa.
+- ✅ **Producto COMPOSITE + receta + Producción** — el form de Productos
+  ahora tiene selector de `productType` y checkbox `assembleOnDemand`
+  (faltaban en el tipo `Product`/`CreateProductInput` del frontend); nueva
+  subpágina `productos/[id]/receta` para el BOM (alta/edición/baja de
+  ítems); botón "Producir" (solo COMPOSITE + `assembleOnDemand=false`) que
+  llama `POST /api/products/stock/production`. Verificado end-to-end:
+  producto compuesto con receta de 3 unidades de un componente, producir 2
+  → componente se descuenta 6 exacto, compuesto sube a 2 — matemática de
+  explosión de receta confirmada contra la API.
+- ✅ **Empresas multipropiedad** — pantalla nueva `Empresa` (crear/vincular
+  una empresa, ver catálogo compartido) + en Productos: botón "Compartir"
+  para productos locales, botón "Vínculo" (con indicador de revisión
+  pendiente) que abre un modal de gestión de override de precio Y receta
+  (activar/desactivar/aceptar/rechazar) + publicar cambios como maestro.
+  **Gap de backend encontrado y resuelto de paso:** no existía ningún
+  endpoint que expusiera si el negocio ya pertenece a una empresa — sin
+  eso, la UI no podía evitar que alguien creara una empresa nueva sin
+  saber que ya estaba vinculado a otra (`linkBusinessToCompany` sobre-
+  escribe `company_id` sin confirmación). Se agregó `GET /api/companies/me`
+  (`platform/companies.routes.ts`, MANAGEMENT, solo lee la BD central).
+  Verificado end-to-end: crear empresa → alta de producto se auto-comparte
+  (`companyProductId` confirmado contra la API) → aparece en el catálogo
+  → ciclo completo activar/desactivar override de precio → publicar.
+  **No verificado en este pase** (necesitaría un segundo negocio/tenant
+  real): el estado `PENDIENTE_DE_REVISION` que dispara cuando OTRA
+  sucursal cambia el maestro — cubierto por los 36 tests de
+  `CompanyCatalogService` que ya pasan (ver pendientes-2026-08-17.md
+  sección E), no re-verificado por UI.
+- **Deliberadamente fuera de alcance:** alta de un producto ya vinculado a
+  un canónico existente vía picker (`companyProductId` en
+  `CreateProductInput`) — el alta automática ya cubre el caso común
+  (compartir SIEMPRE al crear); ese flujo es para el caso más raro de
+  "quiero vincular esto a un producto que YA existe en el catálogo de la
+  empresa", se deja para cuando se pida explícito.
+
+Verificado (frontend): `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm run build` limpio (24 rutas, incluidas las 3 nuevas). Verificado
+(backend): `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
+538/539 (mismo conteo que antes — el endpoint nuevo no rompió nada).
 
 ---
 
