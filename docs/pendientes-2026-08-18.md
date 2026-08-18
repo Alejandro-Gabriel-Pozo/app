@@ -750,3 +750,42 @@ UPSERT en `sql.reservation.repository.test.ts`).
 (0 errores, mismos 2 warnings preexistentes), `npm run build` limpio (25
 rutas). No verificado visualmente en navegador (mismo motivo que el
 punto anterior — sin credenciales a mano).
+
+---
+
+## L. Ticket #3 del spec de mejoras PMS — tooltip enriquecido del calendario (18/08/2026, noche)
+
+A pedido explícito del dueño ("dale el tooltip enriquecido del
+calendario"). Solo `appfrontend-main` — sin cambios de backend, todos los
+campos que necesitaba ya estaban expuestos (incluido `adultos`/`ninos`
+del punto K, recién agregado).
+
+`RoomCalendar.tsx` (tape chart construido hoy, punto G): antes cada barra
+solo tenía el `title` nativo del navegador (una línea, con delay, sin
+estilo) mostrando el nombre del huésped. Ahora, al pasar el mouse sobre
+una barra, aparece un tooltip real con: huésped, check-in, check-out,
+adultos/niños (si la reserva los tiene cargados), servicio (si tiene
+uno), tarifa, y notas internas (si hay).
+
+**Portal a `document.body`** (`createPortal`, no un `div` anidado con
+`top: 100%`) — el contenedor del calendario tiene `overflow: hidden`/
+`overflow-x: auto` en varios niveles; un tooltip anidado se recortaría
+en las filas de arriba o abajo de la grilla. `position: fixed` +
+coordenadas del `getBoundingClientRect()` de la barra evita el recorte
+sin importar dónde esté la reserva.
+
+**"Origen de la reserva" quedó deliberadamente afuera** — el propio
+anexo del spec lo marca "A confirmar", no es un campo ya decidido ni
+existe en el modelo de datos hoy. Mostrar algo inventado ahí sería peor
+que no mostrar nada; si se define qué "orígenes" tiene sentido trackear
+(portal, mostrador, teléfono, OTA), es una decisión de producto aparte,
+no algo para resolver de paso en este ticket.
+
+**Verificado:** `tsc --noEmit` limpio, `npm run lint` limpio (0 errores,
+mismos 2 warnings preexistentes), `npm run build` limpio (25 rutas). **No
+verificado visualmente en navegador** — mismo motivo que los dos puntos
+anteriores (sin credenciales de un usuario de prueba a mano). Un tooltip
+con posicionamiento vía portal es más propenso a bugs sutiles (recorte,
+z-index, offset) que un cambio de input — recomendado confirmarlo a
+simple vista en Reservas → pestaña Calendario antes de darlo por cerrado
+del todo.

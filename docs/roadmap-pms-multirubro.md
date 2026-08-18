@@ -135,12 +135,17 @@ de ocupación EXISTENTES (`GET /api/reports/occupancy` etc. no las suman
 todavía) — el dato ya existe en `reservations`, falta solo agregarlo a
 la agregación de esos endpoints.
 
-❌ **Exportación PDF/Excel y dashboard ADR/RevPAR/GOPPAR** (tickets #3
-tooltip/#4 exportación/#5 dashboard del mismo spec, sin empezar). Ninguna
-de las dos cosas existe hoy: no hay exportación a `.xlsx`/PDF en ningún
-reporte, y no hay dashboard de métricas (ocupación %, ADR, RevPAR con/sin
-OOO, plazas restantes). El ticket original las marca prioridad Alta
-(tooltip), Media (exportación, dashboard).
+✅ **Tooltip enriquecido del calendario** (ticket #3, resuelto 18/08/2026
+noche, ver `pendientes-2026-08-18.md` punto L). `RoomCalendar.tsx` (tape
+chart) muestra al pasar el mouse: huésped, check-in/out, adultos/niños,
+servicio, tarifa, notas. "Origen de la reserva" quedó afuera a propósito
+— el spec lo marca "A confirmar", no existe ese campo en el modelo hoy.
+
+❌ **Exportación PDF/Excel y dashboard ADR/RevPAR/GOPPAR** (tickets #4
+exportación/#5 dashboard del mismo spec, sin empezar). Ninguna de las dos
+cosas existe hoy: no hay exportación a `.xlsx`/PDF en ningún reporte, y
+no hay dashboard de métricas (ocupación %, ADR, RevPAR con/sin OOO,
+plazas restantes). El ticket original las marca prioridad Media.
 
 ---
 
