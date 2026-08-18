@@ -220,43 +220,73 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 );
 
 -- ---------------------------------------------------------------------------
--- Backfill: seedea los 5 roles "sistema" para TODO negocio existente, con
--- los mismos permission_groups que hoy hardcodea security/roles.ts — cero
--- cambio de comportamiento el día que esto se activa. id determinístico
--- (role-<business_id>-<nombre en minúscula>) para poder referenciarlo en el
--- mismo script sin round-trip. Idempotente (ON CONFLICT DO NOTHING) — corre
--- en cada boot, solo inserta lo que falte. Los negocios creados DESPUÉS de
--- este bloque no dependen de él: PlatformRepository.createBusiness() los
--- provisiona directo (mismo criterio que business_modules) — ver ahí.
+-- Catálogo: role_presets / role_preset_permission_groups (18/08/2026,
+-- pendientes-2026-08-18.md sección "deuda estructural" — presets de roles
+-- hardcodeados y duplicados en TS y SQL).
+--
+-- Mismo patrón que `modules` (ver más abajo en este archivo): tabla de
+-- catálogo de plataforma, seedeada una sola vez acá con ON CONFLICT DO
+-- NOTHING. Antes, los 5 roles "sistema" (OWNER/ADMIN/RECEPTIONIST/
+-- HOUSEKEEPING/WAITER) y sus permission_groups estaban escritos DOS veces
+-- a mano: como array TS en PlatformRepository.provisionSystemRoles() y
+-- como UNION ALL literal acá abajo — cualquier cambio a un preset
+-- (agregar un grupo a ADMIN, por ejemplo) requería editar los dos lugares
+-- sin ninguna garantía de que quedaran sincronizados. Ahora hay una sola
+-- fuente de datos (esta tabla): el backfill de acá abajo la LEE via JOIN
+-- en vez de repetirla, y provisionSystemRoles() (TS) hace lo mismo con una
+-- query. Panel de superadmin para editar esto sin tocar código: anotado
+-- aparte en pendientes, sin alcance definido todavía — lo de acá es sólo
+-- sacar la duplicación, no esa UI.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS role_presets (
+  name        VARCHAR(50) PRIMARY KEY,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS role_preset_permission_groups (
+  preset_name       VARCHAR(50) NOT NULL REFERENCES role_presets(name) ON DELETE CASCADE,
+  permission_group  VARCHAR(50) NOT NULL,
+  PRIMARY KEY (preset_name, permission_group)
+);
+
+INSERT INTO role_presets (name) VALUES
+  ('OWNER'), ('ADMIN'), ('RECEPTIONIST'), ('HOUSEKEEPING'), ('WAITER')
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES
+  ('OWNER', 'OWNER_ONLY'), ('OWNER', 'MANAGEMENT'), ('OWNER', 'STAFF'),
+  ('OWNER', 'FRONT_DESK'), ('OWNER', 'HOUSEKEEPING_AND_MANAGEMENT'),
+  ('OWNER', 'ORDERS'), ('OWNER', 'BOOKING'),
+  ('ADMIN', 'MANAGEMENT'), ('ADMIN', 'STAFF'), ('ADMIN', 'FRONT_DESK'),
+  ('ADMIN', 'HOUSEKEEPING_AND_MANAGEMENT'), ('ADMIN', 'ORDERS'), ('ADMIN', 'BOOKING'),
+  ('RECEPTIONIST', 'STAFF'), ('RECEPTIONIST', 'FRONT_DESK'), ('RECEPTIONIST', 'BOOKING'),
+  ('HOUSEKEEPING', 'STAFF'), ('HOUSEKEEPING', 'HOUSEKEEPING_AND_MANAGEMENT'),
+  ('WAITER', 'STAFF'), ('WAITER', 'ORDERS')
+ON CONFLICT (preset_name, permission_group) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Backfill: seedea los roles "sistema" (uno por cada fila de role_presets)
+-- para TODO negocio existente. id determinístico (role-<business_id>-
+-- <nombre en minúscula>) para poder referenciarlo en el mismo script sin
+-- round-trip. Idempotente (ON CONFLICT DO NOTHING) — corre en cada boot,
+-- solo inserta lo que falte. Los negocios creados DESPUÉS de este bloque no
+-- dependen de él: PlatformRepository.createBusiness() los provisiona
+-- directo desde role_presets (mismo criterio que business_modules) — ver
+-- ahí.
 -- ---------------------------------------------------------------------------
 
 INSERT INTO roles (id, business_id, name, is_system)
-SELECT 'role-' || b.id || '-owner',        b.id, 'OWNER',        TRUE FROM businesses b
-UNION ALL
-SELECT 'role-' || b.id || '-admin',        b.id, 'ADMIN',        TRUE FROM businesses b
-UNION ALL
-SELECT 'role-' || b.id || '-receptionist', b.id, 'RECEPTIONIST', TRUE FROM businesses b
-UNION ALL
-SELECT 'role-' || b.id || '-housekeeping', b.id, 'HOUSEKEEPING', TRUE FROM businesses b
-UNION ALL
-SELECT 'role-' || b.id || '-waiter',       b.id, 'WAITER',       TRUE FROM businesses b
+SELECT 'role-' || b.id || '-' || LOWER(rp.name), b.id, rp.name, TRUE
+FROM businesses b
+CROSS JOIN role_presets rp
 ON CONFLICT (business_id, name) DO NOTHING;
 
 INSERT INTO role_permission_groups (role_id, permission_group)
-SELECT 'role-' || b.id || '-owner', g FROM businesses b,
-  UNNEST(ARRAY['OWNER_ONLY','MANAGEMENT','STAFF','FRONT_DESK','HOUSEKEEPING_AND_MANAGEMENT','ORDERS','BOOKING']) AS g
-UNION ALL
-SELECT 'role-' || b.id || '-admin', g FROM businesses b,
-  UNNEST(ARRAY['MANAGEMENT','STAFF','FRONT_DESK','HOUSEKEEPING_AND_MANAGEMENT','ORDERS','BOOKING']) AS g
-UNION ALL
-SELECT 'role-' || b.id || '-receptionist', g FROM businesses b,
-  UNNEST(ARRAY['STAFF','FRONT_DESK','BOOKING']) AS g
-UNION ALL
-SELECT 'role-' || b.id || '-housekeeping', g FROM businesses b,
-  UNNEST(ARRAY['STAFF','HOUSEKEEPING_AND_MANAGEMENT']) AS g
-UNION ALL
-SELECT 'role-' || b.id || '-waiter', g FROM businesses b,
-  UNNEST(ARRAY['STAFF','ORDERS']) AS g
+SELECT 'role-' || b.id || '-' || LOWER(rp.name), rppg.permission_group
+FROM businesses b
+CROSS JOIN role_presets rp
+JOIN role_preset_permission_groups rppg ON rppg.preset_name = rp.name
 ON CONFLICT (role_id, permission_group) DO NOTHING;
 
 -- memberships.role_id: FK real hacia roles. Nullable en el ALTER (Postgres

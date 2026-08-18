@@ -63,9 +63,33 @@ Sin cambios desde ayer — ver `pendientes-2026-08-15.md`/`-16.md`/`-17.md`
 para el detalle completo de cada uno:
 
 ### Deuda estructural / arquitectura
-- Presets de roles de fábrica hardcodeados y duplicados en TS
-  (`platform.repository.ts:151-177`) y SQL (`platform.schema.sql:233-260`)
-  — no salen de config de plataforma editable.
+- ✅ **RESUELTO (18/08/2026, noche)** — Presets de roles de fábrica
+  hardcodeados y duplicados en TS (`platform.repository.ts:151-177`) y SQL
+  (`platform.schema.sql:233-260`). A pedido explícito del dueño ("vamos
+  con presets de roles a config editable"). Se creó el catálogo de
+  plataforma `role_presets`/`role_preset_permission_groups`
+  (`platform.schema.sql`, mismo patrón que `modules`/`business_modules`:
+  tabla seedeada una vez con `ON CONFLICT DO NOTHING`), y tanto el
+  backfill SQL para negocios existentes como
+  `PlatformRepository.provisionSystemRoles()` (TS) ahora LEEN de esa
+  tabla en vez de repetir los 5 roles × grupos de permisos en dos lugares
+  a mano. El catálogo de grupos de permisos en sí (`Roles.X` de
+  `security/roles.ts`) sigue hardcodeado a propósito — eso no cambió, ver
+  el comentario ya existente en el schema (agregar un grupo nuevo siempre
+  implica una ruta nueva en código). Panel de superadmin para editar esto
+  sin tocar código sigue sin alcance definido (ver nota "quizá" del
+  17/08, más abajo) — este cambio solo saca la duplicación, no agrega esa
+  UI. Test de regresión nuevo (`platform.repository.test.ts`, fake
+  `SqlClient` con presets "de mentira" que detectarían si alguien
+  reintroduce un array hardcodeado). **Verificado contra Postgres real**
+  (misma BD de los negocios de prueba `demo`/`refine-test-business`):
+  `platform.schema.sql` aplicado, catálogo sembrado con los 5 presets
+  esperados, roles de los dos negocios existentes sin cambios (mismos
+  grupos que antes), y un negocio de prueba nuevo creado/borrado
+  confirmó que `provisionSystemRoles()` deriva los roles correctos desde
+  la tabla — cascade de borrado limpió todo sin huérfanos. Verificado:
+  `tsc --noEmit` limpio, `npm run lint` limpio, `npm test` 545/545
+  (+1 test nuevo).
 - `PLAN_LIMITS` (`src/config/plan-limits.ts`) sigue siendo una constante
   de código, no una tabla en la BD de plataforma.
 - Huso horario Argentina fijo (`-03:00`) en

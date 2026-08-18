@@ -140,25 +140,34 @@ export class PlatformRepository {
   }
 
   /**
-   * Inserta los 5 roles "sistema" (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/
-   * WAITER) con los mismos permission_groups que hoy hardcodea
-   * security/roles.ts — mismo criterio y mismo motivo que
+   * Inserta los roles "sistema" (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/
+   * WAITER) leyendo el preset de cada uno desde `role_presets`/
+   * `role_preset_permission_groups` — mismo criterio y mismo motivo que
    * provisionDefaultModules(): vive DENTRO de createBusiness() para que
-   * sea imposible que un caller nuevo se olvide de provisionarlos. Los
-   * negocios que ya existían antes de este bloque se migran aparte en el
-   * backfill de platform.schema.sql (BLOQUE ROLES).
+   * sea imposible que un caller nuevo se olvide de provisionarlos.
+   *
+   * Hasta el 18/08/2026 esto era un array TS hardcodeado acá, duplicado a
+   * mano contra el UNION ALL de platform.schema.sql (mismo dato, dos
+   * lugares). Ahora role_presets es la única fuente — ver el comentario
+   * de esa tabla en platform.schema.sql. Los negocios que ya existían
+   * antes de que role_presets existiera se migran aparte en el backfill
+   * de ese mismo archivo (BLOQUE ROLES).
    */
   private async provisionSystemRoles(businessId: string): Promise<void> {
-    const systemRoles: { suffix: string; name: string; groups: string[] }[] = [
-      { suffix: 'owner', name: 'OWNER', groups: ['OWNER_ONLY', 'MANAGEMENT', 'STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] },
-      { suffix: 'admin', name: 'ADMIN', groups: ['MANAGEMENT', 'STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] },
-      { suffix: 'receptionist', name: 'RECEPTIONIST', groups: ['STAFF', 'FRONT_DESK', 'BOOKING'] },
-      { suffix: 'housekeeping', name: 'HOUSEKEEPING', groups: ['STAFF', 'HOUSEKEEPING_AND_MANAGEMENT'] },
-      { suffix: 'waiter', name: 'WAITER', groups: ['STAFF', 'ORDERS'] },
-    ];
+    const presets = await this.db.query<{ name: string; permission_group: string | null }>(
+      `SELECT rp.name, rppg.permission_group
+       FROM role_presets rp
+       LEFT JOIN role_preset_permission_groups rppg ON rppg.preset_name = rp.name`,
+    );
 
-    for (const { suffix, name, groups } of systemRoles) {
-      const roleId = `role-${businessId}-${suffix}`;
+    const groupsByPreset = new Map<string, string[]>();
+    for (const { name, permission_group: group } of presets.rows) {
+      if (!groupsByPreset.has(name)) groupsByPreset.set(name, []);
+      if (group) groupsByPreset.get(name)!.push(group);
+    }
+
+    for (const [name, groups] of groupsByPreset) {
+      const roleId = `role-${businessId}-${name.toLowerCase()}`;
       await this.db.query(
         `INSERT INTO roles (id, business_id, name, is_system)
          VALUES ($1, $2, $3, TRUE)
