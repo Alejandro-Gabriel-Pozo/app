@@ -631,9 +631,31 @@ reportes van a llevar gráficos, o por ahora alcanza con tablas/números?
 Depende de esa respuesta si `recharts` entra en el alcance cuando se
 aborde el ticket de exportación.
 
-**Bug de UX reportado, sin investigar todavía:** los campos de precio
-(alta/edición de producto u otro monto) se comportan como un `<input
-type="number">` continuo con flechas de incrementar/decrementar — el
-dueño lo describe como que debería ser "un área donde se colocan
-números", no un control continuo tipo spinner. Vive en `appfrontend-main`
-(otro repo), no investigado en esta sesión todavía.
+✅ **RESUELTO (18/08/2026, noche) — bug de UX de los campos de precio.**
+Los campos de precio (Productos, Servicios, Recursos) eran `<input
+type="number">` con dos problemas: (1) las flechas nativas de
+incrementar/decrementar del navegador, sensación de "control continuo"
+en vez de un campo numérico; (2) el estado local arrancaba en `0` y
+`parseFloat(value) || 0` volvía a poner `0` cada vez que el campo quedaba
+vacío mientras se tipeaba — el campo "peleaba" con quien lo llenaba,
+nunca se podía dejar en blanco de verdad. Corregido en
+`appfrontend-main`:
+- CSS global (`globals.css`, regla `.input[type='number']`) saca las
+  flechas nativas (`-webkit-appearance: none` en los spin buttons +
+  `-moz-appearance: textfield`) — aplica a TODOS los inputs numéricos de
+  la app, un solo lugar. `type="number"` se mantiene (teclado numérico en
+  mobile, valida que no se tipeen letras), solo se le saca la UI de
+  flechas.
+- Estado local de los 3 formularios con precio (`productos/page.tsx`,
+  `servicios/page.tsx`, `recursos/page.tsx`) admite `'' ` mientras se
+  tipea (`number | ''`, en vez de forzar `0`) — se coerciona a `number`
+  recién en `handleSubmit`, no en cada tecleo. `productos/[id]/
+  variantes/page.tsx` ya tenía este patrón correcto de antes (no hizo
+  falta tocarlo) — se usó como referencia para los otros tres.
+
+**Verificado:** `tsc --noEmit` limpio, `npm run lint` limpio (0 errores,
+2 warnings preexistentes sin relación), `npm run build` limpio (25
+rutas). **No verificado visualmente en navegador en esta sesión** — sin
+credenciales de un usuario de prueba a mano para loguearse. Recomendado
+confirmar a simple vista en `/dashboard/productos` → "Nuevo producto"
+antes de darlo por cerrado del todo.
