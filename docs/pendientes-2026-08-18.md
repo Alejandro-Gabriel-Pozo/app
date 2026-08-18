@@ -117,10 +117,35 @@ para el detalle completo de cada uno:
   la constante hardcodeada de antes, incluida la conversión NULL→Infinity
   de PRO. Verificado: `tsc --noEmit` limpio, `npm run lint` limpio,
   `npm test` 551/551 (+7 tests nuevos).
-- Huso horario Argentina fijo (`-03:00`) en
-  `reservation.service.ts::combineDateAndTime()` — camino crítico de
-  disponibilidad/reservas, dejado a propósito para una sesión propia
-  (DST-awareness, ver A4.7).
+- ✅ **RESUELTO (18/08/2026, noche)** — Huso horario Argentina fijo
+  (`-03:00`) en `reservation.service.ts::combineDateAndTime()`. A pedido
+  explícito del dueño ("sigamos con el huso horario Argentina fijo"), con
+  dos decisiones confirmadas antes de tocar código: (1) agregar `luxon`
+  (primera dependencia de fechas del proyecto — manejar DST a mano con
+  `Intl` es fácil de hacer sutilmente mal, y es un camino crítico ya
+  verificado); (2) cerrar A4.7 ahora con una política explícita, no
+  dejarla para cuando exista un negocio real en un huso con DST.
+  `combineDateAndTime()` ahora recibe `timezone: string` (IANA) en vez de
+  usar `-03:00` fijo, y usa `DateTime.fromObject(..., { zone: timezone })`
+  de luxon. **Política A4.7** (verificada empíricamente contra
+  transiciones reales de `America/Santiago` 2024, luxon 3.7 — resultó ser
+  el comportamiento DEFAULT de la librería, sin código adicional): hora
+  inexistente (hueco de primavera) → avanza por el tamaño del salto,
+  aterriza en un instante válido; hora ambigua (vuelta de otoño) → toma
+  el offset ESTÁNDAR (la ocurrencia más tardía), no el de verano.
+  `getAvailableSlots()` gana un parámetro `timezone` obligatorio, resuelto
+  en `bookable-services.routes.ts` desde `business_profile.timezone`
+  (A4.2, ya existía desde el 17/08 — antes nadie lo leía para esto). Sin
+  cambio de comportamiento para negocios existentes: el default de
+  `business_profile.timezone` sigue siendo
+  `America/Argentina/Buenos_Aires`. Tests nuevos: 2 golden-value contra
+  las transiciones reales de Chile 2024 (no fechas relativas a "hoy") +
+  los 6 tests existentes de `getAvailableSlots` actualizados con el
+  parámetro `timezone` (siguen en verde, confirman cero regresión para
+  Argentina). Verificado: `tsc --noEmit` limpio, `npm run lint` limpio,
+  `npm test` 562/562 (+2 tests nuevos), `npm run build` limpio (smoke
+  test de import del módulo compilado, confirma que la interop ESM de
+  luxon resuelve bien en runtime).
 - F2(c): edición fina de permisos por rol como feature de plan — no
   implementado. Cualquier plan, sin restricción, ya puede editar
   `permissionGroups` de un rol de sistema hoy vía `PUT /api/roles/:id`.

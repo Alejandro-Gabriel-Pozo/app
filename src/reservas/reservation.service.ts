@@ -91,6 +91,7 @@
  *   módulos nunca se comunicaban entre sí.
  */
 
+import { DateTime }                     from 'luxon';
 import { Reservation }                  from './Reservation.js';
 import type { Customer }         from '../clientes-finanzas/customer.entities.js';
 import type { PhysicalResource } from './resource.entities.js';
@@ -645,7 +646,7 @@ export class ReservationService {
    * ventanas, y filtra los que ya están ocupados reusando `checkAvailability`
    * (misma lógica de conflictos que create/update, incluye resource_locks).
    */
-  async getAvailableSlots(serviceId: string, resourceId: string, date: Date): Promise<string[]> {
+  async getAvailableSlots(serviceId: string, resourceId: string, date: Date, timezone: string): Promise<string[]> {
     const service = await this.bookableServiceRepository.findById(serviceId);
     if (!service || service.bookingMode !== 'slot' || service.durationMinutes == null) {
       throw new InvalidReservationError('El servicio no tiene turnos por horario configurables');
@@ -661,8 +662,8 @@ export class ReservationService {
     const durationMs = service.durationMinutes * 60_000;
     const slots: Date[] = [];
     for (const w of windows) {
-      let cursor = combineDateAndTime(date, w.startTime);
-      const windowEnd = combineDateAndTime(date, w.endTime);
+      let cursor = combineDateAndTime(date, w.startTime, timezone);
+      const windowEnd = combineDateAndTime(date, w.endTime, timezone);
       while (cursor.getTime() + durationMs <= windowEnd.getTime()) {
         slots.push(new Date(cursor));
         cursor = new Date(cursor.getTime() + durationMs);
@@ -839,22 +840,63 @@ export class ReservationService {
  * Combina la fecha calendario (leída en UTC, para no depender de la zona
  * horaria del proceso — mismo criterio que `calculateNights`) con una hora
  * "HH:MM" o "HH:MM:SS" (tal cual llega de una columna TIME de Postgres),
- * interpretando esa hora en huso horario de Argentina (UTC-3, sin horario
- * de verano desde 2009).
+ * interpretando esa hora en el huso IANA del negocio (`business_profile.
+ * timezone`, ver domain/business-profile.entities.ts — A4.2).
  *
- * Antes se armaba con `Date.UTC(...)`, es decir "09:00" se guardaba como
- * 09:00 UTC. Como el resto de la app (reservas, `toLocaleTimeString`
- * 'es-AR') muestra los horarios convertidos a hora local del navegador,
- * un negocio en Argentina veía el turno desplazado 3 horas para atrás
- * (09:00 configurado aparecía como 06:00 al elegir turno).
+ * Antes (hasta el 18/08/2026) tenía el huso de Argentina hardcodeado
+ * (`-03:00` fijo) — correcto solo para Argentina, que no aplica horario de
+ * verano desde 2009, pero roto para cualquier negocio en un huso con DST
+ * (Chile, Brasil hasta 2019, Paraguay). `Date` nativo no sabe convertir
+ * "hora de pared + nombre de huso IANA" a instante UTC (solo acepta un
+ * offset numérico fijo) — se usa `luxon` para eso, primera dependencia de
+ * fechas del proyecto (deliberadamente liviano en dependencias hasta
+ * ahora: manejar DST a mano con `Intl` es fácil de hacer sutilmente mal, y
+ * este es un camino crítico de disponibilidad).
+ *
+ * **Política A4.7 (`criterios-negocio.md`) — hora que no existe o que
+ * ocurre dos veces por un cambio de horario:**
+ * - **Hora inexistente** (ej. el salto de primavera en Chile: 23:59:59
+ *   del 7-sep-2024 pasa directo a 01:00:00 del 8-sep — 00:00 a 00:59 no
+ *   existen ese día): se avanza por el mismo tamaño del salto, aterrizando
+ *   en un instante válido después del corte (ej. 00:30 inexistente → se
+ *   toma como 01:30 real). Es el comportamiento default de
+ *   `DateTime.fromObject` de luxon — no hace falta código adicional,
+ *   verificado con las transiciones reales de America/Santiago 2024 (ver
+ *   `reservation.service.test.ts`, describe "combineDateAndTime — DST").
+ * - **Hora ambigua** (ej. la vuelta de otoño: 23:00-23:59 del 6-abr-2024
+ *   en Chile ocurre dos veces, una en horario de verano y otra en
+ *   estándar): se toma el offset ESTÁNDAR (el de invierno, no el de
+ *   verano) — también el default de luxon, que resuelve a la ocurrencia
+ *   más tardía de las dos. Mismo criterio "cuando dudás, la hora que va a
+ *   seguir valiendo el resto del año" que ya se usa para otras
+ *   ambigüedades del sistema.
+ *
+ * Ninguna de las dos ramas lanza ni deja `isValid: false` — confirmado
+ * empíricamente contra luxon 3.7, no es una garantía documentada de la
+ * librería, por eso está fijado con test de regresión (golden values
+ * contra transiciones reales, no fechas relativas a "hoy").
  */
-function combineDateAndTime(date: Date, time: string): Date {
+function combineDateAndTime(date: Date, time: string, timezone: string): Date {
   const parts = time.split(':').map(Number);
-  const hours   = String(parts[0] ?? 0).padStart(2, '0');
-  const minutes = String(parts[1] ?? 0).padStart(2, '0');
-  const seconds = String(parts[2] ?? 0).padStart(2, '0');
-  const year  = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day   = String(date.getUTCDate()).padStart(2, '0');
-  return new Date(`${year}-${month}-${day}T${hours}:${minutes}:${seconds}-03:00`);
+  const hour   = parts[0] ?? 0;
+  const minute = parts[1] ?? 0;
+  const second = parts[2] ?? 0;
+
+  const dt = DateTime.fromObject(
+    {
+      year:  date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day:   date.getUTCDate(),
+      hour, minute, second,
+    },
+    { zone: timezone },
+  );
+
+  if (!dt.isValid) {
+    throw new InvalidReservationError(
+      `No se pudo interpretar "${time}" en el huso horario "${timezone}": ${dt.invalidReason} (${dt.invalidExplanation}).`,
+    );
+  }
+
+  return dt.toJSDate();
 }

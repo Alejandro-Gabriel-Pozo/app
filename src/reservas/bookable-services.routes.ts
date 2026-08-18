@@ -52,6 +52,7 @@ import { SqlCustomerRateRepository }    from '../clientes-finanzas/sql.customer-
 import { SqlOperatingHoursRepository }  from '../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }    from '../pms-estadias/housekeeping.repository.js';
 import { SqlAuditLogRepository }        from '../repositories/audit-log.repository.js';
+import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { ReservationService }           from './reservation.service.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import {
@@ -217,10 +218,16 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
         return;
       }
 
+      // Huso IANA del negocio (business_profile.timezone, A4.2) — ya no
+      // hardcodeado a Argentina (18/08/2026, ver docblock de
+      // combineDateAndTime en reservation.service.ts).
+      const { timezone } = await new SqlBusinessProfileRepository(req.db!).get();
+
       const slots = await buildReservationService(req).getAvailableSlots(
         param(req, 'id'),
         resourceId,
         new Date(`${dateStr}T00:00:00.000Z`),
+        timezone,
       );
       res.json({ slots });
     } catch (err) { next(err); }

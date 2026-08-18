@@ -916,9 +916,10 @@ describe('ReservationService', () => {
     // Lunes 2026-08-17 — coincide con dayOfWeek=0 (lunes) en la resolución
     // (date.getUTCDay() + 6) % 7 usada por getAvailableSlots.
     const LUNES = new Date('2026-08-17T00:00:00.000Z');
+    const ART = 'America/Argentina/Buenos_Aires';
 
     it('sin horario configurado (ni recurso ni negocio) devuelve lista vacía', async () => {
-      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES, ART);
       expect(slots).toEqual([]);
     });
 
@@ -927,7 +928,7 @@ describe('ReservationService', () => {
         { id: 'bh-1', dayOfWeek: 0, startTime: '09:00:00', endTime: '11:00:00' },
       ]);
 
-      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES, ART);
       expect(slots).toHaveLength(2); // 09:00 y 10:00, turnos de 60min
     });
 
@@ -939,7 +940,7 @@ describe('ReservationService', () => {
         { id: 'rh-1', dayOfWeek: 0, startTime: '14:00:00', endTime: '18:00:00' },
       ]);
 
-      const slots = await service.getAvailableSlots('svc-corte-1h', 'barbero-1', LUNES);
+      const slots = await service.getAvailableSlots('svc-corte-1h', 'barbero-1', LUNES, ART);
 
       // Horarios en hora de Argentina (UTC-3): 14:00 ART = 17:00 UTC.
       expect(slots).toHaveLength(4); // solo 14-18, no 8-18 del negocio
@@ -953,7 +954,7 @@ describe('ReservationService', () => {
         { id: 'bh-2', dayOfWeek: 0, startTime: '14:00:00', endTime: '18:00:00' },
       ]);
 
-      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES, ART);
       expect(slots).toHaveLength(8); // 4 + 4
     });
 
@@ -972,7 +973,7 @@ describe('ReservationService', () => {
         details: {},
       });
 
-      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES);
+      const slots = await service.getAvailableSlots('svc-corte-1h', 't1', LUNES, ART);
       expect(slots).toHaveLength(1);
       expect(slots[0]).toContain('T13:00');
     });
@@ -985,8 +986,79 @@ describe('ReservationService', () => {
       });
 
       await expect(
-        service.getAvailableSlots('svc-alojamiento', 't1', LUNES),
+        service.getAvailableSlots('svc-alojamiento', 't1', LUNES, ART),
       ).rejects.toThrow(InvalidReservationError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // combineDateAndTime — DST (18/08/2026, política A4.7, criterios-negocio.md)
+  //
+  // Golden values contra transiciones REALES de America/Santiago 2024
+  // (verificadas empíricamente contra luxon 3.7 antes de escribir este
+  // test — ver docblock de combineDateAndTime en reservation.service.ts):
+  // - Fin de DST (ambigüedad): 2024-04-06 23:59:59 (GMT-3) -> repite hasta
+  //   2024-04-06 23:00:00 (GMT-4). Política: toma el offset ESTÁNDAR
+  //   (GMT-4, la ocurrencia más tardía).
+  // - Inicio de DST (hueco): 2024-09-07 23:59:59 (GMT-4) salta directo a
+  //   2024-09-08 01:00:00 (GMT-3) — 00:00 a 00:59 no existen. Política:
+  //   avanza por el tamaño del salto (1h), aterriza en un instante válido.
+  //
+  // Argentina no tiene DST desde 2009 (por eso el resto de la suite usa
+  // ART sin sobresaltos) — Chile sí, y es el caso real que motivó no dejar
+  // esto sin resolver (ver roadmap de expansión a Chile/Brasil/Paraguay).
+  // -------------------------------------------------------------------------
+  describe('combineDateAndTime — DST (huso con horario de verano)', () => {
+    const SANTIAGO = 'America/Santiago';
+
+    beforeEach(() => {
+      bookableServiceRepo.seed({
+        id: 'svc-dst-test', categoryId: 'cat-table', name: 'Turno corto',
+        bookingMode: 'slot', durationMinutes: 15, price: 10,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+
+    it('hora inexistente (hueco de primavera): avanza por el tamaño del salto, no rechaza ni pierde el horario', async () => {
+      // 2024-09-08 es domingo -> dayOfWeek = (0 + 6) % 7 = 6.
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-gap', dayOfWeek: 6, startTime: '00:00:00', endTime: '02:00:00' },
+      ]);
+
+      const slots = await service.getAvailableSlots(
+        'svc-dst-test', 't1', new Date('2024-09-08T00:00:00.000Z'), SANTIAGO,
+      );
+
+      // 00:00 (inexistente) se alinea con el instante real de 01:00 (offset
+      // ya en horario de verano, GMT-3) -> 2024-09-08T04:00:00Z. Confirma
+      // que ninguna franja se pierde ni se rechaza por el hueco.
+      expect(slots).toEqual([
+        '2024-09-08T04:00:00.000Z',
+        '2024-09-08T04:15:00.000Z',
+        '2024-09-08T04:30:00.000Z',
+        '2024-09-08T04:45:00.000Z',
+      ]);
+    });
+
+    it('hora ambigua (vuelta de otoño): toma el offset estándar, no el de verano', async () => {
+      // 2024-04-06 es sábado -> dayOfWeek = (6 + 6) % 7 = 5.
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-ambiguous', dayOfWeek: 5, startTime: '23:00:00', endTime: '23:45:00' },
+      ]);
+
+      const slots = await service.getAvailableSlots(
+        'svc-dst-test', 't1', new Date('2024-04-06T00:00:00.000Z'), SANTIAGO,
+      );
+
+      // 23:00-23:45 ocurre DOS veces esa noche (GMT-3 primero, GMT-4
+      // después) — la política toma la ocurrencia más tardía (GMT-4,
+      // estándar): 23:00 GMT-4 = 2024-04-07T03:00:00Z, no 02:00:00Z
+      // (que sería la ocurrencia en horario de verano, GMT-3).
+      expect(slots).toEqual([
+        '2024-04-07T03:00:00.000Z',
+        '2024-04-07T03:15:00.000Z',
+        '2024-04-07T03:30:00.000Z',
+      ]);
     });
   });
 });
