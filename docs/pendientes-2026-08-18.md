@@ -553,3 +553,87 @@ en la lista del INSERT pero ausente del SET) se repetía en otro lado.
 `npm test` 541/542 (+3 tests nuevos). **Verificado (frontend):**
 `tsc --noEmit` limpio, `npm run lint` limpio, `npm run build` limpio,
 smoke test de consola en las 17 pantallas sin errores.
+
+---
+
+## I. Bug reportado por el dueño (18/08/2026, noche) — el precio no variaba al editar/redimensionar una reserva
+
+Reportado en uso real: extender o achicar una reserva (drag-resize en el
+calendario, o "Editar horario") no cambiaba `totalPrice` — quedaba el
+precio inicial. Investigado: **no era un bug nuevo de hoy**, era una
+decisión ya tomada antes de esta sesión y documentada en el propio código
+(`reservation.service.ts::updateReservation()`: "No se recalcula el
+precio al editar... fuera de alcance de esta fase"). El trabajo de hoy
+(punto G, calendario de PMS) no la tocó, la heredó tal cual.
+
+Al confirmarlo con el dueño, surgió una complicación real antes de
+tocar código: una reserva `CONFIRMED` ya generó un `CHARGE` financiero
+(`clientes-finanzas`) por el total viejo — pisar `totalPrice` sin más
+desincroniza la reserva del cobro ya emitido (A3.9, criterios-negocio.md:
+"todo movimiento tiene contrapartida"). Alcance acordado explícitamente:
+
+- **PENDING** → recalcula automático al editar (sin cobro emitido
+  todavía, sin riesgo de desincronizar nada).
+- **CONFIRMED** → sigue con el precio congelado, igual que hasta ahora.
+  Recalcular esta rama con un ajuste financiero explícito (cargo o nota
+  de crédito) queda **pendiente aparte** — no se improvisó, requiere
+  diseñar ese flujo (qué pasa si ya se cobró, aviso al cliente, etc.)
+  antes de escribir código.
+
+**Implementado:** `updateReservation()` llama a `resolvePrice()` (el
+mismo método que usa `createReservation()`) con las fechas/recurso
+nuevos cuando `existing.status === 'PENDING'`, y regenera
+`lines`/`totalPrice`. Para `CONFIRMED`, sin cambios — sigue usando
+`existing.totalPrice`/`existing.lines`.
+
+Tests nuevos en `reservation.service.test.ts` (describe "recotización al
+editar"): extender una reserva PENDING (2→4 noches) sube el precio de
+200 a 400 y regenera las 4 líneas; achicarla (4→1 noche) baja el precio
+a 100; confirmar y editar NO cambia el precio (sigue en 200 aunque el
+cambio de fechas "debería" dar 400 si recotizara). Suite completa:
+565/566 (+3 nuevos).
+
+**Verificado:** `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
+565/566. Sin cambios de schema — no hizo falta verificar contra Postgres
+real (la lógica de precio ya se ejercita con los mismos repos en memoria
+que usan los otros 48 tests de `ReservationService`, no hay SQL nuevo).
+
+**Pendiente aparte (anotado, no resuelto hoy):** ajuste financiero
+explícito para recotizar una reserva `CONFIRMED` — depende de diseñar el
+flujo con el dueño antes de tocar código.
+
+---
+
+## J. Nueva información recibida del dueño (18/08/2026, noche) — spec de mejoras PMS y recomendación de dependencias frontend
+
+**Especificación funcional completa** (housekeeping↔calendario↔
+disponibilidad sincronizados, adultos/niños estructurados, tooltip
+enriquecido, exportación PDF/Excel, dashboard ADR/RevPAR/GOPPAR) recibida
+como dos documentos en `C:\Users\Usuario\Downloads\Anotaciones PMS\`.
+Copiados al repo para que no se pierdan: `docs/referencia-mejoras-
+pms-2026-08-18.md` + su anexo, enlazados desde `roadmap-pms-multirubro.md`
+(secciones "Housekeeping y Mantenimiento" y "Reportes y estadísticas").
+Nada implementado todavía — es backlog, no una tarea de hoy.
+
+**Recomendación de dependencias frontend para exportación** (evaluada por
+el dueño, no implementada): para PDF/Excel de reportes, el stack sugerido
+es `jsPDF` + `jspdf-autotable` (tablas) + `qrcode` (QR obligatorio RG 4892
+para las facturas AFIP del módulo FACTURACION, ya planeado) + `xlsx`/
+SheetJS (Excel real, no CSV renombrado) + `Intl.NumberFormat` (nativo,
+sin librería) + `luxon` (ya se sumó hoy en el backend para el fix de
+huso horario — mismo criterio, evaluar si conviene tenerlo también en el
+frontend cuando se llegue a esta tarea). `recharts` (gráficos),
+`papaparse` (CSV liviano) y `react-to-print` (impresión directa) quedan
+para cuando la funcionalidad puntual los pida, no sumarlos de antemano —
+mismo criterio de "no asumir nada sin caso de uso real" que ya rige el
+resto del proyecto. **Pregunta abierta sin responder todavía:** ¿los
+reportes van a llevar gráficos, o por ahora alcanza con tablas/números?
+Depende de esa respuesta si `recharts` entra en el alcance cuando se
+aborde el ticket de exportación.
+
+**Bug de UX reportado, sin investigar todavía:** los campos de precio
+(alta/edición de producto u otro monto) se comportan como un `<input
+type="number">` continuo con flechas de incrementar/decrementar — el
+dueño lo describe como que debería ser "un área donde se colocan
+números", no un control continuo tipo spinner. Vive en `appfrontend-main`
+(otro repo), no investigado en esta sesión todavía.

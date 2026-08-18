@@ -408,6 +408,40 @@ export class ReservationService {
       resource.id,
     );
 
+    // Recotización (18/08/2026, a pedido explícito del dueño — reportado
+    // como "el precio no varía al editar"). Antes NUNCA se recalculaba,
+    // a propósito (ver historial de este comentario en git blame). Ahora
+    // se recalcula SOLO si la reserva sigue PENDING: una CONFIRMED ya
+    // generó un CHARGE financiero (clientes-finanzas) por el total viejo
+    // — pisar `totalPrice` sin un movimiento de ajuste explícito
+    // desincroniza la reserva del cobro ya emitido (A3.9, criterios-
+    // negocio.md: "todo movimiento tiene contrapartida"). Ese ajuste para
+    // CONFIRMED queda pendiente aparte, requiere diseñarlo (ver
+    // pendientes-2026-08-18.md) — no se improvisa acá.
+    let totalPrice = existing.totalPrice;
+    let lines = existing.lines;
+    if (existing.status === 'PENDING') {
+      const service = existing.serviceId
+        ? await this.bookableServiceRepository.findById(existing.serviceId)
+        : null;
+      const priced = await this.resolvePrice({
+        customerId: existing.customer.id,
+        resourceId: resource.id,
+        serviceId:  existing.serviceId ?? undefined,
+        resource,
+        service,
+        startTime:  newStartTime,
+        endTime:    newEndTime,
+      });
+      totalPrice = priced.totalPrice;
+      lines = priced.lines.map((line, i) => ({
+        id:            `${id}-L${i + 1}`,
+        reservationId: id,
+        unitDate:      line.unitDate,
+        price:         line.price,
+      }));
+    }
+
     let updated!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
@@ -431,14 +465,8 @@ export class ReservationService {
         partySize:     existing.partySize,
         notes:         existing.notes,
         orderItemId:   existing.orderItemId,
-        // No se recalcula el precio al editar horario/recurso/detalles —
-        // fuera de alcance de esta fase, re-cotizar necesitaría su propia
-        // UX de confirmación explícita. Mismo criterio para las líneas: no
-        // se regeneran si cambian las fechas (regenerar el COUNT sin
-        // recotizar dejaría líneas con fechas que no corresponden a
-        // ningún precio real) — se preservan tal cual estaban.
-        totalPrice:    existing.totalPrice,
-        lines:         existing.lines,
+        totalPrice,
+        lines,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);

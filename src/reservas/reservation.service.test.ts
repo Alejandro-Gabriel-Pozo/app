@@ -540,6 +540,81 @@ describe('ReservationService', () => {
         service.updateReservation('res-1', {}),
       ).rejects.toThrow(InvalidReservationError);
     });
+
+    // -----------------------------------------------------------------------
+    // Recotización al editar (18/08/2026, reportado por el dueño: "el precio
+    // no varía al editar/redimensionar"). Alcance confirmado: solo PENDING
+    // recalcula, CONFIRMED sigue congelado (ya generó un CHARGE financiero
+    // por el total viejo — ver comentario en reservation.service.ts).
+    // -----------------------------------------------------------------------
+    describe('recotización al editar (PENDING sí, CONFIRMED no)', () => {
+      beforeEach(() => {
+        bookableServiceRepo.seed({
+          id: 'svc-noche-reprice', categoryId: 'cat-table', name: 'Noche de hotel',
+          bookingMode: 'block', durationMinutes: null, price: 100,
+          active: true, createdAt: new Date(), updatedAt: new Date(),
+        });
+      });
+
+      it('extender una reserva PENDING (más noches) recalcula totalPrice y regenera las líneas', async () => {
+        const created = await service.createReservation({
+          id: 'res-extend',
+          resourceId: 't1',
+          serviceId: 'svc-noche-reprice',
+          customer,
+          startTime: new Date('2026-09-01T15:00:00Z'),
+          endTime:   new Date('2026-09-03T10:00:00Z'), // 2 noches = 200
+          details: {},
+        });
+        expect(created.totalPrice).toBe(200);
+
+        const updated = await service.updateReservation('res-extend', {
+          endTime: new Date('2026-09-05T10:00:00Z'), // 4 noches = 400
+        });
+
+        expect(updated.totalPrice).toBe(400);
+        expect(updated.lines).toHaveLength(4);
+      });
+
+      it('achicar una reserva PENDING (menos noches) recalcula totalPrice hacia abajo', async () => {
+        await service.createReservation({
+          id: 'res-shrink',
+          resourceId: 't1',
+          serviceId: 'svc-noche-reprice',
+          customer,
+          startTime: new Date('2026-09-01T15:00:00Z'),
+          endTime:   new Date('2026-09-05T10:00:00Z'), // 4 noches = 400
+          details: {},
+        });
+
+        const updated = await service.updateReservation('res-shrink', {
+          endTime: new Date('2026-09-02T10:00:00Z'), // 1 noche = 100
+        });
+
+        expect(updated.totalPrice).toBe(100);
+        expect(updated.lines).toHaveLength(1);
+      });
+
+      it('editar una reserva CONFIRMED sigue sin recalcular el precio (ya tiene un CHARGE emitido)', async () => {
+        await service.createReservation({
+          id: 'res-confirmed-noprice',
+          resourceId: 't1',
+          serviceId: 'svc-noche-reprice',
+          customer,
+          startTime: new Date('2026-09-01T15:00:00Z'),
+          endTime:   new Date('2026-09-03T10:00:00Z'), // 2 noches = 200
+          details: {},
+        });
+        await service.confirmReservation('res-confirmed-noprice', TEST_BUSINESS_ID);
+
+        const updated = await service.updateReservation('res-confirmed-noprice', {
+          endTime: new Date('2026-09-05T10:00:00Z'), // sería 4 noches = 400 si recotizara
+        });
+
+        expect(updated.status).toBe('CONFIRMED');
+        expect(updated.totalPrice).toBe(200); // congelado, no 400
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

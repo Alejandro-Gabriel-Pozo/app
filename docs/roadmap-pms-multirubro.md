@@ -41,6 +41,14 @@ engine público maduro, no spec a copiar) antes de diseñarlo desde cero.
 servicio" en housekeeping es lo más cercano, pero no hay tickets de
 mantenimiento, técnicos asignados, ni seguimiento de reparaciones.
 
+❌ **Sincronización housekeeping ↔ calendario ↔ disponibilidad** (agregado
+18/08/2026, `docs/referencia-mejoras-pms-2026-08-18.md` punto 3.1): una
+habitación "En reparación/mantenimiento" debería bloquear esas fechas en
+el calendario de reservas y restarse del total usado en ocupación/ADR/
+RevPAR ese día, como fuente única de verdad. Hoy no existe ese enlace.
+Bloques de color grandes por estado (UI housekeeping) también pendiente
+— mismo documento, prioridad Baja según el ticket original.
+
 ## App HK Mobile
 
 ❌ No existe una app mobile dedicada para housekeeping. El tablero web
@@ -115,6 +123,16 @@ un check-in web.
 `/underutilized`). Faltan: comerciales, AA&BB, Pick-up, ROS, facturación,
 cuentas corrientes, proyección, revenue. El pedido original menciona "+200
 reportes" para el módulo de AA&BB — eso vive en el punto de F&B más abajo.
+
+❌ **Adultos/niños como campo estructurado, exportación PDF/Excel, y
+dashboard ADR/RevPAR/GOPPAR** (agregado 18/08/2026,
+`docs/referencia-mejoras-pms-2026-08-18.md` + su anexo — spec completa,
+incluye checklist de QA). Ninguna de las tres cosas existe hoy:
+`reservations` no tiene columnas `adultos`/`ninos` estructuradas, no hay
+exportación a `.xlsx`/PDF en ningún reporte, y no hay dashboard de
+métricas (ocupación %, ADR, RevPAR con/sin OOO, plazas restantes). El
+ticket original las marca prioridad Alta (adultos/niños, tooltip),
+Media (exportación, dashboard).
 
 ---
 
