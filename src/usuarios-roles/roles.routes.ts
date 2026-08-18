@@ -8,25 +8,25 @@
  * PUT    /api/roles/:id      — MANAGEMENT (name y/o permissionGroups)
  * DELETE /api/roles/:id      — MANAGEMENT (desactiva, R3/R5)
  *
- * Montado junto a users.routes.ts (después de tenantMiddleware, aunque las
+ * Montada junto a users.routes.ts (después de tenantMiddleware, aunque las
  * operaciones reales van contra la BD de plataforma vía platformRepo) —
  * necesita req.db para auditar contra la tenant DB, ver role.service.ts.
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z, ZodError } from 'zod';
-import { authorize } from '../../security/auth.middleware.js';
-import { Roles } from '../../security/roles.js';
-import { RoleService } from '../../services/role.service.js';
+import { authorize } from '../security/auth.middleware.js';
+import { Roles } from '../security/roles.js';
+import { RoleService } from './role.service.js';
 import {
   RoleNotFoundError,
   DuplicateRoleNameError,
   InvalidPermissionGroupError,
   CannotModifySystemRoleError,
   RoleInUseError,
-} from '../../services/role.service.js';
-import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
-import type { PlatformRepository } from '../../platform/platform.repository.js';
+} from './role.service.js';
+import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
+import type { PlatformRepository } from '../platform/platform.repository.js';
 
 const CreateRoleSchema = z.object({
   name: z.string().min(1, 'name es obligatorio').max(100),

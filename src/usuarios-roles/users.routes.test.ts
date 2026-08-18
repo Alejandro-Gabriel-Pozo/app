@@ -9,9 +9,9 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { createUsersRouter } from './users.routes.js';
-import { BusinessPlan } from '../../types/enums.js';
-import type { PlatformRepository, Role, Membership } from '../../platform/platform.repository.js';
-import type { AppContainer } from '../../container.js';
+import { BusinessPlan } from '../types/enums.js';
+import type { PlatformRepository, Role, Membership } from '../platform/platform.repository.js';
+import type { AppContainer } from '../container.js';
 import type { Request, Response } from 'express';
 
 function fakeRes() {

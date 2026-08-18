@@ -5,7 +5,7 @@
  * Estos valores se leen en CategoryService (maxCategories -- maxResources
  * está en la interfaz pero ningún service lo aplica todavía, gap
  * preexistente sin relación con este cambio) y, desde el 17/08/2026 (F2,
- * pendientes-2026-08-17.md), en api/routes/users.routes.ts
+ * pendientes-2026-08-17.md), en usuarios-roles/users.routes.ts
  * (maxActiveMemberships/allowedRoleNames) para rechazar operaciones que
  * superen el plan del negocio.
  *
@@ -23,7 +23,7 @@ import { BusinessPlan } from '../types/enums.js';
 export interface PlanLimits {
   maxCategories: number;  // máximo de resource_categories activas
   maxResources: number;   // máximo de resources activos
-  /** Máximo de memberships ACTIVAS que no sean OWNER (el owner es estructural, no ocupa asiento) -- api/routes/users.routes.ts POST /users. */
+  /** Máximo de memberships ACTIVAS que no sean OWNER (el owner es estructural, no ocupa asiento) -- usuarios-roles/users.routes.ts POST /users. */
   maxActiveMemberships: number;
   /** `roles.name` que este plan puede asignar a una membership vía POST/PUT /users. 'ALL' = sin restricción. OWNER nunca pasa por acá (no se asigna desde esta API). */
   allowedRoleNames: readonly string[] | 'ALL';

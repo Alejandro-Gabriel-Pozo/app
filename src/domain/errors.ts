@@ -208,7 +208,7 @@ const PLAN_LIMIT_RESOURCE_LABEL: Record<'categories' | 'resources' | 'membership
 /**
  * Movido desde reservas/category.service.ts (17/08/2026, F2 --
  * pendientes-2026-08-17.md) al agregar un segundo consumidor
- * (api/routes/users.routes.ts, límite de asientos por plan) — antes
+ * (usuarios-roles/users.routes.ts, límite de asientos por plan) — antes
  * extendía `Error` a secas, así que el "PlanLimitError se captura
  * localmente, si llega sin capturar cae al 402 igual" que ya prometía el
  * comentario de error.middleware.ts era en realidad falso: sin `.code` no

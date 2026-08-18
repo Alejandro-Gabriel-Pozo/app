@@ -37,13 +37,13 @@
 import { Router } from 'express';
 import { z, ZodError } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { authorize } from '../../security/auth.middleware.js';
-import { Roles } from '../../security/roles.js';
-import { hashPassword } from '../../security/user.store.js';
-import type { PlatformRepository } from '../../platform/platform.repository.js';
-import type { AppContainer } from '../../container.js';
-import { PLAN_LIMITS } from '../../config/plan-limits.js';
-import { PlanLimitError, RoleNotAvailableInPlanError } from '../../domain/errors.js';
+import { authorize } from '../security/auth.middleware.js';
+import { Roles } from '../security/roles.js';
+import { hashPassword } from '../security/user.store.js';
+import type { PlatformRepository } from '../platform/platform.repository.js';
+import type { AppContainer } from '../container.js';
+import { PLAN_LIMITS } from '../config/plan-limits.js';
+import { PlanLimitError, RoleNotAvailableInPlanError } from '../domain/errors.js';
 
 /**
  * `roleId` reemplaza el enum fijo `role` (14/08/2026, ver security/roles.ts

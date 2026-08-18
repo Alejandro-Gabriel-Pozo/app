@@ -9,7 +9,7 @@
  *
  * ## PlanLimitError
  * Vive en domain/errors.ts (17/08/2026, F2 -- pendientes-2026-08-17.md:
- * ahora también lo usa api/routes/users.routes.ts para el límite de
+ * ahora también lo usa usuarios-roles/users.routes.ts para el límite de
  * asientos por plan). Expone `plan`, `limit` y `resource` como campos
  * públicos para que la capa HTTP (categories.routes.ts) los incluya en
  * el body del 402 sin necesidad de hardcodear valores en el frontend.

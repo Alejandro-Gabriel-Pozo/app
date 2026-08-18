@@ -224,12 +224,11 @@ detalle completo de cada uno:
 
 ## F. Agregados por el dueño (17/08/2026, tarde) — organización + monetización + auditoría de hardcodes
 
-### F1. Reorganizar `security/` — separar auth genérica de gestión de usuarios/roles
+### F1. Reorganizar `security/` — separar auth genérica de gestión de usuarios/roles — ✅ RESUELTO (17/08/2026, tarde)
 
-Evaluado, **sin tocar código todavía** (pedido explícito: solo organizar
-archivos, no tocar lógica de negocio). Hallazgo: la gestión de
-usuarios/roles hoy está más dispersa de lo que parecía a primera vista —
-no es solo `security/`, son TRES ubicaciones:
+A pedido explícito del dueño ("vamos con F1"). Hallazgo original: la
+gestión de usuarios/roles estaba más dispersa de lo que parecía a primera
+vista — no era solo `security/`, eran TRES ubicaciones:
 
 - `src/security/roles.ts` (catálogo `Roles`/`PermissionGroup`, usado por
   `authorize()`) y `src/security/user.types.ts` (`AuthenticatedUser`, forma
@@ -250,19 +249,36 @@ no es solo `security/`, son TRES ubicaciones:
   `PlatformRepository` gigante (`src/platform/platform.repository.ts`),
   sin repositorio propio.
 
-**Recomendación** (para cuando se ejecute, no ahora): crear
-`usuarios-roles/` (mismo patrón que `reservas/`, `pms-estadias/`,
-`clientes-finanzas/`) y mover ahí `role.service.ts`, `roles.routes.ts`,
-`users.routes.ts`, y extraer de `PlatformRepository` un
-`RoleRepository`/`MembershipRepository` propio (mismo criterio que ya se
-usó al separar `pos-menu/`/`clientes-finanzas/` de un repositorio
-monolítico anterior). Dejar en `security/` solo lo genuinamente
-transversal: `auth.middleware.ts`, `auth.service.ts` (JWT), `roles.ts`
-(catálogo de grupos, no las asignaciones), `user.types.ts`,
-`user.store.ts` (hashing), `google-oauth.ts`, `customer.auth.service.ts`.
-Es un move de alto radio de impacto (26 imports de `roles.ts` solo) —
-conviene hacerlo en su propia sesión dedicada, con `tsc`/tests como red
-de seguridad en cada paso, no mezclado con otro trabajo.
+**Hecho — solo la parte de mover archivos, tal como se pidió ("puramente
+organización, no tocar lógica de negocio"):**
+
+- `usuarios-roles/` nueva (mismo patrón que `reservas/`, `pms-estadias/`,
+  `clientes-finanzas/`), con `role.service.ts` + `role.service.test.ts`
+  (antes en `src/services/`), y `roles.routes.ts` + `users.routes.ts` +
+  `users.routes.test.ts` (antes en `src/api/routes/`). Contenido sin
+  tocar — `git status` lo reconoce como rename puro (`R`, no `M`+`A`), no
+  como archivos nuevos con contenido reescrito. Solo cambiaron las rutas
+  de import relativas (`../../` → `../`, y `RoleService`/sus errores pasan
+  a importarse como `./role.service.js`, ahora que es un sibling en la
+  misma carpeta en vez de `../../services/role.service.js`).
+- `app.ts` actualizado para importar `createUsersRouter`/`createRolesRouter`
+  desde `./usuarios-roles/*.js`.
+- `security/` queda intacto — `auth.middleware.ts`, `auth.service.ts`
+  (JWT), `roles.ts` (catálogo de grupos, no las asignaciones),
+  `user.types.ts`, `user.store.ts` (hashing), `google-oauth.ts`,
+  `customer.auth.service.ts`, `module.middleware.ts`, `express.d.ts` —
+  ninguno se movió, son genuinamente transversales.
+
+**Deliberadamente NO hecho** (era refactor de lógica/arquitectura, no
+organización de archivos — fuera del pedido explícito): extraer un
+`RoleRepository`/`MembershipRepository` propio del `PlatformRepository`
+gigante. `Role`/`Membership`/`Identity` siguen viviendo ahí. Si se quiere
+en algún momento, es una conversación aparte (cambia código real, no solo
+ubicación de archivos).
+
+**Verificado:** `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
+538/539 (mismo conteo exacto que antes del move — ninguna suite se perdió
+ni se duplicó), `npm run build` limpio.
 
 ### F2. Tres ejes de monetización separados (feature flags / límites de plan / edición fina de permisos)
 
@@ -399,6 +415,16 @@ fijas — `operating-hours` ya es 100% configurable por negocio).
 
 **Nada de esto se tocó** — es el barrido pedido antes de decidir qué se
 arregla y en qué orden.
+
+**Nota del dueño (17/08/2026, tarde) — dirección tentativa para más
+adelante, todavía sin decidir del todo ("quizá"):** tanto el hallazgo #1
+(presets de roles de fábrica) como el #6 (`PLAN_LIMITS`) deberían poder
+administrarse desde un panel de superadmin — no solo que "salgan de
+código a una tabla", sino que haya una pantalla para editarlos sin tocar
+nada a mano. Esto es más grande que mover `PLAN_LIMITS`/los presets a una
+tabla en la BD central (ya evaluado y pospuesto en F2-bis/F3): implica
+además el endpoint de admin y la UI. Sigue pendiente, sin alcance
+definido — anotado para cuando se retome.
 
 ### F3-bis. Implementado (17/08/2026, tarde) — `currency`/`timezone` en `business_profile`
 
