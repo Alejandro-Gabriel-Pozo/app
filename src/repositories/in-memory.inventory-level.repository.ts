@@ -86,6 +86,16 @@ export class InMemoryInventoryLevelRepository implements InventoryLevelRepositor
     row.updatedAt = new Date();
   }
 
+  async getTotalPhysicalStock(key: { productId: string | null; productVariantId: string | null }): Promise<number> {
+    let total = 0;
+    for (const row of this.rows.values()) {
+      if (key.productVariantId ? row.productVariantId === key.productVariantId : row.productId === key.productId) {
+        total += row.stockQuantity;
+      }
+    }
+    return total;
+  }
+
   async decrementAvailableStock(_client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void> {
     const row = this.rows.get(keyString(key));
     if (!row || row.stockQuantity - row.reservedQuantity < quantity) {

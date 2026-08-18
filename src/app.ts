@@ -68,6 +68,9 @@ import { AuthService }                   from './security/auth.service.js';
 import { PlatformRepository }            from './platform/platform.repository.js';
 import { createPlatformContainer }       from './platform/platform.container.js';
 import { tenantMiddleware }              from './platform/tenant.middleware.js';
+import { CompanyRepository }             from './platform/company.repository.js';
+import { createCompaniesRouter }         from './platform/companies.routes.js';
+import { startCompanySyncWorker, stopCompanySyncWorker } from './platform/company-sync.registry.js';
 import type { AppContainer} from './container.js';
 import { createAppContainer, createPlatformPool, closePlatformPool } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
@@ -116,9 +119,14 @@ export async function createApp(): Promise<{
   // incluyendo el health check. Es el pool real de PLATFORM_DATABASE_URL.
   const platformClient = createPlatformPool();
   const platformRepo   = new PlatformRepository(platformClient);
+  const companyRepo    = new CompanyRepository(platformClient);
 
   const authService = new AuthService(platformRepo);
   const container   = await createAppContainer();
+
+  // Empresas multipropiedad (17/08/2026) — único worker de propagación del
+  // proceso, no por tenant (ver company-sync.registry.ts).
+  startCompanySyncWorker(companyRepo, platformRepo);
 
   // -------------------------------------------------------------------------
   // 4. CORS + body parser
@@ -195,6 +203,11 @@ export async function createApp(): Promise<{
   // 13. /api/admin — ANTES de tenantMiddleware (repair-tenant-db lo requiere)
   // -------------------------------------------------------------------------
   app.use('/api/admin', createAdminRouter(platformRepo));
+
+  // /api/companies — empresas multipropiedad (17/08/2026). Solo toca la BD
+  // de plataforma (req.user, no req.db), mismo motivo que /api/admin va
+  // antes de tenantMiddleware.
+  app.use('/api/companies', createCompaniesRouter(platformRepo, companyRepo));
 
   // /api/auth/me + /api/auth/logout (B2) — solo lee req.user, tampoco
   // necesita req.db de tenant.
@@ -318,6 +331,9 @@ export function registerGracefulShutdown(
 
     try { await stopAllWorkers(); }
     catch (err) { console.error('[server] Error al detener outbox workers:', err); }
+
+    try { await stopCompanySyncWorker(); }
+    catch (err) { console.error('[server] Error al detener el worker de propagación de empresas:', err); }
 
     if (onShutdown) {
       try { await onShutdown(); }

@@ -94,6 +94,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'PRODUCT_NOT_COMPOSITE':
     case 'RECIPE_CYCLE':
     case 'RECIPE_NOT_DEFINED':
+    case 'BUSINESS_NOT_IN_COMPANY':
       return 400;
 
     // --- 422 Unprocessable Entity ---
@@ -130,6 +131,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'CUSTOMER_NOT_FOUND':
     case 'WASTE_REASON_NOT_FOUND':
     case 'RECIPE_ITEM_NOT_FOUND':
+    case 'PRODUCT_NOT_SHARED':
+    case 'COMPANY_PRODUCT_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -142,6 +145,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'CUSTOMER_RATE_CONFLICT':
     case 'NO_BALANCE_TO_TRANSFER':
     case 'STAY_BALANCE_OWED':
+    case 'PRODUCT_HAS_STOCK':
+    case 'INVALID_OVERRIDE_TRANSITION':
       return 409;
 
     // --- 503 Service Unavailable ---

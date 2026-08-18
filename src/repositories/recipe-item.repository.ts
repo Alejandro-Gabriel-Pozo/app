@@ -52,6 +52,16 @@ export interface RecipeItemRepository {
   delete(id: string): Promise<boolean>;
 
   /**
+   * Reemplaza TODA la receta de un producto -- DELETE + INSERT. Usado por
+   * empresas multipropiedad (17/08/2026, docs/diseno-empresas-
+   * multipropiedad.md) para materializar la receta canónica localmente
+   * (al vincular un producto ya existente, o al aceptar una revisión
+   * pendiente) — no pasa por wouldCreateCycle() porque la receta canónica
+   * ya se validó al escribirla del lado que la originó.
+   */
+  replaceForParent(parentProductId: string, items: Array<{ componentProductId: string; quantityPerUnit: number }>): Promise<void>;
+
+  /**
    * ¿Agregar un recipe_item con este componente como hijo de
    * `parentProductId` crearía un ciclo? Verdadero si `componentProductId`
    * (resolviendo `componentVariantId` a su producto dueño si aplica) ya

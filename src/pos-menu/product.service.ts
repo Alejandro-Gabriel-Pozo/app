@@ -38,7 +38,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { InventoryLevelRepository, InventoryLevelKey } from '../repositories/inventory-level.repository.js';
 import { diffFields } from '../domain/audit.js';
-import { DomainError } from '../domain/errors.js';
+import { DomainError, ProductHasStockError } from '../domain/errors.js';
 
 const AUDIT_ENTITY_PRODUCT = 'products';
 const AUDIT_ENTITY_VARIANT = 'product_variants';
@@ -168,7 +168,28 @@ export class ProductService {
     return updated;
   }
 
+  /**
+   * Bloquea la desactivación mientras haya stock físico (no el disponible)
+   * en cualquier ubicación — 17/08/2026,
+   * docs/diseno-empresas-multipropiedad.md decisión 4. Con hasVariants,
+   * el producto en sí no tiene inventory_levels propio (Fase 1 del
+   * carve-out) — se revisa cada variante.
+   */
   async deleteProduct(id: string): Promise<void> {
+    const product = await this.productRepo.getById(id);
+    if (!product) return; // no existe -- no-op, mismo criterio de siempre
+
+    if (product.hasVariants) {
+      const variants = await this.variantRepo.getByProduct({ productId: id });
+      for (const variant of variants) {
+        const stock = await this.inventoryLevelRepo.getTotalPhysicalStock({ productId: null, productVariantId: variant.id });
+        if (stock > 0) throw new ProductHasStockError(variant.id, stock);
+      }
+    } else {
+      const stock = await this.inventoryLevelRepo.getTotalPhysicalStock({ productId: id, productVariantId: null });
+      if (stock > 0) throw new ProductHasStockError(id, stock);
+    }
+
     await this.productRepo.delete(id);
   }
 
@@ -232,7 +253,11 @@ export class ProductService {
     return updated;
   }
 
+  /** Mismo bloqueo por stock físico que deleteProduct() — ver comentario ahí. */
   async deleteVariant(variantId: string): Promise<void> {
+    const stock = await this.inventoryLevelRepo.getTotalPhysicalStock({ productId: null, productVariantId: variantId });
+    if (stock > 0) throw new ProductHasStockError(variantId, stock);
+
     await this.variantRepo.delete(variantId);
   }
 

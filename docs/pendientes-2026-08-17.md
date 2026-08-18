@@ -112,7 +112,79 @@ producto COMPOSITE, armar receta, pantalla de Producción).
 
 **Fases 1, 2 y 3 del carve-out de inventario: completamente cerradas.**
 Quedan fuera de este diseño (conversación futura propia cada una):
-Compras/Proveedores, Empresas multipropiedad, COGS teórico-vs-real.
+Compras/Proveedores (ver sección E, más abajo, para Empresas
+multipropiedad — se retomó y cerró hoy mismo), COGS teórico-vs-real.
+
+---
+
+## E. Empresas multipropiedad — diseñado, implementado y CORREGIDO hoy (17/08/2026)
+
+Retomada la conversación dedicada que `pendientes-2026-08-15.md` sección
+B6 dejaba pendiente. Diseño completo en
+`docs/diseno-empresas-multipropiedad.md` — resumen:
+
+- `companies`/`businesses.company_id` (BD central) + catálogo canónico
+  (`company_products`/`company_recipe_items`) + cola de propagación
+  (`company_catalog_propagation_queue`).
+- `products.company_product_id` + override de PRECIO **y de RECETA**, cada
+  uno de tres estados (INACTIVO/ACTIVO/PENDIENTE_DE_REVISION, no booleano
+  — un cambio del maestro mientras hay override local activo genera una
+  revisión pendiente, nunca se aplica en silencio ni se ignora).
+- `CompanyCatalogService`: `listCompanyCatalog()`, `createLinkedProduct()`,
+  `autoShareIfLinked()`, `shareProduct()` (retroactivo), `publishUpdate()`,
+  y los 8 métodos de override (precio + receta) + `CompanyCatalogPropagationWorker`
+  (único worker del proceso, conecta a cada sucursal hermana con una
+  conexión de vida corta, decriptando su connection string; propaga precio
+  Y receta).
+- `POST /api/companies`(`/link`) + `GET /api/products/company-catalog` +
+  `POST /api/products` (con `companyProductId` opcional) +
+  `POST /api/products/:id/company/*` — todo `Roles.MANAGEMENT`,
+  restringido siempre al negocio propio del caller (nunca un businessId
+  arbitrario del body).
+- Además, de la misma conversación: **bloqueo de desactivar un producto
+  con stock físico > 0** (regla general, no exclusiva de empresas
+  multipropiedad) — reusa el flujo de merma ya existente para resolver la
+  diferencia, sin mecanismo nuevo.
+
+**Corrección de modelo a mitad de sesión:** la primera versión trataba
+"compartir" como paso manual y opcional (`POST /:id/company/share` como
+única puerta de entrada), con `products.active` decidiendo si algo se
+compartía. El dueño corrigió: compartir es SIEMPRE automático — es lo que
+evita que dos sucursales terminen con "Jamón" bajo dos IDs distintos
+(ID:51 y ID:57). `active` es para que una sucursal deje de USAR un
+producto compartido (lo desactiva localmente), no para decidir si se
+comparte. Reescrito `CompanyCatalogService` completo (alta con
+`companyProductId` = vincular a un canónico existente elegido a mano por
+el usuario en un picker; alta sin él = auto-comparte), `products.routes.ts`,
+y `company-sync.worker.ts` (ahora propaga receta, no solo precio). Con
+esto también se destrabó la receta compartida: como todo producto de una
+empresa está SIEMPRE compartido, un componente de receta siempre tiene id
+canónico, no hay encadenamiento roto posible.
+
+**Detección de duplicados:** se evaluó y descartó matching automático por
+nombre — el dueño eligió el camino manual explícito: mostrar el catálogo
+de la empresa al crear (`GET /api/products/company-catalog`) y elegir a
+mano.
+
+**Simplificado a propósito (sigue igual):** publicar un cambio de EDICIÓN
+es una acción explícita (`POST /:id/company/publish`), no automática en
+cada PUT — evita enganchar esto dentro de
+`ProductService.updateProduct()`, el camino crítico ya verificado a fondo
+en las Fases 1-3. El ALTA sí es automática, porque de eso depende evitar
+IDs duplicados.
+
+**Verificado contra Postgres real** (proyectos Neon `DB-APP-PPMS` y
+`pdb-ppms`, branches temporales, borrados después): constraints, dedup de
+la cola de propagación, y las ramas del worker (producto nuevo para el
+tenant + materializa receta canónica, override INACTIVO, override ACTIVO
+→ pasa a revisión pendiente) probadas con datos reales tanto para precio
+como para receta.
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 526/527 (36 tests de `CompanyCatalogService`), `npm run build`
+limpio.
+
+**Backend únicamente** — sin UI en `appfrontend-main` todavía.
 
 ---
 
@@ -136,11 +208,12 @@ detalle completo de cada uno:
   solo documentado.
 - Frontend: falta botón "marcar como servido" en POS/cocina
   (`POST /:id/serve` ya existe en backend). Ahora también falta UI para
-  el catálogo de motivos de merma y para registrar una merma (ver B), y
-  para marcar un producto COMPOSITE, armar su receta y registrar una
-  Producción (ver C).
+  el catálogo de motivos de merma y para registrar una merma (ver B), para
+  marcar un producto COMPOSITE, armar su receta y registrar una Producción
+  (ver C), y para todo el flujo de empresas multipropiedad — compartir un
+  producto, resolver revisiones pendientes, alta de `companies` (ver E).
 - E1-E7 de `pendientes-2026-08-13.md` — necesitan que el dueño defina
   alcance (salvo E7c/d/e, ya resueltos).
-- Empresas multipropiedad + `businesses.company_id`/BD central de
-  "empresa" — caso de uso concreto (`pendientes-2026-08-15.md` sección B6,
-  `pendientes-2026-08-16.md` sección C), sin diseñar en detalle todavía.
+- Empresas multipropiedad: sincronización de RECETA compartida (el
+  precio ya está resuelto, ver sección E) — pendiente resolver primero el
+  encadenamiento de componentes compartidos.

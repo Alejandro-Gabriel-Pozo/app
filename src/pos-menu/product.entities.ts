@@ -17,6 +17,16 @@ export type ProductVariantId = string;
  */
 export type ProductType = 'RAW_MATERIAL' | 'COMPOSITE' | 'RETAIL';
 
+/**
+ * Empresas multipropiedad (17/08/2026, docs/diseno-empresas-
+ * multipropiedad.md decisión 3) — estado de un override local sobre un
+ * campo/entidad compartida (precio, receta). De TRES estados, no on/off:
+ * INACTIVO toma el maestro siempre; ACTIVO usa el valor local; PENDIENTE_
+ * DE_REVISION se dispara solo cuando el maestro cambió mientras estaba
+ * ACTIVO — nunca se aplica en silencio ni se ignora.
+ */
+export type OverrideStatus = 'INACTIVO' | 'ACTIVO' | 'PENDIENTE_DE_REVISION';
+
 // ---------------------------------------------------------------------------
 // ProductVariant
 // ---------------------------------------------------------------------------
@@ -68,6 +78,20 @@ export interface Product {
    *         stock, sin intentar explotar la receta en vivo.
    */
   assembleOnDemand: boolean;
+  /**
+   * Empresas multipropiedad (17/08/2026) — vínculo SIN FK real a
+   * company_products.id (BD central), mismo patrón que stays.assigned_by.
+   * `null` = producto puramente local, no compartido (comportamiento de
+   * hoy, la enorme mayoría). Cuando no es null, vale el MISMO id que
+   * `id` de este Product (ver diseño, "Vínculo en cada tenant").
+   */
+  companyProductId: string | null;
+  priceOverrideStatus: OverrideStatus;
+  /** Solo tiene valor mientras priceOverrideStatus = 'PENDIENTE_DE_REVISION'. */
+  pricePendingMasterValue: number | null;
+  recipeOverrideStatus: OverrideStatus;
+  /** Solo tiene valor mientras recipeOverrideStatus = 'PENDIENTE_DE_REVISION'. */
+  recipePendingMasterSnapshot: Array<{ componentProductId: string; quantityPerUnit: number }> | null;
   createdAt: Date;
   updatedAt: Date;
 }

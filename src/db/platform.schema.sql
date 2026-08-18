@@ -483,6 +483,117 @@ FROM businesses b
 CROSS JOIN modules m
 ON CONFLICT (business_id, module_key) DO NOTHING;
 
+-- ===========================================================================
+-- BLOQUE EMPRESAS MULTIPROPIEDAD (17/08/2026, docs/diseno-empresas-
+-- multipropiedad.md) — catálogo canónico compartido entre sucursales-tenant
+-- ===========================================================================
+-- Caso de uso confirmado: una empresa con varias sucursales (cada una ya su
+-- propio tenant/BD Neon, aislada) necesita compartir IDENTIDAD de productos
+-- (mismo id/nombre en todas) sin compartir NUNCA stock/reservas/movimientos/
+-- pedidos -- eso sigue 100% local a cada tenant. Vive en esta BD central
+-- (nunca en una tenant DB) para que ningún tenant tenga que leer la base de
+-- otro -- ver decryptConnectionString()/tenant-db.setup.ts para cómo el
+-- worker de propagación llega a cada tenant sin exponer credenciales fuera
+-- del server.
+
+CREATE TABLE IF NOT EXISTS companies (
+  id          VARCHAR(255)  PRIMARY KEY,
+  name        VARCHAR(255)  NOT NULL,
+  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'companies_updated_at') THEN
+    CREATE TRIGGER companies_updated_at
+      BEFORE UPDATE ON companies
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- NULL = negocio independiente, sin cambios de comportamiento -- la enorme
+-- mayoría de los tenants hoy. Sin ON DELETE CASCADE a propósito: borrar una
+-- company no debería desvincular sucursales en silencio.
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS company_id VARCHAR(255)
+  REFERENCES companies(id);
+
+CREATE INDEX IF NOT EXISTS idx_businesses_company
+  ON businesses (company_id) WHERE company_id IS NOT NULL;
+
+-- La fuente de verdad de identidad + valores por defecto de un producto
+-- compartido. `id` es el MISMO valor que products.id en cada tenant
+-- vinculado -- así el resto del código de cada tenant (order_items,
+-- inventory_levels, stock_movements, recipe_items locales) no necesita
+-- saber nada de "empresas": sigue operando sobre products.id como siempre.
+CREATE TABLE IF NOT EXISTS company_products (
+  id          VARCHAR(255)   PRIMARY KEY,
+  company_id  VARCHAR(255)   NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name        VARCHAR(255)   NOT NULL,
+  base_price  DECIMAL(10,2)  NOT NULL CHECK (base_price >= 0),
+  sku         VARCHAR(100),
+  created_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_products_company
+  ON company_products (company_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'company_products_updated_at') THEN
+    CREATE TRIGGER company_products_updated_at
+      BEFORE UPDATE ON company_products
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- Receta canónica -- mismo patrón que recipe_items local (schema.sql
+-- BLOQUE 18), pero SOLO referencia otros company_products (nunca una
+-- variante -- las variantes son específicas de cada sucursal, ver diseño
+-- "Deliberadamente fuera"). Sin prevención de ciclos acá todavía -- el
+-- catálogo compartido v1 no explota recetas en ningún camino crítico
+-- (eso pasa localmente en cada tenant, con su propio recipe_items ya
+-- validado); si algún día se necesita explotar la receta canónica en sí,
+-- portar wouldCreateCycle() de recipe.service.ts.
+CREATE TABLE IF NOT EXISTS company_recipe_items (
+  id                     VARCHAR(255)   PRIMARY KEY,
+  company_product_id     VARCHAR(255)   NOT NULL REFERENCES company_products(id) ON DELETE CASCADE,
+  component_product_id   VARCHAR(255)   NOT NULL REFERENCES company_products(id) ON DELETE RESTRICT,
+  quantity_per_unit       DECIMAL(10,4)  NOT NULL CHECK (quantity_per_unit > 0),
+  created_at             TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_company_recipe_item_not_self CHECK (component_product_id != company_product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_recipe_items_parent
+  ON company_recipe_items (company_product_id);
+
+-- Cola de propagación (BD central → cada sucursal hermana). Una fila es un
+-- "aviso de que hay que refrescar" (BLOQUE EMPRESAS, worker de propagación),
+-- NO transporta el valor en sí -- el worker relee company_products/
+-- company_recipe_items al procesar, siempre el estado más nuevo. Por eso
+-- alcanza con, quien encola, insertar con ON CONFLICT DO NOTHING sobre el
+-- par (company_product_id, target_business_id) mientras haya una fila
+-- pendiente sin procesar: no hace falta encolar una fila por cada edición,
+-- una sola alcanza para que el worker traiga lo último cuando le toque.
+CREATE TABLE IF NOT EXISTS company_catalog_propagation_queue (
+  id                   VARCHAR(255)  PRIMARY KEY,
+  company_product_id   VARCHAR(255)  NOT NULL REFERENCES company_products(id) ON DELETE CASCADE,
+  target_business_id   VARCHAR(255)  NOT NULL REFERENCES businesses(id)       ON DELETE CASCADE,
+  created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  processed_at         TIMESTAMPTZ,
+  retry_count          INT           NOT NULL DEFAULT 0,
+  failed_at            TIMESTAMPTZ,
+  last_error           TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_propagation_queue_pending
+  ON company_catalog_propagation_queue (company_product_id, target_business_id)
+  WHERE processed_at IS NULL AND failed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_propagation_queue_pending
+  ON company_catalog_propagation_queue (created_at)
+  WHERE processed_at IS NULL AND failed_at IS NULL;
+
 -- =============================================================================
 -- Fin del schema central
 -- =============================================================================

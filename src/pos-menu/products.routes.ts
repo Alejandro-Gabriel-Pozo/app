@@ -3,7 +3,8 @@
  * @description Rutas REST para productos y variantes.
  *
  * GET    /api/products                                   — MANAGEMENT
- * POST   /api/products                                   — MANAGEMENT
+ * POST   /api/products                                   — MANAGEMENT (companyProductId opcional -- ver "Empresas multipropiedad")
+ * GET    /api/products/company-catalog                   — MANAGEMENT
  * GET    /api/products/:id                               — MANAGEMENT
  * PUT    /api/products/:id                               — MANAGEMENT
  * DELETE /api/products/:id                               — MANAGEMENT
@@ -23,6 +24,17 @@
  * POST   /api/products/stock/transfer                     — MANAGEMENT
  * POST   /api/products/stock/waste                        — MANAGEMENT
  * POST   /api/products/stock/production                   — MANAGEMENT
+ *
+ * POST   /api/products/:id/company/share                  — MANAGEMENT (solo para un producto que YA era local antes de vincular el negocio a una empresa -- el alta normal ya comparte sola, ver POST /api/products)
+ * POST   /api/products/:id/company/publish                — MANAGEMENT
+ * POST   /api/products/:id/company/price-override/activate    — MANAGEMENT
+ * POST   /api/products/:id/company/price-override/deactivate  — MANAGEMENT
+ * POST   /api/products/:id/company/price-override/accept      — MANAGEMENT
+ * POST   /api/products/:id/company/price-override/reject      — MANAGEMENT
+ * POST   /api/products/:id/company/recipe-override/activate    — MANAGEMENT
+ * POST   /api/products/:id/company/recipe-override/deactivate  — MANAGEMENT
+ * POST   /api/products/:id/company/recipe-override/accept      — MANAGEMENT
+ * POST   /api/products/:id/company/recipe-override/reject      — MANAGEMENT
  *
  * ## Rationale de roles
  * Los productos son configuración de catálogo del negocio:
@@ -77,6 +89,10 @@ import {
   UpdateRecipeItemSchema,
   RecordProductionSchema,
 } from '../api/schemas/recipe.schemas.js';
+import { CompanyCatalogService } from './company-catalog.service.js';
+import { CompanyRepository } from '../platform/company.repository.js';
+import { PlatformRepository } from '../platform/platform.repository.js';
+import { createPlatformPool } from '../container.js';
 
 function buildProductService(req: Request): ProductService {
   const db = req.db!;
@@ -94,6 +110,16 @@ function buildRecipeService(req: Request): RecipeService {
     new SqlRecipeItemRepository(db),
     new SqlProductRepository(db),
     new SqlProductVariantRepository(db),
+  );
+}
+
+function buildCompanyCatalogService(req: Request): CompanyCatalogService {
+  const platformClient = createPlatformPool();
+  return new CompanyCatalogService(
+    new SqlProductRepository(req.db!),
+    new SqlRecipeItemRepository(req.db!),
+    new CompanyRepository(platformClient),
+    new PlatformRepository(platformClient),
   );
 }
 
@@ -146,27 +172,54 @@ export function createProductsRouter(_container: AppContainer): Router {
   });
 
   // ── POST /api/products ──────────────────────────────────────────────────────
+  // Empresas multipropiedad (17/08/2026) — `companyProductId` en el body es
+  // opcional: si viene, el usuario eligió "es este" de la lista del
+  // catálogo de la empresa (fuera de alcance del backend, la muestra el
+  // panel vía GET /api/products/company-catalog) y la fila local nace con
+  // ESE id, nunca uno nuevo. Si no viene y el negocio pertenece a una
+  // empresa, el producto genuinamente nuevo se sube al catálogo canónico
+  // automáticamente, sin paso manual — así nunca queda "Jamón" con dos
+  // IDs distintos por no haberlo compartido a tiempo.
   router.post('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const service    = buildProductService(req);
       const locationId = await resolveLocation(req);
-      const { stockQuantity, stockMinAlert, ...body } = req.body;
-      const product = await service.createProduct(
-        compact({
-          ...body,
-          businessId: req.businessId!,
-          initialStockQuantity: stockQuantity as number | undefined,
-          initialStockMinAlert: stockMinAlert as number | undefined,
-        }) as CreateProductInput,
-        req.db!,
-        locationId,
-      );
+      const { stockQuantity, stockMinAlert, companyProductId, ...body } = req.body;
+
+      let product: Product;
+      if (companyProductId) {
+        product = await buildCompanyCatalogService(req).createLinkedProduct(req.businessId!, companyProductId as string);
+      } else {
+        const service = buildProductService(req);
+        product = await service.createProduct(
+          compact({
+            ...body,
+            businessId: req.businessId!,
+            initialStockQuantity: stockQuantity as number | undefined,
+            initialStockMinAlert: stockMinAlert as number | undefined,
+          }) as CreateProductInput,
+          req.db!,
+          locationId,
+        );
+        await buildCompanyCatalogService(req).autoShareIfLinked(req.businessId!, product.id);
+      }
+
       const level = await new SqlInventoryLevelRepository(req.db!).get({
         productId: product.hasVariants ? null : product.id,
         productVariantId: null,
         locationId,
       });
       res.status(201).json(withStock(product, product.hasVariants ? undefined : level));
+    } catch (err) { next(err); }
+  });
+
+  // ── GET /api/products/company-catalog ───────────────────────────────────────
+  // Catálogo canónico completo de la empresa del negocio autenticado —
+  // para que el panel ofrezca "¿ya existe esto?" al dar de alta un
+  // producto. Lista vacía si el negocio no pertenece a ninguna empresa.
+  router.get('/company-catalog', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const catalog = await buildCompanyCatalogService(req).listCompanyCatalog(req.businessId!);
+      res.json(catalog);
     } catch (err) { next(err); }
   });
 
@@ -598,6 +651,100 @@ export function createProductsRouter(_container: AppContainer): Router {
       }
       next(err);
     }
+  });
+
+  // ── Empresas multipropiedad (17/08/2026, docs/diseno-empresas-
+  // multipropiedad.md) — catálogo compartido entre sucursales-tenant.
+  // MANAGEMENT, mismo criterio de roles que el resto del catálogo (no se
+  // propone un permiso nuevo, ver diseño "Rol requerido").
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── POST /api/products/:id/company/share ────────────────────────────────
+  // Solo para el caso "este producto ya era local, el negocio se vinculó a
+  // una empresa DESPUÉS" -- el alta normal (POST /api/products) ya
+  // comparte automáticamente, no necesita este paso.
+  router.post('/:id/company/share', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).shareProduct(req.businessId!, param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/publish ───────────────────────────────
+  // Re-publica el estado local actual como el nuevo maestro (name/sku
+  // siempre; basePrice solo si priceOverrideStatus = 'INACTIVO' en ESTA
+  // sucursal — ver CompanyCatalogService.publishUpdate()).
+  router.post('/:id/company/publish', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await buildCompanyCatalogService(req).publishUpdate(req.businessId!, param(req, 'id'));
+      res.status(204).send();
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/price-override/activate ──────────────
+  router.post('/:id/company/price-override/activate', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).activatePriceOverride(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/price-override/deactivate ────────────
+  router.post('/:id/company/price-override/deactivate', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).deactivatePriceOverride(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/price-override/accept ────────────────
+  // Acepta una revisión pendiente: adopta el valor del maestro.
+  router.post('/:id/company/price-override/accept', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).acceptPriceReview(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/price-override/reject ────────────────
+  // Rechaza una revisión pendiente: se queda con el valor local.
+  router.post('/:id/company/price-override/reject', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).rejectPriceReview(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/recipe-override/activate ─────────────
+  router.post('/:id/company/recipe-override/activate', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).activateRecipeOverride(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/recipe-override/deactivate ───────────
+  router.post('/:id/company/recipe-override/deactivate', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).deactivateRecipeOverride(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/recipe-override/accept ───────────────
+  router.post('/:id/company/recipe-override/accept', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).acceptRecipeReview(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/products/:id/company/recipe-override/reject ───────────────
+  router.post('/:id/company/recipe-override/reject', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const product = await buildCompanyCatalogService(req).rejectRecipeReview(param(req, 'id'));
+      res.json(product);
+    } catch (err) { next(err); }
   });
 
   return router;

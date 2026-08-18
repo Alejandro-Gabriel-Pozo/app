@@ -31,6 +31,12 @@ export interface Business {
   dbUrlEncrypted: string | null;
   /** Versión de schema.sql aplicada en la tenant DB — null = nunca aplicada vía applyTenantSchema() */
   schemaVersion: number | null;
+  /**
+   * Empresas multipropiedad (17/08/2026, docs/diseno-empresas-
+   * multipropiedad.md) — null = negocio independiente, sin cambios de
+   * comportamiento (la enorme mayoría de los tenants hoy).
+   */
+  companyId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -274,6 +280,29 @@ export class PlatformRepository {
       [id],
     );
     return result.rows[0] ? this.rowToBusiness(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Empresas multipropiedad (17/08/2026) — todas las sucursales de una
+   * misma company, para que el worker de propagación sepa a quién
+   * avisarle un cambio de catálogo canónico. No filtra por status: una
+   * sucursal SUSPENDED igual debería recibir la sincronización cuando
+   * vuelva a estar ACTIVE, no perderla en silencio.
+   */
+  async findBusinessesByCompanyId(companyId: string): Promise<Business[]> {
+    const result = await this.db.query<Business>(
+      'SELECT * FROM businesses WHERE company_id = $1',
+      [companyId],
+    );
+    return result.rows.map((row) => this.rowToBusiness(row));
+  }
+
+  /** Vincula (o desvincula, con `companyId = null`) un negocio a una empresa. */
+  async linkBusinessToCompany(businessId: string, companyId: string | null): Promise<void> {
+    await this.db.query(
+      'UPDATE businesses SET company_id = $1, updated_at = NOW() WHERE id = $2',
+      [companyId, businessId],
+    );
   }
 
   async findBySlug(slug: string): Promise<Business | undefined> {
@@ -598,6 +627,7 @@ export class PlatformRepository {
       supabaseProjectId: row.supabase_project_id ?? null,
       dbUrlEncrypted: row.db_url_encrypted ?? null,
       schemaVersion: row.schema_version ?? null,
+      companyId: row.company_id ?? null,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

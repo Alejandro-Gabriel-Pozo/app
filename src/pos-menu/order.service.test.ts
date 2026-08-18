@@ -16,7 +16,7 @@ import { InMemoryRecipeItemRepository } from '../repositories/in-memory.recipe-i
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { IProductRepository, IProductVariantRepository, ListProductsFilter, ListVariantsFilter } from './product.repository.js';
+import type { IProductRepository, IProductVariantRepository, ListProductsFilter, ListVariantsFilter, CompanySyncStatePatch } from './product.repository.js';
 import type { Product, ProductVariant, CreateProductInput, UpdateProductInput, CreateProductVariantInput, UpdateProductVariantInput } from './product.entities.js';
 
 /**
@@ -40,6 +40,8 @@ class FakeProductRepository implements IProductRepository {
       name: input.name, description: input.description ?? null, basePrice: input.basePrice,
       sku: input.sku ?? null, hasVariants: input.hasVariants ?? false,
       productType: input.productType ?? 'RETAIL', assembleOnDemand: input.assembleOnDemand ?? false,
+      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
       active: true, createdAt: now, updatedAt: now,
     };
     this.rows.set(product.id, product);
@@ -51,6 +53,10 @@ class FakeProductRepository implements IProductRepository {
     const updated: Product = { ...current, ...input, updatedAt: new Date() };
     this.rows.set(id, updated);
     return updated;
+  }
+  async updateCompanySyncState(id: string, patch: CompanySyncStatePatch): Promise<void> {
+    const current = this.rows.get(id);
+    if (current) this.rows.set(id, { ...current, ...patch });
   }
 
   async delete(id: string): Promise<boolean> { return this.rows.delete(id); }
@@ -126,6 +132,8 @@ describe('OrderService', () => {
       id: 'prod-1', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Producto de prueba',
       description: null, basePrice: 10, sku: null, hasVariants: false,
       productType: 'RETAIL', assembleOnDemand: false,
+      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
       active: true, createdAt: now, updatedAt: now,
     });
     inventoryLevelRepo.seed({
@@ -344,12 +352,16 @@ describe('OrderService', () => {
         id: 'prod-sandwich', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Sándwich',
         description: null, basePrice: 100, sku: null, hasVariants: false,
         productType: 'COMPOSITE', assembleOnDemand: true,
+        companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+        recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
         active: true, createdAt: now, updatedAt: now,
       });
       productRepo.seed({
         id: 'prod-jamon', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Jamón',
         description: null, basePrice: 5, sku: null, hasVariants: false,
         productType: 'RAW_MATERIAL', assembleOnDemand: false,
+        companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+        recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
         active: true, createdAt: now, updatedAt: now,
       });
       inventoryLevelRepo.seed({

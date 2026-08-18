@@ -101,6 +101,17 @@ export class SqlRecipeItemRepository implements RecipeItemRepository {
     return rows.length > 0;
   }
 
+  async replaceForParent(parentProductId: string, items: Array<{ componentProductId: string; quantityPerUnit: number }>): Promise<void> {
+    await this.db.query(`DELETE FROM recipe_items WHERE parent_product_id = $1`, [parentProductId]);
+    for (const item of items) {
+      await this.db.query(
+        `INSERT INTO recipe_items (id, parent_product_id, component_product_id, component_variant_id, quantity_per_unit)
+         VALUES ($1, $2, $3, NULL, $4)`,
+        [randomUUID(), parentProductId, item.componentProductId, item.quantityPerUnit],
+      );
+    }
+  }
+
   /**
    * Un componente por VARIANTE nunca puede ciclar -- recipe_items.
    * parent_product_id solo referencia productos, nunca variantes, así que

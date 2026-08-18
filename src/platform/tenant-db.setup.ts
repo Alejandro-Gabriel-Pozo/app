@@ -162,7 +162,15 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // movement_type PRODUCTION; los índices únicos de idempotencia por
 // order_item (BLOQUE 13/D1) se amplían a (order_item, producto/variante,
 // tipo) para soportar N componentes por ítem compuesto.
-export const CURRENT_SCHEMA_VERSION = 13;
+// v14 (17/08/2026): Empresas multipropiedad (BLOQUE 19,
+// docs/diseno-empresas-multipropiedad.md) — `products` gana
+// company_product_id (vínculo sin FK real a company_products en la BD
+// central) + price_override_status/recipe_override_status (tres estados:
+// INACTIVO/ACTIVO/PENDIENTE_DE_REVISION) + sus columnas de valor/snapshot
+// pendiente. El catálogo canónico en sí (companies/company_products/
+// company_recipe_items/company_catalog_propagation_queue) vive en
+// platform.schema.sql, no acá.
+export const CURRENT_SCHEMA_VERSION = 14;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

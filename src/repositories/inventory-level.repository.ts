@@ -69,6 +69,17 @@ export interface InventoryLevelRepository {
   decrementAvailableStock(client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void>;
 
   /**
+   * Suma `stock_quantity` (físico, NUNCA el disponible) de un producto o
+   * variante a través de TODAS las ubicaciones del tenant — a diferencia
+   * de `get()`, que resuelve una sola ubicación. Usado para bloquear la
+   * desactivación de un producto/variante mientras tenga stock físico en
+   * cualquier lado (17/08/2026, docs/diseno-empresas-multipropiedad.md
+   * decisión 4 — regla general de ciclo de vida de producto, no exclusiva
+   * de empresas multipropiedad). `undefined`/sin filas = 0.
+   */
+  getTotalPhysicalStock(key: { productId: string | null; productVariantId: string | null }): Promise<number>;
+
+  /**
    * Transferencia atómica entre dos ubicaciones del mismo producto/variante
    * (manual-inventario.md sección 8 — par simétrico, una sola operación).
    * Crea las filas en 0/0 en origen y destino si no existían. Lanza si no

@@ -12,6 +12,7 @@ import type {
   IProductVariantRepository,
   ListProductsFilter,
   ListVariantsFilter,
+  CompanySyncStatePatch,
 } from './product.repository.js';
 import type {
   Product,
@@ -32,6 +33,8 @@ class FakeProductRepository implements IProductRepository {
     this.rows.set(id, {
       id, businessId: 'biz-1', categoryId: null, name: id, description: null,
       basePrice: 10, sku: null, hasVariants: false, productType, assembleOnDemand,
+      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
       active: true, createdAt: now, updatedAt: now,
     });
   }
@@ -42,6 +45,7 @@ class FakeProductRepository implements IProductRepository {
   async save(_product: Product): Promise<void> {}
   async create(_input: CreateProductInput): Promise<Product> { throw new Error('no usado en estos tests'); }
   async update(_id: string, _input: UpdateProductInput): Promise<Product | undefined> { return undefined; }
+  async updateCompanySyncState(_id: string, _patch: CompanySyncStatePatch): Promise<void> {}
   async delete(_id: string): Promise<boolean> { return false; }
 }
 

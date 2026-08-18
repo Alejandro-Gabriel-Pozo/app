@@ -54,6 +54,21 @@ export class InMemoryRecipeItemRepository implements RecipeItemRepository {
     return this.rows.delete(id);
   }
 
+  async replaceForParent(parentProductId: string, items: Array<{ componentProductId: string; quantityPerUnit: number }>): Promise<void> {
+    for (const [id, item] of this.rows) {
+      if (item.parentProductId === parentProductId) this.rows.delete(id);
+    }
+    const now = new Date();
+    for (const item of items) {
+      const id = randomUUID();
+      this.rows.set(id, {
+        id, parentProductId, componentProductId: item.componentProductId, componentVariantId: null,
+        quantityPerUnit: item.quantityPerUnit, costPerUnit: null, yieldPercentage: null,
+        createdAt: now, updatedAt: now,
+      });
+    }
+  }
+
   /** Mismo criterio que la versión SQL: una variante nunca puede ciclar. */
   async wouldCreateCycle(parentProductId: string, componentProductId: string | null, _componentVariantId: string | null): Promise<boolean> {
     if (!componentProductId) return false;

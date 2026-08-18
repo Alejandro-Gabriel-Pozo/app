@@ -15,6 +15,7 @@ import type {
   IProductVariantRepository,
   ListProductsFilter,
   ListVariantsFilter,
+  CompanySyncStatePatch,
 } from './product.repository.js';
 import type {
   Product,
@@ -43,6 +44,11 @@ function rowToProduct(row: Record<string, unknown>): Product {
     active:        Boolean(row['active']),
     productType:      row['product_type'] as ProductType,
     assembleOnDemand: Boolean(row['assemble_on_demand']),
+    companyProductId:            (row['company_product_id'] as string | null) ?? null,
+    priceOverrideStatus:         row['price_override_status'] as Product['priceOverrideStatus'],
+    pricePendingMasterValue:     row['price_pending_master_value'] != null ? Number(row['price_pending_master_value']) : null,
+    recipeOverrideStatus:        row['recipe_override_status'] as Product['recipeOverrideStatus'],
+    recipePendingMasterSnapshot: (row['recipe_pending_master_snapshot'] as Product['recipePendingMasterSnapshot']) ?? null,
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
   };
@@ -127,24 +133,34 @@ export class SqlProductRepository implements IProductRepository {
     await this.db.query(
       `INSERT INTO products (
          id, business_id, category_id, name, description,
-         base_price, sku, has_variants, active, product_type, assemble_on_demand
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         base_price, sku, has_variants, active, product_type, assemble_on_demand,
+         company_product_id, price_override_status, price_pending_master_value,
+         recipe_override_status, recipe_pending_master_snapshot
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (id) DO UPDATE SET
-         category_id        = EXCLUDED.category_id,
-         name               = EXCLUDED.name,
-         description        = EXCLUDED.description,
-         base_price         = EXCLUDED.base_price,
-         sku                = EXCLUDED.sku,
-         has_variants       = EXCLUDED.has_variants,
-         active             = EXCLUDED.active,
-         product_type       = EXCLUDED.product_type,
-         assemble_on_demand = EXCLUDED.assemble_on_demand,
-         updated_at         = NOW()`,
+         category_id                    = EXCLUDED.category_id,
+         name                           = EXCLUDED.name,
+         description                    = EXCLUDED.description,
+         base_price                     = EXCLUDED.base_price,
+         sku                            = EXCLUDED.sku,
+         has_variants                   = EXCLUDED.has_variants,
+         active                         = EXCLUDED.active,
+         product_type                   = EXCLUDED.product_type,
+         assemble_on_demand             = EXCLUDED.assemble_on_demand,
+         company_product_id             = EXCLUDED.company_product_id,
+         price_override_status          = EXCLUDED.price_override_status,
+         price_pending_master_value     = EXCLUDED.price_pending_master_value,
+         recipe_override_status         = EXCLUDED.recipe_override_status,
+         recipe_pending_master_snapshot = EXCLUDED.recipe_pending_master_snapshot,
+         updated_at                     = NOW()`,
       [
         product.id, product.businessId, product.categoryId,
         product.name, product.description, product.basePrice,
         product.sku, product.hasVariants, product.active,
         product.productType, product.assembleOnDemand,
+        product.companyProductId, product.priceOverrideStatus, product.pricePendingMasterValue,
+        product.recipeOverrideStatus,
+        product.recipePendingMasterSnapshot !== null ? JSON.stringify(product.recipePendingMasterSnapshot) : null,
       ],
     );
   }
@@ -207,6 +223,40 @@ export class SqlProductRepository implements IProductRepository {
       params,
     );
     return rows[0] ? rowToProduct(rows[0]) : undefined;
+  }
+
+  /** Empresas multipropiedad (17/08/2026) — ver comentario del tipo en product.repository.ts. */
+  async updateCompanySyncState(id: string, patch: CompanySyncStatePatch): Promise<void> {
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    const map: Array<[keyof CompanySyncStatePatch, string]> = [
+      ['companyProductId',            'company_product_id'],
+      ['basePrice',                   'base_price'],
+      ['priceOverrideStatus',         'price_override_status'],
+      ['pricePendingMasterValue',     'price_pending_master_value'],
+      ['recipeOverrideStatus',        'recipe_override_status'],
+      ['recipePendingMasterSnapshot', 'recipe_pending_master_snapshot'],
+    ];
+
+    for (const [key, col] of map) {
+      if (patch[key] !== undefined) {
+        fields.push(`${col} = $${idx++}`);
+        params.push(
+          key === 'recipePendingMasterSnapshot' && patch[key] !== null
+            ? JSON.stringify(patch[key])
+            : (patch[key] as unknown),
+        );
+      }
+    }
+
+    if (fields.length === 0) return;
+
+    fields.push('updated_at = NOW()');
+    params.push(id);
+
+    await this.db.query(`UPDATE products SET ${fields.join(', ')} WHERE id = $${idx}`, params);
   }
 
   async delete(id: string): Promise<boolean> {

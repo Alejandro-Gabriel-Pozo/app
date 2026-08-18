@@ -2,11 +2,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { ProductService } from './product.service.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
+import { ProductHasStockError } from '../domain/errors.js';
 import type {
   IProductRepository,
   IProductVariantRepository,
   ListProductsFilter,
   ListVariantsFilter,
+  CompanySyncStatePatch,
 } from './product.repository.js';
 import type {
   Product,
@@ -60,6 +62,11 @@ class FakeProductRepository implements IProductRepository {
       hasVariants: input.hasVariants ?? false,
       productType: input.productType ?? 'RETAIL',
       assembleOnDemand: input.assembleOnDemand ?? false,
+      companyProductId: null,
+      priceOverrideStatus: 'INACTIVO',
+      pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO',
+      recipePendingMasterSnapshot: null,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -74,6 +81,11 @@ class FakeProductRepository implements IProductRepository {
     const updated: Product = { ...current, ...input, updatedAt: new Date() };
     this.rows.set(id, updated);
     return updated;
+  }
+
+  async updateCompanySyncState(id: string, patch: CompanySyncStatePatch): Promise<void> {
+    const current = this.rows.get(id);
+    if (current) this.rows.set(id, { ...current, ...patch });
   }
 
   async delete(id: string): Promise<boolean> {
@@ -158,6 +170,11 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
       hasVariants: false,
       productType: 'RETAIL',
       assembleOnDemand: false,
+      companyProductId: null,
+      priceOverrideStatus: 'INACTIVO',
+      pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO',
+      recipePendingMasterSnapshot: null,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -210,5 +227,125 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
   it('no registra un campo que se "actualiza" al mismo valor', async () => {
     await service.updateProduct('prod-1', { basePrice: 100 }, 'identity-1');
     expect(auditRepo.all()).toHaveLength(0);
+  });
+});
+
+describe('ProductService — bloqueo de desactivación por stock físico (17/08/2026, diseno-empresas-multipropiedad.md decisión 4)', () => {
+  let productRepo: FakeProductRepository;
+  let variantRepo: FakeProductVariantRepository;
+  let inventoryLevelRepo: InMemoryInventoryLevelRepository;
+  let service: ProductService;
+
+  beforeEach(() => {
+    productRepo        = new FakeProductRepository();
+    variantRepo         = new FakeProductVariantRepository();
+    inventoryLevelRepo  = new InMemoryInventoryLevelRepository();
+    service             = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository(), inventoryLevelRepo);
+
+    const now = new Date();
+    productRepo.seed({
+      id: 'prod-simple', businessId: 'biz-1', categoryId: null, name: 'Simple',
+      description: null, basePrice: 10, sku: null, hasVariants: false,
+      productType: 'RETAIL', assembleOnDemand: false,
+      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      active: true, createdAt: now, updatedAt: now,
+    });
+    productRepo.seed({
+      id: 'prod-con-variantes', businessId: 'biz-1', categoryId: null, name: 'Con variantes',
+      description: null, basePrice: 10, sku: null, hasVariants: true,
+      productType: 'RETAIL', assembleOnDemand: false,
+      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      active: true, createdAt: now, updatedAt: now,
+    });
+    variantRepo.seed({
+      id: 'var-a', productId: 'prod-con-variantes', name: 'A', attributes: {}, sku: null,
+      priceOverride: null, active: true, createdAt: now, updatedAt: now,
+    });
+    variantRepo.seed({
+      id: 'var-b', productId: 'prod-con-variantes', name: 'B', attributes: {}, sku: null,
+      priceOverride: null, active: true, createdAt: now, updatedAt: now,
+    });
+  });
+
+  it('deleteProduct(): permite desactivar un producto simple sin stock', async () => {
+    inventoryLevelRepo.seed({
+      id: 'lvl-1', businessId: 'biz-1', productId: 'prod-simple', productVariantId: null,
+      locationId: 'loc-default', stockQuantity: 0, reservedQuantity: 0, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteProduct('prod-simple')).resolves.toBeUndefined();
+  });
+
+  it('deleteProduct(): bloquea un producto simple con stock físico > 0, aunque esté todo disponible', async () => {
+    inventoryLevelRepo.seed({
+      id: 'lvl-1', businessId: 'biz-1', productId: 'prod-simple', productVariantId: null,
+      locationId: 'loc-default', stockQuantity: 5, reservedQuantity: 0, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteProduct('prod-simple')).rejects.toBeInstanceOf(ProductHasStockError);
+  });
+
+  it('deleteProduct(): suma el stock físico de TODAS las ubicaciones, no solo una', async () => {
+    inventoryLevelRepo.seed({
+      id: 'lvl-1', businessId: 'biz-1', productId: 'prod-simple', productVariantId: null,
+      locationId: 'loc-a', stockQuantity: 0, reservedQuantity: 0, stockMinAlert: 0,
+    });
+    inventoryLevelRepo.seed({
+      id: 'lvl-2', businessId: 'biz-1', productId: 'prod-simple', productVariantId: null,
+      locationId: 'loc-b', stockQuantity: 3, reservedQuantity: 0, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteProduct('prod-simple')).rejects.toBeInstanceOf(ProductHasStockError);
+  });
+
+  it('deleteProduct() con hasVariants=true: bloquea si CUALQUIER variante tiene stock', async () => {
+    inventoryLevelRepo.seed({
+      id: 'lvl-a', businessId: 'biz-1', productId: null, productVariantId: 'var-a',
+      locationId: 'loc-default', stockQuantity: 0, reservedQuantity: 0, stockMinAlert: 0,
+    });
+    inventoryLevelRepo.seed({
+      id: 'lvl-b', businessId: 'biz-1', productId: null, productVariantId: 'var-b',
+      locationId: 'loc-default', stockQuantity: 2, reservedQuantity: 0, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteProduct('prod-con-variantes')).rejects.toBeInstanceOf(ProductHasStockError);
+  });
+
+  it('deleteProduct() con hasVariants=true: permite desactivar si NINGUNA variante tiene stock', async () => {
+    inventoryLevelRepo.seed({
+      id: 'lvl-a', businessId: 'biz-1', productId: null, productVariantId: 'var-a',
+      locationId: 'loc-default', stockQuantity: 0, reservedQuantity: 0, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteProduct('prod-con-variantes')).resolves.toBeUndefined();
+  });
+
+  it('deleteProduct(): no-opea silenciosamente si el producto no existe (mismo criterio de siempre)', async () => {
+    await expect(service.deleteProduct('no-existe')).resolves.toBeUndefined();
+  });
+
+  it('deleteVariant(): bloquea con stock físico > 0', async () => {
+    inventoryLevelRepo.seed({
+      id: 'lvl-a', businessId: 'biz-1', productId: null, productVariantId: 'var-a',
+      locationId: 'loc-default', stockQuantity: 1, reservedQuantity: 0, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteVariant('var-a')).rejects.toBeInstanceOf(ProductHasStockError);
+  });
+
+  it('deleteVariant(): stock DISPONIBLE (no reservado) no importa -- lo que bloquea es el físico', async () => {
+    // stock=4, reservado=4 -> disponible=0, pero físico sigue siendo 4.
+    inventoryLevelRepo.seed({
+      id: 'lvl-a', businessId: 'biz-1', productId: null, productVariantId: 'var-a',
+      locationId: 'loc-default', stockQuantity: 4, reservedQuantity: 4, stockMinAlert: 0,
+    });
+
+    await expect(service.deleteVariant('var-a')).rejects.toBeInstanceOf(ProductHasStockError);
+  });
+
+  it('deleteVariant(): permite desactivar sin stock', async () => {
+    await expect(service.deleteVariant('var-a')).resolves.toBeUndefined();
   });
 });

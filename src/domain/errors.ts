@@ -98,6 +98,58 @@ export class CustomerRateNotFoundError extends DomainError {
   }
 }
 
+/**
+ * No se puede desactivar un producto/variante mientras tenga stock físico
+ * (no el disponible) > 0 en cualquier ubicación — 17/08/2026,
+ * docs/diseno-empresas-multipropiedad.md decisión 4 (regla general de
+ * ciclo de vida de producto, no exclusiva de empresas multipropiedad).
+ * Reusa el flujo de merma ya existente (Fase 2) para bajar a 0 antes de
+ * reintentar — no es un mecanismo nuevo.
+ */
+export class ProductHasStockError extends DomainError {
+  constructor(id: string, totalStock: number) {
+    super(
+      `No se puede desactivar ${id}: todavía tiene ${totalStock} unidad(es) de stock físico. ` +
+      'Hacé el conteo físico y, si corresponde, registrá una merma (POST /api/products/stock/waste) para llevarlo a 0 antes de desactivar.',
+      'PRODUCT_HAS_STOCK',
+    );
+  }
+}
+
+/**
+ * Empresas multipropiedad (17/08/2026, docs/diseno-empresas-
+ * multipropiedad.md) — el negocio no tiene `company_id` asignado, no se
+ * puede compartir catálogo hasta que un ADMIN lo vincule a una empresa.
+ */
+export class BusinessNotInCompanyError extends DomainError {
+  constructor(businessId: string) {
+    super(
+      `El negocio ${businessId} no pertenece a ninguna empresa (company_id null) -- ` +
+      'no se puede compartir catálogo hasta vincularlo.',
+      'BUSINESS_NOT_IN_COMPANY',
+    );
+  }
+}
+
+export class CompanyProductNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Producto canónico ${id} no encontrado en el catálogo de la empresa.`, 'COMPANY_PRODUCT_NOT_FOUND');
+  }
+}
+
+export class ProductNotSharedError extends DomainError {
+  constructor(productId: string) {
+    super(`El producto ${productId} no está compartido con ninguna empresa todavía.`, 'PRODUCT_NOT_SHARED');
+  }
+}
+
+/** Mismo criterio que InvalidOrderTransitionError -- acción de override que no corresponde al estado actual (INACTIVO/ACTIVO/PENDIENTE_DE_REVISION). */
+export class InvalidOverrideTransitionError extends DomainError {
+  constructor(currentStatus: string, attemptedAction: string) {
+    super(`No se puede "${attemptedAction}" el override -- está en estado ${currentStatus}.`, 'INVALID_OVERRIDE_TRANSITION');
+  }
+}
+
 export class WasteReasonNotFoundError extends DomainError {
   constructor(id: string) {
     super(`Motivo de merma con id "${id}" no encontrado`, 'WASTE_REASON_NOT_FOUND');

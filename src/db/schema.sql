@@ -823,6 +823,48 @@ DO $$ BEGIN
 END $$;
 
 -- ===========================================================================
+-- BLOQUE 19 — EMPRESAS MULTIPROPIEDAD (17/08/2026, docs/diseno-empresas-
+-- multipropiedad.md) — vínculo local a un producto compartido
+-- ===========================================================================
+-- company_product_id: SIN FK real -- es una referencia cross-DB a
+-- company_products.id (BD central de plataforma, platform.schema.sql),
+-- mismo patrón ya usado en este proyecto para stays.assigned_by/
+-- audit_log.changed_by (identity_id de la platform DB sin FK posible,
+-- BLOQUE 2/BLOQUE 6 más arriba): validado por el servicio que sincroniza,
+-- no por un constraint de Postgres. NULL = producto puramente local, no
+-- compartido -- comportamiento de hoy, sin cambios para la enorme mayoría.
+--
+-- price_override_status/recipe_override_status: de TRES estados, no on/off
+-- (decisión 3 del diseño) -- INACTIVO (toma el maestro siempre), ACTIVO
+-- (usa el valor local, la sincronización no lo toca), PENDIENTE_DE_REVISION
+-- (el maestro cambió mientras estaba ACTIVO -- no se aplica en silencio ni
+-- se ignora, la sucursal decide aceptar o rechazar). *_pending_master_*
+-- solo tienen valor mientras el estado correspondiente está en
+-- PENDIENTE_DE_REVISION.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS company_product_id VARCHAR(255);
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS price_override_status VARCHAR(24)
+  NOT NULL DEFAULT 'INACTIVO';
+ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_price_override_status;
+ALTER TABLE products ADD CONSTRAINT chk_products_price_override_status
+  CHECK (price_override_status IN ('INACTIVO', 'ACTIVO', 'PENDIENTE_DE_REVISION'));
+ALTER TABLE products ADD COLUMN IF NOT EXISTS price_pending_master_value DECIMAL(10,2);
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS recipe_override_status VARCHAR(24)
+  NOT NULL DEFAULT 'INACTIVO';
+ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_recipe_override_status;
+ALTER TABLE products ADD CONSTRAINT chk_products_recipe_override_status
+  CHECK (recipe_override_status IN ('INACTIVO', 'ACTIVO', 'PENDIENTE_DE_REVISION'));
+-- snapshot de la receta canónica nueva a revisar -- mismo patrón que
+-- order_items.stock_snapshot (Fase 3 del carve-out de inventario, BLOQUE
+-- 17): una lista completa es más simple de guardar como JSON que modelar
+-- una tabla de "recipe_items pendientes" en paralelo a la real.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS recipe_pending_master_snapshot JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_products_company_product
+  ON products (company_product_id) WHERE company_product_id IS NOT NULL;
+
+-- ===========================================================================
 -- BLOQUE 4 — ÓRDENES
 -- ===========================================================================
 

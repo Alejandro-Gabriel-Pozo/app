@@ -145,6 +145,16 @@ export class SqlInventoryLevelRepository implements InventoryLevelRepository {
     }
   }
 
+  async getTotalPhysicalStock(key: { productId: string | null; productVariantId: string | null }): Promise<number> {
+    const clause = key.productVariantId ? 'product_variant_id = $1' : 'product_id = $1';
+    const param = key.productVariantId ?? key.productId;
+    const { rows } = await this.db.query<{ total: string | null }>(
+      `SELECT COALESCE(SUM(stock_quantity), 0) AS total FROM inventory_levels WHERE ${clause}`,
+      [param],
+    );
+    return Number(rows[0]?.total ?? 0);
+  }
+
   async decrementAvailableStock(client: SqlClient, key: InventoryLevelKey, quantity: number): Promise<void> {
     const target = whereTarget(key, 3);
     const { rows } = await client.query<{ id: string }>(
