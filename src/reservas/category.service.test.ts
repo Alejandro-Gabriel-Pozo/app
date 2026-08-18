@@ -42,6 +42,7 @@ class FakeCategoryRepository implements ICategoryRepository {
       ...(dto.description !== undefined && { description: dto.description }),
       fields: dto.fields,
       active: true,
+      isLodging: dto.isLodging ?? false,
       createdAt: now,
       updatedAt: now,
     };
@@ -85,6 +86,7 @@ describe('CategoryService — auditoría (R8/A9.4)', () => {
       name: 'Salon',
       fields: [],
       active: true,
+      isLodging: false,
       createdAt: new Date(),
       updatedAt: new Date(),
     });

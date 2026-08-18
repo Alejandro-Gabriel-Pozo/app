@@ -182,7 +182,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // Bug real: confirmar una reserva devolvía 500 (Postgres 42703) aunque la
 // reserva sí quedaba CONFIRMED, porque recordOccupancy() corre después de
 // la transacción. DEFAULT '' solo afecta filas ya existentes.
-export const CURRENT_SCHEMA_VERSION = 16;
+// v17 (18/08/2026, noche): `resource_categories` gana `is_lodging` —
+// backlog E1 (pendientes-2026-08-13.md), separa el panel de Estadías/PMS
+// del de Turnos/servicios. DEFAULT FALSE, categorías existentes hay que
+// marcarlas a mano desde Categorías (no hay forma de inferirlo).
+export const CURRENT_SCHEMA_VERSION = 17;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

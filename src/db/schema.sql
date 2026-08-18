@@ -102,6 +102,15 @@ CREATE INDEX IF NOT EXISTS idx_resource_categories_active
 -- el momento de escribir, sin forma de recuperarla después.
 ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
+-- Backlog E1 (13/08/2026, alcance completo decidido 18/08) -- separa el
+-- panel de Estadías/PMS del de Turnos/servicios. true = categoría de
+-- alojamiento (habitaciones/cabañas, se reservan con "Reservas" y se
+-- gestionan con check-in/check-out). false = todo lo demás (sillas,
+-- mesas, canchas -- "Turnos"). Default FALSE: no hay forma de inferir esto
+-- en categorías ya existentes, el dueño las marca a mano después de este
+-- deploy.
+ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS is_lodging BOOLEAN NOT NULL DEFAULT FALSE;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'resource_categories_updated_at') THEN
     CREATE TRIGGER resource_categories_updated_at
@@ -1078,10 +1087,16 @@ CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by    ON stock_movements 
 -- proyecto Neon DB-APP-PPMS, branch production) -- es el que Postgres le
 -- puso solo al CHECK inline original (convención estándar
 -- `<tabla>_<columna>_check`), no una suposición sin verificar.
+--
+-- El DROP+ADD de este CHECK con la lista de valores de esa fecha (sin
+-- TRANSFER/WASTE/PRODUCTION, agregados en bloques posteriores) vivió acá
+-- hasta el 18/08/2026 -- bug real encontrado ese día: schema.sql se asume
+-- idempotente y reaplicable desde cero (¡corre en cada deploy vía
+-- migrate:tenants!), pero un ADD CONSTRAINT con una lista más angosta que
+-- la actual FALLA en cuanto el tenant ya tiene filas con esos tipos más
+-- nuevos -- no es solo redundante, rompe la reaplicación. Consolidado en
+-- un único DROP+ADD con la lista completa, más abajo (ver "Fase 3").
 ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS stock_movements_movement_type_check;
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
-  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED'));
 
 -- OUT (consolidación real) y RESERVATION_RELEASED (liberación sin consolidar)
 -- compiten por el MISMO casillero por order_item -- el que se inserta
@@ -1112,9 +1127,8 @@ ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS to_location_id VARCHAR(255)
 UPDATE stock_movements SET location_id = 'loc-default'
   WHERE location_id IS NULL AND movement_type != 'TRANSFER';
 
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
-  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER'));
+-- (CHECK de movement_type consolidado más abajo, ver nota "Fase 3" — acá
+-- solo location_id/from_location_id/to_location_id, que sí son de esta fase.)
 
 -- Mismo espíritu polimórfico que chk_order_item_polymorphic (BLOQUE 4):
 -- TRANSFER usa el par origen/destino y nunca location_id; el resto de los
@@ -1143,9 +1157,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_movements_location ON stock_movements (loca
 ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS waste_reason_id VARCHAR(255)
   REFERENCES waste_reasons(id) ON DELETE RESTRICT;
 
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
-  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER', 'WASTE'));
+-- (CHECK de movement_type consolidado más abajo, ver nota "Fase 3".)
 
 ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_waste_requires_reason;
 ALTER TABLE stock_movements ADD CONSTRAINT chk_waste_requires_reason CHECK (

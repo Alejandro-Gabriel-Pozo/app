@@ -30,7 +30,7 @@ import type {
 import { CategoryNotFoundError } from '../domain/errors.js';
 
 const RETURNING_COLS = `
-  id, name, description, fields, active, created_at, updated_at
+  id, name, description, fields, active, is_lodging, created_at, updated_at
 `;
 
 function mapRow(row: Record<string, unknown>): ResourceCategory {
@@ -41,6 +41,7 @@ function mapRow(row: Record<string, unknown>): ResourceCategory {
     ...(description !== undefined && { description }),
     fields:    (row['fields'] as CategoryField[]) ?? [],
     active:    row['active'] as boolean,
+    isLodging: row['is_lodging'] as boolean,
     createdAt: new Date(row['created_at'] as string),
     updatedAt: new Date(row['updated_at'] as string),
   };
@@ -51,7 +52,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
 
   async findAll(): Promise<ResourceCategory[]> {
     const result = await this.sqlClient.query(
-      `SELECT id, name, description, fields, active, created_at, updated_at
+      `SELECT ${RETURNING_COLS}
        FROM resource_categories
        WHERE active = TRUE AND deleted_at IS NULL
        ORDER BY created_at ASC`,
@@ -68,7 +69,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
    */
   async findById(id: string): Promise<ResourceCategory | null> {
     const result = await this.sqlClient.query(
-      `SELECT id, name, description, fields, active, created_at, updated_at
+      `SELECT ${RETURNING_COLS}
        FROM resource_categories
        WHERE id = $1`,
       [id],
@@ -87,10 +88,10 @@ export class SqlCategoryRepository implements ICategoryRepository {
 
   async create(dto: CreateCategoryDTO): Promise<ResourceCategory> {
     const result = await this.sqlClient.query(
-      `INSERT INTO resource_categories (id, name, description, fields)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO resource_categories (id, name, description, fields, is_lodging)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING ${RETURNING_COLS}`,
-      [dto.id, dto.name, dto.description ?? null, JSON.stringify(dto.fields ?? [])],
+      [dto.id, dto.name, dto.description ?? null, JSON.stringify(dto.fields ?? []), dto.isLodging ?? false],
     );
     const rows = result.rows as Record<string, unknown>[];
     return mapRow(rows[0] ?? {});
@@ -105,6 +106,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
     if (dto.description !== undefined) { setClauses.push(`description = $${idx++}`); values.push(dto.description); }
     if (dto.fields      !== undefined) { setClauses.push(`fields = $${idx++}`);      values.push(JSON.stringify(dto.fields)); }
     if (dto.active      !== undefined) { setClauses.push(`active = $${idx++}`);      values.push(dto.active); }
+    if (dto.isLodging   !== undefined) { setClauses.push(`is_lodging = $${idx++}`);  values.push(dto.isLodging); }
 
     if (setClauses.length === 0) {
       const cat = await this.findById(id);

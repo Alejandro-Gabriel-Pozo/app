@@ -30,6 +30,16 @@ export interface ResourceCategory {
   description?: string;
   fields: CategoryField[];
   active: boolean;
+  /**
+   * Backlog E1 (13/08/2026, decisión de alcance completo 18/08) — separa el
+   * panel de Estadías/PMS del de Turnos/servicios. true = esta categoría
+   * agrupa recursos de alojamiento (habitaciones, cabañas — se reservan con
+   * "Reservas" y se gestionan con check-in/check-out en Estadías). false =
+   * todo lo demás (sillas de peluquería, mesas, canchas — se reservan como
+   * "Turnos"). Default false porque no hay forma de inferir esto en
+   * categorías ya existentes — el dueño tiene que marcarlas a mano.
+   */
+  isLodging: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,6 +50,7 @@ export interface CreateCategoryDTO {
   name: string;
   description?: string;
   fields: CategoryField[];
+  isLodging?: boolean;
 }
 
 /** DTO para actualizar una categoría */
@@ -48,4 +59,5 @@ export interface UpdateCategoryDTO {
   description?: string;
   fields?: CategoryField[];
   active?: boolean;
+  isLodging?: boolean;
 }

@@ -88,8 +88,14 @@ para el detalle completo de cada uno:
   `modular_addon_pricing_architecture`.
 
 ### Decisiones que necesitan al dueño
-- E1–E7 de `pendientes-2026-08-13.md` (salvo E7c/d/e, ya resueltos) —
-  falta que se defina alcance.
+- E2–E7 de `pendientes-2026-08-13.md` (salvo E7c/d/e, ya resueltos) —
+  falta que se defina alcance. **E1 se resolvió hoy completo, ver sección
+  F.** Dentro de E7a, el gap de "descuento de stock en POS" resultó estar
+  ✅ **ya resuelto** (verificado hoy, no es trabajo nuevo) — quedó
+  arreglado de paso durante el carve-out de inventario del 16-17/08 sin
+  que nadie volviera a marcarlo acá. El resto de E7a (horarios de
+  servicios, housekeeping /me y /status, alta de negocio, locations)
+  sigue abierto, sin cambios.
 - Nota "quizá" del dueño (17/08, tarde): panel de superadmin para editar
   presets de roles/`PLAN_LIMITS` sin tocar código a mano — más grande que
   solo migrar a tabla (implica endpoint + UI de admin), sin alcance
@@ -175,3 +181,70 @@ de datos del dashboard admin y la migración visual al sistema de diseño
 "Bastión" en las 14 pantallas de gestión (+ subpágina de variantes).
 Detalle en `appfrontend-main/docs/sistema-diseno-bastion.md` sección 7.
 Sin pendientes nuevos de ese lado — quedó pusheado completo.
+
+---
+
+## F. E1 resuelto (18/08/2026, noche) — Reservas separado de Turnos
+
+A pedido explícito del dueño ("vamos con E1"), alcance completo elegido
+("Separación completa de paneles", confirmado por pregunta directa antes
+de tocar código — la otra opción era un arreglo puntual sin pantalla
+nueva). Resuelve el síntoma original: una reserva de servicio (ej. corte
+de pelo) contaminaba el panel de Estadías (bug de referencia: "Barbero
+Isahía en el dropdown de check-in").
+
+**Backend:**
+- `resource_categories` gana `is_lodging BOOLEAN NOT NULL DEFAULT FALSE`
+  (schema v17) — `true` = categoría de alojamiento (Reservas/Estadías),
+  `false` = servicio (Turnos). Default `FALSE`: no hay forma de inferir
+  esto en categorías ya existentes, hay que marcarlas a mano desde
+  Categorías después de este deploy.
+- `ResourceCategory`/`CreateCategoryDTO`/`UpdateCategoryDTO`
+  (`types/resource-category.types.ts`), `SqlCategoryRepository`,
+  `category.schemas.ts` (Zod) y `categories.routes.ts` — `isLodging` de
+  punta a punta en GET/POST/PUT.
+- **Bug real encontrado de paso, no relacionado con E1 en sí:**
+  `schema.sql` tenía 4 bloques sucesivos `DROP+ADD CONSTRAINT` para
+  `chk_stock_movements_movement_type` (uno por cada `movement_type` que se
+  fue agregando: base → TRANSFER → WASTE → PRODUCTION). Al reaplicar el
+  archivo completo desde cero contra un tenant que YA tiene filas con
+  `WASTE`/`PRODUCTION` (cualquier negocio activo con POS, incluido el de
+  prueba de esta sesión), el primer bloque —el más angosto, ya
+  superado— fallaba contra esas filas reales, rompiendo la idempotencia
+  que `migrate:tenants` asume (¡corre en cada deploy de Render! — un
+  negocio con esas filas hubiera tumbado el build). Consolidado en un
+  único DROP+ADD con la lista completa. Encontrado porque intentar migrar
+  el negocio de prueba a v17 falló con ese error antes de arreglarlo.
+
+**Frontend:**
+- Categorías: checkbox "Es alojamiento" en el form de crear/editar +
+  indicador en cada card ("Alojamiento — Reservas/Estadías" /
+  "Servicio — Turnos").
+- Reservas: queda acotada a categorías `isLodging=true` (recursos,
+  servicios del selector, y la tabla). Mensaje de empty-state si todavía
+  no hay ninguna categoría marcada.
+- **Turnos (pantalla nueva, nav propio, sin gate de módulo)** — clon
+  deliberado de Reservas con el filtro invertido (categorías
+  `isLodging=false`). Reusa el mismo recurso Refine `'reservas'` — no es
+  un recurso de backend distinto, es la misma entidad `Reservation`
+  filtrada distinto en cada pantalla. Se renombró la variable local
+  preexistente `isLodging` (bookingMode del servicio elegido en el form,
+  un concepto completamente distinto) a `isBlockBooking` en ambas
+  pantallas para no confundirla con `category.isLodging`.
+- Estadías: el dropdown de check-in (`reservationsApi.list({status:
+  'CONFIRMED'})`) ahora filtra a solo reservas de alojamiento — red de
+  seguridad para reservas de servicio creadas antes de este cambio.
+
+**Verificado contra Postgres real y UI** (negocio de prueba,
+`owner@refinetest.local`): migración a schema v17 aplicada tras el fix
+del bug de constraint; categoría marcada `isLodging=true` vía API y UI;
+creada una reserva de alojamiento y una de servicio — la de alojamiento
+solo aparece en Reservas y en el dropdown de check-in, la de servicio
+solo aparece en Turnos, confirmado con capturas y conteo de opciones del
+`<select>`. Datos de prueba limpiados al terminar.
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 538/539 (sin cambios de conteo). **Verificado (frontend):**
+`tsc --noEmit` limpio, `npm run lint` limpio, `npm run build` limpio (26
+rutas, incluida `/dashboard/turnos`), smoke test de consola en las 17
+pantallas del dashboard sin errores.

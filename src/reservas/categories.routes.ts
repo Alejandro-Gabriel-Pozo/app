@@ -123,7 +123,12 @@ export function createCategoryRouter(container: AppContainer): Router {
 
       const service  = buildService(req);
       const category = await service.createCategory(
-        { name: body.name, fields: body.fields as CategoryField[], ...(body.description !== undefined && { description: body.description }) },
+        {
+          name: body.name,
+          fields: body.fields as CategoryField[],
+          ...(body.description !== undefined && { description: body.description }),
+          ...(body.isLodging   !== undefined && { isLodging: body.isLodging }),
+        },
         plan,
       );
       res.status(201).json(category);
@@ -162,6 +167,7 @@ export function createCategoryRouter(container: AppContainer): Router {
           ...(body.description !== undefined && { description: body.description }),
           ...(body.fields      !== undefined && { fields:      body.fields as CategoryField[] }),
           ...(body.active      !== undefined && { active:      body.active }),
+          ...(body.isLodging   !== undefined && { isLodging:   body.isLodging }),
         },
         req.user!.id,
       );
