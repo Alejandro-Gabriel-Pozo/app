@@ -224,6 +224,60 @@ CREATE TABLE IF NOT EXISTS service_schedules (
 );
 
 -- ---------------------------------------------------------------------------
+-- rate_plans (18/08/2026, spec de mejoras PMS — precio por tipo de
+-- habitación en vez de por recurso físico, docs/pendientes-2026-08-18.md
+-- punto M). MAESTRO (docs/criterios-datos.md Parte 1): nunca se hard-borra,
+-- se desactiva (R2/R3); código de negocio = (service_id, name) UNIQUE
+-- (R1/R6).
+--
+-- Tabla separada de `bookable_services` a propósito, no una extensión de
+-- esa tabla: un mismo servicio (ej. "Habitación Doble") puede necesitar
+-- VARIAS tarifas simultáneas (Rack, Corporativa, No reembolsable), y
+-- `bookable_services.price` es una sola columna, un solo valor. `service_id`
+-- ata la tarifa a QUÉ se está reservando; esta tabla resuelve A QUÉ PRECIO
+-- y bajo qué condiciones. Igual patrón de vigencia por rango de fechas que
+-- `plan_limits`/`business_modules` no tienen pero un rate plan hotelero sí
+-- necesita (temporada alta/baja).
+--
+-- R9 (criterios-datos.md): la reserva NO referencia el precio vivo de acá
+-- -- `reservations.total_price`/`reservation_lines.price` siguen siendo el
+-- snapshot congelado al confirmar (ya cumplido desde antes). `rate_plan_id`
+-- en `reservations` es solo trazabilidad ("qué tarifa se eligió"), nunca la
+-- fuente de verdad del precio ya cobrado.
+CREATE TABLE IF NOT EXISTS rate_plans (
+  id                   VARCHAR(255)   PRIMARY KEY,
+  service_id           VARCHAR(255)   NOT NULL
+                         REFERENCES bookable_services(id) ON DELETE CASCADE,
+  name                 VARCHAR(255)   NOT NULL,
+  price                DECIMAL(10,2)  NOT NULL CHECK (price >= 0),
+  includes_breakfast   BOOLEAN        NOT NULL DEFAULT FALSE,
+  cancellation_policy  TEXT,
+  -- NULL = sin restricción de ese extremo (ej. valid_to NULL = vigente
+  -- indefinidamente hacia adelante). Fechas de calendario, no instantes
+  -- -- una tarifa de temporada aplica por DÍA, no por hora (A4.1/A4.3
+  -- distinguen instante de fecha de negocio, esto es lo segundo).
+  valid_from           DATE,
+  valid_to             DATE,
+  active               BOOLEAN        NOT NULL DEFAULT TRUE,
+  created_at           TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT uq_rate_plans_service_name UNIQUE (service_id, name),
+  CONSTRAINT chk_rate_plans_validity CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_plans_service
+  ON rate_plans (service_id) WHERE active = TRUE;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'rate_plans_updated_at') THEN
+    CREATE TRIGGER rate_plans_updated_at
+      BEFORE UPDATE ON rate_plans
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
 -- customers
 -- ---------------------------------------------------------------------------
 -- password_hash nullable: un cliente walk-in creado por el staff (POST
@@ -402,6 +456,19 @@ ALTER TABLE reservations ADD CONSTRAINT chk_reservations_adultos CHECK (adultos 
 
 ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_ninos;
 ALTER TABLE reservations ADD CONSTRAINT chk_reservations_ninos CHECK (ninos IS NULL OR ninos >= 0);
+
+-- rate_plan_id (18/08/2026, spec de mejoras PMS, punto M) — qué tarifa se
+-- eligió al reservar. NULL = no se eligió una tarifa explícita (sigue
+-- resolviendo precio por resource.base_price o el precio de catálogo del
+-- servicio, camino que ya existía). Trazabilidad únicamente — R9: el
+-- precio real cobrado sigue viviendo en total_price/reservation_lines,
+-- congelado al confirmar, nunca se relee de acá. ON DELETE RESTRICT: no
+-- se puede borrar (hard-delete) una tarifa referenciada por una reserva
+-- existente — mismo criterio que el resto de los maestros de este schema.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS rate_plan_id VARCHAR(255) REFERENCES rate_plans(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_reservations_rate_plan
+  ON reservations (rate_plan_id) WHERE rate_plan_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- reservation_lines

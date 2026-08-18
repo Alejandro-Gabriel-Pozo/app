@@ -190,7 +190,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // spec de mejoras PMS (docs/referencia-mejoras-pms-2026-08-18-anexo.md
 // sección A). Nullable: solo se pide/muestra hoy en categorías de
 // alojamiento (isLodging=true); una reserva de Turnos queda con NULL.
-export const CURRENT_SCHEMA_VERSION = 18;
+// v19 (18/08/2026, noche): `rate_plans` (precio por tipo de habitación en
+// vez de por recurso físico) + `reservations.rate_plan_id`. Ver
+// pendientes-2026-08-18.md punto M.
+export const CURRENT_SCHEMA_VERSION = 19;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

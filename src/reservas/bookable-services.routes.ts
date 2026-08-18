@@ -60,6 +60,8 @@ import {
   UpdateBookableServiceSchema,
   CreateServiceScheduleSchema,
   UpdateServiceScheduleSchema,
+  CreateRatePlanSchema,
+  UpdateRatePlanSchema,
 } from '../api/schemas/bookable-service.schemas.js';
 import { ReplaceResourceLocksSchema } from '../api/schemas/resource-lock.schemas.js';
 import type { AppContainer } from '../container.js';
@@ -177,6 +179,44 @@ export function createBookableServicesRouter(_container: AppContainer): Router {
   router.delete('/:id/schedules/:scheduleId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       await buildService(req).removeSchedule(param(req, 'scheduleId'));
+      res.status(204).send();
+    } catch (err) { next(err); }
+  });
+
+  // ── GET /api/bookable-services/:id/rate-plans ──────────────────────────────
+  // 18/08/2026, spec de mejoras PMS — un servicio puede tener varias tarifas
+  // simultáneas (Rack, Corporativa, No reembolsable), ver docs/pendientes-
+  // 2026-08-18.md punto M.
+  router.get('/:id/rate-plans', authorize(Roles.BOOKING), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const ratePlans = await buildService(req).listRatePlans(param(req, 'id'));
+      res.json(ratePlans);
+    } catch (err) { next(err); }
+  });
+
+  // ── POST /api/bookable-services/:id/rate-plans ─────────────────────────────
+  router.post('/:id/rate-plans', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const body = CreateRatePlanSchema.parse(req.body);
+      const ratePlan = await buildService(req).addRatePlan(param(req, 'id'), body);
+      res.status(201).json(ratePlan);
+    } catch (err) { next(err); }
+  });
+
+  // ── PUT /api/bookable-services/:id/rate-plans/:ratePlanId ──────────────────
+  router.put('/:id/rate-plans/:ratePlanId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const body = UpdateRatePlanSchema.parse(req.body);
+      const ratePlan = await buildService(req).updateRatePlan(param(req, 'ratePlanId'), body);
+      res.json(ratePlan);
+    } catch (err) { next(err); }
+  });
+
+  // ── DELETE /api/bookable-services/:id/rate-plans/:ratePlanId ───────────────
+  // Desactiva (MAESTRO, R2/R3) — no hard-delete. Ver BookableServiceService.removeRatePlan.
+  router.delete('/:id/rate-plans/:ratePlanId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      await buildService(req).removeRatePlan(param(req, 'ratePlanId'));
       res.status(204).send();
     } catch (err) { next(err); }
   });

@@ -181,6 +181,7 @@ export function createReservationsRouter(): Router {
           ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
           ...(body.adultos   !== undefined && { adultos: body.adultos }),
           ...(body.ninos     !== undefined && { ninos: body.ninos }),
+          ...(body.ratePlanId !== undefined && { ratePlanId: body.ratePlanId }),
         });
         res.status(201).json(toReservationDto(reservation));
       } catch (err) { next(err); }
@@ -202,6 +203,7 @@ export function createReservationsRouter(): Router {
           ...(body.resourceId !== undefined && { resourceId: body.resourceId }),
           ...(body.adultos    !== undefined && { adultos: body.adultos }),
           ...(body.ninos      !== undefined && { ninos: body.ninos }),
+          ...(body.ratePlanId !== undefined && { ratePlanId: body.ratePlanId }),
         });
         res.json(toReservationDto(updated));
       } catch (err) { next(err); }

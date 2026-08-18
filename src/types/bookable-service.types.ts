@@ -54,6 +54,28 @@ export interface ServiceSchedule {
   active:      boolean;
 }
 
+/**
+ * Tarifa de un servicio (18/08/2026, spec de mejoras PMS) — un mismo
+ * `BookableService` puede tener varias `RatePlan` simultáneas (Rack,
+ * Corporativa, No reembolsable), cada una con su propio precio y vigencia.
+ * `validFrom`/`validTo` son fechas de calendario (no instantes) — una
+ * tarifa de temporada aplica por día. `null` en cualquiera de las dos =
+ * sin restricción de ese extremo.
+ */
+export interface RatePlan {
+  id:                  string;
+  serviceId:           string;
+  name:                string;
+  price:               number;
+  includesBreakfast:   boolean;
+  cancellationPolicy:  string | null;
+  validFrom:           string | null; // YYYY-MM-DD
+  validTo:             string | null; // YYYY-MM-DD
+  active:              boolean;
+  createdAt:           Date;
+  updatedAt:           Date;
+}
+
 // ---------------------------------------------------------------------------
 // DTOs — Bookable Service
 // ---------------------------------------------------------------------------
@@ -95,4 +117,29 @@ export interface UpdateServiceScheduleDTO {
   startTime?:   string | undefined;
   maxCapacity?: number | undefined;
   active?:      boolean | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// DTOs — Rate Plan
+// ---------------------------------------------------------------------------
+
+export interface CreateRatePlanDTO {
+  id:                  string;
+  serviceId:           string;
+  name:                string;
+  price:               number;
+  includesBreakfast?:  boolean | undefined;
+  cancellationPolicy?: string | null | undefined;
+  validFrom?:          string | null | undefined;
+  validTo?:            string | null | undefined;
+}
+
+export interface UpdateRatePlanDTO {
+  name?:                string | undefined;
+  price?:               number | undefined;
+  includesBreakfast?:   boolean | undefined;
+  cancellationPolicy?:  string | null | undefined;
+  validFrom?:           string | null | undefined;
+  validTo?:             string | null | undefined;
+  active?:              boolean | undefined;
 }

@@ -7,15 +7,19 @@ import type { IBookableServiceRepository } from './bookable-service.repository.j
 import type {
   BookableService,
   ServiceSchedule,
+  RatePlan,
   CreateBookableServiceDTO,
   UpdateBookableServiceDTO,
   CreateServiceScheduleDTO,
   UpdateServiceScheduleDTO,
+  CreateRatePlanDTO,
+  UpdateRatePlanDTO,
 } from '../types/bookable-service.types.js';
 
 export class InMemoryBookableServiceRepository implements IBookableServiceRepository {
   private readonly services = new Map<string, BookableService>();
   private readonly schedules = new Map<string, ServiceSchedule>();
+  private readonly ratePlans = new Map<string, RatePlan>();
 
   async findAll(): Promise<BookableService[]> {
     return [...this.services.values()].filter((s) => s.active);
@@ -97,8 +101,62 @@ export class InMemoryBookableServiceRepository implements IBookableServiceReposi
     this.schedules.delete(id);
   }
 
+  async findRatePlansByService(serviceId: string): Promise<RatePlan[]> {
+    return [...this.ratePlans.values()].filter((rp) => rp.serviceId === serviceId && rp.active);
+  }
+
+  async findRatePlanById(id: string): Promise<RatePlan | null> {
+    return this.ratePlans.get(id) ?? null;
+  }
+
+  async createRatePlan(dto: CreateRatePlanDTO): Promise<RatePlan> {
+    const ratePlan: RatePlan = {
+      id: dto.id,
+      serviceId: dto.serviceId,
+      name: dto.name,
+      price: dto.price,
+      includesBreakfast: dto.includesBreakfast ?? false,
+      cancellationPolicy: dto.cancellationPolicy ?? null,
+      validFrom: dto.validFrom ?? null,
+      validTo: dto.validTo ?? null,
+      active: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.ratePlans.set(ratePlan.id, ratePlan);
+    return ratePlan;
+  }
+
+  async updateRatePlan(id: string, dto: UpdateRatePlanDTO): Promise<RatePlan> {
+    const existing = this.ratePlans.get(id);
+    if (!existing) throw new Error(`RatePlan ${id} not found`);
+    const updated: RatePlan = {
+      ...existing,
+      ...(dto.name !== undefined && { name: dto.name }),
+      ...(dto.price !== undefined && { price: dto.price }),
+      ...(dto.includesBreakfast !== undefined && { includesBreakfast: dto.includesBreakfast }),
+      ...(dto.cancellationPolicy !== undefined && { cancellationPolicy: dto.cancellationPolicy }),
+      ...(dto.validFrom !== undefined && { validFrom: dto.validFrom }),
+      ...(dto.validTo !== undefined && { validTo: dto.validTo }),
+      ...(dto.active !== undefined && { active: dto.active }),
+      updatedAt: new Date(),
+    };
+    this.ratePlans.set(id, updated);
+    return updated;
+  }
+
+  async deactivateRatePlan(id: string): Promise<void> {
+    const existing = this.ratePlans.get(id);
+    if (existing) this.ratePlans.set(id, { ...existing, active: false });
+  }
+
   /** Helper de test — carga un servicio directo sin pasar por create(). */
   seed(service: BookableService): void {
     this.services.set(service.id, service);
+  }
+
+  /** Helper de test — carga una tarifa directa sin pasar por createRatePlan(). */
+  seedRatePlan(ratePlan: RatePlan): void {
+    this.ratePlans.set(ratePlan.id, ratePlan);
   }
 }

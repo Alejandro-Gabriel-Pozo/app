@@ -6,10 +6,13 @@
 import type {
   BookableService,
   ServiceSchedule,
+  RatePlan,
   CreateBookableServiceDTO,
   UpdateBookableServiceDTO,
   CreateServiceScheduleDTO,
   UpdateServiceScheduleDTO,
+  CreateRatePlanDTO,
+  UpdateRatePlanDTO,
 } from '../types/bookable-service.types.js';
 
 export interface IBookableServiceRepository {
@@ -26,4 +29,14 @@ export interface IBookableServiceRepository {
   createSchedule(dto: CreateServiceScheduleDTO): Promise<ServiceSchedule>;
   updateSchedule(id: string, dto: UpdateServiceScheduleDTO): Promise<ServiceSchedule>;
   deleteSchedule(id: string): Promise<void>;
+
+  // ---- Rate Plans (18/08/2026, spec de mejoras PMS) ----
+  // MAESTRO (docs/criterios-datos.md R2/R3): nunca hard-delete, por eso
+  // "deactivateRatePlan" y no "deleteRatePlan" — distinto criterio que
+  // deleteSchedule() de arriba (schedules no son MAESTRO).
+  findRatePlansByService(serviceId: string): Promise<RatePlan[]>;
+  findRatePlanById(id: string): Promise<RatePlan | null>;
+  createRatePlan(dto: CreateRatePlanDTO): Promise<RatePlan>;
+  updateRatePlan(id: string, dto: UpdateRatePlanDTO): Promise<RatePlan>;
+  deactivateRatePlan(id: string): Promise<void>;
 }

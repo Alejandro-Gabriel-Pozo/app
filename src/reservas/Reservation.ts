@@ -35,6 +35,14 @@
  *   que pide hotelería específicamente; hoy solo lo completa el
  *   formulario de Reservas/Estadías (categorías `isLodging=true`), una
  *   reserva de Turnos queda con ambos en `null` ("no aplica"), no en 0.
+ *
+ * ## Cambios v8 — rate_plan_id (18/08/2026, spec de mejoras PMS, precio por
+ * tipo de habitación en vez de por recurso físico)
+ * - `+ratePlanId`: opcional, `null` por default. Trazabilidad de qué
+ *   tarifa se eligió al reservar (R9, criterios-datos.md) — el precio real
+ *   ya cobrado sigue viviendo en `totalPrice`/`lines`, congelado; esto NO
+ *   se relee para mostrar el precio, solo para saber "con qué tarifa
+ *   reservó". Ver `ReservationService.resolveUnitPrice()` para la cascada.
  */
 
 import { ReservationStatus } from '../types/enums.js';
@@ -78,6 +86,8 @@ export interface ReservationProps {
   adultos?: number | null;
   /** v7: null = no aplica; requiere `adultos` informado */
   ninos?: number | null;
+  /** v8: tarifa elegida al reservar — trazabilidad, no la fuente del precio (R9) */
+  ratePlanId?: string | null;
 }
 
 export class Reservation {
@@ -91,6 +101,7 @@ export class Reservation {
   public readonly lines: ReservationLine[];
   public readonly adultos: number | null;
   public readonly ninos: number | null;
+  public readonly ratePlanId: string | null;
 
   constructor(props: ReservationProps) {
     const {
@@ -109,6 +120,7 @@ export class Reservation {
       lines = [],
       adultos = null,
       ninos = null,
+      ratePlanId = null,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -147,6 +159,7 @@ export class Reservation {
     this.lines       = lines;
     this.adultos     = adultos;
     this.ninos       = ninos;
+    this.ratePlanId  = ratePlanId;
     this._status     = initialStatus;
   }
 

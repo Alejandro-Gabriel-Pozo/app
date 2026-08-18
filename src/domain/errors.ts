@@ -49,6 +49,19 @@ export class ResourceNotFoundError extends DomainError {
   }
 }
 
+/**
+ * Cubre las tres formas en que una tarifa (RatePlan) puede no ser usable
+ * para una reserva puntual: no existe, está desactivada, o las fechas de
+ * la reserva caen fuera de su vigencia (validFrom/validTo). Un solo error
+ * -- distinguir los tres casos no le aporta nada útil al caller (18/08/2026,
+ * spec de mejoras PMS).
+ */
+export class RatePlanNotAvailableError extends DomainError {
+  constructor(id: string, reason: string) {
+    super(`La tarifa "${id}" no está disponible: ${reason}.`, 'RATE_PLAN_NOT_AVAILABLE');
+  }
+}
+
 export class InvalidCustomerError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_CUSTOMER');

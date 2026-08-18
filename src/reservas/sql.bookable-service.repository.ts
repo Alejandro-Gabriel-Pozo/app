@@ -8,10 +8,13 @@ import type { IBookableServiceRepository } from './bookable-service.repository.j
 import type {
   BookableService,
   ServiceSchedule,
+  RatePlan,
   CreateBookableServiceDTO,
   UpdateBookableServiceDTO,
   CreateServiceScheduleDTO,
   UpdateServiceScheduleDTO,
+  CreateRatePlanDTO,
+  UpdateRatePlanDTO,
   BookingMode,
 } from '../types/bookable-service.types.js';
 
@@ -38,6 +41,25 @@ function mapSchedule(row: Record<string, unknown>): ServiceSchedule {
     startTime:   row['start_time'] as string,
     maxCapacity: Number(row['max_capacity']),
     active:      row['active'] as boolean,
+  };
+}
+
+/** valid_from/valid_to son columnas DATE -- pg las devuelve como Date, se
+ * serializan a 'YYYY-MM-DD' acá (fecha de calendario, no instante, ver
+ * comentario de la tabla en db/schema.sql). */
+function mapRatePlan(row: Record<string, unknown>): RatePlan {
+  return {
+    id:                 row['id'] as string,
+    serviceId:          row['service_id'] as string,
+    name:               row['name'] as string,
+    price:              Number(row['price']),
+    includesBreakfast:  row['includes_breakfast'] as boolean,
+    cancellationPolicy: (row['cancellation_policy'] as string | null) ?? null,
+    validFrom:          row['valid_from'] != null ? new Date(row['valid_from'] as string).toISOString().slice(0, 10) : null,
+    validTo:            row['valid_to']   != null ? new Date(row['valid_to']   as string).toISOString().slice(0, 10) : null,
+    active:             row['active'] as boolean,
+    createdAt:          new Date(row['created_at'] as string),
+    updatedAt:          new Date(row['updated_at'] as string),
   };
 }
 
@@ -179,6 +201,81 @@ export class SqlBookableServiceRepository implements IBookableServiceRepository 
   async deleteSchedule(id: string): Promise<void> {
     await this.db.query(
       `DELETE FROM service_schedules WHERE id = $1`,
+      [id],
+    );
+  }
+
+  // ---- Rate Plans (18/08/2026, spec de mejoras PMS) ----
+
+  async findRatePlansByService(serviceId: string): Promise<RatePlan[]> {
+    const result = await this.db.query(
+      `SELECT * FROM rate_plans WHERE service_id = $1 AND active = TRUE ORDER BY name ASC`,
+      [serviceId],
+    );
+    return (result.rows as Record<string, unknown>[]).map(mapRatePlan);
+  }
+
+  async findRatePlanById(id: string): Promise<RatePlan | null> {
+    const result = await this.db.query(
+      `SELECT * FROM rate_plans WHERE id = $1`,
+      [id],
+    );
+    const rows = result.rows as Record<string, unknown>[];
+    return rows.length ? mapRatePlan(rows[0]!) : null;
+  }
+
+  async createRatePlan(dto: CreateRatePlanDTO): Promise<RatePlan> {
+    const result = await this.db.query(
+      `INSERT INTO rate_plans
+         (id, service_id, name, price, includes_breakfast, cancellation_policy, valid_from, valid_to)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        dto.id,
+        dto.serviceId,
+        dto.name,
+        dto.price,
+        dto.includesBreakfast ?? false,
+        dto.cancellationPolicy ?? null,
+        dto.validFrom ?? null,
+        dto.validTo ?? null,
+      ],
+    );
+    return mapRatePlan((result.rows as Record<string, unknown>[])[0]!);
+  }
+
+  async updateRatePlan(id: string, dto: UpdateRatePlanDTO): Promise<RatePlan> {
+    const setClauses: string[] = [];
+    const values: unknown[]   = [];
+    let   idx = 1;
+
+    if (dto.name               !== undefined) { setClauses.push(`name = $${idx++}`);                 values.push(dto.name); }
+    if (dto.price               !== undefined) { setClauses.push(`price = $${idx++}`);                values.push(dto.price); }
+    if (dto.includesBreakfast   !== undefined) { setClauses.push(`includes_breakfast = $${idx++}`);   values.push(dto.includesBreakfast); }
+    if (dto.cancellationPolicy  !== undefined) { setClauses.push(`cancellation_policy = $${idx++}`);  values.push(dto.cancellationPolicy); }
+    if (dto.validFrom           !== undefined) { setClauses.push(`valid_from = $${idx++}`);           values.push(dto.validFrom); }
+    if (dto.validTo             !== undefined) { setClauses.push(`valid_to = $${idx++}`);             values.push(dto.validTo); }
+    if (dto.active              !== undefined) { setClauses.push(`active = $${idx++}`);               values.push(dto.active); }
+
+    if (setClauses.length === 0) {
+      const rp = await this.findRatePlanById(id);
+      if (!rp) throw new Error(`RatePlan ${id} not found`);
+      return rp;
+    }
+
+    values.push(id);
+    const result = await this.db.query(
+      `UPDATE rate_plans SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values,
+    );
+    const rows = result.rows as Record<string, unknown>[];
+    if (!rows.length) throw new Error(`RatePlan ${id} not found`);
+    return mapRatePlan(rows[0]!);
+  }
+
+  async deactivateRatePlan(id: string): Promise<void> {
+    await this.db.query(
+      `UPDATE rate_plans SET active = FALSE WHERE id = $1`,
       [id],
     );
   }

@@ -12,7 +12,7 @@ import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.c
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
 import { InMemoryHousekeepingRepository } from '../pms-estadias/in-memory.housekeeping.repository.js';
 import { HousekeepingTask } from '../pms-estadias/housekeeping-task.js';
-import { InvalidReservationError, ResourceNotFoundError } from '../domain/errors.js';
+import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -1074,6 +1074,150 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.totalPrice).toBe(160); // 80 * 2 noches
+    });
+
+    // -------------------------------------------------------------------
+    // Rate Plans (18/08/2026, spec de mejoras PMS) — precio por tipo de
+    // habitación en vez de por recurso físico. Cascada: tarifa especial
+    // cliente+servicio > ratePlanId elegido > catálogo del servicio >
+    // tarifa especial cliente+recurso > basePrice del recurso.
+    // -------------------------------------------------------------------
+    it('con ratePlanId, usa el precio de la tarifa en vez del catálogo del servicio', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-doble', categoryId: 'cat-table', name: 'Habitación Doble',
+        bookingMode: 'block', durationMinutes: null, price: 15000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-rack', serviceId: 'svc-doble', name: 'Rack', price: 20000,
+        includesBreakfast: false, cancellationPolicy: null,
+        validFrom: null, validTo: null, active: true,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const reservation = await service.createReservation({
+        id: 'res-rate-plan-1', resourceId: 't1', serviceId: 'svc-doble', ratePlanId: 'rp-rack',
+        customer,
+        startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(20000); // 1 noche, precio de la tarifa, no los 15000 del servicio
+      expect(reservation.ratePlanId).toBe('rp-rack');
+    });
+
+    it('la tarifa especial de cliente+servicio sigue ganando por sobre ratePlanId', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-doble-2', categoryId: 'cat-table', name: 'Habitación Doble 2',
+        bookingMode: 'block', durationMinutes: null, price: 15000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-rack-2', serviceId: 'svc-doble-2', name: 'Rack', price: 20000,
+        includesBreakfast: false, cancellationPolicy: null,
+        validFrom: null, validTo: null, active: true,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+      customerRateRepo.seed([{
+        id: 'rate-negociada', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: null, serviceId: 'svc-doble-2', price: 12000, active: true,
+      }]);
+
+      const reservation = await service.createReservation({
+        id: 'res-rate-plan-2', resourceId: 't1', serviceId: 'svc-doble-2', ratePlanId: 'rp-rack-2',
+        customer,
+        startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(12000); // el descuento negociado gana, no la tarifa pública
+    });
+
+    it('rechaza un ratePlanId inexistente', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-doble-3', categoryId: 'cat-table', name: 'Habitación Doble 3',
+        bookingMode: 'block', durationMinutes: null, price: 15000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      await expect(
+        service.createReservation({
+          id: 'res-rate-plan-3', resourceId: 't1', serviceId: 'svc-doble-3', ratePlanId: 'rp-inexistente',
+          customer,
+          startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(RatePlanNotAvailableError);
+    });
+
+    it('rechaza una tarifa desactivada', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-doble-4', categoryId: 'cat-table', name: 'Habitación Doble 4',
+        bookingMode: 'block', durationMinutes: null, price: 15000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-vieja', serviceId: 'svc-doble-4', name: 'Discontinuada', price: 18000,
+        includesBreakfast: false, cancellationPolicy: null,
+        validFrom: null, validTo: null, active: false,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      await expect(
+        service.createReservation({
+          id: 'res-rate-plan-4', resourceId: 't1', serviceId: 'svc-doble-4', ratePlanId: 'rp-vieja',
+          customer,
+          startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(RatePlanNotAvailableError);
+    });
+
+    it('rechaza una tarifa fuera de su vigencia (validFrom/validTo)', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-doble-5', categoryId: 'cat-table', name: 'Habitación Doble 5',
+        bookingMode: 'block', durationMinutes: null, price: 15000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-temporada', serviceId: 'svc-doble-5', name: 'Temporada baja', price: 12000,
+        includesBreakfast: false, cancellationPolicy: null,
+        validFrom: '2026-06-01', validTo: '2026-06-30', active: true,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      // La reserva es en julio, la tarifa solo vale en junio.
+      await expect(
+        service.createReservation({
+          id: 'res-rate-plan-5', resourceId: 't1', serviceId: 'svc-doble-5', ratePlanId: 'rp-temporada',
+          customer,
+          startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+          details: {},
+        }),
+      ).rejects.toThrow(RatePlanNotAvailableError);
+    });
+
+    it('acepta una tarifa vigente dentro de su rango validFrom/validTo', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-doble-6', categoryId: 'cat-table', name: 'Habitación Doble 6',
+        bookingMode: 'block', durationMinutes: null, price: 15000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-vigente', serviceId: 'svc-doble-6', name: 'Temporada alta', price: 25000,
+        includesBreakfast: true, cancellationPolicy: null,
+        validFrom: '2026-07-01', validTo: '2026-07-31', active: true,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const reservation = await service.createReservation({
+        id: 'res-rate-plan-6', resourceId: 't1', serviceId: 'svc-doble-6', ratePlanId: 'rp-vigente',
+        customer,
+        startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(25000);
     });
   });
 

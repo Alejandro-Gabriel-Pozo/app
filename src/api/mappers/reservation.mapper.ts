@@ -50,6 +50,8 @@ export interface ReservationDto {
   /** Desglose de huéspedes (hotelería, 18/08/2026) — null = no aplica a este tipo de reserva. */
   adultos: number | null;
   ninos: number | null;
+  /** Tarifa elegida al reservar (spec de mejoras PMS, 18/08/2026) — trazabilidad, no la fuente del precio (R9). */
+  ratePlanId: string | null;
   totalPrice: number;
   /**
    * Desglose por unidad temporal (una noche en bookingMode='block', una
@@ -96,6 +98,7 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     notes:     reservation.notes,
     adultos:   reservation.adultos,
     ninos:     reservation.ninos,
+    ratePlanId: reservation.ratePlanId,
     totalPrice: reservation.totalPrice,
     lines: reservation.lines.map((line) => ({
       id:       line.id,

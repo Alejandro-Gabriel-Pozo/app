@@ -8,9 +8,11 @@ import type { IBookableServiceRepository } from './bookable-service.repository.j
 import type {
   BookableService,
   ServiceSchedule,
+  RatePlan,
   CreateBookableServiceDTO,
   UpdateBookableServiceDTO,
   UpdateServiceScheduleDTO,
+  UpdateRatePlanDTO,
 } from '../types/bookable-service.types.js';
 import { DomainError } from '../domain/errors.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
@@ -39,6 +41,24 @@ export class ServiceScheduleNotFoundError extends DomainError {
 export class ScheduleConflictError extends DomainError {
   constructor(dayOfWeek: number, startTime: string) {
     super(`Ya existe un schedule activo para día ${dayOfWeek} a las ${startTime}.`, 'SCHEDULE_CONFLICT');
+  }
+}
+
+export class RatePlanNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Tarifa '${id}' no encontrada.`, 'RATE_PLAN_NOT_FOUND');
+  }
+}
+
+export class DuplicateRatePlanNameError extends DomainError {
+  constructor(name: string) {
+    super(`Ya existe una tarifa llamada '${name}' para este servicio.`, 'DUPLICATE_RATE_PLAN_NAME');
+  }
+}
+
+export class InvalidRatePlanValidityError extends DomainError {
+  constructor() {
+    super('validTo no puede ser anterior a validFrom.', 'INVALID_RATE_PLAN_VALIDITY');
   }
 }
 
@@ -146,5 +166,64 @@ export class BookableServiceService {
     const existing = await this.repo.findScheduleById(scheduleId);
     if (!existing) throw new ServiceScheduleNotFoundError(scheduleId);
     await this.repo.deleteSchedule(scheduleId);
+  }
+
+  // ---- Rate Plans (18/08/2026, spec de mejoras PMS) ----
+
+  async listRatePlans(serviceId: string): Promise<RatePlan[]> {
+    const service = await this.repo.findById(serviceId);
+    if (!service) throw new BookableServiceNotFoundError(serviceId);
+    return this.repo.findRatePlansByService(serviceId);
+  }
+
+  async addRatePlan(
+    serviceId: string,
+    data: { name: string; price: number; includesBreakfast?: boolean | undefined; cancellationPolicy?: string | null | undefined; validFrom?: string | null | undefined; validTo?: string | null | undefined },
+  ): Promise<RatePlan> {
+    const service = await this.repo.findById(serviceId);
+    if (!service) throw new BookableServiceNotFoundError(serviceId);
+
+    assertValidRange(data.validFrom, data.validTo);
+
+    const existing = await this.repo.findRatePlansByService(serviceId);
+    if (existing.some((rp) => rp.name.toLowerCase() === data.name.toLowerCase())) {
+      throw new DuplicateRatePlanNameError(data.name);
+    }
+
+    return this.repo.createRatePlan({ id: randomUUID(), serviceId, ...data });
+  }
+
+  async updateRatePlan(ratePlanId: string, data: UpdateRatePlanDTO): Promise<RatePlan> {
+    const existing = await this.repo.findRatePlanById(ratePlanId);
+    if (!existing) throw new RatePlanNotFoundError(ratePlanId);
+
+    assertValidRange(
+      data.validFrom !== undefined ? data.validFrom : existing.validFrom,
+      data.validTo   !== undefined ? data.validTo   : existing.validTo,
+    );
+
+    if (data.name !== undefined && data.name.toLowerCase() !== existing.name.toLowerCase()) {
+      const siblings = await this.repo.findRatePlansByService(existing.serviceId);
+      if (siblings.some((rp) => rp.id !== ratePlanId && rp.name.toLowerCase() === data.name!.toLowerCase())) {
+        throw new DuplicateRatePlanNameError(data.name);
+      }
+    }
+
+    return this.repo.updateRatePlan(ratePlanId, data);
+  }
+
+  async removeRatePlan(ratePlanId: string): Promise<void> {
+    const existing = await this.repo.findRatePlanById(ratePlanId);
+    if (!existing) throw new RatePlanNotFoundError(ratePlanId);
+    // MAESTRO (R2/R3) — deactivate, no hard-delete. Una reserva ya creada
+    // con esta tarifa (reservations.rate_plan_id) sigue siendo válida e
+    // intacta (R10) aunque la tarifa deje de ofrecerse para reservas nuevas.
+    await this.repo.deactivateRatePlan(ratePlanId);
+  }
+}
+
+function assertValidRange(validFrom: string | null | undefined, validTo: string | null | undefined): void {
+  if (validFrom && validTo && validTo < validFrom) {
+    throw new InvalidRatePlanValidityError();
   }
 }

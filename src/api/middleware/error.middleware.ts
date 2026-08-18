@@ -95,6 +95,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'RECIPE_CYCLE':
     case 'RECIPE_NOT_DEFINED':
     case 'BUSINESS_NOT_IN_COMPANY':
+    case 'RATE_PLAN_NOT_AVAILABLE':
+    case 'INVALID_RATE_PLAN_VALIDITY':
       return 400;
 
     // --- 422 Unprocessable Entity ---
@@ -137,6 +139,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RECIPE_ITEM_NOT_FOUND':
     case 'PRODUCT_NOT_SHARED':
     case 'COMPANY_PRODUCT_NOT_FOUND':
+    case 'RATE_PLAN_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -151,6 +154,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'STAY_BALANCE_OWED':
     case 'PRODUCT_HAS_STOCK':
     case 'INVALID_OVERRIDE_TRANSITION':
+    case 'DUPLICATE_RATE_PLAN_NAME':
       return 409;
 
     // --- 503 Service Unavailable ---

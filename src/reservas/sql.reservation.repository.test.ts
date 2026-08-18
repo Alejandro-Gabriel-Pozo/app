@@ -115,7 +115,7 @@ describe('SqlReservationRepository', () => {
     const insertClause = sql.slice(0, sql.indexOf('ON CONFLICT'));
     const setClause = sql.slice(sql.indexOf('DO UPDATE SET'));
 
-    for (const column of ['service_id', 'party_size', 'notes', 'order_item_id', 'adultos', 'ninos']) {
+    for (const column of ['service_id', 'party_size', 'notes', 'order_item_id', 'adultos', 'ninos', 'rate_plan_id']) {
       expect(insertClause).toContain(column);
       expect(setClause).toMatch(new RegExp(`${column}\\s*=`));
     }

@@ -789,3 +789,81 @@ con posicionamiento vía portal es más propenso a bugs sutiles (recorte,
 z-index, offset) que un cambio de input — recomendado confirmarlo a
 simple vista en Reservas → pestaña Calendario antes de darlo por cerrado
 del todo.
+
+---
+
+## M. Precio por tipo de habitación — `rate_plans` (18/08/2026, noche)
+
+A pedido explícito del dueño, surgido de una conversación sobre check-in/
+check-out y precio de recursos que trajo análisis externo (citado en el
+chat, no un documento formal). Dos decisiones grandes, ambas dadas vuelta
+al menos una vez en la conversación antes de asentarse — quedan
+documentadas con el razonamiento final, no solo la conclusión:
+
+**Decisión 1 — confirmado que hoy el precio vive en el lugar equivocado.**
+`resources.base_price` (la habitación física) tenía el precio; `resource_
+categories` (el tipo, "Doble Estándar") no tenía nada. Coincide con cómo
+lo modela la industria (Booking.com: room type × rate plan).
+
+**Decisión 2 — tabla `rate_plans` separada, NO extender `bookable_services`.**
+Se evaluó dos veces: primero se propuso extender `bookable_services`
+(ya tiene `category_id`+`price`+`active`, casi cumple el rol de rate
+plan). El dueño lo aceptó, después trajo un segundo análisis externo
+cuestionando si hacía falta la tabla nueva ("¿puede haber N servicios
+activos por categoría hoy? si sí, no hace falta tocar la estructura").
+Se verificó: sí puede (no hay constraint que lo bloquee) — pero eso no
+alcanza. El argumento que cerró la discusión: `bookable_services` carga
+config OPERATIVA por fila (`resource_locks`, `service_schedules`,
+`bookingMode`, `durationMinutes`), no solo precio. Si "Doble Estándar —
+Rack" y "Doble Estándar — Corporativa" fueran DOS filas de
+`bookable_services`, cada una necesitaría su propia configuración de
+`resource_locks`/horarios repetida — exactamente la duplicación que el
+proyecto viene evitando toda la sesión. `rate_plans` separada resuelve
+esto: la config operativa vive UNA vez en el servicio, N tarifas cuelgan
+de él solo con precio/vigencia/política de cancelación.
+
+### Backend
+
+- `rate_plans` (schema v19) — MAESTRO (R2/R3: nunca hard-delete, se
+  desactiva), código de negocio `(service_id, name)` UNIQUE (R1/R6).
+  Columnas: `price`, `includes_breakfast`, `cancellation_policy`,
+  `valid_from`/`valid_to` (fechas de calendario, vigencia por temporada).
+  `reservations.rate_plan_id` (nullable, `ON DELETE RESTRICT`) — **solo
+  trazabilidad** (R9): el precio real cobrado sigue viviendo en
+  `total_price`/`reservation_lines`, congelado al calcularse: un cambio
+  futuro de tarifa NUNCA reescribe una reserva ya creada.
+- CRUD completo (`BookableServiceService`): `listRatePlans`/`addRatePlan`
+  (rechaza nombre duplicado por servicio y `validTo < validFrom`)/
+  `updateRatePlan`/`removeRatePlan` (desactiva, no borra). Rutas anidadas
+  bajo el servicio: `GET/POST /api/bookable-services/:id/rate-plans`,
+  `PUT/DELETE /api/bookable-services/:id/rate-plans/:ratePlanId` — mismo
+  patrón que `service_schedules`, la entidad nested ya existente más
+  parecida.
+- Cascada de precio (`ReservationService.resolveUnitPrice()`) gana un
+  escalón: tarifa especial cliente+servicio (gana primero, es un
+  descuento ya negociado) → **`ratePlanId` elegido** (valida existe +
+  activa + `startTime` dentro de `validFrom`/`validTo`, si no,
+  `RatePlanNotAvailableError` 400) → precio de catálogo del servicio →
+  tarifa especial cliente+recurso → `basePrice` del recurso (fallback
+  que queda, sin tocar, para reservas sin tarifa elegida).
+- `createReservation()`/`updateReservation()` aceptan `ratePlanId`
+  opcional; editable en `updateReservation()` con el mismo criterio de
+  recotización de PENDING que ya regía `adultos`/`ninos` (punto K).
+
+### Frontend
+
+Pendiente en este mismo bloque de trabajo — selector de dos pasos
+(elegir servicio → elegir tarifa disponible) en el alta de Reservas, y
+gestión de tarifas integrada en la pantalla de Servicios existente (no
+una pantalla nueva — el dueño pidió explícitamente no duplicar UI por
+estética, la tabla es distinta pero la interfaz no).
+
+**Verificado (backend) contra Postgres real** (tenant `refine-test-
+business`, schema aplicado a v19): columnas/tabla nuevas confirmadas;
+un servicio con DOS tarifas simultáneas creado y listado correctamente;
+una reserva con `ratePlanId` guardada y releída con una instancia de
+repositorio nueva confirmó que `ratePlanId`/`totalPrice` (tomado de la
+tarifa, no del servicio) persisten de verdad. Datos de prueba limpiados.
+`tsc --noEmit` limpio, `npm run lint` limpio, `npm test` 588/588 (+14
+tests nuevos: 8 de CRUD de tarifas, 6 de la cascada de precio incluida
+la prioridad sobre tarifa negociada y los bordes de vigencia).

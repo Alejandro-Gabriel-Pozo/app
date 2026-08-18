@@ -55,6 +55,10 @@ export const CreateReservationSchema = z.object({
   // el dominio, Reservation.ts).
   adultos: z.number().int().min(1).optional(),
   ninos:   z.number().int().min(0).optional(),
+  // Tarifa elegida (spec de mejoras PMS, 18/08/2026) — requiere serviceId,
+  // validado en ReservationService.resolveUnitPrice() (existe, activa,
+  // vigente para la fecha de la reserva).
+  ratePlanId: z.string().min(1).optional(),
 }).refine(
   (data) => Boolean(data.resourceId) !== Boolean(data.categoryId),
   { message: 'Se requiere exactamente uno de resourceId o categoryId', path: ['resourceId'] },
@@ -78,10 +82,13 @@ export const UpdateReservationSchema = z.object({
   // borra el dato (vuelve a "no aplica"), `undefined`/ausente no lo toca.
   adultos: z.number().int().min(1).nullable().optional(),
   ninos:   z.number().int().min(0).nullable().optional(),
+  // Tarifa elegida (spec de mejoras PMS, 18/08/2026) — recotiza si la
+  // reserva sigue PENDING. `null` explícito vuelve a precio de catálogo.
+  ratePlanId: z.string().min(1).nullable().optional(),
 }).refine(
   (data) => data.startTime || data.endTime || data.details || data.resourceId
-    || data.adultos !== undefined || data.ninos !== undefined,
-  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos o ninos' },
+    || data.adultos !== undefined || data.ninos !== undefined || data.ratePlanId !== undefined,
+  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos, ninos o ratePlanId' },
 ).superRefine((data, ctx) => {
   if (data.startTime && data.endTime && new Date(data.endTime) <= new Date(data.startTime)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'endTime debe ser posterior a startTime', path: ['endTime'] });

@@ -24,6 +24,7 @@ interface ReservationRow {
   total_price: string;
   adultos?: number | null;
   ninos?: number | null;
+  rate_plan_id?: string | null;
 }
 
 /**
@@ -69,6 +70,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.orderItemId,
       reservation.adultos,
       reservation.ninos,
+      reservation.ratePlanId,
     ];
   }
 
@@ -102,9 +104,9 @@ export class SqlReservationRepository implements ReservationRepository {
       id, customer_id, customer_name, customer_email,
       resource_id, status,
       start_time, end_time, details, updated_at, total_price,
-      service_id, party_size, notes, order_item_id, adultos, ninos
+      service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -118,7 +120,8 @@ export class SqlReservationRepository implements ReservationRepository {
       notes         = $13,
       order_item_id = $14,
       adultos       = $15,
-      ninos         = $16
+      ninos         = $16,
+      rate_plan_id  = $17
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -362,7 +365,7 @@ export class SqlReservationRepository implements ReservationRepository {
         r.id, r.customer_id, r.customer_name, r.customer_email,
         r.resource_id, r.status, r.start_time, r.end_time, r.details,
         r.service_id, r.party_size, r.notes, r.order_item_id, r.total_price,
-        r.adultos, r.ninos
+        r.adultos, r.ninos, r.rate_plan_id
       FROM reservations r
     `;
   }
@@ -396,6 +399,7 @@ export class SqlReservationRepository implements ReservationRepository {
       lines,
       adultos:       row.adultos ?? null,
       ninos:         row.ninos   ?? null,
+      ratePlanId:    row.rate_plan_id ?? null,
     });
   }
 

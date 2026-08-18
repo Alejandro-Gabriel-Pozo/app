@@ -100,6 +100,7 @@ import {
   InvalidReservationError,
   ResourceNotFoundError,
   ReservationNotFoundError,
+  RatePlanNotAvailableError,
 } from '../domain/errors.js';
 import { validateDetailsAgainstFields } from './category.service.js';
 import type { ReservationRepository }        from './reservation.repository.js';
@@ -139,6 +140,8 @@ export class ReservationService {
     endTime?: Date;
     details: Record<string, unknown>;
     serviceId?: string;
+    /** Tarifa elegida (spec de mejoras PMS, 18/08/2026) — requiere serviceId; ver resolveUnitPrice(). */
+    ratePlanId?: string;
     /** Desglose de huéspedes (hotelería, 18/08/2026) — null/omitido = no aplica a este tipo de reserva. */
     adultos?: number | null;
     ninos?: number | null;
@@ -175,6 +178,7 @@ export class ReservationService {
       customerId: params.customer.id,
       resourceId: params.resourceId,
       serviceId:  params.serviceId,
+      ratePlanId: params.ratePlanId,
       resource,
       service,
       startTime:  params.startTime,
@@ -206,6 +210,7 @@ export class ReservationService {
         endTime,
         details:   params.details,
         ...(params.serviceId !== undefined && { serviceId: params.serviceId }),
+        ratePlanId: params.ratePlanId ?? null,
         adultos: params.adultos ?? null,
         ninos:   params.ninos ?? null,
         totalPrice,
@@ -269,6 +274,7 @@ export class ReservationService {
     customerId: string;
     resourceId: string;
     serviceId: string | undefined;
+    ratePlanId: string | undefined;
     resource: PhysicalResource;
     service: BookableService | null;
     startTime: Date;
@@ -285,12 +291,24 @@ export class ReservationService {
     return { totalPrice, lines };
   }
 
+  /**
+   * Cascada de precio (spec de mejoras PMS, 18/08/2026 — agrega el escalón
+   * de `ratePlanId`, ver docs/pendientes-2026-08-18.md punto M):
+   * tarifa especial cliente+servicio > tarifa elegida (`ratePlanId`) >
+   * precio de catálogo del servicio > tarifa especial cliente+recurso >
+   * precio base del recurso. La tarifa especial de cliente sigue ganando
+   * primero a propósito — es un descuento ya negociado, no debería perderse
+   * porque alguien eligió una tarifa pública en el medio.
+   */
   private async resolveUnitPrice(params: {
     customerId: string;
     resourceId: string;
     serviceId: string | undefined;
+    ratePlanId: string | undefined;
     resource: PhysicalResource;
     service: BookableService | null;
+    startTime?: Date;
+    endTime?: Date;
   }): Promise<number> {
     if (params.serviceId) {
       const serviceRate = await this.customerRateRepository.findActiveForCustomerAndService(
@@ -298,6 +316,11 @@ export class ReservationService {
         params.serviceId,
       );
       if (serviceRate) return serviceRate.price;
+
+      if (params.ratePlanId) {
+        return this.resolveRatePlanPrice(params.ratePlanId, params.startTime, params.endTime);
+      }
+
       if (params.service) return params.service.price;
     }
 
@@ -308,6 +331,32 @@ export class ReservationService {
     if (resourceRate) return resourceRate.price;
 
     return params.resource.basePrice;
+  }
+
+  /**
+   * Valida que la tarifa elegida exista, esté activa, y que el rango de la
+   * reserva caiga dentro de su vigencia (`validFrom`/`validTo`, fechas de
+   * calendario) — chequea la fecha de INICIO únicamente; una estadía que
+   * empieza dentro de la vigencia pero termina después queda fuera de
+   * alcance de esta pasada (simplificación deliberada, mismo criterio que
+   * el resto de "no resolver todos los bordes sin caso de uso real").
+   */
+  private async resolveRatePlanPrice(ratePlanId: string, startTime: Date | undefined, _endTime: Date | undefined): Promise<number> {
+    const ratePlan = await this.bookableServiceRepository.findRatePlanById(ratePlanId);
+    if (!ratePlan) throw new RatePlanNotAvailableError(ratePlanId, 'no existe');
+    if (!ratePlan.active) throw new RatePlanNotAvailableError(ratePlanId, 'está desactivada');
+
+    if (startTime) {
+      const dateStr = startTime.toISOString().slice(0, 10);
+      if (ratePlan.validFrom && dateStr < ratePlan.validFrom) {
+        throw new RatePlanNotAvailableError(ratePlanId, `no es válida hasta ${ratePlan.validFrom}`);
+      }
+      if (ratePlan.validTo && dateStr > ratePlan.validTo) {
+        throw new RatePlanNotAvailableError(ratePlanId, `dejó de ser válida el ${ratePlan.validTo}`);
+      }
+    }
+
+    return ratePlan.price;
   }
 
   /**
@@ -362,6 +411,8 @@ export class ReservationService {
       /** Desglose de huéspedes (hotelería, 18/08/2026) — ver docblock de createReservation. */
       adultos?: number | null;
       ninos?: number | null;
+      /** Tarifa elegida (spec de mejoras PMS, 18/08/2026) — recotiza si sigue PENDING, ver más abajo. */
+      ratePlanId?: string | null;
     },
   ): Promise<Reservation> {
     const existing = await this.requireReservation(id);
@@ -380,16 +431,17 @@ export class ReservationService {
 
     if (
       !changes.startTime && !changes.endTime && !changes.details && !changes.resourceId
-      && changes.adultos === undefined && changes.ninos === undefined
+      && changes.adultos === undefined && changes.ninos === undefined && changes.ratePlanId === undefined
     ) {
       throw new InvalidReservationError(
-        'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos o ninos',
+        'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos, ninos o ratePlanId',
       );
     }
 
     const newStartTime = changes.startTime ?? existing.startTime;
     const newEndTime   = changes.endTime   ?? existing.endTime;
     const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
+    const newRatePlanId = changes.ratePlanId !== undefined ? changes.ratePlanId : existing.ratePlanId;
     const newAdultos   = changes.adultos !== undefined ? changes.adultos : existing.adultos;
     const newNinos     = changes.ninos   !== undefined ? changes.ninos   : existing.ninos;
 
@@ -441,6 +493,7 @@ export class ReservationService {
         customerId: existing.customer.id,
         resourceId: resource.id,
         serviceId:  existing.serviceId ?? undefined,
+        ratePlanId: newRatePlanId ?? undefined,
         resource,
         service,
         startTime:  newStartTime,
@@ -480,6 +533,7 @@ export class ReservationService {
         orderItemId:   existing.orderItemId,
         adultos:       newAdultos,
         ninos:         newNinos,
+        ratePlanId:    newRatePlanId,
         totalPrice,
         lines,
       });
