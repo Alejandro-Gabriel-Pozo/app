@@ -178,6 +178,14 @@ para el detalle completo de cada uno:
   ya resuelve el caso más común, no el fusionar historial).
 - Sitios corporativos (dominio propio) + guest checkout + magic link —
   solo documentado.
+- **Sin endpoint para que un negocio cambie su propio plan** (self-serve
+  billing) — hoy el único camino es una `UPDATE businesses SET plan = ...`
+  a mano en la BD central. No es una limitante hoy (sin cobro online
+  todavía), pero significa que activar el plan ENTERPRISE nuevo (ver punto
+  de "gate de plan Enterprise" más arriba) también depende de eso mismo:
+  ningún negocio puede pasarse solo a ENTERPRISE, lo hace el dueño directo
+  en la base. Anotado a pedido del dueño (18/08, noche) — no bloquea nada
+  hoy, es contexto para cuando se diseñe upgrade/downgrade de plan.
 
 ### Frontend faltante — ✅ RESUELTO (18/08/2026, noche)
 
