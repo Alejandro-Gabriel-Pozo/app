@@ -107,9 +107,13 @@ export function createCategoryRouter(container: AppContainer): Router {
 
       // Usa getBusinessPlan() en lugar de platformRepo.findById() —
       // solo trae el plan (string), no el objeto completo del negocio.
-      let plan;
+      // getPlanLimits() se resuelve en el mismo try: ambas son consultas a
+      // la BD de plataforma y comparten el mismo contrato de error (503
+      // PLATFORM_UNAVAILABLE si esa BD no responde).
+      let plan, limits;
       try {
-        plan = await container.getBusinessPlan(businessId);
+        plan   = await container.getBusinessPlan(businessId);
+        limits = await container.getPlanLimits(plan);
       } catch {
         // La BD de plataforma no respondió. El tenant sigue operativo pero
         // no podemos verificar el límite de plan. Respondemos 503 con un
@@ -130,6 +134,7 @@ export function createCategoryRouter(container: AppContainer): Router {
           ...(body.isLodging   !== undefined && { isLodging: body.isLodging }),
         },
         plan,
+        limits,
       );
       res.status(201).json(category);
     } catch (err) {

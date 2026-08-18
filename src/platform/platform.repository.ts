@@ -12,6 +12,7 @@
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessPlan} from '../types/enums.js';
 import { BusinessStatus, ModuleKey } from '../types/enums.js';
+import type { PlanLimits } from '../config/plan-limits.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -331,6 +332,53 @@ export class PlatformRepository {
       'SELECT * FROM businesses ORDER BY created_at DESC',
     );
     return result.rows.map((r) => this.rowToBusiness(r));
+  }
+
+  // -------------------------------------------------------------------------
+  // Plan limits — límites de uso por plan (18/08/2026, deuda estructural,
+  // reemplaza la constante TS `PLAN_LIMITS` — ver platform.schema.sql
+  // BLOQUE PLAN_LIMITS para el diseño completo).
+  // -------------------------------------------------------------------------
+
+  /**
+   * `undefined` si el plan no tiene fila en `plan_limits` — el caller
+   * (AppContainer.getPlanLimits, container.ts) lo trata como config de
+   * plataforma faltante y lanza, mismo contrato de error que
+   * getBusinessPlan/getBusinessModules ante un negocio inexistente (fail
+   * fast en vez de devolver un límite por default en silencio).
+   *
+   * `NULL` en las columnas numéricas = sin límite → se mapea a `Infinity`
+   * acá para que el resto del código (PlanLimitError, comparaciones
+   * `current >= limit`) no tenga que conocer el detalle de la columna.
+   * 0 filas en `plan_limit_allowed_roles` para el plan = sin restricción
+   * de roles → se mapea a `'ALL'`.
+   */
+  async getPlanLimits(plan: BusinessPlan): Promise<PlanLimits | undefined> {
+    const limitsResult = await this.db.query<{
+      max_categories: number | null;
+      max_resources: number | null;
+      max_active_memberships: number | null;
+    }>(
+      `SELECT max_categories, max_resources, max_active_memberships
+       FROM plan_limits WHERE plan = $1`,
+      [plan],
+    );
+    const row = limitsResult.rows[0];
+    if (!row) return undefined;
+
+    const rolesResult = await this.db.query<{ role_name: string }>(
+      `SELECT role_name FROM plan_limit_allowed_roles WHERE plan = $1`,
+      [plan],
+    );
+
+    return {
+      maxCategories: row.max_categories ?? Infinity,
+      maxResources: row.max_resources ?? Infinity,
+      maxActiveMemberships: row.max_active_memberships ?? Infinity,
+      allowedRoleNames: rolesResult.rows.length > 0
+        ? rolesResult.rows.map((r) => r.role_name)
+        : 'ALL',
+    };
   }
 
   // -------------------------------------------------------------------------

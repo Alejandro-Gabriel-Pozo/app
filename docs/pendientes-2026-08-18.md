@@ -90,8 +90,33 @@ para el detalle completo de cada uno:
   la tabla — cascade de borrado limpió todo sin huérfanos. Verificado:
   `tsc --noEmit` limpio, `npm run lint` limpio, `npm test` 545/545
   (+1 test nuevo).
-- `PLAN_LIMITS` (`src/config/plan-limits.ts`) sigue siendo una constante
-  de código, no una tabla en la BD de plataforma.
+- ✅ **RESUELTO (18/08/2026, noche)** — `PLAN_LIMITS` (`src/config/plan-limits.ts`)
+  seguía siendo una constante de código. A pedido explícito del dueño
+  ("PLAN_LIMITS a tabla en BD"). Se creó `plan_limits`/
+  `plan_limit_allowed_roles` en `platform.schema.sql` (mismo patrón que
+  `role_presets` de este mismo documento): `NULL` en las columnas
+  numéricas = sin límite (mapeado a `Infinity` al leer, plan PRO); 0 filas
+  en `plan_limit_allowed_roles` para un plan = sin restricción de roles
+  (mapeado a `'ALL'`). Nuevo `PlatformRepository.getPlanLimits(plan)` +
+  `AppContainer.getPlanLimits(plan)` (container.ts, mismo contrato de
+  error que `getBusinessPlan`/`getBusinessModules`: lanza si el plan no
+  tiene fila configurada, en vez de aplicar un límite por default en
+  silencio). `plan-limits.ts` ahora solo declara el tipo `PlanLimits`, sin
+  la constante. `CategoryService.createCategory()` pasa a recibir
+  `limits: PlanLimits` ya resuelto por la capa HTTP (no consulta la BD de
+  plataforma desde un service tenant-only — se mantiene la separación que
+  ya regía `plan`); `categories.routes.ts` y `usuarios-roles/users.routes.ts`
+  (los dos call sites, POST y PUT) resuelven `getBusinessPlan` +
+  `getPlanLimits` en el mismo try/catch 503 PLATFORM_UNAVAILABLE. Tests
+  nuevos: `PlatformRepository.getPlanLimits()` (mapeo NULL→Infinity y
+  0-filas→'ALL' con fake `SqlClient`, sin base real) y
+  `CategoryService.createCategory()` con límite de plan (antes sin
+  cobertura, gap preexistente). **Verificado contra Postgres real**
+  (misma BD de `demo`/`refine-test-business`): schema aplicado, los 3
+  planes (FREE/STARTER/PRO) devuelven exactamente los mismos valores que
+  la constante hardcodeada de antes, incluida la conversión NULL→Infinity
+  de PRO. Verificado: `tsc --noEmit` limpio, `npm run lint` limpio,
+  `npm test` 551/551 (+7 tests nuevos).
 - Huso horario Argentina fijo (`-03:00`) en
   `reservation.service.ts::combineDateAndTime()` — camino crítico de
   disponibilidad/reservas, dejado a propósito para una sesión propia

@@ -22,7 +22,7 @@ import type {
   UpdateCategoryDTO,
   CategoryField,
 } from '../types/resource-category.types.js';
-import { PLAN_LIMITS } from '../config/plan-limits.js';
+import type { PlanLimits } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
@@ -99,11 +99,17 @@ export class CategoryService {
     return cat;
   }
 
+  /**
+   * `limits` se resuelve en la capa HTTP (categories.routes.ts, vía
+   * AppContainer.getPlanLimits) y se pasa ya armado -- este service NO
+   * consulta la BD de plataforma directamente (queda tenant-only, mismo
+   * criterio que ya regía `plan`).
+   */
   async createCategory(
     dto: Omit<CreateCategoryDTO, 'id'>,
     plan: BusinessPlan,
+    limits: PlanLimits,
   ): Promise<ResourceCategory> {
-    const limits  = PLAN_LIMITS[plan];
     const current = await this.categoryRepository.countActive();
 
     if (current >= limits.maxCategories) {

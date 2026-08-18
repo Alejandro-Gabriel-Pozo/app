@@ -22,16 +22,18 @@
  *
  * ## Límite de asientos y roles por plan (17/08/2026, F2, pendientes-2026-08-17.md)
  * POST /users chequea, en este orden, ANTES de crear identity/membership:
- * 1. El rol elegido tiene que estar en `PLAN_LIMITS[plan].allowedRoleNames`
- *    (422→402 ROLE_NOT_AVAILABLE_IN_PLAN) — ej. plan FREE solo permite
- *    asignar ADMIN, no RECEPTIONIST/HOUSEKEEPING/WAITER.
+ * 1. El rol elegido tiene que estar en `limits.allowedRoleNames`
+ *    (`container.getPlanLimits(plan)`, 422→402 ROLE_NOT_AVAILABLE_IN_PLAN)
+ *    — ej. plan FREE solo permite asignar ADMIN, no
+ *    RECEPTIONIST/HOUSEKEEPING/WAITER.
  * 2. Las membresías activas no-OWNER del negocio no superan
  *    `maxActiveMemberships` (402 PLAN_LIMIT_REACHED).
  * PUT /users/:id repite el chequeo (1) cuando cambia el roleId — cambiar de
  * rol no suma un asiento nuevo, así que no repite el chequeo (2).
- * Mismo patrón que categories.routes.ts: `container.getBusinessPlan()`
- * (no `platformRepo.findById()` — más liviano) con 503 PLATFORM_UNAVAILABLE
- * si la BD de plataforma no responde.
+ * Mismo patrón que categories.routes.ts: `container.getBusinessPlan()` +
+ * `container.getPlanLimits()` (18/08/2026: los límites viven en la tabla
+ * `plan_limits` de la BD de plataforma, ya no en la constante TS
+ * `PLAN_LIMITS`) con 503 PLATFORM_UNAVAILABLE si esa BD no responde.
  */
 
 import { Router } from 'express';
@@ -42,7 +44,6 @@ import { Roles } from '../security/roles.js';
 import { hashPassword } from '../security/user.store.js';
 import type { PlatformRepository } from '../platform/platform.repository.js';
 import type { AppContainer } from '../container.js';
-import { PLAN_LIMITS } from '../config/plan-limits.js';
 import { PlanLimitError, RoleNotAvailableInPlanError } from '../domain/errors.js';
 
 /**
@@ -152,9 +153,12 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
         }
 
         // Límite de asientos y roles por plan (F2) — ver docblock del archivo.
-        let plan;
+        // getPlanLimits() en el mismo try que getBusinessPlan: mismo
+        // contrato de error, las dos son consultas a la BD de plataforma.
+        let plan, limits;
         try {
-          plan = await container.getBusinessPlan(businessId);
+          plan   = await container.getBusinessPlan(businessId);
+          limits = await container.getPlanLimits(plan);
         } catch {
           res.status(503).json({
             code:    'PLATFORM_UNAVAILABLE',
@@ -162,7 +166,6 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
           });
           return;
         }
-        const limits = PLAN_LIMITS[plan];
 
         if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
           const err = new RoleNotAvailableInPlanError(plan, role.name);
@@ -230,9 +233,10 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
 
           // Límite de roles por plan (F2) — no repite el chequeo de asiento:
           // cambiar de rol no suma una membership nueva, ver docblock del archivo.
-          let plan;
+          let plan, limits;
           try {
-            plan = await container.getBusinessPlan(businessId);
+            plan   = await container.getBusinessPlan(businessId);
+            limits = await container.getPlanLimits(plan);
           } catch {
             res.status(503).json({
               code:    'PLATFORM_UNAVAILABLE',
@@ -240,7 +244,6 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
             });
             return;
           }
-          const limits = PLAN_LIMITS[plan];
           if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
             const err = new RoleNotAvailableInPlanError(plan, role.name);
             res.status(402).json({ code: err.code, message: err.message, plan: err.plan, roleName: err.roleName });

@@ -1,24 +1,26 @@
 /**
  * @file plan-limits.ts
- * @description Límites de uso por plan de suscripción.
+ * @description Tipo de los límites de uso por plan de suscripción.
  *
- * Estos valores se leen en CategoryService (maxCategories -- maxResources
- * está en la interfaz pero ningún service lo aplica todavía, gap
- * preexistente sin relación con este cambio) y, desde el 17/08/2026 (F2,
- * pendientes-2026-08-17.md), en usuarios-roles/users.routes.ts
+ * Los VALORES viven en la tabla `plan_limits`/`plan_limit_allowed_roles` de
+ * la BD de plataforma (platform.schema.sql, BLOQUE PLAN_LIMITS) desde el
+ * 18/08/2026 -- antes eran la constante `PLAN_LIMITS` hardcodeada acá
+ * mismo. Se leen vía `AppContainer.getPlanLimits(plan)` (container.ts),
+ * respaldado por `PlatformRepository.getPlanLimits()`. Este archivo ahora
+ * solo declara la forma del dato para que category.service.ts y
+ * usuarios-roles/users.routes.ts no tengan que importar del repositorio de
+ * plataforma directamente.
+ *
+ * Se leen en CategoryService (maxCategories -- maxResources está en la
+ * interfaz pero ningún service lo aplica todavía, gap preexistente sin
+ * relación con este cambio) y en usuarios-roles/users.routes.ts
  * (maxActiveMemberships/allowedRoleNames) para rechazar operaciones que
  * superen el plan del negocio.
  *
- * Simplificación deliberada (F3, misma fecha): esto sigue siendo una
- * constante en código, no una tabla editable por el superadmin sin
- * deploy -- mismo criterio que ya tenía maxCategories/maxResources. Migrar
- * TODO esto a la BD de plataforma es un lift más grande (schema nuevo +
- * endpoint de admin) que se evaluó y se decidió no hacer en esta ronda.
- *
- * PRO usa Infinity para evitar comparaciones especiales en el código.
+ * PRO usa Infinity para evitar comparaciones especiales en el código --
+ * `PlatformRepository.getPlanLimits()` mapea `NULL` (columna sin límite en
+ * la tabla) a `Infinity` al leer, así que este contrato no cambió.
  */
-
-import { BusinessPlan } from '../types/enums.js';
 
 export interface PlanLimits {
   maxCategories: number;  // máximo de resource_categories activas
@@ -28,24 +30,3 @@ export interface PlanLimits {
   /** `roles.name` que este plan puede asignar a una membership vía POST/PUT /users. 'ALL' = sin restricción. OWNER nunca pasa por acá (no se asigna desde esta API). */
   allowedRoleNames: readonly string[] | 'ALL';
 }
-
-export const PLAN_LIMITS: Record<BusinessPlan, PlanLimits> = {
-  [BusinessPlan.FREE]: {
-    maxCategories: 1,
-    maxResources: 5,
-    maxActiveMemberships: 1,
-    allowedRoleNames: ['ADMIN'],
-  },
-  [BusinessPlan.STARTER]: {
-    maxCategories: 3,
-    maxResources: 20,
-    maxActiveMemberships: 5,
-    allowedRoleNames: ['ADMIN', 'RECEPTIONIST', 'HOUSEKEEPING', 'WAITER'],
-  },
-  [BusinessPlan.PRO]: {
-    maxCategories: Infinity,
-    maxResources: Infinity,
-    maxActiveMemberships: Infinity,
-    allowedRoleNames: 'ALL',
-  },
-};

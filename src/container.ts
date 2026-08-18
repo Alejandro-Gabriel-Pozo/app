@@ -21,6 +21,7 @@
 
 import { PlatformRepository } from './platform/platform.repository.js';
 import { BusinessPlan }        from './types/enums.js';
+import type { PlanLimits }     from './config/plan-limits.js';
 import type { SqlClient }           from './repositories/sql.client.js';
 import { stripSslMode, sslConfig } from './db/pg.client.js';
 import pg from 'pg';
@@ -94,6 +95,7 @@ export async function closePlatformPool(): Promise<void> {
 export interface AppContainer {
   getBusinessPlan: (businessId: string) => Promise<BusinessPlan>;
   getBusinessModules: (businessId: string) => Promise<Record<string, boolean>>;
+  getPlanLimits: (plan: BusinessPlan) => Promise<PlanLimits>;
   mode: 'postgresql';
 }
 
@@ -155,11 +157,33 @@ async function createPostgresContainer(): Promise<AppContainer> {
     return platformRepository.getBusinessModules(businessId);
   };
 
+  /**
+   * Límites de uso del plan (18/08/2026, deuda estructural — reemplaza la
+   * constante TS `PLAN_LIMITS`, ver platform.schema.sql BLOQUE PLAN_LIMITS).
+   * Mismo contrato de error que getBusinessPlan/getBusinessModules: lanza
+   * si el plan no tiene fila en `plan_limits` en vez de aplicar un límite
+   * por default en silencio — un plan sin config es un error de
+   * plataforma, no "sin restricciones".
+   */
+  const getPlanLimits = async (plan: BusinessPlan): Promise<PlanLimits> => {
+    const limits = await platformRepository.getPlanLimits(plan);
+
+    if (!limits) {
+      throw new Error(
+        `[getPlanLimits] plan "${plan}" no tiene límites configurados en la BD de plataforma (tabla plan_limits). ` +
+        'Verificá el seed de platform.schema.sql BLOQUE PLAN_LIMITS.',
+      );
+    }
+
+    return limits;
+  };
+
   console.log('[container] ✅ PostgreSQL listo.');
 
   return {
     getBusinessPlan,
     getBusinessModules,
+    getPlanLimits,
     mode: 'postgresql',
   };
 }

@@ -12,7 +12,17 @@ import { createUsersRouter } from './users.routes.js';
 import { BusinessPlan } from '../types/enums.js';
 import type { PlatformRepository, Role, Membership } from '../platform/platform.repository.js';
 import type { AppContainer } from '../container.js';
+import type { PlanLimits } from '../config/plan-limits.js';
 import type { Request, Response } from 'express';
+
+// Mismos valores que platform.schema.sql BLOQUE PLAN_LIMITS -- desde el
+// 18/08/2026 la fuente real es la tabla `plan_limits`, no una constante TS;
+// este mapa es el fixture del test, no una reintroducción del hardcodeo.
+const PLAN_LIMITS_FIXTURE: Record<BusinessPlan, PlanLimits> = {
+  [BusinessPlan.FREE]: { maxCategories: 1, maxResources: 5, maxActiveMemberships: 1, allowedRoleNames: ['ADMIN'] },
+  [BusinessPlan.STARTER]: { maxCategories: 3, maxResources: 20, maxActiveMemberships: 5, allowedRoleNames: ['ADMIN', 'RECEPTIONIST', 'HOUSEKEEPING', 'WAITER'] },
+  [BusinessPlan.PRO]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL' },
+};
 
 function fakeRes() {
   const res: Partial<Response> & { statusCode?: number; body?: unknown } = {};
@@ -74,6 +84,7 @@ function fakeContainer(plan: BusinessPlan | 'ERROR'): AppContainer {
       return plan;
     }),
     getBusinessModules: vi.fn(async () => ({})),
+    getPlanLimits: vi.fn(async (p: BusinessPlan) => PLAN_LIMITS_FIXTURE[p]),
     mode: 'postgresql',
   };
 }

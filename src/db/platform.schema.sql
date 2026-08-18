@@ -495,6 +495,67 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- ===========================================================================
+-- BLOQUE PLAN_LIMITS — límites de uso por plan de suscripción (18/08/2026,
+-- pendientes-2026-08-18.md, deuda estructural). Antes era una constante TS
+-- (src/config/plan-limits.ts, `PLAN_LIMITS`) leída sincrónicamente en
+-- category.service.ts y usuarios-roles/users.routes.ts — cualquier cambio a
+-- un límite (ej. subir maxResources de STARTER) requería un deploy. Ahora es
+-- una tabla de catálogo (mismo patrón que `modules`/`role_presets`),
+-- consultada vía AppContainer.getPlanLimits() (container.ts).
+--
+-- `max_categories`/`max_resources`/`max_active_memberships` NULL = sin
+-- límite (plan PRO) — se mapea a `Infinity` en PlatformRepository.getPlanLimits()
+-- para no tener que tocar el resto del código (PlanLimitError, comparaciones
+-- `current >= limit`, etc. ya asumían Infinity como "ilimitado").
+--
+-- `plan_limit_allowed_roles`: 0 filas para un plan = sin restricción de
+-- roles ('ALL' en TS), mismo criterio null-significa-sin-límite que los
+-- números de arriba, aplicado a una lista en vez de a un escalar. No es
+-- ambiguo con "plan mal configurado" porque plan_limits y sus 3 filas se
+-- seedean siempre juntas acá abajo, nunca incrementalmente.
+--
+-- No es MAESTRO/TRANSACCIÓN/DOCUMENTO (docs/criterios-datos.md Parte 1) —
+-- catálogo de plataforma sin business_id, mismo trato que `modules`.
+-- `plan` no tiene FK: es el mismo valor que el CHECK de `businesses.plan`
+-- (no existe una tabla catálogo de planes, igual que antes de este cambio).
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS plan_limits (
+  plan                     VARCHAR(50) PRIMARY KEY,
+  max_categories           INT,  -- NULL = sin límite
+  max_resources            INT,  -- NULL = sin límite
+  max_active_memberships   INT,  -- NULL = sin límite
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS plan_limit_allowed_roles (
+  plan       VARCHAR(50) NOT NULL REFERENCES plan_limits(plan) ON DELETE CASCADE,
+  role_name  VARCHAR(50) NOT NULL,
+  PRIMARY KEY (plan, role_name)
+);
+
+INSERT INTO plan_limits (plan, max_categories, max_resources, max_active_memberships) VALUES
+  ('FREE',    1, 5,    1),
+  ('STARTER', 3, 20,   5),
+  ('PRO',     NULL, NULL, NULL)
+ON CONFLICT (plan) DO NOTHING;
+
+INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES
+  ('FREE',    'ADMIN'),
+  ('STARTER', 'ADMIN'), ('STARTER', 'RECEPTIONIST'), ('STARTER', 'HOUSEKEEPING'), ('STARTER', 'WAITER')
+  -- PRO: sin filas a propósito -- 0 filas = sin restricción ('ALL').
+ON CONFLICT (plan, role_name) DO NOTHING;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'plan_limits_updated_at') THEN
+    CREATE TRIGGER plan_limits_updated_at
+      BEFORE UPDATE ON plan_limits
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- Backfill: negocios creados ANTES de este bloque no tienen filas en
 -- business_modules — con fail-closed quedarían sin ningún módulo de un día

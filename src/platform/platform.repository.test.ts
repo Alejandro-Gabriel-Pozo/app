@@ -91,3 +91,76 @@ describe('PlatformRepository.createBusiness() -> provisionSystemRoles()', () => 
     expect(presetARole.params[0]).toBe('role-biz-1-preset_a');
   });
 });
+
+/**
+ * Guardia de regresión para el mismo tipo de deuda estructural, pero en
+ * PLAN_LIMITS (18/08/2026): antes una constante TS, ahora la tabla
+ * `plan_limits`/`plan_limit_allowed_roles`. Verifica el mapeo NULL→Infinity
+ * y "0 filas"→'ALL' que hace getPlanLimits() al leer, sin tocar una base
+ * real.
+ */
+class FakePlanLimitsSqlClient implements SqlClient {
+  constructor(
+    private readonly planLimitsRow: { max_categories: number | null; max_resources: number | null; max_active_memberships: number | null } | undefined,
+    private readonly allowedRoleRows: { role_name: string }[],
+  ) {}
+
+  async query<T = unknown>(sql: string): Promise<{ rows: T[]; rowCount?: number }> {
+    if (sql.includes('FROM plan_limits')) {
+      return { rows: (this.planLimitsRow ? [this.planLimitsRow] : []) as T[] };
+    }
+    if (sql.includes('FROM plan_limit_allowed_roles')) {
+      return { rows: this.allowedRoleRows as T[] };
+    }
+    return { rows: [] as T[] };
+  }
+}
+
+describe('PlatformRepository.getPlanLimits()', () => {
+  it('mapea columnas NULL a Infinity', async () => {
+    const db = new FakePlanLimitsSqlClient(
+      { max_categories: null, max_resources: null, max_active_memberships: null },
+      [],
+    );
+    const limits = await new PlatformRepository(db).getPlanLimits(BusinessPlan.PRO);
+
+    expect(limits).toEqual({
+      maxCategories: Infinity,
+      maxResources: Infinity,
+      maxActiveMemberships: Infinity,
+      allowedRoleNames: 'ALL',
+    });
+  });
+
+  it('mapea columnas con valor y 0 filas de roles permitidos como sin restricción', async () => {
+    const db = new FakePlanLimitsSqlClient(
+      { max_categories: 3, max_resources: 20, max_active_memberships: 5 },
+      [],
+    );
+    const limits = await new PlatformRepository(db).getPlanLimits(BusinessPlan.STARTER);
+
+    expect(limits).toEqual({
+      maxCategories: 3,
+      maxResources: 20,
+      maxActiveMemberships: 5,
+      allowedRoleNames: 'ALL',
+    });
+  });
+
+  it('mapea filas de plan_limit_allowed_roles a la lista de roles permitidos', async () => {
+    const db = new FakePlanLimitsSqlClient(
+      { max_categories: 1, max_resources: 5, max_active_memberships: 1 },
+      [{ role_name: 'ADMIN' }],
+    );
+    const limits = await new PlatformRepository(db).getPlanLimits(BusinessPlan.FREE);
+
+    expect(limits?.allowedRoleNames).toEqual(['ADMIN']);
+  });
+
+  it('devuelve undefined si el plan no tiene fila en plan_limits', async () => {
+    const db = new FakePlanLimitsSqlClient(undefined, []);
+    const limits = await new PlatformRepository(db).getPlanLimits(BusinessPlan.FREE);
+
+    expect(limits).toBeUndefined();
+  });
+});

@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CategoryService } from './category.service.js';
-import { CategoryNotFoundError } from '../domain/errors.js';
+import { CategoryNotFoundError, PlanLimitError } from '../domain/errors.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import { BusinessPlan } from '../types/enums.js';
 import type { ICategoryRepository } from './category.repository.js';
+import type { PlanLimits } from '../config/plan-limits.js';
 import type {
   ResourceCategory,
   CreateCategoryDTO,
@@ -134,5 +136,53 @@ describe('CategoryService — auditoría (R8/A9.4)', () => {
     ).rejects.toBeInstanceOf(CategoryNotFoundError);
 
     expect(auditRepo.all()).toHaveLength(0);
+  });
+});
+
+/**
+ * `limits` ahora lo resuelve la capa HTTP (categories.routes.ts, vía
+ * AppContainer.getPlanLimits) y se lo pasa armado al service (18/08/2026,
+ * PLAN_LIMITS pasó de constante TS a tabla `plan_limits`) — este test
+ * verifica que CategoryService.createCategory() sigue respetando ese
+ * límite sin importar de dónde salió el objeto `PlanLimits`.
+ */
+describe('CategoryService.createCategory() — límite de plan', () => {
+  let categoryRepo: FakeCategoryRepository;
+  let service: CategoryService;
+
+  beforeEach(() => {
+    categoryRepo = new FakeCategoryRepository();
+    service      = new CategoryService(categoryRepo, new InMemoryAuditLogRepository());
+  });
+
+  const limitsFor = (maxCategories: number): PlanLimits => ({
+    maxCategories,
+    maxResources: Infinity,
+    maxActiveMemberships: Infinity,
+    allowedRoleNames: 'ALL',
+  });
+
+  it('crea la categoría si todavía no alcanzó el límite del plan', async () => {
+    const category = await service.createCategory(
+      { name: 'Salon', fields: [] },
+      BusinessPlan.FREE,
+      limitsFor(1),
+    );
+    expect(category.name).toBe('Salon');
+  });
+
+  it('rechaza con PlanLimitError si ya alcanzó maxCategories', async () => {
+    await service.createCategory({ name: 'Salon', fields: [] }, BusinessPlan.FREE, limitsFor(1));
+
+    await expect(
+      service.createCategory({ name: 'Otra', fields: [] }, BusinessPlan.FREE, limitsFor(1)),
+    ).rejects.toBeInstanceOf(PlanLimitError);
+  });
+
+  it('plan con maxCategories = Infinity nunca rechaza', async () => {
+    for (let i = 0; i < 5; i++) {
+      await service.createCategory({ name: `Cat ${i}`, fields: [] }, BusinessPlan.PRO, limitsFor(Infinity));
+    }
+    expect(await categoryRepo.countActive()).toBe(5);
   });
 });
