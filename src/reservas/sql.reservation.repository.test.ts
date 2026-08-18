@@ -75,4 +75,25 @@ describe('SqlReservationRepository', () => {
       ReservationStatus.CONFIRMED,
     ]);
   });
+
+  // Regresión (18/08/2026): el ON CONFLICT DO UPDATE de save()/saveWithClient()
+  // no incluía resource_id/start_time/end_time. INSERT los recibía bien, pero
+  // como la fila ya existía en cada updateReservation() (drag-to-move/resize
+  // del calendario), el UPDATE nunca los tocaba: la API devolvía 200 con el
+  // objeto en memoria como si hubiera guardado, pero la fila real en la base
+  // no cambiaba de fecha ni de recurso.
+  it('el UPDATE del upsert debe tocar resource_id/start_time/end_time, no solo status/details/total_price', async () => {
+    const reservation = await repo.getById('res-1');
+    await repo.save(reservation!);
+
+    const saveCall = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('ON CONFLICT'),
+    );
+    expect(saveCall).toBeDefined();
+    const sql = saveCall![0] as string;
+    const setClause = sql.slice(sql.indexOf('DO UPDATE SET'));
+    expect(setClause).toMatch(/resource_id\s*=/);
+    expect(setClause).toMatch(/start_time\s*=/);
+    expect(setClause).toMatch(/end_time\s*=/);
+  });
 });

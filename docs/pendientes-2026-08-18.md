@@ -331,6 +331,96 @@ uso intensivo de esta sesión) — llevó varias rondas de test descartar
 que fuera un bug real antes de confirmar que el código funciona
 correctamente.
 
+**Corrección a lo de arriba — la verificación "end-to-end contra
+Postgres real" de este mismo punto G era un falso negativo.** Ver punto H:
+el test de esa noche solo miraba el *response* del propio PUT (que
+siempre devuelve el objeto armado en memoria, no una relectura real de la
+fila), nunca un GET independiente después. Por eso el bug de H pasó
+desapercibido en su momento.
+
+---
+
+## H. Bug real de fondo del arrastre en el calendario — `hay que arreglarlo` (18/08/2026, noche)
+
+El dueño reportó, después de arrastrar una estadía del 21/08 al 25/08 en
+el calendario: el "Detalle de reserva" mostraba `20/8/26, 21:00` →
+`24/8/26, 21:00` — fecha corrida un día para atrás y con una hora que no
+debería estar. Pidió explícitamente arreglarlo, y también revisar los
+nombres usados en Reservas para que no generen confusión ("Inicio"/"Fin"
+no comunican que son días completos de check-in/check-out, no horarios
+puntuales).
+
+**Dos bugs distintos, uno tapaba al otro:**
+
+1. **Bug de visualización (frontend, `appfrontend-main/src/app/dashboard/reservas/page.tsx`).**
+   `fmt()` formateaba con `toLocaleString()` sin fijar `timeZone: 'UTC'` —
+   usaba el huso LOCAL del navegador. Una reserva que en la base arranca
+   `2026-08-21T00:00:00.000Z` (medianoche UTC) se mostraba en Argentina
+   (UTC-3) como `20/8/26, 21:00`. Mismo patrón de bug que el de
+   housekeeping arreglado antes en este documento (punto A) y el mismo
+   criterio ya establecido para el calendario (punto G): todo el manejo
+   de fechas de esta pantalla tiene que ser UTC-only, nunca con getters
+   locales.
+   - Corregido: `fmt()` ahora usa `toLocaleDateString(..., { timeZone: 'UTC' })`,
+     sin mostrar hora (no aplica — son días completos).
+   - Como Reservas quedó 100% acotado a alojamiento (punto F, E1), se
+     sacó la rama condicional `isBlockBooking` (que solo daba campos
+     día-a-día si el servicio elegido era `bookingMode='block'`): ahora
+     el formulario de alta, el de edición y la vista de detalle usan
+     `Check-in`/`Check-out` (día completo, `<input type="date">`) como
+     comportamiento por defecto de toda la pantalla — ya no depende de
+     qué servicio se haya elegido. Los turnos con horario puntual
+     (`bookingMode='slot'`, ej. reservar una franja horaria de un
+     recurso) siguen usando el flujo de horario exacto sin cambios.
+   - Rename pedido explícitamente por el dueño: las etiquetas "Inicio"/
+     "Fin" pasaron a "Check-in"/"Check-out" en el formulario de alta, el
+     de edición y el detalle de solo lectura. Se dejó "Inicio"/"Fin" tal
+     cual en la única rama que sigue siendo genuinamente un horario
+     puntual (selección manual de franja cuando el recurso no tiene
+     horario configurado) — ahí sí son minutos exactos, no días.
+
+2. **Bug real de fondo (backend, `app-main/src/reservas/sql.reservation.repository.ts`) — el que de verdad estaba rompiendo el arrastre.**
+   El `UPSERT_SQL` de `save()`/`saveWithClient()` pasaba `resource_id`,
+   `start_time` y `end_time` como parámetros del `INSERT`, pero el
+   `ON CONFLICT (id) DO UPDATE SET` **nunca los incluía** — solo
+   actualizaba `status`, `details`, `updated_at` y `total_price`. Como
+   `updateReservation()` (el PUT que usa tanto "Editar horario" como el
+   drag-to-move/resize del calendario) siempre pega contra una fila que
+   YA existe, cada llamada caía en la rama `DO UPDATE`, y esa rama
+   ignoraba en silencio los tres campos que el drag necesita cambiar.
+   - La API igual devolvía `200` con el objeto "actualizado" porque
+     `updateReservation()` arma y devuelve el objeto en memoria
+     (`Reservation.restore(...)`) sin releer la fila de la base — así que
+     la respuesta del PUT SIEMPRE parecía correcta, incluso cuando el
+     `UPDATE` real no había tocado ninguna de las tres columnas.
+   - Efecto visible: arrastrar/redimensionar en el calendario nunca
+     persistía nada. La barra se movía en el estado local de React, pero
+     al reabrir el detalle (que sí vuelve a pedir el dato al backend) se
+     veían las fechas de ANTES del arrastre — que además tenían el bug 1
+     encima, de ahí el desfase que reportó el dueño.
+   - Esta es la causa real por la que la "verificación end-to-end" del
+     punto G de esta misma noche dio falso positivo: el script de prueba
+     de esa sesión solo miraba el response del propio PUT, nunca hacía un
+     GET independiente después para confirmar que había quedado grabado.
+   - **Reasignación de recurso (arrastre entre filas) tenía el mismo
+     problema** — `resource_id` tampoco estaba en el `SET`.
+   - Corregido: se agregó `resource_id = $5, start_time = $7,
+     end_time = $8` al `ON CONFLICT ... DO UPDATE SET`.
+   - Test de regresión nuevo en `sql.reservation.repository.test.ts`:
+     verifica que el SQL del upsert incluya esas tres columnas en la
+     cláusula `DO UPDATE SET` (no depende de una base real — hubiera
+     detectado este bug específico si hubiera existido antes). Suite
+     completa: 543/543 tests (antes 542/542 + 1 nuevo).
+   - Verificado con PUT real + GET independiente en una sesión de browser
+     nueva (sin caché compartida): mover fechas y reasignar recurso
+     ahora persisten de verdad, confirmado contra la fila real en
+     Postgres, no solo contra el response del PUT.
+
+**Alcance que quedó afuera a propósito:** el huso horario hardcodeado
+`-03:00` en `reservation.service.ts::combineDateAndTime()` (mencionado
+como pendiente en sesiones anteriores) no se tocó — no es parte de este
+bug, es una cuenta pendiente aparte.
+
 **Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
 `npm test` 541/542 (+3 tests nuevos). **Verificado (frontend):**
 `tsc --noEmit` limpio, `npm run lint` limpio, `npm run build` limpio,

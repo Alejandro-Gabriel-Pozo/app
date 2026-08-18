@@ -68,6 +68,14 @@ export class SqlReservationRepository implements ReservationRepository {
   // este fix no estaba en esta lista y CADA INSERT fallaba con una violación
   // de NOT NULL. También faltaba en el ON CONFLICT: un update de reserva
   // nunca actualizaba el precio aunque cambiara.
+  //
+  // resource_id/start_time/end_time faltaban también en el ON CONFLICT
+  // (bug encontrado 18/08/2026 al agregar drag-to-move/resize al calendario):
+  // updateReservation() pasaba estos valores en buildSaveParams() pero el
+  // UPDATE nunca los tocaba, así que mover o redimensionar una reserva no
+  // persistía nada — el 200 que devolvía la API era el objeto en memoria, no
+  // una relectura de la fila. La UI mostraba el cambio hasta el próximo
+  // fetch, donde volvían las fechas viejas.
   private readonly UPSERT_SQL = `
     INSERT INTO reservations (
       id, customer_id, customer_name, customer_email,
@@ -76,7 +84,10 @@ export class SqlReservationRepository implements ReservationRepository {
     )
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10)
     ON CONFLICT (id) DO UPDATE SET
+      resource_id = $5,
       status      = $6,
+      start_time  = $7,
+      end_time    = $8,
       details     = $9,
       updated_at  = CURRENT_TIMESTAMP,
       total_price = $10
