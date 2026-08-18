@@ -34,12 +34,22 @@ export enum PlatformRole {
 
 /**
  * Planes de suscripción disponibles para los negocios.
- * Los límites de cada plan están definidos en src/config/plan-limits.ts
+ * Los límites de cada plan están en la tabla `plan_limits` de la BD de
+ * plataforma (platform.schema.sql, BLOQUE PLAN_LIMITS — 18/08/2026, antes
+ * era la constante TS `PLAN_LIMITS`). `src/config/plan-limits.ts` solo
+ * declara la forma del dato (`PlanLimits`).
+ *
+ * ENTERPRISE (18/08/2026, empresas multipropiedad) — el único plan que
+ * puede crear/unirse a una `company` (catálogo compartido entre varios
+ * negocios, ver docs/diseno-empresas-multipropiedad.md). Mismos límites
+ * numéricos que PRO (sin límite) en el seed de `plan_limits` — Enterprise
+ * es superset de PRO, no un tier con topes propios distintos.
  */
 export enum BusinessPlan {
-  FREE    = 'FREE',
-  STARTER = 'STARTER',
-  PRO     = 'PRO',
+  FREE       = 'FREE',
+  STARTER    = 'STARTER',
+  PRO        = 'PRO',
+  ENTERPRISE = 'ENTERPRISE',
 }
 
 /**

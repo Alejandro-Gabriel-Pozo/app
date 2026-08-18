@@ -126,15 +126,30 @@ para el detalle completo de cada uno:
   `permissionGroups` de un rol de sistema hoy vía `PUT /api/roles/:id`.
 - Decidir si portal de clientes/plataforma migra a cookie httpOnly o
   queda como está.
-- **Empresas multipropiedad (`companies`) sin gate de plan** — aclarado
-  por el dueño (18/08, noche): la idea es que sea la feature que define un
-  plan **Enterprise** (planes comunes = todo separado por negocio;
-  Enterprise = varios negocios agrupados con catálogo compartido). Hoy
-  `POST /api/companies`/`POST /api/companies/link`
-  (`platform/companies.routes.ts`) no chequean plan — cualquier plan puede
-  crear/unirse a una empresa. Mismo bucket que F2(c)/F3 — sin decidir
-  todavía si/cuándo se gatea. Detalle en memoria
-  `modular_addon_pricing_architecture`.
+- ✅ **RESUELTO (18/08/2026, noche)** — Empresas multipropiedad (`companies`)
+  sin gate de plan. A pedido explícito del dueño ("gate de plan Enterprise
+  para empresas multipropiedad"). Se agregó `BusinessPlan.ENTERPRISE`
+  (`types/enums.ts`) — mismos límites numéricos que PRO en `plan_limits`
+  (sin límite; confirmado con el dueño que Enterprise es superset de PRO,
+  no un tier con topes propios — los números son solo una fila de tabla,
+  ajustables sin deploy cuando se decida el pricing real). CHECK de
+  `businesses.plan` ampliado en `platform.schema.sql`. Nuevo
+  `security/plan.middleware.ts` (`requirePlan`), mismo contrato de
+  errores que `requireModule` (401/402 `PLAN_UPGRADE_REQUIRED`/503),
+  aplicado solo a `POST /api/companies` y `POST /api/companies/link`
+  (`companies.routes.ts`) — a propósito NO en `GET /api/companies/me`, así
+  un negocio que baja de plan sigue viendo a qué empresa pertenece. Tests
+  nuevos: `plan.middleware.test.ts` (unit, las 4 ramas del middleware) +
+  `companies.routes.test.ts` (corre la cadena completa de middlewares —
+  `authorize` + `requirePlan` + handler real — para detectar si alguien
+  borra el gate de la ruta sin que un test de `requirePlan` en
+  aislamiento lo note, DEFENSIVE_DEVELOPING principio 3). **Verificado
+  contra Postgres real**: negocio de prueba en plan PRO rechazado con 402
+  al crear empresa; el mismo negocio pasado a ENTERPRISE temporalmente lo
+  permitió (201, company creada y vinculada); revertido el plan y borrada
+  la company de prueba al terminar, estado restaurado a como estaba antes
+  del test. Verificado: `tsc --noEmit` limpio, `npm run lint` limpio,
+  `npm test` 560/560 (+9 tests nuevos).
 
 ### Decisiones que necesitan al dueño
 - E2–E7 de `pendientes-2026-08-13.md` (salvo E7c/d/e, ya resueltos) —

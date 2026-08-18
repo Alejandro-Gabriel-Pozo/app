@@ -22,6 +22,7 @@ const PLAN_LIMITS_FIXTURE: Record<BusinessPlan, PlanLimits> = {
   [BusinessPlan.FREE]: { maxCategories: 1, maxResources: 5, maxActiveMemberships: 1, allowedRoleNames: ['ADMIN'] },
   [BusinessPlan.STARTER]: { maxCategories: 3, maxResources: 20, maxActiveMemberships: 5, allowedRoleNames: ['ADMIN', 'RECEPTIONIST', 'HOUSEKEEPING', 'WAITER'] },
   [BusinessPlan.PRO]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL' },
+  [BusinessPlan.ENTERPRISE]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL' },
 };
 
 function fakeRes() {

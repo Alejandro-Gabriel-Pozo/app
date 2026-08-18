@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS businesses (
 -- no podía registrar un segundo negocio con su propio email.
 ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_owner_email_key;
 
+-- Amplía el CHECK de `plan` para bases ya provisionadas con el schema viejo
+-- (18/08/2026, empresas multipropiedad — pendientes-2026-08-18.md, deuda
+-- estructural "gate de plan Enterprise"). ENTERPRISE es el único plan que
+-- puede crear/unirse a una `company` (tabla `companies`, más abajo) — ver
+-- security/plan.middleware.ts (`requirePlan`), usado por
+-- POST /api/companies y POST /api/companies/link.
+ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_plan_check;
+ALTER TABLE businesses
+  ADD CONSTRAINT businesses_plan_check
+    CHECK (plan IN ('FREE', 'STARTER', 'PRO', 'ENTERPRISE'));
+
 -- Espejo en la BD central de la versión de schema.sql aplicada en la BD del
 -- tenant (ver schema_migrations en schema.sql — esta columna es la que
 -- permite listar "qué tenant está desactualizado" sin conectarse una por
@@ -536,16 +547,21 @@ CREATE TABLE IF NOT EXISTS plan_limit_allowed_roles (
   PRIMARY KEY (plan, role_name)
 );
 
+-- ENTERPRISE (18/08/2026, empresas multipropiedad) -- mismos límites
+-- numéricos que PRO (sin límite): es el plan tope, superset de PRO, no un
+-- tier con topes propios -- ver BusinessPlan en types/enums.ts y la tabla
+-- `companies` más abajo para el gate real (crear/unirse a una company).
 INSERT INTO plan_limits (plan, max_categories, max_resources, max_active_memberships) VALUES
-  ('FREE',    1, 5,    1),
-  ('STARTER', 3, 20,   5),
-  ('PRO',     NULL, NULL, NULL)
+  ('FREE',       1, 5,    1),
+  ('STARTER',    3, 20,   5),
+  ('PRO',        NULL, NULL, NULL),
+  ('ENTERPRISE', NULL, NULL, NULL)
 ON CONFLICT (plan) DO NOTHING;
 
 INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES
   ('FREE',    'ADMIN'),
   ('STARTER', 'ADMIN'), ('STARTER', 'RECEPTIONIST'), ('STARTER', 'HOUSEKEEPING'), ('STARTER', 'WAITER')
-  -- PRO: sin filas a propósito -- 0 filas = sin restricción ('ALL').
+  -- PRO y ENTERPRISE: sin filas a propósito -- 0 filas = sin restricción ('ALL').
 ON CONFLICT (plan, role_name) DO NOTHING;
 
 DO $$ BEGIN

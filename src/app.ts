@@ -208,7 +208,7 @@ export async function createApp(): Promise<{
   // /api/companies — empresas multipropiedad (17/08/2026). Solo toca la BD
   // de plataforma (req.user, no req.db), mismo motivo que /api/admin va
   // antes de tenantMiddleware.
-  app.use('/api/companies', createCompaniesRouter(platformRepo, companyRepo));
+  app.use('/api/companies', createCompaniesRouter(platformRepo, companyRepo, container));
 
   // /api/auth/me + /api/auth/logout (B2) — solo lee req.user, tampoco
   // necesita req.db de tenant.
