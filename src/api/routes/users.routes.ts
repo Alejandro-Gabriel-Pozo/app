@@ -19,6 +19,19 @@
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
  * causaba 401 UNAUTHORIZED al re-leer el header en el segundo pase.
+ *
+ * ## Límite de asientos y roles por plan (17/08/2026, F2, pendientes-2026-08-17.md)
+ * POST /users chequea, en este orden, ANTES de crear identity/membership:
+ * 1. El rol elegido tiene que estar en `PLAN_LIMITS[plan].allowedRoleNames`
+ *    (422→402 ROLE_NOT_AVAILABLE_IN_PLAN) — ej. plan FREE solo permite
+ *    asignar ADMIN, no RECEPTIONIST/HOUSEKEEPING/WAITER.
+ * 2. Las membresías activas no-OWNER del negocio no superan
+ *    `maxActiveMemberships` (402 PLAN_LIMIT_REACHED).
+ * PUT /users/:id repite el chequeo (1) cuando cambia el roleId — cambiar de
+ * rol no suma un asiento nuevo, así que no repite el chequeo (2).
+ * Mismo patrón que categories.routes.ts: `container.getBusinessPlan()`
+ * (no `platformRepo.findById()` — más liviano) con 503 PLATFORM_UNAVAILABLE
+ * si la BD de plataforma no responde.
  */
 
 import { Router } from 'express';
@@ -28,6 +41,9 @@ import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { hashPassword } from '../../security/user.store.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
+import type { AppContainer } from '../../container.js';
+import { PLAN_LIMITS } from '../../config/plan-limits.js';
+import { PlanLimitError, RoleNotAvailableInPlanError } from '../../domain/errors.js';
 
 /**
  * `roleId` reemplaza el enum fijo `role` (14/08/2026, ver security/roles.ts
@@ -51,7 +67,7 @@ const UpdateUserBodySchema = z.object({
   password: z.string().min(8, { message: 'password debe tener al menos 8 caracteres' }).optional(),
 });
 
-export function createUsersRouter(platformRepo: PlatformRepository): Router {
+export function createUsersRouter(platformRepo: PlatformRepository, container: AppContainer): Router {
   const router = Router();
 
   // ── GET /users ─────────────────────────────────────────────────────────────
@@ -135,6 +151,32 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
           return;
         }
 
+        // Límite de asientos y roles por plan (F2) — ver docblock del archivo.
+        let plan;
+        try {
+          plan = await container.getBusinessPlan(businessId);
+        } catch {
+          res.status(503).json({
+            code:    'PLATFORM_UNAVAILABLE',
+            message: 'No se pudo verificar el plan del negocio. Reintentá en unos segundos.',
+          });
+          return;
+        }
+        const limits = PLAN_LIMITS[plan];
+
+        if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
+          const err = new RoleNotAvailableInPlanError(plan, role.name);
+          res.status(402).json({ code: err.code, message: err.message, plan: err.plan, roleName: err.roleName });
+          return;
+        }
+
+        const activeStaffCount = await platformRepo.countActiveStaffMembershipsByBusiness(businessId);
+        if (activeStaffCount >= limits.maxActiveMemberships) {
+          const err = new PlanLimitError(plan, limits.maxActiveMemberships, 'memberships');
+          res.status(402).json({ code: err.code, message: err.message, plan: err.plan, limit: err.limit });
+          return;
+        }
+
         const identity = await platformRepo.createIdentity({
           id: randomUUID(),
           email: body.email,
@@ -185,6 +227,26 @@ export function createUsersRouter(platformRepo: PlatformRepository): Router {
             res.status(422).json({ code: 'CANNOT_ASSIGN_OWNER', message: 'El rol OWNER no se puede asignar desde acá.' });
             return;
           }
+
+          // Límite de roles por plan (F2) — no repite el chequeo de asiento:
+          // cambiar de rol no suma una membership nueva, ver docblock del archivo.
+          let plan;
+          try {
+            plan = await container.getBusinessPlan(businessId);
+          } catch {
+            res.status(503).json({
+              code:    'PLATFORM_UNAVAILABLE',
+              message: 'No se pudo verificar el plan del negocio. Reintentá en unos segundos.',
+            });
+            return;
+          }
+          const limits = PLAN_LIMITS[plan];
+          if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
+            const err = new RoleNotAvailableInPlanError(plan, role.name);
+            res.status(402).json({ code: err.code, message: err.message, plan: err.plan, roleName: err.roleName });
+            return;
+          }
+
           await platformRepo.updateMembershipRole(membershipId, businessId, role.id);
         }
 

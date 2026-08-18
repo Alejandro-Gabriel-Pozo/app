@@ -235,7 +235,7 @@ export async function createApp(): Promise<{
   app.use('/api/locations',         createLocationsRouter());
   app.use('/api/reservations',      createReservationsRouter());
   app.use('/api/customers',         createCustomersRouter(container));
-  app.use('/api/users',             createUsersRouter(platformRepo));
+  app.use('/api/users',             createUsersRouter(platformRepo, container));
   app.use('/api/roles',             createRolesRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));

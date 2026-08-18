@@ -8,9 +8,11 @@
  * - Generar IDs deterministas a partir del nombre
  *
  * ## PlanLimitError
- * Expone `plan`, `limit` y `resource` como campos públicos para que
- * la capa HTTP (categories.routes.ts) los incluya en el body del 402
- * sin necesidad de hardcodear valores en el frontend.
+ * Vive en domain/errors.ts (17/08/2026, F2 -- pendientes-2026-08-17.md:
+ * ahora también lo usa api/routes/users.routes.ts para el límite de
+ * asientos por plan). Expone `plan`, `limit` y `resource` como campos
+ * públicos para que la capa HTTP (categories.routes.ts) los incluya en
+ * el body del 402 sin necesidad de hardcodear valores en el frontend.
  */
 
 import type { ICategoryRepository } from './category.repository.js';
@@ -24,24 +26,9 @@ import { PLAN_LIMITS } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
-import { CategoryNotFoundError } from '../domain/errors.js';
+import { CategoryNotFoundError, PlanLimitError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'resource_categories';
-
-export class PlanLimitError extends Error {
-  constructor(
-    public readonly plan: BusinessPlan,
-    public readonly limit: number,
-    public readonly resource: 'categories' | 'resources',
-  ) {
-    super(
-      `Tu plan ${plan} permite hasta ${
-        limit === Infinity ? 'ilimitadas' : limit
-      } ${resource}. Actualizá tu plan para agregar más.`,
-    );
-    this.name = 'PlanLimitError';
-  }
-}
 
 // CategoryNotFoundError vive en domain/errors.ts (extiende DomainError,
 // code CATEGORY_NOT_FOUND, ya mapeado a 404 en error.middleware.ts).

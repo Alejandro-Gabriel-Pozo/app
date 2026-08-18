@@ -33,14 +33,16 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
-import {
-  CategoryService,
-  PlanLimitError,
-} from './category.service.js';
+import { CategoryService } from './category.service.js';
 // CategoryNotFoundError vive en domain/errors.ts, no en category.service.ts
 // (ver nota ahí) — desde acá ya no hace falta capturarla a mano: es un
 // DomainError real con code CATEGORY_NOT_FOUND, mapeado a 404 en
-// error.middleware.ts (docs/pendientes-2026-08-13.md, C2).
+// error.middleware.ts (docs/pendientes-2026-08-13.md, C2). PlanLimitError
+// también vive en domain/errors.ts desde el 17/08/2026 (F2) — se sigue
+// capturando local acá por el body enriquecido (plan/limit), no porque
+// haga falta para el 402 en sí (esa red de seguridad ya la da
+// error.middleware.ts).
+import { PlanLimitError } from '../domain/errors.js';
 import {
   CreateCategorySchema,
   UpdateCategorySchema,

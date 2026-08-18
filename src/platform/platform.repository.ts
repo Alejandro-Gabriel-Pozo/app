@@ -503,6 +503,25 @@ export class PlatformRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * Cuenta las membresías activas de un negocio que NO sean OWNER --
+   * límite de asientos por plan (17/08/2026, F2, pendientes-2026-08-17.md).
+   * El OWNER es estructural (existe siempre, se crea al registrar el
+   * negocio, nunca vía POST /users) y no ocupa "asiento" a los fines de
+   * este límite -- lo que el plan limita es cuánto STAFF adicional podés
+   * sumar, no si el negocio puede existir con su dueño.
+   */
+  async countActiveStaffMembershipsByBusiness(businessId: string): Promise<number> {
+    const result = await this.db.query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total
+       FROM memberships m
+       JOIN roles r ON r.id = m.role_id
+       WHERE m.business_id = $1 AND m.active = TRUE AND r.name != 'OWNER'`,
+      [businessId],
+    );
+    return result.rows[0]?.total ?? 0;
+  }
+
   // -------------------------------------------------------------------------
   // Roles — CRUD de la entidad configurable (14/08/2026)
   // -------------------------------------------------------------------------

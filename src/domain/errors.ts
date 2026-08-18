@@ -9,6 +9,8 @@
  *   para mantener el dominio libre de dependencias de infraestructura.
  */
 
+import type { BusinessPlan } from '../types/enums.js';
+
 /**
  * Representación agnóstica de un error de validación de campo.
  * Equivalente estructural a un elemento de `ZodError['issues']`,
@@ -193,6 +195,63 @@ export class RecipeNotDefinedError extends DomainError {
       `El producto ${productId} es COMPOSITE pero no tiene receta definida (recipe_items vacío). ` +
       'No se puede vender (assemble_on_demand=true) ni producir así.',
       'RECIPE_NOT_DEFINED',
+    );
+  }
+}
+
+const PLAN_LIMIT_RESOURCE_LABEL: Record<'categories' | 'resources' | 'memberships', string> = {
+  categories:  'categorías',
+  resources:   'recursos',
+  memberships: 'usuarios activos',
+};
+
+/**
+ * Movido desde reservas/category.service.ts (17/08/2026, F2 --
+ * pendientes-2026-08-17.md) al agregar un segundo consumidor
+ * (api/routes/users.routes.ts, límite de asientos por plan) — antes
+ * extendía `Error` a secas, así que el "PlanLimitError se captura
+ * localmente, si llega sin capturar cae al 402 igual" que ya prometía el
+ * comentario de error.middleware.ts era en realidad falso: sin `.code` no
+ * hay forma de que `err instanceof DomainError` lo reconozca, caía al 500
+ * genérico. Ahora es un DomainError real (code PLAN_LIMIT_REACHED,
+ * mapeado a 402) -- la red de seguridad funciona de verdad, y cualquier
+ * router que quiera el body enriquecido (`plan`/`limit`) lo sigue
+ * capturando local antes de que llegue acá, como ya hacía categories.routes.ts.
+ */
+export class PlanLimitError extends DomainError {
+  constructor(
+    public readonly plan: BusinessPlan,
+    public readonly limit: number,
+    public readonly resource: 'categories' | 'resources' | 'memberships',
+  ) {
+    super(
+      `Tu plan ${plan} permite hasta ${
+        limit === Infinity ? 'ilimitados' : limit
+      } ${PLAN_LIMIT_RESOURCE_LABEL[resource]}. Actualizá tu plan para agregar más.`,
+      'PLAN_LIMIT_REACHED',
+    );
+  }
+}
+
+/**
+ * Límite de asientos y roles por plan (17/08/2026, F2 --
+ * pendientes-2026-08-17.md): un plan no solo limita CUÁNTAS membresías
+ * activas puede tener un negocio (ver PlanLimitError, resource
+ * 'memberships') sino también QUÉ roles puede asignarles -- ej. el plan
+ * básico solo permite asignar el rol ADMIN, uno superior desbloquea
+ * RECEPTIONIST/HOUSEKEEPING/WAITER también (src/config/plan-limits.ts,
+ * `allowedRoleNames`). Mismo código semántico que PLAN_LIMIT_REACHED
+ * (402, "actualizá tu plan") pero un mensaje distinto porque el problema
+ * no es un número agotado, es una capacidad no incluida.
+ */
+export class RoleNotAvailableInPlanError extends DomainError {
+  constructor(
+    public readonly plan: BusinessPlan,
+    public readonly roleName: string,
+  ) {
+    super(
+      `El rol '${roleName}' no está disponible en tu plan ${plan}. Actualizá tu plan para habilitarlo.`,
+      'ROLE_NOT_AVAILABLE_IN_PLAN',
     );
   }
 }

@@ -274,15 +274,8 @@ vez de una tabla monolítica de "planes". Estado actual de cada eje:
   `PlatformRepository.getBusinessModules()`/`provisionDefaultModules()`.
   Fail-closed (un módulo sin fila = deshabilitado). Confirmado que se deja
   como está.
-- **(b) Límite de asientos y roles por plan — hoy NO existe, hay que
-  construirlo.** Existe `src/config/plan-limits.ts` (`PLAN_LIMITS`), pero
-  solo cubre `maxCategories`/`maxResources` (usado por
-  `CategoryService`/`ResourceService`, error `PlanLimitError` → 402
-  `PLAN_LIMIT_REACHED`). No hay ningún límite de `memberships` activos ni
-  de qué `role_permission_groups` puede tener un negocio según su plan —
-  hoy cualquier plan puede crear memberships y roles sin tope. Extender
-  este mismo mecanismo (mismo patrón `PlanLimitError`/402) con
-  `maxActiveMemberships` y algo como `allowedPermissionGroups` por plan.
+- **(b) Límite de asientos y roles por plan — ✅ RESUELTO (17/08/2026,
+  tarde).** Ver detalle completo en sección F2-bis más abajo.
 - **(c) Edición fina de permisos por rol como feature del plan — hoy NO
   existe.** `role.service.ts`/`roles.routes.ts` ya permiten editar
   `permissionGroups` de un rol (`PUT /api/roles/:id`) **sin ninguna
@@ -296,8 +289,71 @@ vez de una tabla monolítica de "planes". Estado actual de cada eje:
   chequeo de plan análogo antes de aceptar un cambio de
   `permissionGroups` sobre un rol `is_system`.
 
-**No implementado todavía** — el dueño pidió que quede modelado como
-diseño/backlog primero.
+**(a) y (c) no implementados todavía** — el dueño pidió que queden
+modelados como diseño/backlog por ahora. **(b) sí, ver abajo.**
+
+### F2-bis. Implementado (17/08/2026, tarde) — límite de asientos y roles por plan
+
+A pedido explícito del dueño ("arranca con F2, límite de asientos y roles
+por plan"). Alcance: solo el eje (b) de los tres de F2 — (a) ya estaba
+resuelto, (c) queda para después.
+
+- `PLAN_LIMITS` (`src/config/plan-limits.ts`) gana `maxActiveMemberships`
+  y `allowedRoleNames` por plan — mismo patrón/archivo que ya usaban
+  `maxCategories`/`maxResources`, decisión confirmada con el dueño (no se
+  migró a una tabla en BD central, eso es un lift más grande evaluado y
+  pospuesto). Valores: FREE → 1 asiento, solo rol ADMIN. STARTER → 5
+  asientos, ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER. PRO → sin límite
+  (`Infinity`/`'ALL'`).
+- El **OWNER no ocupa asiento** — es estructural (se crea al registrar el
+  negocio, nunca vía esta API), así que el conteo lo excluye
+  explícitamente (`PlatformRepository.countActiveStaffMembershipsByBusiness()`,
+  nuevo — `JOIN roles ... WHERE r.name != 'OWNER'`).
+- `POST /api/users` (alta de un usuario nuevo) chequea, en este orden:
+  1. ¿El rol elegido está en `allowedRoleNames` del plan? Si no → 402
+     `ROLE_NOT_AVAILABLE_IN_PLAN`.
+  2. ¿Las membresías activas no-OWNER ya llegaron a `maxActiveMemberships`?
+     Si sí → 402 `PLAN_LIMIT_REACHED`.
+  `PUT /api/users/:id` (cambio de rol de un usuario existente) repite el
+  chequeo (1) pero NO el (2) — cambiar de rol no suma un asiento nuevo.
+- **`PlanLimitError` se movió** de `reservas/category.service.ts` a
+  `domain/errors.ts` (ahora extiende `DomainError` de verdad, code
+  `PLAN_LIMIT_REACHED`) al agregarle un segundo consumidor
+  (`users.routes.ts`). De paso corrigió un bug latente: antes extendía
+  `Error` a secas sin `.code`, así que la "red de seguridad" que
+  `error.middleware.ts` prometía en un comentario ("si `PlanLimitError`
+  llega sin capturar, igual cae a 402") en realidad NO funcionaba —
+  `err instanceof DomainError` daba `false` y caía al 500 genérico. Ahora
+  sí funciona. `categories.routes.ts` sigue capturándolo localmente
+  igual que antes (para el body enriquecido con `plan`/`limit`), solo
+  cambió de dónde lo importa.
+- Error nuevo `RoleNotAvailableInPlanError` (`domain/errors.ts`, code
+  `ROLE_NOT_AVAILABLE_IN_PLAN`, mapeado a 402 — mismo criterio comercial
+  que `PLAN_LIMIT_REACHED`: "actualizá tu plan", solo que el problema es
+  una capacidad no incluida, no un número agotado).
+- `users.routes.ts` ahora recibe `container: AppContainer` además de
+  `platformRepo` — usa `container.getBusinessPlan()` (no
+  `platformRepo.findById()`, mismo criterio de eficiencia que
+  `categories.routes.ts`) con 503 `PLATFORM_UNAVAILABLE` si la BD de
+  plataforma no responde.
+
+**Verificado contra Postgres real** (proyecto Neon `pdb-ppms`, branch
+temporal, borrado después): la query nueva de conteo de asientos
+excluye OWNER e inactivos correctamente (probado con datos reales, 1
+ADMIN activo + 1 OWNER + 1 RECEPTIONIST inactivo → cuenta 1; al activar
+el RECEPTIONIST → cuenta 2).
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 538/539 (+8 tests nuevos, `api/routes/users.routes.test.ts` —
+primer test de este router, mismo patrón que `me.routes.test.ts`: handler
+extraído del stack del Router, sin levantar Express real), `npm run build`
+limpio.
+
+**Deliberadamente fuera de esta ronda:** gatear la CREACIÓN de roles
+custom (`POST /api/roles`) por plan — F2 solo pidió el límite de
+asientos/roles al ASIGNAR una membership, no si un negocio puede crear
+roles nuevos. Eso se solapa con F2(c) (edición fina de permisos como
+feature del plan), que sigue sin implementar.
 
 ### F3. Origen de los defaults de fábrica (plataforma, no hardcode) + auditoría de hardcodes
 

@@ -110,8 +110,12 @@ function domainErrorStatus(error: DomainError): number {
 
     // --- 402 Payment Required ---
     // Red de seguridad: PlanLimitError se captura localmente en los routers.
-    // Si por algún motivo llega aquí, devolvemos 402 igual.
+    // Si por algún motivo llega aquí, devolvemos 402 igual. Mismo criterio
+    // para ROLE_NOT_AVAILABLE_IN_PLAN (17/08/2026, F2) -- el problema no es
+    // un número agotado sino una capacidad no incluida en el plan, pero la
+    // semántica HTTP y el mensaje ("actualizá tu plan") son los mismos.
     case 'PLAN_LIMIT_REACHED':
+    case 'ROLE_NOT_AVAILABLE_IN_PLAN':
       return 402;
 
     // --- 403 Forbidden ---
