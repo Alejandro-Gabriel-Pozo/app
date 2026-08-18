@@ -139,6 +139,9 @@ export class ReservationService {
     endTime?: Date;
     details: Record<string, unknown>;
     serviceId?: string;
+    /** Desglose de huéspedes (hotelería, 18/08/2026) — null/omitido = no aplica a este tipo de reserva. */
+    adultos?: number | null;
+    ninos?: number | null;
   }): Promise<Reservation> {
     const resource = await this.resourceRepository.getById(params.resourceId);
     if (!resource) {
@@ -203,6 +206,8 @@ export class ReservationService {
         endTime,
         details:   params.details,
         ...(params.serviceId !== undefined && { serviceId: params.serviceId }),
+        adultos: params.adultos ?? null,
+        ninos:   params.ninos ?? null,
         totalPrice,
         lines: lines.map((line, i) => ({
           id:            `${params.id}-L${i + 1}`,
@@ -354,6 +359,9 @@ export class ReservationService {
       endTime?: Date;
       details?: Record<string, unknown>;
       resourceId?: string;
+      /** Desglose de huéspedes (hotelería, 18/08/2026) — ver docblock de createReservation. */
+      adultos?: number | null;
+      ninos?: number | null;
     },
   ): Promise<Reservation> {
     const existing = await this.requireReservation(id);
@@ -370,15 +378,20 @@ export class ReservationService {
       );
     }
 
-    if (!changes.startTime && !changes.endTime && !changes.details && !changes.resourceId) {
+    if (
+      !changes.startTime && !changes.endTime && !changes.details && !changes.resourceId
+      && changes.adultos === undefined && changes.ninos === undefined
+    ) {
       throw new InvalidReservationError(
-        'Debés enviar al menos un campo para modificar: startTime, endTime, details o resourceId',
+        'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos o ninos',
       );
     }
 
     const newStartTime = changes.startTime ?? existing.startTime;
     const newEndTime   = changes.endTime   ?? existing.endTime;
     const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
+    const newAdultos   = changes.adultos !== undefined ? changes.adultos : existing.adultos;
+    const newNinos     = changes.ninos   !== undefined ? changes.ninos   : existing.ninos;
 
     // Reasignación de recurso (drag-to-move) — resuelve el recurso NUEVO
     // antes de validar detalles/disponibilidad, para que todo lo demás
@@ -465,6 +478,8 @@ export class ReservationService {
         partySize:     existing.partySize,
         notes:         existing.notes,
         orderItemId:   existing.orderItemId,
+        adultos:       newAdultos,
+        ninos:         newNinos,
         totalPrice,
         lines,
       });

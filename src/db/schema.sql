@@ -379,6 +379,30 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- adultos/ninos (18/08/2026, spec de mejoras PMS -- docs/referencia-
+-- mejoras-pms-2026-08-18-anexo.md sección A). Distinto de `party_size`
+-- (arriba): party_size ya existe para TODO rubro y valida contra la
+-- capacidad del recurso (mesa, taller, etc.); adultos/ninos es el
+-- desglose estructurado que pide hotelería, más específico. Nullable a
+-- propósito -- alcance de esta ronda: solo se pide/muestra en categorías
+-- de alojamiento (isLodging=true, ver E1); una reserva de Turnos
+-- (barbería, etc.) sigue sin este dato, NULL. El dueño confirmó (18/08,
+-- noche) que la idea es habilitarlo también para otros rubros con
+-- concepto de grupo + guía (tours) más adelante -- por eso vive como
+-- columna general en `reservations`, no atada a una tabla o flag de
+-- alojamiento; solo la UI de hoy lo restringe a Reservas/Estadías.
+-- `adultos` NULL = "no aplica a este tipo de reserva todavía", no "cero
+-- adultos" -- por eso el CHECK permite NULL pero exige >= 1 si se informa
+-- (mismo criterio que partySize, nunca 0 adultos en una reserva real).
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS adultos INTEGER;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS ninos   INTEGER;
+
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_adultos;
+ALTER TABLE reservations ADD CONSTRAINT chk_reservations_adultos CHECK (adultos IS NULL OR adultos >= 1);
+
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_ninos;
+ALTER TABLE reservations ADD CONSTRAINT chk_reservations_ninos CHECK (ninos IS NULL OR ninos >= 0);
+
 -- ---------------------------------------------------------------------------
 -- reservation_lines
 -- Una fila por unidad temporal de la reserva: una noche si el servicio es

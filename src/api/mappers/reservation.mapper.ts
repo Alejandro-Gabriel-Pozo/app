@@ -47,6 +47,9 @@ export interface ReservationDto {
   serviceId: string | null;
   partySize: number;
   notes: string | null;
+  /** Desglose de huéspedes (hotelería, 18/08/2026) — null = no aplica a este tipo de reserva. */
+  adultos: number | null;
+  ninos: number | null;
   totalPrice: number;
   /**
    * Desglose por unidad temporal (una noche en bookingMode='block', una
@@ -91,6 +94,8 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     serviceId: reservation.serviceId,
     partySize: reservation.partySize,
     notes:     reservation.notes,
+    adultos:   reservation.adultos,
+    ninos:     reservation.ninos,
     totalPrice: reservation.totalPrice,
     lines: reservation.lines.map((line) => ({
       id:       line.id,

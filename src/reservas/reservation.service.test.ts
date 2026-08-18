@@ -223,6 +223,108 @@ describe('ReservationService', () => {
   });
 
   // -------------------------------------------------------------------------
+  // adultos/ninos — desglose de huéspedes (18/08/2026, spec de mejoras PMS)
+  // -------------------------------------------------------------------------
+  describe('adultos/ninos (desglose de huéspedes)', () => {
+    it('crea la reserva con adultos y ninos informados', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-guests-1',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+        adultos: 2,
+        ninos: 1,
+      });
+      expect(reservation.adultos).toBe(2);
+      expect(reservation.ninos).toBe(1);
+    });
+
+    it('sin adultos/ninos informados, quedan en null (no aplica)', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-guests-2',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+      });
+      expect(reservation.adultos).toBeNull();
+      expect(reservation.ninos).toBeNull();
+    });
+
+    it('ninos default 0 si se informa adultos sin ninos', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-guests-3',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+        adultos: 3,
+      });
+      expect(reservation.adultos).toBe(3);
+      expect(reservation.ninos).toBeNull();
+    });
+
+    it('rechaza adultos = 0', async () => {
+      await expect(
+        service.createReservation({
+          id: 'res-guests-4', resourceId: 't1', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+          details: {}, adultos: 0,
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('rechaza ninos negativo', async () => {
+      await expect(
+        service.createReservation({
+          id: 'res-guests-5', resourceId: 't1', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+          details: {}, adultos: 1, ninos: -1,
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('rechaza ninos sin adultos informado', async () => {
+      await expect(
+        service.createReservation({
+          id: 'res-guests-6', resourceId: 't1', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+          details: {}, ninos: 1,
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('updateReservation permite corregir adultos/ninos ("cambio de última hora" en check-in)', async () => {
+      await service.createReservation({
+        id: 'res-guests-7', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+        details: {}, adultos: 2, ninos: 0,
+      });
+
+      const updated = await service.updateReservation('res-guests-7', { adultos: 3, ninos: 1 });
+      expect(updated.adultos).toBe(3);
+      expect(updated.ninos).toBe(1);
+    });
+
+    it('updateReservation con solo adultos/ninos no toca fechas ni recurso', async () => {
+      const created = await service.createReservation({
+        id: 'res-guests-8', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+        details: {},
+      });
+
+      const updated = await service.updateReservation('res-guests-8', { adultos: 1 });
+      expect(updated.adultos).toBe(1);
+      expect(updated.startTime).toEqual(created.startTime);
+      expect(updated.resource.id).toBe(created.resource.id);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe('checkAvailability — recurso desactivado', () => {
     it('devuelve false (no lanza) para un recurso con active: false, mismo contrato que OUT_OF_SERVICE', async () => {
       const inactiveTable = new BookableResource(

@@ -22,6 +22,8 @@ interface ReservationRow {
   notes?: string | null;
   order_item_id?: string | null;
   total_price: string;
+  adultos?: number | null;
+  ninos?: number | null;
 }
 
 /**
@@ -61,6 +63,12 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.endTime.toISOString(),
       JSON.stringify(reservation.details),
       reservation.totalPrice,
+      reservation.serviceId,
+      reservation.partySize,
+      reservation.notes,
+      reservation.orderItemId,
+      reservation.adultos,
+      reservation.ninos,
     ];
   }
 
@@ -76,21 +84,41 @@ export class SqlReservationRepository implements ReservationRepository {
   // persistía nada — el 200 que devolvía la API era el objeto en memoria, no
   // una relectura de la fila. La UI mostraba el cambio hasta el próximo
   // fetch, donde volvían las fechas viejas.
+  //
+  // service_id/party_size/notes/order_item_id faltaban del INSERT Y DEL
+  // ON CONFLICT ENTEROS (bug encontrado 18/08/2026, de paso, al agregar
+  // adultos/ninos a este mismo INSERT) — no es que se desincronizaran entre
+  // sí como el bug de arriba, directamente NUNCA se escribían. `baseSelect()`
+  // sí los lee, así que toda reserva quedaba en la base con `service_id`/
+  // `notes`/`order_item_id` NULL y `party_size` en su DEFAULT (1) para
+  // siempre, sin importar qué valor tuviera en memoria. Efecto real:
+  // `getActiveForServiceInRange()`/`WithLock()` (resource_locks por
+  // servicio) nunca podían matchear nada porque `r.service_id` era NULL en
+  // toda fila — el chequeo de disponibilidad de recursos bloqueados por
+  // servicio quedaba roto en silencio. Test de regresión: mismo patrón que
+  // el de resource_id/start_time/end_time (inspecciona el SQL literal).
   private readonly UPSERT_SQL = `
     INSERT INTO reservations (
       id, customer_id, customer_name, customer_email,
       resource_id, status,
-      start_time, end_time, details, updated_at, total_price
+      start_time, end_time, details, updated_at, total_price,
+      service_id, party_size, notes, order_item_id, adultos, ninos
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16)
     ON CONFLICT (id) DO UPDATE SET
-      resource_id = $5,
-      status      = $6,
-      start_time  = $7,
-      end_time    = $8,
-      details     = $9,
-      updated_at  = CURRENT_TIMESTAMP,
-      total_price = $10
+      resource_id   = $5,
+      status        = $6,
+      start_time    = $7,
+      end_time      = $8,
+      details       = $9,
+      updated_at    = CURRENT_TIMESTAMP,
+      total_price   = $10,
+      service_id    = $11,
+      party_size    = $12,
+      notes         = $13,
+      order_item_id = $14,
+      adultos       = $15,
+      ninos         = $16
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -333,7 +361,8 @@ export class SqlReservationRepository implements ReservationRepository {
       SELECT
         r.id, r.customer_id, r.customer_name, r.customer_email,
         r.resource_id, r.status, r.start_time, r.end_time, r.details,
-        r.service_id, r.party_size, r.notes, r.order_item_id, r.total_price
+        r.service_id, r.party_size, r.notes, r.order_item_id, r.total_price,
+        r.adultos, r.ninos
       FROM reservations r
     `;
   }
@@ -365,6 +394,8 @@ export class SqlReservationRepository implements ReservationRepository {
       orderItemId:   row.order_item_id ?? null,
       totalPrice:    parseFloat(row.total_price),
       lines,
+      adultos:       row.adultos ?? null,
+      ninos:         row.ninos   ?? null,
     });
   }
 

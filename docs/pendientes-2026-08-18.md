@@ -659,3 +659,94 @@ rutas). **No verificado visualmente en navegador en esta sesión** — sin
 credenciales de un usuario de prueba a mano para loguearse. Recomendado
 confirmar a simple vista en `/dashboard/productos` → "Nuevo producto"
 antes de darlo por cerrado del todo.
+
+---
+
+## K. Ticket #2 del spec de mejoras PMS — adultos/niños estructurados (18/08/2026, noche)
+
+A pedido explícito del dueño ("abordar lo de PMS" → eligió empezar por
+este ticket de los 6 del spec, ver punto J). Alcance confirmado antes de
+tocar código (dos preguntas):
+
+- **Adultos/niños solo en alojamiento por ahora** (categorías
+  `isLodging=true`, pantalla Reservas/Estadías) — Turnos no lo pide.
+  El dueño aclaró que la idea es habilitarlo después también para otros
+  rubros con concepto de "grupo + guía" (tours) — por eso vive como
+  columna general en `reservations` (no atada a una tabla/flag de
+  alojamiento), nullable, y solo la UI de hoy lo restringe a Reservas.
+- **`adultos` obligatorio (mínimo 1) cuando se informa, `ninos` opcional
+  (default 0)** — tal cual pide el anexo del spec.
+
+### Backend
+
+- `reservations` gana `adultos`/`ninos` INTEGER nullable (schema v18,
+  `CURRENT_SCHEMA_VERSION` en `tenant-db.setup.ts`). `NULL` = "no aplica
+  a este tipo de reserva" (Turnos), no "cero". CHECK: `adultos IS NULL OR
+  adultos >= 1`, `ninos IS NULL OR ninos >= 0`. Distinto de `party_size`
+  (ya existía, valida contra la capacidad del recurso, aplica a TODO
+  rubro) — son conceptos separados, no se tocó `party_size`.
+- `Reservation.ts`: valida `adultos >= 1` si se informa, `ninos >= 0`,
+  y `ninos` requiere `adultos` informado (no puede haber niños sin saber
+  cuántos adultos). `createReservation()`/`updateReservation()` los
+  aceptan como parámetros opcionales — editable en `updateReservation()`
+  para el caso "cambio de última hora" del check-in (mismo guard de
+  estado PENDING/CONFIRMED que ya regía el resto de los campos editables).
+- Zod (`request.schemas.ts`): `adultos`/`ninos` opcionales en create,
+  `nullable().optional()` en update (`null` explícito borra el dato).
+- DTO de respuesta (`reservation.mapper.ts`) expone ambos campos.
+
+**Bug real encontrado de paso, no relacionado con adultos/niños en sí
+pero en el mismo archivo/método:** `sql.reservation.repository.ts` —
+`service_id`/`party_size`/`notes`/`order_item_id` faltaban COMPLETOS del
+`UPSERT_SQL` (ni en el INSERT ni en el `ON CONFLICT DO UPDATE`), no
+solo desincronizados entre sí como el bug de `resource_id`/`start_time`/
+`end_time` resuelto más temprano hoy (punto H). `baseSelect()` sí los
+lee — significa que **toda reserva en producción tiene `service_id`
+NULL, `notes` NULL, `order_item_id` NULL, y `party_size` siempre en su
+DEFAULT (1)**, sin importar qué se haya pasado en memoria al crearla,
+desde que existe este repositorio. Efecto más grave:
+`getActiveForServiceInRange()`/`WithLock()` (chequeo de disponibilidad
+de recursos bloqueados por SERVICIO) nunca podían matchear nada porque
+`r.service_id` era NULL en toda fila — ese chequeo de disponibilidad
+está roto en silencio desde siempre. Corregido en el mismo commit que
+agrega `adultos`/`ninos` (mismas líneas). Test de regresión nuevo
+(mismo criterio que el de H: inspecciona el SQL literal del INSERT y
+del `DO UPDATE SET`, no solo que se haya llamado `query()`).
+**Pendiente evaluar aparte:** auditar si `getActiveForServiceInRange()`
+tenía algún consumidor real en producción que dependiera de este
+chequeo — no investigado en esta sesión, el fix soluciona la causa raíz
+pero no se midió el impacto histórico.
+
+### Frontend (`appfrontend-main`)
+
+- `lib/types.ts`: `Reservation.adultos`/`ninos`.
+- Reservas (`dashboard/reservas/page.tsx`): campos "Adultos"/"Niños" en
+  el alta (default 1/0) y en la edición del detalle; se muestran en la
+  vista de solo lectura ("Adultos: 2 · Niños: 1").
+- Estadías (`dashboard/estadias/page.tsx`), modal de check-in: al elegir
+  una reserva confirmada, hereda su adultos/niños (editable — "cambio de
+  última hora" que pide el anexo). Si difieren de lo que ya tenía la
+  reserva, `handleCheckIn()` corrige con un `PUT /api/reservations/:id`
+  antes de armar la estadía; si no cambiaron, no manda ese PUT de más.
+
+**Fuera de alcance de este ticket** (son los tickets #3/#4/#5 del spec,
+no pedidos todavía): tooltip enriquecido del calendario, columnas
+adultos/niños en los reportes de ocupación existentes, exportación
+PDF/Excel, dashboard de métricas. Anotado en `roadmap-pms-multirubro.md`.
+
+**Verificado (backend) contra Postgres real** (tenant `refine-test-
+business`, schema aplicado a v18): columnas `adultos`/`ninos`
+confirmadas nullable; una reserva creada con `partySize`/`notes`/
+`adultos`/`ninos` releída con una instancia de repositorio NUEVA (no el
+objeto en memoria) confirmó que los cinco campos persisten; una segunda
+escritura sobre el mismo id (rama `ON CONFLICT DO UPDATE`) confirmó que
+`notes`/`adultos`/`ninos` se actualizan de verdad, no solo en el INSERT
+inicial. Datos de prueba limpiados al terminar. `tsc --noEmit` limpio,
+`npm run lint` limpio, `npm test` 574/574 (+9 tests nuevos: 8 de
+adultos/ninos en `reservation.service.test.ts` + 1 de regresión del
+UPSERT en `sql.reservation.repository.test.ts`).
+
+**Verificado (frontend):** `tsc --noEmit` limpio, `npm run lint` limpio
+(0 errores, mismos 2 warnings preexistentes), `npm run build` limpio (25
+rutas). No verificado visualmente en navegador (mismo motivo que el
+punto anterior — sin credenciales a mano).

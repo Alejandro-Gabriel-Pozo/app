@@ -27,6 +27,14 @@
  *   Ver `ReservationService.resolvePrice()`/`buildLines()` para cómo se
  *   arman, y el comentario de `reservation_lines` en db/schema.sql para
  *   los límites del modelo (sin estado propio, no se regeneran al editar).
+ *
+ * ## Cambios v7 — adultos/niños (18/08/2026, spec de mejoras PMS)
+ * - `+adultos`/`+ninos`: opcionales, `null` por default — distinto de
+ *   `partySize` (que ya existe para TODO rubro y valida contra la
+ *   capacidad del recurso). `adultos`/`ninos` es el desglose estructurado
+ *   que pide hotelería específicamente; hoy solo lo completa el
+ *   formulario de Reservas/Estadías (categorías `isLodging=true`), una
+ *   reserva de Turnos queda con ambos en `null` ("no aplica"), no en 0.
  */
 
 import { ReservationStatus } from '../types/enums.js';
@@ -66,6 +74,10 @@ export interface ReservationProps {
   totalPrice: number;
   /** v6: desglose por unidad temporal — opcional, default [] */
   lines?: ReservationLine[];
+  /** v7: desglose de huéspedes (hotelería) — null = no aplica a este tipo de reserva */
+  adultos?: number | null;
+  /** v7: null = no aplica; requiere `adultos` informado */
+  ninos?: number | null;
 }
 
 export class Reservation {
@@ -77,6 +89,8 @@ export class Reservation {
   public readonly orderItemId: string | null;
   public readonly totalPrice: number;
   public readonly lines: ReservationLine[];
+  public readonly adultos: number | null;
+  public readonly ninos: number | null;
 
   constructor(props: ReservationProps) {
     const {
@@ -93,6 +107,8 @@ export class Reservation {
       orderItemId = null,
       totalPrice,
       lines = [],
+      adultos = null,
+      ninos = null,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -104,6 +120,15 @@ export class Reservation {
     }
     if (totalPrice == null || Number.isNaN(totalPrice) || totalPrice < 0) {
       throw new InvalidReservationError('totalPrice debe ser un número mayor o igual a 0');
+    }
+    if (adultos != null && adultos < 1) {
+      throw new InvalidReservationError('adultos debe ser al menos 1 si se informa');
+    }
+    if (ninos != null && ninos < 0) {
+      throw new InvalidReservationError('ninos no puede ser negativo');
+    }
+    if (ninos != null && adultos == null) {
+      throw new InvalidReservationError('ninos requiere que adultos también esté informado');
     }
 
     assertValidTimeRange(startTime, endTime);
@@ -120,6 +145,8 @@ export class Reservation {
     this.orderItemId = orderItemId;
     this.totalPrice  = totalPrice;
     this.lines       = lines;
+    this.adultos     = adultos;
+    this.ninos       = ninos;
     this._status     = initialStatus;
   }
 

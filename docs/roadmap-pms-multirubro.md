@@ -124,15 +124,23 @@ un check-in web.
 cuentas corrientes, proyección, revenue. El pedido original menciona "+200
 reportes" para el módulo de AA&BB — eso vive en el punto de F&B más abajo.
 
-❌ **Adultos/niños como campo estructurado, exportación PDF/Excel, y
-dashboard ADR/RevPAR/GOPPAR** (agregado 18/08/2026,
-`docs/referencia-mejoras-pms-2026-08-18.md` + su anexo — spec completa,
-incluye checklist de QA). Ninguna de las tres cosas existe hoy:
-`reservations` no tiene columnas `adultos`/`ninos` estructuradas, no hay
-exportación a `.xlsx`/PDF en ningún reporte, y no hay dashboard de
-métricas (ocupación %, ADR, RevPAR con/sin OOO, plazas restantes). El
-ticket original las marca prioridad Alta (adultos/niños, tooltip),
-Media (exportación, dashboard).
+✅ **Adultos/niños como campo estructurado** (agregado 18/08/2026,
+`docs/referencia-mejoras-pms-2026-08-18.md` + su anexo, ticket #2 —
+resuelto la misma noche, ver `pendientes-2026-08-18.md` punto K).
+`reservations.adultos`/`ninos` (schema v18, nullable — solo aplica a
+alojamiento por ahora, extensible a otros rubros con concepto de grupo
+después), formulario de Reservas y modal de check-in de Estadías.
+**Todavía ❌ del mismo ticket:** columnas adultos/niños en los reportes
+de ocupación EXISTENTES (`GET /api/reports/occupancy` etc. no las suman
+todavía) — el dato ya existe en `reservations`, falta solo agregarlo a
+la agregación de esos endpoints.
+
+❌ **Exportación PDF/Excel y dashboard ADR/RevPAR/GOPPAR** (tickets #3
+tooltip/#4 exportación/#5 dashboard del mismo spec, sin empezar). Ninguna
+de las dos cosas existe hoy: no hay exportación a `.xlsx`/PDF en ningún
+reporte, y no hay dashboard de métricas (ocupación %, ADR, RevPAR con/sin
+OOO, plazas restantes). El ticket original las marca prioridad Alta
+(tooltip), Media (exportación, dashboard).
 
 ---
 

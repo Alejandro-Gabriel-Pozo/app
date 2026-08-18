@@ -186,7 +186,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // backlog E1 (pendientes-2026-08-13.md), separa el panel de Estadías/PMS
 // del de Turnos/servicios. DEFAULT FALSE, categorías existentes hay que
 // marcarlas a mano desde Categorías (no hay forma de inferirlo).
-export const CURRENT_SCHEMA_VERSION = 17;
+// v18 (18/08/2026, noche): `reservations` gana `adultos`/`ninos` —
+// spec de mejoras PMS (docs/referencia-mejoras-pms-2026-08-18-anexo.md
+// sección A). Nullable: solo se pide/muestra hoy en categorías de
+// alojamiento (isLodging=true); una reserva de Turnos queda con NULL.
+export const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

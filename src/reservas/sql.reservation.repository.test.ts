@@ -96,4 +96,28 @@ describe('SqlReservationRepository', () => {
     expect(setClause).toMatch(/start_time\s*=/);
     expect(setClause).toMatch(/end_time\s*=/);
   });
+
+  // Regresión (18/08/2026): service_id/party_size/notes/order_item_id
+  // faltaban del INSERT Y del ON CONFLICT enteros -- no es que se
+  // desincronizaran entre sí (como el bug de arriba), directamente nunca
+  // se escribían. Efecto real: getActiveForServiceInRange() nunca podía
+  // matchear nada porque service_id quedaba NULL en toda fila. Encontrado
+  // de paso al agregar adultos/ninos a este mismo INSERT.
+  it('el INSERT y el UPDATE del upsert deben incluir service_id/party_size/notes/order_item_id/adultos/ninos', async () => {
+    const reservation = await repo.getById('res-1');
+    await repo.save(reservation!);
+
+    const saveCall = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('ON CONFLICT'),
+    );
+    expect(saveCall).toBeDefined();
+    const sql = saveCall![0] as string;
+    const insertClause = sql.slice(0, sql.indexOf('ON CONFLICT'));
+    const setClause = sql.slice(sql.indexOf('DO UPDATE SET'));
+
+    for (const column of ['service_id', 'party_size', 'notes', 'order_item_id', 'adultos', 'ninos']) {
+      expect(insertClause).toContain(column);
+      expect(setClause).toMatch(new RegExp(`${column}\\s*=`));
+    }
+  });
 });

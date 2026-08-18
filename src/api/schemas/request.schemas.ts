@@ -49,6 +49,12 @@ export const CreateReservationSchema = z.object({
   // es crear un servicio distinto si hace falta otra duración.
   endTime:    z.string().datetime().optional(),
   details:    z.record(z.unknown()).default({}),
+  // Desglose de huéspedes (hotelería, 18/08/2026) — opcional: hoy solo lo
+  // manda el formulario de Reservas/Estadías (categorías isLodging=true),
+  // Turnos no lo envía. `ninos` requiere `adultos` informado (validado en
+  // el dominio, Reservation.ts).
+  adultos: z.number().int().min(1).optional(),
+  ninos:   z.number().int().min(0).optional(),
 }).refine(
   (data) => Boolean(data.resourceId) !== Boolean(data.categoryId),
   { message: 'Se requiere exactamente uno de resourceId o categoryId', path: ['resourceId'] },
@@ -67,9 +73,15 @@ export const UpdateReservationSchema = z.object({
   // Calendario de PMS (18/08/2026) — drag-to-move: reasignar la reserva a
   // otro recurso (habitación).
   resourceId: z.string().min(1).optional(),
+  // Desglose de huéspedes (18/08/2026) — "editable si hubo cambio de
+  // última hora" (modal de check-in, spec de mejoras PMS). `null` explícito
+  // borra el dato (vuelve a "no aplica"), `undefined`/ausente no lo toca.
+  adultos: z.number().int().min(1).nullable().optional(),
+  ninos:   z.number().int().min(0).nullable().optional(),
 }).refine(
-  (data) => data.startTime || data.endTime || data.details || data.resourceId,
-  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime, details o resourceId' },
+  (data) => data.startTime || data.endTime || data.details || data.resourceId
+    || data.adultos !== undefined || data.ninos !== undefined,
+  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime, details, resourceId, adultos o ninos' },
 ).superRefine((data, ctx) => {
   if (data.startTime && data.endTime && new Date(data.endTime) <= new Date(data.startTime)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'endTime debe ser posterior a startTime', path: ['endTime'] });
