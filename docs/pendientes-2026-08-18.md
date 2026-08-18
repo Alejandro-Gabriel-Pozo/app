@@ -421,6 +421,37 @@ puntuales).
 como pendiente en sesiones anteriores) no se tocó — no es parte de este
 bug, es una cuenta pendiente aparte.
 
+**Auditoría del mismo patrón en el resto del repo (fork dedicado, mismo
+18/08/2026):** se revisaron los otros ~10 archivos de `app-main/src` que
+usan `ON CONFLICT ... DO UPDATE SET` para ver si el mismo error (columna
+en la lista del INSERT pero ausente del SET) se repetía en otro lado.
+
+- Limpios: `sql.financial-transaction.repository.ts`,
+  `platform.repository.ts`, `platform/company.repository.ts`,
+  `pos-menu/sql.product.repository.ts`,
+  `repositories/sql.inventory-level.repository.ts`,
+  `repositories/sql.stock-movement.repository.ts`,
+  `clientes-finanzas/sql.customer.repository.ts`,
+  `reservas/sql.resource.repository.ts` — o son `DO NOTHING` sin SET, o
+  usan `SET col = EXCLUDED.col` (no puede desincronizarse de la lista del
+  INSERT), o excluyen a propósito columnas inmutables con el motivo
+  documentado en un comentario.
+- **Segundo caso real encontrado:** `reservas/sql.occupancy.repository.ts::recordReservation()`.
+  El upsert de `occupancy_records` pasaba `resource_name`, `category_id`,
+  `category_name` como parámetros del INSERT pero el `ON CONFLICT
+  (resource_id, date) DO UPDATE` solo tocaba `booked_minutes`. Efecto:
+  renombrar un recurso o moverlo de categoría dejaba esos tres campos
+  con el valor VIEJO para siempre en cualquier fecha que ya tuviera fila
+  `(resource_id, date)` — silencioso, solo se notaba en reportes de
+  ocupación por categoría (categoría equivocada en el agregado). Menor
+  severidad que el bug de reservas (no rompe integridad de reservas,
+  solo ensucia analítica), pero mismo patrón exacto. Corregido: se agregó
+  `resource_name = $2, category_id = $3, category_name = $4` al SET.
+  Test de regresión agregado en `sql.occupancy.repository.test.ts` (mismo
+  criterio que el de `sql.reservation.repository.test.ts`: inspecciona el
+  SQL literal, no solo que se haya llamado `query()`). Suite completa:
+  544/544.
+
 **Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
 `npm test` 541/542 (+3 tests nuevos). **Verificado (frontend):**
 `tsc --noEmit` limpio, `npm run lint` limpio, `npm run build` limpio,

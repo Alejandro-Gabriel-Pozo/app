@@ -81,12 +81,21 @@ export class SqlOccupancyRepository implements OccupancyRepository {
       return;
     }
 
+    // resource_name/category_id/category_name van también en el SET (bug
+    // encontrado 18/08/2026, mismo patrón que sql.reservation.repository.ts):
+    // sin esto, renombrar un recurso o moverlo de categoría dejaba los
+    // snapshots de ocupación con el nombre/categoría vieja para siempre en
+    // cualquier fecha que ya tuviera una fila (resource_id, date) previa —
+    // silencioso, solo se notaba en reportes de ocupación por categoría.
     const sql = `
       INSERT INTO occupancy_records
         (resource_id, resource_name, category_id, category_name, date, total_minutes, booked_minutes)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (resource_id, date) DO UPDATE
-      SET booked_minutes = occupancy_records.booked_minutes + $7
+      SET resource_name   = $2,
+          category_id     = $3,
+          category_name   = $4,
+          booked_minutes  = occupancy_records.booked_minutes + $7
     `.trim();
 
     for (const { date, minutes } of splitDateRangeIntoDailyMinutes(startTime, endTime)) {

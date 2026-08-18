@@ -74,6 +74,26 @@ describe('SqlOccupancyRepository', () => {
       // Día 2: 00:00 a 02:00 = 2 horas = 120 minutos
       expect(calls[1]![1]![6]).toBe(120);
     });
+
+    // Regresión (18/08/2026): el ON CONFLICT DO UPDATE solo tocaba
+    // booked_minutes -- renombrar un recurso o moverlo de categoría dejaba
+    // resource_name/category_id/category_name viejos para siempre en
+    // cualquier fecha que ya tuviera fila. Mismo patrón que el bug de
+    // sql.reservation.repository.ts (ver docs/pendientes-2026-08-18.md, H).
+    it('el UPDATE del upsert debe tocar resource_name/category_id/category_name, no solo booked_minutes', async () => {
+      const start = new Date('2026-06-21T10:00:00');
+      const end = new Date('2026-06-21T12:00:00');
+
+      await repo.recordReservation('r1', 'Mesa A', 'cat-1', 'Mesas', start, end, ReservationStatus.CONFIRMED);
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const call = mockQuery.mock.calls[0]!;
+      const sql = call[0] as string;
+      const setClause = sql.slice(sql.indexOf('DO UPDATE'));
+      expect(setClause).toMatch(/resource_name\s*=/);
+      expect(setClause).toMatch(/category_id\s*=/);
+      expect(setClause).toMatch(/category_name\s*=/);
+    });
   });
 
   describe('getOccupancyByDateRange', () => {
