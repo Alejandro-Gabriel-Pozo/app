@@ -257,6 +257,20 @@ export class PlanLimitError extends DomainError {
  * (402, "actualizá tu plan") pero un mensaje distinto porque el problema
  * no es un número agotado, es una capacidad no incluida.
  */
+/**
+ * Aprobar un late check-out/early check-in pedido chocaría con la
+ * llegada de la próxima reserva en la misma habitación (18/08/2026,
+ * pendientes-2026-08-18.md punto N) — regla exacta:
+ * `StayService.approveScheduleChange()`. `arrivalTime` es la hora de
+ * pared ya calculada (hora solicitada aprobada de la próxima reserva, o
+ * si no tiene, la hora estándar del negocio).
+ */
+export class NextArrivalConflictError extends DomainError {
+  constructor(arrivalTime: string) {
+    super(`Conflicto: próxima llegada a las ${arrivalTime}`, 'NEXT_ARRIVAL_CONFLICT');
+  }
+}
+
 export class RoleNotAvailableInPlanError extends DomainError {
   constructor(
     public readonly plan: BusinessPlan,

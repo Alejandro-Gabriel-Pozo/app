@@ -76,6 +76,14 @@ export interface HousekeepingTaskProps {
   completedAt: Date | null;
   inspectedAt: Date | null;
   inspectedBy: string | null;
+  /**
+   * Instante antes del cual la tarea no puede pasar a IN_PROGRESS (18/08/2026,
+   * flujo de check-in/check-out — pendientes-2026-08-18.md punto N). `null`
+   * = sin restricción. Lo setea `StayService` al crear la tarea post-checkout
+   * si hubo un late check-out APROBADO, para que housekeeping no entre antes
+   * de que el huésped efectivamente se haya ido.
+   */
+  notBefore: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -93,6 +101,7 @@ export class HousekeepingTask {
     shift: string;
     scheduledFor: Date;
     notes?: string;
+    notBefore?: Date | null;
   }): HousekeepingTask {
     const now = new Date();
     return new HousekeepingTask({
@@ -108,6 +117,7 @@ export class HousekeepingTask {
       completedAt: null,
       inspectedAt: null,
       inspectedBy: null,
+      notBefore: input.notBefore ?? null,
       createdAt: now,
       updatedAt: now,
     });
@@ -141,8 +151,24 @@ export class HousekeepingTask {
     if (this.props.status !== 'ASSIGNED' && this.props.status !== 'PENDING') {
       throw new InvalidHousekeepingTransitionError(`No se puede iniciar una tarea en estado ${this.props.status}.`);
     }
+    if (this.props.notBefore && new Date() < this.props.notBefore) {
+      throw new InvalidHousekeepingTransitionError(
+        `No se puede iniciar esta tarea antes de ${this.props.notBefore.toISOString()} (late check-out aprobado).`,
+      );
+    }
     this.props.status = 'IN_PROGRESS';
     this.props.startedAt = new Date();
+    this.props.updatedAt = new Date();
+  }
+
+  /**
+   * Actualiza `notBefore` sobre una tarea YA creada (18/08/2026, flujo de
+   * check-in/check-out) — caso "la tarea de limpieza de hoy ya existía
+   * cuando se aprobó el late check-out" (ver StayService.approveScheduleChange).
+   * No es una transición de estado, no toca `status`.
+   */
+  setNotBefore(notBefore: Date): void {
+    this.props.notBefore = notBefore;
     this.props.updatedAt = new Date();
   }
 
@@ -217,6 +243,7 @@ export class HousekeepingTask {
   get completedAt(): Date | null { return this.props.completedAt; }
   get inspectedAt(): Date | null { return this.props.inspectedAt; }
   get inspectedBy(): string | null { return this.props.inspectedBy; }
+  get notBefore(): Date | null { return this.props.notBefore; }
   get createdAt(): Date { return this.props.createdAt; }
   get updatedAt(): Date { return this.props.updatedAt; }
 

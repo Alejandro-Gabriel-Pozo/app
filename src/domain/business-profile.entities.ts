@@ -26,12 +26,20 @@ export interface BusinessProfile {
   /**
    * IANA (America/Argentina/Buenos_Aires, ...). Es el campo que A4.2
    * (criterios-negocio.md) pedía en `Business` y nunca se había modelado
-   * — antes vivía hardcodeado en email/templates.ts. `reservation.
-   * service.ts` (combineDateAndTime) sigue con el huso Argentina fijo a
-   * propósito por ahora — cambiarlo toca el camino crítico de
-   * disponibilidad ya verificado, queda para una sesión propia.
+   * — antes vivía hardcodeado en email/templates.ts. Desde el 18/08/2026,
+   * `reservation.service.ts` (combineDateAndTime) también lo usa para el
+   * camino crítico de disponibilidad (antes tenía el huso de Argentina
+   * fijo a propósito) — ver docblock de esa función para el detalle de DST.
    */
   timezone: string;
+  /**
+   * Hora de pared (A4.3, criterios-negocio.md), política general del
+   * negocio — "check-in a las 14" es 14 local siempre, no un instante.
+   * 18/08/2026, flujo de check-in/check-out (pendientes-2026-08-18.md
+   * punto N). Formato HH:MM:SS.
+   */
+  defaultCheckInTime: string;
+  defaultCheckOutTime: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -41,4 +49,6 @@ export interface UpdateBusinessProfileInput {
   contactEmail?: string | null | undefined;
   currency?: string | undefined;
   timezone?: string | undefined;
+  defaultCheckInTime?: string | undefined;
+  defaultCheckOutTime?: string | undefined;
 }

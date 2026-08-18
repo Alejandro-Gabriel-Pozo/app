@@ -21,6 +21,15 @@ export interface HousekeepingRepository {
   findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]>;
   findByStatus(businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]>;
   /**
+   * Tarea no terminal (ni DONE ni INSPECTED) de un recurso en una fecha
+   * dada (18/08/2026, flujo de check-in/check-out) — usado por
+   * `StayService.approveScheduleChange()` para actualizar `notBefore`
+   * sobre una tarea que YA existía al momento de aprobar un late check-out
+   * (en vez de crear una tarea nueva — ver comentario de `not_before` en
+   * db/schema.sql). `date` es 'YYYY-MM-DD', mismo criterio que `findByDate`.
+   */
+  findActiveByResourceAndDate(resourceId: string, businessId: string, date: string): Promise<HousekeepingTask | null>;
+  /**
    * True si el recurso tiene alguna tarea de housekeeping en estado
    * OUT_OF_SERVICE. Sin `businessId`: igual que `ResourceRepository.getById`,
    * un `resourceId` ya está scoped al tenant (una BD por negocio, sin
@@ -38,7 +47,7 @@ export interface HousekeepingRepository {
 const COLUMNS = `
   id, business_id, resource_id, assigned_to, status, notes,
   shift, scheduled_for, started_at, completed_at,
-  inspected_at, inspected_by, created_at, updated_at
+  inspected_at, inspected_by, not_before, created_at, updated_at
 `;
 
 function rowToTask(row: Record<string, unknown>): HousekeepingTask {
@@ -55,6 +64,7 @@ function rowToTask(row: Record<string, unknown>): HousekeepingTask {
     completedAt:  row['completed_at'] ? new Date(row['completed_at'] as string) : null,
     inspectedAt:  row['inspected_at'] ? new Date(row['inspected_at'] as string) : null,
     inspectedBy:  (row['inspected_by'] as string | null) ?? null,
+    notBefore:    row['not_before'] ? new Date(row['not_before'] as string) : null,
     createdAt:    new Date(row['created_at'] as string),
     updatedAt:    new Date(row['updated_at'] as string),
   } satisfies HousekeepingTaskProps);
@@ -68,13 +78,13 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
       `INSERT INTO housekeeping_tasks
          (id, business_id, resource_id, assigned_to, status, notes,
           shift, scheduled_for, started_at, completed_at,
-          inspected_at, inspected_by, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          inspected_at, inspected_by, not_before, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         task.id, task.businessId, task.resourceId, task.assignedTo,
         task.status, task.notes, task.shift, task.scheduledFor,
         task.startedAt, task.completedAt, task.inspectedAt, task.inspectedBy,
-        task.createdAt, task.updatedAt,
+        task.notBefore, task.createdAt, task.updatedAt,
       ],
     );
   }
@@ -83,11 +93,11 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
     await this.db.query(
       `UPDATE housekeeping_tasks
        SET assigned_to=$1, status=$2, notes=$3, started_at=$4,
-           completed_at=$5, inspected_at=$6, inspected_by=$7, updated_at=$8
-       WHERE id=$9 AND business_id=$10`,
+           completed_at=$5, inspected_at=$6, inspected_by=$7, not_before=$8, updated_at=$9
+       WHERE id=$10 AND business_id=$11`,
       [
         task.assignedTo, task.status, task.notes, task.startedAt,
-        task.completedAt, task.inspectedAt, task.inspectedBy, task.updatedAt,
+        task.completedAt, task.inspectedAt, task.inspectedBy, task.notBefore, task.updatedAt,
         task.id, task.businessId,
       ],
     );
@@ -126,6 +136,20 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
       [businessId, date],
     );
     return result.rows.map(rowToTask);
+  }
+
+  async findActiveByResourceAndDate(resourceId: string, businessId: string, date: string): Promise<HousekeepingTask | null> {
+    // Mismo criterio que findByDate: `date` viaja como string, nunca como
+    // `Date` de JS (bug de huso horario ya documentado ahí).
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT ${COLUMNS} FROM housekeeping_tasks
+       WHERE resource_id=$1 AND business_id=$2 AND scheduled_for::date = $3::date
+         AND status NOT IN ('DONE', 'INSPECTED')
+       ORDER BY scheduled_for DESC
+       LIMIT 1`,
+      [resourceId, businessId, date],
+    );
+    return result.rows[0] ? rowToTask(result.rows[0]) : null;
   }
 
   async findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]> {

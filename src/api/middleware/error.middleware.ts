@@ -155,6 +155,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'PRODUCT_HAS_STOCK':
     case 'INVALID_OVERRIDE_TRANSITION':
     case 'DUPLICATE_RATE_PLAN_NAME':
+    case 'NEXT_ARRIVAL_CONFLICT':
       return 409;
 
     // --- 503 Service Unavailable ---

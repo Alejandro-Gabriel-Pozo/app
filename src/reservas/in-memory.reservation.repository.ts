@@ -57,6 +57,15 @@ export class InMemoryReservationRepository implements ReservationRepository {
     );
   }
 
+  async getApprovedLateCheckoutsForDate(date: string): Promise<Reservation[]> {
+    return Array.from(this.reservations.values()).filter(
+      (r) =>
+        r.scheduleApprovalStatus === 'APPROVED' &&
+        r.requestedCheckOutTime != null &&
+        r.endTime.toISOString().slice(0, 10) === date,
+    );
+  }
+
   /**
    * Reservas PENDING/CONFIRMED que solapan un rango, filtradas por lo que
    * indique `matches` — único filtro para las variantes por recurso y por

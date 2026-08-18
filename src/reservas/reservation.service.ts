@@ -973,7 +973,7 @@ export class ReservationService {
  * librería, por eso está fijado con test de regresión (golden values
  * contra transiciones reales, no fechas relativas a "hoy").
  */
-function combineDateAndTime(date: Date, time: string, timezone: string): Date {
+export function combineDateAndTime(date: Date, time: string, timezone: string): Date {
   const parts = time.split(':').map(Number);
   const hour   = parts[0] ?? 0;
   const minute = parts[1] ?? 0;

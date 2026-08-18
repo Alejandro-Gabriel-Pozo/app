@@ -6,6 +6,9 @@
  * - checkIn: verifica que la Reservation esté CONFIRMED antes de crear la Stay
  * - checkOut: cierra la Stay y dispara la tarea de housekeeping del turno siguiente
  * - noShow: cierra la Stay como NO_SHOW (reserva CONFIRMED, huésped no llegó)
+ * - requestScheduleChange/approveScheduleChange/rejectScheduleChange: pedido
+ *   de horario distinto al estándar (late check-out / early check-in) —
+ *   18/08/2026, pendientes-2026-08-18.md punto N. Ver docblock de cada método.
  * - Consultas: stays activas, por recurso, por cliente, por reserva
  *
  * ## Separación de responsabilidades
@@ -24,13 +27,18 @@
  *   MANAGEMENT), que deja el folio en $0 antes de reintentar el check-out.
  */
 
+import { randomUUID } from 'node:crypto';
+import { DateTime } from 'luxon';
 import { Stay } from './stay.js';
 import type { StayRepository } from './stay.repository.js';
+import type { Reservation } from '../reservas/Reservation.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import { combineDateAndTime } from '../reservas/reservation.service.js';
 import type { HousekeepingRepository } from './housekeeping.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { HousekeepingTask } from './housekeeping-task.js';
-import { DomainError, ReservationNotFoundError } from '../domain/errors.js';
+import { DomainError, ReservationNotFoundError, NextArrivalConflictError } from '../domain/errors.js';
 
 export class StayNotFoundError extends DomainError {
   constructor(stayId: string) {
@@ -85,12 +93,28 @@ export interface CheckOutInput {
   nextCleaningShift?: string;
 }
 
+export interface RequestScheduleChangeInput {
+  reservationId: string;
+  /** Al menos uno de los dos debe venir informado (lo valida Reservation.requestScheduleChange). */
+  requestedCheckInTime?: string | null | undefined;
+  requestedCheckOutTime?: string | null | undefined;
+}
+
+export interface ApproveScheduleChangeInput {
+  reservationId: string;
+  businessId: string;
+  approvedBy: string;
+  /** Lo decide el staff al aprobar — null/undefined = sin cargo extra. */
+  chargeAmount?: number | null;
+}
+
 export class StayService {
   constructor(
     private readonly stayRepository: StayRepository,
     private readonly reservationRepository: ReservationRepository,
     private readonly housekeepingRepository: HousekeepingRepository,
     private readonly financialRepository: FinancialTransactionRepository,
+    private readonly businessProfileRepository: BusinessProfileRepository,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -154,16 +178,36 @@ export class StayService {
     stay.checkOut(input.notes);
     await this.stayRepository.update(stay);
 
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(8, 0, 0, 0);
+    const businessProfile = await this.businessProfileRepository.get();
+
+    // Antes: `new Date(); tomorrow.setDate/setHours(...)` — usaba la hora
+    // LOCAL DEL PROCESO (el server, no el negocio) para calcular "mañana a
+    // las 8". Un negocio en un huso distinto al del server podía terminar
+    // con la tarea agendada para el día equivocado cerca de medianoche.
+    // 18/08/2026, pendientes-2026-08-18.md punto N — mismo fix de fondo que
+    // combineDateAndTime en reservation.service.ts.
+    const tomorrowLocal = DateTime.now().setZone(businessProfile.timezone).plus({ days: 1 });
+    const tomorrowAsUtcDate = new Date(Date.UTC(tomorrowLocal.year, tomorrowLocal.month - 1, tomorrowLocal.day));
+    const cleaningScheduledFor = combineDateAndTime(tomorrowAsUtcDate, '08:00:00', businessProfile.timezone);
+
+    // Si hubo un late check-out APROBADO para esta reserva, la tarea de
+    // limpieza recién se crea ACÁ (no existía a la hora de aprobar) — se
+    // crea directamente con el `notBefore` correcto en vez de crearla sin
+    // restricción y depender de un segundo paso para agregarla (ver
+    // approveScheduleChange(), que sí actualiza una tarea si YA existía).
+    let notBefore: Date | null = null;
+    const reservation = await this.reservationRepository.getById(stay.reservationId);
+    if (reservation?.scheduleApprovalStatus === 'APPROVED' && reservation.requestedCheckOutTime) {
+      notBefore = combineDateAndTime(reservation.endTime, reservation.requestedCheckOutTime, businessProfile.timezone);
+    }
 
     const cleaningTask = HousekeepingTask.create({
       businessId:   stay.businessId,
       resourceId:   stay.resourceId,
       shift:        input.nextCleaningShift ?? 'MORNING',
-      scheduledFor: tomorrow,
+      scheduledFor: cleaningScheduledFor,
       notes:        `Limpieza post-checkout. Estadía: ${stay.id}`,
+      notBefore,
     });
     await this.housekeepingRepository.save(cleaningTask);
 
@@ -179,6 +223,132 @@ export class StayService {
     stay.markNoShow();
     await this.stayRepository.update(stay);
     return stay;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Horario de check-in/check-out (18/08/2026, pendientes-2026-08-18.md punto N)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Pedido de horario distinto al estándar (late check-out / early
+   * check-in). No requiere que la Stay exista todavía — un huésped puede
+   * pedir esto sobre una reserva CONFIRMED antes de llegar. La validación
+   * de "al menos un horario" y de que la reserva no esté CANCELLED/
+   * COMPLETED vive en `Reservation.requestScheduleChange()` (invariante
+   * del propio agregado).
+   */
+  async requestScheduleChange(input: RequestScheduleChangeInput): Promise<Reservation> {
+    const reservation = await this.reservationRepository.getById(input.reservationId);
+    if (!reservation) {
+      throw new ReservationNotFoundError(input.reservationId);
+    }
+    reservation.requestScheduleChange({
+      checkInTime:  input.requestedCheckInTime,
+      checkOutTime: input.requestedCheckOutTime,
+    });
+    await this.reservationRepository.save(reservation);
+    return reservation;
+  }
+
+  async rejectScheduleChange(reservationId: string, rejectedBy: string): Promise<Reservation> {
+    const reservation = await this.reservationRepository.getById(reservationId);
+    if (!reservation) {
+      throw new ReservationNotFoundError(reservationId);
+    }
+    reservation.rejectScheduleChange(rejectedBy);
+    await this.reservationRepository.save(reservation);
+    return reservation;
+  }
+
+  /**
+   * Aprueba el pedido de horario pendiente. Orquesta, en este orden:
+   *
+   * 1. Si hay `requestedCheckOutTime` pedido: chequea conflicto con la
+   *    próxima reserva de la misma habitación (regla exacta, dada por el
+   *    dueño del proyecto): SI existe reserva_siguiente Y su hora de
+   *    llegada efectiva (su propia hora aprobada, si tiene; si no, la
+   *    hora estándar del negocio) es ANTERIOR a la hora de check-out
+   *    pedida → rechaza con `NextArrivalConflictError` (409) SIN aprobar
+   *    nada. No hay override — el staff tiene que resolver el conflicto
+   *    primero (correr la próxima reserva, no aprobar, etc.), no forma
+   *    parte de este endpoint.
+   * 2. Marca el pedido APPROVED en la Reservation (invariante "había un
+   *    PENDING" la valida `Reservation.approveScheduleChange()`).
+   * 3. Si `chargeAmount` > 0: crea un CHARGE (folio) — vinculado a la Stay
+   *    si ya existe (huésped ya hizo check-in), si no queda sin `stayId`
+   *    (se adopta después vía `linkStayToReservationCharges` en checkIn(),
+   *    mismo mecanismo que el CHARGE de `reservation.confirmed`).
+   * 4. Si había `requestedCheckOutTime` Y ya existe una HousekeepingTask
+   *    activa para esa habitación ese día (se crea de antemano, antes del
+   *    check-out real): le actualiza `notBefore`. Si todavía no existe,
+   *    no crea una tarea nueva acá — `checkOut()` la crea con el
+   *    `notBefore` correcto en su momento (lee `requestedCheckOutTime` +
+   *    `scheduleApprovalStatus` de la Reservation). No hay "tarea
+   *    preventiva": un badge de solo lectura en el tablero de housekeeping
+   *    (fuera de este service) cubre la advertencia visual antes de esa hora.
+   */
+  async approveScheduleChange(input: ApproveScheduleChangeInput): Promise<Reservation> {
+    const reservation = await this.reservationRepository.getById(input.reservationId);
+    if (!reservation) {
+      throw new ReservationNotFoundError(input.reservationId);
+    }
+
+    const businessProfile = await this.businessProfileRepository.get();
+
+    if (reservation.requestedCheckOutTime) {
+      const next = await this.findNextReservationOnResource(reservation);
+      if (next) {
+        const nextArrivalTime =
+          next.scheduleApprovalStatus === 'APPROVED' && next.requestedCheckInTime
+            ? next.requestedCheckInTime
+            : businessProfile.defaultCheckInTime;
+        const nextArrivalInstant = combineDateAndTime(next.startTime, nextArrivalTime, businessProfile.timezone);
+        const requestedCheckoutInstant = combineDateAndTime(
+          reservation.endTime,
+          reservation.requestedCheckOutTime,
+          businessProfile.timezone,
+        );
+        if (nextArrivalInstant.getTime() < requestedCheckoutInstant.getTime()) {
+          throw new NextArrivalConflictError(nextArrivalTime.slice(0, 5));
+        }
+      }
+    }
+
+    reservation.approveScheduleChange(input.approvedBy, input.chargeAmount ?? null);
+    await this.reservationRepository.save(reservation);
+
+    if (input.chargeAmount != null && input.chargeAmount > 0) {
+      const stay = await this.stayRepository.findByReservation(input.reservationId, input.businessId);
+      await this.financialRepository.create({
+        id:            randomUUID(),
+        businessId:    input.businessId,
+        customerId:    reservation.customer.id,
+        reservationId: reservation.id,
+        stayId:        stay?.id ?? null,
+        type:          'CHARGE',
+        amount:        input.chargeAmount,
+        currency:      businessProfile.currency,
+        status:        'PENDING',
+        notes:         'Cargo por horario de check-in/check-out aprobado fuera del estándar.',
+      });
+    }
+
+    if (reservation.requestedCheckOutTime) {
+      const businessDate = reservation.endTime.toISOString().slice(0, 10);
+      const existingTask = await this.housekeepingRepository.findActiveByResourceAndDate(
+        reservation.resource.id,
+        input.businessId,
+        businessDate,
+      );
+      if (existingTask) {
+        existingTask.setNotBefore(
+          combineDateAndTime(reservation.endTime, reservation.requestedCheckOutTime, businessProfile.timezone),
+        );
+        await this.housekeepingRepository.update(existingTask);
+      }
+    }
+
+    return reservation;
   }
 
   // ---------------------------------------------------------------------------
@@ -230,5 +400,27 @@ export class StayService {
       throw new StayNotFoundError(stayId);
     }
     return stay;
+  }
+
+  /**
+   * Siguiente reserva en la misma habitación (turnover el mismo día) —
+   * busca en una ventana de 24hs desde el checkout de `reservation` y
+   * toma la que arranca más temprano. No filtra por otros servicios que
+   * bloqueen el recurso vía `resource_locks` (a diferencia de
+   * ReservationService.resolveOccupyingReservations) porque el conflicto
+   * que importa acá es específicamente "quién llega a ESTA habitación
+   * después", no disponibilidad general.
+   */
+  private async findNextReservationOnResource(reservation: Reservation): Promise<Reservation | null> {
+    const windowEnd = new Date(reservation.endTime.getTime() + 24 * 60 * 60 * 1000);
+    const candidates = await this.reservationRepository.getActiveForResourceInRange(
+      reservation.resource.id,
+      reservation.endTime,
+      windowEnd,
+    );
+    const next = candidates
+      .filter((r) => r.id !== reservation.id && r.startTime.getTime() >= reservation.endTime.getTime())
+      .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
+    return next ?? null;
   }
 }

@@ -270,10 +270,16 @@ export const CreateOperatingWindowSchema = z.object({
 // módulo, no por request.
 const VALID_TIMEZONES = new Set<string>(Intl.supportedValuesOf('timeZone'));
 
+const timeOnly = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, { message: 'debe tener formato HH:MM o HH:MM:SS' });
+
 export const UpdateBusinessProfileSchema = z.object({
   displayName:  z.string().trim().min(1).max(255).nullable().optional(),
   contactEmail: z.string().trim().email({ message: 'contactEmail debe tener formato válido' }).nullable().optional(),
   /** ISO 4217 (ARS, USD, ...) -- 3 letras mayúsculas, sin validar contra una lista cerrada (evita otro catálogo hardcodeado a mantener). */
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, { message: 'currency debe ser un código ISO 4217 de 3 letras (ej. ARS, USD)' }).optional(),
   timezone: z.string().trim().refine((tz) => VALID_TIMEZONES.has(tz), { message: 'timezone debe ser un nombre IANA válido (ej. America/Argentina/Buenos_Aires)' }).optional(),
+  // Hora estándar de check-in/check-out (18/08/2026, flujo de check-in/
+  // check-out — pendientes-2026-08-18.md punto N).
+  defaultCheckInTime:  timeOnly.optional(),
+  defaultCheckOutTime: timeOnly.optional(),
 });

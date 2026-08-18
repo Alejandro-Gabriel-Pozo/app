@@ -66,6 +66,12 @@ export interface ReservationDto {
    * A3, docs/pendientes-2026-08-13.md).
    */
   allowedTransitions: ReservationStatus[];
+  /** Flujo de check-in/check-out (18/08/2026, pendientes-2026-08-18.md punto N). */
+  requestedCheckInTime: string | null;
+  requestedCheckOutTime: string | null;
+  scheduleApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  scheduleApprovedBy: string | null;
+  scheduleChargeAmount: number | null;
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -106,5 +112,10 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
       price:    line.price,
     })),
     allowedTransitions: [...reservation.allowedTransitions],
+    requestedCheckInTime: reservation.requestedCheckInTime,
+    requestedCheckOutTime: reservation.requestedCheckOutTime,
+    scheduleApprovalStatus: reservation.scheduleApprovalStatus,
+    scheduleApprovedBy: reservation.scheduleApprovedBy,
+    scheduleChargeAmount: reservation.scheduleChargeAmount,
   };
 }

@@ -25,6 +25,11 @@ interface ReservationRow {
   adultos?: number | null;
   ninos?: number | null;
   rate_plan_id?: string | null;
+  requested_check_in_time?: string | null;
+  requested_check_out_time?: string | null;
+  schedule_approval_status?: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  schedule_approved_by?: string | null;
+  schedule_charge_amount?: string | null;
 }
 
 /**
@@ -71,6 +76,11 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.adultos,
       reservation.ninos,
       reservation.ratePlanId,
+      reservation.requestedCheckInTime,
+      reservation.requestedCheckOutTime,
+      reservation.scheduleApprovalStatus,
+      reservation.scheduleApprovedBy,
+      reservation.scheduleChargeAmount,
     ];
   }
 
@@ -104,9 +114,11 @@ export class SqlReservationRepository implements ReservationRepository {
       id, customer_id, customer_name, customer_email,
       resource_id, status,
       start_time, end_time, details, updated_at, total_price,
-      service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id
+      service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id,
+      requested_check_in_time, requested_check_out_time, schedule_approval_status,
+      schedule_approved_by, schedule_charge_amount
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -121,7 +133,12 @@ export class SqlReservationRepository implements ReservationRepository {
       order_item_id = $14,
       adultos       = $15,
       ninos         = $16,
-      rate_plan_id  = $17
+      rate_plan_id  = $17,
+      requested_check_in_time  = $18,
+      requested_check_out_time = $19,
+      schedule_approval_status = $20,
+      schedule_approved_by     = $21,
+      schedule_charge_amount   = $22
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -206,6 +223,18 @@ export class SqlReservationRepository implements ReservationRepository {
     const result = await this.sqlClient.query<ReservationRow>(
       `${this.baseSelect()} WHERE r.start_time < $2 AND r.end_time > $1 ORDER BY r.start_time ASC`,
       [startDate.toISOString(), endDate.toISOString()],
+    );
+    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  async getApprovedLateCheckoutsForDate(date: string): Promise<Reservation[]> {
+    const result = await this.sqlClient.query<ReservationRow>(
+      `${this.baseSelect()}
+       WHERE r.end_time::date = $1::date
+         AND r.schedule_approval_status = 'APPROVED'
+         AND r.requested_check_out_time IS NOT NULL
+       ORDER BY r.end_time ASC`,
+      [date],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
@@ -365,7 +394,9 @@ export class SqlReservationRepository implements ReservationRepository {
         r.id, r.customer_id, r.customer_name, r.customer_email,
         r.resource_id, r.status, r.start_time, r.end_time, r.details,
         r.service_id, r.party_size, r.notes, r.order_item_id, r.total_price,
-        r.adultos, r.ninos, r.rate_plan_id
+        r.adultos, r.ninos, r.rate_plan_id,
+        r.requested_check_in_time, r.requested_check_out_time,
+        r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount
       FROM reservations r
     `;
   }
@@ -400,6 +431,11 @@ export class SqlReservationRepository implements ReservationRepository {
       adultos:       row.adultos ?? null,
       ninos:         row.ninos   ?? null,
       ratePlanId:    row.rate_plan_id ?? null,
+      requestedCheckInTime:   row.requested_check_in_time  ?? null,
+      requestedCheckOutTime:  row.requested_check_out_time ?? null,
+      scheduleApprovalStatus: row.schedule_approval_status ?? null,
+      scheduleApprovedBy:     row.schedule_approved_by     ?? null,
+      scheduleChargeAmount:   row.schedule_charge_amount != null ? parseFloat(row.schedule_charge_amount) : null,
     });
   }
 

@@ -10,6 +10,15 @@
  * POST /reservations/:id/confirm      — FRONT_DESK
  * POST /reservations/:id/cancel       — FRONT_DESK
  * POST /reservations/:id/complete     — FRONT_DESK
+ * POST /reservations/:id/schedule-request         — BOOKING (empleados + CUSTOMER)
+ * POST /reservations/:id/schedule-request/approve — FRONT_DESK
+ * POST /reservations/:id/schedule-request/reject  — FRONT_DESK
+ *
+ * Los 3 endpoints de schedule-request (18/08/2026, pendientes-2026-08-18.md
+ * punto N) están detrás de requireModule(ModuleKey.ALOJAMIENTO) — a
+ * diferencia del resto de este router, que no está gateado por módulo
+ * porque reservas la usan varios rubros (no solo alojamiento). Ver
+ * buildStayService() más abajo.
  *
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Tenerlo dos
@@ -56,6 +65,9 @@ import type { Request }                  from 'express';
 import { randomUUID }                    from 'node:crypto';
 import { authorize }                     from '../security/auth.middleware.js';
 import { Roles }                         from '../security/roles.js';
+import { requireModule }                 from '../security/module.middleware.js';
+import { ModuleKey }                     from '../types/enums.js';
+import type { AppContainer }             from '../container.js';
 import { ReservationService }            from './reservation.service.js';
 import { SqlReservationRepository }      from './sql.reservation.repository.js';
 import { SqlResourceRepository }         from './sql.resource.repository.js';
@@ -68,8 +80,13 @@ import { SqlCustomerRepository }         from '../clientes-finanzas/sql.customer
 import { SqlCustomerRateRepository }     from '../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }   from '../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }     from '../pms-estadias/housekeeping.repository.js';
+import { SqlStayRepository }             from '../pms-estadias/stay.repository.js';
+import { StayService }                   from '../pms-estadias/stay.service.js';
+import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlBusinessProfileRepository }  from '../repositories/sql.business-profile.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../api/schemas/request.schemas.js';
+import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
 
 function buildReservationService(req: Request): ReservationService {
@@ -100,7 +117,24 @@ function buildReservationService(req: Request): ReservationService {
   );
 }
 
-export function createReservationsRouter(): Router {
+/**
+ * StayService orquesta el flujo de horario de check-in/check-out (18/08/2026,
+ * pendientes-2026-08-18.md punto N) — se monta acá (no en /api/stays) porque
+ * los 3 endpoints nuevos toman un `reservationId`, no un `stayId`: un pedido
+ * de horario puede hacerse ANTES del check-in (todavía no existe la Stay).
+ */
+function buildStayService(req: Request): StayService {
+  const db              = req.db;
+  const stayRepo         = new SqlStayRepository(db);
+  const resourceRepo     = new SqlResourceRepository(db);
+  const reservationRepo  = new SqlReservationRepository(db, resourceRepo);
+  const housekeepingRepo = new SqlHousekeepingRepository(db);
+  const financialRepo    = new SqlFinancialTransactionRepository(db);
+  const businessProfileRepo = new SqlBusinessProfileRepository(db);
+  return new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+}
+
+export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
   // ── GET /reservations ──────────────────────────────────────────────────────
@@ -252,6 +286,64 @@ export function createReservationsRouter(): Router {
         const reservation = await service.completeReservation(
           req.params['id']!,
           req.user!.businessId as string,
+        );
+        res.json(toReservationDto(reservation));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/schedule-request ─────────────────────────────
+  // Roles.BOOKING (empleados + CUSTOMER desde portal, mismo criterio que
+  // POST /reservations) — el pedido de horario lo puede iniciar el huésped.
+  router.post(
+    '/:id/schedule-request',
+    authorize(Roles.BOOKING),
+    requireModule(container, ModuleKey.ALOJAMIENTO),
+    async (req, res, next) => {
+      try {
+        const body = RequestScheduleChangeSchema.parse(req.body);
+        const stayService = buildStayService(req);
+        const reservation = await stayService.requestScheduleChange({
+          reservationId: req.params['id']!,
+          ...(body.requestedCheckInTime  !== undefined && { requestedCheckInTime: body.requestedCheckInTime }),
+          ...(body.requestedCheckOutTime !== undefined && { requestedCheckOutTime: body.requestedCheckOutTime }),
+        });
+        res.json(toReservationDto(reservation));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/schedule-request/approve ─────────────────────
+  router.post(
+    '/:id/schedule-request/approve',
+    authorize(Roles.FRONT_DESK),
+    requireModule(container, ModuleKey.ALOJAMIENTO),
+    async (req, res, next) => {
+      try {
+        const body = ApproveScheduleChangeSchema.parse(req.body);
+        const stayService = buildStayService(req);
+        const reservation = await stayService.approveScheduleChange({
+          reservationId: req.params['id']!,
+          businessId:    req.user!.businessId as string,
+          approvedBy:    req.user!.id,
+          ...(body.chargeAmount !== undefined && { chargeAmount: body.chargeAmount }),
+        });
+        res.json(toReservationDto(reservation));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/schedule-request/reject ──────────────────────
+  router.post(
+    '/:id/schedule-request/reject',
+    authorize(Roles.FRONT_DESK),
+    requireModule(container, ModuleKey.ALOJAMIENTO),
+    async (req, res, next) => {
+      try {
+        const stayService = buildStayService(req);
+        const reservation = await stayService.rejectScheduleChange(
+          req.params['id']!,
+          req.user!.id,
         );
         res.json(toReservationDto(reservation));
       } catch (err) { next(err); }

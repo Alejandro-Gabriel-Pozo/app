@@ -79,6 +79,18 @@ export interface ReservationRepository {
     endDate: Date,
   ): Promise<Reservation[]>;
 
+  /**
+   * Reservas con checkout en `date` y un late check-out APROBADO
+   * (`schedule_approval_status='APPROVED'` + `requested_check_out_time`
+   * informado) — badge de solo lectura en el tablero de housekeeping
+   * (18/08/2026, pendientes-2026-08-18.md punto N, ticket del dueño del
+   * proyecto: "no hace falta una tarea nueva, un badge calculado en
+   * tiempo real alcanza"). `date` es 'YYYY-MM-DD' (fecha de negocio,
+   * A4.1) — nunca un `Date`, mismo criterio que
+   * `HousekeepingRepository.findByDate`.
+   */
+  getApprovedLateCheckoutsForDate(date: string): Promise<Reservation[]>;
+
   // Filtrado genérico + paginación
   getFiltered(filters: ReservationFilters): Promise<Reservation[]>;
   countFiltered(filters: Omit<ReservationFilters, 'page' | 'limit'>): Promise<number>;

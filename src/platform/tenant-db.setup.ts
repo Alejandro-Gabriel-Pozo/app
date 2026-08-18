@@ -193,7 +193,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v19 (18/08/2026, noche): `rate_plans` (precio por tipo de habitación en
 // vez de por recurso físico) + `reservations.rate_plan_id`. Ver
 // pendientes-2026-08-18.md punto M.
-export const CURRENT_SCHEMA_VERSION = 19;
+// v20 (18/08/2026, noche): flujo de check-in/check-out — horario estándar
+// en `business_profile`, pedido/aprobación de horario en `reservations`,
+// `housekeeping_tasks.not_before`. Ver pendientes-2026-08-18.md punto N.
+export const CURRENT_SCHEMA_VERSION = 20;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

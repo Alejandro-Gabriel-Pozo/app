@@ -7,6 +7,7 @@
  * |---|---|
  * | GET  /housekeeping               | STAFF (tablero diario — todos ven) |
  * | GET  /housekeeping/me            | HOUSEKEEPING (mis tareas) |
+ * | GET  /housekeeping/late-checkouts| STAFF (badge de late check-out aprobado) |
  * | GET  /housekeeping/status/:s     | HOUSEKEEPING_AND_MANAGEMENT |
  * | GET  /housekeeping/resource/:id  | STAFF |
  * | GET  /housekeeping/:id           | STAFF |
@@ -31,9 +32,13 @@ import { authorize } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
 import type { HousekeepingService } from './housekeeping.service.js';
 import type { HousekeepingStatus } from './housekeeping-task.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import { CreateHousekeepingTaskSchema, AssignHousekeepingTaskSchema } from '../api/schemas/housekeeping.schemas.js';
 
-export function createHousekeepingRouter(service: HousekeepingService): Router {
+export function createHousekeepingRouter(
+  service: HousekeepingService,
+  reservationRepository: ReservationRepository,
+): Router {
   const router = Router();
 
   // ── GET /housekeeping?date=YYYY-MM-DD ──────────────────────────────────────
@@ -74,6 +79,36 @@ export function createHousekeepingRouter(service: HousekeepingService): Router {
         const { businessId, id: userId } = req.user!;
         const tasks = await service.getTasksByAssignee(userId, businessId!);
         res.json(tasks.map(t => t.toJSON()));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /housekeeping/late-checkouts?date=YYYY-MM-DD ────────────────────
+  // Badge de solo lectura (18/08/2026, pendientes-2026-08-18.md punto N) —
+  // reservas con late check-out APROBADO cuyo checkout cae en `date`. Sin
+  // tarea/tabla nueva: se calcula en el momento a partir de
+  // reservations.schedule_approval_status + requested_check_out_time.
+  router.get(
+    '/late-checkouts',
+    authorize(Roles.STAFF),
+    async (req, res, next) => {
+      try {
+        const rawDate = req.query['date'];
+        if (rawDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(rawDate as string)) {
+          res.status(400).json({
+            code: 'INVALID_DATE',
+            message: 'El parámetro "date" debe tener formato YYYY-MM-DD.',
+          });
+          return;
+        }
+        const date = (rawDate as string | undefined) ?? new Date().toISOString().slice(0, 10);
+        const reservations = await reservationRepository.getApprovedLateCheckoutsForDate(date);
+        res.json(reservations.map((r) => ({
+          reservationId: r.id,
+          resourceId: r.resource.id,
+          resourceName: r.resource.name,
+          approvedCheckOutTime: r.requestedCheckOutTime,
+        })));
       } catch (err) { next(err); }
     },
   );

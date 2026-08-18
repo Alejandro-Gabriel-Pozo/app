@@ -108,7 +108,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
   const now = new Date();
   return {
     id: 'default', displayName: null, contactEmail: null,
-    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
     createdAt: now, updatedAt: now,
     ...overrides,
   };

@@ -470,6 +470,31 @@ ALTER TABLE reservations ADD COLUMN IF NOT EXISTS rate_plan_id VARCHAR(255) REFE
 CREATE INDEX IF NOT EXISTS idx_reservations_rate_plan
   ON reservations (rate_plan_id) WHERE rate_plan_id IS NOT NULL;
 
+-- Flujo de check-in/check-out (18/08/2026, pendientes-2026-08-18.md punto
+-- N) — hora SOLICITADA por el huésped (TIME, hora de pared A4.3) distinta
+-- de `business_profile.default_check_in_time`/`default_check_out_time`
+-- (política general) y de `stays.checked_in_at`/`checked_out_at` (lo que
+-- efectivamente pasó — esa columna ya existía, no se toca). Un solo
+-- `schedule_approval_status` cubre el pedido completo (puede incluir
+-- check-in Y check-out solicitados a la vez) — no uno por campo.
+-- `schedule_charge_amount` lo decide el staff AL APROBAR (puede depender
+-- de cuánto más tarde/temprano, no es un valor fijo de política), se
+-- aplica como CHARGE en clientes-finanzas (folio), nunca un sistema de
+-- cobro paralelo.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS requested_check_in_time  TIME;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS requested_check_out_time TIME;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS schedule_approval_status VARCHAR(20);
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS schedule_approved_by     VARCHAR(255);
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS schedule_charge_amount   DECIMAL(10,2);
+
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_schedule_approval_status;
+ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_approval_status
+  CHECK (schedule_approval_status IS NULL OR schedule_approval_status IN ('PENDING', 'APPROVED', 'REJECTED'));
+
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_schedule_charge_amount;
+ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_charge_amount
+  CHECK (schedule_charge_amount IS NULL OR schedule_charge_amount >= 0);
+
 -- ---------------------------------------------------------------------------
 -- reservation_lines
 -- Una fila por unidad temporal de la reserva: una noche si el servicio es
@@ -1416,6 +1441,15 @@ CREATE INDEX IF NOT EXISTS idx_hk_tasks_assignee
 CREATE INDEX IF NOT EXISTS idx_hk_tasks_status
   ON housekeeping_tasks (business_id, status);
 
+-- not_before (18/08/2026, flujo de check-in/check-out — pendientes-2026-
+-- 08-18.md punto N) — instante antes del cual la tarea no puede pasar a
+-- IN_PROGRESS (HousekeepingTask.start(), ver el guard ahí). NULL = sin
+-- restricción, comportamiento de hoy sin cambios. Lo setea StayService al
+-- crear la tarea de limpieza post-checkout si la reserva tenía un late
+-- check-out APROBADO — evita que housekeeping entre a limpiar antes de
+-- que el huésped efectivamente se haya ido.
+ALTER TABLE housekeeping_tasks ADD COLUMN IF NOT EXISTS not_before TIMESTAMPTZ;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'housekeeping_tasks_updated_at') THEN
     CREATE TRIGGER housekeeping_tasks_updated_at
@@ -1800,6 +1834,14 @@ SELECT 'default' WHERE NOT EXISTS (SELECT 1 FROM business_profile);
 -- hasta que alguien lo edite a propósito.
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'ARS';
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'America/Argentina/Buenos_Aires';
+
+-- default_check_in_time/default_check_out_time (18/08/2026, flujo de
+-- check-in/check-out — pendientes-2026-08-18.md punto N). Hora de PARED
+-- (A4.3, criterios-negocio.md: "abre a las 9" es 9 local siempre, no un
+-- instante) — política general del negocio, no una fecha. 14:00/11:00 son
+-- el estándar de la industria hotelera, no un valor mágico elegido acá.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_in_time  TIME NOT NULL DEFAULT '14:00:00';
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_out_time TIME NOT NULL DEFAULT '11:00:00';
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_profile_updated_at') THEN

@@ -9,6 +9,8 @@ function rowToProfile(row: Record<string, unknown>): BusinessProfile {
     contactEmail: (row['contact_email'] as string | null) ?? null,
     currency:     row['currency'] as string,
     timezone:     row['timezone'] as string,
+    defaultCheckInTime:  row['default_check_in_time']  as string,
+    defaultCheckOutTime: row['default_check_out_time'] as string,
     createdAt:    new Date(row['created_at'] as string),
     updatedAt:    new Date(row['updated_at'] as string),
   };
@@ -47,6 +49,14 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
     if (input.timezone !== undefined) {
       fields.push(`timezone = $${idx++}`);
       params.push(input.timezone);
+    }
+    if (input.defaultCheckInTime !== undefined) {
+      fields.push(`default_check_in_time = $${idx++}`);
+      params.push(input.defaultCheckInTime);
+    }
+    if (input.defaultCheckOutTime !== undefined) {
+      fields.push(`default_check_out_time = $${idx++}`);
+      params.push(input.defaultCheckOutTime);
     }
 
     if (fields.length === 0) return this.get();

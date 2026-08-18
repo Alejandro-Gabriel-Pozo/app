@@ -76,6 +76,20 @@ describe('SqlReservationRepository', () => {
     ]);
   });
 
+  // 18/08/2026 — badge de late check-out en el tablero de housekeeping
+  // (pendientes-2026-08-18.md punto N): confirma que el filtro es por
+  // fecha de checkout + pedido APROBADO, como pide el ticket ("reservas
+  // con schedule_approval_status = aprobado y checkout de hoy").
+  it('getApprovedLateCheckoutsForDate filtra por end_time::date + schedule_approval_status=APPROVED', async () => {
+    await repo.getApprovedLateCheckoutsForDate('2026-08-14');
+
+    const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(call[0]).toContain('r.end_time::date = $1::date');
+    expect(call[0]).toContain("r.schedule_approval_status = 'APPROVED'");
+    expect(call[0]).toContain('r.requested_check_out_time IS NOT NULL');
+    expect(call[1]).toEqual(['2026-08-14']);
+  });
+
   // Regresión (18/08/2026): el ON CONFLICT DO UPDATE de save()/saveWithClient()
   // no incluía resource_id/start_time/end_time. INSERT los recibía bien, pero
   // como la fila ya existía en cada updateReservation() (drag-to-move/resize
@@ -115,7 +129,11 @@ describe('SqlReservationRepository', () => {
     const insertClause = sql.slice(0, sql.indexOf('ON CONFLICT'));
     const setClause = sql.slice(sql.indexOf('DO UPDATE SET'));
 
-    for (const column of ['service_id', 'party_size', 'notes', 'order_item_id', 'adultos', 'ninos', 'rate_plan_id']) {
+    for (const column of [
+      'service_id', 'party_size', 'notes', 'order_item_id', 'adultos', 'ninos', 'rate_plan_id',
+      'requested_check_in_time', 'requested_check_out_time', 'schedule_approval_status',
+      'schedule_approved_by', 'schedule_charge_amount',
+    ]) {
       expect(insertClause).toContain(column);
       expect(setClause).toMatch(new RegExp(`${column}\\s*=`));
     }

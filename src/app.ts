@@ -233,7 +233,7 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   app.use('/api/resources',         createResourcesRouter());
   app.use('/api/locations',         createLocationsRouter());
-  app.use('/api/reservations',      createReservationsRouter());
+  app.use('/api/reservations',      createReservationsRouter(container));
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/users',             createUsersRouter(platformRepo, container));
   app.use('/api/roles',             createRolesRouter(platformRepo));
@@ -280,7 +280,9 @@ export async function createApp(): Promise<{
     (req: Request, _res: Response, next: NextFunction) => {
       const housekeepingRepo    = new SqlHousekeepingRepository(req.db);
       const housekeepingService = new HousekeepingService(housekeepingRepo);
-      const router = createHousekeepingRouter(housekeepingService);
+      const resourceRepo    = new SqlResourceRepository(req.db);
+      const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
+      const router = createHousekeepingRouter(housekeepingService, reservationRepo);
       router(req, _res, next);
     },
   );
@@ -294,7 +296,8 @@ export async function createApp(): Promise<{
       const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
       const housekeepingRepo = new SqlHousekeepingRepository(req.db);
       const financialRepo   = new SqlFinancialTransactionRepository(req.db);
-      const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo);
+      const businessProfileRepo = new SqlBusinessProfileRepository(req.db);
+      const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
 
       const arService = new AccountsReceivableService(
         new SqlAccountsReceivableRepository(req.db),
@@ -302,7 +305,7 @@ export async function createApp(): Promise<{
         stayRepo,
         new SqlCustomerRepository(req.db),
         buildTenantTransactionManager(req),
-        new SqlBusinessProfileRepository(req.db),
+        businessProfileRepo,
       );
 
       const router = createStaysRouter(stayService, arService);

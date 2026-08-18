@@ -40,7 +40,7 @@ describe('handleReservationConfirmedEmail', () => {
   it('envía el mail con la identidad del negocio como remitente y reply-to', async () => {
     const profileRepo = new FakeBusinessProfileRepository({
       id: 'default', displayName: 'Hotel Los Álamos', contactEmail: 'contacto@losalamos.com',
-      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -66,7 +66,7 @@ describe('handleReservationConfirmedEmail', () => {
   it('usa el nombre de plataforma por default si el negocio no cargó su identidad', async () => {
     const profileRepo = new FakeBusinessProfileRepository({
       id: 'default', displayName: null, contactEmail: null,
-      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -86,7 +86,7 @@ describe('handleReservationConfirmedEmail', () => {
   it('no envía nada si el cliente no tiene mail cargado (solo teléfono, ej.)', async () => {
     const profileRepo = new FakeBusinessProfileRepository({
       id: 'default', displayName: 'Hotel Los Álamos', contactEmail: null,
-      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
