@@ -71,7 +71,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
 
     if (idempotencyKey !== null) {
       // Path idempotente: el worker usa esto para evitar duplicados en reintentos.
-      // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key (UNIQUE, WHERE NOT NULL).
+      // ON CONFLICT DO NOTHING sobre idx_ft_idempotency_key -- es un índice
+      // ÚNICO PARCIAL (UNIQUE ... WHERE idempotency_key IS NOT NULL), así que
+      // el ON CONFLICT tiene que repetir esa misma condición para que Postgres
+      // pueda inferir qué índice usar como arbiter; sin el WHERE, "ON CONFLICT
+      // (idempotency_key)" no matchea ningún índice NO parcial sobre esa
+      // columna sola y Postgres tira 42P10 "no unique or exclusion constraint
+      // matching the ON CONFLICT specification" (bug real encontrado el
+      // 18/08/2026, quedaba tapado detrás del bug de tipos de $2/$13 de más
+      // abajo -- con ese ya arreglado, este era el que seguía rompiendo el
+      // CHARGE de cada reserva confirmada).
       //
       // shift_id: si el caller no lo pasó explícito ($14) y el medio de pago
       // ($13) es 'CASH', se resuelve al turno OPEN del negocio ($2) en la
@@ -80,14 +89,21 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // card_installments/card_surcharge_amount ($15/$16) son puramente
       // descriptivos (Gap Tango #3) — el CHECK de BD exige payment_method
       // = 'CARD' para que no sean NULL, no hace falta replicar esa lógica acá.
+      // $2 y $13 se castean explícito en su segunda aparición (dentro del
+      // CASE/subquery) -- reusar el mismo placeholder en dos posiciones
+      // sintácticas distintas (VALUES vs. WHERE anidado) hace que Postgres
+      // no pueda unificar el tipo deducido para cada una ("inconsistent
+      // types deduced for parameter", 42P08 -- bug real encontrado el
+      // 18/08/2026: el CHARGE de toda reserva confirmada fallaba al
+      // despacharse, terminaba en dead-letter tras 60 reintentos).
       const result = await client.query<TransactionRow>(
         `INSERT INTO financial_transactions
            (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-           COALESCE($14, CASE WHEN $13 = 'CASH'
-             THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2 AND status = 'OPEN')
+           COALESCE($14, CASE WHEN $13::VARCHAR(20) = 'CASH'
+             THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2::VARCHAR(255) AND status = 'OPEN')
              ELSE NULL END), $15, $16)
-         ON CONFLICT (idempotency_key) DO NOTHING
+         ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
          RETURNING *`,
         [
           id,
@@ -113,13 +129,14 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     }
 
     // Path normal (sin idempotency_key): INSERT estándar, lanza en conflicto
-    // de id. Mismo criterio de shift_id/card_* que el path idempotente (ver arriba).
+    // de id. Mismo criterio de shift_id/card_* que el path idempotente (ver
+    // arriba, incluidos los casts explícitos de $2/$12 -- mismo bug, mismo fix).
     const result = await client.query<TransactionRow>(
       `INSERT INTO financial_transactions
          (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-         COALESCE($13, CASE WHEN $12 = 'CASH'
-           THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2 AND status = 'OPEN')
+         COALESCE($13, CASE WHEN $12::VARCHAR(20) = 'CASH'
+           THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2::VARCHAR(255) AND status = 'OPEN')
            ELSE NULL END), $14, $15)
        RETURNING *`,
       [
