@@ -29,6 +29,7 @@ export interface OpenShiftInput {
   businessId: string;
   openedBy: string;
   openingAmount: number;
+  currency: string;
   notes?: string | null;
 }
 

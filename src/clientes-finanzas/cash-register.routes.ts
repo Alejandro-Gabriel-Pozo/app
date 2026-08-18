@@ -25,6 +25,7 @@ import {
 } from './cash-register.service.js';
 import { SqlCashRegisterShiftRepository }  from './sql.cash-register-shift.repository.js';
 import { SqlFinancialTransactionRepository } from './sql.financial-transaction.repository.js';
+import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles }     from '../security/roles.js';
 import { OpenShiftSchema, CloseShiftSchema } from '../api/schemas/request.schemas.js';
@@ -33,6 +34,7 @@ function buildService(req: Request): CashRegisterService {
   return new CashRegisterService(
     new SqlCashRegisterShiftRepository(req.db!),
     new SqlFinancialTransactionRepository(req.db!),
+    new SqlBusinessProfileRepository(req.db!),
   );
 }
 

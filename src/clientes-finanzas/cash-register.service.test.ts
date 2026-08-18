@@ -13,6 +13,8 @@ import type {
 } from './cash-register-shift.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from './financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 
 /** Fake en memoria — imita el índice único parcial de la BD (A8.2) a mano. */
 class InMemoryShiftRepository implements CashRegisterShiftRepository {
@@ -40,7 +42,7 @@ class InMemoryShiftRepository implements CashRegisterShiftRepository {
       openedBy: input.openedBy,
       openedAt: new Date(),
       openingAmount: input.openingAmount,
-      currency: 'ARS',
+      currency: input.currency,
       status: 'OPEN',
       closedBy: null,
       closedAt: null,
@@ -95,6 +97,23 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async linkStayToReservationCharges() { return 0; }
 }
 
+/** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
+class FakeBusinessProfileRepository implements BusinessProfileRepository {
+  constructor(private readonly profile: BusinessProfile) {}
+  async get(): Promise<BusinessProfile> { return this.profile; }
+  async update(_input: UpdateBusinessProfileInput): Promise<BusinessProfile> { return this.profile; }
+}
+
+function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile {
+  const now = new Date();
+  return {
+    id: 'default', displayName: null, contactEmail: null,
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+    createdAt: now, updatedAt: now,
+    ...overrides,
+  };
+}
+
 const BUSINESS_ID = 'biz-test';
 
 describe('CashRegisterService', () => {
@@ -105,7 +124,7 @@ describe('CashRegisterService', () => {
   beforeEach(() => {
     shiftRepo = new InMemoryShiftRepository();
     financialRepo = new InMemoryFinancialTransactionRepository();
-    service = new CashRegisterService(shiftRepo, financialRepo);
+    service = new CashRegisterService(shiftRepo, financialRepo, new FakeBusinessProfileRepository(makeProfile()));
   });
 
   describe('openShift', () => {
@@ -130,6 +149,14 @@ describe('CashRegisterService', () => {
 
       const otherShift = await service.openShift({ businessId: 'biz-otro', openedBy: 'user-3', openingAmount: 200 });
       expect(otherShift.status).toBe('OPEN');
+    });
+
+    it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
+      service = new CashRegisterService(shiftRepo, financialRepo, new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' })));
+
+      const shift = await service.openShift({ businessId: BUSINESS_ID, openedBy: 'user-1', openingAmount: 500 });
+
+      expect(shift.currency).toBe('USD');
     });
   });
 

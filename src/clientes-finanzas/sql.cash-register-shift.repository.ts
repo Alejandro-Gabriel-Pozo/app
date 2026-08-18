@@ -53,10 +53,10 @@ export class SqlCashRegisterShiftRepository implements CashRegisterShiftReposito
 
   async open(input: OpenShiftInput): Promise<CashRegisterShift> {
     const result = await this.sqlClient.query<ShiftRow>(
-      `INSERT INTO cash_register_shifts (id, business_id, opened_by, opening_amount, notes)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO cash_register_shifts (id, business_id, opened_by, opening_amount, currency, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [input.id, input.businessId, input.openedBy, input.openingAmount, input.notes ?? null],
+      [input.id, input.businessId, input.openedBy, input.openingAmount, input.currency, input.notes ?? null],
     );
     return this.rowToEntity(result.rows[0]!);
   }

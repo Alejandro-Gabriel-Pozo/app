@@ -3,18 +3,14 @@
  * @description Plantillas de mails transaccionales. HTML armado a mano
  * (string simple) — no hace falta un motor de templates para un mail.
  *
- * Fechas en `America/Argentina/Buenos_Aires` fijo — toda la plataforma es
- * hoy Argentina-only (A4.7, criterios-negocio.md). El día que haya
- * tenants en otro huso, esto necesita el `timezone` por negocio que A4.2
- * ya pide y todavía no está modelado — no es un problema nuevo de este
- * archivo.
+ * Fechas formateadas con el `timezone` del negocio (`business_profile.
+ * timezone`, 17/08/2026 — auditoría de hardcodes, pendientes-2026-08-17.md
+ * sección F3). Antes era `America/Argentina/Buenos_Aires` fijo acá mismo;
+ * ahora lo resuelve el caller (email.handlers.ts) leyendo el perfil del
+ * negocio y lo pasa como parámetro. Locale de formato ('es-AR') sigue fijo
+ * a propósito — es una decisión de idioma del mail, no de huso horario, y
+ * no se pidió resolverla en esta ronda.
  */
-
-const DATE_FORMAT = new Intl.DateTimeFormat('es-AR', {
-  timeZone: 'America/Argentina/Buenos_Aires',
-  dateStyle: 'full',
-  timeStyle: 'short',
-});
 
 export interface ReservationConfirmedEmailParams {
   customerName: string;
@@ -22,12 +18,19 @@ export interface ReservationConfirmedEmailParams {
   resourceName: string;
   startTime: Date;
   endTime: Date;
+  /** IANA (ej. America/Argentina/Buenos_Aires) — ver business_profile.timezone. */
+  timezone: string;
 }
 
 export function reservationConfirmedEmail(
   params: ReservationConfirmedEmailParams,
 ): { subject: string; html: string } {
-  const { customerName, businessDisplayName, resourceName, startTime, endTime } = params;
+  const { customerName, businessDisplayName, resourceName, startTime, endTime, timezone } = params;
+  const dateFormat = new Intl.DateTimeFormat('es-AR', {
+    timeZone: timezone,
+    dateStyle: 'full',
+    timeStyle: 'short',
+  });
 
   return {
     subject: `Reserva confirmada — ${businessDisplayName}`,
@@ -43,11 +46,11 @@ export function reservationConfirmedEmail(
           </tr>
           <tr>
             <td style="padding: 8px 0; color: #666;">Desde</td>
-            <td style="padding: 8px 0; font-weight: 600;">${DATE_FORMAT.format(startTime)}</td>
+            <td style="padding: 8px 0; font-weight: 600;">${dateFormat.format(startTime)}</td>
           </tr>
           <tr>
             <td style="padding: 8px 0; color: #666;">Hasta</td>
-            <td style="padding: 8px 0; font-weight: 600;">${DATE_FORMAT.format(endTime)}</td>
+            <td style="padding: 8px 0; font-weight: 600;">${dateFormat.format(endTime)}</td>
           </tr>
         </table>
         <p style="color: #666; font-size: 13px;">Si no reconocés esta reserva, respondé este mail.</p>

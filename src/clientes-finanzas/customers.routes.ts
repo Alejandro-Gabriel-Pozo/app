@@ -28,6 +28,7 @@ import { SqlCustomerRateRepository } from './sql.customer-rate.repository.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
 import { SqlFinancialTransactionRepository } from './sql.financial-transaction.repository.js';
+import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { CustomerAccountService } from './customer-account.service.js';
 import {
   UpdateCustomerSchema, AssignTagSchema, CreateCustomerRateSchema, RecordPaymentSchema,
@@ -360,6 +361,7 @@ export function createCustomersRouter(container: AppContainer): Router {
         const service = new CustomerAccountService(
           new SqlFinancialTransactionRepository(req.db!),
           new SqlCustomerRepository(req.db!),
+          new SqlBusinessProfileRepository(req.db!),
         );
         const statement = await service.getStatement(String(req.params['id']));
         res.json(statement);
@@ -378,6 +380,7 @@ export function createCustomersRouter(container: AppContainer): Router {
         const service = new CustomerAccountService(
           new SqlFinancialTransactionRepository(req.db!),
           new SqlCustomerRepository(req.db!),
+          new SqlBusinessProfileRepository(req.db!),
         );
         const tx = await service.recordPayment({
           customerId: String(req.params['id']),

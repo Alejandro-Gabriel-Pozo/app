@@ -214,6 +214,212 @@ detalle completo de cada uno:
   producto, resolver revisiones pendientes, alta de `companies` (ver E).
 - E1-E7 de `pendientes-2026-08-13.md` — necesitan que el dueño defina
   alcance (salvo E7c/d/e, ya resueltos).
-- Empresas multipropiedad: sincronización de RECETA compartida (el
-  precio ya está resuelto, ver sección E) — pendiente resolver primero el
-  encadenamiento de componentes compartidos.
+- ✅ RESUELTO — Empresas multipropiedad: sincronización de RECETA
+  compartida. Se resolvió y verificó hoy mismo, más tarde en esta sesión
+  — ver sección E (reescrita, "PRECIO **y de RECETA**"). El encadenamiento
+  de componentes compartidos dejó de ser un problema con el modelo
+  corregido (todo producto de una empresa está SIEMPRE compartido).
+
+---
+
+## F. Agregados por el dueño (17/08/2026, tarde) — organización + monetización + auditoría de hardcodes
+
+### F1. Reorganizar `security/` — separar auth genérica de gestión de usuarios/roles
+
+Evaluado, **sin tocar código todavía** (pedido explícito: solo organizar
+archivos, no tocar lógica de negocio). Hallazgo: la gestión de
+usuarios/roles hoy está más dispersa de lo que parecía a primera vista —
+no es solo `security/`, son TRES ubicaciones:
+
+- `src/security/roles.ts` (catálogo `Roles`/`PermissionGroup`, usado por
+  `authorize()`) y `src/security/user.types.ts` (`AuthenticatedUser`, forma
+  del JWT) — esto sí es auth genérica de verdad: infraestructura de
+  autenticación pura, sin reglas de negocio del dominio. Usado por **26
+  archivos** en TODOS los bounded contexts (cada `*.routes.ts` importa
+  `Roles` para `authorize()`) — mover esto tiene alto radio de impacto en
+  imports.
+- `src/security/user.store.ts` — primitivas de hashing PBKDF2, tampoco es
+  "gestión de usuarios", es criptografía genérica reusada por
+  `identities` (BD de plataforma) y por `users.routes.ts` al crear un
+  membership.
+- **La lógica de negocio real de roles/usuarios ya vive AFUERA de
+  `security/`**, pero dispersa en dos carpetas más: `src/services/
+  role.service.ts` (CRUD de roles + auditoría) y `src/api/routes/
+  roles.routes.ts` + `src/api/routes/users.routes.ts` (endpoints). Los
+  datos en sí (`Role`, `Membership`, `Identity`) viven dentro del
+  `PlatformRepository` gigante (`src/platform/platform.repository.ts`),
+  sin repositorio propio.
+
+**Recomendación** (para cuando se ejecute, no ahora): crear
+`usuarios-roles/` (mismo patrón que `reservas/`, `pms-estadias/`,
+`clientes-finanzas/`) y mover ahí `role.service.ts`, `roles.routes.ts`,
+`users.routes.ts`, y extraer de `PlatformRepository` un
+`RoleRepository`/`MembershipRepository` propio (mismo criterio que ya se
+usó al separar `pos-menu/`/`clientes-finanzas/` de un repositorio
+monolítico anterior). Dejar en `security/` solo lo genuinamente
+transversal: `auth.middleware.ts`, `auth.service.ts` (JWT), `roles.ts`
+(catálogo de grupos, no las asignaciones), `user.types.ts`,
+`user.store.ts` (hashing), `google-oauth.ts`, `customer.auth.service.ts`.
+Es un move de alto radio de impacto (26 imports de `roles.ts` solo) —
+conviene hacerlo en su propia sesión dedicada, con `tsc`/tests como red
+de seguridad en cada paso, no mezclado con otro trabajo.
+
+### F2. Tres ejes de monetización separados (feature flags / límites de plan / edición fina de permisos)
+
+Pedido: modelar la monetización como tres reglas de negocio separadas en
+vez de una tabla monolítica de "planes". Estado actual de cada eje:
+
+- **(a) Feature on/off — ya existe, sin cambios.** `ModuleKey`/
+  `business_modules` (`platform.schema.sql`, bloque ENTITLEMENTS) +
+  `PlatformRepository.getBusinessModules()`/`provisionDefaultModules()`.
+  Fail-closed (un módulo sin fila = deshabilitado). Confirmado que se deja
+  como está.
+- **(b) Límite de asientos y roles por plan — hoy NO existe, hay que
+  construirlo.** Existe `src/config/plan-limits.ts` (`PLAN_LIMITS`), pero
+  solo cubre `maxCategories`/`maxResources` (usado por
+  `CategoryService`/`ResourceService`, error `PlanLimitError` → 402
+  `PLAN_LIMIT_REACHED`). No hay ningún límite de `memberships` activos ni
+  de qué `role_permission_groups` puede tener un negocio según su plan —
+  hoy cualquier plan puede crear memberships y roles sin tope. Extender
+  este mismo mecanismo (mismo patrón `PlanLimitError`/402) con
+  `maxActiveMemberships` y algo como `allowedPermissionGroups` por plan.
+- **(c) Edición fina de permisos por rol como feature del plan — hoy NO
+  existe.** `role.service.ts`/`roles.routes.ts` ya permiten editar
+  `permissionGroups` de un rol (`PUT /api/roles/:id`) **sin ninguna
+  restricción de plan** — cualquier negocio, sea cual sea su plan, ya
+  puede editar los roles de fábrica hoy. Falta la regla: en el plan
+  básico, los roles de sistema (`is_system = TRUE`, ver BLOQUE ROLES)
+  quedan fijos con el preset de fábrica; un plan superior desbloquea poder
+  editarlos. Point de enganche natural:
+  `RoleService.update()`/`CannotModifySystemRoleError` ya existe para
+  "no se puede desactivar un rol de sistema" — habría que sumar un
+  chequeo de plan análogo antes de aceptar un cambio de
+  `permissionGroups` sobre un rol `is_system`.
+
+**No implementado todavía** — el dueño pidió que quede modelado como
+diseño/backlog primero.
+
+### F3. Origen de los defaults de fábrica (plataforma, no hardcode) + auditoría de hardcodes
+
+**Hallazgo principal — exactamente el caso que sospechaba el dueño, y no
+solo con `currency`:** los presets "de fábrica" de roles NO salen de
+ninguna configuración de plataforma editable — están escritos dos veces,
+literalmente como arrays en código/SQL, idénticos para cualquier negocio
+sin importar su plan:
+
+1. `PlatformRepository.provisionSystemRoles()`
+   (`src/platform/platform.repository.ts:151-177`) — array `systemRoles`
+   hardcodeado en TypeScript (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER
+   + sus `permissionGroups`), corre en cada alta de negocio nueva.
+2. El mismo catálogo, duplicado en SQL (`platform.schema.sql` BLOQUE
+   ROLES, líneas 233-260) como backfill para negocios que ya existían
+   antes de este bloque.
+
+Dos problemas en uno: (i) están hardcodeados en vez de salir de una
+config de plataforma que el superadmin pueda editar, y (ii) están
+**duplicados en dos lugares** que hay que mantener manualmente
+sincronizados (ya lo dice el comentario de la línea 224 del schema: "los
+mismos permission_groups que hoy hardcodea security/roles.ts" — tres
+copias del mismo dato, contando `security/roles.ts` como el catálogo de
+grupos válidos).
+
+**Auditoría general de hardcodes — barrido completo, nada tocado:**
+
+| # | Qué | Dónde | Por qué es un hardcode de negocio, no técnico |
+|---|---|---|---|
+| 1 | Presets de roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER + sus grupos de permisos) | `platform.repository.ts:151-177` (TS) + `platform.schema.sql:233-260` (SQL, duplicado) | Mismo preset para TODO negocio sin importar plan — el pedido explícito de F2c/F3 es que dependa del plan y salga de config de plataforma |
+| 2 | ✅ RESUELTO (17/08/2026, tarde) — `currency VARCHAR(3) DEFAULT 'ARS'` | `schema.sql` — `financial_transactions`, `accounts_receivable`, `cash_register_shifts` | `business_profile` (tenant DB) ganó `currency`/`timezone` reales (schema v15); los 4 puntos de escritura que lo hardcodeaban (`AccountsReceivableService`, `CustomerAccountService`, `outbox.handlers.ts`, `CashRegisterService`) ahora lo leen de ahí. DEFAULT de columna queda como fallback, no como fuente real |
+| 3 | ✅ RESUELTO (17/08/2026, tarde) — `Business.timezone` nunca modelado pese a A4.2 | Se agregó en `business_profile` (tenant DB), no en `businesses` (BD central) — el resto de esa tabla ya es identidad de ESE negocio, no hace falta que la plataforma central la conozca | Ver detalle en sección F3-bis más abajo |
+| 4 | ✅ RESUELTO (17/08/2026, tarde) — zona horaria fija en mails | `src/email/templates.ts` | `email.handlers.ts` ahora pasa `profile.timezone` al template en vez de la constante fija. Locale `es-AR` sigue fijo a propósito (no se pidió resolver eso) |
+| 5 | **Deliberadamente NO resuelto todavía** — huso Argentina hardcodeado en `combineDateAndTime()` | `src/reservas/reservation.service.ts:827-836` | Toca el camino crítico de disponibilidad/reservas ya verificado a fondo — convertir un IANA timezone a offset UTC para una fecha arbitraria (con DST-awareness) no es trivial y requiere tests propios. Se dejó fuera de esta ronda a propósito, ver F3-bis |
+| 6 | `PLAN_LIMITS` (`maxCategories`/`maxResources` por plan) | `src/config/plan-limits.ts` | No es un hardcode "por tenant" (aplica igual a todos, correcto conceptualmente), pero SÍ es una constante de código que solo el superadmin debería poder tocar sin deploy — mismo argumento que roles: si F2b se construye como tabla en la BD de plataforma, este archivo debería migrar ahí también, no quedar como el único límite que sigue siendo código |
+| 7 | Default de módulos habilitados al crear un negocio ("solo ALOJAMIENTO") | `PlatformRepository.provisionDefaultModules()` (`platform.repository.ts:186-206`) | Confirmado como correcto/deliberado por el dueño en F2a ("ya existe, sin cambios") — se incluye en la tabla solo para que quede registrado que también es un default fijo en código, no específicamente para cambiarlo |
+
+**Sin hallazgos en:** validación de teléfono/CUIT (ya correctamente
+modelado por-cliente vía `customer_tax_profiles`, no hardcodeado), tasas
+de impuesto/IVA (no implementado todavía, nada que auditar), ventana de
+cancelación/depósito/horario de check-in (no existen como constantes
+fijas — `operating-hours` ya es 100% configurable por negocio).
+
+**Nada de esto se tocó** — es el barrido pedido antes de decidir qué se
+arregla y en qué orden.
+
+### F3-bis. Implementado (17/08/2026, tarde) — `currency`/`timezone` en `business_profile`
+
+Primer ítem del barrido resuelto, a pedido explícito del dueño ("arranca
+con F3, currency + timezone en business_profile"). Alcance: fundación
+completa (schema + entidad + repo + validación Zod) + wiring de los
+consumidores de bajo riesgo. **NO** incluye `reservation.service.ts`
+(ver abajo, deliberado).
+
+- `business_profile` (tenant DB, schema v15) gana `currency VARCHAR(3)
+  NOT NULL DEFAULT 'ARS'` y `timezone VARCHAR(64) NOT NULL DEFAULT
+  'America/Argentina/Buenos_Aires'` — mismos valores que estaban
+  hardcodeados, así que ningún negocio existente cambia de comportamiento
+  hasta que alguien edite el perfil a propósito.
+- `PUT /api/business-profile` acepta ambos campos — `currency` valida
+  formato ISO 4217 (3 letras); `timezone` valida contra
+  `Intl.supportedValuesOf('timeZone')` (Node 20 ya lo trae, no hace falta
+  librería nueva ni una lista propia que mantener).
+- Wireado a los 4 puntos que hardcodeaban `currency: 'ARS'`:
+  `AccountsReceivableService`, `CustomerAccountService`,
+  `outbox.handlers.ts` (`handleReservationConfirmed`/`handleOrderConfirmed`),
+  y `CashRegisterService.openShift()` (este último ni siquiera lo
+  seteaba — dependía 100% del DEFAULT de columna). Los cuatro ahora leen
+  `businessProfileRepo.get().currency` en vez de un literal.
+- `email/templates.ts` + `email.handlers.ts`: el mail de reserva
+  confirmada ahora formatea fechas con `profile.timezone` en vez de
+  `America/Argentina/Buenos_Aires` fijo. Locale `es-AR` queda fijo a
+  propósito (no se pidió resolver idioma, solo huso).
+
+**Deliberadamente fuera de esta ronda:** `reservation.service.ts` →
+`combineDateAndTime()` sigue con `-03:00` hardcodeado al combinar fecha +
+hora de un turno. Es el camino crítico de disponibilidad/reservas, ya
+verificado a fondo en sesiones anteriores — convertir un nombre IANA a un
+offset UTC correcto para una fecha arbitraria (con DST-awareness, ver
+A4.7) necesita su propio diseño y batería de tests, no es un cambio de
+una línea. Queda anotado para una sesión propia, no se tocó.
+
+**Verificado contra Postgres real** (proyecto Neon `DB-APP-PPMS`, branch
+temporal `verify-schema-v15-currency-timezone`, borrado después): la fila
+`'default'` ya existente se backfillea con los defaults correctos al
+aplicar el ALTER TABLE, re-aplicar el schema es idempotente, `UPDATE`
+con valores nuevos funciona, e `INSERT` explícito de `cash_register_shifts`
+con `currency` distinto al DEFAULT de columna inserta correctamente.
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 530/531 (+4 tests nuevos que verifican explícitamente que la
+moneda sale de `business_profile` y no de un literal), `npm run build`
+limpio.
+
+---
+
+## G. Referencias externas agregadas hoy (17/08/2026, tarde) — documentación, sin tocar código
+
+- ✅ `docs/referencia-qloapps.md` — análisis de QloApps (motor de reservas
+  hotelero open-source, PrestaShop/PHP) como referencia de producto, no de
+  código (licencia OSL v3, stack distinto). Tres hallazgos enlazados desde
+  `roadmap-pms-multirubro.md`: Channel Manager vía agregador
+  (myallocator) en vez de integraciones directas por OTA; checklist de
+  features de un booking engine público para cuando se diseñe el Portal
+  de clientes; patrón de PDF de comprobante con marca propia (TCPDF en
+  QloApps) separado de la validación fiscal, para cuando ande
+  TusFacturas.app.
+- ✅ `docs/referencia-afip-wsfev1.md` — transcripción completa del manual
+  oficial de AFIP para WSFEv1 (`manual_desarrollador_COMPG_v2_10.pdf`,
+  Facturación Electrónica RG 2485 – Proyecto FE v2.10, revisión 09/08/2017,
+  131 páginas), 1419 líneas: los 21 métodos (autorización CAE/CAEA,
+  consultas, catálogos de tipos de comprobante/IVA/moneda/tributo/
+  documento/país con sus códigos completos), distinción CAE (online,
+  camino típico para POS) vs. CAEA (offline por lote), tablas de
+  validación/error de los dos métodos grandes (`FECAESolicitar`/
+  `FECAEARegInformativo`, ~250 códigos entre los dos). Revisado — buena
+  cobertura, dos anexos históricos (crosswalk de códigos v1→v1.1 de 2011,
+  notas de comprobante tipo C) quedaron resumidos en vez de transcritos
+  línea por línea porque su contenido sustantivo ya está cubierto en las
+  tablas de validación de cada método; el propio documento lo señala
+  explícito con número de página del PDF original para reconstruir si
+  hace falta. Enlazado desde `roadmap-pms-multirubro.md`, sección
+  "Factura Electrónica A/B/T (AFIP)". El plan sigue siendo usar el SDK
+  `arcasdk-main` (Node/TS) como vehículo de implementación, no un cliente
+  SOAP propio.

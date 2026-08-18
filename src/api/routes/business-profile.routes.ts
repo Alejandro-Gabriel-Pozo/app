@@ -1,10 +1,11 @@
 /**
  * @file business-profile.routes.ts
  * @description Identidad del negocio ("Mi Negocio") — punto 5/E5,
- * pendientes-2026-08-15.md. Hoy solo nombre + contacto, lo que necesita el
- * remitente del mail de reserva confirmada (A2.9: eso es config por
- * tenant, nunca una constante de la plataforma). Ver domain/
- * business-profile.entities.ts para por qué arranca mínimo.
+ * pendientes-2026-08-15.md. Nombre + contacto (remitente del mail de
+ * reserva confirmada) más, desde el 17/08/2026 (auditoría de hardcodes,
+ * pendientes-2026-08-17.md sección F3), `currency`/`timezone` — antes
+ * eran constantes fijas en código/SQL, ahora config real por negocio
+ * (A2.9). Ver domain/business-profile.entities.ts.
  *
  * GET /api/business-profile — Roles.MANAGEMENT
  * PUT /api/business-profile — Roles.MANAGEMENT

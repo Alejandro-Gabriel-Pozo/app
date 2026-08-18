@@ -24,6 +24,7 @@ import type { FinancialTransactionRepository } from './financial-transaction.rep
 import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { CustomerRepository } from './customer.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { DomainError, CustomerNotFoundError } from '../domain/errors.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 
@@ -58,6 +59,7 @@ export class AccountsReceivableService {
     private readonly stayRepo: StayRepository,
     private readonly customerRepo: CustomerRepository,
     private readonly transactionManager: TransactionManager,
+    private readonly businessProfileRepo: BusinessProfileRepository,
   ) {}
 
   async transferStayBalanceToReceivable(input: TransferStayBalanceInput): Promise<AccountReceivable> {
@@ -71,6 +73,10 @@ export class AccountsReceivableService {
     const balance = await this.financialRepo.getNetBalanceByStayId(input.stayId);
     if (balance <= 0) throw new NoBalanceToTransferError(input.stayId);
 
+    // Una sola lectura para las dos filas de esta operación -- ambas
+    // registran el mismo movimiento, tienen que quedar en la misma moneda.
+    const { currency } = await this.businessProfileRepo.get();
+
     return this.transactionManager.run(async (client) => {
       await this.financialRepo.createWithClient(client, {
         id:         randomUUID(),
@@ -79,7 +85,7 @@ export class AccountsReceivableService {
         stayId:     input.stayId,
         type:       'PAYMENT',
         amount:     balance,
-        currency:   'ARS',
+        currency,
         status:     'SETTLED',
         notes:      `Transferido a cuenta por cobrar — empresa ${input.companyCustomerId}`,
       });
@@ -90,7 +96,7 @@ export class AccountsReceivableService {
         stayId:            input.stayId,
         companyCustomerId: input.companyCustomerId,
         amount:            balance,
-        currency:          'ARS',
+        currency,
         status:            'PENDIENTE_FACTURAR',
         transferredBy:     input.transferredBy,
         notes:             input.notes ?? null,

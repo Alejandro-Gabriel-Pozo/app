@@ -14,6 +14,8 @@ import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { CustomerRepository } from './customer.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_STAY_ID = 'stay-1';
@@ -92,6 +94,23 @@ class InMemoryTransactionManager implements TransactionManager {
   }
 }
 
+/** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
+class FakeBusinessProfileRepository implements BusinessProfileRepository {
+  constructor(private readonly profile: BusinessProfile) {}
+  async get(): Promise<BusinessProfile> { return this.profile; }
+  async update(_input: UpdateBusinessProfileInput): Promise<BusinessProfile> { return this.profile; }
+}
+
+function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile {
+  const now = new Date();
+  return {
+    id: 'default', displayName: null, contactEmail: null,
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+    createdAt: now, updatedAt: now,
+    ...overrides,
+  };
+}
+
 describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
   let arRepo: FakeAccountsReceivableRepository;
   let financialRepo: FakeFinancialTransactionRepository;
@@ -120,6 +139,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new FakeStayRepository(stay) as unknown as StayRepository,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new InMemoryTransactionManager(),
+      new FakeBusinessProfileRepository(makeProfile()),
     );
   });
 
@@ -149,12 +169,32 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
     expect(ar.transferredBy).toBe('user-manager');
   });
 
+  it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
+    service = new AccountsReceivableService(
+      arRepo, financialRepo,
+      new FakeStayRepository(stay) as unknown as StayRepository,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new InMemoryTransactionManager(),
+      new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' })),
+    );
+    financialRepo.netBalanceByStay = 500;
+
+    const ar = await service.transferStayBalanceToReceivable({
+      stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+      companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+    });
+
+    expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
+    expect(ar.currency).toBe('USD');
+  });
+
   it('rechaza si la estadía no existe', async () => {
     service = new AccountsReceivableService(
       arRepo, financialRepo,
       new FakeStayRepository(null) as unknown as StayRepository,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new InMemoryTransactionManager(),
+      new FakeBusinessProfileRepository(makeProfile()),
     );
 
     await expect(service.transferStayBalanceToReceivable({

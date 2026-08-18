@@ -4,6 +4,8 @@ import { Customer } from './customer.entities.js';
 import type { CustomerRepository } from './customer.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from './financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 
 class FakeCustomerRepository {
   constructor(private readonly customers: Map<string, Customer>) {}
@@ -33,6 +35,23 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async linkStayToReservationCharges() { return 0; }
 }
 
+/** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
+class FakeBusinessProfileRepository implements BusinessProfileRepository {
+  constructor(private readonly profile: BusinessProfile) {}
+  async get(): Promise<BusinessProfile> { return this.profile; }
+  async update(_input: UpdateBusinessProfileInput): Promise<BusinessProfile> { return this.profile; }
+}
+
+function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile {
+  const now = new Date();
+  return {
+    id: 'default', displayName: null, contactEmail: null,
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+    createdAt: now, updatedAt: now,
+    ...overrides,
+  };
+}
+
 const CUSTOMER_ID = 'cust-1';
 const BUSINESS_ID = 'biz-test';
 
@@ -46,6 +65,7 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
     service = new CustomerAccountService(
       financialRepo,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile()),
     );
   });
 
@@ -74,5 +94,18 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
     await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100, paymentMethod: 'CASH' });
 
     expect(financialRepo.created[0]).toMatchObject({ cardInstallments: null, cardSurchargeAmount: null });
+  });
+
+  it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
+    const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
+    service = new CustomerAccountService(
+      financialRepo,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' })),
+    );
+
+    await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100 });
+
+    expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
   });
 });

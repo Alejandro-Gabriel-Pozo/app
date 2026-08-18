@@ -25,6 +25,7 @@
 import { randomUUID } from 'crypto';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type { FinancialTransactionRepository, PaymentInfo, PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { OutboxWorker } from './outbox.worker.js';
 
 /**
@@ -40,12 +41,13 @@ import type { OutboxWorker } from './outbox.worker.js';
 export function registerFinancialHandlers(
   worker: OutboxWorker,
   financialRepo: FinancialTransactionRepository,
+  businessProfileRepo: BusinessProfileRepository,
 ): void {
   worker
-    .on('reservation.confirmed', handleReservationConfirmed(financialRepo))
+    .on('reservation.confirmed', handleReservationConfirmed(financialRepo, businessProfileRepo))
     .on('reservation.completed', handleReservationCompleted(financialRepo))
     .on('reservation.cancelled', handleReservationCancelled(financialRepo))
-    .on('order.confirmed',       handleOrderConfirmed(financialRepo))
+    .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo))
     .on('order.completed',       handleOrderCompleted(financialRepo))
     .on('order.cancelled',       handleOrderCancelled(financialRepo));
 }
@@ -56,6 +58,7 @@ export function registerFinancialHandlers(
 
 export function handleReservationConfirmed(
   financialRepo: FinancialTransactionRepository,
+  businessProfileRepo: BusinessProfileRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId, customerId, totalPrice } = event.payload as {
@@ -67,6 +70,8 @@ export function handleReservationConfirmed(
     // Sin precio (recursos sin costo) → no hay movimiento financiero.
     if (totalPrice == null || totalPrice <= 0) return;
 
+    const { currency } = await businessProfileRepo.get();
+
     // idempotencyKey: garantiza que este evento solo crea un CHARGE,
     // aunque el handler se reintente múltiples veces.
     // Convención: "${eventId}:CHARGE" — único por evento de dominio + tipo.
@@ -77,7 +82,7 @@ export function handleReservationConfirmed(
       reservationId,
       type:           'CHARGE',
       amount:         totalPrice,
-      currency:       'ARS',
+      currency,
       status:         'PENDING',
       idempotencyKey: `${event.id}:CHARGE`,
     });
@@ -110,6 +115,7 @@ export function handleReservationCancelled(
 
 export function handleOrderConfirmed(
   financialRepo: FinancialTransactionRepository,
+  businessProfileRepo: BusinessProfileRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { orderId, customerId, totalAmount, stayId } = event.payload as {
@@ -122,6 +128,8 @@ export function handleOrderConfirmed(
     // Orden sin ítems con precio (ej. solo notas) → no hay movimiento financiero.
     if (totalAmount == null || totalAmount <= 0) return;
 
+    const { currency } = await businessProfileRepo.get();
+
     await financialRepo.create({
       id:             randomUUID(),
       businessId:     event.businessId,
@@ -132,7 +140,7 @@ export function handleOrderConfirmed(
       stayId:         stayId ?? null,
       type:           'CHARGE',
       amount:         totalAmount,
-      currency:       'ARS',
+      currency,
       status:         'PENDING',
       idempotencyKey: `${event.id}:CHARGE`,
     });

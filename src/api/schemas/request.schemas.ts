@@ -242,7 +242,16 @@ export const CreateOperatingWindowSchema = z.object({
 // Perfil del negocio — PUT /api/business-profile (punto 5/E5, 15/08/2026)
 // ---------------------------------------------------------------------------
 
+// IANA reales soportados por el runtime -- evita aceptar un timezone
+// inventado que después rompa Intl.DateTimeFormat en email/templates.ts.
+// Set (no array) para lookup O(1); se computa una sola vez al cargar el
+// módulo, no por request.
+const VALID_TIMEZONES = new Set<string>(Intl.supportedValuesOf('timeZone'));
+
 export const UpdateBusinessProfileSchema = z.object({
   displayName:  z.string().trim().min(1).max(255).nullable().optional(),
   contactEmail: z.string().trim().email({ message: 'contactEmail debe tener formato válido' }).nullable().optional(),
+  /** ISO 4217 (ARS, USD, ...) -- 3 letras mayúsculas, sin validar contra una lista cerrada (evita otro catálogo hardcodeado a mantener). */
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, { message: 'currency debe ser un código ISO 4217 de 3 letras (ej. ARS, USD)' }).optional(),
+  timezone: z.string().trim().refine((tz) => VALID_TIMEZONES.has(tz), { message: 'timezone debe ser un nombre IANA válido (ej. America/Argentina/Buenos_Aires)' }).optional(),
 });

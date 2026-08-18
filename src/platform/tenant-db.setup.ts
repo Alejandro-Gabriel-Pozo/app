@@ -170,7 +170,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // pendiente. El catálogo canónico en sí (companies/company_products/
 // company_recipe_items/company_catalog_propagation_queue) vive en
 // platform.schema.sql, no acá.
-export const CURRENT_SCHEMA_VERSION = 14;
+// v15 (17/08/2026): auditoría de hardcodes (pendientes-2026-08-17.md
+// sección F3) — `business_profile` gana `currency`/`timezone`,
+// configurables por negocio en vez de constantes fijas en código/SQL.
+// DEFAULT explícito igual al valor que estaba hardcodeado antes ('ARS' /
+// America/Argentina/Buenos_Aires) para no cambiar comportamiento hasta
+// que alguien edite el perfil a propósito.
+export const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

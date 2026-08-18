@@ -30,7 +30,9 @@ diseño de eso. Lo que sigue es todo lo que se monta ENCIMA de ese core.
 ✅ Reservas multi-recurso con bloqueo de recursos físicos compartidos
 (`resource_locks`), check-in/check-out (`stays`), housekeeping por turno.
 Portal de clientes: **pendiente, es el foco de la próxima sesión** — sin
-eso no hay web check-in ni autogestión del huésped.
+eso no hay web check-in ni autogestión del huésped. Ver
+`docs/referencia-qloapps.md` punto 2 (checklist de features de un booking
+engine público maduro, no spec a copiar) antes de diseñarlo desde cero.
 
 ## Housekeeping y Mantenimiento
 
@@ -75,7 +77,13 @@ mostrar en otra moneda).
 fiscal argentino real — requiere certificado digital, homologación con
 AFIP, y manejo cuidadoso de errores (una factura mal emitida tiene
 implicancias legales). Cuando se aborde, tratar como su propio proyecto,
-no como una feature más.
+no como una feature más. Para el PDF de comprobante con marca propia
+(separado de la validación fiscal que resuelve TusFacturas.app), ver
+`docs/referencia-qloapps.md` punto 3. Especificación técnica completa del
+servicio de AFIP (WSFEv1 — autenticación, métodos, catálogos, códigos de
+validación) transcrita en `docs/referencia-afip-wsfev1.md`; el SDK
+`arcasdk-main` (Node/TS) es el vehículo de implementación evaluado, no un
+cliente SOAP propio.
 
 ## Informadores fiscales (Citi Ventas, RG 1361, TURIVA)
 
@@ -92,7 +100,9 @@ vencimientos, ni estado de cuenta.
 
 ❌ No hay integración con OTAs (Booking.com, Expedia, Airbnb). Esto también
 implica resolver sincronización de disponibilidad e inventario en tiempo
-real contra terceros — proyecto grande aparte.
+real contra terceros — proyecto grande aparte. Ver `docs/referencia-
+qloapps.md` punto 1: la vía realista es un agregador (myallocator u otro
+vigente) con un único conector, no N integraciones directas por OTA.
 
 ## Web Check-in integrado
 

@@ -88,6 +88,7 @@ import { SqlFinancialTransactionRepository } from './clientes-finanzas/sql.finan
 import { SqlAccountsReceivableRepository }   from './clientes-finanzas/sql.accounts-receivable.repository.js';
 import { SqlCustomerRepository }             from './clientes-finanzas/sql.customer.repository.js';
 import { AccountsReceivableService }         from './clientes-finanzas/accounts-receivable.service.js';
+import { SqlBusinessProfileRepository }      from './repositories/sql.business-profile.repository.js';
 import { buildTenantTransactionManager }     from './db/tenant-context.js';
 import { stopAllWorkers }                from './workers/outbox.registry.js';
 import type { Request, Response, NextFunction } from 'express';
@@ -301,6 +302,7 @@ export async function createApp(): Promise<{
         stayRepo,
         new SqlCustomerRepository(req.db),
         buildTenantTransactionManager(req),
+        new SqlBusinessProfileRepository(req.db),
       );
 
       const router = createStaysRouter(stayService, arService);

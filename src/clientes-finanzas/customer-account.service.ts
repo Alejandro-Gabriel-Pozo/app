@@ -14,6 +14,7 @@ import type {
   FinancialTransactionRepository,
   PaymentMethod,
 } from './financial-transaction.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { CustomerNotFoundError } from '../domain/errors.js';
 
 export interface CustomerStatement {
@@ -26,6 +27,7 @@ export class CustomerAccountService {
   constructor(
     private readonly financialRepo: FinancialTransactionRepository,
     private readonly customerRepo: CustomerRepository,
+    private readonly businessProfileRepo: BusinessProfileRepository,
   ) {}
 
   async getStatement(customerId: string): Promise<CustomerStatement> {
@@ -65,6 +67,8 @@ export class CustomerAccountService {
     const customer = await this.customerRepo.getById(params.customerId);
     if (!customer) throw new CustomerNotFoundError(params.customerId);
 
+    const { currency } = await this.businessProfileRepo.get();
+
     // paymentMethod: si es 'CASH', create() vincula la fila al turno OPEN
     // del negocio automáticamente (ver SqlFinancialTransactionRepository.insert()).
     const created = await this.financialRepo.create({
@@ -74,7 +78,7 @@ export class CustomerAccountService {
       reservationId: null,
       type: 'PAYMENT',
       amount: params.amount,
-      currency: 'ARS',
+      currency,
       status: 'SETTLED',
       idempotencyKey: params.idempotencyKey ?? null,
       notes: params.notes ?? null,

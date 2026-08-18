@@ -1665,6 +1665,26 @@ CREATE TABLE IF NOT EXISTS business_profile (
 INSERT INTO business_profile (id)
 SELECT 'default' WHERE NOT EXISTS (SELECT 1 FROM business_profile);
 
+-- currency/timezone (17/08/2026, auditoría de hardcodes --
+-- pendientes-2026-08-17.md sección F3): antes eran constantes fijas en
+-- código/SQL ('ARS' como DEFAULT de columna en financial_transactions/
+-- accounts_receivable/cash_register_shifts, y America/Argentina/
+-- Buenos_Aires hardcodeado en email/templates.ts). Pasan a vivir acá,
+-- una vez por negocio, mismo lugar que display_name/contact_email (A2.9:
+-- config por tenant, nunca una constante de la plataforma). timezone
+-- además es la columna que A4.2 (criterios-negocio.md) pedía en
+-- `businesses` y nunca se había modelado -- se agrega en business_profile
+-- (tenant DB) en vez de businesses (BD central) porque el resto de esta
+-- tabla ya es "identidad de ESTE negocio" y no hay necesidad de que la
+-- plataforma central la conozca.
+--
+-- DEFAULT explícito ('ARS'/America/Argentina/Buenos_Aires) para que la
+-- fila 'default' ya existente en cualquier tenant quede con el mismo
+-- comportamiento que tenía hardcodeado -- ningún negocio ve un cambio
+-- hasta que alguien lo edite a propósito.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'ARS';
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'America/Argentina/Buenos_Aires';
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_profile_updated_at') THEN
     CREATE TRIGGER business_profile_updated_at

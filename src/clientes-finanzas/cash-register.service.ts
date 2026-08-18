@@ -16,6 +16,7 @@ import type {
   CashRegisterShiftRepository,
 } from './cash-register-shift.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from './financial-transaction.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { DomainError } from '../domain/errors.js';
 
 export class ShiftAlreadyOpenError extends DomainError {
@@ -45,6 +46,7 @@ export class CashRegisterService {
   constructor(
     private readonly shiftRepo: CashRegisterShiftRepository,
     private readonly financialRepo: FinancialTransactionRepository,
+    private readonly businessProfileRepo: BusinessProfileRepository,
   ) {}
 
   async getCurrentShift(businessId: string): Promise<CashRegisterShift | undefined> {
@@ -76,11 +78,13 @@ export class CashRegisterService {
     notes?: string | null;
   }): Promise<CashRegisterShift> {
     try {
+      const { currency } = await this.businessProfileRepo.get();
       return await this.shiftRepo.open({
         id: randomUUID(),
         businessId: params.businessId,
         openedBy: params.openedBy,
         openingAmount: params.openingAmount,
+        currency,
         notes: params.notes ?? null,
       });
     } catch (err) {

@@ -11,6 +11,25 @@ import type {
   PaymentInfo,
 } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
+
+/** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
+class FakeBusinessProfileRepository implements BusinessProfileRepository {
+  constructor(private readonly profile: BusinessProfile) {}
+  async get(): Promise<BusinessProfile> { return this.profile; }
+  async update(_input: UpdateBusinessProfileInput): Promise<BusinessProfile> { return this.profile; }
+}
+
+function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile {
+  const now = new Date();
+  return {
+    id: 'default', displayName: null, contactEmail: null,
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+    createdAt: now, updatedAt: now,
+    ...overrides,
+  };
+}
 
 /** Fake mínimo — solo lo que estos handlers usan. */
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
@@ -58,16 +77,18 @@ function fakeEvent(payload: Record<string, unknown>): DomainEvent {
 
 describe('outbox.handlers — Order', () => {
   let financialRepo: FakeFinancialTransactionRepository;
+  let businessProfileRepo: FakeBusinessProfileRepository;
 
   beforeEach(() => {
     financialRepo = new FakeFinancialTransactionRepository();
+    businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
   });
 
   describe('handleOrderConfirmed', () => {
     it('crea un CHARGE PENDING con orderId e idempotencyKey por evento', async () => {
       const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
 
-      await handleOrderConfirmed(financialRepo)(event);
+      await handleOrderConfirmed(financialRepo, businessProfileRepo)(event);
 
       expect(financialRepo.created).toHaveLength(1);
       expect(financialRepo.created[0]).toMatchObject({
@@ -84,7 +105,7 @@ describe('outbox.handlers — Order', () => {
     it('hereda stayId del payload — "cargo a la habitación" (A1, paso 4)', async () => {
       const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300, stayId: 'stay-1' });
 
-      await handleOrderConfirmed(financialRepo)(event);
+      await handleOrderConfirmed(financialRepo, businessProfileRepo)(event);
 
       expect(financialRepo.created[0]).toMatchObject({ stayId: 'stay-1' });
     });
@@ -92,16 +113,25 @@ describe('outbox.handlers — Order', () => {
     it('stayId queda null si la orden no se asoció a una estadía', async () => {
       const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
 
-      await handleOrderConfirmed(financialRepo)(event);
+      await handleOrderConfirmed(financialRepo, businessProfileRepo)(event);
 
       expect(financialRepo.created[0]).toMatchObject({ stayId: null });
     });
 
     it('no crea nada si totalAmount es 0 o null', async () => {
-      await handleOrderConfirmed(financialRepo)(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 0 }));
-      await handleOrderConfirmed(financialRepo)(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: undefined }));
+      await handleOrderConfirmed(financialRepo, businessProfileRepo)(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 0 }));
+      await handleOrderConfirmed(financialRepo, businessProfileRepo)(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: undefined }));
 
       expect(financialRepo.created).toHaveLength(0);
+    });
+
+    it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
+      const usdProfileRepo = new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' }));
+      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
+
+      await handleOrderConfirmed(financialRepo, usdProfileRepo)(event);
+
+      expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
     });
   });
 

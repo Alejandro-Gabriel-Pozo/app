@@ -64,7 +64,7 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   const businessProfileRepo      = new SqlBusinessProfileRepository(db);
 
   const worker = new OutboxWorker(domainEventRepo);
-  registerFinancialHandlers(worker, financialTransactionRepo);
+  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo);
   registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
   registerEmailHandlers(worker, emailSender, businessProfileRepo);
   worker.start();

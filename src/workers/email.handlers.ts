@@ -47,6 +47,7 @@ export function handleReservationConfirmedEmail(
       resourceName,
       startTime: new Date(startTime),
       endTime: new Date(endTime),
+      timezone: profile.timezone,
     });
 
     await emailSender.send({

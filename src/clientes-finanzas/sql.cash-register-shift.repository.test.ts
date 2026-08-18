@@ -44,7 +44,7 @@ describe('SqlCashRegisterShiftRepository — caja/turno (Gap Tango #2)', () => {
       });
 
       const shift = await repo.open({
-        id: 'shift-1', businessId: 'biz-1', openedBy: 'user-1', openingAmount: 500,
+        id: 'shift-1', businessId: 'biz-1', openedBy: 'user-1', openingAmount: 500, currency: 'ARS',
       });
 
       expect(shift.openingAmount).toBe(500);
