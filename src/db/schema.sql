@@ -1377,6 +1377,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_occupancy_resource_date
 CREATE INDEX IF NOT EXISTS idx_occupancy_date          ON occupancy_records (date);
 CREATE INDEX IF NOT EXISTS idx_occupancy_resource_date ON occupancy_records (resource_id, date);
 
+-- category_id/category_name: sql.occupancy.repository.ts ya las escribe
+-- (recordReservation) y las agrupa por categoría real en los reportes desde
+-- el fix de "report-group-by-category" (ver reservation.service.ts) -- pero
+-- las columnas nunca se agregaron acá. Bug real encontrado el 18/08/2026:
+-- confirmar una reserva devolvía 500 (Postgres 42703, columna inexistente)
+-- pese a que la reserva SÍ quedaba CONFIRMED (recordOccupancy() corre
+-- después de la transacción, fuera de ella). DEFAULT '' solo importa para
+-- las filas ya existentes -- cualquier fila nueva llega con el categoryId
+-- real del recurso.
+ALTER TABLE occupancy_records ADD COLUMN IF NOT EXISTS category_id   VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE occupancy_records ADD COLUMN IF NOT EXISTS category_name VARCHAR(255) NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_occupancy_category ON occupancy_records (category_id);
+
 CREATE TABLE IF NOT EXISTS financial_transactions (
   id               VARCHAR(255)    PRIMARY KEY,
   business_id      VARCHAR(255)    NOT NULL,

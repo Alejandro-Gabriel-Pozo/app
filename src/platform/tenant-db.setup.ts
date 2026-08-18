@@ -176,7 +176,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // DEFAULT explícito igual al valor que estaba hardcodeado antes ('ARS' /
 // America/Argentina/Buenos_Aires) para no cambiar comportamiento hasta
 // que alguien edite el perfil a propósito.
-export const CURRENT_SCHEMA_VERSION = 15;
+// v16 (18/08/2026): `occupancy_records` gana `category_id`/`category_name`
+// — sql.occupancy.repository.ts ya las escribía (agrupar ocupación por
+// categoría real, ver reservation.service.ts) pero la tabla nunca las tuvo.
+// Bug real: confirmar una reserva devolvía 500 (Postgres 42703) aunque la
+// reserva sí quedaba CONFIRMED, porque recordOccupancy() corre después de
+// la transacción. DEFAULT '' solo afecta filas ya existentes.
+export const CURRENT_SCHEMA_VERSION = 16;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
