@@ -895,3 +895,88 @@ sesión (sin credenciales de un usuario de prueba a mano). Dado que este
 es el cambio de frontend más grande del día (componente nuevo + selector
 de dos pasos con fetch condicional), es el que más se beneficiaría de
 una revisión visual antes de darlo por cerrado del todo.
+
+---
+
+## N. Flujo de horario de check-in/check-out (early check-in / late check-out) — 18/08/2026, noche
+
+Backend commiteado (`e14e728`, schema v20) en la sesión anterior a esta,
+que cortó por límite de uso antes de documentarlo acá y de construir el
+frontend. Este punto cubre ambas mitades.
+
+### Backend (ya commiteado, resumen)
+
+Modela un pedido de horario distinto al estándar del negocio:
+
+- `business_profile.default_check_in_time`/`default_check_out_time` (hora
+  de pared, A4.3) — editable vía `PUT /api/business-profile`.
+- `reservations.requested_check_in_time`/`requested_check_out_time` +
+  `schedule_approval_status` (`NULL`/`PENDING`/`APPROVED`/`REJECTED`) +
+  `schedule_approved_by`/`schedule_charge_amount`.
+- `housekeeping_tasks.not_before` — para no limpiar antes de que el
+  huésped se haya ido de verdad si se aprobó un late check-out.
+- `StayService.requestScheduleChange()`/`approveScheduleChange()`/
+  `rejectScheduleChange()`. La aprobación rechaza con
+  `NextArrivalConflictError` (409, `NEXT_ARRIVAL_CONFLICT`) si la próxima
+  reserva de la misma habitación llega antes del checkout pedido — sin
+  override, el staff tiene que resolver el conflicto primero. Si aprueba,
+  crea un cargo opcional en el folio y actualiza (o deja lista para
+  `checkOut()`) la tarea de housekeeping con `not_before`.
+- Endpoints nuevos: `POST /api/reservations/:id/schedule-request`
+  (Roles.BOOKING — lo puede iniciar el huésped), `.../approve` y
+  `.../reject` (Roles.FRONT_DESK) — los tres gateados por
+  `requireModule(ModuleKey.ALOJAMIENTO)`. Badge de solo lectura en
+  `GET /api/housekeeping/late-checkouts?date=` (Roles.STAFF) — reservas
+  con late check-out aprobado que hacen checkout ese día, calculado al
+  vuelo, sin tabla ni tarea nueva.
+- **Verificado contra Postgres real** (tenant de prueba, sesión anterior):
+  conflicto rechazado correctamente, aprobación sin conflicto, cargo
+  creado en `financial_transactions`, `not_before` seteado tanto al crear
+  la tarea en `checkOut()` como al actualizar una ya existente, badge
+  devolviendo las reservas esperadas. `tsc --noEmit`/`npm run lint`
+  limpios (conteo de tests no confirmado en esta sesión — no se corrió de
+  nuevo, sin cambios de backend hoy).
+
+### Frontend (`appfrontend-main`, completado en esta sesión)
+
+- **Mi Negocio** (`dashboard/mi-negocio/page.tsx`) — dos campos
+  `<input type="time">` (Check-in estándar / Check-out estándar) en la
+  sección de identidad del negocio, junto a nombre/email de contacto.
+  `businessProfileApi`/`BusinessProfile` (lib/api.ts) ganan
+  `defaultCheckInTime`/`defaultCheckOutTime` — de paso se completó el
+  tipo con `currency`/`timezone` (ya existían en el backend desde el
+  17/08 pero el tipo del frontend no los declaraba; siguen sin UI de
+  edición propia, eso es un gap aparte no resuelto acá).
+- **Reservas** (`dashboard/reservas/page.tsx`), detalle de una reserva de
+  alojamiento — sección nueva "Horario especial pedido" (badge de estado
+  + horas pedidas + cargo si lo hubo) y tres acciones: "Pedir horario
+  especial" (PENDING/CONFIRMED, formulario inline con dos `<input
+  type="time">`, cualquiera de los dos opcional), y para el staff con un
+  pedido `PENDING`: "Aprobar horario" (formulario inline con cargo
+  opcional) / "Rechazar horario". Un 409 `NEXT_ARRIVAL_CONFLICT` al
+  aprobar se muestra tal cual en el toast — el mensaje del backend ya
+  viene en castellano ("Conflicto: próxima llegada a las HH:MM"), no
+  hacía falta traducirlo de nuevo.
+- **Housekeeping** (`dashboard/housekeeping/page.tsx`) — badge "⏰ hasta
+  HH:MM" en la esquina de la ficha del rack para cualquier recurso con un
+  late check-out aprobado ese día (`GET /api/housekeeping/late-checkouts`,
+  refetch por fecha igual que el tablero de tareas), más una nota
+  destacada al abrir el detalle de esa ficha ("no limpiar antes de las
+  HH:MM"). Es un badge de solo lectura, a propósito — no crea ni bloquea
+  ninguna tarea, el backend ya resuelve `not_before` solo.
+- `Reservation`/`HousekeepingTask` (lib/types.ts) ganan los campos nuevos
+  (`requestedCheckInTime`/`requestedCheckOutTime`/`scheduleApprovalStatus`/
+  `scheduleApprovedBy`/`scheduleChargeAmount`) y un tipo nuevo
+  `LateCheckout`. `reservationsApi` gana `requestScheduleChange`/
+  `approveScheduleChange`/`rejectScheduleChange`; `housekeepingApi` gana
+  `lateCheckouts`.
+
+**Verificado:** `tsc --noEmit` limpio, `npm run lint` limpio (0 errores,
+mismos 2 warnings preexistentes de siempre), `npm run build` limpio (25
+rutas, sin rutas nuevas — todo vive dentro de pantallas existentes). **No
+verificado visualmente en navegador** — sin credenciales de un usuario de
+prueba a mano, mismo motivo que el resto de los cambios de frontend de
+esta sesión. Tres flujos nuevos con estado que se pisa entre sí (pedir →
+aprobar/rechazar, con un formulario inline condicionado a
+`scheduleApprovalStatus`) — recomendado confirmarlo a simple vista en
+Reservas → detalle de una estadía antes de darlo por cerrado del todo.
