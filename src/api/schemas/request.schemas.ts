@@ -61,12 +61,15 @@ export const CreateReservationSchema = z.object({
 );
 
 export const UpdateReservationSchema = z.object({
-  startTime: z.string().datetime().optional(),
-  endTime:   z.string().datetime().optional(),
-  details:   z.record(z.unknown()).optional(),
+  startTime:  z.string().datetime().optional(),
+  endTime:    z.string().datetime().optional(),
+  details:    z.record(z.unknown()).optional(),
+  // Calendario de PMS (18/08/2026) — drag-to-move: reasignar la reserva a
+  // otro recurso (habitación).
+  resourceId: z.string().min(1).optional(),
 }).refine(
-  (data) => data.startTime || data.endTime || data.details,
-  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime o details' },
+  (data) => data.startTime || data.endTime || data.details || data.resourceId,
+  { message: 'Debés enviar al menos un campo para modificar: startTime, endTime, details o resourceId' },
 ).superRefine((data, ctx) => {
   if (data.startTime && data.endTime && new Date(data.endTime) <= new Date(data.startTime)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'endTime debe ser posterior a startTime', path: ['endTime'] });

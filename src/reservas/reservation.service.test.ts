@@ -480,9 +480,53 @@ describe('ReservationService', () => {
       ).rejects.toThrow(InvalidReservationError);
     });
 
-    it('debe rechazar si la reserva no está en PENDING', async () => {
+    it('debe permitir editar una reserva CONFIRMED (drag-to-move del calendario de PMS)', async () => {
       await createBase();
       await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      const updated = await service.updateReservation('res-1', {
+        startTime: new Date('2026-08-01T18:00:00Z'),
+      });
+      expect(updated.status).toBe('CONFIRMED');
+    });
+
+    it('debe reasignar el recurso (drag-to-move a otra habitación) y validar disponibilidad contra el nuevo', async () => {
+      const otherTable = new BookableResource('t-drag-target', 'Mesa Drag', 50, 'cat-table', null);
+      await resourceRepo.save(otherTable);
+      await createBase();
+      const updated = await service.updateReservation('res-1', {
+        resourceId: 't-drag-target',
+      });
+      expect(updated.resource.id).toBe('t-drag-target');
+      // El recurso original queda libre para esas horas.
+      const stillAvailable = await service.checkAvailability(
+        't1',
+        new Date('2026-08-01T19:00:00Z'),
+        new Date('2026-08-01T21:00:00Z'),
+      );
+      expect(stillAvailable).toBe(true);
+    });
+
+    it('debe rechazar reasignar a un recurso ocupado en ese horario', async () => {
+      const otherTable = new BookableResource('t-drag-busy', 'Mesa Ocupada', 50, 'cat-table', null);
+      await resourceRepo.save(otherTable);
+      await createBase('res-1');
+      await service.createReservation({
+        id: 'res-busy',
+        resourceId: 't-drag-busy',
+        customer,
+        startTime: new Date('2026-08-01T19:00:00Z'),
+        endTime:   new Date('2026-08-01T21:00:00Z'),
+        details: {},
+      });
+      await expect(
+        service.updateReservation('res-1', { resourceId: 't-drag-busy' }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('debe rechazar si la reserva está en un estado terminal (CANCELLED/COMPLETED)', async () => {
+      await createBase();
+      await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      await service.cancelReservation('res-1', TEST_BUSINESS_ID);
       await expect(
         service.updateReservation('res-1', {
           startTime: new Date('2026-08-01T18:00:00Z'),

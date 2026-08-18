@@ -352,19 +352,26 @@ export class ReservationService {
       startTime?: Date;
       endTime?: Date;
       details?: Record<string, unknown>;
+      resourceId?: string;
     },
   ): Promise<Reservation> {
     const existing = await this.requireReservation(id);
 
-    if (existing.status !== 'PENDING') {
+    // Calendario de PMS (18/08/2026) — drag-to-move/resize necesita poder
+    // editar una reserva CONFIRMED, no solo PENDING (mover una reserva ya
+    // confirmada de habitación/fecha es el caso de uso principal del
+    // tape-chart). Sigue bloqueado para CANCELLED/COMPLETED (A6.4, estados
+    // terminales no se reabren). totalPrice/lines quedan congelados igual
+    // que antes — este cambio no toca esa decisión ya tomada.
+    if (existing.status !== 'PENDING' && existing.status !== 'CONFIRMED') {
       throw new InvalidReservationError(
-        `Solo se pueden modificar reservas en estado PENDING. Estado actual: ${existing.status}`,
+        `Solo se pueden modificar reservas en estado PENDING o CONFIRMED. Estado actual: ${existing.status}`,
       );
     }
 
-    if (!changes.startTime && !changes.endTime && !changes.details) {
+    if (!changes.startTime && !changes.endTime && !changes.details && !changes.resourceId) {
       throw new InvalidReservationError(
-        'Debés enviar al menos un campo para modificar: startTime, endTime o details',
+        'Debés enviar al menos un campo para modificar: startTime, endTime, details o resourceId',
       );
     }
 
@@ -372,15 +379,32 @@ export class ReservationService {
     const newEndTime   = changes.endTime   ?? existing.endTime;
     const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
 
-    const category = await this.categoryRepository.findById(existing.resource.categoryId);
+    // Reasignación de recurso (drag-to-move) — resuelve el recurso NUEVO
+    // antes de validar detalles/disponibilidad, para que todo lo demás
+    // (fields de categoría, locks, chequeo de ocupación) corra contra el
+    // recurso correcto.
+    let resource = existing.resource;
+    if (changes.resourceId && changes.resourceId !== existing.resource.id) {
+      const newResource = await this.resourceRepository.getById(changes.resourceId);
+      if (!newResource) throw new ResourceNotFoundError(changes.resourceId);
+      // getById() no filtra por active (R2) — mismo chequeo explícito que
+      // createReservation() para una reserva nueva.
+      if (!newResource.active) {
+        throw new InvalidReservationError(`El recurso ${changes.resourceId} está desactivado.`);
+      }
+      resource = newResource;
+    }
+
+    const category = await this.categoryRepository.findById(resource.categoryId);
     if (category) {
       validateDetailsAgainstFields(rawDetails, category.fields);
     }
 
-    // Obtener recursos bloqueados por el servicio original de la reserva
+    // Recursos bloqueados por el servicio, sobre el recurso EFECTIVO
+    // (el nuevo si hubo reasignación, el mismo de siempre si no)
     const lockedResourceIds = await this.resolveLockedResourceIds(
       existing.serviceId ?? undefined,
-      existing.resource.id,
+      resource.id,
     );
 
     let updated!: Reservation;
@@ -397,7 +421,7 @@ export class ReservationService {
       updated = Reservation.restore({
         id:            existing.id,
         customer:      existing.customer,
-        resource:      existing.resource,
+        resource,
         startTime:     newStartTime,
         endTime:       newEndTime,
         details:       rawDetails,
@@ -406,10 +430,10 @@ export class ReservationService {
         partySize:     existing.partySize,
         notes:         existing.notes,
         orderItemId:   existing.orderItemId,
-        // No se recalcula el precio al editar horario/detalles — fuera de
-        // alcance de esta fase, re-cotizar necesitaría su propia UX de
-        // confirmación explícita. Mismo criterio para las líneas: no se
-        // regeneran si cambian las fechas (regenerar el COUNT sin
+        // No se recalcula el precio al editar horario/recurso/detalles —
+        // fuera de alcance de esta fase, re-cotizar necesitaría su propia
+        // UX de confirmación explícita. Mismo criterio para las líneas: no
+        // se regeneran si cambian las fechas (regenerar el COUNT sin
         // recotizar dejaría líneas con fechas que no corresponden a
         // ningún precio real) — se preservan tal cual estaban.
         totalPrice:    existing.totalPrice,

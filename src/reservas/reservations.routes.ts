@@ -194,9 +194,10 @@ export function createReservationsRouter(): Router {
         const body = UpdateReservationSchema.parse(req.body);
         const service = buildReservationService(req);
         const updated = await service.updateReservation(req.params['id']!, {
-          ...(body.startTime !== undefined && { startTime: new Date(body.startTime) }),
-          ...(body.endTime   !== undefined && { endTime: new Date(body.endTime) }),
-          ...(body.details   !== undefined && { details: body.details }),
+          ...(body.startTime  !== undefined && { startTime: new Date(body.startTime) }),
+          ...(body.endTime    !== undefined && { endTime: new Date(body.endTime) }),
+          ...(body.details    !== undefined && { details: body.details }),
+          ...(body.resourceId !== undefined && { resourceId: body.resourceId }),
         });
         res.json(toReservationDto(updated));
       } catch (err) { next(err); }

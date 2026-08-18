@@ -248,3 +248,90 @@ solo aparece en Turnos, confirmado con capturas y conteo de opciones del
 `tsc --noEmit` limpio, `npm run lint` limpio, `npm run build` limpio (26
 rutas, incluida `/dashboard/turnos`), smoke test de consola en las 17
 pantallas del dashboard sin errores.
+
+---
+
+## G. Calendario de PMS (tape chart) en Reservas — pedido explícito del dueño (18/08/2026, noche)
+
+A pedido explícito ("ya quiero tener el 'calendario' que corresponde a un
+PMS — revisa lo que ha hecho QloApps"). Investigación primero (fork
+dedicado, código real de QloApps en `C:\Users\Usuario\Downloads\
+QloApps-develop\QloApps-develop`, no solo la doc de referencia existente):
+QloApps **no tiene** un tape chart (habitaciones × fechas) — solo un
+mini-calendario mensual tipo mapa de calor para elegir fechas al buscar
+disponibilidad, sin filas por habitación, sin click, sin drag, y su
+booking depende de carrito/orden de PrestaShop (no aplica a nuestro
+modelo, ya más limpio). Nada para adaptar de ahí — se diseñó de cero.
+
+**Decisiones de alcance, confirmadas con el dueño antes de tocar código:**
+- Construir a medida, sin librería — la opción estándar
+  (`@fullcalendar/resource-timeline`) es la parte paga de FullCalendar,
+  US$480/año para uso comercial; había alternativas gratis (DayPilot
+  Lite) pero se descartaron también a favor de código propio.
+- Drag-to-move Y resize desde el arranque (no una v1 solo-lectura) —
+  nivel de interacción de un PMS real (Cloudbeds/Mews).
+
+**Backend — `reservation.service.ts::updateReservation()`:**
+- Ahora acepta `resourceId` además de `startTime`/`endTime`/`details`
+  (reasignación de habitación vía drag). Resuelve el recurso nuevo,
+  revalida `category.fields`/locks/disponibilidad contra ESE recurso.
+- **Cambio de regla de negocio:** antes solo se podían editar reservas
+  `PENDING`; ahora también `CONFIRMED` (sigue bloqueado para
+  `CANCELLED`/`COMPLETED` — A6.4, estados terminales no se reabren). Es
+  el caso de uso principal del tape chart: mover una reserva YA
+  confirmada de habitación o de fecha. `totalPrice`/`lines` siguen
+  congelados al editar (decisión ya tomada antes, no se tocó — resize no
+  recotiza, igual que "Editar horario" ya no recotizaba).
+- `UpdateReservationSchema` (Zod) y `PUT /api/reservations/:id` — nuevo
+  campo `resourceId` opcional.
+- 3 tests nuevos en `reservation.service.test.ts` (reasignar recurso,
+  rechazar reasignación a uno ocupado, permitir editar CONFIRMED) +
+  reescrito el que asumía "PENDING-only" para reflejar la regla nueva.
+
+**Frontend — `components/RoomCalendar.tsx` (nuevo, ~380 líneas) +
+tab "Calendario" en Reservas:**
+- Grid a medida sin librería: filas = habitaciones (categorías
+  `isLodging=true`, mismo filtro de E1), columnas = 7 días, navegación
+  semana anterior/siguiente/hoy. Barras coloreadas por estado (mismo
+  semáforo Bastión que el resto de la app), truncadas visualmente si la
+  reserva empieza/termina fuera de la semana visible.
+- Drag nativo con Pointer Events (sin librería de drag-and-drop) — mover
+  (día + fila), y dos handles de resize (extender/acortar por cualquier
+  borde). Ghost/preview en vivo durante el arrastre, sin mutar la lista
+  real hasta soltar — si el PUT falla (ej. 409 por conflicto), no hace
+  falta revertir nada a mano, el ghost ya desapareció.
+- Click en una barra → mismo modal de detalle que la vista Lista. Click
+  en una celda vacía → "Nueva reserva" con habitación y fecha
+  precargadas.
+- **Bug real encontrado y arreglado durante la implementación:**
+  `preventDefault()` en `pointerdown` (necesario para que arrastrar no
+  dispare selección de texto del navegador) suprime el evento `click`
+  nativo derivado — la distinción "fue un click o fue un drag" se
+  resolvió a mano dentro del propio `pointerup`, no con un `onClick` del
+  lado de la barra.
+- **Otro bug real:** llamar a un setState de OTRO componente (el modal
+  de detalle del padre) desde adentro del *updater* de `setDragPreview`
+  disparaba el warning de React "Cannot update a component while
+  rendering a different component". Resuelto con un ref-espejo del
+  preview (`dragPreviewRef`) en vez de leer el estado vía la forma
+  funcional del setter.
+- Convención de fechas: todo el math usa getters **UTC**, nunca locales
+  — mismo motivo que el fix del bug de housekeeping del punto A de este
+  mismo documento (un getter local depende del huso del proceso).
+
+**Verificado end-to-end contra Postgres real** (negocio de prueba): las
+tres interacciones (mover, redimensionar, reasignar de fila) confirmadas
+con captura del request/response real — payload correcto en los tres
+casos, aplicado correctamente por el backend. Reasignar a un recurso
+genuinamente ocupado devuelve 400 con mensaje claro (confirma que el
+chequeo de disponibilidad sigue funcionando igual que siempre). Nota de
+entorno: el backend de este entorno de prueba tardó hasta ~3s en algunas
+respuestas puntuales (probablemente latencia de cómputo de Neon bajo el
+uso intensivo de esta sesión) — llevó varias rondas de test descartar
+que fuera un bug real antes de confirmar que el código funciona
+correctamente.
+
+**Verificado (backend):** `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 541/542 (+3 tests nuevos). **Verificado (frontend):**
+`tsc --noEmit` limpio, `npm run lint` limpio, `npm run build` limpio,
+smoke test de consola en las 17 pantallas sin errores.
