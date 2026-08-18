@@ -867,3 +867,31 @@ tarifa, no del servicio) persisten de verdad. Datos de prueba limpiados.
 `tsc --noEmit` limpio, `npm run lint` limpio, `npm test` 588/588 (+14
 tests nuevos: 8 de CRUD de tarifas, 6 de la cascada de precio incluida
 la prioridad sobre tarifa negociada y los bordes de vigencia).
+
+### Frontend (`appfrontend-main`, mismo bloque de trabajo, completado)
+
+- `RatePlanManager.tsx` (componente nuevo) — CRUD de tarifas de un
+  servicio, integrado como modal en la pantalla de Servicios existente
+  (botón "Tarifas" por fila, mismo patrón que "Recursos" ya usaba con
+  `ResourceLockPicker`) — **no una pantalla nueva**, a pedido explícito
+  del dueño ("no duplicar la interfaz por estética, la tabla es distinta
+  pero la UI no tiene por qué serlo"). Lista tarifas existentes, permite
+  crear/editar/desactivar, con el mismo patrón de precio sin forzar "0"
+  mientras se tipea que ya rige el resto de los campos de precio del
+  sistema (punto J).
+- Reservas (`dashboard/reservas/page.tsx`) — selector de dos pasos en el
+  alta: elegir servicio primero, y si tiene tarifas cargadas, aparece un
+  segundo `<select>` para elegir cuál (opcional — sin elegir ninguna,
+  sigue usando el precio de catálogo del servicio como siempre). Se
+  resetea al cambiar de servicio.
+- `lib/types.ts`/`lib/api.ts` — `RatePlan`/`CreateRatePlanInput`/
+  `UpdateRatePlanInput`, `ratePlansApi`, `Reservation.ratePlanId`,
+  `reservationsApi.create`/`update` aceptan `ratePlanId`.
+
+**Verificado:** `tsc --noEmit` limpio, `npm run lint` limpio (0 errores,
+mismos 2 warnings preexistentes), `npm run build` limpio (25 rutas). No
+verificado visualmente en navegador — mismo motivo que el resto de la
+sesión (sin credenciales de un usuario de prueba a mano). Dado que este
+es el cambio de frontend más grande del día (componente nuevo + selector
+de dos pasos con fetch condicional), es el que más se beneficiaría de
+una revisión visual antes de darlo por cerrado del todo.
