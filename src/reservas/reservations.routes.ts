@@ -7,6 +7,10 @@
  * GET  /reservations/:id              — FRONT_DESK
  * POST /reservations                  — BOOKING (empleados + CUSTOMER desde portal)
  * PUT  /reservations/:id              — FRONT_DESK
+ * GET  /reservations/:id/price-preview            — FRONT_DESK
+ * POST /reservations/:id/confirm-price-adjustment — MANAGEMENT (a propósito,
+ *      no FRONT_DESK — separa "quien edita fechas" de "quien autoriza la
+ *      plata", ver comentario en la ruta)
  * POST /reservations/:id/confirm      — FRONT_DESK
  * POST /reservations/:id/cancel       — FRONT_DESK
  * POST /reservations/:id/complete     — FRONT_DESK
@@ -249,6 +253,48 @@ export function createReservationsRouter(container: AppContainer): Router {
           ...(body.ratePlanId !== undefined && { ratePlanId: body.ratePlanId }),
         });
         res.json(toReservationDto(updated));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /reservations/:id/price-preview ─────────────────────────────────
+  // 19/08/2026, pendientes-2026-08-18.md punto I — solo lectura, compara el
+  // totalPrice congelado de una reserva CONFIRMED contra lo que costaría
+  // hoy con sus fechas/recurso actuales. `null` si no aplica (no está
+  // CONFIRMED, o no hay diferencia).
+  router.get(
+    '/:id/price-preview',
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const service = buildReservationService(req);
+        const preview = await service.previewPriceAdjustment(req.params['id']!);
+        res.json(preview);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/confirm-price-adjustment ─────────────────────
+  // Aplica el ajuste que price-preview mostró — nunca automático, siempre
+  // a pedido explícito de un empleado (decisión del dueño, mismo punto I).
+  // Roles.MANAGEMENT a propósito, NO FRONT_DESK como el resto de este
+  // router: PUT /:id (el que edita las fechas que generan el ajuste) sí es
+  // FRONT_DESK — si esta ruta también lo fuera, la misma persona podría
+  // editar Y autorizar el cargo/nota de crédito resultante con dos clicks
+  // seguidos, sin una segunda mirada real. Separar el rol es lo que hace
+  // que "revisión manual" sea una revisión de verdad.
+  router.post(
+    '/:id/confirm-price-adjustment',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const service     = buildReservationService(req);
+        const reservation = await service.confirmPriceAdjustment(
+          req.params['id']!,
+          req.user!.businessId as string,
+          req.user!.id,
+        );
+        res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
     },
   );

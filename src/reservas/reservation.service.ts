@@ -57,7 +57,9 @@ import {
   InvalidReservationError,
   ResourceNotFoundError,
   ReservationNotFoundError,
+  NoPriceAdjustmentPendingError,
 } from '../domain/errors.js';
+import type { ReservationLine } from './reservation.types.js';
 import { validateDetailsAgainstFields } from './category.service.js';
 import type { ReservationRepository }        from './reservation.repository.js';
 import type { ResourceRepository }           from './resource.repository.js';
@@ -352,9 +354,177 @@ export class ReservationService {
         ratePlanId:    newRatePlanId,
         totalPrice,
         lines,
+        // Bug real encontrado de paso (19/08/2026, sesión del ajuste de
+        // precio de reservas CONFIRMED): faltaban acá, así que CUALQUIER
+        // updateReservation() (incluido el drag-to-move/resize del
+        // calendario, punto G) borraba en silencio un pedido de horario
+        // especial pendiente/aprobado (punto N) — Reservation.restore()
+        // los defaultea a null si no se pasan explícitamente, y el UPSERT
+        // los escribe sin condicional (sql.reservation.repository.ts).
+        requestedCheckInTime:   existing.requestedCheckInTime,
+        requestedCheckOutTime:  existing.requestedCheckOutTime,
+        scheduleApprovalStatus: existing.scheduleApprovalStatus,
+        scheduleApprovedBy:     existing.scheduleApprovedBy,
+        scheduleChargeAmount:   existing.scheduleChargeAmount,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
+    });
+
+    return updated;
+  }
+
+  /**
+   * Recalcula precio + líneas para una reserva con SUS fechas/recurso
+   * ACTUALES (no un candidato hipotético) — usada tanto por
+   * `previewPriceAdjustment` como por `confirmPriceAdjustment`, un solo
+   * lugar para la cascada de precio en vez de reimplementarla dos veces.
+   */
+  private async recalculatePriceFor(
+    existing: Reservation,
+  ): Promise<{ totalPrice: number; lines: ReservationLine[] }> {
+    const service = existing.serviceId
+      ? await this.bookableServiceRepository.findById(existing.serviceId)
+      : null;
+    const priced = await this.pricing.resolvePrice({
+      customerId: existing.customer.id,
+      resourceId: existing.resource.id,
+      serviceId:  existing.serviceId ?? undefined,
+      ratePlanId: existing.ratePlanId ?? undefined,
+      resource:   existing.resource,
+      service,
+      startTime:  existing.startTime,
+      endTime:    existing.endTime,
+    });
+    return {
+      totalPrice: priced.totalPrice,
+      lines: priced.lines.map((line, i) => ({
+        id:            `${existing.id}-L${i + 1}`,
+        reservationId: existing.id,
+        unitDate:      line.unitDate,
+        price:         line.price,
+      })),
+    };
+  }
+
+  /**
+   * Ajuste de precio de una reserva CONFIRMED (19/08/2026, pendientes-2026-
+   * 08-18.md punto I, decisión del dueño 19/08/2026). `updateReservation()`
+   * deja `totalPrice`/`lines` congelados para CONFIRMED (A3.9 — ya hay un
+   * CHARGE emitido) — este método es el "¿y si recalculara?" de solo
+   * lectura: compara ese valor congelado contra lo que el precio
+   * ACTUAL de la reserva (fechas/recurso ya editados) daría hoy. `null` si
+   * no aplica (no está CONFIRMED) o si no hay diferencia real que ajustar.
+   */
+  async previewPriceAdjustment(id: string): Promise<{
+    currentTotalPrice: number;
+    recalculatedTotalPrice: number;
+    difference: number;
+  } | null> {
+    const existing = await this.requireReservation(id);
+    if (existing.status !== 'CONFIRMED') return null;
+
+    const recalculated = await this.recalculatePriceFor(existing);
+    const difference = recalculated.totalPrice - existing.totalPrice;
+    if (difference === 0) return null;
+
+    return {
+      currentTotalPrice: existing.totalPrice,
+      recalculatedTotalPrice: recalculated.totalPrice,
+      difference,
+    };
+  }
+
+  /**
+   * Aplica el ajuste que `previewPriceAdjustment` mostró — a pedido
+   * EXPLÍCITO de un empleado, nunca automático (elegido por sobre el
+   * auto-cobro para evitar un ajuste financiero mal disparado sin revisión
+   * humana). Actualiza `totalPrice`/`lines` de la reserva y deja un evento
+   * de dominio (`reservation.price_adjusted`) para que el outbox worker
+   * cree el movimiento en `clientes-finanzas` — mismo camino async que
+   * `reservation.confirmed`→CHARGE (A10, un solo mecanismo para crear
+   * movimientos financieros, no uno nuevo por feature). El movimiento es
+   * `ADJUSTMENT` con `amount` con signo: positivo si el nuevo precio es
+   * mayor (cargo extra), negativo si es menor (nota de crédito) — `type
+   * ADJUSTMENT` ya está excluido de la conciliación de caja
+   * (`getCashMovementsTotal`, cash-register), es el tipo correcto para una
+   * corrección de libro que no es un cobro/pago real de efectivo.
+   *
+   * `confirmedByUserId` (19/08/2026, corrección a pedido explícito del
+   * dueño): identity_id de quien autoriza — la ruta que llama a este
+   * método exige `Roles.MANAGEMENT`, NO el mismo `Roles.FRONT_DESK` que
+   * puede editar las fechas/recurso que generaron el ajuste. Sin esa
+   * separación, la misma persona que estira una reserva podría también
+   * "confirmar" el cargo resultante con un segundo click — la revisión
+   * manual dejaría de ser una revisión real. Se persiste en
+   * `financial_transactions.confirmed_by`, mismo criterio que
+   * `reservations.schedule_approved_by`.
+   */
+  async confirmPriceAdjustment(id: string, businessId: string, confirmedByUserId: string): Promise<Reservation> {
+    if (!businessId) throw new Error('businessId es obligatorio en confirmPriceAdjustment');
+    if (!confirmedByUserId) throw new Error('confirmedByUserId es obligatorio en confirmPriceAdjustment');
+
+    const existing = await this.requireReservation(id);
+    if (existing.status !== 'CONFIRMED') {
+      throw new InvalidReservationError(
+        `Solo se puede ajustar el precio de una reserva CONFIRMED. Estado actual: ${existing.status}`,
+      );
+    }
+
+    const recalculated = await this.recalculatePriceFor(existing);
+    const difference = recalculated.totalPrice - existing.totalPrice;
+    if (difference === 0) throw new NoPriceAdjustmentPendingError(id);
+
+    let updated!: Reservation;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      updated = Reservation.restore({
+        id:            existing.id,
+        customer:      existing.customer,
+        resource:      existing.resource,
+        startTime:     existing.startTime,
+        endTime:       existing.endTime,
+        details:       existing.details as Record<string, unknown>,
+        initialStatus: existing.status,
+        serviceId:     existing.serviceId,
+        partySize:     existing.partySize,
+        notes:         existing.notes,
+        orderItemId:   existing.orderItemId,
+        adultos:       existing.adultos,
+        ninos:         existing.ninos,
+        ratePlanId:    existing.ratePlanId,
+        totalPrice:    recalculated.totalPrice,
+        lines:         recalculated.lines,
+        requestedCheckInTime:   existing.requestedCheckInTime,
+        requestedCheckOutTime:  existing.requestedCheckOutTime,
+        scheduleApprovalStatus: existing.scheduleApprovalStatus,
+        scheduleApprovedBy:     existing.scheduleApprovedBy,
+        scheduleChargeAmount:   existing.scheduleChargeAmount,
+      });
+
+      await this.reservationRepository.saveWithClient(client, updated);
+      await this.domainEventRepository.insertWithClient(client, {
+        businessId,
+        aggregateType: 'RESERVATION',
+        aggregateId:   id,
+        eventType:     'reservation.price_adjusted',
+        payload: {
+          reservationId: id,
+          customerId:    existing.customer.id,
+          // Con signo -- outbox.handlers.ts lo pasa tal cual como `amount`
+          // del ADJUSTMENT. Positivo = cargo extra, negativo = nota de
+          // crédito (A10.2, payload autocontenido).
+          amount:             difference,
+          // Quién autorizó el ajuste (19/08/2026, a pedido explícito del
+          // dueño) — mismo criterio de accountability que
+          // reservations.schedule_approved_by. La ruta que llama a este
+          // método exige Roles.MANAGEMENT, no el mismo FRONT_DESK que edita
+          // fechas: separa "quien pide el cambio" de "quien aprueba la plata".
+          confirmedByUserId,
+          previousTotalPrice: existing.totalPrice,
+          newTotalPrice:      recalculated.totalPrice,
+        },
+      });
     });
 
     return updated;

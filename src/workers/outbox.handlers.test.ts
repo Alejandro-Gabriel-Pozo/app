@@ -3,6 +3,7 @@ import {
   handleOrderConfirmed,
   handleOrderCompleted,
   handleOrderCancelled,
+  handleReservationPriceAdjusted,
 } from './outbox.handlers.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type {
@@ -179,5 +180,81 @@ describe('outbox.handlers — Order', () => {
       await handleOrderCancelled(financialRepo)(fakeEvent({ orderId: 'order-1' }));
       expect(financialRepo.voidedOrderIds).toEqual(['order-1']);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reservation — ajuste de precio (19/08/2026, pendientes-2026-08-18.md punto I)
+// ---------------------------------------------------------------------------
+
+function fakeReservationEvent(payload: Record<string, unknown>): DomainEvent {
+  return {
+    id: 99,
+    businessId: 'biz-test',
+    aggregateType: 'RESERVATION',
+    aggregateId: 'res-1',
+    eventType: 'reservation.price_adjusted',
+    payload,
+  };
+}
+
+describe('outbox.handlers — handleReservationPriceAdjusted', () => {
+  let financialRepo: FakeFinancialTransactionRepository;
+  let businessProfileRepo: FakeBusinessProfileRepository;
+
+  beforeEach(() => {
+    financialRepo = new FakeFinancialTransactionRepository();
+    businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
+  });
+
+  it('crea un ADJUSTMENT PENDING con el monto positivo tal cual (cargo extra)', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 200 });
+
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created).toHaveLength(1);
+    expect(financialRepo.created[0]).toMatchObject({
+      businessId:     'biz-test',
+      customerId:     'cust-1',
+      reservationId:  'res-1',
+      type:           'ADJUSTMENT',
+      amount:         200,
+      status:         'PENDING',
+      idempotencyKey: '99:ADJUSTMENT',
+    });
+  });
+
+  it('crea un ADJUSTMENT con el monto NEGATIVO tal cual (nota de crédito) -- no le aplica Math.abs()', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: -300 });
+
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created[0]).toMatchObject({ amount: -300 });
+  });
+
+  it('graba confirmedBy con el identity_id de quien autorizó el ajuste (accountability)', async () => {
+    const event = fakeReservationEvent({
+      reservationId: 'res-1', customerId: 'cust-1', amount: 200, confirmedByUserId: 'user-manager-1',
+    });
+
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created[0]).toMatchObject({ confirmedBy: 'user-manager-1' });
+  });
+
+  it('no crea nada si amount es 0 (nada que ajustar)', async () => {
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(
+      fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 0 }),
+    );
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('usa la moneda configurada en business_profile, no un valor fijo', async () => {
+    const usdProfileRepo = new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' }));
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 200 });
+
+    await handleReservationPriceAdjusted(financialRepo, usdProfileRepo)(event);
+
+    expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
   });
 });

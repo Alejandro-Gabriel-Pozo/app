@@ -250,6 +250,75 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     });
   });
 
+  describe('create — confirmed_by (19/08/2026, ajuste de precio de reservas CONFIRMED)', () => {
+    it('incluye confirmed_by en el INSERT normal (sin idempotencyKey)', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-8', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: 'res-1', order_id: null, stay_id: null,
+          idempotency_key: null, type: 'ADJUSTMENT', amount: '-300', currency: 'ARS',
+          status: 'PENDING', notes: null, confirmed_by: 'user-manager-1', created_at: new Date(),
+        }],
+      });
+
+      const created = await repo.create({
+        id: 'tx-8',
+        businessId: 'biz-1',
+        customerId: 'cust-1',
+        reservationId: 'res-1',
+        type: 'ADJUSTMENT',
+        amount: -300,
+        currency: 'ARS',
+        status: 'PENDING',
+        confirmedBy: 'user-manager-1',
+      });
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('confirmed_by');
+      expect(params).toContain('user-manager-1');
+      expect(created?.confirmedBy).toBe('user-manager-1');
+    });
+
+    it('incluye confirmed_by en el INSERT idempotente (con idempotencyKey)', async () => {
+      await repo.create({
+        id: 'tx-9',
+        businessId: 'biz-1',
+        customerId: 'cust-1',
+        reservationId: 'res-1',
+        idempotencyKey: 'evt-1:ADJUSTMENT',
+        type: 'ADJUSTMENT',
+        amount: 200,
+        currency: 'ARS',
+        status: 'PENDING',
+        confirmedBy: 'user-manager-1',
+      });
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('confirmed_by');
+      expect(params).toContain('user-manager-1');
+    });
+
+    it('queda null para CHARGE/PAYMENT/REFUND sin autorización humana explícita', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-10', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: null, stay_id: null,
+          idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
+          status: 'PENDING', notes: null, confirmed_by: null, created_at: new Date(),
+        }],
+      });
+
+      const created = await repo.create({
+        id: 'tx-10', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+
+      expect(created?.confirmedBy).toBeNull();
+    });
+  });
+
   describe('getByStayId', () => {
     it('filtra por stay_id ordenado por created_at ASC', async () => {
       await repo.getByStayId('stay-1');

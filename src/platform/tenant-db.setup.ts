@@ -200,7 +200,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `business_profile` (legal_name/tax_id/tax_id_type/tax_condition,
 // domicilio fiscal, punto de venta AFIP) — Fase 1 de Facturación
 // Electrónica AFIP. Ver docs/referencia-afip-wsfev1.md.
-export const CURRENT_SCHEMA_VERSION = 21;
+// v22 (19/08/2026): financial_transactions.amount admite negativo cuando
+// type='ADJUSTMENT' (nota de crédito al recotizar una reserva CONFIRMED
+// hacia abajo) — CHARGE/PAYMENT/REFUND siguen exigiendo amount >= 0.
+// financial_transactions.confirmed_by (identity_id de quien autorizó el
+// ajuste a mano, mismo criterio que schedule_approved_by). Ver
+// pendientes-2026-08-18.md punto I.
+export const CURRENT_SCHEMA_VERSION = 22;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

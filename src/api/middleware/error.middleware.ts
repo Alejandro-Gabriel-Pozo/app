@@ -156,6 +156,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'INVALID_OVERRIDE_TRANSITION':
     case 'DUPLICATE_RATE_PLAN_NAME':
     case 'NEXT_ARRIVAL_CONFLICT':
+    case 'NO_PRICE_ADJUSTMENT_PENDING':
       return 409;
 
     // --- 503 Service Unavailable ---

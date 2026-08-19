@@ -1577,6 +1577,33 @@ ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS stay_id VARCHAR(255)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_id VARCHAR(255)
   REFERENCES stays(id) ON DELETE SET NULL;
 
+-- Ajuste de precio de reservas CONFIRMED (19/08/2026, pendientes-2026-08-
+-- 18.md punto I) -- ADJUSTMENT necesita poder representar tanto un cargo
+-- extra (recotizar hacia arriba) como una nota de crédito (recotizar hacia
+-- abajo), y el único mecanismo de resta que ya existe en el modelo
+-- (SUM(CASE ... WHEN 'ADJUSTMENT' THEN amount ...) en getNetBalanceByX,
+-- sql.financial-transaction.repository.ts) ya suma `amount` tal cual, con
+-- signo -- no hace falta tocar esas queries, solo permitir que ADJUSTMENT
+-- guarde un monto negativo. CHARGE/PAYMENT/REFUND siguen exigiendo
+-- amount >= 0 como siempre (nunca tuvieron necesidad de signo). El nombre
+-- viejo del constraint (financial_transactions_amount_check) es el que
+-- Postgres autogenera para un CHECK de columna sin nombre explícito en el
+-- CREATE TABLE original -- se dropea explícito porque, a diferencia de un
+-- ADD COLUMN, un ALTER de un CHECK existente no es "agregar si falta".
+ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS financial_transactions_amount_check;
+ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS chk_financial_transactions_amount;
+ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_amount
+  CHECK (amount >= 0 OR type = 'ADJUSTMENT');
+
+-- identity_id (JWT sub) de quien autorizó el movimiento a mano -- hoy solo
+-- lo completa la confirmación del ajuste de precio de una reserva
+-- CONFIRMED (Roles.MANAGEMENT, no el mismo FRONT_DESK que edita fechas:
+-- separar "quien pide el cambio" de "quien aprueba la plata" era el punto
+-- de pedir confirmación manual en primer lugar). SIN FK a `users` a
+-- propósito, misma razón que stays.assigned_by (BLOQUE 6): identity vive
+-- en la platform DB.
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS confirmed_by VARCHAR(255);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_idempotency_key
   ON financial_transactions (idempotency_key)
   WHERE idempotency_key IS NOT NULL;

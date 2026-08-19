@@ -14,9 +14,11 @@
  *   por construcción (filtran por status).
  *
  * ## Handlers registrados
- * - `reservation.confirmed`  → crea CHARGE PENDING en financial_transactions
- * - `reservation.completed`  → pasa CHARGE a SETTLED
- * - `reservation.cancelled`  → pasa CHARGE a VOIDED (si existía)
+ * - `reservation.confirmed`      → crea CHARGE PENDING en financial_transactions
+ * - `reservation.completed`      → pasa CHARGE/ADJUSTMENT a SETTLED (por reservation_id, blanket update)
+ * - `reservation.cancelled`      → pasa CHARGE/ADJUSTMENT a VOIDED (si existía)
+ * - `reservation.price_adjusted` → crea ADJUSTMENT PENDING (19/08/2026, pendientes-2026-08-18.md punto I;
+ *                                   monto con signo — positivo = cargo extra, negativo = nota de crédito)
  * - `order.confirmed`        → crea CHARGE PENDING (mismo mecanismo, por order_id)
  * - `order.completed`        → pasa CHARGE a SETTLED
  * - `order.cancelled`        → pasa CHARGE a VOIDED (si existía)
@@ -44,9 +46,10 @@ export function registerFinancialHandlers(
   businessProfileRepo: BusinessProfileRepository,
 ): void {
   worker
-    .on('reservation.confirmed', handleReservationConfirmed(financialRepo, businessProfileRepo))
-    .on('reservation.completed', handleReservationCompleted(financialRepo))
-    .on('reservation.cancelled', handleReservationCancelled(financialRepo))
+    .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo))
+    .on('reservation.completed',      handleReservationCompleted(financialRepo))
+    .on('reservation.cancelled',      handleReservationCancelled(financialRepo))
+    .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo))
     .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo))
     .on('order.completed',       handleOrderCompleted(financialRepo))
     .on('order.cancelled',       handleOrderCancelled(financialRepo));
@@ -104,6 +107,54 @@ export function handleReservationCancelled(
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId } = event.payload as { reservationId: string };
     await financialRepo.voidByReservationId(reservationId);
+  };
+}
+
+/**
+ * Ajuste de precio de una reserva CONFIRMED (19/08/2026, pendientes-2026-
+ * 08-18.md punto I) — crea el `ADJUSTMENT` correspondiente al cargo/nota
+ * de crédito que un empleado confirmó a mano
+ * (`ReservationService.confirmPriceAdjustment`). `amount` viaja CON SIGNO
+ * en el payload (positivo = cargo extra, negativo = nota de crédito) — se
+ * pasa tal cual, `getNetBalanceByX` ya suma `amount` de ADJUSTMENT sin
+ * `ABS()` (schema.sql BLOQUE financial_transactions, v22). Status PENDING
+ * como el CHARGE original — `handleReservationCompleted`/`Cancelled` lo
+ * arrastran a SETTLED/VOIDED junto con él (`settleByReservationId`/
+ * `voidByReservationId` son un UPDATE por `reservation_id`, no por id de
+ * transacción puntual, así que agarran cualquier PENDING de esa reserva).
+ */
+export function handleReservationPriceAdjusted(
+  financialRepo: FinancialTransactionRepository,
+  businessProfileRepo: BusinessProfileRepository,
+) {
+  return async (event: DomainEvent): Promise<void> => {
+    const { reservationId, customerId, amount, confirmedByUserId } = event.payload as {
+      reservationId: string;
+      customerId: string;
+      amount: number;
+      confirmedByUserId?: string;
+    };
+
+    if (amount === 0) return;
+
+    const { currency } = await businessProfileRepo.get();
+
+    // idempotencyKey: "${eventId}:ADJUSTMENT" — mismo criterio que
+    // "${eventId}:CHARGE" en handleReservationConfirmed. confirmedBy queda
+    // grabado en la fila (accountability — quién autorizó este movimiento,
+    // no solo que "el sistema" lo hizo).
+    await financialRepo.create({
+      id:             randomUUID(),
+      businessId:     event.businessId,
+      customerId,
+      reservationId,
+      type:           'ADJUSTMENT',
+      amount,
+      currency,
+      status:         'PENDING',
+      idempotencyKey: `${event.id}:ADJUSTMENT`,
+      confirmedBy:    confirmedByUserId ?? null,
+    });
   };
 }
 

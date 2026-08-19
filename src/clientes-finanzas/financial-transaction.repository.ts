@@ -60,6 +60,18 @@ export interface FinancialTransaction {
    * propósito, ver comentario de BLOQUE 12 en schema.sql.
    */
   cardSurchargeAmount?: number | null;
+  /**
+   * identity_id (JWT sub) de quien autorizó este movimiento a mano — hoy
+   * solo lo completa el ajuste de precio de una reserva CONFIRMED
+   * (19/08/2026, pendientes-2026-08-18.md punto I): un cargo extra/nota de
+   * crédito por recotización necesita quedar atribuido a QUIÉN lo aprobó,
+   * no solo a que "el sistema" lo hizo — mismo criterio de accountability
+   * que `reservations.schedule_approved_by`. Null para todo lo demás
+   * (CHARGE/PAYMENT/REFUND no tienen un paso de autorización humana
+   * explícito). SIN FK a `users` a propósito, misma razón que
+   * `stays.assigned_by`: identity vive en la platform DB.
+   */
+  confirmedBy?: string | null;
   createdAt?: Date;
 }
 

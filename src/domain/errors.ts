@@ -62,6 +62,23 @@ export class RatePlanNotAvailableError extends DomainError {
   }
 }
 
+/**
+ * Ajuste de precio de una reserva CONFIRMED (19/08/2026, pendientes-2026-
+ * 08-18.md punto I) — se lanza al intentar `POST .../confirm-price-adjustment`
+ * cuando no hay ninguna diferencia real entre `totalPrice` (congelado) y el
+ * precio recalculado con las fechas/recurso actuales. No es un error de
+ * estado (la reserva puede estar perfectamente CONFIRMED) sino de que no
+ * hay nada que confirmar — 409, no 400.
+ */
+export class NoPriceAdjustmentPendingError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" no tiene un ajuste de precio pendiente de confirmar.`,
+      'NO_PRICE_ADJUSTMENT_PENDING',
+    );
+  }
+}
+
 export class InvalidCustomerError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_CUSTOMER');

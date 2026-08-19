@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { ReservationStatus } from '../types/enums.js';
 import { BookableResource } from './resource.entities.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
+import { Reservation } from './Reservation.js';
 import { ReservationService } from './reservation.service.js';
 import { InMemoryReservationRepository } from './in-memory.reservation.repository.js';
 import { InMemoryResourceRepository } from './in-memory.resource.repository.js';
@@ -12,7 +13,7 @@ import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.c
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
 import { InMemoryHousekeepingRepository } from '../pms-estadias/in-memory.housekeeping.repository.js';
 import { HousekeepingTask } from '../pms-estadias/housekeeping-task.js';
-import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError } from '../domain/errors.js';
+import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -716,6 +717,181 @@ describe('ReservationService', () => {
         expect(updated.status).toBe('CONFIRMED');
         expect(updated.totalPrice).toBe(200); // congelado, no 400
       });
+    });
+
+    // Bug real encontrado el 19/08/2026 (sesión del ajuste de precio de
+    // reservas CONFIRMED, mientras se tocaba este mismo restore()):
+    // Reservation.restore() defaultea requestedCheckInTime/CheckOutTime/
+    // scheduleApprovalStatus/scheduleApprovedBy/scheduleChargeAmount a
+    // null si no se pasan explícitamente, y el UPSERT real
+    // (sql.reservation.repository.ts) los escribe sin condicional — CUALQUIER
+    // updateReservation() (incluido el drag-to-move/resize del calendario,
+    // punto G) borraba en silencio un pedido de horario especial pendiente/
+    // aprobado (punto N). No detectado antes porque ningún test comparaba
+    // estos campos antes/después de un update.
+    it('updateReservation NO borra un pedido de horario especial (early check-in/late check-out) ya aprobado', async () => {
+      const seeded = Reservation.restore({
+        id: 'res-schedule-preserve',
+        customer,
+        resource: table,
+        startTime: new Date('2026-09-01T15:00:00Z'),
+        endTime:   new Date('2026-09-03T10:00:00Z'),
+        details: {},
+        initialStatus: ReservationStatus.CONFIRMED,
+        totalPrice: 0,
+        requestedCheckOutTime:  '13:00',
+        scheduleApprovalStatus: 'APPROVED',
+        scheduleApprovedBy:     'user-front-desk-1',
+        scheduleChargeAmount:   500,
+      });
+      await reservationRepo.save(seeded);
+
+      const updated = await service.updateReservation('res-schedule-preserve', {
+        resourceId: 't1', // mismo recurso, pero fuerza el camino de reasignación/restore
+      });
+
+      expect(updated.requestedCheckOutTime).toBe('13:00');
+      expect(updated.scheduleApprovalStatus).toBe('APPROVED');
+      expect(updated.scheduleApprovedBy).toBe('user-front-desk-1');
+      expect(updated.scheduleChargeAmount).toBe(500);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('previewPriceAdjustment / confirmPriceAdjustment (reserva CONFIRMED) — 19/08/2026, pendientes-2026-08-18.md punto I', () => {
+    beforeEach(() => {
+      bookableServiceRepo.seed({
+        id: 'svc-noche-adjust', categoryId: 'cat-table', name: 'Noche de hotel',
+        bookingMode: 'block', durationMinutes: null, price: 100,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+
+    it('previewPriceAdjustment devuelve null para una reserva PENDING (no aplica)', async () => {
+      await service.createReservation({
+        id: 'res-preview-pending', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
+        details: {},
+      });
+      expect(await service.previewPriceAdjustment('res-preview-pending')).toBeNull();
+    });
+
+    it('previewPriceAdjustment devuelve null si no hay diferencia (mismas fechas)', async () => {
+      await service.createReservation({
+        id: 'res-preview-same', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'), // 200
+        details: {},
+      });
+      await service.confirmReservation('res-preview-same', TEST_BUSINESS_ID);
+      expect(await service.previewPriceAdjustment('res-preview-same')).toBeNull();
+    });
+
+    it('previewPriceAdjustment muestra la diferencia positiva al extender una reserva CONFIRMED', async () => {
+      await service.createReservation({
+        id: 'res-preview-extend', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'), // 200
+        details: {},
+      });
+      await service.confirmReservation('res-preview-extend', TEST_BUSINESS_ID);
+      // totalPrice sigue congelado en 200 -- solo cambian fechas/lo que costaría hoy.
+      await service.updateReservation('res-preview-extend', { endTime: new Date('2026-09-05T10:00:00Z') }); // 4 noches
+
+      const preview = await service.previewPriceAdjustment('res-preview-extend');
+      expect(preview).toEqual({ currentTotalPrice: 200, recalculatedTotalPrice: 400, difference: 200 });
+    });
+
+    it('previewPriceAdjustment muestra la diferencia negativa al achicar una reserva CONFIRMED', async () => {
+      await service.createReservation({
+        id: 'res-preview-shrink', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-05T10:00:00Z'), // 400
+        details: {},
+      });
+      await service.confirmReservation('res-preview-shrink', TEST_BUSINESS_ID);
+      await service.updateReservation('res-preview-shrink', { endTime: new Date('2026-09-02T10:00:00Z') }); // 1 noche
+
+      const preview = await service.previewPriceAdjustment('res-preview-shrink');
+      expect(preview).toEqual({ currentTotalPrice: 400, recalculatedTotalPrice: 100, difference: -300 });
+    });
+
+    it('confirmPriceAdjustment aplica el nuevo totalPrice/lines y emite reservation.price_adjusted con el monto con signo', async () => {
+      await service.createReservation({
+        id: 'res-confirm-adjust', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'), // 200
+        details: {},
+      });
+      await service.confirmReservation('res-confirm-adjust', TEST_BUSINESS_ID);
+      eventRepo.events = []; // solo nos interesa el evento del ajuste, no el de confirmación
+      await service.updateReservation('res-confirm-adjust', { endTime: new Date('2026-09-05T10:00:00Z') });
+
+      const updated = await service.confirmPriceAdjustment('res-confirm-adjust', TEST_BUSINESS_ID, 'user-manager-1');
+
+      expect(updated.totalPrice).toBe(400);
+      expect(updated.lines).toHaveLength(4);
+      expect(eventRepo.events).toHaveLength(1);
+      expect(eventRepo.events[0]).toMatchObject({
+        eventType: 'reservation.price_adjusted',
+        payload: expect.objectContaining({
+          reservationId: 'res-confirm-adjust',
+          amount: 200,
+          previousTotalPrice: 200,
+          newTotalPrice: 400,
+          confirmedByUserId: 'user-manager-1',
+        }),
+      });
+    });
+
+    it('confirmPriceAdjustment rechaza si no se informa confirmedByUserId', async () => {
+      await service.createReservation({
+        id: 'res-confirm-noattr', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
+        details: {},
+      });
+      await service.confirmReservation('res-confirm-noattr', TEST_BUSINESS_ID);
+      await service.updateReservation('res-confirm-noattr', { endTime: new Date('2026-09-05T10:00:00Z') });
+
+      await expect(service.confirmPriceAdjustment('res-confirm-noattr', TEST_BUSINESS_ID, ''))
+        .rejects.toThrow('confirmedByUserId es obligatorio');
+    });
+
+    it('confirmPriceAdjustment con una reserva achicada emite un ajuste NEGATIVO (nota de crédito)', async () => {
+      await service.createReservation({
+        id: 'res-confirm-credit', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-05T10:00:00Z'), // 400
+        details: {},
+      });
+      await service.confirmReservation('res-confirm-credit', TEST_BUSINESS_ID);
+      eventRepo.events = [];
+      await service.updateReservation('res-confirm-credit', { endTime: new Date('2026-09-02T10:00:00Z') }); // 1 noche
+
+      const updated = await service.confirmPriceAdjustment('res-confirm-credit', TEST_BUSINESS_ID, 'user-manager-1');
+
+      expect(updated.totalPrice).toBe(100);
+      expect(eventRepo.events[0]).toMatchObject({
+        payload: expect.objectContaining({ amount: -300, previousTotalPrice: 400, newTotalPrice: 100 }),
+      });
+    });
+
+    it('confirmPriceAdjustment rechaza con NoPriceAdjustmentPendingError si no hay diferencia que confirmar', async () => {
+      await service.createReservation({
+        id: 'res-confirm-nodiff', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
+        details: {},
+      });
+      await service.confirmReservation('res-confirm-nodiff', TEST_BUSINESS_ID);
+
+      await expect(service.confirmPriceAdjustment('res-confirm-nodiff', TEST_BUSINESS_ID, 'user-manager-1'))
+        .rejects.toThrow(NoPriceAdjustmentPendingError);
+    });
+
+    it('confirmPriceAdjustment rechaza una reserva que no está CONFIRMED', async () => {
+      await service.createReservation({
+        id: 'res-confirm-pending', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
+        details: {},
+      });
+
+      await expect(service.confirmPriceAdjustment('res-confirm-pending', TEST_BUSINESS_ID, 'user-manager-1'))
+        .rejects.toThrow(InvalidReservationError);
     });
   });
 
