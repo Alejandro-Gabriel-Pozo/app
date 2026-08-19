@@ -1069,22 +1069,36 @@ todavía no hay conexión real a AFIP ni emisión de comprobantes.
   `GET`/`PUT /api/business-profile` (`business-profile.routes.ts`, ya
   existente, sin cambios de código — serializa la entidad completa) ya
   exponen los campos nuevos de punta a punta.
-- **Verificado contra Postgres real** (tenant de prueba
+- **Verificado contra Postgres** (tenant de prueba
   `77c106bb-2e3a-4219-aa30-5dbb88ef9c35`, vía `npm run migrate:tenants`
-  a v21 — un segundo tenant, `biz-demo-01`, falló la migración con
-  "Unsupported state or unable to authenticate data" al desencriptar su
-  connection string guardada; es un negocio de prueba viejo ya señalado
-  como con `schema_version` desalineado en `pendientes-2026-08-15.md`
-  línea 760, no algo roto por este cambio — **pendiente evaluar aparte**
-  si vale la pena reparar ese tenant o darlo de baja). Un `PUT` armado
-  pasando por el mismo `UpdateBusinessProfileSchema` que usa la ruta real
-  (no llamando al repositorio directo — la primera pasada de esta
-  verificación sí lo hizo, dio un falso positivo de bug porque la
-  normalización de CUIT/país vive en el schema, no en el repositorio),
-  releído con una instancia nueva de `SqlBusinessProfileRepository`,
-  confirmó que los 10 campos persisten y las dos normalizaciones
-  (CUIT sin guiones, país a mayúsculas) se aplican. Datos de prueba
-  restaurados a `null` al terminar — estado del tenant sin cambios.
+  a v21). **Corrección importante (19/08/2026, más tarde el mismo día):**
+  esta verificación corrió contra `refine-local-dev-platform`
+  (`br-odd-sun-ayyir5lm`, proyecto Neon `pdb-ppms`) — una branch temporal
+  bifurcada de `production` el 18/08, con TTL propio (expiró sola el
+  19/08 ~12:00 UTC), **no contra la branch `production` real**
+  (`br-royal-mouse-aybe2ai3`). El `PLATFORM_DATABASE_URL` del `.env`
+  local apunta a esa branch de prueba, no a la real — bueno para no
+  arriesgar producción sin querer en scripts ad-hoc, pero hay que tenerlo
+  presente al leer "verificado contra Postgres real" en este documento:
+  significa "contra una copia bifurcada de producción", no la base viva.
+  Un `PUT` armado pasando por el mismo `UpdateBusinessProfileSchema` que
+  usa la ruta real (no llamando al repositorio directo — la primera
+  pasada de esta verificación sí lo hizo, dio un falso positivo de bug
+  porque la normalización de CUIT/país vive en el schema, no en el
+  repositorio), releído con una instancia nueva de
+  `SqlBusinessProfileRepository`, confirmó que los 10 campos persisten y
+  las dos normalizaciones (CUIT sin guiones, país a mayúsculas) se
+  aplican. Datos de prueba restaurados a `null` al terminar.
+  **Sobre `biz-demo-01`:** en esa misma corrida, migrar ESE negocio en la
+  branch de prueba falló al desencriptar su connection string — generó
+  una falsa alarma de que producción real llevaba días sin desplegar
+  (ver corrección abajo). Consultando la branch `production` real
+  directo (MCP de Neon): `biz-demo-01` está sano — `schema_version = 21`,
+  connection string presente, actualizado el mismo 19/08 a las 10:57 UTC
+  (confirma que el deploy de Render de esta sesión, con el schema v21 de
+  este mismo punto P, salió bien). **No hace falta ninguna acción sobre
+  `biz-demo-01` en producción** — la alarma anterior quedó descartada, no
+  se tocó nada de la base real.
 - Verificado: `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
   610/610 (+7 tests nuevos: 6 de `cuitSchema` + el ajuste de 8 fixtures
   de `BusinessProfile` en tests ya existentes para que sigan compilando).
