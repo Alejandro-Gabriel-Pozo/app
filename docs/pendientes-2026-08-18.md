@@ -1601,3 +1601,107 @@ funciona end-to-end contra producción real. El "Cannot GET
 /api/business-profile/afip-credentials" reportado antes de este fix era
 solo por probar esa URL directo en el navegador (esa ruta acepta
 PUT/DELETE, no GET sin `/status`) — no era un bug.
+
+---
+
+## V. Botón "Facturar" + auditoría E7a/K + bug real de reintento de facturas AFIP (19/08/2026)
+
+A pedido explícito del dueño, sesión de continuación. Tres pedidos en
+paralelo, resueltos en orden.
+
+### 1. Botón "Facturar" en el flujo de cobro — ✅ RESUELTO (`appfrontend-main`)
+
+Quedaba pendiente del punto T ("qué sigue"): `invoicesApi.request()` ya
+existía del lado del frontend, faltaba el punto de entrada en la UI.
+Decisión del dueño: **ambos lugares** (Reservas y Cuentas Corrientes),
+mismo componente reusado.
+
+- `components/FacturarButton.tsx` (nuevo) — recibe `financialTransactionId`,
+  llama `POST /api/invoices` (ya idempotente por transacción del lado del
+  backend, así que un click sobre una factura ya emitida devuelve la misma,
+  nunca duplica). Maneja `MODULE_NOT_ENABLED` mostrando un mensaje en vez
+  de romper, mismo criterio que la sección de certificado AFIP.
+- Cuentas Corrientes: botón por fila de cargo (`CHARGE`).
+- Reservas (detalle): botón bajo "Comprobante AFIP" cuando existe un
+  `CHARGE` para esa reserva — resuelto vía `customerAccountApi.getStatement()`
+  (sin sumar endpoint nuevo).
+- **Bug propio encontrado y corregido en el camino:** el gate inicial
+  exigía `tx.status === 'SETTLED'`, pero el `CHARGE` queda `PENDING` hasta
+  el checkout (`handleReservationCompleted`, `outbox.handlers.ts`) — eso
+  escondía el botón para toda reserva `CONFIRMED` todavía no completada,
+  el caso más común. Corregido a excluir solo `VOIDED`/`FAILED`.
+
+Verificado (frontend): `tsc`/`lint`/`build` limpios. Verificado en
+producción real (Playwright, `host.zuluhub.com.ar`): botón visible y
+funcional en los dos lugares.
+
+### 2. Auditoría de `getActiveForServiceInRange()` (punto K, "pendiente evaluar aparte") — ✅ CERRADO, sin impacto real
+
+En producción real solo existe **una fila** en `resource_locks` (la del
+bug de referencia original, "Barbero Isahia"/"Corte de pelo", hoy
+`active=false`), y contra ese recurso hay **una sola reserva** en toda la
+base. Con una sola reserva no pudo haber existido un doble-booking real
+(hacen falta al menos dos superpuestas para que el gap se manifieste). El
+fix del bug ya aplicado sigue siendo correcto — esto solo confirma que no
+hay nada que reparar retroactivamente en los datos.
+
+### 3. Bug real: comprobante AFIP fallido quedaba irrecuperable para siempre — ✅ RESUELTO (schema v24)
+
+Encontrado en vivo: el dueño probó "Facturar" en homologación y WSAA
+rechazó el certificado (`Computador no autorizado a acceder al servicio`)
+antes de pedir el CAE. Como `idempotency_key` es determinística por
+`financial_transaction_id` (una sola fila posible por cobro),
+`requestInvoice()` iba a devolver ese mismo registro `FAILED_UNCERTAIN`
+para siempre, incluso después de corregir el problema del lado de AFIP.
+
+- `invoices.afip_contacted` (schema v24) — si `createNextVoucher()`
+  (WSFEv1) llegó a invocarse antes de la falla. `FALSE` = sin ambigüedad
+  posible (ej. ni siquiera se pudo autenticar), reintento automático
+  seguro. `TRUE` = AFIP fue contactado y la falla es genuinamente ambigua
+  (A8.6) — requiere revisión manual antes de reintentar, para no
+  arriesgar un CAE duplicado real.
+- `InvoiceService.requestInvoice()` gana `retryExisting()`: reusa la
+  MISMA fila cuando es seguro (`PENDING`, `REJECTED`, o `FAILED_UNCERTAIN`
+  sin contactar) y se abstiene cuando no. `ISSUED` nunca se retoca.
+- Backfill del schema v24: el único caso identificable con certeza por su
+  `error_message` (el chequeo previo al CAE) se corrigió a
+  `afip_contacted=false` sobre las filas ya existentes en producción.
+- 3 tests nuevos (reintenta / no reintenta / reintenta tras rechazo
+  explícito). Suite completa: 670/670.
+- **Verificado contra AFIP homologación real**: el reintento sí volvió a
+  intentar contra el servicio real de AFIP (no devolvió el caché al
+  toque), sin duplicar la fila. Siguió fallando por el mismo motivo de
+  fondo (ver punto 4) — confirma que el mecanismo de reintento en sí
+  funciona, el bloqueo real quedó del lado de AFIP.
+
+### 4. CUIT de autenticación AFIP separado del CUIT legal — ✅ RESUELTO (schema v25)
+
+Diagnóstico real del `Computador no autorizado`: el certificado cargado
+salió del gestor de certificados de **producción** de AFIP, no del de
+testing/homologación — ambientes con certificados independientes, nunca
+se mezclan. El dueño decidió seguir probando con un **CUIT del pool de
+testing de AFIP**, distinto de su CUIT real.
+
+`business_profile.tax_id` se usaba para dos cosas a la vez: la identidad
+fiscal legal real ("Datos fiscales") y el CUIT de autenticación contra
+AFIP — pisarlo con el CUIT de testing hubiera ensuciado el dato legal.
+
+- `business_profile.afip_cuit` (schema v25, nullable) — `NULL` = seguir
+  usando `tax_id` (comportamiento de siempre, sin cambio para quien no lo
+  cargue). `InvoiceService` resuelve `profile.afipCuit ?? profile.taxId`
+  como CUIT de autenticación.
+- Mi Negocio (`appfrontend-main`) — campo nuevo "CUIT de autenticación"
+  en la sección Certificado AFIP (no en Datos Fiscales, a propósito).
+- 4 tests nuevos (fallback a `taxId`, `afipCuit` gana, rechaza sin
+  ninguno de los dos). Suite completa: 673/673.
+
+**Verificado en producción real** (Playwright): campo visible y
+funcional en Mi Negocio, sin errores de consola. No se probó un guardado
+real con un CUIT inventado para no ensuciar el dato de producción.
+
+**Qué falta para que la Fase 2 de AFIP funcione de punta a punta:** el
+dueño tiene que (1) conseguir un CUIT del pool de testing de AFIP, (2)
+generar el certificado en el gestor de **homologación** (no el de
+producción), (3) cargar cert + "CUIT de autenticación" en Mi Negocio, y
+(4) reintentar sobre los dos comprobantes que quedaron `FAILED_UNCERTAIN`.
+Ninguno de estos cuatro pasos depende de código nuevo.
