@@ -1269,3 +1269,81 @@ todo.
 Sin conexión real a AFIP (WSFEv1 / `arcasdk-main`), sin emisión de
 comprobantes, sin homologación. Fase 1 solo deja cargados los datos que
 esa conexión va a necesitar. Backlog, no arrancado.
+
+---
+
+## R. E7a — las 3 pantallas priorizadas, construidas (19/08/2026)
+
+A pedido explícito del dueño ("SEGUIMOS CON ESO" tras cerrar las
+decisiones pendientes). Backend ya existía para las tres desde antes —
+puro trabajo de frontend (`appfrontend-main`), ningún endpoint nuevo.
+
+### 1. Horarios de servicios reservables
+
+`ScheduleManager.tsx` (componente nuevo) — CRUD de horarios semanales de
+un servicio `bookingMode='slot'` (día + hora de inicio + capacidad
+simultánea), integrado en Servicios como botón "Horarios" por fila
+(solo visible para servicios modo slot) — mismo patrón de modal que
+`RatePlanManager.tsx` (punto M). A diferencia de tarifas, acá `DELETE`
+es hard-delete real (`removeSchedule()` en el backend borra la fila, no
+desactiva) — no hay reservas que referencien un `scheduleId`, la
+disponibilidad se calcula al vuelo combinando schedules + resource_locks
++ reservas existentes.
+
+### 2. Housekeeping — vistas por usuario/estado
+
+Pestañas nuevas en `dashboard/housekeeping/page.tsx`: "Tablero" (el rack
+por fecha de siempre, sin cambios) y "Mis tareas" (lista nueva, sin
+filtro de fecha, vía `GET /housekeeping/me`). Un `<select>` de estado
+dentro de "Mis tareas" — en "todas" trae la lista propia; en cualquier
+estado puntual, cambia a `GET /housekeeping/status/:status` (tablero
+COMPLETO filtrado por ese estado, todas las fechas/asignados, no solo
+lo propio) — útil tanto para un housekeeper viendo su propio trabajo
+como para management viendo "todo lo que está EN CURSO ahora mismo" sin
+tener que pasear por fechas. Mismos botones de acción (Iniciar/Completar/
+Inspeccionar/Asignar) que ya existían en el rack, reutilizados tal cual
+sobre los objetos `HousekeepingTask` de la lista.
+
+### 3. Alta pública de negocio nuevo
+
+Pantalla nueva `/registro` (nombre del negocio + email + contraseña del
+dueño), con link desde `/login` ("¿Todavía no tenés negocio? Registrate").
+**Gap real encontrado y arreglado de paso:** `POST /register`
+(`business.routes.ts`) devolvía el token en el body pero nunca seteaba
+la cookie httpOnly (`setAuthCookie`) — a diferencia de `/api/login`/
+`/select-business`/`/google`, que sí la setean desde B2. Como
+`AuthContext.tsx` ya no lee el token del body (solo la cookie, ver punto
+Q), un dueño registrándose desde esta pantalla nueva hubiera quedado
+"deslogueado" pese a la respuesta 201 exitosa — nadie lo había notado
+antes porque no existía ningún consumidor de este endpoint hasta ahora.
+Corregido agregando `setAuthCookie(res, token, expiresIn)`, mismo
+criterio que el resto del login de staff.
+
+`next.config.js` (`appfrontend-main`) gana un rewrite nuevo para
+`/register` — el backend lo monta sin prefijo `/api` (como `/platform`),
+así que sin el rewrite el fetch nunca hubiera llegado al backend real
+(se hubiera quedado pegando contra el propio Next.js).
+
+**No verificado end-to-end en vivo, a propósito:** `POST /register`
+dispara aprovisionamiento REAL de una tenant DB en Neon
+(`provisionTenantDatabase()`) — no hay endpoint para dar de baja un
+negocio (ver sección de backlog más arriba), así que un registro de
+prueba real dejaría infraestructura huérfana sin forma de limpiarla por
+API. Se verificó en cambio: `tsc --noEmit`/`npm run lint`/`npm test`
+(backend, 621/621) y `tsc --noEmit`/`npm run lint`/`npm run build`
+(frontend, 26 rutas — `/registro` nueva) limpios, más lectura del código
+real de `business.routes.ts` confirmando que el flujo (Zod → slug →
+identity → business → membership OWNER → aprovisionamiento →
+`setAuthCookie` → response) es el mismo que ya corre en producción para
+cada negocio existente, con el único cambio real siendo la línea de la
+cookie. **Nota aparte:** la branch de Neon temporal usada para verificar
+contra Postgres real en esta sesión (`refine-local-dev-platform`, ver
+corrección en el punto P) venció durante esta misma sesión (TTL, no
+por algo que se rompió) — si se quiere probar `/registro` de punta a
+punta con una base real, hace falta crear una branch de prueba nueva
+primero.
+
+Verificado (frontend, las 3 pantallas): `tsc --noEmit` limpio, `npm run
+lint` limpio (mismo warning preexistente sin relación), `npm run build`
+limpio (26 rutas). **No verificado visualmente en navegador** — mismo
+gap recurrente de toda la sesión (sin credenciales de prueba a mano).
