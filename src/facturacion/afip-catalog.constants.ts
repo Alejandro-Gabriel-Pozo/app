@@ -58,6 +58,26 @@ export function resolveDocTipo(taxIdType: string | null | undefined): number {
 }
 
 /**
+ * Inverso de `resolveDocTipo()`, para el PDF (`@arcasdk/pdf`,
+ * `InvoicePdfService`) -- ese paquete espera la ETIQUETA de AFIP
+ * ("CUIT"/"DNI"/...), no el código numérico, tanto para mostrarla en el
+ * comprobante como para el QR (`buildArcaQrUrl` mapea la etiqueta de
+ * vuelta a número; pasarle el número como string ahí también "funciona"
+ * por su fallback `Number(...)`, pero se ve mal impreso -- "99: 0" en vez
+ * de "Sin Identificar"). "Sin Identificar" es la etiqueta real que ese
+ * paquete usa para 99, no una invención nuestra.
+ */
+export function docTipoLabel(docTipo: number): string {
+  switch (docTipo) {
+    case DOC_TIPO_CUIT: return 'CUIT';
+    case DOC_TIPO_CUIL: return 'CUIL';
+    case DOC_TIPO_CDI: return 'CDI';
+    case DOC_TIPO_DNI: return 'DNI';
+    default: return 'Sin Identificar';
+  }
+}
+
+/**
  * Condición frente al IVA del RECEPTOR (`CondicionIVAReceptorId`, tabla
  * `FEParamGetCondicionIvaReceptor` — agregada en v2.10 del WS, RG 5259).
  * Acá SÍ se hardcodea un único valor, a diferencia del resto de esta

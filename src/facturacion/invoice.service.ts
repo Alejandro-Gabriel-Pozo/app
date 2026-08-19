@@ -59,8 +59,8 @@ export interface RequestInvoiceInput {
   concepto?: number;
 }
 
-/** yyyymmdd, el formato que exige WSFEv1 (nunca ISO) — ver referencia-afip-wsfev1.md. */
-function toAfipDate(date: Date): string {
+/** yyyymmdd, el formato que exige WSFEv1 (nunca ISO) — ver referencia-afip-wsfev1.md. Exportada: la reusa InvoicePdfService. */
+export function toAfipDate(date: Date): string {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, '0');
   const d = String(date.getUTCDate()).padStart(2, '0');
@@ -170,6 +170,7 @@ export class InvoiceService {
         environment: credentials.environment,
         ptoVta: profile.afipSalesPoint,
         cbteTipo: CBTE_TIPO_FACTURA_B,
+        emisorCuit: authCuit,
         concepto,
         docTipo: buyer.docTipo,
         docNro: buyer.docNro,

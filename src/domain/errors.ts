@@ -337,3 +337,17 @@ export class AfipRequestRejectedError extends DomainError {
     super(`AFIP rechazó el comprobante ${invoiceId}: ${observations}`, 'AFIP_REQUEST_REJECTED');
   }
 }
+
+/** PDF del comprobante (19/08/2026, `@arcasdk/pdf`) -- mismo code que ya usaba el 404 inline de `GET /api/invoices/:id`. */
+export class InvoiceNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Comprobante "${id}" no encontrado`, 'INVOICE_NOT_FOUND');
+  }
+}
+
+/** Sin CAE todavía no hay documento fiscal real que representar en PDF -- no se inventa un comprobante "provisorio". */
+export class InvoiceNotIssuedError extends DomainError {
+  constructor(id: string) {
+    super(`El comprobante ${id} todavía no tiene CAE -- no se puede generar el PDF hasta que AFIP lo emita`, 'INVOICE_NOT_ISSUED');
+  }
+}

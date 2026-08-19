@@ -24,6 +24,7 @@ interface InvoiceRow {
   cae_vto: string | null;
   status: InvoiceStatus;
   afip_contacted: boolean;
+  emisor_cuit: string | null;
   afip_request: unknown;
   afip_response: unknown;
   error_message: string | null;
@@ -54,6 +55,7 @@ function rowToEntity(row: InvoiceRow): Invoice {
     caeVto: row.cae_vto,
     status: row.status,
     afipContacted: row.afip_contacted,
+    emisorCuit: row.emisor_cuit,
     afipRequest: row.afip_request,
     afipResponse: row.afip_response,
     errorMessage: row.error_message,
@@ -90,13 +92,13 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     const { rows } = await this.db.query<InvoiceRow>(
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
-          pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id, moneda,
+          pto_vta, cbte_tipo, emisor_cuit, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id, moneda,
           imp_neto, imp_iva, imp_total, status, afip_request)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'PENDING', $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'PENDING', $18)
        RETURNING *`,
       [
         input.id, input.businessId, input.financialTransactionId, input.customerId,
-        input.idempotencyKey, input.environment, input.ptoVta, input.cbteTipo, input.concepto,
+        input.idempotencyKey, input.environment, input.ptoVta, input.cbteTipo, input.emisorCuit, input.concepto,
         input.docTipo, input.docNro, input.condicionIvaReceptorId, input.moneda,
         input.impNeto, input.impIva, input.impTotal, JSON.stringify(afipRequest),
       ],

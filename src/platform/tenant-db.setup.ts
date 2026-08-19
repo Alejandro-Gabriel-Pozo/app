@@ -227,7 +227,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // ficticio para probar -- pisar tax_id directamente ensuciaría "Datos
 // fiscales" (identidad legal real). NULL = se sigue autenticando como
 // tax_id, sin cambio de comportamiento para quien no lo cargue.
-export const CURRENT_SCHEMA_VERSION = 25;
+// v26 (19/08/2026): invoices.emisor_cuit — congela el CUIT de
+// autenticación usado al CREAR el comprobante (R9), para que el PDF
+// (`@arcasdk/pdf`) siempre muestre el CUIT real con el que AFIP lo
+// asoció, sin importar si business_profile.afip_cuit cambia después.
+export const CURRENT_SCHEMA_VERSION = 26;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

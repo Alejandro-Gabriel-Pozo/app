@@ -35,6 +35,8 @@ export interface Invoice {
    * puede reintentar un FAILED_UNCERTAIN solo, o si necesita revisión
    * manual primero (A8.6). */
   afipContacted: boolean;
+  /** CUIT de autenticación AFIP congelado al crear (schema v26) — ver docblock en schema.sql. `null` = comprobante emitido antes de este campo. */
+  emisorCuit: string | null;
   afipRequest: unknown;
   afipResponse: unknown;
   errorMessage: string | null;
@@ -51,6 +53,7 @@ export interface CreateInvoiceInput {
   environment: AfipEnvironment;
   ptoVta: number;
   cbteTipo: number;
+  emisorCuit: string;
   concepto: number;
   docTipo: number;
   docNro: string;

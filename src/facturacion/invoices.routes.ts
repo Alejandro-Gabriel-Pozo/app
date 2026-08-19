@@ -25,8 +25,10 @@ import type { AppContainer } from '../container.js';
 import { SqlAfipCredentialsRepository } from './sql.afip-credentials.repository.js';
 import { SqlInvoiceRepository } from './sql.invoice.repository.js';
 import { InvoiceService } from './invoice.service.js';
+import { InvoicePdfService } from './invoice-pdf.service.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
+import { SqlCustomerRepository } from '../clientes-finanzas/sql.customer.repository.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 
 function buildInvoiceService(req: Request): InvoiceService {
@@ -75,6 +77,30 @@ export function createInvoicesRouter(container: AppContainer): Router {
           return;
         }
         res.json(invoice);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /api/invoices/:id/pdf ────────────────────────────────────────────
+  // PDF oficial (@arcasdk/pdf, Puppeteer) del comprobante ya emitido -- ver
+  // docblock de InvoicePdfService para las simplificaciones de este corte.
+  router.get(
+    '/:id/pdf',
+    gate,
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const db = req.db!;
+        const pdfService = new InvoicePdfService(
+          new SqlInvoiceRepository(db),
+          new SqlBusinessProfileRepository(db),
+          new SqlCustomerRepository(db),
+        );
+        const id = String(req.params['id']);
+        const pdf = await pdfService.generate(id);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="comprobante-${id}.pdf"`);
+        res.send(pdf);
       } catch (err) { next(err); }
     },
   );

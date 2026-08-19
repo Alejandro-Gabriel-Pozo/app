@@ -2058,3 +2058,16 @@ UPDATE invoices SET afip_contacted = FALSE
     AND afip_contacted = TRUE
     AND error_message LIKE 'no se pudo consultar FECompUltimoAutorizado%';
 
+-- invoices.emisor_cuit (schema v26) -- el CUIT con el que se autenticó
+-- contra AFIP en el momento de crear ESTE comprobante (R9: una
+-- transacción/documento congela lo que necesita del maestro, no lo
+-- re-deriva del estado actual). Necesario para el PDF (`@arcasdk/pdf`):
+-- si business_profile.afip_cuit cambia más adelante (ej. se pasa de CUIT
+-- de testing a CUIT real), un comprobante YA emitido tiene que seguir
+-- mostrando el CUIT con el que AFIP realmente lo asoció, no el actual.
+-- Nullable: filas ya existentes (emitidas antes de este campo) no tienen
+-- forma retroactiva de saber cuál fue -- InvoicePdfService cae a
+-- afip_cuit/tax_id actuales solo para esas, con la salvedad documentada
+-- ahí mismo.
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS emisor_cuit VARCHAR(50);
+

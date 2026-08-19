@@ -144,6 +144,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'COMPANY_PRODUCT_NOT_FOUND':
     case 'RATE_PLAN_NOT_FOUND':
     case 'FINANCIAL_TRANSACTION_NOT_FOUND':
+    case 'INVOICE_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -164,6 +165,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'NEXT_ARRIVAL_CONFLICT':
     case 'NO_PRICE_ADJUSTMENT_PENDING':
     case 'AFIP_REQUEST_UNCERTAIN':
+    case 'INVOICE_NOT_ISSUED':
       return 409;
 
     // --- 503 Service Unavailable ---
