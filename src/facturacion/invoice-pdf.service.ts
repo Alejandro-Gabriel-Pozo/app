@@ -107,6 +107,16 @@ export class InvoicePdfService {
     };
 
     const generator = new InvoicePdfGenerator();
-    return generator.generate(data);
+    const pdf = await generator.generate(data);
+    // @arcasdk/pdf declara Promise<Buffer> pero page.pdf() de Puppeteer
+    // devuelve Uint8Array en runtime (desde que Puppeteer dejó de atarse a
+    // la API de Node) -- el propio paquete lo sabe y lo corrige en su
+    // camino de "múltiples copias" (_mergeBuffers, vía pdf-lib), pero no en
+    // el camino normal de una sola copia, que es el que usamos acá. Sin
+    // este Buffer.from(), Express.res.send() no reconoce el Uint8Array
+    // como binario (Buffer.isBuffer() da false) y cae a res.json(), que
+    // serializa cada byte como una clave de objeto -- el PDF que le llega
+    // al cliente no es un PDF, es texto JSON con extensión .pdf.
+    return Buffer.from(pdf);
   }
 }

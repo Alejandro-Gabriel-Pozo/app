@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { InvoicePdfService } from './invoice-pdf.service.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus } from './invoice.entities.js';
@@ -86,5 +86,34 @@ describe('InvoicePdfService -- guards antes de generar (sin invocar Puppeteer)',
   it('rechaza si el comprobante quedó FAILED_UNCERTAIN (sin CAE real)', async () => {
     const service = buildService({ invoice: makeInvoice({ status: 'FAILED_UNCERTAIN', cae: null, cbteNro: null, caeVto: null }) });
     await expect(service.generate('inv-1')).rejects.toThrow(InvoiceNotIssuedError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regresión (19/08/2026): el PDF descargado en producción no abría --
+// "page.pdf()" de Puppeteer devuelve Uint8Array en runtime (@arcasdk/pdf
+// declara Buffer pero no lo es), y Express.res.send() solo reconoce un
+// Buffer.isBuffer() real como binario -- con un Uint8Array crudo cae a
+// res.json(), que serializa cada byte como clave de un objeto
+// ({"0":37,"1":80,...}) en vez de mandar el archivo. Se mockea
+// @arcasdk/pdf devolviendo un Uint8Array puro (lo que realmente hace
+// Puppeteer) para no depender de Chromium instalado en esta suite.
+// ---------------------------------------------------------------------------
+vi.mock('@arcasdk/pdf', () => ({
+  InvoicePdfGenerator: class {
+    async generate() {
+      return new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF" -- no un Buffer real
+    }
+  },
+}));
+
+describe('InvoicePdfService -- el resultado siempre es un Buffer real', () => {
+  it('convierte el Uint8Array que devuelve @arcasdk/pdf a un Buffer de Node', async () => {
+    const service = buildService({ invoice: makeInvoice() });
+
+    const result = await service.generate('inv-1');
+
+    expect(Buffer.isBuffer(result)).toBe(true);
+    expect(result.subarray(0, 4).toString()).toBe('%PDF');
   });
 });
