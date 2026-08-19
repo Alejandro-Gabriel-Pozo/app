@@ -1073,6 +1073,112 @@ propio documento lo aclara ("no es una decisión final").
 
 ---
 
+## Q. Portal de clientes migrado a cookie httpOnly (19/08/2026) — decisión del punto C, resuelta
+
+A pedido explícito del dueño ("SEGUIMOS CON ESO"), cierra la decisión
+"cookie httpOnly portal de clientes" de la sección de decisiones de este
+mismo documento. Mismo patrón que B2 aplicó al panel de staff
+(`pendientes-2026-08-13.md`), pero con cookie de nombre DISTINTO
+(`rh_customer_token` vs. `rh_token` de staff) — viven en el mismo dominio/
+path, así que un mismo navegador con las dos sesiones abiertas (ej. el
+dueño probando su propio portal) no se pisa una cookie con la otra.
+
+### Backend
+
+- `auth.middleware.ts`: `AUTH_COOKIE_NAME_CUSTOMER` nueva, `setCustomerAuthCookie`/
+  `clearCustomerAuthCookie` (mismas opciones que las de staff, factorizadas
+  en un solo `cookieOptions()` para no desincronizar las dos). `authenticate()`
+  ahora prueba, en orden: header `Authorization` → cookie de staff → cookie
+  de cliente.
+- `CustomerAuthService`: ganó `tokenTtlSeconds` (antes el TTL real del
+  token quedaba en el default hardcodeado de `signToken()`, 24h, sin leer
+  `JWT_EXPIRES_IN` como sí hace el staff — necesario ahora porque
+  `setCustomerAuthCookie` necesita ese número para el `maxAge`).
+  `parseExpiresIn()` (antes privada de `auth.service.ts`) pasa a exportada
+  y reusada acá.
+- `customer.routes.ts`: register/login/login-google setean la cookie
+  (además de seguir devolviendo el token en el body — coexistencia, no
+  reemplazo). `POST /api/customer/logout` nueva (pública, sin auth, mismo
+  criterio que `/api/auth/logout` de staff). `POST /api/customer/refresh`
+  nueva (autenticada, re-firma con `exp` nuevo, no toca la tenant DB —
+  mismo criterio que `POST /api/auth/refresh` de staff). `GET /api/customer/me`
+  gana `?businessSlug=` opcional: la cookie es del dominio entero
+  (`path: '/'`), así que sin este chequeo un cliente logueado en el
+  negocio A que visita el portal del negocio B se vería como "logueado"
+  ahí con los datos de A — ahora responde 401 si el slug pedido no
+  corresponde al `business_id` del token.
+- Tests nuevos: `auth.middleware.test.ts` (prioridad header > cookie
+  staff > cookie cliente, nombres de cookie distintos) y
+  `customer.routes.test.ts` (nuevo archivo — `/refresh`, `/logout`, y el
+  chequeo de `businessSlug` en `/me`, corriendo la cadena real de
+  handlers).
+
+### Bug real encontrado y arreglado de paso — `DELETE /api/customer/me` tiraba 500 siempre
+
+No tiene relación con la cookie — se encontró verificando el flujo
+completo end-to-end contra un server local. `SqlCustomerRepository.anonymize()`
+(`sql.customer.repository.ts`) usaba `withTransaction()`/`getPool()` de
+`db/pg.client.js`, que resuelve el pool desde `DATABASE_URL` — variable de
+la era single-tenant, ya no existe en producción (`refactor: eliminar
+soporte single-tenant`, commit `31854e8`). Cualquier cliente que pidiera
+eliminar su cuenta (`Mi cuenta` → `Eliminar mi cuenta`) recibía 500 sin
+importar el request — bug preexistente, presente desde ese refactor.
+Corregido usando `this.sqlClient` (el pool del TENANT, ya inyectado por
+el constructor), igual que el resto de los métodos de esta clase — ninguno
+de ellos envuelve sus escrituras multi-statement en una transacción
+explícita tampoco, mismo criterio, se mantuvo así. Test de regresión
+nuevo en `sql.customer.repository.test.ts`.
+
+### Frontend (`appfrontend-main`)
+
+- `CustomerAuthContext.tsx` reescrito: ya no guarda nada en `localStorage`
+  ni expone un token — `customer`/`isLoading` se resuelven con
+  `GET /api/customer/me?businessSlug=`, disparado una vez al montar
+  `CustomerAuthProvider` (que ahora lee el slug con `useParams()`, ya que
+  vive dentro de `/portal/[businessSlug]/layout.tsx`). `refreshCustomer(slug)`
+  se llama a mano después de login/register (para actualizar el estado
+  con la respuesta fresca); `logout()` pega a `/api/customer/logout` y
+  limpia el estado local. Refresh en segundo plano cada 20 min mientras
+  haya sesión, mismo patrón que `AuthContext.tsx`.
+- `customerApi.ts`: `customerApiFetch`/`publicFetch` ganan
+  `credentials: 'include'`, sacan el header `Authorization` armado a
+  mano. El interceptor de 401/`TOKEN_EXPIRED` ya no lee `session.businessSlug`
+  (no existe más) — extrae el slug de `window.location.pathname` en su
+  lugar (funciona igual pero además es más correcto: siempre redirige al
+  login del portal que el usuario está mirando, no al de la sesión vieja).
+- Páginas actualizadas: `login`/`register` (llaman `refreshCustomer` en
+  vez de `setSession`), `cuenta/layout.tsx` y `disponibilidad/page.tsx`
+  (leen `customer` en vez de `session`, ya no comparan `businessSlug` a
+  mano — el backend lo valida), `cuenta/perfil/page.tsx` (`logout()` en
+  vez de `clearSession()`, ahora async), portal home `page.tsx`
+  (simplificada: el chequeo de sesión ya lo dispara el provider).
+- Tipo `CustomerSession` eliminado (`lib/portal/types.ts`, re-export en
+  `lib/types.ts`) — ya no hay una "sesión" persistible del lado cliente.
+
+**Verificado end-to-end contra Postgres** (tenant `refine-test-business`,
+branch de prueba de Neon — mismo criterio de precisión que la corrección
+del punto P: no es la branch `production` real, es la copia bifurcada
+para pruebas): server local levantado, cliente de prueba registrado vía
+`curl` con cookie jar real — confirmado con las cuatro rutas nuevas/
+tocadas: `GET /me?businessSlug=` correcto → 200; mismo cookie contra el
+slug de OTRO negocio (`demo`) → 401 "Sesión de otro negocio" (el chequeo
+funciona de verdad, no solo en el test); `POST /refresh` → token nuevo
+con `exp` distinto, cookie actualizada; `POST /logout` → cookie limpiada,
+`GET /me` después → 401. `DELETE /me` (con el fix del bug de arriba) →
+204, y confirmado que la anonimización se grabó de verdad (un segundo
+login con las mismas credenciales ya rechaza). Cliente de prueba quedó
+anonimizado al terminar (mismo estado que dejaría un usuario real
+eliminando su cuenta — no hizo falta limpieza adicional).
+
+Verificado (backend): `tsc --noEmit` limpio, `npm run lint` limpio,
+`npm test` 621/621 (+9 tests nuevos: 4 de cookie de cliente en
+`auth.middleware.test.ts`, 5 de `customer.routes.ts`/`sql.customer.repository.ts`
+nuevos). Verificado (frontend): `tsc --noEmit` limpio, `npm run lint`
+limpio (mismo warning preexistente sin relación), `npm run build` limpio
+(25 rutas, sin rutas nuevas).
+
+---
+
 ## P. Facturación Electrónica AFIP — Fase 1 (perfil fiscal del negocio), backend comiteado (19/08/2026)
 
 Arranca la implementación de la Fase 1 anotada como backlog en la sección
