@@ -146,11 +146,23 @@ para el detalle completo de cada uno:
   `npm test` 562/562 (+2 tests nuevos), `npm run build` limpio (smoke
   test de import del módulo compilado, confirma que la interop ESM de
   luxon resuelve bien en runtime).
-- F2(c): edición fina de permisos por rol como feature de plan — no
-  implementado. Cualquier plan, sin restricción, ya puede editar
-  `permissionGroups` de un rol de sistema hoy vía `PUT /api/roles/:id`.
-- Decidir si portal de clientes/plataforma migra a cookie httpOnly o
-  queda como está.
+- ✅ **DECIDIDO (19/08/2026)** — F2(c): edición fina de permisos por rol
+  pasa a ser feature paga, disponible desde el plan **PRO** en adelante
+  (no exclusivo de Enterprise). **Decisión de implementación tomada junto
+  con esto:** no un middleware aislado tipo `requirePlan` — se agrega
+  como una dimensión más (`allowsCustomRolePermissions` o similar) del
+  sistema genérico de `PLAN_LIMITS` que ya está pendiente de diseñar
+  (ver nota de panel de superadmin más abajo, y la decisión de proceso
+  sobre cómo se van a cargar esos valores). Así se diseña una sola vez
+  como parte de ese sistema más grande, en vez de construir un gate
+  puntual que después haya que migrar. **No implementado todavía** —
+  queda para cuando se aborde `PLAN_LIMITS` como sistema genérico.
+- ✅ **DECIDIDO (19/08/2026)** — Portal de clientes migra a cookie
+  httpOnly, mismo patrón que ya se aplicó al panel de staff (B2,
+  13/08/2026 — ver `pendientes-2026-08-13.md`). Justificación: el token
+  sigue en `localStorage` (`CustomerAuthContext.tsx`), mismo hueco de XSS
+  que motivó el cambio original. **No implementado todavía** — es la
+  próxima tarea a encarar.
 - ✅ **RESUELTO (18/08/2026, noche)** — Empresas multipropiedad (`companies`)
   sin gate de plan. A pedido explícito del dueño ("gate de plan Enterprise
   para empresas multipropiedad"). Se agregó `BusinessPlan.ENTERPRISE`
@@ -185,10 +197,17 @@ para el detalle completo de cada uno:
   que nadie volviera a marcarlo acá. El resto de E7a (horarios de
   servicios, housekeeping /me y /status, alta de negocio, locations)
   sigue abierto, sin cambios.
-- Nota "quizá" del dueño (17/08, tarde): panel de superadmin para editar
-  presets de roles/`PLAN_LIMITS` sin tocar código a mano — más grande que
-  solo migrar a tabla (implica endpoint + UI de admin), sin alcance
-  definido todavía.
+- ✅ **DECIDIDO (19/08/2026)** — panel de superadmin para editar presets
+  de roles/`PLAN_LIMITS`: **no por ahora.** En su lugar, los cambios a
+  esos valores (incluida la dimensión nueva de F2(c) de arriba cuando se
+  implemente) se hacen siempre vía **script/migración versionada**
+  (mismo patrón que ya rige `schema.sql`/`CURRENT_SCHEMA_VERSION`), nunca
+  con un `UPDATE` suelto tipeado a mano en el momento contra la base
+  real. Motivo: mantiene el historial ordenado de qué cambió y cuándo, y
+  evita repetir el patrón de riesgo que casi lleva a un `UPDATE` directo
+  sin ese resguardo esta misma sesión (ver corrección de la falsa alarma
+  de `biz-demo-01` más abajo en este documento). El día que sí haga falta
+  un panel real, ya queda el historial versionado como base.
 
 ### Backlog / integraciones externas
 - Facturación electrónica AFIP — investigado (`referencia-afip-wsfev1.md`),
@@ -626,10 +645,9 @@ frontend cuando se llegue a esta tarea). `recharts` (gráficos),
 `papaparse` (CSV liviano) y `react-to-print` (impresión directa) quedan
 para cuando la funcionalidad puntual los pida, no sumarlos de antemano —
 mismo criterio de "no asumir nada sin caso de uso real" que ya rige el
-resto del proyecto. **Pregunta abierta sin responder todavía:** ¿los
-reportes van a llevar gráficos, o por ahora alcanza con tablas/números?
-Depende de esa respuesta si `recharts` entra en el alcance cuando se
-aborde el ticket de exportación.
+resto del proyecto. ✅ **DECIDIDO (19/08/2026):** solo tablas y números
+por ahora — `recharts` NO entra en el alcance del ticket de exportación
+cuando se aborde; se suma después si hace falta de verdad.
 
 ✅ **RESUELTO (18/08/2026, noche) — bug de UX de los campos de precio.**
 Los campos de precio (Productos, Servicios, Recursos) eran `<input
