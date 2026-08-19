@@ -3,34 +3,34 @@
  * @description Plantillas de mails transaccionales. HTML armado a mano
  * (string simple) — no hace falta un motor de templates para un mail.
  *
- * Fechas formateadas con el `timezone` del negocio (`business_profile.
- * timezone`, 17/08/2026 — auditoría de hardcodes, pendientes-2026-08-17.md
- * sección F3). Antes era `America/Argentina/Buenos_Aires` fijo acá mismo;
- * ahora lo resuelve el caller (email.handlers.ts) leyendo el perfil del
- * negocio y lo pasa como parámetro. Locale de formato ('es-AR') sigue fijo
- * a propósito — es una decisión de idioma del mail, no de huso horario, y
- * no se pidió resolverla en esta ronda.
+ * `checkInLabel`/`checkOutLabel` llegan YA formateados por el caller
+ * (email.handlers.ts) — este archivo no decide zona horaria ni si el
+ * instante crudo de la reserva es un horario real o solo una marca de día
+ * calendario (alojamiento, E1). Antes esta plantilla recibía
+ * `startTime`/`endTime` + `timezone` y los formateaba acá mismo con
+ * `Intl.DateTimeFormat`, tratándolos siempre como un instante real — para
+ * una reserva de alojamiento eso rompía (bug reportado 19/08/2026:
+ * `startTime`/`endTime` de alojamiento son "medianoche UTC del día",
+ * convertirlas al huso del negocio corría el horario mostrado sin
+ * relación con el check-in/check-out real configurado). Separar el
+ * formateo del armado de HTML deja esa decisión en un solo lugar
+ * (email.handlers.ts), no repetida si aparece un tercer tipo de mail.
  */
 
 export interface ReservationConfirmedEmailParams {
   customerName: string;
   businessDisplayName: string;
   resourceName: string;
-  startTime: Date;
-  endTime: Date;
-  /** IANA (ej. America/Argentina/Buenos_Aires) — ver business_profile.timezone. */
-  timezone: string;
+  /** Ya formateado para mostrar tal cual, ej. "lunes, 28 de septiembre de 2026, 15:00". */
+  checkInLabel: string;
+  /** Ídem, para el fin de la reserva. */
+  checkOutLabel: string;
 }
 
 export function reservationConfirmedEmail(
   params: ReservationConfirmedEmailParams,
 ): { subject: string; html: string } {
-  const { customerName, businessDisplayName, resourceName, startTime, endTime, timezone } = params;
-  const dateFormat = new Intl.DateTimeFormat('es-AR', {
-    timeZone: timezone,
-    dateStyle: 'full',
-    timeStyle: 'short',
-  });
+  const { customerName, businessDisplayName, resourceName, checkInLabel, checkOutLabel } = params;
 
   return {
     subject: `Reserva confirmada — ${businessDisplayName}`,
@@ -46,11 +46,11 @@ export function reservationConfirmedEmail(
           </tr>
           <tr>
             <td style="padding: 8px 0; color: #666;">Desde</td>
-            <td style="padding: 8px 0; font-weight: 600;">${dateFormat.format(startTime)}</td>
+            <td style="padding: 8px 0; font-weight: 600;">${escapeHtml(checkInLabel)}</td>
           </tr>
           <tr>
             <td style="padding: 8px 0; color: #666;">Hasta</td>
-            <td style="padding: 8px 0; font-weight: 600;">${dateFormat.format(endTime)}</td>
+            <td style="padding: 8px 0; font-weight: 600;">${escapeHtml(checkOutLabel)}</td>
           </tr>
         </table>
         <p style="color: #666; font-size: 13px;">Si no reconocés esta reserva, respondé este mail.</p>

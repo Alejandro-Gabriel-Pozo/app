@@ -22,7 +22,15 @@ services:
     # el deploy de TODOS es bajo — revisar este acoplamiento si el número
     # de tenants crece (podría convenir no fallar el build por un tenant
     # puntual y solo alertar, en vez de bloquear a todos).
-    buildCommand: npm install && npm run build && npm run migrate:tenants
+    # `npx puppeteer browsers install chrome` explícito (19/08/2026) --
+    # @arcasdk/pdf (PDF de factura) depende de Puppeteer, cuyo postinstall
+    # debería descargar Chromium solo, pero Render cachea `node_modules`
+    # entre builds y no lo volvió a disparar: el deploy quedaba con
+    # "Could not find Chrome" en runtime pese al build "exitoso". Correrlo
+    # como paso explícito del build (ver .puppeteerrc.cjs para dónde cae el
+    # caché) no depende de que el postinstall se dispare -- es idempotente,
+    # si el binario ya está no vuelve a bajarlo.
+    buildCommand: npm install && npx puppeteer browsers install chrome && npm run build && npm run migrate:tenants
     startCommand: npm start
     healthCheckPath: /health
     envVars:

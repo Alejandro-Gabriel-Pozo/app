@@ -113,4 +113,64 @@ describe('handleReservationConfirmedEmail', () => {
 
     expect(emailSender.sent).toHaveLength(0);
   });
+
+  // Regresión (19/08/2026): startTime/endTime de una reserva de alojamiento
+  // son "medianoche UTC del día calendario" (Reservas, appfrontend-main),
+  // no un instante real -- convertirlas al huso del negocio como si lo
+  // fueran mostraba un horario sin relación con el check-in/check-out
+  // configurado (reportado: "Desde"/"Hasta" mostraban 9pm-9pm ambos).
+  it('alojamiento: muestra el check-in/check-out ESTÁNDAR del negocio, no el instante crudo convertido de huso', async () => {
+    const profileRepo = new FakeBusinessProfileRepository({
+      id: 'default', displayName: 'Hotel ZULU', contactEmail: null,
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '15:00:00', defaultCheckOutTime: '10:00:00',
+      legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+      fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+      fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
+      defaultIvaRate: 21, pricesIncludeIva: true,
+      createdAt: now, updatedAt: now,
+    });
+    const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
+
+    // Check-in 29/09, check-out 30/09 -- medianoche UTC de cada día, tal
+    // cual los manda Reservas hoy.
+    await handler(fakeEvent({
+      customerEmail: 'cliente@example.com',
+      customerName:  'Ale',
+      resourceName:  'Habitación 03',
+      startTime:     '2026-09-29T00:00:00.000Z',
+      endTime:       '2026-09-30T00:00:00.000Z',
+      isLodging:     true,
+    }));
+
+    const html = emailSender.sent[0]!.html;
+    expect(html).toContain('29 de septiembre de 2026, 3:00 p. m.');
+    expect(html).toContain('30 de septiembre de 2026, 10:00 a. m.');
+    expect(html).not.toContain('9:00 p. m.');
+  });
+
+  it('turno con horario real (no alojamiento): sigue convirtiendo el instante al huso del negocio', async () => {
+    const profileRepo = new FakeBusinessProfileRepository({
+      id: 'default', displayName: 'Hotel ZULU', contactEmail: null,
+      currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '15:00:00', defaultCheckOutTime: '10:00:00',
+      legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+      fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+      fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
+      defaultIvaRate: 21, pricesIncludeIva: true,
+      createdAt: now, updatedAt: now,
+    });
+    const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
+
+    // 13:00 UTC = 10:00 en Argentina (UTC-3) -- instante real de un turno.
+    await handler(fakeEvent({
+      customerEmail: 'cliente@example.com',
+      customerName:  'Ale',
+      resourceName:  'Barbero Isahía',
+      startTime:     '2026-08-20T13:00:00.000Z',
+      endTime:       '2026-08-20T13:30:00.000Z',
+      isLodging:     false,
+    }));
+
+    const html = emailSender.sent[0]!.html;
+    expect(html).toContain('10:00');
+  });
 });

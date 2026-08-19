@@ -448,6 +448,41 @@ describe('ReservationService', () => {
       expect((eventRepo.events[0] as { eventType: string }).eventType)
         .toBe('reservation.confirmed');
     });
+
+    // Regresión (19/08/2026): email.handlers.ts necesita saber si la
+    // reserva es de una categoría de alojamiento para formatear
+    // Desde/Hasta con el check-in/check-out ESTÁNDAR del negocio en vez de
+    // convertir el instante crudo (que para alojamiento es solo una marca
+    // de día calendario, no un horario real).
+    it('el payload de reservation.confirmed incluye isLodging según la categoría del recurso', async () => {
+      const lodgingCategoryRepo: ICategoryRepository = {
+        async findById() {
+          return {
+            id: 'cat-table', name: 'Habitaciones', fields: [], active: true,
+            isLodging: true, createdAt: new Date(), updatedAt: new Date(),
+          };
+        },
+        async findAll() { return []; },
+        async countActive() { return 0; },
+        async create(): Promise<never> { throw new Error('no usado en este test'); },
+        async update(): Promise<never> { throw new Error('no usado en este test'); },
+        async deactivate() {},
+      };
+      const lodgingService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+      );
+
+      await lodgingService.createReservation({
+        id: 'res-lodging', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      await lodgingService.confirmReservation('res-lodging', TEST_BUSINESS_ID);
+
+      const event = eventRepo.events[0] as { payload: { isLodging: boolean } };
+      expect(event.payload.isLodging).toBe(true);
+    });
   });
 
   // -------------------------------------------------------------------------

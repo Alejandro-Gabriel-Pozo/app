@@ -536,6 +536,17 @@ export class ReservationService {
     const reservation = await this.requireReservation(id);
     reservation.confirm();
 
+    // email.handlers.ts necesita saber si esto es alojamiento (E1) para
+    // formatear Desde/Hasta como día calendario + horario ESTÁNDAR del
+    // negocio, no como el instante crudo -- startTime/endTime de una
+    // reserva de alojamiento son "medianoche UTC de ese día" (marca de
+    // fecha, ver comentario de Reservas en appfrontend-main), sin
+    // significado real de hora. Aplicarles el huso del negocio como si
+    // fueran un instante real corría el horario mostrado (bug reportado
+    // 19/08/2026: "Desde"/"Hasta" mostraban 9pm-9pm sin relación con el
+    // check-in/check-out configurado).
+    const category = await this.categoryRepository.findById(reservation.resource.categoryId);
+
     await this.transactionManager.run(async (client: SqlClient) => {
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
@@ -557,6 +568,7 @@ export class ReservationService {
           customerEmail: reservation.customer.email ?? null,
           customerName:  reservation.customer.fullName,
           resourceName:  reservation.resource.name,
+          isLodging:     category?.isLodging ?? false,
         },
       });
     });

@@ -28,12 +28,13 @@ export function handleReservationConfirmedEmail(
   businessProfileRepo: BusinessProfileRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { customerEmail, customerName, resourceName, startTime, endTime } = event.payload as {
+    const { customerEmail, customerName, resourceName, startTime, endTime, isLodging } = event.payload as {
       customerEmail?: string | null;
       customerName?: string;
       resourceName?: string;
       startTime?: string;
       endTime?: string;
+      isLodging?: boolean;
     };
 
     // Cliente sin mail cargado (solo teléfono, ej.) -- nada que enviar, no es un error.
@@ -45,9 +46,8 @@ export function handleReservationConfirmedEmail(
       customerName: customerName ?? 'cliente',
       businessDisplayName: profile.displayName ?? DEFAULT_SENDER_NAME,
       resourceName,
-      startTime: new Date(startTime),
-      endTime: new Date(endTime),
-      timezone: profile.timezone,
+      checkInLabel:  formatReservationBoundary(startTime, isLodging, profile.timezone, profile.defaultCheckInTime),
+      checkOutLabel: formatReservationBoundary(endTime,   isLodging, profile.timezone, profile.defaultCheckOutTime),
     });
 
     await emailSender.send({
@@ -58,4 +58,35 @@ export function handleReservationConfirmedEmail(
       html,
     });
   };
+}
+
+/**
+ * Etiqueta a mostrar en el mail para el inicio/fin de una reserva.
+ *
+ * - **Alojamiento (E1):** `boundary` es "medianoche UTC del día calendario"
+ *   (así lo guarda Reservas, appfrontend-main) -- no un horario real. Se
+ *   muestra el día (leído en UTC, nunca con getters locales -- mismo
+ *   motivo que el resto del sistema, ver housekeeping/calendario) más el
+ *   horario ESTÁNDAR configurado en Mi Negocio para check-in/check-out.
+ *   `standardTime` ("HH:MM[:SS]", columna TIME de Postgres) es ya la hora
+ *   de pared del negocio -- se formatea tal cual, sin pasar por ninguna
+ *   conversión de huso (no representa un instante, no tiene zona).
+ * - **Turno con horario real** (`bookingMode='slot'`): `boundary` sí es un
+ *   instante real -- se convierte al huso del negocio, como antes.
+ */
+function formatReservationBoundary(
+  boundary: string,
+  isLodging: boolean | undefined,
+  timezone: string,
+  standardTime: string | null,
+): string {
+  if (isLodging) {
+    const dateLabel = new Intl.DateTimeFormat('es-AR', { dateStyle: 'full', timeZone: 'UTC' }).format(new Date(boundary));
+    if (!standardTime) return dateLabel;
+    const [h = 0, m = 0] = standardTime.split(':').map(Number);
+    const timeLabel = new Intl.DateTimeFormat('es-AR', { timeStyle: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(2000, 0, 1, h, m)));
+    return `${dateLabel}, ${timeLabel}`;
+  }
+
+  return new Intl.DateTimeFormat('es-AR', { dateStyle: 'full', timeStyle: 'short', timeZone: timezone }).format(new Date(boundary));
 }
