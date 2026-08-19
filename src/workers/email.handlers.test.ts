@@ -44,6 +44,7 @@ describe('handleReservationConfirmedEmail', () => {
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -73,6 +74,7 @@ describe('handleReservationConfirmedEmail', () => {
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -96,6 +98,7 @@ describe('handleReservationConfirmedEmail', () => {
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);

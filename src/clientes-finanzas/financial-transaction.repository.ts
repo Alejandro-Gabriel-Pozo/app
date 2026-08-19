@@ -106,6 +106,15 @@ export interface FinancialTransactionRepository {
     tx: Omit<FinancialTransaction, 'createdAt'>,
   ): Promise<FinancialTransaction | null>;
 
+  /**
+   * Busca una transacción puntual por su propio id — a diferencia de las
+   * `getByX` de abajo (que devuelven varias, agrupadas por origen), esto
+   * es "dame ESTA fila". Agregado (19/08/2026) para que el servicio de
+   * facturación AFIP pueda resolver el `FinancialTransaction` exacto que
+   * se está facturando a partir de `invoices.financial_transaction_id`.
+   */
+  getById(id: string): Promise<FinancialTransaction | null>;
+
   /** Obtiene todas las transacciones de una reserva. */
   getByReservationId(reservationId: string): Promise<FinancialTransaction[]>;
 

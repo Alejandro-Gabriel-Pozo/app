@@ -55,6 +55,7 @@ import { createHousekeepingRouter }      from './pms-estadias/housekeeping.route
 import { createStaysRouter }             from './pms-estadias/stays.routes.js';
 import { createBusinessHoursRouter }     from './platform/business-hours.routes.js';
 import { createBusinessProfileRouter }   from './api/routes/business-profile.routes.js';
+import { createInvoicesRouter, createAfipCredentialsRouter } from './facturacion/invoices.routes.js';
 import { createBusinessModulesRouter }   from './platform/business-modules.routes.js';
 import { createCashRegisterRouter }      from './clientes-finanzas/cash-register.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
@@ -243,7 +244,13 @@ export async function createApp(): Promise<{
   app.use('/api/waste-reasons', requireModule(container, ModuleKey.POS_RESTAURANTE), createWasteReasonsRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
+  // Montado ANTES de /api/business-profile a propósito: es más específico
+  // (Express prueba routers en orden de registro, pero conviene no
+  // depender de que el router menos específico no matchee el path por
+  // casualidad).
+  app.use('/api/business-profile/afip-credentials', createAfipCredentialsRouter(container));
   app.use('/api/business-profile',  createBusinessProfileRouter());
+  app.use('/api/invoices',          createInvoicesRouter(container));
   app.use('/api/audit-log',         createAuditLogRouter());
   app.use(
     '/api/cash-register',

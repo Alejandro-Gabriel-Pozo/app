@@ -1905,6 +1905,38 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_postal_code
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_country     VARCHAR(2);
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_sales_point         INTEGER;
 
+-- Conexión real a AFIP (19/08/2026, pendientes-2026-08-18.md, Facturación
+-- Electrónica -- Fase 2). Todo nullable/con default explícito, config real
+-- por negocio (A2.9) -- nunca una constante de código:
+--
+-- default_iva_rate/prices_include_iva: si los precios de catálogo YA
+-- incluyen IVA, y a qué alícuota. Confirmado con el dueño (19/08/2026):
+-- HOY sus precios incluyen IVA al 21% general -- por eso el DEFAULT acá
+-- refleja SU situación real, no una constante inventada por el sistema;
+-- sigue siendo un campo editable, no un valor fijo sin respaldo. Cuando
+-- haga falta una alícuota distinta por producto, es un campo nuevo en
+-- products/bookable_services, no tocar esto.
+--
+-- afip_environment: 'homologacion' (pruebas, sin validez fiscal real) o
+-- 'producción' -- cada uno tiene su propio certificado, nunca se mezclan.
+-- afip_cert_encrypted/afip_key_encrypted: certificado X.509 + clave
+-- privada, cifrados con el mismo esquema AES-256-GCM que ya usa
+-- db_url_encrypted (encryptConnectionString/decryptConnectionString,
+-- tenant-db.setup.ts) -- un solo mecanismo de cifrado en el proyecto, no
+-- uno nuevo por secreto.
+-- afip_ticket_encrypted/afip_ticket_expires_at: cachea el Ticket de
+-- Acceso de WSAA (Token+Sign, dura 12hs) para no volver a autenticar en
+-- cada request -- un ticket por negocio alcanza porque solo se usa el
+-- servicio WSFE. Cifrado igual que el certificado.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_iva_rate      NUMERIC(5,2) NOT NULL DEFAULT 21.00 CHECK (default_iva_rate >= 0);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS prices_include_iva    BOOLEAN      NOT NULL DEFAULT TRUE;
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_environment      VARCHAR(20)
+  CHECK (afip_environment IS NULL OR afip_environment IN ('homologacion', 'produccion'));
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_cert_encrypted   TEXT;
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_key_encrypted    TEXT;
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_ticket_encrypted TEXT;
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_ticket_expires_at TIMESTAMPTZ;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_profile_updated_at') THEN
     CREATE TRIGGER business_profile_updated_at
@@ -1912,4 +1944,78 @@ DO $$ BEGIN
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- invoices — comprobantes fiscales AFIP (DOCUMENTO, criterios-datos.md
+-- Parte 1 -- nunca se edita ni se borra, se anula con otro documento, jamás
+-- ni un carácter cambia después de emitido).
+--
+-- Numeración por talonario (criterios-datos.md nota al pie 1, ya
+-- anticipada en el diseño desde el arranque): (business_id, pto_vta,
+-- cbte_tipo) es su propia secuencia -- Factura A, B, C son talonarios
+-- independientes, no una numeración global. cbte_nro queda NULL hasta que
+-- AFIP confirma el CAE (nunca se reserva localmente antes de saber que
+-- AFIP lo aceptó, para no dejar huecos si el pedido falla).
+--
+-- A3.9 (contrapartida): financial_transaction_id es NOT NULL -- un
+-- comprobante siempre factura un cobro que ya existe en el ledger, nunca
+-- un monto inventado.
+--
+-- idempotency_key: DETERMINÍSTICA por financial_transaction_id
+-- ("invoice:<financialTransactionId>"), no generada por el cliente en
+-- cada intento (a diferencia de R13/A8.5 en su forma general) -- acá el
+-- límite de negocio real ya existe solo (un cobro se factura una sola
+-- vez), y una clave server-side evita el escenario exacto que A8.6
+-- previene: un timeout de red que el cliente reintenta con una clave
+-- NUEVA terminaría pidiendo un segundo CAE para el mismo cobro.
+--
+-- status: PENDING (a punto de pedir el CAE) -> ISSUED (CAE recibido) |
+-- REJECTED (AFIP lo rechazó explícito, Resultado='R' -- se puede corregir
+-- y reintentar con una fila nueva) | FAILED_UNCERTAIN (falla de red/
+-- timeout ambiguo -- A8.6, nunca se reintenta solo, requiere confirmar
+-- contra FECompUltimoAutorizado/getVoucherInfo antes de que un humano
+-- decida qué hacer).
+CREATE TABLE IF NOT EXISTS invoices (
+  id                        VARCHAR(255)  PRIMARY KEY,
+  business_id               VARCHAR(255)  NOT NULL,
+  financial_transaction_id  VARCHAR(255)  NOT NULL REFERENCES financial_transactions(id),
+  customer_id               VARCHAR(255)  NOT NULL REFERENCES customers(id),
+  idempotency_key           VARCHAR(255)  NOT NULL,
+  environment               VARCHAR(20)   NOT NULL CHECK (environment IN ('homologacion', 'produccion')),
+  pto_vta                   INTEGER       NOT NULL,
+  cbte_tipo                 INTEGER       NOT NULL,
+  cbte_nro                  BIGINT,
+  concepto                  INTEGER       NOT NULL,
+  doc_tipo                  INTEGER       NOT NULL,
+  doc_nro                   VARCHAR(20)   NOT NULL,
+  condicion_iva_receptor_id INTEGER       NOT NULL,
+  moneda                    VARCHAR(3)    NOT NULL DEFAULT 'PES',
+  imp_neto                  NUMERIC(12,2) NOT NULL CHECK (imp_neto >= 0),
+  imp_iva                   NUMERIC(12,2) NOT NULL CHECK (imp_iva >= 0),
+  imp_total                 NUMERIC(12,2) NOT NULL CHECK (imp_total >= 0),
+  cae                       VARCHAR(20),
+  cae_vto                   DATE,
+  status                    VARCHAR(30)   NOT NULL DEFAULT 'PENDING'
+                              CHECK (status IN ('PENDING', 'ISSUED', 'REJECTED', 'FAILED_UNCERTAIN')),
+  afip_request              JSONB,
+  afip_response             JSONB,
+  error_message             VARCHAR(1000),
+  created_at                TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  issued_at                 TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_idempotency_key
+  ON invoices (idempotency_key);
+
+-- El talonario -- único por negocio+punto de venta+tipo+número, solo
+-- cuando el número ya está asignado (AFIP lo confirmó).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_talonario
+  ON invoices (business_id, pto_vta, cbte_tipo, cbte_nro)
+  WHERE cbte_nro IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_invoices_financial_transaction
+  ON invoices (financial_transaction_id);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_customer
+  ON invoices (customer_id, created_at DESC);
 

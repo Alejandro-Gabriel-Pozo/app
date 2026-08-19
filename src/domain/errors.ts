@@ -299,3 +299,41 @@ export class RoleNotAvailableInPlanError extends DomainError {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Facturación electrónica AFIP (19/08/2026, Fase 2)
+// ---------------------------------------------------------------------------
+
+export class FinancialTransactionNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Transacción financiera "${id}" no encontrada`, 'FINANCIAL_TRANSACTION_NOT_FOUND');
+  }
+}
+
+export class AfipNotConfiguredError extends DomainError {
+  constructor(reason: string) {
+    super(`Facturación AFIP no está configurada: ${reason}`, 'AFIP_NOT_CONFIGURED');
+  }
+}
+
+/**
+ * Falla ambigua al pedir un CAE (timeout/error de red durante la llamada
+ * a AFIP) — A8.6: nunca se reintenta sola. La invoice queda
+ * `FAILED_UNCERTAIN`, un humano tiene que confirmar contra
+ * `getVoucherInfo`/el propio portal de AFIP antes de decidir si
+ * reintentar o no.
+ */
+export class AfipRequestUncertainError extends DomainError {
+  constructor(invoiceId: string, cause: string) {
+    super(
+      `No se pudo confirmar si AFIP procesó el comprobante ${invoiceId}: ${cause}. Verificar antes de reintentar.`,
+      'AFIP_REQUEST_UNCERTAIN',
+    );
+  }
+}
+
+export class AfipRequestRejectedError extends DomainError {
+  constructor(invoiceId: string, observations: string) {
+    super(`AFIP rechazó el comprobante ${invoiceId}: ${observations}`, 'AFIP_REQUEST_REJECTED');
+  }
+}

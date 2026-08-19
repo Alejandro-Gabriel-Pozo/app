@@ -101,8 +101,11 @@ function domainErrorStatus(error: DomainError): number {
 
     // --- 422 Unprocessable Entity ---
     // El request es válido pero viola una regla de negocio (mismo criterio
-    // que INVALID_CATEGORY en resources.routes.ts).
+    // que INVALID_CATEGORY en resources.routes.ts). AFIP_REQUEST_REJECTED:
+    // el request llegó bien formado, pero AFIP rechazó el comprobante por
+    // una regla de negocio suya — mismo criterio.
     case 'COMPANY_CUSTOMER_REQUIRED':
+    case 'AFIP_REQUEST_REJECTED':
       return 422;
 
     // --- 401 Unauthorized ---
@@ -140,9 +143,12 @@ function domainErrorStatus(error: DomainError): number {
     case 'PRODUCT_NOT_SHARED':
     case 'COMPANY_PRODUCT_NOT_FOUND':
     case 'RATE_PLAN_NOT_FOUND':
+    case 'FINANCIAL_TRANSACTION_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
+    // AFIP_REQUEST_UNCERTAIN: no es "no encontrado" ni "mal pedido" — es un
+    // estado de conflicto real (no se sabe si AFIP ya lo procesó), A8.6.
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
@@ -157,10 +163,16 @@ function domainErrorStatus(error: DomainError): number {
     case 'DUPLICATE_RATE_PLAN_NAME':
     case 'NEXT_ARRIVAL_CONFLICT':
     case 'NO_PRICE_ADJUSTMENT_PENDING':
+    case 'AFIP_REQUEST_UNCERTAIN':
       return 409;
 
     // --- 503 Service Unavailable ---
     // Red de seguridad: PLATFORM_UNAVAILABLE se captura localmente en los routers.
+    // AFIP_NOT_CONFIGURED: mismo criterio que BUSINESS_NOT_READY -- la
+    // funcionalidad depende de un recurso externo (certificado AFIP) que
+    // todavía no está disponible para este negocio, no es un error del
+    // request en sí.
+    case 'AFIP_NOT_CONFIGURED':
     case 'PLATFORM_UNAVAILABLE':
     case 'BUSINESS_NOT_READY':
       return 503;

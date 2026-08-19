@@ -30,6 +30,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
     createdAt: now, updatedAt: now,
     ...overrides,
   };
@@ -49,6 +50,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async createWithClient(_client: SqlClient, tx: Omit<FinancialTransaction, 'createdAt'>) {
     return this.create(tx);
   }
+  async getById(id: string) { return this.created.find((tx) => tx.id === id) ?? null; }
   async getByOrderId() { return []; }
   async getByReservationId() { return []; }
   async getByCustomerId() { return []; }

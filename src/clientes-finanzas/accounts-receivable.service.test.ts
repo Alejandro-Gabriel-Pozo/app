@@ -55,6 +55,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
     return { ...tx, createdAt: new Date() };
   }
 
+  async getById(): Promise<FinancialTransaction | null> { return null; }
   async getByIdempotencyKey(): Promise<FinancialTransaction | undefined> { return undefined; }
   async getByReservationId(): Promise<FinancialTransaction[]> { return []; }
   async getByOrderId(): Promise<FinancialTransaction[]> { return []; }
@@ -109,6 +110,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
     createdAt: now, updatedAt: now,
     ...overrides,
   };

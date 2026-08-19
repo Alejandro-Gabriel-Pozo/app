@@ -171,6 +171,14 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
   }
 
+  async getById(id: string): Promise<FinancialTransaction | null> {
+    const result = await this.sqlClient.query<TransactionRow>(
+      `SELECT * FROM financial_transactions WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? this.rowToEntity(result.rows[0]) : null;
+  }
+
   async getByReservationId(reservationId: string): Promise<FinancialTransaction[]> {
     const result = await this.sqlClient.query<TransactionRow>(
       `SELECT * FROM financial_transactions

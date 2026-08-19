@@ -60,6 +60,17 @@ export interface BusinessProfile {
   fiscalAddressCountry: string | null;
   /** Punto de Venta (terminología AFIP) — un solo punto de venta por ahora, ver schema.sql. */
   afipSalesPoint: number | null;
+  /**
+   * Conexión real a AFIP (19/08/2026, Fase 2). Confirmado con el dueño
+   * (A2.9 — config real, nunca una constante): HOY sus precios de
+   * catálogo YA incluyen IVA, alícuota general 21%. Ninguno de los dos es
+   * un supuesto del sistema, son estos dos campos. El certificado/clave/
+   * ticket de WSAA NO viven acá — `AfipCredentialsRepository` los maneja
+   * aparte, nunca deben poder salir por este mismo camino (GET
+   * /api/business-profile expone el resto del perfil entero).
+   */
+  defaultIvaRate: number;
+  pricesIncludeIva: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,4 +92,6 @@ export interface UpdateBusinessProfileInput {
   fiscalAddressPostalCode?: string | null | undefined;
   fiscalAddressCountry?: string | null | undefined;
   afipSalesPoint?: number | null | undefined;
+  defaultIvaRate?: number | undefined;
+  pricesIncludeIva?: boolean | undefined;
 }

@@ -206,7 +206,12 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // financial_transactions.confirmed_by (identity_id de quien autorizó el
 // ajuste a mano, mismo criterio que schedule_approved_by). Ver
 // pendientes-2026-08-18.md punto I.
-export const CURRENT_SCHEMA_VERSION = 22;
+// v23 (19/08/2026): conexión real a AFIP — business_profile gana
+// default_iva_rate/prices_include_iva/afip_environment/afip_cert_encrypted/
+// afip_key_encrypted/afip_ticket_encrypted/afip_ticket_expires_at; tabla
+// `invoices` nueva (DOCUMENTO — comprobantes con CAE). Ver
+// docs/referencia-afip-wsfev1.md y pendientes-2026-08-19.md.
+export const CURRENT_SCHEMA_VERSION = 23;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

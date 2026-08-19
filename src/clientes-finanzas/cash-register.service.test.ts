@@ -82,6 +82,7 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
 
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) { return { ...tx, createdAt: new Date() }; }
   async createWithClient(_client: SqlClient, tx: Omit<FinancialTransaction, 'createdAt'>) { return this.create(tx); }
+  async getById() { return null; }
   async getByReservationId() { return []; }
   async getByOrderId() { return []; }
   async getByCustomerId() { return []; }
@@ -112,6 +113,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
     createdAt: now, updatedAt: now,
     ...overrides,
   };
