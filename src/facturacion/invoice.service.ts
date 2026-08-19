@@ -18,14 +18,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { Arca } from '@arcasdk/core';
 import type { InvoiceRepository } from './invoice.repository.js';
 import type { Invoice, AfipEnvironment } from './invoice.entities.js';
-import type { AfipCredentialsRepository } from './afip-credentials.repository.js';
+import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
-import { buildAfipClient } from './afip-client.factory.js';
-import type { AfipClientFactory } from './afip-client.factory.js';
+import { buildDefaultAfipBillingPort } from './arca-sdk-billing.adapter.js';
+import type { AfipBillingPort } from './afip-billing.port.js';
 import {
   CBTE_TIPO_FACTURA_B,
   CONCEPTO_SERVICIOS,
@@ -73,13 +72,20 @@ function afipDateToIso(afipDate: string): string {
   return `${afipDate.slice(0, 4)}-${afipDate.slice(4, 6)}-${afipDate.slice(6, 8)}`;
 }
 
+/** Firma de `buildDefaultAfipBillingPort` — inyectable para testear la orquestación sin pegarle al SDK real (afip-billing.port.ts, R14: un solo puerto, cualquier SDK detrás). */
+export type AfipBillingPortFactory = (
+  credentials: AfipCredentials,
+  taxId: string,
+  credentialsRepo: AfipCredentialsRepository,
+) => AfipBillingPort;
+
 export class InvoiceService {
   constructor(
     private readonly invoiceRepo: InvoiceRepository,
     private readonly financialTransactionRepo: FinancialTransactionRepository,
     private readonly businessProfileRepo: BusinessProfileRepository,
     private readonly afipCredentialsRepo: AfipCredentialsRepository,
-    private readonly clientFactory: AfipClientFactory = buildAfipClient,
+    private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
   /**
@@ -219,17 +225,15 @@ export class InvoiceService {
   }
 
   private async issue(
-    client: Arca,
+    port: AfipBillingPort,
     invoice: Invoice,
     afipRequest: Record<string, unknown>,
     environment: AfipEnvironment,
     ptoVta: number,
   ): Promise<Invoice> {
-    const billing = client.electronicBillingService;
-
     let lastVoucherBefore: number;
     try {
-      lastVoucherBefore = (await billing.getLastVoucher(ptoVta, invoice.cbteTipo)).cbteNro;
+      lastVoucherBefore = (await port.getLastVoucher(ptoVta, invoice.cbteTipo)).cbteNro;
     } catch (err) {
       // Ni siquiera se pudo consultar el último comprobante -- sin ese
       // punto de referencia no hay forma de reconciliar después, así que
@@ -243,57 +247,51 @@ export class InvoiceService {
 
     let result;
     try {
-      result = await billing.createNextVoucher(afipRequest as never);
+      result = await port.createNextVoucher(afipRequest);
     } catch (err) {
-      return this.reconcileAfterFailure(client, invoice, ptoVta, lastVoucherBefore, errMessage(err));
+      return this.reconcileAfterFailure(port, invoice, ptoVta, lastVoucherBefore, errMessage(err));
     }
 
-    const cabResp = result.response.FeCabResp;
-    const detResp = result.response.FeDetResp?.FECAEDetResponse?.[0];
-
-    if (cabResp?.Resultado === 'R' || detResp?.Resultado === 'R') {
-      const obs = (detResp?.Observaciones?.Obs ?? []).map((o) => `${o.Code}: ${o.Msg}`).join('; ')
-        || (result.response.Errors?.Err ?? []).map((e) => `${e.Code}: ${e.Msg}`).join('; ')
-        || 'sin detalle';
+    if (result.resultado === 'R') {
       // AFIP evaluó y dijo que no -- confirmado que no quedó nada emitido,
       // reintentable solo una vez corregido lo que haya rechazado.
+      const obs = result.observaciones ?? 'sin detalle';
       await this.invoiceRepo.markFailed(invoice.id, {
         status: 'REJECTED',
         errorMessage: obs,
-        afipResponse: result.response,
+        afipResponse: result.raw,
         afipContacted: true,
       });
       throw new AfipRequestRejectedError(invoice.id, obs);
     }
 
-    if (!detResp?.CbteDesde || !result.cae) {
-      const message = `respuesta de AFIP sin CbteDesde/CAE pese a no venir Resultado='R': ${JSON.stringify(result.response)}`;
+    if (!result.cbteDesde || !result.cae) {
+      const message = `respuesta de AFIP sin CbteDesde/CAE pese a no venir Resultado='R': ${JSON.stringify(result.raw)}`;
       // AFIP respondió pero de forma inesperada -- genuinamente ambiguo,
       // requiere revisión manual antes de reintentar (A8.6).
-      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.response, afipContacted: true });
+      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.raw, afipContacted: true });
       throw new AfipRequestUncertainError(invoice.id, message);
     }
 
     return this.invoiceRepo.markIssued(invoice.id, {
-      cbteNro: detResp.CbteDesde,
+      cbteNro: result.cbteDesde,
       cae: result.cae,
-      caeVto: afipDateToIso(result.caeFchVto),
-      afipResponse: result.response,
+      caeVto: afipDateToIso(result.caeFchVto!),
+      afipResponse: result.raw,
     });
   }
 
   /** A8.6 — reconciliación después de una falla ambigua, nunca un reintento directo. */
   private async reconcileAfterFailure(
-    client: Arca,
+    port: AfipBillingPort,
     invoice: Invoice,
     ptoVta: number,
     lastVoucherBefore: number,
     originalErrorMessage: string,
   ): Promise<Invoice> {
-    const billing = client.electronicBillingService;
     let lastVoucherAfter: number | null = null;
     try {
-      lastVoucherAfter = (await billing.getLastVoucher(ptoVta, invoice.cbteTipo)).cbteNro;
+      lastVoucherAfter = (await port.getLastVoucher(ptoVta, invoice.cbteTipo)).cbteNro;
     } catch {
       // no se pudo ni reconciliar -- queda incierto, un humano lo revisa a mano.
     }
@@ -301,16 +299,13 @@ export class InvoiceService {
     if (lastVoucherAfter !== null && lastVoucherAfter > lastVoucherBefore) {
       // AFIP SÍ procesó el pedido pese al error de red del lado cliente --
       // se recupera el CAE real en vez de perderlo o pedir uno nuevo.
-      // Nombres en camelCase acá (codAutorizacion/fchVto) -- este DTO del
-      // SDK normaliza el XML crudo de AFIP (CAE/CAEFchVto), a diferencia
-      // de CreateVoucherResultDto que sí expone `cae`/`caeFchVto` directo.
-      const info = await billing.getVoucherInfo(lastVoucherAfter, ptoVta, invoice.cbteTipo).catch(() => null);
+      const info = await port.getVoucherInfo(lastVoucherAfter, ptoVta, invoice.cbteTipo).catch(() => null);
       if (info?.codAutorizacion) {
         return this.invoiceRepo.markIssued(invoice.id, {
           cbteNro: lastVoucherAfter,
           cae: info.codAutorizacion,
           caeVto: info.fchVto ? afipDateToIso(info.fchVto) : afipDateToIso(toAfipDate(new Date())),
-          afipResponse: info,
+          afipResponse: info.raw,
         });
       }
     }

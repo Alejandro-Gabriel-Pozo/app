@@ -9,6 +9,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
+import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -181,7 +182,11 @@ describe('InvoiceService', () => {
       new FakeFinancialTransactionRepository(opts.tx === undefined ? makeTx() : opts.tx),
       new FakeBusinessProfileRepository(opts.profile ?? makeProfile()),
       new FakeAfipCredentialsRepository(opts.credentials === undefined ? makeCredentials() : opts.credentials),
-      () => client,
+      // buildService sigue armando un Arca fake (fakeArcaClient) igual que
+      // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
+      // existentes de fakeArcaClient({...}) en esta suite no necesiten
+      // tocarse uno por uno.
+      () => buildArcaBillingAdapter(client),
     );
   }
 
@@ -213,7 +218,7 @@ describe('InvoiceService', () => {
 
   describe('afipCuit (schema v25) -- CUIT de autenticación distinto del legal (taxId)', () => {
     it('sin afipCuit cargado, se autentica con taxId (comportamiento de siempre)', async () => {
-      const clientFactory = vi.fn().mockReturnValue(fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }));
+      const clientFactory = vi.fn().mockReturnValue(buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) })));
       const service = new InvoiceService(
         invoiceRepo,
         new FakeFinancialTransactionRepository(makeTx()),
@@ -228,7 +233,7 @@ describe('InvoiceService', () => {
     });
 
     it('con afipCuit cargado, se autentica con ESE cuit, no con taxId -- no ensucia la identidad fiscal real', async () => {
-      const clientFactory = vi.fn().mockReturnValue(fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }));
+      const clientFactory = vi.fn().mockReturnValue(buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) })));
       const service = new InvoiceService(
         invoiceRepo,
         new FakeFinancialTransactionRepository(makeTx()),
