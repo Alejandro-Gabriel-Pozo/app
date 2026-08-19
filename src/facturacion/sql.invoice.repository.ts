@@ -21,7 +21,7 @@ interface InvoiceRow {
   imp_iva: string;
   imp_total: string;
   cae: string | null;
-  cae_vto: string | null;
+  cae_vto: Date | null; // DATE llega como Date en pg, no como string
   status: InvoiceStatus;
   afip_contacted: boolean;
   emisor_cuit: string | null;
@@ -52,7 +52,7 @@ function rowToEntity(row: InvoiceRow): Invoice {
     impIva: parseFloat(row.imp_iva),
     impTotal: parseFloat(row.imp_total),
     cae: row.cae,
-    caeVto: row.cae_vto,
+    caeVto: row.cae_vto ? row.cae_vto.toISOString().split('T')[0]! : null,
     status: row.status,
     afipContacted: row.afip_contacted,
     emisorCuit: row.emisor_cuit,
