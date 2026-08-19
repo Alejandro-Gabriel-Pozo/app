@@ -217,9 +217,11 @@ para el detalle completo de cada uno:
 ### Backlog / integraciones externas
 - Facturación electrónica AFIP — ✅ **Fase 1 resuelta (19/08/2026, punto
   P)**: perfil fiscal del negocio emisor (`business_profile`), cargado
-  desde Mi Negocio. Sigue sin arrancar la conexión real a AFIP (WSFEv1 /
-  SDK `arcasdk-main`), sin emisión de comprobantes, sin homologación —
-  eso es lo que queda de este ítem.
+  desde Mi Negocio. ✅ **Fase 2 resuelta (19/08/2026, punto T)**: conexión
+  real WSAA/WSFEv1 (`@arcasdk/core`), tabla `invoices`, UI de carga de
+  certificado. Sigue faltando: botón "Facturar" en el flujo de cobro y
+  prueba real contra AFIP homologación (el dueño todavía no presentó el
+  CSR) — eso es lo que queda de este ítem.
 - Mails de reserva confirmada — falta cuenta de Resend + dominio
   verificado (`NoopEmailSender` hasta entonces).
 - Login con Google — falta crear el OAuth Client ID en Google Cloud
@@ -1459,3 +1461,104 @@ Con esto se cierran las 4 decisiones que quedaron pendientes de la
 sesión de hoy (cookie httpOnly del portal, E7a, permisos por rol —
 diseño definido, implementación queda para cuando se aborde `PLAN_LIMITS`
 como sistema genérico — y este ajuste de precio).
+
+---
+
+## T. Facturación Electrónica AFIP — Fase 2 (conexión real WSFEv1), backend y UI de certificado comiteados (19/08/2026)
+
+A pedido explícito del dueño ("VAMOS POR CONEXIÓN REAL"), tras cerrar la
+Fase 1 (punto P, solo perfil fiscal). Esta fase agrega la conexión real
+a AFIP: autenticación WSAA, pedido de CAE por WSFEv1, y la tabla que
+guarda cada comprobante emitido.
+
+**Decisiones del dueño (`AskUserQuestion`) antes de arrancar:**
+- Todavía no presentó el CSR a AFIP — no hay certificado real para
+  probar en esta sesión, todo queda listo pero sin prueba end-to-end.
+- Ambiente: homologación primero.
+- Tipo de comprobante: Factura B.
+- Precios: incluyen IVA (más común de cara al cliente).
+- Tasa de IVA: 21% general para arrancar.
+
+**Clasificación (`criterios-negocio`):** comprobante AFIP = **DOCUMENTO**
+(no transacción ni maestro) — inmutable una vez con CAE, numeración
+correlativa por talonario, emitido por un tercero externo. Contrapartida
+de un `financial_transaction` ya existente (A3.9), nunca lo reemplaza.
+
+### Backend — comiteado y pusheado (`120e4a1`)
+
+- Nuevo módulo `src/facturacion/`: `SqlAfipCredentialsRepository`
+  (cert/clave/ambiente cifrados con AES-256-GCM, reutilizando
+  `encryptConnectionString`; cachea el ticket WSAA 12hs), catálogo de
+  códigos AFIP (`CbteTipo`/`DocTipo`/`CondicionIvaReceptorId`),
+  `afip-client.factory.ts` (arma el cliente `@arcasdk/core`), e
+  `InvoiceService` (solicitar/emitir/reconciliar un comprobante).
+- Tabla `invoices` (schema v23): `business_id` (aislamiento por tenant —
+  cada negocio tiene su propia BD, no hace falta columna de filtro
+  adicional), `idempotency_key` único, unicidad de talonario
+  (`business_id`, `pto_vta`, `cbte_tipo`, `cbte_nro`), FK a
+  `financial_transaction_id` (R15: si esa transacción no existe, el
+  INSERT falla en vez de guardar un comprobante huérfano).
+- **A8.6 — nunca reintentar una mutación ambigua.** Si la llamada a AFIP
+  se corta después de contactarlo (no se sabe si emitió o no), no se
+  reintenta a ciegas: `reconcileAfterFailure()` compara
+  `getLastVoucher()` antes/después del intento y consulta
+  `getVoucherInfo()` para confirmar qué pasó realmente, en vez de
+  arriesgar un comprobante salteado o duplicado.
+- `business_profile` gana `defaultIvaRate`/`pricesIncludeIva` (decisión
+  del dueño arriba).
+- `financial-transaction.repository` gana `getById()` — no existía,
+  hacía falta para resolver el cobro a facturar.
+- Nuevos `DomainError`: `FINANCIAL_TRANSACTION_NOT_FOUND` (404),
+  `AFIP_NOT_CONFIGURED` (503 — mismo criterio que `BUSINESS_NOT_READY`,
+  depende de un recurso externo todavía no disponible),
+  `AFIP_REQUEST_UNCERTAIN` (409, A8.6), `AFIP_REQUEST_REJECTED` (422 —
+  AFIP rechazó el comprobante por una regla de negocio suya).
+- Rutas nuevas, todas detrás de `requireModule(ModuleKey.FACTURACION)`
+  (módulo ya definido y sembrado, sin ninguna ruta que lo usara hasta
+  ahora): `GET/PUT/DELETE /api/business-profile/afip-credentials`
+  (`Roles.MANAGEMENT` — carga un secreto, no lo puede hacer cualquiera)
+  y `POST/GET /api/invoices` (`Roles.FRONT_DESK` — pedir el CAE de un
+  cobro ya registrado).
+- Verificado: `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
+  664/665 (+25 tests nuevos: catálogo AFIP, repositorio de credenciales
+  cifradas, `InvoiceService` incluida la reconciliación A8.6).
+- **Contra Postgres real** (branch temporal `test-afip-schema-19-08`,
+  bifurcada de `production` en el proyecto Neon `DB-APP-PPMS`, borrada al
+  terminar): el constraint de talonario único rechazó un duplicado
+  (`business_id` + `pto_vta` + `cbte_tipo` + `cbte_nro`), el
+  `idempotency_key` único funcionó igual, la FK a
+  `financial_transaction_id` inexistente falló tal como se esperaba
+  (R15), y los campos nuevos de `business_profile` quedaron con los
+  defaults reales (21.00, `true`).
+
+### Frontend — comiteado y pusheado (`280f7b9`)
+
+Nuevo dominio `lib/facturacion/` (`types.ts` + `api.ts`, mismo patrón que
+el resto de `lib/<dominio>/`): `afipCredentialsApi` (status/save/clear,
+nunca recibe el cert/clave de vuelta del backend) e `invoicesApi`
+(request/get/listByFinancialTransaction, listo para cuando exista el
+botón "Facturar"). En Mi Negocio: sección nueva "Certificado AFIP"
+(textareas para `.crt`/`.key`, selector homologación/producción, botón
+"Borrar certificado" con confirmación) — si el negocio no tiene el
+módulo de Facturación habilitado, muestra un mensaje en vez de romper
+(`MODULE_NOT_ENABLED`, 402). "Datos fiscales" gana los dos campos de IVA
+(tasa general, si el precio ya la incluye).
+
+Verificado: `tsc --noEmit` limpio, `next build` limpio (26 rutas, sin
+rutas nuevas), `eslint` sin errores nuevos (mismo warning preexistente
+sin relación en `lib/http.ts`). **No verificado visualmente en
+navegador** — sin credenciales de un usuario de prueba ni herramienta de
+browser disponibles en esta sesión, mismo gap recurrente de toda la
+sesión (ver puntos J/K/L/M/N/P/S). Recomendado confirmar a simple vista
+en Mi Negocio antes de darlo por completamente probado.
+
+### Qué sigue (fuera de alcance de esta fase)
+
+- Botón "Facturar" en el flujo de cobro real — todavía no se decidió
+  dónde exactamente vive (¿detalle de reserva? ¿clientes-finanzas?
+  ¿ambos?). `invoicesApi.request()` ya existe del lado del frontend,
+  falta el punto de entrada en la UI.
+- Prueba real contra AFIP homologación: bloqueada hasta que el dueño
+  presente el CSR y tenga certificado válido — sin eso, ni el flujo feliz
+  ni la reconciliación A8.6 se pueden ejercitar contra el servicio real,
+  solo contra los tests unitarios con el cliente mockeado.
