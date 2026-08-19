@@ -1347,3 +1347,111 @@ Verificado (frontend, las 3 pantallas): `tsc --noEmit` limpio, `npm run
 lint` limpio (mismo warning preexistente sin relación), `npm run build`
 limpio (26 rutas). **No verificado visualmente en navegador** — mismo
 gap recurrente de toda la sesión (sin credenciales de prueba a mano).
+
+---
+
+## S. Ajuste de precio al recotizar una reserva CONFIRMED — decisión del punto I, resuelta (19/08/2026)
+
+A pedido explícito del dueño ("SEGUIMOS CON ESO"), cierra la última
+decisión pendiente de hoy: al editar fechas/recurso de una reserva ya
+confirmada y cobrada, mostrar el precio recalculado como preview y dejar
+que un empleado confirme el ajuste a mano (cargo extra o nota de
+crédito), nunca automático.
+
+### Backend
+
+- `ReservationService.previewPriceAdjustment(id)` — solo lectura, compara
+  `totalPrice` (congelado desde que se confirmó) contra lo que costaría
+  HOY con las fechas/recurso actuales de la reserva (ya editados por
+  `updateReservation()`, que sigue sin tocar el precio para CONFIRMED).
+  `null` si no aplica o no hay diferencia real.
+- `ReservationService.confirmPriceAdjustment(id, businessId, confirmedByUserId)`
+  — aplica el nuevo `totalPrice`/`lines` y emite `reservation.price_adjusted`
+  (mismo camino async por outbox que `reservation.confirmed`→CHARGE, A10:
+  un solo mecanismo para crear movimientos financieros). `handleReservationPriceAdjusted`
+  (`outbox.handlers.ts`) crea un `ADJUSTMENT` en `financial_transactions`
+  con `amount` CON SIGNO (positivo = cargo extra, negativo = nota de
+  crédito) — `ADJUSTMENT` ya estaba excluido de la conciliación de caja
+  (`getCashMovementsTotal`), es el tipo correcto para una corrección de
+  libro que no es un cobro/pago real de efectivo. `idempotencyKey`
+  `${eventId}:ADJUSTMENT`, mismo criterio que `:CHARGE`.
+- Rutas nuevas: `GET /api/reservations/:id/price-preview` (`Roles.FRONT_DESK`,
+  solo lectura) y `POST /api/reservations/:id/confirm-price-adjustment`.
+- Schema (v22): `financial_transactions.amount` admite negativo cuando
+  `type='ADJUSTMENT'` (`CHECK (amount >= 0 OR type = 'ADJUSTMENT')`,
+  reemplaza el CHECK sin nombre que Postgres autogeneraba) — CHARGE/
+  PAYMENT/REFUND siguen exigiendo `>= 0`. `getNetBalanceByCustomerId`/
+  `ByStayId` no necesitaron ningún cambio: ya sumaban `amount` de
+  ADJUSTMENT tal cual (con signo), sin `ABS()`.
+- **Bug real encontrado y arreglado de paso, mientras se tocaba
+  `updateReservation()` para este feature:** `Reservation.restore()` no
+  recibía `requestedCheckInTime`/`requestedCheckOutTime`/
+  `scheduleApprovalStatus`/`scheduleApprovedBy`/`scheduleChargeAmount` —
+  se defaultean a `null` si no se pasan, y el UPSERT real los escribe sin
+  condicional. Efecto: **cualquier** `updateReservation()` (incluido el
+  drag-to-move/resize del calendario, punto G) borraba en silencio un
+  pedido de horario especial pendiente/aprobado (punto N). Corregido
+  pasando esos 5 campos desde `existing` en el `restore()` de
+  `updateReservation()`; el `restore()` nuevo de `confirmPriceAdjustment()`
+  ya nació con el fix incluido. Test de regresión nuevo.
+
+### Correcciones de diseño a pedido explícito del dueño (mismo día, antes de comitear)
+
+Dos observaciones sobre la primera versión de este feature, ambas
+aplicadas antes de dar el trabajo por terminado:
+
+1. **Separación de roles.** La primera versión gateaba
+   `confirm-price-adjustment` con `Roles.FRONT_DESK` — el mismo rol que
+   ya puede editar las fechas que generan el ajuste (`PUT /:id`). El
+   dueño señaló que eso convierte la "revisión manual" en una
+   autoaprobación de dos clicks por la misma persona, exactamente lo que
+   la decisión original quería evitar. Cambiado a `Roles.MANAGEMENT` —
+   el preview (`GET .../price-preview`) sigue siendo `FRONT_DESK` (solo
+   lectura, no autoriza nada), pero confirmar el cargo/nota de crédito
+   necesita un rol distinto al de quien pidió el cambio.
+2. **Accountability — quién confirmó.** La primera versión no dejaba
+   registro de qué usuario autorizó el ajuste, pese a que el propio
+   codebase ya tiene el patrón exacto para esto
+   (`reservations.schedule_approved_by`, punto N) — simplemente no se
+   replicó acá. Agregado `financial_transactions.confirmed_by`
+   (`VARCHAR(255)`, identity_id, SIN FK a `users` por el mismo motivo que
+   `stays.assigned_by`: identity vive en la platform DB) — se completa
+   solo en el `ADJUSTMENT` de un ajuste de precio confirmado a mano;
+   CHARGE/PAYMENT/REFUND no tienen un paso de autorización humana
+   explícito, queda `null`. `confirmPriceAdjustment()` ahora exige
+   `confirmedByUserId` (la ruta lo resuelve de `req.user!.id`, ya
+   verificado como MANAGEMENT por el punto 1).
+
+### Verificado
+
+- **Backend:** `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
+  639/640 (+18 tests nuevos: preview/confirm en `reservation.service.test.ts`,
+  incluida la regresión de horario especial y el chequeo de
+  `confirmedByUserId` obligatorio; `handleReservationPriceAdjusted` en
+  `outbox.handlers.test.ts`, incluido `confirmedBy`; `confirmed_by` en
+  `sql.financial-transaction.repository.test.ts`).
+- **Contra Postgres real** (branch temporal `test-adjustment-check-19-08`,
+  bifurcada de `production` en el proyecto Neon `DB-APP-PPMS` — la branch
+  correcta para tenant DBs, distinta de `pdb-ppms`/plataforma; borrada al
+  terminar): el `DROP CONSTRAINT IF EXISTS financial_transactions_amount_check`
+  confirmó que el nombre autogenerado por Postgres para el CHECK sin
+  nombre era efectivamente ese (no una suposición sin verificar); un
+  `ADJUSTMENT` con `amount = -300` se insertó sin problema con
+  `confirmed_by` grabado; un `CHARGE` con `amount = -100` fue rechazado
+  por el constraint nuevo, tal como se esperaba; el `SUM` de
+  `getNetBalanceByStayId` con el `ADJUSTMENT` negativo ya `SETTLED` dio
+  `-300` exacto, sin haber tocado esa query — confirma que la resta ya
+  funcionaba sola con el signo, como se había diseñado.
+- **Frontend:** `tsc --noEmit` limpio, `npm run lint` limpio (mismo
+  warning preexistente), `npm run build` limpio (26 rutas, sin rutas
+  nuevas). "Editar horario" ahora también aparece para CONFIRMED (antes
+  solo PENDING); banner de "Ajuste de precio pendiente" en el detalle,
+  con el botón "Confirmar ajuste" visible solo para `isManagement`
+  (`useIsManagement()`) — mismo criterio que la ruta del backend, evita
+  mostrar un botón que el backend igual rechazaría. **No verificado
+  visualmente en navegador** — mismo gap recurrente de toda la sesión.
+
+Con esto se cierran las 4 decisiones que quedaron pendientes de la
+sesión de hoy (cookie httpOnly del portal, E7a, permisos por rol —
+diseño definido, implementación queda para cuando se aborde `PLAN_LIMITS`
+como sistema genérico — y este ajuste de precio).
