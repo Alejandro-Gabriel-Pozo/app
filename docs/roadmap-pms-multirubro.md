@@ -154,6 +154,14 @@ plazas restantes). El ticket original las marca prioridad Media.
 Todo este bloque es esencialmente un ERP de restaurante aparte, para
 negocios que combinan hospedaje con bar/restaurante propio.
 
+**Diseño en curso (18/08/2026, sin implementar):** modelo de mesas
+(`Order.resourceId`), `booking_mode` extensible a nivel plataforma,
+política de solapamiento walk-in vs. reserva de mesa, analítica de mesa,
+y canal de venta (`salesChannel`) — ver
+`docs/diseno-pos-menu-mesas-2026-08-18.md` y
+`pendientes-2026-08-18.md` punto O. Nada de esto está construido
+todavía, son preguntas de diseño abiertas.
+
 | Feature | Estado |
 |---|---|
 | Mobile para toma de pedidos | ❌ — `orders.routes.ts`/`/dashboard/ordenes` existen pero son web, no mobile |

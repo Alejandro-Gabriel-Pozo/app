@@ -980,3 +980,61 @@ esta sesión. Tres flujos nuevos con estado que se pisa entre sí (pedir →
 aprobar/rechazar, con un formulario inline condicionado a
 `scheduleApprovalStatus`) — recomendado confirmarlo a simple vista en
 Reservas → detalle de una estadía antes de darlo por cerrado del todo.
+
+---
+
+## O. Documento de diseño recibido — POS-Menu: mesas, booking mode, canal de venta, límites de plan (18/08/2026, noche)
+
+Documento de trabajo del dueño, copiado íntegro a
+`docs/diseno-pos-menu-mesas-2026-08-18.md` y enlazado desde
+`roadmap-pms-multirubro.md` (sección "Complemento F&B"). **Nada
+implementado todavía** — es la base para seguir charlando cada punto, no
+una decisión cerrada. Resumen de lo ya decidido en concepto y lo que
+sigue abierto:
+
+**Ya decidido en concepto (falta traducir a schema/código cuando se
+aborde):**
+- Modelo de mesas: categoría = rubro gastronómico, recursos = mesas.
+  1 apertura de mesa = 1 orden viva (`DRAFT`/`CONFIRMED`); el estado
+  abierta/cerrada se deriva, no se persiste. Gap técnico ya identificado:
+  `Order` no tiene `resourceId` todavía, hay que agregarlo (nullable, FK
+  a `resources`).
+- Solapamiento walk-in vs. reserva de mesa: buffer de seguridad antes de
+  la reserva (reusa `resource_locks`/`duration_minutes` del motor de
+  turnos, aplicado a mesas) + alerta visual al staff cuando se acerca el
+  horario de una reserva sobre mesa ocupada.
+- Analítica de mesa: timestamps de apertura/cierre + `resourceId` en
+  `Order`, cruzado con `order_items`, alimentan reportería propia (sin
+  IA, ya decidido en sesiones previas) — dato complementario a
+  `occupancy_records` (que es diario, no sirve para esto), no reemplazo.
+- Límites de plan: "negocio" = propiedad física (Enterprise habilita
+  multi-propiedad); dentro de un negocio, el plan también debería limitar
+  cantidad de categorías por tipo — para que separar rubros en categorías
+  no sea un sustituto gratis de pagar multi-negocio. Mismo patrón que la
+  idea ya conversada de vender asientos de rol por cantidad: diseñar la
+  tabla de límites de forma genérica (`max_negocios`,
+  `max_categorias_por_negocio`, etc.) en vez de un campo hardcodeado por
+  límite nuevo que aparezca — mismo espíritu que `plan_limits` (sección C
+  de este documento, ya migrado a tabla), pero ese solo cubre los límites
+  que existían al 18/08, no esta dimensión nueva de categorías.
+
+**Preguntas abiertas, sin resolver (a definir antes de tocar código):**
+1. `booking_mode`: ¿un valor único por categoría, o capacidades
+   independientes combinables (reservable sí/no + admite orden en vivo
+   sí/no)? Se sabe que tiene que ser un catálogo extensible a nivel
+   plataforma (mismo patrón que `role_presets`/`plan_limits`, no un enum
+   fijo en TS), pero no la forma exacta.
+2. Números concretos de tolerancia (llegada temprana / grace period de
+   llegada tardía en mesas) — aceptados en concepto, faltan como default
+   configurable.
+3. Cómo se modela `salesChannel` (canal de venta: mesa/mostrador/
+   habitación/...) y si se catalogiza fijo o extensible a nivel
+   plataforma — gap recién identificado, `resourceId = null` en `Order`
+   hoy sería ambiguo entre "venta de mostrador a propósito" y "se
+   olvidaron de cargar la mesa".
+4. Estructura genérica completa de límites de plan — el catálogo de qué
+   dimensiones limitar (no solo negocios/categorías) todavía no está
+   definido.
+
+No se toca código de esto hasta que el dueño confirme cada punto — el
+propio documento lo aclara ("no es una decisión final").
