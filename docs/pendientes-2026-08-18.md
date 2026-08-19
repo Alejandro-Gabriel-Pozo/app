@@ -1038,3 +1038,62 @@ aborde):**
 
 No se toca código de esto hasta que el dueño confirme cada punto — el
 propio documento lo aclara ("no es una decisión final").
+
+---
+
+## P. Facturación Electrónica AFIP — Fase 1 (perfil fiscal del negocio), backend comiteado (19/08/2026)
+
+Arranca la implementación de la Fase 1 anotada como backlog en la sección
+C de este mismo documento (`docs/referencia-afip-wsfev1.md`, SDK
+`arcasdk-main`). Esta fase es solo el perfil fiscal del negocio EMISOR —
+todavía no hay conexión real a AFIP ni emisión de comprobantes.
+
+### Backend — comiteado y pusheado (`250bfbd`)
+
+- `business_profile` (schema v21) gana `legal_name`, `tax_id`/
+  `tax_id_type`/`tax_condition`, domicilio fiscal en columnas planas
+  (`fiscal_address_line1`/`city`/`state`/`postal_code`/`country`),
+  `afip_sales_point`. Mismos nombres de columna que `customer_tax_profiles`
+  (A5.1, un término en todo el stack) — esa tabla ya resuelve el lado
+  comprador de una factura, esta resuelve el emisor. Todo nullable sin
+  default: ningún negocio existente tenía datos fiscales, no hay
+  comportamiento previo que preservar.
+- `cuitSchema` nuevo en `common.schemas.ts` — valida formato (11 dígitos,
+  con o sin guiones) Y el dígito verificador (módulo 11), con tests
+  dedicados (`common.schemas.test.ts`, 6 casos). Genuinamente transversal
+  desde el arranque (lo va a usar tanto el perfil del emisor como, más
+  adelante, `customer_tax_profiles`), a diferencia del regex de hora que
+  esperó a la segunda copia para mudarse a `common.schemas.ts`.
+- `UpdateBusinessProfileSchema` (Zod) — los 10 campos fiscales opcionales,
+  `fiscalAddressCountry` normalizado a ISO 3166-1 alfa-2 en mayúsculas.
+  `GET`/`PUT /api/business-profile` (`business-profile.routes.ts`, ya
+  existente, sin cambios de código — serializa la entidad completa) ya
+  exponen los campos nuevos de punta a punta.
+- **Verificado contra Postgres real** (tenant de prueba
+  `77c106bb-2e3a-4219-aa30-5dbb88ef9c35`, vía `npm run migrate:tenants`
+  a v21 — un segundo tenant, `biz-demo-01`, falló la migración con
+  "Unsupported state or unable to authenticate data" al desencriptar su
+  connection string guardada; es un negocio de prueba viejo ya señalado
+  como con `schema_version` desalineado en `pendientes-2026-08-15.md`
+  línea 760, no algo roto por este cambio — **pendiente evaluar aparte**
+  si vale la pena reparar ese tenant o darlo de baja). Un `PUT` armado
+  pasando por el mismo `UpdateBusinessProfileSchema` que usa la ruta real
+  (no llamando al repositorio directo — la primera pasada de esta
+  verificación sí lo hizo, dio un falso positivo de bug porque la
+  normalización de CUIT/país vive en el schema, no en el repositorio),
+  releído con una instancia nueva de `SqlBusinessProfileRepository`,
+  confirmó que los 10 campos persisten y las dos normalizaciones
+  (CUIT sin guiones, país a mayúsculas) se aplican. Datos de prueba
+  restaurados a `null` al terminar — estado del tenant sin cambios.
+- Verificado: `tsc --noEmit` limpio, `npm run lint` limpio, `npm test`
+  610/610 (+7 tests nuevos: 6 de `cuitSchema` + el ajuste de 8 fixtures
+  de `BusinessProfile` en tests ya existentes para que sigan compilando).
+
+### Frontend — pendiente, no arrancado
+
+Campos fiscales en Mi Negocio (`dashboard/mi-negocio/page.tsx`,
+`appfrontend-main`) — mismo patrón que `defaultCheckInTime`/
+`defaultCheckOutTime` del punto N (sección nueva en el form de identidad
+del negocio + tipos en `lib/types.ts`/`lib/api.ts`). Sin catálogo cerrado
+todavía para `taxIdType`/`taxCondition` (selects vs. texto libre) — a
+definir cuando se aborde esta mitad.
