@@ -2071,3 +2071,15 @@ UPDATE invoices SET afip_contacted = FALSE
 -- ahí mismo.
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS emisor_cuit VARCHAR(50);
 
+-- customer_tax_profiles pasa a tener consumidor real (schema v27,
+-- 19/08/2026) -- la tabla ya existía sin repositorio ni ruta desde antes
+-- (decisión de negocio del 18/08/2026, ver reservation-customer.entities.ts).
+-- Un cliente tiene UN perfil fiscal por ahora (is_default siempre TRUE) --
+-- constraint único en la base, no solo en el servicio (R6,
+-- criterios-datos.md). Si más adelante hace falta más de un perfil por
+-- cliente (ej. varias razones sociales de una empresa), este índice se
+-- reemplaza por uno parcial sobre is_default, no se agrega ahora sin caso
+-- de uso real.
+CREATE UNIQUE INDEX IF NOT EXISTS customer_tax_profiles_customer_uniq
+  ON customer_tax_profiles (customer_id);
+

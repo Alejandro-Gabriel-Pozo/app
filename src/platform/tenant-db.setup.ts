@@ -231,7 +231,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // autenticación usado al CREAR el comprobante (R9), para que el PDF
 // (`@arcasdk/pdf`) siempre muestre el CUIT real con el que AFIP lo
 // asoció, sin importar si business_profile.afip_cuit cambia después.
-export const CURRENT_SCHEMA_VERSION = 26;
+// v27 (19/08/2026): índice único customer_tax_profiles_customer_uniq —
+// customer_tax_profiles gana su primer repositorio/ruta real (padrón de
+// ARCA), un perfil fiscal por cliente por ahora.
+export const CURRENT_SCHEMA_VERSION = 27;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

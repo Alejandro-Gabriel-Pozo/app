@@ -35,6 +35,10 @@ import {
 } from '../api/schemas/request.schemas.js';
 import { CustomerRateConflictError, ResourceNotFoundError } from '../domain/errors.js';
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
+import { cuitSchema } from '../api/schemas/common.schemas.js';
+import { SqlCustomerTaxProfileRepository } from './sql.customer-tax-profile.repository.js';
+import { SqlAfipCredentialsRepository } from '../facturacion/sql.afip-credentials.repository.js';
+import { PadronService } from '../facturacion/padron.service.js';
 
 // ---------------------------------------------------------------------------
 // Schemas de validación
@@ -61,6 +65,51 @@ const CreateCustomerSchema = z.object({
   if (!data.displayName && !data.fullName) {
     ctx.addIssue({ code: 'custom', message: 'displayName es obligatorio', path: ['displayName'] });
   }
+});
+
+const CUIT_LIKE_TYPES = new Set(['CUIT', 'CUIL']);
+
+/**
+ * Perfil fiscal (customer_tax_profiles, schema v27). `taxIdType` sigue el
+ * mismo criterio de texto libre que `business_profile.taxIdType` — sin
+ * catálogo cerrado en código, ARCA expone el suyo propio
+ * (PadronService.getIvaReceptorTypes). El dígito verificador SÍ se valida
+ * cuando el tipo declarado es CUIT/CUIL (cuitSchema, mismo chequeo mod-11
+ * que ya usa business_profile) -- otros tipos (DNI, pasaporte extranjero)
+ * quedan como texto sin ese chequeo, no tiene sentido aplicárselo.
+ */
+const AddressInputSchema = z.object({
+  line1:      z.string().trim().min(1),
+  line2:      z.string().trim().min(1).nullable().optional(),
+  city:       z.string().trim().min(1).nullable().optional(),
+  state:      z.string().trim().min(1).nullable().optional(),
+  postalCode: z.string().trim().min(1).nullable().optional(),
+  country:    z.string().trim().length(2).transform((v) => v.toUpperCase()),
+});
+
+const UpsertTaxProfileSchema = z.object({
+  legalName:    z.string().trim().min(1),
+  taxId:        z.string().trim().min(1),
+  taxIdType:    z.string().trim().min(1).max(20),
+  taxCondition: z.string().trim().min(1).nullable().optional(),
+  address:      AddressInputSchema.nullable().optional(),
+}).superRefine((data, ctx) => {
+  if (!CUIT_LIKE_TYPES.has(data.taxIdType.toUpperCase())) return;
+  const result = cuitSchema.safeParse(data.taxId);
+  if (!result.success) {
+    ctx.addIssue({
+      code: 'custom',
+      message: result.error.issues[0]?.message ?? 'CUIT/CUIL inválido',
+      path: ['taxId'],
+    });
+    return;
+  }
+  data.taxId = result.data; // normalizado sin guiones -- lo que se persiste.
+});
+
+const LookupByCuitSchema = z.object({ cuit: cuitSchema });
+const LookupByDniSchema = z.object({
+  dni: z.string().trim().regex(/^\d{7,8}$/, 'DNI debe tener 7 u 8 dígitos, sin puntos'),
 });
 
 // ---------------------------------------------------------------------------
@@ -149,6 +198,120 @@ export function createCustomersRouter(container: AppContainer): Router {
         const refreshed = await repo.getById(id);
         const tags = await repo.getTagsByCustomerId(id);
         res.json({ ...toCustomerDto(refreshed!), tags });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── Perfil fiscal (customer_tax_profiles, schema v27) + padrón de ARCA ──
+  // Roles.MANAGEMENT en las cinco rutas: mismo criterio de sensibilidad que
+  // afip-credentials.repository.ts y business-profile "Datos fiscales" —
+  // CUIT/razón social/domicilio de un cliente es un escalón más sensible
+  // que el ABM normal de clientes (FRONT_DESK). Todas detrás de
+  // requireModule(FACTURACION): customer_tax_profiles existe para
+  // facturar, no tiene sentido sin ese módulo habilitado.
+  const facturacionGate = requireModule(container, ModuleKey.FACTURACION);
+
+  // GET /customers/:id/tax-profile — null si el cliente todavía no cargó datos fiscales.
+  router.get(
+    '/:id/tax-profile',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const profile = await new SqlCustomerTaxProfileRepository(req.db!).getByCustomerId(String(req.params['id']));
+        res.json(profile);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // PUT /customers/:id/tax-profile — crea o actualiza (un perfil por cliente, ver docblock de la entidad).
+  router.put(
+    '/:id/tax-profile',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const id = String(req.params['id']);
+        const repo = new SqlCustomerRepository(req.db!);
+        const existing = await repo.getById(id);
+        if (!existing) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
+          return;
+        }
+        const body = UpsertTaxProfileSchema.parse(req.body);
+        const profile = await new SqlCustomerTaxProfileRepository(req.db!).upsert(id, {
+          legalName: body.legalName,
+          taxId: body.taxId,
+          taxIdType: body.taxIdType,
+          ...(body.taxCondition !== undefined && { taxCondition: body.taxCondition }),
+          ...(body.address !== undefined && {
+            address: body.address && {
+              line1: body.address.line1,
+              line2: body.address.line2 ?? null,
+              city: body.address.city ?? null,
+              state: body.address.state ?? null,
+              postalCode: body.address.postalCode ?? null,
+              country: body.address.country,
+            },
+          }),
+        });
+        res.json(profile);
+      } catch (err) { next(err); }
+    },
+  );
+
+  function buildPadronService(req: Request): PadronService {
+    return new PadronService(
+      new SqlBusinessProfileRepository(req.db!),
+      new SqlAfipCredentialsRepository(req.db!),
+    );
+  }
+
+  // POST /customers/padron/lookup-by-cuit — { cuit } en el body, nunca en
+  // la URL (A7.2, criterios-negocio.md: PII nunca en query strings/paths,
+  // quedan en logs de acceso y proxies). `null` si el CUIT no existe en
+  // el padrón -- no es un error, es una respuesta válida.
+  router.post(
+    '/padron/lookup-by-cuit',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const { cuit } = LookupByCuitSchema.parse(req.body);
+        const result = await buildPadronService(req).getTaxpayerByCuit(cuit);
+        res.json(result);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /customers/padron/lookup-by-dni — resuelve el CUIT/CUIL asociado
+  // a un DNI (para autocompletar cuando el cliente solo dio el documento).
+  router.post(
+    '/padron/lookup-by-dni',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const { dni } = LookupByDniSchema.parse(req.body);
+        const cuit = await buildPadronService(req).resolveCuitByDni(dni);
+        res.json({ cuit });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // GET /customers/padron/iva-receptor-types — catálogo OFICIAL de ARCA,
+  // sin PII (no hace falta POST acá). Reemplaza/confirma la lista
+  // hardcodeada de afip-catalog.constants.ts ahora que hay certificado
+  // real -- ver docblock de ese archivo.
+  router.get(
+    '/padron/iva-receptor-types',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const claseCmp = typeof req.query['claseCmp'] === 'string' ? req.query['claseCmp'] : undefined;
+        const types = await buildPadronService(req).getIvaReceptorTypes(claseCmp);
+        res.json(types);
       } catch (err) { next(err); }
     },
   );

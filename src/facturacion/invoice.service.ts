@@ -21,10 +21,11 @@ import { randomUUID } from 'node:crypto';
 import type { Arca } from '@arcasdk/core';
 import type { InvoiceRepository } from './invoice.repository.js';
 import type { Invoice, AfipEnvironment } from './invoice.entities.js';
-import type { AfipCredentialsRepository, AfipCredentials } from './afip-credentials.repository.js';
+import type { AfipCredentialsRepository } from './afip-credentials.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { buildAfipClient } from './afip-client.factory.js';
+import type { AfipClientFactory } from './afip-client.factory.js';
 import {
   CBTE_TIPO_FACTURA_B,
   CONCEPTO_SERVICIOS,
@@ -71,13 +72,6 @@ export function toAfipDate(date: Date): string {
 function afipDateToIso(afipDate: string): string {
   return `${afipDate.slice(0, 4)}-${afipDate.slice(4, 6)}-${afipDate.slice(6, 8)}`;
 }
-
-/** Firma de `buildAfipClient` — inyectable para poder testear la orquestación sin pegarle al SDK real. */
-export type AfipClientFactory = (
-  credentials: AfipCredentials,
-  taxId: string,
-  credentialsRepo: AfipCredentialsRepository,
-) => Arca;
 
 export class InvoiceService {
   constructor(
