@@ -38,7 +38,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { PlatformRepository } from './platform.repository.js';
 import { hashPassword, verifyPassword } from '../security/user.store.js';
-import { signToken } from '../security/auth.middleware.js';
+import { signToken, setAuthCookie } from '../security/auth.middleware.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
@@ -185,10 +185,19 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
         // El JWT de staff ya no lleva `role` (ver security/roles.ts) — los
         // permisos se resuelven en cada request contra role_permission_groups.
         const jwtSecret = process.env.JWT_SECRET!;
+        const EXPIRES_IN_SECONDS = 86_400;
         const token = signToken(
           { sub: identityId, business_id: businessId },
           jwtSecret,
+          EXPIRES_IN_SECONDS,
         );
+        // Cookie httpOnly (19/08/2026, E7a — mismo criterio que
+        // /api/login/select-business/google, B2): sin esto, un dueño que
+        // se registra desde la pantalla nueva de alta pública quedaría con
+        // el token en el body pero SIN sesión real (AuthContext.tsx ya no
+        // lee el token del body, solo la cookie) — tendría que loguearse
+        // de nuevo después de registrarse.
+        setAuthCookie(res, token, EXPIRES_IN_SECONDS);
 
         const message = finalStatus === BusinessStatus.ACTIVE
           ? 'Negocio registrado y listo para usar.'
@@ -203,7 +212,7 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           business: { id: business.id, name: business.name, slug: business.slug, plan: business.plan, status: finalStatus },
           token,
           tokenType: 'Bearer',
-          expiresIn: 86_400,
+          expiresIn: EXPIRES_IN_SECONDS,
           user: { id: identityId, email: body.ownerEmail, role: ownerRole.name },
         });
       } catch (err) {
