@@ -54,6 +54,7 @@ export function createReportsRouter(service: ReportService): Router {
         const { from, to, limit } = req.query as { from: string; to: string; limit?: string };
         const topLimit = limit ? parseInt(limit, 10) : 5;
         const summary = await service.generateOccupancySummary(
+          req.businessId!,
           new Date(from),
           new Date(to),
           topLimit,
@@ -75,6 +76,7 @@ export function createReportsRouter(service: ReportService): Router {
       try {
         const { from, to } = req.query as { from: string; to: string };
         const report = await service.generateOccupancyByResourceType(
+          req.businessId!,
           new Date(from),
           new Date(to),
         );
@@ -100,6 +102,7 @@ export function createReportsRouter(service: ReportService): Router {
         };
         const thresholdValue = threshold ? parseFloat(threshold) : 30;
         const resources = await service.getUnderutilizedResources(
+          req.businessId!,
           new Date(from),
           new Date(to),
           thresholdValue,

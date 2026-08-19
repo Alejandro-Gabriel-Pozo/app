@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReportService } from './report.service.js';
 import type { OccupancyRepository, OccupancyStats } from '../reservas/occupancy.repository.js';
+import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
+import type { HousekeepingTask, HousekeepingStatus } from '../pms-estadias/housekeeping-task.js';
 import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
@@ -10,6 +12,23 @@ import type {
 class FakeAccountsReceivableRepository implements Pick<AccountsReceivableRepository, 'getReportByPeriod'> {
   public rows: AccountsReceivableReportRow[] = [];
   async getReportByPeriod(): Promise<AccountsReceivableReportRow[]> { return this.rows; }
+}
+
+/** Fake mínimo — solo `findByStatus()` es lo que ReportService llama (filtrado OOO). */
+class FakeHousekeepingRepository implements HousekeepingRepository {
+  public outOfServiceResourceIds: string[] = [];
+  async save(): Promise<void> {}
+  async update(): Promise<void> {}
+  async findById(): Promise<HousekeepingTask | null> { return null; }
+  async findByResource(): Promise<HousekeepingTask[]> { return []; }
+  async findByDate(): Promise<HousekeepingTask[]> { return []; }
+  async findByAssignee(): Promise<HousekeepingTask[]> { return []; }
+  async findActiveByResourceAndDate(): Promise<HousekeepingTask | null> { return null; }
+  async isOutOfService(resourceId: string): Promise<boolean> { return this.outOfServiceResourceIds.includes(resourceId); }
+  async findByStatus(_businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]> {
+    if (status !== 'OUT_OF_SERVICE') return [];
+    return this.outOfServiceResourceIds.map((resourceId) => ({ resourceId }) as unknown as HousekeepingTask);
+  }
 }
 
 // Mock repository
@@ -52,15 +71,19 @@ class MockOccupancyRepository implements OccupancyRepository {
   }
 }
 
+const BUSINESS_ID = 'biz-1';
+
 describe('ReportService', () => {
   let mockRepository: OccupancyRepository;
   let arRepository: FakeAccountsReceivableRepository;
+  let housekeepingRepository: FakeHousekeepingRepository;
   let service: ReportService;
 
   beforeEach(() => {
     mockRepository = new MockOccupancyRepository();
     arRepository = new FakeAccountsReceivableRepository();
-    service = new ReportService(mockRepository, arRepository as unknown as AccountsReceivableRepository);
+    housekeepingRepository = new FakeHousekeepingRepository();
+    service = new ReportService(mockRepository, arRepository as unknown as AccountsReceivableRepository, housekeepingRepository);
   });
 
   describe('generateOccupancyReport', () => {
@@ -110,7 +133,7 @@ describe('ReportService', () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
-      const summary = await service.generateOccupancySummary(startDate, endDate);
+      const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate);
 
       expect(summary).toMatchObject({
         startDate: '2026-06-21',
@@ -124,7 +147,7 @@ describe('ReportService', () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
-      const summary = await service.generateOccupancySummary(startDate, endDate, 1);
+      const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate, 1);
 
       expect(summary.topOccupied).toHaveLength(1);
       expect(summary.topOccupied[0]!.resourceId).toBe('r1');
@@ -158,7 +181,7 @@ describe('ReportService', () => {
         })),
       );
 
-      const summary = await service.generateOccupancySummary(startDate, endDate, 3);
+      const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate, 3);
 
       expect(summary.topOccupied).toHaveLength(3);
       expect(summary.bottomOccupied).toHaveLength(3);
@@ -170,7 +193,7 @@ describe('ReportService', () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
-      const summary = await service.generateOccupancySummary(startDate, endDate);
+      const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate);
 
       expect(summary.totalResources).toBe(0);
       expect(summary.averageOccupancy).toBe(0);
@@ -190,7 +213,7 @@ describe('ReportService', () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
-      const result = await service.generateOccupancyByResourceType(startDate, endDate);
+      const result = await service.generateOccupancyByResourceType(BUSINESS_ID, startDate, endDate);
 
       expect(Object.keys(result)).toHaveLength(4); // Cabañas, Mesas, Spa, Deportes
       expect(result['Cabañas']).toHaveLength(2);
@@ -207,7 +230,7 @@ describe('ReportService', () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
-      const result = await service.generateOccupancyByResourceType(startDate, endDate);
+      const result = await service.generateOccupancyByResourceType(BUSINESS_ID, startDate, endDate);
 
       expect(result['Sin categoría']).toHaveLength(1);
     });
@@ -225,6 +248,7 @@ describe('ReportService', () => {
       const endDate = new Date('2026-06-22');
 
       const underutilized = await service.getUnderutilizedResources(
+        BUSINESS_ID,
         startDate,
         endDate,
         30,
@@ -242,7 +266,7 @@ describe('ReportService', () => {
       const startDate = new Date('2026-06-21');
       const endDate = new Date('2026-06-22');
 
-      const underutilized = await service.getUnderutilizedResources(startDate, endDate);
+      const underutilized = await service.getUnderutilizedResources(BUSINESS_ID, startDate, endDate);
 
       expect(underutilized).toHaveLength(1);
     });
@@ -284,6 +308,49 @@ describe('ReportService', () => {
       expect(report).toHaveLength(1);
       expect(report[0]?.companyName).toBe('Empresa SA');
       expect(report[0]?.totalAmount).toBe(45000);
+    });
+  });
+
+  // Regresión: auditoría de producto (19/08/2026) — un recurso OUT_OF_SERVICE
+  // seguía contando como "capacidad disponible" en los reportes agregados.
+  describe('recursos OUT_OF_SERVICE quedan excluidos de los reportes agregados', () => {
+    const startDate = new Date('2026-06-21');
+    const endDate = new Date('2026-06-22');
+
+    it('generateOccupancySummary: no cuenta r2 (OOO) en total/promedio/rankings', async () => {
+      housekeepingRepository.outOfServiceResourceIds = ['r2'];
+
+      const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate);
+
+      expect(summary.totalResources).toBe(1);
+      expect(summary.averageOccupancy).toBe(25.0); // solo r1 -- sin r2 (15%) promediando hacia abajo
+      expect(summary.topOccupied.map((r) => r.resourceId)).toEqual(['r1']);
+      expect(summary.bottomOccupied.map((r) => r.resourceId)).toEqual(['r1']);
+    });
+
+    it('generateOccupancyByResourceType: r2 (OOO) no aparece en ninguna categoría', async () => {
+      housekeepingRepository.outOfServiceResourceIds = ['r2'];
+
+      const result = await service.generateOccupancyByResourceType(BUSINESS_ID, startDate, endDate);
+
+      expect(result['Mesas']).toHaveLength(1);
+      expect(result['Mesas']![0]!.resourceId).toBe('r1');
+    });
+
+    it('getUnderutilizedResources: r2 (OOO, 15% < 30%) no aparece pese a estar bajo el umbral', async () => {
+      housekeepingRepository.outOfServiceResourceIds = ['r2'];
+
+      const underutilized = await service.getUnderutilizedResources(BUSINESS_ID, startDate, endDate, 30);
+
+      // r1 (25%) sigue bajo el umbral de 30% y aparece -- lo que se prueba
+      // acá es que r2 (OOO) no aparece, no que la lista quede vacía.
+      expect(underutilized.map((r) => r.resourceId)).toEqual(['r1']);
+    });
+
+    it('sin recursos OOO, no cambia nada (mismo comportamiento de siempre)', async () => {
+      const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate);
+
+      expect(summary.totalResources).toBe(2);
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { OccupancyRepository, OccupancyStats } from '../reservas/occupancy.repository.js';
+import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
 import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
@@ -38,7 +39,30 @@ export class ReportService {
   constructor(
     private readonly occupancyRepository: OccupancyRepository,
     private readonly accountsReceivableRepository: AccountsReceivableRepository,
+    private readonly housekeepingRepository: HousekeepingRepository,
   ) {}
+
+  /**
+   * Recursos actualmente OUT_OF_SERVICE (auditoría de producto, 19/08/2026)
+   * — se excluyen de los reportes agregados de ocupación: un recurso fuera
+   * de servicio no era "capacidad disponible sin usar", así que contarlo
+   * en el promedio/ranking distorsiona la lectura hacia abajo.
+   *
+   * Límite conocido: `isOutOfService` (housekeeping.repository.ts) es un
+   * estado ACTUAL del recurso, no fechado — no hay forma hoy de saber si
+   * ya estaba OOO en el rango histórico que pide el reporte. Para un
+   * reporte de un período pasado, esto puede excluir de más (un recurso
+   * que se rompió ayer desaparece también de reportes de meses
+   * anteriores). Aceptado a propósito: mejor subestimar por exceso de
+   * exclusión que seguir sumando un recurso roto como "disponible" en el
+   * reporte de HOY, que es el caso de uso real que motivó este fix.
+   */
+  private async filterOutOfService(businessId: string, stats: OccupancyStats[]): Promise<OccupancyStats[]> {
+    const outOfService = await this.housekeepingRepository.findByStatus(businessId, 'OUT_OF_SERVICE');
+    if (outOfService.length === 0) return stats;
+    const outOfServiceIds = new Set(outOfService.map((t) => t.resourceId));
+    return stats.filter((s) => !outOfServiceIds.has(s.resourceId));
+  }
 
   /**
    * Genera reporte diario de ocupación en un período.
@@ -70,22 +94,25 @@ export class ReportService {
    * Genera resumen ejecutivo de ocupación.
    */
   async generateOccupancySummary(
+    businessId: string,
     startDate: Date,
     endDate: Date,
     topLimit: number = 5,
   ): Promise<OccupancySummary> {
-    const averageByResource =
+    const allByResource =
       await this.occupancyRepository.getAverageOccupancyByResource(
         startDate,
         endDate,
       );
+    const averageByResource = await this.filterOutOfService(businessId, allByResource);
 
-    const topOccupied =
-      await this.occupancyRepository.getTopOccupiedResources(
-        startDate,
-        endDate,
-        topLimit,
-      );
+    // topOccupied/bottomOccupied derivados en memoria del mismo array ya
+    // filtrado -- getTopOccupiedResources() hace la misma cuenta agregada
+    // con ORDER BY DESC LIMIT a nivel SQL, pero traerlo aparte sin filtrar
+    // reintroduciría recursos OOO en el ranking (R14: un solo camino).
+    const topOccupied = [...averageByResource]
+      .sort((a, b) => b.occupancyRate - a.occupancyRate)
+      .slice(0, topLimit);
 
     // Obtener los menos ocupados (reverse sort de los top)
     const bottomOccupied = [...averageByResource]
@@ -120,14 +147,16 @@ export class ReportService {
    * recurso — cualquier rubro funciona correctamente.
    */
   async generateOccupancyByResourceType(
+    businessId: string,
     startDate: Date,
     endDate: Date,
   ): Promise<Record<string, OccupancyStats[]>> {
-    const averageByResource =
+    const allByResource =
       await this.occupancyRepository.getAverageOccupancyByResource(
         startDate,
         endDate,
       );
+    const averageByResource = await this.filterOutOfService(businessId, allByResource);
 
     const byCategory: Record<string, OccupancyStats[]> = {};
 
@@ -151,15 +180,17 @@ export class ReportService {
    * Útil para identificar recursos subutilizados.
    */
   async getUnderutilizedResources(
+    businessId: string,
     startDate: Date,
     endDate: Date,
     threshold: number = 30, // Menos del 30% de ocupación
   ): Promise<OccupancyStats[]> {
-    const averageByResource =
+    const allByResource =
       await this.occupancyRepository.getAverageOccupancyByResource(
         startDate,
         endDate,
       );
+    const averageByResource = await this.filterOutOfService(businessId, allByResource);
 
     return averageByResource.filter((r) => r.occupancyRate < threshold);
   }

@@ -264,7 +264,8 @@ export async function createApp(): Promise<{
     (req: Request, _res: Response, next: NextFunction) => {
       const occupancyRepo = new SqlOccupancyRepository(req.db);
       const accountsReceivableRepo = new SqlAccountsReceivableRepository(req.db);
-      const reportService = new ReportService(occupancyRepo, accountsReceivableRepo);
+      const housekeepingRepo = new SqlHousekeepingRepository(req.db);
+      const reportService = new ReportService(occupancyRepo, accountsReceivableRepo, housekeepingRepo);
       const router = createReportsRouter(reportService);
       router(req, _res, next);
     },
