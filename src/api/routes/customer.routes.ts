@@ -565,10 +565,14 @@ export function createCustomerRouter(
           return;
         }
 
+        // Reservas ya no depende de la clase Customer completa de
+        // clientes-finanzas (Fase 7, docs/auditoria-modularidad.md D1) --
+        // se proyecta acá, en el borde, a la representación mínima que
+        // el dominio de reservas necesita.
         const reservation = await reservationService.createReservation({
           id:         randomUUID(),
           resourceId: body.resourceId,
-          customer:   customerEntity,
+          customer:   { id: customerEntity.id, fullName: customerEntity.fullName, email: customerEntity.email },
           startTime:  new Date(body.startTime),
           details:    body.details,
           ...(body.serviceId !== undefined && { serviceId: body.serviceId }),

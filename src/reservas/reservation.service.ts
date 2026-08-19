@@ -51,7 +51,7 @@
  */
 
 import { Reservation }                  from './Reservation.js';
-import type { Customer }         from '../clientes-finanzas/customer.entities.js';
+import type { ReservationCustomer } from './reservation-customer.entities.js';
 import type { PhysicalResource } from './resource.entities.js';
 import {
   InvalidReservationError,
@@ -124,7 +124,7 @@ export class ReservationService {
   async createReservation(params: {
     id: string;
     resourceId: string;
-    customer: Customer;
+    customer: ReservationCustomer;
     startTime: Date;
     endTime?: Date;
     details: Record<string, unknown>;
@@ -385,7 +385,7 @@ export class ReservationService {
           // email.handlers.ts (punto 5/E5, 15/08/2026) — payload autocontenido
           // (A10.2): no relee customer/resource, ya los tiene acá.
           customerEmail: reservation.customer.email ?? null,
-          customerName:  reservation.customer.displayName,
+          customerName:  reservation.customer.fullName,
           resourceName:  reservation.resource.name,
         },
       });

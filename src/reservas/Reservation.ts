@@ -70,7 +70,7 @@
 import { ReservationStatus } from '../types/enums.js';
 import { assertValidTimeRange } from './availability.js';
 import type { BookableResource } from './resource.entities.js';
-import type { Customer } from '../clientes-finanzas/customer.entities.js';
+import type { ReservationCustomer } from './reservation-customer.entities.js';
 import { InvalidReservationError } from '../domain/errors.js';
 import type { ReservationSnapshot, ReservationLine } from './reservation.types.js';
 
@@ -86,7 +86,7 @@ const ALLOWED_TRANSITIONS: Record<
 
 export interface ReservationProps {
   id: string;
-  customer: Customer;
+  customer: ReservationCustomer;
   resource: BookableResource;
   startTime: Date;
   endTime: Date;
@@ -211,7 +211,7 @@ export class Reservation {
   }
 
   public readonly id: string;
-  public readonly customer: Customer;
+  public readonly customer: ReservationCustomer;
   public readonly resource: BookableResource;
   public readonly startTime: Date;
   public readonly endTime: Date;

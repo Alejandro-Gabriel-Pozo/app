@@ -1,7 +1,7 @@
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from './Reservation.js';
 import type { ReservationRepository, ReservationFilters } from './reservation.repository.js';
-import { Customer } from '../clientes-finanzas/customer.entities.js';
+import type { ReservationCustomer } from './reservation-customer.entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { ResourceRepository } from './resource.repository.js';
@@ -402,9 +402,15 @@ export class SqlReservationRepository implements ReservationRepository {
   }
 
   private async rowToReservation(row: ReservationRow): Promise<Reservation> {
-    const customer = row.customer_email
-      ? new Customer(row.customer_id, row.customer_name, row.customer_email)
-      : new Customer(row.customer_id, row.customer_name, []);
+    // customer_id/customer_name/customer_email son el "congelado" de R9
+    // (criterios-datos.md) -- reservas ya no envuelve esto en la clase
+    // Customer completa de clientes-finanzas (Fase 7, D1), es su propia
+    // proyección mínima. Ver reservation-customer.entities.ts.
+    const customer: ReservationCustomer = {
+      id:       row.customer_id,
+      fullName: row.customer_name,
+      email:    row.customer_email ?? undefined,
+    };
 
     const resource = await this.resourceRepository.getById(row.resource_id);
     if (!resource) throw new ResourceNotFoundError(row.resource_id);

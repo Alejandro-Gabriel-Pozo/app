@@ -69,6 +69,7 @@ import { requireModule }                 from '../security/module.middleware.js'
 import { ModuleKey }                     from '../types/enums.js';
 import type { AppContainer }             from '../container.js';
 import { ReservationService }            from './reservation.service.js';
+import type { ReservationCustomer }      from './reservation-customer.entities.js';
 import { SqlReservationRepository }      from './sql.reservation.repository.js';
 import { SqlResourceRepository }         from './sql.resource.repository.js';
 import { SqlOccupancyRepository }        from './sql.occupancy.repository.js';
@@ -177,11 +178,19 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const body = CreateReservationSchema.parse(req.body);
 
-        const customer = await new SqlCustomerRepository(req.db).getById(body.customer.id);
-        if (!customer) {
+        const customerEntity = await new SqlCustomerRepository(req.db).getById(body.customer.id);
+        if (!customerEntity) {
           res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: `Cliente con id "${body.customer.id}" no encontrado` });
           return;
         }
+        // Reservas ya no depende de la clase Customer completa de
+        // clientes-finanzas (Fase 7, D1) -- se proyecta acá, en el borde,
+        // a la representación mínima que el dominio de reservas necesita.
+        const customer: ReservationCustomer = {
+          id:       customerEntity.id,
+          fullName: customerEntity.fullName,
+          email:    customerEntity.email,
+        };
 
         const service = buildReservationService(req);
 
