@@ -1934,3 +1934,65 @@ recurso lo es). Suite completa: 678/679 (+3 tests nuevos). Verificado:
 **No verificado todavía con un mail real en producción** — pendiente que
 el dueño confirme otra reserva de alojamiento y revise el mail que
 llega.
+
+## Z. PDF — causas E y F, sesión de continuación (19/08/2026)
+
+**Causa E — el `render.yaml` del repo no estaba sincronizado con la
+config real del servicio en Render.** El Build Command pusheado en el
+commit `ffab3be` (con `npx puppeteer browsers install chrome`) nunca
+llegó a aplicarse — el campo real en Render Dashboard → Settings → Build
+& Deploy seguía en `npm install && npm run build && npm run
+migrate:tenants`. Este servicio no sincroniza `render.yaml`
+automáticamente. ✅ **RESUELTO** — el dueño lo pegó a mano en el
+dashboard. Con eso el endpoint dejó de dar 500 y empezó a devolver un
+archivo.
+
+**Causa F — el archivo que devolvía no era un PDF válido.** El dueño
+reportó "no se puede abrir, parece roto" con un PDF de 795KB (no 0 ni
+truncado — plata cambio de foco de diagnóstico). Se inspeccionaron los
+bytes reales del archivo descargado (mismo filesystem, `~/Downloads/
+comprobante-5.pdf`): no era binario, era **JSON** —
+`{"0":37,"1":80,"2":68,"3":70,...}`, cada byte serializado como clave de
+un objeto.
+
+Causa real: `page.pdf()` de Puppeteer devuelve `Uint8Array` en runtime,
+no `Buffer` de Node, pese a que `@arcasdk/pdf` declara `Promise<Buffer>`
+(mismo patrón de "el tipo declarado miente" que el bug de `cae_vto`,
+punto X de este documento — invisible para `tsc`, la librería de
+terceros también se equivoca en su propio `.d.ts`). El paquete lo sabe
+a medias: su camino de "múltiples copias" (`_mergeBuffers`, vía
+`pdf-lib`) sí hace `Buffer.from()`, el camino normal de una sola copia
+no. `Express.res.send()` solo manda binario si `Buffer.isBuffer()` da
+`true` — con un `Uint8Array` crudo cae a `res.json()`, que serializa
+cada byte como clave numérica. De ahí el archivo "roto": literalmente no
+era un PDF.
+
+✅ **RESUELTO (commit `e232a84`)**. `InvoicePdfService.generate()`
+envuelve el resultado en `Buffer.from()` antes de devolverlo — fix en el
+borde de nuestro código, sin tocar el paquete de terceros. Reproducido
+el bug exacto con un script standalone antes de arreglarlo
+(`Buffer.isBuffer()` daba `false`, `JSON.stringify()` reproducía el
+archivo corrupto real byte a byte) y confirmado que `Buffer.from()` lo
+resuelve. Test de regresión nuevo (mockea `@arcasdk/pdf` devolviendo un
+`Uint8Array` puro, sin depender de Chromium instalado en la suite).
+Suite completa: 679/680 (+1 test nuevo). Verificado: `tsc --noEmit`,
+`npm run lint`, `npm run build` limpios.
+
+**No verificado todavía con una descarga real en producción** — pendiente
+que el dueño reintente "Facturar" → "PDF" tras el próximo deploy y
+confirme que el archivo abre.
+
+## AA. Test flaky de cancelación — borde exacto de 24h (19/08/2026)
+
+Reportado por el dueño corriendo la suite localmente:
+`reservation.cancel-confirmed.test.ts > permite cancelar con exactamente
+24h de antelación` fallaba intermitentemente. ✅ **RESUELTO (commit
+`96f4a69`)** — no era un bug de negocio: el test leía `Date.now()` dos
+veces por separado (una en `msFromNow()` para armar la fecha de la
+reserva, otra como default de `canCancelConfirmed()` para "ahora"), sin
+margen en el borde exacto — cualquier milisegundo transcurrido entre
+ambas lecturas reales del reloj hacía fallar el test aunque
+`customer.routes.ts` (código de producción, una sola lectura del reloj)
+estuviera bien. Se captura `Date.now()` una sola vez y se pasa explícito
+a los dos lados de la comparación. Verificado corriendo el archivo 5
+veces seguidas tras el fix, estable las 5.
