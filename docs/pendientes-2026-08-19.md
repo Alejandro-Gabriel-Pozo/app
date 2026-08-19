@@ -48,6 +48,14 @@ PDF de factura, calendario, etc. — todo ✅ resuelto ahí a esta altura).
   con un CUIT real desde producción y confirmar que `legalName`/
   `address` vienen poblados.
 
+- ✅ **Puerto + adapter para @arcasdk/core en `InvoiceService`** (a
+  pedido explícito del dueño, arquitectura para poder cambiar de SDK de
+  facturación sin tocar lógica de negocio). `afip-billing.port.ts` +
+  `arca-sdk-billing.adapter.ts` nuevos — `InvoiceService` ya no importa
+  ningún tipo de `@arcasdk/core`. Commit `0042022`. No es un pendiente
+  en sí, mejora interna — se anota acá por completitud del registro de
+  la sesión.
+
 ## B. Confirmado ya resuelto (no reimplementar)
 
 - Housekeeping↔Reservas, bloqueo de escritura (`isOutOfService()` en
