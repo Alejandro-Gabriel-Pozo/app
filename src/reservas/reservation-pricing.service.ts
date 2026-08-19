@@ -45,6 +45,13 @@ export class ReservationPricingService {
     startTime: Date;
     endTime: Date;
   }): Promise<{ totalPrice: number; lines: Array<{ unitDate: Date; price: number }> }> {
+    // 'block' cotiza por noche (calculateNights). 'slot' y 'event' cotizan
+    // como 1 unidad -- precio plano por turno o por evento completo, no
+    // por día/noche. Para 'event' esto es una decisión explícita
+    // (confirmada con el dueño, 18/08/2026, docs/auditoria-modularidad.md
+    // Fase 4): un evento (ej. salón o mesa reservada en exclusiva) se
+    // cobra como un bloque único con precio fijo, sea cual sea su
+    // duración real -- no como una serie de unidades repetidas.
     const units = params.service?.bookingMode === 'block'
       ? this.calculateNights(params.startTime, params.endTime)
       : 1;

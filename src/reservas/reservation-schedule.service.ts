@@ -36,6 +36,13 @@ export class ReservationScheduleService {
    */
   async getAvailableSlots(serviceId: string, resourceId: string, date: Date, timezone: string): Promise<string[]> {
     const service = await this.bookableServiceRepository.findById(serviceId);
+    // Solo 'slot' tiene sentido acá -- 'block' se reserva por rango de
+    // noches, no por turnos de duración fija. 'event' tampoco: es una
+    // decisión explícita (confirmada con el dueño, 18/08/2026,
+    // docs/auditoria-modularidad.md Fase 4) que un evento (ej. salón o
+    // mesa reservada en exclusiva) se agenda a mano por el organizador
+    // (fecha/hora/duración explícitas), no eligiendo de una grilla de
+    // turnos sugeridos como un corte de pelo.
     if (!service || service.bookingMode !== 'slot' || service.durationMinutes == null) {
       throw new InvalidReservationError('El servicio no tiene turnos por horario configurables');
     }
