@@ -220,7 +220,14 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // un negocio real probó Facturar en homologación y quedó con una fila
 // FAILED_UNCERTAIN irrecuperable (el idempotency_key determinístico por
 // financial_transaction_id devolvía esa misma fila para siempre).
-export const CURRENT_SCHEMA_VERSION = 24;
+// v25 (19/08/2026): business_profile.afip_cuit — CUIT de autenticación
+// AFIP separado del CUIT legal (tax_id). Encontrado en vivo, misma sesión:
+// el certificado real cargado en homologación era del gestor de
+// PRODUCCIÓN de AFIP, y homologación puede requerir un CUIT de testing
+// ficticio para probar -- pisar tax_id directamente ensuciaría "Datos
+// fiscales" (identidad legal real). NULL = se sigue autenticando como
+// tax_id, sin cambio de comportamiento para quien no lo cargue.
+export const CURRENT_SCHEMA_VERSION = 25;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

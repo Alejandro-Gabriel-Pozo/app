@@ -21,6 +21,7 @@ function rowToProfile(row: Record<string, unknown>): BusinessProfile {
     fiscalAddressPostalCode: (row['fiscal_address_postal_code']  as string | null) ?? null,
     fiscalAddressCountry:    (row['fiscal_address_country']      as string | null) ?? null,
     afipSalesPoint:          (row['afip_sales_point']            as number | null) ?? null,
+    afipCuit:                (row['afip_cuit']                   as string | null) ?? null,
     defaultIvaRate:          parseFloat(row['default_iva_rate'] as string),
     pricesIncludeIva:        row['prices_include_iva'] as boolean,
     createdAt:    new Date(row['created_at'] as string),
@@ -109,6 +110,10 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
     if (input.afipSalesPoint !== undefined) {
       fields.push(`afip_sales_point = $${idx++}`);
       params.push(input.afipSalesPoint);
+    }
+    if (input.afipCuit !== undefined) {
+      fields.push(`afip_cuit = $${idx++}`);
+      params.push(input.afipCuit?.trim() || null);
     }
     if (input.defaultIvaRate !== undefined) {
       fields.push(`default_iva_rate = $${idx++}`);

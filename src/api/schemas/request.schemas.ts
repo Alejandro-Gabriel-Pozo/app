@@ -296,6 +296,8 @@ export const UpdateBusinessProfileSchema = z.object({
   fiscalAddressCountry:    z.string().trim().length(2, { message: 'fiscalAddressCountry debe ser un código ISO 3166-1 alfa-2 (ej. AR)' }).toUpperCase().nullable().optional(),
   /** Punto de Venta (terminología AFIP) — entero positivo, AFIP lo numera desde 1. */
   afipSalesPoint: z.number().int().positive().nullable().optional(),
+  /** CUIT de autenticación AFIP, si difiere del CUIT legal (`taxId`) -- ej. CUIT de testing en homologación. `null` = usar `taxId`. */
+  afipCuit: cuitSchema.nullable().optional(),
   // Conexión real a AFIP (19/08/2026, Fase 2) — si los precios de catálogo
   // ya incluyen IVA, y a qué alícuota (A2.9, config real del negocio).
   defaultIvaRate:   z.number().min(0).max(100).optional(),

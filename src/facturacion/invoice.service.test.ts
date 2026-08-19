@@ -110,7 +110,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
     legalName: 'Hotel Test SRL', taxId: '20111111112', taxIdType: 'CUIT', taxCondition: 'Responsable Inscripto',
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
-    fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: 3,
+    fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: 3, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
     createdAt: now, updatedAt: now,
     ...overrides,
@@ -206,6 +206,44 @@ describe('InvoiceService', () => {
 
     it('rechaza si todavía no se cargó el certificado AFIP', async () => {
       const service = buildService({ credentials: null });
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(AfipNotConfiguredError);
+    });
+  });
+
+  describe('afipCuit (schema v25) -- CUIT de autenticación distinto del legal (taxId)', () => {
+    it('sin afipCuit cargado, se autentica con taxId (comportamiento de siempre)', async () => {
+      const clientFactory = vi.fn().mockReturnValue(fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }));
+      const service = new InvoiceService(
+        invoiceRepo,
+        new FakeFinancialTransactionRepository(makeTx()),
+        new FakeBusinessProfileRepository(makeProfile({ taxId: '20111111112', afipCuit: null })),
+        new FakeAfipCredentialsRepository(makeCredentials()),
+        clientFactory,
+      );
+
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(clientFactory).toHaveBeenCalledWith(expect.anything(), '20111111112', expect.anything());
+    });
+
+    it('con afipCuit cargado, se autentica con ESE cuit, no con taxId -- no ensucia la identidad fiscal real', async () => {
+      const clientFactory = vi.fn().mockReturnValue(fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }));
+      const service = new InvoiceService(
+        invoiceRepo,
+        new FakeFinancialTransactionRepository(makeTx()),
+        new FakeBusinessProfileRepository(makeProfile({ taxId: '20111111112', afipCuit: '20333333335' })),
+        new FakeAfipCredentialsRepository(makeCredentials()),
+        clientFactory,
+      );
+
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(clientFactory).toHaveBeenCalledWith(expect.anything(), '20333333335', expect.anything());
+    });
+
+    it('sin taxId NI afipCuit, rechaza (nada con qué autenticarse)', async () => {
+      const service = buildService({ profile: makeProfile({ taxId: null, afipCuit: null }) });
       await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
     });

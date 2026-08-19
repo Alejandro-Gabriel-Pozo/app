@@ -1937,6 +1937,15 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_key_encrypted    TEXT
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_ticket_encrypted TEXT;
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_ticket_expires_at TIMESTAMPTZ;
 
+-- afip_cuit (schema v25) -- CUIT con el que InvoiceService se autentica
+-- contra AFIP, si difiere de tax_id (el CUIT legal real que se muestra en
+-- "Datos fiscales"). NULL = usar tax_id, el caso normal. Existe porque
+-- AFIP homologación puede exigir un CUIT de testing ficticio, y pisar
+-- tax_id con ese valor ensuciaría la identidad fiscal real mostrada en Mi
+-- Negocio -- ver docblock de BusinessProfile.afipCuit en
+-- domain/business-profile.entities.ts.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_cuit VARCHAR(50);
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_profile_updated_at') THEN
     CREATE TRIGGER business_profile_updated_at

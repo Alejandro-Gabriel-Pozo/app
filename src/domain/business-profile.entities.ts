@@ -61,6 +61,17 @@ export interface BusinessProfile {
   /** Punto de Venta (terminología AFIP) — un solo punto de venta por ahora, ver schema.sql. */
   afipSalesPoint: number | null;
   /**
+   * CUIT con el que autenticarse contra AFIP -- `null` = usar `taxId` (el
+   * caso normal: el negocio se autentica como sí mismo). Distinto de
+   * `taxId` a propósito (19/08/2026, hallazgo real durante Fase 2):
+   * homologación de AFIP a veces exige un CUIT de testing ficticio,
+   * independiente del CUIT legal real -- pisar `taxId` con ese valor
+   * ensuciaría "Datos fiscales" (identidad legal real que se muestra en
+   * Mi Negocio). Este campo permite separar "con qué CUIT hablo con AFIP"
+   * de "cuál es mi identidad fiscal real", sin que uno tape al otro.
+   */
+  afipCuit: string | null;
+  /**
    * Conexión real a AFIP (19/08/2026, Fase 2). Confirmado con el dueño
    * (A2.9 — config real, nunca una constante): HOY sus precios de
    * catálogo YA incluyen IVA, alícuota general 21%. Ninguno de los dos es
@@ -92,6 +103,7 @@ export interface UpdateBusinessProfileInput {
   fiscalAddressPostalCode?: string | null | undefined;
   fiscalAddressCountry?: string | null | undefined;
   afipSalesPoint?: number | null | undefined;
+  afipCuit?: string | null | undefined;
   defaultIvaRate?: number | undefined;
   pricesIncludeIva?: boolean | undefined;
 }

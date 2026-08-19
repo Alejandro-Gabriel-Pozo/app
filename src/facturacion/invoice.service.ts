@@ -122,7 +122,11 @@ export class InvoiceService {
     if (!tx) throw new FinancialTransactionNotFoundError(input.financialTransactionId);
 
     const profile = await this.businessProfileRepo.get();
-    if (!profile.taxId) throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
+    // afipCuit (schema v25) gana si está cargado -- CUIT con el que
+    // AUTENTICA contra AFIP, puede diferir del legal (taxId) en
+    // homologación (ver docblock de BusinessProfile.afipCuit).
+    const authCuit = profile.afipCuit ?? profile.taxId;
+    if (!authCuit) throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
     if (!profile.afipSalesPoint) throw new AfipNotConfiguredError('falta el punto de venta AFIP en Mi Negocio');
 
     const credentials = await this.afipCredentialsRepo.getDecrypted();
@@ -178,7 +182,7 @@ export class InvoiceService {
       afipRequest,
     );
 
-    const client = this.clientFactory(credentials, profile.taxId, this.afipCredentialsRepo);
+    const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
   }
 
@@ -206,9 +210,10 @@ export class InvoiceService {
     const credentials = await this.afipCredentialsRepo.getDecrypted();
     if (!credentials) throw new AfipNotConfiguredError('falta cargar el certificado AFIP en Mi Negocio');
     const profile = await this.businessProfileRepo.get();
-    if (!profile.taxId) throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
+    const authCuit = profile.afipCuit ?? profile.taxId;
+    if (!authCuit) throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
 
-    const client = this.clientFactory(credentials, profile.taxId, this.afipCredentialsRepo);
+    const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     return this.issue(
       client,
       existing,
