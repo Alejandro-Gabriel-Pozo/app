@@ -4,9 +4,10 @@
 // Ver schema.sql BLOQUE 15. Arrancó mínimo (nombre + contacto) a propósito —
 // solo lo que necesitaba el mail de reserva confirmada (punto 5/E5,
 // pendientes-2026-08-15.md). Sumó currency/timezone el 17/08/2026
-// (auditoría de hardcodes, pendientes-2026-08-17.md sección F3). Los
-// campos fiscales de FACTURACION se agregan después sobre esta misma
-// tabla, no una nueva.
+// (auditoría de hardcodes, pendientes-2026-08-17.md sección F3). Sumó el
+// perfil fiscal el 18/08/2026 (Facturación Electrónica AFIP, Fase 1 —
+// docs/referencia-afip-wsfev1.md), tal como este comentario ya anticipaba:
+// sobre esta misma tabla, no una nueva.
 // =============================================================================
 
 export interface BusinessProfile {
@@ -40,6 +41,25 @@ export interface BusinessProfile {
    */
   defaultCheckInTime: string;
   defaultCheckOutTime: string;
+  /**
+   * Perfil fiscal del negocio EMISOR (18/08/2026, Facturación Electrónica
+   * AFIP, Fase 1 — docs/referencia-afip-wsfev1.md). Mismos nombres que
+   * `customer_tax_profiles` (A5.1) — esa tabla resuelve el lado
+   * comprador de una factura, esta resuelve el emisor. Todo `null` hasta
+   * que el dueño del negocio lo cargue en Mi Negocio; sin esto no hay con
+   * qué autenticarse ni qué mandar en la cabecera de un comprobante AFIP.
+   */
+  legalName: string | null;
+  taxId: string | null;
+  taxIdType: string | null;
+  taxCondition: string | null;
+  fiscalAddressLine1: string | null;
+  fiscalAddressCity: string | null;
+  fiscalAddressState: string | null;
+  fiscalAddressPostalCode: string | null;
+  fiscalAddressCountry: string | null;
+  /** Punto de Venta (terminología AFIP) — un solo punto de venta por ahora, ver schema.sql. */
+  afipSalesPoint: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -51,4 +71,14 @@ export interface UpdateBusinessProfileInput {
   timezone?: string | undefined;
   defaultCheckInTime?: string | undefined;
   defaultCheckOutTime?: string | undefined;
+  legalName?: string | null | undefined;
+  taxId?: string | null | undefined;
+  taxIdType?: string | null | undefined;
+  taxCondition?: string | null | undefined;
+  fiscalAddressLine1?: string | null | undefined;
+  fiscalAddressCity?: string | null | undefined;
+  fiscalAddressState?: string | null | undefined;
+  fiscalAddressPostalCode?: string | null | undefined;
+  fiscalAddressCountry?: string | null | undefined;
+  afipSalesPoint?: number | null | undefined;
 }

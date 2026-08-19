@@ -26,7 +26,7 @@
  */
 
 import { z } from 'zod';
-import { TIME_ONLY_REGEX, timeOnlySchema } from './common.schemas.js';
+import { TIME_ONLY_REGEX, timeOnlySchema, cuitSchema } from './common.schemas.js';
 
 const CustomerSchema = z.object({
   id: z.string().min(1, 'customer.id es obligatorio — el cliente debe existir previamente'),
@@ -279,4 +279,21 @@ export const UpdateBusinessProfileSchema = z.object({
   // check-out — pendientes-2026-08-18.md punto N).
   defaultCheckInTime:  timeOnlySchema.optional(),
   defaultCheckOutTime: timeOnlySchema.optional(),
+  // Perfil fiscal del negocio emisor (18/08/2026, Facturación Electrónica
+  // AFIP, Fase 1 — docs/referencia-afip-wsfev1.md). Sin catálogo cerrado
+  // para taxIdType/taxCondition todavía: AFIP expone sus propios catálogos
+  // de referencia para esto (ver el documento), se valida contra ellos
+  // recién cuando se conecte de verdad — acá solo se guarda lo que el
+  // dueño del negocio carga a mano.
+  legalName: z.string().trim().min(1).max(255).nullable().optional(),
+  taxId:     cuitSchema.nullable().optional(),
+  taxIdType: z.string().trim().min(1).max(20).nullable().optional(),
+  taxCondition: z.string().trim().min(1).max(50).nullable().optional(),
+  fiscalAddressLine1:      z.string().trim().min(1).max(255).nullable().optional(),
+  fiscalAddressCity:       z.string().trim().min(1).max(120).nullable().optional(),
+  fiscalAddressState:      z.string().trim().min(1).max(120).nullable().optional(),
+  fiscalAddressPostalCode: z.string().trim().min(1).max(20).nullable().optional(),
+  fiscalAddressCountry:    z.string().trim().length(2, { message: 'fiscalAddressCountry debe ser un código ISO 3166-1 alfa-2 (ej. AR)' }).toUpperCase().nullable().optional(),
+  /** Punto de Venta (terminología AFIP) — entero positivo, AFIP lo numera desde 1. */
+  afipSalesPoint: z.number().int().positive().nullable().optional(),
 });

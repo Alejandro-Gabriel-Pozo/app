@@ -47,6 +47,9 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
   return {
     id: 'default', displayName: null, contactEmail: null,
     currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
+    legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+    fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+    fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null,
     createdAt: now, updatedAt: now,
     ...overrides,
   };

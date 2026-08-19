@@ -1843,6 +1843,41 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT N
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_in_time  TIME NOT NULL DEFAULT '14:00:00';
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_out_time TIME NOT NULL DEFAULT '11:00:00';
 
+-- Perfil fiscal del negocio (18/08/2026, Facturación Electrónica AFIP,
+-- Fase 1 -- pendientes-2026-08-18.md). Exactamente el ALTER TABLE que el
+-- comentario de arriba (BLOQUE 15, 15/08/2026) ya anticipaba: sin tabla
+-- nueva. Mismos nombres de columna que `customer_tax_profiles` (legal_name/
+-- tax_id/tax_id_type/tax_condition -- A5.1, un término en todo el stack),
+-- que ya resuelve el lado COMPRADOR de una factura ("Empresa"); esto
+-- resuelve el lado EMISOR (el propio negocio).
+--
+-- Todo nullable, SIN default -- a diferencia de currency/timezone (que
+-- preservaban un valor hardcodeado previo), acá no hay "comportamiento de
+-- antes" que mantener: ningún negocio existente tenía datos fiscales, y
+-- ninguno debe aparecer con un CUIT/condición IVA inventados. Se completa
+-- a mano en Mi Negocio cuando el dueño del negocio lo cargue.
+--
+-- domicilio fiscal en columnas planas (no una tabla propia, a diferencia
+-- de customer_addresses): es UN solo domicilio fijo del negocio emisor,
+-- no una lista de direcciones por tipo/destinatario como sí necesita un
+-- cliente. Mismos nombres de columna que customer_addresses donde el
+-- concepto es el mismo (line1/city/state/postal_code/country).
+--
+-- afip_sales_point (Punto de Venta, terminología AFIP): un solo punto de
+-- venta por ahora -- la mayoría de los negocios de este tamaño operan con
+-- uno. Si en el futuro hace falta más de uno, es una tabla aparte, no un
+-- ALTER acá.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS legal_name               VARCHAR(255);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS tax_id                   VARCHAR(50);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS tax_id_type              VARCHAR(20);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS tax_condition            VARCHAR(50);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_line1       VARCHAR(255);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_city        VARCHAR(120);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_state       VARCHAR(120);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_postal_code VARCHAR(20);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS fiscal_address_country     VARCHAR(2);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_sales_point         INTEGER;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'business_profile_updated_at') THEN
     CREATE TRIGGER business_profile_updated_at

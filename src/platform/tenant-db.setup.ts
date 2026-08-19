@@ -196,7 +196,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v20 (18/08/2026, noche): flujo de check-in/check-out — horario estándar
 // en `business_profile`, pedido/aprobación de horario en `reservations`,
 // `housekeeping_tasks.not_before`. Ver pendientes-2026-08-18.md punto N.
-export const CURRENT_SCHEMA_VERSION = 20;
+// v21 (18/08/2026, noche): perfil fiscal del negocio emisor en
+// `business_profile` (legal_name/tax_id/tax_id_type/tax_condition,
+// domicilio fiscal, punto de venta AFIP) — Fase 1 de Facturación
+// Electrónica AFIP. Ver docs/referencia-afip-wsfev1.md.
+export const CURRENT_SCHEMA_VERSION = 21;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

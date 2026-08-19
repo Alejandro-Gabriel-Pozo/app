@@ -11,6 +11,16 @@ function rowToProfile(row: Record<string, unknown>): BusinessProfile {
     timezone:     row['timezone'] as string,
     defaultCheckInTime:  row['default_check_in_time']  as string,
     defaultCheckOutTime: row['default_check_out_time'] as string,
+    legalName:               (row['legal_name']                 as string | null) ?? null,
+    taxId:                   (row['tax_id']                     as string | null) ?? null,
+    taxIdType:               (row['tax_id_type']                as string | null) ?? null,
+    taxCondition:            (row['tax_condition']               as string | null) ?? null,
+    fiscalAddressLine1:      (row['fiscal_address_line1']        as string | null) ?? null,
+    fiscalAddressCity:       (row['fiscal_address_city']         as string | null) ?? null,
+    fiscalAddressState:      (row['fiscal_address_state']        as string | null) ?? null,
+    fiscalAddressPostalCode: (row['fiscal_address_postal_code']  as string | null) ?? null,
+    fiscalAddressCountry:    (row['fiscal_address_country']      as string | null) ?? null,
+    afipSalesPoint:          (row['afip_sales_point']            as number | null) ?? null,
     createdAt:    new Date(row['created_at'] as string),
     updatedAt:    new Date(row['updated_at'] as string),
   };
@@ -57,6 +67,46 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
     if (input.defaultCheckOutTime !== undefined) {
       fields.push(`default_check_out_time = $${idx++}`);
       params.push(input.defaultCheckOutTime);
+    }
+    if (input.legalName !== undefined) {
+      fields.push(`legal_name = $${idx++}`);
+      params.push(input.legalName?.trim() || null);
+    }
+    if (input.taxId !== undefined) {
+      fields.push(`tax_id = $${idx++}`);
+      params.push(input.taxId?.trim() || null);
+    }
+    if (input.taxIdType !== undefined) {
+      fields.push(`tax_id_type = $${idx++}`);
+      params.push(input.taxIdType?.trim() || null);
+    }
+    if (input.taxCondition !== undefined) {
+      fields.push(`tax_condition = $${idx++}`);
+      params.push(input.taxCondition?.trim() || null);
+    }
+    if (input.fiscalAddressLine1 !== undefined) {
+      fields.push(`fiscal_address_line1 = $${idx++}`);
+      params.push(input.fiscalAddressLine1?.trim() || null);
+    }
+    if (input.fiscalAddressCity !== undefined) {
+      fields.push(`fiscal_address_city = $${idx++}`);
+      params.push(input.fiscalAddressCity?.trim() || null);
+    }
+    if (input.fiscalAddressState !== undefined) {
+      fields.push(`fiscal_address_state = $${idx++}`);
+      params.push(input.fiscalAddressState?.trim() || null);
+    }
+    if (input.fiscalAddressPostalCode !== undefined) {
+      fields.push(`fiscal_address_postal_code = $${idx++}`);
+      params.push(input.fiscalAddressPostalCode?.trim() || null);
+    }
+    if (input.fiscalAddressCountry !== undefined) {
+      fields.push(`fiscal_address_country = $${idx++}`);
+      params.push(input.fiscalAddressCountry?.trim() || null);
+    }
+    if (input.afipSalesPoint !== undefined) {
+      fields.push(`afip_sales_point = $${idx++}`);
+      params.push(input.afipSalesPoint);
     }
 
     if (fields.length === 0) return this.get();
