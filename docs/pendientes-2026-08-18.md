@@ -1795,3 +1795,66 @@ autocompletar razón social/condición IVA/domicilio de un cliente nuevo
 en vez de tipearlos a mano, en `customer_tax_profiles` (tabla que ya
 existe en el schema pero sin repositorio propio ni consumidor real
 todavía).
+
+---
+
+## X. Mail y PDF de factura reportados rotos en uso real — dos bugs de código + un dato mal cargado (19/08/2026)
+
+El dueño reportó, ya en producción: confirmó una reserva y el mail de
+confirmación no llegó, y al facturar el PDF no descargaba. Investigado en
+paralelo — tres causas distintas, ninguna relacionada con la otra.
+
+### 1. Mail — ✅ RESUELTO, era `RESEND_FROM_EMAIL` mal cargada en Render, no un bug de código
+
+El log de Resend (resend.com/emails) mostró el request real:
+`"from": "Hotel ZULU <tureserva.host.zuluhub.com.ar>"` → `422 Invalid
+'from' field`. La variable se había cargado con el dominio pelado, sin
+casilla de mail delante (tenía que ser `algo@dominio`, no solo
+`dominio`). Corregida por el dueño directo en Render — sin cambio de
+código. Confirmado por el dueño: **el mail ya funciona.**
+
+### 2. PDF — ✅ RESUELTO, dos bugs de código apilados (uno tapaba al otro)
+
+**Bug A — Chromium sin `--no-sandbox` en el contenedor de Render.**
+Exactamente el riesgo que había quedado sin verificar en el punto W
+("no verificado todavía: que Puppeteer lance Chromium exitosamente en
+runtime real de Render"). `@arcasdk/pdf` llama
+`puppeteer.launch({ headless: true })` sin exponer opciones de launch en
+su API pública — parcheado con `patch-package` (`patches/@arcasdk+pdf+
+0.2.0.patch`, se reaplica solo en cada `npm install` vía `postinstall`)
+agregando `args: ['--no-sandbox', '--disable-setuid-sandbox',
+'--disable-dev-shm-usage']`. Verificado generando un PDF real
+localmente con el parche puesto (90KB, `%PDF-` válido). Commit `71d4683`.
+
+**Bug secundario, mientras tanto — el botón "PDF" no mostraba el error.**
+`FacturarButton.tsx`: la rama `invoice.status === 'ISSUED'` seteaba
+`errorMessage` si fallaba la descarga pero nunca lo renderizaba (ese
+`<span>` solo vivía en la rama de antes de facturar) — por eso el
+dueño vio "no pasa nada" en vez de un mensaje. Corregido en
+`appfrontend-main` (commit `f80f563`).
+
+**Bug B — el real detrás del primer 500 que SÍ se vio gracias al fix
+anterior:** `TypeError: invoice.caeVto.replace is not a function`
+(`invoice-pdf.service.ts:106`, visible en logs de Render recién después
+del fix de arriba). `invoices.cae_vto` es `DATE` en Postgres — el driver
+`pg` lo devuelve como objeto `Date` en runtime, no como string, pese a
+que `InvoiceRow` (`sql.invoice.repository.ts`) lo tipaba `string | null`
+(mismo tipo de gap ya resuelto antes para `cbte_nro`/BIGINT, pero nunca
+aplicado acá). Como el resto del código solo serializa `caeVto` a JSON
+(que serializa un `Date` como ISO string sin que nadie lo note), nadie
+había pisado el bug hasta que `InvoicePdfService` llamó `.replace()`
+directo sobre el valor crudo del driver. Corregido en el mapeo de fila
+(`rowToEntity`), mismo borde donde ya se normalizaba `cbte_nro` — el
+resto del código sigue confiando en el tipo `string` que la entidad
+declara. Test de regresión nuevo (`sql.invoice.repository.test.ts`,
+mockea una fila con un `Date` real, no un string — los tests viejos de
+esta clase de bug siempre mockeaban ya con string, por eso no lo
+agarraban). Commit `5d912d7`.
+
+**Verificado:** `tsc --noEmit`, `npm run lint`, `npm run build` y
+`npm test` (675/676, +2 tests nuevos) limpios en `app-main`; `tsc
+--noEmit` limpio en `appfrontend-main`. **No verificado todavía contra
+un PDF real en producción tras el segundo fix** (el del `caeVto`) —
+recomendado que el dueño reintente "Facturar" → "PDF" sobre el mismo
+comprobante (`23170335-71ca-4cdc-9d46-a577308c980e`) una vez que termine
+el redeploy de Render con el commit `5d912d7`.
