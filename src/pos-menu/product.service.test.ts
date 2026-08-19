@@ -349,3 +349,53 @@ describe('ProductService — bloqueo de desactivación por stock físico (17/08/
     await expect(service.deleteVariant('var-a')).resolves.toBeUndefined();
   });
 });
+
+// Regresión: búsqueda server-side de productos (?q= en products.routes.ts,
+// hallazgo de auditoría de producto 19/08/2026) -- sin esto el frontend
+// tenía que traer el catálogo completo y filtrar en el cliente, no escala
+// con miles de productos.
+describe('ProductService — listProducts() con búsqueda', () => {
+  it('reenvía `search` al repositorio cuando viene', async () => {
+    let lastFilter: ListProductsFilter | undefined;
+    const productRepo: IProductRepository = {
+      async getById() { return undefined; },
+      async getAll(filter) { lastFilter = filter; return []; },
+      async getBySku() { return undefined; },
+      async save() {},
+      async create(): Promise<never> { throw new Error('no usado en este test'); },
+      async update() { return undefined; },
+      async updateCompanySyncState() {},
+      async delete() { return false; },
+    };
+    const service = new ProductService(
+      productRepo, new FakeProductVariantRepository(),
+      new InMemoryAuditLogRepository(), new InMemoryInventoryLevelRepository(),
+    );
+
+    await service.listProducts('biz-1', 'coca');
+
+    expect(lastFilter).toEqual({ businessId: 'biz-1', search: 'coca' });
+  });
+
+  it('sin `search`, no lo agrega al filtro -- mismo listado completo de siempre', async () => {
+    let lastFilter: ListProductsFilter | undefined;
+    const productRepo: IProductRepository = {
+      async getById() { return undefined; },
+      async getAll(filter) { lastFilter = filter; return []; },
+      async getBySku() { return undefined; },
+      async save() {},
+      async create(): Promise<never> { throw new Error('no usado en este test'); },
+      async update() { return undefined; },
+      async updateCompanySyncState() {},
+      async delete() { return false; },
+    };
+    const service = new ProductService(
+      productRepo, new FakeProductVariantRepository(),
+      new InMemoryAuditLogRepository(), new InMemoryInventoryLevelRepository(),
+    );
+
+    await service.listProducts('biz-1');
+
+    expect(lastFilter).toEqual({ businessId: 'biz-1' });
+  });
+});

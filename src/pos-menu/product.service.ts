@@ -105,8 +105,15 @@ export class ProductService {
   // CRUD productos
   // -------------------------------------------------------------------------
 
-  async listProducts(businessId: string): Promise<Product[]> {
-    return this.productRepo.getAll({ businessId });
+  /**
+   * `search` opcional (coincidencia parcial en `name`/`sku`, ya soportado
+   * por el repositorio) — sin él, mismo listado completo de siempre. Mismo
+   * criterio que `CustomerRepository.searchByName()`: catálogos grandes
+   * (miles de productos) necesitan filtrar en el servidor, no traer todo y
+   * filtrar en el cliente.
+   */
+  async listProducts(businessId: string, search?: string): Promise<Product[]> {
+    return this.productRepo.getAll({ businessId, ...(search && { search }) });
   }
 
   async getProduct(id: string): Promise<Product | null> {

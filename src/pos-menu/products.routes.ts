@@ -161,11 +161,15 @@ export function createProductsRouter(_container: AppContainer): Router {
   const router = Router();
 
   // ── GET /api/products ───────────────────────────────────────────────────────
+  // `?q=` opcional -- coincidencia parcial contra name/sku (mismo criterio
+  // que `?name=` en customers.routes.ts). Sin él, listado completo de
+  // siempre (sin cambio de comportamiento para el frontend actual).
   router.get('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const service    = buildProductService(req);
       const locationId = await resolveLocation(req);
-      const products   = await service.listProducts(req.businessId!);
+      const q          = req.query['q'];
+      const products   = await service.listProducts(req.businessId!, typeof q === 'string' ? q.trim() : undefined);
       const levels      = await new SqlInventoryLevelRepository(req.db!).getAllByLocation(req.businessId!, locationId);
       res.json(products.map((p) => withStock(p, levelFor(levels, p.id, null))));
     } catch (err) { next(err); }
