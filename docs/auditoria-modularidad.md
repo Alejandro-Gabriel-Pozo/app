@@ -1,5 +1,13 @@
 # Auditoría de modularidad, cohesión, acoplamiento, SRP, DDD y DRY
 
+> **Estado (18/08/2026, noche): las 7 fases del roadmap se aplicaron y
+> verificaron.** Fase 1 (`121527d`), Fase 2 (`5e7e432`+`d14d82d`), Fase 3
+> backend (`2c873f3`) + frontend (`5d55186`), Fase 4 (`0ec2d7c` mergeado en
+> `93e9b63`, appfrontend-main), Fase 5 (`2f0c32a`, appfrontend-main), Fase 6
+> (`2fbfd05`), Fase 7 (`d2b9c6f`). Las convenciones que resultaron de esto
+> ya no son una propuesta — quedaron documentadas como estado real del
+> código en `CLAUDE.md` de cada repo (app-main y appfrontend-main).
+>
 > Auditoría realizada desde cero sobre el estado actual del código (18/08/2026).
 > Cualquier reporte previo en `docs/analysis/` (dead-code.txt, duplication/,
 > dependency-graph.dot, dependency-violations.html) se descartó como fuente de
