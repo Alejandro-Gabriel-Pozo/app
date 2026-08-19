@@ -1858,3 +1858,79 @@ un PDF real en producción tras el segundo fix** (el del `caeVto`) —
 recomendado que el dueño reintente "Facturar" → "PDF" sobre el mismo
 comprobante (`23170335-71ca-4cdc-9d46-a577308c980e`) una vez que termine
 el redeploy de Render con el commit `5d912d7`.
+
+### 3. PDF — dos causas MÁS, después del fix del `caeVto` (mismo día, sesión de continuación)
+
+El comprobante `dcd62fb2-...` seguía dando 500 después de los fixes de
+arriba. Dos causas nuevas, encontradas leyendo logs de Render en vivo:
+
+**Causa C — `Could not find Chrome`.** El Chromium que Puppeteer
+descarga en el build vive en `~/.cache/puppeteer` (home del usuario) por
+default — fuera del directorio del proyecto. Render corre build y
+runtime en filesystems separados; solo el directorio del proyecto viaja
+de uno al otro, así que ese Chromium nunca llegaba a runtime pese a
+haberse descargado bien en el build. ✅ **RESUELTO (commit `d3082fe`)**:
+`.puppeteerrc.cjs` nuevo, redirige el caché a `.cache/puppeteer` DENTRO
+del proyecto (gitignoreado). Verificado localmente forzando un reinstall
+completo: el binario cae en la carpeta nueva y el PDF se sigue generando
+desde ahí.
+
+**Causa D — con el caché ya bien ubicado, seguía sin encontrar Chrome.**
+El log de Render mostró la ruta correcta
+(`/opt/render/project/src/.cache/puppeteer`) pero vacía — Render cachea
+`node_modules` entre deploys para acelerar builds, y no volvió a disparar
+el `postinstall` de Puppeteer (el paquete ya estaba "instalado" desde su
+punto de vista, aunque el `.cache/puppeteer` del proyecto en sí —
+gitignoreado, no persiste entre deploys — estuviera vacío en este
+checkout nuevo). ✅ **RESUELTO (commit `ffab3be`)**: `render.yaml` agrega
+`npx puppeteer browsers install chrome` como paso EXPLÍCITO del
+`buildCommand`, después de `npm install` — no depende de que el
+postinstall se dispare, es idempotente (si el binario ya está, no lo
+vuelve a bajar). Verificado localmente: mismo comando, misma versión que
+pedía Render (`148.0.7778.97`), cae en la ruta correcta.
+
+**No verificado todavía contra un PDF real en producción** tras estos
+dos fixes — pendiente que el dueño reintente una vez que termine el
+próximo deploy de Render.
+
+## Y. Mail de reserva — check-in/check-out mostraba un horario sin relación con el real (19/08/2026)
+
+Mismo reporte del dueño, sesión de continuación: el mail de confirmación
+mostraba "Desde: ... 9:00 p. m." y "Hasta: ... 9:00 p. m." — ambos
+horarios iguales y sin relación con el check-in (15:00) / check-out
+(10:00) configurados en Mi Negocio para ese negocio (`admin@demo.com`).
+
+**Causa real:** `startTime`/`endTime` de una reserva de alojamiento (E1)
+se guardan como "medianoche UTC del día calendario" — una marca de
+fecha, no un instante real (así lo dice el propio comentario de
+`dashboard/reservas/page.tsx`, y por eso esa pantalla siempre las
+muestra en UTC, sin hora). El mail (agregado 17/08, auditoría de
+hardcodes) las convertía al huso horario del negocio con
+`Intl.DateTimeFormat({ timeZone })` como si fueran un instante real —
+medianoche UTC en Argentina (UTC-3) cae 9pm del día anterior, y como
+check-in y check-out son ambos "medianoche UTC de su propio día", los
+dos terminaban mostrando la misma hora.
+
+✅ **RESUELTO (commit `ffab3be`)**. `confirmReservation()`
+(`reservation.service.ts`) agrega `isLodging` al payload del evento
+(consulta la categoría del recurso). `email.handlers.ts` lo usa para
+elegir el formateo: alojamiento → día (leído en UTC) + el check-in/
+check-out ESTÁNDAR real del negocio
+(`business_profile.defaultCheckInTime`/`defaultCheckOutTime`, ya es hora
+de pared, sin conversión de huso); un turno con horario real
+(`bookingMode='slot'`) sigue convirtiendo el instante al huso como
+antes. `templates.ts` deja de decidir formateo — recibe las etiquetas ya
+armadas (`checkInLabel`/`checkOutLabel`), esa decisión queda en un solo
+lugar (`email.handlers.ts`) por si aparece un tercer tipo de mail.
+
+Tests nuevos: `email.handlers.test.ts` (alojamiento con
+`defaultCheckInTime='15:00:00'` da "29 de septiembre de 2026, 3:00 p.
+m." en vez de un instante convertido de huso; un turno no-alojamiento
+sigue convirtiendo el instante real) + `reservation.service.test.ts`
+(el payload del evento trae `isLodging: true` cuando la categoría del
+recurso lo es). Suite completa: 678/679 (+3 tests nuevos). Verificado:
+`tsc --noEmit`, `npm run lint`, `npm run build` limpios.
+
+**No verificado todavía con un mail real en producción** — pendiente que
+el dueño confirme otra reserva de alojamiento y revise el mail que
+llega.
