@@ -168,33 +168,44 @@ export class SqlCustomerRepository implements CustomerRepository {
     return (rowCount ?? 0) > 0;
   }
 
+  /**
+   * Bug real encontrado y arreglado de paso (19/08/2026, sesión de la
+   * cookie httpOnly del portal): usaba `withTransaction()` de
+   * `db/pg.client.js`, que resuelve el pool desde `DATABASE_URL` — una
+   * variable de entorno de la era single-tenant que ya no existe en
+   * producción (`refactor: eliminar soporte single-tenant`). Cualquier
+   * llamada real a `DELETE /api/customer/me` tiraba 500
+   * ("DATABASE_URL no está definida"), sin importar la cookie/token —
+   * este bug es previo y no tiene relación con la migración de auth.
+   * Corregido usando `this.sqlClient` (el pool del TENANT, ya inyectado
+   * por el constructor) igual que el resto de los métodos de esta clase
+   * — ninguno de ellos envuelve sus escrituras multi-statement en una
+   * transacción explícita tampoco, mismo criterio.
+   */
   async anonymize(id: string): Promise<boolean> {
-    const { withTransaction } = await import('../db/pg.client.js');
-    const result = await withTransaction(async (tx) => {
-      await tx.query(
-        `DELETE FROM customer_contact_methods WHERE customer_id = $1`,
-        [id],
-      );
-      await tx.query(
-        `INSERT INTO customer_contact_methods
-           (id, customer_id, channel, value, is_primary)
-         VALUES ($1, $2, 'EMAIL', $3, TRUE)
-         ON CONFLICT DO NOTHING`,
-        [`ccm-anon-${id}`, id, `deleted-${id}@anon.local`],
-      );
-      return tx.query(
-        `UPDATE customers SET
-           display_name  = '[eliminado]',
-           full_name     = '[eliminado]',
-           email         = $1,
-           password_hash = NULL,
-           google_sub    = NULL,
-           updated_at    = CURRENT_TIMESTAMP
-         WHERE id = $2
-           AND display_name != '[eliminado]'`,
-        [`deleted-${id}@anon.local`, id],
-      );
-    });
+    await this.sqlClient.query(
+      `DELETE FROM customer_contact_methods WHERE customer_id = $1`,
+      [id],
+    );
+    await this.sqlClient.query(
+      `INSERT INTO customer_contact_methods
+         (id, customer_id, channel, value, is_primary)
+       VALUES ($1, $2, 'EMAIL', $3, TRUE)
+       ON CONFLICT DO NOTHING`,
+      [`ccm-anon-${id}`, id, `deleted-${id}@anon.local`],
+    );
+    const result = await this.sqlClient.query(
+      `UPDATE customers SET
+         display_name  = '[eliminado]',
+         full_name     = '[eliminado]',
+         email         = $1,
+         password_hash = NULL,
+         google_sub    = NULL,
+         updated_at    = CURRENT_TIMESTAMP
+       WHERE id = $2
+         AND display_name != '[eliminado]'`,
+      [`deleted-${id}@anon.local`, id],
+    );
     return (result.rowCount ?? 0) > 0;
   }
 

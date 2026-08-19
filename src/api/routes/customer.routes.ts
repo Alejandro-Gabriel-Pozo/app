@@ -43,15 +43,31 @@
  * ### Públicas (sin autenticación)
  * POST   /api/customer/:businessSlug/register
  * POST   /api/customer/:businessSlug/login
+ * POST   /api/customer/:businessSlug/login/google
  * GET    /api/customer/:businessSlug/availability
+ * POST   /api/customer/logout
  *
  * ### Protegidas (requieren JWT con role=CUSTOMER, business_id incluido)
  * GET    /api/customer/me
  * DELETE /api/customer/me
+ * POST   /api/customer/refresh
  * GET    /api/customer/me/reservations
  * POST   /api/customer/me/reservations
  * PATCH  /api/customer/me/reservations/:id
  * POST   /api/customer/me/reservations/:id/cancel
+ *
+ * ## Cookie httpOnly del portal (19/08/2026, docs/pendientes-2026-08-18.md
+ * punto P)
+ * Mismo patrón que B2 aplicó al panel de staff (docs/pendientes-2026-08-13.md):
+ * register/login/login-google setean `AUTH_COOKIE_NAME_CUSTOMER` además de
+ * devolver el token en el body (coexistencia, no reemplazo — cualquier
+ * consumidor que lea el body sigue funcionando). `logout` limpia la cookie
+ * sin requerir autenticación (igual que `/api/auth/logout` de staff — es
+ * idempotente, funciona aunque la cookie ya haya vencido). `refresh`
+ * re-firma el token del cliente YA autenticado con un `exp` nuevo, mismo
+ * criterio que `POST /api/auth/refresh` de staff (`me.routes.ts`) pero para
+ * clientes — no hace falta releer nada de la tenant DB, `authenticate()` ya
+ * verificó la firma y el `exp` del token vigente.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
@@ -62,10 +78,18 @@ import rateLimit from 'express-rate-limit';
 import type pg from 'pg';
 import type { AppContainer } from '../../container.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
-import { authenticate, authorize } from '../../security/auth.middleware.js';
+import {
+  authenticate,
+  authorize,
+  setCustomerAuthCookie,
+  clearCustomerAuthCookie,
+  signToken,
+  getJwtSecret,
+} from '../../security/auth.middleware.js';
+import { parseExpiresIn } from '../../security/auth.service.js';
 import { Roles } from '../../security/roles.js';
 import { toReservationDto } from '../mappers/reservation.mapper.js';
-import { ReservationStatus, BusinessStatus } from '../../types/enums.js';
+import { ReservationStatus, BusinessStatus, UserRole } from '../../types/enums.js';
 import type { PlatformRepository } from '../../platform/platform.repository.js';
 import {
   getTenantClient,
@@ -301,6 +325,7 @@ export function createCustomerRouter(
         const { customerRepo } = buildService(client, getTenantRawPool(businessId));
         const authService = new CustomerAuthService(customerRepo, businessId);
         const result = await authService.register(body);
+        setCustomerAuthCookie(res, result.token, result.expiresIn);
 
         res.status(201).json({
           message: 'Cuenta creada exitosamente',
@@ -335,6 +360,7 @@ export function createCustomerRouter(
         const { customerRepo } = buildService(client, getTenantRawPool(businessId));
         const authService = new CustomerAuthService(customerRepo, businessId);
         const result = await authService.login(body);
+        setCustomerAuthCookie(res, result.token, result.expiresIn);
 
         res.json({
           token: result.token,
@@ -371,6 +397,7 @@ export function createCustomerRouter(
         const { customerRepo } = buildService(client, getTenantRawPool(businessId));
         const authService = new CustomerAuthService(customerRepo, businessId);
         const result = await authService.loginWithGoogle(body.idToken);
+        setCustomerAuthCookie(res, result.token, result.expiresIn);
 
         res.json({
           token: result.token,
@@ -449,6 +476,16 @@ export function createCustomerRouter(
   );
 
   // -------------------------------------------------------------------------
+  // POST /api/customer/logout — pública, sin autenticación (mismo criterio
+  // que /api/auth/logout de staff: limpiar una cookie ya vencida/ausente no
+  // debería fallar).
+  // -------------------------------------------------------------------------
+  router.post('/logout', (_req: Request, res: Response): void => {
+    clearCustomerAuthCookie(res);
+    res.status(204).end();
+  });
+
+  // -------------------------------------------------------------------------
   // A partir de aquí: requieren JWT con role=CUSTOMER (business_id incluido)
   // -------------------------------------------------------------------------
   router.use(authenticate(), authorize(Roles.CUSTOMER_ONLY));
@@ -473,6 +510,14 @@ export function createCustomerRouter(
 
   // -------------------------------------------------------------------------
   // GET /api/customer/me
+  //
+  // `?businessSlug=X` opcional (19/08/2026, portal a cookie httpOnly): la
+  // cookie del portal es del dominio entero (`path: '/'`), así que un
+  // cliente logueado en el negocio A cuya cookie viaja igual al visitar el
+  // portal del negocio B tiene que verse como "no logueado" ahí, no como
+  // logueado-con-los-datos-de-A. Sin `businessSlug`, se comporta igual que
+  // antes (usado por callers que ya conocen el contexto del negocio por
+  // otra vía).
   // -------------------------------------------------------------------------
   router.get(
     '/me',
@@ -480,6 +525,15 @@ export function createCustomerRouter(
       try {
         const customerId = requireCustomerId(req, res);
         if (!customerId) return;
+
+        const expectedSlug = typeof req.query.businessSlug === 'string' ? req.query.businessSlug : undefined;
+        if (expectedSlug) {
+          const business = await platformRepo.findBySlug(expectedSlug);
+          if (!business || business.id !== req.user!.businessId) {
+            res.status(401).json({ code: 'UNAUTHORIZED', message: 'Sesión de otro negocio' });
+            return;
+          }
+        }
 
         const { customerRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
         const customer = await customerRepo.getById(customerId);
@@ -491,6 +545,33 @@ export function createCustomerRouter(
       } catch (err) {
         next(err);
       }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/customer/refresh — re-firma el token con un exp nuevo, mismo
+  // criterio que POST /api/auth/refresh de staff (me.routes.ts). Pura
+  // re-firma en memoria: authenticate() ya validó firma+exp del token
+  // vigente en este mismo request, no hace falta releer nada de la BD.
+  // -------------------------------------------------------------------------
+  router.post(
+    '/refresh',
+    (req: Request, res: Response): void => {
+      const customerId = req.user?.customerId;
+      const businessId = req.user?.businessId;
+      if (!customerId || !businessId) {
+        res.status(401).json({ code: 'UNAUTHORIZED', message: 'No autenticado' });
+        return;
+      }
+
+      const ttl = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
+      const token = signToken(
+        { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: businessId },
+        getJwtSecret(),
+        ttl,
+      );
+      setCustomerAuthCookie(res, token, ttl);
+      res.status(200).json({ token, tokenType: 'Bearer', expiresIn: ttl });
     },
   );
 

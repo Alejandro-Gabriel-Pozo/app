@@ -291,10 +291,14 @@ function invalidBusinessSelectionError(): Error {
  * - `"Nm"`  → N minutos (ej. "30m" → 1800)
  * - `"N"`   → N segundos directos
  *
+ * Exportada (19/08/2026) porque `CustomerAuthService` y el refresh del
+ * portal (`customer.routes.ts`) la reusan — mismo TTL configurable que
+ * staff, un solo parser en vez de reimplementarlo.
+ *
  * @param value - Valor de la variable de entorno JWT_EXPIRES_IN
  * @returns Duración en segundos (mínimo 60, máximo 30 días)
  */
-function parseExpiresIn(value: string): number {
+export function parseExpiresIn(value: string): number {
   const lower = value.trim().toLowerCase();
   const num = parseFloat(lower);
 

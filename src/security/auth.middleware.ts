@@ -30,13 +30,21 @@
  * en `memberships` de plataforma) y queda fuera de este cambio.
  *
  * ## Cookie httpOnly (B2, docs/pendientes-2026-08-13.md)
- * `authenticate()` acepta el token de DOS formas, en este orden: header
- * `Authorization: Bearer <token>` (como siempre) o, si no vino, la cookie
- * `AUTH_COOKIE_NAME`. Es un fallback, no un reemplazo — cualquier cliente
- * que ya mande el header (apps, Postman, la doc de Swagger) sigue
- * funcionando exactamente igual. `setAuthCookie`/`clearAuthCookie` viven acá
- * para que login/logout no dupliquen las opciones de la cookie
- * (httpOnly/secure/sameSite/path) en dos archivos.
+ * `authenticate()` acepta el token de TRES formas, en este orden: header
+ * `Authorization: Bearer <token>` (como siempre), la cookie de staff
+ * `AUTH_COOKIE_NAME`, o la cookie de portal de clientes
+ * `AUTH_COOKIE_NAME_CUSTOMER` (19/08/2026, docs/pendientes-2026-08-18.md
+ * punto P — portal migrado al mismo patrón). Es un fallback, no un
+ * reemplazo — cualquier cliente que ya mande el header (apps, Postman, la
+ * doc de Swagger) sigue funcionando exactamente igual.
+ *
+ * Dos cookies con nombres DISTINTOS a propósito, no una compartida: viven
+ * en el mismo dominio/path (`/`), así que un mismo navegador con sesión de
+ * staff Y de portal abiertas a la vez (ej. el dueño probando su propio
+ * portal) pisaría una cookie con la otra si compartieran nombre.
+ * `setAuthCookie`/`clearAuthCookie`/`setCustomerAuthCookie`/
+ * `clearCustomerAuthCookie` viven acá para que ningún caller duplique las
+ * opciones de la cookie (httpOnly/secure/sameSite/path) en dos archivos.
  *
  * ## hashPassword / verifyPassword
  * Viven en user.store.ts — importarlas de ahí directamente. Hasta el
@@ -157,6 +165,7 @@ export function verifyToken<T = JwtPayload>(token: string, secret: string): T & 
 // ---------------------------------------------------------------------------
 
 export const AUTH_COOKIE_NAME = 'rh_token';
+export const AUTH_COOKIE_NAME_CUSTOMER = 'rh_customer_token';
 
 /**
  * Parser mínimo del header `Cookie`. No se agregó `cookie-parser` como
@@ -181,27 +190,39 @@ function parseCookies(header: string | undefined): Record<string, string> {
 }
 
 /**
- * Setea la cookie de sesión. `secure` solo en producción: en desarrollo
- * local (http, sin TLS) el browser descarta silenciosamente una cookie
- * `Secure` y rompería el login local.
+ * Opciones compartidas por las dos cookies de sesión (staff y cliente).
+ * `secure` solo en producción: en desarrollo local (http, sin TLS) el
+ * browser descarta silenciosamente una cookie `Secure` y rompería el
+ * login local. Un solo lugar para no desincronizar las opciones entre
+ * `set*`/`clear*` de las dos cookies.
  */
-export function setAuthCookie(res: Response, token: string, maxAgeSeconds: number): void {
-  res.cookie(AUTH_COOKIE_NAME, token, {
+function cookieOptions(maxAgeSeconds?: number): {
+  httpOnly: true; secure: boolean; sameSite: 'strict'; path: string; maxAge?: number;
+} {
+  return {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
     path: '/',
-    maxAge: maxAgeSeconds * 1000,
-  });
+    ...(maxAgeSeconds !== undefined && { maxAge: maxAgeSeconds * 1000 }),
+  };
+}
+
+export function setAuthCookie(res: Response, token: string, maxAgeSeconds: number): void {
+  res.cookie(AUTH_COOKIE_NAME, token, cookieOptions(maxAgeSeconds));
 }
 
 export function clearAuthCookie(res: Response): void {
-  res.clearCookie(AUTH_COOKIE_NAME, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    path: '/',
-  });
+  res.clearCookie(AUTH_COOKIE_NAME, cookieOptions());
+}
+
+/** Cookie del portal de clientes — mismas opciones, nombre distinto (ver docblock del archivo). */
+export function setCustomerAuthCookie(res: Response, token: string, maxAgeSeconds: number): void {
+  res.cookie(AUTH_COOKIE_NAME_CUSTOMER, token, cookieOptions(maxAgeSeconds));
+}
+
+export function clearCustomerAuthCookie(res: Response): void {
+  res.clearCookie(AUTH_COOKIE_NAME_CUSTOMER, cookieOptions());
 }
 
 // ---------------------------------------------------------------------------
@@ -274,9 +295,10 @@ export const authenticate = (
     }
 
     const authHeader = req.headers['authorization'];
+    const cookies = parseCookies(req.headers['cookie']);
     const token = authHeader?.startsWith('Bearer ')
       ? authHeader.slice(7)
-      : parseCookies(req.headers['cookie'])[AUTH_COOKIE_NAME];
+      : (cookies[AUTH_COOKIE_NAME] ?? cookies[AUTH_COOKIE_NAME_CUSTOMER]);
 
     if (!token) {
       res.status(401).json({

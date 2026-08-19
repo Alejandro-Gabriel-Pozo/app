@@ -8,6 +8,7 @@ import type { CustomerRepository } from '../clientes-finanzas/customer.repositor
 import { Customer } from '../clientes-finanzas/customer.entities.js';
 import { hashPassword, verifyPassword } from './user.store.js';
 import { signToken } from './auth.middleware.js';
+import { parseExpiresIn } from './auth.service.js';
 import { verifyGoogleIdToken } from './google-oauth.js';
 import { UserRole } from '../types/enums.js';
 
@@ -24,6 +25,8 @@ export interface CustomerLoginInput {
 
 export interface CustomerAuthResult {
   token: string;
+  /** Segundos hasta que expira `token` — usado para el `maxAge` de la cookie httpOnly del portal. */
+  expiresIn: number;
   customer: {
     id: string;
     fullName: string;
@@ -39,6 +42,14 @@ const DUMMY_HASH = await hashPassword('dummy-constant-time-placeholder');
 
 export class CustomerAuthService {
   private readonly jwtSecret: string;
+  /**
+   * Mismo TTL configurable que staff (`JWT_EXPIRES_IN`, default 24h) —
+   * antes `issueToken()` dependía del default hardcodeado de `signToken()`
+   * (86400s) sin leer la variable de entorno. Hace falta un valor real acá
+   * (no solo el token) porque `setCustomerAuthCookie` necesita el mismo
+   * número para el `maxAge` de la cookie (19/08/2026, portal a httpOnly).
+   */
+  private readonly tokenTtlSeconds: number;
 
   constructor(
     private readonly customerRepository: CustomerRepository,
@@ -49,6 +60,7 @@ export class CustomerAuthService {
       throw new Error('[CustomerAuthService] JWT_SECRET no está definida en las variables de entorno.');
     }
     this.jwtSecret = secret;
+    this.tokenTtlSeconds = parseExpiresIn(process.env.JWT_EXPIRES_IN ?? '24h');
   }
 
   async register(input: CustomerRegistrationInput): Promise<CustomerAuthResult> {
@@ -68,7 +80,7 @@ export class CustomerAuthService {
     await this.customerRepository.saveWithPassword(customer, passwordHash);
 
     const token = this.issueToken(id);
-    return { token, customer: { id, fullName: input.fullName, email: input.email } };
+    return { token, expiresIn: this.tokenTtlSeconds, customer: { id, fullName: input.fullName, email: input.email } };
   }
 
   async login(input: CustomerLoginInput): Promise<CustomerAuthResult> {
@@ -86,6 +98,7 @@ export class CustomerAuthService {
     const token = this.issueToken(record.customer.id);
     return {
       token,
+      expiresIn: this.tokenTtlSeconds,
       customer: {
         id:       record.customer.id,
         fullName: record.customer.fullName,
@@ -125,13 +138,18 @@ export class CustomerAuthService {
     }
 
     const token = this.issueToken(customer.id);
-    return { token, customer: { id: customer.id, fullName: customer.fullName, email: customer.email ?? '' } };
+    return {
+      token,
+      expiresIn: this.tokenTtlSeconds,
+      customer: { id: customer.id, fullName: customer.fullName, email: customer.email ?? '' },
+    };
   }
 
   private issueToken(customerId: string): string {
     return signToken(
       { sub: customerId, role: UserRole.CUSTOMER, customer_id: customerId, business_id: this.businessId },
       this.jwtSecret,
+      this.tokenTtlSeconds,
     );
   }
 }
