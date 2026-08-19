@@ -40,13 +40,21 @@ PDF de factura, calendario, etc. — todo ✅ resuelto ahí a esta altura).
   `/api/customers` (`:id/tax-profile`, `padron/lookup-by-cuit`,
   `padron/lookup-by-dni`, `padron/iva-receptor-types`). "Proveedor"
   como concepto quedó explícitamente fuera de esta ronda (decisión
-  confirmada con el dueño). Commit `83df646`. **Sin frontend todavía**
-  (ver sección D) y **sin verificar contra el padrón real** — no hay
-  credenciales AFIP en este entorno de desarrollo, el mapeo de la
-  respuesta se basó en leer el código fuente del SDK, no en una llamada
-  real. Primer chequeo pendiente: probar `POST /padron/lookup-by-cuit`
-  con un CUIT real desde producción y confirmar que `legalName`/
-  `address` vienen poblados.
+  confirmada con el dueño). Commit `83df646`.
+  ✅ **Frontend agregado (19/08/2026, commit `8a6b0ab`,
+  appfrontend-main)** — sección "Datos fiscales" en el modal "Editar
+  cliente" de la pantalla de Clientes: alta manual + "Buscar por DNI"
+  (encadena resolver CUIT → traer datos del padrón, un solo click) +
+  "Buscar" junto al campo CUIT/CUIL. Sección oculta entera si el
+  negocio no tiene el módulo Facturación habilitado.
+  **Todavía sin verificar contra el padrón real** — no hay credenciales
+  AFIP en este entorno de desarrollo (ni backend local levantado), el
+  mapeo de la respuesta se basó en leer el código fuente del SDK, no en
+  una llamada real, y la UI tampoco se probó visualmente en navegador.
+  Primer chequeo pendiente en producción: abrir un cliente, usar
+  "Buscar por DNI" o "Buscar" con un CUIT real, y confirmar que razón
+  social/condición IVA/domicilio vienen poblados y que "Guardar datos
+  fiscales" persiste bien (reabrir el modal debe traer lo guardado).
 
 - ✅ **Puerto + adapter para @arcasdk/core en `InvoiceService`** (a
   pedido explícito del dueño, arquitectura para poder cambiar de SDK de
