@@ -1,0 +1,20 @@
+diff --git a/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js b/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js
+index 2c7448f..24166db 100644
+--- a/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js
++++ b/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js
+@@ -115,7 +115,14 @@ class InvoicePdfGenerator {
+             const renderTemplate = this.renderTemplate;
+             const optsWithCopy = Object.assign(Object.assign({}, this.opts), { copy });
+             const html = renderTemplate({ data, options: optsWithCopy, qrDataUrl });
+-            const browser = yield puppeteer_1.default.launch({ headless: true });
++            const browser = yield puppeteer_1.default.launch({
++                headless: true,
++                // Sin esto, Chromium falla al arrancar en contenedores sin los
++                // privilegios de kernel que su sandbox necesita (ej. Render) con
++                // "No usable sandbox!" -- --disable-dev-shm-usage evita además que
++                // se quede sin memoria compartida en contenedores con /dev/shm chico.
++                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
++            });
+             try {
+                 const page = yield browser.newPage();
+                 const { format: pageFormat, width: pageWidthMm, height: pageHeightMm, } = PAGE_DIMENSIONS[this.opts.pageSize || "A4"] || PAGE_DIMENSIONS.A4;

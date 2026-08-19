@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "build": "rm -rf dist && tsc && cp src/db/schema.sql dist/db/schema.sql && cp src/db/platform.schema.sql dist/db/platform.schema.sql",
@@ -29,6 +30,7 @@
     "dependency-cruiser": "^18.2.0",
     "eslint": "^9.0.0",
     "jscpd": "^5.0.15",
+    "patch-package": "^8.0.1",
     "ts-prune": "^0.10.3",
     "tsx": "^4.19.0",
     "typescript-eslint": "^8.0.0",
