@@ -8,7 +8,7 @@
 
 import type { WasteReasonRepository, WasteReason } from '../repositories/waste-reason.repository.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields } from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 import { WasteReasonNotFoundError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'waste_reasons';
@@ -48,18 +48,7 @@ export class WasteReasonService {
     const updated = await this.wasteReasonRepo.update(id, input);
 
     const changes = diffFields(before, input);
-    if (changes.length > 0) {
-      await this.auditLogRepo.record(
-        changes.map((c) => ({
-          entity: AUDIT_ENTITY,
-          entityId: id,
-          field: c.field,
-          oldValue: c.oldValue,
-          newValue: c.newValue,
-          changedBy,
-        })),
-      );
-    }
+    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
     return updated;
   }

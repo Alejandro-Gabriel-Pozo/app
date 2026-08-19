@@ -25,7 +25,7 @@ import type {
 import type { PlanLimits } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields } from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 import { CategoryNotFoundError, PlanLimitError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'resource_categories';
@@ -136,18 +136,7 @@ export class CategoryService {
     const updated = await this.categoryRepository.update(id, dto);
 
     const changes = diffFields(before, dto);
-    if (changes.length > 0) {
-      await this.auditLogRepository.record(
-        changes.map((c) => ({
-          entity: AUDIT_ENTITY,
-          entityId: id,
-          field: c.field,
-          oldValue: c.oldValue,
-          newValue: c.newValue,
-          changedBy,
-        })),
-      );
-    }
+    await recordFieldChanges(this.auditLogRepository, AUDIT_ENTITY, id, changes, changedBy);
 
     return updated;
   }

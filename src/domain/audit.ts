@@ -6,6 +6,8 @@
 // solo los campos que realmente cambiaron de valor.
 // =============================================================================
 
+import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+
 export interface FieldChange {
   field: string;
   oldValue: unknown;
@@ -43,4 +45,33 @@ export function diffFields<T extends object, P extends object>(
   }
 
   return changes;
+}
+
+/**
+ * Envuelve el patrón "si hay cambios, grabarlos" que se repetía a mano en
+ * 6 call sites (Fase 3, docs/auditoria-modularidad.md, hallazgo DRY-2):
+ * `CategoryService`, `WasteReasonService`, `BookableServiceService`,
+ * `ProductService` (x2, producto y variante), `resources.routes.ts`. No
+ * incluye los registros de auditoría de un solo evento hecho a mano en
+ * `role.service.ts` (alta/rename de rol) — esos no comparan `before`
+ * contra un patch, son un hecho puntual distinto de este patrón.
+ */
+export async function recordFieldChanges(
+  auditLogRepo: AuditLogRepository,
+  entity: string,
+  entityId: string,
+  changes: FieldChange[],
+  changedBy: string,
+): Promise<void> {
+  if (changes.length === 0) return;
+  await auditLogRepo.record(
+    changes.map((c) => ({
+      entity,
+      entityId,
+      field: c.field,
+      oldValue: c.oldValue,
+      newValue: c.newValue,
+      changedBy,
+    })),
+  );
 }

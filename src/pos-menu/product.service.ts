@@ -37,7 +37,7 @@ import type {
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { InventoryLevelRepository, InventoryLevelKey } from '../repositories/inventory-level.repository.js';
-import { diffFields } from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 import { DomainError, ProductHasStockError } from '../domain/errors.js';
 
 const AUDIT_ENTITY_PRODUCT = 'products';
@@ -152,18 +152,7 @@ export class ProductService {
     if (!updated) return null;
 
     const changes = diffFields(before, input);
-    if (changes.length > 0) {
-      await this.auditLogRepo.record(
-        changes.map((c) => ({
-          entity: AUDIT_ENTITY_PRODUCT,
-          entityId: id,
-          field: c.field,
-          oldValue: c.oldValue,
-          newValue: c.newValue,
-          changedBy,
-        })),
-      );
-    }
+    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY_PRODUCT, id, changes, changedBy);
 
     return updated;
   }
@@ -237,18 +226,7 @@ export class ProductService {
     if (!updated) return null;
 
     const changes = diffFields(before, input);
-    if (changes.length > 0) {
-      await this.auditLogRepo.record(
-        changes.map((c) => ({
-          entity: AUDIT_ENTITY_VARIANT,
-          entityId: variantId,
-          field: c.field,
-          oldValue: c.oldValue,
-          newValue: c.newValue,
-          changedBy,
-        })),
-      );
-    }
+    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY_VARIANT, variantId, changes, changedBy);
 
     return updated;
   }

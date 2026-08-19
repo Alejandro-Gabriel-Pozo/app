@@ -15,7 +15,7 @@
 
 import type { PlatformRepository, Role } from '../platform/platform.repository.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields } from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 import { Roles as PermissionGroups, type PermissionGroup } from '../security/roles.js';
 import { DomainError } from '../domain/errors.js';
 
@@ -131,18 +131,7 @@ export class RoleService {
       { permissionGroups: [...before.permissionGroups].sort() },
       { permissionGroups: [...permissionGroups].sort() },
     );
-    if (changes.length > 0) {
-      await this.auditLogRepo.record(
-        changes.map((c) => ({
-          entity: AUDIT_ENTITY,
-          entityId: id,
-          field: c.field,
-          oldValue: c.oldValue,
-          newValue: c.newValue,
-          changedBy,
-        })),
-      );
-    }
+    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
     return updated;
   }

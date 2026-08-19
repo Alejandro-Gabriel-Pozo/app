@@ -16,7 +16,7 @@ import type {
 } from './bookable-service.types.js';
 import { DomainError } from '../domain/errors.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields } from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 
 const AUDIT_ENTITY = 'bookable_services';
 
@@ -105,18 +105,7 @@ export class BookableServiceService {
     const updated = await this.repo.update(id, data);
 
     const changes = diffFields(existing, data);
-    if (changes.length > 0) {
-      await this.auditLogRepo.record(
-        changes.map((c) => ({
-          entity: AUDIT_ENTITY,
-          entityId: id,
-          field: c.field,
-          oldValue: c.oldValue,
-          newValue: c.newValue,
-          changedBy,
-        })),
-      );
-    }
+    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
     return updated;
   }

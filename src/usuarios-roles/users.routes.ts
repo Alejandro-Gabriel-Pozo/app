@@ -45,6 +45,7 @@ import { hashPassword } from '../security/user.store.js';
 import type { PlatformRepository } from '../platform/platform.repository.js';
 import type { AppContainer } from '../container.js';
 import { PlanLimitError, RoleNotAvailableInPlanError } from '../domain/errors.js';
+import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
 
 /**
  * `roleId` reemplaza el enum fijo `role` (14/08/2026, ver security/roles.ts
@@ -153,19 +154,10 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
         }
 
         // Límite de asientos y roles por plan (F2) — ver docblock del archivo.
-        // getPlanLimits() en el mismo try que getBusinessPlan: mismo
-        // contrato de error, las dos son consultas a la BD de plataforma.
-        let plan, limits;
-        try {
-          plan   = await container.getBusinessPlan(businessId);
-          limits = await container.getPlanLimits(plan);
-        } catch {
-          res.status(503).json({
-            code:    'PLATFORM_UNAVAILABLE',
-            message: 'No se pudo verificar el plan del negocio. Reintentá en unos segundos.',
-          });
-          return;
-        }
+        // resolvePlanLimits() (security/) ya maneja el 503 PLATFORM_UNAVAILABLE.
+        const resolved = await resolvePlanLimits(container, res, businessId);
+        if (!resolved) return;
+        const { plan, limits } = resolved;
 
         if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
           const err = new RoleNotAvailableInPlanError(plan, role.name);
@@ -233,17 +225,9 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
 
           // Límite de roles por plan (F2) — no repite el chequeo de asiento:
           // cambiar de rol no suma una membership nueva, ver docblock del archivo.
-          let plan, limits;
-          try {
-            plan   = await container.getBusinessPlan(businessId);
-            limits = await container.getPlanLimits(plan);
-          } catch {
-            res.status(503).json({
-              code:    'PLATFORM_UNAVAILABLE',
-              message: 'No se pudo verificar el plan del negocio. Reintentá en unos segundos.',
-            });
-            return;
-          }
+          const resolved = await resolvePlanLimits(container, res, businessId);
+          if (!resolved) return;
+          const { plan, limits } = resolved;
           if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
             const err = new RoleNotAvailableInPlanError(plan, role.name);
             res.status(402).json({ code: err.code, message: err.message, plan: err.plan, roleName: err.roleName });

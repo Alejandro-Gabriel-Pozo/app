@@ -51,6 +51,7 @@ import type { CategoryField } from './resource-category.types.js';
 import { ZodError } from 'zod';
 import { SqlCategoryRepository } from './sql.category.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
+import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
 import type { AppContainer } from '../container.js';
 
 export function createCategoryRouter(container: AppContainer): Router {
@@ -107,23 +108,11 @@ export function createCategoryRouter(container: AppContainer): Router {
 
       // Usa getBusinessPlan() en lugar de platformRepo.findById() —
       // solo trae el plan (string), no el objeto completo del negocio.
-      // getPlanLimits() se resuelve en el mismo try: ambas son consultas a
-      // la BD de plataforma y comparten el mismo contrato de error (503
-      // PLATFORM_UNAVAILABLE si esa BD no responde).
-      let plan, limits;
-      try {
-        plan   = await container.getBusinessPlan(businessId);
-        limits = await container.getPlanLimits(plan);
-      } catch {
-        // La BD de plataforma no respondió. El tenant sigue operativo pero
-        // no podemos verificar el límite de plan. Respondemos 503 con un
-        // código explícito para que el frontend lo trate diferente a un 500.
-        res.status(503).json({
-          code:    'PLATFORM_UNAVAILABLE',
-          message: 'No se pudo verificar el plan del negocio. Reintentá en unos segundos.',
-        });
-        return;
-      }
+      // resolvePlanLimits() (security/) ya maneja el 503 PLATFORM_UNAVAILABLE
+      // si esa BD no responde (Fase 3, auditoria-modularidad.md, DRY-3).
+      const resolved = await resolvePlanLimits(container, res, businessId);
+      if (!resolved) return;
+      const { plan, limits } = resolved;
 
       const service  = buildService(req);
       const category = await service.createCategory(

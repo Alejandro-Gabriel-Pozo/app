@@ -43,7 +43,7 @@ import { z }                              from 'zod';
 import { CreateOperatingWindowSchema }   from '../api/schemas/request.schemas.js';
 import type { VisualMetadata }           from '../types/visual.interface.js';
 import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
-import { diffFields }                    from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 
 const AUDIT_ENTITY_RESOURCE = 'resources';
 
@@ -257,18 +257,13 @@ export function createResourcesRouter(): Router {
           description: body.description,
           locationId:  body.locationId ?? body.location_id,
         });
-        if (changes.length > 0) {
-          await new SqlAuditLogRepository(req.db).record(
-            changes.map((c) => ({
-              entity: AUDIT_ENTITY_RESOURCE,
-              entityId: existing.id,
-              field: c.field,
-              oldValue: c.oldValue,
-              newValue: c.newValue,
-              changedBy: req.user!.id,
-            })),
-          );
-        }
+        await recordFieldChanges(
+          new SqlAuditLogRepository(req.db),
+          AUDIT_ENTITY_RESOURCE,
+          existing.id,
+          changes,
+          req.user!.id,
+        );
 
         res.json(updated);
       } catch (err) { next(err); }
