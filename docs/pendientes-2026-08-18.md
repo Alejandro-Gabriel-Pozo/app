@@ -215,16 +215,20 @@ para el detalle completo de cada uno:
   un panel real, ya queda el historial versionado como base.
 
 ### Backlog / integraciones externas
-- Facturación electrónica AFIP — investigado (`referencia-afip-wsfev1.md`),
-  nada implementado. Bloquea con ABM de Empresa (perfil fiscal) y de
-  Producto (IVA). Plan: SDK `arcasdk-main` (Node/TS).
+- Facturación electrónica AFIP — ✅ **Fase 1 resuelta (19/08/2026, punto
+  P)**: perfil fiscal del negocio emisor (`business_profile`), cargado
+  desde Mi Negocio. Sigue sin arrancar la conexión real a AFIP (WSFEv1 /
+  SDK `arcasdk-main`), sin emisión de comprobantes, sin homologación —
+  eso es lo que queda de este ítem.
 - Mails de reserva confirmada — falta cuenta de Resend + dominio
   verificado (`NoopEmailSender` hasta entonces).
 - Login con Google — falta crear el OAuth Client ID en Google Cloud
   Console y cargar `GOOGLE_CLIENT_ID`/`NEXT_PUBLIC_GOOGLE_CLIENT_ID`.
-- Portal de clientes: falta landing + alta pública de negocio, y
-  mecanismo de "reclamo" (`claim`/`merge`) completo (el login con Google
-  ya resuelve el caso más común, no el fusionar historial).
+- Portal de clientes: alta pública de negocio nuevo — ✅ **resuelta
+  (19/08/2026, punto R, `/registro`)**. Sigue faltando: landing propia
+  del portal, y el mecanismo de "reclamo" (`claim`/`merge`) completo (el
+  login con Google ya resuelve el caso más común, no el fusionar
+  historial).
 - Sitios corporativos (dominio propio) + guest checkout + magic link —
   solo documentado.
 - **Sin endpoint para que un negocio cambie su propio plan** (self-serve
