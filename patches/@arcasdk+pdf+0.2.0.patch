@@ -18,3 +18,36 @@ index 2c7448f..24166db 100644
              try {
                  const page = yield browser.newPage();
                  const { format: pageFormat, width: pageWidthMm, height: pageHeightMm, } = PAGE_DIMENSIONS[this.opts.pageSize || "A4"] || PAGE_DIMENSIONS.A4;
+diff --git a/node_modules/@arcasdk/pdf/lib/templates/arca-default/invoice-document.hbs b/node_modules/@arcasdk/pdf/lib/templates/arca-default/invoice-document.hbs
+index c44ea8d..ac32d16 100644
+--- a/node_modules/@arcasdk/pdf/lib/templates/arca-default/invoice-document.hbs
++++ b/node_modules/@arcasdk/pdf/lib/templates/arca-default/invoice-document.hbs
+@@ -59,6 +59,11 @@
+   .total-box-label{width:60%;text-align:right;font-size:11pt;font-weight:bold;padding-right:8px}
+   .total-box-value{width:40%;text-align:right;font-size:11pt;font-weight:bold}
+   .son-text{font-size:7pt;text-align:right;margin-top:2px}
++  .transparencia-fiscal-box{border:1pt solid #000;padding:5px 8px;margin-top:5px;font-size:8pt}
++  .transparencia-fiscal-title{font-weight:bold;text-align:center;margin-bottom:3px}
++  .transparencia-fiscal-row{display:flex;justify-content:flex-end;gap:8px}
++  .transparencia-fiscal-row span:first-child{font-weight:normal}
++  .transparencia-fiscal-row span:last-child{font-weight:bold;min-width:80px;text-align:right}
+   .cae-section{display:flex;align-items:flex-start;gap:12px;margin-top:8px}
+   .qr-img{width:65px;height:65px}
+   .arca-block{display:flex;flex-direction:column;justify-content:center}
+@@ -282,6 +287,16 @@
+         <div class="son-text">Son {{currencyName data.moneda}} {{numberToWords data.importeTotal}}</div>
+       </div>
+     </div>
++    <!-- Régimen de Transparencia Fiscal al Consumidor (Ley 27.743 / RG 5614/2024 ARCA) --
++         obligatorio desde el 1/4/2025 para Responsable Inscripto/Exento facturando a
++         Consumidor Final con IVA incluido en el precio (Factura B) -- discrimina el IVA
++         y otros impuestos indirectos ya contenidos en el importe total, aunque el
++         comprobante en sí no desglose el IVA por línea como una Factura A. -->
++    <div class="transparencia-fiscal-box">
++      <div class="transparencia-fiscal-title">Régimen de Transparencia Fiscal al Consumidor (Ley 27.743)</div>
++      <div class="transparencia-fiscal-row"><span>IVA Contenido:</span><span>{{formatCurrency data.importeIva data.moneda}}</span></div>
++      <div class="transparencia-fiscal-row"><span>Otros Impuestos Nacionales Indirectos:</span><span>{{formatCurrency (default data.importeTributos 0) data.moneda}}</span></div>
++    </div>
+     {{else if (eq data.cbteLetra "E")}}
+     {{#if data.cotizacion}}
+     <div class="export-footer-row">
