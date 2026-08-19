@@ -43,7 +43,14 @@ describe('Política de cancelación — reservas CONFIRMED', () => {
   // --- Casos que PERMITEN cancelar ---
 
   it('permite cancelar con exactamente 24h de antelación', () => {
-    const { ok } = canCancelConfirmed(msFromNow(CANCEL_ADVANCE_MS));
+    // Un solo Date.now() para los dos lados de la comparación -- el borde
+    // exacto (msUntilStart === CANCEL_ADVANCE_MS) no deja margen: usar
+    // msFromNow() + el default `now = Date.now()` de canCancelConfirmed()
+    // lee el reloj real DOS veces por separado, y cualquier ms de por
+    // medio (GC, CI lento, etc.) hace fallar el test de forma intermitente
+    // aunque la lógica de negocio esté bien.
+    const now = Date.now();
+    const { ok } = canCancelConfirmed(new Date(now + CANCEL_ADVANCE_MS), now);
     expect(ok).toBe(true);
   });
 
