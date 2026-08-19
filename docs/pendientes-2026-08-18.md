@@ -1562,3 +1562,42 @@ en Mi Negocio antes de darlo por completamente probado.
   presente el CSR y tenga certificado válido — sin eso, ni el flujo feliz
   ni la reconciliación A8.6 se pueden ejercitar contra el servicio real,
   solo contra los tests unitarios con el cliente mockeado.
+
+---
+
+## U. Bug real encontrado tras el deploy de T — `npm start` reventaba Render por falta de memoria (19/08/2026)
+
+Después de pushear el punto T, un deploy posterior (commit `7d17407`,
+**solo docs**, sin tocar código de la app) se cayó en Render con
+`FATAL ERROR: Ineffective mark-compacts near heap limit — JavaScript heap
+out of memory` (exit 134). No fue un bug de la Fase 2 en sí — fue el
+módulo nuevo (`facturacion/` + dependencia `@arcasdk/core`) el que hizo
+que un problema latente cruzara el límite de memoria.
+
+**Causa:** `package.json` tenía `"start": "npm run build && node
+dist/server.js"` — heredado de un fix viejo (`df47067`, de cuando
+`render.yaml` todavía no tenía `buildCommand` propio). Con
+`buildCommand: npm install && npm run build && npm run migrate:tenants`
+ya compilando y subiendo `dist/` en la etapa de build, `npm start`
+volvía a correr `rm -rf dist && tsc` desde cero **en el contenedor de
+runtime** (más chico de memoria que el de build) cada vez que arrancaba
+el proceso. Con el codebase ya más grande, ese segundo `tsc` redundante
+fue lo que hizo explotar la memoria.
+
+**No hubo caída del sitio real** — Render sigue sirviendo el último
+deploy sano mientras uno nuevo falla — pero cualquier deploy futuro
+corría el mismo riesgo, con probabilidad creciente a medida que el
+código crece.
+
+**Fix (commit `b2b01ed`):** `start` pasa a ser directo `node
+dist/server.js` — el `dist/` ya viene armado por `buildCommand`, no hace
+falta rehacerlo. Verificado: `npm run build` local genera `dist/server.js`
+correctamente.
+
+**Confirmado por el dueño (19/08/2026):** el deploy siguiente salió bien,
+y desde Mi Negocio ya guardó el certificado y la clave AFIP de
+homologación sin errores — la sección "Certificado AFIP" (punto T)
+funciona end-to-end contra producción real. El "Cannot GET
+/api/business-profile/afip-credentials" reportado antes de este fix era
+solo por probar esa URL directo en el navegador (esa ruta acepta
+PUT/DELETE, no GET sin `/status`) — no era un bug.
