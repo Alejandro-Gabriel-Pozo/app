@@ -1089,11 +1089,31 @@ todavía no hay conexión real a AFIP ni emisión de comprobantes.
   610/610 (+7 tests nuevos: 6 de `cuitSchema` + el ajuste de 8 fixtures
   de `BusinessProfile` en tests ya existentes para que sigan compilando).
 
-### Frontend — pendiente, no arrancado
+### Frontend — ✅ RESUELTO (19/08/2026), comiteado y pusheado (`ef05420`)
 
-Campos fiscales en Mi Negocio (`dashboard/mi-negocio/page.tsx`,
-`appfrontend-main`) — mismo patrón que `defaultCheckInTime`/
-`defaultCheckOutTime` del punto N (sección nueva en el form de identidad
-del negocio + tipos en `lib/types.ts`/`lib/api.ts`). Sin catálogo cerrado
-todavía para `taxIdType`/`taxCondition` (selects vs. texto libre) — a
-definir cuando se aborde esta mitad.
+`FiscalProfileSection` nueva en `dashboard/mi-negocio/page.tsx`
+(`appfrontend-main`) — mismo patrón que `BusinessIdentitySection` ya
+existente (carga con `businessProfileApi.get()`, guarda con `.update()`,
+skeleton mientras carga): razón social, CUIT, tipo de documento,
+condición frente al IVA, domicilio fiscal (línea/localidad/provincia/CP/
+país), punto de venta AFIP. `BusinessProfile` (`lib/negocio/types.ts`) y
+`businessProfileApi.update()` (`lib/negocio/api.ts`) ganan los 10 campos
+nuevos — los barrels `lib/types.ts`/`lib/api.ts` no necesitaron cambios
+(ya re-exportan todo desde `negocio/`). Texto libre para `taxIdType`/
+`taxCondition`, sin catálogo cerrado — mismo criterio que el backend
+(AFIP expone sus propios catálogos de referencia, se valida en serio
+recién cuando se conecte de verdad, no antes).
+
+Verificado: `tsc --noEmit` limpio, `npm run lint` limpio (0 errores,
+mismo warning preexistente sin relación), `npm run build` limpio (25
+rutas, sin rutas nuevas). **No verificado visualmente en navegador** —
+sin credenciales de un usuario de prueba a mano, mismo gap recurrente de
+toda esta sesión (ver puntos J/K/L/M/N más arriba). Recomendado
+confirmar a simple vista en Mi Negocio antes de darlo por cerrado del
+todo.
+
+### Qué sigue (fuera de alcance de la Fase 1)
+
+Sin conexión real a AFIP (WSFEv1 / `arcasdk-main`), sin emisión de
+comprobantes, sin homologación. Fase 1 solo deja cargados los datos que
+esa conexión va a necesitar. Backlog, no arrancado.
