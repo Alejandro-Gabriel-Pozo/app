@@ -31,6 +31,22 @@ PDF de factura, calendario, etc. — todo ✅ resuelto ahí a esta altura).
   — cierra del todo el punto crítico #1. `generateOccupancySummary()`,
   `generateOccupancyByResourceType()` y `getUnderutilizedResources()`
   excluyen recursos OUT_OF_SERVICE antes de agregar. Commit `3f3d762`.
+- ✅ **Perfil fiscal de cliente + consulta al padrón de ARCA (backend)**
+  — conecta la decisión de arquitectura del 18/08/2026 que había quedado
+  solo en un comentario (`customer_tax_profiles` existía en `schema.sql`
+  sin repositorio ni consumidor). `SqlCustomerTaxProfileRepository` +
+  `PadronService` (`getTaxpayerByCuit`/`resolveCuitByDni`/
+  `getIvaReceptorTypes`, ws_sr_padron_a5/a13) + rutas nuevas bajo
+  `/api/customers` (`:id/tax-profile`, `padron/lookup-by-cuit`,
+  `padron/lookup-by-dni`, `padron/iva-receptor-types`). "Proveedor"
+  como concepto quedó explícitamente fuera de esta ronda (decisión
+  confirmada con el dueño). Commit `83df646`. **Sin frontend todavía**
+  (ver sección D) y **sin verificar contra el padrón real** — no hay
+  credenciales AFIP en este entorno de desarrollo, el mapeo de la
+  respuesta se basó en leer el código fuente del SDK, no en una llamada
+  real. Primer chequeo pendiente: probar `POST /padron/lookup-by-cuit`
+  con un CUIT real desde producción y confirmar que `legalName`/
+  `address` vienen poblados.
 
 ## B. Confirmado ya resuelto (no reimplementar)
 
@@ -118,11 +134,18 @@ Orden sugerido por la auditoría, sin lo ya resuelto en la sección A:
    (`getStatus()` vs. `getDecrypted()` separados) — no es el mismo
    mecanismo 1:1 (estos datos no son un secreto, son inmutables tras
    confirmación), pero es la referencia de diseño a seguir.
-4. **Clientes — ABM insuficiente para fiscal** — `customer.entities.ts`
-   (v3) no tiene CUIT/condición IVA/domicilio ni DNI. Bloqueante si en
-   algún momento van a emitir Factura A (receptor Responsable
-   Inscripto). También bloquea la búsqueda por DNI/CUIT (extensión de
-   la búsqueda multicriterio).
+4. ✅ **RESUELTO (backend, 19/08/2026) — Clientes, ABM fiscal.**
+   `customer.entities.ts` sigue sin CUIT/condición IVA/domicilio (a
+   propósito, ver decisión del 18/08 — identidad básica y fiscal son
+   conceptos separados) pero ahora existe `CustomerTaxProfile` +
+   `SqlCustomerTaxProfileRepository` con esos datos, y `PadronService`
+   para autocompletarlos por CUIT o DNI (ver sección A). Bloqueante de
+   Factura A destrabado del lado del dato. **Todavía falta**: la
+   búsqueda de clientes POR CUIT/DNI (extensión de la búsqueda
+   multicriterio existente, `?email=`/`?name=`) no se construyó — lo
+   que se conectó es la consulta AL padrón de ARCA (autocompletar desde
+   afuera), no una búsqueda contra los perfiles fiscales ya cargados en
+   la propia base. Y sin UI en `appfrontend-main` todavía.
 5. **Tarifas especiales — precio fijo vs. porcentaje** — cambio de
    modelo, no de UI. `CustomerRate.price: number` es override absoluto;
    pasar a `discountPercentage` implica decidir migración de tarifas ya
@@ -147,11 +170,12 @@ Orden sugerido por la auditoría, sin lo ya resuelto en la sección A:
    (`business_profile.default_iva_rate`); sumar el campo por producto
    destraba además el punto de "IVA no debe vivir en Mi Negocio" de la
    especificación.
-9. **Clientes — catálogo de tags** — `addTag(customerId, tagId)` sugiere
-   que ya podría existir un catálogo detrás del `tagId`, pero no se
-   encontró una entidad/tabla `Tag` dedicada. **Confirmar antes de
-   construir nada** — puede que solo falte un CRUD de tags en el admin,
-   o que `tagId` sea en realidad texto libre con otro nombre.
+9. ✅ **CORRECCIÓN (19/08/2026) — Clientes, catálogo de tags: NO es un
+   gap, ya está implementado completo.** Anotado ayer como "sin
+   confirmar" — verificado hoy: `tags`/`customer_tags` existen en
+   `schema.sql`, y `SqlCustomerRepository.getTagsByCustomerId()`/
+   `getAllTags()`/`findOrCreateTagByName()` ya las usan de punta a
+   punta. Se saca de la lista de pendientes.
 
 ## E. No verificable desde `app-main` — pendiente confirmar con el frontend
 
