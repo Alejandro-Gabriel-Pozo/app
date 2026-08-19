@@ -1705,3 +1705,93 @@ generar el certificado en el gestor de **homologación** (no el de
 producción), (3) cargar cert + "CUIT de autenticación" en Mi Negocio, y
 (4) reintentar sobre los dos comprobantes que quedaron `FAILED_UNCERTAIN`.
 Ninguno de estos cuatro pasos depende de código nuevo.
+
+---
+
+## W. PDF del comprobante AFIP — `@arcasdk/pdf` (19/08/2026, schema v26)
+
+A pedido explícito del dueño ("Integrar ArcaSDK en app-main"). Aclarado
+antes de tocar código: `@arcasdk/core` (WSAA/WSFEv1) ya estaba integrado
+desde la Fase 2 — lo que faltaba era el paquete hermano `@arcasdk/pdf`
+(repo fuente provisto por el dueño, `arcasdk-main (1)`), que genera el
+PDF oficial con diseño ARCA/AFIP y QR de verificación. Sin esto, el
+botón "Facturar" daba un CAE pero no había nada imprimible para el
+cliente.
+
+**Riesgo real, planteado y aceptado explícitamente antes de implementar:**
+`@arcasdk/pdf` depende de Puppeteer — ~680MB de Chromium se descargan en
+cada `npm install` (corre en cada build de Render, ya incluido en
+`buildCommand`), y cada PDF generado lanza un proceso Chromium headless
+completo en runtime. `npm audit` marca una vulnerabilidad alta sin fix
+(`extract-zip`, path traversal) transitiva de Puppeteer — solo se
+ejercita al descomprimir el Chromium descargado, no en cada request,
+pero es real. Mismo tipo de riesgo que el incidente de memoria del punto
+U de este documento (ahí un `tsc` redundante, acá Puppeteer). El dueño
+confirmó explícitamente probarlo igual en el mismo backend en vez de
+aislarlo en un servicio aparte o buscar un motor sin Chromium.
+
+### Backend (`app-main`)
+
+- `invoices.emisor_cuit` (schema v26, R9 — criterios-datos.md) — congela
+  el CUIT de autenticación AFIP usado al CREAR el comprobante, para que
+  el PDF siga mostrando el CUIT real con el que AFIP lo asoció aunque
+  `business_profile.afip_cuit` cambie después.
+- `InvoicePdfService` (nuevo) — arma el `InvoiceData` desde
+  `invoices`/`business_profile`/`customers` y llama a
+  `InvoicePdfGenerator`. Rechaza fuerte (`InvoiceNotIssuedError`, 409) si
+  el comprobante no tiene CAE — `invoices` es DOCUMENTO, no se imprime
+  nada "provisorio".
+- `GET /api/invoices/:id/pdf` (`Roles.FRONT_DESK`, mismo gate de módulo
+  que el resto de facturación) — devuelve el PDF binario.
+- Simplificaciones deliberadas de este corte (documentadas en el
+  docblock del servicio): un solo ítem por comprobante (el cobro es un
+  monto único hoy, sin desglose de líneas a nivel `FinancialTransaction`);
+  receptor asume Consumidor Final (único caso que la UI arma —
+  `RequestInvoiceInput.buyer` nunca se manda desde el frontend todavía);
+  `emisor.iibb`/`fechaInicioActividades` quedan vacíos (no cargados en
+  el sistema).
+- **Ajuste encontrado verificando con un fixture real:** pasar el código
+  numérico crudo (`docTipo`, ej. `99`) como `documentoTipo` imprimía
+  "99: 0" en el PDF en vez de una etiqueta legible — `@arcasdk/pdf`
+  espera la etiqueta ("CUIT"/"DNI"/"Sin Identificar") tanto para mostrarla
+  como para el QR. Agregado `docTipoLabel()` (inverso de
+  `resolveDocTipo()` ya existente) en `afip-catalog.constants.ts`.
+- 3 tests nuevos (los guards de `InvoicePdfService` — no encontrado,
+  `PENDING`, `FAILED_UNCERTAIN` — sin invocar el generador real, eso se
+  verificó a mano). Suite completa: 673/673.
+
+### Frontend (`appfrontend-main`)
+
+`FacturarButton.tsx` — botón "PDF" junto al CAE/Cbte cuando el
+comprobante quedó `ISSUED`. Blob + objectURL + `<a>` temporal (patrón
+estándar de descarga), sin pasar por `apiFetch` (esa función siempre
+espera JSON).
+
+### Verificado
+
+- **Local, con un fixture real** (no un mock): PDF válido generado
+  (~91KB, ~1s), firma `%PDF-` correcta, layout AFIP/ARCA correcto, QR
+  presente, CAE/vencimiento visibles — confirmado leyendo el PDF
+  generado, no solo que el buffer no esté vacío.
+- **Contra producción real, tras el deploy**: servidor sano después del
+  build con Puppeteer (`/health` 200); `GET /api/invoices/:id/pdf` sobre
+  uno de los comprobantes `FAILED_UNCERTAIN` reales devolvió
+  `409 INVOICE_NOT_ISSUED` correctamente, sin caerse el servidor.
+- **No verificado todavía**: que Puppeteer lance Chromium exitosamente
+  en el runtime real de Render (el guard de arriba corta ANTES de llegar
+  a esa parte). Depende de tener un comprobante `ISSUED` de verdad — o
+  sea, depende de que se resuelva el trámite de AFIP (punto V.4). Probar
+  la descarga del PDF real apenas exista el primer comprobante `ISSUED`
+  es el primer chequeo pendiente de esta sesión.
+- `tsc`/`lint`/`build` limpios en los dos repos.
+
+### Backlog anotado, no implementado (capacidades de ArcaSDK que el dueño repasó)
+
+CAEA (autorización anticipada offline), FCE MiPyMEs, FEX (exportación),
+motores SOAP intercambiables — sin caso de uso concreto todavía. La más
+interesante para cuando se priorice: **Registro/Padrón**
+(`getPersonaInfo`-style, consulta contra el padrón de AFIP por CUIT) —
+autocompletar razón social/condición IVA/domicilio de un cliente nuevo
+en vez de tipearlos a mano, en `customer_tax_profiles` (tabla que ya
+existe en el schema pero sin repositorio propio ni consumidor real
+todavía).
