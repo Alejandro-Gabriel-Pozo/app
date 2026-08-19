@@ -194,9 +194,14 @@ para el detalle completo de cada uno:
   F.** Dentro de E7a, el gap de "descuento de stock en POS" resultó estar
   ✅ **ya resuelto** (verificado hoy, no es trabajo nuevo) — quedó
   arreglado de paso durante el carve-out de inventario del 16-17/08 sin
-  que nadie volviera a marcarlo acá. El resto de E7a (horarios de
-  servicios, housekeeping /me y /status, alta de negocio, locations)
-  sigue abierto, sin cambios.
+  que nadie volviera a marcarlo acá. ✅ **DECIDIDO (19/08/2026)** — del
+  resto de E7a, se prioriza construir pantalla para: **horarios de
+  servicios reservables**, **vistas de housekeeping por usuario/estado**
+  (`/me` y `/status/:status`), y **alta pública de negocio nuevo**
+  (`POST /register`). **`locations` queda sin priorizar** — sigue siendo
+  scaffolding sin uso real, no entra en este lote. Ninguno de los tres
+  priorizados está implementado todavía — falta definir orden/estimar
+  antes de arrancar.
 - ✅ **DECIDIDO (19/08/2026)** — panel de superadmin para editar presets
   de roles/`PLAN_LIMITS`: **no por ahora.** En su lugar, los cambios a
   esos valores (incluida la dimensión nueva de F2(c) de arriba cuando se
@@ -617,9 +622,18 @@ cambio de fechas "debería" dar 400 si recotizara). Suite completa:
 real (la lógica de precio ya se ejercita con los mismos repos en memoria
 que usan los otros 48 tests de `ReservationService`, no hay SQL nuevo).
 
-**Pendiente aparte (anotado, no resuelto hoy):** ajuste financiero
-explícito para recotizar una reserva `CONFIRMED` — depende de diseñar el
-flujo con el dueño antes de tocar código.
+✅ **DECIDIDO (19/08/2026)** — ajuste financiero explícito para recotizar
+una reserva `CONFIRMED`: al editar fechas/recurso de una reserva ya
+confirmada (y ya cobrada), el sistema recalcula el precio nuevo y
+**muestra la diferencia**, pero el ajuste real del cobro (cargo extra o
+nota de crédito en `clientes-finanzas`) lo confirma un empleado a mano —
+no se dispara automático. Elegido por sobre el auto-cobro para evitar el
+riesgo de un ajuste financiero mal disparado sin revisión humana.
+**No implementado todavía** — requiere: mostrar el precio recalculado
+como preview antes de confirmar el cambio (no solo congelar como hoy),
+un flujo de aprobación/confirmación del ajuste en la UI, y el
+cargo/nota de crédito correspondiente en `clientes-finanzas` una vez
+confirmado.
 
 ---
 
