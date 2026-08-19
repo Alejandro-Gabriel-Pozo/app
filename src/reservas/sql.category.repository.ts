@@ -26,7 +26,7 @@ import type {
   CreateCategoryDTO,
   UpdateCategoryDTO,
   CategoryField,
-} from '../types/resource-category.types.js';
+} from './resource-category.types.js';
 import { CategoryNotFoundError } from '../domain/errors.js';
 
 const RETURNING_COLS = `

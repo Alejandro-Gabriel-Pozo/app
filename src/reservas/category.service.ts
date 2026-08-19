@@ -21,7 +21,7 @@ import type {
   CreateCategoryDTO,
   UpdateCategoryDTO,
   CategoryField,
-} from '../types/resource-category.types.js';
+} from './resource-category.types.js';
 import type { PlanLimits } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';

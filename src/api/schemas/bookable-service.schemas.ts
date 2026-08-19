@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { TIME_ONLY_REGEX } from './common.schemas.js';
 
 export const CreateBookableServiceSchema = z.object({
   categoryId:      z.string().min(1),
@@ -26,7 +27,7 @@ export const UpdateBookableServiceSchema = z.object({
 
 export const CreateServiceScheduleSchema = z.object({
   dayOfWeek:   z.number().int().min(0).max(6),
-  startTime:   z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, {
+  startTime:   z.string().regex(TIME_ONLY_REGEX, {
     message: 'startTime debe tener formato HH:MM o HH:MM:SS',
   }),
   maxCapacity: z.number().int().min(1),
@@ -34,7 +35,7 @@ export const CreateServiceScheduleSchema = z.object({
 
 export const UpdateServiceScheduleSchema = z.object({
   dayOfWeek:   z.number().int().min(0).max(6).optional(),
-  startTime:   z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, {
+  startTime:   z.string().regex(TIME_ONLY_REGEX, {
     message: 'startTime debe tener formato HH:MM o HH:MM:SS',
   }).optional(),
   maxCapacity: z.number().int().min(1).optional(),

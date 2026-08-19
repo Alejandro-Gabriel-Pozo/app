@@ -110,7 +110,7 @@ import type { ICategoryRepository }          from './category.repository.js';
 import type { DomainEventRepository }        from '../repositories/domain-event.repository.js';
 import type { IResourceLockRepository }      from './resource-lock.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
-import type { BookableService } from '../types/bookable-service.types.js';
+import type { BookableService } from './bookable-service.types.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
 import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';

@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { TIME_ONLY_REGEX } from './common.schemas.js';
 
 export const CheckInSchema = z.object({
   reservationId: z.string().min(1, 'reservationId es obligatorio'),
@@ -24,14 +25,14 @@ export const TransferToReceivableSchema = z.object({
 
 /**
  * Horario de check-in/check-out fuera del estándar (18/08/2026,
- * pendientes-2026-08-18.md punto N). Mismo formato HH:MM(:SS) que
- * `timeOnly` en api/schemas/request.schemas.ts — no se reusa ese schema
- * acá para no crear una dependencia cruzada entre dos archivos de
- * schemas por un solo regex; si se agrega un tercer lugar que lo
- * necesite, vale la pena moverlo a un módulo compartido.
+ * pendientes-2026-08-18.md punto N). El propio comentario original acá
+ * decía "si se agrega un tercer lugar que lo necesite, vale la pena
+ * moverlo a un módulo compartido" — ese tercer lugar (y un cuarto y un
+ * quinto) ya existían (auditoria-modularidad.md, DRY-1); ahora usa el
+ * regex centralizado en common.schemas.ts.
  */
 const timeOnly = z.string().regex(
-  /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/,
+  TIME_ONLY_REGEX,
   'Formato de hora inválido — usar HH:MM o HH:MM:SS',
 );
 

@@ -47,7 +47,7 @@ import {
   CreateCategorySchema,
   UpdateCategorySchema,
 } from '../api/schemas/category.schemas.js';
-import type { CategoryField } from '../types/resource-category.types.js';
+import type { CategoryField } from './resource-category.types.js';
 import { ZodError } from 'zod';
 import { SqlCategoryRepository } from './sql.category.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';

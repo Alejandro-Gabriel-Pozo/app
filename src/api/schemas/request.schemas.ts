@@ -26,6 +26,7 @@
  */
 
 import { z } from 'zod';
+import { TIME_ONLY_REGEX, timeOnlySchema } from './common.schemas.js';
 
 const CustomerSchema = z.object({
   id: z.string().min(1, 'customer.id es obligatorio — el cliente debe existir previamente'),
@@ -249,12 +250,10 @@ export const CompleteOrderSchema = z.object({
 // Horario de atención — POST /api/business-hours, POST /api/resources/:id/hours
 // ---------------------------------------------------------------------------
 
-const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
-
 export const CreateOperatingWindowSchema = z.object({
   dayOfWeek: z.number().int().min(0).max(6),
-  startTime: z.string().regex(TIME_REGEX, { message: 'startTime debe tener formato HH:MM o HH:MM:SS' }),
-  endTime:   z.string().regex(TIME_REGEX, { message: 'endTime debe tener formato HH:MM o HH:MM:SS' }),
+  startTime: z.string().regex(TIME_ONLY_REGEX, { message: 'startTime debe tener formato HH:MM o HH:MM:SS' }),
+  endTime:   z.string().regex(TIME_ONLY_REGEX, { message: 'endTime debe tener formato HH:MM o HH:MM:SS' }),
 }).refine((data) => data.endTime > data.startTime, {
   message: 'endTime debe ser posterior a startTime',
   path: ['endTime'],
@@ -270,8 +269,6 @@ export const CreateOperatingWindowSchema = z.object({
 // módulo, no por request.
 const VALID_TIMEZONES = new Set<string>(Intl.supportedValuesOf('timeZone'));
 
-const timeOnly = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, { message: 'debe tener formato HH:MM o HH:MM:SS' });
-
 export const UpdateBusinessProfileSchema = z.object({
   displayName:  z.string().trim().min(1).max(255).nullable().optional(),
   contactEmail: z.string().trim().email({ message: 'contactEmail debe tener formato válido' }).nullable().optional(),
@@ -280,6 +277,6 @@ export const UpdateBusinessProfileSchema = z.object({
   timezone: z.string().trim().refine((tz) => VALID_TIMEZONES.has(tz), { message: 'timezone debe ser un nombre IANA válido (ej. America/Argentina/Buenos_Aires)' }).optional(),
   // Hora estándar de check-in/check-out (18/08/2026, flujo de check-in/
   // check-out — pendientes-2026-08-18.md punto N).
-  defaultCheckInTime:  timeOnly.optional(),
-  defaultCheckOutTime: timeOnly.optional(),
+  defaultCheckInTime:  timeOnlySchema.optional(),
+  defaultCheckOutTime: timeOnlySchema.optional(),
 });

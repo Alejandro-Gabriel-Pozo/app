@@ -9,7 +9,7 @@ import type {
   ResourceCategory,
   CreateCategoryDTO,
   UpdateCategoryDTO,
-} from '../types/resource-category.types.js';
+} from './resource-category.types.js';
 
 /**
  * Fake mínimo de ICategoryRepository — no hay InMemoryCategoryRepository en

@@ -7,7 +7,7 @@ import type {
   ResourceCategory,
   CreateCategoryDTO,
   UpdateCategoryDTO,
-} from '../types/resource-category.types.js';
+} from './resource-category.types.js';
 
 export interface ICategoryRepository {
   /** Devuelve todas las categorías activas */

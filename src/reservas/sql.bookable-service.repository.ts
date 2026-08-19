@@ -16,7 +16,7 @@ import type {
   CreateRatePlanDTO,
   UpdateRatePlanDTO,
   BookingMode,
-} from '../types/bookable-service.types.js';
+} from './bookable-service.types.js';
 
 function mapService(row: Record<string, unknown>): BookableService {
   return {

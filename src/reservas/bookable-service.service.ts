@@ -13,7 +13,7 @@ import type {
   UpdateBookableServiceDTO,
   UpdateServiceScheduleDTO,
   UpdateRatePlanDTO,
-} from '../types/bookable-service.types.js';
+} from './bookable-service.types.js';
 import { DomainError } from '../domain/errors.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';

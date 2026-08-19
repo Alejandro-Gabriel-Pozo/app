@@ -3,6 +3,8 @@
  * @description Especificación OpenAPI 3.0 de la Reservations API.
  */
 
+import { TIME_ONLY_REGEX } from '../api/schemas/common.schemas.js';
+
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
@@ -982,7 +984,7 @@ export const openApiSpec = {
         required: ['dayOfWeek', 'startTime', 'maxCapacity'],
         properties: {
           dayOfWeek:   { type: 'integer', minimum: 0, maximum: 6, description: '0 = lunes, 6 = domingo', example: 0 },
-          startTime:   { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$', example: '10:00', description: 'Formato HH:MM o HH:MM:SS' },
+          startTime:   { type: 'string', pattern: TIME_ONLY_REGEX.source, example: '10:00', description: 'Formato HH:MM o HH:MM:SS' },
           maxCapacity: { type: 'integer', minimum: 1, example: 4 },
         },
       },
@@ -991,7 +993,7 @@ export const openApiSpec = {
         type: 'object',
         properties: {
           dayOfWeek:   { type: 'integer', minimum: 0, maximum: 6 },
-          startTime:   { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$', description: 'Formato HH:MM o HH:MM:SS' },
+          startTime:   { type: 'string', pattern: TIME_ONLY_REGEX.source, description: 'Formato HH:MM o HH:MM:SS' },
           maxCapacity: { type: 'integer', minimum: 1 },
           active:      { type: 'boolean', description: 'false para desactivar sin borrar' },
         },

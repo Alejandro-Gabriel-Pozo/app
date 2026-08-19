@@ -13,7 +13,7 @@ import type {
   UpdateServiceScheduleDTO,
   CreateRatePlanDTO,
   UpdateRatePlanDTO,
-} from '../types/bookable-service.types.js';
+} from './bookable-service.types.js';
 
 export interface IBookableServiceRepository {
   // ---- Bookable Services ----

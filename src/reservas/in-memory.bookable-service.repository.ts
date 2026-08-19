@@ -14,7 +14,7 @@ import type {
   UpdateServiceScheduleDTO,
   CreateRatePlanDTO,
   UpdateRatePlanDTO,
-} from '../types/bookable-service.types.js';
+} from './bookable-service.types.js';
 
 export class InMemoryBookableServiceRepository implements IBookableServiceRepository {
   private readonly services = new Map<string, BookableService>();
