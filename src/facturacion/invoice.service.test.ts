@@ -28,7 +28,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
     const invoice: Invoice = {
       ...input,
       cbteNro: null, cae: null, caeVto: null,
-      status: 'PENDING', afipRequest, afipResponse: null, errorMessage: null,
+      status: 'PENDING', afipContacted: false, afipRequest, afipResponse: null, errorMessage: null,
       createdAt: new Date(), issuedAt: null,
     };
     this.invoices.set(invoice.id, invoice);
@@ -48,6 +48,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
     const updated: Invoice = {
       ...existing, status: data.status, errorMessage: data.errorMessage,
       afipResponse: data.afipResponse ?? existing.afipResponse,
+      afipContacted: data.afipContacted,
     };
     this.invoices.set(id, updated);
     return updated;
@@ -252,6 +253,59 @@ describe('InvoiceService', () => {
 
       expect(second.id).toBe(first.id);
       expect(createNextVoucher).toHaveBeenCalledTimes(1);
+    });
+
+    it('FAILED_UNCERTAIN sin haber contactado a AFIP (falla el chequeo previo al CAE) SÍ reintenta contra AFIP en el segundo pedido', async () => {
+      const getLastVoucher = vi.fn()
+        .mockRejectedValueOnce(new Error('timeout de red'))
+        .mockResolvedValueOnce({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 });
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(11));
+      const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher }) });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(AfipRequestUncertainError);
+      const failed = await invoiceRepo.getByIdempotencyKey('invoice:ft-1');
+      expect(failed?.status).toBe('FAILED_UNCERTAIN');
+      expect(failed?.afipContacted).toBe(false);
+
+      const retried = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      expect(retried.status).toBe('ISSUED');
+      expect(retried.id).toBe(failed!.id); // misma fila, nunca una segunda
+      expect(createNextVoucher).toHaveBeenCalledTimes(1);
+    });
+
+    it('FAILED_UNCERTAIN habiendo contactado a AFIP (createNextVoucher se invocó, red cortada después) NO reintenta solo -- A8.6', async () => {
+      const getLastVoucher = vi.fn().mockResolvedValue({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 });
+      const createNextVoucher = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+      const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher }) });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(AfipRequestUncertainError);
+      const failed = await invoiceRepo.getByIdempotencyKey('invoice:ft-1');
+      expect(failed?.afipContacted).toBe(true);
+
+      const second = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      expect(second.status).toBe('FAILED_UNCERTAIN');
+      expect(second.id).toBe(failed!.id);
+      // nunca se volvió a llamar createNextVoucher -- ambiguo, requiere revisión manual antes de reintentar
+      expect(createNextVoucher).toHaveBeenCalledTimes(1);
+    });
+
+    it('REJECTED (AFIP evaluó y dijo que no) SÍ reintenta contra AFIP en el segundo pedido', async () => {
+      const createNextVoucher = vi.fn()
+        .mockResolvedValueOnce(afipRejectedResponse())
+        .mockResolvedValueOnce(afipApprovedResponse(5));
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(AfipRequestRejectedError);
+      const rejected = await invoiceRepo.getByIdempotencyKey('invoice:ft-1');
+      expect(rejected?.status).toBe('REJECTED');
+
+      const retried = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      expect(retried.status).toBe('ISSUED');
+      expect(retried.id).toBe(rejected!.id);
+      expect(createNextVoucher).toHaveBeenCalledTimes(2);
     });
   });
 

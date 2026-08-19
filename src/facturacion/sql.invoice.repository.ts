@@ -23,6 +23,7 @@ interface InvoiceRow {
   cae: string | null;
   cae_vto: string | null;
   status: InvoiceStatus;
+  afip_contacted: boolean;
   afip_request: unknown;
   afip_response: unknown;
   error_message: string | null;
@@ -52,6 +53,7 @@ function rowToEntity(row: InvoiceRow): Invoice {
     cae: row.cae,
     caeVto: row.cae_vto,
     status: row.status,
+    afipContacted: row.afip_contacted,
     afipRequest: row.afip_request,
     afipResponse: row.afip_response,
     errorMessage: row.error_message,
@@ -118,10 +120,14 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   async markFailed(id: string, data: MarkFailedInput): Promise<Invoice> {
     const { rows } = await this.db.query<InvoiceRow>(
       `UPDATE invoices
-       SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response)
+       SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5
        WHERE id = $1
        RETURNING *`,
-      [id, data.status, data.errorMessage, data.afipResponse != null ? JSON.stringify(data.afipResponse) : null],
+      [
+        id, data.status, data.errorMessage,
+        data.afipResponse != null ? JSON.stringify(data.afipResponse) : null,
+        data.afipContacted,
+      ],
     );
     if (!rows[0]) throw new Error(`Invoice ${id} no encontrada al marcar ${data.status}`);
     return rowToEntity(rows[0]);

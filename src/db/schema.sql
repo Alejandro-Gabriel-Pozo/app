@@ -1970,11 +1970,25 @@ END $$;
 -- NUEVA terminaría pidiendo un segundo CAE para el mismo cobro.
 --
 -- status: PENDING (a punto de pedir el CAE) -> ISSUED (CAE recibido) |
--- REJECTED (AFIP lo rechazó explícito, Resultado='R' -- se puede corregir
--- y reintentar con una fila nueva) | FAILED_UNCERTAIN (falla de red/
--- timeout ambiguo -- A8.6, nunca se reintenta solo, requiere confirmar
--- contra FECompUltimoAutorizado/getVoucherInfo antes de que un humano
--- decida qué hacer).
+-- REJECTED (AFIP lo rechazó explícito, Resultado='R' -- nada quedó
+-- emitido, confirmado) | FAILED_UNCERTAIN (falla de red/timeout ambiguo).
+-- idempotency_key es determinística y única por financial_transaction_id
+-- (no hay "fila nueva" posible para el mismo cobro) -- el reintento
+-- (InvoiceService.requestInvoice) SIEMPRE reusa la misma fila, nunca
+-- inserta una segunda. Solo se habilita ese reintento cuando es seguro:
+-- ISSUED nunca se retoca; REJECTED y PENDING sí son retomables (se sabe
+-- con certeza que no quedó nada emitido); FAILED_UNCERTAIN depende de
+-- afip_contacted (abajo) -- A8.6, un reintento ciego después de haber
+-- contactado a AFIP podría duplicar un comprobante fiscal real.
+--
+-- afip_contacted: si createNextVoucher() (WSFEv1) llegó a invocarse antes
+-- de la falla. FALSE = ni siquiera se pudo autenticar/consultar contra
+-- AFIP (ej. WSAA rechazó el certificado) -- no hay ambigüedad posible,
+-- reintento automático seguro. TRUE = AFIP fue contactado y la falla
+-- ocurrió después (red cortada a mitad de la respuesta, o una respuesta
+-- rara sin CAE ni Resultado='R') -- genuinamente ambiguo, requiere que un
+-- humano reconcilie a mano (FECompUltimoAutorizado/getVoucherInfo) antes
+-- de que el sistema reintente solo.
 CREATE TABLE IF NOT EXISTS invoices (
   id                        VARCHAR(255)  PRIMARY KEY,
   business_id               VARCHAR(255)  NOT NULL,
@@ -2018,4 +2032,20 @@ CREATE INDEX IF NOT EXISTS idx_invoices_financial_transaction
 
 CREATE INDEX IF NOT EXISTS idx_invoices_customer
   ON invoices (customer_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- invoices.afip_contacted (schema v24) -- ver el docblock de la tabla más
+-- arriba. DEFAULT TRUE (conservador) para filas YA existentes: sin saber
+-- si createNextVoucher() llegó a invocarse en su momento, más vale no
+-- habilitar un reintento automático que podría ser inseguro. El backfill
+-- de abajo corrige el único caso identificable con certeza por su
+-- error_message: el chequeo previo a pedir el CAE (FECompUltimoAutorizado)
+-- que falla ANTES de siquiera intentar createNextVoucher() -- ahí no hay
+-- ambigüedad posible, sea cual sea la fila.
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS afip_contacted BOOLEAN NOT NULL DEFAULT TRUE;
+
+UPDATE invoices SET afip_contacted = FALSE
+  WHERE status = 'FAILED_UNCERTAIN'
+    AND afip_contacted = TRUE
+    AND error_message LIKE 'no se pudo consultar FECompUltimoAutorizado%';
 

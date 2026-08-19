@@ -11,6 +11,9 @@ export interface MarkFailedInput {
   status: 'REJECTED' | 'FAILED_UNCERTAIN';
   errorMessage: string;
   afipResponse?: unknown;
+  /** Ver `Invoice.afipContacted` — obligatorio, cada call site de
+   * `markFailed()` sabe si createNextVoucher() llegó a invocarse. */
+  afipContacted: boolean;
 }
 
 export interface InvoiceRepository {

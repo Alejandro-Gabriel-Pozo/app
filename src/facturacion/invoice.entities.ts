@@ -30,6 +30,11 @@ export interface Invoice {
   cae: string | null;
   caeVto: string | null;
   status: InvoiceStatus;
+  /** Si createNextVoucher() (WSFEv1) llegó a invocarse antes de una falla —
+   * ver docblock de `invoices` en schema.sql. Gobierna si InvoiceService
+   * puede reintentar un FAILED_UNCERTAIN solo, o si necesita revisión
+   * manual primero (A8.6). */
+  afipContacted: boolean;
   afipRequest: unknown;
   afipResponse: unknown;
   errorMessage: string | null;

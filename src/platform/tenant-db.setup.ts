@@ -211,7 +211,16 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // afip_key_encrypted/afip_ticket_encrypted/afip_ticket_expires_at; tabla
 // `invoices` nueva (DOCUMENTO — comprobantes con CAE). Ver
 // docs/referencia-afip-wsfev1.md y pendientes-2026-08-19.md.
-export const CURRENT_SCHEMA_VERSION = 23;
+// v24 (19/08/2026): invoices.afip_contacted — permite que
+// InvoiceService.requestInvoice() reintente un comprobante FAILED_UNCERTAIN
+// cuando createNextVoucher() nunca llegó a invocarse (ej. WSAA rechazó el
+// certificado antes de siquiera intentar el CAE), sin arriesgar un
+// reintento ciego cuando la falla ocurrió DESPUÉS de contactar a AFIP
+// (A8.6 -- ahí sigue requiriendo revisión manual). Encontrado en vivo:
+// un negocio real probó Facturar en homologación y quedó con una fila
+// FAILED_UNCERTAIN irrecuperable (el idempotency_key determinístico por
+// financial_transaction_id devolvía esa misma fila para siempre).
+export const CURRENT_SCHEMA_VERSION = 24;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

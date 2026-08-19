@@ -111,11 +111,12 @@ export class InvoiceService {
   async requestInvoice(input: RequestInvoiceInput): Promise<Invoice> {
     // Idempotencia DETERMINÍSTICA por financial_transaction_id (ver
     // docblock de schema.sql en la tabla invoices) — un reintento (doble
-    // click, timeout del cliente) siempre pega contra la MISMA fila, nunca
-    // dispara un segundo pedido de CAE.
+    // click, timeout del cliente, o el usuario volviendo a intentar tras
+    // arreglar algo del lado de AFIP) siempre pega contra la MISMA fila,
+    // nunca dispara un segundo pedido de CAE con una fila nueva.
     const idempotencyKey = `invoice:${input.financialTransactionId}`;
     const existing = await this.invoiceRepo.getByIdempotencyKey(idempotencyKey);
-    if (existing) return existing;
+    if (existing) return this.retryExisting(existing);
 
     const tx = await this.financialTransactionRepo.getById(input.financialTransactionId);
     if (!tx) throw new FinancialTransactionNotFoundError(input.financialTransactionId);
@@ -181,6 +182,42 @@ export class InvoiceService {
     return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
   }
 
+  /**
+   * Un `requestInvoice()` que pega contra un comprobante que ya existe
+   * (mismo `financial_transaction_id`, misma fila por el idempotency_key
+   * determinístico) reintenta o no según qué tan seguro sea:
+   *
+   * - ISSUED: ya tiene CAE real de AFIP, nunca se vuelve a tocar.
+   * - FAILED_UNCERTAIN con `afipContacted=true`: AFIP fue contactado y no
+   *   se pudo confirmar qué pasó (A8.6) -- reintentar a ciegas podría
+   *   duplicar un comprobante fiscal real. Se devuelve tal cual, requiere
+   *   revisión manual (contra FECompUltimoAutorizado/getVoucherInfo)
+   *   antes de habilitar un reintento.
+   * - El resto (PENDING, REJECTED, o FAILED_UNCERTAIN con
+   *   `afipContacted=false`): se sabe con certeza que no quedó nada
+   *   emitido, reintento seguro reusando la MISMA fila y el MISMO
+   *   `afipRequest` ya persistido (no se recalcula nada del cobro de
+   *   nuevo -- ver R12, una transacción confirmada no se edita).
+   */
+  private async retryExisting(existing: Invoice): Promise<Invoice> {
+    if (existing.status === 'ISSUED') return existing;
+    if (existing.status === 'FAILED_UNCERTAIN' && existing.afipContacted) return existing;
+
+    const credentials = await this.afipCredentialsRepo.getDecrypted();
+    if (!credentials) throw new AfipNotConfiguredError('falta cargar el certificado AFIP en Mi Negocio');
+    const profile = await this.businessProfileRepo.get();
+    if (!profile.taxId) throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
+
+    const client = this.clientFactory(credentials, profile.taxId, this.afipCredentialsRepo);
+    return this.issue(
+      client,
+      existing,
+      existing.afipRequest as Record<string, unknown>,
+      existing.environment,
+      existing.ptoVta,
+    );
+  }
+
   private async issue(
     client: Arca,
     invoice: Invoice,
@@ -198,7 +235,9 @@ export class InvoiceService {
       // punto de referencia no hay forma de reconciliar después, así que
       // no se intenta el pedido de CAE con esa incertidumbre de entrada.
       const message = `no se pudo consultar FECompUltimoAutorizado antes de pedir el CAE: ${errMessage(err)}`;
-      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message });
+      // createNextVoucher() nunca se invocó -- sin ambigüedad posible,
+      // reintentable solo (afipContacted: false, ver invoice.entities.ts).
+      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: false });
       throw new AfipRequestUncertainError(invoice.id, message);
     }
 
@@ -216,17 +255,22 @@ export class InvoiceService {
       const obs = (detResp?.Observaciones?.Obs ?? []).map((o) => `${o.Code}: ${o.Msg}`).join('; ')
         || (result.response.Errors?.Err ?? []).map((e) => `${e.Code}: ${e.Msg}`).join('; ')
         || 'sin detalle';
+      // AFIP evaluó y dijo que no -- confirmado que no quedó nada emitido,
+      // reintentable solo una vez corregido lo que haya rechazado.
       await this.invoiceRepo.markFailed(invoice.id, {
         status: 'REJECTED',
         errorMessage: obs,
         afipResponse: result.response,
+        afipContacted: true,
       });
       throw new AfipRequestRejectedError(invoice.id, obs);
     }
 
     if (!detResp?.CbteDesde || !result.cae) {
       const message = `respuesta de AFIP sin CbteDesde/CAE pese a no venir Resultado='R': ${JSON.stringify(result.response)}`;
-      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.response });
+      // AFIP respondió pero de forma inesperada -- genuinamente ambiguo,
+      // requiere revisión manual antes de reintentar (A8.6).
+      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.response, afipContacted: true });
       throw new AfipRequestUncertainError(invoice.id, message);
     }
 
@@ -272,7 +316,9 @@ export class InvoiceService {
     }
 
     const message = `error de red al pedir el CAE (${originalErrorMessage}) -- FECompUltimoAutorizado no avanzó de forma confirmable, requiere revisión manual antes de reintentar`;
-    await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message });
+    // createNextVoucher() SÍ se invocó y no se pudo confirmar el resultado --
+    // ambiguo por definición (A8.6), no reintentable solo.
+    await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: true });
     throw new AfipRequestUncertainError(invoice.id, message);
   }
 }
