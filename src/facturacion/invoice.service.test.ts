@@ -30,6 +30,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
       ...input,
       cbteNro: null, cae: null, caeVto: null,
       status: 'PENDING', afipContacted: false, afipRequest, afipResponse: null, errorMessage: null,
+      paymentMethod: input.paymentMethod ?? null, cardInstallments: input.cardInstallments ?? null,
       createdAt: new Date(), issuedAt: null,
     };
     this.invoices.set(invoice.id, invoice);
@@ -386,6 +387,37 @@ describe('InvoiceService', () => {
       expect(createNextVoucher).toHaveBeenCalledWith(expect.objectContaining({
         DocTipo: 80, DocNro: 20333333335, CondicionIVAReceptorId: 1,
       }));
+    });
+
+    // Regresión (19/08/2026, auditoría de producto): financial_transactions
+    // ya tenía forma de pago completa (cash-register, orders,
+    // customer-account.service.ts) pero el comprobante nunca la reflejaba.
+    it('congela paymentMethod/cardInstallments de la FinancialTransaction al crear (R9)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ paymentMethod: 'CARD', cardInstallments: 3 }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.paymentMethod).toBe('CARD');
+      expect(invoice.cardInstallments).toBe(3);
+    });
+
+    it('sin forma de pago cargada en la transacción, queda null (no se inventa un valor)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      // makeTx() sin overrides ya omite paymentMethod/cardInstallments --
+      // exactamente el caso "transacción sin forma de pago cargada".
+      const service = buildService({
+        tx: makeTx(),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.paymentMethod).toBeNull();
+      expect(invoice.cardInstallments).toBeNull();
     });
   });
 

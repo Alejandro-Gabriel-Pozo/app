@@ -27,7 +27,7 @@ import type { InvoiceRepository } from './invoice.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { CustomerRepository } from '../clientes-finanzas/customer.repository.js';
 import { toAfipDate } from './invoice.service.js';
-import { CBTE_TIPO_FACTURA_B, CONCEPTO_SERVICIOS, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, docTipoLabel } from './afip-catalog.constants.js';
+import { CBTE_TIPO_FACTURA_B, CONCEPTO_SERVICIOS, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, docTipoLabel, paymentMethodLabel } from './afip-catalog.constants.js';
 import { InvoiceNotFoundError, InvoiceNotIssuedError } from '../domain/errors.js';
 
 export class InvoicePdfService {
@@ -62,6 +62,7 @@ export class InvoicePdfService {
     // invoice.service.ts), no default_iva_rate del negocio -- ese puede
     // haber cambiado desde que se emitió este comprobante puntual.
     const alicuotaIvaPct = invoice.impNeto > 0 ? Math.round((invoice.impIva / invoice.impNeto) * 10000) / 100 : 0;
+    const condicionVenta = paymentMethodLabel(invoice.paymentMethod, invoice.cardInstallments);
 
     const data: InvoiceData = {
       emisor: {
@@ -86,6 +87,7 @@ export class InvoicePdfService {
       cbteFecha: toAfipDate(invoice.issuedAt ?? invoice.createdAt),
       concepto: invoice.concepto,
       moneda: invoice.moneda,
+      ...(condicionVenta !== undefined && { condicionVenta }),
       items: [
         {
           descripcion: invoice.concepto === CONCEPTO_SERVICIOS ? 'Servicios' : 'Productos',

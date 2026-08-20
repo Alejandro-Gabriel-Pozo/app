@@ -78,6 +78,32 @@ export function docTipoLabel(docTipo: number): string {
 }
 
 /**
+ * Label humano de `Invoice.paymentMethod` para `InvoiceData.condicionVenta`
+ * (`@arcasdk/pdf`, campo "Cond. Venta" del comprobante) -- WSFEv1 en sí no
+ * tiene un campo dedicado a "medio de pago" para Factura B/C domésticas,
+ * pero "Contado"/"Tarjeta de Crédito"/etc. en Condición de Venta es el uso
+ * estándar en facturación argentina (A5.1: el dominio ya usa `paymentMethod`
+ * -- CASH/CARD/TRANSFER/OTHER, financial_transactions -- esta es la ÚNICA
+ * traducción a texto para impresión, A5.3). `null` = la
+ * FinancialTransaction de origen no tenía forma de pago cargada -- el
+ * campo queda vacío en el PDF, no se inventa un valor.
+ */
+export function paymentMethodLabel(
+  paymentMethod: 'CASH' | 'CARD' | 'TRANSFER' | 'OTHER' | null,
+  cardInstallments: number | null,
+): string | undefined {
+  switch (paymentMethod) {
+    case 'CASH': return 'Contado';
+    case 'CARD': return cardInstallments && cardInstallments > 1
+      ? `Tarjeta de Crédito/Débito (${cardInstallments} cuotas)`
+      : 'Tarjeta de Crédito/Débito';
+    case 'TRANSFER': return 'Transferencia Bancaria';
+    case 'OTHER': return 'Otro';
+    default: return undefined;
+  }
+}
+
+/**
  * Condición frente al IVA del RECEPTOR (`CondicionIVAReceptorId`, tabla
  * `FEParamGetCondicionIvaReceptor` — agregada en v2.10 del WS, RG 5259).
  * Acá SÍ se hardcodea un único valor, a diferencia del resto de esta

@@ -179,6 +179,10 @@ export class InvoiceService {
         impNeto,
         impIva,
         impTotal,
+        // Congelados desde la FinancialTransaction de origen (R9) -- el
+        // comprobante nunca vuelve a consultarla después de esto.
+        paymentMethod: tx.paymentMethod ?? null,
+        cardInstallments: tx.cardInstallments ?? null,
       },
       afipRequest,
     );

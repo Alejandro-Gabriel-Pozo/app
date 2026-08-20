@@ -2083,3 +2083,18 @@ ALTER TABLE invoices ADD COLUMN IF NOT EXISTS emisor_cuit VARCHAR(50);
 CREATE UNIQUE INDEX IF NOT EXISTS customer_tax_profiles_customer_uniq
   ON customer_tax_profiles (customer_id);
 
+-- invoices.payment_method/card_installments (schema v28, 19/08/2026) --
+-- financial_transactions ya tenía forma de pago completa (cash-register,
+-- orders, customer-account.service.ts) pero el comprobante AFIP nunca la
+-- mostraba -- hallazgo de auditoría de producto. R9 (criterios-datos.md):
+-- se congelan acá al crear el comprobante, tomados de la
+-- FinancialTransaction de origen -- invoices nunca vuelve a consultarla
+-- después. Mismo CHECK que financial_transactions.card_installments
+-- (A8.2): solo tiene sentido con payment_method = 'CARD'. Nullable a
+-- propósito, igual que en financial_transactions -- no todo cobro tiene
+-- forma de pago cargada.
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)
+  CHECK (payment_method IS NULL OR payment_method IN ('CASH', 'CARD', 'TRANSFER', 'OTHER'));
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS card_installments SMALLINT
+  CHECK (card_installments IS NULL OR (card_installments >= 1 AND payment_method = 'CARD'));
+

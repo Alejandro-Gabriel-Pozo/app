@@ -234,7 +234,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v27 (19/08/2026): índice único customer_tax_profiles_customer_uniq —
 // customer_tax_profiles gana su primer repositorio/ruta real (padrón de
 // ARCA), un perfil fiscal por cliente por ahora.
-export const CURRENT_SCHEMA_VERSION = 27;
+// v28 (19/08/2026): invoices.payment_method/card_installments — el
+// comprobante AFIP ahora congela la forma de pago de la
+// FinancialTransaction de origen (R9), antes invisible en el PDF.
+export const CURRENT_SCHEMA_VERSION = 28;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

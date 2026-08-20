@@ -5,6 +5,8 @@
  * talonario (negocio + punto de venta + tipo de comprobante).
  */
 
+import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
+
 export type InvoiceStatus = 'PENDING' | 'ISSUED' | 'REJECTED' | 'FAILED_UNCERTAIN';
 export type AfipEnvironment = 'homologacion' | 'produccion';
 
@@ -37,6 +39,15 @@ export interface Invoice {
   afipContacted: boolean;
   /** CUIT de autenticación AFIP congelado al crear (schema v26) — ver docblock en schema.sql. `null` = comprobante emitido antes de este campo. */
   emisorCuit: string | null;
+  /**
+   * Congelados desde `FinancialTransaction.paymentMethod`/`cardInstallments`
+   * al crear el comprobante (schema v28, R9 -- criterios-datos.md: un
+   * documento congela lo que necesita de la transacción de origen, nunca
+   * la re-consulta después). `null` = la transacción de origen no tenía
+   * forma de pago cargada, o comprobante emitido antes de este campo.
+   */
+  paymentMethod: PaymentMethod | null;
+  cardInstallments: number | null;
   afipRequest: unknown;
   afipResponse: unknown;
   errorMessage: string | null;
@@ -62,4 +73,6 @@ export interface CreateInvoiceInput {
   impNeto: number;
   impIva: number;
   impTotal: number;
+  paymentMethod?: PaymentMethod | null;
+  cardInstallments?: number | null;
 }

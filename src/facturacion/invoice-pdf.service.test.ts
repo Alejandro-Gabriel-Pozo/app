@@ -44,6 +44,7 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
     moneda: 'PES', impNeto: 100, impIva: 21, impTotal: 121,
     cae: 'CAE-123', caeVto: '2026-09-01',
     status: 'ISSUED', afipContacted: true, emisorCuit: '20111111112',
+    paymentMethod: null, cardInstallments: null,
     afipRequest: {}, afipResponse: {}, errorMessage: null,
     createdAt: now, issuedAt: now,
     ...overrides,
@@ -99,10 +100,12 @@ describe('InvoicePdfService -- guards antes de generar (sin invocar Puppeteer)',
 // @arcasdk/pdf devolviendo un Uint8Array puro (lo que realmente hace
 // Puppeteer) para no depender de Chromium instalado en esta suite.
 // ---------------------------------------------------------------------------
+const generateSpy = vi.fn(async (_data: unknown) => new Uint8Array([0x25, 0x50, 0x44, 0x46])); // "%PDF" -- no un Buffer real
+
 vi.mock('@arcasdk/pdf', () => ({
   InvoicePdfGenerator: class {
-    async generate() {
-      return new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF" -- no un Buffer real
+    async generate(data: unknown) {
+      return generateSpy(data);
     }
   },
 }));
@@ -115,5 +118,28 @@ describe('InvoicePdfService -- el resultado siempre es un Buffer real', () => {
 
     expect(Buffer.isBuffer(result)).toBe(true);
     expect(result.subarray(0, 4).toString()).toBe('%PDF');
+  });
+});
+
+// Regresión (19/08/2026, auditoría de producto): financial_transactions ya
+// tenía forma de pago completa pero el comprobante nunca la mostraba.
+describe('InvoicePdfService -- condicionVenta (forma de pago congelada)', () => {
+  it('CARD con cuotas: arma el label con la cantidad de cuotas', async () => {
+    const service = buildService({ invoice: makeInvoice({ paymentMethod: 'CARD', cardInstallments: 6 }) });
+
+    await service.generate('inv-1');
+
+    expect(generateSpy).toHaveBeenCalledWith(expect.objectContaining({
+      condicionVenta: 'Tarjeta de Crédito/Débito (6 cuotas)',
+    }));
+  });
+
+  it('sin forma de pago cargada en la transacción de origen: condicionVenta ausente, no un string vacío', async () => {
+    const service = buildService({ invoice: makeInvoice({ paymentMethod: null, cardInstallments: null }) });
+
+    await service.generate('inv-1');
+
+    const data = generateSpy.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect('condicionVenta' in data).toBe(false);
   });
 });

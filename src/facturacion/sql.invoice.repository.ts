@@ -1,6 +1,7 @@
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment } from './invoice.entities.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
+import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 
 interface InvoiceRow {
   id: string;
@@ -25,6 +26,8 @@ interface InvoiceRow {
   status: InvoiceStatus;
   afip_contacted: boolean;
   emisor_cuit: string | null;
+  payment_method: PaymentMethod | null;
+  card_installments: number | null;
   afip_request: unknown;
   afip_response: unknown;
   error_message: string | null;
@@ -56,6 +59,8 @@ function rowToEntity(row: InvoiceRow): Invoice {
     status: row.status,
     afipContacted: row.afip_contacted,
     emisorCuit: row.emisor_cuit,
+    paymentMethod: row.payment_method,
+    cardInstallments: row.card_installments,
     afipRequest: row.afip_request,
     afipResponse: row.afip_response,
     errorMessage: row.error_message,
@@ -93,14 +98,16 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
           pto_vta, cbte_tipo, emisor_cuit, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id, moneda,
-          imp_neto, imp_iva, imp_total, status, afip_request)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'PENDING', $18)
+          imp_neto, imp_iva, imp_total, payment_method, card_installments, status, afip_request)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'PENDING', $20)
        RETURNING *`,
       [
         input.id, input.businessId, input.financialTransactionId, input.customerId,
         input.idempotencyKey, input.environment, input.ptoVta, input.cbteTipo, input.emisorCuit, input.concepto,
         input.docTipo, input.docNro, input.condicionIvaReceptorId, input.moneda,
-        input.impNeto, input.impIva, input.impTotal, JSON.stringify(afipRequest),
+        input.impNeto, input.impIva, input.impTotal,
+        input.paymentMethod ?? null, input.cardInstallments ?? null,
+        JSON.stringify(afipRequest),
       ],
     );
     return rowToEntity(rows[0]!);
