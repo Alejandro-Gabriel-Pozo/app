@@ -141,68 +141,10 @@ function toCustomerDto(customer: Customer) {
 export function createCustomersRouter(container: AppContainer): Router {
   const router = Router();
 
-  // GET /customers/:id
-  router.get(
-    '/:id',
-    authorize(Roles.FRONT_DESK),
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-        const repo = new SqlCustomerRepository(req.db!);
-        const id = String(req.params['id']);
-        const customer = await repo.getById(id);
-        if (!customer) {
-          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
-          return;
-        }
-        const tags = await repo.getTagsByCustomerId(id);
-        res.json({ ...toCustomerDto(customer), tags });
-      } catch (err) { next(err); }
-    },
-  );
-
-  // PATCH /customers/:id — actualiza displayName/kind/active
-  router.patch(
-    '/:id',
-    authorize(Roles.FRONT_DESK),
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-        const repo = new SqlCustomerRepository(req.db!);
-        const id = String(req.params['id']);
-        const existing = await repo.getById(id);
-        if (!existing) {
-          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
-          return;
-        }
-
-        const body = UpdateCustomerSchema.parse(req.body);
-
-        if (body.displayName !== undefined) {
-          const updated = new Customer(
-            existing.id,
-            body.displayName,
-            existing.contactMethods,
-            existing.kind,
-            existing.active,
-          );
-          await repo.save(updated);
-        }
-
-        if (body.kind !== undefined || body.active !== undefined) {
-          await repo.updateKindAndActive(
-            id,
-            body.kind ?? existing.kind,
-            body.active ?? existing.active,
-          );
-        }
-
-        const refreshed = await repo.getById(id);
-        const tags = await repo.getTagsByCustomerId(id);
-        res.json({ ...toCustomerDto(refreshed!), tags });
-      } catch (err) { next(err); }
-    },
-  );
-
   // ── Perfil fiscal (customer_tax_profiles, schema v27) + padrón de ARCA ──
+  // IMPORTANTE: estas rutas se registran ANTES de /:id para que Express no
+  // capture "/padron" como un parámetro :id. Regla general de este router:
+  // rutas estáticas siempre antes de rutas con parámetros dinámicos.
   // Roles.MANAGEMENT en las cinco rutas: mismo criterio de sensibilidad que
   // afip-credentials.repository.ts y business-profile "Datos fiscales" —
   // CUIT/razón social/domicilio de un cliente es un escalón más sensible
@@ -210,55 +152,6 @@ export function createCustomersRouter(container: AppContainer): Router {
   // requireModule(FACTURACION): customer_tax_profiles existe para
   // facturar, no tiene sentido sin ese módulo habilitado.
   const facturacionGate = requireModule(container, ModuleKey.FACTURACION);
-
-  // GET /customers/:id/tax-profile — null si el cliente todavía no cargó datos fiscales.
-  router.get(
-    '/:id/tax-profile',
-    facturacionGate,
-    authorize(Roles.MANAGEMENT),
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-        const profile = await new SqlCustomerTaxProfileRepository(req.db!).getByCustomerId(String(req.params['id']));
-        res.json(profile);
-      } catch (err) { next(err); }
-    },
-  );
-
-  // PUT /customers/:id/tax-profile — crea o actualiza (un perfil por cliente, ver docblock de la entidad).
-  router.put(
-    '/:id/tax-profile',
-    facturacionGate,
-    authorize(Roles.MANAGEMENT),
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-        const id = String(req.params['id']);
-        const repo = new SqlCustomerRepository(req.db!);
-        const existing = await repo.getById(id);
-        if (!existing) {
-          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
-          return;
-        }
-        const body = UpsertTaxProfileSchema.parse(req.body);
-        const profile = await new SqlCustomerTaxProfileRepository(req.db!).upsert(id, {
-          legalName: body.legalName,
-          taxId: body.taxId,
-          taxIdType: body.taxIdType,
-          ...(body.taxCondition !== undefined && { taxCondition: body.taxCondition }),
-          ...(body.address !== undefined && {
-            address: body.address && {
-              line1: body.address.line1,
-              line2: body.address.line2 ?? null,
-              city: body.address.city ?? null,
-              state: body.address.state ?? null,
-              postalCode: body.address.postalCode ?? null,
-              country: body.address.country,
-            },
-          }),
-        });
-        res.json(profile);
-      } catch (err) { next(err); }
-    },
-  );
 
   function buildPadronService(req: Request): PadronService {
     return new PadronService(
@@ -312,44 +205,6 @@ export function createCustomersRouter(container: AppContainer): Router {
         const claseCmp = typeof req.query['claseCmp'] === 'string' ? req.query['claseCmp'] : undefined;
         const types = await buildPadronService(req).getIvaReceptorTypes(claseCmp);
         res.json(types);
-      } catch (err) { next(err); }
-    },
-  );
-
-  // POST /customers/:id/tags — find-or-create por nombre + asignar
-  router.post(
-    '/:id/tags',
-    authorize(Roles.FRONT_DESK),
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-        const repo = new SqlCustomerRepository(req.db!);
-        const id = String(req.params['id']);
-        const existing = await repo.getById(id);
-        if (!existing) {
-          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
-          return;
-        }
-
-        const { tagName } = AssignTagSchema.parse(req.body);
-        const tag = await repo.findOrCreateTagByName(tagName.trim());
-        await repo.addTag(id, tag.id);
-
-        const tags = await repo.getTagsByCustomerId(id);
-        res.status(201).json({ ...toCustomerDto(existing), tags });
-      } catch (err) { next(err); }
-    },
-  );
-
-  // DELETE /customers/:id/tags/:tagId
-  router.delete(
-    '/:id/tags/:tagId',
-    authorize(Roles.FRONT_DESK),
-    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-        const repo = new SqlCustomerRepository(req.db!);
-        const id = String(req.params['id']);
-        await repo.removeTag(id, String(req.params['tagId']));
-        res.status(204).send();
       } catch (err) { next(err); }
     },
   );
@@ -435,6 +290,154 @@ export function createCustomersRouter(container: AppContainer): Router {
         const customer = new Customer(customerId, displayName, contactMethods);
         await repo.save(customer);
         res.status(201).json(toCustomerDto(customer));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // GET /customers/:id
+  router.get(
+    '/:id',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params['id']);
+        const customer = await repo.getById(id);
+        if (!customer) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
+          return;
+        }
+        const tags = await repo.getTagsByCustomerId(id);
+        res.json({ ...toCustomerDto(customer), tags });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // PATCH /customers/:id — actualiza displayName/kind/active
+  router.patch(
+    '/:id',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params['id']);
+        const existing = await repo.getById(id);
+        if (!existing) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
+          return;
+        }
+
+        const body = UpdateCustomerSchema.parse(req.body);
+
+        if (body.displayName !== undefined) {
+          const updated = new Customer(
+            existing.id,
+            body.displayName,
+            existing.contactMethods,
+            existing.kind,
+            existing.active,
+          );
+          await repo.save(updated);
+        }
+
+        if (body.kind !== undefined || body.active !== undefined) {
+          await repo.updateKindAndActive(
+            id,
+            body.kind ?? existing.kind,
+            body.active ?? existing.active,
+          );
+        }
+
+        const refreshed = await repo.getById(id);
+        const tags = await repo.getTagsByCustomerId(id);
+        res.json({ ...toCustomerDto(refreshed!), tags });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // GET /customers/:id/tax-profile — null si el cliente todavía no cargó datos fiscales.
+  router.get(
+    '/:id/tax-profile',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const profile = await new SqlCustomerTaxProfileRepository(req.db!).getByCustomerId(String(req.params['id']));
+        res.json(profile);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // PUT /customers/:id/tax-profile — crea o actualiza (un perfil por cliente, ver docblock de la entidad).
+  router.put(
+    '/:id/tax-profile',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const id = String(req.params['id']);
+        const repo = new SqlCustomerRepository(req.db!);
+        const existing = await repo.getById(id);
+        if (!existing) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
+          return;
+        }
+        const body = UpsertTaxProfileSchema.parse(req.body);
+        const profile = await new SqlCustomerTaxProfileRepository(req.db!).upsert(id, {
+          legalName: body.legalName,
+          taxId: body.taxId,
+          taxIdType: body.taxIdType,
+          ...(body.taxCondition !== undefined && { taxCondition: body.taxCondition }),
+          ...(body.address !== undefined && {
+            address: body.address && {
+              line1: body.address.line1,
+              line2: body.address.line2 ?? null,
+              city: body.address.city ?? null,
+              state: body.address.state ?? null,
+              postalCode: body.address.postalCode ?? null,
+              country: body.address.country,
+            },
+          }),
+        });
+        res.json(profile);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /customers/:id/tags — find-or-create por nombre + asignar
+  router.post(
+    '/:id/tags',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params['id']);
+        const existing = await repo.getById(id);
+        if (!existing) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
+          return;
+        }
+
+        const { tagName } = AssignTagSchema.parse(req.body);
+        const tag = await repo.findOrCreateTagByName(tagName.trim());
+        await repo.addTag(id, tag.id);
+
+        const tags = await repo.getTagsByCustomerId(id);
+        res.status(201).json({ ...toCustomerDto(existing), tags });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // DELETE /customers/:id/tags/:tagId
+  router.delete(
+    '/:id/tags/:tagId',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const repo = new SqlCustomerRepository(req.db!);
+        const id = String(req.params['id']);
+        await repo.removeTag(id, String(req.params['tagId']));
+        res.status(204).send();
       } catch (err) { next(err); }
     },
   );
