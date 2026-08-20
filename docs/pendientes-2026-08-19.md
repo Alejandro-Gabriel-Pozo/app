@@ -12,6 +12,20 @@ PDF de factura, calendario, etc. — todo ✅ resuelto ahí a esta altura).
 
 ## A. Resuelto en esta sesión
 
+- ✅ **Forma de pago en el comprobante AFIP (schema v28)** — corrección a
+  la auditoría original: decía "cero campos, cero referencias
+  (formaPago/medioPago/paymentMethod)" tanto para `Invoice` como para
+  `FinancialTransaction`. Falso para `FinancialTransaction`
+  (`payment_method`/`card_installments` ya existían completos —
+  cash-register, orders, customer-account.service.ts). El gap real,
+  más acotado: `Invoice`/`InvoicePdfService` nunca los leían, el
+  comprobante impreso no mostraba cómo pagó el cliente pese a que el
+  dato ya estaba cargado. `invoices.payment_method`/`card_installments`
+  nuevos, congelados de la `FinancialTransaction` de origen al crear el
+  comprobante (R9) — se imprimen como "Cond. Venta" en el PDF
+  ("Contado"/"Tarjeta de Crédito/Débito (N cuotas)"/etc.). Verificado
+  con un PDF real generado localmente (mismo fixture de comprobante-5).
+  Commit `565b571`.
 - ✅ **Factura B no discriminaba IVA (Ley 27.743 / RG 5614/2024 ARCA)**
   — bloqueante legal. El bug estaba en el template `.hbs` de
   `@arcasdk/pdf` (branch `cbteLetra="B"` nunca renderizaba el desglose),
