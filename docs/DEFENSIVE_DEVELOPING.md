@@ -39,6 +39,15 @@ sección 2 en el PR."*
    `req.db`), el día que una esté mal las dos hay que arreglarlas por
    separado — y es fácil olvidarse de una. Centralizar en un único
    builder/factory.
+6. **Una garantía de integridad que deja de vivir en un constraint de la base
+   tiene que declararse explícita, no asumirse.** Caso real (D9, 22/08/2026):
+   "un solo override de tarifa activo por cliente+ítem" vivía en un índice
+   único de Postgres. Al pasar a scope multinivel (bucket/categoría/ítem, con
+   filas múltiples por tarifa), esa garantía ya no puede expresarse como
+   índice único simple — se resolvió juntando candidatas y ordenando por
+   especificidad en la capa de servicio. Si esto no se nombra así de
+   explícito en el PR/commit, alguien asume después que sigue tan blindada
+   como antes.
 
 ---
 
@@ -70,6 +79,13 @@ aplíque. Los que no apliquen, marcálos como `N/A` con una razón corta —
   a `ssl: false` porque `NODE_ENV` no estaba seteado)?
 - [ ] **¿Qué se loguea o reporta si esto sale mal en producción?** ¿Alcanza
   para diagnosticar sin acceso a un debugger?
+- [ ] **Si vas a hacer `git commit --amend` o reescribir un commit:** ¿corriste
+  `git log origin/<rama>..HEAD` para confirmar que nada de eso se pusheó ya?
+  Reescribir historia no pusheada es gratis; reescribir historia pusheada no.
+- [ ] **Si el ítem es grande o el alcance está ambiguo** (más de una
+  interpretación razonable, o toca una decisión de negocio no confirmada):
+  ¿existe un doc de diseño en `docs/diseno-*.md` escrito ANTES de tocar
+  código, no en paralelo?
 
 ---
 

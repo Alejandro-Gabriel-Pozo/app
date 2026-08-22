@@ -18,6 +18,21 @@ como correctas.
 Usá los nombres que ya existen en el código (`docs/criterios-negocio.md`,
 A5.5). Si una entidad se llama `Turno`, no la renombres a `BookingLine`.
 
+## Preguntas de alcance pueden esconder una decisión de negocio
+
+Antes de implementar algo que surgió como "¿lo construimos ahora?" o "¿esto
+entra en el alcance?", separá la pregunta de alcance de cualquier decisión de
+comportamiento escondida adentro. Caso real (D5, 22/08/2026): la pregunta era
+"¿el catálogo es reutilizable?" — la implementación resolvió eso Y, sin
+preguntarlo aparte, asumió que reutilizable significaba "snapshot al asignar"
+en vez de "regla viva". Esa segunda parte era una decisión de negocio con dos
+respuestas igual de válidas y no se preguntó — quedó registrada como
+"confirmada" sin estarlo, y hubo que revertir diseño ya implementado.
+
+Regla: si una pregunta de alcance, una vez resuelta, puede comportarse de más
+de una forma razonable, cada forma es su propia pregunta con
+`AskUserQuestion` — no la resuelvas como parte de la primera.
+
 ## Developing defensivo — obligatorio antes de dar un cambio por terminado
 
 Además de `criterios-negocio`, todo cambio de código (no solo los que
@@ -68,6 +83,18 @@ crear un tipo nuevo, preguntate quién lo va a importar; si la respuesta es
 - "Resolver plan + límites del negocio contra la BD de plataforma, con
   503 si no responde" → `security/resolve-plan-limits.ts::resolvePlanLimits()`,
   mismo contrato que `requireModule`/`requirePlan`.
+- Auditoría de catálogo/tarifas especiales → `domain/audit.ts::recordFieldChanges()`,
+  ya extendido a `RateCatalogService` y a la desactivación de `customer_rates`
+  (distingue "cambió el % del catálogo" de "se tocó al cliente puntual") — no
+  reimplementes el diff a mano.
+- Resolver ALOJAMIENTO vs. TURNOS → `ICategoryRepository` (columna `is_lodging`
+  de `resource_categories`), ya inyectado en `ReservationPricingService` — si un
+  servicio nuevo lo necesita, reenviá la dependencia existente, no crees una
+  tabla ni un flag nuevo.
+- "Exactamente uno de N" en un CHECK de Postgres (pricing mode de
+  `customer_rates`, scope de `customer_rates`, scope de `rate_catalog`) →
+  patrón CASE-based, ya usado 3 veces en este repo — no el diseño polimórfico
+  `scope_type`/`scope_id` (pierde la FK real hacia las tablas de ítem).
 
 **Bounded contexts — no importes la clase rica de otro contexto dentro de
 tu propia entidad.** Si tu módulo solo necesita 2-3 campos de una entidad
