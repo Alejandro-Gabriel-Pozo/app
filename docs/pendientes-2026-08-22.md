@@ -40,6 +40,27 @@ pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
 
 ## D9. Scope multi-nivel para tarifas especiales (customer_rates + rate_catalog)
 
+✅ **Diseño escrito y cerrado con el dueño (22/08/2026, antes de codear):**
+`docs/diseno-scope-multinivel-tarifas-2026-08-22.md`. Propuesta completa
+de schema (5 columnas de scope mutuamente excluyentes: resource/service/
+product/category/bucket) + algoritmo de resolución de precio +
+cumplimiento declarado. Las 4 decisiones de negocio quedaron confirmadas
+(2 defaults del pedido original + 2 vía `AskUserQuestion`: PRODUCTOS
+entra en el alcance, y el eje servicio-siempre-gana de D5 domina por
+encima de la especificidad multi-nivel, no al revés). Lo único que
+cambió después fue la SECUENCIA de entrega, a pedido del dueño — partida
+en dos para que el trabajo de reservas no espere al de POS:
+
+- **D9-Parte 1** (ALOJAMIENTO/TURNOS/SERVICIOS — `reservas`) — lista
+  para implementar ya, sin bloqueos.
+- **D9-Parte 2** (PRODUCTOS + gancho nuevo en `pos-menu`/
+  `order.service.ts`, que hoy no consulta `customer_rates` en
+  absoluto) — aparte, no bloqueante, diseño ya escrito para retomar
+  cuando corresponda.
+
+(Nombrado "Parte 1"/"Parte 2" en vez de D6/D7 — esos dos números ya
+están tomados más arriba en este mismo archivo.)
+
 **No es parte de D5** — D5 (fijo/%/catálogo reutilizable, ya implementado
 y commiteado) resuelve CÓMO se expresa un descuento; esto resuelve A QUÉ
 se aplica. Encontrado el 22/08/2026, mismo día que D5, al revisar el
