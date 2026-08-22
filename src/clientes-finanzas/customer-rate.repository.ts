@@ -8,9 +8,9 @@
  * scope posibles, exactamente uno (`chk_customer_rate_scope` en
  * db/schema.sql):
  *   - `resourceId`/`serviceId`/`productId` — nivel ÍTEM (antes solo los
- *     primeros dos existían; `productId` se agrega al schema en esta
- *     pasada pero la API lo rechaza hasta D9-Parte 2, ver
- *     request.schemas.ts)
+ *     primeros dos existían; `productId` se agregó en D9-Parte 1 con la
+ *     API rechazándolo hasta D9-Parte 2 -- ya habilitado, lo consulta
+ *     `OrderPricingService`, pos-menu/order-pricing.service.ts)
  *   - `categoryId` — nivel CATEGORÍA (una sola columna: resources/
  *     bookable_services/products ya comparten `resource_categories`)
  *   - `bucket` — nivel BUCKET (`'ALOJAMIENTO'|'TURNOS'|'SERVICIOS'|'PRODUCTOS'`;
@@ -109,6 +109,16 @@ export interface ICustomerRateRepository {
   /** Idem para un servicio — bucket fijo `'SERVICIOS'`, sin split (a diferencia de recursos, no hay is_lodging). */
   findActiveForCustomerAndService(
     customerId: string, serviceId: string, categoryId: string,
+  ): Promise<CustomerRate | undefined>;
+
+  /**
+   * Idem para un producto (D9-Parte 2) — bucket fijo `'PRODUCTOS'`, sin
+   * split. Consultado por `OrderPricingService` (pos-menu/order-pricing.
+   * service.ts), no por `ReservationPricingService` — es el único de los
+   * 3 ejes de ítem que vive en el bounded context de POS, no en reservas.
+   */
+  findActiveForCustomerAndProduct(
+    customerId: string, productId: string, categoryId: string,
   ): Promise<CustomerRate | undefined>;
 
   /** Por id, sin filtro de `active` — usado para auditar la desactivación (necesita el estado ANTES). */

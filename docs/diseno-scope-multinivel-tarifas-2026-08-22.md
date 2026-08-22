@@ -298,6 +298,21 @@ sin romper el flujo actual de venta de mostrador).
 **Se implementa Parte 1 primero.** Parte 2 queda planificada acá mismo,
 lista para retomar cuando corresponda, sin re-diseñar desde cero.
 
+✅ **RESUELTO (22/08/2026).** Implementado tal como está diseñado acá
+arriba, con un hallazgo que amplió el alcance real (registrado en
+`pendientes-2026-08-22.md`, sección D9-Parte 2): al llegar a
+`order.service.ts` se encontró que `unitPrice` era, hasta esa pasada,
+SIEMPRE el que mandaba el cliente en el body — sin validarlo contra el
+precio real del producto, ni hablar todavía de tarifa especial. No era
+solo "falta el gancho a `customer_rates`", el servidor no tenía ninguna
+autoridad de precio en absoluto para ítems de producto. Decisión del
+dueño: el servidor pasa a tener autoridad completa — `unitPrice` queda
+PROHIBIDO en el request para `PRODUCT`/`PRODUCT_VARIANT` (lo resuelve
+`OrderPricingService`, nuevo, mismo algoritmo que
+`ReservationPricingService`) y sigue siendo obligatorio para
+`RESERVATION`, que no tiene resolución server-side (fuera de este
+alcance). Ver `src/pos-menu/order-pricing.service.ts` para el detalle.
+
 ---
 
 ## 7. Superficie de cambio (dimensionar, no para ejecutar todavía)

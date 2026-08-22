@@ -159,7 +159,14 @@ export interface CreateOrderItemInput {
   productVariantId?: ProductVariantId | null;
   reservationId?:   string | null;
   quantity:         number;
-  unitPrice:        number;
+  /**
+   * D9-Parte 2 (docs/diseno-scope-multinivel-tarifas-2026-08-22.md): para
+   * PRODUCT/PRODUCT_VARIANT el servidor lo resuelve (OrderPricingService) --
+   * este campo se ignora/rechaza para esos dos tipos (ver
+   * CreateOrderItemSchema, request.schemas.ts). Sigue siendo obligatorio
+   * para RESERVATION, que no tiene resolución server-side todavía.
+   */
+  unitPrice?:       number;
 }
 
 export interface CreateOrderInput {

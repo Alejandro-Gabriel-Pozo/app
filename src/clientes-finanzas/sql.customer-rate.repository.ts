@@ -85,6 +85,20 @@ export class SqlCustomerRateRepository implements ICustomerRateRepository {
     return result.rows[0] ? rowToRate(result.rows[0]) : undefined;
   }
 
+  async findActiveForCustomerAndProduct(
+    customerId: string, productId: string, categoryId: string,
+  ): Promise<CustomerRate | undefined> {
+    const result = await this.db.query<CustomerRateRow>(
+      `${SELECT_WITH_CATALOG}
+       WHERE cr.customer_id = $1 AND cr.active = TRUE
+         AND (cr.product_id = $2 OR cr.category_id = $3 OR cr.bucket = 'PRODUCTOS')
+       ORDER BY ${SPECIFICITY_ORDER} ASC
+       LIMIT 1`,
+      [customerId, productId, categoryId],
+    );
+    return result.rows[0] ? rowToRate(result.rows[0]) : undefined;
+  }
+
   /** `businessId` es guardia multi-tenant — sin filtro de `active`, a diferencia de las de arriba: se usa para auditar la desactivación, necesita poder leer el estado ANTES de apagarlo. */
   async findById(id: string, businessId: string): Promise<CustomerRate | undefined> {
     const result = await this.db.query<CustomerRateRow>(

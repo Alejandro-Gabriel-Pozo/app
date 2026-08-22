@@ -51,6 +51,8 @@ import { SqlAuditLogRepository }         from '../repositories/audit-log.reposit
 import { SqlInventoryLevelRepository }   from '../repositories/sql.inventory-level.repository.js';
 import { RecipeService }                 from './recipe.service.js';
 import { SqlRecipeItemRepository }       from '../repositories/sql.recipe-item.repository.js';
+import { OrderPricingService }           from './order-pricing.service.js';
+import { SqlCustomerRateRepository }     from '../clientes-finanzas/sql.customer-rate.repository.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -65,21 +67,24 @@ import {
 } from '../api/schemas/request.schemas.js';
 
 function buildOrderService(req: Request, _container: AppContainer): OrderService {
+  const productService = new ProductService(
+    new SqlProductRepository(req.db!),
+    new SqlProductVariantRepository(req.db!),
+    new SqlAuditLogRepository(req.db!),
+    new SqlInventoryLevelRepository(req.db!),
+  );
   return new OrderService(
     new SqlOrderRepository(req.db!),
     buildTenantTransactionManager(req),
     new SqlDomainEventRepository(req.db!),
-    new ProductService(
-      new SqlProductRepository(req.db!),
-      new SqlProductVariantRepository(req.db!),
-      new SqlAuditLogRepository(req.db!),
-      new SqlInventoryLevelRepository(req.db!),
-    ),
+    productService,
     new RecipeService(
       new SqlRecipeItemRepository(req.db!),
       new SqlProductRepository(req.db!),
       new SqlProductVariantRepository(req.db!),
     ),
+    // D9-Parte 2 -- resuelve unitPrice server-side para PRODUCT/PRODUCT_VARIANT.
+    new OrderPricingService(productService, new SqlCustomerRateRepository(req.db!)),
   );
 }
 
@@ -95,11 +100,22 @@ function stripItemUndefined(item: CreateOrderItemBody): CreateOrderItemInput {
   return {
     itemType:         item.itemType,
     quantity:         item.quantity,
-    unitPrice:        item.unitPrice,
     productId:        item.productId        ?? null,
     productVariantId: item.productVariantId ?? null,
     reservationId:    item.reservationId    ?? null,
+    // D9-Parte 2 -- ausente para PRODUCT/PRODUCT_VARIANT (el schema ya lo
+    // prohíbe ahí, el servidor lo resuelve); presente y obligatorio para
+    // RESERVATION (sin cambios).
+    ...(item.unitPrice !== undefined && { unitPrice: item.unitPrice }),
   };
+}
+
+/** D9-Parte 2 -- createOrder()/addItem() ahora resuelven precio (ProductService.resolveTarget()) al armar cada ítem, no solo al confirmar -- mismo mapeo de errores que ya usaba confirmOrder() más abajo. */
+function handleItemPricingError(err: unknown, res: Response, next: NextFunction): void {
+  if (err instanceof ProductNotFoundError)      res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: (err as Error).message });
+  else if (err instanceof VariantNotFoundError) res.status(404).json({ code: 'VARIANT_NOT_FOUND', message: (err as Error).message });
+  else if (err instanceof VariantRequiredError) res.status(400).json({ code: 'VARIANT_REQUIRED',  message: (err as Error).message });
+  else next(err);
 }
 
 export function createOrdersRouter(container: AppContainer): Router {
@@ -143,7 +159,7 @@ export function createOrdersRouter(container: AppContainer): Router {
         ...(parsed.data.stayId !== undefined && { stayId: parsed.data.stayId }),
       });
       res.status(201).json(order);
-    } catch (err) { next(err); }
+    } catch (err) { handleItemPricingError(err, res, next); }
   });
 
   // ── GET /api/orders/:id ─────────────────────────────────────────────────────
@@ -261,7 +277,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     } catch (err) {
       if (err instanceof OrderNotFoundError)         res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof OrderNotEditableError) res.status(409).json({ code: 'ORDER_NOT_EDITABLE', message: (err as Error).message });
-      else next(err);
+      else handleItemPricingError(err, res, next);
     }
   });
 

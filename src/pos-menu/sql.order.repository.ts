@@ -173,6 +173,17 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
 
     const items: OrderItem[] = [];
     for (const item of input.items ?? []) {
+      // D9-Parte 2 -- unitPrice ya no viene del caller para PRODUCT/
+      // PRODUCT_VARIANT (lo resuelve OrderPricingService, solo alcanzable
+      // vía OrderService.createOrder(), no por este método legacy). Este
+      // método no tiene acceso a esa resolución (capa de repositorio, sin
+      // dependencia a servicios de dominio) -- falla explícito en vez de
+      // persistir unitPrice=NaN en silencio.
+      if (item.unitPrice === undefined) {
+        throw new Error(
+          `unitPrice es obligatorio para SqlOrderRepository.create() (método legacy, no atómico) -- usar OrderService.createOrder() en su lugar, que resuelve el precio server-side para PRODUCT/PRODUCT_VARIANT (itemType: ${item.itemType}).`,
+        );
+      }
       const newItem = await this.addItemWithClient(this.db, id, {
         itemType:         item.itemType,
         productId:        item.productId        ?? null,

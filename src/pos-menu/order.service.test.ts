@@ -6,6 +6,7 @@ import {
   InvalidPaymentInfoError,
   OrderNotServableError,
   OrderAlreadyServedError,
+  MissingUnitPriceError,
 } from './order.service.js';
 import { ProductService, InsufficientStockError } from './product.service.js';
 import { InMemoryOrderRepository } from './in-memory.order.repository.js';
@@ -13,6 +14,8 @@ import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.
 import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
 import { RecipeService } from './recipe.service.js';
 import { InMemoryRecipeItemRepository } from '../repositories/in-memory.recipe-item.repository.js';
+import { OrderPricingService } from './order-pricing.service.js';
+import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.customer-rate.repository.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
@@ -114,6 +117,7 @@ describe('OrderService', () => {
   let inventoryLevelRepo: InMemoryInventoryLevelRepository;
   let recipeItemRepo: InMemoryRecipeItemRepository;
   let productService: ProductService;
+  let customerRateRepo: InMemoryCustomerRateRepository;
   let service: OrderService;
 
   beforeEach(() => {
@@ -125,29 +129,44 @@ describe('OrderService', () => {
     recipeItemRepo      = new InMemoryRecipeItemRepository();
     productService      = new ProductService(productRepo, new FakeProductVariantRepository(), new InMemoryAuditLogRepository(), inventoryLevelRepo);
     const recipeService = new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository());
-    service             = new OrderService(orderRepo, txManager, eventRepo, productService, recipeService);
+    customerRateRepo     = new InMemoryCustomerRateRepository();
+    const orderPricingService = new OrderPricingService(productService, customerRateRepo);
+    service             = new OrderService(orderRepo, txManager, eventRepo, productService, recipeService, orderPricingService);
 
-    const now = new Date();
-    productRepo.seed({
-      id: 'prod-1', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Producto de prueba',
-      description: null, basePrice: 10, sku: null, hasVariants: false,
-      productType: 'RETAIL', assembleOnDemand: false,
-      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
-      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
-      active: true, createdAt: now, updatedAt: now,
-    });
+    seedProduct1(10);
     inventoryLevelRepo.seed({
       id: 'lvl-prod-1', businessId: TEST_BUSINESS_ID, productId: 'prod-1', productVariantId: null,
       locationId: 'loc-default', stockQuantity: 1000, reservedQuantity: 0, stockMinAlert: 0,
     });
   });
 
+  /**
+   * D9-Parte 2 -- `unitPrice` ya no es un input del ítem (lo resuelve el
+   * servidor desde `Product.basePrice`), así que estos tests siguen
+   * variando el precio sembrando `prod-1` con el `basePrice` que antes
+   * mandaban en el body. `customerRateRepo` queda vacío en todos estos
+   * tests -- sin tarifa especial, `OrderPricingService` devuelve
+   * exactamente `basePrice`, mismo resultado que antes.
+   */
+  function seedProduct1(basePrice: number): void {
+    const now = new Date();
+    productRepo.seed({
+      id: 'prod-1', businessId: TEST_BUSINESS_ID, categoryId: null, name: 'Producto de prueba',
+      description: null, basePrice, sku: null, hasVariants: false,
+      productType: 'RETAIL', assembleOnDemand: false,
+      companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+      recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      active: true, createdAt: now, updatedAt: now,
+    });
+  }
+
   async function createDraftOrderWithItem(unitPrice: number): Promise<string> {
+    seedProduct1(unitPrice);
     const order = await service.createOrder({
       businessId: TEST_BUSINESS_ID,
       customerId: TEST_CUSTOMER_ID,
       locationId: 'loc-default',
-      items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2, unitPrice }],
+      items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 }],
     });
     return order.id;
   }
@@ -191,7 +210,7 @@ describe('OrderService', () => {
         customerId: TEST_CUSTOMER_ID,
         stayId:     'stay-1',
         locationId: 'loc-default',
-        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1, unitPrice: 100 }],
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
       });
 
       await service.confirmOrder(order.id);
@@ -375,7 +394,7 @@ describe('OrderService', () => {
         businessId: TEST_BUSINESS_ID,
         customerId: TEST_CUSTOMER_ID,
         locationId: 'loc-default',
-        items: [{ itemType: 'PRODUCT', productId: 'prod-sandwich', quantity, unitPrice: 100 }],
+        items: [{ itemType: 'PRODUCT', productId: 'prod-sandwich', quantity }],
       });
       return order.id;
     }
@@ -451,7 +470,7 @@ describe('OrderService', () => {
         businessId: TEST_BUSINESS_ID,
         customerId: TEST_CUSTOMER_ID,
         locationId: 'loc-default',
-        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 5000, unitPrice: 10 }],
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 5000 }],
       });
 
       await expect(service.confirmOrder(order.id)).rejects.toThrow(InsufficientStockError);
@@ -483,6 +502,138 @@ describe('OrderService', () => {
       await service.markServed(id);
 
       await expect(service.markServed(id)).rejects.toThrow(OrderAlreadyServedError);
+    });
+  });
+
+  describe('D9-Parte 2 — resolución de precio server-side (customer_rates)', () => {
+    it('sin tarifa especial activa, unitPrice = basePrice del producto', async () => {
+      seedProduct1(20);
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 3 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(20);
+      expect(order.totalAmount).toBe(60);
+    });
+
+    it('tarifa especial de cliente a nivel ÍTEM (monto fijo) gana sobre basePrice', async () => {
+      seedProduct1(20);
+      await customerRateRepo.create({
+        id: 'rate-1', businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        productId: 'prod-1', fixedPrice: 15,
+      });
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(15);
+    });
+
+    it('tarifa especial a nivel BUCKET PRODUCTOS (% de descuento) se aplica si no hay una más específica', async () => {
+      seedProduct1(100);
+      await customerRateRepo.create({
+        id: 'rate-2', businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        bucket: 'PRODUCTOS', discountPercentage: 10,
+      });
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(90);
+    });
+
+    it('tarifa especial a nivel CATEGORÍA se aplica cuando el producto tiene esa categoría', async () => {
+      const now = new Date();
+      productRepo.seed({
+        id: 'prod-cat', businessId: TEST_BUSINESS_ID, categoryId: 'cat-bebidas', name: 'Gaseosa',
+        description: null, basePrice: 50, sku: null, hasVariants: false,
+        productType: 'RETAIL', assembleOnDemand: false,
+        companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+        recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+        active: true, createdAt: now, updatedAt: now,
+      });
+      inventoryLevelRepo.seed({
+        id: 'lvl-prod-cat', businessId: TEST_BUSINESS_ID, productId: 'prod-cat', productVariantId: null,
+        locationId: 'loc-default', stockQuantity: 100, reservedQuantity: 0, stockMinAlert: 0,
+      });
+      await customerRateRepo.create({
+        id: 'rate-cat', businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        categoryId: 'cat-bebidas', discountPercentage: 20,
+      });
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-cat', quantity: 1 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(40); // 50 * 0.8
+    });
+
+    it('especificidad: tarifa a nivel ÍTEM le gana a una de nivel BUCKET para el mismo cliente', async () => {
+      seedProduct1(100);
+      await customerRateRepo.create({
+        id: 'rate-bucket', businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        bucket: 'PRODUCTOS', discountPercentage: 50,
+      });
+      await customerRateRepo.create({
+        id: 'rate-item', businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        productId: 'prod-1', fixedPrice: 77,
+      });
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(77);
+    });
+
+    it('una tarifa especial de OTRO cliente no afecta -- usa basePrice', async () => {
+      seedProduct1(20);
+      await customerRateRepo.create({
+        id: 'rate-otro', businessId: TEST_BUSINESS_ID, customerId: 'otro-cliente',
+        productId: 'prod-1', fixedPrice: 1,
+      });
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(20);
+    });
+
+    it('un unitPrice mandado igual por un caller interno (saltando el schema Zod) se ignora -- el servidor manda siempre', async () => {
+      seedProduct1(20);
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1, unitPrice: 999999 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(20);
+    });
+
+    it('addItem() también resuelve el precio server-side, usando el customerId de la orden ya creada', async () => {
+      seedProduct1(20);
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default', items: [],
+      });
+      await customerRateRepo.create({
+        id: 'rate-additem', businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        productId: 'prod-1', discountPercentage: 25,
+      });
+
+      const item = await service.addItem(order.id, { itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 });
+
+      expect(item.unitPrice).toBe(15); // 20 * 0.75
+    });
+
+    it('itemType RESERVATION sigue tomando unitPrice del caller -- sin gancho server-side (fuera del alcance de D9)', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1, unitPrice: 500 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(500);
+    });
+
+    it('itemType RESERVATION sin unitPrice lanza MissingUnitPriceError', async () => {
+      await expect(service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1 }],
+      })).rejects.toThrow(MissingUnitPriceError);
     });
   });
 });

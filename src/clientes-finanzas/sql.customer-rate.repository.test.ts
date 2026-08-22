@@ -103,6 +103,18 @@ describe('SqlCustomerRateRepository — % efectivo (propio vs. catálogo en vivo
     expect(params).toEqual(['cust-1', 'svc-1', 'cat-x']);
   });
 
+  it('findActiveForCustomerAndProduct compara ítem/categoría/bucket fijo PRODUCTOS (D9-Parte 2)', async () => {
+    const client = mockClient([]);
+    const repo = new SqlCustomerRateRepository(client);
+
+    await repo.findActiveForCustomerAndProduct('cust-1', 'prod-1', 'cat-x');
+
+    const [sql, params] = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(sql).toContain("cr.product_id = $2 OR cr.category_id = $3 OR cr.bucket = 'PRODUCTOS'");
+    expect(sql).toContain('ORDER BY');
+    expect(params).toEqual(['cust-1', 'prod-1', 'cat-x']);
+  });
+
   it('create() con rateCatalogId no manda discount_percentage propio, y el SELECT final igual resuelve el % vía JOIN', async () => {
     const client = mockClient([rateRow({ rate_catalog_id: 'cat-1', catalog_discount_percentage: '20.00' })]);
     const repo = new SqlCustomerRateRepository(client);

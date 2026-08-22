@@ -32,6 +32,8 @@ import { recordFieldChanges } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
+import { SqlProductRepository } from '../pos-menu/sql.product.repository.js';
+import { ProductNotFoundError } from '../pos-menu/product.service.js';
 import { SqlFinancialTransactionRepository } from './sql.financial-transaction.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { CustomerAccountService } from './customer-account.service.js';
@@ -483,10 +485,11 @@ export function createCustomersRouter(container: AppContainer): Router {
         // venía antes). CreateCustomerRateSchema ya garantizó que no
         // vinieron mezclados los dos modos.
         //
-        // D9-Parte 1 (pendientes-2026-08-22.md) — el "target" ahora es uno
-        // de 4 (antes 2): resourceId/serviceId (ÍTEM), categoryId
-        // (CATEGORÍA) o bucket (BUCKET). `productId`/bucket='PRODUCTOS' ya
-        // los rechazó el schema Zod más arriba (D9-Parte 2).
+        // D9-Parte 2 (pendientes-2026-08-22.md) — el "target" ahora es uno
+        // de 5: resourceId/serviceId/productId (ÍTEM), categoryId
+        // (CATEGORÍA) o bucket (BUCKET). productId/bucket='PRODUCTOS' ya
+        // están habilitados -- OrderPricingService (pos-menu) los consulta
+        // de verdad al resolver el precio de un ítem de orden.
         let dto: CreateCustomerRateDto;
 
         if (body.rateCatalogId) {
@@ -497,6 +500,7 @@ export function createCustomersRouter(container: AppContainer): Router {
           // resolución por ítem/categoría/bucket) -- solo el % queda vivo.
           const target = catalogEntry.resourceId  ? { resourceId: catalogEntry.resourceId }
             : catalogEntry.serviceId  ? { serviceId: catalogEntry.serviceId }
+            : catalogEntry.productId  ? { productId: catalogEntry.productId }
             : catalogEntry.categoryId ? { categoryId: catalogEntry.categoryId }
             : { bucket: catalogEntry.bucket! };
           dto = { ...base, ...target, rateCatalogId: catalogEntry.id };
@@ -509,6 +513,10 @@ export function createCustomersRouter(container: AppContainer): Router {
             const service = await new SqlBookableServiceRepository(req.db!).findById(body.serviceId);
             if (!service) throw new BookableServiceNotFoundError(body.serviceId);
           }
+          if (body.productId) {
+            const product = await new SqlProductRepository(req.db!).getById(body.productId);
+            if (!product) throw new ProductNotFoundError(body.productId);
+          }
           if (body.categoryId) {
             const category = await new SqlCategoryRepository(req.db!).findById(body.categoryId);
             if (!category) throw new CategoryNotFoundError(body.categoryId);
@@ -516,6 +524,7 @@ export function createCustomersRouter(container: AppContainer): Router {
 
           const target = body.resourceId  ? { resourceId: body.resourceId }
             : body.serviceId  ? { serviceId: body.serviceId }
+            : body.productId  ? { productId: body.productId }
             : body.categoryId ? { categoryId: body.categoryId }
             : { bucket: body.bucket! };
           dto = body.price !== undefined
@@ -535,7 +544,14 @@ export function createCustomersRouter(container: AppContainer): Router {
           }
           throw dbErr;
         }
-      } catch (err) { next(err); }
+      } catch (err) {
+        // ProductNotFoundError (pos-menu/product.service.ts) no es un
+        // DomainError -- domainErrorStatus() no lo mapea, se captura acá
+        // localmente (D9-Parte 2), mismo criterio que confirmOrder() en
+        // orders.routes.ts.
+        if (err instanceof ProductNotFoundError) { res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: (err as Error).message }); return; }
+        next(err);
+      }
     },
   );
 

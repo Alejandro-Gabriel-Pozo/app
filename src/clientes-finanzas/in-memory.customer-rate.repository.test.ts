@@ -129,3 +129,45 @@ describe('InMemoryCustomerRateRepository.findActiveForCustomerAndService — buc
     expect(rate?.id).toBe('r-item');
   });
 });
+
+describe('InMemoryCustomerRateRepository.findActiveForCustomerAndProduct — bucket fijo PRODUCTOS (D9-Parte 2)', () => {
+  it('bucket PRODUCTOS matchea sin importar la categoría del producto', async () => {
+    const repo = new InMemoryCustomerRateRepository();
+    repo.seed([makeRate({ id: 'r-productos', bucket: 'PRODUCTOS' })]);
+
+    const rate = await repo.findActiveForCustomerAndProduct('cust-1', 'p1', 'cat-bebidas');
+
+    expect(rate?.id).toBe('r-productos');
+  });
+
+  it('categoría de producto le gana al bucket PRODUCTOS', async () => {
+    const repo = new InMemoryCustomerRateRepository();
+    repo.seed([
+      makeRate({ id: 'r-bucket', bucket: 'PRODUCTOS', discountPercentage: 5 }),
+      makeRate({ id: 'r-categoria', categoryId: 'cat-bebidas', discountPercentage: 15 }),
+    ]);
+
+    const rate = await repo.findActiveForCustomerAndProduct('cust-1', 'p1', 'cat-bebidas');
+
+    expect(rate?.id).toBe('r-categoria');
+  });
+
+  it('ítem (productId) le gana a categoría y bucket', async () => {
+    const repo = new InMemoryCustomerRateRepository();
+    repo.seed([
+      makeRate({ id: 'r-bucket', bucket: 'PRODUCTOS' }),
+      makeRate({ id: 'r-categoria', categoryId: 'cat-bebidas' }),
+      makeRate({ id: 'r-item', productId: 'p1' }),
+    ]);
+
+    const rate = await repo.findActiveForCustomerAndProduct('cust-1', 'p1', 'cat-bebidas');
+
+    expect(rate?.id).toBe('r-item');
+  });
+
+  it('sin ninguna candidata, no devuelve nada', async () => {
+    const repo = new InMemoryCustomerRateRepository();
+    const rate = await repo.findActiveForCustomerAndProduct('cust-1', 'p1', 'cat-bebidas');
+    expect(rate).toBeUndefined();
+  });
+});

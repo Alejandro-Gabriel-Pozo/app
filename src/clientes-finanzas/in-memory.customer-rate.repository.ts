@@ -42,6 +42,17 @@ export class InMemoryCustomerRateRepository implements ICustomerRateRepository {
     return [...candidates].sort((a, b) => specificity(a) - specificity(b))[0];
   }
 
+  async findActiveForCustomerAndProduct(
+    customerId: string, productId: string, categoryId: string,
+  ): Promise<CustomerRate | undefined> {
+    const candidates = this.rates.filter(
+      (r) => r.customerId === customerId && r.active &&
+        (r.productId === productId || r.categoryId === categoryId || r.bucket === 'PRODUCTOS'),
+    );
+    if (candidates.length === 0) return undefined;
+    return [...candidates].sort((a, b) => specificity(a) - specificity(b))[0];
+  }
+
   // Copia, no la referencia interna -- un caller típico de findById() lee
   // el estado "antes" para auditar y después llama deactivate(), que muta
   // el objeto guardado acá adentro (mismo bug encontrado y corregido en

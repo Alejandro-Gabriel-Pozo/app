@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RecordPaymentSchema, CompleteOrderSchema, CreateCustomerRateSchema, CreateRateCatalogEntrySchema } from './request.schemas.js';
+import { RecordPaymentSchema, CompleteOrderSchema, CreateCustomerRateSchema, CreateRateCatalogEntrySchema, CreateOrderItemSchema } from './request.schemas.js';
 
 describe('RecordPaymentSchema — cardInstallments/cardSurchargeAmount (Gap Tango #3)', () => {
   it('acepta CARD con cuotas y recargo dentro del monto', () => {
@@ -107,20 +107,15 @@ describe('CreateCustomerRateSchema — scope multi-nivel (D9-Parte 1, pendientes
     expect(result.success).toBe(true);
   });
 
-  it('acepta bucket ALOJAMIENTO/TURNOS/SERVICIOS + price (nivel BUCKET)', () => {
-    for (const bucket of ['ALOJAMIENTO', 'TURNOS', 'SERVICIOS']) {
+  it('acepta bucket ALOJAMIENTO/TURNOS/SERVICIOS/PRODUCTOS + price (nivel BUCKET, D9-Parte 2: PRODUCTOS ya habilitado)', () => {
+    for (const bucket of ['ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS']) {
       expect(CreateCustomerRateSchema.safeParse({ bucket, price: 100 }).success).toBe(true);
     }
   });
 
-  it('rechaza bucket PRODUCTOS -- D9-Parte 2, no implementado todavía', () => {
-    const result = CreateCustomerRateSchema.safeParse({ bucket: 'PRODUCTOS', price: 100 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rechaza productId -- D9-Parte 2, no implementado todavía', () => {
+  it('acepta productId (nivel ÍTEM, D9-Parte 2)', () => {
     const result = CreateCustomerRateSchema.safeParse({ productId: 'prod-1', price: 100 });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it('rechaza bucket inválido (fuera del catálogo de 4)', () => {
@@ -130,6 +125,11 @@ describe('CreateCustomerRateSchema — scope multi-nivel (D9-Parte 1, pendientes
 
   it('rechaza categoryId + bucket juntos (dos niveles a la vez)', () => {
     const result = CreateCustomerRateSchema.safeParse({ categoryId: 'cat-1', bucket: 'TURNOS', price: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza productId + resourceId juntos (dos scopes ÍTEM a la vez)', () => {
+    const result = CreateCustomerRateSchema.safeParse({ productId: 'p1', resourceId: 'r1', price: 100 });
     expect(result.success).toBe(false);
   });
 
@@ -177,8 +177,37 @@ describe('CreateRateCatalogEntrySchema — scope multi-nivel (D9-Parte 1, pendie
     expect(result.success).toBe(true);
   });
 
-  it('rechaza bucket PRODUCTOS / productId -- D9-Parte 2, no implementado todavía', () => {
-    expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 10, bucket: 'PRODUCTOS' }).success).toBe(false);
-    expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 10, productId: 'p1' }).success).toBe(false);
+  it('acepta bucket PRODUCTOS / productId (D9-Parte 2, ya habilitado)', () => {
+    expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 10, bucket: 'PRODUCTOS' }).success).toBe(true);
+    expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 10, productId: 'p1' }).success).toBe(true);
+  });
+});
+
+describe('CreateOrderItemSchema — unitPrice server-side para PRODUCT/PRODUCT_VARIANT (D9-Parte 2, pendientes-2026-08-22.md)', () => {
+  it('rechaza unitPrice para itemType PRODUCT -- el servidor lo resuelve', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'PRODUCT', productId: 'p1', quantity: 1, unitPrice: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('acepta PRODUCT sin unitPrice', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'PRODUCT', productId: 'p1', quantity: 1 });
+    expect(result.success).toBe(true);
+  });
+
+  it('rechaza unitPrice para itemType PRODUCT_VARIANT -- el servidor lo resuelve', () => {
+    const result = CreateOrderItemSchema.safeParse({
+      itemType: 'PRODUCT_VARIANT', productId: 'p1', productVariantId: 'v1', quantity: 1, unitPrice: 100,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('sigue exigiendo unitPrice para itemType RESERVATION -- sin gancho server-side (fuera del alcance de D9)', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('acepta RESERVATION con unitPrice', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1, unitPrice: 500 });
+    expect(result.success).toBe(true);
   });
 });

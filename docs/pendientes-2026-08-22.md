@@ -73,10 +73,32 @@ en dos para que el trabajo de reservas no espere al de POS:
   repo in-memory, 2 integración en `reservation.service.test.ts` —
   bucket ALOJAMIENTO end-to-end + el caso borde de ejes), suite completa
   (801 tests) + typecheck + eslint verdes.
-- **D9-Parte 2** (PRODUCTOS + gancho nuevo en `pos-menu`/
-  `order.service.ts`, que hoy no consulta `customer_rates` en
-  absoluto) — aparte, no bloqueante, diseño ya escrito para retomar
-  cuando corresponda. Sin empezar.
+- ✅ **D9-Parte 2 RESUELTO (22/08/2026)** — PRODUCTOS habilitado como
+  target de tarifa especial (`productId`/`bucket='PRODUCTOS'`, ya
+  aceptados por `CreateCustomerRateSchema`/`CreateRateCatalogEntrySchema`)
+  + `OrderPricingService` nuevo (`src/pos-menu/order-pricing.service.ts`),
+  mismo algoritmo que `ReservationPricingService` pero eje único (sin
+  "servicio vs. recurso" en POS). `customers.routes.ts`/
+  `rate-catalog.routes.ts` validan existencia de `productId`
+  (`SqlProductRepository`) igual que ya hacían con resource/service/
+  category. **Hallazgo que amplió el alcance real, no en el diseño
+  original** (ver `docs/diseno-scope-multinivel-tarifas-2026-08-22.md`,
+  sección D9-Parte 2): `order.service.ts` tomaba el `unitPrice` que
+  mandaba el cliente en el body tal cual, sin validarlo contra el precio
+  real del producto — el servidor no tenía ninguna autoridad de precio
+  para ítems de producto, más allá de la tarifa especial. Decisión del
+  dueño: el servidor pasa a tener autoridad completa — `unitPrice` queda
+  PROHIBIDO en el request para `PRODUCT`/`PRODUCT_VARIANT`
+  (`CreateOrderItemSchema` lo rechaza con mensaje explícito, lo resuelve
+  `OrderPricingService`) y sigue siendo obligatorio para `RESERVATION`,
+  que no tiene resolución server-side (fuera de este alcance;
+  `MissingUnitPriceError` como red de seguridad si un caller interno lo
+  saltea). `SqlOrderRepository.create()` (método legacy, no atómico) fue
+  actualizado para fallar explícito si le llega un ítem de producto sin
+  `unitPrice`, en vez de persistir `NaN` en silencio — solo
+  `OrderService.createOrder()` resuelve el precio de verdad. Suite
+  completa (821 tests, 76 archivos) + lint + typecheck verdes. **Backend
+  only** — sin verificar en el panel de POS todavía.
 
 (Nombrado "Parte 1"/"Parte 2" en vez de D6/D7 — esos dos números ya
 están tomados más arriba en este mismo archivo.)

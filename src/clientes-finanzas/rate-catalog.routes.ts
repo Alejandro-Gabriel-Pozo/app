@@ -34,6 +34,8 @@ import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
 import { CreateRateCatalogEntrySchema, UpdateRateCatalogEntrySchema } from '../api/schemas/request.schemas.js';
 import { ResourceNotFoundError, RateCatalogEntryNotFoundError, RateCatalogEntryConflictError, CategoryNotFoundError } from '../domain/errors.js';
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
+import { SqlProductRepository } from '../pos-menu/sql.product.repository.js';
+import { ProductNotFoundError } from '../pos-menu/product.service.js';
 
 export function createRateCatalogRouter(): Router {
   const router = Router();
@@ -65,16 +67,20 @@ export function createRateCatalogRouter(): Router {
         const service = await new SqlBookableServiceRepository(req.db!).findById(body.serviceId);
         if (!service) throw new BookableServiceNotFoundError(body.serviceId);
       }
+      if (body.productId) {
+        const product = await new SqlProductRepository(req.db!).getById(body.productId);
+        if (!product) throw new ProductNotFoundError(body.productId);
+      }
       if (body.categoryId) {
         const category = await new SqlCategoryRepository(req.db!).findById(body.categoryId);
         if (!category) throw new CategoryNotFoundError(body.categoryId);
       }
 
-      // D9-Parte 1 (pendientes-2026-08-22.md) — 4 modos de scope posibles
-      // (antes 2); `productId`/bucket='PRODUCTOS' ya los rechazó el schema
-      // Zod más arriba (D9-Parte 2).
+      // D9-Parte 2 (pendientes-2026-08-22.md) — 5 modos de scope posibles;
+      // productId/bucket='PRODUCTOS' ya están habilitados.
       const target = body.resourceId  ? { resourceId: body.resourceId }
         : body.serviceId  ? { serviceId: body.serviceId }
+        : body.productId  ? { productId: body.productId }
         : body.categoryId ? { categoryId: body.categoryId }
         : { bucket: body.bucket! };
       try {
@@ -94,7 +100,12 @@ export function createRateCatalogRouter(): Router {
         }
         throw dbErr;
       }
-    } catch (err) { next(err); }
+    } catch (err) {
+      // ProductNotFoundError no es un DomainError -- se captura acá
+      // localmente (D9-Parte 2), mismo criterio que customers.routes.ts.
+      if (err instanceof ProductNotFoundError) { res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: (err as Error).message }); return; }
+      next(err);
+    }
   });
 
   router.put('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {

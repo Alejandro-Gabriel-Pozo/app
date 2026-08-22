@@ -27,7 +27,7 @@ export interface RateCatalogEntry {
   discountPercentage: number;
   resourceId: string | null;
   serviceId: string | null;
-  /** Nivel ÍTEM nuevo (D9-Parte 1) — columna en schema desde ya, API la rechaza hasta D9-Parte 2. */
+  /** Nivel ÍTEM nuevo (D9-Parte 1) — habilitado en la API desde D9-Parte 2. */
   productId: string | null;
   /** Nivel CATEGORÍA (D9-Parte 1). */
   categoryId: string | null;

@@ -109,6 +109,16 @@ const ORDER_ITEM_TYPES = ['PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION'] as const;
  *  - PRODUCT          → productId obligatorio, productVariantId prohibido, reservationId prohibido
  *  - PRODUCT_VARIANT  → productId y productVariantId obligatorios, reservationId prohibido
  *  - RESERVATION      → reservationId obligatorio, productId y productVariantId prohibidos
+ *
+ * ## unitPrice — D9-Parte 2 (docs/diseno-scope-multinivel-tarifas-2026-08-22.md)
+ * Hasta esta pasada `unitPrice` era SIEMPRE el que mandaba el cliente, sin
+ * validarlo contra el precio real del producto (hallazgo hecho al empezar
+ * D9-Parte 2, fuera del diseño original). Decisión del dueño: el servidor
+ * pasa a tener autoridad completa del precio para ítems de producto --
+ * `unitPrice` queda PROHIBIDO para PRODUCT/PRODUCT_VARIANT (lo resuelve
+ * `OrderPricingService`, ver order-pricing.service.ts) y sigue siendo
+ * OBLIGATORIO para RESERVATION, que no tiene (todavía) ningún paso de
+ * resolución server-side -- fuera del alcance de D9.
  */
 export const CreateOrderItemSchema = z.object({
   itemType:         z.enum(ORDER_ITEM_TYPES, {
@@ -121,7 +131,8 @@ export const CreateOrderItemSchema = z.object({
     .int({ message: 'quantity debe ser un entero' })
     .min(1, { message: 'quantity debe ser mayor o igual a 1' }),
   unitPrice:        z.number({ invalid_type_error: 'unitPrice debe ser un número' })
-    .min(0, { message: 'unitPrice no puede ser negativo' }),
+    .min(0, { message: 'unitPrice no puede ser negativo' })
+    .optional(),
   notes:            z.string().nullable().optional(),
 }).superRefine((data, ctx) => {
   if (data.itemType === 'PRODUCT' || data.itemType === 'PRODUCT_VARIANT') {
@@ -130,6 +141,9 @@ export const CreateOrderItemSchema = z.object({
     }
     if (data.reservationId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'reservationId debe ser null para itemType PRODUCT y PRODUCT_VARIANT', path: ['reservationId'] });
+    }
+    if (data.unitPrice !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unitPrice no se acepta para PRODUCT/PRODUCT_VARIANT -- el servidor lo resuelve (precio base + tarifa especial, D9-Parte 2).', path: ['unitPrice'] });
     }
   }
   if (data.itemType === 'PRODUCT_VARIANT') {
@@ -146,6 +160,9 @@ export const CreateOrderItemSchema = z.object({
     }
     if (data.productVariantId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productVariantId debe ser null para itemType RESERVATION', path: ['productVariantId'] });
+    }
+    if (data.unitPrice === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unitPrice es obligatorio para itemType RESERVATION', path: ['unitPrice'] });
     }
   }
 });
@@ -194,11 +211,11 @@ export const AssignTagSchema = z.object({
 
 // D9-Parte 1 (pendientes-2026-08-22.md,
 // docs/diseno-scope-multinivel-tarifas-2026-08-22.md): el scope de una
-// tarifa especial pasa de "resourceId XOR serviceId" a 4 modos posibles
-// (ítem: resourceId/serviceId; categoría: categoryId; bucket: bucket) --
-// `productId`/`bucket:'PRODUCTOS'` quedan en el schema de la BD desde ya
-// pero la API los rechaza hasta D9-Parte 2 (el gancho en pos-menu que los
-// va a consultar de verdad) -- ver RATE_SCOPE_BUCKETS.
+// tarifa especial pasa de "resourceId XOR serviceId" a 5 modos posibles
+// (ítem: resourceId/serviceId/productId; categoría: categoryId; bucket:
+// bucket). D9-Parte 2: `productId`/`bucket:'PRODUCTOS'` ya están
+// habilitados -- `OrderPricingService` (pos-menu/order-pricing.service.ts)
+// los consulta de verdad al resolver el precio de un ítem de orden.
 export const RATE_SCOPE_BUCKETS = ['ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'] as const;
 const RateScopeBucketSchema = z.enum(RATE_SCOPE_BUCKETS);
 
@@ -213,31 +230,22 @@ export const CreateCustomerRateSchema = z.object({
   rateCatalogId:      z.string().min(1).optional(),
   notes:              z.string().optional(),
 }).superRefine((data, ctx) => {
-  if (data.productId !== undefined || data.bucket === 'PRODUCTOS') {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'PRODUCTOS todavía no está soportado como scope de tarifa especial (D9-Parte 2, no implementado todavía).',
-      path: [data.productId !== undefined ? 'productId' : 'bucket'],
-    });
-    return;
-  }
-
   if (data.rateCatalogId) {
-    if (data.resourceId || data.serviceId || data.categoryId || data.bucket || data.price !== undefined || data.discountPercentage !== undefined) {
+    if (data.resourceId || data.serviceId || data.productId || data.categoryId || data.bucket || data.price !== undefined || data.discountPercentage !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'rateCatalogId no se combina con resourceId/serviceId/categoryId/bucket/price/discountPercentage -- esos valores se toman del catálogo.',
+        message: 'rateCatalogId no se combina con resourceId/serviceId/productId/categoryId/bucket/price/discountPercentage -- esos valores se toman del catálogo.',
         path: ['rateCatalogId'],
       });
     }
     return;
   }
 
-  const scopeFieldsSet = [data.resourceId, data.serviceId, data.categoryId, data.bucket].filter((v) => v !== undefined).length;
+  const scopeFieldsSet = [data.resourceId, data.serviceId, data.productId, data.categoryId, data.bucket].filter((v) => v !== undefined).length;
   if (scopeFieldsSet !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Debés especificar exactamente uno de: resourceId, serviceId, categoryId, bucket',
+      message: 'Debés especificar exactamente uno de: resourceId, serviceId, productId, categoryId, bucket',
       path: ['resourceId'],
     });
   }
@@ -264,20 +272,11 @@ export const CreateRateCatalogEntrySchema = z.object({
   categoryId:         z.string().min(1).optional(),
   bucket:             RateScopeBucketSchema.optional(),
 }).superRefine((data, ctx) => {
-  if (data.productId !== undefined || data.bucket === 'PRODUCTOS') {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'PRODUCTOS todavía no está soportado como scope de catálogo (D9-Parte 2, no implementado todavía).',
-      path: [data.productId !== undefined ? 'productId' : 'bucket'],
-    });
-    return;
-  }
-
-  const scopeFieldsSet = [data.resourceId, data.serviceId, data.categoryId, data.bucket].filter((v) => v !== undefined).length;
+  const scopeFieldsSet = [data.resourceId, data.serviceId, data.productId, data.categoryId, data.bucket].filter((v) => v !== undefined).length;
   if (scopeFieldsSet !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Debés especificar exactamente uno de: resourceId, serviceId, categoryId, bucket',
+      message: 'Debés especificar exactamente uno de: resourceId, serviceId, productId, categoryId, bucket',
       path: ['resourceId'],
     });
   }

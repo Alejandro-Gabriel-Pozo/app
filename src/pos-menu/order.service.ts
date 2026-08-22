@@ -22,6 +22,7 @@ import type {
   Order,
   OrderItem,
   OrderStatus,
+  OrderItemType,
   OrderWithTransitions,
   CreateOrderInput,
   CreateOrderItemInput,
@@ -36,6 +37,7 @@ import type { ProductService }          from './product.service.js';
 import type { RecipeService }           from './recipe.service.js';
 import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';
 import { canonicalStockItemOrder }      from '../workers/inventory.handlers.js';
+import type { OrderPricingService }     from './order-pricing.service.js';
 
 // ---------------------------------------------------------------------------
 // Errores de dominio
@@ -95,6 +97,19 @@ export class InvalidPaymentInfoError extends DomainError {
   }
 }
 
+/**
+ * D9-Parte 2 -- un ítem RESERVATION no tiene resolución de precio
+ * server-side (fuera del alcance de D9), así que sigue dependiendo de que
+ * el caller mande `unitPrice`. `CreateOrderItemSchema` ya lo exige a nivel
+ * API; este error es la red de seguridad del lado del servicio para un
+ * caller interno que la saltee.
+ */
+export class MissingUnitPriceError extends DomainError {
+  constructor(itemType: OrderItemType) {
+    super(`unitPrice es obligatorio para itemType ${itemType} (no tiene resolución de precio server-side).`, 'VALIDATION_ERROR');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Contrato extendido del repositorio para operaciones transaccionales
 // ---------------------------------------------------------------------------
@@ -147,26 +162,6 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Arma el input de un OrderItem a partir de lo que manda el caller.
- * Antes estaba duplicado entre createOrder() y addItem() — jscpd lo marcó
- * (docs/analysis/duplication/, C3). subtotal = quantity * unitPrice, igual
- * en los dos casos.
- */
-function buildOrderItemInput(
-  item: CreateOrderItemInput,
-): Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'> {
-  return {
-    itemType:         item.itemType,
-    productId:        item.productId        ?? null,
-    productVariantId: item.productVariantId ?? null,
-    reservationId:    item.reservationId    ?? null,
-    quantity:         item.quantity,
-    unitPrice:        item.unitPrice,
-    subtotal:         item.quantity * item.unitPrice,
-    notes:            null,
-  };
-}
 
 /**
  * Transiciones válidas por estado — refleja exactamente los guards de
@@ -294,7 +289,57 @@ export class OrderService {
      * resolveConfirmStockItems). No se usa en ningún otro método.
      */
     private readonly recipeService: RecipeService,
+    /**
+     * D9-Parte 2 (docs/diseno-scope-multinivel-tarifas-2026-08-22.md) --
+     * resuelve `unitPrice` server-side para ítems PRODUCT/PRODUCT_VARIANT
+     * (precio base/override + tarifa especial del cliente si aplica). Ver
+     * resolveUnitPrice() más abajo.
+     */
+    private readonly orderPricingService: OrderPricingService,
   ) {}
+
+  /**
+   * D9-Parte 2 -- reemplaza al viejo `buildOrderItemInput()` (function
+   * suelta, jscpd la había marcado duplicada entre createOrder()/addItem(),
+   * docs/analysis/duplication/ C3): ahora necesita `this.orderPricingService`,
+   * así que pasa a ser un método de instancia. `unitPrice` YA NO viene del
+   * caller para PRODUCT/PRODUCT_VARIANT (CreateOrderItemSchema lo prohíbe) --
+   * se resuelve acá. RESERVATION sigue sin gancho server-side (fuera del
+   * alcance de D9): sigue dependiendo de `item.unitPrice`, con
+   * MissingUnitPriceError como red de seguridad si un caller interno lo
+   * saltea.
+   */
+  private async resolveOrderItemInput(
+    item: CreateOrderItemInput,
+    customerId: string,
+    locationId: string,
+  ): Promise<Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>> {
+    const unitPrice = await this.resolveUnitPrice(item, customerId, locationId);
+    return {
+      itemType:         item.itemType,
+      productId:        item.productId        ?? null,
+      productVariantId: item.productVariantId ?? null,
+      reservationId:    item.reservationId    ?? null,
+      quantity:         item.quantity,
+      unitPrice,
+      subtotal:         item.quantity * unitPrice,
+      notes:            null,
+    };
+  }
+
+  private async resolveUnitPrice(item: CreateOrderItemInput, customerId: string, locationId: string): Promise<number> {
+    if (item.itemType === 'RESERVATION') {
+      if (item.unitPrice === undefined) throw new MissingUnitPriceError(item.itemType);
+      return item.unitPrice;
+    }
+
+    return this.orderPricingService.resolveUnitPrice({
+      customerId,
+      productId:  item.productId!,
+      variantId:  item.productVariantId ?? undefined,
+      locationId,
+    });
+  }
 
   async listOrders(filter: ListOrdersFilter): Promise<OrderWithTransitions[]> {
     return (await this.orderRepo.getAll(filter)).map(withAllowedTransitions);
@@ -314,7 +359,8 @@ export class OrderService {
 
       const items: OrderItem[] = [];
       for (const item of input.items ?? []) {
-        const newItem = await this.orderRepo.addItemWithClient(client, id, buildOrderItemInput(item));
+        const resolvedItem = await this.resolveOrderItemInput(item, input.customerId, input.locationId);
+        const newItem = await this.orderRepo.addItemWithClient(client, id, resolvedItem);
         items.push(newItem);
       }
 
@@ -335,7 +381,8 @@ export class OrderService {
     if (!order) throw new OrderNotFoundError(orderId);
     if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
 
-    return this.orderRepo.addItem(orderId, buildOrderItemInput(item));
+    const resolvedItem = await this.resolveOrderItemInput(item, order.customerId, order.locationId);
+    return this.orderRepo.addItem(orderId, resolvedItem);
   }
 
   async removeItem(orderId: string, itemId: string): Promise<void> {
