@@ -20,7 +20,7 @@ function mockClient(rows: unknown[] = []): SqlClient {
 function rateRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'rate-1', business_id: 'biz-1', customer_id: 'cust-1',
-    resource_id: 'r1', service_id: null,
+    resource_id: 'r1', service_id: null, product_id: null, category_id: null, bucket: null,
     fixed_price: null, discount_percentage: null, rate_catalog_id: null,
     active: true, notes: null,
     created_at: new Date(), updated_at: new Date(),
@@ -34,7 +34,7 @@ describe('SqlCustomerRateRepository — % efectivo (propio vs. catálogo en vivo
     const client = mockClient([rateRow({ rate_catalog_id: 'cat-1', catalog_discount_percentage: '10.00' })]);
     const repo = new SqlCustomerRateRepository(client);
 
-    const rate = await repo.findActiveForCustomerAndResource('cust-1', 'r1');
+    const rate = await repo.findActiveForCustomerAndResource('cust-1', 'r1', 'cat-x', false);
 
     expect(rate?.discountPercentage).toBe(10);
     expect(rate?.rateCatalogId).toBe('cat-1');
@@ -44,7 +44,7 @@ describe('SqlCustomerRateRepository — % efectivo (propio vs. catálogo en vivo
     const client = mockClient([rateRow({ discount_percentage: '15.00' })]);
     const repo = new SqlCustomerRateRepository(client);
 
-    const rate = await repo.findActiveForCustomerAndResource('cust-1', 'r1');
+    const rate = await repo.findActiveForCustomerAndResource('cust-1', 'r1', 'cat-x', false);
 
     expect(rate?.discountPercentage).toBe(15);
   });
@@ -53,7 +53,7 @@ describe('SqlCustomerRateRepository — % efectivo (propio vs. catálogo en vivo
     const client = mockClient([rateRow({ fixed_price: '40.00', catalog_discount_percentage: null })]);
     const repo = new SqlCustomerRateRepository(client);
 
-    const rate = await repo.findActiveForCustomerAndResource('cust-1', 'r1');
+    const rate = await repo.findActiveForCustomerAndResource('cust-1', 'r1', 'cat-x', false);
 
     expect(rate?.fixedPrice).toBe(40);
     expect(rate?.discountPercentage).toBeNull();
@@ -63,11 +63,44 @@ describe('SqlCustomerRateRepository — % efectivo (propio vs. catálogo en vivo
     const client = mockClient([]);
     const repo = new SqlCustomerRateRepository(client);
 
-    await repo.findActiveForCustomerAndService('cust-1', 'svc-1');
+    await repo.findActiveForCustomerAndService('cust-1', 'svc-1', 'cat-x');
 
     const sql = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(sql).toContain('LEFT JOIN rate_catalog rc ON rc.id = cr.rate_catalog_id');
     expect(sql).toContain('cr.service_id = $2');
+  });
+
+  it('findActiveForCustomerAndResource compara ítem/categoría/bucket y ordena por especificidad (D9-Parte 1)', async () => {
+    const client = mockClient([]);
+    const repo = new SqlCustomerRateRepository(client);
+
+    await repo.findActiveForCustomerAndResource('cust-1', 'r1', 'cat-x', true);
+
+    const [sql, params] = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(sql).toContain('cr.resource_id = $2 OR cr.category_id = $3 OR cr.bucket = $4');
+    expect(sql).toContain('ORDER BY');
+    expect(params).toEqual(['cust-1', 'r1', 'cat-x', 'ALOJAMIENTO']);
+  });
+
+  it('findActiveForCustomerAndResource usa TURNOS cuando isLodging=false', async () => {
+    const client = mockClient([]);
+    const repo = new SqlCustomerRateRepository(client);
+
+    await repo.findActiveForCustomerAndResource('cust-1', 'r1', 'cat-x', false);
+
+    const params = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]![1] as unknown[];
+    expect(params).toEqual(['cust-1', 'r1', 'cat-x', 'TURNOS']);
+  });
+
+  it('findActiveForCustomerAndService compara ítem/categoría/bucket fijo SERVICIOS', async () => {
+    const client = mockClient([]);
+    const repo = new SqlCustomerRateRepository(client);
+
+    await repo.findActiveForCustomerAndService('cust-1', 'svc-1', 'cat-x');
+
+    const [sql, params] = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(sql).toContain("cr.service_id = $2 OR cr.category_id = $3 OR cr.bucket = 'SERVICIOS'");
+    expect(params).toEqual(['cust-1', 'svc-1', 'cat-x']);
   });
 
   it('create() con rateCatalogId no manda discount_percentage propio, y el SELECT final igual resuelve el % vía JOIN', async () => {
@@ -81,7 +114,7 @@ describe('SqlCustomerRateRepository — % efectivo (propio vs. catálogo en vivo
     const [sql, params] = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(sql).toContain('WITH inserted AS');
     expect(sql).toContain('LEFT JOIN rate_catalog rc ON rc.id = inserted.rate_catalog_id');
-    expect(params).toEqual(['rate-2', 'biz-1', 'cust-1', 'r1', null, null, null, 'cat-1', null]);
+    expect(params).toEqual(['rate-2', 'biz-1', 'cust-1', 'r1', null, null, null, null, null, null, 'cat-1', null]);
     expect(rate.discountPercentage).toBe(20);
   });
 });

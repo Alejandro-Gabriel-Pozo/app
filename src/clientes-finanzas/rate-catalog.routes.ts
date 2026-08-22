@@ -30,8 +30,9 @@ import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { RateCatalogService } from './rate-catalog.service.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
+import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
 import { CreateRateCatalogEntrySchema, UpdateRateCatalogEntrySchema } from '../api/schemas/request.schemas.js';
-import { ResourceNotFoundError, RateCatalogEntryNotFoundError, RateCatalogEntryConflictError } from '../domain/errors.js';
+import { ResourceNotFoundError, RateCatalogEntryNotFoundError, RateCatalogEntryConflictError, CategoryNotFoundError } from '../domain/errors.js';
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
 
 export function createRateCatalogRouter(): Router {
@@ -64,8 +65,18 @@ export function createRateCatalogRouter(): Router {
         const service = await new SqlBookableServiceRepository(req.db!).findById(body.serviceId);
         if (!service) throw new BookableServiceNotFoundError(body.serviceId);
       }
+      if (body.categoryId) {
+        const category = await new SqlCategoryRepository(req.db!).findById(body.categoryId);
+        if (!category) throw new CategoryNotFoundError(body.categoryId);
+      }
 
-      const target = body.resourceId ? { resourceId: body.resourceId } : { serviceId: body.serviceId! };
+      // D9-Parte 1 (pendientes-2026-08-22.md) — 4 modos de scope posibles
+      // (antes 2); `productId`/bucket='PRODUCTOS' ya los rechazó el schema
+      // Zod más arriba (D9-Parte 2).
+      const target = body.resourceId  ? { resourceId: body.resourceId }
+        : body.serviceId  ? { serviceId: body.serviceId }
+        : body.categoryId ? { categoryId: body.categoryId }
+        : { bucket: body.bucket! };
       try {
         const entry = await buildService(req).create({
           id: randomUUID(),

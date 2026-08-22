@@ -9,19 +9,37 @@ import type {
   CreateCustomerRateDto,
 } from './customer-rate.repository.js';
 
+/** 1 = ítem (más específico), 2 = categoría, 3 = bucket -- mismo criterio que SPECIFICITY_ORDER en sql.customer-rate.repository.ts. */
+function specificity(r: CustomerRate): number {
+  if (r.resourceId || r.serviceId || r.productId) return 1;
+  if (r.categoryId) return 2;
+  return 3;
+}
+
 export class InMemoryCustomerRateRepository implements ICustomerRateRepository {
   private readonly rates: CustomerRate[] = [];
 
-  async findActiveForCustomerAndResource(customerId: string, resourceId: string): Promise<CustomerRate | undefined> {
-    return this.rates.find(
-      (r) => r.customerId === customerId && r.resourceId === resourceId && r.active,
+  async findActiveForCustomerAndResource(
+    customerId: string, resourceId: string, categoryId: string, isLodging: boolean,
+  ): Promise<CustomerRate | undefined> {
+    const bucket = isLodging ? 'ALOJAMIENTO' : 'TURNOS';
+    const candidates = this.rates.filter(
+      (r) => r.customerId === customerId && r.active &&
+        (r.resourceId === resourceId || r.categoryId === categoryId || r.bucket === bucket),
     );
+    if (candidates.length === 0) return undefined;
+    return [...candidates].sort((a, b) => specificity(a) - specificity(b))[0];
   }
 
-  async findActiveForCustomerAndService(customerId: string, serviceId: string): Promise<CustomerRate | undefined> {
-    return this.rates.find(
-      (r) => r.customerId === customerId && r.serviceId === serviceId && r.active,
+  async findActiveForCustomerAndService(
+    customerId: string, serviceId: string, categoryId: string,
+  ): Promise<CustomerRate | undefined> {
+    const candidates = this.rates.filter(
+      (r) => r.customerId === customerId && r.active &&
+        (r.serviceId === serviceId || r.categoryId === categoryId || r.bucket === 'SERVICIOS'),
     );
+    if (candidates.length === 0) return undefined;
+    return [...candidates].sort((a, b) => specificity(a) - specificity(b))[0];
   }
 
   // Copia, no la referencia interna -- un caller típico de findById() lee
@@ -44,6 +62,9 @@ export class InMemoryCustomerRateRepository implements ICustomerRateRepository {
       customerId: dto.customerId,
       resourceId: dto.resourceId ?? null,
       serviceId: dto.serviceId ?? null,
+      productId: dto.productId ?? null,
+      categoryId: dto.categoryId ?? null,
+      bucket: dto.bucket ?? null,
       fixedPrice: dto.fixedPrice ?? null,
       discountPercentage: dto.discountPercentage ?? null,
       rateCatalogId: dto.rateCatalogId ?? null,

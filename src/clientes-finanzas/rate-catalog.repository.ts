@@ -3,18 +3,21 @@
  * @description Interfaz para el catálogo de tarifas reutilizables (D5,
  * pendientes-2026-08-19.md, decisión confirmada con el dueño 22/08/2026).
  *
- * MAESTRO: una fila = nombre + % de descuento sobre UN resource_id XOR UN
- * service_id (mismo grano que CustomerRate). `POST /customers/:id/rates`
- * con `rateCatalogId` crea una CustomerRate que REFERENCIA esta entrada —
- * es una referencia VIVA (decisión explícita del dueño, corregida el
- * mismo 22/08/2026 antes de cualquier deploy real): editar
- * `discountPercentage` acá cambia de inmediato lo que paga todo cliente ya
- * asignado, resuelto con JOIN en `sql.customer-rate.repository.ts`. Solo
- * `resourceId`/`serviceId` se copian a la `CustomerRate` al crearla — no
- * el %. `update()` queda auditado (`RateCatalogService`, entity
- * `rate_catalog` en `audit_log`) precisamente porque ese cambio mueve
- * plata de gente sin que nadie haya tocado a esos clientes ese día. Ver
- * db/schema.sql BLOQUE rate_catalog.
+ * MAESTRO: una fila = nombre + % de descuento sobre un SCOPE (mismo grano
+ * que `CustomerRate` — desde D9-Parte 1, pendientes-2026-08-22.md, son 5
+ * modos posibles, exactamente uno: `resourceId`/`serviceId`/`productId`
+ * a nivel ÍTEM, `categoryId` a nivel CATEGORÍA, `bucket` a nivel BUCKET.
+ * Ver customer-rate.repository.ts para el detalle completo de los 3
+ * niveles). `POST /customers/:id/rates` con `rateCatalogId` crea una
+ * CustomerRate que REFERENCIA esta entrada — es una referencia VIVA
+ * (decisión explícita del dueño, corregida el mismo 22/08/2026 antes de
+ * cualquier deploy real): editar `discountPercentage` acá cambia de
+ * inmediato lo que paga todo cliente ya asignado, resuelto con JOIN en
+ * `sql.customer-rate.repository.ts`. El SCOPE (no el %) sí se copia a la
+ * `CustomerRate` al crearla. `update()` queda auditado (`RateCatalogService`,
+ * entity `rate_catalog` en `audit_log`) precisamente porque ese cambio
+ * mueve plata de gente sin que nadie haya tocado a esos clientes ese día.
+ * Ver db/schema.sql BLOQUE rate_catalog / D9-Parte 1.
  */
 
 export interface RateCatalogEntry {
@@ -24,20 +27,29 @@ export interface RateCatalogEntry {
   discountPercentage: number;
   resourceId: string | null;
   serviceId: string | null;
+  /** Nivel ÍTEM nuevo (D9-Parte 1) — columna en schema desde ya, API la rechaza hasta D9-Parte 2. */
+  productId: string | null;
+  /** Nivel CATEGORÍA (D9-Parte 1). */
+  categoryId: string | null;
+  /** Nivel BUCKET (D9-Parte 1) — `'ALOJAMIENTO'|'TURNOS'|'SERVICIOS'|'PRODUCTOS'`. */
+  bucket: string | null;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
+/** Exactamente uno de los 5 (`chk_rate_catalog_scope`, schema.sql) — Zod ya lo validó antes de llegar acá. */
 export type CreateRateCatalogEntryDto = {
   id: string;
   businessId: string;
   name: string;
   discountPercentage: number;
-} & (
-  | { resourceId: string; serviceId?: undefined }
-  | { resourceId?: undefined; serviceId: string }
-);
+  resourceId?: string;
+  serviceId?: string;
+  productId?: string;
+  categoryId?: string;
+  bucket?: string;
+};
 
 export interface UpdateRateCatalogEntryDto {
   name?: string | undefined;

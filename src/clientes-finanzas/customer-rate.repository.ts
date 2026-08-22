@@ -2,14 +2,29 @@
  * @file customer-rate.repository.ts
  * @description Interfaz para tarifas especiales (precios negociados por cliente).
  *
- * Una fila = un override de precio para un cliente sobre UN resource_id XOR
- * UN service_id (nunca ambos, nunca ninguno — chk_customer_rate_target en
- * db/schema.sql). ReservationService.resolvePrice() la consulta para decidir
- * el total_price de una reserva antes de la tarifa de catálogo.
+ * Una fila = un override de precio para un cliente sobre un SCOPE — desde
+ * D9-Parte 1 (pendientes-2026-08-22.md,
+ * docs/diseno-scope-multinivel-tarifas-2026-08-22.md) hay 5 modos de
+ * scope posibles, exactamente uno (`chk_customer_rate_scope` en
+ * db/schema.sql):
+ *   - `resourceId`/`serviceId`/`productId` — nivel ÍTEM (antes solo los
+ *     primeros dos existían; `productId` se agrega al schema en esta
+ *     pasada pero la API lo rechaza hasta D9-Parte 2, ver
+ *     request.schemas.ts)
+ *   - `categoryId` — nivel CATEGORÍA (una sola columna: resources/
+ *     bookable_services/products ya comparten `resource_categories`)
+ *   - `bucket` — nivel BUCKET (`'ALOJAMIENTO'|'TURNOS'|'SERVICIOS'|'PRODUCTOS'`;
+ *     ALOJAMIENTO/TURNOS no son tablas, se derivan de
+ *     `resource_categories.is_lodging`)
+ *
+ * `ReservationPricingService.resolveUnitPrice()` la consulta para decidir
+ * el precio unitario de una reserva — de las filas activas que alcanzan
+ * al ítem concreto (a cualquiera de los 3 niveles), gana la más
+ * específica (ítem > categoría > bucket).
  *
  * D5 (pendientes-2026-08-19.md, decisión confirmada con el dueño
- * 22/08/2026): el override es, excluyente (chk_customer_rate_pricing_mode
- * en schema.sql):
+ * 22/08/2026): el PRECIO (ortogonal al scope de arriba) es, excluyente
+ * (chk_customer_rate_pricing_mode en schema.sql):
  *   (A) un monto FIJO (`fixedPrice`)
  *   (B) un % DE DESCUENTO propio de la fila (`discountPercentage`)
  *   (C) una referencia VIVA a `rate_catalog` (`rateCatalogId`)
@@ -29,6 +44,12 @@ export interface CustomerRate {
   customerId: string;
   resourceId: string | null;
   serviceId: string | null;
+  /** Nivel ÍTEM nuevo (D9-Parte 1) — columna en schema desde ya, API la rechaza hasta D9-Parte 2. */
+  productId: string | null;
+  /** Nivel CATEGORÍA (D9-Parte 1) — FK a `resource_categories`, compartida por los 3 tipos de ítem. */
+  categoryId: string | null;
+  /** Nivel BUCKET (D9-Parte 1) — `'ALOJAMIENTO'|'TURNOS'|'SERVICIOS'|'PRODUCTOS'`, null si el scope es ítem/categoría. */
+  bucket: string | null;
   /** Monto fijo absoluto. Excluyente con `discountPercentage`/`rateCatalogId`. */
   fixedPrice: number | null;
   /**
@@ -47,11 +68,13 @@ export interface CustomerRate {
 }
 
 /**
- * Exactamente uno de `fixedPrice`/`discountPercentage`/`rateCatalogId` —
- * el caller (ruta HTTP) ya validó esto contra el body con Zod antes de
- * llegar acá. En el modo `rateCatalogId`, la fila NO guarda su propio %
- * (queda NULL en la base) — se resuelve en cada lectura, ver docblock de
- * la interfaz arriba.
+ * Exactamente uno de `fixedPrice`/`discountPercentage`/`rateCatalogId`
+ * (precio) y exactamente uno de `resourceId`/`serviceId`/`productId`/
+ * `categoryId`/`bucket` (scope) — el caller (ruta HTTP) ya validó las dos
+ * cosas contra el body con Zod antes de llegar acá. En el modo
+ * `rateCatalogId`, la fila NO guarda su propio % (queda NULL en la
+ * base) — se resuelve en cada lectura, ver docblock de la interfaz
+ * arriba.
  */
 export type CreateCustomerRateDto = {
   id: string;
@@ -59,6 +82,9 @@ export type CreateCustomerRateDto = {
   customerId: string;
   resourceId?: string | null;
   serviceId?: string | null;
+  productId?: string | null;
+  categoryId?: string | null;
+  bucket?: string | null;
   notes?: string | null;
 } & (
   | { fixedPrice: number; discountPercentage?: undefined; rateCatalogId?: undefined }
@@ -67,8 +93,23 @@ export type CreateCustomerRateDto = {
 );
 
 export interface ICustomerRateRepository {
-  findActiveForCustomerAndResource(customerId: string, resourceId: string): Promise<CustomerRate | undefined>;
-  findActiveForCustomerAndService(customerId: string, serviceId: string): Promise<CustomerRate | undefined>;
+  /**
+   * Mejor tarifa activa para un recurso concreto — de las candidatas que
+   * lo alcanzan (`resource_id` propio, `category_id` de su categoría, o
+   * `bucket` ALOJAMIENTO/TURNOS según `isLodging` de esa categoría), la
+   * más específica. `categoryId`/`isLodging` los resuelve el caller
+   * (`ReservationPricingService`, ya tiene `resource.categoryId` y
+   * consulta `ICategoryRepository` para `isLodging`) — este repositorio
+   * no conoce `resource_categories` más que para comparar valores.
+   */
+  findActiveForCustomerAndResource(
+    customerId: string, resourceId: string, categoryId: string, isLodging: boolean,
+  ): Promise<CustomerRate | undefined>;
+
+  /** Idem para un servicio — bucket fijo `'SERVICIOS'`, sin split (a diferencia de recursos, no hay is_lodging). */
+  findActiveForCustomerAndService(
+    customerId: string, serviceId: string, categoryId: string,
+  ): Promise<CustomerRate | undefined>;
 
   /** Por id, sin filtro de `active` — usado para auditar la desactivación (necesita el estado ANTES). */
   findById(id: string, businessId: string): Promise<CustomerRate | undefined>;

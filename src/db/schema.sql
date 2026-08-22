@@ -579,9 +579,11 @@ END $$;
 
 -- ---------------------------------------------------------------------------
 -- rate_catalog (D5, pendientes-2026-08-19.md) — catálogo de tarifas
--- reutilizables. MAESTRO: una fila = nombre + % de descuento sobre UN
--- resource_id XOR UN service_id (mismo grano que customer_rates, ver
--- abajo).
+-- reutilizables. MAESTRO: una fila = nombre + % de descuento sobre un
+-- scope (mismo grano que customer_rates, ver abajo) -- desde D9-Parte 1
+-- (pendientes-2026-08-22.md) el scope tiene 5 modos posibles, no solo
+-- resource_id XOR service_id; ver el bloque D9-Parte 1 más abajo en
+-- este archivo para el detalle completo.
 --
 -- `customer_rates.rate_catalog_id` (cuando está seteado) es una
 -- REFERENCIA VIVA — decisión explícita del dueño (22/08/2026, corregida
@@ -631,11 +633,13 @@ END $$;
 
 -- ---------------------------------------------------------------------------
 -- customer_rates  (tarifas especiales por cliente)
--- Una fila = un override de precio para un cliente sobre UN resource_id XOR
--- UN service_id (nunca ambos, nunca ninguno — chk_customer_rate_target).
--- Resolución de precio en ReservationService.resolvePrice(): tarifa de
--- cliente+servicio > precio de catálogo del servicio > tarifa de
--- cliente+recurso > precio base del recurso.
+-- Una fila = un override de precio para un cliente sobre un scope --
+-- desde D9-Parte 1 son 5 modos posibles (antes solo resource_id XOR
+-- service_id), ver el bloque D9-Parte 1 más abajo en este archivo.
+-- Resolución de precio en ReservationPricingService.resolveUnitPrice():
+-- tarifa especial de cliente+servicio (más específica entre ítem/
+-- categoría/bucket) > precio de catálogo del servicio > tarifa especial
+-- de cliente+recurso (ídem) > precio base del recurso.
 --
 -- D5 (pendientes-2026-08-19.md, decisión confirmada con el dueño
 -- 22/08/2026): el override puede ser, EXCLUYENTE (chk_customer_rate_pricing_mode):
@@ -757,6 +761,92 @@ FROM base
 WHERE cr.id = base.id
   AND base.base_price > 0
   AND (1 - cr.fixed_price / base.base_price) * 100 > 0;
+
+-- ---------------------------------------------------------------------------
+-- D9-Parte 1 (pendientes-2026-08-22.md, docs/diseno-scope-multinivel-
+-- tarifas-2026-08-22.md) — scope multi-nivel para customer_rates/
+-- rate_catalog. Antes: el target era siempre ÍTEM (resource_id XOR
+-- service_id). Ahora, EXCLUYENTE entre 5 columnas:
+--   - resource_id / service_id / product_id -- nivel ÍTEM (como antes,
+--     + un tercer tipo nuevo)
+--   - category_id -- nivel CATEGORÍA. Una sola columna para los 3 tipos
+--     de ítem: resources/bookable_services/products ya comparten
+--     resource_categories (mismo FK, sin discriminador de "para qué
+--     bucket es" -- el match es por igualdad de category_id contra el
+--     ítem concreto, no hace falta saberlo).
+--   - bucket -- nivel BUCKET (ALOJAMIENTO/TURNOS/SERVICIOS/PRODUCTOS).
+--     No es FK: ALOJAMIENTO/TURNOS no son tablas, son
+--     resource_categories.is_lodging (TRUE/FALSE) de la categoría del
+--     recurso -- ver ReservationPricingService.
+--
+-- product_id/bucket='PRODUCTOS' se agregan YA (evita una segunda
+-- migración) pero la API los rechaza hasta D9-Parte 2 (el gancho en
+-- pos-menu que los va a consultar de verdad) -- ver
+-- CreateCustomerRateSchema/CreateRateCatalogEntrySchema.
+--
+-- Solapamiento y unicidad: con scope multi-nivel, un mismo ítem puede
+-- quedar alcanzado por varias filas activas simultáneas (una a nivel
+-- ítem, una de categoría, una de bucket) sin que eso sea un duplicado —
+-- gana la más específica (ítem > categoría > bucket), resuelto en
+-- ReservationPricingService al cotizar, no en un índice único (decisión
+-- confirmada con el dueño: la garantía de unicidad por cliente+ítem
+-- concreto deja de poder vivir sola en Postgres). Lo que SÍ sigue
+-- viviendo en la base: como máximo una fila activa por cliente+valor
+-- EXACTO de scope (un índice único por columna, igual que antes).
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
+ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
+ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
+
+ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_bucket;
+ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_bucket
+  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+
+-- Reemplaza chk_rate_catalog_target (2 vías) -- ya no tiene sentido con
+-- 5 columnas de scope posibles.
+ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_target;
+ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_scope;
+ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_scope CHECK (
+  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
+);
+
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
+
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_bucket;
+ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_bucket
+  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_target;
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_scope;
+ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_scope CHECK (
+  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
+);
+
+-- Un único override ACTIVO por cliente+valor exacto de scope -- mismo
+-- criterio que los 2 índices de resource/service ya existentes arriba,
+-- uno más por cada columna de scope nueva.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_product
+  ON customer_rates (customer_id, product_id)
+  WHERE active = TRUE AND product_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_category
+  ON customer_rates (customer_id, category_id)
+  WHERE active = TRUE AND category_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_bucket
+  ON customer_rates (customer_id, bucket)
+  WHERE active = TRUE AND bucket IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- business_hours  (horario de atención por defecto del negocio — "Mi Negocio")

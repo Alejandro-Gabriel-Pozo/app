@@ -35,10 +35,13 @@ export class SqlRateCatalogRepository implements IRateCatalogRepository {
 
   async create(dto: CreateRateCatalogEntryDto): Promise<RateCatalogEntry> {
     const result = await this.db.query<RateCatalogRow>(
-      `INSERT INTO rate_catalog (id, business_id, name, discount_percentage, resource_id, service_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO rate_catalog (id, business_id, name, discount_percentage, resource_id, service_id, product_id, category_id, bucket)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [dto.id, dto.businessId, dto.name, dto.discountPercentage, dto.resourceId ?? null, dto.serviceId ?? null],
+      [
+        dto.id, dto.businessId, dto.name, dto.discountPercentage,
+        dto.resourceId ?? null, dto.serviceId ?? null, dto.productId ?? null, dto.categoryId ?? null, dto.bucket ?? null,
+      ],
     );
     return rowToEntry(result.rows[0]!);
   }
@@ -78,6 +81,9 @@ interface RateCatalogRow {
   discount_percentage: string;
   resource_id: string | null;
   service_id: string | null;
+  product_id: string | null;
+  category_id: string | null;
+  bucket: string | null;
   active: boolean;
   created_at: Date;
   updated_at: Date;
@@ -91,6 +97,9 @@ function rowToEntry(r: RateCatalogRow): RateCatalogEntry {
     discountPercentage: parseFloat(r.discount_percentage),
     resourceId: r.resource_id,
     serviceId: r.service_id,
+    productId: r.product_id,
+    categoryId: r.category_id,
+    bucket: r.bucket,
     active: r.active,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

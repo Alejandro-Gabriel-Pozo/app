@@ -51,12 +51,32 @@ encima de la especificidad multi-nivel, no al revés). Lo único que
 cambió después fue la SECUENCIA de entrega, a pedido del dueño — partida
 en dos para que el trabajo de reservas no espere al de POS:
 
-- **D9-Parte 1** (ALOJAMIENTO/TURNOS/SERVICIOS — `reservas`) — lista
-  para implementar ya, sin bloqueos.
+- ✅ **D9-Parte 1 RESUELTO (22/08/2026)** — ALOJAMIENTO/TURNOS/SERVICIOS
+  (`reservas`). Schema: `customer_rates`/`rate_catalog` ganan
+  `product_id`/`category_id`/`bucket` (los 3, aunque `product_id`/
+  `bucket='PRODUCTOS'` los rechaza la API hasta Parte 2 — evita una
+  segunda migración); `chk_customer_rate_scope`/`chk_rate_catalog_scope`
+  (5 vías, exactamente una) reemplazan los CHECK de 2 vías; 3 índices
+  únicos nuevos por tabla (uno por columna de scope nueva). `ICustomerRateRepository.
+  findActiveForCustomerAndResource/Service` ya no busca una fila exacta —
+  junta todas las candidatas (ítem/categoría/bucket) y devuelve la más
+  específica (`ORDER BY` especificidad en SQL, `.sort()` en el fake
+  in-memory). `ReservationPricingService` recibe `ICategoryRepository`
+  nuevo (ya lo tenía `ReservationService`, solo se reenvía) para resolver
+  `isLodging` de la categoría del recurso — `PhysicalResource` no lo trae
+  directo. Eje servicio-siempre-gana (D5) intacto, verificado con un test
+  explícito (bucket SERVICIOS le gana a ítem de recurso). `Create*Schema`
+  (Zod) aceptan categoryId/bucket, rechazan productId/`bucket='PRODUCTOS'`
+  con mensaje explícito ("D9-Parte 2, no implementado todavía"). Rutas
+  validan existencia de `categoryId` (`SqlCategoryRepository`) igual que
+  ya hacían con resource/service. 25 tests nuevos (schemas, repo SQL,
+  repo in-memory, 2 integración en `reservation.service.test.ts` —
+  bucket ALOJAMIENTO end-to-end + el caso borde de ejes), suite completa
+  (801 tests) + typecheck + eslint verdes.
 - **D9-Parte 2** (PRODUCTOS + gancho nuevo en `pos-menu`/
   `order.service.ts`, que hoy no consulta `customer_rates` en
   absoluto) — aparte, no bloqueante, diseño ya escrito para retomar
-  cuando corresponda.
+  cuando corresponda. Sin empezar.
 
 (Nombrado "Parte 1"/"Parte 2" en vez de D6/D7 — esos dos números ya
 están tomados más arriba en este mismo archivo.)

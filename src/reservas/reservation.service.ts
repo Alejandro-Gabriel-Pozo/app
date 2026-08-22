@@ -106,6 +106,7 @@ export class ReservationService {
     this.pricing = new ReservationPricingService(
       customerRateRepository,
       this.bookableServiceRepository,
+      this.categoryRepository,
     );
     this.availability = new ReservationAvailabilityService(
       this.resourceRepository,

@@ -101,6 +101,44 @@ describe('CreateCustomerRateSchema — fijo vs. % vs. catálogo (D5, pendientes-
   });
 });
 
+describe('CreateCustomerRateSchema — scope multi-nivel (D9-Parte 1, pendientes-2026-08-22.md)', () => {
+  it('acepta categoryId + discountPercentage (nivel CATEGORÍA)', () => {
+    const result = CreateCustomerRateSchema.safeParse({ categoryId: 'cat-hab-dobles', discountPercentage: 10 });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta bucket ALOJAMIENTO/TURNOS/SERVICIOS + price (nivel BUCKET)', () => {
+    for (const bucket of ['ALOJAMIENTO', 'TURNOS', 'SERVICIOS']) {
+      expect(CreateCustomerRateSchema.safeParse({ bucket, price: 100 }).success).toBe(true);
+    }
+  });
+
+  it('rechaza bucket PRODUCTOS -- D9-Parte 2, no implementado todavía', () => {
+    const result = CreateCustomerRateSchema.safeParse({ bucket: 'PRODUCTOS', price: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza productId -- D9-Parte 2, no implementado todavía', () => {
+    const result = CreateCustomerRateSchema.safeParse({ productId: 'prod-1', price: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza bucket inválido (fuera del catálogo de 4)', () => {
+    const result = CreateCustomerRateSchema.safeParse({ bucket: 'GIMNASIO', price: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza categoryId + bucket juntos (dos niveles a la vez)', () => {
+    const result = CreateCustomerRateSchema.safeParse({ categoryId: 'cat-1', bucket: 'TURNOS', price: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza rateCatalogId combinado con categoryId o bucket', () => {
+    expect(CreateCustomerRateSchema.safeParse({ rateCatalogId: 'cat-1', categoryId: 'c1' }).success).toBe(false);
+    expect(CreateCustomerRateSchema.safeParse({ rateCatalogId: 'cat-1', bucket: 'TURNOS' }).success).toBe(false);
+  });
+});
+
 describe('CreateRateCatalogEntrySchema (D5, pendientes-2026-08-19.md)', () => {
   it('acepta nombre + % + resourceId', () => {
     const result = CreateRateCatalogEntrySchema.safeParse({ name: 'Corporativo', discountPercentage: 10, resourceId: 'r1' });
@@ -125,5 +163,22 @@ describe('CreateRateCatalogEntrySchema (D5, pendientes-2026-08-19.md)', () => {
   it('rechaza % <= 0 o > 100', () => {
     expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 0, resourceId: 'r1' }).success).toBe(false);
     expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 100.5, resourceId: 'r1' }).success).toBe(false);
+  });
+});
+
+describe('CreateRateCatalogEntrySchema — scope multi-nivel (D9-Parte 1, pendientes-2026-08-22.md)', () => {
+  it('acepta categoryId', () => {
+    const result = CreateRateCatalogEntrySchema.safeParse({ name: 'Dobles -10%', discountPercentage: 10, categoryId: 'cat-1' });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta bucket ALOJAMIENTO', () => {
+    const result = CreateRateCatalogEntrySchema.safeParse({ name: 'Todo alojamiento -10%', discountPercentage: 10, bucket: 'ALOJAMIENTO' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rechaza bucket PRODUCTOS / productId -- D9-Parte 2, no implementado todavía', () => {
+    expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 10, bucket: 'PRODUCTOS' }).success).toBe(false);
+    expect(CreateRateCatalogEntrySchema.safeParse({ name: 'X', discountPercentage: 10, productId: 'p1' }).success).toBe(false);
   });
 });

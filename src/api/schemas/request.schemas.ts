@@ -192,29 +192,52 @@ export const AssignTagSchema = z.object({
 //     discountPercentage se resuelven del catálogo, no se mandan acá.
 // ---------------------------------------------------------------------------
 
+// D9-Parte 1 (pendientes-2026-08-22.md,
+// docs/diseno-scope-multinivel-tarifas-2026-08-22.md): el scope de una
+// tarifa especial pasa de "resourceId XOR serviceId" a 4 modos posibles
+// (ítem: resourceId/serviceId; categoría: categoryId; bucket: bucket) --
+// `productId`/`bucket:'PRODUCTOS'` quedan en el schema de la BD desde ya
+// pero la API los rechaza hasta D9-Parte 2 (el gancho en pos-menu que los
+// va a consultar de verdad) -- ver RATE_SCOPE_BUCKETS.
+export const RATE_SCOPE_BUCKETS = ['ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'] as const;
+const RateScopeBucketSchema = z.enum(RATE_SCOPE_BUCKETS);
+
 export const CreateCustomerRateSchema = z.object({
   resourceId:         z.string().min(1).optional(),
   serviceId:          z.string().min(1).optional(),
+  productId:          z.string().min(1).optional(),
+  categoryId:         z.string().min(1).optional(),
+  bucket:             RateScopeBucketSchema.optional(),
   price:              z.number().min(0).optional(),
   discountPercentage: z.number().gt(0).max(100).optional(),
   rateCatalogId:      z.string().min(1).optional(),
   notes:              z.string().optional(),
 }).superRefine((data, ctx) => {
+  if (data.productId !== undefined || data.bucket === 'PRODUCTOS') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'PRODUCTOS todavía no está soportado como scope de tarifa especial (D9-Parte 2, no implementado todavía).',
+      path: [data.productId !== undefined ? 'productId' : 'bucket'],
+    });
+    return;
+  }
+
   if (data.rateCatalogId) {
-    if (data.resourceId || data.serviceId || data.price !== undefined || data.discountPercentage !== undefined) {
+    if (data.resourceId || data.serviceId || data.categoryId || data.bucket || data.price !== undefined || data.discountPercentage !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'rateCatalogId no se combina con resourceId/serviceId/price/discountPercentage -- esos valores se toman del catálogo.',
+        message: 'rateCatalogId no se combina con resourceId/serviceId/categoryId/bucket/price/discountPercentage -- esos valores se toman del catálogo.',
         path: ['rateCatalogId'],
       });
     }
     return;
   }
 
-  if (Boolean(data.resourceId) === Boolean(data.serviceId)) {
+  const scopeFieldsSet = [data.resourceId, data.serviceId, data.categoryId, data.bucket].filter((v) => v !== undefined).length;
+  if (scopeFieldsSet !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Debés especificar resourceId o serviceId, no ambos ni ninguno',
+      message: 'Debés especificar exactamente uno de: resourceId, serviceId, categoryId, bucket',
       path: ['resourceId'],
     });
   }
@@ -237,9 +260,27 @@ export const CreateRateCatalogEntrySchema = z.object({
   discountPercentage: z.number().gt(0).max(100),
   resourceId:         z.string().min(1).optional(),
   serviceId:          z.string().min(1).optional(),
-}).refine((data) => Boolean(data.resourceId) !== Boolean(data.serviceId), {
-  message: 'Debés especificar resourceId o serviceId, no ambos ni ninguno',
-  path: ['resourceId'],
+  productId:          z.string().min(1).optional(),
+  categoryId:         z.string().min(1).optional(),
+  bucket:             RateScopeBucketSchema.optional(),
+}).superRefine((data, ctx) => {
+  if (data.productId !== undefined || data.bucket === 'PRODUCTOS') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'PRODUCTOS todavía no está soportado como scope de catálogo (D9-Parte 2, no implementado todavía).',
+      path: [data.productId !== undefined ? 'productId' : 'bucket'],
+    });
+    return;
+  }
+
+  const scopeFieldsSet = [data.resourceId, data.serviceId, data.categoryId, data.bucket].filter((v) => v !== undefined).length;
+  if (scopeFieldsSet !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debés especificar exactamente uno de: resourceId, serviceId, categoryId, bucket',
+      path: ['resourceId'],
+    });
+  }
 });
 
 // Solo name/discountPercentage — el target (resourceId/serviceId) no se

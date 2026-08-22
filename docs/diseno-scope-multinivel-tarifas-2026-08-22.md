@@ -15,6 +15,12 @@
 > partir la ENTREGA en dos (sección 6 nueva) — no la decisión de si
 > PRODUCTOS entra (ya dijo que sí), sino CUÁNDO se entrega, para que el
 > trabajo de recurso/servicio no quede esperando al de POS.
+>
+> ✅ **D9-Parte 1 IMPLEMENTADA (22/08/2026, mismo día)** — ver
+> `pendientes-2026-08-22.md` para el detalle de qué se tocó y los 25 tests
+> nuevos. Este documento queda como diseño de referencia (por qué se
+> decidió así), no como "todavía no aplicado" para la Parte 1. D9-Parte 2
+> (PRODUCTOS + `pos-menu`) sigue sin empezar.
 
 ---
 

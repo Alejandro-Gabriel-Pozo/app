@@ -30,6 +30,7 @@ import { SqlRateCatalogRepository } from './sql.rate-catalog.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { recordFieldChanges } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
+import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
 import { SqlFinancialTransactionRepository } from './sql.financial-transaction.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
@@ -37,7 +38,7 @@ import { CustomerAccountService } from './customer-account.service.js';
 import {
   UpdateCustomerSchema, AssignTagSchema, CreateCustomerRateSchema, RecordPaymentSchema,
 } from '../api/schemas/request.schemas.js';
-import { CustomerRateConflictError, ResourceNotFoundError, RateCatalogEntryNotFoundError } from '../domain/errors.js';
+import { CustomerRateConflictError, ResourceNotFoundError, RateCatalogEntryNotFoundError, CategoryNotFoundError } from '../domain/errors.js';
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
 import { cuitSchema } from '../api/schemas/common.schemas.js';
 import { SqlCustomerTaxProfileRepository } from './sql.customer-tax-profile.repository.js';
@@ -481,17 +482,23 @@ export function createCustomersRouter(container: AppContainer): Router {
         // lectura, ver sql.customer-rate.repository.ts) o ad hoc (tal cual
         // venía antes). CreateCustomerRateSchema ya garantizó que no
         // vinieron mezclados los dos modos.
+        //
+        // D9-Parte 1 (pendientes-2026-08-22.md) — el "target" ahora es uno
+        // de 4 (antes 2): resourceId/serviceId (ÍTEM), categoryId
+        // (CATEGORÍA) o bucket (BUCKET). `productId`/bucket='PRODUCTOS' ya
+        // los rechazó el schema Zod más arriba (D9-Parte 2).
         let dto: CreateCustomerRateDto;
 
         if (body.rateCatalogId) {
           const catalogEntry = await new SqlRateCatalogRepository(req.db!).findById(body.rateCatalogId, businessId);
           if (!catalogEntry || !catalogEntry.active) throw new RateCatalogEntryNotFoundError(body.rateCatalogId);
 
-          // resourceId/serviceId SÍ se copian (los necesita el índice único
-          // y la resolución por recurso/servicio) -- solo el % queda vivo.
-          const target = catalogEntry.resourceId
-            ? { resourceId: catalogEntry.resourceId }
-            : { serviceId: catalogEntry.serviceId! };
+          // El scope SÍ se copia (lo necesitan los índices únicos y la
+          // resolución por ítem/categoría/bucket) -- solo el % queda vivo.
+          const target = catalogEntry.resourceId  ? { resourceId: catalogEntry.resourceId }
+            : catalogEntry.serviceId  ? { serviceId: catalogEntry.serviceId }
+            : catalogEntry.categoryId ? { categoryId: catalogEntry.categoryId }
+            : { bucket: catalogEntry.bucket! };
           dto = { ...base, ...target, rateCatalogId: catalogEntry.id };
         } else {
           if (body.resourceId) {
@@ -502,8 +509,15 @@ export function createCustomersRouter(container: AppContainer): Router {
             const service = await new SqlBookableServiceRepository(req.db!).findById(body.serviceId);
             if (!service) throw new BookableServiceNotFoundError(body.serviceId);
           }
+          if (body.categoryId) {
+            const category = await new SqlCategoryRepository(req.db!).findById(body.categoryId);
+            if (!category) throw new CategoryNotFoundError(body.categoryId);
+          }
 
-          const target = body.resourceId ? { resourceId: body.resourceId } : { serviceId: body.serviceId! };
+          const target = body.resourceId  ? { resourceId: body.resourceId }
+            : body.serviceId  ? { serviceId: body.serviceId }
+            : body.categoryId ? { categoryId: body.categoryId }
+            : { bucket: body.bucket! };
           dto = body.price !== undefined
             ? { ...base, ...target, fixedPrice: body.price }
             : { ...base, ...target, discountPercentage: body.discountPercentage! };

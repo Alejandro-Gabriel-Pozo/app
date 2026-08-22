@@ -19,7 +19,8 @@ function seedEntry(repo: InMemoryRateCatalogRepository, overrides: Partial<RateC
   const now = new Date();
   const entry: RateCatalogEntry = {
     id: 'cat-1', businessId: 'biz-1', name: 'Corporativo', discountPercentage: 10,
-    resourceId: 'r1', serviceId: null, active: true, createdAt: now, updatedAt: now,
+    resourceId: 'r1', serviceId: null, productId: null, categoryId: null, bucket: null,
+    active: true, createdAt: now, updatedAt: now,
     ...overrides,
   };
   repo.seed([entry]);

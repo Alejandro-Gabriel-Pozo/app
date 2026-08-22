@@ -1159,7 +1159,7 @@ describe('ReservationService', () => {
     it('con tarifa especial de cliente+recurso, la usa en vez del basePrice de catálogo', async () => {
       customerRateRepo.seed([{
         id: 'rate-1', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: 't1', serviceId: null, fixedPrice: 40, discountPercentage: null, rateCatalogId: null, active: true,
+        resourceId: 't1', serviceId: null, productId: null, categoryId: null, bucket: null, fixedPrice: 40, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1178,7 +1178,7 @@ describe('ReservationService', () => {
       // t1 tiene basePrice=50 (ver arriba) -- 20% de descuento = 40.
       customerRateRepo.seed([{
         id: 'rate-pct-1', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: 't1', serviceId: null, fixedPrice: null, discountPercentage: 20, rateCatalogId: null, active: true,
+        resourceId: 't1', serviceId: null, productId: null, categoryId: null, bucket: null, fixedPrice: null, discountPercentage: 20, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1202,7 +1202,7 @@ describe('ReservationService', () => {
       // 25% de descuento sobre 40 = 30.
       customerRateRepo.seed([{
         id: 'rate-pct-2', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-precio-pct', fixedPrice: null, discountPercentage: 25, rateCatalogId: null, active: true,
+        resourceId: null, serviceId: 'svc-precio-pct', productId: null, categoryId: null, bucket: null, fixedPrice: null, discountPercentage: 25, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1217,6 +1217,70 @@ describe('ReservationService', () => {
       expect(reservation.totalPrice).toBe(30);
     });
 
+    it('D9-Parte 1: tarifa a nivel BUCKET (ALOJAMIENTO) se aplica a un recurso de una categoría de alojamiento', async () => {
+      const lodgingCategoryRepo: ICategoryRepository = {
+        async findById() {
+          return {
+            id: 'cat-table', name: 'Habitaciones', fields: [], active: true,
+            isLodging: true, createdAt: new Date(), updatedAt: new Date(),
+          };
+        },
+        async findAll() { return []; },
+        async countActive() { return 0; },
+        async create(): Promise<never> { throw new Error('no usado en este test'); },
+        async update(): Promise<never> { throw new Error('no usado en este test'); },
+        async deactivate() {},
+      };
+      const lodgingService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+      );
+      // t1 tiene basePrice=50 -- 30% de descuento a nivel BUCKET ALOJAMIENTO = 35.
+      customerRateRepo.seed([{
+        id: 'rate-bucket-aloj', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: null, serviceId: null, productId: null, categoryId: null, bucket: 'ALOJAMIENTO',
+        fixedPrice: null, discountPercentage: 30, rateCatalogId: null, active: true,
+      }]);
+
+      const reservation = await lodgingService.createReservation({
+        id: 'res-bucket-aloj', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T09:00:00'), endTime: new Date('2026-07-01T10:00:00'), details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(35);
+    });
+
+    it('D9-Parte 1: el eje servicio sigue ganando aunque su tarifa sea de nivel BUCKET y la del recurso sea de nivel ÍTEM (default confirmado, no al revés)', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-axis', categoryId: 'cat-table', name: 'Servicio eje',
+        bookingMode: 'slot', durationMinutes: 30, price: 999,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      customerRateRepo.seed([
+        // Eje SERVICIO -- nivel BUCKET (el más débil posible).
+        {
+          id: 'rate-axis-service', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+          resourceId: null, serviceId: null, productId: null, categoryId: null, bucket: 'SERVICIOS',
+          fixedPrice: 7, discountPercentage: null, rateCatalogId: null, active: true,
+        },
+        // Eje RECURSO -- nivel ÍTEM (el más fuerte posible).
+        {
+          id: 'rate-axis-resource', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+          resourceId: 't1', serviceId: null, productId: null, categoryId: null, bucket: null,
+          fixedPrice: 999, discountPercentage: null, rateCatalogId: null, active: true,
+        },
+      ]);
+
+      const reservation = await service.createReservation({
+        id: 'res-axis', resourceId: 't1', serviceId: 'svc-axis', customer,
+        startTime: new Date('2026-07-01T09:00:00'), details: {},
+      });
+
+      // Gana el eje servicio (7), no el ítem del eje recurso (999).
+      expect(reservation.totalPrice).toBe(7);
+    });
+
     it('con tarifa especial de cliente+servicio, la prioriza sobre el precio de catálogo del servicio', async () => {
       bookableServiceRepo.seed({
         id: 'svc-precio-2', categoryId: 'cat-table', name: 'Servicio con precio 2',
@@ -1225,7 +1289,7 @@ describe('ReservationService', () => {
       });
       customerRateRepo.seed([{
         id: 'rate-2', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-precio-2', fixedPrice: 15, discountPercentage: null, rateCatalogId: null, active: true,
+        resourceId: null, serviceId: 'svc-precio-2', productId: null, categoryId: null, bucket: null, fixedPrice: 15, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1314,7 +1378,7 @@ describe('ReservationService', () => {
       });
       customerRateRepo.seed([{
         id: 'rate-noche', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-noche-3', fixedPrice: 80, discountPercentage: null, rateCatalogId: null, active: true,
+        resourceId: null, serviceId: 'svc-noche-3', productId: null, categoryId: null, bucket: null, fixedPrice: 80, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1374,7 +1438,7 @@ describe('ReservationService', () => {
       });
       customerRateRepo.seed([{
         id: 'rate-negociada', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-doble-2', fixedPrice: 12000, discountPercentage: null, rateCatalogId: null, active: true,
+        resourceId: null, serviceId: 'svc-doble-2', productId: null, categoryId: null, bucket: null, fixedPrice: 12000, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({

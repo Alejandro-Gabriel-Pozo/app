@@ -6,6 +6,18 @@
  * toca disponibilidad, locks, ni el ciclo de vida de la reserva — eso
  * sigue en `ReservationService` (orquestador) y
  * `ReservationAvailabilityService`.
+ *
+ * D9-Parte 1 (pendientes-2026-08-22.md,
+ * docs/diseno-scope-multinivel-tarifas-2026-08-22.md): las tarifas
+ * especiales ya no son solo a nivel ÍTEM (resource_id/service_id) — un
+ * cliente puede tener una activa a nivel CATEGORÍA o BUCKET
+ * (ALOJAMIENTO/TURNOS/SERVICIOS) también. `ICustomerRateRepository.
+ * findActiveForCustomerAndResource/Service` ya resuelve la más específica
+ * de las que apliquen (ítem > categoría > bucket) — este servicio solo le
+ * pasa `categoryId`/`isLodging`, no decide entre niveles. `isLodging`
+ * (ALOJAMIENTO vs. TURNOS) se resuelve acá vía `ICategoryRepository`
+ * porque `PhysicalResource` no lo trae (solo `categoryId`) — ver
+ * `resource_categories.is_lodging` en `schema.sql`.
  */
 
 import type { PhysicalResource } from './resource.entities.js';
@@ -13,11 +25,13 @@ import type { BookableService } from './bookable-service.types.js';
 import { InvalidReservationError, RatePlanNotAvailableError } from '../domain/errors.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
+import type { ICategoryRepository } from './category.repository.js';
 
 export class ReservationPricingService {
   constructor(
     private readonly customerRateRepository:    ICustomerRateRepository,
     private readonly bookableServiceRepository: IBookableServiceRepository,
+    private readonly categoryRepository:        ICategoryRepository,
   ) {}
 
   /**
@@ -83,15 +97,24 @@ export class ReservationPricingService {
     endTime?: Date;
   }): Promise<number> {
     if (params.serviceId) {
+      // categoryId del SERVICIO -- '' si `service` no vino cargado (mismo
+      // caso ya tolerado por requireServicePrice más abajo). '' nunca
+      // matchea un category_id real, así que el nivel CATEGORÍA
+      // simplemente no aporta candidatas en ese caso -- ítem y bucket
+      // ('SERVICIOS') siguen funcionando igual.
       const serviceRate = await this.customerRateRepository.findActiveForCustomerAndService(
         params.customerId,
         params.serviceId,
+        params.service?.categoryId ?? '',
       );
       if (serviceRate) {
         // El % se aplica contra el precio de CATÁLOGO del servicio (no
         // contra la tarifa elegida ni el precio base del recurso) -- es el
         // mismo escalón que ganaría si esta tarifa especial no existiera
-        // (ver cascada en el docblock de la clase).
+        // (ver cascada en el docblock de la clase). D9: esto NO cambia por
+        // el nivel del scope (ítem/categoría/bucket) -- el eje servicio
+        // sigue ganando entre ejes con cualquier nivel (decisión
+        // confirmada con el dueño, docs/diseno-scope-multinivel-tarifas-2026-08-22.md).
         return this.resolveRateAmount(serviceRate, this.requireServicePrice(params));
       }
 
@@ -102,9 +125,12 @@ export class ReservationPricingService {
       if (params.service) return params.service.price;
     }
 
+    const resourceCategory = await this.categoryRepository.findById(params.resource.categoryId);
     const resourceRate = await this.customerRateRepository.findActiveForCustomerAndResource(
       params.customerId,
       params.resourceId,
+      params.resource.categoryId,
+      resourceCategory?.isLodging ?? false,
     );
     if (resourceRate) return this.resolveRateAmount(resourceRate, params.resource.basePrice);
 
