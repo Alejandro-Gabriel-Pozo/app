@@ -227,14 +227,63 @@ Orden sugerido por la auditoría, sin lo ya resuelto en la sección A:
    que se conectó es la consulta AL padrón de ARCA (autocompletar desde
    afuera), no una búsqueda contra los perfiles fiscales ya cargados en
    la propia base. Y sin UI en `appfrontend-main` todavía.
-5. **Tarifas especiales — precio fijo vs. porcentaje** — cambio de
-   modelo, no de UI. `CustomerRate.price: number` es override absoluto;
-   pasar a `discountPercentage` implica decidir migración de tarifas ya
-   cargadas (¿se recalculan a % contra el precio base actual, o quedan
-   "legacy fixed"?) — **sin definir, no asumir ninguna opción**. El
-   modelo de "catálogo de tarifas reutilizables" (nombre + % + a qué
-   aplica) que pide la especificación tampoco existe hoy — es un
-   rediseño de tabla.
+5. ✅ **RESUELTO (backend, 22/08/2026) — Tarifas especiales, fijo vs. %,
+   catálogo reutilizable.** 3 decisiones confirmadas con el dueño: (1)
+   `CustomerRate` soporta AMBOS — `fixedPrice`/`discountPercentage`
+   (`price` renombrado, ahora nullable), exactamente uno de los dos
+   (`chk_customer_rate_pricing_mode`); (2) tarifas fijas ya cargadas se
+   recalculan a % contra el precio base de HOY — migración gateada por
+   `created_at < '2026-08-22'` en `schema.sql` (no por "fixed_price IS NOT
+   NULL", que sigue siendo una opción válida para tarifas nuevas), deja
+   sin tocar (legacy fixed) las filas sin precio base válido o sin
+   descuento real (precio ya cargado >= precio base); (3) `rate_catalog`
+   nuevo (MAESTRO, nombre + % + resourceId XOR serviceId) — **referencia
+   VIVA**, no siembra-y-olvida como `role_presets` (primera versión
+   implementada así, corregida el mismo día antes de cualquier push: el
+   dueño la marcó explícitamente como la única de las 3 decisiones no
+   confirmada con `AskUserQuestion` antes de codear, y pidió el modelo
+   contrario). `customer_rates.rate_catalog_id`, cuando está seteado, deja
+   `discount_percentage` en NULL en la fila — el % efectivo se resuelve
+   con `LEFT JOIN` a `rate_catalog` en cada lectura
+   (`sql.customer-rate.repository.ts`): editar el % del catálogo cambia de
+   inmediato lo que paga TODO cliente ya asignado a esa entrada.
+   `resourceId`/`serviceId` sí se copian a la fila (los necesita el índice
+   único y la resolución por recurso/servicio existente). Desactivar una
+   entrada de catálogo no le saca el descuento a quien ya la tenía
+   asignada — solo bloquea asignarla de nuevo (R11).
+   `POST /customers/:id/rates` acepta `rateCatalogId` XOR
+   (resourceId/serviceId + price/discountPercentage). Nuevo
+   `GET/POST /api/rate-catalog` + `DELETE /api/rate-catalog/:id`
+   (MANAGEMENT). `ReservationPricingService.resolveUnitPrice()` calcula el
+   % contra el precio de catálogo del servicio o `basePrice` del recurso,
+   según corresponda — sin cambios por esta corrección, ya recibía el %
+   efectivo del repositorio. 30 tests nuevos (pricing service, schemas,
+   repositorio SQL), suite completa (771 tests) + typecheck + eslint
+   verdes. Nada de esto había llegado a bootear contra una base real
+   (verificado con `git log origin/main..HEAD` antes de reescribir: 0
+   commits pusheados) — la corrección fue reescribir el código, no una
+   migración compensatoria.
+   ✅ **Auditoría del origen del cambio (mismo día, seguimiento pedido por
+   el dueño):** con `rate_catalog_id` como referencia viva, el precio de
+   un cliente puede moverse sin que nadie lo haya tocado a él — hacía
+   falta poder distinguir "cambió porque cambió el catálogo" de "alguien
+   editó la tarifa de este cliente puntual". `RateCatalogService` nuevo
+   (`update()`/`deactivate()` auditados, entity=`rate_catalog`;
+   `create()` NO se audita, mismo criterio que `CategoryService.createCategory()`)
+   + `PUT /api/rate-catalog/:id` nuevo (antes no existía forma de cambiar
+   el % vía API, solo crear/listar/desactivar). `DELETE
+   /customers/:id/rates/:rateId` ahora audita la desactivación
+   (entity=`customer_rates`, field=`active`). De paso, encontrado y
+   corregido un bug real en los fakes in-memory
+   (`InMemoryRateCatalogRepository`/`InMemoryCustomerRateRepository`):
+   devolvían la referencia interna en vez de una copia, así que un
+   `before = findById(...)` seguido de `update()`/`deactivate()`
+   corrompía el propio snapshot ya leído (el diff de auditoría daba
+   vacío siempre) — no afecta producción (el repo SQL real no comparte
+   referencias), solo los tests. 8 tests nuevos, suite completa (776
+   tests) + typecheck + eslint verdes.
+   **Todavía sin UI en `appfrontend-main`** — pantalla de Clientes (tarifas
+   especiales) y una nueva para el catálogo reutilizable.
 6. **Número operativo de Reserva** (y de Cliente, mismo mecanismo) —
    `Reservation.ts` (v9) no tiene número secuencial visible para el
    staff, solo `id` interno. Diseñar como un mecanismo reutilizable

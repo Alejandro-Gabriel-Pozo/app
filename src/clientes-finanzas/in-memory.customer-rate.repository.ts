@@ -24,6 +24,15 @@ export class InMemoryCustomerRateRepository implements ICustomerRateRepository {
     );
   }
 
+  // Copia, no la referencia interna -- un caller típico de findById() lee
+  // el estado "antes" para auditar y después llama deactivate(), que muta
+  // el objeto guardado acá adentro (mismo bug encontrado y corregido en
+  // in-memory.rate-catalog.repository.ts, ver ese comentario).
+  async findById(id: string, businessId: string): Promise<CustomerRate | undefined> {
+    const rate = this.rates.find((r) => r.id === id && r.businessId === businessId);
+    return rate ? { ...rate } : undefined;
+  }
+
   async getByCustomerId(customerId: string): Promise<CustomerRate[]> {
     return this.rates.filter((r) => r.customerId === customerId && r.active);
   }
@@ -35,7 +44,9 @@ export class InMemoryCustomerRateRepository implements ICustomerRateRepository {
       customerId: dto.customerId,
       resourceId: dto.resourceId ?? null,
       serviceId: dto.serviceId ?? null,
-      price: dto.price,
+      fixedPrice: dto.fixedPrice ?? null,
+      discountPercentage: dto.discountPercentage ?? null,
+      rateCatalogId: dto.rateCatalogId ?? null,
       active: true,
       notes: dto.notes ?? null,
     };

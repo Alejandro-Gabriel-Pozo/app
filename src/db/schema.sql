@@ -578,12 +578,75 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
+-- rate_catalog (D5, pendientes-2026-08-19.md) — catálogo de tarifas
+-- reutilizables. MAESTRO: una fila = nombre + % de descuento sobre UN
+-- resource_id XOR UN service_id (mismo grano que customer_rates, ver
+-- abajo).
+--
+-- `customer_rates.rate_catalog_id` (cuando está seteado) es una
+-- REFERENCIA VIVA — decisión explícita del dueño (22/08/2026, corregida
+-- ANTES de cualquier deploy real, ver historial de este archivo): el %
+-- efectivo de esas tarifas se resuelve con un JOIN a esta tabla en cada
+-- lectura (findActiveForCustomerAndResource/Service en
+-- sql.customer-rate.repository.ts), no se copia a la fila. Si se edita
+-- `discount_percentage` acá, TODOS los clientes ya asignados a esta
+-- entrada cobran el nuevo % de inmediato, sin tocar sus filas de
+-- `customer_rates`. Desactivar una entrada (`active=FALSE`) NO le saca el
+-- descuento a quien ya la tenía asignada -- congela el último % leído
+-- (la fila del catálogo sigue existiendo, el JOIN la sigue encontrando);
+-- solo bloquea asignársela a alguien nuevo (R11, criterios-datos.md).
+-- Distinto de `role_presets`/`role_preset_permission_groups`, que sí
+-- siembran una vez y no vuelven a tocar lo ya creado -- no asumir que
+-- todo "catálogo reutilizable" de este repo se comporta igual, cada uno
+-- se confirma por separado.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rate_catalog (
+  id                   VARCHAR(255)   PRIMARY KEY,
+  business_id          VARCHAR(255)   NOT NULL,
+  name                 VARCHAR(255)   NOT NULL,
+  discount_percentage  DECIMAL(5,2)   NOT NULL CHECK (discount_percentage > 0 AND discount_percentage <= 100),
+  resource_id          VARCHAR(255)   REFERENCES resources(id) ON DELETE CASCADE,
+  service_id           VARCHAR(255)   REFERENCES bookable_services(id) ON DELETE CASCADE,
+  active               BOOLEAN        NOT NULL DEFAULT TRUE,
+  created_at           TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_rate_catalog_target CHECK (
+    (resource_id IS NOT NULL AND service_id IS NULL) OR
+    (resource_id IS NULL AND service_id IS NOT NULL)
+  ),
+  CONSTRAINT uq_rate_catalog_business_name UNIQUE (business_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_catalog_business
+  ON rate_catalog (business_id) WHERE active = TRUE;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'rate_catalog_updated_at') THEN
+    CREATE TRIGGER rate_catalog_updated_at
+      BEFORE UPDATE ON rate_catalog
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
 -- customer_rates  (tarifas especiales por cliente)
 -- Una fila = un override de precio para un cliente sobre UN resource_id XOR
 -- UN service_id (nunca ambos, nunca ninguno — chk_customer_rate_target).
 -- Resolución de precio en ReservationService.resolvePrice(): tarifa de
 -- cliente+servicio > precio de catálogo del servicio > tarifa de
 -- cliente+recurso > precio base del recurso.
+--
+-- D5 (pendientes-2026-08-19.md, decisión confirmada con el dueño
+-- 22/08/2026): el override puede ser, EXCLUYENTE (chk_customer_rate_pricing_mode):
+--   (A) un monto FIJO (`fixed_price`, antes `price`)
+--   (B) un % DE DESCUENTO propio de la fila (`discount_percentage`)
+--   (C) una referencia VIVA a `rate_catalog` (`rate_catalog_id`) -- el %
+--       efectivo NO vive acá, se resuelve con JOIN en cada lectura (ver
+--       docblock de rate_catalog arriba)
+-- `resourceId`/`serviceId` SÍ se copian a la fila en el modo (C) (los
+-- necesitan los índices únicos de abajo y la resolución por recurso/
+-- servicio) -- lo único que queda "vivo" es el %.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS customer_rates (
   id           VARCHAR(255)   PRIMARY KEY,
@@ -622,6 +685,78 @@ DO $$ BEGIN
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
+
+-- `price` -> `fixed_price`: rename guardado por IF EXISTS -- una vez
+-- corrido, la columna `price` ya no existe y este bloque no vuelve a
+-- aplicar (Postgres tira error si se repite un RENAME sin este guard).
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'customer_rates' AND column_name = 'price'
+  ) THEN
+    ALTER TABLE customer_rates RENAME COLUMN price TO fixed_price;
+  END IF;
+END $$;
+
+ALTER TABLE customer_rates ALTER COLUMN fixed_price DROP NOT NULL;
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS discount_percentage DECIMAL(5,2);
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS rate_catalog_id VARCHAR(255) REFERENCES rate_catalog(id);
+
+-- Corregido 22/08/2026, ANTES de cualquier deploy real (verificado: nada
+-- booteó todavía contra este schema — `git log origin/main..HEAD`) --
+-- versión anterior de esta constraint asumía que una tarifa de catálogo
+-- copiaba su % a la fila (modelo "snapshot"). El dueño confirmó que
+-- quiere "regla viva": `rate_catalog_id` referencia el % del catálogo EN
+-- CADA lectura (ver findActiveForCustomerAndResource/Service más abajo,
+-- LEFT JOIN a rate_catalog) -- la fila NO guarda su propio
+-- discount_percentage en ese caso. Ahora son tres modos mutuamente
+-- excluyentes, exactamente uno:
+--   A) fixed_price       -- monto fijo ad hoc
+--   B) discount_percentage -- % ad hoc, propio de la fila
+--   C) rate_catalog_id   -- % resuelto en vivo desde el catálogo
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_pricing_mode;
+ALTER TABLE customer_rates
+  ADD CONSTRAINT chk_customer_rate_pricing_mode CHECK (
+    (CASE WHEN fixed_price          IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN discount_percentage  IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN rate_catalog_id      IS NOT NULL THEN 1 ELSE 0 END) = 1
+  );
+
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_discount_percentage;
+ALTER TABLE customer_rates
+  ADD CONSTRAINT chk_customer_rate_discount_percentage
+    CHECK (discount_percentage IS NULL OR (discount_percentage > 0 AND discount_percentage <= 100));
+
+-- ---------------------------------------------------------------------------
+-- Backfill: tarifas fijas cargadas ANTES de que existiera el % (decisión
+-- confirmada con el dueño, D5) se recalculan a % contra el precio base de
+-- HOY del recurso/servicio. Gateado por `created_at < '2026-08-22'` (fecha
+-- de este cambio) -- NO por "fixed_price IS NOT NULL", que es una opción
+-- válida para tarifas nuevas de acá en más y no debe reconvertirse en cada
+-- boot. Rows sin precio base (recurso/servicio borrado) o donde el precio
+-- fijo ya cargado es MAYOR o igual al precio base (no hay descuento real,
+-- sería un % negativo) quedan sin tocar -- "legacy fixed" a propósito, no
+-- se fuerza un dato sin sentido dentro de `discount_percentage`.
+-- ---------------------------------------------------------------------------
+WITH base AS (
+  SELECT
+    cr.id,
+    CASE WHEN cr.resource_id IS NOT NULL THEN r.base_price ELSE bs.price END AS base_price
+  FROM customer_rates cr
+  LEFT JOIN resources r          ON r.id  = cr.resource_id
+  LEFT JOIN bookable_services bs ON bs.id = cr.service_id
+  WHERE cr.fixed_price IS NOT NULL
+    AND cr.discount_percentage IS NULL
+    AND cr.rate_catalog_id IS NULL
+    AND cr.created_at < '2026-08-22T00:00:00Z'::timestamptz
+)
+UPDATE customer_rates cr
+SET discount_percentage = ROUND((1 - cr.fixed_price / base.base_price) * 100, 2),
+    fixed_price = NULL
+FROM base
+WHERE cr.id = base.id
+  AND base.base_price > 0
+  AND (1 - cr.fixed_price / base.base_price) * 100 > 0;
 
 -- ---------------------------------------------------------------------------
 -- business_hours  (horario de atención por defecto del negocio — "Mi Negocio")
@@ -1696,11 +1831,19 @@ CREATE INDEX IF NOT EXISTS idx_ar_stay
 -- changed_by es un identity_id (JWT sub) de la platform DB, SIN FK a
 -- `users` a proposito -- misma razon que stays.assigned_by (BLOQUE 6).
 --
--- Alcance actual (14/08/2026): solo wireado en CategoryService.updateCategory
--- y ProductService.updateProduct/updateVariant -- los maestros que motivaron
--- R8 ("cuando un cliente discuta un precio"). PhysicalResource,
--- BookableService y el resto de los maestros quedan sin auditar todavia,
--- deliberado -- ver nota en category.service.ts/product.service.ts.
+-- Alcance actual (22/08/2026): CategoryService.updateCategory,
+-- ProductService.updateProduct/updateVariant (14/08/2026),
+-- BusinessProfileService.update (D3, 22/08/2026) y, desde D5 (mismo dia),
+-- RateCatalogService.update/deactivate (entity='rate_catalog') +
+-- deactivate de customer_rates (entity='customer_rates', field='active') --
+-- esta ultima porque con rate_catalog_id como referencia VIVA, el precio
+-- de un cliente puede moverse sin que nadie lo haya tocado a EL (cambio
+-- en la entrada de catalogo que tiene asignada) -- el rastro en
+-- audit_log(entity='rate_catalog') es lo unico que explica ese caso,
+-- distinto de audit_log(entity='customer_rates') para una edicion directa
+-- de la tarifa de ese cliente puntual. PhysicalResource, BookableService y
+-- el resto de los maestros quedan sin auditar todavia, deliberado -- ver
+-- nota en category.service.ts/product.service.ts.
 CREATE TABLE IF NOT EXISTS audit_log (
   id          VARCHAR(255)  PRIMARY KEY,
   entity      VARCHAR(50)   NOT NULL,

@@ -25,6 +25,10 @@ import { Customer } from './customer.entities.js';
 import { Roles } from '../security/roles.js';
 import { SqlCustomerRepository } from './sql.customer.repository.js';
 import { SqlCustomerRateRepository } from './sql.customer-rate.repository.js';
+import type { CreateCustomerRateDto } from './customer-rate.repository.js';
+import { SqlRateCatalogRepository } from './sql.rate-catalog.repository.js';
+import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
+import { recordFieldChanges } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
 import { SqlFinancialTransactionRepository } from './sql.financial-transaction.repository.js';
@@ -33,7 +37,7 @@ import { CustomerAccountService } from './customer-account.service.js';
 import {
   UpdateCustomerSchema, AssignTagSchema, CreateCustomerRateSchema, RecordPaymentSchema,
 } from '../api/schemas/request.schemas.js';
-import { CustomerRateConflictError, ResourceNotFoundError } from '../domain/errors.js';
+import { CustomerRateConflictError, ResourceNotFoundError, RateCatalogEntryNotFoundError } from '../domain/errors.js';
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
 import { cuitSchema } from '../api/schemas/common.schemas.js';
 import { SqlCustomerTaxProfileRepository } from './sql.customer-tax-profile.repository.js';
@@ -467,27 +471,47 @@ export function createCustomersRouter(container: AppContainer): Router {
         }
 
         const body = CreateCustomerRateSchema.parse(req.body);
+        const businessId = req.user!.businessId as string;
+        const base = { id: randomUUID(), businessId, customerId, ...(body.notes && { notes: body.notes }) };
 
-        if (body.resourceId) {
-          const resource = await new SqlResourceRepository(req.db!).getById(body.resourceId);
-          if (!resource) throw new ResourceNotFoundError(body.resourceId);
-        }
-        if (body.serviceId) {
-          const service = await new SqlBookableServiceRepository(req.db!).findById(body.serviceId);
-          if (!service) throw new BookableServiceNotFoundError(body.serviceId);
+        // D5 (pendientes-2026-08-19.md) — dos formas de armar el DTO: desde
+        // un preset del catálogo (rateCatalogId es una referencia VIVA —
+        // decisión del dueño, corregida 22/08/2026 antes de cualquier
+        // deploy real: el % NO se copia acá, se resuelve con JOIN en cada
+        // lectura, ver sql.customer-rate.repository.ts) o ad hoc (tal cual
+        // venía antes). CreateCustomerRateSchema ya garantizó que no
+        // vinieron mezclados los dos modos.
+        let dto: CreateCustomerRateDto;
+
+        if (body.rateCatalogId) {
+          const catalogEntry = await new SqlRateCatalogRepository(req.db!).findById(body.rateCatalogId, businessId);
+          if (!catalogEntry || !catalogEntry.active) throw new RateCatalogEntryNotFoundError(body.rateCatalogId);
+
+          // resourceId/serviceId SÍ se copian (los necesita el índice único
+          // y la resolución por recurso/servicio) -- solo el % queda vivo.
+          const target = catalogEntry.resourceId
+            ? { resourceId: catalogEntry.resourceId }
+            : { serviceId: catalogEntry.serviceId! };
+          dto = { ...base, ...target, rateCatalogId: catalogEntry.id };
+        } else {
+          if (body.resourceId) {
+            const resource = await new SqlResourceRepository(req.db!).getById(body.resourceId);
+            if (!resource) throw new ResourceNotFoundError(body.resourceId);
+          }
+          if (body.serviceId) {
+            const service = await new SqlBookableServiceRepository(req.db!).findById(body.serviceId);
+            if (!service) throw new BookableServiceNotFoundError(body.serviceId);
+          }
+
+          const target = body.resourceId ? { resourceId: body.resourceId } : { serviceId: body.serviceId! };
+          dto = body.price !== undefined
+            ? { ...base, ...target, fixedPrice: body.price }
+            : { ...base, ...target, discountPercentage: body.discountPercentage! };
         }
 
         const rateRepo = new SqlCustomerRateRepository(req.db!);
         try {
-          const rate = await rateRepo.create({
-            id: randomUUID(),
-            businessId: req.user!.businessId as string,
-            customerId,
-            ...(body.resourceId && { resourceId: body.resourceId }),
-            ...(body.serviceId && { serviceId: body.serviceId }),
-            price: body.price,
-            ...(body.notes && { notes: body.notes }),
-          });
+          const rate = await rateRepo.create(dto);
           res.status(201).json(rate);
         } catch (dbErr) {
           // Índice único parcial (uq_customer_rates_customer_resource/_service) —
@@ -502,13 +526,35 @@ export function createCustomersRouter(container: AppContainer): Router {
   );
 
   // DELETE /customers/:id/rates/:rateId — desactiva (soft), idempotente
+  //
+  // Auditado (R8, entity='customer_rates') a propósito, distinto de
+  // entity='rate_catalog' (rate-catalog.service.ts) -- esto es "alguien
+  // tocó la tarifa DE ESTE cliente puntual", no "cambió una entrada de
+  // catálogo que de rebote movió el precio de N clientes" (D5,
+  // pendientes-2026-08-19.md, seguimiento del 22/08/2026).
   router.delete(
     '/:id/rates/:rateId',
     authorize(Roles.MANAGEMENT),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        const businessId = req.user!.businessId as string;
+        const rateId = String(req.params['rateId']);
         const rateRepo = new SqlCustomerRateRepository(req.db!);
-        await rateRepo.deactivate(String(req.params['rateId']));
+
+        const before = await rateRepo.findById(rateId, businessId);
+        await rateRepo.deactivate(rateId);
+
+        if (before?.active) {
+          const auditLogRepo = new SqlAuditLogRepository(req.db!);
+          await recordFieldChanges(
+            auditLogRepo,
+            'customer_rates',
+            rateId,
+            [{ field: 'active', oldValue: true, newValue: false }],
+            req.user!.id,
+          );
+        }
+
         res.status(204).send();
       } catch (err) { next(err); }
     },

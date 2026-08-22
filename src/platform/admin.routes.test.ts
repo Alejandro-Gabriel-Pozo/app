@@ -187,7 +187,7 @@ describe('POST /api/admin/repair-tenant-db — exige token de PLATAFORMA', () =>
     const router = createAdminRouter(platformRepo);
 
     const platformToken = signPlatformToken({ sub: 'admin-1', role: PlatformRole.SUPERADMIN, email: 'admin@zuluhub.com' });
-    const res = await runRoute(router, '/repair-tenant-db', reqWithAuth(`Bearer ${platformToken}`, {}));
+    await runRoute(router, '/repair-tenant-db', reqWithAuth(`Bearer ${platformToken}`, {}));
 
     expect(platformRepo.activateBusiness).not.toHaveBeenCalled();
   });

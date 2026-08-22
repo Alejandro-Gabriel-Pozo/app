@@ -185,15 +185,70 @@ export const AssignTagSchema = z.object({
 // ---------------------------------------------------------------------------
 // Tarifas especiales — POST /api/customers/:id/rates
 // ---------------------------------------------------------------------------
+// D5 (pendientes-2026-08-19.md, decisión confirmada con el dueño
+// 22/08/2026): dos formas de cargar una tarifa especial --
+// (a) ad hoc: resourceId XOR serviceId + price XOR discountPercentage.
+// (b) desde el catálogo (rateCatalogId): resourceId/serviceId/price/
+//     discountPercentage se resuelven del catálogo, no se mandan acá.
+// ---------------------------------------------------------------------------
 
 export const CreateCustomerRateSchema = z.object({
-  resourceId: z.string().min(1).optional(),
-  serviceId:  z.string().min(1).optional(),
-  price:      z.number().min(0),
-  notes:      z.string().optional(),
+  resourceId:         z.string().min(1).optional(),
+  serviceId:          z.string().min(1).optional(),
+  price:              z.number().min(0).optional(),
+  discountPercentage: z.number().gt(0).max(100).optional(),
+  rateCatalogId:      z.string().min(1).optional(),
+  notes:              z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.rateCatalogId) {
+    if (data.resourceId || data.serviceId || data.price !== undefined || data.discountPercentage !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'rateCatalogId no se combina con resourceId/serviceId/price/discountPercentage -- esos valores se toman del catálogo.',
+        path: ['rateCatalogId'],
+      });
+    }
+    return;
+  }
+
+  if (Boolean(data.resourceId) === Boolean(data.serviceId)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debés especificar resourceId o serviceId, no ambos ni ninguno',
+      path: ['resourceId'],
+    });
+  }
+
+  if ((data.price !== undefined) === (data.discountPercentage !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debés especificar price o discountPercentage, no ambos ni ninguno',
+      path: ['price'],
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Catálogo de tarifas reutilizables — POST /api/rate-catalog
+// ---------------------------------------------------------------------------
+
+export const CreateRateCatalogEntrySchema = z.object({
+  name:               z.string().min(1).max(255),
+  discountPercentage: z.number().gt(0).max(100),
+  resourceId:         z.string().min(1).optional(),
+  serviceId:          z.string().min(1).optional(),
 }).refine((data) => Boolean(data.resourceId) !== Boolean(data.serviceId), {
   message: 'Debés especificar resourceId o serviceId, no ambos ni ninguno',
   path: ['resourceId'],
+});
+
+// Solo name/discountPercentage — el target (resourceId/serviceId) no se
+// edita acá, ver comentario de UpdateRateCatalogEntryDto.
+export const UpdateRateCatalogEntrySchema = z.object({
+  name:               z.string().min(1).max(255).optional(),
+  discountPercentage: z.number().gt(0).max(100).optional(),
+}).refine((data) => data.name !== undefined || data.discountPercentage !== undefined, {
+  message: 'Debés mandar al menos name o discountPercentage',
 });
 
 // ---------------------------------------------------------------------------

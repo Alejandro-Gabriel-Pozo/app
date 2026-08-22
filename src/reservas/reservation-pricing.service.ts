@@ -87,7 +87,13 @@ export class ReservationPricingService {
         params.customerId,
         params.serviceId,
       );
-      if (serviceRate) return serviceRate.price;
+      if (serviceRate) {
+        // El % se aplica contra el precio de CATÁLOGO del servicio (no
+        // contra la tarifa elegida ni el precio base del recurso) -- es el
+        // mismo escalón que ganaría si esta tarifa especial no existiera
+        // (ver cascada en el docblock de la clase).
+        return this.resolveRateAmount(serviceRate, this.requireServicePrice(params));
+      }
 
       if (params.ratePlanId) {
         return this.resolveRatePlanPrice(params.ratePlanId, params.startTime, params.endTime);
@@ -100,9 +106,39 @@ export class ReservationPricingService {
       params.customerId,
       params.resourceId,
     );
-    if (resourceRate) return resourceRate.price;
+    if (resourceRate) return this.resolveRateAmount(resourceRate, params.resource.basePrice);
 
     return params.resource.basePrice;
+  }
+
+  /**
+   * D5 (pendientes-2026-08-19.md) -- una CustomerRate es un monto fijo O un
+   * % de descuento contra `basePrice` (chk_customer_rate_pricing_mode,
+   * schema.sql garantiza exactamente uno de los dos). Redondeo a centavos
+   * -- mismo criterio que invoice.service.ts (Math.round(n*100)/100), la
+   * plata nunca se deja con arrastre de flotante.
+   */
+  private resolveRateAmount(rate: { fixedPrice: number | null; discountPercentage: number | null }, basePrice: number): number {
+    if (rate.fixedPrice !== null) return rate.fixedPrice;
+    return Math.round(basePrice * (1 - rate.discountPercentage! / 100) * 100) / 100;
+  }
+
+  /**
+   * Base para calcular un % de descuento de SERVICIO -- distinta de
+   * `resource.basePrice` (que ya viene siempre garantizado en `params`).
+   * `params.service` puede ser null en la práctica (ver el fallback de la
+   * línea de abajo en el caso sin tarifa especial) -- con un % activo eso
+   * ya no es un caso silencioso: sin precio de catálogo no hay contra qué
+   * calcular el descuento, así que se corta con un error claro en vez de
+   * inventar una base (0, basePrice del recurso, etc.).
+   */
+  private requireServicePrice(params: { serviceId: string | undefined; service: BookableService | null }): number {
+    if (!params.service) {
+      throw new InvalidReservationError(
+        `No se pudo resolver el precio de catálogo del servicio "${params.serviceId}" para calcular el % de descuento de la tarifa especial.`,
+      );
+    }
+    return params.service.price;
   }
 
   /**

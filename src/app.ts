@@ -41,6 +41,7 @@ import { createMeRouter }                from './api/routes/me.routes.js';
 import { createBusinessRouter }          from './platform/business.routes.js';
 import { createCustomerRouter }          from './api/routes/customer.routes.js';
 import { createCustomersRouter }         from './clientes-finanzas/customers.routes.js';
+import { createRateCatalogRouter }       from './clientes-finanzas/rate-catalog.routes.js';
 import { createCategoryRouter }          from './reservas/categories.routes.js';
 import { createAuditLogRouter }          from './api/routes/audit-log.routes.js';
 import { createUsersRouter }             from './usuarios-roles/users.routes.js';
@@ -263,6 +264,7 @@ export async function createApp(): Promise<{
   app.use('/api/locations',         createLocationsRouter());
   app.use('/api/reservations',      createReservationsRouter(container));
   app.use('/api/customers',         createCustomersRouter(container));
+  app.use('/api/rate-catalog',      createRateCatalogRouter());
   // /api/users/invitations ANTES de /api/users a propósito: el router de
   // /api/users tiene GET/PUT /:id — montado primero, "invitations"
   // matchearía ese :id y nunca llegaría a este router.

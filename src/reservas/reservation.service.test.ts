@@ -1159,7 +1159,7 @@ describe('ReservationService', () => {
     it('con tarifa especial de cliente+recurso, la usa en vez del basePrice de catálogo', async () => {
       customerRateRepo.seed([{
         id: 'rate-1', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: 't1', serviceId: null, price: 40, active: true,
+        resourceId: 't1', serviceId: null, fixedPrice: 40, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1174,6 +1174,49 @@ describe('ReservationService', () => {
       expect(reservation.totalPrice).toBe(40);
     });
 
+    it('D5: tarifa especial de cliente+recurso como % de descuento, calcula contra basePrice del recurso', async () => {
+      // t1 tiene basePrice=50 (ver arriba) -- 20% de descuento = 40.
+      customerRateRepo.seed([{
+        id: 'rate-pct-1', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: 't1', serviceId: null, fixedPrice: null, discountPercentage: 20, rateCatalogId: null, active: true,
+      }]);
+
+      const reservation = await service.createReservation({
+        id: 'res-precio-pct-1',
+        resourceId: 't1',
+        customer,
+        startTime: new Date('2026-07-01T09:00:00'),
+        endTime:   new Date('2026-07-01T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(40);
+    });
+
+    it('D5: tarifa especial de cliente+servicio como % de descuento, calcula contra el precio de catálogo del servicio', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-precio-pct', categoryId: 'cat-table', name: 'Servicio con precio pct',
+        bookingMode: 'slot', durationMinutes: 30, price: 40,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      // 25% de descuento sobre 40 = 30.
+      customerRateRepo.seed([{
+        id: 'rate-pct-2', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: null, serviceId: 'svc-precio-pct', fixedPrice: null, discountPercentage: 25, rateCatalogId: null, active: true,
+      }]);
+
+      const reservation = await service.createReservation({
+        id: 'res-precio-pct-2',
+        resourceId: 't1',
+        serviceId: 'svc-precio-pct',
+        customer,
+        startTime: new Date('2026-07-01T09:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(30);
+    });
+
     it('con tarifa especial de cliente+servicio, la prioriza sobre el precio de catálogo del servicio', async () => {
       bookableServiceRepo.seed({
         id: 'svc-precio-2', categoryId: 'cat-table', name: 'Servicio con precio 2',
@@ -1182,7 +1225,7 @@ describe('ReservationService', () => {
       });
       customerRateRepo.seed([{
         id: 'rate-2', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-precio-2', price: 15, active: true,
+        resourceId: null, serviceId: 'svc-precio-2', fixedPrice: 15, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1271,7 +1314,7 @@ describe('ReservationService', () => {
       });
       customerRateRepo.seed([{
         id: 'rate-noche', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-noche-3', price: 80, active: true,
+        resourceId: null, serviceId: 'svc-noche-3', fixedPrice: 80, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({
@@ -1331,7 +1374,7 @@ describe('ReservationService', () => {
       });
       customerRateRepo.seed([{
         id: 'rate-negociada', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
-        resourceId: null, serviceId: 'svc-doble-2', price: 12000, active: true,
+        resourceId: null, serviceId: 'svc-doble-2', fixedPrice: 12000, discountPercentage: null, rateCatalogId: null, active: true,
       }]);
 
       const reservation = await service.createReservation({

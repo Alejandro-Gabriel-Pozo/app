@@ -130,6 +130,20 @@ export class CustomerRateNotFoundError extends DomainError {
   }
 }
 
+/** D5 (pendientes-2026-08-19.md) — `rateCatalogId` de POST /customers/:id/rates no existe o está desactivada en este negocio. */
+export class RateCatalogEntryNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Entrada de catálogo de tarifas con id "${id}" no encontrada o desactivada`, 'RATE_CATALOG_ENTRY_NOT_FOUND');
+  }
+}
+
+/** uq_rate_catalog_business_name (schema.sql) — ya existe una entrada con ese nombre en este negocio. */
+export class RateCatalogEntryConflictError extends DomainError {
+  constructor(name: string) {
+    super(`Ya existe una entrada de catálogo llamada "${name}" en este negocio`, 'RATE_CATALOG_ENTRY_CONFLICT');
+  }
+}
+
 /**
  * No se puede desactivar un producto/variante mientras tenga stock físico
  * (no el disponible) > 0 en cualquier ubicación — 17/08/2026,

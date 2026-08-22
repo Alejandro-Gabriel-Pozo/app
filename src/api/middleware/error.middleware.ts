@@ -150,6 +150,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RATE_PLAN_NOT_FOUND':
     case 'FINANCIAL_TRANSACTION_NOT_FOUND':
     case 'INVOICE_NOT_FOUND':
+    case 'RATE_CATALOG_ENTRY_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -171,6 +172,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'NO_PRICE_ADJUSTMENT_PENDING':
     case 'AFIP_REQUEST_UNCERTAIN':
     case 'INVOICE_NOT_ISSUED':
+    case 'RATE_CATALOG_ENTRY_CONFLICT':
       return 409;
 
     // --- 503 Service Unavailable ---
