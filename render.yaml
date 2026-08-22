@@ -63,7 +63,9 @@ services:
       - key: DB_ENCRYPTION_KEY
         sync: false
 
-      # CORS — dominio del frontend (ej. https://mi-app.vercel.app)
+      # CORS — dominio del frontend (ej. https://mi-app.vercel.app). También
+      # reusada (22/08/2026, D2) para armar el link de invitación de
+      # usuarios que se manda por mail -- ver app.ts, variable frontendUrl.
       - key: CORS_ORIGIN
         sync: false
 

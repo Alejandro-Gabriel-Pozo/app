@@ -6,7 +6,7 @@
 > `appfrontend` frontend). Ver instrucción permanente en `CLAUDE.md` (raíz de
 > `App - frontend`), sección "Auditoría de dominios".
 
-Última actualización: 2026-08-15.
+Última actualización: 2026-08-22.
 
 | Dominio/Subdominio/Archivo | Notas registradas |
 |---|---|
@@ -24,7 +24,7 @@
 | `github.com/Alejandro-Gabriel-Pozo/appfrontend` | Repositorio frontend. Remoto real confirmado: `origin` de `appfrontend-main` apunta acá (no tiene mención explícita en texto, se agrega por auditoría de `git remote -v`). |
 | `*.aws.neon.tech` (proyecto `pdb-ppms`, us-east-2, PG18 — plataforma; proyecto tenants, us-west-2, PG17) | Ver `app-main/docs/INCIDENT_LOG_2026-08-08.md`. Regla permanente: SIEMPRE usar el endpoint con sufijo `-pooler` antes de `.region.aws.neon.tech` en Render/producción (serverless no mantiene conexiones persistentes); la URL sin pooler es solo para migraciones locales (`drizzle-kit push/migrate`). Deuda documentada: mismatch de versión PG18 vs PG17 entre plataforma y tenants, sin alinear todavía. |
 | `unpkg.com`, `fonts.googleapis.com`, `fonts.gstatic.com` | Dominios externos permitidos en la Content-Security-Policy de `/docs` (Swagger UI) — `app-main/src/api/middleware/helmet.middleware.ts:94-103`. Comentario explícito: `'unsafe-inline'` ahí es aceptable porque Swagger UI no procesa datos de usuarios; **no** debe extenderse esa política permisiva al resto de la API. |
-| `CORS_ORIGIN` (variable, sin dominio fijo) | `app-main/src/app.ts:122-124`: en producción, si `CORS_ORIGIN` no está seteada, el CORS cae a `false` (bloquea todo) — en desarrollo cae a `'*'`. Debe apuntar exactamente al dominio real del frontend; un mismatch bloquea todas las peticiones del panel. **(15/08/2026)** confirmado que hoy apunta a `reservasapp-teal.vercel.app` (Vercel), no a un dominio de Render — ver auditoría de esa fila. |
+| `CORS_ORIGIN` (variable, sin dominio fijo) | `app-main/src/app.ts:122-124`: en producción, si `CORS_ORIGIN` no está seteada, el CORS cae a `false` (bloquea todo) — en desarrollo cae a `'*'`. Debe apuntar exactamente al dominio real del frontend; un mismatch bloquea todas las peticiones del panel. **(15/08/2026)** confirmado que hoy apunta a `reservasapp-teal.vercel.app` (Vercel), no a un dominio de Render — ver auditoría de esa fila. **(22/08/2026, D2 invitación de usuarios por mail)** segundo uso nuevo: `app.ts` deriva `frontendUrl` de esta misma variable (con fallback a `http://localhost:3000` si no está seteada o vale `'*'`) para armar el link `{frontendUrl}/invitaciones/aceptar?token=...` que se manda por mail — decisión deliberada de reusar esta variable en vez de sumar una segunda con el mismo dominio adentro. Si el día de mañana el dominio de CORS y el del link de invitación necesitan diferir (ej. un proxy/CDN intermedio distinto), esto hay que separarlo en dos variables. |
 | `localhost:3000` | Entorno de desarrollo local del backend (`app-main/README.md:23-24`, `app-main/src/server.ts:62-63`, `app-main/src/openapi/spec.ts:27`). Expone `/docs` (Swagger UI) y `/health` (health check). |
 | `portal/[businessSlug]` (subdominio lógico, no DNS) | Ruta dinámica del frontend (`appfrontend-main/src/app/portal/[businessSlug]/...`) que identifica al negocio/tenant por slug en la URL, no por subdominio real. Relevante para no confundirlo con un subdominio DNS durante auditorías. |
 

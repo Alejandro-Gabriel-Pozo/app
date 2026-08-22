@@ -117,6 +117,40 @@ export interface MembershipContext {
 }
 
 // ---------------------------------------------------------------------------
+// Invitaciones — D2, pendientes-2026-08-19.md. Ver BLOQUE INVITACIONES en
+// platform.schema.sql para la clasificación (TRANSACCIÓN) y el
+// razonamiento completo.
+// ---------------------------------------------------------------------------
+
+export type UserInvitationStatus = 'PENDING' | 'ACCEPTED' | 'REVOKED';
+
+export interface UserInvitation {
+  id: string;
+  businessId: string;
+  businessName: string;
+  email: string;
+  roleId: string;
+  roleName: string;
+  status: UserInvitationStatus;
+  invitedByIdentityId: string;
+  acceptedIdentityId: string | null;
+  expiresAt: Date;
+  acceptedAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface CreateUserInvitationInput {
+  id: string;
+  businessId: string;
+  email: string;
+  roleId: string;
+  tokenHash: string;
+  invitedByIdentityId: string;
+  expiresAt: Date;
+}
+
+// ---------------------------------------------------------------------------
 // Repositorio
 // ---------------------------------------------------------------------------
 
@@ -688,6 +722,133 @@ export class PlatformRepository {
   }
 
   // -------------------------------------------------------------------------
+  // Invitaciones — D2, pendientes-2026-08-19.md
+  // -------------------------------------------------------------------------
+
+  async createInvitation(input: CreateUserInvitationInput): Promise<UserInvitation> {
+    const result = await this.db.query<UserInvitationJoinRow>(
+      `INSERT INTO user_invitations
+         (id, business_id, email, role_id, token_hash, invited_by_identity_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, business_id, email, role_id, token_hash, status,
+         invited_by_identity_id, accepted_identity_id, expires_at, accepted_at,
+         revoked_at, created_at,
+         (SELECT name FROM businesses WHERE id = $2) AS business_name,
+         (SELECT name FROM roles WHERE id = $4) AS role_name`,
+      [input.id, input.businessId, input.email.toLowerCase(), input.roleId, input.tokenHash, input.invitedByIdentityId, input.expiresAt],
+    );
+    return this.rowToUserInvitation(result.rows[0]!);
+  }
+
+  /** Guardia de idempotencia (R13): como máximo una invitación PENDING por (negocio, email). */
+  async findPendingInvitationByBusinessAndEmail(businessId: string, email: string): Promise<UserInvitation | undefined> {
+    const result = await this.db.query<UserInvitationJoinRow>(
+      `SELECT ui.id, ui.business_id, ui.email, ui.role_id, ui.token_hash, ui.status,
+              ui.invited_by_identity_id, ui.accepted_identity_id, ui.expires_at, ui.accepted_at,
+              ui.revoked_at, ui.created_at,
+              b.name AS business_name, r.name AS role_name
+       FROM user_invitations ui
+       JOIN businesses b ON b.id = ui.business_id
+       JOIN roles r ON r.id = ui.role_id
+       WHERE ui.business_id = $1 AND LOWER(ui.email) = $2 AND ui.status = 'PENDING'`,
+      [businessId, email.toLowerCase()],
+    );
+    return result.rows[0] ? this.rowToUserInvitation(result.rows[0]) : undefined;
+  }
+
+  async listPendingInvitationsByBusiness(businessId: string): Promise<UserInvitation[]> {
+    const result = await this.db.query<UserInvitationJoinRow>(
+      `SELECT ui.id, ui.business_id, ui.email, ui.role_id, ui.token_hash, ui.status,
+              ui.invited_by_identity_id, ui.accepted_identity_id, ui.expires_at, ui.accepted_at,
+              ui.revoked_at, ui.created_at,
+              b.name AS business_name, r.name AS role_name
+       FROM user_invitations ui
+       JOIN businesses b ON b.id = ui.business_id
+       JOIN roles r ON r.id = ui.role_id
+       WHERE ui.business_id = $1 AND ui.status = 'PENDING'
+       ORDER BY ui.created_at DESC`,
+      [businessId],
+    );
+    return result.rows.map((r) => this.rowToUserInvitation(r));
+  }
+
+  /** `businessId` es guardia multi-tenant — mismo criterio que findMembershipByIdAndBusiness. */
+  async findInvitationByIdAndBusiness(id: string, businessId: string): Promise<UserInvitation | undefined> {
+    const result = await this.db.query<UserInvitationJoinRow>(
+      `SELECT ui.id, ui.business_id, ui.email, ui.role_id, ui.token_hash, ui.status,
+              ui.invited_by_identity_id, ui.accepted_identity_id, ui.expires_at, ui.accepted_at,
+              ui.revoked_at, ui.created_at,
+              b.name AS business_name, r.name AS role_name
+       FROM user_invitations ui
+       JOIN businesses b ON b.id = ui.business_id
+       JOIN roles r ON r.id = ui.role_id
+       WHERE ui.id = $1 AND ui.business_id = $2`,
+      [id, businessId],
+    );
+    return result.rows[0] ? this.rowToUserInvitation(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Reenviar = rotar token + expiración sobre la MISMA fila (R13 — no crea
+   * una segunda invitación PENDING para el mismo email). Solo si sigue
+   * PENDING — reenviar una invitación ya ACCEPTED/REVOKED no tiene sentido
+   * (R11, bloqueo hacia adelante).
+   */
+  async rotateInvitationToken(id: string, businessId: string, tokenHash: string, expiresAt: Date): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE user_invitations
+       SET token_hash = $1, expires_at = $2
+       WHERE id = $3 AND business_id = $4 AND status = 'PENDING'`,
+      [tokenHash, expiresAt, id, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** Cancela una invitación pendiente — no se puede revocar una ya aceptada (R11). */
+  async revokeInvitation(id: string, businessId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE user_invitations
+       SET status = 'REVOKED', revoked_at = NOW()
+       WHERE id = $1 AND business_id = $2 AND status = 'PENDING'`,
+      [id, businessId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Resuelve una invitación por el token que llega en el link del mail —
+   * SIN filtro de businessId a propósito: el token ES la credencial, mismo
+   * criterio que resolver una identity por email en el login antes de
+   * saber a qué negocio se va a entrar. El caller valida `status`/
+   * `expiresAt` — este método solo busca.
+   */
+  async findInvitationByTokenHash(tokenHash: string): Promise<UserInvitation | undefined> {
+    const result = await this.db.query<UserInvitationJoinRow>(
+      `SELECT ui.id, ui.business_id, ui.email, ui.role_id, ui.token_hash, ui.status,
+              ui.invited_by_identity_id, ui.accepted_identity_id, ui.expires_at, ui.accepted_at,
+              ui.revoked_at, ui.created_at,
+              b.name AS business_name, r.name AS role_name
+       FROM user_invitations ui
+       JOIN businesses b ON b.id = ui.business_id
+       JOIN roles r ON r.id = ui.role_id
+       WHERE ui.token_hash = $1`,
+      [tokenHash],
+    );
+    return result.rows[0] ? this.rowToUserInvitation(result.rows[0]) : undefined;
+  }
+
+  /** Terminal — una vez ACCEPTED, nunca vuelve a PENDING (R11/R12). */
+  async markInvitationAccepted(id: string, acceptedIdentityId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE user_invitations
+       SET status = 'ACCEPTED', accepted_at = NOW(), accepted_identity_id = $1
+       WHERE id = $2 AND status = 'PENDING'`,
+      [acceptedIdentityId, id],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // -------------------------------------------------------------------------
   // Mappers
   // -------------------------------------------------------------------------
 
@@ -744,6 +905,24 @@ export class PlatformRepository {
       updatedAt: new Date(row.updated_at),
     };
   }
+
+  private rowToUserInvitation(row: UserInvitationJoinRow): UserInvitation {
+    return {
+      id: row.id,
+      businessId: row.business_id,
+      businessName: row.business_name,
+      email: row.email,
+      roleId: row.role_id,
+      roleName: row.role_name,
+      status: row.status as UserInvitationStatus,
+      invitedByIdentityId: row.invited_by_identity_id,
+      acceptedIdentityId: row.accepted_identity_id,
+      expiresAt: new Date(row.expires_at),
+      acceptedAt: row.accepted_at ? new Date(row.accepted_at) : null,
+      revokedAt: row.revoked_at ? new Date(row.revoked_at) : null,
+      createdAt: new Date(row.created_at),
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -778,4 +957,21 @@ interface RoleJoinRow {
   permission_groups: string[];
   created_at: string;
   updated_at: string;
+}
+
+interface UserInvitationJoinRow {
+  id: string;
+  business_id: string;
+  business_name: string;
+  email: string;
+  role_id: string;
+  role_name: string;
+  token_hash: string;
+  status: string;
+  invited_by_identity_id: string;
+  accepted_identity_id: string | null;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
 }

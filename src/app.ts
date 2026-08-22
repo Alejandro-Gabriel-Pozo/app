@@ -44,6 +44,7 @@ import { createCustomersRouter }         from './clientes-finanzas/customers.rou
 import { createCategoryRouter }          from './reservas/categories.routes.js';
 import { createAuditLogRouter }          from './api/routes/audit-log.routes.js';
 import { createUsersRouter }             from './usuarios-roles/users.routes.js';
+import { createUserInvitationsRouter, createInvitationAcceptanceRouter } from './usuarios-roles/user-invitation.routes.js';
 import { createRolesRouter }             from './usuarios-roles/roles.routes.js';
 import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
@@ -92,6 +93,7 @@ import { AccountsReceivableService }         from './clientes-finanzas/accounts-
 import { SqlBusinessProfileRepository }      from './repositories/sql.business-profile.repository.js';
 import { buildTenantTransactionManager }     from './db/tenant-context.js';
 import { stopAllWorkers }                from './workers/outbox.registry.js';
+import { createEmailSender }             from './email/email.sender.js';
 import type { Request, Response, NextFunction } from 'express';
 
 export async function createApp(): Promise<{
@@ -136,6 +138,16 @@ export async function createApp(): Promise<{
   const corsOrigin =
     process.env.CORS_ORIGIN ??
     (process.env.NODE_ENV === 'production' ? false : '*');
+
+  // Base para links que mandamos por mail (invitación de usuarios, D2) —
+  // reusa CORS_ORIGIN ("dominio del frontend", ver render.yaml) en vez de
+  // sumar una segunda variable de entorno con el mismo dominio adentro.
+  // `'*'` (dev sin CORS_ORIGIN seteada) no es una URL real, así que cae al
+  // puerto default de Next.js en local.
+  const frontendUrl =
+    process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*'
+      ? process.env.CORS_ORIGIN
+      : 'http://localhost:3000';
 
   app.use(cors({
     origin:         corsOrigin,
@@ -200,6 +212,12 @@ export async function createApp(): Promise<{
   // Mismo motivo por el que /platform/* vive fuera de /api por completo.
   app.use('/api/admin', createAdminRouter(platformRepo));
 
+  // /api/invitations — aceptar una invitación de usuario (D2,
+  // pendientes-2026-08-19.md). PÚBLICO a propósito, mismo motivo que
+  // /api/admin: quien acepta todavía no tiene ningún JWT (ni de tenant ni
+  // de plataforma) — el token de la invitación es la única credencial.
+  app.use('/api/invitations', createInvitationAcceptanceRouter(platformRepo, container));
+
   // authenticate() — protege /api/* desde aquí. Se le pasa
   // resolveMembershipContext (14/08/2026, reemplaza al viejo chequeo
   // booleano de memberships.active) para que además de la revocación
@@ -245,6 +263,10 @@ export async function createApp(): Promise<{
   app.use('/api/locations',         createLocationsRouter());
   app.use('/api/reservations',      createReservationsRouter(container));
   app.use('/api/customers',         createCustomersRouter(container));
+  // /api/users/invitations ANTES de /api/users a propósito: el router de
+  // /api/users tiene GET/PUT /:id — montado primero, "invitations"
+  // matchearía ese :id y nunca llegaría a este router.
+  app.use('/api/users/invitations', createUserInvitationsRouter(platformRepo, container, createEmailSender(), frontendUrl));
   app.use('/api/users',             createUsersRouter(platformRepo, container));
   app.use('/api/roles',             createRolesRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));

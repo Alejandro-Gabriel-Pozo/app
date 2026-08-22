@@ -435,6 +435,78 @@ DO $$ BEGIN
 END $$;
 
 -- ===========================================================================
+-- BLOQUE INVITACIONES — user_invitations (D2, pendientes-2026-08-19.md)
+-- ===========================================================================
+-- TRANSACCIÓN (docs/criterios-datos.md Parte 1): un hecho que ocurre (se
+-- invita), se confirma (ACCEPTED) o se revierte (REVOKED) -- nunca se edita
+-- después de confirmarse (R11/R12). Mientras sigue PENDING sí se puede
+-- reemitir (reenviar rota token/expires_at sobre la MISMA fila -- todavía
+-- no "pasó" nada, análogo a una orden en borrador antes de confirmarse).
+--
+-- Reemplaza/complementa la alta directa de users.routes.ts (POST /users),
+-- donde HOY un ADMIN tipea la contraseña de otra persona -- ver el
+-- comentario de ese archivo, "Todavía no hay flujo de invitación". Ese
+-- endpoint queda intacto (alta rápida sin depender de que llegue un mail);
+-- esto es la vía adicional recomendada.
+--
+-- `token_hash` guarda el HASH (sha256) del token que se manda por mail,
+-- nunca el token en texto plano -- mismo principio que password_hash: si
+-- la base se filtra, el token no sirve para nada. `security/
+-- invitation-token.ts` genera el token y calcula el hash.
+--
+-- `token_hash` es UNIQUE GLOBAL (no por negocio): resolver una invitación
+-- por token no conoce el negocio de antemano -- el propio token ES la
+-- credencial, mismo criterio que resolver una identity por email en el
+-- login antes de saber a qué negocio se va a entrar (A2.1/A2.2,
+-- criterios-negocio.md).
+--
+-- Sin columna EXPIRED propia a propósito: "expirado" se calcula en el
+-- SELECT (expires_at < NOW()) sobre una fila que sigue en PENDING -- no
+-- requiere un cron que la reescriba (R14, un solo camino de escritura).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS user_invitations (
+  id                      VARCHAR(255) PRIMARY KEY,
+  business_id             VARCHAR(255) NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  email                   VARCHAR(255) NOT NULL,
+  role_id                 VARCHAR(255) NOT NULL REFERENCES roles(id),
+  token_hash              VARCHAR(64)  NOT NULL,
+  status                  VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                            CHECK (status IN ('PENDING', 'ACCEPTED', 'REVOKED')),
+  invited_by_identity_id  VARCHAR(255) NOT NULL REFERENCES identities(id),
+  accepted_identity_id    VARCHAR(255)          REFERENCES identities(id),
+  expires_at              TIMESTAMPTZ  NOT NULL,
+  accepted_at             TIMESTAMPTZ,
+  revoked_at              TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_invitations_token_hash
+  ON user_invitations (token_hash);
+
+-- R6/R13: como máximo una invitación PENDING por (negocio, email) a la vez
+-- -- reenviar rota el token de la MISMA fila (rotateInvitationToken en
+-- platform.repository.ts) en vez de crear una segunda fila. Una invitación
+-- vieja ACCEPTED/REVOKED no bloquea invitar de nuevo a ese email -- la
+-- tabla queda como historial real, no se sobreescribe.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_invitations_business_email_pending
+  ON user_invitations (business_id, LOWER(email))
+  WHERE status = 'PENDING';
+
+CREATE INDEX IF NOT EXISTS idx_user_invitations_business
+  ON user_invitations (business_id)
+  WHERE status = 'PENDING';
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'user_invitations_updated_at') THEN
+    CREATE TRIGGER user_invitations_updated_at
+      BEFORE UPDATE ON user_invitations
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
 -- domain_events / financial_transactions — NO viven en esta BD
 -- ===========================================================================
 -- Estas dos tablas existieron acá hasta el 12/08/2026, con un comentario que

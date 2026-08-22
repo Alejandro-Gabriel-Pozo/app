@@ -59,6 +59,34 @@ export function reservationConfirmedEmail(
   };
 }
 
+export interface UserInvitationEmailParams {
+  businessDisplayName: string;
+  roleName: string;
+  /** Ya armada por el caller (user-invitation.routes.ts) — apunta al FRONTEND, no a esta API. */
+  acceptUrl: string;
+  expiresInDays: number;
+}
+
+export function userInvitationEmail(
+  params: UserInvitationEmailParams,
+): { subject: string; html: string } {
+  const { businessDisplayName, roleName, acceptUrl, expiresInDays } = params;
+
+  return {
+    subject: `Te invitaron a sumarte a ${businessDisplayName}`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
+        <h2 style="margin-bottom: 4px;">Te invitaron a ${escapeHtml(businessDisplayName)}</h2>
+        <p>Vas a sumarte con el rol <strong>${escapeHtml(roleName)}</strong>.</p>
+        <p style="margin: 24px 0;">
+          <a href="${acceptUrl}" style="background: #1a1a1a; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; display: inline-block;">Aceptar invitación</a>
+        </p>
+        <p style="color: #666; font-size: 13px;">Este link vence en ${expiresInDays} días. Si no esperabas esta invitación, ignorá este mail.</p>
+      </div>
+    `.trim(),
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')

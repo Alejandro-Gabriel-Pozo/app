@@ -162,10 +162,35 @@ Orden sugerido por la auditoría, sin lo ya resuelto en la sección A:
    `router.post()`) nunca se ejecutaba en el test — 2 de los 7 casos
    fallaban en silencio. Corregido antes de commitear; typecheck +
    suite completa (723 tests) verde.
-2. **Invitación de usuarios** — alta hoy es directa con contraseña
-   tipeada por un tercero; falta invitación por mail real (Resend, ya
-   integrado) + link de aceptación. Cero código de invite/invitation en
-   `usuarios-roles/` hoy.
+2. ✅ **RESUELTO (backend, 22/08/2026) — Invitación de usuarios.**
+   `user_invitations` (platform.schema.sql, TRANSACCIÓN) + métodos nuevos
+   en `PlatformRepository` + `usuarios-roles/user-invitation.routes.ts`
+   (dos routers: `createUserInvitationsRouter` autenticado en
+   `/api/users/invitations` — crear/listar/reenviar/revocar — y
+   `createInvitationAcceptanceRouter` público en `/api/invitations` —
+   `lookup`/`accept`, montado antes de `authenticate()` como `/api/admin`).
+   Token de un solo uso, hasheado (sha256) antes de persistir, viaja en el
+   BODY de los POST de esta API (nunca en la URL) — el link del MAIL sí
+   lo lleva en la query string, apuntando al frontend
+   (`{CORS_ORIGIN}/invitaciones/aceptar?token=...`, reusa esa variable en
+   vez de sumar una nueva, ver `docs/auditoria-dominios.md`). Si el email
+   invitado ya tiene identity en otro negocio, aceptar solo agrega una
+   membership nueva (no pisa la contraseña existente) — la alta directa
+   de `POST /users` queda intacta como vía alternativa. 20 tests nuevos,
+   typecheck + suite completa (743 tests) verde.
+   ✅ **UI agregada (22/08/2026, appfrontend-main)** — botón "Invitar por
+   mail" + modal en Usuarios, tabla "Invitaciones pendientes" con
+   reenviar/cancelar, y página pública `/invitaciones/aceptar`
+   (`useSearchParams` + `<Suspense>`, requisito de Next 16). Verificado:
+   typecheck, `eslint`, `next build` (la página nueva prerenderiza
+   estática) y smoke test con el dev server local (`curl` a las rutas +
+   al proxy `/api/invitations/lookup`, éste último devuelve 500 porque no
+   había backend local corriendo — esperable, no es un error del código).
+   **No probado en navegador de punta a punta** (login real, crear
+   invitación, abrir el link, aceptar) — no hay extensión de Chrome
+   conectada en esta sesión ni se corrió el backend contra la BD real
+   para no escribir de más ahí sin permiso explícito. Primer chequeo
+   pendiente en un entorno con backend + navegador disponibles.
 3. **Protección de datos fiscales del negocio** —
    `business-profile.routes.ts` solo tiene GET/PUT planos bajo
    `Roles.MANAGEMENT`, sin bloqueo tras la primera carga ni auditoría
