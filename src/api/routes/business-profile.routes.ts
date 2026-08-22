@@ -8,30 +8,44 @@
  * (A2.9). Ver domain/business-profile.entities.ts.
  *
  * GET /api/business-profile — Roles.MANAGEMENT
- * PUT /api/business-profile — Roles.MANAGEMENT
+ * PUT /api/business-profile — Roles.MANAGEMENT, con un candado extra (D3,
+ * pendientes-2026-08-19.md): una vez que el CUIT ya está cargado, tocar
+ * cualquier campo del perfil fiscal (razón social/CUIT/domicilio/etc.)
+ * exige además Roles.OWNER_ONLY — ver domain/business-profile.service.ts
+ * para la regla completa y por qué. Todo `update()` queda auditado en
+ * `audit_log` (R8), no solo los campos fiscales.
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
+import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
+import { BusinessProfileService } from '../../domain/business-profile.service.js';
 import { UpdateBusinessProfileSchema } from '../schemas/request.schemas.js';
 
 export function createBusinessProfileRouter(): Router {
   const router = Router();
 
+  function buildService(req: Request): BusinessProfileService {
+    return new BusinessProfileService(
+      new SqlBusinessProfileRepository(req.db!),
+      new SqlAuditLogRepository(req.db!),
+    );
+  }
+
   router.get('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const repo = new SqlBusinessProfileRepository(req.db!);
-      res.json(await repo.get());
+      res.json(await buildService(req).get());
     } catch (err) { next(err); }
   });
 
   router.put('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const body = UpdateBusinessProfileSchema.parse(req.body);
-      const repo = new SqlBusinessProfileRepository(req.db!);
-      res.json(await repo.update(body));
+      const isOwner = (req.user?.permissionGroups ?? []).includes(Roles.OWNER_ONLY);
+      const updated = await buildService(req).update(body, req.user!.id, isOwner);
+      res.json(updated);
     } catch (err) { next(err); }
   });
 

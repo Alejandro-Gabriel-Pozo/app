@@ -191,14 +191,30 @@ Orden sugerido por la auditoría, sin lo ya resuelto en la sección A:
    conectada en esta sesión ni se corrió el backend contra la BD real
    para no escribir de más ahí sin permiso explícito. Primer chequeo
    pendiente en un entorno con backend + navegador disponibles.
-3. **Protección de datos fiscales del negocio** —
-   `business-profile.routes.ts` solo tiene GET/PUT planos bajo
-   `Roles.MANAGEMENT`, sin bloqueo tras la primera carga ni auditoría
-   para CUIT/razón social/domicilio fiscal. Patrón de referencia YA
-   resuelto en el mismo repo: `afip-credentials.repository.ts`
-   (`getStatus()` vs. `getDecrypted()` separados) — no es el mismo
-   mecanismo 1:1 (estos datos no son un secreto, son inmutables tras
-   confirmación), pero es la referencia de diseño a seguir.
+3. ✅ **RESUELTO (22/08/2026) — Protección de datos fiscales del negocio.**
+   `BusinessProfileService` nuevo (`domain/business-profile.service.ts`)
+   entre la ruta y el repositorio. Regla: "confirmado" = `taxId` (CUIT) ya
+   no es null; antes de esa primera carga el perfil fiscal sigue abierto
+   a cualquier `Roles.MANAGEMENT` (alta inicial sin fricción). Después,
+   CAMBIAR el valor de un campo fiscal (razón social, CUIT, tipo/condición
+   de IVA, domicilio fiscal, punto de venta, CUIT de autenticación AFIP)
+   exige `Roles.OWNER_ONLY` — no es un lock permanente, el dueño siempre
+   puede corregir un error real. El gate mira el DIFF real
+   (`domain/audit.ts::diffFields`), no si el campo vino en el body — el
+   frontend reenvía el formulario entero en cada submit, así que "presente
+   en el patch" hubiera bloqueado hasta cambiar `pricesIncludeIva` solo
+   (bug encontrado y corregido antes de commitear). Todo `update()` queda
+   auditado en `audit_log` (R8), no solo los campos fiscales — mismo
+   patrón que `CategoryService`/`ProductService` (`recordFieldChanges`).
+   Nuevo `FiscalProfileLockedError` (403 `FISCAL_PROFILE_LOCKED`,
+   `error.middleware.ts`). 6 tests nuevos en
+   `business-profile.service.test.ts`.
+   **Frontend (`appfrontend-main`, mismo día):** "Datos fiscales (AFIP)" y
+   "CUIT de autenticación AFIP" en Mi Negocio se deshabilitan (con aviso)
+   para un `MANAGEMENT` no-dueño una vez que el CUIT ya está cargado — IVA
+   general/precios incluyen IVA quedan fuera del candado, no son campo
+   fiscal. No probado en navegador real (mismas limitaciones que D2: sin
+   extensión de Chrome conectada, sin correr contra la BD real).
 4. ✅ **RESUELTO (backend, 19/08/2026) — Clientes, ABM fiscal.**
    `customer.entities.ts` sigue sin CUIT/condición IVA/domicilio (a
    propósito, ver decisión del 18/08 — identidad básica y fiscal son

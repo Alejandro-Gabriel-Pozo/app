@@ -124,7 +124,12 @@ function domainErrorStatus(error: DomainError): number {
       return 402;
 
     // --- 403 Forbidden ---
+    // FISCAL_PROFILE_LOCKED (D3, pendientes-2026-08-19.md): el request es
+    // válido y el rol tiene MANAGEMENT, pero no OWNER_ONLY -- mismo criterio
+    // semántico que FORBIDDEN, code propio para que el frontend distinga
+    // "no tenés este permiso en general" de "esto puntual quedó bloqueado".
     case 'FORBIDDEN':
+    case 'FISCAL_PROFILE_LOCKED':
       return 403;
 
     // --- 404 Not Found ---

@@ -351,3 +351,19 @@ export class InvoiceNotIssuedError extends DomainError {
     super(`El comprobante ${id} todavía no tiene CAE -- no se puede generar el PDF hasta que AFIP lo emita`, 'INVOICE_NOT_ISSUED');
   }
 }
+
+/**
+ * D3 (pendientes-2026-08-19.md) -- una vez que el negocio ya cargó su CUIT
+ * (perfil fiscal "confirmado", ver business-profile.service.ts), cambiar
+ * razón social/CUIT/domicilio fiscal deja de estar disponible para
+ * cualquier Roles.MANAGEMENT y pasa a exigir Roles.OWNER_ONLY. Antes de esa
+ * primera carga el perfil fiscal sigue abierto a cualquier ADMIN, como hoy.
+ */
+export class FiscalProfileLockedError extends DomainError {
+  constructor() {
+    super(
+      'Los datos fiscales ya están cargados -- solo el propietario del negocio puede modificarlos.',
+      'FISCAL_PROFILE_LOCKED',
+    );
+  }
+}
