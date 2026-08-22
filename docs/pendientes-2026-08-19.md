@@ -147,11 +147,21 @@ negocio, no técnicas.**
 
 Orden sugerido por la auditoría, sin lo ya resuelto en la sección A:
 
-1. **`repair-tenant-db` expuesto** (`src/platform/admin.routes.ts`,
-   `/api/admin`) — protegido solo con `Roles.MANAGEMENT` (un Admin de
-   tenant normal puede llamarlo), debería requerir un rol de
-   PLATAFORMA, no de tenant. El propio comment del archivo ya dice que
-   se puede borrar sin efectos secundarios una vez que no se necesite.
+1. ✅ **RESUELTO (22/08/2026, commit `f7887d2`) — `repair-tenant-db` expuesto**
+   (`src/platform/admin.routes.ts`, `/api/admin`). Estaba escrito en el
+   working tree desde la misma noche del 19/08 pero nunca se había
+   commiteado — quedó sin marcar acá y una auditoría externa del 22/08
+   lo reportó de nuevo como si siguiera abierto. Ambas rutas
+   (`repair-tenant-db`/`set-tenant-url`) exigen ahora
+   `authenticatePlatform()` + `authorizePlatform([SUPERADMIN])` en vez
+   de `Roles.MANAGEMENT` de tenant; `businessId` pasa a venir del body.
+   Al revisarlo antes de commitear se encontró además que el test nuevo
+   (`admin.routes.test.ts`) tenía un bug propio: su `runRoute` solo
+   recorría `route.stack`, no `router.stack` completo, así que el gate
+   (montado con `router.use(...)`, no pasado como argumento a
+   `router.post()`) nunca se ejecutaba en el test — 2 de los 7 casos
+   fallaban en silencio. Corregido antes de commitear; typecheck +
+   suite completa (723 tests) verde.
 2. **Invitación de usuarios** — alta hoy es directa con contraseña
    tipeada por un tercero; falta invitación por mail real (Resend, ya
    integrado) + link de aceptación. Cero código de invite/invitation en
