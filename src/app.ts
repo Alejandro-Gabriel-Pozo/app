@@ -189,6 +189,17 @@ export async function createApp(): Promise<{
   // -------------------------------------------------------------------------
   app.use('/api', ...helmetApi);
 
+  // /api/admin — ANTES del authenticate() de tenant de más abajo (19/08/2026,
+  // auditoría de producto: repair-tenant-db/set-tenant-url estaban detrás de
+  // Roles.MANAGEMENT de TENANT, es decir cualquier OWNER/ADMIN de cualquier
+  // negocio podía reapuntar su propia BD -- set-tenant-url incluso a una URL
+  // arbitraria mandada en el body). Ahora exige un token de PLATAFORMA
+  // (authenticatePlatform(), PLATFORM_JWT_SECRET) -- un superadmin no tiene
+  // token de tenant, así que este mount tiene que resolver ANTES de que el
+  // authenticate() de tenant de la línea de abajo lo rechace con 401 primero.
+  // Mismo motivo por el que /platform/* vive fuera de /api por completo.
+  app.use('/api/admin', createAdminRouter(platformRepo));
+
   // authenticate() — protege /api/* desde aquí. Se le pasa
   // resolveMembershipContext (14/08/2026, reemplaza al viejo chequeo
   // booleano de memberships.active) para que además de la revocación
@@ -201,10 +212,8 @@ export async function createApp(): Promise<{
     platformRepo.getMembershipContext(identityId, businessId),
   ));
 
-  // -------------------------------------------------------------------------
-  // 13. /api/admin — ANTES de tenantMiddleware (repair-tenant-db lo requiere)
-  // -------------------------------------------------------------------------
-  app.use('/api/admin', createAdminRouter(platformRepo));
+  // (/api/admin se movió arriba, antes de este authenticate() de tenant --
+  // ver comentario ahí, 19/08/2026.)
 
   // /api/companies — empresas multipropiedad (17/08/2026). Solo toca la BD
   // de plataforma (req.user, no req.db), mismo motivo que /api/admin va

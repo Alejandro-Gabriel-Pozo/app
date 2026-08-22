@@ -128,9 +128,10 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           id: businessId, name: body.name, slug: body.slug, plan: body.plan, ownerEmail: body.ownerEmail,
         });
         // Sin auto-provisioning (code review agosto 2026) — ver tenant-db.setup.ts.
-        // El negocio queda PENDING; alguien con acceso a la BD del ADMIN de este
-        // negocio debe llamar POST /api/admin/set-tenant-url con una connection
-        // string ya creada (y con schema.sql ya aplicado) para activarlo.
+        // El negocio queda PENDING; alguien con token de PLATAFORMA (19/08/2026 --
+        // antes era autoservicio del dueño del negocio, ver admin.routes.ts) debe
+        // llamar POST /api/admin/set-tenant-url con { businessId, databaseUrl } de
+        // una connection string ya creada (y con schema.sql ya aplicado) para activarlo.
         res.status(201).json({
           message: 'Negocio registrado en estado PENDING. Falta activar su base de datos manualmente.',
           business: toBusinessDto(business),
