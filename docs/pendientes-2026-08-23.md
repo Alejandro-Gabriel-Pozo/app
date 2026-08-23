@@ -523,8 +523,8 @@ housekeeping planificadas a futuro (uso legítimo), así que un
 `ORDER BY scheduled_for DESC` ingenuo (como proponía el informe) dejaría que
 una tarea de mantenimiento programada para la semana que viene tape un
 OUT_OF_SERVICE vigente de hoy — el fix real filtra `scheduled_for <= NOW()`
-antes de ordenar. **Sin commitear todavía** — queda para que el dueño revise
-el diff y pida el commit.
+antes de ordenar. **Commiteado** — `d02fd58` (J1, K3), `414a02b` (J2),
+`e050368` (J3).
 
 Informe completo (no código, solo diagnóstico) hecho por otra sesión de
 Claude sobre un zip de `app-main` (posiblemente no el HEAD actual — **hay
@@ -626,7 +626,9 @@ enchufara el frontend todavía. **K5 solo el hallazgo SC19** (el resto de
 sus sub-hallazgos — categorías, `basePrice`, duplicación — no estaban en
 el alcance confirmado con el dueño, quedan igual que estaban). Suite completa de `app-main` (961 tests),
 `tsc --noEmit` de los dos repos y `next build` de `appfrontend-main` en
-verde. **Sin commitear todavía.**
+verde. **Commiteado** — `e5864d7` (K1, backend), `d02fd58` (K3, backend),
+`cc55865` (K2, backend); en `appfrontend-main`: `d2de882` (K1),
+`1433df5`/`75ee947` (K4), `1433df5`/`0695387` (K5-SC19).
 
 Dos diagnósticos más de la misma sesión externa, contra el código real de
 `app-main` (mismo caveat: zip posiblemente atrasado, reverificar líneas).
