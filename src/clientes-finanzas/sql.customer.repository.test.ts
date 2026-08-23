@@ -99,6 +99,98 @@ describe('SqlCustomerRepository', () => {
     });
   });
 
+  // K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — paginación real.
+  describe('getFiltered / countFiltered', () => {
+    it('sin page/limit: no aplica LIMIT/OFFSET a la subquery de ids', async () => {
+      const client = mockClient([]);
+      (client.query as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ rows: [{ id: 'c1' }] })
+        .mockResolvedValueOnce({ rows: [] });
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.getFiltered({});
+
+      const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls[0]![0]).not.toContain('LIMIT');
+      expect(calls[0]![0]).not.toContain('OFFSET');
+    });
+
+    it('con page/limit: pagina la subquery de ids, no el JOIN con contact methods', async () => {
+      const client = mockClient([]);
+      (client.query as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ rows: [{ id: 'c1' }, { id: 'c2' }] })
+        .mockResolvedValueOnce({ rows: [] });
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.getFiltered({ page: 2, limit: 10 });
+
+      const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls[0]![0]).toContain('SELECT c.id FROM customers c');
+      expect(calls[0]![0]).toContain('LIMIT $1');
+      expect(calls[0]![0]).toContain('OFFSET $2');
+      expect(calls[0]![1]).toEqual([10, 10]); // page 2, limit 10 -> offset 10
+      expect(calls[1]![0]).toContain('c.id = ANY($1)');
+      expect(calls[1]![1]).toEqual([['c1', 'c2']]);
+    });
+
+    it('sin resultados en la subquery de ids, no hace un segundo query (evita c.id = ANY([]))', async () => {
+      const client = mockClient([]);
+      (client.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [] });
+      const repo = new SqlCustomerRepository(client);
+
+      const result = await repo.getFiltered({ page: 1, limit: 10 });
+
+      expect(result).toEqual([]);
+      expect(client.query).toHaveBeenCalledTimes(1);
+    });
+
+    it('onlyCurrentAccountEnabled filtra por enable_current_account = TRUE en ambos queries', async () => {
+      const client = mockClient([]);
+      (client.query as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ rows: [{ count: '3' }] });
+      const repo = new SqlCustomerRepository(client);
+
+      const total = await repo.countFiltered({ onlyCurrentAccountEnabled: true });
+
+      expect(total).toBe(3);
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('WHERE c.enable_current_account = TRUE');
+    });
+
+    // K2 (23/08/2026) — `search` matchea nombre O email, distinto de
+    // searchByName (solo nombre) — reemplaza el filtro que antes hacía
+    // dashboard/clientes/page.tsx en memoria sobre la lista completa.
+    it('search filtra por display_name O email (ILIKE) en la subquery de ids', async () => {
+      const client = mockClient([]);
+      (client.query as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ rows: [{ count: '2' }] });
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.countFiltered({ search: 'ana' });
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('c.display_name ILIKE $1');
+      expect(call[0]).toContain("ccm.channel = 'EMAIL' AND ccm.value ILIKE $1");
+      expect(call[1]).toEqual(['%ana%']);
+    });
+
+    it('search y onlyCurrentAccountEnabled combinados usan índices de párametro correlativos', async () => {
+      const client = mockClient([]);
+      (client.query as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ rows: [] });
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.getFiltered({ search: 'ana', onlyCurrentAccountEnabled: true, page: 1, limit: 10 });
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('c.enable_current_account = TRUE');
+      expect(call[0]).toContain('ILIKE $1');
+      expect(call[0]).toContain('LIMIT $2');
+      expect(call[0]).toContain('OFFSET $3');
+      expect(call[1]).toEqual(['%ana%', 10, 0]);
+    });
+  });
+
   describe('setCurrentAccountEnabled', () => {
     it('actualiza enable_current_account del cliente', async () => {
       const client = mockClient([]);

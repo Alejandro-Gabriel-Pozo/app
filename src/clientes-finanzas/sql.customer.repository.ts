@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import type { ContactMethod } from './customer.entities.js';
 import { Customer } from './customer.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { CustomerRepository, CustomerWithPassword, Tag, NewVsRecurringReport } from './customer.repository.js';
+import type { CustomerRepository, CustomerWithPassword, Tag, NewVsRecurringReport, CustomerFilters } from './customer.repository.js';
 
 // ── Tipos internos ──────────────────────────────────────────────────────────
 
@@ -94,6 +94,64 @@ export class SqlCustomerRepository implements CustomerRepository {
         : `${BASE_SELECT} ORDER BY c.display_name ASC`,
     );
     return groupByCustomer(rows);
+  }
+
+  /**
+   * K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — paginación real.
+   * `BASE_SELECT` hace LEFT JOIN con customer_contact_methods (una fila por
+   * método de contacto, no por cliente) — aplicar LIMIT/OFFSET directo ahí
+   * paginaría filas de contacto, no clientes. Se pagina sobre una subquery
+   * de ids de `customers` primero, y recién ahí se hace el join completo
+   * para esos ids puntuales.
+   */
+  async getFiltered(filters: CustomerFilters): Promise<Customer[]> {
+    const { where, params } = this.buildCustomerWhereClause(filters);
+
+    let idQuery = `SELECT c.id FROM customers c ${where} ORDER BY c.display_name ASC`;
+    if (filters.limit !== undefined && filters.page !== undefined) {
+      params.push(filters.limit);
+      idQuery += ` LIMIT $${params.length}`;
+      params.push((filters.page - 1) * filters.limit);
+      idQuery += ` OFFSET $${params.length}`;
+    }
+    const idResult = await this.sqlClient.query<{ id: string }>(idQuery, params);
+    if (idResult.rows.length === 0) return [];
+
+    const ids = idResult.rows.map((r) => r.id);
+    const { rows } = await this.sqlClient.query<CustomerRow>(
+      `${BASE_SELECT} WHERE c.id = ANY($1) ORDER BY c.display_name ASC`,
+      [ids],
+    );
+    return groupByCustomer(rows);
+  }
+
+  async countFiltered(filters: Omit<CustomerFilters, 'page' | 'limit'>): Promise<number> {
+    const { where, params } = this.buildCustomerWhereClause(filters);
+    const result = await this.sqlClient.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM customers c ${where}`,
+      params,
+    );
+    return parseInt(result.rows[0]?.count ?? '0', 10);
+  }
+
+  private buildCustomerWhereClause(
+    filters: Omit<CustomerFilters, 'page' | 'limit'>,
+  ): { where: string; params: unknown[] } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (filters.onlyCurrentAccountEnabled) {
+      conditions.push('c.enable_current_account = TRUE');
+    }
+    if (filters.search) {
+      params.push(`%${filters.search}%`);
+      conditions.push(
+        `(c.display_name ILIKE $${params.length} OR EXISTS (
+          SELECT 1 FROM customer_contact_methods ccm
+          WHERE ccm.customer_id = c.id AND ccm.channel = 'EMAIL' AND ccm.value ILIKE $${params.length}
+        ))`,
+      );
+    }
+    return { where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '', params };
   }
 
   async getByEmail(email: string): Promise<Customer | undefined> {

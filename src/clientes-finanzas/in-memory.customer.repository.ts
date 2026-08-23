@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Customer } from './customer.entities.js';
-import type { CustomerRepository, CustomerWithPassword, Tag, NewVsRecurringReport } from './customer.repository.js';
+import type { CustomerRepository, CustomerWithPassword, Tag, NewVsRecurringReport, CustomerFilters } from './customer.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
 interface CustomerRecord {
@@ -71,6 +71,37 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   async getAll(onlyCurrentAccountEnabled = false): Promise<Customer[]> {
     const all = Array.from(this.store.values()).map((r) => r.customer);
     return onlyCurrentAccountEnabled ? all.filter((c) => c.enableCurrentAccount) : all;
+  }
+
+  private matchesCustomerFilters(c: Customer, filters: Omit<CustomerFilters, 'page' | 'limit'>): boolean {
+    if (filters.onlyCurrentAccountEnabled && !c.enableCurrentAccount) return false;
+    if (filters.search) {
+      const q = filters.search.toLowerCase();
+      const matchesName = c.displayName.toLowerCase().includes(q);
+      const matchesEmail = c.email?.toLowerCase().includes(q) ?? false;
+      if (!matchesName && !matchesEmail) return false;
+    }
+    return true;
+  }
+
+  /** K2 (23/08/2026) — mismo orden/criterio que la versión SQL (display_name ASC). */
+  async getFiltered(filters: CustomerFilters): Promise<Customer[]> {
+    let all = Array.from(this.store.values())
+      .map((r) => r.customer)
+      .filter((c) => this.matchesCustomerFilters(c, filters))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+    if (filters.page !== undefined && filters.limit !== undefined) {
+      const start = (filters.page - 1) * filters.limit;
+      all = all.slice(start, start + filters.limit);
+    }
+    return all;
+  }
+
+  async countFiltered(filters: Omit<CustomerFilters, 'page' | 'limit'>): Promise<number> {
+    return Array.from(this.store.values())
+      .map((r) => r.customer)
+      .filter((c) => this.matchesCustomerFilters(c, filters))
+      .length;
   }
 
   async getByEmail(email: string): Promise<Customer | undefined> {

@@ -414,7 +414,7 @@ export function createCustomersRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const repo = new SqlCustomerRepository(req.db!);
-        const { email, name, currentAccountEnabled } = req.query;
+        const { email, name, search, currentAccountEnabled, page, limit } = req.query;
 
         if (typeof email === 'string' && email.trim()) {
           const customer = await repo.getByEmail(email.trim());
@@ -431,12 +431,38 @@ export function createCustomersRouter(container: AppContainer): Router {
         // F1-Pieza 1 (23/08/2026) — filtro RÍGIDO de base para el panel de
         // Cuentas Corrientes, spec del dueño: "los huéspedes sin este
         // atributo no deben aparecer bajo ninguna circunstancia". El
-        // filtro vive en SqlCustomerRepository.getAll(), no acá.
-        //
-        // Sin filtros: listado completo — lo necesita la pantalla de
-        // Clientes del dashboard para mostrar una tabla navegable, no solo
-        // búsqueda puntual (antes esto daba 400).
-        const customers = await repo.getAll(currentAccountEnabled === 'true');
+        // filtro vive en SqlCustomerRepository.getFiltered(), no acá.
+        const onlyCurrentAccountEnabled = currentAccountEnabled === 'true';
+
+        // K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — `search` es
+        // distinto de `name`: matchea nombre O email (ILIKE), y sí combina
+        // con paginación — reemplaza el filtro que antes hacía
+        // dashboard/clientes/page.tsx en memoria sobre la lista completa
+        // (fullName.includes() || email.includes()).
+        const searchTerm = typeof search === 'string' && search.trim() ? search.trim() : undefined;
+
+        // Con page/limit en la query, devuelve el envelope paginado
+        // (PaginatedResponse<T>, igual que /api/reservations); sin ellos,
+        // el array plano de siempre — la pantalla de Cuentas Corrientes no
+        // manda paginación, necesita la lista completa filtrada.
+        if (typeof page === 'string' && typeof limit === 'string') {
+          const pageNum  = Number(page);
+          const limitNum = Number(limit);
+          const filters = { onlyCurrentAccountEnabled, ...(searchTerm !== undefined && { search: searchTerm }), page: pageNum, limit: limitNum };
+          const [customers, total] = await Promise.all([
+            repo.getFiltered(filters),
+            repo.countFiltered({ onlyCurrentAccountEnabled, ...(searchTerm !== undefined && { search: searchTerm }) }),
+          ]);
+          res.json({
+            data: customers.map(toCustomerDto),
+            total,
+            page: pageNum,
+            totalPages: Math.max(1, Math.ceil(total / limitNum)),
+          });
+          return;
+        }
+
+        const customers = await repo.getFiltered({ onlyCurrentAccountEnabled, ...(searchTerm !== undefined && { search: searchTerm }) });
         res.json(customers.map(toCustomerDto));
       } catch (err) { next(err); }
     },

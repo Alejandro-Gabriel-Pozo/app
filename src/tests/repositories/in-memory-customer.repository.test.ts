@@ -142,4 +142,29 @@ describe('InMemoryCustomerRepository', () => {
       expect(await repo.getAll()).toEqual([]);
     });
   });
+
+  // K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — paginación real.
+  describe('getFiltered / countFiltered', () => {
+    beforeEach(async () => {
+      await repo.save(makeCustomer({ id: 'x1', fullName: 'Carla', email: 'carla@example.com' }));
+      await repo.save(makeCustomer({ id: 'x2', fullName: 'Ana', email: 'ana2@example.com' }));
+      await repo.save(makeCustomer({ id: 'x3', fullName: 'Beto', email: 'beto@example.com' }));
+    });
+
+    it('sin page/limit, devuelve todos ordenados por displayName', async () => {
+      const result = await repo.getFiltered({});
+      expect(result.map((c) => c.displayName)).toEqual(['Ana', 'Beto', 'Carla']);
+    });
+
+    it('con page/limit, pagina sobre la lista ya ordenada', async () => {
+      const page1 = await repo.getFiltered({ page: 1, limit: 2 });
+      const page2 = await repo.getFiltered({ page: 2, limit: 2 });
+      expect(page1.map((c) => c.displayName)).toEqual(['Ana', 'Beto']);
+      expect(page2.map((c) => c.displayName)).toEqual(['Carla']);
+    });
+
+    it('countFiltered devuelve el total sin paginar', async () => {
+      expect(await repo.countFiltered({})).toBe(3);
+    });
+  });
 });

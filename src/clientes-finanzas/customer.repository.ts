@@ -22,6 +22,21 @@ export interface NewVsRecurringReport {
   activeCustomersCount: number;
 }
 
+/** K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — mismo shape que ReservationFilters. */
+export interface CustomerFilters {
+  /**
+   * Búsqueda por nombre O email (ILIKE, substring) — combina lo que antes
+   * hacía el frontend en memoria sobre la lista completa
+   * (`fullName.includes() || email.includes()`) con paginación real.
+   * Distinto de `searchByName()` (solo fullName, sin paginar) — ese método
+   * queda intacto para quien ya lo use.
+   */
+  search?: string;
+  onlyCurrentAccountEnabled?: boolean;
+  page?: number;
+  limit?: number;
+}
+
 /**
  * Contrato del repositorio de clientes.
  */
@@ -50,6 +65,10 @@ export interface CustomerRepository {
    * un filtro de UI. Usarlo para el panel de Cuentas Corrientes.
    */
   getAll(onlyCurrentAccountEnabled?: boolean): Promise<Customer[]>;
+
+  /** K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — paginación real, mismo criterio que ReservationRepository.getFiltered. */
+  getFiltered(filters: CustomerFilters): Promise<Customer[]>;
+  countFiltered(filters: Omit<CustomerFilters, 'page' | 'limit'>): Promise<number>;
 
   getByEmail(email: string): Promise<Customer | undefined>;
 

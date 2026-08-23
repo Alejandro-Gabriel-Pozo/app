@@ -70,6 +70,7 @@
 import { Router }                        from 'express';
 import type { Request }                  from 'express';
 import { randomUUID }                    from 'node:crypto';
+import type { ReservationStatus }        from '../types/enums.js';
 import { authorize }                     from '../security/auth.middleware.js';
 import { Roles }                         from '../security/roles.js';
 import { requireModule }                 from '../security/module.middleware.js';
@@ -176,6 +177,14 @@ export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
   // ── GET /reservations ──────────────────────────────────────────────────────
+  // K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — antes llamaba a
+  // getAll() (deprecado), sin leer query params: siempre un SELECT sin
+  // LIMIT sobre toda la tabla. `getFiltered`/`countFiltered` ya existían
+  // implementados (sql.reservation.repository.ts), solo faltaba wirear la
+  // ruta. Sin page/limit en la query, se mantiene el array plano de
+  // siempre (compatibilidad hacia atrás) — con page/limit, devuelve el
+  // envelope paginado que el frontend ya tipa (PaginatedResponse<T>,
+  // lib/http.ts).
   router.get(
     '/',
     authorize(Roles.FRONT_DESK),
@@ -183,7 +192,32 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const resourceRepo = new SqlResourceRepository(req.db);
         const repo         = new SqlReservationRepository(req.db, resourceRepo);
-        const reservations = await repo.getAll();
+        const { status, resourceId, customerId, from, to, page, limit } = req.query as Record<string, string>;
+        const filters = {
+          ...(status     !== undefined && { status: status as ReservationStatus }),
+          ...(resourceId !== undefined && { resourceId }),
+          ...(customerId !== undefined && { customerId }),
+          ...(from       !== undefined && { from: new Date(from) }),
+          ...(to         !== undefined && { to:   new Date(to) }),
+        };
+
+        if (page !== undefined && limit !== undefined) {
+          const pageNum  = Number(page);
+          const limitNum = Number(limit);
+          const [reservations, total] = await Promise.all([
+            repo.getFiltered({ ...filters, page: pageNum, limit: limitNum }),
+            repo.countFiltered(filters),
+          ]);
+          res.json({
+            data: reservations.map(toReservationDto),
+            total,
+            page: pageNum,
+            totalPages: Math.max(1, Math.ceil(total / limitNum)),
+          });
+          return;
+        }
+
+        const reservations = await repo.getFiltered(filters);
         res.json(reservations.map(toReservationDto));
       } catch (err) { next(err); }
     },
