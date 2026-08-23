@@ -344,13 +344,20 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
   });
 
   describe('getNetBalanceByStayId', () => {
-    it('calcula CHARGE + ADJUSTMENT - PAYMENT - REFUND, solo SETTLED', async () => {
+    // Bug real en producción, 23/08/2026 (pendientes-2026-08-23.md,
+    // verificación de auditoría externa): REFUND tenía el mismo signo que
+    // PAYMENT. Un REFUND revierte un PAYMENT (A3.9, criterios-negocio.md
+    // -- "todo movimiento tiene contrapartida"), necesita el signo
+    // OPUESTO para cancelarlo, no el mismo para duplicarlo.
+    it('calcula CHARGE + ADJUSTMENT + REFUND - PAYMENT, solo SETTLED', async () => {
       await repo.getNetBalanceByStayId('stay-1');
 
       const mockQuery = vi.mocked(mockSqlClient.query);
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(sql).toContain("WHEN 'CHARGE'     THEN  amount");
+      expect(sql).toContain("WHEN 'ADJUSTMENT' THEN  amount");
       expect(sql).toContain("WHEN 'PAYMENT'    THEN -amount");
+      expect(sql).toContain("WHEN 'REFUND'     THEN  amount");
       expect(sql).toContain("status = 'SETTLED'");
       expect(sql).toContain('stay_id = $1');
       expect(params).toEqual(['stay-1']);
@@ -359,6 +366,60 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     it('devuelve 0 cuando no hay transacciones', async () => {
       const balance = await repo.getNetBalanceByStayId('stay-sin-cargos');
       expect(balance).toBe(0);
+    });
+
+    // Regresión directa del bug: simula lo que Postgres devolvería con la
+    // fórmula CORREGIDA para "cobré 1000, reembolsé 1000 completo" -- con
+    // el bug viejo (REFUND: -amount) esta cuenta daba -2000, no 0.
+    it('regresión: cobro completo + reembolso completo da balance 0, no -2×monto', async () => {
+      // amount=1000 CHARGE (voided, no cuenta) + amount=1000 PAYMENT SETTLED
+      // (-1000) + amount=1000 REFUND SETTLED (fórmula corregida: +1000) = 0.
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [{ net: '0' }] });
+      const balance = await repo.getNetBalanceByStayId('stay-reembolso-total');
+      expect(balance).toBe(0);
+    });
+  });
+
+  describe('getNetBalanceByCustomerId', () => {
+    it('calcula CHARGE + ADJUSTMENT + REFUND - PAYMENT, solo SETTLED (mismo fix que getNetBalanceByStayId)', async () => {
+      await repo.getNetBalanceByCustomerId('cust-1');
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain("WHEN 'PAYMENT'    THEN -amount");
+      expect(sql).toContain("WHEN 'REFUND'     THEN  amount");
+      expect(sql).toContain("customer_id = $1");
+      expect(params).toEqual(['cust-1']);
+    });
+  });
+
+  // Bug real en producción, 23/08/2026: voidByReservationId/voidByOrderId
+  // anulaban CUALQUIER transacción PENDING/SETTLED de la reserva/orden sin
+  // filtrar por `type` -- así que un PAYMENT ya cobrado (ej. una seña,
+  // C1-Fase A) quedaba VOIDED junto con el CHARGE al cancelar. Un pago es
+  // un hecho histórico de dinero que ya cambió de manos -- nunca se anula
+  // en silencio, solo se revierte con un REFUND explícito.
+  describe('voidByReservationId', () => {
+    it('solo anula CHARGE/ADJUSTMENT, nunca PAYMENT/REFUND', async () => {
+      await repo.voidByReservationId('res-1');
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain("SET status = 'VOIDED'");
+      expect(sql).toContain("type IN ('CHARGE', 'ADJUSTMENT')");
+      expect(params).toEqual(['res-1']);
+    });
+  });
+
+  describe('voidByOrderId', () => {
+    it('solo anula CHARGE/ADJUSTMENT, nunca PAYMENT/REFUND', async () => {
+      await repo.voidByOrderId('order-1');
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain("SET status = 'VOIDED'");
+      expect(sql).toContain("type IN ('CHARGE', 'ADJUSTMENT')");
+      expect(params).toEqual(['order-1']);
     });
   });
 });

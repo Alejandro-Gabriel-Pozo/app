@@ -243,12 +243,30 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
+  /**
+   * Bug real en producción, 23/08/2026 (mismo hallazgo que el fix de
+   * signo en getNetBalanceByCustomerId/getNetBalanceByStayId, ver ahí) —
+   * antes anulaba CUALQUIER fila de la reserva sin filtrar por `type`,
+   * así que un PAYMENT ya cobrado (ej. una seña, C1-Fase A) quedaba
+   * VOIDED junto con el CHARGE al cancelar. Un pago es un hecho histórico
+   * de dinero que ya cambió de manos -- nunca se anula en silencio, solo
+   * se revierte con un REFUND explícito (A3.9: todo movimiento tiene
+   * contrapartida). Ahora solo anula CHARGE/ADJUSTMENT -- la parte de la
+   * deuda que corresponde a un servicio que no se va a prestar.
+   *
+   * `getCollectedPaymentTotalForReservation` seguía contando PAYMENT
+   * VOIDED a propósito (ver su docblock) porque antes de este fix el
+   * PAYMENT SÍ quedaba VOIDED acá -- se deja esa cláusula igual, ahora es
+   * defensiva/no debería activarse nunca desde este método, pero no hay
+   * necesidad de tocarla para este fix.
+   */
   async voidByReservationId(reservationId: string): Promise<number> {
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
        SET status = 'VOIDED'
        WHERE reservation_id = $1
-         AND status IN ('PENDING', 'SETTLED')`,
+         AND status IN ('PENDING', 'SETTLED')
+         AND type IN ('CHARGE', 'ADJUSTMENT')`,
       [reservationId],
     );
     return result.rowCount ?? 0;
@@ -280,17 +298,29 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
+  /** Mismo fix y mismo motivo que `voidByReservationId` — ver su docblock. */
   async voidByOrderId(orderId: string): Promise<number> {
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
        SET status = 'VOIDED'
        WHERE order_id = $1
-         AND status IN ('PENDING', 'SETTLED')`,
+         AND status IN ('PENDING', 'SETTLED')
+         AND type IN ('CHARGE', 'ADJUSTMENT')`,
       [orderId],
     );
     return result.rowCount ?? 0;
   }
 
+  /**
+   * Bug real en producción, 23/08/2026 (pendientes-2026-08-23.md,
+   * verificación de auditoría externa) — REFUND tenía el mismo signo que
+   * PAYMENT (`-amount`). Un REFUND revierte un PAYMENT (A3.9,
+   * criterios-negocio.md: "todo movimiento tiene contrapartida"), así que
+   * necesita el signo OPUESTO, no el mismo: si no, un reembolso duplica el
+   * débito en vez de cancelarlo (cobro 1000 + reembolso 1000 daba -2000,
+   * no 0). Ver también `voidByReservationId`/`voidByOrderId` más abajo —
+   * el bug completo requería los dos fixes juntos.
+   */
   async getNetBalanceByCustomerId(customerId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
       `SELECT
@@ -300,7 +330,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
                WHEN 'CHARGE'     THEN  amount
                WHEN 'ADJUSTMENT' THEN  amount
                WHEN 'PAYMENT'    THEN -amount
-               WHEN 'REFUND'     THEN -amount
+               WHEN 'REFUND'     THEN  amount
              END
            ), 0
          ) AS net
@@ -343,6 +373,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
+  /** Mismo fix y mismo motivo que `getNetBalanceByCustomerId` — ver su docblock. */
   async getNetBalanceByStayId(stayId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
       `SELECT
@@ -352,7 +383,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
                WHEN 'CHARGE'     THEN  amount
                WHEN 'ADJUSTMENT' THEN  amount
                WHEN 'PAYMENT'    THEN -amount
-               WHEN 'REFUND'     THEN -amount
+               WHEN 'REFUND'     THEN  amount
              END
            ), 0
          ) AS net

@@ -153,8 +153,15 @@ export interface FinancialTransactionRepository {
   settleByReservationId(reservationId: string): Promise<number>;
 
   /**
-   * Pasa a VOIDED todas las transacciones PENDING/SETTLED de una reserva.
-   * Usado cuando se cancela una reserva confirmada.
+   * Pasa a VOIDED las transacciones CHARGE/ADJUSTMENT PENDING/SETTLED de
+   * una reserva. Usado cuando se cancela una reserva confirmada.
+   *
+   * NO toca PAYMENT/REFUND (fix 23/08/2026, bug real en producción) — un
+   * pago ya cobrado es un hecho histórico de dinero que cambió de manos,
+   * nunca se anula en silencio al cancelar. Si corresponde devolver algo,
+   * eso se modela con un REFUND explícito (ver `CancellationRefundService`,
+   * C2), no anulando el PAYMENT original.
+   *
    * Retorna la cantidad de filas actualizadas.
    */
   voidByReservationId(reservationId: string): Promise<number>;
@@ -177,13 +184,20 @@ export interface FinancialTransactionRepository {
   getByShiftId(shiftId: string): Promise<FinancialTransaction[]>;
 
   /**
-   * Pasa a VOIDED todas las transacciones PENDING/SETTLED de una orden.
-   * Usado cuando se cancela una orden confirmada.
+   * Pasa a VOIDED las transacciones CHARGE/ADJUSTMENT PENDING/SETTLED de
+   * una orden. Usado cuando se cancela una orden confirmada. Mismo motivo
+   * que `voidByReservationId` — no toca PAYMENT/REFUND.
    * Retorna la cantidad de filas actualizadas.
    */
   voidByOrderId(orderId: string): Promise<number>;
 
-  /** Balance neto de un cliente: suma(CHARGE + ADJUSTMENT) - suma(PAYMENT + REFUND), solo SETTLED. */
+  /**
+   * Balance neto de un cliente: suma(CHARGE + ADJUSTMENT + REFUND) -
+   * suma(PAYMENT), solo SETTLED. REFUND tiene el mismo signo que CHARGE/
+   * ADJUSTMENT (no el de PAYMENT) porque revierte un PAYMENT -- necesita
+   * el signo opuesto para cancelarlo, no duplicarlo (fix 23/08/2026, A3.9
+   * criterios-negocio.md).
+   */
   getNetBalanceByCustomerId(customerId: string): Promise<number>;
 
   /**
@@ -202,21 +216,26 @@ export interface FinancialTransactionRepository {
    * docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md) — a diferencia
    * de `getSettledPaymentTotalForReservation` (que exige `SETTLED`, usada
    * por el gate de seña de `confirmReservation()`), esta cuenta lo cobrado
-   * de verdad sin importar si `cancelReservation()`/`voidByReservationId`
-   * ya lo neutralizó en el balance -- `CancellationRefundService.
-   * previewRefund()`/`confirmRefund()` necesitan "cuánto se cobró", no
-   * "cuánto sigue contando en el balance" (esas filas ya están `VOIDED`
-   * para cuando la reserva está `CANCELLED` y el worker de outbox ya
-   * procesó el evento).
+   * de verdad. `CancellationRefundService.previewRefund()`/`confirmRefund()`
+   * necesitan "cuánto se cobró", no "cuánto sigue contando en el balance".
+   *
+   * El `OR status = 'VOIDED'` es DEFENSIVO desde el fix de
+   * `voidByReservationId` (23/08/2026): antes, un PAYMENT de la reserva
+   * quedaba VOIDED al cancelar, así que hacía falta incluirlo acá para no
+   * perder de vista "cuánto se cobró realmente". Ahora `voidByReservationId`
+   * ya no toca PAYMENT (solo CHARGE/ADJUSTMENT), así que en teoría esta
+   * cláusula nunca debería activarse desde acá en adelante -- se deja
+   * igual por las dudas de que exista alguna fila VOIDED de antes del fix,
+   * o algún otro camino que la anule.
    */
   getCollectedPaymentTotalForReservation(reservationId: string): Promise<number>;
 
   /**
-   * Balance neto de una estadía puntual (mismo cálculo que
-   * getNetBalanceByCustomerId, pero acotado a un `stay_id`). Es lo que
-   * StayService.checkOut() consulta para decidir si hay saldo pendiente —
-   * el balance del cliente completo mezclaría estadías/órdenes históricas
-   * ya saldadas con la actual.
+   * Balance neto de una estadía puntual (mismo cálculo y mismo fix de
+   * signo de REFUND que getNetBalanceByCustomerId, pero acotado a un
+   * `stay_id`). Es lo que StayService.checkOut() consulta para decidir si
+   * hay saldo pendiente — el balance del cliente completo mezclaría
+   * estadías/órdenes históricas ya saldadas con la actual.
    */
   getNetBalanceByStayId(stayId: string): Promise<number>;
 
