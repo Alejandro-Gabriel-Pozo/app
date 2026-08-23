@@ -29,7 +29,7 @@ import { SqlCustomerRateRepository } from './sql.customer-rate.repository.js';
 import type { CreateCustomerRateDto } from './customer-rate.repository.js';
 import { SqlRateCatalogRepository } from './sql.rate-catalog.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
-import { recordFieldChanges } from '../domain/audit.js';
+import { diffFields, recordFieldChanges } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
 import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
@@ -50,6 +50,12 @@ import { SqlAfipCredentialsRepository } from '../facturacion/sql.afip-credential
 import { PadronService } from '../facturacion/padron.service.js';
 import { SqlInvoiceRepository } from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
+
+// I9 (23/08/2026, pendientes-2026-08-23.md — verificación de auditoría
+// externa): antes solo se auditaba customer_rates de este archivo, nunca
+// los campos propios del Cliente (displayName/kind/active/
+// enableCurrentAccount) — hueco real confirmado contra el código.
+const AUDIT_ENTITY_CUSTOMER = 'customers';
 
 // ---------------------------------------------------------------------------
 // Schemas de validación
@@ -223,6 +229,23 @@ export function createCustomersRouter(container: AppContainer): Router {
         if (body.enableCurrentAccount !== undefined) {
           await repo.setCurrentAccountEnabled(id, body.enableCurrentAccount);
         }
+
+        // Auditoría (R8/A9.4, I9) — diff contra lo que realmente vino en
+        // el body y el estado ANTES de escribir, mismo patrón que
+        // resources.routes.ts/CategoryService/ProductService.
+        const changes = diffFields(existing, {
+          displayName:          body.displayName,
+          kind:                 body.kind,
+          active:               body.active,
+          enableCurrentAccount: body.enableCurrentAccount,
+        });
+        await recordFieldChanges(
+          new SqlAuditLogRepository(req.db!),
+          AUDIT_ENTITY_CUSTOMER,
+          id,
+          changes,
+          req.user!.id,
+        );
 
         const refreshed = await repo.getById(id);
         const tags = await repo.getTagsByCustomerId(id);
