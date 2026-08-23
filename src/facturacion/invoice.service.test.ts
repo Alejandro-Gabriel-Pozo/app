@@ -2,13 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
 import { InvoiceService } from './invoice.service.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
-import type { Invoice, CreateInvoiceInput, InvoiceStatus } from './invoice.entities.js';
+import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
 import type { FinancialTransactionRepository, FinancialTransaction, PaymentInfo } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { IOrderRepository } from '../pos-menu/order.repository.js';
 import type { Order } from '../pos-menu/order.entities.js';
+import type { IProductRepository, IProductVariantRepository } from '../pos-menu/product.repository.js';
+import type { Product, ProductVariant } from '../pos-menu/product.entities.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import type { Reservation } from '../reservas/Reservation.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
@@ -19,6 +25,7 @@ import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 
 class FakeInvoiceRepository implements InvoiceRepository {
   public invoices = new Map<string, Invoice>();
+  public items = new Map<string, InvoiceItem[]>();
 
   async getById(id: string) { return this.invoices.get(id) ?? null; }
   async getByIdempotencyKey(key: string) {
@@ -27,7 +34,15 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByFinancialTransactionId(ftId: string) {
     return [...this.invoices.values()].filter((i) => i.financialTransactionId === ftId);
   }
-  async create(input: CreateInvoiceInput, afipRequest: unknown): Promise<Invoice> {
+  async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
+    return this.createWithClient({} as SqlClient, input, afipRequest, items);
+  }
+  async createWithClient(
+    _client: SqlClient,
+    input: CreateInvoiceInput,
+    afipRequest: unknown,
+    items: CreateInvoiceItemInput[],
+  ): Promise<Invoice> {
     const invoice: Invoice = {
       ...input,
       cbteNro: null, cae: null, caeVto: null,
@@ -36,7 +51,13 @@ class FakeInvoiceRepository implements InvoiceRepository {
       createdAt: new Date(), issuedAt: null,
     };
     this.invoices.set(invoice.id, invoice);
+    this.items.set(invoice.id, items.map((item, i) => ({
+      ...item, id: `ii-${invoice.id}-${i}`, invoiceId: invoice.id, createdAt: new Date(),
+    })));
     return invoice;
+  }
+  async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> {
+    return this.items.get(invoiceId) ?? [];
   }
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
@@ -92,6 +113,30 @@ class FakeOrderRepository implements Pick<IOrderRepository, 'getById'> {
   constructor(private readonly order: Order | null = null) {}
   async getById(id: string): Promise<Order | undefined> {
     return this.order && this.order.id === id ? this.order : undefined;
+  }
+}
+
+/** D8-Nivel B (23/08/2026) -- fakes mínimos para armar líneas del comprobante. */
+class FakeProductRepository implements Pick<IProductRepository, 'getById'> {
+  constructor(private readonly products: Map<string, Product> = new Map()) {}
+  async getById(id: string): Promise<Product | undefined> { return this.products.get(id); }
+}
+
+class FakeProductVariantRepository implements Pick<IProductVariantRepository, 'getById'> {
+  constructor(private readonly variants: Map<string, ProductVariant> = new Map()) {}
+  async getById(id: string): Promise<ProductVariant | undefined> { return this.variants.get(id); }
+}
+
+class FakeReservationRepository implements Pick<ReservationRepository, 'getById'> {
+  constructor(private readonly reservation: Reservation | null = null) {}
+  async getById(id: string): Promise<Reservation | undefined> {
+    return this.reservation && this.reservation.id === id ? this.reservation : undefined;
+  }
+}
+
+class FakeTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    return work({} as SqlClient);
   }
 }
 
@@ -190,6 +235,11 @@ describe('InvoiceService', () => {
     client?: Arca;
     /** D8 -- solo hace falta cuando `tx.orderId` está seteado y se quiere ejercitar el agrupado por tasa. */
     order?: Order | null;
+    /** D8-Nivel B -- productos/variantes referenciados por los order_items del `order` de arriba. */
+    products?: Map<string, Product>;
+    productVariants?: Map<string, ProductVariant>;
+    /** D8-Nivel B -- solo hace falta cuando `tx.reservationId` está seteado (factura directa de una reserva). */
+    reservation?: Reservation | null;
   } = {}) {
     const client = opts.client ?? fakeArcaClient();
     return new InvoiceService(
@@ -198,6 +248,10 @@ describe('InvoiceService', () => {
       new FakeBusinessProfileRepository(opts.profile ?? makeProfile()),
       new FakeAfipCredentialsRepository(opts.credentials === undefined ? makeCredentials() : opts.credentials),
       new FakeOrderRepository(opts.order ?? null),
+      new FakeProductRepository(opts.products),
+      new FakeProductVariantRepository(opts.productVariants),
+      new FakeReservationRepository(opts.reservation ?? null),
+      new FakeTransactionManager(),
       // buildService sigue armando un Arca fake (fakeArcaClient) igual que
       // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
       // existentes de fakeArcaClient({...}) en esta suite no necesiten
@@ -241,6 +295,10 @@ describe('InvoiceService', () => {
         new FakeBusinessProfileRepository(makeProfile({ taxId: '20111111112', afipCuit: null })),
         new FakeAfipCredentialsRepository(makeCredentials()),
         new FakeOrderRepository(),
+        new FakeProductRepository(),
+        new FakeProductVariantRepository(),
+        new FakeReservationRepository(),
+        new FakeTransactionManager(),
         clientFactory,
       );
 
@@ -257,6 +315,10 @@ describe('InvoiceService', () => {
         new FakeBusinessProfileRepository(makeProfile({ taxId: '20111111112', afipCuit: '20333333335' })),
         new FakeAfipCredentialsRepository(makeCredentials()),
         new FakeOrderRepository(),
+        new FakeProductRepository(),
+        new FakeProductVariantRepository(),
+        new FakeReservationRepository(),
+        new FakeTransactionManager(),
         clientFactory,
       );
 
@@ -423,6 +485,145 @@ describe('InvoiceService', () => {
 
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // D8-Nivel B (23/08/2026, docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md)
+  // -- líneas reales del comprobante (invoice_items).
+  // ---------------------------------------------------------------------------
+  describe('D8-Nivel B -- líneas reales del comprobante', () => {
+    function makeOrderItem(overrides: Partial<{
+      subtotal: number; ivaRate: number | null; itemType: 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION';
+      productId: string | null; productVariantId: string | null; reservationId: string | null; quantity: number;
+    }> = {}) {
+      return {
+        id: `oi-${Math.random()}`, orderId: 'ord-1',
+        itemType: overrides.itemType ?? 'PRODUCT',
+        productId: overrides.productId !== undefined ? overrides.productId : 'prod-1',
+        productVariantId: overrides.productVariantId ?? null,
+        reservationId: overrides.reservationId ?? null,
+        quantity: overrides.quantity ?? 1,
+        unitPrice: overrides.subtotal ?? 100, subtotal: overrides.subtotal ?? 100,
+        notes: null, stockSnapshot: null, ivaRate: overrides.ivaRate ?? null,
+        appliedCustomerRateId: null,
+        createdAt: new Date(), updatedAt: new Date(),
+      };
+    }
+
+    function makeReservationFake(id: string, resourceName: string): Reservation {
+      return { id, resource: { name: resourceName } } as unknown as Reservation;
+    }
+
+    it('una orden con un producto real arma una línea con nombre/cantidad/unidad/código ARCA del producto', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const products = new Map<string, Product>([
+        ['prod-1', { id: 'prod-1', name: 'Coca-Cola 500ml', unit: 'unidad', arcaUnitCode: 7 } as unknown as Product],
+      ]);
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, ivaRate: 21, quantity: 2 })],
+        } as unknown as Order,
+        products,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        description: 'Coca-Cola 500ml', quantity: 2, subtotal: 121, ivaRate: 21,
+        unit: 'unidad', arcaUnitCode: 7, orderItemId: expect.any(String), reservationId: null,
+      });
+    });
+
+    it('un producto con variante muestra el nombre de la variante entre paréntesis', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const products = new Map<string, Product>([
+        ['prod-1', { id: 'prod-1', name: 'Remera', unit: null, arcaUnitCode: null } as unknown as Product],
+      ]);
+      const productVariants = new Map<string, ProductVariant>([
+        ['var-1', { id: 'var-1', name: 'Talle M' } as unknown as ProductVariant],
+      ]);
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, ivaRate: 21, itemType: 'PRODUCT_VARIANT', productVariantId: 'var-1' })],
+        } as unknown as Order,
+        products, productVariants,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items[0]?.description).toBe('Remera (Talle M)');
+    });
+
+    it('un ítem RESERVATION dentro de una orden usa el nombre del recurso de la reserva', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, itemType: 'RESERVATION', productId: null, reservationId: 'res-1' })],
+        } as unknown as Order,
+        reservation: makeReservationFake('res-1', 'Mesa Ventana'),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items[0]).toMatchObject({ description: 'Mesa Ventana', orderItemId: expect.any(String), reservationId: 'res-1' });
+    });
+
+    it('una reserva facturada directo (sin orderId) arma UNA línea con tx.amount, no reservation.totalPrice', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      // tx.amount=60 -- ej. la seña de una reserva de totalPrice=200 (C1-Fase A) --
+      // la línea tiene que reflejar el comprobante puntual, no el total de la reserva.
+      const service = buildService({
+        tx: makeTx({ amount: 60, orderId: null, reservationId: 'res-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        reservation: makeReservationFake('res-1', 'Habitación Doble'),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        description: 'Habitación Doble', quantity: 1, unitPrice: 60, subtotal: 60,
+        reservationId: 'res-1', orderItemId: null,
+      });
+    });
+
+    it('sin orden ni reserva asociada, cae a una línea genérica (mismo fallback que Nivel A)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 100, orderId: null, reservationId: null }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(1);
+      expect(items[0]?.description).toBe('Servicios');
     });
   });
 

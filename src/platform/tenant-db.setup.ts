@@ -259,7 +259,12 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // — `order_items.applied_customer_rate_id`/`reservations.applied_customer_rate_id`
 // (snapshot de qué CustomerRate se aplicó, si hubo alguna, R9). Ninguno de
 // los dos lo registraba antes -- necesario para el reporte "tarifas aplicadas".
-export const CURRENT_SCHEMA_VERSION = 31;
+// v32 (23/08/2026): facturación por líneas, Nivel B (C3,
+// docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md) — tabla
+// `invoice_items` nueva. Facturas nuevas ganan líneas reales por
+// producto/reserva; facturas viejas (Nivel A) siguen sin filas acá, el
+// PDF les sigue mostrando el ítem agrupado por tasa para siempre.
+export const CURRENT_SCHEMA_VERSION = 32;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

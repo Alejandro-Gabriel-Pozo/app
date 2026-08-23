@@ -5,6 +5,13 @@ el 22/08/2026, durante la sesión de D8 (IVA por producto) — el dueño pidió
 explícito, al elegir el alcance de D8, que quedara documentado como hito
 para el próximo ciclo, no como algo a implementar ahora.
 
+**✅ 23/08/2026 — Nivel B también implementado.** Ver
+`docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md` para las 3
+decisiones del dueño y el detalle. Este documento queda como referencia
+histórica de Nivel A (sigue vigente — las facturas viejas, y cualquier
+comprobante sin línea real, se siguen mostrando así, ver decisión 2 del
+documento de Nivel B).
+
 **Este documento define dos niveles.** Nivel A ya está implementado (D8,
 mismo día) y es la fuente de verdad de lo que existe hoy. Nivel B es
 diseño a futuro — nombrado, no implementado, **no elegir ninguna de sus

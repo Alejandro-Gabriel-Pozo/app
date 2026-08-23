@@ -14,12 +14,19 @@
  * confundirlas con datos perdidos):
  * - `emisor.iibb`/`fechaInicioActividades` quedan vacíos -- el sistema no
  *   carga esos datos todavía (no forman parte de la Fase 1 fiscal).
- * - Un solo ítem por comprobante (el cobro es un monto único, sin
- *   desglose de líneas a nivel `FinancialTransaction` hoy).
  * - `receptor` asume Consumidor Final -- es el único caso que la UI arma
  *   hoy (`RequestInvoiceInput.buyer` nunca se manda desde el frontend
  *   todavía). Si eso cambia, este archivo necesita resolver la condición
  *   IVA real del receptor contra `getIvaReceptorTypes()`, no adivinarla.
+ *
+ * D8-Nivel B (23/08/2026, docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md)
+ * — `items[]` muestra productos/reservas reales cuando el comprobante
+ * tiene `invoice_items` (emitido después de este cambio). Comprobantes
+ * viejos (Nivel A, D8, sin filas en `invoice_items`) siguen mostrando el
+ * ítem sintético agrupado por tasa de IVA, para siempre -- decisión del
+ * dueño, sin reconstrucción retroactiva. `iva[]`/los totales del
+ * comprobante NO cambian con Nivel B: siguen saliendo de
+ * `afipRequest.Iva` (ya frozen al emitir, R9) en los dos casos.
  */
 
 import { InvoicePdfGenerator, type InvoiceData } from '@arcasdk/pdf';
@@ -61,9 +68,10 @@ export class InvoicePdfService {
       throw new InvoiceNotIssuedError(id);
     }
 
-    const [profile, customer] = await Promise.all([
+    const [profile, customer, invoiceItems] = await Promise.all([
       this.businessProfileRepo.get(),
       this.customerRepo.getById(invoice.customerId),
+      this.invoiceRepo.getItemsByInvoiceId(id),
     ]);
 
     // Congelado al crear (schema v26) -- solo cae al valor ACTUAL para
@@ -108,11 +116,22 @@ export class InvoicePdfService {
       concepto: invoice.concepto,
       moneda: invoice.moneda,
       ...(condicionVenta !== undefined && { condicionVenta }),
-      // Un ítem sintético por grupo de tasa (D8) -- todavía NO es una
-      // línea por producto real (eso es Nivel B, docs/diseno-facturacion-
-      // lineas-2026-08-22.md, no implementado). Con una sola tasa (el caso
-      // de siempre) es exactamente el ítem único de antes de D8.
-      items: ivaGroups.length > 0
+      // D8-Nivel B (23/08/2026) -- si el comprobante tiene líneas reales
+      // (invoice_items, emitido después de este cambio), se muestran los
+      // productos/reservas reales. Si no (factura Nivel A, vieja -- ver
+      // docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md decisión 2,
+      // "sigue mostrando el ítem agrupado por tasa para siempre"), cae al
+      // ítem sintético por grupo de tasa de D8, sin cambios.
+      items: invoiceItems.length > 0
+        ? invoiceItems.map((item) => ({
+            descripcion: item.description,
+            cantidad: item.quantity,
+            unidadMedida: item.unit ?? 'unidad',
+            precioUnitario: item.unitPrice,
+            subtotal: item.subtotal,
+            alicuotaIva: item.ivaRate,
+          }))
+        : ivaGroups.length > 0
         ? ivaGroups.map((g) => ({
             descripcion: `${invoice.concepto === CONCEPTO_SERVICIOS ? 'Servicios' : 'Productos'} (${ivaAlicuotaLabel(g.id)})`,
             cantidad: 1,

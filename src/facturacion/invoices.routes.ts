@@ -30,6 +30,10 @@ import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.fina
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { SqlCustomerRepository } from '../clientes-finanzas/sql.customer.repository.js';
 import { SqlOrderRepository } from '../pos-menu/sql.order.repository.js';
+import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';
+import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
+import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 
 function buildInvoiceService(req: Request): InvoiceService {
@@ -40,6 +44,10 @@ function buildInvoiceService(req: Request): InvoiceService {
     new SqlBusinessProfileRepository(db),
     new SqlAfipCredentialsRepository(db),
     new SqlOrderRepository(db),
+    new SqlProductRepository(db),
+    new SqlProductVariantRepository(db),
+    new SqlReservationRepository(db, new SqlResourceRepository(db)),
+    buildTenantTransactionManager(req),
   );
 }
 

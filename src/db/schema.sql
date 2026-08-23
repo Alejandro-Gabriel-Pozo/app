@@ -2587,3 +2587,38 @@ ALTER TABLE reservations ADD COLUMN IF NOT EXISTS applied_customer_rate_id VARCH
 CREATE INDEX IF NOT EXISTS idx_reservations_applied_rate
   ON reservations (applied_customer_rate_id) WHERE applied_customer_rate_id IS NOT NULL;
 
+-- ---------------------------------------------------------------------------
+-- D8-Nivel B (23/08/2026, docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md
+-- -- C3, pendientes-2026-08-22.md sección C) -- líneas reales por
+-- comprobante. Decisiones del dueño: tabla propia (no financial_transactions,
+-- que sigue siendo monto único); facturas viejas (Nivel A, sin filas acá)
+-- siguen mostrando el ítem agrupado por tasa para siempre, sin
+-- reconstrucción retroactiva; una reserva facturada directo (sin orderId)
+-- también produce una línea -- un solo modelo.
+--
+-- Snapshot congelado al EMITIR (R9/R12 -- invoices es DOCUMENTO, nunca se
+-- relee el origen después). iva_rate NOT NULL acá (a diferencia de
+-- products.iva_rate/order_items.iva_rate, nullable="hereda") -- para
+-- cuando se arma esta fila la cascada ya se resolvió al valor efectivo.
+CREATE TABLE IF NOT EXISTS invoice_items (
+  id             VARCHAR(255)   PRIMARY KEY,
+  invoice_id     VARCHAR(255)   NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  order_item_id  VARCHAR(255)   REFERENCES order_items(id) ON DELETE SET NULL,
+  reservation_id VARCHAR(255)   REFERENCES reservations(id) ON DELETE SET NULL,
+  description    VARCHAR(500)   NOT NULL,
+  quantity       DECIMAL(10,2)  NOT NULL CHECK (quantity > 0),
+  unit_price     DECIMAL(12,2)  NOT NULL CHECK (unit_price >= 0),
+  subtotal       DECIMAL(12,2)  NOT NULL CHECK (subtotal >= 0),
+  iva_rate       NUMERIC(5,2)   NOT NULL CHECK (iva_rate >= 0),
+  unit           VARCHAR(20),
+  arca_unit_code SMALLINT,
+  created_at     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_invoice_item_origin CHECK (
+    (order_item_id IS NOT NULL AND reservation_id IS NULL) OR
+    (order_item_id IS NULL AND reservation_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_id);
+

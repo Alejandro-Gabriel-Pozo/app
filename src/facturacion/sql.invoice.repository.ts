@@ -1,7 +1,8 @@
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment } from './invoice.entities.js';
+import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
+import { randomUUID } from 'node:crypto';
 
 interface InvoiceRow {
   id: string;
@@ -93,8 +94,17 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map(rowToEntity);
   }
 
-  async create(input: CreateInvoiceInput, afipRequest: unknown): Promise<Invoice> {
-    const { rows } = await this.db.query<InvoiceRow>(
+  async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
+    return this.createWithClient(this.db, input, afipRequest, items);
+  }
+
+  async createWithClient(
+    client: SqlClient,
+    input: CreateInvoiceInput,
+    afipRequest: unknown,
+    items: CreateInvoiceItemInput[],
+  ): Promise<Invoice> {
+    const { rows } = await client.query<InvoiceRow>(
       `INSERT INTO invoices
          (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
           pto_vta, cbte_tipo, emisor_cuit, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id, moneda,
@@ -110,7 +120,55 @@ export class SqlInvoiceRepository implements InvoiceRepository {
         JSON.stringify(afipRequest),
       ],
     );
+
+    for (const item of items) {
+      await client.query(
+        `INSERT INTO invoice_items
+           (id, invoice_id, order_item_id, reservation_id, description, quantity, unit_price, subtotal, iva_rate, unit, arca_unit_code)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          randomUUID(), input.id, item.orderItemId, item.reservationId, item.description,
+          item.quantity, item.unitPrice, item.subtotal, item.ivaRate, item.unit, item.arcaUnitCode,
+        ],
+      );
+    }
+
     return rowToEntity(rows[0]!);
+  }
+
+  async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> {
+    const { rows } = await this.db.query<{
+      id: string;
+      invoice_id: string;
+      order_item_id: string | null;
+      reservation_id: string | null;
+      description: string;
+      quantity: string;
+      unit_price: string;
+      subtotal: string;
+      iva_rate: string;
+      unit: string | null;
+      arca_unit_code: number | null;
+      created_at: Date;
+    }>(
+      `SELECT * FROM invoice_items WHERE invoice_id = $1 ORDER BY created_at ASC`,
+      [invoiceId],
+    );
+
+    return rows.map((row) => ({
+      id: row.id,
+      invoiceId: row.invoice_id,
+      orderItemId: row.order_item_id,
+      reservationId: row.reservation_id,
+      description: row.description,
+      quantity: parseFloat(row.quantity),
+      unitPrice: parseFloat(row.unit_price),
+      subtotal: parseFloat(row.subtotal),
+      ivaRate: parseFloat(row.iva_rate),
+      unit: row.unit,
+      arcaUnitCode: row.arca_unit_code,
+      createdAt: row.created_at,
+    }));
   }
 
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {

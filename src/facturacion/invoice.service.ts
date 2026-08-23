@@ -19,12 +19,17 @@
 
 import { randomUUID } from 'node:crypto';
 import type { InvoiceRepository } from './invoice.repository.js';
-import type { Invoice, AfipEnvironment } from './invoice.entities.js';
+import type { Invoice, AfipEnvironment, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile } from '../domain/business-profile.entities.js';
 import type { IOrderRepository } from '../pos-menu/order.repository.js';
+import type { OrderItem } from '../pos-menu/order.entities.js';
+import type { IProductRepository, IProductVariantRepository } from '../pos-menu/product.repository.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import { buildDefaultAfipBillingPort } from './arca-sdk-billing.adapter.js';
 import type { AfipBillingPort } from './afip-billing.port.js';
 import {
@@ -92,8 +97,17 @@ export class InvoiceService {
      * D8 (22/08/2026) — resuelve `order_items.iva_rate` para agrupar el
      * comprobante por alícuota cuando la orden mezcla productos con
      * distinta tasa. Solo se usa `getById()` (trae `Order.items` inline).
+     * D8-Nivel B (23/08/2026) — también arma las líneas reales del
+     * comprobante (`invoice_items`), ver `resolveInvoiceItems()`.
      */
     private readonly orderRepo: Pick<IOrderRepository, 'getById'>,
+    /** D8-Nivel B — nombre/unidad/código ARCA de cada línea PRODUCT. */
+    private readonly productRepo: Pick<IProductRepository, 'getById'>,
+    private readonly productVariantRepo: Pick<IProductVariantRepository, 'getById'>,
+    /** D8-Nivel B — nombre del recurso/servicio para la línea de una reserva. */
+    private readonly reservationRepo: Pick<ReservationRepository, 'getById'>,
+    /** D8-Nivel B — el comprobante y sus líneas se crean en la misma transacción (A8.2/A8.3). */
+    private readonly transactionManager: TransactionManager,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
@@ -120,34 +134,100 @@ export class InvoiceService {
   }
 
   /**
-   * D8 (22/08/2026, pendientes-2026-08-19.md sección D) — agrupa el monto
-   * de la transacción por tasa de IVA. Reservas (sin `orderId`) y
-   * órdenes sin ítems con `ivaRate` propio siguen exactamente como antes
-   * de D8: un solo grupo con `business_profile.default_iva_rate`.
+   * D8-Nivel B (23/08/2026, docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md)
+   * — arma las líneas reales del comprobante. Reemplaza a `resolveIvaGroups()`
+   * (D8) -- el `Iva[]` que se manda a AFIP se deriva ahora de ESTAS MISMAS
+   * líneas (agrupadas por `ivaRate`) en vez de leer `order_items` aparte,
+   * un solo cómputo (R14).
    *
-   * Usa `order_items.iva_rate` (snapshot congelado al armar la orden, R9)
-   * -- NUNCA relee `products.iva_rate` actual, que puede haber cambiado
-   * desde la venta. `tx.amount` de una orden CHARGE es exactamente
-   * `sum(order_items.subtotal)` (`handleOrderConfirmed`, outbox.handlers.ts
-   * -- `totalAmount` viene de `Order.totalAmount`, que es esa misma suma),
-   * así que agrupar por `subtotal` reconstruye `tx.amount` sin resto.
+   * 1. Orden con ítems (`tx.orderId`): una línea POR `order_item`, sin
+   *    importar el tipo (PRODUCT/PRODUCT_VARIANT/RESERVATION).
+   * 2. Reserva facturada directo (`tx.reservationId`, sin `orderId` — el
+   *    camino más común hoy): UNA línea. `unitPrice=subtotal=tx.amount`,
+   *    NUNCA `reservation.totalPrice` -- con C1-Fase A una misma reserva
+   *    genera dos FinancialTransaction (seña/saldo), cada una con su
+   *    propia factura; `tx.amount` es lo que corresponde a ESTE
+   *    comprobante puntual. Limitación conocida (documentada en el
+   *    diseño): la descripción no distingue "seña" de "saldo".
+   * 3. Caso borde sin orden ni reserva asociada: una línea genérica,
+   *    mismo fallback que ya existía en Nivel A.
    */
-  private async resolveIvaGroups(
-    tx: Pick<FinancialTransaction, 'amount' | 'orderId'>,
+  private async resolveInvoiceItems(
+    tx: Pick<FinancialTransaction, 'amount' | 'orderId' | 'reservationId'>,
     profile: Pick<BusinessProfile, 'defaultIvaRate'>,
-  ): Promise<Array<{ rate: number; amount: number }>> {
-    const fallback = [{ rate: profile.defaultIvaRate, amount: tx.amount }];
-    if (!tx.orderId || !this.orderRepo) return fallback;
-
-    const order = await this.orderRepo.getById(tx.orderId);
-    if (!order || order.items.length === 0) return fallback;
-
-    const groups = new Map<number, number>();
-    for (const item of order.items) {
-      const rate = item.ivaRate ?? profile.defaultIvaRate;
-      groups.set(rate, (groups.get(rate) ?? 0) + item.subtotal);
+    concepto: number,
+  ): Promise<CreateInvoiceItemInput[]> {
+    if (tx.orderId) {
+      const order = await this.orderRepo.getById(tx.orderId);
+      if (order && order.items.length > 0) {
+        return Promise.all(order.items.map((item) => this.resolveOrderItemLine(item, profile)));
+      }
     }
-    return [...groups.entries()].map(([rate, amount]) => ({ rate, amount }));
+
+    if (tx.reservationId) {
+      const reservation = await this.reservationRepo.getById(tx.reservationId);
+      return [{
+        orderItemId: null,
+        reservationId: tx.reservationId,
+        description: reservation ? reservation.resource.name : 'Reserva',
+        quantity: 1,
+        unitPrice: tx.amount,
+        subtotal: tx.amount,
+        ivaRate: profile.defaultIvaRate,
+        unit: null,
+        arcaUnitCode: null,
+      }];
+    }
+
+    return [{
+      orderItemId: null,
+      reservationId: null,
+      description: concepto === 1 ? 'Productos' : 'Servicios',
+      quantity: 1,
+      unitPrice: tx.amount,
+      subtotal: tx.amount,
+      ivaRate: profile.defaultIvaRate,
+      unit: null,
+      arcaUnitCode: null,
+    }];
+  }
+
+  private async resolveOrderItemLine(
+    item: OrderItem,
+    profile: Pick<BusinessProfile, 'defaultIvaRate'>,
+  ): Promise<CreateInvoiceItemInput> {
+    if (item.itemType === 'RESERVATION') {
+      const reservation = item.reservationId ? await this.reservationRepo.getById(item.reservationId) : null;
+      return {
+        orderItemId: item.id,
+        reservationId: item.reservationId,
+        description: reservation ? reservation.resource.name : 'Reserva',
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        subtotal: item.subtotal,
+        // D8 nunca extendió IVA-por-ítem a reservas -- solo productos.
+        ivaRate: profile.defaultIvaRate,
+        unit: null,
+        arcaUnitCode: null,
+      };
+    }
+
+    const product = item.productId ? await this.productRepo.getById(item.productId) : null;
+    const variant = item.productVariantId ? await this.productVariantRepo.getById(item.productVariantId) : null;
+    const description = variant ? `${product?.name ?? item.productId} (${variant.name})` : (product?.name ?? item.productId ?? 'Producto');
+
+    return {
+      orderItemId: item.id,
+      reservationId: null,
+      description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      subtotal: item.subtotal,
+      // Snapshot ya congelado en D8 -- nunca relee products.iva_rate actual.
+      ivaRate: item.ivaRate ?? profile.defaultIvaRate,
+      unit: product?.unit ?? null,
+      arcaUnitCode: product?.arcaUnitCode ?? null,
+    };
   }
 
   async requestInvoice(input: RequestInvoiceInput): Promise<Invoice> {
@@ -177,14 +257,17 @@ export class InvoiceService {
     const buyer = input.buyer ?? CONSUMIDOR_FINAL;
     const concepto = input.concepto ?? CONCEPTO_SERVICIOS;
 
-    // D8 (22/08/2026) -- un grupo por tasa distinta (una orden con
-    // productos a 21% y a 10.5% produce dos). Reservas y el caso de
-    // siempre (una sola tasa) dan exactamente un grupo, mismo resultado
-    // que antes de D8.
-    const groups = await this.resolveIvaGroups(tx, profile);
-    const splits = groups.map((g) => ({
-      ...this.splitAmount(g.amount, profile.pricesIncludeIva, g.rate),
-      rate: g.rate,
+    // D8-Nivel B (23/08/2026) -- líneas reales del comprobante. El
+    // agrupado por tasa para Iva[] (D8) se deriva de ESTAS líneas, no de
+    // una lectura aparte de order_items (R14, un solo cómputo).
+    const items = await this.resolveInvoiceItems(tx, profile, concepto);
+    const groups = new Map<number, number>();
+    for (const item of items) {
+      groups.set(item.ivaRate, (groups.get(item.ivaRate) ?? 0) + item.subtotal);
+    }
+    const splits = [...groups.entries()].map(([rate, amount]) => ({
+      ...this.splitAmount(amount, profile.pricesIncludeIva, rate),
+      rate,
     }));
     const impNeto  = round2(splits.reduce((sum, s) => sum + s.impNeto, 0));
     const impIva   = round2(splits.reduce((sum, s) => sum + s.impIva, 0));
@@ -222,32 +305,40 @@ export class InvoiceService {
       ...(ivaEntries.length > 0 && { Iva: ivaEntries }),
     };
 
-    const invoice = await this.invoiceRepo.create(
-      {
-        id: invoiceId,
-        businessId: input.businessId,
-        financialTransactionId: input.financialTransactionId,
-        customerId: tx.customerId,
-        idempotencyKey,
-        environment: credentials.environment,
-        ptoVta: profile.afipSalesPoint,
-        cbteTipo: CBTE_TIPO_FACTURA_B,
-        emisorCuit: authCuit,
-        concepto,
-        docTipo: buyer.docTipo,
-        docNro: buyer.docNro,
-        condicionIvaReceptorId: buyer.condicionIvaReceptorId,
-        moneda: 'PES',
-        impNeto,
-        impIva,
-        impTotal,
-        // Congelados desde la FinancialTransaction de origen (R9) -- el
-        // comprobante nunca vuelve a consultarla después de esto.
-        paymentMethod: tx.paymentMethod ?? null,
-        cardInstallments: tx.cardInstallments ?? null,
-      },
-      afipRequest,
-    );
+    // D8-Nivel B -- el comprobante y sus líneas se crean atómicamente
+    // (A8.2/A8.3): nunca una factura persistida sin ninguna línea por una
+    // falla a mitad de camino.
+    let invoice!: Invoice;
+    await this.transactionManager.run(async (client: SqlClient) => {
+      invoice = await this.invoiceRepo.createWithClient(
+        client,
+        {
+          id: invoiceId,
+          businessId: input.businessId,
+          financialTransactionId: input.financialTransactionId,
+          customerId: tx.customerId,
+          idempotencyKey,
+          environment: credentials.environment,
+          ptoVta: profile.afipSalesPoint!,
+          cbteTipo: CBTE_TIPO_FACTURA_B,
+          emisorCuit: authCuit,
+          concepto,
+          docTipo: buyer.docTipo,
+          docNro: buyer.docNro,
+          condicionIvaReceptorId: buyer.condicionIvaReceptorId,
+          moneda: 'PES',
+          impNeto,
+          impIva,
+          impTotal,
+          // Congelados desde la FinancialTransaction de origen (R9) -- el
+          // comprobante nunca vuelve a consultarla después de esto.
+          paymentMethod: tx.paymentMethod ?? null,
+          cardInstallments: tx.cardInstallments ?? null,
+        },
+        afipRequest,
+        items,
+      );
+    });
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);

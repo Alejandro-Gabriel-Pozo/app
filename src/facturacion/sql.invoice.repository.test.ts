@@ -95,3 +95,33 @@ describe('SqlInvoiceRepository — mapeo de cae_vto', () => {
     expect(invoice!.caeVto).toBeNull();
   });
 });
+
+// D8-Nivel B (23/08/2026) -- mismo motivo que cae_vto arriba: DECIMAL/NUMERIC
+// vuelve como string desde `pg`, no como number. getItemsByInvoiceId()
+// tiene que convertir explícito, no confiar en el tipo declarado de la fila.
+describe('SqlInvoiceRepository — getItemsByInvoiceId()', () => {
+  it('convierte quantity/unit_price/subtotal/iva_rate de string (pg) a number', async () => {
+    const mockSqlClient = mockClient([
+      {
+        id: 'ii-1', invoice_id: 'inv-1', order_item_id: 'oi-1', reservation_id: null,
+        description: 'Coca-Cola 500ml', quantity: '2.00', unit_price: '50.00', subtotal: '100.00',
+        iva_rate: '21.00', unit: 'unidad', arca_unit_code: 7, created_at: new Date(),
+      },
+    ]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const items = await repo.getItemsByInvoiceId('inv-1');
+
+    expect(items).toEqual([{
+      id: 'ii-1', invoiceId: 'inv-1', orderItemId: 'oi-1', reservationId: null,
+      description: 'Coca-Cola 500ml', quantity: 2, unitPrice: 50, subtotal: 100,
+      ivaRate: 21, unit: 'unidad', arcaUnitCode: 7, createdAt: items[0]!.createdAt,
+    }]);
+    expect(typeof items[0]!.quantity).toBe('number');
+  });
+
+  it('sin líneas (factura Nivel A), devuelve array vacío', async () => {
+    const repo = new SqlInvoiceRepository(mockClient([]));
+    expect(await repo.getItemsByInvoiceId('inv-vieja')).toEqual([]);
+  });
+});

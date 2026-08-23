@@ -62,14 +62,37 @@ pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
   `PAYMENT` sin contrapartida al voidear la `CHARGE` (A3.9) — limitación
   conocida, anotada en el documento de diseño, no resuelta. Sigue sin
   responder la escala de % según anticipación.
-- **C3** — Modelo de factura ítem único vs. multi-línea:
-  `docs/diseno-facturacion-lineas-2026-08-22.md` (escrito 22/08/2026, junto
-  con D8) define Nivel A (agrupar por tasa de IVA, sin líneas por
-  producto) y Nivel B (líneas reales por producto, con 4 preguntas
-  abiertas). **Nivel A ya está implementado** (ver D8 más abajo) — Nivel B
-  sigue sin decidir, es el hito real que falta para C2 (notas de crédito
-  parciales) y D7 (reportes por producto desde la factura, no solo desde
-  la orden).
+- ✅ **C3 RESUELTO (23/08/2026) — Nivel A (D8) y Nivel B, los dos
+  implementados.** `docs/diseno-facturacion-lineas-2026-08-22.md` (Nivel A)
+  + `docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md` (Nivel B, 3
+  decisiones del dueño confirmadas por `AskUserQuestion` antes de codear:
+  tabla `invoice_items` propia, no `financial_transactions`; facturas
+  viejas sin líneas siguen mostrando el ítem agrupado por tasa para
+  siempre, sin reconstrucción retroactiva; una reserva facturada directo
+  también es una línea, un solo modelo).
+  `invoice_items` — línea real por producto/reserva, congelada al emitir
+  (R9/R12): `order_items` de una orden dan una línea cada uno (incluidos
+  los `RESERVATION` dentro de una orden POS, usan el nombre del recurso);
+  una reserva facturada directo (sin `orderId`, el camino más común hoy)
+  da UNA línea con `unitPrice=tx.amount` (nunca `reservation.totalPrice`
+  — con C1-Fase A una misma reserva genera dos `FinancialTransaction`,
+  seña y saldo, cada una con su propia factura). `InvoiceRepository` gana
+  `createWithClient()` (factura + líneas en una sola transacción, A8.2/
+  A8.3 — nunca una factura sin ninguna línea por una falla a mitad de
+  camino) y `getItemsByInvoiceId()`. `InvoicePdfService` muestra productos
+  reales cuando hay líneas, cae al ítem agrupado por tasa si no las hay
+  (factura vieja) — el `Iva[]`/los totales del comprobante NO cambian con
+  Nivel B, siguen saliendo de `afipRequest.Iva` en los dos casos (ya
+  estaba correctamente congelado, no hacía falta re-derivarlo).
+  `InvoiceService.resolveIvaGroups()` (D8) se reemplaza por
+  `resolveInvoiceItems()` — el agrupado por tasa para `Iva[]` se deriva
+  ahora de las mismas líneas que se persisten, un solo cómputo (R14).
+  Es el hito real que destraba C2 (notas de crédito parciales — ahora
+  hay una línea contra la cual emitir una) y D7 (reportes por producto
+  desde la factura) — **ninguno de los dos se implementa acá**, solo
+  quedan destrabados. Suite completa (875 tests) + lint + typecheck
+  verdes. **Backend only** — sin UI en `appfrontend-main` (mostrar las
+  líneas reales en el detalle de factura).
 
 **No elegir ninguna opción de C1/C2/C3 sin el dueño.**
 

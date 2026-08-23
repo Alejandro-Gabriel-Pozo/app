@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { InvoicePdfService } from './invoice-pdf.service.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
-import type { Invoice, CreateInvoiceInput, InvoiceStatus } from './invoice.entities.js';
+import type { Invoice, CreateInvoiceInput, CreateInvoiceItemInput, InvoiceItem, InvoiceStatus } from './invoice.entities.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { CustomerRepository } from '../clientes-finanzas/customer.repository.js';
@@ -17,14 +18,17 @@ import { CBTE_TIPO_FACTURA_B, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, CONCEPTO_
 // ---------------------------------------------------------------------------
 
 class FakeInvoiceRepository implements InvoiceRepository {
-  constructor(private readonly invoice: Invoice | null) {}
+  /** D8-Nivel B (23/08/2026) -- `items` vacío (default) = factura Nivel A, sin líneas reales. */
+  constructor(private readonly invoice: Invoice | null, private readonly items: InvoiceItem[] = []) {}
   async getById(id: string) { return this.invoice?.id === id ? this.invoice : null; }
   async getByIdempotencyKey() { return null; }
   async getByFinancialTransactionId() { return []; }
-  async create(_input: CreateInvoiceInput): Promise<Invoice> { throw new Error('no usado en este test'); }
+  async create(_input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }
+  async createWithClient(_client: SqlClient, _input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markIssued(_id: string, _data: MarkIssuedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markFailed(_id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async getStatus(): Promise<InvoiceStatus | null> { return this.invoice?.status ?? null; }
+  async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> { return this.invoice?.id === invoiceId ? this.items : []; }
 }
 
 class FakeBusinessProfileRepository implements BusinessProfileRepository {
@@ -66,9 +70,9 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
   };
 }
 
-function buildService(opts: { invoice: Invoice | null; profile?: BusinessProfile }) {
+function buildService(opts: { invoice: Invoice | null; profile?: BusinessProfile; items?: InvoiceItem[] }) {
   return new InvoicePdfService(
-    new FakeInvoiceRepository(opts.invoice),
+    new FakeInvoiceRepository(opts.invoice, opts.items ?? []),
     new FakeBusinessProfileRepository(opts.profile ?? makeProfile()),
     { getById: async () => new Customer('cust-1', 'Juan Garcia', 'juan@example.com') } as unknown as CustomerRepository,
   );
@@ -142,5 +146,42 @@ describe('InvoicePdfService -- condicionVenta (forma de pago congelada)', () => 
 
     const data = generateSpy.mock.calls.at(-1)![0] as Record<string, unknown>;
     expect('condicionVenta' in data).toBe(false);
+  });
+});
+
+// D8-Nivel B (23/08/2026, docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md)
+describe('InvoicePdfService -- D8-Nivel B (líneas reales vs. fallback Nivel A)', () => {
+  it('con invoice_items reales, arma items[] con los productos reales, no el ítem sintético por tasa', async () => {
+    const service = buildService({
+      invoice: makeInvoice(),
+      items: [
+        {
+          id: 'ii-1', invoiceId: 'inv-1', orderItemId: 'oi-1', reservationId: null,
+          description: 'Coca-Cola 500ml', quantity: 2, unitPrice: 50, subtotal: 100,
+          ivaRate: 21, unit: 'unidad', arcaUnitCode: 7, createdAt: new Date(),
+        },
+      ],
+    });
+
+    await service.generate('inv-1');
+
+    const data = generateSpy.mock.calls.at(-1)![0] as { items: unknown[] };
+    expect(data.items).toEqual([{
+      descripcion: 'Coca-Cola 500ml', cantidad: 2, unidadMedida: 'unidad',
+      precioUnitario: 50, subtotal: 100, alicuotaIva: 21,
+    }]);
+  });
+
+  it('sin invoice_items (factura Nivel A, vieja), sigue mostrando el ítem agrupado por tasa -- sin reconstrucción retroactiva', async () => {
+    const service = buildService({
+      invoice: makeInvoice({ afipRequest: { Iva: [{ Id: 5, BaseImp: 100, Importe: 21 }] } }),
+      items: [],
+    });
+
+    await service.generate('inv-1');
+
+    const data = generateSpy.mock.calls.at(-1)![0] as { items: Array<{ descripcion: string }> };
+    expect(data.items).toHaveLength(1);
+    expect(data.items[0]?.descripcion).toContain('21%');
   });
 });

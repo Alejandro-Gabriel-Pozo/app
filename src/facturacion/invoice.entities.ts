@@ -55,6 +55,31 @@ export interface Invoice {
   issuedAt: Date | null;
 }
 
+/**
+ * D8-Nivel B (23/08/2026, docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md)
+ * — línea real de un comprobante, congelada al emitir (R9/R12). Exactamente
+ * uno de `orderItemId`/`reservationId` (trazabilidad del origen, mismo
+ * criterio que `order_items.item_type`). Facturas emitidas antes de este
+ * cambio (Nivel A) no tienen ninguna fila acá -- ver
+ * `InvoicePdfService.generate()` para el fallback.
+ */
+export interface InvoiceItem {
+  id: string;
+  invoiceId: string;
+  orderItemId: string | null;
+  reservationId: string | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  subtotal: number;
+  ivaRate: number;
+  unit: string | null;
+  arcaUnitCode: number | null;
+  createdAt: Date;
+}
+
+export type CreateInvoiceItemInput = Omit<InvoiceItem, 'id' | 'invoiceId' | 'createdAt'>;
+
 export interface CreateInvoiceInput {
   id: string;
   businessId: string;
