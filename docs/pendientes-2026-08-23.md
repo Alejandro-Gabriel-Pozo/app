@@ -12,33 +12,60 @@ registrado ahí.
 
 ---
 
-## 🔴 URGENTE — ⚠️ EN PROGRESO: búsqueda de padrón ARCA (23/08/2026)
+## 🔴 URGENTE — ✅ CAUSA RAÍZ CONFIRMADA Y RESUELTA (23/08/2026)
 
-Fix desplegado (commits `34cf958` backend, `e533e59` frontend) para los dos
-problemas de abajo. **Falta la confirmación final del Problema 1** contra
-ARCA real — ver esa sección.
+Fix desplegado (commits `34cf958`, `f99a712`, backend; pendiente el commit
+de la causa raíz real más abajo). Confirmado con un log real de Render
+capturado por el dueño — ver Problema 1.
 
 **Reportado por el dueño en producción** (`host.zuluhub.com.ar`), en el
 modal "Editar cliente" → sección "Datos fiscales". Dos problemas
-distintos, los dos reales, hay que resolver los dos:
+distintos, los dos reales:
 
-### Problema 1 — Errores 400/500 al buscar en el padrón — ⚠️ PARCIAL (23/08/2026)
+### Problema 1 — Errores 400/500 al buscar en el padrón — ✅ RESUELTO (23/08/2026)
 
-**Confirmado leyendo el SDK real** (`@arcasdk/core`, `base-register-repository.js`
-y `register-scope-thirteen.repository.js`): el caso "no encontrado" YA lo
-maneja el propio SDK (`isAfipNotFoundError`: code 602 o mensaje "no existe")
-devolviendo `null`/`[]`, no tirando excepción — la hipótesis original de
-que el SDK tira crudo en ese caso era incorrecta. El 500 real venía de
-CUALQUIER OTRA excepción (timeout, fault SOAP con forma que
-`isAfipNotFoundError` no reconoce, etc.) que se colaba sin envolver hasta
-el catch-all de `error.middleware.ts`.
+**Causa raíz real, confirmada con el log de Render que pidió el dueño**
+(no la hipótesis original ni el "cualquier excepción" del fix anterior):
+el fault exacto que devolvía ARCA era
 
-**Arreglado (commit `34cf958`, app-main):** `getTaxpayerByCuit` y
-`resolveCuitByDni` en `padron.service.ts` ahora envuelven la llamada al
-SDK — cualquier excepción real se traduce a `AfipPadronUnavailableError`
-(503, no 500 genérico) y queda logueada completa server-side
-(`console.error`) para poder ver el detalle exacto la próxima vez.
-Tests nuevos cubriendo el caso. `tsc --noEmit` verde.
+```
+soap:Fault: Token recibido es para el servicio [wsfe], deberia ser
+para servicio [ws_sr_padron_a5,ws_sr_constancia_inscripcion].
+```
+
+Un Ticket de Acceso de WSAA (Token+Sign) está scoped a **un solo servicio**
+de ARCA — un ticket para `wsfe` (facturación) no sirve para
+`ws_sr_padron_a5`/`ws_sr_padron_a13` (padrón). `SqlAfipTicketStorage`
+(`afip-ticket-storage.ts`) cacheaba **un solo ticket por negocio** en
+`business_profile.afip_ticket_encrypted` — el propio comentario del
+código decía explícitamente "solo se usa el servicio WSFE en este
+negocio, así que `serviceName` no se usa para particionar nada". Ese
+supuesto era cierto hasta el 19/08/2026; dejó de serlo en cuanto
+`PadronService` empezó a pedir tickets para otros servicios — el ticket
+de `wsfe` ya cacheado (de facturación electrónica) se reusaba para las
+llamadas al padrón, y ARCA las rechazaba con el fault de arriba.
+
+**Arreglado:**
+- Tabla nueva `afip_tickets` (`service_name` PK, particiona el cache por
+  servicio) reemplaza las columnas `business_profile.afip_ticket_*`
+  (dropeadas). `CURRENT_SCHEMA_VERSION` subida a 34 — **sin este bump el
+  cambio de schema nunca se hubiera aplicado** a negocios ya
+  provisionados (`migrate-tenants.ts` se salta un negocio si su
+  `schema_version` ya coincide con la constante).
+- `AfipCredentialsRepository.getTicket/saveTicket/clearTicket` ahora
+  reciben `serviceName`; `SqlAfipTicketStorage` deja de ignorarlo.
+- `save()`/`clear()` de credenciales siguen invalidando TODOS los
+  tickets cacheados (cambiar de certificado invalida todo, no solo un
+  servicio).
+- Se mantiene también el fix anterior (`AfipPadronUnavailableError`,
+  503 en vez de 500 genérico) como red de seguridad para cualquier OTRA
+  excepción real que no sea este bug puntual.
+- Tests nuevos, incluyendo la regresión concreta: un ticket cacheado
+  para `wsfe` no se devuelve para `ws_sr_padron_a5`. `tsc --noEmit` y
+  suite completa (904 tests) verdes.
+- Se aplica solo automáticamente: `render.yaml` corre `migrate:tenants`
+  en el build, así que el próximo deploy crea `afip_tickets` en la BD
+  real sin intervención manual.
 
 **El 400 de CUIT inválido no era un bug de UX** — se revisó
 `extractErrorMessage` (`appfrontend-main/src/lib/http.ts`) y ya traduce
@@ -46,11 +73,9 @@ el mensaje del dígito verificador a un toast entendible. Lo que se vio en
 la pestaña de red como "400 Bad Request" es la etiqueta HTTP estándar de
 DevTools, no necesariamente lo que se le mostró al usuario.
 
-**Sigue sin confirmar contra ARCA real** — nunca se probó (ni en dev ni
-en producción). Decisión del dueño (23/08/2026): esperar a que un
-CUIT/DNI real dispare el error de nuevo con el fix ya desplegado, y
-revisar el log de Render en ese momento para ver el detalle exacto que
-devuelve ARCA. **No cerrar este ítem sin haber leído ese log.**
+**Falta que el dueño confirme en producción** con un CUIT/DNI real que
+la búsqueda ya funciona de punta a punta — recién ahí se cierra del
+todo.
 
 <details><summary>Investigación original (histórico, ya resuelta como se explica arriba)</summary>
 

@@ -39,7 +39,16 @@ export interface AfipCredentialsRepository {
   save(cert: string, key: string, environment: AfipEnvironment): Promise<void>;
   clear(): Promise<void>;
 
-  getTicket(): Promise<AfipTicketCache | null>;
-  saveTicket(credentialsJson: string, expiresAt: Date): Promise<void>;
-  clearTicket(): Promise<void>;
+  /**
+   * Un Ticket de Acceso de WSAA está scoped a UN SOLO servicio de ARCA
+   * (`wsfe`, `ws_sr_padron_a5`, `ws_sr_padron_a13`, ...) -- `serviceName`
+   * particiona el cache por servicio. Bug real en producción (23/08/2026,
+   * pendientes-2026-08-23.md): antes de esto había un solo ticket por
+   * negocio, así que un ticket obtenido para `wsfe` se reusaba para el
+   * padrón y ARCA lo rechazaba con "Token recibido es para el servicio
+   * [wsfe], debería ser para servicio [ws_sr_padron_a5,...]".
+   */
+  getTicket(serviceName: string): Promise<AfipTicketCache | null>;
+  saveTicket(serviceName: string, credentialsJson: string, expiresAt: Date): Promise<void>;
+  clearTicket(serviceName: string): Promise<void>;
 }

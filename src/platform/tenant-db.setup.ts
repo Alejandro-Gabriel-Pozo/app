@@ -269,7 +269,12 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `cancellation_policies` nueva (tramos de % según anticipación) y
 // `financial_transactions.reversed_invoice_id` (qué factura cubre cada
 // REFUND del reparto LIFO).
-export const CURRENT_SCHEMA_VERSION = 33;
+// v34 (23/08/2026): bug real en producción, pendientes-2026-08-23.md — el
+// Ticket de Acceso de WSAA está scoped a un solo servicio de ARCA, pero
+// `business_profile.afip_ticket_*` guardaba uno solo por negocio. Tabla
+// `afip_tickets` nueva (particionada por `service_name`); se dropean las
+// dos columnas viejas de `business_profile`.
+export const CURRENT_SCHEMA_VERSION = 34;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

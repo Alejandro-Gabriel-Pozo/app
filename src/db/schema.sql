@@ -2300,18 +2300,21 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_sales_point         I
 -- db_url_encrypted (encryptConnectionString/decryptConnectionString,
 -- tenant-db.setup.ts) -- un solo mecanismo de cifrado en el proyecto, no
 -- uno nuevo por secreto.
--- afip_ticket_encrypted/afip_ticket_expires_at: cachea el Ticket de
--- Acceso de WSAA (Token+Sign, dura 12hs) para no volver a autenticar en
--- cada request -- un ticket por negocio alcanza porque solo se usa el
--- servicio WSFE. Cifrado igual que el certificado.
+-- El Ticket de Acceso de WSAA (Token+Sign, dura 12hs) se cacheaba acá
+-- mismo (afip_ticket_encrypted/afip_ticket_expires_at) asumiendo que un
+-- ticket por negocio alcanzaba porque solo se usaba el servicio WSFE --
+-- ESE SUPUESTO ERA FALSO apenas se agregó un segundo servicio de ARCA
+-- (PadronService, 19/08/2026) y causó un bug real en producción. Esas dos
+-- columnas se movieron a la tabla `afip_tickets` (ver más abajo en este
+-- archivo, 23/08/2026, pendientes-2026-08-23.md), particionada por
+-- `service_name` -- no tocar este comentario histórico más que para
+-- dejar esta nota, el DROP COLUMN real está en la sección de más abajo.
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_iva_rate      NUMERIC(5,2) NOT NULL DEFAULT 21.00 CHECK (default_iva_rate >= 0);
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS prices_include_iva    BOOLEAN      NOT NULL DEFAULT TRUE;
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_environment      VARCHAR(20)
   CHECK (afip_environment IS NULL OR afip_environment IN ('homologacion', 'produccion'));
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_cert_encrypted   TEXT;
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_key_encrypted    TEXT;
-ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_ticket_encrypted TEXT;
-ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS afip_ticket_expires_at TIMESTAMPTZ;
 
 -- afip_cuit (schema v25) -- CUIT con el que InvoiceService se autentica
 -- contra AFIP, si difiere de tax_id (el CUIT legal real que se muestra en
@@ -2667,4 +2670,36 @@ CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_i
 -- ---------------------------------------------------------------------------
 ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS reversed_invoice_id VARCHAR(255)
   REFERENCES invoices(id);
+
+-- ---------------------------------------------------------------------------
+-- afip_tickets (23/08/2026, pendientes-2026-08-23.md -- bug real en
+-- producción confirmado por log de Render): un Ticket de Acceso de WSAA
+-- está scoped a UN SOLO servicio de ARCA -- el comentario original de
+-- `afip_ticket_encrypted`/`afip_ticket_expires_at` (ver más arriba en este
+-- archivo) asumía "solo se usa el servicio WSFE en este negocio" y por eso
+-- un ticket por negocio alcanzaba. Ese supuesto dejó de ser cierto el
+-- 19/08/2026 cuando `PadronService` empezó a pedir tickets para
+-- `ws_sr_padron_a5`/`ws_sr_padron_a13` -- el ticket de `wsfe` cacheado se
+-- reusaba para esas llamadas y ARCA las rechazaba con un SOAP fault
+-- ("Token recibido es para el servicio [wsfe], debería ser para servicio
+-- [ws_sr_padron_a5,...]"), que se colaba como 500 genérico en el negocio.
+--
+-- No es maestro/transacción/documento (criterios-datos.md Parte 1) -- es
+-- cache de infraestructura, TTL de 12hs igual que antes: `service_name` es
+-- la clave natural (no hace falta `id` técnico separado), sin
+-- `active`/`deleted_at` (R3 no aplica, una fila vencida o de un servicio
+-- que ya no se usa simplemente se sobrescribe o se borra, no hay estado de
+-- negocio que preservar). Sin columna de tenant (A2.8 -- este proyecto
+-- aísla tenants con una DB por negocio, no con filtro por businessId; esta
+-- tabla vive en esa misma DB ya aislada). `ON CONFLICT (service_name) DO
+-- UPDATE` en el repositorio -- idempotente, es un cache que se pisa, no un
+-- alta que pueda duplicarse.
+ALTER TABLE business_profile DROP COLUMN IF EXISTS afip_ticket_encrypted;
+ALTER TABLE business_profile DROP COLUMN IF EXISTS afip_ticket_expires_at;
+
+CREATE TABLE IF NOT EXISTS afip_tickets (
+  service_name     VARCHAR(50)  PRIMARY KEY,
+  ticket_encrypted TEXT         NOT NULL,
+  expires_at       TIMESTAMPTZ  NOT NULL
+);
 

@@ -51,52 +51,53 @@ export class SqlAfipCredentialsRepository implements AfipCredentialsRepository {
       encryptConnectionString(cert),
       encryptConnectionString(key),
     ]);
-    // Cambiar de certificado invalida cualquier ticket cacheado del
-    // certificado viejo -- WSAA lo hubiera rechazado igual en el próximo
-    // uso, pero limpiarlo acá evita el intento de más y el error confuso.
+    // Cambiar de certificado invalida CUALQUIER ticket cacheado del
+    // certificado viejo, de TODOS los servicios (wsfe, padrón, etc.) --
+    // WSAA lo hubiera rechazado igual en el próximo uso, pero limpiarlo
+    // acá evita el intento de más y el error confuso.
     await this.db.query(
       `UPDATE business_profile
-       SET afip_cert_encrypted = $1, afip_key_encrypted = $2, afip_environment = $3,
-           afip_ticket_encrypted = NULL, afip_ticket_expires_at = NULL, updated_at = NOW()
+       SET afip_cert_encrypted = $1, afip_key_encrypted = $2, afip_environment = $3, updated_at = NOW()
        WHERE id = 'default'`,
       [certEncrypted, keyEncrypted, environment],
     );
+    await this.db.query(`DELETE FROM afip_tickets`);
   }
 
   async clear(): Promise<void> {
     await this.db.query(
       `UPDATE business_profile
-       SET afip_cert_encrypted = NULL, afip_key_encrypted = NULL, afip_environment = NULL,
-           afip_ticket_encrypted = NULL, afip_ticket_expires_at = NULL, updated_at = NOW()
+       SET afip_cert_encrypted = NULL, afip_key_encrypted = NULL, afip_environment = NULL, updated_at = NOW()
        WHERE id = 'default'`,
     );
+    await this.db.query(`DELETE FROM afip_tickets`);
   }
 
-  async getTicket(): Promise<AfipTicketCache | null> {
-    const { rows } = await this.db.query<{ afip_ticket_encrypted: string | null; afip_ticket_expires_at: string | null }>(
-      `SELECT afip_ticket_encrypted, afip_ticket_expires_at FROM business_profile WHERE id = 'default' LIMIT 1`,
+  async getTicket(serviceName: string): Promise<AfipTicketCache | null> {
+    const { rows } = await this.db.query<{ ticket_encrypted: string; expires_at: string }>(
+      `SELECT ticket_encrypted, expires_at FROM afip_tickets WHERE service_name = $1 LIMIT 1`,
+      [serviceName],
     );
     const row = rows[0];
-    if (!row?.afip_ticket_encrypted || !row.afip_ticket_expires_at) return null;
+    if (!row) return null;
     return {
-      credentials: await decryptConnectionString(row.afip_ticket_encrypted),
-      expiresAt: new Date(row.afip_ticket_expires_at),
+      credentials: await decryptConnectionString(row.ticket_encrypted),
+      expiresAt: new Date(row.expires_at),
     };
   }
 
-  async saveTicket(credentialsJson: string, expiresAt: Date): Promise<void> {
+  async saveTicket(serviceName: string, credentialsJson: string, expiresAt: Date): Promise<void> {
     const encrypted = await encryptConnectionString(credentialsJson);
     await this.db.query(
-      `UPDATE business_profile
-       SET afip_ticket_encrypted = $1, afip_ticket_expires_at = $2
-       WHERE id = 'default'`,
-      [encrypted, expiresAt.toISOString()],
+      `INSERT INTO afip_tickets (service_name, ticket_encrypted, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (service_name) DO UPDATE
+       SET ticket_encrypted = EXCLUDED.ticket_encrypted, expires_at = EXCLUDED.expires_at`,
+      [serviceName, encrypted, expiresAt.toISOString()],
     );
   }
 
-  async clearTicket(): Promise<void> {
-    await this.db.query(
-      `UPDATE business_profile SET afip_ticket_encrypted = NULL, afip_ticket_expires_at = NULL WHERE id = 'default'`,
-    );
+  async clearTicket(serviceName: string): Promise<void> {
+    await this.db.query(`DELETE FROM afip_tickets WHERE service_name = $1`, [serviceName]);
   }
 }

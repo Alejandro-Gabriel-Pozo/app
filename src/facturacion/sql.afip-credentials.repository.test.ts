@@ -15,49 +15,52 @@ afterEach(() => {
 });
 
 /**
- * Fake mínimo que simula la fila singleton `business_profile` -- suficiente
- * para probar que save()/getDecrypted()/getStatus() leen y escriben las
- * columnas correctas sin necesitar Postgres real.
+ * Fake mínimo que simula la fila singleton `business_profile` + la tabla
+ * `afip_tickets` (particionada por `service_name`, 23/08/2026) -- suficiente
+ * para probar que save()/getDecrypted()/getStatus()/*Ticket() leen y
+ * escriben lo correcto sin necesitar Postgres real.
  */
-function fakeSqlClient(): SqlClient & { row: Record<string, unknown> } {
+function fakeSqlClient(): SqlClient & { row: Record<string, unknown>; tickets: Map<string, { ticket_encrypted: string; expires_at: string }> } {
   const state = {
     row: {
       afip_cert_encrypted: null as string | null,
       afip_key_encrypted: null as string | null,
       afip_environment: null as string | null,
-      afip_ticket_encrypted: null as string | null,
-      afip_ticket_expires_at: null as string | null,
     },
+    tickets: new Map<string, { ticket_encrypted: string; expires_at: string }>(),
   };
 
   return {
     get row() { return state.row; },
+    get tickets() { return state.tickets; },
     async query<T>(sql: string, params: unknown[] = []) {
       if (sql.includes('UPDATE business_profile') && sql.includes('afip_cert_encrypted = $1')) {
         state.row.afip_cert_encrypted = params[0] as string;
         state.row.afip_key_encrypted = params[1] as string;
         state.row.afip_environment = params[2] as string;
-        state.row.afip_ticket_encrypted = null;
-        state.row.afip_ticket_expires_at = null;
         return { rows: [] as T[], rowCount: 1 };
       }
       if (sql.includes('SET afip_cert_encrypted = NULL')) {
         state.row.afip_cert_encrypted = null;
         state.row.afip_key_encrypted = null;
         state.row.afip_environment = null;
-        state.row.afip_ticket_encrypted = null;
-        state.row.afip_ticket_expires_at = null;
         return { rows: [] as T[], rowCount: 1 };
       }
-      if (sql.includes('SET afip_ticket_encrypted = $1')) {
-        state.row.afip_ticket_encrypted = params[0] as string;
-        state.row.afip_ticket_expires_at = params[1] as string;
+      if (sql.includes('DELETE FROM afip_tickets') && sql.includes('WHERE service_name')) {
+        state.tickets.delete(params[0] as string);
         return { rows: [] as T[], rowCount: 1 };
       }
-      if (sql.includes('SET afip_ticket_encrypted = NULL')) {
-        state.row.afip_ticket_encrypted = null;
-        state.row.afip_ticket_expires_at = null;
+      if (sql.includes('DELETE FROM afip_tickets')) {
+        state.tickets.clear();
         return { rows: [] as T[], rowCount: 1 };
+      }
+      if (sql.includes('INSERT INTO afip_tickets')) {
+        state.tickets.set(params[0] as string, { ticket_encrypted: params[1] as string, expires_at: params[2] as string });
+        return { rows: [] as T[], rowCount: 1 };
+      }
+      if (sql.includes('SELECT ticket_encrypted, expires_at FROM afip_tickets')) {
+        const ticket = state.tickets.get(params[0] as string);
+        return { rows: (ticket ? [ticket as T] : []), rowCount: ticket ? 1 : 0 };
       }
       if (sql.includes('has_cert')) {
         return {
@@ -115,53 +118,74 @@ describe('SqlAfipCredentialsRepository', () => {
     expect(JSON.stringify(status)).not.toContain('KEY');
   });
 
-  it('save() con un certificado nuevo invalida cualquier ticket WSAA cacheado del certificado viejo', async () => {
+  it('save() con un certificado nuevo invalida cualquier ticket WSAA cacheado del certificado viejo, de todos los servicios', async () => {
     const client = fakeSqlClient();
     const repo = new SqlAfipCredentialsRepository(client);
 
     await repo.save('CERT-1', 'KEY-1', 'homologacion');
-    await repo.saveTicket(JSON.stringify({ token: 'x' }), new Date(Date.now() + 3_600_000));
-    expect(await repo.getTicket()).not.toBeNull();
+    await repo.saveTicket('wsfe', JSON.stringify({ token: 'x' }), new Date(Date.now() + 3_600_000));
+    await repo.saveTicket('ws_sr_padron_a5', JSON.stringify({ token: 'y' }), new Date(Date.now() + 3_600_000));
+    expect(await repo.getTicket('wsfe')).not.toBeNull();
+    expect(await repo.getTicket('ws_sr_padron_a5')).not.toBeNull();
 
     await repo.save('CERT-2', 'KEY-2', 'homologacion');
-    expect(await repo.getTicket()).toBeNull();
+    expect(await repo.getTicket('wsfe')).toBeNull();
+    expect(await repo.getTicket('ws_sr_padron_a5')).toBeNull();
   });
 
-  it('clear() borra certificado, clave, ambiente y ticket cacheado', async () => {
+  it('clear() borra certificado, clave, ambiente y todos los tickets cacheados', async () => {
     const client = fakeSqlClient();
     const repo = new SqlAfipCredentialsRepository(client);
 
     await repo.save('CERT', 'KEY', 'produccion');
+    await repo.saveTicket('wsfe', '{"token":"abc"}', new Date());
     await repo.clear();
 
     expect(await repo.getStatus()).toEqual({ configured: false, environment: null });
     expect(await repo.getDecrypted()).toBeNull();
+    expect(await repo.getTicket('wsfe')).toBeNull();
   });
 
-  describe('ticket WSAA (cache del Token de Acceso, 12hs)', () => {
+  describe('ticket WSAA (cache del Token de Acceso, 12hs, particionado por servicio)', () => {
     it('saveTicket()/getTicket() hacen roundtrip cifrado', async () => {
       const client = fakeSqlClient();
       const repo = new SqlAfipCredentialsRepository(client);
       const expiresAt = new Date('2026-08-20T00:00:00.000Z');
 
-      await repo.saveTicket('{"token":"abc","sign":"def"}', expiresAt);
-      const cached = await repo.getTicket();
+      await repo.saveTicket('wsfe', '{"token":"abc","sign":"def"}', expiresAt);
+      const cached = await repo.getTicket('wsfe');
 
       expect(cached?.credentials).toBe('{"token":"abc","sign":"def"}');
       expect(cached?.expiresAt.toISOString()).toBe(expiresAt.toISOString());
-      expect(client.row.afip_ticket_encrypted).not.toContain('token');
+      expect(client.tickets.get('wsfe')?.ticket_encrypted).not.toContain('token');
     });
 
-    it('clearTicket() borra solo el ticket, no el certificado', async () => {
+    it('clearTicket() borra solo el ticket de ese servicio, no el certificado ni otros tickets', async () => {
       const client = fakeSqlClient();
       const repo = new SqlAfipCredentialsRepository(client);
 
       await repo.save('CERT', 'KEY', 'homologacion');
-      await repo.saveTicket('{"token":"abc"}', new Date());
-      await repo.clearTicket();
+      await repo.saveTicket('wsfe', '{"token":"abc"}', new Date());
+      await repo.saveTicket('ws_sr_padron_a5', '{"token":"def"}', new Date());
+      await repo.clearTicket('wsfe');
 
-      expect(await repo.getTicket()).toBeNull();
+      expect(await repo.getTicket('wsfe')).toBeNull();
+      expect(await repo.getTicket('ws_sr_padron_a5')).not.toBeNull();
       expect(await repo.getStatus()).toEqual({ configured: true, environment: 'homologacion' });
+    });
+
+    // Bug real en producción, 23/08/2026 (pendientes-2026-08-23.md): un
+    // ticket cacheado para `wsfe` se reusaba para las llamadas al padrón
+    // porque antes había un solo ticket por negocio -- ARCA rechazaba esas
+    // llamadas con un SOAP fault. Este test es la regresión concreta.
+    it('un ticket cacheado para wsfe NO se devuelve para ws_sr_padron_a5 -- son servicios independientes', async () => {
+      const client = fakeSqlClient();
+      const repo = new SqlAfipCredentialsRepository(client);
+
+      await repo.saveTicket('wsfe', '{"token":"solo-wsfe"}', new Date(Date.now() + 3_600_000));
+
+      expect(await repo.getTicket('ws_sr_padron_a5')).toBeNull();
+      expect((await repo.getTicket('wsfe'))?.credentials).toBe('{"token":"solo-wsfe"}');
     });
   });
 });
