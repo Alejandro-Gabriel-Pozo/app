@@ -836,11 +836,19 @@ oculta el `<select>` de recurso y manda `categoryId` en vez de
   navegadores lo garantizan (ej. Firefox no siempre) — el `value`/
   `onChange` de estos inputs ya producía/consumía `HH:MM` sin importar
   `lang`, el fix es puramente visual.
-- **Categorías "0 campos definidos" — sin tocar, fuera de alcance de esta sesión.** el backend ya soporta campos
-  dinámicos tipados (`CategoryFieldSchema` en `category.schemas.ts`) — al
-  modal de "Editar categoría" del frontend le falta la sección para
-  agregar/editar esos campos. No hay que construir nada nuevo en el
-  backend.
+- **Categorías "0 campos definidos" — ✅ RESUELTO (23/08/2026, commit
+  `57c6f42`, `appfrontend-main`).** El backend ya soportaba campos
+  dinámicos tipados (`CategoryFieldSchema` en `category.schemas.ts`), sin
+  cambios necesarios ahí. Se agregó al modal de "Editar/Nueva categoría"
+  (`dashboard/categorias/page.tsx`) la sección para agregar/editar/quitar
+  campos: nombre interno, label visible, tipo (texto/número/opciones/sí-no/
+  fecha), obligatorio, y opciones separadas por coma para el tipo
+  "opciones" — mismo criterio de validación que `CategoryFieldSchema`
+  (nombre/label obligatorios, "opciones" necesita al menos una opción),
+  validado en el cliente antes de mandar. `tsc --noEmit` y `next build`
+  verdes. No verificado contra un backend real conectado (misma limitación
+  que el resto de la sesión) — sí se confirmó que la pantalla renderiza sin
+  errores (200 OK) contra el dev server local.
 - **`basePrice` en Recurso:** no es un bug — es el fallback deliberado de
   último nivel para "reservé un Recurso sin pasar por un Servicio del
   catálogo" (`serviceId` es opcional). El problema real es solo de UI: se
