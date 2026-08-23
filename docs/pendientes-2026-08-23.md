@@ -476,11 +476,16 @@ Detalle completo del razonamiento en el mensaje del commit.
   Hallazgo aparte encontrado de paso: `users.routes.ts:135,151` todavía
   dice *"todavía no existe un flujo de invitación automático"* — mensaje
   de error obsoleto, el flujo de invitación existe desde D2.
-- **I9 (auditoría de campos solo sobre maestros parciales):** refutado en
-  parte — recursos y servicios SÍ están auditados
-  (`resources.routes.ts:260`, `bookable-service.service.ts:108`), contra
-  lo que decía el audit. Sí es cierto que los campos propios de Cliente
-  (nombre/kind/activo) no se auditan, y ningún documento se audita.
+- **I9 — ✅ RESUELTO PARCIAL (23/08/2026, commit `ec8efc1`) — auditoría de
+  campos solo sobre maestros parciales.** Refutado en parte contra lo que
+  decía el audit: recursos y servicios YA estaban auditados
+  (`resources.routes.ts:260`, `bookable-service.service.ts:108`). Lo que
+  sí era cierto — los campos propios de Cliente (displayName/kind/active/
+  enableCurrentAccount) no se auditaban — está arreglado: `PATCH
+  /customers/:id` ahora graba `recordFieldChanges()`, mismo patrón que
+  `resources.routes.ts`. Sigue sin resolver la otra mitad del hallazgo:
+  **ningún DOCUMENTO se audita** (facturas, notas de crédito) — eso es un
+  alcance mayor, no se tocó.
 - **I10 (`docs/analysis/dead-code.txt` vencido):** ✅ confirmado,
   referencia `src/domain/entities.ts`/`Reservation.ts`, ya no existen.
 - **I11 (5 vulnerabilidades npm altas, `@arcasdk/pdf`→`puppeteer`→
