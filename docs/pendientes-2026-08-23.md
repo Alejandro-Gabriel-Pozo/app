@@ -396,3 +396,96 @@ número de reserva/cliente en listados + prefijo editable en Mi Negocio
 (D6); pantalla de reportes POS/CRM (D7); carga de IVA/unidad/código ARCA
 al crear/editar un producto (D8); verificación en el panel de POS de la
 autoridad de precio server-side para productos (D9-Parte 2).
+
+---
+
+## I. Auditoría externa verificada contra el código (23/08/2026)
+
+El dueño pasó un documento de auditoría de otro origen ("AUDITORIA:
+VERIFICAR:") con 15 hallazgos. Se verificó cada uno contra el código real
+(Grep/Read + `npm audit` + `vitest --coverage`, dos forks en paralelo +
+verificación directa de los ítems #2/#3). Resultado completo abajo — la
+línea base de cobertura que traía el audit (49.93% líneas / 73.37%
+funciones) **ya no aplica**: hoy (con el código agregado en esta sesión)
+es 36.98%/59.93% — la caída es real, no un error de medición, y refuerza
+el hallazgo I6.
+
+### I1–I2. ✅ RESUELTOS (commit `ce0de1f`) — signo de REFUND + `voidByReservationId`/`voidByOrderId` anulando pagos
+
+El hallazgo más grave del audit, confirmado y corregido:
+`getNetBalanceByCustomerId()`/`getNetBalanceByStayId()` sumaban `REFUND`
+con el mismo signo que `PAYMENT` (`-amount`) en vez del opuesto — cobrar
+una seña de 1000 y reembolsarla completa dejaba un saldo de **-2000, no
+0**. Al investigar el escenario completo se encontró un segundo bug
+relacionado: `voidByReservationId()`/`voidByOrderId()` anulaban
+CUALQUIER transacción de la reserva/orden sin filtrar por `type` — un
+`PAYMENT` ya cobrado quedaba `VOIDED` junto con el `CHARGE` al cancelar.
+Los dos bugs juntos eran necesarios para el caso real. Fix + tests de
+regresión con los números reales + suite de integración nueva (Postgres
+real, no se pudo correr en este entorno por falta de `TEST_DATABASE_URL`
+— **correr una vez con una BD real antes de confiar ciegamente en ella**).
+Detalle completo del razonamiento en el mensaje del commit.
+
+### Matriz de hallazgos "cerrados" que trajo el audit — corregida
+
+| Hallazgo del audit | Veredicto real |
+|---|---|
+| CC mezcla huéspedes / `kind` alcanza sin flag nuevo | **Exagerado** — `AccountsReceivableService` solo valida `kind` para transferir a cuentas por cobrar, no filtra el panel general. Por eso F1-Pieza 1 (`enable_current_account`) hacía falta de verdad. |
+| Reversión LIFO (C2) | ✅ Confirmado tal cual. |
+| Trazabilidad medio de pago (schema v28) | ✅ Confirmado. |
+| Invitaciones TTL 7 días + reenvío rota token | ✅ Confirmado exacto. |
+| IVA multi-alícuota (D8) | ✅ Confirmado. |
+
+### Hallazgos abiertos, verificados con números reales (no los que traía el audit)
+
+- **I3 (sin entidad Empleado / auditoría no resoluble a persona):**
+  parcialmente resuelto por F2 de hoy (nombre/DNI/teléfono ya viven en
+  `identities`) — pero solo sirve para la pantalla de Usuarios.
+  `audit_log.changed_by` sigue sin poder resolverse a un nombre:
+  `identities` vive en la BD de plataforma, `audit_log` en la BD del
+  tenant — el propio schema documenta "SIN FK a `users` a propósito".
+  `GET /api/audit-log` sigue devolviendo filas crudas.
+- **I4 (conciliación de pagos — "Registrar Pago" sin contexto):**
+  confirmado, `recordPayment()` no tiene ningún campo para indicar qué
+  factura salda un pago. El patrón (`reversedInvoiceId`) ya existe del
+  lado del reembolso (C2) y no del cobro. Es la brecha estructural más
+  grande que queda — candidata a resolver junto con C1-Fase C.
+- **I5 (sin `credit_limit`):** ✅ confirmado, cero coincidencias en todo
+  el repo.
+- **I6 (float/`round2` duplicado):** ✅ confirmado — `round2` idéntica en
+  `cancellation-refund.service.ts` e `invoice.service.ts`. `parseFloat`
+  sobre dinero en 16 archivos.
+- **I7 (cobertura de rutas) — peor de lo que decía el audit:** 31
+  archivos `*.routes.ts` reales (no 17) — `vitest.config.ts` excluye
+  `api/**`/`platform/**`/`security/**` (14 archivos) de la medición por
+  completo, ni siquiera aparecen como 0%. De los 17 que sí mide, 15 en
+  0% (~4.300 líneas sin cubrir). 188 call-sites de `authorize()`.
+- **I8 (dos caminos de alta de usuario):** los dos caminos son reales,
+  pero la cita del audit está mal (R14 vive en `criterios-datos.md`, no
+  en `DEFENSIVE_DEVELOPING.md`, y dice "no escribir directo contra la
+  tabla saltando la capa de servicio" — los dos caminos SÍ pasan por la
+  capa de servicio, no es una violación de R14 tal como está escrita).
+  Hallazgo aparte encontrado de paso: `users.routes.ts:135,151` todavía
+  dice *"todavía no existe un flujo de invitación automático"* — mensaje
+  de error obsoleto, el flujo de invitación existe desde D2.
+- **I9 (auditoría de campos solo sobre maestros parciales):** refutado en
+  parte — recursos y servicios SÍ están auditados
+  (`resources.routes.ts:260`, `bookable-service.service.ts:108`), contra
+  lo que decía el audit. Sí es cierto que los campos propios de Cliente
+  (nombre/kind/activo) no se auditan, y ningún documento se audita.
+- **I10 (`docs/analysis/dead-code.txt` vencido):** ✅ confirmado,
+  referencia `src/domain/entities.ts`/`Reservation.ts`, ya no existen.
+- **I11 (5 vulnerabilidades npm altas, `@arcasdk/pdf`→`puppeteer`→
+  `extract-zip`):** ✅ confirmado exacto — pero corrección importante:
+  `fixAvailable: false` en las 5. `npm audit fix` **no las arregla**,
+  hace falta bump manual de puppeteer o esperar el fix de `@arcasdk/pdf`.
+
+### Hallazgo aparte, sin verificar en profundidad
+
+- Tooling: el comando documentado para correr tests de integración
+  (`TEST_DATABASE_URL=... npx vitest run src/tests/integration`, ver
+  comentario en `vitest.config.ts`) **no funciona** — el `exclude` del
+  config bloquea el path incluso pasado explícito por CLI. Afecta tanto
+  al test de integración que ya existía como al nuevo de esta sesión.
+  No se tocó (fuera de alcance de este fix puntual) — pendiente decidir
+  si vale la pena arreglar el config o documentar el flag correcto.
