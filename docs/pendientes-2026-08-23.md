@@ -445,11 +445,19 @@ Detalle completo del razonamiento en el mensaje del commit.
   `identities` vive en la BD de plataforma, `audit_log` en la BD del
   tenant — el propio schema documenta "SIN FK a `users` a propósito".
   `GET /api/audit-log` sigue devolviendo filas crudas.
-- **I4 (conciliación de pagos — "Registrar Pago" sin contexto):**
-  confirmado, `recordPayment()` no tiene ningún campo para indicar qué
-  factura salda un pago. El patrón (`reversedInvoiceId`) ya existe del
-  lado del reembolso (C2) y no del cobro. Es la brecha estructural más
-  grande que queda — candidata a resolver junto con C1-Fase C.
+- **I4 — ✅ RESUELTO (23/08/2026, commits `cc2a84f` backend, `6143d21`
+  frontend) — conciliación de pagos ("Registrar Pago" sin contexto).**
+  Confirmado, `recordPayment()` no tenía ningún campo para indicar qué
+  factura salda un pago; el patrón (`reversedInvoiceId`) ya existía del
+  lado del reembolso (C2) y no del cobro. Arreglado espejando ese mismo
+  patrón: `financial_transactions.settled_invoice_id` nuevo,
+  `recordPayment()` acepta `allocations` opcional (una fila PAYMENT por
+  factura elegida + resto sin asociar si sobra), `GET /customers/:id/
+  outstanding-invoices` nuevo. El modal de "Registrar Pago" en
+  `dashboard/cuentas-corrientes` lista las facturas pendientes con
+  checkbox + monto editable por factura, tal como lo pidió el dueño.
+  `CURRENT_SCHEMA_VERSION` a 37. Se cruza con C1-Fase C (facturación
+  corporate consolidada) pero no dependía de ella para resolverse.
 - **I5 (sin `credit_limit`):** ✅ confirmado, cero coincidencias en todo
   el repo.
 - **I6 (float/`round2` duplicado):** ✅ confirmado — `round2` idéntica en
@@ -480,12 +488,27 @@ Detalle completo del razonamiento en el mensaje del commit.
   `fixAvailable: false` en las 5. `npm audit fix` **no las arregla**,
   hace falta bump manual de puppeteer o esperar el fix de `@arcasdk/pdf`.
 
-### Hallazgo aparte, sin verificar en profundidad
+### Hallazgo aparte — ✅ RESUELTO (commit `31607ef`)
 
 - Tooling: el comando documentado para correr tests de integración
   (`TEST_DATABASE_URL=... npx vitest run src/tests/integration`, ver
-  comentario en `vitest.config.ts`) **no funciona** — el `exclude` del
-  config bloquea el path incluso pasado explícito por CLI. Afecta tanto
-  al test de integración que ya existía como al nuevo de esta sesión.
-  No se tocó (fuera de alcance de este fix puntual) — pendiente decidir
-  si vale la pena arreglar el config o documentar el flag correcto.
+  comentario viejo en `vitest.config.ts`) **no funcionaba** — el
+  `exclude` del config se aplica siempre, incluso pasando ese path
+  explícito por CLI (y `--exclude` por CLI solo suma patrones, no los
+  reemplaza). Afectaba tanto al test de integración que ya existía como
+  al nuevo de esta sesión (I1/I2). Arreglado con
+  `vitest.integration.config.ts` (sin esa exclusión) + `npm run
+  test:integration`. Verificado: corre y saltea gracefully los 2
+  archivos de integración sin `TEST_DATABASE_URL`; la suite default
+  (`npm test`) sigue excluyéndolos igual que antes (926 tests, sin
+  cambios).
+
+### Lección documentada en `criterios-negocio.md` (commit `31607ef`)
+
+- Corolario nuevo bajo **A3.9** (todo movimiento tiene contrapartida),
+  grounded en el bug real I1/I2 de esta sesión: un movimiento que
+  revierte a otro (REFUND vs PAYMENT) usa signo OPUESTO, nunca el mismo;
+  un `voidBy*`/`cancelBy*` por entidad padre nunca debe tocar filas de
+  dinero ya cobrado sin filtrar por `type`. Mismo criterio que R2/R3 del
+  incidente original del 13/08 — una regla nueva nace de un bug real, no
+  en abstracto.
