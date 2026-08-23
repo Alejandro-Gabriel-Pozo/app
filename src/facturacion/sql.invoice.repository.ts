@@ -94,6 +94,17 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map(rowToEntity);
   }
 
+  async getByReservationId(reservationId: string): Promise<Invoice[]> {
+    const { rows } = await this.db.query<InvoiceRow>(
+      `SELECT i.* FROM invoices i
+       JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
+       WHERE ft.reservation_id = $1
+       ORDER BY i.created_at ASC`,
+      [reservationId],
+    );
+    return rows.map(rowToEntity);
+  }
+
   async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
     return this.createWithClient(this.db, input, afipRequest, items);
   }

@@ -264,7 +264,12 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `invoice_items` nueva. Facturas nuevas ganan líneas reales por
 // producto/reserva; facturas viejas (Nivel A) siguen sin filas acá, el
 // PDF les sigue mostrando el ítem agrupado por tasa para siempre.
-export const CURRENT_SCHEMA_VERSION = 32;
+// v33 (23/08/2026): cancelación con reembolso + Nota de Crédito (C2,
+// docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md) — tabla
+// `cancellation_policies` nueva (tramos de % según anticipación) y
+// `financial_transactions.reversed_invoice_id` (qué factura cubre cada
+// REFUND del reparto LIFO).
+export const CURRENT_SCHEMA_VERSION = 33;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

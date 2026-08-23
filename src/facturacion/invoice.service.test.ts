@@ -15,8 +15,8 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError } from '../domain/errors.js';
-import { CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError } from '../domain/errors.js';
+import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByFinancialTransactionId(ftId: string) {
     return [...this.invoices.values()].filter((i) => i.financialTransactionId === ftId);
   }
+  async getByReservationId(): Promise<Invoice[]> { return []; }
   async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
     return this.createWithClient({} as SqlClient, input, afipRequest, items);
   }
@@ -99,6 +100,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
   async getSettledPaymentTotalForReservation() { return 0; }
+  async getCollectedPaymentTotalForReservation() { return 0; }
   async linkStayToReservationCharges() { return 0; }
 }
 
@@ -624,6 +626,100 @@ describe('InvoiceService', () => {
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
       expect(items[0]?.description).toBe('Servicios');
+    });
+  });
+
+  describe('C2 -- Nota de Crédito para una FinancialTransaction REFUND', () => {
+    function seedOriginalInvoice(overrides: Partial<Invoice> = {}): Invoice {
+      const original: Invoice = {
+        id: 'inv-original', businessId: 'biz-1', financialTransactionId: 'ft-original', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-original', environment: 'homologacion',
+        ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B, cbteNro: 42,
+        concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5,
+        moneda: 'PES', impNeto: 82.64, impIva: 17.36, impTotal: 100,
+        cae: 'CAE-ORIGINAL', caeVto: '2026-09-01',
+        status: 'ISSUED', afipContacted: true, emisorCuit: '20111111112',
+        paymentMethod: null, cardInstallments: null,
+        afipRequest: { Iva: [{ Id: 5, BaseImp: 82.64, Importe: 17.36 }] },
+        afipResponse: {}, errorMessage: null,
+        createdAt: new Date(), issuedAt: new Date(),
+        ...overrides,
+      };
+      invoiceRepo.invoices.set(original.id, original);
+      return original;
+    }
+
+    it('rechaza un REFUND sin reversedInvoiceId (ledger-only, sin factura que corregir)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: null }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(InvoiceNotReversibleError);
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un REFUND cuya factura asociada no existe', async () => {
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: 'inv-inexistente' }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(InvoiceNotReversibleError);
+    });
+
+    it('rechaza un REFUND cuya factura asociada no está ISSUED', async () => {
+      seedOriginalInvoice({ status: 'PENDING', cbteNro: null });
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: 'inv-original' }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(InvoiceNotReversibleError);
+    });
+
+    it('reembolso total: arma una NC (CbteTipo 8) con CbtesAsoc apuntando a la factura original', async () => {
+      seedOriginalInvoice();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 100, reservationId: 'res-1', reversedInvoiceId: 'inv-original' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.cbteTipo).toBe(CBTE_TIPO_NOTA_CREDITO_B);
+      expect(invoice.impTotal).toBe(100);
+      expect(invoice.impNeto).toBe(82.64);
+      expect(invoice.impIva).toBe(17.36);
+      const sentRequest = createNextVoucher.mock.calls[0]![0] as { CbtesAsoc: Array<{ Tipo: number; PtoVta: number; Nro: number }> };
+      expect(sentRequest.CbtesAsoc).toEqual([{ Tipo: CBTE_TIPO_FACTURA_B, PtoVta: 3, Nro: 42 }]);
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ unitPrice: 100, subtotal: 100, reservationId: 'res-1' });
+    });
+
+    it('reembolso parcial: escala proporcionalmente el neto/IVA de la factura original, no los recalcula desde la config actual', async () => {
+      seedOriginalInvoice(); // impTotal=100, impNeto=82.64, impIva=17.36
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        // pricesIncludeIva=false acá a propósito -- si el código recalculara
+        // desde la config actual (bug ya autocorregido en D8-Nivel B) esto
+        // daría un resultado distinto al escalado proporcional correcto.
+        tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: 'inv-original' }),
+        profile: makeProfile({ pricesIncludeIva: false, defaultIvaRate: 21 }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      // factor = 50/100 = 0.5 -- mitad del neto/IVA original, no un IVA recalculado sobre 50.
+      expect(invoice.impTotal).toBe(50);
+      expect(invoice.impNeto).toBe(41.32);
+      expect(invoice.impIva).toBe(8.68);
     });
   });
 

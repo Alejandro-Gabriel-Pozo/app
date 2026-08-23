@@ -55,13 +55,52 @@ pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
   consolidada, cuentas por cobrar/statements) — ambas documentadas en
   `docs/diseno-sena-deposito-fase-a-2026-08-22.md` como referencia, sin
   diseñar en detalle.
-- **C2** — Reglas de cancelación → Notas de Crédito por %: sigue
-  bloqueado por no existir soporte de NC/ND. Con C1-Fase A implementado,
-  el caso concreto que lo necesita quedó identificado con precisión:
-  cancelar una reserva `CONFIRMED` cuya seña ya se cobró/facturó deja el
-  `PAYMENT` sin contrapartida al voidear la `CHARGE` (A3.9) — limitación
-  conocida, anotada en el documento de diseño, no resuelta. Sigue sin
-  responder la escala de % según anticipación.
+- ✅ **C2 RESUELTO (23/08/2026)** — Reglas de cancelación → Notas de
+  Crédito por %. `docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md`.
+  Decisiones del dueño (3 rondas de `AskUserQuestion`): tramos de %
+  configurables por el negocio según anticipación (días hasta el
+  check-in), no un % fijo; el reembolso se calcula solo sobre lo
+  efectivamente cobrado (`PAYMENT`), nunca sobre `totalPrice`; acción
+  manual separada de `/cancel`, con vista previa (mismo patrón que
+  `previewPriceAdjustment`/`confirmPriceAdjustment`); reparto entre
+  varias facturas de una misma reserva (seña+saldo, C1-Fase A) por LIFO
+  sin prorrateo — consume primero la factura más nueva hasta el 100% de
+  su importe, después la anterior, sin cálculos de porcentaje/redondeo
+  por factura (más simple y respeta el criterio contable estándar de
+  reversión de operaciones).
+  **Hallazgo real durante el diseño**: `getSettledPaymentTotalForReservation()`
+  (la que usa el gate de seña) no sirve para calcular "cuánto se cobró"
+  DESPUÉS de cancelar — `voidByReservationId()` pasa a `VOIDED` también
+  las filas `PAYMENT` `SETTLED`, así que ese método siempre daría `0` para
+  una reserva ya `CANCELLED`. Se agregó
+  `getCollectedPaymentTotalForReservation()` (suma `SETTLED`+`VOIDED`).
+  Implementado: tabla `cancellation_policies` (ladder por
+  `min_days_before_checkin`, CRUD completo — a diferencia de
+  `deposit_policies`, que hoy no tiene rutas — mismo criterio de catálogo
+  simple que `waste_reasons`); `financial_transactions.reversed_invoice_id`
+  (qué factura ISSUED cubre cada `REFUND`, R9); `CancellationRefundService`
+  (archivo propio, no un método más de `ReservationService`) con
+  `previewRefund()`/`confirmRefund()` — este último solo crea la(s) fila(s)
+  `REFUND` en el ledger (`status SETTLED`, mismo criterio que `PAYMENT`),
+  NO emite la Nota de Crédito ahí mismo (pedir un CAE es una llamada de
+  red, no debe vivir dentro de la transacción de BD). La NC se pide
+  reusando la MISMA ruta `POST /invoices` que ya existía para
+  Factura/CHARGE/PAYMENT (R14, un solo camino) —
+  `InvoiceService.requestInvoice()` detecta `tx.type === 'REFUND'` y arma
+  una Nota de Crédito B (`CBTE_TIPO_NOTA_CREDITO_B = 8`) con `CbtesAsoc`
+  apuntando a la factura original, escalando proporcionalmente su
+  neto/IVA ya congelado (nunca re-derivado desde `pricesIncludeIva`
+  actual — mismo cuidado que ya se autocorrigió en D8-Nivel B).
+  `InvoiceRepository` gana `getByReservationId()`. Errores nuevos:
+  `ReservationNotCancelledError`, `NothingToRefundError`,
+  `CancellationPolicyNotFoundError`, `InvoiceNotReversibleError`. Rutas
+  nuevas: CRUD `/api/cancellation-policies` (MANAGEMENT, sin gate de
+  módulo — mismo criterio que el núcleo de reservas) y
+  `GET`/`POST /api/reservations/:id/cancellation-refund/preview|confirm`
+  (FRONT_DESK). 26 tests nuevos, suite completa (901 tests) + lint +
+  typecheck verdes. **Backend only** — sin UI en `appfrontend-main`
+  (configurar tramos, pantalla de preview/confirmar reembolso al
+  cancelar).
 - ✅ **C3 RESUELTO (23/08/2026) — Nivel A (D8) y Nivel B, los dos
   implementados.** `docs/diseno-facturacion-lineas-2026-08-22.md` (Nivel A)
   + `docs/diseno-facturacion-lineas-nivel-b-2026-08-23.md` (Nivel B, 3
@@ -94,7 +133,7 @@ pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
   verdes. **Backend only** — sin UI en `appfrontend-main` (mostrar las
   líneas reales en el detalle de factura).
 
-**No elegir ninguna opción de C1/C2/C3 sin el dueño.**
+**No elegir ninguna opción de C1-Fase B/C sin el dueño** (única decisión de negocio que sigue sin resolver en esta sección — C1-Fase A, C2 y C3 ya están implementados).
 
 ## D. Backlog confirmado pendiente (arrastrado de 08-19, sin cambios salvo D6)
 

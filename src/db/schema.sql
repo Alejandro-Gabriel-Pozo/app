@@ -941,6 +941,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_deposit_policies_bucket
   ON deposit_policies (business_id, bucket) WHERE active = TRUE AND bucket IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
+-- cancellation_policies (23/08/2026,
+-- docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md -- C2) — tramos de
+-- % de reembolso según anticipación (días entre "ahora" y
+-- reservations.start_time) al cancelar una reserva CONFIRMED que ya cobró
+-- algo. Sin scope por ítem/categoría/bucket a propósito (a diferencia de
+-- deposit_policies) -- el dueño pidió tramos por anticipación, no por
+-- recurso. Resolución tipo ladder en
+-- CancellationPolicyRepository.findApplicableTier(): el tramo con
+-- min_days_before_checkin más alto que sea <= la anticipación real. Sin
+-- ningún tramo aplicable -- incluida la tabla vacía -- el reembolso es 0%,
+-- mismo criterio "sin política, sin comportamiento automático" que
+-- deposit_policies.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cancellation_policies (
+  id                      VARCHAR(255)  PRIMARY KEY,
+  business_id             VARCHAR(255)  NOT NULL,
+  min_days_before_checkin INTEGER       NOT NULL CHECK (min_days_before_checkin >= 0),
+  refund_percentage       DECIMAL(5,2)  NOT NULL CHECK (refund_percentage >= 0 AND refund_percentage <= 100),
+  active                  BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at              TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cancellation_policies_business ON cancellation_policies (business_id);
+
+-- Un solo tramo activo por umbral exacto -- mismo criterio que
+-- deposit_policies (una fila "gana" por cada valor distinto de scope).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cancellation_policies_threshold
+  ON cancellation_policies (business_id, min_days_before_checkin) WHERE active = TRUE;
+
+-- ---------------------------------------------------------------------------
 -- business_hours  (horario de atención por defecto del negocio — "Mi Negocio")
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS business_hours (
@@ -2621,4 +2652,19 @@ CREATE TABLE IF NOT EXISTS invoice_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_id);
+
+-- ---------------------------------------------------------------------------
+-- financial_transactions.reversed_invoice_id (23/08/2026,
+-- docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md -- C2) — solo tiene
+-- sentido en filas type='REFUND' creadas por CancellationRefundService: la
+-- factura ISSUED contra la que corresponde emitir la Nota de Crédito
+-- (reparto LIFO entre las facturas de la reserva, decisión del dueño). Va
+-- como ALTER porque invoices se crea después de financial_transactions en
+-- este mismo archivo (mismo motivo que otras columnas con FK tardía de más
+-- arriba). NULL si no había factura ISSUED que cubrir esa porción del
+-- reembolso -- REFUND ledger-only, sin NC que emitir para esa parte (R9: se
+-- congela al crear, InvoiceService nunca vuelve a buscar "cuál factura").
+-- ---------------------------------------------------------------------------
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS reversed_invoice_id VARCHAR(255)
+  REFERENCES invoices(id);
 

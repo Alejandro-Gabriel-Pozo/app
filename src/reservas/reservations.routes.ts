@@ -13,6 +13,9 @@
  *      plata", ver comentario en la ruta)
  * POST /reservations/:id/confirm      — FRONT_DESK
  * POST /reservations/:id/cancel       — FRONT_DESK
+ * GET  /reservations/:id/cancellation-refund/preview — FRONT_DESK (C2)
+ * POST /reservations/:id/cancellation-refund/confirm — FRONT_DESK (C2,
+ *      acción manual separada de /cancel -- ver CancellationRefundService)
  * POST /reservations/:id/complete     — FRONT_DESK
  * POST /reservations/:id/schedule-request         — BOOKING (empleados + CUSTOMER)
  * POST /reservations/:id/schedule-request/approve — FRONT_DESK
@@ -91,6 +94,9 @@ import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.fina
 import { SqlBusinessProfileRepository }  from '../repositories/sql.business-profile.repository.js';
 import { SqlNumberSequenceRepository }   from '../repositories/sql.number-sequence.repository.js';
 import { SqlDepositPolicyRepository }    from './sql.deposit-policy.repository.js';
+import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repository.js';
+import { CancellationRefundService }     from './cancellation-refund.service.js';
+import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../api/schemas/request.schemas.js';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
@@ -129,6 +135,23 @@ function buildReservationService(req: Request): ReservationService {
     businessProfileRepo,
     financialTransactionRepo,
     numberSequenceRepo,
+  );
+}
+
+/**
+ * C2 (23/08/2026, docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md) —
+ * separado de buildReservationService() a propósito: es un servicio propio,
+ * no un método más de ReservationService.
+ */
+function buildCancellationRefundService(req: Request): CancellationRefundService {
+  const db = req.db;
+  return new CancellationRefundService(
+    new SqlReservationRepository(db, new SqlResourceRepository(db)),
+    new SqlCancellationPolicyRepository(db),
+    new SqlFinancialTransactionRepository(db),
+    new SqlInvoiceRepository(db),
+    new SqlBusinessProfileRepository(db),
+    buildTenantTransactionManager(req),
   );
 }
 
@@ -337,6 +360,43 @@ export function createReservationsRouter(container: AppContainer): Router {
           req.user!.businessId as string,
         );
         res.json(toReservationDto(reservation));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /reservations/:id/cancellation-refund/preview ───────────────────
+  // C2 -- no persiste nada, mismo criterio que GET .../price-preview.
+  router.get(
+    '/:id/cancellation-refund/preview',
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const service = buildCancellationRefundService(req);
+        const preview = await service.previewRefund(
+          req.params['id']!,
+          req.user!.businessId as string,
+        );
+        res.json(preview);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/cancellation-refund/confirm ──────────────────
+  // C2 -- acción manual separada de /cancel (mismo criterio que
+  // confirm-price-adjustment): crea la(s) fila(s) REFUND en el ledger, no
+  // emite la Nota de Crédito acá (ver docblock de CancellationRefundService).
+  router.post(
+    '/:id/cancellation-refund/confirm',
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const service = buildCancellationRefundService(req);
+        const refunds = await service.confirmRefund(
+          req.params['id']!,
+          req.user!.businessId as string,
+          req.user!.id,
+        );
+        res.status(201).json(refunds);
       } catch (err) { next(err); }
     },
   );

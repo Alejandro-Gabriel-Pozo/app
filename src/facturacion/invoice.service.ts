@@ -34,6 +34,7 @@ import { buildDefaultAfipBillingPort } from './arca-sdk-billing.adapter.js';
 import type { AfipBillingPort } from './afip-billing.port.js';
 import {
   CBTE_TIPO_FACTURA_B,
+  CBTE_TIPO_NOTA_CREDITO_B,
   CONCEPTO_SERVICIOS,
   DOC_TIPO_CONSUMIDOR_FINAL,
   CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL,
@@ -44,6 +45,7 @@ import {
   AfipNotConfiguredError,
   AfipRequestUncertainError,
   AfipRequestRejectedError,
+  InvoiceNotReversibleError,
 } from '../domain/errors.js';
 
 export interface Buyer {
@@ -254,6 +256,18 @@ export class InvoiceService {
     const credentials = await this.afipCredentialsRepo.getDecrypted();
     if (!credentials) throw new AfipNotConfiguredError('falta cargar el certificado AFIP en Mi Negocio');
 
+    // C2 (23/08/2026, docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md)
+    // -- una FinancialTransaction REFUND arma una Nota de Crédito B, no una
+    // Factura B. R14: misma ruta de emisión de CAE (idempotencia, issue(),
+    // reconcileAfterFailure(), retryExisting()) para cualquier tipo de
+    // transacción -- el branching vive solo acá, en cómo se arma el
+    // afipRequest/los ítems.
+    if (tx.type === 'REFUND') {
+      const invoice = await this.buildCreditNote(tx, input, profile, authCuit, credentials, idempotencyKey);
+      const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
+      return this.issue(client, invoice, invoice.afipRequest as Record<string, unknown>, credentials.environment, profile.afipSalesPoint!);
+    }
+
     const buyer = input.buyer ?? CONSUMIDOR_FINAL;
     const concepto = input.concepto ?? CONCEPTO_SERVICIOS;
 
@@ -342,6 +356,120 @@ export class InvoiceService {
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
+  }
+
+  /**
+   * C2 -- arma (persiste, no emite) la Nota de Crédito B para una
+   * `FinancialTransaction` `REFUND`. `tx.reversedInvoiceId` (resuelto por
+   * `CancellationRefundService.confirmRefund()`, reparto LIFO) apunta a la
+   * factura ISSUED que corresponde corregir -- sin eso, o si esa factura
+   * ya no está ISSUED, no hay documento fiscal válido contra el cual
+   * emitir (`InvoiceNotReversibleError`).
+   *
+   * `DocTipo`/`DocNro`/`CondicionIvaReceptorId`/`Concepto` se toman de la
+   * factura ORIGINAL (R9 -- ya se congelaron ahí, no del `input.buyer` que
+   * llegue acá). `Iva[]`/`ImpNeto`/`ImpIva`/`ImpTotal`: se escala
+   * proporcionalmente el desglose por tasa YA CONGELADO de la factura
+   * original (`factor = tx.amount / original.impTotal`) -- nunca se
+   * re-deriva desde `profile.pricesIncludeIva` actual (mismo error que se
+   * autocorrigió en D8-Nivel B: la config pudo cambiar desde que se
+   * facturó). Con una factura directa de reserva (D8-Nivel B: siempre de
+   * una sola tasa) esto colapsa al caso simple de un solo grupo.
+   */
+  private async buildCreditNote(
+    tx: FinancialTransaction,
+    input: RequestInvoiceInput,
+    profile: BusinessProfile,
+    authCuit: string,
+    credentials: AfipCredentials,
+    idempotencyKey: string,
+  ): Promise<Invoice> {
+    if (!tx.reversedInvoiceId) throw new InvoiceNotReversibleError(tx.id);
+    const original = await this.invoiceRepo.getById(tx.reversedInvoiceId);
+    if (!original || original.status !== 'ISSUED' || !original.cbteNro) {
+      throw new InvoiceNotReversibleError(tx.id);
+    }
+
+    const factor = original.impTotal > 0 ? tx.amount / original.impTotal : 0;
+    const originalIva = (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? [];
+    const ivaEntries = originalIva.map((entry) => ({
+      Id: entry.Id,
+      BaseImp: round2(entry.BaseImp * factor),
+      Importe: round2(entry.Importe * factor),
+    }));
+    const impIva = round2(ivaEntries.reduce((sum, entry) => sum + entry.Importe, 0));
+    const impTotal = round2(tx.amount);
+    const impNeto = round2(impTotal - impIva);
+    const effectiveIvaRate = impNeto > 0 ? round2((impIva / impNeto) * 100) : 0;
+
+    const invoiceId = randomUUID();
+    const cbteFch = toAfipDate(new Date());
+
+    const afipRequest = {
+      CantReg: 1,
+      PtoVta: profile.afipSalesPoint,
+      CbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
+      Concepto: original.concepto,
+      DocTipo: original.docTipo,
+      DocNro: Number(original.docNro),
+      CbteFch: cbteFch,
+      ImpTotal: impTotal,
+      ImpTotConc: 0,
+      ImpNeto: impNeto,
+      ImpOpEx: 0,
+      ImpIVA: impIva,
+      ImpTrib: 0,
+      MonId: 'PES',
+      MonCotiz: 1,
+      CondicionIVAReceptorId: original.condicionIvaReceptorId,
+      CbtesAsoc: [{ Tipo: original.cbteTipo, PtoVta: original.ptoVta, Nro: original.cbteNro }],
+      ...(original.concepto !== 1 && { FchServDesde: cbteFch, FchServHasta: cbteFch, FchVtoPago: cbteFch }),
+      ...(ivaEntries.length > 0 && { Iva: ivaEntries }),
+    };
+
+    const items: CreateInvoiceItemInput[] = [{
+      orderItemId: null,
+      reservationId: tx.reservationId ?? null,
+      description: 'Nota de crédito -- cancelación de reserva',
+      quantity: 1,
+      unitPrice: tx.amount,
+      subtotal: tx.amount,
+      ivaRate: effectiveIvaRate,
+      unit: null,
+      arcaUnitCode: null,
+    }];
+
+    let invoice!: Invoice;
+    await this.transactionManager.run(async (client: SqlClient) => {
+      invoice = await this.invoiceRepo.createWithClient(
+        client,
+        {
+          id: invoiceId,
+          businessId: input.businessId,
+          financialTransactionId: input.financialTransactionId,
+          customerId: tx.customerId,
+          idempotencyKey,
+          environment: credentials.environment,
+          ptoVta: profile.afipSalesPoint!,
+          cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
+          emisorCuit: authCuit,
+          concepto: original.concepto,
+          docTipo: original.docTipo,
+          docNro: original.docNro,
+          condicionIvaReceptorId: original.condicionIvaReceptorId,
+          moneda: 'PES',
+          impNeto,
+          impIva,
+          impTotal,
+          paymentMethod: tx.paymentMethod ?? null,
+          cardInstallments: tx.cardInstallments ?? null,
+        },
+        afipRequest,
+        items,
+      );
+    });
+
+    return invoice;
   }
 
   /**

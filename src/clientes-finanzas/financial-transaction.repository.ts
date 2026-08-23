@@ -72,6 +72,17 @@ export interface FinancialTransaction {
    * `stays.assigned_by`: identity vive en la platform DB.
    */
   confirmedBy?: string | null;
+  /**
+   * Solo tiene sentido en filas `type = 'REFUND'` (C2,
+   * docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md,
+   * `CancellationRefundService`) — la factura ISSUED contra la que
+   * corresponde emitir la Nota de Crédito (reparto LIFO entre las
+   * facturas de la reserva). `null` para todo lo demás, y también para un
+   * `REFUND` que no tenía ninguna factura que cubrir (ledger-only, ver el
+   * diseño). SIN cascada de borrado -- una `Invoice` (DOCUMENTO, R12)
+   * nunca se borra.
+   */
+  reversedInvoiceId?: string | null;
   createdAt?: Date;
 }
 
@@ -185,6 +196,20 @@ export interface FinancialTransactionRepository {
    * que no hace falta filtrar por otro estado.
    */
   getSettledPaymentTotalForReservation(reservationId: string): Promise<number>;
+
+  /**
+   * Suma de `PAYMENT` de una reserva en estado `SETTLED` o `VOIDED` (C2,
+   * docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md) — a diferencia
+   * de `getSettledPaymentTotalForReservation` (que exige `SETTLED`, usada
+   * por el gate de seña de `confirmReservation()`), esta cuenta lo cobrado
+   * de verdad sin importar si `cancelReservation()`/`voidByReservationId`
+   * ya lo neutralizó en el balance -- `CancellationRefundService.
+   * previewRefund()`/`confirmRefund()` necesitan "cuánto se cobró", no
+   * "cuánto sigue contando en el balance" (esas filas ya están `VOIDED`
+   * para cuando la reserva está `CANCELLED` y el worker de outbox ya
+   * procesó el evento).
+   */
+  getCollectedPaymentTotalForReservation(reservationId: string): Promise<number>;
 
   /**
    * Balance neto de una estadía puntual (mismo cálculo que

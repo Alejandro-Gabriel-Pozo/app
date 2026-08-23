@@ -21,6 +21,14 @@ export interface InvoiceRepository {
   getById(id: string): Promise<Invoice | null>;
   getByIdempotencyKey(idempotencyKey: string): Promise<Invoice | null>;
   getByFinancialTransactionId(financialTransactionId: string): Promise<Invoice[]>;
+  /**
+   * C2 (23/08/2026, docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md)
+   * — todas las facturas (cualquier status) de una reserva, resolviendo vía
+   * `financial_transactions.reservation_id` (JOIN, no requiere columna
+   * nueva en `invoices`). `CancellationRefundService.confirmRefund()` las
+   * filtra a `ISSUED` y las ordena por `issuedAt` para el reparto LIFO.
+   */
+  getByReservationId(reservationId: string): Promise<Invoice[]>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

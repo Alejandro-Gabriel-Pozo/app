@@ -24,6 +24,14 @@ export const CBTE_TIPO_FACTURA_A = 1;
 export const CBTE_TIPO_FACTURA_B = 6;
 export const CBTE_TIPO_FACTURA_C = 11;
 
+/**
+ * C2 (23/08/2026, docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md)
+ * — Nota de Crédito B, la única asociable a una Factura B (combinación
+ * válida confirmada: autorizar 08 con `CbteAsoc.Tipo` 06, código 10040 de
+ * `referencia-afip-wsfev1.md:563`).
+ */
+export const CBTE_TIPO_NOTA_CREDITO_B = 8;
+
 /** Concepto del comprobante — determina si van fechas de servicio (FchServDesde/Hasta). */
 export const CONCEPTO_PRODUCTOS = 1;
 export const CONCEPTO_SERVICIOS = 2;

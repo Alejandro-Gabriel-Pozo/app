@@ -95,6 +95,57 @@ export class DepositNotPaidError extends DomainError {
   }
 }
 
+/**
+ * C2 (23/08/2026, docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md) —
+ * `previewRefund()`/`confirmRefund()` exigen que la reserva ya esté
+ * `CANCELLED` (el reembolso es una acción manual separada de cancelar, no
+ * automática). 409, mismo criterio que `NoPriceAdjustmentPendingError`.
+ */
+export class ReservationNotCancelledError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" no está cancelada -- no hay reembolso que calcular.`,
+      'RESERVATION_NOT_CANCELLED',
+    );
+  }
+}
+
+/**
+ * C2 — `confirmRefund()` cuando el cálculo da $0 (sin política de
+ * cancelación aplicable para la anticipación real, o nada cobrado
+ * todavía). No crea una fila REFUND de $0 -- 409, no un 200 vacío.
+ */
+export class NothingToRefundError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" no tiene nada para reembolsar (sin política aplicable o sin cobros registrados).`,
+      'NOTHING_TO_REFUND',
+    );
+  }
+}
+
+/** C2 — catálogo `cancellation_policies`, mismo criterio que `WasteReasonNotFoundError`. */
+export class CancellationPolicyNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Política de cancelación "${id}" no encontrada`, 'CANCELLATION_POLICY_NOT_FOUND');
+  }
+}
+
+/**
+ * C2 — `InvoiceService.requestInvoice()` para una `FinancialTransaction`
+ * `REFUND` sin `reversedInvoiceId` (ledger-only a propósito, ver "Alcance"
+ * del diseño) o cuya factura asociada no está `ISSUED`. No hay documento
+ * fiscal válido contra el cual emitir la Nota de Crédito.
+ */
+export class InvoiceNotReversibleError extends DomainError {
+  constructor(financialTransactionId: string) {
+    super(
+      `La transacción "${financialTransactionId}" no tiene una factura ISSUED asociada -- no se puede emitir Nota de Crédito.`,
+      'INVOICE_NOT_REVERSIBLE',
+    );
+  }
+}
+
 export class InvalidCustomerError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_CUSTOMER');

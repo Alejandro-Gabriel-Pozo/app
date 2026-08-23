@@ -145,6 +145,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CUSTOMER_RATE_NOT_FOUND':
     case 'CUSTOMER_NOT_FOUND':
     case 'WASTE_REASON_NOT_FOUND':
+    case 'CANCELLATION_POLICY_NOT_FOUND':
     case 'RECIPE_ITEM_NOT_FOUND':
     case 'PRODUCT_NOT_SHARED':
     case 'COMPANY_PRODUCT_NOT_FOUND':
@@ -175,6 +176,9 @@ function domainErrorStatus(error: DomainError): number {
     case 'AFIP_REQUEST_UNCERTAIN':
     case 'INVOICE_NOT_ISSUED':
     case 'RATE_CATALOG_ENTRY_CONFLICT':
+    case 'RESERVATION_NOT_CANCELLED':
+    case 'NOTHING_TO_REFUND':
+    case 'INVOICE_NOT_REVERSIBLE':
       return 409;
 
     // --- 503 Service Unavailable ---

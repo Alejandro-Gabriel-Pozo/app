@@ -51,6 +51,7 @@ import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
 import { createProductsRouter }          from './pos-menu/products.routes.js';
 import { createWasteReasonsRouter }      from './pos-menu/waste-reasons.routes.js';
+import { createCancellationPoliciesRouter } from './reservas/cancellation-policies.routes.js';
 import { createOrdersRouter }            from './pos-menu/orders.routes.js';
 import { createBookableServicesRouter }  from './reservas/bookable-services.routes.js';
 import { createHousekeepingRouter }      from './pms-estadias/housekeeping.routes.js';
@@ -265,6 +266,7 @@ export async function createApp(): Promise<{
   app.use('/api/resources',         createResourcesRouter());
   app.use('/api/locations',         createLocationsRouter());
   app.use('/api/reservations',      createReservationsRouter(container));
+  app.use('/api/cancellation-policies', createCancellationPoliciesRouter(container));
   app.use('/api/customers',         createCustomersRouter(container));
   app.use('/api/rate-catalog',      createRateCatalogRouter());
   // /api/users/invitations ANTES de /api/users a propósito: el router de

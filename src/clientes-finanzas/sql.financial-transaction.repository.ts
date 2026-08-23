@@ -27,6 +27,7 @@ interface TransactionRow {
   card_installments: number | null;
   card_surcharge_amount: string | null; // DECIMAL llega como string en pg
   confirmed_by: string | null;
+  reversed_invoice_id: string | null;
   created_at: Date;
 }
 
@@ -99,11 +100,11 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // despacharse, terminaba en dead-letter tras 60 reintentos).
       const result = await client.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by)
+           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by, reversed_invoice_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
            COALESCE($14, CASE WHEN $13::VARCHAR(20) = 'CASH'
              THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2::VARCHAR(255) AND status = 'OPEN')
-             ELSE NULL END), $15, $16, $17)
+             ELSE NULL END), $15, $16, $17, $18)
          ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
          RETURNING *`,
         [
@@ -124,6 +125,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           cardInstallments,
           cardSurchargeAmount,
           tx.confirmedBy ?? null,
+          tx.reversedInvoiceId ?? null,
         ],
       );
       // RETURNING vacío = ON CONFLICT activado = fila ya existía = éxito silencioso.
@@ -135,11 +137,11 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // arriba, incluidos los casts explícitos de $2/$12 -- mismo bug, mismo fix).
     const result = await client.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by)
+         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by, reversed_invoice_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
          COALESCE($13, CASE WHEN $12::VARCHAR(20) = 'CASH'
            THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2::VARCHAR(255) AND status = 'OPEN')
-           ELSE NULL END), $14, $15, $16)
+           ELSE NULL END), $14, $15, $16, $17)
        RETURNING *`,
       [
         id,
@@ -158,6 +160,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         cardInstallments,
         cardSurchargeAmount,
         tx.confirmedBy ?? null,
+        tx.reversedInvoiceId ?? null,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
@@ -319,6 +322,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return parseFloat(result.rows[0]?.total ?? '0');
   }
 
+  async getCollectedPaymentTotalForReservation(reservationId: string): Promise<number> {
+    const result = await this.sqlClient.query<{ total: string }>(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM financial_transactions
+       WHERE reservation_id = $1 AND type = 'PAYMENT' AND status IN ('SETTLED', 'VOIDED')`,
+      [reservationId],
+    );
+    return parseFloat(result.rows[0]?.total ?? '0');
+  }
+
   async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
@@ -374,6 +387,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       cardInstallments:    row.card_installments,
       cardSurchargeAmount: row.card_surcharge_amount !== null ? parseFloat(row.card_surcharge_amount) : null,
       confirmedBy:     row.confirmed_by,
+      reversedInvoiceId: row.reversed_invoice_id,
       createdAt:       row.created_at,
     };
   }

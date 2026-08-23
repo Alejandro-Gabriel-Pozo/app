@@ -70,6 +70,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
   async getSettledPaymentTotalForReservation() { return 0; }
+  async getCollectedPaymentTotalForReservation() { return 0; }
   async linkStayToReservationCharges() { return 0; }
 }
 
