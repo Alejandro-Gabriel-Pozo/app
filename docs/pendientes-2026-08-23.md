@@ -838,3 +838,81 @@ oculta el `<select>` de recurso y manda `categoryId` en vez de
   dinero ya cobrado sin filtrar por `type`. Mismo criterio que R2/R3 del
   incidente original del 13/08 — una regla nueva nace de un bug real, no
   en abstracto.
+
+---
+
+## L. RBAC — auditoría de permisos por rol pendiente (23/08/2026, sin implementar)
+
+**Cómo apareció:** al confirmar en producción el fix de K1 (jerarquía de
+rol + link de reseteo), el dueño probó con su propia cuenta de OWNER y no
+vio el botón nuevo — comportamiento esperado (un OWNER puede seguir
+fijando cualquier contraseña directo, el botón solo aparece para un actor
+no-OWNER editando a alguien protegido). Al explicarlo, el dueño hizo una
+pregunta de fondo: **¿por qué un RECEPTIONIST no puede recuperar su propia
+contraseña sin depender de que un admin le mande el link?** — hoy
+`POST /users/:id/password-reset-link` requiere `authorize(Roles.MANAGEMENT)`,
+así que cualquier reseteo (protegido o no) necesita que alguien con ese
+permiso lo dispare. No existe ningún flujo self-service ("olvidé mi
+contraseña", sin sesión, sin admin de por medio).
+
+**Alcance confirmado con el dueño (no achicar en la próxima sesión):**
+esto no es solo "agregar un link en el login" — es un caso concreto de
+un problema más amplio, **falta una auditoría general de qué puede/no
+puede hacer cada rol en cada endpoint** (mismo tipo de trabajo que K1,
+pero sistemático en vez de puntual). Antes de tocar código, mapear
+`authorize(Roles.X)` real de cada ruta contra lo que el dueño espera que
+cada rol pueda hacer — probablemente saltan más casos como este.
+
+**Investigación ya hecha para el caso puntual (self-service de
+contraseña) — no repetir, partir de acá:**
+
+- **Login es por email, sin businessId** (`app-main/src/api/routes/
+  auth.routes.ts` + `security/auth.service.ts`) — identity global, no
+  scopeado a un negocio hasta after el match de credenciales
+  (`findActiveMembershipsByIdentityId`: 0 → `INVALID_CREDENTIALS`
+  genérico, 1 → JWT directo, 2+ → selección de negocio con
+  `identityToken` de 5 min). Un self-service "olvidé mi contraseña"
+  debería resolver igual, por email/identity, sin pedir negocio de
+  entrada — pedirlo sería peor UX que lo que ya resuelve el login mismo.
+- **Bloqueo real de schema:** `password_reset_tokens.business_id` es
+  `NOT NULL` (`platform.schema.sql`) — hoy se llena con el negocio del
+  ADMIN que dispara el link (`req.user!.businessId`). Un pedido
+  self-service, sin sesión, no tiene ningún negocio en contexto. El
+  propio comentario de la tabla ya dice que `business_id` es "solo
+  trazabilidad, no scope de acceso" — nada impide hacerlo nullable.
+- **Bloqueo real de infraestructura:** `dispatchPasswordResetEmail()`
+  (`users.routes.ts`) arma el mail con `SqlBusinessProfileRepository(req.db!)`
+  — `req.db` solo existe después de `tenantMiddleware`, que necesita un
+  `business_id` resuelto. Sin sesión no hay `req.db`. Necesita un
+  fallback (`DEFAULT_SENDER_NAME`, ya existe en `users.routes.ts`) para
+  identidades con 0 o 2+ memberships, y solo buscar el nombre real del
+  negocio cuando hay exactamente una membership activa (mismo criterio
+  que usa el login para auto-resolver negocio).
+- **Falta rate-limiting dedicado:** `/api/password-resets`
+  (`app.ts`) hoy solo tiene el `globalLimiter` (500/min) — no el
+  `authLimiter` (10/15min) que sí protege `/api/login`. Un endpoint
+  nuevo de "pedir reseteo por email" (sin sesión, ataque de enumeración/
+  spam de mails obvio) necesita ese mismo límite explícito en el mount.
+- **Anti-enumeración obligatorio:** `AuthService.login()` ya resuelve
+  esto para el login (hashea contra un `DUMMY_HASH` aunque la identity no
+  exista, mismo mensaje genérico y mismo tiempo de respuesta si el email
+  no existe o si la contraseña es incorrecta — ver docblock de
+  `auth.service.ts`, líneas ~26-36). El endpoint nuevo de pedir reseteo
+  por email tiene que seguir el mismo criterio: misma respuesta/tiempo
+  exista o no exista ese email — **no** copiar el patrón de
+  `POST /password-resets/lookup` (ese sí devuelve 404 distinguible,
+  pero porque ahí el dato de entrada es un token ya de por sí secreto,
+  no un email público — modelos de amenaza distintos).
+- **La mitad de "aceptar" ya está lista, sin tocar:** `POST /password-resets/lookup`
+  y `/accept`, `security/password-reset-token.ts`, `passwordResetEmail()`
+  — todo público, no scopeado a tenant, reusable tal cual. Falta
+  construir solo la mitad de "pedir" (un endpoint público nuevo,
+  probablemente `POST /password-resets/request` con `{ email }`).
+- **Confirmado que no hay nada parecido en ningún lado hoy** — grep de
+  "forgot"/"olvid"/"recuper" en los dos repos no encontró ningún rastro
+  de un flujo de recuperación pre-existente (ni siquiera en el portal de
+  clientes, `customer.auth.service.ts`, que tampoco lo tiene si algún día
+  se pide para clientes también).
+
+**No implementado — queda para una sesión dedicada, con el mapa de
+permisos por rol primero.**
