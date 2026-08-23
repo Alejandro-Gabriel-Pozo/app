@@ -12,13 +12,47 @@ registrado ahí.
 
 ---
 
-## 🔴 URGENTE — BUG en producción, sin resolver: búsqueda de padrón ARCA (23/08/2026)
+## 🔴 URGENTE — ⚠️ EN PROGRESO: búsqueda de padrón ARCA (23/08/2026)
+
+Fix desplegado (commits `34cf958` backend, `e533e59` frontend) para los dos
+problemas de abajo. **Falta la confirmación final del Problema 1** contra
+ARCA real — ver esa sección.
 
 **Reportado por el dueño en producción** (`host.zuluhub.com.ar`), en el
 modal "Editar cliente" → sección "Datos fiscales". Dos problemas
 distintos, los dos reales, hay que resolver los dos:
 
-### Problema 1 — Errores 400/500 al buscar en el padrón
+### Problema 1 — Errores 400/500 al buscar en el padrón — ⚠️ PARCIAL (23/08/2026)
+
+**Confirmado leyendo el SDK real** (`@arcasdk/core`, `base-register-repository.js`
+y `register-scope-thirteen.repository.js`): el caso "no encontrado" YA lo
+maneja el propio SDK (`isAfipNotFoundError`: code 602 o mensaje "no existe")
+devolviendo `null`/`[]`, no tirando excepción — la hipótesis original de
+que el SDK tira crudo en ese caso era incorrecta. El 500 real venía de
+CUALQUIER OTRA excepción (timeout, fault SOAP con forma que
+`isAfipNotFoundError` no reconoce, etc.) que se colaba sin envolver hasta
+el catch-all de `error.middleware.ts`.
+
+**Arreglado (commit `34cf958`, app-main):** `getTaxpayerByCuit` y
+`resolveCuitByDni` en `padron.service.ts` ahora envuelven la llamada al
+SDK — cualquier excepción real se traduce a `AfipPadronUnavailableError`
+(503, no 500 genérico) y queda logueada completa server-side
+(`console.error`) para poder ver el detalle exacto la próxima vez.
+Tests nuevos cubriendo el caso. `tsc --noEmit` verde.
+
+**El 400 de CUIT inválido no era un bug de UX** — se revisó
+`extractErrorMessage` (`appfrontend-main/src/lib/http.ts`) y ya traduce
+el mensaje del dígito verificador a un toast entendible. Lo que se vio en
+la pestaña de red como "400 Bad Request" es la etiqueta HTTP estándar de
+DevTools, no necesariamente lo que se le mostró al usuario.
+
+**Sigue sin confirmar contra ARCA real** — nunca se probó (ni en dev ni
+en producción). Decisión del dueño (23/08/2026): esperar a que un
+CUIT/DNI real dispare el error de nuevo con el fix ya desplegado, y
+revisar el log de Render en ese momento para ver el detalle exacto que
+devuelve ARCA. **No cerrar este ítem sin haber leído ese log.**
+
+<details><summary>Investigación original (histórico, ya resuelta como se explica arriba)</summary>
 
 Errores de red exactos que vio el dueño:
 ```
@@ -74,7 +108,29 @@ confirmarlo. Es el primer paso antes de tocar código.
    de prueba al dueño, dado que esto nunca se verificó contra ARCA real
    (ni en dev ni en producción).
 
-### Problema 2 — UX de búsqueda mal diseñada (confirmado, no es percepción)
+</details>
+
+### Problema 2 — ✅ RESUELTO (23/08/2026) — UX de búsqueda mal diseñada
+
+**Decisión del dueño, confirmada con `AskUserQuestion`:** campo único con
+auto-detección (11 dígitos → CUIT, 7-8 dígitos → DNI). Antes de implementar
+se encontró una restricción real: el SDK de ARCA (`@arcasdk/core`) no tiene
+NINGÚN método de búsqueda por razón social — los webservices
+`ws_sr_padron_a5`/`a13` solo aceptan CUIT o DNI como clave, no es que falte
+conectarlo, es que el servicio no lo soporta. Confirmado con el dueño:
+si se tipea algo que no son solo dígitos, se avisa que la búsqueda por
+razón social no está disponible contra ARCA (no se intenta una búsqueda
+local de clientes como alternativa — eso queda fuera de este ítem, ver G1).
+
+**Implementado (commit `e533e59`, appfrontend-main):**
+`dashboard/clientes/page.tsx` — un solo input + botón "Buscar" con
+`handleTaxLookup()`, reemplaza los dos mecanismos viejos
+(`handleLookupByDni`/`handleLookupByCuit` y sus estados `dniInput`/
+`lookingUpByCuit`/`lookingUpByDni`). `tsc --noEmit` y `next build` verdes.
+**No verificado en navegador por Claude** (mismo motivo que F3: sin backend
+local conectado) — pendiente que el dueño lo pruebe en producción.
+
+<details><summary>Investigación original (histórico)</summary>
 
 Confirmado leyendo `appfrontend-main/src/app/dashboard/clientes/page.tsx`
 (sección "Datos fiscales" del modal, líneas ~490-584): hoy hay **dos
@@ -104,6 +160,8 @@ que ya exista y solo haya que conectar.
 
 **No implementado nada de esto todavía — ni el fix del bug ni el
 rediseño de UX.** Es lo primero a retomar en la próxima sesión.
+
+</details>
 
 ---
 
