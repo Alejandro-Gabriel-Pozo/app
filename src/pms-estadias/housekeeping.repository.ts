@@ -173,10 +173,25 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
   }
 
   async isOutOfService(resourceId: string): Promise<boolean> {
-    const result = await this.db.query(
-      `SELECT 1 FROM housekeeping_tasks WHERE resource_id=$1 AND status='OUT_OF_SERVICE' LIMIT 1`,
+    // J3 (23/08/2026, pendientes-2026-08-23.md) — antes esto miraba
+    // CUALQUIER fila OUT_OF_SERVICE del recurso, sin importar antigüedad:
+    // una tarea vieja marcada fuera de servicio bloqueaba el recurso para
+    // siempre, aunque ya hubiera tareas más nuevas normales. Ahora toma la
+    // tarea que gobierna el estado ACTUAL (la más reciente cuyo
+    // scheduled_for ya llegó) y mira solo esa.
+    //
+    // `scheduled_for <= NOW()` excluye tareas planificadas a futuro
+    // (mantenimiento programado, uso real hoy vía "planificar turno") —
+    // sin este filtro, un `ORDER BY scheduled_for DESC` ingenuo dejaría
+    // que una tarea de la semana que viene "tape" un OUT_OF_SERVICE
+    // vigente de hoy solo por tener una fecha más lejana.
+    const result = await this.db.query<{ status: HousekeepingStatus }>(
+      `SELECT status FROM housekeeping_tasks
+       WHERE resource_id=$1 AND scheduled_for <= NOW()
+       ORDER BY scheduled_for DESC, updated_at DESC
+       LIMIT 1`,
       [resourceId],
     );
-    return (result.rowCount ?? result.rows.length) > 0;
+    return result.rows[0]?.status === 'OUT_OF_SERVICE';
   }
 }

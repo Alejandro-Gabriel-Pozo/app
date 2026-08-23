@@ -59,9 +59,17 @@ export class InMemoryHousekeepingRepository implements HousekeepingRepository {
   }
 
   async isOutOfService(resourceId: string): Promise<boolean> {
-    return [...this.tasks.values()].some(
-      (t) => t.resourceId === resourceId && t.status === 'OUT_OF_SERVICE',
-    );
+    // J3 — mismo criterio que SqlHousekeepingRepository: la tarea más
+    // reciente cuyo scheduled_for ya llegó (excluye mantenimiento
+    // planificado a futuro, que no debe tapar un OUT_OF_SERVICE vigente).
+    const now = Date.now();
+    const candidates = [...this.tasks.values()]
+      .filter((t) => t.resourceId === resourceId && t.scheduledFor.getTime() <= now)
+      .sort((a, b) => {
+        const byScheduled = b.scheduledFor.getTime() - a.scheduledFor.getTime();
+        return byScheduled !== 0 ? byScheduled : b.updatedAt.getTime() - a.updatedAt.getTime();
+      });
+    return candidates[0]?.status === 'OUT_OF_SERVICE';
   }
 
   /** Helper de test — carga una tarea directo sin pasar por save(). */
