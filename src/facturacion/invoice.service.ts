@@ -47,6 +47,7 @@ import {
   AfipRequestRejectedError,
   InvoiceNotReversibleError,
 } from '../domain/errors.js';
+import { round2 } from '../domain/money.js';
 
 export interface Buyer {
   docTipo: number;
@@ -601,10 +602,6 @@ export class InvoiceService {
     await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: true });
     throw new AfipRequestUncertainError(invoice.id, message);
   }
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
 }
 
 function errMessage(err: unknown): string {

@@ -30,6 +30,7 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { ReservationStatus } from '../types/enums.js';
 import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError } from '../domain/errors.js';
+import { round2 } from '../domain/money.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -130,8 +131,4 @@ export class CancellationRefundService {
 
     return created;
   }
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
 }
