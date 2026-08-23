@@ -160,6 +160,20 @@ export class SqlCustomerRepository implements CustomerRepository {
     return groupByCustomer(rows);
   }
 
+  async searchByTaxId(taxId: string): Promise<Customer[]> {
+    const normalized = taxId.replace(/[-\s.]/g, '');
+    const { rows } = await this.sqlClient.query<CustomerRow>(
+      `${BASE_SELECT}
+       WHERE EXISTS (
+         SELECT 1 FROM customer_tax_profiles ctp
+         WHERE ctp.customer_id = c.id AND ctp.tax_id = $1
+       )
+       ORDER BY c.display_name ASC`,
+      [normalized],
+    );
+    return groupByCustomer(rows);
+  }
+
   // ── Eliminación ───────────────────────────────────────────────────────────
 
   async delete(id: string): Promise<boolean> {

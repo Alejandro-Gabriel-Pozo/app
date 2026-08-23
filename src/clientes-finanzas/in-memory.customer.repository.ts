@@ -92,6 +92,16 @@ export class InMemoryCustomerRepository implements CustomerRepository {
       .filter((c) => c.fullName.toLowerCase().includes(q));
   }
 
+  /**
+   * G1 (23/08/2026) — este test double no compone CustomerTaxProfileRepository
+   * (fuera de su bounded context, mismo criterio que getNewVsRecurringReport()
+   * más abajo), así que no tiene de dónde leer `tax_id`. Devuelve siempre
+   * vacío -- no debería llamarse en la práctica.
+   */
+  async searchByTaxId(): Promise<Customer[]> {
+    return [];
+  }
+
   async delete(id: string): Promise<boolean> {
     const record = this.store.get(id);
     if (!record) return false;

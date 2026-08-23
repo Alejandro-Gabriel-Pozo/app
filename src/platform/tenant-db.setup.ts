@@ -274,7 +274,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `business_profile.afip_ticket_*` guardaba uno solo por negocio. Tabla
 // `afip_tickets` nueva (particionada por `service_name`); se dropean las
 // dos columnas viejas de `business_profile`.
-export const CURRENT_SCHEMA_VERSION = 34;
+// v35 (23/08/2026): G1, pendientes-2026-08-23.md — búsqueda de clientes
+// por CUIT/DNI contra la base propia. Índice nuevo
+// `idx_customer_tax_profiles_tax_id`.
+export const CURRENT_SCHEMA_VERSION = 35;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

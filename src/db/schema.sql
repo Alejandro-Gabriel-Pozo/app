@@ -2703,3 +2703,15 @@ CREATE TABLE IF NOT EXISTS afip_tickets (
   expires_at       TIMESTAMPTZ  NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- idx_customer_tax_profiles_tax_id (23/08/2026, G1, pendientes-2026-08-23.md)
+-- -- búsqueda de clientes por CUIT/DNI contra la base propia
+-- (SqlCustomerRepository.searchByTaxId(), POST /customers/search-by-tax-id).
+-- No es único a propósito -- customer_tax_profiles_customer_uniq ya
+-- garantiza un perfil fiscal POR cliente, pero nada impide que dos
+-- clientes distintos tengan el mismo tax_id cargado por error de tipeo;
+-- ese caso real no debe romper una escritura, solo aparecer como
+-- resultado múltiple en la búsqueda.
+CREATE INDEX IF NOT EXISTS idx_customer_tax_profiles_tax_id
+  ON customer_tax_profiles (tax_id);
+

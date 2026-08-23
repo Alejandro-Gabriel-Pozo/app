@@ -121,6 +121,15 @@ const LookupByDniSchema = z.object({
   dni: z.string().trim().regex(/^\d{7,8}$/, 'DNI debe tener 7 u 8 dígitos, sin puntos'),
 });
 
+// G1 (23/08/2026) — CUIT (11 dígitos) o DNI (7-8), body nunca query string
+// (mismo motivo A7.2 que los dos schemas de arriba). Sin regex de longitud
+// fija a propósito: busca contra `customer_tax_profiles.tax_id` tal cual
+// está cargado, que puede incluir DNIs de clientes extranjeros u otros
+// formatos -- una búsqueda que no encuentra nada devuelve `[]`, no un 400.
+const SearchByTaxIdSchema = z.object({
+  taxId: z.string().trim().min(1).max(50),
+});
+
 // ---------------------------------------------------------------------------
 // DTO de salida
 // ---------------------------------------------------------------------------
@@ -391,6 +400,23 @@ export function createCustomersRouter(container: AppContainer): Router {
         // Clientes del dashboard para mostrar una tabla navegable, no solo
         // búsqueda puntual (antes esto daba 400).
         const customers = await repo.getAll();
+        res.json(customers.map(toCustomerDto));
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /customers/search-by-tax-id — { taxId } en el body, nunca en la
+  // URL (A7.2: el CUIT/DNI es PII, no puede quedar en logs de acceso/
+  // proxies -- mismo criterio que /padron/lookup-by-cuit más arriba).
+  // Devuelve un array: tax_id no tiene unicidad a nivel de base.
+  router.post(
+    '/search-by-tax-id',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const { taxId } = SearchByTaxIdSchema.parse(req.body);
+        const repo = new SqlCustomerRepository(req.db!);
+        const customers = await repo.searchByTaxId(taxId);
         res.json(customers.map(toCustomerDto));
       } catch (err) { next(err); }
     },

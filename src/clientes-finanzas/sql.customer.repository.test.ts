@@ -73,4 +73,32 @@ describe('SqlCustomerRepository', () => {
 
     expect(await repo.anonymize('cust-1')).toBe(false);
   });
+
+  // G1 (23/08/2026) — búsqueda de clientes por CUIT/DNI contra
+  // customer_tax_profiles (perfiles fiscales ya cargados), no el padrón
+  // externo de ARCA.
+  describe('searchByTaxId', () => {
+    it('normaliza guiones/espacios antes de buscar', async () => {
+      const client = mockClient([]);
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.searchByTaxId('20-11111111-2');
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('customer_tax_profiles');
+      expect(call[0]).toContain('ctp.tax_id = $1');
+      expect(call[1]).toEqual(['20111111112']);
+    });
+
+    it('no filtra por active -- un cliente desactivado sigue siendo encontrable por su CUIT (R2)', async () => {
+      const client = mockClient([]);
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.searchByTaxId('20111111112');
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      const whereClause = (call[0] as string).split('WHERE EXISTS')[1]!;
+      expect(whereClause).not.toContain('active');
+    });
+  });
 });

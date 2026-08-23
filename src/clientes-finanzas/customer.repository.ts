@@ -67,6 +67,20 @@ export interface CustomerRepository {
   saveWithGoogle(customer: Customer, googleSub: string): Promise<void>;
 
   searchByName(name: string): Promise<Customer[]>;
+
+  /**
+   * Busca por CUIT/CUIL/DNI (`customer_tax_profiles.tax_id`), normalizado
+   * sin guiones (mismo criterio que `cuitSchema`, `api/schemas/common.schemas.ts`).
+   * Match EXACTO, no parcial (a diferencia de `searchByName`) -- es un
+   * identificador preciso, no texto libre. Devuelve un array, no un único
+   * `Customer`, porque `tax_id` no tiene unicidad a nivel de base (solo hay
+   * un perfil fiscal POR cliente, `customer_tax_profiles_customer_uniq` --
+   * nada impide que dos clientes distintos terminen con el mismo CUIT/DNI
+   * cargado por error de tipeo, y ocultar ese duplicado sería peor que
+   * mostrarlo).
+   */
+  searchByTaxId(taxId: string): Promise<Customer[]>;
+
   delete(id: string): Promise<boolean>;
 
   /**
