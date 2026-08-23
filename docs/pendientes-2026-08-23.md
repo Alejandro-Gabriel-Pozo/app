@@ -495,6 +495,29 @@ Detalle completo del razonamiento en el mensaje del commit.
   `extract-zip`):** ✅ confirmado exacto — pero corrección importante:
   `fixAvailable: false` en las 5. `npm audit fix` **no las arregla**,
   hace falta bump manual de puppeteer o esperar el fix de `@arcasdk/pdf`.
+  **🔴 BLOQUEADO (pendiente de resolver — por escalabilidad, investigado en
+  sesión aparte del 23/08/2026):** el bump manual no es seguro. `extract-zip`
+  nunca sacó fix — Puppeteer directamente dejó de usarlo desde
+  `@puppeteer/browsers` 3.x, que solo viene con `puppeteer` 25+. Pero
+  `puppeteer` 25 pasó a ser **ESM puro** (`"type": "module"`, sin entrada
+  CommonJS — confirmado con `npm view puppeteer@25.8.0 type exports`), y el
+  código compilado de `@arcasdk/pdf`
+  (`node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js:60`)
+  hace `require("puppeteer")` clásico — forzar el bump vía `overrides` tira
+  `ERR_REQUIRE_ESM` y **rompe la generación de cada factura real** (el PDF
+  con CAE/QR que ve el cliente final). No hay una 24.x más nueva que traiga
+  el fix (24.43.1, la instalada, ya es la última de esa serie) y `@arcasdk/pdf`
+  solo tiene publicada la `0.2.0` — no hay versión del proveedor a la que
+  subir tampoco. El test suite no lo hubiera detectado:
+  `invoice-pdf.service.test.ts` mockea todo, nunca invoca el generador real
+  (ver comentario en ese archivo, líneas 13-18). Exposición práctica baja
+  mientras tanto: `extract-zip` solo corre al instalar/descargar el binario
+  de Chrome (build time), no en cada factura emitida. Opciones para
+  resolverlo de fondo, sin decidir todavía: esperar que `@arcasdk/pdf`
+  publique una versión compatible con puppeteer 25, o parchear el paquete
+  vendorizado con `patch-package` (cambiar ese `require()` por un `import()`
+  dinámico) — tocar código de un tercero que factura documentos fiscales,
+  requiere luz verde del dueño antes de encararlo.
 
 ### Hallazgo aparte — ✅ RESUELTO (commit `31607ef`)
 
