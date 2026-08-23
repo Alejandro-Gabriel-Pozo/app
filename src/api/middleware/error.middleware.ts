@@ -188,6 +188,7 @@ function domainErrorStatus(error: DomainError): number {
     // todavía no está disponible para este negocio, no es un error del
     // request en sí.
     case 'AFIP_NOT_CONFIGURED':
+    case 'AFIP_PADRON_UNAVAILABLE':
     case 'PLATFORM_UNAVAILABLE':
     case 'BUSINESS_NOT_READY':
       return 503;

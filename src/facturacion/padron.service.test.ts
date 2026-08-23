@@ -4,7 +4,7 @@ import { PadronService } from './padron.service.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
-import { AfipNotConfiguredError } from '../domain/errors.js';
+import { AfipNotConfiguredError, AfipPadronUnavailableError } from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fakes — mismo patrón que invoice.service.test.ts
@@ -128,6 +128,20 @@ describe('PadronService.getTaxpayerByCuit', () => {
 
     await expect(service.getTaxpayerByCuit('20111111112')).rejects.toBeInstanceOf(AfipNotConfiguredError);
   });
+
+  // Bug en producción, 23/08/2026 (pendientes-2026-08-23.md): una excepción
+  // del SDK que NO es "no encontrado" (timeout, fault SOAP con forma que
+  // isAfipNotFoundError no reconoce, etc.) se colaba cruda hasta el
+  // catch-all de error.middleware.ts y salía como 500 genérico. Ahora se
+  // traduce a un error de dominio propio (503).
+  it('excepción real del SDK (no "no encontrado"): AfipPadronUnavailableError, no un 500 crudo', async () => {
+    const client = fakeArcaClient({
+      getTaxpayerDetails: vi.fn().mockRejectedValue(new Error('ECONNRESET')),
+    });
+
+    await expect(buildService(client).getTaxpayerByCuit('20111111112'))
+      .rejects.toBeInstanceOf(AfipPadronUnavailableError);
+  });
 });
 
 describe('PadronService.resolveCuitByDni', () => {
@@ -145,6 +159,15 @@ describe('PadronService.resolveCuitByDni', () => {
     const result = await buildService(client).resolveCuitByDni('99999999');
 
     expect(result).toBeNull();
+  });
+
+  it('excepción real del SDK (no "no encontrado"): AfipPadronUnavailableError, no un 500 crudo', async () => {
+    const client = fakeArcaClient({
+      getTaxIDByDocument: vi.fn().mockRejectedValue(new Error('ECONNRESET')),
+    });
+
+    await expect(buildService(client).resolveCuitByDni('11111111'))
+      .rejects.toBeInstanceOf(AfipPadronUnavailableError);
   });
 });
 

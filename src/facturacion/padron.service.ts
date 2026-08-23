@@ -45,6 +45,31 @@ import type { AfipCredentialsRepository } from './afip-credentials.repository.js
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { resolveAfipClient, buildAfipClient } from './afip-client.factory.js';
 import type { AfipClientFactory } from './afip-client.factory.js';
+import { AfipPadronUnavailableError } from '../domain/errors.js';
+
+/**
+ * El SDK (`base-register-repository.js::getTaxpayerDetails`,
+ * `register-scope-thirteen.repository.js::getTaxIDByDocument`) ya
+ * distingue "no encontrado" (`isAfipNotFoundError`: `code === 602` o
+ * mensaje con "no existe") y devuelve `null`/`[]` en ese caso -- no hace
+ * falta duplicar esa lógica acá. Lo que SÍ hacía falta (bug en
+ * producción, 23/08/2026): cualquier OTRA excepción (timeout, fault SOAP
+ * con forma que `isAfipNotFoundError` no reconoce, credencial inválida en
+ * runtime) se colaba sin envolver hasta el catch-all de
+ * `error.middleware.ts` y salía como 500 genérico, sin loguear el detalle
+ * real del fault. Esto la traduce a un error de dominio (503, es un
+ * problema de infraestructura externa) y deja el error crudo en el log
+ * del servidor para poder diagnosticar la próxima vez que pase.
+ */
+async function callPadron<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(`[PadronService] Falla no esperada en ${operation}:`, error);
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new AfipPadronUnavailableError(operation, cause);
+  }
+}
 
 export interface PadronAddress {
   line1: string | null;
@@ -90,7 +115,9 @@ export class PadronService {
   /** `null` si el CUIT no existe en el padrón (no es un error — CUIT mal tipeado, ej.). */
   async getTaxpayerByCuit(cuit: string): Promise<TaxpayerLookupResult | null> {
     const client = await resolveAfipClient(this.businessProfileRepo, this.afipCredentialsRepo, this.clientFactory);
-    const details = await client.registerScopeFiveService.getTaxpayerDetails(Number(cuit));
+    const details = await callPadron('getTaxpayerByCuit', () =>
+      client.registerScopeFiveService.getTaxpayerDetails(Number(cuit)),
+    );
     if (!details) return null;
     return this.mapTaxpayerDetails(cuit, details);
   }
@@ -98,7 +125,9 @@ export class PadronService {
   /** `null` si el DNI no tiene ningún CUIT/CUIL asociado en el padrón. */
   async resolveCuitByDni(dni: string): Promise<string | null> {
     const client = await resolveAfipClient(this.businessProfileRepo, this.afipCredentialsRepo, this.clientFactory);
-    const result = await client.registerScopeThirteenService.getTaxIDByDocument(dni);
+    const result = await callPadron('resolveCuitByDni', () =>
+      client.registerScopeThirteenService.getTaxIDByDocument(dni),
+    );
     const first = result.idPersona?.[0];
     return first != null ? String(first) : null;
   }

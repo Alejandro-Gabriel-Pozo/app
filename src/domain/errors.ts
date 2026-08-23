@@ -420,6 +420,20 @@ export class AfipRequestRejectedError extends DomainError {
 }
 
 /**
+ * Falla real del SDK al consultar el padrón (WS_SR_PADRON_A5/A13) que NO es
+ * "no encontrado" -- ese caso ya devuelve `null`/`[]` desde el propio SDK
+ * (`isAfipNotFoundError`, `@arcasdk/core`). Cualquier otra excepción
+ * (timeout, credencial inválida en runtime, fault SOAP con forma
+ * inesperada que `isAfipNotFoundError` no reconoce) caía antes como 500
+ * genérico -- bug reportado en producción 23/08/2026, pendientes-2026-08-23.md.
+ */
+export class AfipPadronUnavailableError extends DomainError {
+  constructor(operation: string, cause: string) {
+    super(`No se pudo consultar el padrón de ARCA (${operation}): ${cause}`, 'AFIP_PADRON_UNAVAILABLE');
+  }
+}
+
+/**
  * D8 (22/08/2026) — una tasa de IVA (de un producto o de `business_profile.
  * default_iva_rate`) no tiene `Id` de AFIP confirmado en `IVA_ALICUOTA_IDS`
  * (afip-catalog.constants.ts). No se adivina un Id -- ver docblock de esa
