@@ -364,11 +364,19 @@ describe('StayService — horario de check-in/check-out', () => {
   });
 
   it('approveScheduleChange() actualiza el notBefore de una tarea de housekeeping ya existente', async () => {
-    const existingTask = HousekeepingTask.create({
-      businessId: TEST_BUSINESS_ID,
-      resourceId: TEST_RESOURCE_ID,
-      shift: 'MORNING',
-      scheduledFor: new Date('2026-08-14T08:00:00Z'),
+    // J2 (23/08/2026) — restore(), no create(): esto simula una tarea que
+    // YA existe (rehidratada) para el mismo día que la reserva hace
+    // checkout ('2026-08-14', ver endTime de los fixtures de este
+    // archivo) — create() rechazaría esa fecha por estar en el pasado
+    // respecto al reloj real (hoy es 2026-08-23), pero acá lo que importa
+    // es que approveScheduleChange() encuentre esta tarea por FECHA
+    // (findActiveByResourceAndDate), no por recencia.
+    const existingTask = HousekeepingTask.restore({
+      id: 'hk-existing-1', businessId: TEST_BUSINESS_ID, resourceId: TEST_RESOURCE_ID,
+      assignedTo: null, status: 'PENDING', notes: null,
+      shift: 'MORNING', scheduledFor: new Date('2026-08-14T08:00:00Z'),
+      startedAt: null, completedAt: null, inspectedAt: null, inspectedBy: null,
+      notBefore: null, createdAt: new Date('2026-08-14T08:00:00Z'), updatedAt: new Date('2026-08-14T08:00:00Z'),
     });
     housekeepingRepo.seed(existingTask);
 

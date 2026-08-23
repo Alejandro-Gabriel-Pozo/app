@@ -104,6 +104,16 @@ export class HousekeepingTask {
     notBefore?: Date | null;
   }): HousekeepingTask {
     const now = new Date();
+    // J2 (23/08/2026, pendientes-2026-08-23.md) — vive en el factory de
+    // ALTA, no en el constructor privado: a diferencia de Reservation, acá
+    // el constructor no valida nada, y restore() (rehidratación desde la
+    // base) llama al constructor directo — un guard ahí rompería la
+    // lectura de tareas históricas. Instante exacto (no día de negocio,
+    // decisión confirmada) — stay.service.ts siempre agenda "mañana
+    // 08:00", así que nunca choca con este guard.
+    if (input.scheduledFor.getTime() < now.getTime()) {
+      throw new InvalidHousekeepingTransitionError('No se puede planificar una tarea con fecha ya pasada.');
+    }
     return new HousekeepingTask({
       id: randomUUID(),
       businessId: input.businessId,

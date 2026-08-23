@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HousekeepingTask } from './housekeeping-task.js';
+import { HousekeepingTask, InvalidHousekeepingTransitionError } from './housekeeping-task.js';
 
 describe('HousekeepingTask.allowedTransitions (A3, deuda estructural)', () => {
   function makeTask() {
@@ -7,7 +7,7 @@ describe('HousekeepingTask.allowedTransitions (A3, deuda estructural)', () => {
       businessId: 'biz-1',
       resourceId: 'room-1',
       shift: 'MORNING',
-      scheduledFor: new Date('2026-08-14T08:00:00Z'),
+      scheduledFor: new Date('2030-01-01T08:00:00Z'),
     });
   }
 
@@ -56,5 +56,30 @@ describe('HousekeepingTask.allowedTransitions (A3, deuda estructural)', () => {
   it('toJSON() incluye allowedTransitions', () => {
     const task = makeTask();
     expect(task.toJSON().allowedTransitions).toEqual(['ASSIGNED', 'IN_PROGRESS', 'OUT_OF_SERVICE']);
+  });
+});
+
+// J2 (23/08/2026, pendientes-2026-08-23.md) — no se puede planificar una
+// tarea con scheduledFor ya pasado. Instante exacto (decisión confirmada).
+describe('HousekeepingTask.create — scheduledFor en el pasado', () => {
+  it('rechaza crear con scheduledFor en el pasado', () => {
+    expect(() =>
+      HousekeepingTask.create({
+        businessId: 'biz-1',
+        resourceId: 'room-1',
+        shift: 'MORNING',
+        scheduledFor: new Date('2020-01-01T08:00:00Z'),
+      }),
+    ).toThrow(InvalidHousekeepingTransitionError);
+  });
+
+  it('acepta crear con scheduledFor futuro', () => {
+    const task = HousekeepingTask.create({
+      businessId: 'biz-1',
+      resourceId: 'room-1',
+      shift: 'MORNING',
+      scheduledFor: new Date('2030-01-01T08:00:00Z'),
+    });
+    expect(task.status).toBe('PENDING');
   });
 });
