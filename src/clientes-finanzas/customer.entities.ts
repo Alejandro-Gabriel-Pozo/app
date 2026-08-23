@@ -54,6 +54,16 @@ export class Customer {
      * existentes).
      */
     public readonly customerNumber: number | null = null,
+    /**
+     * v5 — F1-Pieza 1 (23/08/2026, pendientes-2026-08-23.md): tipificación
+     * de cliente para cuenta corriente. `false` por default -- un cliente
+     * nuevo NUNCA aparece en el panel de Cuentas Corrientes hasta que se
+     * habilita explícitamente (filtro rígido de base, no solo de UI, ver
+     * `SqlCustomerRepository.getAll()`). Independiente de `kind`: un
+     * cliente COMPANY no necesariamente tiene crédito habilitado, y un
+     * INDIVIDUAL corporativo tampoco está descartado a priori.
+     */
+    public readonly enableCurrentAccount: boolean = false,
   ) {
     if (!id.trim()) throw new InvalidCustomerError('id es obligatorio');
     if (!displayName.trim()) throw new InvalidCustomerError('fullName es obligatorio');

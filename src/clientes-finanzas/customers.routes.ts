@@ -145,6 +145,8 @@ function toCustomerDto(customer: Customer) {
     email:       customer.email,
     kind:        customer.kind,
     active:      customer.active,
+    /** F1-Pieza 1 (23/08/2026) — tipificación para Cuentas Corrientes. */
+    enableCurrentAccount: customer.enableCurrentAccount,
     contactMethods: customer.contactMethods.map((cm) => ({
       id:        cm.id,
       channel:   cm.channel,
@@ -214,6 +216,10 @@ export function createCustomersRouter(container: AppContainer): Router {
             body.kind ?? existing.kind,
             body.active ?? existing.active,
           );
+        }
+
+        if (body.enableCurrentAccount !== undefined) {
+          await repo.setCurrentAccountEnabled(id, body.enableCurrentAccount);
         }
 
         const refreshed = await repo.getById(id);
@@ -375,14 +381,15 @@ export function createCustomersRouter(container: AppContainer): Router {
     },
   );
 
-  // GET /customers?email=...  o  GET /customers?name=...  o  GET /customers (todos)
+  // GET /customers?email=...  o  GET /customers?name=...  o
+  // GET /customers?currentAccountEnabled=true  o  GET /customers (todos)
   router.get(
     '/',
     authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const repo = new SqlCustomerRepository(req.db!);
-        const { email, name } = req.query;
+        const { email, name, currentAccountEnabled } = req.query;
 
         if (typeof email === 'string' && email.trim()) {
           const customer = await repo.getByEmail(email.trim());
@@ -396,10 +403,15 @@ export function createCustomersRouter(container: AppContainer): Router {
           return;
         }
 
+        // F1-Pieza 1 (23/08/2026) — filtro RÍGIDO de base para el panel de
+        // Cuentas Corrientes, spec del dueño: "los huéspedes sin este
+        // atributo no deben aparecer bajo ninguna circunstancia". El
+        // filtro vive en SqlCustomerRepository.getAll(), no acá.
+        //
         // Sin filtros: listado completo — lo necesita la pantalla de
         // Clientes del dashboard para mostrar una tabla navegable, no solo
         // búsqueda puntual (antes esto daba 400).
-        const customers = await repo.getAll();
+        const customers = await repo.getAll(currentAccountEnabled === 'true');
         res.json(customers.map(toCustomerDto));
       } catch (err) { next(err); }
     },

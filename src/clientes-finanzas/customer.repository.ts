@@ -42,7 +42,15 @@ export interface CustomerRepository {
   saveWithClient(client: SqlClient, customer: Customer, passwordHash: string): Promise<void>;
 
   getById(id: string): Promise<Customer | undefined>;
-  getAll(): Promise<Customer[]>;
+
+  /**
+   * `onlyCurrentAccountEnabled: true` -- filtro RÍGIDO de base de datos
+   * (F1-Pieza 1, pendientes-2026-08-23.md, spec del dueño: "los huéspedes
+   * sin este atributo no deben aparecer bajo ninguna circunstancia"), no
+   * un filtro de UI. Usarlo para el panel de Cuentas Corrientes.
+   */
+  getAll(onlyCurrentAccountEnabled?: boolean): Promise<Customer[]>;
+
   getByEmail(email: string): Promise<Customer | undefined>;
 
   /**
@@ -98,6 +106,9 @@ export interface CustomerRepository {
    * defaults en cada guardado de displayName/contactMethods.
    */
   updateKindAndActive(customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void>;
+
+  /** F1-Pieza 1 (23/08/2026) — habilita/deshabilita la cuenta corriente de un cliente. */
+  setCurrentAccountEnabled(customerId: string, enabled: boolean): Promise<void>;
 
   getTagsByCustomerId(customerId: string): Promise<Tag[]>;
   getAllTags(): Promise<Tag[]>;

@@ -25,6 +25,7 @@ interface CustomerRow {
   kind:            string;
   active:          boolean;
   customer_number: number;
+  enable_current_account: boolean;
   ccm_id:        string | null;
   channel:       string | null;
   ccm_value:     string | null;
@@ -42,6 +43,7 @@ const BASE_SELECT = `
     c.kind,
     c.active,
     c.customer_number,
+    c.enable_current_account,
     ccm.id          AS ccm_id,
     ccm.channel,
     ccm.value       AS ccm_value,
@@ -85,9 +87,11 @@ export class SqlCustomerRepository implements CustomerRepository {
     return rows.length ? rowsToCustomer(rows) : undefined;
   }
 
-  async getAll(): Promise<Customer[]> {
+  async getAll(onlyCurrentAccountEnabled = false): Promise<Customer[]> {
     const { rows } = await this.sqlClient.query<CustomerRow>(
-      `${BASE_SELECT} ORDER BY c.display_name ASC`,
+      onlyCurrentAccountEnabled
+        ? `${BASE_SELECT} WHERE c.enable_current_account = TRUE ORDER BY c.display_name ASC`
+        : `${BASE_SELECT} ORDER BY c.display_name ASC`,
     );
     return groupByCustomer(rows);
   }
@@ -231,6 +235,13 @@ export class SqlCustomerRepository implements CustomerRepository {
     await this.sqlClient.query(
       `UPDATE customers SET kind = $2, active = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [customerId, kind, active],
+    );
+  }
+
+  async setCurrentAccountEnabled(customerId: string, enabled: boolean): Promise<void> {
+    await this.sqlClient.query(
+      `UPDATE customers SET enable_current_account = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [customerId, enabled],
     );
   }
 
@@ -381,7 +392,7 @@ export class SqlCustomerRepository implements CustomerRepository {
 function rowsToCustomer(rows: CustomerRow[]): Customer {
   const first = rows[0];
   if (!first) throw new Error('rowsToCustomer llamado con array vacío');
-  const { id, display_name, kind, active, customer_number } = first;
+  const { id, display_name, kind, active, customer_number, enable_current_account } = first;
   const contactMethods: ContactMethod[] = rows
     .filter((r) => r.ccm_id !== null)
     .map((r) => ({
@@ -391,7 +402,7 @@ function rowsToCustomer(rows: CustomerRow[]): Customer {
       isPrimary: r.is_primary ?? false,
       ...(r.verified_at !== null && r.verified_at !== undefined && { verifiedAt: r.verified_at }),
     }));
-  return new Customer(id, display_name, contactMethods, kind as 'INDIVIDUAL' | 'COMPANY', active, customer_number);
+  return new Customer(id, display_name, contactMethods, kind as 'INDIVIDUAL' | 'COMPANY', active, customer_number, enable_current_account);
 }
 
 function groupByCustomer(rows: CustomerRow[]): Customer[] {

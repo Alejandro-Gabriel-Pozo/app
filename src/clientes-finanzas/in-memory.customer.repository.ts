@@ -68,8 +68,9 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     return this.store.get(id)?.customer;
   }
 
-  async getAll(): Promise<Customer[]> {
-    return Array.from(this.store.values()).map((r) => r.customer);
+  async getAll(onlyCurrentAccountEnabled = false): Promise<Customer[]> {
+    const all = Array.from(this.store.values()).map((r) => r.customer);
+    return onlyCurrentAccountEnabled ? all.filter((c) => c.enableCurrentAccount) : all;
   }
 
   async getByEmail(email: string): Promise<Customer | undefined> {
@@ -153,6 +154,21 @@ export class InMemoryCustomerRepository implements CustomerRepository {
       kind,
       active,
       record.customer.customerNumber,
+    );
+    this.store.set(customerId, { customer: updated, passwordHash: record.passwordHash, googleSub: record.googleSub });
+  }
+
+  async setCurrentAccountEnabled(customerId: string, enabled: boolean): Promise<void> {
+    const record = this.store.get(customerId);
+    if (!record) return;
+    const updated = new Customer(
+      record.customer.id,
+      record.customer.displayName,
+      record.customer.contactMethods,
+      record.customer.kind,
+      record.customer.active,
+      record.customer.customerNumber,
+      enabled,
     );
     this.store.set(customerId, { customer: updated, passwordHash: record.passwordHash, googleSub: record.googleSub });
   }

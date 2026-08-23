@@ -191,6 +191,8 @@ export const UpdateCustomerSchema = z.object({
   displayName: z.string().min(1).optional(),
   kind:        z.enum(['INDIVIDUAL', 'COMPANY']).optional(),
   active:      z.boolean().optional(),
+  /** F1-Pieza 1 (23/08/2026) — tipificación para Cuentas Corrientes. */
+  enableCurrentAccount: z.boolean().optional(),
 }).refine((data) => Object.keys(data).length > 0, {
   message: 'Debés enviar al menos un campo para modificar',
 });

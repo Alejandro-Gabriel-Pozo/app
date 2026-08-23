@@ -74,6 +74,44 @@ describe('SqlCustomerRepository', () => {
     expect(await repo.anonymize('cust-1')).toBe(false);
   });
 
+  // F1-Pieza 1 (23/08/2026) — filtro RÍGIDO de base para el panel de
+  // Cuentas Corrientes (spec del dueño: "los huéspedes sin este atributo
+  // no deben aparecer bajo ninguna circunstancia").
+  describe('getAll(onlyCurrentAccountEnabled)', () => {
+    it('sin argumento: no filtra por enable_current_account', async () => {
+      const client = mockClient([]);
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.getAll();
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).not.toContain('enable_current_account = TRUE');
+    });
+
+    it('true: filtra por enable_current_account = TRUE en el WHERE', async () => {
+      const client = mockClient([]);
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.getAll(true);
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('WHERE c.enable_current_account = TRUE');
+    });
+  });
+
+  describe('setCurrentAccountEnabled', () => {
+    it('actualiza enable_current_account del cliente', async () => {
+      const client = mockClient([]);
+      const repo = new SqlCustomerRepository(client);
+
+      await repo.setCurrentAccountEnabled('cust-1', true);
+
+      const call = (client.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('SET enable_current_account = $2');
+      expect(call[1]).toEqual(['cust-1', true]);
+    });
+  });
+
   // G1 (23/08/2026) — búsqueda de clientes por CUIT/DNI contra
   // customer_tax_profiles (perfiles fiscales ya cargados), no el padrón
   // externo de ARCA.

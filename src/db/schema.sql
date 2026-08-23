@@ -2715,3 +2715,18 @@ CREATE TABLE IF NOT EXISTS afip_tickets (
 CREATE INDEX IF NOT EXISTS idx_customer_tax_profiles_tax_id
   ON customer_tax_profiles (tax_id);
 
+-- ---------------------------------------------------------------------------
+-- customers.enable_current_account (23/08/2026, F1-Pieza 1,
+-- pendientes-2026-08-23.md) -- tipificación de cliente para Cuentas
+-- Corrientes. Spec del dueño: "el panel principal de Cuentas Corrientes
+-- debe aplicar un filtro RÍGIDO DE BASE DE DATOS... los huéspedes sin este
+-- atributo no deben aparecer bajo ninguna circunstancia" -- por eso el
+-- filtro vive en el WHERE de SqlCustomerRepository.getAll(), no solo en
+-- el frontend. Independiente de `kind` (INDIVIDUAL/COMPANY) a propósito --
+-- ver docblock de Customer.enableCurrentAccount. DEFAULT FALSE: un cliente
+-- nuevo nunca tiene crédito habilitado hasta que alguien lo marca.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS enable_current_account BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_customers_current_account
+  ON customers (id) WHERE enable_current_account = TRUE;
+
