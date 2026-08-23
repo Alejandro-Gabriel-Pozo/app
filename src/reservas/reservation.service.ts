@@ -90,6 +90,14 @@ import { resolveEndTime } from './reservation-time.utils.js';
 // este módulo.
 export { combineDateAndTime } from './reservation-time.utils.js';
 
+/**
+ * J1 (23/08/2026, pendientes-2026-08-23.md) — margen para no rechazar un
+ * walk-in "reservar ahora mismo" por la latencia normal entre que el
+ * frontend arma el timestamp y la request llega al server. Valor
+ * confirmado con el dueño (AskUserQuestion).
+ */
+const PAST_START_TOLERANCE_MS = 5 * 60 * 1000;
+
 export class ReservationService {
   private readonly pricing:      ReservationPricingService;
   private readonly availability: ReservationAvailabilityService;
@@ -115,6 +123,14 @@ export class ReservationService {
     private readonly financialTransactionRepository: Pick<FinancialTransactionRepository, 'getSettledPaymentTotalForReservation'>,
     /** D6 (22/08/2026) — número operativo, resuelto una sola vez en createReservation(). */
     private readonly numberSequenceRepository: NumberSequenceRepository,
+    /**
+     * J1 (23/08/2026) — reloj inyectable para el guard de "no crear/mover
+     * una reserva al pasado". Opcional con default real: los ~101
+     * call-sites de producción no necesitan tocarse. Los tests que
+     * construyen fixtures con fechas fijas (`reservation.service.test.ts`)
+     * inyectan un reloj congelado anterior a esas fechas.
+     */
+    private readonly now: () => Date = () => new Date(),
   ) {
     this.pricing = new ReservationPricingService(
       customerRateRepository,
@@ -151,6 +167,8 @@ export class ReservationService {
     /** Desglose de huéspedes (hotelería, 18/08/2026) — null/omitido = no aplica a este tipo de reserva. */
     adultos?: number | null;
     ninos?: number | null;
+    /** K3 (23/08/2026) — explícito para negocios de recurso 1:1 (barbería/spa). Alojamiento lo deriva de adultos+ninos, ver más abajo. */
+    partySize?: number;
   }): Promise<Reservation> {
     const resource = await this.resourceRepository.getById(params.resourceId);
     if (!resource) {
@@ -164,6 +182,15 @@ export class ReservationService {
     // que falla rápido sin esperar a la transacción.
     if (!resource.active) {
       throw new InvalidReservationError(`El recurso ${params.resourceId} está desactivado.`);
+    }
+
+    // J1 (23/08/2026, pendientes-2026-08-23.md) — no puede vivir en el
+    // constructor de Reservation: Reservation.restore() comparte el mismo
+    // constructor y reconstruye reservas históricas leídas de la base
+    // (prácticamente todas, su startTime ya "pasó" con solo el paso del
+    // tiempo). El guard va acá, en el caso de uso de ALTA.
+    if (params.startTime.getTime() < this.now().getTime() - PAST_START_TOLERANCE_MS) {
+      throw new InvalidReservationError('No se puede crear una reserva con fecha/hora de inicio en el pasado.');
     }
 
     const category = await this.categoryRepository.findById(resource.categoryId);
@@ -221,6 +248,15 @@ export class ReservationService {
     // confirmPriceAdjustment(), que reenvían el mismo número que ya tenía.
     const reservationNumber = await this.numberSequenceRepository.next('RESERVATION');
 
+    // K3 (23/08/2026, pendientes-2026-08-23.md) — Reservation.ts SÍ valida
+    // partySize > resource.capacity, pero hasta acá nunca se le pasaba el
+    // dato real: caía siempre al default de la entidad (1). Se deriva de
+    // adultos+ninos cuando vienen informados (hotelería); para negocios de
+    // recurso 1:1 (barbería/spa) se puede mandar partySize explícito, o
+    // dejar que la entidad siga defaulteando a 1.
+    const partySize = params.partySize
+      ?? (params.adultos != null ? params.adultos + (params.ninos ?? 0) : undefined);
+
     let reservation!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
@@ -243,6 +279,7 @@ export class ReservationService {
         ratePlanId: params.ratePlanId ?? null,
         adultos: params.adultos ?? null,
         ninos:   params.ninos ?? null,
+        ...(partySize !== undefined && { partySize }),
         totalPrice,
         depositAmount,
         depositDueBy,
@@ -301,6 +338,18 @@ export class ReservationService {
 
     const newStartTime = changes.startTime ?? existing.startTime;
     const newEndTime   = changes.endTime   ?? existing.endTime;
+
+    // J1 (23/08/2026, pendientes-2026-08-23.md) — solo dispara cuando se
+    // está moviendo el inicio (drag-to-move del calendario); editar otros
+    // campos de una reserva vieja sigue permitido, no se toca acá.
+    // Confirmado con el dueño: mover una reserva al pasado se bloquea
+    // igual que crearla en el pasado.
+    if (
+      changes.startTime !== undefined
+      && newStartTime.getTime() < this.now().getTime() - PAST_START_TOLERANCE_MS
+    ) {
+      throw new InvalidReservationError('No se puede mover una reserva a una fecha/hora de inicio en el pasado.');
+    }
     const rawDetails   = changes.details   ?? (existing.details as Record<string, unknown>);
     const newRatePlanId = changes.ratePlanId !== undefined ? changes.ratePlanId : existing.ratePlanId;
     const newAdultos   = changes.adultos !== undefined ? changes.adultos : existing.adultos;

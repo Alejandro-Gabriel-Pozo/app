@@ -72,6 +72,14 @@ class InMemoryTransactionManager implements TransactionManager {
 /** businessId de prueba — requerido desde fix/reservation-businessid-required. */
 const TEST_BUSINESS_ID = 'biz-test';
 
+/**
+ * J1 (23/08/2026, pendientes-2026-08-23.md) — reloj congelado para el
+ * guard de "no crear/mover una reserva al pasado". Todos los fixtures de
+ * `startTime` de este archivo usan fechas 2026-07/08/09; esta fecha es
+ * anterior a todas ellas, así que el guard nunca las rechaza.
+ */
+const FROZEN_TEST_NOW = () => new Date('2020-01-01T00:00:00Z');
+
 describe('ReservationService', () => {
   let reservationRepo: InMemoryReservationRepository;
   let resourceRepo: InMemoryResourceRepository;
@@ -122,6 +130,10 @@ describe('ReservationService', () => {
     }
   }
 
+  // K3 (23/08/2026, pendientes-2026-08-23.md) — capacity=4 (antes caía al
+  // default de 1): createReservation() ahora deriva partySize real de
+  // adultos+ninos, y varios tests de "adultos/ninos" de este archivo usan
+  // combinaciones de hasta 4 personas contra este mismo recurso compartido.
   const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
     shape: 'RECTANGLE',
     width: 120,
@@ -129,7 +141,7 @@ describe('ReservationService', () => {
     positionX: 0,
     positionY: 0,
     rotationDegrees: 0,
-  });
+  }, 4);
 
   const customer = new Customer('cust-1', 'Ana García', 'ana@example.com');
 
@@ -165,6 +177,7 @@ describe('ReservationService', () => {
       businessProfileRepo,
       financialTransactionRepo,
       numberSequenceRepo,
+      FROZEN_TEST_NOW,
     );
 
     await resourceRepo.save(table);
@@ -223,13 +236,19 @@ describe('ReservationService', () => {
     });
 
     it('debe rechazar si el recurso está marcado OUT_OF_SERVICE por housekeeping', async () => {
-      const task = HousekeepingTask.create({
-        businessId: TEST_BUSINESS_ID,
-        resourceId: 't1',
-        shift: 'MORNING',
-        scheduledFor: new Date('2026-07-01T08:00:00'),
+      // J3 (23/08/2026) — restore(), no create(): simula una tarea que YA
+      // existe (rehidratada, como si viniera de la base), no una de alta
+      // nueva — create() rechazaría un scheduledFor pasado (J2), pero acá
+      // lo que importa es que isOutOfService() mire tareas cuyo
+      // scheduled_for ya llegó (J3), así que tiene que quedar en el pasado
+      // real a propósito.
+      const task = HousekeepingTask.restore({
+        id: 'hk-out-1', businessId: TEST_BUSINESS_ID, resourceId: 't1',
+        assignedTo: null, status: 'OUT_OF_SERVICE', notes: 'Cañería rota',
+        shift: 'MORNING', scheduledFor: new Date('2020-01-01T08:00:00'),
+        startedAt: null, completedAt: null, inspectedAt: null, inspectedBy: null,
+        notBefore: null, createdAt: new Date('2020-01-01T08:00:00'), updatedAt: new Date('2020-01-01T08:00:00'),
       });
-      task.setOutOfService('Cañería rota');
       housekeepingRepo.seed(task);
 
       await expect(
@@ -264,6 +283,46 @@ describe('ReservationService', () => {
           endTime:   new Date('2026-07-01T22:00:00'),
           details: {},
         }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // J1 (23/08/2026, pendientes-2026-08-23.md) — no se puede crear/mover una
+  // reserva a una fecha/hora de inicio en el pasado. `service` usa
+  // FROZEN_TEST_NOW (2020-01-01) como reloj, así que "pasado"/"futuro" se
+  // definen relativo a esa fecha, no al reloj real.
+  // -------------------------------------------------------------------------
+  describe('J1 — startTime en el pasado', () => {
+    it('rechaza crear con startTime claramente en el pasado', async () => {
+      await expect(
+        service.createReservation({
+          id: 'res-past', resourceId: 't1', customer,
+          startTime: new Date('2019-01-01T20:00:00Z'), endTime: new Date('2019-01-01T22:00:00Z'),
+          details: {},
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('acepta crear con startTime dentro de la tolerancia de 5 minutos', async () => {
+      const withinTolerance = new Date(FROZEN_TEST_NOW().getTime() - 2 * 60 * 1000);
+      const reservation = await service.createReservation({
+        id: 'res-within-tolerance', resourceId: 't1', customer,
+        startTime: withinTolerance, endTime: new Date(withinTolerance.getTime() + 60 * 60 * 1000),
+        details: {},
+      });
+      expect(reservation.id).toBe('res-within-tolerance');
+    });
+
+    it('rechaza mover (updateReservation) el startTime a una fecha ya pasada', async () => {
+      await service.createReservation({
+        id: 'res-move-past', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00Z'), endTime: new Date('2026-07-01T22:00:00Z'),
+        details: {},
+      });
+
+      await expect(
+        service.updateReservation('res-move-past', { startTime: new Date('2019-01-01T20:00:00Z') }),
       ).rejects.toThrow(InvalidReservationError);
     });
   });
@@ -367,6 +426,53 @@ describe('ReservationService', () => {
       expect(updated.adultos).toBe(1);
       expect(updated.startTime).toEqual(created.startTime);
       expect(updated.resource.id).toBe(created.resource.id);
+    });
+
+    // K3 (23/08/2026, pendientes-2026-08-23.md) — Reservation.ts ya validaba
+    // partySize > resource.capacity, pero createReservation() nunca lo
+    // recibía (caía siempre al default 1 de la entidad). Estos tests
+    // prueban que ahora sí se deriva de adultos+ninos y de verdad valida
+    // contra la capacidad real del recurso.
+    it('deriva partySize de adultos+ninos y lo persiste en la reserva', async () => {
+      const roomCap2 = new BookableResource(
+        't-cap2', 'Habitación doble', 80, 'cat-room',
+        { shape: 'RECTANGLE', width: 120, height: 80, positionX: 0, positionY: 0, rotationDegrees: 0 },
+        2,
+      );
+      await resourceRepo.save(roomCap2);
+
+      const reservation = await service.createReservation({
+        id: 'res-partysize-1', resourceId: 't-cap2', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+        details: {}, adultos: 1, ninos: 1,
+      });
+      expect(reservation.partySize).toBe(2);
+    });
+
+    it('rechaza cuando adultos+ninos supera la capacidad real del recurso', async () => {
+      const roomCap2 = new BookableResource(
+        't-cap2', 'Habitación doble', 80, 'cat-room',
+        { shape: 'RECTANGLE', width: 120, height: 80, positionX: 0, positionY: 0, rotationDegrees: 0 },
+        2,
+      );
+      await resourceRepo.save(roomCap2);
+
+      await expect(
+        service.createReservation({
+          id: 'res-partysize-2', resourceId: 't-cap2', customer,
+          startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+          details: {}, adultos: 3, ninos: 2,
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+    });
+
+    it('acepta partySize explícito para negocios de recurso 1:1 (sin adultos/ninos)', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-partysize-3', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+        details: {}, partySize: 1,
+      });
+      expect(reservation.partySize).toBe(1);
     });
   });
 
@@ -518,6 +624,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
+        FROZEN_TEST_NOW,
       );
 
       await lodgingService.createReservation({
@@ -565,6 +672,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
+        FROZEN_TEST_NOW,
       );
 
       const reservation = await depositService.createReservation({
@@ -584,6 +692,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
+        FROZEN_TEST_NOW,
       );
 
       await depositService.createReservation({
@@ -608,6 +717,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
+        FROZEN_TEST_NOW,
       );
 
       const reservation = await depositService.createReservation({
@@ -624,6 +734,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, numberSequenceRepo,
+        FROZEN_TEST_NOW,
       );
 
       const before = Date.now();
@@ -710,13 +821,15 @@ describe('ReservationService', () => {
     });
 
     it('debe retornar false cuando el recurso está OUT_OF_SERVICE, sin conflicto de horario', async () => {
-      const task = HousekeepingTask.create({
-        businessId: TEST_BUSINESS_ID,
-        resourceId: 't1',
-        shift: 'MORNING',
-        scheduledFor: new Date('2026-07-01T08:00:00'),
+      // J3 (23/08/2026) — restore(), no create(): ver comentario del test
+      // equivalente en el describe de createReservation más arriba.
+      const task = HousekeepingTask.restore({
+        id: 'hk-out-2', businessId: TEST_BUSINESS_ID, resourceId: 't1',
+        assignedTo: null, status: 'OUT_OF_SERVICE', notes: null,
+        shift: 'MORNING', scheduledFor: new Date('2020-01-01T08:00:00'),
+        startedAt: null, completedAt: null, inspectedAt: null, inspectedBy: null,
+        notBefore: null, createdAt: new Date('2020-01-01T08:00:00'), updatedAt: new Date('2020-01-01T08:00:00'),
       });
-      task.setOutOfService();
       housekeepingRepo.seed(task);
 
       const available = await service.checkAvailability(
@@ -1440,6 +1553,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
+        FROZEN_TEST_NOW,
       );
       // t1 tiene basePrice=50 -- 30% de descuento a nivel BUCKET ALOJAMIENTO = 35.
       customerRateRepo.seed([{
