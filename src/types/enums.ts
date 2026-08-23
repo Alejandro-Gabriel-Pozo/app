@@ -1,8 +1,16 @@
+/**
+ * EXPIRED (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md,
+ * C1-Fase A) — estado terminal nuevo, distinto de CANCELLED: una reserva
+ * que venció su hold sin cobrar la seña (reservation-hold-expiry.worker.ts),
+ * nunca disparado por una acción de usuario (A6.6, criterios-negocio.md).
+ * No confundir con CANCELLED, que sí es una decisión (cliente/staff).
+ */
 export enum ReservationStatus {
   PENDING = 'PENDING',
   CONFIRMED = 'CONFIRMED',
   CANCELLED = 'CANCELLED',
   COMPLETED = 'COMPLETED',
+  EXPIRED = 'EXPIRED',
 }
 
 /**

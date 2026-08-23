@@ -14,12 +14,54 @@ detalle completo de lo ya cerrado (ver el archivo anterior para eso).
 Ver `pendientes-2026-08-19.md` sección C para el detalle completo de cada
 pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
 
-- **C1** — Seña/depósito como concepto de facturación separado: no existe
-  hoy (se factura el total o nada). Sin responder: dónde vive la regla de
-  %, si la seña es un comprobante propio, cómo se descuenta del saldo final.
-- **C2** — Reglas de cancelación → Notas de Crédito por %: depende de C1 y
-  de soporte de NC/ND (no existe). Sin responder: escala de % según
-  anticipación, y si aplica sobre el total o sobre la seña.
+- ✅ **C1-Fase A RESUELTO (22/08/2026)** — Seña/depósito, núcleo sin
+  gateway de pago. Diseño completo en
+  `docs/diseno-sena-deposito-fase-a-2026-08-22.md`. Decisiones del dueño:
+  % vive en política general del negocio + override por ítem/categoría/
+  bucket (mismo resolver de D9); comprobante propio por hito (Factura B
+  de la seña, otra del saldo — estructuralmente ya soportado, `Invoice`
+  es 1:1 con `FinancialTransaction` y ahora hay dos por reserva); cobro y
+  factura siempre MANUALES en esta fase (nada de gateway); sin política
+  configurada, confirmar sigue sin exigir ningún pago (hallazgo de
+  diseño, ver abajo). Implementado: estado `EXPIRED` nuevo en
+  `ReservationStatus` (worker `ReservationHoldExpiryWorker` libera holds
+  vencidos sin cobrar, A8.7); tabla `deposit_policies` (scope de 4 vías,
+  sin `product_id` ni nivel cliente); `reservations.deposit_amount`/
+  `deposit_due_by` congelados al crear (R9); `ReservationPricingService.
+  resolveDepositAmount()`; `confirmReservation()` gatea con
+  `DepositNotPaidError` si `deposit_amount > 0` y no hay `PAYMENT
+  SETTLED` suficiente (`getSettledPaymentTotalForReservation`, método
+  nuevo); `handleReservationConfirmed` (outbox) pasa de crear una sola
+  CHARGE por el total a crear CHARGE(depósito) `SETTLED` + CHARGE(saldo)
+  `PENDING` en el mismo evento — **sin tocar** `handleReservationCompleted`/
+  `settleByReservationId`/`voidByReservationId`/`getNetBalanceByStayId`/
+  `StayService.checkOut()` (hallazgo del diseño: esos mecanismos ya
+  encajaban sin cambios, ver sección 6 del documento);
+  `CustomerAccountService.recordPayment()` acepta `reservationId`.
+  **Hallazgo real durante el diseño** (dos rondas de `AskUserQuestion`):
+  la primera versión del mecanismo unificado implicaba que TODA reserva
+  con precio, en TODO negocio, exigiera pago completo antes de poder
+  confirmarse aunque no hubiera política de seña — se corrigió a
+  `deposit_amount` default `0` (no `totalPrice`), así que sin política
+  configurada el comportamiento es exactamente el de siempre. 24 tests
+  nuevos, suite completa (845 tests) + lint + typecheck verdes. **Backend
+  only** — sin UI en `appfrontend-main` todavía (configurar
+  `deposit_policies`/`default_deposit_percentage` en Mi Negocio, cobrar
+  seña desde la ficha de reserva).
+  **Sin resolver todavía, explícitamente fuera de esta fase**: Fase B
+  (integración con gateway de pago real, hold corto para canal web,
+  auto-release automático — depende de elegir proveedor) y Fase C
+  (`BillingEntity` separado de `Guest`, facturación corporate
+  consolidada, cuentas por cobrar/statements) — ambas documentadas en
+  `docs/diseno-sena-deposito-fase-a-2026-08-22.md` como referencia, sin
+  diseñar en detalle.
+- **C2** — Reglas de cancelación → Notas de Crédito por %: sigue
+  bloqueado por no existir soporte de NC/ND. Con C1-Fase A implementado,
+  el caso concreto que lo necesita quedó identificado con precisión:
+  cancelar una reserva `CONFIRMED` cuya seña ya se cobró/facturó deja el
+  `PAYMENT` sin contrapartida al voidear la `CHARGE` (A3.9) — limitación
+  conocida, anotada en el documento de diseño, no resuelta. Sigue sin
+  responder la escala de % según anticipación.
 - **C3** — Modelo de factura ítem único vs. multi-línea: hay un diseño
   propuesto sin implementar (`docs/diseno-facturacion-lineas-2026-08-22.md`,
   Nivel A/B sin decidir).

@@ -89,6 +89,7 @@ import { SqlStayRepository }             from '../pms-estadias/stay.repository.j
 import { StayService }                   from '../pms-estadias/stay.service.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlBusinessProfileRepository }  from '../repositories/sql.business-profile.repository.js';
+import { SqlDepositPolicyRepository }    from './sql.deposit-policy.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema } from '../api/schemas/request.schemas.js';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
@@ -107,6 +108,9 @@ function buildReservationService(req: Request): ReservationService {
   const operatingHoursRepo    = new SqlOperatingHoursRepository(db);
   const housekeepingRepo      = new SqlHousekeepingRepository(db);
   const transactionManager    = buildTenantTransactionManager(req);
+  const depositPolicyRepo     = new SqlDepositPolicyRepository(db);
+  const businessProfileRepo   = new SqlBusinessProfileRepository(db);
+  const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
   return new ReservationService(
     reservationRepo,
     resourceRepo,
@@ -119,6 +123,9 @@ function buildReservationService(req: Request): ReservationService {
     customerRateRepo,
     operatingHoursRepo,
     housekeepingRepo,
+    depositPolicyRepo,
+    businessProfileRepo,
+    financialTransactionRepo,
   );
 }
 

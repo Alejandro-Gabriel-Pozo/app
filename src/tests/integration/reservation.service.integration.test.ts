@@ -57,6 +57,9 @@ import { SqlBookableServiceRepository }       from '../../reservas/sql.bookable-
 import { SqlCustomerRateRepository }          from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }        from '../../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }          from '../../pms-estadias/housekeeping.repository.js';
+import { SqlDepositPolicyRepository }         from '../../reservas/sql.deposit-policy.repository.js';
+import { SqlBusinessProfileRepository }       from '../../repositories/sql.business-profile.repository.js';
+import { SqlFinancialTransactionRepository }  from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../reservas/reservation.service.js';
 import { Customer }                           from '../../clientes-finanzas/customer.entities.js';
@@ -92,6 +95,9 @@ async function buildService() {
   const operatingHoursRepo = new SqlOperatingHoursRepository(db);
   const housekeepingRepo = new SqlHousekeepingRepository(db);
   const txManager       = new PostgresTransactionManager(pool);
+  const depositPolicyRepo = new SqlDepositPolicyRepository(db);
+  const businessProfileRepo = new SqlBusinessProfileRepository(db);
+  const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
 
   return new ReservationService(
     reservationRepo,
@@ -105,6 +111,9 @@ async function buildService() {
     customerRateRepo,
     operatingHoursRepo,
     housekeepingRepo,
+    depositPolicyRepo,
+    businessProfileRepo,
+    financialTransactionRepo,
   );
 }
 

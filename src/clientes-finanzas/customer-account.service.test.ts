@@ -33,6 +33,7 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async voidByOrderId() { return 0; }
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
+  async getSettledPaymentTotalForReservation() { return 0; }
   async linkStayToReservationCharges() { return 0; }
 }
 
@@ -52,6 +53,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
+    defaultDepositPercentage: null, depositHoldHours: null,
     createdAt: now, updatedAt: now,
     ...overrides,
   };
@@ -99,6 +101,18 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
     await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100, paymentMethod: 'CASH' });
 
     expect(financialRepo.created[0]).toMatchObject({ cardInstallments: null, cardSurchargeAmount: null });
+  });
+
+  it('reservationId se persiste cuando se pasa (C1-Fase A, cobro de seña/saldo)', async () => {
+    await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 30, reservationId: 'res-1' });
+
+    expect(financialRepo.created[0]).toMatchObject({ reservationId: 'res-1', type: 'PAYMENT', status: 'SETTLED' });
+  });
+
+  it('reservationId queda null si no se pasa (pago genérico contra la cuenta del cliente, sin cambios)', async () => {
+    await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100 });
+
+    expect(financialRepo.created[0]).toMatchObject({ reservationId: null });
   });
 
   it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {

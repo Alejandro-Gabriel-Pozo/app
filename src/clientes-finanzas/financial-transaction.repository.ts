@@ -176,6 +176,17 @@ export interface FinancialTransactionRepository {
   getNetBalanceByCustomerId(customerId: string): Promise<number>;
 
   /**
+   * Suma de `PAYMENT` `SETTLED` asociados a una reserva puntual (C1-Fase A,
+   * docs/diseno-sena-deposito-fase-a-2026-08-22.md) — usado por
+   * `ReservationService.confirmReservation()` para el gate de seña
+   * (`DepositNotPaidError`): compara este total contra `deposit_amount`
+   * sin necesitar tocar el status de ningún `CHARGE`. `PAYMENT` siempre se
+   * crea `SETTLED` directo (`CustomerAccountService.recordPayment`), así
+   * que no hace falta filtrar por otro estado.
+   */
+  getSettledPaymentTotalForReservation(reservationId: string): Promise<number>;
+
+  /**
    * Balance neto de una estadía puntual (mismo cálculo que
    * getNetBalanceByCustomerId, pero acotado a un `stay_id`). Es lo que
    * StayService.checkOut() consulta para decidir si hay saldo pendiente —

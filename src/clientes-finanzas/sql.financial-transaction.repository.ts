@@ -309,6 +309,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return parseFloat(result.rows[0]?.net ?? '0');
   }
 
+  async getSettledPaymentTotalForReservation(reservationId: string): Promise<number> {
+    const result = await this.sqlClient.query<{ total: string }>(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM financial_transactions
+       WHERE reservation_id = $1 AND type = 'PAYMENT' AND status = 'SETTLED'`,
+      [reservationId],
+    );
+    return parseFloat(result.rows[0]?.total ?? '0');
+  }
+
   async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions

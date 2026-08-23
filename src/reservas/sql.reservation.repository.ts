@@ -30,6 +30,8 @@ interface ReservationRow {
   schedule_approval_status?: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
   schedule_approved_by?: string | null;
   schedule_charge_amount?: string | null;
+  deposit_amount: string;
+  deposit_due_by?: string | Date | null;
 }
 
 /**
@@ -81,6 +83,8 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.scheduleApprovalStatus,
       reservation.scheduleApprovedBy,
       reservation.scheduleChargeAmount,
+      reservation.depositAmount,
+      reservation.depositDueBy ? reservation.depositDueBy.toISOString() : null,
     ];
   }
 
@@ -116,9 +120,9 @@ export class SqlReservationRepository implements ReservationRepository {
       start_time, end_time, details, updated_at, total_price,
       service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id,
       requested_check_in_time, requested_check_out_time, schedule_approval_status,
-      schedule_approved_by, schedule_charge_amount
+      schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -138,7 +142,9 @@ export class SqlReservationRepository implements ReservationRepository {
       requested_check_out_time = $19,
       schedule_approval_status = $20,
       schedule_approved_by     = $21,
-      schedule_charge_amount   = $22
+      schedule_charge_amount   = $22,
+      deposit_amount           = $23,
+      deposit_due_by           = $24
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -235,6 +241,16 @@ export class SqlReservationRepository implements ReservationRepository {
          AND r.requested_check_out_time IS NOT NULL
        ORDER BY r.end_time ASC`,
       [date],
+    );
+    return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
+  }
+
+  async getPendingWithExpiredDeposit(now: Date): Promise<Reservation[]> {
+    const result = await this.sqlClient.query<ReservationRow>(
+      `${this.baseSelect()}
+       WHERE r.status = $1 AND r.deposit_due_by IS NOT NULL AND r.deposit_due_by < $2
+       ORDER BY r.deposit_due_by ASC`,
+      [ReservationStatus.PENDING, now.toISOString()],
     );
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
@@ -396,7 +412,8 @@ export class SqlReservationRepository implements ReservationRepository {
         r.service_id, r.party_size, r.notes, r.order_item_id, r.total_price,
         r.adultos, r.ninos, r.rate_plan_id,
         r.requested_check_in_time, r.requested_check_out_time,
-        r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount
+        r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount,
+        r.deposit_amount, r.deposit_due_by
       FROM reservations r
     `;
   }
@@ -442,6 +459,8 @@ export class SqlReservationRepository implements ReservationRepository {
       scheduleApprovalStatus: row.schedule_approval_status ?? null,
       scheduleApprovedBy:     row.schedule_approved_by     ?? null,
       scheduleChargeAmount:   row.schedule_charge_amount != null ? parseFloat(row.schedule_charge_amount) : null,
+      depositAmount: parseFloat(row.deposit_amount),
+      depositDueBy:  row.deposit_due_by ? new Date(row.deposit_due_by) : null,
     });
   }
 

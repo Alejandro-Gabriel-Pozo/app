@@ -79,6 +79,22 @@ export class NoPriceAdjustmentPendingError extends DomainError {
   }
 }
 
+/**
+ * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md) —
+ * "regla de oro": una reserva PENDING no pasa a CONFIRMED sin que la seña
+ * ya esté cobrada (`PAYMENT` `SETTLED` >= `deposit_amount`). 409, no 400 —
+ * la reserva existe y es válida, solo falta un requisito de estado previo
+ * a la transición (mismo criterio que `NoPriceAdjustmentPendingError`).
+ */
+export class DepositNotPaidError extends DomainError {
+  constructor(reservationId: string, depositAmount: number, paidSoFar: number) {
+    super(
+      `La reserva "${reservationId}" requiere la seña cobrada antes de confirmarse (seña: ${depositAmount}, cobrado: ${paidSoFar}).`,
+      'DEPOSIT_NOT_PAID',
+    );
+  }
+}
+
 export class InvalidCustomerError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_CUSTOMER');

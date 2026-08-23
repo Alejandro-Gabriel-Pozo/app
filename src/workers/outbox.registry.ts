@@ -27,9 +27,13 @@ import { registerInventoryHandlers }           from './inventory.handlers.js';
 import { registerEmailHandlers }               from './email.handlers.js';
 import { createEmailSender }                   from '../email/email.sender.js';
 import { SqlBusinessProfileRepository }        from '../repositories/sql.business-profile.repository.js';
+import { ReservationHoldExpiryWorker }         from './reservation-hold-expiry.worker.js';
+import { SqlReservationRepository }            from '../reservas/sql.reservation.repository.js';
+import { SqlResourceRepository }               from '../reservas/sql.resource.repository.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
 
 const workers = new Map<string, OutboxWorker>();
+const holdExpiryWorkers = new Map<string, ReservationHoldExpiryWorker>();
 
 // Un solo EmailSender para todo el proceso -- no es config por tenant
 // (A2.9: la cuenta de envío es infraestructura de la plataforma, ver
@@ -71,6 +75,21 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
 
   workers.set(businessId, worker);
   console.log(`[outbox] Worker arrancado para tenant ${businessId}`);
+
+  // C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+  // -- worker de liberación de holds vencidos, mismo ciclo de vida que el
+  // de outbox (por tenant, arrancado acá, detenido en stopTenantWorker/
+  // stopAllWorkers).
+  const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+  const holdExpiryWorker = new ReservationHoldExpiryWorker(
+    businessId,
+    reservationRepo,
+    financialTransactionRepo,
+    domainEventRepo,
+    transactionManager,
+  );
+  holdExpiryWorker.start();
+  holdExpiryWorkers.set(businessId, holdExpiryWorker);
 }
 
 /**
@@ -80,6 +99,8 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
 export async function stopAllWorkers(): Promise<void> {
   await Promise.allSettled([...workers.values()].map((w) => w.stop()));
   workers.clear();
+  await Promise.allSettled([...holdExpiryWorkers.values()].map((w) => w.stop()));
+  holdExpiryWorkers.clear();
 }
 
 /**
@@ -90,7 +111,14 @@ export async function stopAllWorkers(): Promise<void> {
  */
 export async function stopTenantWorker(businessId: string): Promise<void> {
   const worker = workers.get(businessId);
-  if (!worker) return;
-  workers.delete(businessId);
-  await worker.stop();
+  if (worker) {
+    workers.delete(businessId);
+    await worker.stop();
+  }
+
+  const holdExpiryWorker = holdExpiryWorkers.get(businessId);
+  if (holdExpiryWorker) {
+    holdExpiryWorkers.delete(businessId);
+    await holdExpiryWorker.stop();
+  }
 }

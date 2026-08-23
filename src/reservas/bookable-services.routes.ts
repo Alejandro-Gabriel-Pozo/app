@@ -53,6 +53,8 @@ import { SqlOperatingHoursRepository }  from '../platform/sql.operating-hours.re
 import { SqlHousekeepingRepository }    from '../pms-estadias/housekeeping.repository.js';
 import { SqlAuditLogRepository }        from '../repositories/audit-log.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
+import { SqlDepositPolicyRepository } from './sql.deposit-policy.repository.js';
+import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { ReservationService }           from './reservation.service.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import {
@@ -97,6 +99,9 @@ function buildReservationService(req: Request): ReservationService {
     new SqlCustomerRateRepository(db),
     new SqlOperatingHoursRepository(db),
     new SqlHousekeepingRepository(db),
+    new SqlDepositPolicyRepository(db),
+    new SqlBusinessProfileRepository(db),
+    new SqlFinancialTransactionRepository(db),
   );
 }
 

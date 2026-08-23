@@ -57,6 +57,12 @@ export class InMemoryReservationRepository implements ReservationRepository {
     );
   }
 
+  async getPendingWithExpiredDeposit(now: Date): Promise<Reservation[]> {
+    return Array.from(this.reservations.values()).filter(
+      (r) => r.status === ReservationStatus.PENDING && r.depositDueBy != null && r.depositDueBy < now,
+    );
+  }
+
   async getApprovedLateCheckoutsForDate(date: string): Promise<Reservation[]> {
     return Array.from(this.reservations.values()).filter(
       (r) =>

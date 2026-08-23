@@ -52,6 +52,8 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     afipCuit: null,
     defaultIvaRate: 21,
     pricesIncludeIva: true,
+    defaultDepositPercentage: null,
+    depositHoldHours: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

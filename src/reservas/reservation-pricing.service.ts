@@ -26,13 +26,74 @@ import { InvalidReservationError, RatePlanNotAvailableError } from '../domain/er
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
 import type { ICategoryRepository } from './category.repository.js';
+import type { IDepositPolicyRepository } from './deposit-policy.repository.js';
 
 export class ReservationPricingService {
   constructor(
     private readonly customerRateRepository:    ICustomerRateRepository,
     private readonly bookableServiceRepository: IBookableServiceRepository,
     private readonly categoryRepository:        ICategoryRepository,
+    /**
+     * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+     * -- resuelve el % de seña. Opcional para no romper callers que todavía
+     * no la necesitan (tests unitarios de la cascada de precio, que no
+     * llaman a `resolveDepositAmount()`); `resolveDepositAmount()` explota
+     * si se invoca sin haberla inyectado.
+     */
+    private readonly depositPolicyRepository?: IDepositPolicyRepository,
   ) {}
+
+  /**
+   * Monto de seña para una reserva de ALOJAMIENTO/TURNOS (resourceId) o
+   * SERVICIOS (serviceId) -- mismo criterio de especificidad que la
+   * cascada de precio: política de `deposit_policies` más específica
+   * (ítem > categoría > bucket) o, si no hay ninguna activa, el default
+   * general del negocio (`business_profile.default_deposit_percentage`).
+   * Sin ninguna de las dos, `0` -- confirmado con el dueño (22/08/2026):
+   * sin política de seña configurada, `confirmReservation()` sigue sin
+   * exigir ningún pago previo, exactamente como siempre. `0` no es un
+   * caso especial: con `deposit=0` la cascada de CHARGE en
+   * `handleReservationConfirmed` (outbox.handlers.ts) crea una sola
+   * CHARGE por el saldo (=`totalPrice`), PENDING -- el mismo camino de
+   * siempre, sin rama aparte. Redondeo a centavos, mismo criterio que
+   * `resolveRateAmount()`.
+   */
+  async resolveDepositAmount(params: {
+    resourceId: string;
+    serviceId: string | undefined;
+    resource: PhysicalResource;
+    service: BookableService | null;
+    totalPrice: number;
+    defaultDepositPercentage: number | null;
+  }): Promise<number> {
+    if (!this.depositPolicyRepository) {
+      throw new Error('resolveDepositAmount(): IDepositPolicyRepository no fue inyectado en ReservationPricingService.');
+    }
+    if (params.totalPrice <= 0) return 0;
+
+    let percentage: number | null = null;
+
+    if (params.serviceId) {
+      const policy = await this.depositPolicyRepository.findActiveForService(
+        params.serviceId,
+        params.service?.categoryId ?? '',
+      );
+      percentage = policy?.percentage ?? null;
+    } else {
+      const resourceCategory = await this.categoryRepository.findById(params.resource.categoryId);
+      const policy = await this.depositPolicyRepository.findActiveForResource(
+        params.resourceId,
+        params.resource.categoryId,
+        resourceCategory?.isLodging ?? false,
+      );
+      percentage = policy?.percentage ?? null;
+    }
+
+    percentage ??= params.defaultDepositPercentage;
+    if (percentage == null) return 0;
+
+    return Math.round(params.totalPrice * (percentage / 100) * 100) / 100;
+  }
 
   /**
    * Resuelve el precio a cobrar Y su desglose en `ReservationLine`s (una

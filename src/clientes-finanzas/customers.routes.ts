@@ -30,6 +30,7 @@ import { SqlRateCatalogRepository } from './sql.rate-catalog.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { recordFieldChanges } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
+import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
 import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
 import { SqlProductRepository } from '../pos-menu/sql.product.repository.js';
@@ -40,7 +41,7 @@ import { CustomerAccountService } from './customer-account.service.js';
 import {
   UpdateCustomerSchema, AssignTagSchema, CreateCustomerRateSchema, RecordPaymentSchema,
 } from '../api/schemas/request.schemas.js';
-import { CustomerRateConflictError, ResourceNotFoundError, RateCatalogEntryNotFoundError, CategoryNotFoundError } from '../domain/errors.js';
+import { CustomerRateConflictError, ResourceNotFoundError, RateCatalogEntryNotFoundError, CategoryNotFoundError, ReservationNotFoundError } from '../domain/errors.js';
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
 import { cuitSchema } from '../api/schemas/common.schemas.js';
 import { SqlCustomerTaxProfileRepository } from './sql.customer-tax-profile.repository.js';
@@ -616,6 +617,10 @@ export function createCustomersRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = RecordPaymentSchema.parse(req.body);
+        if (body.reservationId) {
+          const reservation = await new SqlReservationRepository(req.db!, new SqlResourceRepository(req.db!)).getById(body.reservationId);
+          if (!reservation) throw new ReservationNotFoundError(body.reservationId);
+        }
         const service = new CustomerAccountService(
           new SqlFinancialTransactionRepository(req.db!),
           new SqlCustomerRepository(req.db!),
@@ -630,6 +635,7 @@ export function createCustomersRouter(container: AppContainer): Router {
           ...(body.cardSurchargeAmount !== undefined && { cardSurchargeAmount: body.cardSurchargeAmount }),
           ...(body.notes && { notes: body.notes }),
           ...(body.idempotencyKey && { idempotencyKey: body.idempotencyKey }),
+          ...(body.reservationId && { reservationId: body.reservationId }),
         });
         res.status(201).json(tx);
       } catch (err) { next(err); }

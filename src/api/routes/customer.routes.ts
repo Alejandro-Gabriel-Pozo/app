@@ -101,6 +101,9 @@ import {
 import { buildTransactionManagerFromPool } from '../../db/tenant-context.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { SqlResourceRepository }     from '../../reservas/sql.resource.repository.js';
+import { SqlDepositPolicyRepository } from '../../reservas/sql.deposit-policy.repository.js';
+import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
+import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlReservationRepository }  from '../../reservas/sql.reservation.repository.js';
 import { SqlCustomerRepository }     from '../../clientes-finanzas/sql.customer.repository.js';
 import { SqlOccupancyRepository }    from '../../reservas/sql.occupancy.repository.js';
@@ -229,6 +232,9 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const customerRateRepo = new SqlCustomerRateRepository(client);
   const operatingHoursRepo = new SqlOperatingHoursRepository(client);
   const housekeepingRepo = new SqlHousekeepingRepository(client);
+  const depositPolicyRepo = new SqlDepositPolicyRepository(client);
+  const businessProfileRepo = new SqlBusinessProfileRepository(client);
+  const financialTransactionRepo = new SqlFinancialTransactionRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -242,6 +248,9 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     customerRateRepo,
     operatingHoursRepo,
     housekeepingRepo,
+    depositPolicyRepo,
+    businessProfileRepo,
+    financialTransactionRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo };

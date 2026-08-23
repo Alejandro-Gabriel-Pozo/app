@@ -91,6 +91,15 @@ export interface ReservationRepository {
    */
   getApprovedLateCheckoutsForDate(date: string): Promise<Reservation[]>;
 
+  /**
+   * PENDING con `depositDueBy` vencido (< `now`) — usado por
+   * `ReservationHoldExpiryWorker` (C1-Fase A,
+   * docs/diseno-sena-deposito-fase-a-2026-08-22.md) para liberar holds sin
+   * seña cobrada. `depositDueBy IS NULL` nunca vence (negocio sin
+   * `deposit_hold_hours` configurado) — excluidas a propósito.
+   */
+  getPendingWithExpiredDeposit(now: Date): Promise<Reservation[]>;
+
   // Filtrado genérico + paginación
   getFiltered(filters: ReservationFilters): Promise<Reservation[]>;
   countFiltered(filters: Omit<ReservationFilters, 'page' | 'limit'>): Promise<number>;

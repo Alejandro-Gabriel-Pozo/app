@@ -82,6 +82,19 @@ export interface BusinessProfile {
    */
   defaultIvaRate: number;
   pricesIncludeIva: boolean;
+  /**
+   * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+   * — política general de seña/depósito del negocio (A2.9: config real,
+   * nunca una constante de código). `defaultDepositPercentage` aplica
+   * cuando `deposit_policies` no tiene un override más específico para el
+   * ítem/categoría/bucket de la reserva; `null` = el negocio no configuró
+   * seña, `ReservationPricingService.resolveDepositAmount()` cae al total
+   * completo. `depositHoldHours` es cuántas horas puede quedar una reserva
+   * PENDING sin cobrar la seña antes de que `ReservationHoldExpiryWorker`
+   * la venza — `null` = sin vencimiento.
+   */
+  defaultDepositPercentage: number | null;
+  depositHoldHours: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -106,4 +119,6 @@ export interface UpdateBusinessProfileInput {
   afipCuit?: string | null | undefined;
   defaultIvaRate?: number | undefined;
   pricesIncludeIva?: boolean | undefined;
+  defaultDepositPercentage?: number | null | undefined;
+  depositHoldHours?: number | null | undefined;
 }

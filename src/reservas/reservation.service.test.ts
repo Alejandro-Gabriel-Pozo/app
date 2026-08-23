@@ -10,10 +10,11 @@ import { InMemoryOccupancyRepository } from './in-memory.occupancy.repository.js
 import { InMemoryResourceLockRepository } from './in-memory.resource-lock.repository.js';
 import { InMemoryBookableServiceRepository } from './in-memory.bookable-service.repository.js';
 import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.customer-rate.repository.js';
+import { InMemoryDepositPolicyRepository } from './in-memory.deposit-policy.repository.js';
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
 import { InMemoryHousekeepingRepository } from '../pms-estadias/in-memory.housekeeping.repository.js';
 import { HousekeepingTask } from '../pms-estadias/housekeeping-task.js';
-import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError } from '../domain/errors.js';
+import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -82,7 +83,41 @@ describe('ReservationService', () => {
   let customerRateRepo: InMemoryCustomerRateRepository;
   let operatingHoursRepo: InMemoryOperatingHoursRepository;
   let housekeepingRepo: InMemoryHousekeepingRepository;
+  let depositPolicyRepo: InMemoryDepositPolicyRepository;
+  let financialTransactionRepo: FakePaymentLedger;
   let service: ReservationService;
+
+  /** Sin política de seña -- comportamiento default (deposit_amount = 0, gate nunca se activa). */
+  const businessProfileRepo = {
+    async get() {
+      return {
+        id: 'default', displayName: null, contactEmail: null,
+        currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires',
+        defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
+        legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+        fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+        fiscalAddressPostalCode: null, fiscalAddressCountry: null,
+        afipSalesPoint: null, afipCuit: null,
+        defaultIvaRate: 21, pricesIncludeIva: true,
+        defaultDepositPercentage: null, depositHoldHours: null,
+        createdAt: new Date(), updatedAt: new Date(),
+      };
+    },
+  };
+
+  /**
+   * Ledger mínimo para probar el gate de `confirmReservation()` (C1-Fase A)
+   * sin necesitar `CustomerAccountService`/`FinancialTransaction` completos
+   * -- ReservationService solo LEE `getSettledPaymentTotalForReservation`,
+   * nunca escribe. `setPaid()` simula que un operador ya registró el cobro.
+   */
+  class FakePaymentLedger {
+    private paid = new Map<string, number>();
+    setPaid(reservationId: string, amount: number): void { this.paid.set(reservationId, amount); }
+    async getSettledPaymentTotalForReservation(reservationId: string): Promise<number> {
+      return this.paid.get(reservationId) ?? 0;
+    }
+  }
 
   const table = new BookableResource('t1', 'Mesa Ventana', 50, 'cat-table', {
     shape: 'RECTANGLE',
@@ -107,6 +142,8 @@ describe('ReservationService', () => {
     customerRateRepo      = new InMemoryCustomerRateRepository();
     operatingHoursRepo    = new InMemoryOperatingHoursRepository();
     housekeepingRepo      = new InMemoryHousekeepingRepository();
+    depositPolicyRepo     = new InMemoryDepositPolicyRepository();
+    financialTransactionRepo = new FakePaymentLedger();
 
     service = new ReservationService(
       reservationRepo,
@@ -120,6 +157,9 @@ describe('ReservationService', () => {
       customerRateRepo,
       operatingHoursRepo,
       housekeepingRepo,
+      depositPolicyRepo,
+      businessProfileRepo,
+      financialTransactionRepo,
     );
 
     await resourceRepo.save(table);
@@ -472,6 +512,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo,
       );
 
       await lodgingService.createReservation({
@@ -482,6 +523,137 @@ describe('ReservationService', () => {
 
       const event = eventRepo.events[0] as { payload: { isLodging: boolean } };
       expect(event.payload.isLodging).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+  // -------------------------------------------------------------------------
+  describe('seña/depósito (C1-Fase A)', () => {
+    /** Devuelve el mismo perfil que businessProfileRepo, con overrides puntuales. */
+    function makeBusinessProfileRepo(overrides: { defaultDepositPercentage?: number | null; depositHoldHours?: number | null }) {
+      return {
+        async get() {
+          const base = await businessProfileRepo.get();
+          return { ...base, ...overrides };
+        },
+      };
+    }
+
+    it('sin política de seña configurada, deposit_amount es 0 y confirmar no exige ningún pago', async () => {
+      const reservation = await service.createReservation({
+        id: 'res-nosena', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      expect(reservation.depositAmount).toBe(0);
+      expect(reservation.depositDueBy).toBeNull();
+
+      // Sin pago registrado (financialTransactionRepo por default no tiene nada
+      // en FakePaymentLedger) y aun así confirma -- el gate no se activa con deposit=0.
+      const confirmed = await service.confirmReservation('res-nosena', TEST_BUSINESS_ID);
+      expect(confirmed.status).toBe(ReservationStatus.CONFIRMED);
+    });
+
+    it('con % default del negocio, deposit_amount se resuelve como % del total y confirmar sin pago falla', async () => {
+      const depositService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo,
+      );
+
+      const reservation = await depositService.createReservation({
+        id: 'res-sena30', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      // t1 tiene basePrice=50 -- 30% = 15.
+      expect(reservation.depositAmount).toBe(15);
+
+      await expect(depositService.confirmReservation('res-sena30', TEST_BUSINESS_ID))
+        .rejects.toThrow(DepositNotPaidError);
+    });
+
+    it('confirma una vez que el pago registrado cubre la seña', async () => {
+      const depositService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo,
+      );
+
+      await depositService.createReservation({
+        id: 'res-sena-pagada', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+
+      financialTransactionRepo.setPaid('res-sena-pagada', 15);
+
+      const confirmed = await depositService.confirmReservation('res-sena-pagada', TEST_BUSINESS_ID);
+      expect(confirmed.status).toBe(ReservationStatus.CONFIRMED);
+    });
+
+    it('un override de deposit_policies a nivel recurso gana sobre el default del negocio', async () => {
+      depositPolicyRepo.seed({
+        id: 'dp-1', businessId: TEST_BUSINESS_ID,
+        resourceId: 't1', serviceId: null, categoryId: null, bucket: null,
+        percentage: 50, active: true,
+      });
+      const depositService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo,
+      );
+
+      const reservation = await depositService.createReservation({
+        id: 'res-override', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      // t1 basePrice=50 -- override de 50% (no el default de 30%) = 25.
+      expect(reservation.depositAmount).toBe(25);
+    });
+
+    it('deposit_due_by se calcula a partir de deposit_hold_hours cuando hay seña', async () => {
+      const depositService = new ReservationService(
+        reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
+        eventRepo, txManager, lockRepo, bookableServiceRepo,
+        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo,
+      );
+
+      const before = Date.now();
+      const reservation = await depositService.createReservation({
+        id: 'res-hold', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      expect(reservation.depositDueBy).not.toBeNull();
+      const diffHours = (reservation.depositDueBy!.getTime() - before) / (60 * 60 * 1000);
+      expect(diffHours).toBeGreaterThan(23.9);
+      expect(diffHours).toBeLessThan(24.1);
+    });
+
+    it('Reservation.expire(): PENDING -> EXPIRED es válida y terminal', () => {
+      const reservation = Reservation.restore({
+        id: 'res-expire', customer, resource: table,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+        details: {}, totalPrice: 50, initialStatus: ReservationStatus.PENDING,
+      });
+
+      expect(reservation.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED', 'EXPIRED']);
+      reservation.expire();
+      expect(reservation.status).toBe(ReservationStatus.EXPIRED);
+      expect(reservation.allowedTransitions).toEqual([]);
+      expect(() => reservation.expire()).toThrow(InvalidReservationError);
+    });
+
+    it('Reservation.expire(): CONFIRMED -> EXPIRED es inválida (solo desde PENDING)', () => {
+      const reservation = Reservation.restore({
+        id: 'res-confirmed', customer, resource: table,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
+        details: {}, totalPrice: 50, initialStatus: ReservationStatus.CONFIRMED,
+      });
+
+      expect(() => reservation.expire()).toThrow(InvalidReservationError);
     });
   });
 
@@ -1235,6 +1407,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo,
       );
       // t1 tiene basePrice=50 -- 30% de descuento a nivel BUCKET ALOJAMIENTO = 35.
       customerRateRepo.seed([{

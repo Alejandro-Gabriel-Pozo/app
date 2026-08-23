@@ -170,6 +170,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'DUPLICATE_RATE_PLAN_NAME':
     case 'NEXT_ARRIVAL_CONFLICT':
     case 'NO_PRICE_ADJUSTMENT_PENDING':
+    case 'DEPOSIT_NOT_PAID':
     case 'AFIP_REQUEST_UNCERTAIN':
     case 'INVOICE_NOT_ISSUED':
     case 'RATE_CATALOG_ENTRY_CONFLICT':

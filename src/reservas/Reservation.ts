@@ -78,10 +78,11 @@ const ALLOWED_TRANSITIONS: Record<
   ReservationStatus,
   readonly ReservationStatus[]
 > = {
-  [ReservationStatus.PENDING]:   [ReservationStatus.CONFIRMED,  ReservationStatus.CANCELLED],
+  [ReservationStatus.PENDING]:   [ReservationStatus.CONFIRMED,  ReservationStatus.CANCELLED, ReservationStatus.EXPIRED],
   [ReservationStatus.CONFIRMED]: [ReservationStatus.CANCELLED,  ReservationStatus.COMPLETED],
   [ReservationStatus.CANCELLED]: [],
   [ReservationStatus.COMPLETED]: [],
+  [ReservationStatus.EXPIRED]:   [],
 };
 
 export interface ReservationProps {
@@ -117,6 +118,20 @@ export interface ReservationProps {
   scheduleApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
   scheduleApprovedBy?: string | null;
   scheduleChargeAmount?: number | null;
+  /**
+   * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+   * — monto de seña YA RESUELTO (jerarquía ítem>categoría>bucket>default del
+   * negocio), congelado al crear la reserva (R9). Default `0` (sin seña)
+   * cuando no se pasa explícito — mismo valor que
+   * `ReservationPricingService.resolveDepositAmount()` devuelve sin
+   * ninguna política configurada. `0` es explícitamente "el gate de
+   * `confirmReservation()` no aplica" (confirmado con el dueño,
+   * 22/08/2026): sin política, confirmar sigue sin exigir ningún pago
+   * previo, igual que siempre — no un depósito 100% implícito.
+   */
+  depositAmount?: number;
+  /** v.C1-Fase A: instante (UTC) hasta el cual puede seguir PENDING sin la seña cobrada — null = sin vencimiento. */
+  depositDueBy?: Date | null;
 }
 
 export class Reservation {
@@ -136,6 +151,8 @@ export class Reservation {
   private _scheduleApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
   private _scheduleApprovedBy: string | null;
   private _scheduleChargeAmount: number | null;
+  public readonly depositAmount: number;
+  public readonly depositDueBy: Date | null;
 
   constructor(props: ReservationProps) {
     const {
@@ -160,6 +177,8 @@ export class Reservation {
       scheduleApprovalStatus = null,
       scheduleApprovedBy = null,
       scheduleChargeAmount = null,
+      depositAmount = 0,
+      depositDueBy = null,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -184,6 +203,12 @@ export class Reservation {
     if (scheduleChargeAmount != null && scheduleChargeAmount < 0) {
       throw new InvalidReservationError('scheduleChargeAmount no puede ser negativo');
     }
+    if (depositAmount == null || Number.isNaN(depositAmount) || depositAmount < 0) {
+      throw new InvalidReservationError('depositAmount debe ser un número mayor o igual a 0');
+    }
+    if (depositAmount > totalPrice) {
+      throw new InvalidReservationError('depositAmount no puede superar totalPrice');
+    }
 
     assertValidTimeRange(startTime, endTime);
 
@@ -207,6 +232,8 @@ export class Reservation {
     this._scheduleApprovalStatus = scheduleApprovalStatus;
     this._scheduleApprovedBy     = scheduleApprovedBy;
     this._scheduleChargeAmount   = scheduleChargeAmount;
+    this.depositAmount = depositAmount;
+    this.depositDueBy  = depositDueBy;
     this._status     = initialStatus;
   }
 
@@ -260,6 +287,8 @@ export class Reservation {
   confirm(): void  { this.transitionTo(ReservationStatus.CONFIRMED);  }
   cancel(): void   { this.transitionTo(ReservationStatus.CANCELLED);  }
   complete(): void { this.transitionTo(ReservationStatus.COMPLETED);  }
+  /** C1-Fase A — solo lo dispara `ReservationHoldExpiryWorker` (A6.6: nunca una acción de usuario). */
+  expire(): void   { this.transitionTo(ReservationStatus.EXPIRED);    }
 
   /**
    * Pedido de horario distinto al estándar del negocio (late check-out /

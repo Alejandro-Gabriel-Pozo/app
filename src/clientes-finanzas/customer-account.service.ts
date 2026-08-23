@@ -63,6 +63,13 @@ export class CustomerAccountService {
     cardSurchargeAmount?: number;
     notes?: string;
     idempotencyKey?: string;
+    /**
+     * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+     * — cobro de la seña o del saldo de una reserva puntual. `null`
+     * (default) = pago genérico contra la cuenta del cliente, sin asociar
+     * a ninguna reserva (comportamiento sin cambios).
+     */
+    reservationId?: string | null;
   }): Promise<FinancialTransaction> {
     const customer = await this.customerRepo.getById(params.customerId);
     if (!customer) throw new CustomerNotFoundError(params.customerId);
@@ -75,7 +82,7 @@ export class CustomerAccountService {
       id: randomUUID(),
       businessId: params.businessId,
       customerId: params.customerId,
-      reservationId: null,
+      reservationId: params.reservationId ?? null,
       type: 'PAYMENT',
       amount: params.amount,
       currency,

@@ -67,6 +67,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async voidByOrderId(): Promise<number> { return 0; }
   async getNetBalanceByCustomerId(): Promise<number> { return 0; }
   async getNetBalanceByStayId(): Promise<number> { return this.netBalanceByStay; }
+  async getSettledPaymentTotalForReservation(): Promise<number> { return 0; }
   async getByShiftId(): Promise<FinancialTransaction[]> { return []; }
   async linkStayToReservationCharges(): Promise<number> { return 0; }
 }
@@ -111,6 +112,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
+    defaultDepositPercentage: null, depositHoldHours: null,
     createdAt: now, updatedAt: now,
     ...overrides,
   };

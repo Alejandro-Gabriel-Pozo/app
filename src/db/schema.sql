@@ -406,7 +406,7 @@ CREATE TABLE IF NOT EXISTS reservations (
   start_time     TIMESTAMPTZ     NOT NULL,
   end_time       TIMESTAMPTZ     NOT NULL,
   status         VARCHAR(50)     NOT NULL DEFAULT 'PENDING'
-                   CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED')),
+                   CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'EXPIRED')),
   party_size     INTEGER         NOT NULL DEFAULT 1 CHECK (party_size >= 1),
   details        JSONB,
   notes          TEXT,
@@ -494,6 +494,52 @@ ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_approval_statu
 ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_schedule_charge_amount;
 ALTER TABLE reservations ADD CONSTRAINT chk_reservations_schedule_charge_amount
   CHECK (schedule_charge_amount IS NULL OR schedule_charge_amount >= 0);
+
+-- EXPIRED (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md,
+-- C1-Fase A) — estado terminal nuevo, distinto de CANCELLED: una reserva
+-- que venció su hold sin cobrar la seña (worker nuevo,
+-- reservation-hold-expiry.worker.ts), no una decisión de cancelar. Para
+-- tenant DBs creadas antes de este cambio, el CHECK del CREATE TABLE de
+-- arriba no se re-ejecuta (CREATE TABLE IF NOT EXISTS) -- hace falta el
+-- ALTER explícito.
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS reservations_status_check;
+ALTER TABLE reservations ADD CONSTRAINT reservations_status_check
+  CHECK (status IN ('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'EXPIRED'));
+
+-- deposit_amount/deposit_due_by (C1-Fase A) — seña/depósito. deposit_amount
+-- se resuelve UNA VEZ al crear la reserva (jerarquía ítem>categoría>bucket>
+-- default del negocio, ReservationPricingService.resolveDepositAmount()) y
+-- queda congelado (R9, criterios-datos.md) -- si la política cambia
+-- después, esta reserva no se recalcula. `0` = sin política de seña
+-- configurada -- confirmado con el dueño (22/08/2026): `confirmReservation()`
+-- sigue sin exigir ningún pago previo en ese caso, exactamente como
+-- siempre (NO es un depósito 100% implícito). Con `deposit_amount = 0` la
+-- cascada de CHARGE en `handleReservationConfirmed` crea una sola CHARGE
+-- por el total, PENDING -- el mismo camino de siempre, sin rama aparte.
+-- deposit_due_by es el instante (A4.1, UTC) hasta el cual la reserva puede
+-- seguir PENDING sin la seña cobrada -- NULL si el negocio no configuró
+-- deposit_hold_hours (ver business_profile más abajo) o si deposit_amount
+-- es 0 (nada que vencer): sin vencimiento, la reserva queda PENDING
+-- indefinidamente hasta que la cobren/completen/cancelen a mano.
+-- Nullable primero, backfill, y recién ahí NOT NULL -- mismo patrón que
+-- resources.location_id más arriba (BLOQUE 1): funciona tanto en una BD
+-- nueva (0 filas, los pasos de abajo son no-ops después del primero) como
+-- en una existente con reservas ya cargadas. Backfill a 0 (sin seña) --
+-- confirmado con el dueño (22/08/2026): sin política de seña configurada,
+-- deposit_amount es 0 y confirmReservation() sigue sin exigir ningún pago
+-- previo, exactamente como hasta ahora. Ninguna reserva ya cargada tenía
+-- concepto de seña, así que 0 es el valor correcto para todas.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_amount DECIMAL(12,2);
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS deposit_due_by TIMESTAMPTZ;
+UPDATE reservations SET deposit_amount = 0 WHERE deposit_amount IS NULL;
+ALTER TABLE reservations ALTER COLUMN deposit_amount SET NOT NULL;
+
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS chk_reservations_deposit_amount;
+ALTER TABLE reservations ADD CONSTRAINT chk_reservations_deposit_amount
+  CHECK (deposit_amount >= 0 AND deposit_amount <= total_price);
+
+CREATE INDEX IF NOT EXISTS idx_reservations_deposit_due_by
+  ON reservations (deposit_due_by) WHERE deposit_due_by IS NOT NULL AND status = 'PENDING';
 
 -- ---------------------------------------------------------------------------
 -- reservation_lines
@@ -847,6 +893,52 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_category
 CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_bucket
   ON customer_rates (customer_id, bucket)
   WHERE active = TRUE AND bucket IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- deposit_policies (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md,
+-- C1-Fase A) — % de seña por ítem/categoría/bucket, mismo patrón de scope de
+-- 4 vías que rate_catalog/customer_rates usaban ANTES de que D9 les
+-- agregara product_id (bucket acá NO incluye 'PRODUCTOS' -- la seña es un
+-- concepto de reservas, no de venta de POS). Sin nivel cliente: a
+-- diferencia de customer_rates, la seña en Fase A no tiene override por
+-- cliente (eso depende de BillingEntity, Fase C, que no existe todavía).
+-- Resolución (más específico gana) en
+-- ReservationPricingService.resolveDepositAmount() -- mismo criterio de
+-- ORDER BY por especificidad que ya usa D9, no un índice único el que
+-- decide qué gana.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS deposit_policies (
+  id           VARCHAR(255)   PRIMARY KEY,
+  business_id  VARCHAR(255)   NOT NULL,
+  resource_id  VARCHAR(255)   REFERENCES resources(id) ON DELETE CASCADE,
+  service_id   VARCHAR(255)   REFERENCES bookable_services(id) ON DELETE CASCADE,
+  category_id  VARCHAR(255)   REFERENCES resource_categories(id) ON DELETE CASCADE,
+  bucket       VARCHAR(20)    CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS')),
+  percentage   DECIMAL(5,2)   NOT NULL CHECK (percentage > 0 AND percentage <= 100),
+  active       BOOLEAN        NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_deposit_policy_scope CHECK (
+    (CASE WHEN resource_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN service_id  IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN category_id IS NOT NULL THEN 1 ELSE 0 END +
+     CASE WHEN bucket      IS NOT NULL THEN 1 ELSE 0 END) = 1
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_deposit_policies_business ON deposit_policies (business_id);
+
+-- Una sola política activa por valor exacto de scope -- mismo criterio que
+-- los índices únicos de customer_rates/rate_catalog.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deposit_policies_resource
+  ON deposit_policies (resource_id) WHERE active = TRUE AND resource_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deposit_policies_service
+  ON deposit_policies (service_id) WHERE active = TRUE AND service_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deposit_policies_category
+  ON deposit_policies (category_id) WHERE active = TRUE AND category_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deposit_policies_bucket
+  ON deposit_policies (business_id, bucket) WHERE active = TRUE AND bucket IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- business_hours  (horario de atención por defecto del negocio — "Mi Negocio")
@@ -2102,6 +2194,26 @@ ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT N
 -- el estándar de la industria hotelera, no un valor mágico elegido acá.
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_in_time  TIME NOT NULL DEFAULT '14:00:00';
 ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_check_out_time TIME NOT NULL DEFAULT '11:00:00';
+
+-- default_deposit_percentage/deposit_hold_hours (22/08/2026,
+-- docs/diseno-sena-deposito-fase-a-2026-08-22.md, C1-Fase A). Política
+-- general del negocio (A2.9, criterios-negocio.md -- nunca una constante de
+-- código): % de seña que aplica cuando no hay override en deposit_policies,
+-- y cuántas horas puede quedar una reserva PENDING sin cobrar la seña antes
+-- de vencer (worker reservation-hold-expiry.worker.ts). Ambas NULL por
+-- default -- un negocio recién creado no tiene política de seña hasta que
+-- la configure explícitamente (deposit_amount se resuelve al total
+-- completo, ver reservations.deposit_amount más arriba).
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS default_deposit_percentage DECIMAL(5,2);
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS deposit_hold_hours INTEGER;
+
+ALTER TABLE business_profile DROP CONSTRAINT IF EXISTS chk_business_profile_default_deposit_percentage;
+ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_default_deposit_percentage
+  CHECK (default_deposit_percentage IS NULL OR (default_deposit_percentage > 0 AND default_deposit_percentage <= 100));
+
+ALTER TABLE business_profile DROP CONSTRAINT IF EXISTS chk_business_profile_deposit_hold_hours;
+ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_deposit_hold_hours
+  CHECK (deposit_hold_hours IS NULL OR deposit_hold_hours > 0);
 
 -- Perfil fiscal del negocio (18/08/2026, Facturación Electrónica AFIP,
 -- Fase 1 -- pendientes-2026-08-18.md). Exactamente el ALTER TABLE que el

@@ -3,6 +3,7 @@ import {
   handleOrderConfirmed,
   handleOrderCompleted,
   handleOrderCancelled,
+  handleReservationConfirmed,
   handleReservationPriceAdjusted,
 } from './outbox.handlers.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
@@ -31,6 +32,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
+    defaultDepositPercentage: null, depositHoldHours: null,
     createdAt: now, updatedAt: now,
     ...overrides,
   };
@@ -67,6 +69,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async voidByOrderId(orderId: string) { this.voidedOrderIds.push(orderId); return 1; }
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
+  async getSettledPaymentTotalForReservation() { return 0; }
   async linkStayToReservationCharges() { return 0; }
 }
 
@@ -199,6 +202,67 @@ function fakeReservationEvent(payload: Record<string, unknown>): DomainEvent {
     payload,
   };
 }
+
+describe('outbox.handlers — handleReservationConfirmed (C1-Fase A)', () => {
+  let financialRepo: FakeFinancialTransactionRepository;
+  let businessProfileRepo: FakeBusinessProfileRepository;
+
+  beforeEach(() => {
+    financialRepo = new FakeFinancialTransactionRepository();
+    businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
+  });
+
+  it('sin depositAmount (reserva sin seña): una sola CHARGE por el total, PENDING -- comportamiento de siempre', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', totalPrice: 100, depositAmount: 0 });
+
+    await handleReservationConfirmed(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created).toHaveLength(1);
+    expect(financialRepo.created[0]).toMatchObject({
+      type: 'CHARGE', amount: 100, status: 'PENDING', idempotencyKey: '99:CHARGE:BALANCE',
+    });
+  });
+
+  it('con depositAmount parcial: dos CHARGE -- depósito SETTLED + saldo PENDING', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', totalPrice: 100, depositAmount: 30 });
+
+    await handleReservationConfirmed(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created).toHaveLength(2);
+    expect(financialRepo.created).toContainEqual(expect.objectContaining({
+      type: 'CHARGE', amount: 30, status: 'SETTLED', idempotencyKey: '99:CHARGE:DEPOSIT',
+    }));
+    expect(financialRepo.created).toContainEqual(expect.objectContaining({
+      type: 'CHARGE', amount: 70, status: 'PENDING', idempotencyKey: '99:CHARGE:BALANCE',
+    }));
+  });
+
+  it('con depositAmount = totalPrice (seña 100%): solo la CHARGE del depósito, sin CHARGE de saldo en 0', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', totalPrice: 100, depositAmount: 100 });
+
+    await handleReservationConfirmed(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created).toHaveLength(1);
+    expect(financialRepo.created[0]).toMatchObject({ type: 'CHARGE', amount: 100, status: 'SETTLED', idempotencyKey: '99:CHARGE:DEPOSIT' });
+  });
+
+  it('depositAmount ausente en el payload (evento viejo, pre-Fase A): se trata como 0, sin romper', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', totalPrice: 100 });
+
+    await handleReservationConfirmed(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created).toHaveLength(1);
+    expect(financialRepo.created[0]).toMatchObject({ type: 'CHARGE', amount: 100, status: 'PENDING' });
+  });
+
+  it('sin totalPrice (recurso sin costo): no crea ningún movimiento', async () => {
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', depositAmount: 0 });
+
+    await handleReservationConfirmed(financialRepo, businessProfileRepo)(event);
+
+    expect(financialRepo.created).toHaveLength(0);
+  });
+});
 
 describe('outbox.handlers — handleReservationPriceAdjusted', () => {
   let financialRepo: FakeFinancialTransactionRepository;

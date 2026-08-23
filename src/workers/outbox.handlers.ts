@@ -59,36 +59,73 @@ export function registerFinancialHandlers(
 // Handlers individuales (exportados para testear en aislamiento)
 // ---------------------------------------------------------------------------
 
+/**
+ * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md) —
+ * antes creaba UNA CHARGE PENDING por `totalPrice`. Ahora crea dos, con
+ * ciclos de vida distintos:
+ *   - CHARGE(depósito) `SETTLED` directo -- `ReservationService.
+ *     confirmReservation()` ya verificó que está cobrado (regla de oro,
+ *     gate `DepositNotPaidError`) antes de emitir este evento, así que acá
+ *     es un hecho consumado, no algo "pendiente" de settlear después.
+ *   - CHARGE(saldo = totalPrice - depositAmount) `PENDING` -- mismo rol que
+ *     la única CHARGE de antes: sigue flotando durante la estadía, acepta
+ *     ADJUSTMENTs (confirmPriceAdjustment) y se salda en bloque recién al
+ *     completar (`handleReservationCompleted`, sin cambios). Si el saldo da
+ *     0 (deposit_amount === totalPrice, seña 100%) no se crea -- mismo
+ *     guard que ya existía para totalPrice <= 0.
+ * Dos idempotencyKeys distintas ("${event.id}:CHARGE:DEPOSIT"/
+ * "${event.id}:CHARGE:BALANCE") -- un mismo evento reintentado no duplica
+ * ninguna de las dos.
+ */
 export function handleReservationConfirmed(
   financialRepo: FinancialTransactionRepository,
   businessProfileRepo: BusinessProfileRepository,
 ) {
   return async (event: DomainEvent): Promise<void> => {
-    const { reservationId, customerId, totalPrice } = event.payload as {
+    const { reservationId, customerId, totalPrice, depositAmount } = event.payload as {
       reservationId: string;
       customerId: string;
       totalPrice: number | undefined;
+      depositAmount: number | undefined;
     };
 
     // Sin precio (recursos sin costo) → no hay movimiento financiero.
     if (totalPrice == null || totalPrice <= 0) return;
 
     const { currency } = await businessProfileRepo.get();
+    // depositAmount puede faltar en eventos viejos (antes de esta fase,
+    // todavía en el outbox sin procesar) -- se tratan como "sin seña", todo
+    // el total va al saldo, mismo comportamiento que tenían antes.
+    const deposit = depositAmount ?? 0;
+    const balance = totalPrice - deposit;
 
-    // idempotencyKey: garantiza que este evento solo crea un CHARGE,
-    // aunque el handler se reintente múltiples veces.
-    // Convención: "${eventId}:CHARGE" — único por evento de dominio + tipo.
-    await financialRepo.create({
-      id:             randomUUID(),
-      businessId:     event.businessId,
-      customerId,
-      reservationId,
-      type:           'CHARGE',
-      amount:         totalPrice,
-      currency,
-      status:         'PENDING',
-      idempotencyKey: `${event.id}:CHARGE`,
-    });
+    if (deposit > 0) {
+      await financialRepo.create({
+        id:             randomUUID(),
+        businessId:     event.businessId,
+        customerId,
+        reservationId,
+        type:           'CHARGE',
+        amount:         deposit,
+        currency,
+        status:         'SETTLED',
+        idempotencyKey: `${event.id}:CHARGE:DEPOSIT`,
+      });
+    }
+
+    if (balance > 0) {
+      await financialRepo.create({
+        id:             randomUUID(),
+        businessId:     event.businessId,
+        customerId,
+        reservationId,
+        type:           'CHARGE',
+        amount:         balance,
+        currency,
+        status:         'PENDING',
+        idempotencyKey: `${event.id}:CHARGE:BALANCE`,
+      });
+    }
   };
 }
 

@@ -58,6 +58,7 @@ import {
   ResourceNotFoundError,
   ReservationNotFoundError,
   NoPriceAdjustmentPendingError,
+  DepositNotPaidError,
 } from '../domain/errors.js';
 import type { ReservationLine } from './reservation.types.js';
 import { validateDetailsAgainstFields } from './category.service.js';
@@ -71,6 +72,9 @@ import type { IBookableServiceRepository } from './bookable-service.repository.j
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
 import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
+import type { IDepositPolicyRepository } from './deposit-policy.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { TransactionManager }           from '../db/transaction-manager.js';
 import type { SqlClient }                    from '../repositories/sql.client.js';
 import { ReservationPricingService }      from './reservation-pricing.service.js';
@@ -102,11 +106,18 @@ export class ReservationService {
     customerRateRepository:  ICustomerRateRepository,
     operatingHoursRepository: IOperatingHoursRepository,
     housekeepingRepository:  HousekeepingRepository,
+    /** C1-Fase A — resuelve el % de seña (deposit_policies), reenviado a ReservationPricingService. */
+    depositPolicyRepository: IDepositPolicyRepository,
+    /** C1-Fase A — `default_deposit_percentage`/`deposit_hold_hours` (política general del negocio, A2.9). */
+    private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
+    /** C1-Fase A — gate de `confirmReservation()` (`getSettledPaymentTotalForReservation`). Solo lectura, no crea movimientos financieros (eso sigue siendo trabajo exclusivo del outbox worker, A10). */
+    private readonly financialTransactionRepository: Pick<FinancialTransactionRepository, 'getSettledPaymentTotalForReservation'>,
   ) {
     this.pricing = new ReservationPricingService(
       customerRateRepository,
       this.bookableServiceRepository,
       this.categoryRepository,
+      depositPolicyRepository,
     );
     this.availability = new ReservationAvailabilityService(
       this.resourceRepository,
@@ -177,6 +188,25 @@ export class ReservationService {
       endTime,
     });
 
+    // C1-Fase A (docs/diseno-sena-deposito-fase-a-2026-08-22.md) --
+    // deposit_amount se resuelve y congela ACÁ (R9), igual que totalPrice
+    // dos líneas arriba -- no se recalcula si la política cambia después.
+    // Sin CHARGE todavía: se crea recién al confirmar (handleReservationConfirmed,
+    // outbox.handlers.ts), junto con el de saldo -- ver docblock de
+    // confirmReservation() más abajo para el porqué de no crearlo acá.
+    const businessProfile = await this.businessProfileRepository.get();
+    const depositAmount = await this.pricing.resolveDepositAmount({
+      resourceId: params.resourceId,
+      serviceId:  params.serviceId,
+      resource,
+      service,
+      totalPrice,
+      defaultDepositPercentage: businessProfile.defaultDepositPercentage,
+    });
+    const depositDueBy = depositAmount > 0 && businessProfile.depositHoldHours != null
+      ? new Date(Date.now() + businessProfile.depositHoldHours * 60 * 60 * 1000)
+      : null;
+
     // Obtener recursos adicionales bloqueados por el servicio (si aplica)
     const lockedResourceIds = await this.availability.resolveLockedResourceIds(
       params.serviceId,
@@ -206,6 +236,8 @@ export class ReservationService {
         adultos: params.adultos ?? null,
         ninos:   params.ninos ?? null,
         totalPrice,
+        depositAmount,
+        depositDueBy,
         lines: lines.map((line, i) => ({
           id:            `${params.id}-L${i + 1}`,
           reservationId: params.id,
@@ -531,10 +563,32 @@ export class ReservationService {
     return updated;
   }
 
+  /**
+   * C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
+   * — "regla de oro": no confirma sin la seña cobrada. El gate compara
+   * `PAYMENT` `SETTLED` acumulados contra `deposit_amount` (congelado al
+   * crear la reserva) — no depende de que exista un `CHARGE` todavía. El
+   * `CHARGE(depósito)` recién se crea acá, `SETTLED` directo (ya está
+   * pagado, es un hecho consumado — mismo criterio que un `PAYMENT`
+   * manual), junto con el `CHARGE(saldo)` `PENDING` que reemplaza a la
+   * única `CHARGE` que este evento creaba antes de esta fase (ver
+   * `handleReservationConfirmed`, outbox.handlers.ts). Cero cambios en
+   * `handleReservationCompleted`/`checkOut()` — el saldo sigue flotando
+   * `PENDING` hasta que el folio cierra, exactamente como hacía la única
+   * CHARGE de antes.
+   */
   async confirmReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en confirmReservation');
 
     const reservation = await this.requireReservation(id);
+
+    if (reservation.depositAmount > 0) {
+      const paidSoFar = await this.financialTransactionRepository.getSettledPaymentTotalForReservation(id);
+      if (paidSoFar < reservation.depositAmount) {
+        throw new DepositNotPaidError(id, reservation.depositAmount, paidSoFar);
+      }
+    }
+
     reservation.confirm();
 
     // email.handlers.ts necesita saber si esto es alojamiento (E1) para
@@ -564,6 +618,10 @@ export class ReservationService {
           // outbox.handlers.ts lee esto para crear el CHARGE — antes faltaba
           // acá, así que se salteaba en silencio (totalPrice null/≤0).
           totalPrice:    reservation.totalPrice,
+          // C1-Fase A -- handleReservationConfirmed necesita separar
+          // depósito (ya cobrado, SETTLED) de saldo (PENDING, = totalPrice -
+          // depositAmount) en vez de una sola CHARGE por el total.
+          depositAmount: reservation.depositAmount,
           // email.handlers.ts (punto 5/E5, 15/08/2026) — payload autocontenido
           // (A10.2): no relee customer/resource, ya los tiene acá.
           customerEmail: reservation.customer.email ?? null,

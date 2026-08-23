@@ -62,8 +62,8 @@ describe('toReservationDto', () => {
   });
 
   it('allowedTransitions sobrevive un roundtrip JSON real (A3, deuda estructural)', () => {
-    // reservation está en PENDING (default) — PENDING → CONFIRMED | CANCELLED.
+    // reservation está en PENDING (default) — PENDING → CONFIRMED | CANCELLED | EXPIRED (C1-Fase A).
     const roundtripped = JSON.parse(JSON.stringify(toReservationDto(reservation)));
-    expect(roundtripped.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED']);
+    expect(roundtripped.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED', 'EXPIRED']);
   });
 });

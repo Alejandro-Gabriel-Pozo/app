@@ -313,6 +313,8 @@ export const RecordPaymentSchema = z.object({
   cardSurchargeAmount:  z.number().min(0).optional(),
   idempotencyKey:       z.string().min(1).optional(),
   notes:                z.string().max(500).optional(),
+  /** C1-Fase A -- cobro de la seña o el saldo de una reserva puntual (docs/diseno-sena-deposito-fase-a-2026-08-22.md). Omitido = pago genérico contra la cuenta del cliente, sin cambios. */
+  reservationId:        z.string().min(1).optional(),
 })
   .refine((data) => (data.cardInstallments === undefined && data.cardSurchargeAmount === undefined) || data.paymentMethod === 'CARD', CARD_FIELDS_REQUIRE_CARD_METHOD)
   .refine((data) => data.cardSurchargeAmount === undefined || data.cardSurchargeAmount <= data.amount, {
@@ -397,4 +399,11 @@ export const UpdateBusinessProfileSchema = z.object({
   // ya incluyen IVA, y a qué alícuota (A2.9, config real del negocio).
   defaultIvaRate:   z.number().min(0).max(100).optional(),
   pricesIncludeIva: z.boolean().optional(),
+  // Política general de seña/depósito (22/08/2026, C1-Fase A,
+  // docs/diseno-sena-deposito-fase-a-2026-08-22.md) -- A2.9, config real
+  // del negocio. `null` = sin política de seña (deposit_amount cae al
+  // total completo, ver ReservationPricingService.resolveDepositAmount()).
+  defaultDepositPercentage: z.number().gt(0).max(100).nullable().optional(),
+  /** Horas que una reserva PENDING puede esperar sin cobrar la seña antes de vencer -- null = sin vencimiento. */
+  depositHoldHours: z.number().int().positive().nullable().optional(),
 });
