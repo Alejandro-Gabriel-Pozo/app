@@ -274,17 +274,30 @@ producción tras cada push.
 
 ## G. Gap puntual confirmado, no cerrado (23/08/2026)
 
-### G1. Búsqueda de clientes por CUIT/DNI
+### G1. ✅ RESUELTO (23/08/2026) — Búsqueda de clientes por CUIT/DNI
 
 `pendientes-2026-08-19.md` (sección D4, ABM fiscal) ya lo dejaba anotado
 explícito: *"Todavía falta: la búsqueda de clientes POR CUIT/DNI... no se
 construyó — lo que se conectó es la consulta AL padrón de ARCA
 (autocompletar desde afuera), no una búsqueda contra los perfiles fiscales
-ya cargados en la propia base"*. Confirmado hoy contra el código real
+ya cargados en la propia base"*. Confirmado contra el código real
 (`src/clientes-finanzas/customers.routes.ts:376`): el listado de clientes
-solo soporta `?email=`/`?name=` — sin filtro por CUIT ni DNI. El 22/08 se
-tocó bastante el módulo de clientes/facturación (C1-Fase A, C2, C3) pero
-ninguno pasó por este endpoint. Sigue pendiente, sin UI tampoco.
+solo soportaba `?email=`/`?name=` — sin filtro por CUIT ni DNI.
+
+**Arreglado (commit `b3ebd3e` backend, `58f36d6` frontend):**
+- `POST /customers/search-by-tax-id` — body, nunca query string (A7.2:
+  el CUIT/DNI es PII). Match exacto normalizado (sin guiones/espacios)
+  contra `customer_tax_profiles.tax_id`; devuelve un array porque esa
+  columna no tiene unicidad a nivel de base. No filtra por `active`
+  (R2). Índice nuevo, `CURRENT_SCHEMA_VERSION` a 35.
+- Frontend: el mismo campo de búsqueda de la lista de clientes
+  auto-detecta CUIT/DNI (7+ dígitos) y consulta ese endpoint en vez de
+  filtrar nombre/email en memoria — sin UI nueva, reusa el buscador
+  existente.
+
+`tsc --noEmit`, suite completa (906 tests) y `next build` verdes. No
+verificado en navegador (mismo motivo que el resto de la sesión — sin
+backend local conectado).
 
 ---
 
