@@ -2730,3 +2730,24 @@ ALTER TABLE customers ADD COLUMN IF NOT EXISTS enable_current_account BOOLEAN NO
 CREATE INDEX IF NOT EXISTS idx_customers_current_account
   ON customers (id) WHERE enable_current_account = TRUE;
 
+-- ---------------------------------------------------------------------------
+-- financial_transactions.settled_invoice_id (23/08/2026, I4,
+-- pendientes-2026-08-23.md -- verificación de auditoría externa,
+-- "conciliación de pagos") -- espejo exacto de reversed_invoice_id (C2,
+-- más arriba): qué factura salda un PAYMENT puntual. Solo tiene sentido
+-- con type='PAYMENT'. NULL = pago genérico contra la cuenta del cliente,
+-- sin asociar a ninguna factura (comportamiento previo, sin cambios).
+--
+-- Antes de esto, "Registrar Pago" no tenía forma de decir qué factura
+-- estaba cancelando -- CustomerAccountService.recordPayment() creaba un
+-- único PAYMENT sin destino. Ahora puede crear varias filas PAYMENT (una
+-- por factura elegida en la conciliación + un resto sin asociar si el
+-- monto pagado excede lo seleccionado), cada una con su
+-- settled_invoice_id -- mismo patrón que confirmRefund() ya usaba del
+-- lado del reembolso.
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS settled_invoice_id VARCHAR(255)
+  REFERENCES invoices(id);
+
+CREATE INDEX IF NOT EXISTS idx_ft_settled_invoice
+  ON financial_transactions (settled_invoice_id) WHERE settled_invoice_id IS NOT NULL;
+

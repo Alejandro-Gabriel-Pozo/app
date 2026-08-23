@@ -280,7 +280,10 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v36 (23/08/2026): F1-Pieza 1, pendientes-2026-08-23.md — tipificación de
 // cliente para Cuentas Corrientes. `customers.enable_current_account`
 // nuevo, DEFAULT FALSE.
-export const CURRENT_SCHEMA_VERSION = 36;
+// v37 (23/08/2026): I4, pendientes-2026-08-23.md — conciliación de pagos.
+// `financial_transactions.settled_invoice_id` nuevo, espejo de
+// `reversed_invoice_id`.
+export const CURRENT_SCHEMA_VERSION = 37;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

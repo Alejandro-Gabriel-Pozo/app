@@ -317,6 +317,11 @@ export const RecordPaymentSchema = z.object({
   notes:                z.string().max(500).optional(),
   /** C1-Fase A -- cobro de la seña o el saldo de una reserva puntual (docs/diseno-sena-deposito-fase-a-2026-08-22.md). Omitido = pago genérico contra la cuenta del cliente, sin cambios. */
   reservationId:        z.string().min(1).optional(),
+  /** I4 (23/08/2026) -- qué factura(s) salda este pago y cuánto de cada una. Omitido = pago genérico sin destino, comportamiento previo sin cambios. */
+  allocations: z.array(z.object({
+    invoiceId: z.string().min(1),
+    amount:    z.number().positive('amount de la asignación debe ser mayor a 0'),
+  })).min(1).optional(),
 })
   .refine((data) => (data.cardInstallments === undefined && data.cardSurchargeAmount === undefined) || data.paymentMethod === 'CARD', CARD_FIELDS_REQUIRE_CARD_METHOD)
   .refine((data) => data.cardSurchargeAmount === undefined || data.cardSurchargeAmount <= data.amount, {

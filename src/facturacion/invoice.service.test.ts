@@ -35,6 +35,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
     return [...this.invoices.values()].filter((i) => i.financialTransactionId === ftId);
   }
   async getByReservationId(): Promise<Invoice[]> { return []; }
+  async getOutstandingByCustomerId(): Promise<Array<Invoice & { outstanding: number }>> { return []; }
   async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
     return this.createWithClient({} as SqlClient, input, afipRequest, items);
   }

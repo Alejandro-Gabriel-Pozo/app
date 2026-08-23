@@ -94,6 +94,27 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map(rowToEntity);
   }
 
+  async getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>> {
+    const { rows } = await this.db.query<InvoiceRow & { outstanding: string }>(
+      `SELECT * FROM (
+         SELECT i.*,
+           (i.imp_total
+             - COALESCE((SELECT SUM(p.amount) FROM financial_transactions p
+                         WHERE p.settled_invoice_id = i.id AND p.status = 'SETTLED'), 0)
+             - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+                         WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
+           ) AS outstanding
+         FROM invoices i
+         JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
+         WHERE i.customer_id = $1 AND i.status = 'ISSUED' AND ft.type = 'CHARGE'
+       ) sub
+       WHERE outstanding > 0
+       ORDER BY issued_at ASC NULLS LAST`,
+      [customerId],
+    );
+    return rows.map((row) => ({ ...rowToEntity(row), outstanding: parseFloat(row.outstanding) }));
+  }
+
   async getByReservationId(reservationId: string): Promise<Invoice[]> {
     const { rows } = await this.db.query<InvoiceRow>(
       `SELECT i.* FROM invoices i

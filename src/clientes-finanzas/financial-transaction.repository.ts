@@ -83,6 +83,16 @@ export interface FinancialTransaction {
    * nunca se borra.
    */
   reversedInvoiceId?: string | null;
+  /**
+   * Solo tiene sentido en filas `type = 'PAYMENT'` (I4, 23/08/2026,
+   * pendientes-2026-08-23.md — conciliación de pagos, verificación de
+   * auditoría externa) — la factura ISSUED que este pago está saldando.
+   * Espejo exacto de `reversedInvoiceId` del lado del cobro en vez del
+   * reembolso. `null` = pago genérico contra la cuenta del cliente, sin
+   * asociar a ninguna factura (comportamiento previo, sin cambios). SIN
+   * cascada de borrado — mismo motivo que `reversedInvoiceId`.
+   */
+  settledInvoiceId?: string | null;
   createdAt?: Date;
 }
 

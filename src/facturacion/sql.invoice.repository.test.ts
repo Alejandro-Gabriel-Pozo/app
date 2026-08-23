@@ -125,3 +125,44 @@ describe('SqlInvoiceRepository — getItemsByInvoiceId()', () => {
     expect(await repo.getItemsByInvoiceId('inv-vieja')).toEqual([]);
   });
 });
+
+// I4 (23/08/2026, pendientes-2026-08-23.md -- conciliación de pagos,
+// verificación de auditoría externa) -- facturas ISSUED con saldo
+// pendiente, para el modal de conciliación de "Registrar Pago".
+describe('SqlInvoiceRepository — getOutstandingByCustomerId()', () => {
+  it('filtra por customer_id, status ISSUED, y solo cargos reales (ft.type = CHARGE, no Notas de Crédito)', async () => {
+    const mockSqlClient = mockClient([]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    await repo.getOutstandingByCustomerId('cust-1');
+
+    const mockQuery = vi.mocked(mockSqlClient.query);
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain("i.status = 'ISSUED'");
+    expect(sql).toContain("ft.type = 'CHARGE'");
+    expect(sql).toContain('settled_invoice_id');
+    expect(sql).toContain('reversed_invoice_id');
+    expect(sql).toContain('outstanding > 0');
+    expect(params).toEqual(['cust-1']);
+  });
+
+  it('convierte outstanding (string de pg) a number', async () => {
+    const mockSqlClient = mockClient([
+      {
+        id: 'inv-1', business_id: 'biz-1', financial_transaction_id: 'ft-1', customer_id: 'cust-1',
+        idempotency_key: 'invoice:ft-1', environment: 'homologacion', pto_vta: 1, cbte_tipo: 6,
+        cbte_nro: '5', concepto: 1, doc_tipo: 99, doc_nro: '0', condicion_iva_receptor_id: 5,
+        moneda: 'PES', imp_neto: '1000.00', imp_iva: '210.00', imp_total: '1210.00',
+        cae: '123', cae_vto: new Date(Date.UTC(2026, 8, 1)), status: 'ISSUED', afip_contacted: true,
+        emisor_cuit: null, afip_request: {}, afip_response: {}, error_message: null,
+        created_at: new Date(), issued_at: new Date(), outstanding: '710.00',
+      },
+    ]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const result = await repo.getOutstandingByCustomerId('cust-1');
+
+    expect(result[0]!.outstanding).toBe(710);
+    expect(typeof result[0]!.outstanding).toBe('number');
+  });
+});

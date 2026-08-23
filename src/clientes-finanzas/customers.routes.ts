@@ -48,6 +48,8 @@ import { cuitSchema } from '../api/schemas/common.schemas.js';
 import { SqlCustomerTaxProfileRepository } from './sql.customer-tax-profile.repository.js';
 import { SqlAfipCredentialsRepository } from '../facturacion/sql.afip-credentials.repository.js';
 import { PadronService } from '../facturacion/padron.service.js';
+import { SqlInvoiceRepository } from '../facturacion/sql.invoice.repository.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
 // ---------------------------------------------------------------------------
 // Schemas de validación
@@ -634,6 +636,18 @@ export function createCustomersRouter(container: AppContainer): Router {
     },
   );
 
+  // I4 (23/08/2026) — conciliación de pagos, mismo criterio de composición
+  // que buildCancellationRefundService en reservations.routes.ts.
+  function buildCustomerAccountService(req: Request): CustomerAccountService {
+    return new CustomerAccountService(
+      new SqlFinancialTransactionRepository(req.db!),
+      new SqlCustomerRepository(req.db!),
+      new SqlBusinessProfileRepository(req.db!),
+      new SqlInvoiceRepository(req.db!),
+      buildTenantTransactionManager(req),
+    );
+  }
+
   // GET /customers/:id/account — estado de cuenta (balance + transacciones)
   router.get(
     '/:id/account',
@@ -641,18 +655,29 @@ export function createCustomersRouter(container: AppContainer): Router {
     requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const service = new CustomerAccountService(
-          new SqlFinancialTransactionRepository(req.db!),
-          new SqlCustomerRepository(req.db!),
-          new SqlBusinessProfileRepository(req.db!),
-        );
-        const statement = await service.getStatement(String(req.params['id']));
+        const statement = await buildCustomerAccountService(req).getStatement(String(req.params['id']));
         res.json(statement);
       } catch (err) { next(err); }
     },
   );
 
-  // POST /customers/:id/payments — registra un pago manual (idempotente)
+  // GET /customers/:id/outstanding-invoices — facturas ISSUED con saldo
+  // pendiente, para el modal de conciliación de "Registrar Pago" (I4).
+  router.get(
+    '/:id/outstanding-invoices',
+    authorize(Roles.FRONT_DESK),
+    requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const invoices = await buildCustomerAccountService(req).getOutstandingInvoices(String(req.params['id']));
+        res.json(invoices);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /customers/:id/payments — registra un pago manual (idempotente).
+  // `allocations` (I4) — qué factura(s) salda este pago y cuánto de cada
+  // una; omitido = comportamiento previo, un pago genérico sin destino.
   router.post(
     '/:id/payments',
     authorize(Roles.FRONT_DESK),
@@ -664,12 +689,7 @@ export function createCustomersRouter(container: AppContainer): Router {
           const reservation = await new SqlReservationRepository(req.db!, new SqlResourceRepository(req.db!)).getById(body.reservationId);
           if (!reservation) throw new ReservationNotFoundError(body.reservationId);
         }
-        const service = new CustomerAccountService(
-          new SqlFinancialTransactionRepository(req.db!),
-          new SqlCustomerRepository(req.db!),
-          new SqlBusinessProfileRepository(req.db!),
-        );
-        const tx = await service.recordPayment({
+        const txs = await buildCustomerAccountService(req).recordPayment({
           customerId: String(req.params['id']),
           businessId: req.user!.businessId as string,
           amount: body.amount,
@@ -679,8 +699,9 @@ export function createCustomersRouter(container: AppContainer): Router {
           ...(body.notes && { notes: body.notes }),
           ...(body.idempotencyKey && { idempotencyKey: body.idempotencyKey }),
           ...(body.reservationId && { reservationId: body.reservationId }),
+          ...(body.allocations && { allocations: body.allocations }),
         });
-        res.status(201).json(tx);
+        res.status(201).json(txs);
       } catch (err) { next(err); }
     },
   );

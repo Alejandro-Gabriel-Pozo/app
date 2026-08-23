@@ -29,6 +29,17 @@ export interface InvoiceRepository {
    * filtra a `ISSUED` y las ordena por `issuedAt` para el reparto LIFO.
    */
   getByReservationId(reservationId: string): Promise<Invoice[]>;
+  /**
+   * I4 (23/08/2026, pendientes-2026-08-23.md — conciliación de pagos,
+   * verificación de auditoría externa) — facturas `ISSUED` de un cliente
+   * (excluye Notas de Crédito, que se emiten desde `type='REFUND'`) con
+   * saldo pendiente > 0. `outstanding = impTotal - pagado (settled_invoice_id)
+   * - acreditado (reversed_invoice_id)`, ambos solo `SETTLED`. Usado por
+   * el modal de conciliación de "Registrar Pago"
+   * (`dashboard/cuentas-corrientes`) para listar qué facturas puede saldar
+   * un pago nuevo.
+   */
+  getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

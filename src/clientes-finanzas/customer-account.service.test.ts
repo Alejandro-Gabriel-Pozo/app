@@ -6,6 +6,9 @@ import type { FinancialTransaction, FinancialTransactionRepository } from './fin
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
+import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
+import type { Invoice } from '../facturacion/invoice.entities.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
 
 class FakeCustomerRepository {
   constructor(private readonly customers: Map<string, Customer>) {}
@@ -36,6 +39,20 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async getSettledPaymentTotalForReservation() { return 0; }
   async getCollectedPaymentTotalForReservation() { return 0; }
   async linkStayToReservationCharges() { return 0; }
+}
+
+/** Fake mínimo para el path de allocations (I4) — un mapa de facturas por id, todas ISSUED por default. */
+class FakeInvoiceRepository {
+  constructor(private readonly invoices: Map<string, Invoice>) {}
+  async getById(id: string): Promise<Invoice | null> { return this.invoices.get(id) ?? null; }
+  async getOutstandingByCustomerId(): Promise<Array<Invoice & { outstanding: number }>> { return []; }
+}
+
+/** Corre el callback directo, sin BEGIN/COMMIT real -- alcanza para testear la orquestación. */
+class FakeTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    return work({} as SqlClient);
+  }
 }
 
 /** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
@@ -74,6 +91,8 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
       financialRepo,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new FakeBusinessProfileRepository(makeProfile()),
+      new FakeInvoiceRepository(new Map()) as unknown as InvoiceRepository,
+      new FakeTransactionManager(),
     );
   });
 
@@ -122,10 +141,111 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
       financialRepo,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' })),
+      new FakeInvoiceRepository(new Map()) as unknown as InvoiceRepository,
+      new FakeTransactionManager(),
     );
 
     await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100 });
 
     expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
+  });
+});
+
+// I4 (23/08/2026) — conciliación de pagos: recordPayment() con allocations.
+describe('CustomerAccountService.recordPayment — allocations (I4)', () => {
+  let financialRepo: InMemoryFinancialTransactionRepository;
+  let invoices: Map<string, Invoice>;
+  let service: CustomerAccountService;
+
+  function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
+    return {
+      id: 'inv-1', businessId: BUSINESS_ID, financialTransactionId: 'ft-orig',
+      customerId: CUSTOMER_ID, idempotencyKey: 'idem-1', environment: 'homologacion',
+      ptoVta: 1, cbteTipo: 6, cbteNro: 1, concepto: 1, docTipo: 96, docNro: '0',
+      condicionIvaReceptorId: 5, moneda: 'PES', impNeto: 1000, impIva: 210, impTotal: 1210,
+      cae: '123', caeVto: '2026-09-01', status: 'ISSUED', afipContacted: true, emisorCuit: null,
+      paymentMethod: null, cardInstallments: null, afipRequest: null, afipResponse: null,
+      errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    financialRepo = new InMemoryFinancialTransactionRepository();
+    invoices = new Map([['inv-1', makeInvoice()]]);
+    const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
+    service = new CustomerAccountService(
+      financialRepo,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile()),
+      new FakeInvoiceRepository(invoices) as unknown as InvoiceRepository,
+      new FakeTransactionManager(),
+    );
+  });
+
+  it('crea una fila PAYMENT por factura asignada, con settledInvoiceId', async () => {
+    const result = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 1210,
+      allocations: [{ invoiceId: 'inv-1', amount: 1210 }],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 1210, status: 'SETTLED' });
+  });
+
+  it('si el monto pagado excede lo asignado, crea una fila extra sin asociar por el resto', async () => {
+    await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 1500,
+      allocations: [{ invoiceId: 'inv-1', amount: 1210 }],
+    });
+
+    expect(financialRepo.created).toHaveLength(2);
+    expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 1210 });
+    expect(financialRepo.created[1]).toMatchObject({ settledInvoiceId: null, amount: 290 });
+  });
+
+  it('rechaza si lo asignado supera el monto pagado', async () => {
+    await expect(service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100,
+      allocations: [{ invoiceId: 'inv-1', amount: 1210 }],
+    })).rejects.toThrow();
+  });
+
+  it('rechaza una factura que no pertenece a este cliente', async () => {
+    invoices.set('inv-otro', makeInvoice({ id: 'inv-otro', customerId: 'otro-cliente' }));
+
+    await expect(service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100,
+      allocations: [{ invoiceId: 'inv-otro', amount: 100 }],
+    })).rejects.toThrow();
+  });
+
+  it('rechaza una factura que no está ISSUED', async () => {
+    invoices.set('inv-pending', makeInvoice({ id: 'inv-pending', status: 'PENDING' }));
+
+    await expect(service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100,
+      allocations: [{ invoiceId: 'inv-pending', amount: 100 }],
+    })).rejects.toThrow();
+  });
+
+  it('rechaza una factura inexistente', async () => {
+    await expect(service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100,
+      allocations: [{ invoiceId: 'inv-no-existe', amount: 100 }],
+    })).rejects.toThrow();
+  });
+
+  it('cardInstallments/cardSurchargeAmount van solo en la primera fila, no se duplican', async () => {
+    invoices.set('inv-2', makeInvoice({ id: 'inv-2' }));
+
+    await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 2420,
+      paymentMethod: 'CARD', cardInstallments: 3, cardSurchargeAmount: 100,
+      allocations: [{ invoiceId: 'inv-1', amount: 1210 }, { invoiceId: 'inv-2', amount: 1210 }],
+    });
+
+    expect(financialRepo.created[0]).toMatchObject({ cardInstallments: 3, cardSurchargeAmount: 100 });
+    expect(financialRepo.created[1]).toMatchObject({ cardInstallments: null, cardSurchargeAmount: null });
   });
 });
