@@ -849,12 +849,17 @@ oculta el `<select>` de recurso y manda `categoryId` en vez de
   verdes. No verificado contra un backend real conectado (misma limitación
   que el resto de la sesión) — sí se confirmó que la pantalla renderiza sin
   errores (200 OK) contra el dev server local.
-- **`basePrice` en Recurso:** no es un bug — es el fallback deliberado de
+- **`basePrice` en Recurso — ✅ RESUELTO (23/08/2026, commit `318ae8a`,
+  `appfrontend-main`).** No era un bug — es el fallback deliberado de
   último nivel para "reservé un Recurso sin pasar por un Servicio del
-  catálogo" (`serviceId` es opcional). El problema real es solo de UI: se
-  muestra con la misma jerarquía visual que cualquier otro dato, sin
-  aclarar que es un caso excepcional — mover a un campo secundario/
-  colapsado con aclaración, no tocar la cascada de pricing.
+  catálogo" (`serviceId` es opcional). El problema real era solo de UI: se
+  mostraba con la misma jerarquía visual que Nombre/Categoría y como
+  `required`, sin aclarar que es un caso excepcional. Se movió a un
+  `<details>` colapsado (abierto por defecto solo si el recurso ya tiene un
+  valor distinto de 0) con la aclaración de cuándo se usa, y se sacó el
+  `required` — el backend ya lo trataba como opcional con default 0
+  (`resources.routes.ts`), así que la UI ahora es consistente con eso. No
+  se tocó la cascada de pricing real. `tsc --noEmit` y `next build` verdes.
 - **Reservas/Estadías/Housekeeping:** confirmado que NO están duplicadas —
   `stays.reservation_id` referencia `reservations`, `housekeeping_tasks`
   referencia `resource_id` directo, cada módulo extiende sin reimplementar.
