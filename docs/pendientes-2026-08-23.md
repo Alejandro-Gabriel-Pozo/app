@@ -290,20 +290,29 @@ ninguno pasó por este endpoint. Sigue pendiente, sin UI tampoco.
 
 ## H. Hallazgo nuevo, sin cerrar (23/08/2026)
 
-### H1. `dashboard/ordenes/[id]/page.tsx` — nunca estuvo en Bastión ni pasó a ZULU
+### H1. ✅ RESUELTO (23/08/2026) — `dashboard/ordenes/[id]/page.tsx` — nunca estuvo en Bastión ni pasó a ZULU
 
 Encontrado al auditar la migración de diseño (F3): a diferencia de las
 otras ~19 pantallas del dashboard, el detalle de una orden
-(`appfrontend-main/src/app/dashboard/ordenes/[id]/page.tsx`) no usa
-`.bastion` ni el tema oscuro base — tiene su propia paleta de colores
+(`appfrontend-main/src/app/dashboard/ordenes/[id]/page.tsx`) no usaba
+`.bastion` ni el tema oscuro base — tenía su propia paleta de colores
 hardcodeada en hex/rgba directo (`STATUS_COLOR`, ej. `#10b981`, `#f87171`,
 `#60a5fa`), independiente de cualquiera de los dos sistemas de diseño que
-pasaron por el resto del dashboard. No se tocó — quedó fuera del alcance
-de F3 porque el inventario de esa migración se armó a partir de qué
-pantallas usaban `.bastion`, y esta nunca lo usó. Pendiente: migrarla a
-los tokens `.zulu` (mismo criterio que el resto — reemplazar los hex
-literales por `var(--warning)`/`var(--danger)`/`var(--info)`/etc. según el
-estado que representen).
+pasaron por el resto del dashboard. Quedó fuera del alcance de F3 porque
+el inventario de esa migración se armó a partir de qué pantallas usaban
+`.bastion`, y esta nunca lo usó.
+
+**Arreglado (commit `a59c4c6`, appfrontend-main):** wrapper con clase
+`.zulu` agregado, todos los hex/rgba reemplazados por
+`var(--success/danger/info/text-*/border)` según el estado que
+representan, el badge de estado pasa a reusar las clases `.badge-*`
+compartidas (mismo `STATUS_BADGE_CLASS` que ya usa
+`dashboard/ordenes/page.tsx`, un solo lugar de verdad) en vez de un
+`STATUS_COLOR` propio con dot pintado a mano, y las tarjetas pasan a
+`className="card"` en vez de una `.detail-card` local con
+`background: #13151e` fijo. `tsc --noEmit` y `next build` verdes. No
+verificado en navegador (mismo motivo que F3 — sin backend local
+conectado).
 
 ---
 
