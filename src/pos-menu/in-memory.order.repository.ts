@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IOrderRepositoryWithClient } from './order.service.js';
-import type { ListOrdersFilter } from './order.repository.js';
+import type { ListOrdersFilter, SalesByProductRow, TicketSummaryReport } from './order.repository.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type {
   Order,
@@ -156,5 +157,90 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
     order.servedAt = new Date();
     order.updatedAt = new Date();
     return order;
+  }
+
+  // ---------------------------------------------------------------------------
+  // D7 (22/08/2026) — reportes POS. Sin acceso a ProductRepository/
+  // CustomerRepository en memoria (test double, no compone otros repos) --
+  // productName/customerName caen al id como placeholder. Ningún test de
+  // ReportService usa este repo (tiene su propio fake dedicado); esto solo
+  // existe para satisfacer IOrderRepository en order.service.test.ts.
+  // ---------------------------------------------------------------------------
+
+  private confirmedOrdersInRange(from: Date, to: Date): Order[] {
+    return [...this.orders.values()].filter((o) =>
+      (o.status === 'CONFIRMED' || o.status === 'COMPLETED') &&
+      o.confirmedAt !== null && o.confirmedAt >= from && o.confirmedAt <= to,
+    );
+  }
+
+  async getSalesByProduct(from: Date, to: Date): Promise<SalesByProductRow[]> {
+    const groups = new Map<string, SalesByProductRow>();
+    const orderIdsByKey = new Map<string, Set<string>>();
+
+    for (const order of this.confirmedOrdersInRange(from, to)) {
+      for (const item of order.items) {
+        if (item.itemType !== 'PRODUCT' && item.itemType !== 'PRODUCT_VARIANT') continue;
+        const key = `${item.productId}:${item.productVariantId ?? ''}`;
+        const existing = groups.get(key);
+        if (existing) {
+          existing.quantitySold += item.quantity;
+          existing.totalRevenue += item.subtotal;
+        } else {
+          groups.set(key, {
+            productId: item.productId!,
+            productVariantId: item.productVariantId,
+            productName: item.productId!,
+            variantName: item.productVariantId,
+            quantitySold: item.quantity,
+            totalRevenue: item.subtotal,
+            orderCount: 0,
+          });
+        }
+        if (!orderIdsByKey.has(key)) orderIdsByKey.set(key, new Set());
+        orderIdsByKey.get(key)!.add(order.id);
+      }
+    }
+
+    for (const [key, row] of groups) {
+      row.orderCount = orderIdsByKey.get(key)!.size;
+    }
+
+    return [...groups.values()].sort((a, b) => b.totalRevenue - a.totalRevenue);
+  }
+
+  async getTicketSummary(from: Date, to: Date): Promise<TicketSummaryReport> {
+    const orders = this.confirmedOrdersInRange(from, to);
+    const totalRevenue = orders.reduce((sum, o) => sum + o.totalAmount, 0);
+    return {
+      orderCount: orders.length,
+      totalRevenue,
+      averageTicket: orders.length > 0 ? totalRevenue / orders.length : 0,
+    };
+  }
+
+  async getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]> {
+    const groups = new Map<string, AppliedRateReportRow>();
+
+    for (const order of this.confirmedOrdersInRange(from, to)) {
+      for (const item of order.items) {
+        if (!item.appliedCustomerRateId) continue;
+        const existing = groups.get(item.appliedCustomerRateId);
+        if (existing) {
+          existing.timesApplied += 1;
+          existing.totalAmount += item.subtotal;
+        } else {
+          groups.set(item.appliedCustomerRateId, {
+            customerRateId: item.appliedCustomerRateId,
+            customerId: order.customerId,
+            customerName: order.customerId,
+            timesApplied: 1,
+            totalAmount: item.subtotal,
+          });
+        }
+      }
+    }
+
+    return [...groups.values()].sort((a, b) => b.timesApplied - a.timesApplied);
   }
 }

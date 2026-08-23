@@ -2566,3 +2566,24 @@ ALTER TABLE order_items ADD COLUMN IF NOT EXISTS iva_rate NUMERIC(5,2);
 ALTER TABLE order_items DROP CONSTRAINT IF EXISTS chk_order_items_iva_rate;
 ALTER TABLE order_items ADD CONSTRAINT chk_order_items_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
 
+-- ---------------------------------------------------------------------------
+-- D7 (22/08/2026, pendientes-2026-08-19.md sección D) -- reportes POS/CRM.
+-- "Tarifas aplicadas" necesita saber CUÁL CustomerRate (si hubo alguna) se
+-- usó para resolver el precio -- ni reservations ni order_items lo
+-- registraban antes de esto (totalPrice/unitPrice ya vienen resueltos,
+-- sin trazabilidad de qué escalón de la cascada ganó). NULL = precio de
+-- catálogo/base, sin descuento. Snapshot al vender/reservar (R9) -- no se
+-- recalcula después; si la CustomerRate se desactiva o se borra más
+-- adelante, la venta ya facturada sigue señalando qué tarifa usó en su
+-- momento (ON DELETE SET NULL solo por si la fila desaparece de verdad,
+-- no por desactivación -- desactivar nunca borra la fila, R3).
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS applied_customer_rate_id VARCHAR(255)
+  REFERENCES customer_rates(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_order_items_applied_rate
+  ON order_items (applied_customer_rate_id) WHERE applied_customer_rate_id IS NOT NULL;
+
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS applied_customer_rate_id VARCHAR(255)
+  REFERENCES customer_rates(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_reservations_applied_rate
+  ON reservations (applied_customer_rate_id) WHERE applied_customer_rate_id IS NOT NULL;
+

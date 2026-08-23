@@ -101,6 +101,13 @@ export interface OrderItem {
    * `InvoiceService.resolveIvaGroups()`.
    */
   ivaRate:            number | null;
+  /**
+   * D7 (22/08/2026) — snapshot de qué `CustomerRate` (descuento especial)
+   * se aplicó para resolver `unitPrice`, si hubo alguna (`null` = precio
+   * de catálogo/base, sin descuento). Sirve para el reporte "tarifas
+   * aplicadas" — ver `OrderPricingService.resolveUnitPrice()`.
+   */
+  appliedCustomerRateId: string | null;
   createdAt:          Date;
   updatedAt:          Date;
 }

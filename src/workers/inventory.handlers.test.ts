@@ -8,7 +8,7 @@ import { ProductService } from '../pos-menu/product.service.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { InMemoryInventoryLevelRepository } from '../repositories/in-memory.inventory-level.repository.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
-import type { StockMovementRepository, CreateStockMovementInput } from '../repositories/stock-movement.repository.js';
+import type { StockMovementRepository, CreateStockMovementInput, WasteReportRow } from '../repositories/stock-movement.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type {
@@ -105,6 +105,10 @@ class FakeStockMovementRepository implements StockMovementRepository {
     movementType: string,
   ): Promise<boolean> {
     return this.seenByTypeKey.has(`${componentKey({ orderItemId, productId, productVariantId })}:${movementType}`);
+  }
+
+  async getWasteReport(): Promise<WasteReportRow[]> {
+    return [];
   }
 }
 

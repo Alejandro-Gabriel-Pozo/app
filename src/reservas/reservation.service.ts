@@ -180,7 +180,7 @@ export class ReservationService {
 
     const endTime = await resolveEndTime(params.serviceId, params.startTime, params.endTime, service);
 
-    const { totalPrice, lines } = await this.pricing.resolvePrice({
+    const { totalPrice, lines, appliedCustomerRateId } = await this.pricing.resolvePrice({
       customerId: params.customer.id,
       resourceId: params.resourceId,
       serviceId:  params.serviceId,
@@ -247,6 +247,7 @@ export class ReservationService {
         depositAmount,
         depositDueBy,
         reservationNumber,
+        appliedCustomerRateId,
         lines: lines.map((line, i) => ({
           id:            `${params.id}-L${i + 1}`,
           reservationId: params.id,
@@ -345,6 +346,7 @@ export class ReservationService {
     // pendientes-2026-08-18.md) — no se improvisa acá.
     let totalPrice = existing.totalPrice;
     let lines = existing.lines;
+    let appliedCustomerRateId = existing.appliedCustomerRateId;
     if (existing.status === 'PENDING') {
       const service = existing.serviceId
         ? await this.bookableServiceRepository.findById(existing.serviceId)
@@ -366,6 +368,7 @@ export class ReservationService {
         unitDate:      line.unitDate,
         price:         line.price,
       }));
+      appliedCustomerRateId = priced.appliedCustomerRateId;
     }
 
     let updated!: Reservation;
@@ -409,6 +412,7 @@ export class ReservationService {
         scheduleApprovedBy:     existing.scheduleApprovedBy,
         scheduleChargeAmount:   existing.scheduleChargeAmount,
         reservationNumber:      existing.reservationNumber,
+        appliedCustomerRateId,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -425,7 +429,7 @@ export class ReservationService {
    */
   private async recalculatePriceFor(
     existing: Reservation,
-  ): Promise<{ totalPrice: number; lines: ReservationLine[] }> {
+  ): Promise<{ totalPrice: number; lines: ReservationLine[]; appliedCustomerRateId: string | null }> {
     const service = existing.serviceId
       ? await this.bookableServiceRepository.findById(existing.serviceId)
       : null;
@@ -447,6 +451,7 @@ export class ReservationService {
         unitDate:      line.unitDate,
         price:         line.price,
       })),
+      appliedCustomerRateId: priced.appliedCustomerRateId,
     };
   }
 
@@ -546,6 +551,7 @@ export class ReservationService {
         reservationNumber:      existing.reservationNumber,
         depositAmount:          existing.depositAmount,
         depositDueBy:           existing.depositDueBy,
+        appliedCustomerRateId:  recalculated.appliedCustomerRateId,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);

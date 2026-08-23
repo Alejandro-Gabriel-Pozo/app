@@ -33,6 +33,7 @@ describe('toReservationDto', () => {
     notes: 'Pidió silla junto a la ventana',
     totalPrice: 20,
     reservationNumber: 1,
+    appliedCustomerRateId: null,
   });
 
   it('el status sobrevive un roundtrip JSON real (antes se perdía: _status vs status)', () => {

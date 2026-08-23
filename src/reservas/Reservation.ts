@@ -148,6 +148,18 @@ export interface ReservationProps {
    * comentario de updateReservation()).
    */
   reservationNumber: number;
+  /**
+   * D7 (22/08/2026, pendientes-2026-08-19.md sección D) — qué
+   * `CustomerRate` (descuento especial) se aplicó para resolver
+   * `totalPrice`, si hubo alguna (`null` = precio de catálogo/rate plan,
+   * sin descuento). Igual que `reservationNumber`, OBLIGATORIO a
+   * propósito (aunque el valor típico sea `null`) — sin esto, un
+   * `restore()` nuevo que se olvide de reenviarlo perdería en silencio la
+   * trazabilidad de la tarifa aplicada, mismo bug que ya pasó una vez con
+   * requestedCheckInTime/scheduleApprovalStatus. Lo resuelve
+   * `ReservationPricingService.resolvePrice()`.
+   */
+  appliedCustomerRateId: string | null;
 }
 
 export class Reservation {
@@ -170,6 +182,7 @@ export class Reservation {
   public readonly depositAmount: number;
   public readonly depositDueBy: Date | null;
   public readonly reservationNumber: number;
+  public readonly appliedCustomerRateId: string | null;
 
   constructor(props: ReservationProps) {
     const {
@@ -197,6 +210,7 @@ export class Reservation {
       depositAmount = 0,
       depositDueBy = null,
       reservationNumber,
+      appliedCustomerRateId,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -256,6 +270,7 @@ export class Reservation {
     this.depositAmount = depositAmount;
     this.depositDueBy  = depositDueBy;
     this.reservationNumber = reservationNumber;
+    this.appliedCustomerRateId = appliedCustomerRateId;
     this._status     = initialStatus;
   }
 

@@ -38,6 +38,26 @@
  * dueño, corregida ANTES de cualquier deploy real).
  */
 
+/**
+ * D7 (22/08/2026, pendientes-2026-08-19.md sección D) — cuántas veces se
+ * aplicó esta CustomerRate (y a quién) en un período. Vive acá, no en
+ * `pos-menu/order.repository.ts` ni en `reservas/reservation.repository.ts`
+ * por separado, porque el reporte cruza los dos bounded contexts (una
+ * tarifa se puede aplicar en una orden POS o en una reserva) — este es el
+ * dueño real del concepto "tarifa aplicada", no uno de los dos
+ * consumidores. `ReportService` combina las filas de
+ * `IOrderRepository.getAppliedRatesReport()` y
+ * `ReservationRepository.getAppliedRatesReport()` (mismo shape, orígenes
+ * distintos) en un solo reporte.
+ */
+export interface AppliedRateReportRow {
+  customerRateId: string;
+  customerId: string;
+  customerName: string;
+  timesApplied: number;
+  totalAmount: number;
+}
+
 export interface CustomerRate {
   id: string;
   businessId: string;

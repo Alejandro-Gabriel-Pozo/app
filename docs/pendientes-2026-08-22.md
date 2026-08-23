@@ -121,9 +121,35 @@ pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
   contenido real del archivo ya incluye esos cambios (no hay nada roto:
   se reaplica completo siempre), pero el número de versión registrado por
   tenant no los refleja. Backlog, no se corrigió retroactivo.
-- **D7** — Reportes POS/Restaurante y CRM (ventas por producto/mermas/
-  ticket promedio; clientes nuevos vs. recurrentes/tarifas aplicadas).
-  Cero endpoints hoy.
+- ✅ **D7 RESUELTO (23/08/2026)** — Reportes POS/Restaurante y CRM. 2
+  decisiones confirmadas con el dueño (`AskUserQuestion`) antes de
+  codear: (1) "activo en el período" = tuvo reserva u orden CONFIRMED/
+  COMPLETED en [from,to]; de ese conjunto, "nuevo" = `created_at` también
+  cae en el rango, "recurrente" = más de una reserva/orden en TODA su
+  historia (estado del cliente, no del período — no son categorías
+  exhaustivas, un cliente puede no caer en ninguna); (2) "tarifas
+  aplicadas" necesitaba agregar el registro de qué `CustomerRate` se
+  aplicó tanto en `order_items` como en `reservations` — ninguno de los
+  dos lo guardaba antes de esto (hallazgo real: mi primera pregunta daba
+  por sentado que Reservas ya lo tenía vía `ratePlanId`, que en realidad
+  es un concepto distinto —qué *rate plan* de habitación se eligió—, no
+  "qué descuento se aplicó"; corregido antes de codear, ver conversación).
+  `order_items.applied_customer_rate_id`/`reservations.applied_customer_rate_id`
+  (snapshot al vender/reservar, R9 — mismo patrón protector que D6/D8:
+  `Reservation.appliedCustomerRateId` es obligatorio en el constructor,
+  TypeScript fuerza a reenviarlo en cada `restore()` nuevo).
+  5 reportes nuevos (`GET /api/reports/pos/sales-by-product`,
+  `/pos/waste`, `/pos/ticket-summary`, `/crm/new-vs-recurring`,
+  `/crm/applied-rates`), gateados igual que los reportes existentes
+  (`requireModule(REPORTES)` + `Roles.MANAGEMENT`) — sin gate extra de
+  `POS_RESTAURANTE`, mismo criterio que occupancy/accounts-receivable ya
+  usaban. `AppliedRateReportRow` vive en `customer-rate.repository.ts`
+  (no en pos-menu ni en reservas por separado) porque el reporte cruza
+  los dos bounded contexts — `ReportService.generateAppliedRatesReport()`
+  combina ambos orígenes, sumando en una sola fila si la misma tarifa se
+  usó de los dos lados. Suite completa (866 tests) + lint + typecheck
+  verdes. **Backend only** — sin UI en `appfrontend-main` (pantalla de
+  reportes POS/CRM todavía no existe).
 - ✅ **D8 RESUELTO (22/08/2026)** — IVA por producto, unidad de medida,
   código ARCA. 2 decisiones confirmadas con el dueño (`AskUserQuestion`)
   antes de codear: (1) la factura AFIP SÍ agrupa por tasa cuando la orden

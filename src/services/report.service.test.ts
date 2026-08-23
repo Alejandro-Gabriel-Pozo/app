@@ -7,6 +7,11 @@ import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
 } from '../clientes-finanzas/accounts-receivable.repository.js';
+import type { IOrderRepository, SalesByProductRow, TicketSummaryReport } from '../pos-menu/order.repository.js';
+import type { StockMovementRepository, WasteReportRow } from '../repositories/stock-movement.repository.js';
+import type { CustomerRepository, NewVsRecurringReport } from '../clientes-finanzas/customer.repository.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
 /** Fake mínimo — solo lo que ReportService llama. */
 class FakeAccountsReceivableRepository implements Pick<AccountsReceivableRepository, 'getReportByPeriod'> {
@@ -71,19 +76,60 @@ class MockOccupancyRepository implements OccupancyRepository {
   }
 }
 
+/** D7 (22/08/2026) — fake mínimo, solo los 3 métodos que ReportService llama. */
+class FakeOrderRepository implements Pick<IOrderRepository, 'getSalesByProduct' | 'getTicketSummary' | 'getAppliedRatesReport'> {
+  public salesByProduct: SalesByProductRow[] = [];
+  public ticketSummary: TicketSummaryReport = { orderCount: 0, totalRevenue: 0, averageTicket: 0 };
+  public appliedRates: AppliedRateReportRow[] = [];
+  async getSalesByProduct(): Promise<SalesByProductRow[]> { return this.salesByProduct; }
+  async getTicketSummary(): Promise<TicketSummaryReport> { return this.ticketSummary; }
+  async getAppliedRatesReport(): Promise<AppliedRateReportRow[]> { return this.appliedRates; }
+}
+
+class FakeStockMovementRepository implements Pick<StockMovementRepository, 'getWasteReport'> {
+  public rows: WasteReportRow[] = [];
+  async getWasteReport(): Promise<WasteReportRow[]> { return this.rows; }
+}
+
+class FakeCustomerRepository implements Pick<CustomerRepository, 'getNewVsRecurringReport'> {
+  public report: NewVsRecurringReport = { newCustomersCount: 0, recurringCustomersCount: 0, activeCustomersCount: 0 };
+  async getNewVsRecurringReport(): Promise<NewVsRecurringReport> { return this.report; }
+}
+
+class FakeReservationRepository implements Pick<ReservationRepository, 'getAppliedRatesReport'> {
+  public appliedRates: AppliedRateReportRow[] = [];
+  async getAppliedRatesReport(): Promise<AppliedRateReportRow[]> { return this.appliedRates; }
+}
+
 const BUSINESS_ID = 'biz-1';
 
 describe('ReportService', () => {
   let mockRepository: OccupancyRepository;
   let arRepository: FakeAccountsReceivableRepository;
   let housekeepingRepository: FakeHousekeepingRepository;
+  let orderRepository: FakeOrderRepository;
+  let stockMovementRepository: FakeStockMovementRepository;
+  let customerRepository: FakeCustomerRepository;
+  let reservationRepository: FakeReservationRepository;
   let service: ReportService;
 
   beforeEach(() => {
     mockRepository = new MockOccupancyRepository();
     arRepository = new FakeAccountsReceivableRepository();
     housekeepingRepository = new FakeHousekeepingRepository();
-    service = new ReportService(mockRepository, arRepository as unknown as AccountsReceivableRepository, housekeepingRepository);
+    orderRepository = new FakeOrderRepository();
+    stockMovementRepository = new FakeStockMovementRepository();
+    customerRepository = new FakeCustomerRepository();
+    reservationRepository = new FakeReservationRepository();
+    service = new ReportService(
+      mockRepository,
+      arRepository as unknown as AccountsReceivableRepository,
+      housekeepingRepository,
+      orderRepository,
+      stockMovementRepository,
+      customerRepository,
+      reservationRepository,
+    );
   });
 
   describe('generateOccupancyReport', () => {
@@ -351,6 +397,94 @@ describe('ReportService', () => {
       const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate);
 
       expect(summary.totalResources).toBe(2);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reportes POS/CRM
+  // ---------------------------------------------------------------------------
+
+  describe('generateSalesByProductReport', () => {
+    it('delega en IOrderRepository.getSalesByProduct', async () => {
+      orderRepository.salesByProduct = [{
+        productId: 'prod-1', productVariantId: null, productName: 'Coca-Cola', variantName: null,
+        quantitySold: 10, totalRevenue: 1000, orderCount: 7,
+      }];
+
+      const report = await service.generateSalesByProductReport(new Date('2026-08-01'), new Date('2026-08-31'));
+
+      expect(report).toHaveLength(1);
+      expect(report[0]?.productName).toBe('Coca-Cola');
+      expect(report[0]?.quantitySold).toBe(10);
+    });
+  });
+
+  describe('generateWasteReport', () => {
+    it('delega en StockMovementRepository.getWasteReport', async () => {
+      stockMovementRepository.rows = [{
+        productId: 'prod-1', productVariantId: null, productName: 'Pan', variantName: null,
+        wasteReasonId: 'wr-1', wasteReasonName: 'Vencido', totalQuantity: 5, movementCount: 2,
+      }];
+
+      const report = await service.generateWasteReport(new Date('2026-08-01'), new Date('2026-08-31'));
+
+      expect(report).toHaveLength(1);
+      expect(report[0]?.wasteReasonName).toBe('Vencido');
+    });
+  });
+
+  describe('generateTicketSummaryReport', () => {
+    it('delega en IOrderRepository.getTicketSummary', async () => {
+      orderRepository.ticketSummary = { orderCount: 20, totalRevenue: 40000, averageTicket: 2000 };
+
+      const report = await service.generateTicketSummaryReport(new Date('2026-08-01'), new Date('2026-08-31'));
+
+      expect(report.averageTicket).toBe(2000);
+    });
+  });
+
+  describe('generateNewVsRecurringReport', () => {
+    it('delega en CustomerRepository.getNewVsRecurringReport', async () => {
+      customerRepository.report = { newCustomersCount: 5, recurringCustomersCount: 12, activeCustomersCount: 30 };
+
+      const report = await service.generateNewVsRecurringReport(new Date('2026-08-01'), new Date('2026-08-31'));
+
+      expect(report).toEqual({ newCustomersCount: 5, recurringCustomersCount: 12, activeCustomersCount: 30 });
+    });
+  });
+
+  describe('generateAppliedRatesReport', () => {
+    it('combina POS + Reservas cuando NO comparten customerRateId', async () => {
+      orderRepository.appliedRates = [
+        { customerRateId: 'rate-pos', customerId: 'cust-1', customerName: 'Ana', timesApplied: 3, totalAmount: 300 },
+      ];
+      reservationRepository.appliedRates = [
+        { customerRateId: 'rate-res', customerId: 'cust-2', customerName: 'Beto', timesApplied: 1, totalAmount: 500 },
+      ];
+
+      const report = await service.generateAppliedRatesReport(new Date('2026-08-01'), new Date('2026-08-31'));
+
+      expect(report).toHaveLength(2);
+      expect(report.map((r) => r.customerRateId).sort()).toEqual(['rate-pos', 'rate-res']);
+    });
+
+    it('suma en una sola fila cuando la MISMA tarifa se usó en POS y en Reservas', async () => {
+      orderRepository.appliedRates = [
+        { customerRateId: 'rate-1', customerId: 'cust-1', customerName: 'Ana', timesApplied: 3, totalAmount: 300 },
+      ];
+      reservationRepository.appliedRates = [
+        { customerRateId: 'rate-1', customerId: 'cust-1', customerName: 'Ana', timesApplied: 2, totalAmount: 400 },
+      ];
+
+      const report = await service.generateAppliedRatesReport(new Date('2026-08-01'), new Date('2026-08-31'));
+
+      expect(report).toHaveLength(1);
+      expect(report[0]).toMatchObject({ customerRateId: 'rate-1', timesApplied: 5, totalAmount: 700 });
+    });
+
+    it('sin tarifas aplicadas en el período, devuelve lista vacía', async () => {
+      const report = await service.generateAppliedRatesReport(new Date('2026-08-01'), new Date('2026-08-31'));
+      expect(report).toEqual([]);
     });
   });
 });

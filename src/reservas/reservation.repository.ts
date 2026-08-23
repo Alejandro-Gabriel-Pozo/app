@@ -1,6 +1,7 @@
 import type { Reservation } from './Reservation.js';
 import type { ReservationStatus } from '../types/enums.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
 export interface ReservationFilters {
   status?:     ReservationStatus;
@@ -106,4 +107,7 @@ export interface ReservationRepository {
 
   /** @deprecated Usar getFiltered({}) */
   getAll(): Promise<Reservation[]>;
+
+  /** D7 (22/08/2026) — tarifas especiales aplicadas en reservas CONFIRMED/COMPLETED en [from, to]. Ver `AppliedRateReportRow`. */
+  getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]>;
 }

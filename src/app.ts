@@ -92,6 +92,8 @@ import { SqlAccountsReceivableRepository }   from './clientes-finanzas/sql.accou
 import { SqlCustomerRepository }             from './clientes-finanzas/sql.customer.repository.js';
 import { AccountsReceivableService }         from './clientes-finanzas/accounts-receivable.service.js';
 import { SqlBusinessProfileRepository }      from './repositories/sql.business-profile.repository.js';
+import { SqlOrderRepository }                from './pos-menu/sql.order.repository.js';
+import { SqlStockMovementRepository }        from './repositories/sql.stock-movement.repository.js';
 import { buildTenantTransactionManager }     from './db/tenant-context.js';
 import { stopAllWorkers }                from './workers/outbox.registry.js';
 import { createEmailSender }             from './email/email.sender.js';
@@ -298,7 +300,20 @@ export async function createApp(): Promise<{
       const occupancyRepo = new SqlOccupancyRepository(req.db);
       const accountsReceivableRepo = new SqlAccountsReceivableRepository(req.db);
       const housekeepingRepo = new SqlHousekeepingRepository(req.db);
-      const reportService = new ReportService(occupancyRepo, accountsReceivableRepo, housekeepingRepo);
+      // D7 (22/08/2026) — reportes POS/CRM.
+      const orderRepo = new SqlOrderRepository(req.db);
+      const stockMovementRepo = new SqlStockMovementRepository(req.db);
+      const customerRepo = new SqlCustomerRepository(req.db);
+      const reservationRepo = new SqlReservationRepository(req.db, new SqlResourceRepository(req.db));
+      const reportService = new ReportService(
+        occupancyRepo,
+        accountsReceivableRepo,
+        housekeepingRepo,
+        orderRepo,
+        stockMovementRepo,
+        customerRepo,
+        reservationRepo,
+      );
       const router = createReportsRouter(reportService);
       router(req, _res, next);
     },

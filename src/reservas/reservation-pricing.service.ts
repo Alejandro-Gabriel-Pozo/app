@@ -119,7 +119,12 @@ export class ReservationPricingService {
     service: BookableService | null;
     startTime: Date;
     endTime: Date;
-  }): Promise<{ totalPrice: number; lines: Array<{ unitDate: Date; price: number }> }> {
+  }): Promise<{
+    totalPrice: number;
+    lines: Array<{ unitDate: Date; price: number }>;
+    /** D7 (22/08/2026) -- qué CustomerRate se aplicó, si hubo alguna. Ver docblock de resolveUnitPrice(). */
+    appliedCustomerRateId: string | null;
+  }> {
     // 'block' cotiza por noche (calculateNights). 'slot' y 'event' cotizan
     // como 1 unidad -- precio plano por turno o por evento completo, no
     // por día/noche. Para 'event' esto es una decisión explícita
@@ -131,11 +136,11 @@ export class ReservationPricingService {
       ? this.calculateNights(params.startTime, params.endTime)
       : 1;
 
-    const unitPrice = await this.resolveUnitPrice(params);
+    const { unitPrice, appliedCustomerRateId } = await this.resolveUnitPrice(params);
     const lines = this.buildLines(params.startTime, units, unitPrice);
     const totalPrice = lines.reduce((sum, line) => sum + line.price, 0);
 
-    return { totalPrice, lines };
+    return { totalPrice, lines, appliedCustomerRateId };
   }
 
   /**
@@ -156,7 +161,7 @@ export class ReservationPricingService {
     service: BookableService | null;
     startTime?: Date;
     endTime?: Date;
-  }): Promise<number> {
+  }): Promise<{ unitPrice: number; appliedCustomerRateId: string | null }> {
     if (params.serviceId) {
       // categoryId del SERVICIO -- '' si `service` no vino cargado (mismo
       // caso ya tolerado por requireServicePrice más abajo). '' nunca
@@ -176,14 +181,23 @@ export class ReservationPricingService {
         // el nivel del scope (ítem/categoría/bucket) -- el eje servicio
         // sigue ganando entre ejes con cualquier nivel (decisión
         // confirmada con el dueño, docs/diseno-scope-multinivel-tarifas-2026-08-22.md).
-        return this.resolveRateAmount(serviceRate, this.requireServicePrice(params));
+        return {
+          unitPrice: this.resolveRateAmount(serviceRate, this.requireServicePrice(params)),
+          appliedCustomerRateId: serviceRate.id,
+        };
       }
 
       if (params.ratePlanId) {
-        return this.resolveRatePlanPrice(params.ratePlanId, params.startTime, params.endTime);
+        // ratePlanId es un escalón DISTINTO de CustomerRate (D7,
+        // 22/08/2026) -- elegir un rate_plan público no es un descuento
+        // negociado, así que no cuenta como "tarifa aplicada" para ese reporte.
+        return {
+          unitPrice: await this.resolveRatePlanPrice(params.ratePlanId, params.startTime, params.endTime),
+          appliedCustomerRateId: null,
+        };
       }
 
-      if (params.service) return params.service.price;
+      if (params.service) return { unitPrice: params.service.price, appliedCustomerRateId: null };
     }
 
     const resourceCategory = await this.categoryRepository.findById(params.resource.categoryId);
@@ -193,9 +207,14 @@ export class ReservationPricingService {
       params.resource.categoryId,
       resourceCategory?.isLodging ?? false,
     );
-    if (resourceRate) return this.resolveRateAmount(resourceRate, params.resource.basePrice);
+    if (resourceRate) {
+      return {
+        unitPrice: this.resolveRateAmount(resourceRate, params.resource.basePrice),
+        appliedCustomerRateId: resourceRate.id,
+      };
+    }
 
-    return params.resource.basePrice;
+    return { unitPrice: params.resource.basePrice, appliedCustomerRateId: null };
   }
 
   /**

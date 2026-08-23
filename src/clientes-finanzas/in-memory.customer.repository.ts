@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Customer } from './customer.entities.js';
-import type { CustomerRepository, CustomerWithPassword, Tag } from './customer.repository.js';
+import type { CustomerRepository, CustomerWithPassword, Tag, NewVsRecurringReport } from './customer.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
 interface CustomerRecord {
@@ -174,5 +174,15 @@ export class InMemoryCustomerRepository implements CustomerRepository {
 
   async removeTag(customerId: string, tagId: string): Promise<void> {
     this.customerTags.get(customerId)?.delete(tagId);
+  }
+
+  /**
+   * D7 (22/08/2026) — este test double no compone ReservationRepository/
+   * OrderRepository (fuera de su bounded context), así que no puede
+   * calcular el reporte real. `ReportService` se testea con su propio
+   * fake dedicado, no con este repo -- no debería llamarse en la práctica.
+   */
+  async getNewVsRecurringReport(): Promise<NewVsRecurringReport> {
+    return { newCustomersCount: 0, recurringCustomersCount: 0, activeCustomersCount: 0 };
   }
 }

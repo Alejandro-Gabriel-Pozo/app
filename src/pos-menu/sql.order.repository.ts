@@ -23,7 +23,8 @@ import { randomUUID } from 'crypto';
 import pg from 'pg';
 import type { Pool } from 'pg';
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { ListOrdersFilter } from './order.repository.js';
+import type { ListOrdersFilter, SalesByProductRow, TicketSummaryReport } from './order.repository.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOrderRepositoryWithClient } from './order.service.js';
 import type {
   Order,
@@ -52,6 +53,7 @@ function rowToOrderItem(row: Record<string, unknown>): OrderItem {
     notes:            (row['notes'] as string | null) ?? null,
     stockSnapshot:    (row['stock_snapshot'] as OrderItem['stockSnapshot']) ?? null,
     ivaRate:          row['iva_rate'] != null ? Number(row['iva_rate']) : null,
+    appliedCustomerRateId: (row['applied_customer_rate_id'] as string | null) ?? null,
     createdAt:        new Date(row['created_at'] as string),
     updatedAt:        new Date(row['updated_at'] as string),
   };
@@ -195,10 +197,11 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
         subtotal:         item.quantity * item.unitPrice,
         notes:            null,
         // Método legacy, sin acceso a OrderPricingService (ver docblock de
-        // la clase) -- no puede resolver el iva_rate del producto acá.
-        // null = InvoiceService cae al default_iva_rate del negocio para
-        // este ítem, mismo comportamiento que un producto sin override.
+        // la clase) -- no puede resolver el iva_rate del producto ni la
+        // tarifa especial acá. null = mismo comportamiento que un
+        // producto sin override / sin tarifa especial aplicada.
         ivaRate:          null,
+        appliedCustomerRateId: null,
       });
       items.push(newItem);
     }
@@ -392,8 +395,8 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     const { rows } = await client.query<Record<string, unknown>>(
       `INSERT INTO order_items
          (id, order_id, item_type, product_id, product_variant_id, reservation_id,
-          quantity, unit_price, subtotal, notes, iva_rate)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          quantity, unit_price, subtotal, notes, iva_rate, applied_customer_rate_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         id, orderId, item.itemType,
@@ -403,6 +406,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
         item.quantity, item.unitPrice, item.subtotal,
         item.notes ?? null,
         item.ivaRate ?? null,
+        item.appliedCustomerRateId ?? null,
       ],
     );
     return rowToOrderItem(rows[0]!);
@@ -447,6 +451,110 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     }
 
     return rows.length > 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reportes POS
+  // -------------------------------------------------------------------------
+
+  async getSalesByProduct(from: Date, to: Date): Promise<SalesByProductRow[]> {
+    const { rows } = await this.db.query<{
+      product_id: string;
+      product_variant_id: string | null;
+      product_name: string;
+      variant_name: string | null;
+      quantity_sold: string;
+      total_revenue: string;
+      order_count: string;
+    }>(
+      `SELECT
+         oi.product_id,
+         oi.product_variant_id,
+         p.name  AS product_name,
+         pv.name AS variant_name,
+         SUM(oi.quantity) AS quantity_sold,
+         SUM(oi.subtotal) AS total_revenue,
+         COUNT(DISTINCT oi.order_id) AS order_count
+       FROM order_items oi
+       JOIN orders o    ON o.id = oi.order_id
+       JOIN products p  ON p.id = oi.product_id
+       LEFT JOIN product_variants pv ON pv.id = oi.product_variant_id
+       WHERE oi.item_type IN ('PRODUCT', 'PRODUCT_VARIANT')
+         AND o.status IN ('CONFIRMED', 'COMPLETED')
+         AND o.confirmed_at >= $1 AND o.confirmed_at <= $2
+       GROUP BY oi.product_id, oi.product_variant_id, p.name, pv.name
+       ORDER BY total_revenue DESC`,
+      [from, to],
+    );
+
+    return rows.map((row) => ({
+      productId:        row.product_id,
+      productVariantId: row.product_variant_id,
+      productName:      row.product_name,
+      variantName:      row.variant_name,
+      quantitySold:     parseInt(row.quantity_sold, 10),
+      totalRevenue:     parseFloat(row.total_revenue),
+      orderCount:       parseInt(row.order_count, 10),
+    }));
+  }
+
+  async getTicketSummary(from: Date, to: Date): Promise<TicketSummaryReport> {
+    const { rows } = await this.db.query<{
+      order_count: string;
+      total_revenue: string;
+      average_ticket: string;
+    }>(
+      `SELECT
+         COUNT(*) AS order_count,
+         COALESCE(SUM(total_amount), 0) AS total_revenue,
+         COALESCE(AVG(total_amount), 0) AS average_ticket
+       FROM orders
+       WHERE status IN ('CONFIRMED', 'COMPLETED')
+         AND confirmed_at >= $1 AND confirmed_at <= $2`,
+      [from, to],
+    );
+
+    const row = rows[0]!;
+    return {
+      orderCount:    parseInt(row.order_count, 10),
+      totalRevenue:  parseFloat(row.total_revenue),
+      averageTicket: parseFloat(row.average_ticket),
+    };
+  }
+
+  async getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]> {
+    const { rows } = await this.db.query<{
+      customer_rate_id: string;
+      customer_id: string;
+      customer_name: string;
+      times_applied: string;
+      total_amount: string;
+    }>(
+      `SELECT
+         oi.applied_customer_rate_id AS customer_rate_id,
+         cr.customer_id,
+         c.display_name AS customer_name,
+         COUNT(*) AS times_applied,
+         SUM(oi.subtotal) AS total_amount
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       JOIN customer_rates cr ON cr.id = oi.applied_customer_rate_id
+       JOIN customers c ON c.id = cr.customer_id
+       WHERE oi.applied_customer_rate_id IS NOT NULL
+         AND o.status IN ('CONFIRMED', 'COMPLETED')
+         AND o.confirmed_at >= $1 AND o.confirmed_at <= $2
+       GROUP BY oi.applied_customer_rate_id, cr.customer_id, c.display_name
+       ORDER BY times_applied DESC`,
+      [from, to],
+    );
+
+    return rows.map((row) => ({
+      customerRateId: row.customer_rate_id,
+      customerId:     row.customer_id,
+      customerName:   row.customer_name,
+      timesApplied:   parseInt(row.times_applied, 10),
+      totalAmount:    parseFloat(row.total_amount),
+    }));
   }
 }
 

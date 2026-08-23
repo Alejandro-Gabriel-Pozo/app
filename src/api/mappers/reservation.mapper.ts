@@ -74,6 +74,8 @@ export interface ReservationDto {
   scheduleApprovalStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
   scheduleApprovedBy: string | null;
   scheduleChargeAmount: number | null;
+  /** D7 (22/08/2026) — qué CustomerRate se aplicó, si hubo alguna. `null` = precio de catálogo/rate plan, sin descuento. */
+  appliedCustomerRateId: string | null;
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -120,5 +122,6 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     scheduleApprovalStatus: reservation.scheduleApprovalStatus,
     scheduleApprovedBy: reservation.scheduleApprovedBy,
     scheduleChargeAmount: reservation.scheduleChargeAmount,
+    appliedCustomerRateId: reservation.appliedCustomerRateId,
   };
 }

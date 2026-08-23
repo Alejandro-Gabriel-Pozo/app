@@ -134,6 +134,91 @@ export function createReportsRouter(service: ReportService): Router {
     },
   );
 
+  // ── GET /reports/pos/sales-by-product ─────────────────────────────────────
+  // Ventas por producto/variante (D7, pendientes-2026-08-19.md sección D).
+  // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
+  router.get(
+    '/pos/sales-by-product',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateSalesByProductReport(new Date(from), new Date(to));
+        res.json(report);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /reports/pos/waste ─────────────────────────────────────────────────
+  // Mermas por producto/variante + motivo (D7).
+  // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
+  router.get(
+    '/pos/waste',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateWasteReport(new Date(from), new Date(to));
+        res.json(report);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /reports/pos/ticket-summary ───────────────────────────────────────
+  // Ticket promedio (D7).
+  // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
+  router.get(
+    '/pos/ticket-summary',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateTicketSummaryReport(new Date(from), new Date(to));
+        res.json(report);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /reports/crm/new-vs-recurring ─────────────────────────────────────
+  // Clientes nuevos vs. recurrentes (D7).
+  // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
+  router.get(
+    '/crm/new-vs-recurring',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateNewVsRecurringReport(new Date(from), new Date(to));
+        res.json(report);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /reports/crm/applied-rates ────────────────────────────────────────
+  // Tarifas especiales aplicadas, combinando POS + Reservas (D7).
+  // Query params: from=YYYY-MM-DD, to=YYYY-MM-DD
+  router.get(
+    '/crm/applied-rates',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const { from, to } = req.query as { from: string; to: string };
+        const report = await service.generateAppliedRatesReport(new Date(from), new Date(to));
+        res.json(report);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   // ── DELETE /reports/occupancy/purge ───────────────────────────────────────
   // Elimina registros de ocupación anteriores a una fecha.
   // Query params: before=YYYY-MM-DD

@@ -5,6 +5,7 @@ import type {
   ReservationRepository,
   ReservationFilters,
 }                                   from './reservation.repository.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
 /**
  * Implementación en memoria del repositorio de reservas.
@@ -130,5 +131,38 @@ export class InMemoryReservationRepository implements ReservationRepository {
 
   async getAll(): Promise<Reservation[]> {
     return Array.from(this.reservations.values());
+  }
+
+  /**
+   * D7 (22/08/2026) — test double, sin `createdAt` en el agregado
+   * `Reservation` (solo vive como columna en la fila SQL) -- usa
+   * `startTime` como proxy del rango. Ningún test de `ReportService` usa
+   * este repo (tiene su propio fake dedicado); esto solo existe para
+   * satisfacer `ReservationRepository` en tests que sí lo instancian.
+   */
+  async getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]> {
+    const groups = new Map<string, AppliedRateReportRow>();
+
+    for (const reservation of this.reservations.values()) {
+      if (!reservation.appliedCustomerRateId) continue;
+      if (reservation.status !== ReservationStatus.CONFIRMED && reservation.status !== ReservationStatus.COMPLETED) continue;
+      if (reservation.startTime < from || reservation.startTime > to) continue;
+
+      const existing = groups.get(reservation.appliedCustomerRateId);
+      if (existing) {
+        existing.timesApplied += 1;
+        existing.totalAmount += reservation.totalPrice;
+      } else {
+        groups.set(reservation.appliedCustomerRateId, {
+          customerRateId: reservation.appliedCustomerRateId,
+          customerId: reservation.customer.id,
+          customerName: reservation.customer.fullName,
+          timesApplied: 1,
+          totalAmount: reservation.totalPrice,
+        });
+      }
+    }
+
+    return [...groups.values()].sort((a, b) => b.timesApplied - a.timesApplied);
   }
 }

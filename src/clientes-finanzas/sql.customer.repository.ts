@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import type { ContactMethod } from './customer.entities.js';
 import { Customer } from './customer.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { CustomerRepository, CustomerWithPassword, Tag } from './customer.repository.js';
+import type { CustomerRepository, CustomerWithPassword, Tag, NewVsRecurringReport } from './customer.repository.js';
 
 // ── Tipos internos ──────────────────────────────────────────────────────────
 
@@ -269,6 +269,51 @@ export class SqlCustomerRepository implements CustomerRepository {
       `DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id = $2`,
       [customerId, tagId],
     );
+  }
+
+  /**
+   * D7 (22/08/2026) — ver docblock de la interfaz para las definiciones de
+   * "activo"/"nuevo"/"recurrente". `lifetime_counts` cuenta TODA la
+   * historia (sin filtro de fecha) a propósito -- "recurrente" es un
+   * estado del cliente, no algo limitado a [from, to].
+   */
+  async getNewVsRecurringReport(from: Date, to: Date): Promise<NewVsRecurringReport> {
+    const { rows } = await this.sqlClient.query<{
+      new_customers: string;
+      recurring_customers: string;
+      active_customers: string;
+    }>(
+      `WITH active_customers AS (
+         SELECT DISTINCT customer_id FROM reservations
+           WHERE status IN ('CONFIRMED', 'COMPLETED') AND created_at >= $1 AND created_at <= $2
+         UNION
+         SELECT DISTINCT customer_id FROM orders
+           WHERE status IN ('CONFIRMED', 'COMPLETED') AND confirmed_at >= $1 AND confirmed_at <= $2
+       ),
+       lifetime_counts AS (
+         SELECT customer_id, COUNT(*) AS cnt FROM (
+           SELECT customer_id FROM reservations WHERE status IN ('CONFIRMED', 'COMPLETED')
+           UNION ALL
+           SELECT customer_id FROM orders WHERE status IN ('CONFIRMED', 'COMPLETED')
+         ) all_tx
+         GROUP BY customer_id
+       )
+       SELECT
+         COUNT(*) FILTER (WHERE c.created_at >= $1 AND c.created_at <= $2) AS new_customers,
+         COUNT(*) FILTER (WHERE COALESCE(lc.cnt, 0) > 1) AS recurring_customers,
+         COUNT(*) AS active_customers
+       FROM active_customers ac
+       JOIN customers c ON c.id = ac.customer_id
+       LEFT JOIN lifetime_counts lc ON lc.customer_id = ac.customer_id`,
+      [from, to],
+    );
+
+    const row = rows[0]!;
+    return {
+      newCustomersCount:       parseInt(row.new_customers, 10),
+      recurringCustomersCount: parseInt(row.recurring_customers, 10),
+      activeCustomersCount:    parseInt(row.active_customers, 10),
+    };
   }
 
   // ── Helpers privados ──────────────────────────────────────────────────────

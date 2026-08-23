@@ -38,10 +38,12 @@ export class OrderPricingService {
   ) {}
 
   /**
-   * Precio unitario efectivo + tasa de IVA (D8, 22/08/2026) de un ítem
-   * PRODUCT/PRODUCT_VARIANT. `customerId` puede ser `null` -- venta de
-   * mostrador sin cliente (`orders.customer_id` es nullable en la base,
-   * aunque hoy `CreateOrderSchema` lo exige siempre desde la API -- ver
+   * Precio unitario efectivo + tasa de IVA (D8) + qué `CustomerRate` se
+   * aplicó, si hubo alguna (D7, 22/08/2026 -- para el reporte "tarifas
+   * aplicadas", `ReportService.generateAppliedRatesReport()`).
+   * `customerId` puede ser `null` -- venta de mostrador sin cliente
+   * (`orders.customer_id` es nullable en la base, aunque hoy
+   * `CreateOrderSchema` lo exige siempre desde la API -- ver
    * docs/diseno-scope-multinivel-tarifas-2026-08-22.md sección 2). Sin
    * cliente no hay tarifa especial posible: se resuelve directo al precio
    * base/override de variante.
@@ -56,18 +58,22 @@ export class OrderPricingService {
     productId: ProductId;
     variantId: ProductVariantId | undefined;
     locationId: string;
-  }): Promise<{ unitPrice: number; ivaRate: number | null }> {
+  }): Promise<{ unitPrice: number; ivaRate: number | null; appliedCustomerRateId: string | null }> {
     const target = await this.productService.resolveTarget(params.productId, params.variantId, params.locationId);
     const ivaRate = target.product.ivaRate;
 
-    if (!params.customerId) return { unitPrice: target.effectivePrice, ivaRate };
+    if (!params.customerId) return { unitPrice: target.effectivePrice, ivaRate, appliedCustomerRateId: null };
 
     const rate = await this.customerRateRepository.findActiveForCustomerAndProduct(
       params.customerId, params.productId, target.product.categoryId ?? '',
     );
-    if (!rate) return { unitPrice: target.effectivePrice, ivaRate };
+    if (!rate) return { unitPrice: target.effectivePrice, ivaRate, appliedCustomerRateId: null };
 
-    return { unitPrice: this.resolveRateAmount(rate, target.effectivePrice), ivaRate };
+    return {
+      unitPrice: this.resolveRateAmount(rate, target.effectivePrice),
+      ivaRate,
+      appliedCustomerRateId: rate.id,
+    };
   }
 
   /**

@@ -255,7 +255,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // — `products.iva_rate`/`unit`/`arca_unit_code`, `order_items.iva_rate`
 // (snapshot al armar la orden, R9). `InvoiceService` agrupa el comprobante
 // AFIP por tasa cuando la orden mezcla productos con distinta alícuota.
-export const CURRENT_SCHEMA_VERSION = 30;
+// v31 (22/08/2026): reportes POS/CRM (D7, pendientes-2026-08-19.md sección D)
+// — `order_items.applied_customer_rate_id`/`reservations.applied_customer_rate_id`
+// (snapshot de qué CustomerRate se aplicó, si hubo alguna, R9). Ninguno de
+// los dos lo registraba antes -- necesario para el reporte "tarifas aplicadas".
+export const CURRENT_SCHEMA_VERSION = 31;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

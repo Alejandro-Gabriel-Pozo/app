@@ -4,6 +4,11 @@ import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
 } from '../clientes-finanzas/accounts-receivable.repository.js';
+import type { IOrderRepository, SalesByProductRow, TicketSummaryReport } from '../pos-menu/order.repository.js';
+import type { StockMovementRepository, WasteReportRow } from '../repositories/stock-movement.repository.js';
+import type { CustomerRepository, NewVsRecurringReport } from '../clientes-finanzas/customer.repository.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
 /**
  * Reporte de ocupación diaria
@@ -40,6 +45,11 @@ export class ReportService {
     private readonly occupancyRepository: OccupancyRepository,
     private readonly accountsReceivableRepository: AccountsReceivableRepository,
     private readonly housekeepingRepository: HousekeepingRepository,
+    /** D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reportes POS/CRM. */
+    private readonly orderRepository: Pick<IOrderRepository, 'getSalesByProduct' | 'getTicketSummary' | 'getAppliedRatesReport'>,
+    private readonly stockMovementRepository: Pick<StockMovementRepository, 'getWasteReport'>,
+    private readonly customerRepository: Pick<CustomerRepository, 'getNewVsRecurringReport'>,
+    private readonly reservationRepository: Pick<ReservationRepository, 'getAppliedRatesReport'>,
   ) {}
 
   /**
@@ -213,5 +223,60 @@ export class ReportService {
     endDate: Date,
   ): Promise<AccountsReceivableReportRow[]> {
     return this.accountsReceivableRepository.getReportByPeriod(startDate, endDate);
+  }
+
+  // ---------------------------------------------------------------------------
+  // D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reportes POS/CRM
+  // ---------------------------------------------------------------------------
+
+  /** Ventas por producto/variante (POS), órdenes CONFIRMED/COMPLETED en el período. */
+  async generateSalesByProductReport(startDate: Date, endDate: Date): Promise<SalesByProductRow[]> {
+    return this.orderRepository.getSalesByProduct(startDate, endDate);
+  }
+
+  /** Mermas por producto/variante + motivo (POS), en el período. */
+  async generateWasteReport(startDate: Date, endDate: Date): Promise<WasteReportRow[]> {
+    return this.stockMovementRepository.getWasteReport(startDate, endDate);
+  }
+
+  /** Ticket promedio (POS), órdenes CONFIRMED/COMPLETED en el período. */
+  async generateTicketSummaryReport(startDate: Date, endDate: Date): Promise<TicketSummaryReport> {
+    return this.orderRepository.getTicketSummary(startDate, endDate);
+  }
+
+  /**
+   * Clientes nuevos vs. recurrentes (CRM) — ver el docblock de
+   * `CustomerRepository.getNewVsRecurringReport()` para las definiciones
+   * confirmadas con el dueño (22/08/2026).
+   */
+  async generateNewVsRecurringReport(startDate: Date, endDate: Date): Promise<NewVsRecurringReport> {
+    return this.customerRepository.getNewVsRecurringReport(startDate, endDate);
+  }
+
+  /**
+   * Tarifas aplicadas (CRM) — combina lo que pasó en órdenes POS y en
+   * reservas, agrupado por CustomerRate (mismo shape en las dos, ver
+   * `AppliedRateReportRow`). Un mismo `customerRateId` usado en ambos
+   * lados en el mismo período se suma en una sola fila -- el reporte es
+   * "cuánto se usó esta tarifa en todo el negocio", no por origen.
+   */
+  async generateAppliedRatesReport(startDate: Date, endDate: Date): Promise<AppliedRateReportRow[]> {
+    const [fromOrders, fromReservations] = await Promise.all([
+      this.orderRepository.getAppliedRatesReport(startDate, endDate),
+      this.reservationRepository.getAppliedRatesReport(startDate, endDate),
+    ]);
+
+    const merged = new Map<string, AppliedRateReportRow>();
+    for (const row of [...fromOrders, ...fromReservations]) {
+      const existing = merged.get(row.customerRateId);
+      if (existing) {
+        existing.timesApplied += row.timesApplied;
+        existing.totalAmount += row.totalAmount;
+      } else {
+        merged.set(row.customerRateId, { ...row });
+      }
+    }
+
+    return [...merged.values()].sort((a, b) => b.timesApplied - a.timesApplied);
   }
 }

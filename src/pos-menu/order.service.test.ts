@@ -518,6 +518,8 @@ describe('OrderService', () => {
       });
       expect(order.items[0]!.unitPrice).toBe(20);
       expect(order.totalAmount).toBe(60);
+      // D7 (22/08/2026) -- sin tarifa especial, appliedCustomerRateId queda null.
+      expect(order.items[0]!.appliedCustomerRateId).toBeNull();
     });
 
     it('tarifa especial de cliente a nivel ÍTEM (monto fijo) gana sobre basePrice', async () => {
@@ -531,6 +533,8 @@ describe('OrderService', () => {
         items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 }],
       });
       expect(order.items[0]!.unitPrice).toBe(15);
+      // D7 (22/08/2026) -- se congela qué CustomerRate se usó (reporte "tarifas aplicadas").
+      expect(order.items[0]!.appliedCustomerRateId).toBe('rate-1');
     });
 
     it('tarifa especial a nivel BUCKET PRODUCTOS (% de descuento) se aplica si no hay una más específica', async () => {

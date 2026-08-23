@@ -9,6 +9,7 @@ import type {
   CreateOrderInput,
   UpdateOrderInput,
 } from './order.entities.js';
+import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
 export interface ListOrdersFilter {
   businessId:  string;
@@ -19,6 +20,30 @@ export interface ListOrdersFilter {
   limit?:      number;
   offset?:     number;
 }
+
+// ---------------------------------------------------------------------------
+// D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reportes POS
+// ---------------------------------------------------------------------------
+
+/** Ventas agregadas por producto/variante en un período (órdenes CONFIRMED/COMPLETED). */
+export interface SalesByProductRow {
+  productId: string;
+  productVariantId: string | null;
+  productName: string;
+  variantName: string | null;
+  quantitySold: number;
+  totalRevenue: number;
+  orderCount: number;
+}
+
+/** Ticket promedio de las órdenes CONFIRMED/COMPLETED en un período. */
+export interface TicketSummaryReport {
+  orderCount: number;
+  totalRevenue: number;
+  averageTicket: number;
+}
+
+/** Ver `AppliedRateReportRow` en `clientes-finanzas/customer-rate.repository.js` -- el reporte cruza pos-menu y reservas, vive con CustomerRate, el dueño real del concepto. */
 
 export interface IOrderRepository {
   getById(id: string): Promise<Order | undefined>;
@@ -50,4 +75,11 @@ export interface IOrderRepository {
    * orderId es necesario para el UPDATE de total_amount post-DELETE.
    */
   removeItem(orderItemId: string, orderId: string): Promise<boolean>;
+
+  /** D7 — ventas por producto/variante, órdenes CONFIRMED/COMPLETED en [from, to] (por confirmed_at). */
+  getSalesByProduct(from: Date, to: Date): Promise<SalesByProductRow[]>;
+  /** D7 — ticket promedio de órdenes CONFIRMED/COMPLETED en [from, to]. */
+  getTicketSummary(from: Date, to: Date): Promise<TicketSummaryReport>;
+  /** D7 — tarifas especiales aplicadas en order_items de órdenes CONFIRMED/COMPLETED en [from, to]. */
+  getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]>;
 }

@@ -120,6 +120,7 @@ describe('StayService — ledger (A1, paso 3)', () => {
       initialStatus: ReservationStatus.CONFIRMED,
       totalPrice: 15000,
       reservationNumber: 1,
+      appliedCustomerRateId: null,
     });
     await reservationRepo.save(reservation);
   });
@@ -234,6 +235,7 @@ describe('StayService — horario de check-in/check-out', () => {
       initialStatus: ReservationStatus.CONFIRMED,
       totalPrice: 15000,
       reservationNumber: 1,
+      appliedCustomerRateId: null,
     });
     await reservationRepo.save(reservation);
   });
@@ -251,6 +253,7 @@ describe('StayService — horario de check-in/check-out', () => {
       initialStatus: ReservationStatus.CONFIRMED,
       totalPrice: 15000,
       reservationNumber: 1,
+      appliedCustomerRateId: null,
     });
     void reservationRepo.save(next);
   }

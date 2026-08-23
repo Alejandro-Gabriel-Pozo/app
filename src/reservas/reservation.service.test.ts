@@ -642,6 +642,7 @@ describe('ReservationService', () => {
         id: 'res-expire', customer, resource: table,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
         details: {}, totalPrice: 50, initialStatus: ReservationStatus.PENDING, reservationNumber: 1,
+        appliedCustomerRateId: null,
       });
 
       expect(reservation.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED', 'EXPIRED']);
@@ -656,6 +657,7 @@ describe('ReservationService', () => {
         id: 'res-confirmed', customer, resource: table,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
         details: {}, totalPrice: 50, initialStatus: ReservationStatus.CONFIRMED, reservationNumber: 2,
+        appliedCustomerRateId: null,
       });
 
       expect(() => reservation.expire()).toThrow(InvalidReservationError);
@@ -748,6 +750,22 @@ describe('ReservationService', () => {
       expect(updated.startTime).toEqual(new Date('2026-08-01T18:00:00Z'));
       expect(updated.endTime).toEqual(new Date('2026-08-01T21:00:00Z'));
       expect(updated.status).toBe(ReservationStatus.PENDING);
+    });
+
+    it('D7 (22/08/2026) -- PENDING recalcula appliedCustomerRateId si aparece una tarifa especial nueva', async () => {
+      await createBase();
+      customerRateRepo.seed([{
+        id: 'rate-update-1', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
+        resourceId: 't1', serviceId: null, productId: null, categoryId: null, bucket: null,
+        fixedPrice: 30, discountPercentage: null, rateCatalogId: null, active: true,
+      }]);
+
+      const updated = await service.updateReservation('res-1', {
+        startTime: new Date('2026-08-01T18:00:00Z'),
+      });
+
+      expect(updated.appliedCustomerRateId).toBe('rate-update-1');
+      expect(updated.totalPrice).toBe(30);
     });
 
     it('debe actualizar solo endTime manteniendo startTime existente', async () => {
@@ -956,6 +974,7 @@ describe('ReservationService', () => {
         scheduleApprovedBy:     'user-front-desk-1',
         scheduleChargeAmount:   500,
         reservationNumber:      42,
+        appliedCustomerRateId:  null,
       });
       await reservationRepo.save(seeded);
 
@@ -1316,6 +1335,8 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.totalPrice).toBe(50); // table.basePrice
+      // D7 (22/08/2026) -- sin tarifa especial, appliedCustomerRateId queda null.
+      expect(reservation.appliedCustomerRateId).toBeNull();
     });
 
     it('sin tarifa especial y con serviceId, usa el precio de catálogo del servicio', async () => {
@@ -1353,6 +1374,8 @@ describe('ReservationService', () => {
       });
 
       expect(reservation.totalPrice).toBe(40);
+      // D7 (22/08/2026) -- se congela qué CustomerRate se usó (reporte "tarifas aplicadas").
+      expect(reservation.appliedCustomerRateId).toBe('rate-1');
     });
 
     it('D5: tarifa especial de cliente+recurso como % de descuento, calcula contra basePrice del recurso', async () => {

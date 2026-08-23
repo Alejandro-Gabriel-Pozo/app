@@ -10,6 +10,18 @@ import type { SqlClient } from './sql.client.js';
  */
 export type StockMovementType = 'IN' | 'OUT' | 'ADJUSTMENT' | 'RETURN' | 'RESERVATION_RELEASED' | 'TRANSFER' | 'WASTE' | 'PRODUCTION';
 
+/** D7 (22/08/2026) — una fila por producto/variante + motivo de merma, agregada en un período. */
+export interface WasteReportRow {
+  productId: string | null;
+  productVariantId: string | null;
+  productName: string | null;
+  variantName: string | null;
+  wasteReasonId: string;
+  wasteReasonName: string;
+  totalQuantity: number;
+  movementCount: number;
+}
+
 export interface StockMovement {
   id: string;
   businessId: string;
@@ -82,4 +94,7 @@ export interface StockMovementRepository {
     productVariantId: string | null,
     movementType: StockMovementType,
   ): Promise<boolean>;
+
+  /** D7 (22/08/2026) — reporte de mermas (movementType='WASTE') agrupado por producto/variante + motivo, en un período. */
+  getWasteReport(from: Date, to: Date): Promise<WasteReportRow[]>;
 }

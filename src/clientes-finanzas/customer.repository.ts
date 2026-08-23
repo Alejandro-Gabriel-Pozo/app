@@ -15,6 +15,13 @@ export interface Tag {
   name: string;
 }
 
+/** D7 (22/08/2026) — ver docblock de getNewVsRecurringReport() para las definiciones. */
+export interface NewVsRecurringReport {
+  newCustomersCount: number;
+  recurringCustomersCount: number;
+  activeCustomersCount: number;
+}
+
 /**
  * Contrato del repositorio de clientes.
  */
@@ -83,4 +90,18 @@ export interface CustomerRepository {
   findOrCreateTagByName(name: string): Promise<Tag>;
   addTag(customerId: string, tagId: string): Promise<void>;
   removeTag(customerId: string, tagId: string): Promise<void>;
+
+  /**
+   * D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reporte CRM.
+   * Decisiones confirmadas con el dueño (`AskUserQuestion`, 22/08/2026):
+   * "activo en el período" = tuvo al menos una reserva u orden CONFIRMED/
+   * COMPLETED en [from, to]. De ESE conjunto: "nuevo" = su `created_at`
+   * también cae en [from, to] (se dio de alta y compró en la misma
+   * ventana). "Recurrente" = tiene más de una reserva/orden CONFIRMED/
+   * COMPLETED en TODA su historia (no limitado al rango — es un estado
+   * del cliente, no del período). Un cliente puede no caer en ninguna de
+   * las dos categorías (ej. se registró antes del período y esta es su
+   * única compra de siempre) — no son categorías exhaustivas.
+   */
+  getNewVsRecurringReport(from: Date, to: Date): Promise<NewVsRecurringReport>;
 }
