@@ -31,6 +31,8 @@ export interface ResourceDto {
 
 export interface ReservationDto {
   id: string;
+  /** Número operativo (D6, 22/08/2026) — correlativo humano, formatear con `businessProfile.reservationNumberPrefix` (ej. "RES-000123"). */
+  reservationNumber: number;
   status: string;
   resourceId: string;
   /** categoryId del recurso — reemplaza el antiguo campo `resourceType` */
@@ -87,6 +89,7 @@ export function toResourceDto(resource: BookableResource): ResourceDto {
 export function toReservationDto(reservation: Reservation): ReservationDto {
   return {
     id:         reservation.id,
+    reservationNumber: reservation.reservationNumber,
     status:     reservation.status,
     resourceId: reservation.resource.id,
     categoryId: reservation.resource.categoryId,

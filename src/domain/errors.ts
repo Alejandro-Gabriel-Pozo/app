@@ -368,6 +368,21 @@ export class AfipRequestRejectedError extends DomainError {
   }
 }
 
+/**
+ * D8 (22/08/2026) — una tasa de IVA (de un producto o de `business_profile.
+ * default_iva_rate`) no tiene `Id` de AFIP confirmado en `IVA_ALICUOTA_IDS`
+ * (afip-catalog.constants.ts). No se adivina un Id -- ver docblock de esa
+ * constante.
+ */
+export class UnsupportedIvaRateError extends DomainError {
+  constructor(ratePercent: number) {
+    super(
+      `Tasa de IVA ${ratePercent}% sin Id de AFIP confirmado. Confirmar el Id real contra FEParamGetTiposIva antes de facturar con esta tasa.`,
+      'UNSUPPORTED_IVA_RATE',
+    );
+  }
+}
+
 /** PDF del comprobante (19/08/2026, `@arcasdk/pdf`) -- mismo code que ya usaba el 404 inline de `GET /api/invoices/:id`. */
 export class InvoiceNotFoundError extends DomainError {
   constructor(id: string) {

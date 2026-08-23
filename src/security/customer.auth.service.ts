@@ -11,6 +11,7 @@ import { signToken } from './auth.middleware.js';
 import { parseExpiresIn } from './auth.service.js';
 import { verifyGoogleIdToken } from './google-oauth.js';
 import { UserRole } from '../types/enums.js';
+import type { NumberSequenceRepository } from '../repositories/number-sequence.repository.js';
 
 export interface CustomerRegistrationInput {
   fullName: string;
@@ -54,6 +55,8 @@ export class CustomerAuthService {
   constructor(
     private readonly customerRepository: CustomerRepository,
     private readonly businessId: string,
+    /** D6 (22/08/2026) — número operativo para el alta real (register()/loginWithGoogle()). */
+    private readonly numberSequenceRepository: NumberSequenceRepository,
   ) {
     const secret = process.env.JWT_SECRET;
     if (!secret) {
@@ -73,9 +76,10 @@ export class CustomerAuthService {
 
     const id = randomUUID();
     const passwordHash = await hashPassword(input.password);
+    const customerNumber = await this.numberSequenceRepository.next('CUSTOMER');
     const customer = new Customer(id, input.fullName, [
       { id: `ccm-${id}`, channel: 'EMAIL', value: input.email, isPrimary: true },
-    ]);
+    ], 'INDIVIDUAL', true, customerNumber);
 
     await this.customerRepository.saveWithPassword(customer, passwordHash);
 
@@ -130,9 +134,10 @@ export class CustomerAuthService {
         await this.customerRepository.linkGoogleSub(customer.id, google.sub);
       } else {
         const id = randomUUID();
+        const customerNumber = await this.numberSequenceRepository.next('CUSTOMER');
         customer = new Customer(id, google.name ?? google.email, [
           { id: `ccm-${id}`, channel: 'EMAIL', value: google.email, isPrimary: true },
-        ]);
+        ], 'INDIVIDUAL', true, customerNumber);
         await this.customerRepository.saveWithGoogle(customer, google.sub);
       }
     }

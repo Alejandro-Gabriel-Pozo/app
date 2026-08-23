@@ -123,6 +123,11 @@ export class CompanyCatalogService {
       productType: 'RETAIL', assembleOnDemand: false,
       companyProductId, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      // D8 (22/08/2026) -- el catálogo canónico no comparte IVA/unidad/
+      // código ARCA (son clasificación impositiva LOCAL, no del producto
+      // compartido) -- nace sin override, hereda default_iva_rate del
+      // negocio como cualquier producto nuevo.
+      ivaRate: null, unit: null, arcaUnitCode: null,
       createdAt: now, updatedAt: now,
     });
 

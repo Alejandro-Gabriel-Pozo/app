@@ -106,6 +106,7 @@ function domainErrorStatus(error: DomainError): number {
     // una regla de negocio suya — mismo criterio.
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'AFIP_REQUEST_REJECTED':
+    case 'UNSUPPORTED_IVA_RATE':
       return 422;
 
     // --- 401 Unauthorized ---

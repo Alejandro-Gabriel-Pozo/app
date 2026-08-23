@@ -24,6 +24,7 @@ import type { ContactMethod } from './customer.entities.js';
 import { Customer } from './customer.entities.js';
 import { Roles } from '../security/roles.js';
 import { SqlCustomerRepository } from './sql.customer.repository.js';
+import { SqlNumberSequenceRepository } from '../repositories/sql.number-sequence.repository.js';
 import { SqlCustomerRateRepository } from './sql.customer-rate.repository.js';
 import type { CreateCustomerRateDto } from './customer-rate.repository.js';
 import { SqlRateCatalogRepository } from './sql.rate-catalog.repository.js';
@@ -127,6 +128,8 @@ const LookupByDniSchema = z.object({
 function toCustomerDto(customer: Customer) {
   return {
     id:          customer.id,
+    /** Número operativo (D6, 22/08/2026) — formatear con `businessProfile.customerNumberPrefix` (ej. "CLI-000045"). */
+    customerNumber: customer.customerNumber,
     displayName: customer.displayName,
     /** @deprecated usar contactMethods */
     fullName:    customer.displayName,
@@ -191,6 +194,7 @@ export function createCustomersRouter(container: AppContainer): Router {
             existing.contactMethods,
             existing.kind,
             existing.active,
+            existing.customerNumber,
           );
           await repo.save(updated);
         }
@@ -440,7 +444,8 @@ export function createCustomersRouter(container: AppContainer): Router {
           }
         }
 
-        const customer = new Customer(customerId, displayName, contactMethods);
+        const customerNumber = await new SqlNumberSequenceRepository(req.db!).next('CUSTOMER');
+        const customer = new Customer(customerId, displayName, contactMethods, 'INDIVIDUAL', true, customerNumber);
         await repo.save(customer);
         res.status(201).json(toCustomerDto(customer));
       } catch (err) { next(err); }

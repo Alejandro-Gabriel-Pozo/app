@@ -29,6 +29,7 @@ import { InvoicePdfService } from './invoice-pdf.service.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { SqlCustomerRepository } from '../clientes-finanzas/sql.customer.repository.js';
+import { SqlOrderRepository } from '../pos-menu/sql.order.repository.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 
 function buildInvoiceService(req: Request): InvoiceService {
@@ -38,6 +39,7 @@ function buildInvoiceService(req: Request): InvoiceService {
     new SqlFinancialTransactionRepository(db),
     new SqlBusinessProfileRepository(db),
     new SqlAfipCredentialsRepository(db),
+    new SqlOrderRepository(db),
   );
 }
 

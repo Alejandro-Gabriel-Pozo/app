@@ -102,9 +102,17 @@ export async function seedCustomer(
   const email = overrides.email ?? `test_${randomUUID()}@test.com`;
   const displayName = fullName;
 
+  // customer_number es NOT NULL (D6, 22/08/2026) -- se resuelve acá con el
+  // mismo mecanismo atómico que SqlNumberSequenceRepository.next(), en vez
+  // de duplicar ese repositorio solo para el seed de tests.
   await db.query(
-    `INSERT INTO customers (id, full_name, display_name, email, password_hash)
-     VALUES ($1, $2, $3, $4, 'hash_dummy')`,
+    `WITH n AS (
+       UPDATE number_sequences SET next_value = next_value + 1
+       WHERE entity_type = 'CUSTOMER'
+       RETURNING next_value - 1 AS value
+     )
+     INSERT INTO customers (id, full_name, display_name, email, password_hash, customer_number)
+     VALUES ($1, $2, $3, $4, 'hash_dummy', (SELECT value FROM n))`,
     [id, fullName, displayName, email],
   );
   return { id, fullName, displayName, email };
@@ -147,10 +155,17 @@ export async function seedReservation(
   const customerName = overrides.customerName ?? 'Juan Pérez';
   const totalPrice = overrides.totalPrice ?? 1000;
 
+  // reservation_number es NOT NULL (D6, 22/08/2026) -- mismo mecanismo
+  // atómico que seedCustomer() más arriba, ver el comentario ahí.
   await db.query(
-    `INSERT INTO reservations
-       (id, resource_id, customer_id, customer_name, start_time, end_time, status, total_price)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `WITH n AS (
+       UPDATE number_sequences SET next_value = next_value + 1
+       WHERE entity_type = 'RESERVATION'
+       RETURNING next_value - 1 AS value
+     )
+     INSERT INTO reservations
+       (id, resource_id, customer_id, customer_name, start_time, end_time, status, total_price, reservation_number)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT value FROM n))`,
     [id, resourceId, customerId, customerName, startTime, endTime, status, totalPrice],
   );
   return { id, resourceId, customerId, startTime, endTime, status };

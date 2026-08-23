@@ -51,6 +51,7 @@ function rowToOrderItem(row: Record<string, unknown>): OrderItem {
     subtotal:         Number(row['subtotal']),
     notes:            (row['notes'] as string | null) ?? null,
     stockSnapshot:    (row['stock_snapshot'] as OrderItem['stockSnapshot']) ?? null,
+    ivaRate:          row['iva_rate'] != null ? Number(row['iva_rate']) : null,
     createdAt:        new Date(row['created_at'] as string),
     updatedAt:        new Date(row['updated_at'] as string),
   };
@@ -193,6 +194,11 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
         unitPrice:        item.unitPrice,
         subtotal:         item.quantity * item.unitPrice,
         notes:            null,
+        // Método legacy, sin acceso a OrderPricingService (ver docblock de
+        // la clase) -- no puede resolver el iva_rate del producto acá.
+        // null = InvoiceService cae al default_iva_rate del negocio para
+        // este ítem, mismo comportamiento que un producto sin override.
+        ivaRate:          null,
       });
       items.push(newItem);
     }
@@ -386,8 +392,8 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     const { rows } = await client.query<Record<string, unknown>>(
       `INSERT INTO order_items
          (id, order_id, item_type, product_id, product_variant_id, reservation_id,
-          quantity, unit_price, subtotal, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          quantity, unit_price, subtotal, notes, iva_rate)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
       [
         id, orderId, item.itemType,
@@ -396,6 +402,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
         item.reservationId    ?? null,
         item.quantity, item.unitPrice, item.subtotal,
         item.notes ?? null,
+        item.ivaRate ?? null,
       ],
     );
     return rowToOrderItem(rows[0]!);

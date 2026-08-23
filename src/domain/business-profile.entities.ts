@@ -95,6 +95,16 @@ export interface BusinessProfile {
    */
   defaultDepositPercentage: number | null;
   depositHoldHours: number | null;
+  /**
+   * Prefijo del número operativo de Cliente/Reserva (D6, 22/08/2026,
+   * pendientes-2026-08-22.md sección D) — ej. "CLI" → "CLI-000045". Solo
+   * afecta cómo se MUESTRA el número (`customers.customer_number`/
+   * `reservations.reservation_number`, enteros crudos en la base); cambiar
+   * el prefijo reformatea todos los números existentes al leerlos, no
+   * reescribe nada persistido. DEFAULT 'CLI'/'RES', nunca null.
+   */
+  customerNumberPrefix: string;
+  reservationNumberPrefix: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -121,4 +131,6 @@ export interface UpdateBusinessProfileInput {
   pricesIncludeIva?: boolean | undefined;
   defaultDepositPercentage?: number | null | undefined;
   depositHoldHours?: number | null | undefined;
+  customerNumberPrefix?: string | undefined;
+  reservationNumberPrefix?: string | undefined;
 }

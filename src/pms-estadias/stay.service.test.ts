@@ -86,7 +86,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
-    defaultDepositPercentage: null, depositHoldHours: null,
+    defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
     createdAt: now, updatedAt: now,
     ...overrides,
   };
@@ -119,6 +119,7 @@ describe('StayService — ledger (A1, paso 3)', () => {
       details: {},
       initialStatus: ReservationStatus.CONFIRMED,
       totalPrice: 15000,
+      reservationNumber: 1,
     });
     await reservationRepo.save(reservation);
   });
@@ -232,6 +233,7 @@ describe('StayService — horario de check-in/check-out', () => {
       details: {},
       initialStatus: ReservationStatus.CONFIRMED,
       totalPrice: 15000,
+      reservationNumber: 1,
     });
     await reservationRepo.save(reservation);
   });
@@ -248,6 +250,7 @@ describe('StayService — horario de check-in/check-out', () => {
       details: {},
       initialStatus: ReservationStatus.CONFIRMED,
       totalPrice: 15000,
+      reservationNumber: 1,
     });
     void reservationRepo.save(next);
   }

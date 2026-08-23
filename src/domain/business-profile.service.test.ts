@@ -54,6 +54,8 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     pricesIncludeIva: true,
     defaultDepositPercentage: null,
     depositHoldHours: null,
+    customerNumberPrefix: 'CLI',
+    reservationNumberPrefix: 'RES',
     createdAt: now,
     updatedAt: now,
     ...overrides,

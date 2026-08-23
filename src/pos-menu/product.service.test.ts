@@ -67,6 +67,9 @@ class FakeProductRepository implements IProductRepository {
       pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO',
       recipePendingMasterSnapshot: null,
+      ivaRate: input.ivaRate ?? null,
+      unit: input.unit ?? null,
+      arcaUnitCode: input.arcaUnitCode ?? null,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -175,6 +178,9 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
       pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO',
       recipePendingMasterSnapshot: null,
+      ivaRate: null,
+      unit: null,
+      arcaUnitCode: null,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -249,6 +255,7 @@ describe('ProductService — bloqueo de desactivación por stock físico (17/08/
       productType: 'RETAIL', assembleOnDemand: false,
       companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      ivaRate: null, unit: null, arcaUnitCode: null,
       active: true, createdAt: now, updatedAt: now,
     });
     productRepo.seed({
@@ -257,6 +264,7 @@ describe('ProductService — bloqueo de desactivación por stock físico (17/08/
       productType: 'RETAIL', assembleOnDemand: false,
       companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      ivaRate: null, unit: null, arcaUnitCode: null,
       active: true, createdAt: now, updatedAt: now,
     });
     variantRepo.seed({

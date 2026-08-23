@@ -314,7 +314,7 @@ export class OrderService {
     customerId: string,
     locationId: string,
   ): Promise<Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>> {
-    const unitPrice = await this.resolveUnitPrice(item, customerId, locationId);
+    const { unitPrice, ivaRate } = await this.resolveUnitPrice(item, customerId, locationId);
     return {
       itemType:         item.itemType,
       productId:        item.productId        ?? null,
@@ -324,13 +324,19 @@ export class OrderService {
       unitPrice,
       subtotal:         item.quantity * unitPrice,
       notes:            null,
+      ivaRate,
     };
   }
 
-  private async resolveUnitPrice(item: CreateOrderItemInput, customerId: string, locationId: string): Promise<number> {
+  private async resolveUnitPrice(
+    item: CreateOrderItemInput,
+    customerId: string,
+    locationId: string,
+  ): Promise<{ unitPrice: number; ivaRate: number | null }> {
     if (item.itemType === 'RESERVATION') {
       if (item.unitPrice === undefined) throw new MissingUnitPriceError(item.itemType);
-      return item.unitPrice;
+      // Sin producto -- InvoiceService cae al default_iva_rate del negocio.
+      return { unitPrice: item.unitPrice, ivaRate: null };
     }
 
     return this.orderPricingService.resolveUnitPrice({

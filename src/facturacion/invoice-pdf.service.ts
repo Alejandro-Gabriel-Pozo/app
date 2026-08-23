@@ -27,8 +27,25 @@ import type { InvoiceRepository } from './invoice.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { CustomerRepository } from '../clientes-finanzas/customer.repository.js';
 import { toAfipDate } from './invoice.service.js';
-import { CBTE_TIPO_FACTURA_B, CONCEPTO_SERVICIOS, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, docTipoLabel, paymentMethodLabel } from './afip-catalog.constants.js';
+import { CBTE_TIPO_FACTURA_B, CONCEPTO_SERVICIOS, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, docTipoLabel, paymentMethodLabel, ivaAlicuotaLabel, ivaAlicuotaPercentFromId } from './afip-catalog.constants.js';
 import { InvoiceNotFoundError, InvoiceNotIssuedError } from '../domain/errors.js';
+
+/**
+ * Lee `afipRequest.Iva` (D8, 22/08/2026) -- el `afipRequest` real mandado
+ * a AFIP al emitir, congelado en `invoices.afip_request` (JSONB, R9).
+ * `unknown` porque `Invoice.afipRequest` no tiene un tipo propio (se
+ * persiste tal cual se construyó en `InvoiceService.requestInvoice()`) --
+ * lectura defensiva, nunca asume la forma sin chequear.
+ */
+function readAfipIvaGroups(afipRequest: unknown): Array<{ id: number; baseImp: number; importe: number }> {
+  if (typeof afipRequest !== 'object' || afipRequest === null || !('Iva' in afipRequest)) return [];
+  const iva = (afipRequest as { Iva?: unknown }).Iva;
+  if (!Array.isArray(iva)) return [];
+  return iva
+    .filter((entry): entry is { Id: number; BaseImp: number; Importe: number } =>
+      typeof entry === 'object' && entry !== null && 'Id' in entry && 'BaseImp' in entry && 'Importe' in entry)
+    .map((entry) => ({ id: Number(entry.Id), baseImp: Number(entry.BaseImp), importe: Number(entry.Importe) }));
+}
 
 export class InvoicePdfService {
   constructor(
@@ -58,11 +75,14 @@ export class InvoicePdfService {
       .join(', ');
 
     const isConsumidorFinal = invoice.condicionIvaReceptorId === CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL;
-    // % real a partir de los montos ya calculados (splitAmount en
-    // invoice.service.ts), no default_iva_rate del negocio -- ese puede
-    // haber cambiado desde que se emitió este comprobante puntual.
-    const alicuotaIvaPct = invoice.impNeto > 0 ? Math.round((invoice.impIva / invoice.impNeto) * 10000) / 100 : 0;
     const condicionVenta = paymentMethodLabel(invoice.paymentMethod, invoice.cardInstallments);
+
+    // D8 (22/08/2026) -- `invoice.afipRequest.Iva` es el desglose REAL por
+    // tasa, congelado al emitir (R9) -- una orden con productos a 21% y
+    // 10.5% ya no tiene un único "% real" que calcular desde impNeto/impIva
+    // (eso da un blend sin sentido fiscal, ej. "18.2%", que no es ninguna
+    // alícuota real de AFIP). Se lee directo de ahí en vez de recalcular.
+    const ivaGroups = readAfipIvaGroups(invoice.afipRequest);
 
     const data: InvoiceData = {
       emisor: {
@@ -88,19 +108,36 @@ export class InvoicePdfService {
       concepto: invoice.concepto,
       moneda: invoice.moneda,
       ...(condicionVenta !== undefined && { condicionVenta }),
-      items: [
-        {
-          descripcion: invoice.concepto === CONCEPTO_SERVICIOS ? 'Servicios' : 'Productos',
-          cantidad: 1,
-          unidadMedida: 'unidad',
-          precioUnitario: invoice.impNeto,
-          subtotal: invoice.impNeto,
-          ...(invoice.impIva > 0 && { alicuotaIva: alicuotaIvaPct }),
-        },
-      ],
+      // Un ítem sintético por grupo de tasa (D8) -- todavía NO es una
+      // línea por producto real (eso es Nivel B, docs/diseno-facturacion-
+      // lineas-2026-08-22.md, no implementado). Con una sola tasa (el caso
+      // de siempre) es exactamente el ítem único de antes de D8.
+      items: ivaGroups.length > 0
+        ? ivaGroups.map((g) => ({
+            descripcion: `${invoice.concepto === CONCEPTO_SERVICIOS ? 'Servicios' : 'Productos'} (${ivaAlicuotaLabel(g.id)})`,
+            cantidad: 1,
+            unidadMedida: 'unidad',
+            precioUnitario: g.baseImp,
+            subtotal: g.baseImp,
+            alicuotaIva: ivaAlicuotaPercentFromId(g.id) ?? 0,
+          }))
+        : [
+            {
+              descripcion: invoice.concepto === CONCEPTO_SERVICIOS ? 'Servicios' : 'Productos',
+              cantidad: 1,
+              unidadMedida: 'unidad',
+              precioUnitario: invoice.impNeto,
+              subtotal: invoice.impNeto,
+            },
+          ],
       importeNetoGravado: invoice.impNeto,
-      ...(invoice.impIva > 0 && {
-        iva: [{ id: 5, descripcion: `${alicuotaIvaPct}%`, baseImponible: invoice.impNeto, importe: invoice.impIva }],
+      ...(ivaGroups.length > 0 && {
+        iva: ivaGroups.map((g) => ({
+          id: g.id,
+          descripcion: ivaAlicuotaLabel(g.id),
+          baseImponible: g.baseImp,
+          importe: g.importe,
+        })),
       }),
       importeIva: invoice.impIva,
       importeTotal: invoice.impTotal,

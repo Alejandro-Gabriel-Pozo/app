@@ -44,7 +44,7 @@ describe('handleReservationConfirmedEmail', () => {
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
-    defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null,
+    defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -74,7 +74,7 @@ describe('handleReservationConfirmedEmail', () => {
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
-    defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null,
+    defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -98,7 +98,7 @@ describe('handleReservationConfirmedEmail', () => {
     legalName: null, taxId: null, taxIdType: null, taxCondition: null,
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
-    defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null,
+    defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -126,7 +126,7 @@ describe('handleReservationConfirmedEmail', () => {
       legalName: null, taxId: null, taxIdType: null, taxCondition: null,
       fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
       fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
-      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null,
+      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);
@@ -155,7 +155,7 @@ describe('handleReservationConfirmedEmail', () => {
       legalName: null, taxId: null, taxIdType: null, taxCondition: null,
       fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
       fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
-      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null,
+      defaultIvaRate: 21, pricesIncludeIva: true, defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
       createdAt: now, updatedAt: now,
     });
     const handler = handleReservationConfirmedEmail(emailSender, profileRepo);

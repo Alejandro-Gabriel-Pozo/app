@@ -60,6 +60,7 @@ import { SqlHousekeepingRepository }          from '../../pms-estadias/housekeep
 import { SqlDepositPolicyRepository }         from '../../reservas/sql.deposit-policy.repository.js';
 import { SqlBusinessProfileRepository }       from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository }  from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlNumberSequenceRepository }        from '../../repositories/sql.number-sequence.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../reservas/reservation.service.js';
 import { Customer }                           from '../../clientes-finanzas/customer.entities.js';
@@ -98,6 +99,7 @@ async function buildService() {
   const depositPolicyRepo = new SqlDepositPolicyRepository(db);
   const businessProfileRepo = new SqlBusinessProfileRepository(db);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
+  const numberSequenceRepo = new SqlNumberSequenceRepository(db);
 
   return new ReservationService(
     reservationRepo,
@@ -114,6 +116,7 @@ async function buildService() {
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,
+    numberSequenceRepo,
   );
 }
 

@@ -132,6 +132,22 @@ export interface ReservationProps {
   depositAmount?: number;
   /** v.C1-Fase A: instante (UTC) hasta el cual puede seguir PENDING sin la seña cobrada — null = sin vencimiento. */
   depositDueBy?: Date | null;
+  /**
+   * v10 — número operativo (D6, 22/08/2026, pendientes-2026-08-22.md
+   * sección D). Obligatorio y SIN default a propósito: a diferencia de
+   * adultos/scheduleApprovalStatus/etc. (opcionales, "no aplica" es un
+   * valor válido), este campo no tiene un valor neutro razonable — toda
+   * reserva tiene un correlativo. Lo resuelve `NumberSequenceRepository.
+   * next('RESERVATION')` UNA sola vez, en `ReservationService.
+   * createReservation()`; cualquier otro call site que reconstruya una
+   * Reservation existente (`updateReservation()`, `confirmPriceAdjustment()`)
+   * debe reenviar `existing.reservationNumber` tal cual — al ser
+   * obligatorio, TypeScript fuerza a pensarlo en cada `Reservation.restore()`
+   * nuevo en vez de dejarlo caer en un default silencioso (mismo bug que ya
+   * pasó una vez con requestedCheckInTime/scheduleApprovalStatus, ver
+   * comentario de updateReservation()).
+   */
+  reservationNumber: number;
 }
 
 export class Reservation {
@@ -153,6 +169,7 @@ export class Reservation {
   private _scheduleChargeAmount: number | null;
   public readonly depositAmount: number;
   public readonly depositDueBy: Date | null;
+  public readonly reservationNumber: number;
 
   constructor(props: ReservationProps) {
     const {
@@ -179,9 +196,13 @@ export class Reservation {
       scheduleChargeAmount = null,
       depositAmount = 0,
       depositDueBy = null,
+      reservationNumber,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
+    if (!Number.isInteger(reservationNumber) || reservationNumber < 1) {
+      throw new InvalidReservationError('reservationNumber debe ser un entero mayor o igual a 1');
+    }
     if (partySize < 1) throw new InvalidReservationError('partySize debe ser al menos 1');
     if (partySize > resource.capacity) {
       throw new InvalidReservationError(
@@ -234,6 +255,7 @@ export class Reservation {
     this._scheduleChargeAmount   = scheduleChargeAmount;
     this.depositAmount = depositAmount;
     this.depositDueBy  = depositDueBy;
+    this.reservationNumber = reservationNumber;
     this._status     = initialStatus;
   }
 

@@ -51,6 +51,7 @@ function makePendingReservation(id: string, opts: { depositAmount?: number; depo
     details: {}, totalPrice: 100, initialStatus: ReservationStatus.PENDING,
     depositAmount: opts.depositAmount ?? 30,
     depositDueBy: opts.depositDueBy ?? null,
+    reservationNumber: 1,
   });
 }
 

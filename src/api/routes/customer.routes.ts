@@ -104,6 +104,7 @@ import { SqlResourceRepository }     from '../../reservas/sql.resource.repositor
 import { SqlDepositPolicyRepository } from '../../reservas/sql.deposit-policy.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlNumberSequenceRepository } from '../../repositories/sql.number-sequence.repository.js';
 import { SqlReservationRepository }  from '../../reservas/sql.reservation.repository.js';
 import { SqlCustomerRepository }     from '../../clientes-finanzas/sql.customer.repository.js';
 import { SqlOccupancyRepository }    from '../../reservas/sql.occupancy.repository.js';
@@ -235,6 +236,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const depositPolicyRepo = new SqlDepositPolicyRepository(client);
   const businessProfileRepo = new SqlBusinessProfileRepository(client);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(client);
+  const numberSequenceRepo = new SqlNumberSequenceRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -251,9 +253,10 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,
+    numberSequenceRepo,
   );
 
-  return { reservationService, reservationRepo, resourceRepo, customerRepo };
+  return { reservationService, reservationRepo, resourceRepo, customerRepo, numberSequenceRepo };
 }
 
 /** Resuelve el SqlClient y el pool raw del tenant a partir del slug en la URL pública. */
@@ -331,8 +334,8 @@ export function createCustomerRouter(
         const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const body = RegisterCustomerSchema.parse(req.body);
-        const { customerRepo } = buildService(client, getTenantRawPool(businessId));
-        const authService = new CustomerAuthService(customerRepo, businessId);
+        const { customerRepo, numberSequenceRepo } = buildService(client, getTenantRawPool(businessId));
+        const authService = new CustomerAuthService(customerRepo, businessId, numberSequenceRepo);
         const result = await authService.register(body);
         setCustomerAuthCookie(res, result.token, result.expiresIn);
 
@@ -366,8 +369,8 @@ export function createCustomerRouter(
         const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const body = LoginCustomerSchema.parse(req.body);
-        const { customerRepo } = buildService(client, getTenantRawPool(businessId));
-        const authService = new CustomerAuthService(customerRepo, businessId);
+        const { customerRepo, numberSequenceRepo } = buildService(client, getTenantRawPool(businessId));
+        const authService = new CustomerAuthService(customerRepo, businessId, numberSequenceRepo);
         const result = await authService.login(body);
         setCustomerAuthCookie(res, result.token, result.expiresIn);
 
@@ -403,8 +406,8 @@ export function createCustomerRouter(
         const { client, businessId } = await resolveTenantBySlug(slug, platformRepo);
 
         const body = GoogleLoginCustomerSchema.parse(req.body);
-        const { customerRepo } = buildService(client, getTenantRawPool(businessId));
-        const authService = new CustomerAuthService(customerRepo, businessId);
+        const { customerRepo, numberSequenceRepo } = buildService(client, getTenantRawPool(businessId));
+        const authService = new CustomerAuthService(customerRepo, businessId, numberSequenceRepo);
         const result = await authService.loginWithGoogle(body.idToken);
         setCustomerAuthCookie(res, result.token, result.expiresIn);
 

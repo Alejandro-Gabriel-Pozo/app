@@ -32,6 +32,7 @@ describe('toReservationDto', () => {
     partySize: 2,
     notes: 'Pidió silla junto a la ventana',
     totalPrice: 20,
+    reservationNumber: 1,
   });
 
   it('el status sobrevive un roundtrip JSON real (antes se perdía: _status vs status)', () => {
@@ -43,6 +44,11 @@ describe('toReservationDto', () => {
   it('resourceId viaja plano, no solo anidado dentro de resource', () => {
     const dto = toReservationDto(reservation);
     expect(dto.resourceId).toBe('silla-1');
+  });
+
+  it('reservationNumber (D6, 22/08/2026) viaja en el DTO', () => {
+    const dto = toReservationDto(reservation);
+    expect(dto.reservationNumber).toBe(1);
   });
 
   it('customer.fullName y customer.email sobreviven el roundtrip (antes eran getters, se perdían)', () => {

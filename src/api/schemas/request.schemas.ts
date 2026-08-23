@@ -406,4 +406,10 @@ export const UpdateBusinessProfileSchema = z.object({
   defaultDepositPercentage: z.number().gt(0).max(100).nullable().optional(),
   /** Horas que una reserva PENDING puede esperar sin cobrar la seña antes de vencer -- null = sin vencimiento. */
   depositHoldHours: z.number().int().positive().nullable().optional(),
+  // Prefijo del número operativo de Cliente/Reserva (D6, 22/08/2026,
+  // pendientes-2026-08-22.md sección D) -- ej. "CLI" → "CLI-000045". Nunca
+  // null (a diferencia de defaultDepositPercentage): siempre hay un
+  // prefijo, DEFAULT 'CLI'/'RES' en schema.sql.
+  customerNumberPrefix:    z.string().trim().toUpperCase().regex(/^[A-Z0-9]{1,10}$/, { message: 'customerNumberPrefix debe ser de 1 a 10 letras/números' }).optional(),
+  reservationNumberPrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{1,10}$/, { message: 'reservationNumberPrefix debe ser de 1 a 10 letras/números' }).optional(),
 });

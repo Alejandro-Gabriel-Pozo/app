@@ -92,6 +92,26 @@ export interface Product {
   recipeOverrideStatus: OverrideStatus;
   /** Solo tiene valor mientras recipeOverrideStatus = 'PENDIENTE_DE_REVISION'. */
   recipePendingMasterSnapshot: Array<{ componentProductId: string; quantityPerUnit: number }> | null;
+  /**
+   * D8 (22/08/2026, pendientes-2026-08-19.md sección D) — tasa de IVA en %
+   * de ESTE producto. `null` = hereda `business_profile.default_iva_rate`
+   * (mismo patrón que `ProductVariant.priceOverride`). A nivel producto,
+   * no de variante -- una variante de talle/color no cambia la
+   * clasificación impositiva del ítem. `prices_include_iva` (neto vs.
+   * incluido) sigue siendo una sola política del negocio, no varía acá.
+   */
+  ivaRate: number | null;
+  /** D8 — texto libre informativo ("unidad", "kg", "litro"). Recibos/reportes, no viaja a AFIP todavía (ver arcaUnitCode). */
+  unit: string | null;
+  /**
+   * D8 — código numérico del catálogo AFIP `Umed` (FEParamGetTiposUnidadesMedida).
+   * Guardado para cuando la factura tenga líneas reales (Nivel B,
+   * docs/diseno-facturacion-lineas-2026-08-22.md) -- WSFEv1 tal como está
+   * integrado hoy no tiene concepto de línea/ítem al que colgarlo, así que
+   * este campo no se usa todavía en ningún comprobante real. No validado
+   * contra un catálogo (no confirmado en este repo, ver schema.sql).
+   */
+  arcaUnitCode: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,6 +143,10 @@ export interface CreateProductInput {
   /** Default 'RETAIL'/false si no se especifica (comportamiento de hoy). */
   productType?: ProductType;
   assembleOnDemand?: boolean;
+  /** D8 — null/omitido = hereda default_iva_rate del negocio. */
+  ivaRate?: number | null;
+  unit?: string | null;
+  arcaUnitCode?: number | null;
 }
 
 export interface UpdateProductInput {
@@ -135,6 +159,9 @@ export interface UpdateProductInput {
   active?: boolean;
   productType?: ProductType;
   assembleOnDemand?: boolean;
+  ivaRate?: number | null;
+  unit?: string | null;
+  arcaUnitCode?: number | null;
 }
 
 export interface CreateProductVariantInput {

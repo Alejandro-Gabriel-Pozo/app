@@ -75,6 +75,7 @@ import type { HousekeepingRepository } from '../pms-estadias/housekeeping.reposi
 import type { IDepositPolicyRepository } from './deposit-policy.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { NumberSequenceRepository } from '../repositories/number-sequence.repository.js';
 import type { TransactionManager }           from '../db/transaction-manager.js';
 import type { SqlClient }                    from '../repositories/sql.client.js';
 import { ReservationPricingService }      from './reservation-pricing.service.js';
@@ -112,6 +113,8 @@ export class ReservationService {
     private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
     /** C1-Fase A — gate de `confirmReservation()` (`getSettledPaymentTotalForReservation`). Solo lectura, no crea movimientos financieros (eso sigue siendo trabajo exclusivo del outbox worker, A10). */
     private readonly financialTransactionRepository: Pick<FinancialTransactionRepository, 'getSettledPaymentTotalForReservation'>,
+    /** D6 (22/08/2026) — número operativo, resuelto una sola vez en createReservation(). */
+    private readonly numberSequenceRepository: NumberSequenceRepository,
   ) {
     this.pricing = new ReservationPricingService(
       customerRateRepository,
@@ -213,6 +216,11 @@ export class ReservationService {
       params.resourceId,
     );
 
+    // D6 (22/08/2026) — número operativo, resuelto UNA vez acá (el único
+    // alta real de una reserva) — nunca en updateReservation()/
+    // confirmPriceAdjustment(), que reenvían el mismo número que ya tenía.
+    const reservationNumber = await this.numberSequenceRepository.next('RESERVATION');
+
     let reservation!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
@@ -238,6 +246,7 @@ export class ReservationService {
         totalPrice,
         depositAmount,
         depositDueBy,
+        reservationNumber,
         lines: lines.map((line, i) => ({
           id:            `${params.id}-L${i + 1}`,
           reservationId: params.id,
@@ -399,6 +408,7 @@ export class ReservationService {
         scheduleApprovalStatus: existing.scheduleApprovalStatus,
         scheduleApprovedBy:     existing.scheduleApprovedBy,
         scheduleChargeAmount:   existing.scheduleChargeAmount,
+        reservationNumber:      existing.reservationNumber,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -533,6 +543,9 @@ export class ReservationService {
         scheduleApprovalStatus: existing.scheduleApprovalStatus,
         scheduleApprovedBy:     existing.scheduleApprovedBy,
         scheduleChargeAmount:   existing.scheduleChargeAmount,
+        reservationNumber:      existing.reservationNumber,
+        depositAmount:          existing.depositAmount,
+        depositDueBy:           existing.depositDueBy,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);

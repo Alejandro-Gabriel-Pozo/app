@@ -32,6 +32,7 @@ interface ReservationRow {
   schedule_charge_amount?: string | null;
   deposit_amount: string;
   deposit_due_by?: string | Date | null;
+  reservation_number: number;
 }
 
 /**
@@ -85,6 +86,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.scheduleChargeAmount,
       reservation.depositAmount,
       reservation.depositDueBy ? reservation.depositDueBy.toISOString() : null,
+      reservation.reservationNumber,
     ];
   }
 
@@ -113,6 +115,15 @@ export class SqlReservationRepository implements ReservationRepository {
   // toda fila — el chequeo de disponibilidad de recursos bloqueados por
   // servicio quedaba roto en silencio. Test de regresión: mismo patrón que
   // el de resource_id/start_time/end_time (inspecciona el SQL literal).
+  // reservation_number ($25) -- número operativo (D6, 22/08/2026). Va en el
+  // ON CONFLICT SET igual que el resto de las columnas (convención de este
+  // UPSERT: todo lo que está en el INSERT también está en el SET, ver el
+  // historial de bugs arriba) -- es seguro porque `Reservation.reservationNumber`
+  // es OBLIGATORIO en el constructor (Reservation.ts) y todo restore() que
+  // reconstruye una reserva existente reenvía `existing.reservationNumber`
+  // tal cual, nunca uno nuevo. Se resuelve una única vez, en
+  // ReservationService.createReservation() (NumberSequenceRepository.next()),
+  // antes de la primera vez que este UPSERT corre para esa reserva.
   private readonly UPSERT_SQL = `
     INSERT INTO reservations (
       id, customer_id, customer_name, customer_email,
@@ -120,9 +131,10 @@ export class SqlReservationRepository implements ReservationRepository {
       start_time, end_time, details, updated_at, total_price,
       service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id,
       requested_check_in_time, requested_check_out_time, schedule_approval_status,
-      schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by
+      schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by,
+      reservation_number
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -144,7 +156,8 @@ export class SqlReservationRepository implements ReservationRepository {
       schedule_approved_by     = $21,
       schedule_charge_amount   = $22,
       deposit_amount           = $23,
-      deposit_due_by           = $24
+      deposit_due_by           = $24,
+      reservation_number       = $25
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -413,7 +426,7 @@ export class SqlReservationRepository implements ReservationRepository {
         r.adultos, r.ninos, r.rate_plan_id,
         r.requested_check_in_time, r.requested_check_out_time,
         r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount,
-        r.deposit_amount, r.deposit_due_by
+        r.deposit_amount, r.deposit_due_by, r.reservation_number
       FROM reservations r
     `;
   }
@@ -461,6 +474,7 @@ export class SqlReservationRepository implements ReservationRepository {
       scheduleChargeAmount:   row.schedule_charge_amount != null ? parseFloat(row.schedule_charge_amount) : null,
       depositAmount: parseFloat(row.deposit_amount),
       depositDueBy:  row.deposit_due_by ? new Date(row.deposit_due_by) : null,
+      reservationNumber: row.reservation_number,
     });
   }
 

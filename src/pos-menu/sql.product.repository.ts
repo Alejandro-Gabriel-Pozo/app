@@ -49,6 +49,9 @@ function rowToProduct(row: Record<string, unknown>): Product {
     pricePendingMasterValue:     row['price_pending_master_value'] != null ? Number(row['price_pending_master_value']) : null,
     recipeOverrideStatus:        row['recipe_override_status'] as Product['recipeOverrideStatus'],
     recipePendingMasterSnapshot: (row['recipe_pending_master_snapshot'] as Product['recipePendingMasterSnapshot']) ?? null,
+    ivaRate:       row['iva_rate'] != null ? Number(row['iva_rate']) : null,
+    unit:          (row['unit'] as string | null) ?? null,
+    arcaUnitCode:  row['arca_unit_code'] != null ? Number(row['arca_unit_code']) : null,
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
   };
@@ -135,8 +138,9 @@ export class SqlProductRepository implements IProductRepository {
          id, business_id, category_id, name, description,
          base_price, sku, has_variants, active, product_type, assemble_on_demand,
          company_product_id, price_override_status, price_pending_master_value,
-         recipe_override_status, recipe_pending_master_snapshot
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         recipe_override_status, recipe_pending_master_snapshot,
+         iva_rate, unit, arca_unit_code
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        ON CONFLICT (id) DO UPDATE SET
          category_id                    = EXCLUDED.category_id,
          name                           = EXCLUDED.name,
@@ -152,6 +156,9 @@ export class SqlProductRepository implements IProductRepository {
          price_pending_master_value     = EXCLUDED.price_pending_master_value,
          recipe_override_status         = EXCLUDED.recipe_override_status,
          recipe_pending_master_snapshot = EXCLUDED.recipe_pending_master_snapshot,
+         iva_rate                       = EXCLUDED.iva_rate,
+         unit                           = EXCLUDED.unit,
+         arca_unit_code                 = EXCLUDED.arca_unit_code,
          updated_at                     = NOW()`,
       [
         product.id, product.businessId, product.categoryId,
@@ -161,6 +168,7 @@ export class SqlProductRepository implements IProductRepository {
         product.companyProductId, product.priceOverrideStatus, product.pricePendingMasterValue,
         product.recipeOverrideStatus,
         product.recipePendingMasterSnapshot !== null ? JSON.stringify(product.recipePendingMasterSnapshot) : null,
+        product.ivaRate, product.unit, product.arcaUnitCode,
       ],
     );
   }
@@ -170,8 +178,9 @@ export class SqlProductRepository implements IProductRepository {
     const { rows } = await this.db.query<Record<string, unknown>>(
       `INSERT INTO products (
          id, business_id, category_id, name, description,
-         base_price, sku, has_variants, product_type, assemble_on_demand
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         base_price, sku, has_variants, product_type, assemble_on_demand,
+         iva_rate, unit, arca_unit_code
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         id,
@@ -184,6 +193,9 @@ export class SqlProductRepository implements IProductRepository {
         input.hasVariants ?? false,
         input.productType ?? 'RETAIL',
         input.assembleOnDemand ?? false,
+        input.ivaRate ?? null,
+        input.unit ?? null,
+        input.arcaUnitCode ?? null,
       ],
     );
     return rowToProduct(rows[0]!);
@@ -204,6 +216,9 @@ export class SqlProductRepository implements IProductRepository {
       ['active',        'active'],
       ['productType',       'product_type'],
       ['assembleOnDemand',  'assemble_on_demand'],
+      ['ivaRate',       'iva_rate'],
+      ['unit',          'unit'],
+      ['arcaUnitCode',  'arca_unit_code'],
     ];
 
     for (const [key, col] of map) {

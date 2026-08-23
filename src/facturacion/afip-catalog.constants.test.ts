@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { resolveDocTipo, DOC_TIPO_CUIT, DOC_TIPO_DNI, DOC_TIPO_CONSUMIDOR_FINAL, paymentMethodLabel } from './afip-catalog.constants.js';
+import {
+  resolveDocTipo, DOC_TIPO_CUIT, DOC_TIPO_DNI, DOC_TIPO_CONSUMIDOR_FINAL, paymentMethodLabel,
+  resolveIvaAlicuotaId, ivaAlicuotaPercentFromId, ivaAlicuotaLabel,
+} from './afip-catalog.constants.js';
+import { UnsupportedIvaRateError } from '../domain/errors.js';
 
 describe('resolveDocTipo', () => {
   it('mapea CUIT/DNI a sus códigos AFIP', () => {
@@ -38,5 +42,31 @@ describe('paymentMethodLabel', () => {
 
   it('sin forma de pago cargada: undefined, no se inventa un valor', () => {
     expect(paymentMethodLabel(null, null)).toBeUndefined();
+  });
+});
+
+// D8 (22/08/2026) -- catálogo de alícuotas de IVA (Id_Alicuota_IVA).
+describe('resolveIvaAlicuotaId', () => {
+  it('mapea las 3 tasas confirmadas por docs/referencia-afip-wsfev1.md', () => {
+    expect(resolveIvaAlicuotaId(0)).toBe(3);
+    expect(resolveIvaAlicuotaId(10.5)).toBe(4);
+    expect(resolveIvaAlicuotaId(21)).toBe(5);
+  });
+
+  it('rechaza explícito una tasa sin Id confirmado, en vez de adivinar', () => {
+    expect(() => resolveIvaAlicuotaId(27)).toThrow(UnsupportedIvaRateError);
+  });
+});
+
+describe('ivaAlicuotaPercentFromId / ivaAlicuotaLabel', () => {
+  it('es el inverso exacto de resolveIvaAlicuotaId', () => {
+    expect(ivaAlicuotaPercentFromId(5)).toBe(21);
+    expect(ivaAlicuotaPercentFromId(4)).toBe(10.5);
+    expect(ivaAlicuotaLabel(5)).toBe('21%');
+  });
+
+  it('un Id desconocido no inventa un %, muestra el Id crudo', () => {
+    expect(ivaAlicuotaPercentFromId(99)).toBeUndefined();
+    expect(ivaAlicuotaLabel(99)).toBe('Id 99');
   });
 });

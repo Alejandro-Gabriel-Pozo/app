@@ -2443,3 +2443,126 @@ ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS card_installments SMALLINT
   CHECK (card_installments IS NULL OR (card_installments >= 1 AND payment_method = 'CARD'));
 
+-- ---------------------------------------------------------------------------
+-- número operativo de Reserva/Cliente (schema v29, 22/08/2026, D6 --
+-- pendientes-2026-08-22.md sección D). Un correlativo humano por negocio,
+-- con prefijo configurable ("CLI-000045", "RES-000123" -- el prefijo vive
+-- en business_profile, ver más abajo; el formateo es responsabilidad de
+-- quien lea el número, acá solo se guarda el entero).
+--
+-- `number_sequences`: mecanismo único reutilizable para los dos (y para
+-- cualquier otro tipo que haga falta después, ej. facturas por talonario,
+-- ver la nota¹ de PARTE 1 de criterios-datos.md). Una fila por tipo,
+-- incrementada atómicamente con UPDATE...RETURNING (A8.2/A8.3,
+-- criterios-negocio.md -- el invariante "siguiente valor" vive en la base,
+-- nunca un SELECT+INSERT desde la capa de servicio).
+--
+-- NO es una SEQUENCE nativa de Postgres a propósito. `customers` usa
+-- INSERT...ON CONFLICT DO UPDATE como upsert genérico -- el alta real Y
+-- cada edición (PATCH /customers/:id, etc.) pasan por el mismo save().
+-- Un DEFAULT con nextval() en la columna se evalúa en CADA fila propuesta,
+-- incluida una que termina resolviéndose por el lado del UPDATE (conflicto
+-- de PK) -- quemaría un número nuevo en cada edición, no uno por alta real,
+-- y el correlativo dejaría de tener relación con el orden de alta. Con esta
+-- tabla, el número se pide una sola vez, explícito, solo en el alta real
+-- (NumberSequenceRepository.next(), antes del INSERT) -- nunca en un UPDATE.
+CREATE TABLE IF NOT EXISTS number_sequences (
+  entity_type VARCHAR(20) PRIMARY KEY CHECK (entity_type IN ('CUSTOMER', 'RESERVATION')),
+  next_value  INTEGER     NOT NULL DEFAULT 1
+);
+
+INSERT INTO number_sequences (entity_type) VALUES ('CUSTOMER')    ON CONFLICT DO NOTHING;
+INSERT INTO number_sequences (entity_type) VALUES ('RESERVATION') ON CONFLICT DO NOTHING;
+
+-- customers.customer_number / reservations.reservation_number. Backfill
+-- retroactivo (decisión del dueño, 22/08/2026): las filas existentes se
+-- numeran por antigüedad real (created_at, luego id como desempate
+-- estable) -- el primer cliente/reserva de cada negocio pasa a ser el #1,
+-- no queda con el número vacío. Solo toca filas con el número todavía NULL,
+-- así que reaplicar este archivo en un tenant ya numerado no hace nada.
+ALTER TABLE customers    ADD COLUMN IF NOT EXISTS customer_number    INTEGER;
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS reservation_number INTEGER;
+
+WITH numbered AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn
+  FROM customers WHERE customer_number IS NULL
+)
+UPDATE customers c SET customer_number = numbered.rn
+FROM numbered WHERE c.id = numbered.id;
+
+WITH numbered AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn
+  FROM reservations WHERE reservation_number IS NULL
+)
+UPDATE reservations r SET reservation_number = numbered.rn
+FROM numbered WHERE r.id = numbered.id;
+
+-- Arranca la secuencia después del último número backfillado -- guardado
+-- por `next_value = 1` (su DEFAULT recién insertado arriba): en la primera
+-- corrida siempre matchea, en las siguientes ya no (next_value real de uso
+-- ya avanzó), así que este UPDATE deja de tocar nada después de la primera vez.
+UPDATE number_sequences SET next_value = (SELECT COALESCE(MAX(customer_number), 0) + 1 FROM customers)
+  WHERE entity_type = 'CUSTOMER' AND next_value = 1;
+UPDATE number_sequences SET next_value = (SELECT COALESCE(MAX(reservation_number), 0) + 1 FROM reservations)
+  WHERE entity_type = 'RESERVATION' AND next_value = 1;
+
+ALTER TABLE customers    ALTER COLUMN customer_number    SET NOT NULL;
+ALTER TABLE reservations ALTER COLUMN reservation_number SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_customer_number
+  ON customers (customer_number);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reservations_reservation_number
+  ON reservations (reservation_number);
+
+-- Prefijo configurable por negocio (A2.9 -- config real, nunca una
+-- constante de código, mismo criterio que currency/timezone más arriba).
+-- DEFAULT explícito para que un tenant ya existente no vea el campo vacío
+-- hasta que alguien lo edite a propósito.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS customer_number_prefix    VARCHAR(10) NOT NULL DEFAULT 'CLI';
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS reservation_number_prefix VARCHAR(10) NOT NULL DEFAULT 'RES';
+
+-- ---------------------------------------------------------------------------
+-- D8 (22/08/2026, pendientes-2026-08-19.md sección D / pendientes-2026-08-22.md)
+-- IVA por producto, unidad de medida, código ARCA. Hoy `business_profile.
+-- default_iva_rate` es la única tasa que existe -- A2.9 (criterios-negocio.md)
+-- nombra explícito "alícuota por producto" como algo que NO debería vivir
+-- como constante única del negocio. `iva_rate` nullable = hereda el default
+-- del negocio (mismo patrón que product_variants.price_override -- NULL
+-- hereda, ver ProductService.resolvePrice()). Confirmado con el dueño
+-- (22/08/2026): `prices_include_iva` (neto vs. incluido) SIGUE siendo una
+-- sola política del negocio -- solo la TASA varía por producto, no ese
+-- criterio. A nivel producto, no de variante (una variante de talle/color
+-- no cambia la clasificación impositiva del ítem).
+--
+-- `unit`/`arca_unit_code` son dos campos DISTINTOS a propósito: `unit` es
+-- texto libre informativo (recibos/reportes, "unidad"/"kg"/"litro"), ya
+-- usable hoy. `arca_unit_code` es el código numérico real del catálogo AFIP
+-- `Umed` (FEParamGetTiposUnidadesMedida) -- no documentado en este repo
+-- (docs/referencia-afip-wsfev1.md no lo cubre, WSFEv1 tal como está
+-- integrado hoy no tiene concepto de línea/ítem al que colgarlo, ver
+-- InvoiceService). Se guarda para cuando la factura AFIP tenga líneas de
+-- verdad (Nivel B, docs/diseno-facturacion-lineas-2026-08-22.md) -- no se
+-- valida contra un catálogo hardcodeado, mismo criterio de cautela que
+-- CondicionIvaReceptorId (afip-catalog.constants.ts): confirmar en vivo
+-- contra el SDK antes de usarlo en un comprobante real.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS iva_rate NUMERIC(5,2);
+ALTER TABLE products DROP CONSTRAINT IF EXISTS chk_products_iva_rate;
+ALTER TABLE products ADD CONSTRAINT chk_products_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS unit VARCHAR(20);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS arca_unit_code SMALLINT;
+
+-- order_items.iva_rate -- snapshot de `products.iva_rate` (o NULL si el
+-- producto no tenía override, o si el ítem es RESERVATION) tomado en el
+-- momento de armar la orden (R9, criterios-datos.md: la transacción
+-- congela lo que necesitó). Sin esto, facturar una orden vieja usaría la
+-- tasa ACTUAL del producto en vez de la vigente al momento de la venta --
+-- mismo error de fondo que ya se evitó con total_price/deposit_amount en
+-- reservations. NULL acá (a diferencia de la columna de products) no
+-- significa "hereda" en el momento de facturar -- ahí cae directo al
+-- default del negocio vigente EN ESE MOMENTO, igual que hoy (ver
+-- InvoiceService.resolveIvaGroups()).
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS iva_rate NUMERIC(5,2);
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS chk_order_items_iva_rate;
+ALTER TABLE order_items ADD CONSTRAINT chk_order_items_iva_rate CHECK (iva_rate IS NULL OR iva_rate >= 0);
+

@@ -19,11 +19,12 @@ import type { CustomerRepository, CustomerWithPassword, Tag } from './customer.r
 // ── Tipos internos ──────────────────────────────────────────────────────────
 
 interface CustomerRow {
-  id:            string;
-  display_name:  string;
-  password_hash: string | null;
-  kind:          string;
-  active:        boolean;
+  id:              string;
+  display_name:    string;
+  password_hash:   string | null;
+  kind:            string;
+  active:          boolean;
+  customer_number: number;
   ccm_id:        string | null;
   channel:       string | null;
   ccm_value:     string | null;
@@ -40,6 +41,7 @@ const BASE_SELECT = `
     c.password_hash,
     c.kind,
     c.active,
+    c.customer_number,
     ccm.id          AS ccm_id,
     ccm.channel,
     ccm.value       AS ccm_value,
@@ -271,21 +273,36 @@ export class SqlCustomerRepository implements CustomerRepository {
 
   // ── Helpers privados ──────────────────────────────────────────────────────
 
+  /**
+   * `customer_number` ($5, D6 22/08/2026) va en el INSERT pero A PROPÓSITO
+   * NO en el ON CONFLICT SET -- distinto de sql.reservation.repository.ts
+   * (que SÍ lo pone en las dos ramas). Ahí es seguro porque
+   * `Reservation.reservationNumber` es obligatorio en el constructor; acá
+   * `Customer.customerNumber` es opcional (varias decenas de
+   * `new Customer(...)` posicionales en el repo, forzarlo a obligatorio
+   * rompería todos). Esta rama del UPSERT se usa tanto para el alta real
+   * como para CADA edición (PATCH /customers/:id, etc.) -- si
+   * `customer_number` estuviera en el SET, un `Customer` reconstruido sin
+   * pasar el número (ej. el PATCH de displayName) lo pisaría con NULL en
+   * cada edición. Omitirlo del SET hace que la base ignore $5 salvo en el
+   * INSERT real -- ninguna edición puede tocarlo, sin importar qué traiga
+   * el objeto en memoria.
+   */
   private async _upsertCustomer(
     client: SqlClient,
     customer: Customer,
     passwordHash: string | null,
   ): Promise<void> {
     await client.query(
-      `INSERT INTO customers (id, display_name, full_name, email, password_hash)
-       VALUES ($1, $2, $2, $3, $4)
+      `INSERT INTO customers (id, display_name, full_name, email, password_hash, customer_number)
+       VALUES ($1, $2, $2, $3, $4, $5)
        ON CONFLICT (id) DO UPDATE SET
          display_name  = $2,
          full_name     = $2,
          email         = $3,
          password_hash = COALESCE($4, customers.password_hash),
          updated_at    = CURRENT_TIMESTAMP`,
-      [customer.id, customer.displayName, customer.email, passwordHash],
+      [customer.id, customer.displayName, customer.email, passwordHash, customer.customerNumber],
     );
     for (const cm of customer.contactMethods) {
       await client.query(
@@ -305,7 +322,7 @@ export class SqlCustomerRepository implements CustomerRepository {
 function rowsToCustomer(rows: CustomerRow[]): Customer {
   const first = rows[0];
   if (!first) throw new Error('rowsToCustomer llamado con array vacío');
-  const { id, display_name, kind, active } = first;
+  const { id, display_name, kind, active, customer_number } = first;
   const contactMethods: ContactMethod[] = rows
     .filter((r) => r.ccm_id !== null)
     .map((r) => ({
@@ -315,7 +332,7 @@ function rowsToCustomer(rows: CustomerRow[]): Customer {
       isPrimary: r.is_primary ?? false,
       ...(r.verified_at !== null && r.verified_at !== undefined && { verifiedAt: r.verified_at }),
     }));
-  return new Customer(id, display_name, contactMethods, kind as 'INDIVIDUAL' | 'COMPANY', active);
+  return new Customer(id, display_name, contactMethods, kind as 'INDIVIDUAL' | 'COMPANY', active, customer_number);
 }
 
 function groupByCustomer(rows: CustomerRow[]): Customer[] {

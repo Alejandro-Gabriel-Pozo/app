@@ -92,6 +92,15 @@ export interface OrderItem {
    * en schema.sql, columna order_items.stock_snapshot.
    */
   stockSnapshot:      Array<{ productId: string; productVariantId: string | null; quantity: number }> | null;
+  /**
+   * D8 (22/08/2026) — snapshot de `Product.ivaRate` al momento de armar la
+   * orden (R9: la transacción congela lo que necesitó). `null` = el
+   * producto no tenía override (cae al `default_iva_rate` del negocio
+   * VIGENTE al facturar, no al de hoy) o el ítem es RESERVATION (sin
+   * producto). Ver `OrderPricingService.resolveUnitPrice()` y
+   * `InvoiceService.resolveIvaGroups()`.
+   */
+  ivaRate:            number | null;
   createdAt:          Date;
   updatedAt:          Date;
 }

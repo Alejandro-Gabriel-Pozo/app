@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { InMemoryCustomerRepository } from '../../clientes-finanzas/in-memory.customer.repository.js';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
+import { InMemoryNumberSequenceRepository } from '../../repositories/in-memory.number-sequence.repository.js';
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 
@@ -26,7 +27,7 @@ afterEach(() => {
 
 const setup = async () => {
   const repo = new InMemoryCustomerRepository();
-  const service = new CustomerAuthService(repo, 'biz-test-1');
+  const service = new CustomerAuthService(repo, 'biz-test-1', new InMemoryNumberSequenceRepository());
   const { customer, token } = await service.register({
     fullName: 'Juan Pérez',
     email: 'juan@test.com',

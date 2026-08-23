@@ -13,6 +13,7 @@ import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.c
 import { InMemoryDepositPolicyRepository } from './in-memory.deposit-policy.repository.js';
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
 import { InMemoryHousekeepingRepository } from '../pms-estadias/in-memory.housekeeping.repository.js';
+import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.number-sequence.repository.js';
 import { HousekeepingTask } from '../pms-estadias/housekeeping-task.js';
 import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
@@ -85,6 +86,7 @@ describe('ReservationService', () => {
   let housekeepingRepo: InMemoryHousekeepingRepository;
   let depositPolicyRepo: InMemoryDepositPolicyRepository;
   let financialTransactionRepo: FakePaymentLedger;
+  let numberSequenceRepo: InMemoryNumberSequenceRepository;
   let service: ReservationService;
 
   /** Sin política de seña -- comportamiento default (deposit_amount = 0, gate nunca se activa). */
@@ -100,6 +102,7 @@ describe('ReservationService', () => {
         afipSalesPoint: null, afipCuit: null,
         defaultIvaRate: 21, pricesIncludeIva: true,
         defaultDepositPercentage: null, depositHoldHours: null,
+        customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
         createdAt: new Date(), updatedAt: new Date(),
       };
     },
@@ -144,6 +147,7 @@ describe('ReservationService', () => {
     housekeepingRepo      = new InMemoryHousekeepingRepository();
     depositPolicyRepo     = new InMemoryDepositPolicyRepository();
     financialTransactionRepo = new FakePaymentLedger();
+    numberSequenceRepo    = new InMemoryNumberSequenceRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -160,6 +164,7 @@ describe('ReservationService', () => {
       depositPolicyRepo,
       businessProfileRepo,
       financialTransactionRepo,
+      numberSequenceRepo,
     );
 
     await resourceRepo.save(table);
@@ -512,7 +517,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
-        depositPolicyRepo, businessProfileRepo, financialTransactionRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
       );
 
       await lodgingService.createReservation({
@@ -559,7 +564,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
       );
 
       const reservation = await depositService.createReservation({
@@ -578,7 +583,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
       );
 
       await depositService.createReservation({
@@ -602,7 +607,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
       );
 
       const reservation = await depositService.createReservation({
@@ -618,7 +623,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, numberSequenceRepo,
       );
 
       const before = Date.now();
@@ -636,7 +641,7 @@ describe('ReservationService', () => {
       const reservation = Reservation.restore({
         id: 'res-expire', customer, resource: table,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
-        details: {}, totalPrice: 50, initialStatus: ReservationStatus.PENDING,
+        details: {}, totalPrice: 50, initialStatus: ReservationStatus.PENDING, reservationNumber: 1,
       });
 
       expect(reservation.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED', 'EXPIRED']);
@@ -650,7 +655,7 @@ describe('ReservationService', () => {
       const reservation = Reservation.restore({
         id: 'res-confirmed', customer, resource: table,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'),
-        details: {}, totalPrice: 50, initialStatus: ReservationStatus.CONFIRMED,
+        details: {}, totalPrice: 50, initialStatus: ReservationStatus.CONFIRMED, reservationNumber: 2,
       });
 
       expect(() => reservation.expire()).toThrow(InvalidReservationError);
@@ -950,6 +955,7 @@ describe('ReservationService', () => {
         scheduleApprovalStatus: 'APPROVED',
         scheduleApprovedBy:     'user-front-desk-1',
         scheduleChargeAmount:   500,
+        reservationNumber:      42,
       });
       await reservationRepo.save(seeded);
 
@@ -961,6 +967,9 @@ describe('ReservationService', () => {
       expect(updated.scheduleApprovalStatus).toBe('APPROVED');
       expect(updated.scheduleApprovedBy).toBe('user-front-desk-1');
       expect(updated.scheduleChargeAmount).toBe(500);
+      // D6 (22/08/2026) — mismo criterio que el resto de este test: el
+      // número operativo tampoco puede perderse en un restore() de update.
+      expect(updated.reservationNumber).toBe(42);
     });
   });
 
@@ -1407,7 +1416,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, housekeepingRepo,
-        depositPolicyRepo, businessProfileRepo, financialTransactionRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
       );
       // t1 tiene basePrice=50 -- 30% de descuento a nivel BUCKET ALOJAMIENTO = 35.
       customerRateRepo.seed([{

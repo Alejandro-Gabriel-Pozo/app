@@ -45,6 +45,7 @@ class FakeProductRepository implements IProductRepository {
       productType: input.productType ?? 'RETAIL', assembleOnDemand: input.assembleOnDemand ?? false,
       companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      ivaRate: input.ivaRate ?? null, unit: input.unit ?? null, arcaUnitCode: input.arcaUnitCode ?? null,
       active: true, createdAt: now, updatedAt: now,
     };
     this.rows.set(product.id, product);
@@ -156,6 +157,7 @@ describe('OrderService', () => {
       productType: 'RETAIL', assembleOnDemand: false,
       companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      ivaRate: null, unit: null, arcaUnitCode: null,
       active: true, createdAt: now, updatedAt: now,
     });
   }
@@ -373,6 +375,7 @@ describe('OrderService', () => {
         productType: 'COMPOSITE', assembleOnDemand: true,
         companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
         recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+        ivaRate: null, unit: null, arcaUnitCode: null,
         active: true, createdAt: now, updatedAt: now,
       });
       productRepo.seed({
@@ -381,6 +384,7 @@ describe('OrderService', () => {
         productType: 'RAW_MATERIAL', assembleOnDemand: false,
         companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
         recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+        ivaRate: null, unit: null, arcaUnitCode: null,
         active: true, createdAt: now, updatedAt: now,
       });
       inventoryLevelRepo.seed({
@@ -550,6 +554,7 @@ describe('OrderService', () => {
         productType: 'RETAIL', assembleOnDemand: false,
         companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
         recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+        ivaRate: null, unit: null, arcaUnitCode: null,
         active: true, createdAt: now, updatedAt: now,
       });
       inventoryLevelRepo.seed({
@@ -634,6 +639,49 @@ describe('OrderService', () => {
         businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
         items: [{ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1 }],
       })).rejects.toThrow(MissingUnitPriceError);
+    });
+  });
+
+  // D8 (22/08/2026, pendientes-2026-08-19.md sección D) -- order_items.iva_rate
+  // se congela desde Product.ivaRate al armar la orden (R9), para que
+  // InvoiceService pueda agrupar por tasa sin releer el producto actual.
+  describe('D8 — snapshot de iva_rate en order_items', () => {
+    function seedProductWithIva(id: string, basePrice: number, ivaRate: number | null): void {
+      const now = new Date();
+      productRepo.seed({
+        id, businessId: TEST_BUSINESS_ID, categoryId: null, name: id, description: null,
+        basePrice, sku: null, hasVariants: false, productType: 'RETAIL', assembleOnDemand: false,
+        companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
+        recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+        ivaRate, unit: null, arcaUnitCode: null,
+        active: true, createdAt: now, updatedAt: now,
+      });
+    }
+
+    it('un producto con ivaRate propio lo congela en el order_item', async () => {
+      seedProductWithIva('prod-105', 100, 10.5);
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-105', quantity: 1 }],
+      });
+      expect(order.items[0]!.ivaRate).toBe(10.5);
+    });
+
+    it('un producto sin override queda con ivaRate null (InvoiceService cae al default del negocio recién al facturar)', async () => {
+      seedProduct1(20);
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      expect(order.items[0]!.ivaRate).toBeNull();
+    });
+
+    it('un ítem RESERVATION (sin producto) queda con ivaRate null', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1, unitPrice: 500 }],
+      });
+      expect(order.items[0]!.ivaRate).toBeNull();
     });
   });
 });

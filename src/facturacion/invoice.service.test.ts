@@ -7,7 +7,9 @@ import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus,
 import type { FinancialTransactionRepository, FinancialTransaction, PaymentInfo } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError } from '../domain/errors.js';
+import type { IOrderRepository } from '../pos-menu/order.repository.js';
+import type { Order } from '../pos-menu/order.entities.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 
@@ -85,6 +87,14 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
   async update(_input: UpdateBusinessProfileInput) { return this.profile; }
 }
 
+/** D8 (22/08/2026) -- `getById()` es lo único que InvoiceService usa. */
+class FakeOrderRepository implements Pick<IOrderRepository, 'getById'> {
+  constructor(private readonly order: Order | null = null) {}
+  async getById(id: string): Promise<Order | undefined> {
+    return this.order && this.order.id === id ? this.order : undefined;
+  }
+}
+
 class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
   constructor(private readonly credentials: AfipCredentials | null) {}
   async getStatus(): Promise<AfipCredentialsStatus> {
@@ -115,7 +125,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: 3, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
-    defaultDepositPercentage: null, depositHoldHours: null,
+    defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
     createdAt: now, updatedAt: now,
     ...overrides,
   };
@@ -178,6 +188,8 @@ describe('InvoiceService', () => {
     profile?: BusinessProfile;
     credentials?: AfipCredentials | null;
     client?: Arca;
+    /** D8 -- solo hace falta cuando `tx.orderId` está seteado y se quiere ejercitar el agrupado por tasa. */
+    order?: Order | null;
   } = {}) {
     const client = opts.client ?? fakeArcaClient();
     return new InvoiceService(
@@ -185,6 +197,7 @@ describe('InvoiceService', () => {
       new FakeFinancialTransactionRepository(opts.tx === undefined ? makeTx() : opts.tx),
       new FakeBusinessProfileRepository(opts.profile ?? makeProfile()),
       new FakeAfipCredentialsRepository(opts.credentials === undefined ? makeCredentials() : opts.credentials),
+      new FakeOrderRepository(opts.order ?? null),
       // buildService sigue armando un Arca fake (fakeArcaClient) igual que
       // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
       // existentes de fakeArcaClient({...}) en esta suite no necesiten
@@ -227,6 +240,7 @@ describe('InvoiceService', () => {
         new FakeFinancialTransactionRepository(makeTx()),
         new FakeBusinessProfileRepository(makeProfile({ taxId: '20111111112', afipCuit: null })),
         new FakeAfipCredentialsRepository(makeCredentials()),
+        new FakeOrderRepository(),
         clientFactory,
       );
 
@@ -242,6 +256,7 @@ describe('InvoiceService', () => {
         new FakeFinancialTransactionRepository(makeTx()),
         new FakeBusinessProfileRepository(makeProfile({ taxId: '20111111112', afipCuit: '20333333335' })),
         new FakeAfipCredentialsRepository(makeCredentials()),
+        new FakeOrderRepository(),
         clientFactory,
       );
 
@@ -286,6 +301,128 @@ describe('InvoiceService', () => {
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
       expect(invoice.impTotal).toBe(121);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // D8 (22/08/2026, pendientes-2026-08-19.md sección D) -- agrupado por
+  // tasa de IVA cuando la FinancialTransaction viene de una Order con
+  // productos a distinta alícuota.
+  // ---------------------------------------------------------------------------
+  describe('D8 -- agrupado de IVA por tasa (órdenes con productos a distinta alícuota)', () => {
+    function makeOrderItem(overrides: Partial<{ subtotal: number; ivaRate: number | null }> = {}) {
+      return {
+        id: `oi-${Math.random()}`, orderId: 'ord-1', itemType: 'PRODUCT' as const,
+        productId: 'prod-1', productVariantId: null, reservationId: null,
+        quantity: 1, unitPrice: overrides.subtotal ?? 100, subtotal: overrides.subtotal ?? 100,
+        notes: null, stockSnapshot: null, ivaRate: overrides.ivaRate ?? null,
+        createdAt: new Date(), updatedAt: new Date(),
+      };
+    }
+
+    it('una orden con UNA sola tasa (todos los ítems al mismo % o sin override) da el mismo resultado que antes de D8', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, ivaRate: 21 })],
+        } as unknown as Order,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.impNeto).toBe(100);
+      expect(invoice.impIva).toBe(21);
+      expect(invoice.impTotal).toBe(121);
+      expect((invoice.afipRequest as { Iva: unknown[] }).Iva).toHaveLength(1);
+    });
+
+    it('una orden con DOS tasas distintas (21% y 10.5%) agrupa en dos entradas de Iva[] -- cumplimiento fiscal estricto', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 155.25, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 155.25,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [
+            // 21% -- 121 incluye IVA -> neto 100, iva 21
+            makeOrderItem({ subtotal: 121, ivaRate: 21 }),
+            // 10.5% -- 34.25 incluye IVA -> neto 31, iva 3.25
+            makeOrderItem({ subtotal: 34.25, ivaRate: 10.5 }),
+          ],
+        } as unknown as Order,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.impNeto).toBe(131);
+      expect(invoice.impIva).toBe(24.25);
+      expect(invoice.impTotal).toBe(155.25);
+
+      const iva = (invoice.afipRequest as { Iva: Array<{ Id: number; BaseImp: number; Importe: number }> }).Iva;
+      expect(iva).toHaveLength(2);
+      expect(iva).toEqual(expect.arrayContaining([
+        { Id: 5, BaseImp: 100, Importe: 21 },     // 21%
+        { Id: 4, BaseImp: 31, Importe: 3.25 },    // 10.5%
+      ]));
+    });
+
+    it('un ítem sin override (ivaRate null) cae al default_iva_rate del negocio, no queda sin clasificar', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, ivaRate: null })],
+        } as unknown as Order,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.impNeto).toBe(100);
+      expect(invoice.impIva).toBe(21);
+    });
+
+    it('una tasa sin Id de AFIP confirmado (ej. 27%) rechaza explícito en vez de mandar un Id inventado', async () => {
+      const service = buildService({
+        tx: makeTx({ amount: 127, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 127,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 127, ivaRate: 27 })],
+        } as unknown as Order,
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+        .rejects.toThrow(UnsupportedIvaRateError);
+    });
+
+    it('una reserva (sin orderId) sigue exactamente igual que antes de D8 -- una sola tasa, la del negocio', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: null, reservationId: 'res-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.impNeto).toBe(100);
+      expect(invoice.impIva).toBe(21);
     });
   });
 

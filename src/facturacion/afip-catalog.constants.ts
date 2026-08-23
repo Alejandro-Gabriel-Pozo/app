@@ -17,6 +17,8 @@
  * parámetro explícito al crear un comprobante — no se adivina un valor acá.
  */
 
+import { UnsupportedIvaRateError } from '../domain/errors.js';
+
 /** Tipo de comprobante (`CbteTipo`) — solo los usados por Fase 2 (Factura B). */
 export const CBTE_TIPO_FACTURA_A = 1;
 export const CBTE_TIPO_FACTURA_B = 6;
@@ -116,3 +118,62 @@ export function paymentMethodLabel(
  * certificado real, antes de facturar en producción de verdad.
  */
 export const CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL = 5;
+
+/**
+ * `Id_Alicuota_IVA` (`AlicIva.Id`, tabla `FEParamGetTiposIva`) — a
+ * diferencia de `CondicionIvaReceptorId` de arriba, esta SÍ se hardcodea
+ * (D8, 22/08/2026): es una tabla vieja y estable del protocolo (a
+ * diferencia de `CondicionIvaReceptorId`, agregada recién en v2.10 con
+ * RG 5259), mismo criterio que `CBTE_TIPO_*`/`DOC_TIPO_*` de arriba.
+ *
+ * Solo 3 entradas confirmadas por `docs/referencia-afip-wsfev1.md` (línea
+ * 815, "3=0%, y las demás alícuotas vigentes — código exacto vía
+ * consulta"; línea 1352 confirma Id=4/Id=5 con un ejemplo real). Los
+ * demás Id (27%, 5%, 2.5%, etc.) NO se hardcodean acá sin poder
+ * confirmarlos contra `getIvaTipos()`/`FEParamGetTiposIva()` del SDK en
+ * vivo -- `resolveIvaAlicuotaId()` falla explícito (nunca adivina) para
+ * cualquier tasa fuera de esta lista.
+ */
+export const IVA_ALICUOTA_IDS: ReadonlyMap<number, number> = new Map([
+  [0, 3],
+  [10.5, 4],
+  [21, 5],
+]);
+
+/**
+ * Resuelve el `Id` de AFIP para una tasa en % (ej. 21 → 5). Usado por
+ * `InvoiceService` para armar `Iva[]` agrupado por alícuota (D8) --
+ * `products.iva_rate`/`business_profile.default_iva_rate` se cargan en %
+ * humano, nunca el Id de AFIP directamente (A5.1: el dominio usa el
+ * lenguaje del negocio, la traducción al protocolo vive acá, un solo
+ * lugar). Tira `UnsupportedIvaRateError` en vez de mandar un Id
+ * inventado a AFIP -- ver docblock de `IVA_ALICUOTA_IDS`.
+ */
+export function resolveIvaAlicuotaId(ratePercent: number): number {
+  const id = IVA_ALICUOTA_IDS.get(ratePercent);
+  if (id === undefined) {
+    throw new UnsupportedIvaRateError(ratePercent);
+  }
+  return id;
+}
+
+/**
+ * Inverso de `resolveIvaAlicuotaId()` -- para `InvoicePdfService`, que lee
+ * el `Id` ya persistido en `invoice.afipRequest.Iva` (congelado al emitir,
+ * R9) y necesita el % para el PDF. `undefined` para cualquier Id fuera de
+ * `IVA_ALICUOTA_IDS` -- no debería pasar (todo Id que llegó acá salió de
+ * `resolveIvaAlicuotaId()` al crear el comprobante), pero el PDF no
+ * rompe por esto: cae a mostrar el Id crudo (ver `ivaAlicuotaLabel`).
+ */
+export function ivaAlicuotaPercentFromId(id: number): number | undefined {
+  for (const [pct, mappedId] of IVA_ALICUOTA_IDS) {
+    if (mappedId === id) return pct;
+  }
+  return undefined;
+}
+
+/** Label humano para el PDF (`InvoiceData.items[].alicuotaIva`/`iva[].descripcion`) -- "21%" o, si el Id es desconocido, "Id 7" (nunca inventa un %). */
+export function ivaAlicuotaLabel(id: number): string {
+  const pct = ivaAlicuotaPercentFromId(id);
+  return pct !== undefined ? `${pct}%` : `Id ${id}`;
+}

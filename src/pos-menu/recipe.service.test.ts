@@ -35,6 +35,7 @@ class FakeProductRepository implements IProductRepository {
       basePrice: 10, sku: null, hasVariants: false, productType, assembleOnDemand,
       companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
       recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+      ivaRate: null, unit: null, arcaUnitCode: null,
       active: true, createdAt: now, updatedAt: now,
     });
   }

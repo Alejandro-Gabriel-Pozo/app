@@ -62,21 +62,104 @@ pregunta — acá solo el resumen para no perder de vista que siguen abiertas.
   `PAYMENT` sin contrapartida al voidear la `CHARGE` (A3.9) — limitación
   conocida, anotada en el documento de diseño, no resuelta. Sigue sin
   responder la escala de % según anticipación.
-- **C3** — Modelo de factura ítem único vs. multi-línea: hay un diseño
-  propuesto sin implementar (`docs/diseno-facturacion-lineas-2026-08-22.md`,
-  Nivel A/B sin decidir).
+- **C3** — Modelo de factura ítem único vs. multi-línea:
+  `docs/diseno-facturacion-lineas-2026-08-22.md` (escrito 22/08/2026, junto
+  con D8) define Nivel A (agrupar por tasa de IVA, sin líneas por
+  producto) y Nivel B (líneas reales por producto, con 4 preguntas
+  abiertas). **Nivel A ya está implementado** (ver D8 más abajo) — Nivel B
+  sigue sin decidir, es el hito real que falta para C2 (notas de crédito
+  parciales) y D7 (reportes por producto desde la factura, no solo desde
+  la orden).
 
 **No elegir ninguna opción de C1/C2/C3 sin el dueño.**
 
-## D. Backlog confirmado pendiente (arrastrado de 08-19, sin cambios)
+## D. Backlog confirmado pendiente (arrastrado de 08-19, sin cambios salvo D6)
 
-- **D6** — Número operativo de Reserva/Cliente (secuencia por negocio,
-  prefijo configurable, mecanismo único reutilizable para ambos).
+- ✅ **D6 RESUELTO (22/08/2026)** — Número operativo de Reserva/Cliente.
+  3 decisiones confirmadas con el dueño (`AskUserQuestion`) antes de
+  codear: backfill retroactivo de lo ya existente (por antigüedad,
+  `created_at`+`id`), TODA alta de cliente numera (incluido auto-registro/
+  Google del portal, no solo alta de mostrador), formato prefijo + 6
+  dígitos (`CLI-000045`/`RES-000123`, prefijo configurable en Mi Negocio).
+  Tabla `number_sequences` nueva (mecanismo único, `entity_type` CUSTOMER/
+  RESERVATION, `UPDATE...RETURNING` atómico — A8.2/A8.3) +
+  `NumberSequenceRepository`/`SqlNumberSequenceRepository`/
+  `InMemoryNumberSequenceRepository`. `customers.customer_number`/
+  `reservations.reservation_number` (NOT NULL, único, backfill retroactivo
+  en el propio schema.sql). `business_profile.customer_number_prefix`/
+  `reservation_number_prefix` (DEFAULT 'CLI'/'RES', A2.9).
+  **Hallazgo real de diseño, no en el pedido original**: `customers` usa
+  `INSERT...ON CONFLICT DO UPDATE` como upsert genérico para alta Y
+  edición (PATCH incluido) — si el número saliera de un `DEFAULT
+  nextval()` de Postgres se hubiera quemado un número nuevo en CADA
+  edición, no solo en el alta real (mismo mecanismo por el que un
+  `SERIAL`/`IDENTITY` se salta valores en un upsert con conflicto). Se
+  resolvió asignando el número explícito UNA vez en el service/route de
+  alta real y excluyendo `customer_number` del `ON CONFLICT DO UPDATE SET`
+  del upsert (ver comentario en `_upsertCustomer()`, sql.customer.repository.ts)
+  — ninguna edición puede tocarlo, sin importar qué traiga el objeto en
+  memoria. Para `Reservation` (agregado con `restore()` explícito, no
+  upsert genérico) la protección es al revés: `reservationNumber` es
+  OBLIGATORIO en el constructor (Reservation.ts), así TypeScript fuerza a
+  reenviar `existing.reservationNumber` en cada `restore()` nuevo — mismo
+  criterio que ya evitó una vez perder `requestedCheckInTime`/
+  `scheduleApprovalStatus` en un update (bug real del 19/08/2026).
+  `confirmPriceAdjustment()` tenía ESE bug exacto pendiente para
+  `depositAmount`/`depositDueBy` (nunca se reenviaban en su `restore()`,
+  se resetaban a 0/null en cada ajuste de precio de una reserva
+  CONFIRMED) — encontrado de paso al tocar ese mismo bloque para D6,
+  corregido en el mismo cambio. `ReservationDto`/DTO de Customer exponen
+  el número crudo (`reservationNumber`/`customerNumber`); formatear con
+  el prefijo queda en quien lea (frontend), no se persiste el string
+  formateado — cambiar el prefijo reformatea todo sin migrar nada. Suite
+  completa (846 tests) + lint + typecheck verdes. **Backend only** — sin
+  UI en `appfrontend-main` todavía (mostrar el número en listado/ficha de
+  Reservas y Clientes, prefijo editable en Mi Negocio).
+  **Nota aparte, no D6**: al bumpear `CURRENT_SCHEMA_VERSION` (28→29,
+  `tenant-db.setup.ts`) se encontró que C1-Fase A y D9-Parte 1/2
+  (mismo día) cambiaron `schema.sql` sin bumpear esa constante — el
+  contenido real del archivo ya incluye esos cambios (no hay nada roto:
+  se reaplica completo siempre), pero el número de versión registrado por
+  tenant no los refleja. Backlog, no se corrigió retroactivo.
 - **D7** — Reportes POS/Restaurante y CRM (ventas por producto/mermas/
   ticket promedio; clientes nuevos vs. recurrentes/tarifas aplicadas).
   Cero endpoints hoy.
-- **D8** — IVA por producto, unidad de medida, código ARCA (hoy la tasa de
-  IVA es global del negocio).
+- ✅ **D8 RESUELTO (22/08/2026)** — IVA por producto, unidad de medida,
+  código ARCA. 2 decisiones confirmadas con el dueño (`AskUserQuestion`)
+  antes de codear: (1) la factura AFIP SÍ agrupa por tasa cuando la orden
+  mezcla productos con distinta alícuota (no solo catálogo/recibos
+  internos — "cumplimiento fiscal estricto"); (2) `prices_include_iva`
+  (neto vs. incluido) sigue siendo una sola política del negocio, solo la
+  TASA varía por producto.
+  `products.iva_rate` (nullable, hereda `default_iva_rate` del negocio si
+  no hay override — a nivel producto, no de variante) + `unit` (texto
+  libre informativo) + `arca_unit_code` (código AFIP `Umed`, guardado
+  para cuando exista Nivel B de C3, no usado todavía — WSFEv1 sin líneas
+  no tiene dónde colgarlo). `order_items.iva_rate` — snapshot de
+  `Product.ivaRate` al armar la orden (R9: la transacción congela lo que
+  necesitó, nunca relee el producto actual al facturar).
+  `IVA_ALICUOTA_IDS`/`resolveIvaAlicuotaId()` (afip-catalog.constants.ts)
+  — solo 3 tasas confirmadas por `docs/referencia-afip-wsfev1.md` (0%,
+  10.5%, 21%); cualquier otra tasa rechaza explícito
+  (`UnsupportedIvaRateError`) en vez de inventar un Id de AFIP.
+  `InvoiceService.resolveIvaGroups()` agrupa `order_items.subtotal` por
+  tasa distinta y arma un `Iva[]` con una entrada por tasa (protocolo
+  WSFEv1 real, sin necesitar líneas por producto — ver C3 más abajo);
+  reservas (sin `orderId`) y el caso de siempre (una sola tasa) dan
+  exactamente el mismo resultado que antes de D8.
+  `InvoicePdfService` deja de recalcular un % combinado sin sentido fiscal
+  (ej. "18.2%" mezclando 21%+10.5%) y lee el desglose real ya persistido
+  en `afip_request` (JSONB, congelado al emitir).
+  **Hallazgo real de diseño, no en el pedido original**: al tocar
+  `confirmPriceAdjustment()` para otra cosa en D6 se había corregido un
+  bug de `depositAmount`/`depositDueBy` — acá, al escribir el desglose de
+  Nivel A, se identificó que C3 (`docs/diseno-facturacion-lineas-2026-08-22.md`,
+  escrito en esta misma sesión) queda como el hito real pendiente para
+  notas de crédito parciales (C2) y reportes por producto desde la
+  factura (D7) — ninguno de los dos se puede resolver solo con D8.
+  Suite completa (858 tests) + lint + typecheck verdes. **Backend
+  only** — sin UI en `appfrontend-main` (cargar IVA/unidad/código ARCA al
+  crear/editar un producto).
 
 ---
 

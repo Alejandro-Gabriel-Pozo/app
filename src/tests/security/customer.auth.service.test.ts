@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync, createSign, type KeyObject } from 'node:crypto';
 import { CustomerAuthService } from '../../security/customer.auth.service.js';
 import { InMemoryCustomerRepository } from '../../clientes-finanzas/in-memory.customer.repository.js';
+import { InMemoryNumberSequenceRepository } from '../../repositories/in-memory.number-sequence.repository.js';
 import { __resetGoogleJwksCacheForTests } from '../../security/google-oauth.js';
 import { Customer } from '../../clientes-finanzas/customer.entities.js';
 
@@ -41,7 +42,7 @@ afterEach(() => {
 
 const makeService = () => {
   const repo = new InMemoryCustomerRepository();
-  const service = new CustomerAuthService(repo, 'biz-test-1');
+  const service = new CustomerAuthService(repo, 'biz-test-1', new InMemoryNumberSequenceRepository());
   return { repo, service };
 };
 
@@ -54,7 +55,7 @@ describe('CustomerAuthService — constructor', () => {
   it('lanza Error si JWT_SECRET no está definida (Bug 1)', () => {
     delete process.env.JWT_SECRET;
     const repo = new InMemoryCustomerRepository();
-    expect(() => new CustomerAuthService(repo, 'biz-test-1')).toThrow(
+    expect(() => new CustomerAuthService(repo, 'biz-test-1', new InMemoryNumberSequenceRepository())).toThrow(
       '[CustomerAuthService] JWT_SECRET no está definida',
     );
   });

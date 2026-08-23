@@ -237,7 +237,25 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v28 (19/08/2026): invoices.payment_method/card_installments — el
 // comprobante AFIP ahora congela la forma de pago de la
 // FinancialTransaction de origen (R9), antes invisible en el PDF.
-export const CURRENT_SCHEMA_VERSION = 28;
+//
+// NOTA: C1-Fase A y D9-Parte 1/2 (22/08/2026, pendientes-2026-08-22.md)
+// cambiaron schema.sql (deposit_policies, reservations.deposit_amount,
+// scope multi-nivel de customer_rates/rate_catalog) sin bumpear esta
+// constante — hallazgo de paso al tocar este archivo para v29. No se
+// corrige retroactivo acá (aplicar el archivo completo siempre reaplica
+// todo igual, así que no rompe nada), pero un tenant que se resincronizó
+// entre v28 y esta v29 quedó registrado como "v28" sin reflejar esos
+// cambios. Backlog, no forma parte de D6.
+// v29 (22/08/2026): número operativo de Reserva/Cliente (D6,
+// pendientes-2026-08-22.md sección D) — tabla `number_sequences` nueva,
+// `customers.customer_number`/`reservations.reservation_number` (con
+// backfill retroactivo por antigüedad), `business_profile.customer_number_prefix`/
+// `reservation_number_prefix`.
+// v30 (22/08/2026): IVA por producto (D8, pendientes-2026-08-19.md sección D)
+// — `products.iva_rate`/`unit`/`arca_unit_code`, `order_items.iva_rate`
+// (snapshot al armar la orden, R9). `InvoiceService` agrupa el comprobante
+// AFIP por tasa cuando la orden mezcla productos con distinta alícuota.
+export const CURRENT_SCHEMA_VERSION = 30;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

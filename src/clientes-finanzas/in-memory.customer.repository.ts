@@ -120,6 +120,9 @@ export class InMemoryCustomerRepository implements CustomerRepository {
       id,
       '[eliminado]',
       `deleted-${id}@anon.local`,
+      record.customer.kind,
+      record.customer.active,
+      record.customer.customerNumber,
     );
 
     // googleSub también se limpia -- A7.4 (anonimizar de verdad, no dejar
@@ -139,6 +142,7 @@ export class InMemoryCustomerRepository implements CustomerRepository {
       record.customer.contactMethods,
       kind,
       active,
+      record.customer.customerNumber,
     );
     this.store.set(customerId, { customer: updated, passwordHash: record.passwordHash, googleSub: record.googleSub });
   }

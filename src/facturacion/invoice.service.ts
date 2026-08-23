@@ -21,8 +21,10 @@ import { randomUUID } from 'node:crypto';
 import type { InvoiceRepository } from './invoice.repository.js';
 import type { Invoice, AfipEnvironment } from './invoice.entities.js';
 import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
-import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { BusinessProfile } from '../domain/business-profile.entities.js';
+import type { IOrderRepository } from '../pos-menu/order.repository.js';
 import { buildDefaultAfipBillingPort } from './arca-sdk-billing.adapter.js';
 import type { AfipBillingPort } from './afip-billing.port.js';
 import {
@@ -30,6 +32,7 @@ import {
   CONCEPTO_SERVICIOS,
   DOC_TIPO_CONSUMIDOR_FINAL,
   CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL,
+  resolveIvaAlicuotaId,
 } from './afip-catalog.constants.js';
 import {
   FinancialTransactionNotFoundError,
@@ -85,13 +88,21 @@ export class InvoiceService {
     private readonly financialTransactionRepo: FinancialTransactionRepository,
     private readonly businessProfileRepo: BusinessProfileRepository,
     private readonly afipCredentialsRepo: AfipCredentialsRepository,
+    /**
+     * D8 (22/08/2026) — resuelve `order_items.iva_rate` para agrupar el
+     * comprobante por alícuota cuando la orden mezcla productos con
+     * distinta tasa. Solo se usa `getById()` (trae `Order.items` inline).
+     */
+    private readonly orderRepo: Pick<IOrderRepository, 'getById'>,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
   /**
-   * Desglosa `amount` (el total ya cobrado, `financial_transactions.amount`)
-   * en neto + IVA según la config REAL del negocio (A2.9 —
-   * `prices_include_iva`/`default_iva_rate`, nunca un supuesto fijo).
+   * Desglosa `amount` en neto + IVA para UNA tasa (A2.9 — nunca un
+   * supuesto fijo). `resolveIvaGroups()` la llama una vez por cada tasa
+   * distinta que participó de la venta (D8) — con una sola tasa (el caso
+   * de siempre: reservas, o una orden con un solo producto/todos a la
+   * misma tasa) el comportamiento es idéntico al de antes de D8.
    */
   private splitAmount(
     amount: number,
@@ -106,6 +117,37 @@ export class InvoiceService {
     const impNeto = round2(amount / (1 + rate));
     const impIva = round2(amount - impNeto);
     return { impNeto, impIva, impTotal: round2(amount) };
+  }
+
+  /**
+   * D8 (22/08/2026, pendientes-2026-08-19.md sección D) — agrupa el monto
+   * de la transacción por tasa de IVA. Reservas (sin `orderId`) y
+   * órdenes sin ítems con `ivaRate` propio siguen exactamente como antes
+   * de D8: un solo grupo con `business_profile.default_iva_rate`.
+   *
+   * Usa `order_items.iva_rate` (snapshot congelado al armar la orden, R9)
+   * -- NUNCA relee `products.iva_rate` actual, que puede haber cambiado
+   * desde la venta. `tx.amount` de una orden CHARGE es exactamente
+   * `sum(order_items.subtotal)` (`handleOrderConfirmed`, outbox.handlers.ts
+   * -- `totalAmount` viene de `Order.totalAmount`, que es esa misma suma),
+   * así que agrupar por `subtotal` reconstruye `tx.amount` sin resto.
+   */
+  private async resolveIvaGroups(
+    tx: Pick<FinancialTransaction, 'amount' | 'orderId'>,
+    profile: Pick<BusinessProfile, 'defaultIvaRate'>,
+  ): Promise<Array<{ rate: number; amount: number }>> {
+    const fallback = [{ rate: profile.defaultIvaRate, amount: tx.amount }];
+    if (!tx.orderId || !this.orderRepo) return fallback;
+
+    const order = await this.orderRepo.getById(tx.orderId);
+    if (!order || order.items.length === 0) return fallback;
+
+    const groups = new Map<number, number>();
+    for (const item of order.items) {
+      const rate = item.ivaRate ?? profile.defaultIvaRate;
+      groups.set(rate, (groups.get(rate) ?? 0) + item.subtotal);
+    }
+    return [...groups.entries()].map(([rate, amount]) => ({ rate, amount }));
   }
 
   async requestInvoice(input: RequestInvoiceInput): Promise<Invoice> {
@@ -134,10 +176,30 @@ export class InvoiceService {
 
     const buyer = input.buyer ?? CONSUMIDOR_FINAL;
     const concepto = input.concepto ?? CONCEPTO_SERVICIOS;
-    const { impNeto, impIva, impTotal } = this.splitAmount(tx.amount, profile.pricesIncludeIva, profile.defaultIvaRate);
+
+    // D8 (22/08/2026) -- un grupo por tasa distinta (una orden con
+    // productos a 21% y a 10.5% produce dos). Reservas y el caso de
+    // siempre (una sola tasa) dan exactamente un grupo, mismo resultado
+    // que antes de D8.
+    const groups = await this.resolveIvaGroups(tx, profile);
+    const splits = groups.map((g) => ({
+      ...this.splitAmount(g.amount, profile.pricesIncludeIva, g.rate),
+      rate: g.rate,
+    }));
+    const impNeto  = round2(splits.reduce((sum, s) => sum + s.impNeto, 0));
+    const impIva   = round2(splits.reduce((sum, s) => sum + s.impIva, 0));
+    const impTotal = round2(splits.reduce((sum, s) => sum + s.impTotal, 0));
 
     const invoiceId = randomUUID();
     const cbteFch = toAfipDate(new Date());
+
+    // AlicIva.Id por grupo con IVA > 0 -- un grupo en 0% no se informa acá
+    // (mismo criterio que antes de D8: `Iva[]` completo se omite si
+    // impIva=0, ver el comentario 10018/1146 de referencia-afip-wsfev1.md:
+    // con ImpIVA=0 solo puede informarse Id=3).
+    const ivaEntries = splits
+      .filter((s) => s.impIva > 0)
+      .map((s) => ({ Id: resolveIvaAlicuotaId(s.rate), BaseImp: s.impNeto, Importe: s.impIva }));
 
     const afipRequest = {
       CantReg: 1,
@@ -157,7 +219,7 @@ export class InvoiceService {
       MonCotiz: 1,
       CondicionIVAReceptorId: buyer.condicionIvaReceptorId,
       ...(concepto !== 1 && { FchServDesde: cbteFch, FchServHasta: cbteFch, FchVtoPago: cbteFch }),
-      ...(impIva > 0 && { Iva: [{ Id: 5, BaseImp: impNeto, Importe: impIva }] }), // Id 5 = 21%, ver afip-catalog.constants.ts
+      ...(ivaEntries.length > 0 && { Iva: ivaEntries }),
     };
 
     const invoice = await this.invoiceRepo.create(

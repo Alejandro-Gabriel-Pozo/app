@@ -40,6 +40,20 @@ export class Customer {
     public readonly kind: 'INDIVIDUAL' | 'COMPANY' = 'INDIVIDUAL',
     /** v2 clientes especiales: cuenta activa (soft-delete usa esto) */
     public readonly active: boolean = true,
+    /**
+     * v4 — número operativo (D6, 22/08/2026, pendientes-2026-08-22.md
+     * sección D). `null` = todavía no resuelto — pasarlo explícito solo en
+     * el alta real (`NumberSequenceRepository.next('CUSTOMER')`, ANTES de
+     * construir); el resto de los call sites (PATCH de edición, etc.) lo
+     * puede omitir sin riesgo: `SqlCustomerRepository._upsertCustomer()`
+     * nunca escribe `customer_number` en la rama de UPDATE del upsert (solo
+     * en el INSERT), así que un valor null/desactualizado acá no pisa nada
+     * ya persistido — ver el comentario de ese método para el porqué (a
+     * diferencia de Reservation.reservationNumber, este campo no se puede
+     * volver obligatorio sin romper decenas de call sites posicionales
+     * existentes).
+     */
+    public readonly customerNumber: number | null = null,
   ) {
     if (!id.trim()) throw new InvalidCustomerError('id es obligatorio');
     if (!displayName.trim()) throw new InvalidCustomerError('fullName es obligatorio');

@@ -26,6 +26,8 @@ function rowToProfile(row: Record<string, unknown>): BusinessProfile {
     pricesIncludeIva:        row['prices_include_iva'] as boolean,
     defaultDepositPercentage: row['default_deposit_percentage'] != null ? parseFloat(row['default_deposit_percentage'] as string) : null,
     depositHoldHours:         (row['deposit_hold_hours'] as number | null) ?? null,
+    customerNumberPrefix:    row['customer_number_prefix']    as string,
+    reservationNumberPrefix: row['reservation_number_prefix'] as string,
     createdAt:    new Date(row['created_at'] as string),
     updatedAt:    new Date(row['updated_at'] as string),
   };
@@ -132,6 +134,14 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
     if (input.depositHoldHours !== undefined) {
       fields.push(`deposit_hold_hours = $${idx++}`);
       params.push(input.depositHoldHours);
+    }
+    if (input.customerNumberPrefix !== undefined) {
+      fields.push(`customer_number_prefix = $${idx++}`);
+      params.push(input.customerNumberPrefix);
+    }
+    if (input.reservationNumberPrefix !== undefined) {
+      fields.push(`reservation_number_prefix = $${idx++}`);
+      params.push(input.reservationNumberPrefix);
     }
 
     if (fields.length === 0) return this.get();

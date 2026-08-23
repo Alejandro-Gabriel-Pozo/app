@@ -137,6 +137,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     productType: 'RETAIL', assembleOnDemand: false,
     companyProductId: null, priceOverrideStatus: 'INACTIVO', pricePendingMasterValue: null,
     recipeOverrideStatus: 'INACTIVO', recipePendingMasterSnapshot: null,
+    ivaRate: null, unit: null, arcaUnitCode: null,
     createdAt: now, updatedAt: now,
     ...overrides,
   };
