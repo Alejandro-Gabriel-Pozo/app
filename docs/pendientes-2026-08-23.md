@@ -12,11 +12,20 @@ registrado ahí.
 
 ---
 
-## 🔴 URGENTE — ✅ CAUSA RAÍZ CONFIRMADA Y RESUELTA (23/08/2026)
+## 🔴 URGENTE — ✅ RESUELTO Y VERIFICADO EN PRODUCCIÓN (23/08/2026)
 
-Fix desplegado (commits `34cf958`, `f99a712`, backend; pendiente el commit
-de la causa raíz real más abajo). Confirmado con un log real de Render
-capturado por el dueño — ver Problema 1.
+Fix desplegado (commits `34cf958`, `f99a712`, `05d1ad4`, backend;
+`e533e59`, frontend). **Verificado por el dueño contra ARCA real en
+producción** (`host.zuluhub.com.ar`) — ver Problema 1: CUIT `20224107030`
+devolvió datos reales del padrón (200 OK), y un CUIT sin datos devolvió
+`null` correctamente (200 OK, no error). Cierra el ítem del todo.
+
+Nota aparte, no un bug: durante la verificación apareció un "Cannot GET"
+al probar desde `https://reservasapp-8iisegw7e-alepozod.vercel.app`
+(la URL específica de ese deploy puntual que genera Vercel, no el dominio
+real) — desapareció al entrar por `host.zuluhub.com.ar`. Para probar
+cualquier cambio en producción, usar siempre ese dominio, no el link que
+tira Vercel después de cada push.
 
 **Reportado por el dueño en producción** (`host.zuluhub.com.ar`), en el
 modal "Editar cliente" → sección "Datos fiscales". Dos problemas
@@ -73,9 +82,11 @@ el mensaje del dígito verificador a un toast entendible. Lo que se vio en
 la pestaña de red como "400 Bad Request" es la etiqueta HTTP estándar de
 DevTools, no necesariamente lo que se le mostró al usuario.
 
-**Falta que el dueño confirme en producción** con un CUIT/DNI real que
-la búsqueda ya funciona de punta a punta — recién ahí se cierra del
-todo.
+**Confirmado en producción por el dueño (23/08/2026):** CUIT `20224107030`
+(ejemplo oficial del SDK, `getPersonaList_v2`) → `200 OK` con datos reales
+del padrón (razón social, condición IVA, domicilio). Un segundo CUIT sin
+datos en el padrón → `200 OK` con `null`, comportamiento esperado. Item
+cerrado del todo.
 
 <details><summary>Investigación original (histórico, ya resuelta como se explica arriba)</summary>
 
