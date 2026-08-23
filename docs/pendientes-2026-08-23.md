@@ -215,28 +215,64 @@ tres todavía figuraban abiertos en bloque ("E2–E7... falta que se defina
 alcance"). Desde el 19/08 no vuelven a aparecer ni como ✅ resueltos ni
 como descartados en ningún archivo posterior.
 
-### F1. Auditoría de cuentas corrientes (ex-E3)
+### F1. ⚠️ EN PROGRESO (23/08/2026) — Reestructuración de Cuentas Corrientes (ex-E3)
 
-Pedido tal como lo planteó el usuario el 13/08: revisar y reestructurar la
-lógica operativa del módulo de cuentas corrientes. Sin alcance ni lista de
-problemas concretos todavía entonces — seguía así el 18/08. Lo único que
-tocó ese módulo desde entonces fue `CustomerAccountService.recordPayment()`
-dentro de C1-Fase A (seña/depósito, 22/08) — es un cambio funcional
-puntual, no la auditoría que se había pedido. Punto de partida para cuando
-se retome: `CustomerAccountService` (`src/clientes-finanzas/` o
-equivalente actual), rutas `GET/POST /api/customers/:id/account` y
-`/payments`. Falta que el usuario indique qué específicamente no funciona
-como espera — sin eso, no hay nada que auditar todavía.
+Alcance recibido del dueño el 23/08 (spec completo, 4 piezas): (1)
+tipificación de cliente para habilitar cuenta corriente, (2) trazabilidad
+de folio con documento de origen obligatorio por cargo, (3) facturación
+segregada por tipo de cliente + bloqueo de checkout con saldo pendiente,
+(4) conciliación de pagos contra facturas puntuales (no un "registrar
+pago" ciego). **Se cruza directo con C1-Fase C** (sección C más abajo,
+"BillingEntity separado de Guest, facturación corporate consolidada,
+cuentas por cobrar/statements") — el spec del dueño la responde en los
+hechos.
 
-### F2. Estandarización de ABM/alta de usuarios (ex-E4a)
+Decisión del dueño: arrancar por la Pieza 1 primero, no las 4 en simultáneo.
+
+**Pieza 1 — ✅ RESUELTA (commits `3546937` backend, `0fa4c7e` frontend):**
+`customers.enable_current_account` (DEFAULT FALSE, independiente de
+`kind`). `GET /api/customers?currentAccountEnabled=true` filtra en la
+base (`SqlCustomerRepository.getAll()`), no en el frontend — spec
+textual del dueño: "los huéspedes sin este atributo no deben aparecer
+bajo ninguna circunstancia". Checkbox "Habilitar cuenta corriente" en
+`dashboard/clientes`; el panel de Cuentas Corrientes ya pide la lista
+filtrada. `CURRENT_SCHEMA_VERSION` a 36.
+
+**Piezas 2, 3 y 4 — sin empezar.** Pieza 3 (facturación segregada +
+bloqueo de checkout) es la más grande y riesgosa — toca `StayService`,
+`InvoiceService` y el flujo de check-out; no arrancarla sin las piezas 1
+y 2 resueltas primero (así lo pidió el dueño). Retomar preguntando cuál
+sigue.
+
+### F2. ⚠️ PARCIAL (23/08/2026) — Estandarización de ABM/alta de usuarios (ex-E4a)
 
 Mitad de investigación de E4 original — la otra mitad (E4b, tarifa % vs.
-precio fijo) sí se resolvió como D5 el 22/08, esta no. Pedido de
-investigación/diseño amplio: estandarizar ABM y alta de usuarios,
-validando contra normativa nacional real (evitar "flujos ficticios" sin
-aplicabilidad comercial). Sin hallazgo del repo que lo acote todavía —
-requiere una sesión aparte de research antes de tocar código. Sin cambios
-desde el 13/08.
+precio fijo) sí se resolvió como D5 el 22/08, esta no. El pedido de
+investigación/diseño amplio contra normativa nacional real sigue sin
+research — pero el dueño trajo 3 problemas concretos el 23/08, y esos ya
+se resolvieron:
+
+1. **✅ Nav mostraba "Usuarios" a roles sin gestión** (ej. RECEPTIONIST).
+   El backend ya rechazaba `GET /api/users` para esos roles
+   (`authorize(Roles.MANAGEMENT)`) — no había fuga de datos real, pero sí
+   un link a una pantalla rota. Commit `693b954` (appfrontend-main):
+   `managementOnly` en el nav, mismo criterio que `moduleKey`.
+2. **⚠️ Mail de invitación da 404 — causa raíz encontrada, requiere acción
+   del dueño, no de código.** El link se arma con `CORS_ORIGIN` (Render),
+   hoy apuntando a `https://reservasapp-teal.vercel.app` en vez de
+   `https://host.zuluhub.com.ar` (el dominio que se confirmó funcionando
+   hoy mismo con el fix del padrón ARCA). **Hay que actualizar esa
+   variable de entorno en el dashboard de Render** — no es algo que se
+   pueda arreglar desde el repo.
+3. **✅ Faltaban campos de usuario** (nombre completo, DNI, teléfono,
+   legajo, fecha de ingreso). Commits `d6ecb7a` (backend) y `16d8c4f`
+   (frontend): nombre/DNI/teléfono viven en `identities` (la persona,
+   compartida si trabaja en más de un negocio); legajo/fecha de ingreso
+   viven en `memberships` (el empleo en ESE negocio puntual).
+
+**Sigue pendiente:** el research amplio contra normativa nacional
+("evitar flujos ficticios sin aplicabilidad comercial") — nadie lo pidió
+puntualmente todavía en esta sesión, sigue siendo una sesión aparte.
 
 ### F3. ✅ RESUELTO (23/08/2026) — Auditar y remodelar el frontend "según estándar de innovación" (ex-E6)
 
