@@ -47,7 +47,10 @@ npm run test:watch
 npx vitest run --coverage
 
 # Tests de integración (requiere TEST_DATABASE_URL)
-TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres npx vitest run src/tests/integration
+# `npm test`/`vitest run` normal NUNCA los corre -- vitest.config.ts los
+# excluye siempre, incluso pasando este path explícito por CLI (hallazgo
+# real, 23/08/2026, pendientes-2026-08-23.md sección I). Config separada:
+TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres npm run test:integration
 ```
 
 ## Variables de entorno para integración

@@ -160,6 +160,25 @@ revocado a nivel Postgres. Corregir es contra-asentar.
 pago sin destino es un descuadre esperando. Todo importe se explica por
 otro registro.
 
+> **Corolario, de un bug real en producción (23/08/2026, verificación de
+> auditoría externa, pendientes-2026-08-23.md I1/I2):** un movimiento que
+> revierte a otro usa el signo OPUESTO del que revierte, nunca el mismo.
+> `getNetBalanceByCustomerId()` sumaba REFUND con el mismo signo que
+> PAYMENT (`-amount` los dos) — cobrar 1000 y reembolsar 1000 completo
+> dejaba un saldo de -2000, no 0, porque el reembolso duplicaba el débito
+> en vez de cancelarlo. Al mismo tiempo, `voidByReservationId()` anulaba
+> CUALQUIER fila PENDING/SETTLED de la reserva sin filtrar por `type` — un
+> PAYMENT ya cobrado (una seña) quedaba VOIDED junto con el CHARGE al
+> cancelar, silencioso. **Los dos bugs son la misma clase de error:
+> tratar un movimiento de DINERO QUE YA CAMBIÓ DE MANOS (PAYMENT/REFUND)
+> como si fuera una OBLIGACIÓN QUE TODAVÍA NO SE CONCRETÓ (CHARGE/
+> ADJUSTMENT PENDING).** Un pago recibido es un hecho histórico — nunca se
+> anula en silencio al cancelar lo que lo originó, solo se revierte con un
+> movimiento explícito de signo opuesto. Antes de agregar un `voidBy*`/
+> `cancelBy*` que anule "todo lo de la entidad padre", preguntarse: ¿esto
+> incluye filas de tipo PAYMENT/REFUND? Si sí, es casi seguro un error —
+> acotar el filtro por `type`.
+
 **A3.10 — Cobros idempotentes.** *Ya resuelto con `idempotencyKey` del
 cliente.*
 

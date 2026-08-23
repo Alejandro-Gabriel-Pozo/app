@@ -4,9 +4,15 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    // Tests de integración excluidos del run por defecto:
-    // requieren TEST_DATABASE_URL (BD postgres real).
-    // Correrlos con: TEST_DATABASE_URL=... npx vitest run src/tests/integration
+    // Tests de integración excluidos del run por defecto: requieren
+    // TEST_DATABASE_URL (BD postgres real). El `exclude` de acá abajo se
+    // aplica SIEMPRE, incluso pasando el path explícito por CLI -- el
+    // comentario viejo ("correrlos con: TEST_DATABASE_URL=... npx vitest
+    // run src/tests/integration") no funcionaba, `--exclude` tampoco lo
+    // pisa, solo lo suma (hallazgo real, 23/08/2026, pendientes-2026-08-23.md
+    // sección I, "lo que surgió" al escribir un test de integración nuevo
+    // para I1/I2). Correrlos de verdad con vitest.integration.config.ts,
+    // que no tiene esta exclusión: TEST_DATABASE_URL=... npm run test:integration
     include: ['src/**/*.test.ts'],
     exclude: [
       'src/tests/integration/**',
