@@ -526,6 +526,59 @@ DO $$ BEGIN
 END $$;
 
 -- ===========================================================================
+-- BLOQUE RESETEO DE CONTRASEÑA — password_reset_tokens (K1, 23/08/2026,
+-- pendientes-2026-08-23.md)
+-- ===========================================================================
+-- Mismo criterio que user_invitations (ver bloque de arriba): `token_hash`
+-- guarda el sha256 del token que se manda por mail, nunca el token en texto
+-- plano (security/password-reset-token.ts genera y hashea). `token_hash` es
+-- UNIQUE GLOBAL por el mismo motivo -- el token ES la credencial, resolverlo
+-- no depende de saber de antemano a qué negocio pertenece.
+--
+-- `identity_id`, no `membership_id`: la contraseña vive en la identity,
+-- compartida entre negocios si la persona trabaja en más de uno (mismo
+-- criterio que users.routes.ts, PUT /:id). `business_id` es solo
+-- trazabilidad -- qué negocio disparó el link -- no scope de acceso.
+--
+-- A lo sumo un PENDING por identity a la vez -- pedir un link nuevo rota la
+-- MISMA fila (uq_password_reset_tokens_identity_pending +
+-- upsertPasswordResetToken en platform.repository.ts), mismo patrón que
+-- reenviar una invitación. TTL de 24hs (más corto que los 7 días de
+-- invitación -- acá ya existe una cuenta activa, no hace falta la misma
+-- ventana larga). Sin columna REVOKED/EXPIRED a propósito -- "expirado" se
+-- calcula en el SELECT, mismo criterio que user_invitations.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id                        VARCHAR(255) PRIMARY KEY,
+  identity_id               VARCHAR(255) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+  requested_by_identity_id  VARCHAR(255) NOT NULL REFERENCES identities(id),
+  business_id               VARCHAR(255) NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  token_hash                VARCHAR(64)  NOT NULL,
+  status                    VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
+                              CHECK (status IN ('PENDING', 'USED')),
+  expires_at                TIMESTAMPTZ  NOT NULL,
+  used_at                   TIMESTAMPTZ,
+  created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_password_reset_tokens_token_hash
+  ON password_reset_tokens (token_hash);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_password_reset_tokens_identity_pending
+  ON password_reset_tokens (identity_id)
+  WHERE status = 'PENDING';
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'password_reset_tokens_updated_at') THEN
+    CREATE TRIGGER password_reset_tokens_updated_at
+      BEFORE UPDATE ON password_reset_tokens
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
 -- domain_events / financial_transactions — NO viven en esta BD
 -- ===========================================================================
 -- Estas dos tablas existieron acá hasta el 12/08/2026, con un comentario que

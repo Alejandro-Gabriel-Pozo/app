@@ -87,6 +87,33 @@ export function userInvitationEmail(
   };
 }
 
+export interface PasswordResetEmailParams {
+  businessDisplayName: string;
+  /** Ya armada por el caller (password-reset.routes.ts) — apunta al FRONTEND, no a esta API. */
+  resetUrl: string;
+  expiresInHours: number;
+}
+
+export function passwordResetEmail(
+  params: PasswordResetEmailParams,
+): { subject: string; html: string } {
+  const { businessDisplayName, resetUrl, expiresInHours } = params;
+
+  return {
+    subject: `Restablecer tu contraseña — ${businessDisplayName}`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
+        <h2 style="margin-bottom: 4px;">Restablecer tu contraseña</h2>
+        <p>Alguien de <strong>${escapeHtml(businessDisplayName)}</strong> pidió un link para restablecer tu contraseña.</p>
+        <p style="margin: 24px 0;">
+          <a href="${resetUrl}" style="background: #1a1a1a; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; display: inline-block;">Restablecer contraseña</a>
+        </p>
+        <p style="color: #666; font-size: 13px;">Este link vence en ${expiresInHours} horas. Si no lo pediste vos, ignorá este mail — tu contraseña actual sigue funcionando.</p>
+      </div>
+    `.trim(),
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')

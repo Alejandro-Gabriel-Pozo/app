@@ -3,11 +3,12 @@
  *
  * Permisos por endpoint:
  *
- * GET    /users          — MANAGEMENT (OWNER, ADMIN)
- * GET    /users/:id      — MANAGEMENT
- * POST   /users          — MANAGEMENT
- * PUT    /users/:id      — MANAGEMENT
- * DELETE /users/:id      — OWNER_ONLY (solo el propietario puede eliminar usuarios)
+ * GET    /users                        — MANAGEMENT (OWNER, ADMIN)
+ * GET    /users/:id                    — MANAGEMENT
+ * POST   /users                        — MANAGEMENT
+ * PUT    /users/:id                    — MANAGEMENT
+ * POST   /users/:id/password-reset-link — MANAGEMENT (K1, 23/08/2026 — manda un link, no fija la password a mano)
+ * DELETE /users/:id                    — OWNER_ONLY (solo el propietario puede eliminar usuarios)
  *
  * Nota: el rol OWNER no puede ser asignado desde la API — se asigna al crear
  * el negocio en la plataforma. El endpoint de creación lo rechaza explícitamente.
@@ -36,16 +37,28 @@
  * `PLAN_LIMITS`) con 503 PLATFORM_UNAVAILABLE si esa BD no responde.
  */
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { z, ZodError } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { authorize } from '../security/auth.middleware.js';
 import { Roles } from '../security/roles.js';
 import { hashPassword } from '../security/user.store.js';
+import { generatePasswordResetToken, hashPasswordResetToken } from '../security/password-reset-token.js';
+import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
+import { passwordResetEmail } from '../email/templates.js';
+import type { EmailSender } from '../email/email.sender.js';
 import type { PlatformRepository } from '../platform/platform.repository.js';
 import type { AppContainer } from '../container.js';
 import { PlanLimitError, RoleNotAvailableInPlanError } from '../domain/errors.js';
 import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
+
+/** K1 (23/08/2026) — más corto que los 7 días de invitación: acá ya existe una cuenta activa. */
+const PASSWORD_RESET_EXPIRES_HOURS = 24;
+const DEFAULT_SENDER_NAME = 'ZuluHub';
+
+function buildPasswordResetUrl(frontendUrl: string, token: string): string {
+  return `${frontendUrl}/restablecer-contrasena/confirmar?token=${encodeURIComponent(token)}`;
+}
 
 /**
  * `roleId` reemplaza el enum fijo `role` (14/08/2026, ver security/roles.ts
@@ -85,8 +98,30 @@ const UpdateUserBodySchema = z.object({
   hiredAt: z.coerce.date().optional(),
 });
 
-export function createUsersRouter(platformRepo: PlatformRepository, container: AppContainer): Router {
+export function createUsersRouter(
+  platformRepo: PlatformRepository,
+  container: AppContainer,
+  /** K1 (23/08/2026) — para POST /:id/password-reset-link, mismo patrón que user-invitation.routes.ts. */
+  emailSender: EmailSender,
+  frontendUrl: string,
+): Router {
   const router = Router();
+
+  async function dispatchPasswordResetEmail(req: Request, email: string, token: string): Promise<void> {
+    const profile = await new SqlBusinessProfileRepository(req.db!).get();
+    const { subject, html } = passwordResetEmail({
+      businessDisplayName: profile.displayName ?? DEFAULT_SENDER_NAME,
+      resetUrl:       buildPasswordResetUrl(frontendUrl, token),
+      expiresInHours: PASSWORD_RESET_EXPIRES_HOURS,
+    });
+    await emailSender.send({
+      to: email,
+      fromName: profile.displayName ?? DEFAULT_SENDER_NAME,
+      ...(profile.contactEmail && { replyTo: profile.contactEmail }),
+      subject,
+      html,
+    });
+  }
 
   // ── GET /users ─────────────────────────────────────────────────────────────
   router.get(
@@ -259,6 +294,29 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
         }
 
         if (body.password !== undefined) {
+          // K1 (23/08/2026, pendientes-2026-08-23.md) — jerarquía de rol:
+          // un MANAGEMENT no puede pisarle la contraseña a un OWNER (ni a
+          // otro MANAGEMENT) de una sola membership — antes solo se
+          // chequeaba identidad compartida entre negocios (ver comentario
+          // de abajo), sin mirar el rol del objetivo. Se usa
+          // permissionGroups (vía getRoleById), NO roleName — roleName es
+          // "solo para mostrar" (ver comentario en Membership más arriba
+          // en este archivo), los roles son configurables por negocio.
+          const targetRole = await platformRepo.getRoleById(member.roleId, businessId);
+          const targetIsProtected = Boolean(
+            targetRole?.permissionGroups.includes(Roles.OWNER_ONLY)
+            || targetRole?.permissionGroups.includes(Roles.MANAGEMENT),
+          );
+          const actorIsOwnerOnly = (req.user!.permissionGroups ?? []).includes(Roles.OWNER_ONLY);
+          if (targetIsProtected && !actorIsOwnerOnly) {
+            res.status(403).json({
+              code: 'ROLE_HIERARCHY_PROTECTED',
+              message: 'No podés cambiarle la contraseña a alguien de este rol directamente — ' +
+                'mandale un link de reseteo (POST /users/:id/password-reset-link).',
+            });
+            return;
+          }
+
           // La password vive en la identity, compartida entre TODOS los
           // negocios en los que esa persona es miembro. Si dejáramos que
           // cualquier ADMIN de CUALQUIER negocio la cambie sin más, un
@@ -301,6 +359,45 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
         }
         next(err);
       }
+    },
+  );
+
+  // ── POST /users/:id/password-reset-link — K1, 23/08/2026 ───────────────────
+  // Vía general para restablecer la contraseña de cualquier usuario (no
+  // solo el caso bloqueado por jerarquía más arriba) — es la propia
+  // persona la que la cambia al abrir el link, así que a diferencia de
+  // fijarla a mano acá NO aplica el chequeo de identidad compartida entre
+  // negocios (SHARED_IDENTITY_PASSWORD): ese chequeo existe para evitar que
+  // un admin la pise sin que la persona se entere, un link no tiene ese
+  // problema.
+  router.post(
+    '/:id/password-reset-link',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId as string;
+        const membershipId = req.params['id'] as string;
+
+        const member = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);
+        if (!member) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Usuario no encontrado' });
+          return;
+        }
+
+        const token = generatePasswordResetToken();
+        const resetToken = await platformRepo.upsertPasswordResetToken({
+          id: randomUUID(),
+          identityId: member.identityId,
+          requestedByIdentityId: req.user!.id,
+          businessId,
+          tokenHash: hashPasswordResetToken(token),
+          expiresAt: new Date(Date.now() + PASSWORD_RESET_EXPIRES_HOURS * 60 * 60 * 1000),
+        });
+
+        await dispatchPasswordResetEmail(req, resetToken.identityEmail, token);
+
+        res.status(204).send();
+      } catch (err) { next(err); }
     },
   );
 

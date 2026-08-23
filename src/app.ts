@@ -46,6 +46,7 @@ import { createCategoryRouter }          from './reservas/categories.routes.js';
 import { createAuditLogRouter }          from './api/routes/audit-log.routes.js';
 import { createUsersRouter }             from './usuarios-roles/users.routes.js';
 import { createUserInvitationsRouter, createInvitationAcceptanceRouter } from './usuarios-roles/user-invitation.routes.js';
+import { createPasswordResetAcceptanceRouter } from './usuarios-roles/password-reset.routes.js';
 import { createRolesRouter }             from './usuarios-roles/roles.routes.js';
 import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
@@ -222,6 +223,12 @@ export async function createApp(): Promise<{
   // de plataforma) — el token de la invitación es la única credencial.
   app.use('/api/invitations', createInvitationAcceptanceRouter(platformRepo, container));
 
+  // /api/password-resets — aceptar un link de reseteo de contraseña (K1,
+  // 23/08/2026, pendientes-2026-08-23.md). PÚBLICO, mismo motivo que
+  // /api/invitations: quien todavía no puso su contraseña nueva no tiene
+  // ningún JWT.
+  app.use('/api/password-resets', createPasswordResetAcceptanceRouter(platformRepo));
+
   // authenticate() — protege /api/* desde aquí. Se le pasa
   // resolveMembershipContext (14/08/2026, reemplaza al viejo chequeo
   // booleano de memberships.active) para que además de la revocación
@@ -273,7 +280,7 @@ export async function createApp(): Promise<{
   // /api/users tiene GET/PUT /:id — montado primero, "invitations"
   // matchearía ese :id y nunca llegaría a este router.
   app.use('/api/users/invitations', createUserInvitationsRouter(platformRepo, container, createEmailSender(), frontendUrl));
-  app.use('/api/users',             createUsersRouter(platformRepo, container));
+  app.use('/api/users',             createUsersRouter(platformRepo, container, createEmailSender(), frontendUrl));
   app.use('/api/roles',             createRolesRouter(platformRepo));
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));

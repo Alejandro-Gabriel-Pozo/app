@@ -182,6 +182,36 @@ export interface CreateUserInvitationInput {
 }
 
 // ---------------------------------------------------------------------------
+// Reseteo de contraseña — K1, 23/08/2026, pendientes-2026-08-23.md. Ver
+// BLOQUE RESETEO DE CONTRASEÑA en platform.schema.sql para la clasificación
+// y el razonamiento completo (mismo criterio que UserInvitation de arriba).
+// ---------------------------------------------------------------------------
+
+export type PasswordResetTokenStatus = 'PENDING' | 'USED';
+
+export interface PasswordResetToken {
+  id: string;
+  identityId: string;
+  /** Email de la identity objetivo — join, para el preview del lookup público. */
+  identityEmail: string;
+  requestedByIdentityId: string;
+  businessId: string;
+  status: PasswordResetTokenStatus;
+  expiresAt: Date;
+  usedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface UpsertPasswordResetTokenInput {
+  id: string;
+  identityId: string;
+  requestedByIdentityId: string;
+  businessId: string;
+  tokenHash: string;
+  expiresAt: Date;
+}
+
+// ---------------------------------------------------------------------------
 // Repositorio
 // ---------------------------------------------------------------------------
 
@@ -903,6 +933,67 @@ export class PlatformRepository {
   }
 
   // -------------------------------------------------------------------------
+  // Reseteo de contraseña — K1, 23/08/2026, pendientes-2026-08-23.md
+  // -------------------------------------------------------------------------
+
+  /**
+   * A lo sumo un token PENDING por identity (R13, mismo criterio que
+   * invitaciones) — pedir un link nuevo rota la MISMA fila en vez de
+   * insertar una segunda. `ON CONFLICT` sobre el índice parcial
+   * `uq_password_reset_tokens_identity_pending` hace esto atómico (evita el
+   * read-then-write que sí tiene el flujo de invitaciones, A8.3).
+   */
+  async upsertPasswordResetToken(input: UpsertPasswordResetTokenInput): Promise<PasswordResetToken> {
+    const result = await this.db.query<PasswordResetTokenJoinRow>(
+      `WITH upserted AS (
+         INSERT INTO password_reset_tokens
+           (id, identity_id, requested_by_identity_id, business_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (identity_id) WHERE status = 'PENDING'
+         DO UPDATE SET token_hash = EXCLUDED.token_hash,
+                        requested_by_identity_id = EXCLUDED.requested_by_identity_id,
+                        business_id = EXCLUDED.business_id,
+                        expires_at = EXCLUDED.expires_at
+         RETURNING id, identity_id, requested_by_identity_id, business_id, status, expires_at, used_at, created_at
+       )
+       SELECT u.*, i.email AS identity_email
+       FROM upserted u
+       JOIN identities i ON i.id = u.identity_id`,
+      [input.id, input.identityId, input.requestedByIdentityId, input.businessId, input.tokenHash, input.expiresAt],
+    );
+    return this.rowToPasswordResetToken(result.rows[0]!);
+  }
+
+  /**
+   * Resuelve un token de reseteo por el hash que llega en el link del mail —
+   * SIN filtro de businessId, mismo criterio que findInvitationByTokenHash
+   * (el token ES la credencial). El caller valida `status`/`expiresAt`.
+   */
+  async findPasswordResetTokenByHash(tokenHash: string): Promise<PasswordResetToken | undefined> {
+    const result = await this.db.query<PasswordResetTokenJoinRow>(
+      `SELECT prt.id, prt.identity_id, prt.requested_by_identity_id, prt.business_id,
+              prt.status, prt.expires_at, prt.used_at, prt.created_at,
+              i.email AS identity_email
+       FROM password_reset_tokens prt
+       JOIN identities i ON i.id = prt.identity_id
+       WHERE prt.token_hash = $1`,
+      [tokenHash],
+    );
+    return result.rows[0] ? this.rowToPasswordResetToken(result.rows[0]) : undefined;
+  }
+
+  /** Terminal — un token usado no vuelve a PENDING (mismo criterio que invitaciones ACCEPTED). */
+  async markPasswordResetTokenUsed(id: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE password_reset_tokens
+       SET status = 'USED', used_at = NOW()
+       WHERE id = $1 AND status = 'PENDING'`,
+      [id],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  // -------------------------------------------------------------------------
   // Mappers
   // -------------------------------------------------------------------------
 
@@ -992,6 +1083,20 @@ export class PlatformRepository {
       createdAt: new Date(row.created_at),
     };
   }
+
+  private rowToPasswordResetToken(row: PasswordResetTokenJoinRow): PasswordResetToken {
+    return {
+      id: row.id,
+      identityId: row.identity_id,
+      identityEmail: row.identity_email,
+      requestedByIdentityId: row.requested_by_identity_id,
+      businessId: row.business_id,
+      status: row.status as PasswordResetTokenStatus,
+      expiresAt: new Date(row.expires_at),
+      usedAt: row.used_at ? new Date(row.used_at) : null,
+      createdAt: new Date(row.created_at),
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,5 +1160,17 @@ interface UserInvitationJoinRow {
   expires_at: string;
   accepted_at: string | null;
   revoked_at: string | null;
+  created_at: string;
+}
+
+interface PasswordResetTokenJoinRow {
+  id: string;
+  identity_id: string;
+  identity_email: string;
+  requested_by_identity_id: string;
+  business_id: string;
+  status: string;
+  expires_at: string;
+  used_at: string | null;
   created_at: string;
 }
