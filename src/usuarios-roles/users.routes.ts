@@ -56,17 +56,33 @@ import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
  * comentario en POST más abajo) y roles de otro negocio/inexistentes con
  * 404 en vez de aceptarlos en silencio.
  */
+// F2 (23/08/2026, pendientes-2026-08-23.md) — fullName/dni/phone son de la
+// IDENTITY (la persona, compartida entre negocios si trabaja en más de
+// uno); employeeNumber/hiredAt son de la MEMBERSHIP (el empleo en ESTE
+// negocio puntual). Ver docblock de Identity/Membership en
+// platform.repository.ts para el razonamiento completo. Todos opcionales
+// -- ninguno se pedía hasta ahora, no se vuelven obligatorios de golpe.
 const CreateUserBodySchema = z.object({
   email: z.string({ required_error: 'email es obligatorio' }).email(),
   password: z.string({ required_error: 'password es obligatorio' }).min(8, {
     message: 'password debe tener al menos 8 caracteres',
   }),
   roleId: z.string({ required_error: 'roleId es obligatorio' }).min(1),
+  fullName: z.string().trim().min(1).optional(),
+  dni: z.string().trim().min(1).max(20).optional(),
+  phone: z.string().trim().min(1).max(30).optional(),
+  employeeNumber: z.string().trim().min(1).max(50).optional(),
+  hiredAt: z.coerce.date().optional(),
 });
 
 const UpdateUserBodySchema = z.object({
   roleId: z.string().min(1).optional(),
   password: z.string().min(8, { message: 'password debe tener al menos 8 caracteres' }).optional(),
+  fullName: z.string().trim().min(1).optional(),
+  dni: z.string().trim().min(1).max(20).optional(),
+  phone: z.string().trim().min(1).max(30).optional(),
+  employeeNumber: z.string().trim().min(1).max(50).optional(),
+  hiredAt: z.coerce.date().optional(),
 });
 
 export function createUsersRouter(platformRepo: PlatformRepository, container: AppContainer): Router {
@@ -176,6 +192,9 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
           id: randomUUID(),
           email: body.email,
           passwordHash: await hashPassword(body.password),
+          fullName: body.fullName,
+          dni: body.dni,
+          phone: body.phone,
         });
 
         const member = await platformRepo.createMembership({
@@ -183,9 +202,11 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
           identityId: identity.id,
           businessId,
           roleId: role.id,
+          employeeNumber: body.employeeNumber,
+          hiredAt: body.hiredAt,
         });
 
-        res.status(201).json({ ...member, email: identity.email });
+        res.status(201).json({ ...member, email: identity.email, fullName: identity.fullName, dni: identity.dni, phone: identity.phone });
       } catch (err) {
         if (err instanceof ZodError) {
           res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
@@ -254,6 +275,21 @@ export function createUsersRouter(platformRepo: PlatformRepository, container: A
             return;
           }
           await platformRepo.updateIdentityPassword(member.identityId, await hashPassword(body.password));
+        }
+
+        if (body.fullName !== undefined || body.dni !== undefined || body.phone !== undefined) {
+          await platformRepo.updateIdentityProfile(member.identityId, {
+            fullName: body.fullName,
+            dni: body.dni,
+            phone: body.phone,
+          });
+        }
+
+        if (body.employeeNumber !== undefined || body.hiredAt !== undefined) {
+          await platformRepo.updateMembershipEmployment(membershipId, {
+            employeeNumber: body.employeeNumber,
+            hiredAt: body.hiredAt,
+          });
         }
 
         const updated = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);

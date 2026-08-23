@@ -138,6 +138,16 @@ ALTER TABLE identities ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_identities_google_sub
   ON identities (google_sub) WHERE google_sub IS NOT NULL;
 
+-- F2 (23/08/2026, pendientes-2026-08-23.md) — datos de la PERSONA, no del
+-- empleo puntual (van acá y no en `memberships` porque una identity puede
+-- trabajar en más de un negocio con el mismo nombre/DNI/teléfono; el
+-- legajo y la fecha de ingreso SÍ son por empleo, ver más abajo en
+-- `memberships`). Todos nullable -- ninguno se pedía hasta ahora, identities
+-- existentes quedan sin completar hasta que un admin los cargue.
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS full_name VARCHAR(255);
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS dni       VARCHAR(20);
+ALTER TABLE identities ADD COLUMN IF NOT EXISTS phone     VARCHAR(30);
+
 CREATE TABLE IF NOT EXISTS memberships (
   id            VARCHAR(255) PRIMARY KEY,
   identity_id   VARCHAR(255) NOT NULL
@@ -176,6 +186,15 @@ ALTER TABLE memberships
 CREATE INDEX IF NOT EXISTS idx_memberships_identity
   ON memberships (identity_id)
   WHERE active = TRUE;
+
+-- F2 (23/08/2026, pendientes-2026-08-23.md) — legajo y fecha de ingreso
+-- son del EMPLEO en ESTE negocio, no de la persona (a diferencia de
+-- full_name/dni/phone en `identities` arriba) -- la misma identity puede
+-- tener un legajo distinto en cada negocio donde trabaja. Nullable + sin
+-- unicidad forzada: es un dato administrativo interno de cada negocio, no
+-- un identificador con el que el sistema resuelva nada.
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS employee_number VARCHAR(50);
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS hired_at        DATE;
 
 CREATE INDEX IF NOT EXISTS idx_memberships_business
   ON memberships (business_id);

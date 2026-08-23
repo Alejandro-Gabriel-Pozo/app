@@ -53,7 +53,8 @@ function makeRole(overrides: Partial<Role> = {}): Role {
 function makeMembership(overrides: Partial<Membership> = {}): Membership {
   return {
     id: 'mem-1', identityId: 'ident-1', businessId: 'biz-1', businessName: 'Biz Test',
-    roleId: 'role-admin', roleName: 'ADMIN', active: true, createdAt: now,
+    roleId: 'role-admin', roleName: 'ADMIN', active: true,
+    employeeNumber: null, hiredAt: null, createdAt: now,
     ...overrides,
   };
 }

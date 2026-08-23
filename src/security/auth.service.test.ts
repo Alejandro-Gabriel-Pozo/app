@@ -141,9 +141,9 @@ describe('AuthService.loginWithGoogle()', () => {
   }
 
   it('primera vez: matchea por email, vincula el sub y emite el token tenant-scoped', async () => {
-    repo.identities.set('identity-1', { id: 'identity-1', email: 'admin@demo.com', passwordHash: 'x', googleSub: null, createdAt: new Date() });
+    repo.identities.set('identity-1', { id: 'identity-1', email: 'admin@demo.com', passwordHash: 'x', googleSub: null, fullName: null, dni: null, phone: null, createdAt: new Date() });
     repo.memberships.set('identity-1', [
-      { id: 'm1', identityId: 'identity-1', businessId: 'biz-1', businessName: 'Demo', roleId: 'r1', roleName: 'ADMIN', active: true, createdAt: new Date() },
+      { id: 'm1', identityId: 'identity-1', businessId: 'biz-1', businessName: 'Demo', roleId: 'r1', roleName: 'ADMIN', active: true, employeeNumber: null, hiredAt: null, createdAt: new Date() },
     ]);
 
     const service = new AuthService(repo as unknown as PlatformRepository);
@@ -154,9 +154,9 @@ describe('AuthService.loginWithGoogle()', () => {
   });
 
   it('siguientes veces: matchea directo por google_sub, sin volver a vincular', async () => {
-    repo.identities.set('identity-1', { id: 'identity-1', email: 'admin@demo.com', passwordHash: 'x', googleSub: 'google-sub-1', createdAt: new Date() });
+    repo.identities.set('identity-1', { id: 'identity-1', email: 'admin@demo.com', passwordHash: 'x', googleSub: 'google-sub-1', fullName: null, dni: null, phone: null, createdAt: new Date() });
     repo.memberships.set('identity-1', [
-      { id: 'm1', identityId: 'identity-1', businessId: 'biz-1', businessName: 'Demo', roleId: 'r1', roleName: 'ADMIN', active: true, createdAt: new Date() },
+      { id: 'm1', identityId: 'identity-1', businessId: 'biz-1', businessName: 'Demo', roleId: 'r1', roleName: 'ADMIN', active: true, employeeNumber: null, hiredAt: null, createdAt: new Date() },
     ]);
 
     const service = new AuthService(repo as unknown as PlatformRepository);

@@ -164,3 +164,64 @@ describe('PlatformRepository.getPlanLimits()', () => {
     expect(limits).toBeUndefined();
   });
 });
+
+/**
+ * F2 (23/08/2026, pendientes-2026-08-23.md) — fullName/dni/phone son de la
+ * IDENTITY (la persona), employeeNumber/hiredAt son de la MEMBERSHIP (el
+ * empleo en ese negocio). Guardia de que cada campo se escribe en la tabla
+ * correcta, no en la otra.
+ */
+class RecordingSqlClient implements SqlClient {
+  calls: RecordedInsert[] = [];
+
+  async query<T = unknown>(sql: string, params: unknown[] = []): Promise<{ rows: T[]; rowCount?: number }> {
+    this.calls.push({ sql, params });
+    return { rows: [{}] as T[], rowCount: 1 };
+  }
+}
+
+describe('PlatformRepository — perfil de identity vs. empleo de membership (F2)', () => {
+  it('createIdentity() inserta full_name/dni/phone en identities', async () => {
+    const db = new RecordingSqlClient();
+    await new PlatformRepository(db).createIdentity({
+      id: 'ident-1', email: 'a@b.com', passwordHash: 'x',
+      fullName: 'Ana Gómez', dni: '30111222', phone: '+54 11 5555-5555',
+    });
+
+    const call = db.calls[0]!;
+    expect(call.sql).toContain('INSERT INTO identities');
+    expect(call.sql).toContain('full_name');
+    expect(call.params).toEqual(['ident-1', 'a@b.com', 'x', 'Ana Gómez', '30111222', '+54 11 5555-5555']);
+  });
+
+  it('createMembership() inserta employee_number/hired_at en memberships, no en identities', async () => {
+    const db = new RecordingSqlClient();
+    const hiredAt = new Date('2026-01-15');
+    await new PlatformRepository(db).createMembership({
+      id: 'mem-1', identityId: 'ident-1', businessId: 'biz-1', roleId: 'role-1',
+      employeeNumber: 'LEG-042', hiredAt,
+    });
+
+    const call = db.calls[0]!;
+    expect(call.sql).toContain('INSERT INTO memberships');
+    expect(call.sql).toContain('employee_number');
+    expect(call.sql).not.toContain('full_name');
+    expect(call.params).toEqual(['mem-1', 'ident-1', 'biz-1', 'role-1', 'LEG-042', hiredAt]);
+  });
+
+  it('updateIdentityProfile() solo actualiza los campos provistos', async () => {
+    const db = new RecordingSqlClient();
+    await new PlatformRepository(db).updateIdentityProfile('ident-1', { fullName: 'Nuevo Nombre' });
+
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0]!.sql).toContain('UPDATE identities SET full_name');
+  });
+
+  it('updateMembershipEmployment() solo actualiza los campos provistos', async () => {
+    const db = new RecordingSqlClient();
+    await new PlatformRepository(db).updateMembershipEmployment('mem-1', { employeeNumber: 'LEG-099' });
+
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0]!.sql).toContain('UPDATE memberships SET employee_number');
+  });
+});

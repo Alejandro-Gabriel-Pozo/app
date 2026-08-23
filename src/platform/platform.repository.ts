@@ -56,6 +56,10 @@ export interface Identity {
   passwordHash: string;
   /** Login con Google (punto 5/E5) — null hasta que se vincule. */
   googleSub: string | null;
+  /** F2 (23/08/2026) — datos de la persona, no del empleo (ver `Membership.employeeNumber`/`hiredAt`). Null hasta que un admin los carga. */
+  fullName: string | null;
+  dni: string | null;
+  phone: string | null;
   createdAt: Date;
 }
 
@@ -63,6 +67,15 @@ export interface CreateIdentityInput {
   id: string;
   email: string;
   passwordHash: string;
+  fullName?: string | null | undefined;
+  dni?: string | null | undefined;
+  phone?: string | null | undefined;
+}
+
+export interface UpdateIdentityProfileInput {
+  fullName?: string | null | undefined;
+  dni?: string | null | undefined;
+  phone?: string | null | undefined;
 }
 
 export interface Membership {
@@ -75,6 +88,9 @@ export interface Membership {
   /** Nombre del rol (roles.name), solo para mostrar — no se usa para autorizar */
   roleName: string;
   active: boolean;
+  /** F2 (23/08/2026) — del EMPLEO en este negocio, no de la persona (ver `Identity.fullName`/`dni`/`phone`). Null hasta que un admin los carga. */
+  employeeNumber: string | null;
+  hiredAt: Date | null;
   createdAt: Date;
 }
 
@@ -83,6 +99,21 @@ export interface CreateMembershipInput {
   identityId: string;
   businessId: string;
   roleId: string;
+  employeeNumber?: string | null | undefined;
+  hiredAt?: Date | null | undefined;
+}
+
+export interface UpdateMembershipEmploymentInput {
+  employeeNumber?: string | null | undefined;
+  hiredAt?: Date | null | undefined;
+}
+
+/** F2 (23/08/2026) — membership + los datos de la identity que ABM/usuarios necesita mostrar (nunca passwordHash). */
+export interface MembershipWithIdentity extends Membership {
+  email: string;
+  fullName: string | null;
+  dni: string | null;
+  phone: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,10 +488,10 @@ export class PlatformRepository {
 
   async createIdentity(input: CreateIdentityInput): Promise<Identity> {
     const result = await this.db.query<IdentityRow>(
-      `INSERT INTO identities (id, email, password_hash)
-       VALUES ($1, $2, $3)
+      `INSERT INTO identities (id, email, password_hash, full_name, dni, phone)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [input.id, input.email.toLowerCase(), input.passwordHash],
+      [input.id, input.email.toLowerCase(), input.passwordHash, input.fullName ?? null, input.dni ?? null, input.phone ?? null],
     );
     return this.rowToIdentity(result.rows[0]!);
   }
@@ -472,20 +503,43 @@ export class PlatformRepository {
     );
   }
 
+  /** F2 (23/08/2026) — solo los campos que se pasan explícitamente se tocan (mismo criterio que UpdateUserBodySchema en users.routes.ts). */
+  async updateIdentityProfile(identityId: string, input: UpdateIdentityProfileInput): Promise<void> {
+    if (input.fullName !== undefined) {
+      await this.db.query('UPDATE identities SET full_name = $1, updated_at = NOW() WHERE id = $2', [input.fullName, identityId]);
+    }
+    if (input.dni !== undefined) {
+      await this.db.query('UPDATE identities SET dni = $1, updated_at = NOW() WHERE id = $2', [input.dni, identityId]);
+    }
+    if (input.phone !== undefined) {
+      await this.db.query('UPDATE identities SET phone = $1, updated_at = NOW() WHERE id = $2', [input.phone, identityId]);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Memberships — "a qué negocio pertenecés y con qué rol"
   // -------------------------------------------------------------------------
 
   async createMembership(input: CreateMembershipInput): Promise<Membership> {
     const result = await this.db.query<MembershipJoinRow>(
-      `INSERT INTO memberships (id, identity_id, business_id, role_id)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, identity_id, business_id, role_id, active, created_at,
+      `INSERT INTO memberships (id, identity_id, business_id, role_id, employee_number, hired_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, identity_id, business_id, role_id, active, employee_number, hired_at, created_at,
          (SELECT name FROM businesses WHERE id = $3) AS business_name,
          (SELECT name FROM roles WHERE id = $4) AS role_name`,
-      [input.id, input.identityId, input.businessId, input.roleId],
+      [input.id, input.identityId, input.businessId, input.roleId, input.employeeNumber ?? null, input.hiredAt ?? null],
     );
     return this.rowToMembership(result.rows[0]!);
+  }
+
+  /** F2 (23/08/2026) — legajo/fecha de ingreso son del empleo, no de la persona (ver `updateIdentityProfile`). */
+  async updateMembershipEmployment(membershipId: string, input: UpdateMembershipEmploymentInput): Promise<void> {
+    if (input.employeeNumber !== undefined) {
+      await this.db.query('UPDATE memberships SET employee_number = $1, updated_at = NOW() WHERE id = $2', [input.employeeNumber, membershipId]);
+    }
+    if (input.hiredAt !== undefined) {
+      await this.db.query('UPDATE memberships SET hired_at = $1, updated_at = NOW() WHERE id = $2', [input.hiredAt, membershipId]);
+    }
   }
 
   /**
@@ -494,7 +548,7 @@ export class PlatformRepository {
    */
   async findActiveMembershipsByIdentityId(identityId: string): Promise<Membership[]> {
     const result = await this.db.query<MembershipJoinRow>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
               b.name AS business_name, r.name AS role_name
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
@@ -508,7 +562,7 @@ export class PlatformRepository {
 
   async findMembership(identityId: string, businessId: string): Promise<Membership | undefined> {
     const result = await this.db.query<MembershipJoinRow>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
               b.name AS business_name, r.name AS role_name
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
@@ -544,10 +598,10 @@ export class PlatformRepository {
    * Lista las membresías (con email de la identity) de un negocio.
    * Solo para uso del ADMIN del negocio — no expone passwordHash.
    */
-  async listMembershipsByBusiness(businessId: string): Promise<(Membership & { email: string })[]> {
-    const result = await this.db.query<MembershipJoinRow & { email: string }>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
-              b.name AS business_name, r.name AS role_name, i.email
+  async listMembershipsByBusiness(businessId: string): Promise<MembershipWithIdentity[]> {
+    const result = await this.db.query<MembershipJoinRow & IdentityProfileColumns>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
+              b.name AS business_name, r.name AS role_name, i.email, i.full_name, i.dni, i.phone
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
        JOIN roles r ON r.id = m.role_id
@@ -556,7 +610,7 @@ export class PlatformRepository {
        ORDER BY m.created_at ASC`,
       [businessId],
     );
-    return result.rows.map((r) => ({ ...this.rowToMembership(r), email: r.email }));
+    return result.rows.map((r) => this.rowToMembershipWithIdentity(r));
   }
 
   /**
@@ -567,10 +621,10 @@ export class PlatformRepository {
   async findMembershipByIdAndBusiness(
     membershipId: string,
     businessId: string,
-  ): Promise<(Membership & { email: string }) | undefined> {
-    const result = await this.db.query<MembershipJoinRow & { email: string }>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.created_at,
-              b.name AS business_name, r.name AS role_name, i.email
+  ): Promise<MembershipWithIdentity | undefined> {
+    const result = await this.db.query<MembershipJoinRow & IdentityProfileColumns>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
+              b.name AS business_name, r.name AS role_name, i.email, i.full_name, i.dni, i.phone
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
        JOIN roles r ON r.id = m.role_id
@@ -578,7 +632,7 @@ export class PlatformRepository {
        WHERE m.id = $1 AND m.business_id = $2`,
       [membershipId, businessId],
     );
-    return result.rows[0] ? { ...this.rowToMembership(result.rows[0]), email: result.rows[0]!.email } : undefined;
+    return result.rows[0] ? this.rowToMembershipWithIdentity(result.rows[0]) : undefined;
   }
 
   /**
@@ -876,6 +930,9 @@ export class PlatformRepository {
       email: row.email,
       passwordHash: row.password_hash,
       googleSub: row.google_sub,
+      fullName: row.full_name,
+      dni: row.dni,
+      phone: row.phone,
       createdAt: new Date(row.created_at),
     };
   }
@@ -889,7 +946,19 @@ export class PlatformRepository {
       roleId: row.role_id,
       roleName: row.role_name,
       active: row.active,
+      employeeNumber: row.employee_number,
+      hiredAt: row.hired_at ? new Date(row.hired_at) : null,
       createdAt: new Date(row.created_at),
+    };
+  }
+
+  private rowToMembershipWithIdentity(row: MembershipJoinRow & IdentityProfileColumns): MembershipWithIdentity {
+    return {
+      ...this.rowToMembership(row),
+      email: row.email,
+      fullName: row.full_name,
+      dni: row.dni,
+      phone: row.phone,
     };
   }
 
@@ -934,6 +1003,9 @@ interface IdentityRow {
   email: string;
   password_hash: string;
   google_sub: string | null;
+  full_name: string | null;
+  dni: string | null;
+  phone: string | null;
   created_at: string;
 }
 
@@ -945,7 +1017,17 @@ interface MembershipJoinRow {
   role_id: string;
   role_name: string;
   active: boolean;
+  employee_number: string | null;
+  hired_at: string | null;
   created_at: string;
+}
+
+/** Columnas de `identities` que se agregan a un JOIN de membership cuando hace falta mostrar el perfil (F2, 23/08/2026). */
+interface IdentityProfileColumns {
+  email: string;
+  full_name: string | null;
+  dni: string | null;
+  phone: string | null;
 }
 
 interface RoleJoinRow {
