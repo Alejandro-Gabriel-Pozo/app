@@ -257,13 +257,16 @@ se resolvieron:
    (`authorize(Roles.MANAGEMENT)`) — no había fuga de datos real, pero sí
    un link a una pantalla rota. Commit `693b954` (appfrontend-main):
    `managementOnly` en el nav, mismo criterio que `moduleKey`.
-2. **⚠️ Mail de invitación da 404 — causa raíz encontrada, requiere acción
-   del dueño, no de código.** El link se arma con `CORS_ORIGIN` (Render),
-   hoy apuntando a `https://reservasapp-teal.vercel.app` en vez de
-   `https://host.zuluhub.com.ar` (el dominio que se confirmó funcionando
-   hoy mismo con el fix del padrón ARCA). **Hay que actualizar esa
-   variable de entorno en el dashboard de Render** — no es algo que se
-   pueda arreglar desde el repo.
+2. **✅ RESUELTO (23/08/2026) — Mail de invitación daba 404.** Causa raíz:
+   el link se arma con `CORS_ORIGIN` (Render), que apuntaba a
+   `https://reservasapp-teal.vercel.app` en vez de
+   `https://host.zuluhub.com.ar`. **El dueño ya actualizó esa variable de
+   entorno en el dashboard de Render** — confirmado por el dueño
+   (23/08/2026), ahora apunta a `host.zuluhub.com.ar`. No requería cambio
+   de código. **Sin confirmar todavía:** probar el flujo completo de
+   invitación end-to-end (mandar una invitación real y que el link abra
+   bien) — el dueño solo confirmó el cambio de la variable, no el flujo
+   completo probado de punta a punta.
 3. **✅ Faltaban campos de usuario** (nombre completo, DNI, teléfono,
    legajo, fecha de ingreso). Commits `d6ecb7a` (backend) y `16d8c4f`
    (frontend): nombre/DNI/teléfono viven en `identities` (la persona,
@@ -507,6 +510,324 @@ Detalle completo del razonamiento en el mensaje del commit.
   archivos de integración sin `TEST_DATABASE_URL`; la suite default
   (`npm test`) sigue excluyéndolos igual que antes (926 tests, sin
   cambios).
+
+## J. Bugs reportados por diagnóstico externo (23/08/2026) — ✅ IMPLEMENTADO Y VERIFICADO (23/08/2026)
+
+**J1, J2 y J3 implementados en esta sesión** (plan formal, `AskUserQuestion`
+para las decisiones abiertas que quedaban: tolerancia de J1 = 5 minutos,
+mismo guard también en `updateReservation()`, J2 por instante exacto). Suite
+completa de `app-main` verde (961 tests) y `tsc --noEmit` limpio después de
+cada bloque. **No se corrigió tal cual proponía el diagnóstico externo en
+J3** — un agente de exploración encontró que hoy sí existen tareas de
+housekeeping planificadas a futuro (uso legítimo), así que un
+`ORDER BY scheduled_for DESC` ingenuo (como proponía el informe) dejaría que
+una tarea de mantenimiento programada para la semana que viene tape un
+OUT_OF_SERVICE vigente de hoy — el fix real filtra `scheduled_for <= NOW()`
+antes de ordenar. **Sin commitear todavía** — queda para que el dueño revise
+el diff y pida el commit.
+
+Informe completo (no código, solo diagnóstico) hecho por otra sesión de
+Claude sobre un zip de `app-main` (posiblemente no el HEAD actual — **hay
+que reverificar cada referencia de línea contra el código real antes de
+aplicar nada**). Archivo fuente completo:
+`C:\Users\Usuario\Downloads\23082026claude\` (el `.md` del reporte no se
+guardó ahí como archivo aparte, pegado en el chat de la sesión del 23/08).
+Reportado por el dueño en base a bugs reales que encontró usando la app.
+
+### J1. ✅ RESUELTO — Reserva con `startTime` ya pasado
+
+`ReservationService.createReservation()`
+(`src/reservas/reservation.service.ts`) no valida que `params.startTime`
+no sea anterior a "ahora" — se puede cargar una reserva en el pasado sin
+ningún aviso. `assertValidTimeRange()` (`src/reservas/availability.ts`)
+solo chequea `start < end`.
+
+**Por qué el guard NO va en el constructor de `Reservation`:**
+`Reservation.restore()` comparte el constructor privado con la creación
+nueva — un guard ahí rompería la rehidratación de cualquier reserva
+histórica leída desde la base (prácticamente todas). Va en la capa de
+caso de uso (`createReservation()`), no en la entidad.
+
+**Fix propuesto (sin aplicar):** guard con tolerancia (~2 min, valor
+arbitrario a confirmar) + reloj inyectable (`now: () => Date` opcional en
+el constructor de `ReservationService`, default `() => new Date()`) para
+no romper los ~71 tests existentes con fechas fijas ya pasadas respecto a
+hoy. Requiere tocar 7 sitios de `new ReservationService(...)` en
+`reservation.service.test.ts` para pasarles un reloj fijo — no las líneas
+de fecha individuales.
+
+**Decisión abierta para el dueño:** ¿`updateReservation()` (drag-to-move
+del calendario) necesita el mismo guard, o hay casos legítimos de editar
+una reserva pasada para corregir un dato histórico?
+
+### J2. ✅ RESUELTO — Housekeeping: tarea con `scheduledFor` ya pasado
+
+Mismo patrón que J1: `CreateHousekeepingTaskSchema` solo valida formato
+ISO 8601, no que sea futuro; `HousekeepingTask.create()`
+(`src/pms-estadias/housekeeping-task.ts`) tampoco valida fecha. Fix
+propuesto: guard en `create()` (no en `restore()`, mismo motivo que J1) —
+acá el volumen de tests afectados es mucho menor (un solo test directo con
+fecha fija ya pasada).
+
+**Decisión abierta para el dueño:** ¿comparar instante exacto o "día de
+negocio" (criterio A4.4)? Con instante exacto, una tarea cargada para "la
+tarde de hoy" después de que pasó la mañana podría rechazarse si
+`scheduledFor` no lleva componente horario real.
+
+### J3. ✅ RESUELTO — Housekeeping: "fuera de servicio" no se podía volver a habilitar
+
+**No es que falte el endpoint** — `HousekeepingTask.resetToPending()` y
+`POST /housekeeping/:id/reset` (rol `MANAGEMENT`) ya existen y funcionan.
+
+**Causa raíz real:** `HousekeepingRepository.isOutOfService(resourceId)`
+(SQL y su espejo in-memory) hace `WHERE resource_id=$1 AND
+status='OUT_OF_SERVICE' LIMIT 1` sin filtrar por fecha ni quedarse con la
+tarea más reciente — **cualquier tarea de cualquier día que alguna vez
+quedó en `OUT_OF_SERVICE` sin resetear bloquea el recurso para siempre**,
+aunque exista una tarea más nueva en `PENDING`. Como el tablero filtra por
+fecha, esa tarea vieja deja de verse → parece que no hay forma de
+revertir, aunque el reset sobre la tarea correcta funciona bien.
+
+**Fix propuesto (sin aplicar):** que `isOutOfService` mire solo la tarea
+más reciente (`ORDER BY scheduled_for DESC, updated_at DESC LIMIT 1`) en
+vez de "¿existió alguna vez una fila OUT_OF_SERVICE". **Riesgo a revisar
+antes de aplicar:** si algún día se planifica housekeeping a futuro
+(mantenimiento programado para dentro de 3 días), ese `ORDER BY` haría que
+una tarea futura bloquee reservas de HOY. No hay evidencia de que ese
+flujo exista hoy, pero confirmar antes de aplicar tal cual.
+
+**Decisión de producto más grande, no incluida en el fix puntual:** el
+dueño planteó que "fuera de servicio" debería tener fecha de inicio y de
+caducidad, como una reserva, en vez de ser un flag atado a una tarea de un
+día puntual — eso es una entidad nueva ("ventana de mantenimiento"),
+separada de este fix acotado. Anotado junto con otras ideas sueltas de
+housekeeping que trajo el dueño en la misma conversación externa:
+cronograma/autoasignación a maestranza, "pendiente de repaso" en vez de
+romper si no hay ocupación, contingencia late checkout/limpieza/check-in
+del siguiente huésped con franja horaria en vez de instante fijo — ninguna
+de estas últimas tiene spec todavía, quedan como ideas para una sesión de
+diseño aparte.
+
+**Checklist antes de dar J1–J3 por cerrados:** reverificar cada línea
+contra el HEAD real (el zip auditado puede estar desactualizado); no
+tocar los constructores privados de `Reservation`/`HousekeepingTask`
+(comparten `restore()` con la rehidratación histórica); `tsc --noEmit` +
+suite completa en verde.
+
+---
+
+## K. Auditoría externa — datos y RBAC (23/08/2026) — ✅ IMPLEMENTADO (23/08/2026, con una salvedad en K2)
+
+K1, K3 y K4 implementados y verificados en esta sesión (mismo plan/
+`AskUserQuestion` que J). **K2 quedó parcial a propósito** — ver el
+subítem, encontrar dos conflictos reales de UX que el plan original no
+había previsto hizo que se implementara el backend completo pero no se
+enchufara el frontend todavía. **K5 solo el hallazgo SC19** (el resto de
+sus sub-hallazgos — categorías, `basePrice`, duplicación — no estaban en
+el alcance confirmado con el dueño, quedan igual que estaban). Suite completa de `app-main` (961 tests),
+`tsc --noEmit` de los dos repos y `next build` de `appfrontend-main` en
+verde. **Sin commitear todavía.**
+
+Dos diagnósticos más de la misma sesión externa, contra el código real de
+`app-main` (mismo caveat: zip posiblemente atrasado, reverificar líneas).
+Archivos fuente completos en
+`C:\Users\Usuario\Downloads\23082026claude\hallazgos-datos-vs-codigo-real.md`
+y `rbac-matriz-real-hallazgos.md` (esta última reemplaza las secciones 2-3
+de `rbac-especificacion-tecnica.md`, que tenía roles inventados sin ver el
+código — las secciones 1/4/5/6/7 de ese documento siguen valiendo como
+marco general).
+
+### K1. ✅ RESUELTO — RBAC: hueco de jerarquía al cambiar contraseña + flujo de link de reseteo
+
+**Implementado en esta sesión** (decisión confirmada con el dueño: en vez
+de solo rechazar, se construyó el flujo completo de link de reseteo —
+no existía nada parecido salvo invitaciones, que sirvió de molde exacto).
+
+- **Backend** (`app-main`): guard de jerarquía en `PUT /users/:id`
+  (`users.routes.ts`) — rechaza con 403 `ROLE_HIERARCHY_PROTECTED` si el
+  actor no es `OWNER_ONLY` y el objetivo tiene rol `OWNER_ONLY`/`MANAGEMENT`
+  (por `permissionGroups`, no por `roleName` — los roles son configurables
+  por negocio). Tabla nueva `password_reset_tokens` (`platform.schema.sql`,
+  mismo patrón que `user_invitations`: token hasheado sha256, TTL 24hs, a
+  lo sumo un PENDING por identity). Módulo `security/password-reset-token.ts`.
+  Endpoint nuevo `POST /users/:id/password-reset-link` (MANAGEMENT, manda
+  el mail) + router público nuevo `password-reset.routes.ts`
+  (`POST /api/password-resets/lookup` y `/accept`, montado antes de
+  `authenticate()`). Template de mail `passwordResetEmail()`.
+- **Frontend** (`appfrontend-main`): página pública
+  `/restablecer-contrasena/confirmar` (clon de `/invitaciones/aceptar`).
+  En `dashboard/usuarios`, editar un usuario protegido oculta el campo de
+  contraseña directa y muestra "Enviar link para restablecer contraseña".
+- 22 tests nuevos entre los tres archivos de test tocados/creados
+  (`users.routes.test.ts`, `password-reset.routes.test.ts`).
+- **Sin probar en navegador** — mismo motivo que el resto de la sesión
+  (sin backend local conectado). Señalar al dueño que pruebe el flujo
+  completo de punta a punta (mandar el link, abrirlo, setear contraseña,
+  loguearse) antes de darlo por confirmado en producción — es una feature
+  nueva, no un ajuste chico.
+
+<details><summary>Diagnóstico original (histórico)</summary>
+
+**Hallazgo original — hueco de jerarquía al cambiar contraseña de otro usuario (SD-2)**
+
+`users.routes.ts`, `PUT /:id`: ya protege el caso de identidad compartida
+entre negocios (bloquea cambiar contraseña si la persona tiene más de una
+membership activa). **Lo que NO bloquea:** dentro del mismo negocio, un
+usuario `MANAGEMENT` puede cambiarle la contraseña directamente a un
+`OWNER` (si ese owner pertenece a un solo negocio) — sin link de reseteo,
+sin chequeo de jerarquía de rol. Fix sugerido: antes de
+`updateIdentityPassword`, rechazar (o forzar flujo de link de reseteo) si
+el rol del objetivo es `OWNER`/`MANAGEMENT` y quien ejecuta no es
+`OWNER_ONLY`.
+
+**Sin confirmar:** si `user-invitation.routes.ts` (reenvío/revocación de
+invitaciones) tiene la misma protección de jerarquía — no se revisó
+(sigue sin revisarse, fuera del alcance de esta sesión).
+
+</details>
+
+### K2. ⚠️ PARCIAL (23/08/2026) — Paginación real: backend listo, frontend sin enchufar
+
+Confirmado en código: `reservations.routes.ts` y `customers.routes.ts` no
+tenían `limit`/`offset`/`cursor`/`page` — siempre devolvían la tabla
+completa.
+
+**Backend — ✅ RESUELTO e implementado en esta sesión.**
+`GET /reservations` ahora lee `page`/`limit`/`status`/`resourceId`/
+`customerId`/`from`/`to` de la query y usa `getFiltered`/`countFiltered`
+(ya existían implementados en `sql.reservation.repository.ts`, solo
+faltaba wirear la ruta). `GET /customers` necesitó repo nuevo —
+`CustomerFilters`/`getFiltered`/`countFiltered` agregados a
+`customer.repository.ts` + las dos implementaciones (`sql.`/`in-memory.`);
+como el `BASE_SELECT` de clientes hace `LEFT JOIN` con
+`customer_contact_methods` (una fila por método de contacto, no por
+cliente), pagina sobre una subquery de ids de `customers` primero y recién
+ahí hace el join completo. **Sin `page`/`limit` en la query, las dos rutas
+siguen devolviendo el array plano de siempre** (compatibilidad hacia
+atrás) — con ellos, el envelope `{ data, total, page, totalPages }` que el
+frontend ya tenía tipado (`PaginatedResponse<T>`, sin usar hasta ahora).
+Reservas no necesitó tests nuevos (`getFiltered`/`countFiltered` ya
+estaban cubiertos); clientes sumó 9 (ver más abajo, incluye el filtro
+`search` agregado después).
+
+**Frontend — a propósito NO enchufado, hallazgo real que frenó el plan
+original.** El plan asumía que alcanzaba con cambiar
+`pagination: { mode: 'off' }` → `'server'` en los `useTable()` de Refine.
+Al revisar el código de las pantallas antes de tocarlas, aparecieron dos
+casos donde eso rompería algo que hoy funciona:
+
+- **Reservas/Turnos** (`useReservationsScreen.ts`, hook compartido): las
+  dos pantallas son la MISMA lista de reservas, separada en dos vistas
+  puramente por un filtro client-side por categoría (`screenResourceIds`,
+  alojamiento vs. el resto). Si el backend solo devuelve una página de
+  "todas las reservas", ese filtro por categoría se aplicaría DESPUÉS,
+  sobre un subconjunto ya recortado — Reservas o Turnos podría mostrar
+  muy pocos resultados (o ninguno) según qué haya caído en esa página,
+  aunque existan de sobra. El backend no tiene un filtro por categoría/
+  `isLodging` que resuelva esto.
+- **Clientes** (`dashboard/clientes/page.tsx`): la búsqueda por nombre/
+  email (`filtered`, filtro client-side sobre `customers`) hoy busca
+  contra la lista COMPLETA ya cargada. Con paginación server-side,
+  `customers` pasaría a ser solo la página actual — buscar a alguien que
+  esté en otra página no lo encontraría, sin ningún aviso de que la
+  búsqueda quedó incompleta.
+
+Ninguno de los dos casos estaba contemplado en el plan original — se
+encontraron recién al leer el código de las pantallas, no antes.
+
+**Segundo intento, mismo día:** para Clientes se llegó a implementar el
+backend completo del filtro de búsqueda (`CustomerFilters.search` — nombre
+O email, ILIKE, combina con paginación; `customer.repository.ts` +
+`sql.`/`in-memory.` + `customers.routes.ts` nuevo query param `search`,
+distinto de `name` que ya existía sin paginar). Antes de tocar el
+frontend apareció un tercer hallazgo, más grande que los dos anteriores:
+`appfrontend-main/src/lib/refine/dataProvider.ts` — compartido por los
+**10 recursos** migrados a Refine, no solo Clientes — hoy ignora
+`pagination`/`filters` por completo, con un comentario propio explícito:
+*"Ningún recurso pagina/filtra/ordena server-side todavía vía Refine"*
+(`ResourceAdapter.list()` solo acepta `meta`; `getList()` calcula
+`total: data.length` sobre el array que ya trajo entero). Wirear
+server-pagination para Clientes de verdad sería la PRIMERA vez que ese
+patrón se usa en el repo — no es tocar una pantalla, es extender un
+contrato compartido. Confirmado con el dueño (`AskUserQuestion`): frenar
+acá, no tocar `dataProvider.ts` hoy. **No se tocó ninguna pantalla** —
+Clientes y Reservas/Turnos siguen en `mode: 'off'` tal como estaban, sin
+regresión. El backend de paginación+búsqueda de clientes queda listo y testeado
+(9 tests nuevos entre `sql.customer.repository.test.ts` e
+`in-memory-customer.repository.test.ts`) para cuando se encare el frontend en una
+sesión dedicada — junto con el filtro categoría/`isLodging` server-side
+que necesita Reservas/Turnos y la extensión de `dataProvider.ts` que
+ambos necesitan.
+
+### K3. ✅ RESUELTO — Cupo/capacidad al reservar: la validación existía pero nunca recibía el dato real
+
+`Reservation.ts` valida `partySize > resource.capacity`, pero
+`createReservation()` **nunca pasa `partySize`** al crear la reserva — se
+defaultea a `1`, así que la validación siempre compara contra 1, nunca
+contra la cantidad real de gente. Por separado existen `adultos`/`ninos`
+(desglose de huéspedes en estadías) pero nunca se cruzan con
+`resource.capacity` — solo se guardan para reportes. Resultado hoy: se
+puede reservar una habitación con capacidad 2 cargando `adultos: 5` sin
+ningún aviso.
+
+**Implementado (23/08/2026):** `createReservation()` deriva
+`partySize = adultos + ninos` cuando vienen informados; `partySize`
+explícito también aceptado (negocios de recurso 1:1). `CreateReservationSchema`
+tiene `partySize` opcional nuevo. El fixture compartido `t1` de
+`reservation.service.test.ts` pasó a `capacity: 4` (antes caía al default
+1) para poder probar combinaciones reales de huéspedes contra el mismo
+recurso que usa el resto del archivo — sin eso, los tests existentes de
+`adultos`/`ninos` (que usan hasta 4 personas) empezaban a fallar contra la
+nueva validación real. 3 tests nuevos de capacidad.
+
+### K4. ✅ RESUELTO — Asignación automática de recurso expuesta en el frontend
+
+`CreateReservationSchema` ya acepta `resourceId` **o** `categoryId`
+(mutuamente excluyentes), y `findAvailableResourceInCategory()` asigna
+automáticamente el primer recurso libre de la categoría — genérico, sin
+ninguna rama por `isLodging`, sirve igual para "cualquier habitación
+libre" que para "cualquier barbero libre" en Turnos. Hasta hoy, ninguno de los dos formularios (Reservas/Estadías, Turnos) exponía
+la opción "cualquiera disponible" — obligaban siempre a elegir un recurso
+puntual.
+
+**Implementado (23/08/2026):** checkbox "Cualquier recurso disponible" en
+`dashboard/reservas/page.tsx` y `dashboard/turnos/page.tsx`, visible solo
+cuando hay un servicio elegido (de ahí sale el `categoryId`). Tildado:
+oculta el `<select>` de recurso y manda `categoryId` en vez de
+`resourceId` al crear. Sin backend a tocar — ya soportaba esto.
+`tsc --noEmit` y `next build` verdes.
+
+### K5. Hallazgos menores — solo el primero (SC19) estaba en el alcance de esta sesión
+
+- **SC19 (formato de hora) — ✅ RESUELTO (23/08/2026).** El backend ya
+  exigía 24hs estricto (`TIME_ONLY_REGEX`) — el selector AM/PM que se vio
+  en captura era un componente de frontend que no respetaba el contrato
+  del backend (el navegador decide el formato visual según el idioma del
+  SO). **Implementado:** `lang="es-AR"` en los 9 `<input type="time">` de
+  4 archivos (`ScheduleManager.tsx`, `dashboard/recursos`, `dashboard/
+  mi-negocio` ×4, `dashboard/reservas` ×2) — decisión confirmada con el
+  dueño (`AskUserQuestion`): fix rápido, no el selector HH:MM propio.
+  Nota para no reabrir por sorpresa: Chrome lo respeta, no todos los
+  navegadores lo garantizan (ej. Firefox no siempre) — el `value`/
+  `onChange` de estos inputs ya producía/consumía `HH:MM` sin importar
+  `lang`, el fix es puramente visual.
+- **Categorías "0 campos definidos" — sin tocar, fuera de alcance de esta sesión.** el backend ya soporta campos
+  dinámicos tipados (`CategoryFieldSchema` en `category.schemas.ts`) — al
+  modal de "Editar categoría" del frontend le falta la sección para
+  agregar/editar esos campos. No hay que construir nada nuevo en el
+  backend.
+- **`basePrice` en Recurso:** no es un bug — es el fallback deliberado de
+  último nivel para "reservé un Recurso sin pasar por un Servicio del
+  catálogo" (`serviceId` es opcional). El problema real es solo de UI: se
+  muestra con la misma jerarquía visual que cualquier otro dato, sin
+  aclarar que es un caso excepcional — mover a un campo secundario/
+  colapsado con aclaración, no tocar la cascada de pricing.
+- **Reservas/Estadías/Housekeeping:** confirmado que NO están duplicadas —
+  `stays.reservation_id` referencia `reservations`, `housekeeping_tasks`
+  referencia `resource_id` directo, cada módulo extiende sin reimplementar.
+  Sin acción.
+
+---
 
 ### Lección documentada en `criterios-negocio.md` (commit `31607ef`)
 
