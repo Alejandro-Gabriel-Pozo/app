@@ -53,6 +53,18 @@ wiring (pools mezclados, fallos a mitad de camino, un solo camino por
 responsabilidad). Los dos aplican en paralelo cuando el cambio toca
 ambas cosas.
 
+## RBAC — maestro de permisos por endpoint
+
+`docs/rbac-matriz-endpoints.md` es la fuente de verdad de qué grupo de
+`security/roles.ts` exige cada ruta — es un documento vivo, no una foto
+única. Al agregar, sacar o cambiar un `authorize(Roles.X)` en cualquier
+`*.routes.ts`, actualizá ese documento (la fila del endpoint que tocaste)
+Y el número `EXPECTED_AUTHORIZE_CALL_SITES` de
+`src/tests/security/rbac-matrix-sync.test.ts` en el mismo cambio — ese
+test es una cerca eléctrica (cuenta call-sites reales contra un número
+fijo), no un sistema que interpreta código; si rompe, es la señal de que
+el maestro se desactualizó.
+
 ## Modularidad — convenciones aplicadas (no aspiracionales)
 
 Estado real del código después de `docs/auditoria-modularidad.md`

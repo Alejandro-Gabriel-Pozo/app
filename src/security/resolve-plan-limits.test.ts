@@ -17,6 +17,8 @@ const FAKE_LIMITS: PlanLimits = {
   maxResources: 50,
   maxActiveMemberships: 5,
   allowedRoleNames: 'ALL',
+  maxCustomRoles: 10,
+  allowedPermissionGroups: 'ALL',
 };
 
 function fakeContainer(mode: 'ok' | 'planError' | 'limitsError'): AppContainer {

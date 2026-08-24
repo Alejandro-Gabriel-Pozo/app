@@ -29,4 +29,8 @@ export interface PlanLimits {
   maxActiveMemberships: number;
   /** `roles.name` que este plan puede asignar a una membership vía POST/PUT /users. 'ALL' = sin restricción. OWNER nunca pasa por acá (no se asigna desde esta API). */
   allowedRoleNames: readonly string[] | 'ALL';
+  /** L (23/08/2026) -- máximo de roles CUSTOM activos (isSystem=false) del negocio -- usuarios-roles/roles.routes.ts POST /. Los 5 roles de fábrica no cuentan contra este límite. */
+  maxCustomRoles: number;
+  /** L (23/08/2026) -- grupos de `security/roles.ts` que un rol CUSTOM puede incluir. 'ALL' = sin restricción. No aplica a los 5 roles de fábrica (esos ya vienen fijos desde role_preset_permission_groups). */
+  allowedPermissionGroups: readonly string[] | 'ALL';
 }

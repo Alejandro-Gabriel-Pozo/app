@@ -46,7 +46,7 @@ import { createCategoryRouter }          from './reservas/categories.routes.js';
 import { createAuditLogRouter }          from './api/routes/audit-log.routes.js';
 import { createUsersRouter }             from './usuarios-roles/users.routes.js';
 import { createUserInvitationsRouter, createInvitationAcceptanceRouter } from './usuarios-roles/user-invitation.routes.js';
-import { createPasswordResetAcceptanceRouter } from './usuarios-roles/password-reset.routes.js';
+import { createPasswordResetRouter } from './usuarios-roles/password-reset.routes.js';
 import { createRolesRouter }             from './usuarios-roles/roles.routes.js';
 import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
@@ -61,6 +61,7 @@ import { createBusinessHoursRouter }     from './platform/business-hours.routes.
 import { createBusinessProfileRouter }   from './api/routes/business-profile.routes.js';
 import { createInvoicesRouter, createAfipCredentialsRouter } from './facturacion/invoices.routes.js';
 import { createBusinessModulesRouter }   from './platform/business-modules.routes.js';
+import { createBusinessPlanLimitsRouter } from './platform/business-plan-limits.routes.js';
 import { createCashRegisterRouter }      from './clientes-finanzas/cash-register.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
@@ -223,11 +224,15 @@ export async function createApp(): Promise<{
   // de plataforma) — el token de la invitación es la única credencial.
   app.use('/api/invitations', createInvitationAcceptanceRouter(platformRepo, container));
 
-  // /api/password-resets — aceptar un link de reseteo de contraseña (K1,
-  // 23/08/2026, pendientes-2026-08-23.md). PÚBLICO, mismo motivo que
-  // /api/invitations: quien todavía no puso su contraseña nueva no tiene
-  // ningún JWT.
-  app.use('/api/password-resets', createPasswordResetAcceptanceRouter(platformRepo));
+  // /api/password-resets — reseteo de contraseña, público (K1 aceptar +
+  // L self-service "olvidé mi contraseña", 23/08/2026,
+  // pendientes-2026-08-23.md). Mismo motivo que /api/invitations: quien
+  // todavía no puso su contraseña nueva no tiene ningún JWT.
+  // authLimiter (no globalLimiter solo) — L, 23/08/2026: POST /request es
+  // texto libre (email) sin sesión, mismo vector de enumeración/spam que
+  // /api/login; antes de este cambio el mount entero no tenía ningún
+  // límite dedicado.
+  app.use('/api/password-resets', authLimiter, createPasswordResetRouter(platformRepo, createEmailSender(), frontendUrl));
 
   // authenticate() — protege /api/* desde aquí. Se le pasa
   // resolveMembershipContext (14/08/2026, reemplaza al viejo chequeo
@@ -257,6 +262,11 @@ export async function createApp(): Promise<{
   // plataforma vía container), así que va antes de tenantMiddleware.
   app.use('/api/business/modules', createBusinessModulesRouter(container));
 
+  // /api/business/plan-limits — L (23/08/2026), mismo motivo que modules
+  // arriba: el dashboard necesita saber maxCustomRoles/allowedPermissionGroups
+  // sin ser MANAGEMENT, para el gating visual del CRUD de roles propios.
+  app.use('/api/business/plan-limits', createBusinessPlanLimitsRouter(container));
+
   // -------------------------------------------------------------------------
   // 14. tenantMiddleware — inyecta req.db + arranca OutboxWorker por tenant
   // -------------------------------------------------------------------------
@@ -281,7 +291,7 @@ export async function createApp(): Promise<{
   // matchearía ese :id y nunca llegaría a este router.
   app.use('/api/users/invitations', createUserInvitationsRouter(platformRepo, container, createEmailSender(), frontendUrl));
   app.use('/api/users',             createUsersRouter(platformRepo, container, createEmailSender(), frontendUrl));
-  app.use('/api/roles',             createRolesRouter(platformRepo));
+  app.use('/api/roles',             createRolesRouter(platformRepo, container));
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));

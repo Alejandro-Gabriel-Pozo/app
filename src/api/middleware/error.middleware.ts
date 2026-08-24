@@ -122,6 +122,9 @@ function domainErrorStatus(error: DomainError): number {
     // semántica HTTP y el mensaje ("actualizá tu plan") son los mismos.
     case 'PLAN_LIMIT_REACHED':
     case 'ROLE_NOT_AVAILABLE_IN_PLAN':
+    // L (23/08/2026) -- mismo criterio: techo de permisos de un rol CUSTOM
+    // por plan, capacidad no incluida, no un número agotado.
+    case 'PERMISSION_GROUP_NOT_AVAILABLE_IN_PLAN':
       return 402;
 
     // --- 403 Forbidden ---

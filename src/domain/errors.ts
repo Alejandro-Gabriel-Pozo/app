@@ -310,10 +310,12 @@ export class RecipeNotDefinedError extends DomainError {
   }
 }
 
-const PLAN_LIMIT_RESOURCE_LABEL: Record<'categories' | 'resources' | 'memberships', string> = {
+const PLAN_LIMIT_RESOURCE_LABEL: Record<'categories' | 'resources' | 'memberships' | 'customRoles', string> = {
   categories:  'categorías',
   resources:   'recursos',
   memberships: 'usuarios activos',
+  /** L (23/08/2026) — roles CUSTOM del negocio, no cuenta los 5 de fábrica. */
+  customRoles: 'roles personalizados',
 };
 
 /**
@@ -333,7 +335,7 @@ export class PlanLimitError extends DomainError {
   constructor(
     public readonly plan: BusinessPlan,
     public readonly limit: number,
-    public readonly resource: 'categories' | 'resources' | 'memberships',
+    public readonly resource: 'categories' | 'resources' | 'memberships' | 'customRoles',
   ) {
     super(
       `Tu plan ${plan} permite hasta ${
@@ -377,6 +379,29 @@ export class RoleNotAvailableInPlanError extends DomainError {
     super(
       `El rol '${roleName}' no está disponible en tu plan ${plan}. Actualizá tu plan para habilitarlo.`,
       'ROLE_NOT_AVAILABLE_IN_PLAN',
+    );
+  }
+}
+
+/**
+ * L (23/08/2026) — "techo de permisos" para roles CUSTOM (no los 5 de
+ * fábrica, que ya vienen con sus grupos fijos): un negocio puede armar un
+ * rol propio combinando cualquiera de los 8 grupos de `security/roles.ts`,
+ * pero el PLAN limita cuáles (`plan_limit_allowed_permission_groups` —
+ * FREE/STARTER no pueden incluir OWNER_ONLY/MANAGEMENT, evita armar un
+ * "dueño"/"gerente" a medida sin pasar por los presets curados). Mismo
+ * código semántico 402 que el resto de esta familia de errores
+ * (PlanLimitError/RoleNotAvailableInPlanError) — es una capacidad no
+ * incluida, no un número agotado.
+ */
+export class PermissionGroupNotAvailableInPlanError extends DomainError {
+  constructor(
+    public readonly plan: BusinessPlan,
+    public readonly permissionGroups: string[],
+  ) {
+    super(
+      `Tu plan ${plan} no incluye ${permissionGroups.join(', ')} para roles personalizados. Actualizá tu plan para habilitarlo.`,
+      'PERMISSION_GROUP_NOT_AVAILABLE_IN_PLAN',
     );
   }
 }

@@ -29,10 +29,10 @@ const TEST_FRONTEND_URL = 'https://app.example.com';
 // 18/08/2026 la fuente real es la tabla `plan_limits`, no una constante TS;
 // este mapa es el fixture del test, no una reintroducción del hardcodeo.
 const PLAN_LIMITS_FIXTURE: Record<BusinessPlan, PlanLimits> = {
-  [BusinessPlan.FREE]: { maxCategories: 1, maxResources: 5, maxActiveMemberships: 1, allowedRoleNames: ['ADMIN'] },
-  [BusinessPlan.STARTER]: { maxCategories: 3, maxResources: 20, maxActiveMemberships: 5, allowedRoleNames: ['ADMIN', 'RECEPTIONIST', 'HOUSEKEEPING', 'WAITER'] },
-  [BusinessPlan.PRO]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL' },
-  [BusinessPlan.ENTERPRISE]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL' },
+  [BusinessPlan.FREE]: { maxCategories: 1, maxResources: 5, maxActiveMemberships: 1, allowedRoleNames: ['ADMIN'], maxCustomRoles: 0, allowedPermissionGroups: [] },
+  [BusinessPlan.STARTER]: { maxCategories: 3, maxResources: 20, maxActiveMemberships: 5, allowedRoleNames: ['ADMIN', 'RECEPTIONIST', 'HOUSEKEEPING', 'WAITER'], maxCustomRoles: 2, allowedPermissionGroups: ['STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] },
+  [BusinessPlan.PRO]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL', maxCustomRoles: 10, allowedPermissionGroups: 'ALL' },
+  [BusinessPlan.ENTERPRISE]: { maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity, allowedRoleNames: 'ALL', maxCustomRoles: Infinity, allowedPermissionGroups: 'ALL' },
 };
 
 function fakeRes() {

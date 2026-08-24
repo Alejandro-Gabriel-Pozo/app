@@ -9,10 +9,11 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { PlatformContainer } from './platform.container.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
-import { authenticatePlatform } from './platform.auth.middleware.js';
+import { authenticatePlatform, authorizePlatform } from './platform.auth.middleware.js';
 import type { Business } from './platform.repository.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
+import { PlatformRole } from '../types/enums.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -35,6 +36,35 @@ const UpdateBusinessStatusSchema = z.object({
     BusinessStatus.CANCELLED,
   ] as [string, ...string[]]),
   reason: z.string().max(500).optional(),
+});
+
+// L (23/08/2026) — a diferencia del status, cambiar de plan no tiene
+// transiciones restringidas (cualquier plan a cualquier plan, en
+// cualquier dirección).
+const UpdateBusinessPlanSchema = z.object({
+  plan: z.nativeEnum(BusinessPlan),
+});
+
+// L (23/08/2026) — editar plan_limits/plan_limit_allowed_roles/
+// plan_limit_allowed_permission_groups desde el superadmin. `null` en los
+// numéricos = sin límite (mismo criterio que la columna real);
+// `allowedRoleNames`/`allowedPermissionGroups` vacíos = sin restricción
+// ('ALL' en la forma resuelta que consume el resto del código).
+const NullableNonNegativeInt = z.number().int().min(0).nullable();
+const UpdatePlanLimitsSchema = z.object({
+  maxCategories: NullableNonNegativeInt,
+  maxResources: NullableNonNegativeInt,
+  maxActiveMemberships: NullableNonNegativeInt,
+  maxCustomRoles: NullableNonNegativeInt,
+  allowedRoleNames: z.array(z.string()),
+  allowedPermissionGroups: z.array(z.string()),
+});
+
+// L (23/08/2026) — editar los grupos de permiso de un preset de rol de
+// fábrica. Solo permission_groups: el `name` es fijo (los 5 presets no se
+// crean/borran desde acá, ver docblock de la ruta).
+const UpdateRolePresetSchema = z.object({
+  permissionGroups: z.array(z.string()),
 });
 
 function firstString(val: unknown): string | undefined {
@@ -69,7 +99,13 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
-  router.use(authenticatePlatform());
+  // L (23/08/2026, docs/rbac-matriz-endpoints.md) — hasta acá solo exigía
+  // authenticatePlatform() sin restringir por PlatformRole. Sin efecto
+  // práctico hoy (un solo PlatformRole posible, un solo actor de
+  // plataforma hardcodeado) pero es exactamente el mismo agujero que
+  // admin.routes.ts ya cerró el 19/08/2026 — cerrarlo acá también antes
+  // de que un panel de superadmin real agregue una segunda cuenta/rol.
+  router.use(authenticatePlatform(), authorizePlatform([PlatformRole.SUPERADMIN]));
 
   router.get(
     '/stats',
@@ -182,6 +218,32 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     },
   );
 
+  // PATCH /platform/businesses/:id/plan — L (23/08/2026). Antes el único
+  // camino para cambiar el plan de un negocio ya creado era un UPDATE a
+  // mano en la BD central (pendientes-2026-08-18.md). No reconcilia
+  // memberships/roles que queden fuera de los límites del plan nuevo — ver
+  // docblock de PlatformRepository.updateBusinessPlan().
+  router.patch(
+    '/businesses/:id/plan',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body     = UpdateBusinessPlanSchema.parse(req.body);
+        const business = await platformRepository.findById(String(req.params['id']));
+        if (!business) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Negocio no encontrado' });
+          return;
+        }
+        if (business.plan === body.plan) {
+          res.status(400).json({ code: 'SAME_PLAN', message: `El negocio ya está en el plan ${body.plan}.` });
+          return;
+        }
+        await platformRepository.updateBusinessPlan(business.id, body.plan);
+        const updated = await platformRepository.findById(business.id);
+        res.json({ message: `Plan actualizado a ${body.plan}`, business: updated ? toBusinessDto(updated) : null });
+      } catch (err) { next(err); }
+    },
+  );
+
   // POST /platform/businesses/:id/provision — le da al superadmin un botón
   // de "reintentar" para un negocio que quedó PENDING (registro público con
   // el auto-provisioning de business.routes.ts caído, o un negocio creado
@@ -210,6 +272,69 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
         const updated = await platformRepository.findById(business.id);
         res.json({ message: 'Base de datos aprovisionada y negocio activado.', business: updated ? toBusinessDto(updated) : null });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // GET/PUT /platform/plan-limits — L (23/08/2026). Antes solo editable
+  // por script/migración versionada (pendientes-2026-08-18.md, decisión
+  // "no por ahora" del 19/08, reabierta esta sesión). `:plan` tiene que
+  // ser uno de los 4 valores de BusinessPlan que ya tienen fila en
+  // plan_limits -- no se crean/borran planes desde acá (ver docblock de
+  // PlatformRepository.listRolePresets() para el mismo criterio aplicado
+  // a presets).
+  router.get(
+    '/plan-limits',
+    async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        res.json(await platformRepository.listPlanLimits());
+      } catch (err) { next(err); }
+    },
+  );
+
+  router.put(
+    '/plan-limits/:plan',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const plan = String(req.params['plan']);
+        if (!Object.values(BusinessPlan).includes(plan as BusinessPlan)) {
+          res.status(400).json({ code: 'INVALID_PLAN', message: `'${plan}' no es un plan válido.` });
+          return;
+        }
+        const body = UpdatePlanLimitsSchema.parse(req.body);
+        const updated = await platformRepository.updatePlanLimits(plan as BusinessPlan, body);
+        res.json(updated);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // GET/PUT /platform/role-presets — L (23/08/2026). Catálogo global de
+  // los 5 roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER)
+  // que se copian a `roles` al crear un negocio (provisionSystemRoles()).
+  // Editar acá NO afecta negocios ya provisionados -- solo los que se
+  // creen de ahí en adelante. No se pueden agregar/borrar presets (un rol
+  // de fábrica nuevo requiere tocar código en varios lugares que asumen
+  // estos 5 nombres, no es solo una fila de config).
+  router.get(
+    '/role-presets',
+    async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        res.json(await platformRepository.listRolePresets());
+      } catch (err) { next(err); }
+    },
+  );
+
+  router.put(
+    '/role-presets/:name',
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body = UpdateRolePresetSchema.parse(req.body);
+        const updated = await platformRepository.updateRolePresetPermissionGroups(String(req.params['name']), body.permissionGroups);
+        if (!updated) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Preset de rol no encontrado' });
+          return;
+        }
+        res.json(updated);
       } catch (err) { next(err); }
     },
   );

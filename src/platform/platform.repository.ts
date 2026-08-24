@@ -140,6 +140,39 @@ export interface CreateRoleInput {
   permissionGroups: string[];
 }
 
+/**
+ * L (23/08/2026) — forma cruda para el panel de superadmin (editar
+ * `plan_limits`), a diferencia de `PlanLimits` (config/plan-limits.ts,
+ * forma resuelta con Infinity/'ALL' que consume el resto del código de
+ * negocio). Acá `null`/`[]` viajan tal cual están en la base.
+ */
+export interface PlanLimitsAdmin {
+  plan: BusinessPlan;
+  maxCategories: number | null;
+  maxResources: number | null;
+  maxActiveMemberships: number | null;
+  maxCustomRoles: number | null;
+  /** [] = sin restricción ('ALL' en la forma resuelta). */
+  allowedRoleNames: string[];
+  /** [] = sin restricción ('ALL' en la forma resuelta). */
+  allowedPermissionGroups: string[];
+}
+
+export interface UpdatePlanLimitsInput {
+  maxCategories: number | null;
+  maxResources: number | null;
+  maxActiveMemberships: number | null;
+  maxCustomRoles: number | null;
+  allowedRoleNames: string[];
+  allowedPermissionGroups: string[];
+}
+
+/** L (23/08/2026) — catálogo global de los 5 roles de fábrica (`role_presets`). */
+export interface RolePresetAdmin {
+  name: string;
+  permissionGroups: string[];
+}
+
 /** Resultado combinado para el hook de authenticate() — ver auth.middleware.ts */
 export interface MembershipContext {
   active: boolean;
@@ -195,7 +228,10 @@ export interface PasswordResetToken {
   /** Email de la identity objetivo — join, para el preview del lookup público. */
   identityEmail: string;
   requestedByIdentityId: string;
-  businessId: string;
+  /** L (23/08/2026) — null cuando el pedido es self-service y la identity
+   * tiene 0 o 2+ memberships activas (ambiguo, sin un negocio único que
+   * trazar). Solo trazabilidad, nunca scope de acceso — ver schema. */
+  businessId: string | null;
   status: PasswordResetTokenStatus;
   expiresAt: Date;
   usedAt: Date | null;
@@ -206,7 +242,7 @@ export interface UpsertPasswordResetTokenInput {
   id: string;
   identityId: string;
   requestedByIdentityId: string;
-  businessId: string;
+  businessId: string | null;
   tokenHash: string;
   expiresAt: Date;
 }
@@ -379,6 +415,25 @@ export class PlatformRepository {
     );
   }
 
+  /**
+   * L (23/08/2026) — cambiar el plan de un negocio ya existente. No
+   * reconcilia memberships/roles que queden fuera de los límites del
+   * plan nuevo (ej. bajar a FREE con 3 usuarios activos) — mismo
+   * comportamiento laxo que ya tiene `updateBusinessStatus` para otros
+   * límites, deuda conocida, no se resuelve acá.
+   */
+  async updateBusinessPlan(
+    businessId: string,
+    plan: BusinessPlan,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE businesses
+       SET plan = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [plan, businessId],
+    );
+  }
+
   async findById(id: string): Promise<Business | undefined> {
     const result = await this.db.query<Business>(
       'SELECT * FROM businesses WHERE id = $1',
@@ -453,8 +508,9 @@ export class PlatformRepository {
       max_categories: number | null;
       max_resources: number | null;
       max_active_memberships: number | null;
+      max_custom_roles: number | null;
     }>(
-      `SELECT max_categories, max_resources, max_active_memberships
+      `SELECT max_categories, max_resources, max_active_memberships, max_custom_roles
        FROM plan_limits WHERE plan = $1`,
       [plan],
     );
@@ -466,14 +522,101 @@ export class PlatformRepository {
       [plan],
     );
 
+    const permissionGroupsResult = await this.db.query<{ permission_group: string }>(
+      `SELECT permission_group FROM plan_limit_allowed_permission_groups WHERE plan = $1`,
+      [plan],
+    );
+
     return {
       maxCategories: row.max_categories ?? Infinity,
       maxResources: row.max_resources ?? Infinity,
       maxActiveMemberships: row.max_active_memberships ?? Infinity,
+      maxCustomRoles: row.max_custom_roles ?? Infinity,
       allowedRoleNames: rolesResult.rows.length > 0
         ? rolesResult.rows.map((r) => r.role_name)
         : 'ALL',
+      allowedPermissionGroups: permissionGroupsResult.rows.length > 0
+        ? permissionGroupsResult.rows.map((r) => r.permission_group)
+        : 'ALL',
     };
+  }
+
+  /**
+   * L (23/08/2026) — forma cruda para el panel de superadmin (editar), a
+   * diferencia de `getPlanLimits()` (forma resuelta con Infinity/'ALL'
+   * para el resto del código de negocio). Acá `null`/`[]` viajan tal cual
+   * están en la base — el frontend decide cómo mostrar "sin límite".
+   */
+  async listPlanLimits(): Promise<PlanLimitsAdmin[]> {
+    const limitsResult = await this.db.query<{
+      plan: string;
+      max_categories: number | null;
+      max_resources: number | null;
+      max_active_memberships: number | null;
+      max_custom_roles: number | null;
+    }>(`SELECT plan, max_categories, max_resources, max_active_memberships, max_custom_roles FROM plan_limits ORDER BY plan`);
+
+    const rolesResult = await this.db.query<{ plan: string; role_name: string }>(
+      `SELECT plan, role_name FROM plan_limit_allowed_roles`,
+    );
+    const groupsResult = await this.db.query<{ plan: string; permission_group: string }>(
+      `SELECT plan, permission_group FROM plan_limit_allowed_permission_groups`,
+    );
+
+    return limitsResult.rows.map((row) => ({
+      plan: row.plan as BusinessPlan,
+      maxCategories: row.max_categories,
+      maxResources: row.max_resources,
+      maxActiveMemberships: row.max_active_memberships,
+      maxCustomRoles: row.max_custom_roles,
+      allowedRoleNames: rolesResult.rows.filter((r) => r.plan === row.plan).map((r) => r.role_name),
+      allowedPermissionGroups: groupsResult.rows.filter((r) => r.plan === row.plan).map((r) => r.permission_group),
+    }));
+  }
+
+  /** Reemplaza el set completo de límites de un plan — mismo patrón que `updateRolePermissionGroups()` (DELETE + INSERT, sin transacción explícita, volumen de filas chico). */
+  async updatePlanLimits(plan: BusinessPlan, input: UpdatePlanLimitsInput): Promise<PlanLimitsAdmin> {
+    await this.db.query(
+      `UPDATE plan_limits SET max_categories = $2, max_resources = $3, max_active_memberships = $4, max_custom_roles = $5 WHERE plan = $1`,
+      [plan, input.maxCategories, input.maxResources, input.maxActiveMemberships, input.maxCustomRoles],
+    );
+    await this.db.query(`DELETE FROM plan_limit_allowed_roles WHERE plan = $1`, [plan]);
+    for (const roleName of input.allowedRoleNames) {
+      await this.db.query(`INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES ($1, $2)`, [plan, roleName]);
+    }
+    await this.db.query(`DELETE FROM plan_limit_allowed_permission_groups WHERE plan = $1`, [plan]);
+    for (const group of input.allowedPermissionGroups) {
+      await this.db.query(`INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group) VALUES ($1, $2)`, [plan, group]);
+    }
+    return (await this.listPlanLimits()).find((p) => p.plan === plan)!;
+  }
+
+  /** Catálogo global de los 5 roles de fábrica — editar acá NO afecta negocios ya provisionados (`provisionSystemRoles()` solo lee esto al CREAR un negocio), solo los nuevos de ahí en adelante. */
+  async listRolePresets(): Promise<RolePresetAdmin[]> {
+    const result = await this.db.query<{ name: string; permission_group: string | null }>(
+      `SELECT rp.name, rppg.permission_group
+       FROM role_presets rp
+       LEFT JOIN role_preset_permission_groups rppg ON rppg.preset_name = rp.name
+       ORDER BY rp.name`,
+    );
+    const byName = new Map<string, string[]>();
+    for (const { name, permission_group } of result.rows) {
+      if (!byName.has(name)) byName.set(name, []);
+      if (permission_group) byName.get(name)!.push(permission_group);
+    }
+    return [...byName.entries()].map(([name, permissionGroups]) => ({ name, permissionGroups }));
+  }
+
+  /** `undefined` si `name` no es uno de los 5 presets existentes — no se pueden crear/borrar presets desde acá, ver docblock de platform.routes.ts. */
+  async updateRolePresetPermissionGroups(name: string, permissionGroups: string[]): Promise<RolePresetAdmin | undefined> {
+    const exists = await this.db.query(`SELECT 1 FROM role_presets WHERE name = $1`, [name]);
+    if (exists.rows.length === 0) return undefined;
+
+    await this.db.query(`DELETE FROM role_preset_permission_groups WHERE preset_name = $1`, [name]);
+    for (const group of permissionGroups) {
+      await this.db.query(`INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES ($1, $2)`, [name, group]);
+    }
+    return { name, permissionGroups };
   }
 
   // -------------------------------------------------------------------------
@@ -1168,7 +1311,7 @@ interface PasswordResetTokenJoinRow {
   identity_id: string;
   identity_email: string;
   requested_by_identity_id: string;
-  business_id: string;
+  business_id: string | null;
   status: string;
   expires_at: string;
   used_at: string | null;

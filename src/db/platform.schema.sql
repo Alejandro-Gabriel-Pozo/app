@@ -553,7 +553,13 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   id                        VARCHAR(255) PRIMARY KEY,
   identity_id               VARCHAR(255) NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
   requested_by_identity_id  VARCHAR(255) NOT NULL REFERENCES identities(id),
-  business_id               VARCHAR(255) NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  -- L (23/08/2026, self-service) — nullable a propósito: un pedido de
+  -- "olvidé mi contraseña" sin sesión no tiene ningún negocio en contexto
+  -- cuando la identity tiene 0 o 2+ memberships activas (ambiguo, no hay
+  -- un negocio único que trazar). Sigue siendo solo trazabilidad -- ver
+  -- comentario de arriba -- nunca scope de acceso, así que permitir NULL
+  -- acá no abre ningún agujero.
+  business_id               VARCHAR(255) REFERENCES businesses(id) ON DELETE CASCADE,
   token_hash                VARCHAR(64)  NOT NULL,
   status                    VARCHAR(20)  NOT NULL DEFAULT 'PENDING'
                               CHECK (status IN ('PENDING', 'USED')),
@@ -562,6 +568,13 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- L (23/08/2026) — para negocios ya provisionados antes de este cambio, la
+-- columna ya existe como NOT NULL (K1). platform.schema.sql se corre
+-- completo en cada boot (server.ts) contra la BD de plataforma, no hace
+-- falta CURRENT_SCHEMA_VERSION acá -- DROP NOT NULL sobre una columna que
+-- ya es nullable es un no-op, así que correrlo de nuevo no rompe nada.
+ALTER TABLE password_reset_tokens ALTER COLUMN business_id DROP NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_password_reset_tokens_token_hash
   ON password_reset_tokens (token_hash);
@@ -681,9 +694,15 @@ CREATE TABLE IF NOT EXISTS plan_limits (
   max_categories           INT,  -- NULL = sin límite
   max_resources            INT,  -- NULL = sin límite
   max_active_memberships   INT,  -- NULL = sin límite
+  max_custom_roles         INT,  -- NULL = sin límite (L, 23/08/2026 -- roles propios del negocio, no los 5 de fábrica)
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- L (23/08/2026) -- para negocios ya provisionados antes de este bloque,
+-- la columna no existe todavía. Mismo criterio que business_id de
+-- password_reset_tokens: ADD COLUMN IF NOT EXISTS es un no-op si ya existe.
+ALTER TABLE plan_limits ADD COLUMN IF NOT EXISTS max_custom_roles INT;
 
 CREATE TABLE IF NOT EXISTS plan_limit_allowed_roles (
   plan       VARCHAR(50) NOT NULL REFERENCES plan_limits(plan) ON DELETE CASCADE,
@@ -691,22 +710,54 @@ CREATE TABLE IF NOT EXISTS plan_limit_allowed_roles (
   PRIMARY KEY (plan, role_name)
 );
 
+-- L (23/08/2026) -- mismo criterio que plan_limit_allowed_roles: 0 filas
+-- para un plan = sin restricción de grupos de permiso ('ALL' en TS).
+-- Gatea qué CreateRoleSchema.permissionGroups puede llevar un rol CUSTOM
+-- (roles.routes.ts) -- no afecta a los 5 roles de fábrica, que ya vienen
+-- con sus grupos fijos desde role_preset_permission_groups.
+CREATE TABLE IF NOT EXISTS plan_limit_allowed_permission_groups (
+  plan              VARCHAR(50) NOT NULL REFERENCES plan_limits(plan) ON DELETE CASCADE,
+  permission_group  VARCHAR(50) NOT NULL,
+  PRIMARY KEY (plan, permission_group)
+);
+
 -- ENTERPRISE (18/08/2026, empresas multipropiedad) -- mismos límites
 -- numéricos que PRO (sin límite): es el plan tope, superset de PRO, no un
 -- tier con topes propios -- ver BusinessPlan en types/enums.ts y la tabla
 -- `companies` más abajo para el gate real (crear/unirse a una company).
-INSERT INTO plan_limits (plan, max_categories, max_resources, max_active_memberships) VALUES
-  ('FREE',       1, 5,    1),
-  ('STARTER',    3, 20,   5),
-  ('PRO',        NULL, NULL, NULL),
-  ('ENTERPRISE', NULL, NULL, NULL)
+INSERT INTO plan_limits (plan, max_categories, max_resources, max_active_memberships, max_custom_roles) VALUES
+  ('FREE',       1, 5,    1,    0),
+  ('STARTER',    3, 20,   5,    2),
+  ('PRO',        NULL, NULL, NULL, 10),
+  ('ENTERPRISE', NULL, NULL, NULL, NULL)
 ON CONFLICT (plan) DO NOTHING;
+
+-- L (23/08/2026) -- para negocios ya seedeados con el INSERT viejo (sin
+-- max_custom_roles), el ON CONFLICT DO NOTHING de arriba no toca la fila
+-- existente. Backfill explícito para no dejar NULL (="sin límite") donde
+-- el default real es 0/2/10.
+UPDATE plan_limits SET max_custom_roles = 0  WHERE plan = 'FREE'    AND max_custom_roles IS NULL;
+UPDATE plan_limits SET max_custom_roles = 2  WHERE plan = 'STARTER' AND max_custom_roles IS NULL;
+UPDATE plan_limits SET max_custom_roles = 10 WHERE plan = 'PRO'     AND max_custom_roles IS NULL;
+-- ENTERPRISE se queda NULL a propósito (sin límite) -- nada que backfillear.
 
 INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES
   ('FREE',    'ADMIN'),
   ('STARTER', 'ADMIN'), ('STARTER', 'RECEPTIONIST'), ('STARTER', 'HOUSEKEEPING'), ('STARTER', 'WAITER')
   -- PRO y ENTERPRISE: sin filas a propósito -- 0 filas = sin restricción ('ALL').
 ON CONFLICT (plan, role_name) DO NOTHING;
+
+-- L (23/08/2026) -- techo de permisos para roles CUSTOM (no los de fábrica):
+-- FREE/STARTER no pueden incluir OWNER_ONLY/MANAGEMENT en un rol propio.
+-- ADMIN (que sí incluye MANAGEMENT) sigue disponible en esos planes como
+-- PRESET curado por la plataforma -- lo que se restringe acá es que el
+-- negocio arme un "gerente"/"dueño" a medida combinando grupos por su
+-- cuenta; ese nivel de armado libre queda reservado a PRO/ENTERPRISE.
+INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group) VALUES
+  ('FREE',    'STAFF'), ('FREE',    'FRONT_DESK'), ('FREE',    'HOUSEKEEPING_AND_MANAGEMENT'), ('FREE',    'ORDERS'), ('FREE',    'BOOKING'),
+  ('STARTER', 'STAFF'), ('STARTER', 'FRONT_DESK'), ('STARTER', 'HOUSEKEEPING_AND_MANAGEMENT'), ('STARTER', 'ORDERS'), ('STARTER', 'BOOKING')
+  -- PRO y ENTERPRISE: sin filas a propósito -- 0 filas = sin restricción ('ALL').
+ON CONFLICT (plan, permission_group) DO NOTHING;
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'plan_limits_updated_at') THEN

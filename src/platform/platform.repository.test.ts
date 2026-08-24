@@ -101,16 +101,21 @@ describe('PlatformRepository.createBusiness() -> provisionSystemRoles()', () => 
  */
 class FakePlanLimitsSqlClient implements SqlClient {
   constructor(
-    private readonly planLimitsRow: { max_categories: number | null; max_resources: number | null; max_active_memberships: number | null } | undefined,
+    private readonly planLimitsRow: { max_categories: number | null; max_resources: number | null; max_active_memberships: number | null; max_custom_roles?: number | null } | undefined,
     private readonly allowedRoleRows: { role_name: string }[],
+    private readonly allowedPermissionGroupRows: { permission_group: string }[] = [],
   ) {}
 
   async query<T = unknown>(sql: string): Promise<{ rows: T[]; rowCount?: number }> {
     if (sql.includes('FROM plan_limits')) {
-      return { rows: (this.planLimitsRow ? [this.planLimitsRow] : []) as T[] };
+      const row = this.planLimitsRow ? { max_custom_roles: null, ...this.planLimitsRow } : undefined;
+      return { rows: (row ? [row] : []) as T[] };
     }
     if (sql.includes('FROM plan_limit_allowed_roles')) {
       return { rows: this.allowedRoleRows as T[] };
+    }
+    if (sql.includes('FROM plan_limit_allowed_permission_groups')) {
+      return { rows: this.allowedPermissionGroupRows as T[] };
     }
     return { rows: [] as T[] };
   }
@@ -129,6 +134,8 @@ describe('PlatformRepository.getPlanLimits()', () => {
       maxResources: Infinity,
       maxActiveMemberships: Infinity,
       allowedRoleNames: 'ALL',
+      maxCustomRoles: Infinity,
+      allowedPermissionGroups: 'ALL',
     });
   });
 
@@ -144,6 +151,8 @@ describe('PlatformRepository.getPlanLimits()', () => {
       maxResources: 20,
       maxActiveMemberships: 5,
       allowedRoleNames: 'ALL',
+      maxCustomRoles: Infinity,
+      allowedPermissionGroups: 'ALL',
     });
   });
 
@@ -155,6 +164,18 @@ describe('PlatformRepository.getPlanLimits()', () => {
     const limits = await new PlatformRepository(db).getPlanLimits(BusinessPlan.FREE);
 
     expect(limits?.allowedRoleNames).toEqual(['ADMIN']);
+  });
+
+  it('mapea filas de plan_limit_allowed_permission_groups a la lista de grupos permitidos (L, 23/08/2026)', async () => {
+    const db = new FakePlanLimitsSqlClient(
+      { max_categories: 1, max_resources: 5, max_active_memberships: 1, max_custom_roles: 0 },
+      [],
+      [{ permission_group: 'STAFF' }, { permission_group: 'FRONT_DESK' }],
+    );
+    const limits = await new PlatformRepository(db).getPlanLimits(BusinessPlan.FREE);
+
+    expect(limits?.maxCustomRoles).toBe(0);
+    expect(limits?.allowedPermissionGroups).toEqual(['STAFF', 'FRONT_DESK']);
   });
 
   it('devuelve undefined si el plan no tiene fila en plan_limits', async () => {

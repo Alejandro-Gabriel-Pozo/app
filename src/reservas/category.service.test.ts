@@ -160,6 +160,8 @@ describe('CategoryService.createCategory() — límite de plan', () => {
     maxResources: Infinity,
     maxActiveMemberships: Infinity,
     allowedRoleNames: 'ALL',
+    maxCustomRoles: Infinity,
+    allowedPermissionGroups: 'ALL',
   });
 
   it('crea la categoría si todavía no alcanzó el límite del plan', async () => {

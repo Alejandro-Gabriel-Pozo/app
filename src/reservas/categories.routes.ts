@@ -65,7 +65,15 @@ export function createCategoryRouter(container: AppContainer): Router {
   }
 
   // ---------------------------------------------------------------------------
-  // GET /
+  // GET / y GET /:id — SIN authorize() a propósito (L, 23/08/2026,
+  // docs/rbac-matriz-endpoints.md, confirmado contra el frontend real).
+  // Cualquier identidad autenticada del tenant puede leerlas, incluido un
+  // token CUSTOMER: el portal de clientes las necesita logueado para el
+  // filtro de categoría del buscador de disponibilidad (ver
+  // appfrontend-main/src/app/portal/[businessSlug]/disponibilidad/page.tsx,
+  // comentario "El filtro de categoría solo está disponible logueado").
+  // No cerrar esto con Roles.STAFF sin verificar antes que el portal ya no
+  // lo necesita — romperías esa pantalla real, no una fuga.
   // ---------------------------------------------------------------------------
   router.get('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
