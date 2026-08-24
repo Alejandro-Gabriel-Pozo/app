@@ -45,20 +45,12 @@ import { Roles } from '../security/roles.js';
 import { hashPassword } from '../security/user.store.js';
 import { generatePasswordResetToken, hashPasswordResetToken } from '../security/password-reset-token.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
-import { passwordResetEmail } from '../email/templates.js';
+import { sendPasswordResetEmail, PASSWORD_RESET_EXPIRES_HOURS } from './password-reset.routes.js';
 import type { EmailSender } from '../email/email.sender.js';
 import type { PlatformRepository } from '../platform/platform.repository.js';
 import type { AppContainer } from '../container.js';
 import { PlanLimitError, RoleNotAvailableInPlanError } from '../domain/errors.js';
 import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
-
-/** K1 (23/08/2026) — más corto que los 7 días de invitación: acá ya existe una cuenta activa. */
-const PASSWORD_RESET_EXPIRES_HOURS = 24;
-const DEFAULT_SENDER_NAME = 'ZuluHub';
-
-function buildPasswordResetUrl(frontendUrl: string, token: string): string {
-  return `${frontendUrl}/restablecer-contrasena/confirmar?token=${encodeURIComponent(token)}`;
-}
 
 /**
  * `roleId` reemplaza el enum fijo `role` (14/08/2026, ver security/roles.ts
@@ -109,18 +101,7 @@ export function createUsersRouter(
 
   async function dispatchPasswordResetEmail(req: Request, email: string, token: string): Promise<void> {
     const profile = await new SqlBusinessProfileRepository(req.db!).get();
-    const { subject, html } = passwordResetEmail({
-      businessDisplayName: profile.displayName ?? DEFAULT_SENDER_NAME,
-      resetUrl:       buildPasswordResetUrl(frontendUrl, token),
-      expiresInHours: PASSWORD_RESET_EXPIRES_HOURS,
-    });
-    await emailSender.send({
-      to: email,
-      fromName: profile.displayName ?? DEFAULT_SENDER_NAME,
-      ...(profile.contactEmail && { replyTo: profile.contactEmail }),
-      subject,
-      html,
-    });
+    await sendPasswordResetEmail(emailSender, frontendUrl, email, token, profile);
   }
 
   // ── GET /users ─────────────────────────────────────────────────────────────

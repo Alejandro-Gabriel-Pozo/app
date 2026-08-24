@@ -1,9 +1,14 @@
 /**
  * @file password-reset.routes.ts
- * @description Aceptación pública de un link de reseteo de contraseña (K1,
- * 23/08/2026, pendientes-2026-08-23.md). Complementa
- * `POST /users/:id/password-reset-link` (users.routes.ts, MANAGEMENT) —
- * ese endpoint dispara el mail, este acepta el token que llega en el link.
+ * @description Reseteo de contraseña — flujo completo, público.
+ *
+ * - `POST /request` (L, 23/08/2026, self-service) — "olvidé mi
+ *   contraseña", sin sesión, sin admin de por medio. Complementa
+ *   `POST /users/:id/password-reset-link` (users.routes.ts, MANAGEMENT) —
+ *   ese lo dispara un admin sobre OTRA persona; este lo dispara la propia
+ *   persona sobre sí misma.
+ * - `POST /lookup` / `POST /accept` (K1, 23/08/2026) — acepta el token que
+ *   llega en el link, sea cual sea el endpoint que lo generó.
  *
  * Router PÚBLICO, montado en `/api/password-resets` ANTES de authenticate()
  * — mismo motivo que `/api/invitations`: quien todavía no puso su
@@ -13,10 +18,56 @@
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { z, ZodError } from 'zod';
-import { hashPasswordResetToken } from '../security/password-reset-token.js';
+import { generatePasswordResetToken, hashPasswordResetToken } from '../security/password-reset-token.js';
 import { hashPassword } from '../security/user.store.js';
+import { passwordResetEmail } from '../email/templates.js';
+import type { EmailSender } from '../email/email.sender.js';
+import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
+import { getTenantClient } from '../platform/tenant.middleware.js';
 import type { PlatformRepository, PasswordResetToken } from '../platform/platform.repository.js';
+
+/** Más corto que los 7 días de invitación — acá ya existe una cuenta activa. */
+export const PASSWORD_RESET_EXPIRES_HOURS = 24;
+export const DEFAULT_SENDER_NAME = 'ZuluHub';
+
+export function buildPasswordResetUrl(frontendUrl: string, token: string): string {
+  return `${frontendUrl}/restablecer-contrasena/confirmar?token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Compone y manda el mail de reseteo — compartido entre el link disparado
+ * por un admin (`users.routes.ts`, ya tiene `req.db` del negocio) y el
+ * pedido self-service de acá (sin sesión, sin `req.db` — ver
+ * `resolveBusinessBranding` más abajo). `business` ya resuelto por el
+ * caller para no acoplar esta función a CÓMO se consiguió.
+ */
+export async function sendPasswordResetEmail(
+  emailSender: EmailSender,
+  frontendUrl: string,
+  toEmail: string,
+  token: string,
+  business: { displayName: string | null; contactEmail?: string | null } | null,
+): Promise<void> {
+  const senderName = business?.displayName ?? DEFAULT_SENDER_NAME;
+  const { subject, html } = passwordResetEmail({
+    businessDisplayName: senderName,
+    resetUrl:       buildPasswordResetUrl(frontendUrl, token),
+    expiresInHours: PASSWORD_RESET_EXPIRES_HOURS,
+  });
+  await emailSender.send({
+    to: toEmail,
+    fromName: senderName,
+    ...(business?.contactEmail && { replyTo: business.contactEmail }),
+    subject,
+    html,
+  });
+}
+
+const RequestPasswordResetBodySchema = z.object({
+  email: z.string({ required_error: 'email es obligatorio' }).email(),
+});
 
 const LookupPasswordResetBodySchema = z.object({
   token: z.string({ required_error: 'token es obligatorio' }).min(1),
@@ -29,8 +80,93 @@ const AcceptPasswordResetBodySchema = z.object({
   }),
 });
 
-export function createPasswordResetAcceptanceRouter(platformRepo: PlatformRepository): Router {
+/**
+ * Mismo mensaje/forma de respuesta exista o no exista el email — A7.1/A7.2
+ * y el mismo criterio que `AuthService.login()` (docblock de
+ * `auth.service.ts`): revelar la diferencia es una superficie de
+ * enumeración de cuentas. A diferencia del login, acá no hace falta un
+ * hash dummy para tiempo constante (no hay verificación de contraseña de
+ * por medio, las consultas son todas rápidas) — alcanza con que la
+ * respuesta externa sea siempre idéntica.
+ */
+const GENERIC_REQUEST_RESPONSE = {
+  message: 'Si el email existe, vas a recibir un link para restablecer tu contraseña.',
+};
+
+export function createPasswordResetRouter(
+  platformRepo: PlatformRepository,
+  emailSender: EmailSender,
+  frontendUrl: string,
+): Router {
   const router = Router();
+
+  /**
+   * Resuelve el nombre del negocio para el mail SOLO cuando hay exactamente
+   * una membership activa (mismo criterio que el login para auto-resolver
+   * negocio, `AuthService.resolveLoginOutcome`) — con 0 o 2+, no hay un
+   * negocio único al que atribuirle la marca del mail, cae a
+   * DEFAULT_SENDER_NAME. `getTenantClient` (no `req.db`: acá no hay sesión,
+   * no pasó por tenantMiddleware) resuelve la conexión a la BD de ESE
+   * negocio puntual.
+   */
+  async function resolveBusinessBranding(
+    identityId: string,
+  ): Promise<{ displayName: string | null; contactEmail?: string | null; businessId: string | null }> {
+    const memberships = await platformRepo.findActiveMembershipsByIdentityId(identityId);
+    if (memberships.length !== 1) return { displayName: null, businessId: null };
+
+    const businessId = memberships[0]!.businessId;
+    try {
+      const client = await getTenantClient(businessId, platformRepo);
+      const profile = await new SqlBusinessProfileRepository(client).get();
+      return { displayName: profile.displayName, contactEmail: profile.contactEmail, businessId };
+    } catch (err) {
+      // Negocio suspendido/sin BD lista/lo que sea -- no es motivo para
+      // fallar el pedido de reseteo entero, cae a DEFAULT_SENDER_NAME.
+      console.error(`[password-resets/request] no se pudo resolver el negocio ${businessId} para el mail:`, err);
+      return { displayName: null, businessId };
+    }
+  }
+
+  // ── POST /password-resets/request — self-service, L (23/08/2026) ───────────
+  router.post('/request', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email } = RequestPasswordResetBodySchema.parse(req.body);
+
+      // Deliberadamente sin `await` bloqueante del resultado hacia la
+      // respuesta -- cualquier fallo interno (identity no existe, mail no
+      // sale) se loguea pero NUNCA cambia la respuesta externa (anti-
+      // enumeración, ver GENERIC_REQUEST_RESPONSE).
+      try {
+        const identity = await platformRepo.findIdentityByEmail(email);
+        if (identity) {
+          const branding = await resolveBusinessBranding(identity.id);
+          const token = generatePasswordResetToken();
+          const resetToken = await platformRepo.upsertPasswordResetToken({
+            id: randomUUID(),
+            identityId: identity.id,
+            // Self-service: lo pide la propia persona, no un admin sobre
+            // otra -- a diferencia de POST /users/:id/password-reset-link.
+            requestedByIdentityId: identity.id,
+            businessId: branding.businessId,
+            tokenHash: hashPasswordResetToken(token),
+            expiresAt: new Date(Date.now() + PASSWORD_RESET_EXPIRES_HOURS * 60 * 60 * 1000),
+          });
+          await sendPasswordResetEmail(emailSender, frontendUrl, resetToken.identityEmail, token, branding);
+        }
+      } catch (err) {
+        console.error('[password-resets/request] fallo interno, respuesta genérica igual:', err);
+      }
+
+      res.json(GENERIC_REQUEST_RESPONSE);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'Datos inválidos', errors: err.flatten() });
+        return;
+      }
+      next(err);
+    }
+  });
 
   async function findValidPendingToken(token: string): Promise<PasswordResetToken | undefined> {
     const resetToken = await platformRepo.findPasswordResetTokenByHash(hashPasswordResetToken(token));
