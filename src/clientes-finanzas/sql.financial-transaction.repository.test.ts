@@ -61,20 +61,25 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       expect(params).toContain('stay-1');
     });
 
-    it('permite stay_id null (cargo sin estadía asociada)', async () => {
+    it('permite stay_id null (cargo asociado a una orden, sin estadía)', async () => {
       vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [{
           id: 'tx-3', business_id: 'biz-1', customer_id: 'cust-1',
-          reservation_id: null, order_id: null, stay_id: null,
+          reservation_id: null, order_id: 'order-3', stay_id: null,
           idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
           status: 'PENDING', notes: null, created_at: new Date(),
         }],
       });
 
+      // orderId cubre el documento de origen obligatorio (F1-Pieza 2) --
+      // este test verifica específicamente que stay_id null no rompe nada,
+      // no que un cargo pueda no tener NINGÚN origen (ver describe de más
+      // abajo para ese caso).
       await repo.create({
         id: 'tx-3',
         businessId: 'biz-1',
         customerId: 'cust-1',
+        orderId: 'order-3',
         type: 'CHARGE',
         amount: 100,
         currency: 'ARS',
@@ -84,6 +89,72 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       const mockQuery = vi.mocked(mockSqlClient.query);
       const [, params] = mockQuery.mock.calls[0]!;
       expect(params).toContain(null);
+    });
+  });
+
+  describe('create — documento de origen obligatorio (F1-Pieza 2, 23/08/2026)', () => {
+    it('rechaza un CHARGE sin reservationId, orderId ni stayId', async () => {
+      await expect(repo.create({
+        id: 'tx-origen-1', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      })).rejects.toThrow(/documento de origen/);
+
+      expect(mockSqlClient.query).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un ADJUSTMENT sin reservationId, orderId ni stayId', async () => {
+      await expect(repo.create({
+        id: 'tx-origen-2', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'ADJUSTMENT', amount: -50, currency: 'ARS', status: 'PENDING',
+      })).rejects.toThrow(/documento de origen/);
+    });
+
+    it('acepta un CHARGE con orderId aunque reservationId y stayId sean null', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-origen-3', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: 'order-1', stay_id: null,
+          idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
+          status: 'PENDING', notes: null, created_at: new Date(),
+        }],
+      });
+
+      await expect(repo.create({
+        id: 'tx-origen-3', businessId: 'biz-1', customerId: 'cust-1', orderId: 'order-1',
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      })).resolves.not.toBeNull();
+    });
+
+    it('NO exige origen para PAYMENT (pago genérico contra la cuenta del cliente)', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-origen-4', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: null, stay_id: null,
+          idempotency_key: null, type: 'PAYMENT', amount: '100', currency: 'ARS',
+          status: 'SETTLED', notes: null, created_at: new Date(),
+        }],
+      });
+
+      await expect(repo.create({
+        id: 'tx-origen-4', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'PAYMENT', amount: 100, currency: 'ARS', status: 'SETTLED',
+      })).resolves.not.toBeNull();
+    });
+
+    it('NO exige origen para REFUND (reembolso ledger-only, sin factura que cubrir)', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-origen-5', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: null, stay_id: null,
+          idempotency_key: null, type: 'REFUND', amount: '100', currency: 'ARS',
+          status: 'SETTLED', notes: null, created_at: new Date(),
+        }],
+      });
+
+      await expect(repo.create({
+        id: 'tx-origen-5', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'REFUND', amount: 100, currency: 'ARS', status: 'SETTLED',
+      })).resolves.not.toBeNull();
     });
   });
 
@@ -304,14 +375,16 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
         rows: [{
           id: 'tx-10', business_id: 'biz-1', customer_id: 'cust-1',
-          reservation_id: null, order_id: null, stay_id: null,
+          reservation_id: null, order_id: null, stay_id: 'stay-10',
           idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
           status: 'PENDING', notes: null, confirmed_by: null, created_at: new Date(),
         }],
       });
 
+      // stayId cubre el documento de origen obligatorio (F1-Pieza 2) --
+      // no tiene relación con lo que este test verifica (confirmed_by).
       const created = await repo.create({
-        id: 'tx-10', businessId: 'biz-1', customerId: 'cust-1',
+        id: 'tx-10', businessId: 'biz-1', customerId: 'cust-1', stayId: 'stay-10',
         type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
       });
 
@@ -328,6 +401,45 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       expect(sql).toContain('WHERE stay_id = $1');
       expect(sql).toContain('ORDER BY created_at ASC');
       expect(params).toEqual(['stay-1']);
+    });
+  });
+
+  describe('getByCustomerId — reservationNumber (F1-Pieza 2, 23/08/2026)', () => {
+    it('hace LEFT JOIN a reservations y mapea reservation_number', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-1', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: 'res-1', order_id: null, stay_id: null,
+          reservation_number: 42,
+          idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
+          status: 'PENDING', notes: null, created_at: new Date(),
+        }],
+      });
+
+      const [tx] = await repo.getByCustomerId('cust-1');
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('LEFT JOIN reservations');
+      expect(sql).toContain('WHERE ft.customer_id = $1');
+      expect(params).toEqual(['cust-1']);
+      expect(tx!.reservationNumber).toBe(42);
+    });
+
+    it('reservationNumber queda null si el cargo no tiene reservationId', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-2', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: 'order-1', stay_id: null,
+          reservation_number: null,
+          idempotency_key: null, type: 'CHARGE', amount: '100', currency: 'ARS',
+          status: 'PENDING', notes: null, created_at: new Date(),
+        }],
+      });
+
+      const [tx] = await repo.getByCustomerId('cust-1');
+
+      expect(tx!.reservationNumber).toBeNull();
     });
   });
 

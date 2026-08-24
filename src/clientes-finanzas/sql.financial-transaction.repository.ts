@@ -16,6 +16,8 @@ interface TransactionRow {
   reservation_id: string | null;
   order_id: string | null;
   stay_id: string | null;
+  /** Solo presente en el resultado de getByCustomerId() (JOIN) -- ver reservationNumber en la entidad. */
+  reservation_number?: number | null;
   idempotency_key: string | null;
   type: TransactionType;
   amount: string; // DECIMAL llega como string en pg
@@ -65,6 +67,32 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     client: SqlClient,
     tx: Omit<FinancialTransaction, 'createdAt'>,
   ): Promise<FinancialTransaction | null> {
+    // F1-Pieza 2 (23/08/2026, pendientes-2026-08-23.md) — "documento de
+    // origen obligatorio por cargo", A3.9 de criterios-negocio.md ("un
+    // cargo sin origen es un descuadre esperando"). Guard a nivel
+    // aplicación, no CHECK de Postgres: no hay forma de verificar contra
+    // datos reales de producción (sin TEST_DATABASE_URL en este entorno)
+    // si alguna fila vieja ya viola el invariante -- un CHECK que valida
+    // filas existentes al agregarse rompería el deploy si una sola fila
+    // no cumple. Los 4 sitios de creación reales (outbox.handlers.ts x3,
+    // stay.service.ts, reservation.service.ts) ya setean reservationId/
+    // orderId siempre -- este guard es para que un caller nuevo no rompa
+    // ese invariante en silencio, no una migración retroactiva.
+    // PAYMENT/REFUND no entran: un pago de mostrador contra la cuenta
+    // general del cliente, sin reserva/orden asociada, es un caso real
+    // (CustomerAccountService.recordPayment() sin allocations).
+    if (
+      (tx.type === 'CHARGE' || tx.type === 'ADJUSTMENT') &&
+      tx.reservationId == null &&
+      tx.orderId == null &&
+      tx.stayId == null
+    ) {
+      throw new Error(
+        `financial_transactions: un ${tx.type} necesita al menos un documento de origen ` +
+        `(reservationId, orderId o stayId) -- no debería crearse uno sin ninguno de los tres.`,
+      );
+    }
+
     const id = tx.id ?? randomUUID();
     const idempotencyKey = tx.idempotencyKey ?? null;
     const paymentMethod = tx.paymentMethod ?? null;
@@ -205,11 +233,20 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rows.map((r) => this.rowToEntity(r));
   }
 
+  /**
+   * F1-Pieza 2 (23/08/2026) — LEFT JOIN a `reservations` para traer
+   * `reservation_number` (D6): el estado de cuenta necesita mostrar A QUÉ
+   * reserva pertenece cada cargo, no solo el UUID interno. LEFT (no INNER)
+   * porque reservation_id es nullable -- un cargo de orden/estadía sin
+   * reserva asociada no debe desaparecer del estado de cuenta.
+   */
   async getByCustomerId(customerId: string): Promise<FinancialTransaction[]> {
     const result = await this.sqlClient.query<TransactionRow>(
-      `SELECT * FROM financial_transactions
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+      `SELECT ft.*, r.reservation_number
+       FROM financial_transactions ft
+       LEFT JOIN reservations r ON r.id = ft.reservation_id
+       WHERE ft.customer_id = $1
+       ORDER BY ft.created_at DESC`,
       [customerId],
     );
     return result.rows.map((r) => this.rowToEntity(r));
@@ -424,6 +461,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       reversedInvoiceId: row.reversed_invoice_id,
       settledInvoiceId: row.settled_invoice_id,
       createdAt:       row.created_at,
+      reservationNumber: row.reservation_number ?? null,
     };
   }
 }

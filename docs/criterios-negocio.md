@@ -179,6 +179,21 @@ otro registro.
 > incluye filas de tipo PAYMENT/REFUND? Si sí, es casi seguro un error —
 > acotar el filtro por `type`.
 
+> **Corolario, enforcement real (23/08/2026, F1-Pieza 2,
+> pendientes-2026-08-23.md):** hasta esta sesión, "un cargo sin origen"
+> era una regla escrita pero no exigida por ningún código — nada impedía
+> crear un `CHARGE`/`ADJUSTMENT` con `reservation_id`, `order_id` y
+> `stay_id` los tres `NULL`. `SqlFinancialTransactionRepository.insert()`
+> (choke point único de `create()`/`createWithClient()`) ahora rechaza esa
+> combinación para esos dos tipos — `PAYMENT`/`REFUND` siguen sin
+> exigirlo, un pago/reembolso genérico contra la cuenta del cliente sin
+> reserva/orden asociada es un caso real. Guard a nivel aplicación, no
+> CHECK de Postgres: sin acceso a los datos reales de producción no se
+> pudo confirmar que ninguna fila vieja ya violara el invariante — un
+> CHECK que valida filas existentes al agregarse hubiera arriesgado
+> romper el deploy. Los 4 sitios de creación reales ya seteaban origen
+> siempre; el guard es para que un caller nuevo no lo rompa en silencio.
+
 **A3.10 — Cobros idempotentes.** *Ya resuelto con `idempotencyKey` del
 cliente.*
 

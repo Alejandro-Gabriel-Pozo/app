@@ -94,6 +94,18 @@ export interface FinancialTransaction {
    */
   settledInvoiceId?: string | null;
   createdAt?: Date;
+  /**
+   * F1-Pieza 2 (23/08/2026, pendientes-2026-08-23.md — trazabilidad de
+   * folio). Campo DERIVADO, no persistido en la tabla — `reservations.
+   * reservation_number` (D6) traído por JOIN. Solo lo completa
+   * `getByCustomerId()` (el estado de cuenta, único lugar donde el
+   * cliente/staff necesita reconocer a qué reserva pertenece un cargo);
+   * el resto de los métodos de lectura lo dejan en `null` (no hicieron
+   * el JOIN). También `null` si `reservationId` es null o si la reserva
+   * no tiene número asignado (no debería pasar post-backfill de D6, pero
+   * el JOIN es LEFT por las dudas).
+   */
+  reservationNumber?: number | null;
 }
 
 /** Metadata de medio de pago que puede acompañar un settle (Gap Tango #3). */
