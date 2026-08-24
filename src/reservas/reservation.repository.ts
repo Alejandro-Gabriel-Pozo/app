@@ -9,6 +9,22 @@ export interface ReservationFilters {
   customerId?: string;
   from?:       Date;
   to?:         Date;
+  /**
+   * K2 (23/08/2026) — separa Reservas (alojamiento) de Turnos (todo lo
+   * demás) por la categoría del recurso (`resource_categories.is_lodging`),
+   * mismo criterio que ya usa `ReservationPricingService` vía
+   * `ICategoryRepository` — no un flag nuevo, la traducción a SQL de un
+   * filtro que antes solo existía client-side.
+   */
+  isLodging?:  boolean;
+  /**
+   * K2 (23/08/2026) — busca sobre `customer_name`/`customer_email`
+   * CONGELADOS en la propia fila de la reserva (R9, `rowToReservation`),
+   * no contra el `Customer` actual — decisión confirmada con el dueño:
+   * una reserva vieja se busca por el nombre/email que tenía al momento
+   * de reservar, no por el nombre actual del cliente si cambió después.
+   */
+  search?:     string;
   page?:       number;
   limit?:      number;
 }

@@ -138,6 +138,17 @@ const SearchByTaxIdSchema = z.object({
   taxId: z.string().trim().min(1).max(50),
 });
 
+// A7.2 (23/08/2026, pendientes-2026-08-23.md) — `search` es nombre/email
+// tipeado por el usuario, mismo tipo de dato que taxId arriba: nunca en
+// query string. Body, mismo criterio. page/limit no son PII, viajan igual
+// para no duplicar la llamada.
+const SearchCustomersSchema = z.object({
+  search: z.string().trim().min(1).max(200),
+  currentAccountEnabled: z.boolean().optional(),
+  page: z.number().int().positive().optional(),
+  limit: z.number().int().positive().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // DTO de salida
 // ---------------------------------------------------------------------------
@@ -162,6 +173,36 @@ function toCustomerDto(customer: Customer) {
       isPrimary: cm.isPrimary,
     })),
   };
+}
+
+/**
+ * Arma la respuesta de GET /customers y POST /customers/search — con
+ * page+limit el envelope paginado (PaginatedResponse<T>), sin ellos el
+ * array plano de siempre (compatibilidad hacia atrás, ver K2). Un solo
+ * lugar para las dos rutas: la única diferencia entre ellas es DE DÓNDE
+ * sale `search` (query string vs. body, A7.2), no qué se hace con él.
+ */
+async function respondWithCustomerList(
+  repo: SqlCustomerRepository,
+  filters: { onlyCurrentAccountEnabled: boolean; search?: string; page?: number; limit?: number },
+  res: Response,
+): Promise<void> {
+  if (filters.page !== undefined && filters.limit !== undefined) {
+    const { page, limit, ...countFilters } = filters;
+    const [customers, total] = await Promise.all([
+      repo.getFiltered(filters),
+      repo.countFiltered(countFilters),
+    ]);
+    res.json({
+      data: customers.map(toCustomerDto),
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
+    return;
+  }
+  const customers = await repo.getFiltered(filters);
+  res.json(customers.map(toCustomerDto));
 }
 
 // ---------------------------------------------------------------------------
@@ -408,13 +449,15 @@ export function createCustomersRouter(container: AppContainer): Router {
 
   // GET /customers?email=...  o  GET /customers?name=...  o
   // GET /customers?currentAccountEnabled=true  o  GET /customers (todos)
+  // `search` (nombre O email) YA NO va acá — ver POST /customers/search
+  // (A7.2, 23/08/2026: era PII viajando en query string).
   router.get(
     '/',
     authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const repo = new SqlCustomerRepository(req.db!);
-        const { email, name, search, currentAccountEnabled, page, limit } = req.query;
+        const { email, name, currentAccountEnabled, page, limit } = req.query;
 
         if (typeof email === 'string' && email.trim()) {
           const customer = await repo.getByEmail(email.trim());
@@ -434,36 +477,35 @@ export function createCustomersRouter(container: AppContainer): Router {
         // filtro vive en SqlCustomerRepository.getFiltered(), no acá.
         const onlyCurrentAccountEnabled = currentAccountEnabled === 'true';
 
-        // K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — `search` es
-        // distinto de `name`: matchea nombre O email (ILIKE), y sí combina
-        // con paginación — reemplaza el filtro que antes hacía
-        // dashboard/clientes/page.tsx en memoria sobre la lista completa
-        // (fullName.includes() || email.includes()).
-        const searchTerm = typeof search === 'string' && search.trim() ? search.trim() : undefined;
-
         // Con page/limit en la query, devuelve el envelope paginado
         // (PaginatedResponse<T>, igual que /api/reservations); sin ellos,
         // el array plano de siempre — la pantalla de Cuentas Corrientes no
         // manda paginación, necesita la lista completa filtrada.
-        if (typeof page === 'string' && typeof limit === 'string') {
-          const pageNum  = Number(page);
-          const limitNum = Number(limit);
-          const filters = { onlyCurrentAccountEnabled, ...(searchTerm !== undefined && { search: searchTerm }), page: pageNum, limit: limitNum };
-          const [customers, total] = await Promise.all([
-            repo.getFiltered(filters),
-            repo.countFiltered({ onlyCurrentAccountEnabled, ...(searchTerm !== undefined && { search: searchTerm }) }),
-          ]);
-          res.json({
-            data: customers.map(toCustomerDto),
-            total,
-            page: pageNum,
-            totalPages: Math.max(1, Math.ceil(total / limitNum)),
-          });
-          return;
-        }
+        const filters = typeof page === 'string' && typeof limit === 'string'
+          ? { onlyCurrentAccountEnabled, page: Number(page), limit: Number(limit) }
+          : { onlyCurrentAccountEnabled };
+        await respondWithCustomerList(repo, filters, res);
+      } catch (err) { next(err); }
+    },
+  );
 
-        const customers = await repo.getFiltered({ onlyCurrentAccountEnabled, ...(searchTerm !== undefined && { search: searchTerm }) });
-        res.json(customers.map(toCustomerDto));
+  // POST /customers/search — { search } en el body, nunca en la URL
+  // (A7.2: nombre/email tipeado por el usuario es PII, mismo criterio que
+  // /search-by-tax-id más abajo). Reemplaza el `?search=` que tenía
+  // GET /customers hasta esta sesión (K2, pendientes-2026-08-23.md).
+  router.post(
+    '/search',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body = SearchCustomersSchema.parse(req.body);
+        const repo = new SqlCustomerRepository(req.db!);
+        const filters = {
+          onlyCurrentAccountEnabled: body.currentAccountEnabled ?? false,
+          search: body.search,
+          ...(body.page !== undefined && body.limit !== undefined && { page: body.page, limit: body.limit }),
+        };
+        await respondWithCustomerList(repo, filters, res);
       } catch (err) { next(err); }
     },
   );

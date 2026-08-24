@@ -380,6 +380,22 @@ export class SqlReservationRepository implements ReservationRepository {
       params.push(filters.to.toISOString());
       conditions.push(`r.start_time < $${params.length}`);
     }
+    if (filters.isLodging !== undefined) {
+      // EXISTS en vez de JOIN en el FROM principal a propósito — baseSelect()
+      // es `FROM reservations r` sin joins (la usan getById/getByCustomerId/
+      // etc., no solo getFiltered) y un JOIN ahí multiplicaría filas si algún
+      // día resources/resource_categories deja de ser 1:1.
+      params.push(filters.isLodging);
+      conditions.push(`EXISTS (
+        SELECT 1 FROM resources res
+        JOIN resource_categories rc ON rc.id = res.category_id
+        WHERE res.id = r.resource_id AND rc.is_lodging = $${params.length}
+      )`);
+    }
+    if (filters.search !== undefined && filters.search.trim() !== '') {
+      params.push(`%${filters.search.trim()}%`);
+      conditions.push(`(r.customer_name ILIKE $${params.length} OR r.customer_email ILIKE $${params.length})`);
+    }
 
     return { conditions, params };
   }

@@ -28,6 +28,18 @@ describe('SqlReservationRepository', () => {
   beforeEach(() => {
     mockSqlClient = {
       query: vi.fn(async (sql: string) => {
+        // Orden importante: getFiltered({isLodging}) arma un EXISTS que
+        // contiene el substring "FROM resources" DENTRO de la query
+        // principal (que sigue siendo "FROM reservations r ..." de
+        // baseSelect()) — hay que distinguir por la forma más específica
+        // primero, si no countFiltered/getFiltered con isLodging matchean
+        // la rama de resourceRepo.getById() por error.
+        if (sql.includes('COUNT(*)')) {
+          return { rows: [{ count: '1' }] };
+        }
+        if (sql.includes('FROM reservations')) {
+          return { rows: [reservationRow] };
+        }
         if (sql.includes('FROM resources')) {
           return {
             rows: [
@@ -139,5 +151,74 @@ describe('SqlReservationRepository', () => {
       expect(insertClause).toContain(column);
       expect(setClause).toMatch(new RegExp(`${column}\\s*=`));
     }
+  });
+
+  // K2 (23/08/2026) — filtro isLodging/search nuevo en getFiltered/countFiltered,
+  // para separar Reservas/Turnos y buscar por nombre/email server-side.
+  describe('getFiltered / countFiltered — isLodging y search', () => {
+    it('sin filtros no agrega el EXISTS de isLodging ni el ILIKE de search', async () => {
+      await repo.getFiltered({});
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).not.toContain('EXISTS');
+      expect(call[0]).not.toContain('ILIKE');
+      expect(call[1]).toEqual([]);
+    });
+
+    it('isLodging agrega un EXISTS contra resources/resource_categories, no un JOIN en el FROM principal', async () => {
+      await repo.getFiltered({ isLodging: true });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('FROM reservations r');
+      expect(call[0]).toContain('EXISTS (');
+      expect(call[0]).toContain('JOIN resource_categories rc ON rc.id = res.category_id');
+      expect(call[0]).toContain('rc.is_lodging = $1');
+      expect(call[1]).toEqual([true]);
+    });
+
+    it('isLodging: false también viaja como parámetro real, no se cae por falsy', async () => {
+      await repo.countFiltered({ isLodging: false });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('rc.is_lodging = $1');
+      expect(call[1]).toEqual([false]);
+    });
+
+    it('search busca por customer_name O customer_email con el mismo parámetro', async () => {
+      await repo.getFiltered({ search: 'Ana' });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('r.customer_name ILIKE $1');
+      expect(call[0]).toContain('r.customer_email ILIKE $1');
+      expect(call[1]).toEqual(['%Ana%']);
+    });
+
+    it('search vacío o solo espacios no agrega ningún filtro', async () => {
+      await repo.getFiltered({ search: '   ' });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).not.toContain('ILIKE');
+      expect(call[1]).toEqual([]);
+    });
+
+    it('isLodging + search combinados usan índices de parámetro correlativos', async () => {
+      await repo.getFiltered({ isLodging: true, search: 'Ana' });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('rc.is_lodging = $1');
+      expect(call[0]).toContain('r.customer_name ILIKE $2');
+      expect(call[0]).toContain('r.customer_email ILIKE $2');
+      expect(call[1]).toEqual([true, '%Ana%']);
+    });
+
+    it('countFiltered arma el mismo WHERE que getFiltered, sin LIMIT/OFFSET', async () => {
+      await repo.countFiltered({ isLodging: true, search: 'Ana' });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('SELECT COUNT(*) AS count FROM reservations r');
+      expect(call[0]).not.toContain('LIMIT');
+      expect(call[0]).not.toContain('OFFSET');
+      expect(call[1]).toEqual([true, '%Ana%']);
+    });
   });
 });

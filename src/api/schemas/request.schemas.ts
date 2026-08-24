@@ -96,6 +96,25 @@ export const UpdateReservationSchema = z.object({
   }
 });
 
+// A7.2 (23/08/2026, pendientes-2026-08-23.md) — `search` es nombre/email
+// tipeado por el usuario (busca contra customer_name/customer_email
+// CONGELADOS de la reserva, ver ReservationFilters), body nunca query
+// string. Reemplaza el `?search=` que tenía GET /reservations hasta esta
+// sesión (K2) — el resto de filtros no es PII, viaja igual acá para no
+// duplicar la llamada. Sin validar `status` contra el enum a propósito:
+// GET /reservations tampoco lo valida hoy (cast directo), mismo criterio.
+export const SearchReservationsSchema = z.object({
+  search:     z.string().trim().min(1).max(200),
+  status:     z.string().optional(),
+  resourceId: z.string().min(1).optional(),
+  customerId: z.string().min(1).optional(),
+  from:       z.string().datetime().optional(),
+  to:         z.string().datetime().optional(),
+  isLodging:  z.boolean().optional(),
+  page:       z.number().int().positive().optional(),
+  limit:      z.number().int().positive().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Schemas de Órdenes
 // ---------------------------------------------------------------------------

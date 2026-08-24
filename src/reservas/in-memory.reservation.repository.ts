@@ -6,6 +6,7 @@ import type {
   ReservationFilters,
 }                                   from './reservation.repository.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
+import type { ICategoryRepository } from './category.repository.js';
 
 /**
  * Implementación en memoria del repositorio de reservas.
@@ -20,6 +21,17 @@ import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.re
  */
 export class InMemoryReservationRepository implements ReservationRepository {
   private reservations: Map<string, Reservation> = new Map();
+
+  /**
+   * K2 (23/08/2026) — solo hace falta para resolver el filtro `isLodging`
+   * de getFiltered() (el `Resource` embebido en cada `Reservation` trae
+   * `categoryId`, no `isLodging` — eso vive en `resource_categories`, hay
+   * que resolverlo aparte). Opcional porque ningún test existente hoy
+   * necesita ese filtro en memoria — mismo criterio de reuso de dependencia
+   * ya existente que usa `ReservationPricingService`, no una tabla/mapa
+   * nuevo en este repo.
+   */
+  constructor(private readonly categoryRepository?: ICategoryRepository) {}
 
   async save(reservation: Reservation): Promise<void> {
     this.reservations.set(reservation.id, reservation);
@@ -113,6 +125,28 @@ export class InMemoryReservationRepository implements ReservationRepository {
     if (filters.customerId) results = results.filter((r) => r.customer.id === filters.customerId);
     if (filters.from)       results = results.filter((r) => r.endTime   > filters.from!);
     if (filters.to)         results = results.filter((r) => r.startTime < filters.to!);
+
+    if (filters.isLodging !== undefined) {
+      if (!this.categoryRepository) {
+        // Fallar fuerte en vez de devolver resultados sin filtrar en
+        // silencio — mismo criterio que "errores silenciosos" del resto
+        // del proyecto: mejor romper un test que dar por buena una
+        // separación Reservas/Turnos que en realidad no se aplicó.
+        throw new Error(
+          'InMemoryReservationRepository.getFiltered({isLodging}) requiere categoryRepository inyectado en el constructor.',
+        );
+      }
+      const flags = await Promise.all(
+        results.map((r) => this.categoryRepository!.findById(r.resource.categoryId)),
+      );
+      results = results.filter((_, i) => flags[i]?.isLodging === filters.isLodging);
+    }
+    if (filters.search && filters.search.trim() !== '') {
+      const q = filters.search.trim().toLowerCase();
+      results = results.filter((r) =>
+        r.customer.fullName?.toLowerCase().includes(q) || r.customer.email?.toLowerCase().includes(q),
+      );
+    }
 
     const page  = filters.page  ?? 1;
     const limit = filters.limit ?? results.length;

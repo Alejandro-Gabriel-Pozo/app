@@ -4,6 +4,8 @@
  * Permisos por endpoint:
  *
  * GET  /reservations                  — FRONT_DESK (OWNER, ADMIN, RECEPTIONIST)
+ * POST /reservations/search           — FRONT_DESK (A7.2, 23/08/2026: `search`
+ *      es PII, va en el body — reemplaza el `?search=` que tenía GET arriba)
  * GET  /reservations/:id              — FRONT_DESK
  * POST /reservations                  — BOOKING (empleados + CUSTOMER desde portal)
  * PUT  /reservations/:id              — FRONT_DESK
@@ -68,7 +70,8 @@
  */
 
 import { Router }                        from 'express';
-import type { Request }                  from 'express';
+import type { Request, Response }        from 'express';
+import type { ReservationFilters }       from './reservation.repository.js';
 import { randomUUID }                    from 'node:crypto';
 import type { ReservationStatus }        from '../types/enums.js';
 import { authorize }                     from '../security/auth.middleware.js';
@@ -99,7 +102,7 @@ import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repos
 import { CancellationRefundService }     from './cancellation-refund.service.js';
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { CreateReservationSchema, UpdateReservationSchema } from '../api/schemas/request.schemas.js';
+import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema } from '../api/schemas/request.schemas.js';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
 
@@ -173,6 +176,36 @@ function buildStayService(req: Request): StayService {
   return new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
 }
 
+/**
+ * Arma la respuesta de GET /reservations y POST /reservations/search — con
+ * page+limit el envelope paginado (PaginatedResponse<T>), sin ellos el
+ * array plano de siempre (compatibilidad hacia atrás, K2). Un solo lugar
+ * para las dos rutas: la única diferencia entre ellas es DE DÓNDE sale
+ * `search` (query string vs. body, A7.2), no qué se hace con él.
+ */
+async function respondWithReservationsList(
+  repo: SqlReservationRepository,
+  filters: ReservationFilters,
+  res: Response,
+): Promise<void> {
+  if (filters.page !== undefined && filters.limit !== undefined) {
+    const { page, limit, ...countFilters } = filters;
+    const [reservations, total] = await Promise.all([
+      repo.getFiltered(filters),
+      repo.countFiltered(countFilters),
+    ]);
+    res.json({
+      data: reservations.map(toReservationDto),
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
+    return;
+  }
+  const reservations = await repo.getFiltered(filters);
+  res.json(reservations.map(toReservationDto));
+}
+
 export function createReservationsRouter(container: AppContainer): Router {
   const router = Router();
 
@@ -184,7 +217,8 @@ export function createReservationsRouter(container: AppContainer): Router {
   // ruta. Sin page/limit en la query, se mantiene el array plano de
   // siempre (compatibilidad hacia atrás) — con page/limit, devuelve el
   // envelope paginado que el frontend ya tipa (PaginatedResponse<T>,
-  // lib/http.ts).
+  // lib/http.ts). `search` YA NO va acá — ver POST /reservations/search
+  // (A7.2, 23/08/2026: era PII viajando en query string).
   router.get(
     '/',
     authorize(Roles.FRONT_DESK),
@@ -192,33 +226,44 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const resourceRepo = new SqlResourceRepository(req.db);
         const repo         = new SqlReservationRepository(req.db, resourceRepo);
-        const { status, resourceId, customerId, from, to, page, limit } = req.query as Record<string, string>;
+        const { status, resourceId, customerId, from, to, isLodging, page, limit } = req.query as Record<string, string>;
         const filters = {
           ...(status     !== undefined && { status: status as ReservationStatus }),
           ...(resourceId !== undefined && { resourceId }),
           ...(customerId !== undefined && { customerId }),
           ...(from       !== undefined && { from: new Date(from) }),
           ...(to         !== undefined && { to:   new Date(to) }),
+          ...(isLodging  !== undefined && { isLodging: isLodging === 'true' }),
+          ...(page !== undefined && limit !== undefined && { page: Number(page), limit: Number(limit) }),
         };
+        await respondWithReservationsList(repo, filters, res);
+      } catch (err) { next(err); }
+    },
+  );
 
-        if (page !== undefined && limit !== undefined) {
-          const pageNum  = Number(page);
-          const limitNum = Number(limit);
-          const [reservations, total] = await Promise.all([
-            repo.getFiltered({ ...filters, page: pageNum, limit: limitNum }),
-            repo.countFiltered(filters),
-          ]);
-          res.json({
-            data: reservations.map(toReservationDto),
-            total,
-            page: pageNum,
-            totalPages: Math.max(1, Math.ceil(total / limitNum)),
-          });
-          return;
-        }
-
-        const reservations = await repo.getFiltered(filters);
-        res.json(reservations.map(toReservationDto));
+  // POST /reservations/search — { search } en el body, nunca en la URL
+  // (A7.2: nombre/email tipeado por el usuario es PII). Reemplaza el
+  // `?search=` que tenía GET /reservations hasta esta sesión (K2,
+  // pendientes-2026-08-23.md).
+  router.post(
+    '/search',
+    authorize(Roles.FRONT_DESK),
+    async (req, res, next) => {
+      try {
+        const body = SearchReservationsSchema.parse(req.body);
+        const resourceRepo = new SqlResourceRepository(req.db);
+        const repo         = new SqlReservationRepository(req.db, resourceRepo);
+        const filters = {
+          search: body.search,
+          ...(body.status     !== undefined && { status: body.status as ReservationStatus }),
+          ...(body.resourceId !== undefined && { resourceId: body.resourceId }),
+          ...(body.customerId !== undefined && { customerId: body.customerId }),
+          ...(body.from       !== undefined && { from: new Date(body.from) }),
+          ...(body.to         !== undefined && { to:   new Date(body.to) }),
+          ...(body.isLodging  !== undefined && { isLodging: body.isLodging }),
+          ...(body.page !== undefined && body.limit !== undefined && { page: body.page, limit: body.limit }),
+        };
+        await respondWithReservationsList(repo, filters, res);
       } catch (err) { next(err); }
     },
   );
