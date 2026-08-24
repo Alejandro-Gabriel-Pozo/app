@@ -784,6 +784,160 @@ sesión dedicada — junto con el filtro categoría/`isLodging` server-side
 que necesita Reservas/Turnos y la extensión de `dataProvider.ts` que
 ambos necesitan.
 
+**Clientes — ✅ RESUELTO (sesión posterior, 23/08/2026).** Se retomó lo que
+había quedado frenado: `dataProvider.ts` extendido (`getList` ahora pasa
+`pagination`/`filters` a cada adapter; `ResourceAdapter.list` recibe un
+objeto `{meta, pagination, filters}` en vez de solo `meta` — los 8
+recursos que no lo usan no necesitaron tocarse, una función con menos
+parámetros sigue siendo asignable). El adapter `clientes` es el único
+migrado a `pagination: { mode: 'server' }` por ahora — arma
+`search`/`page`/`limit` para `GET /customers` a partir del filtro Refine
+`{field: 'search', ...}`. `dashboard/clientes/page.tsx`: el buscador único
+de siempre sigue con los dos caminos (7+ dígitos → CUIT/DNI exacto contra
+el padrón fiscal, sin paginar; el resto → filtro `search` server-side),
+mismo debounce de 400ms, ya no filtra nombre/email en memoria. Se agregó
+paginación real (Anterior/Siguiente, 20 por página) — antes esta pantalla
+no tenía ninguna, mostraba la tabla completa. `tsc --noEmit` y
+`next build` verdes. No verificado en navegador (sin backend local
+conectado, misma limitación de siempre) — pendiente que el dueño pruebe
+en producción: buscar algo que esté más allá de los primeros 20 clientes
+y confirmar que Anterior/Siguiente funciona.
+
+**Reservas/Turnos — ✅ RESUELTO (sesión posterior, 23/08/2026).** Una
+investigación en paralelo (otra sesión) dejó el diseño completo antes de
+tocar código — confirmado contra el código real, no reinventado. Decisión
+del dueño sobre la búsqueda (`AskUserQuestion`): **Opción A** — nuevo
+filtro `search` server-side sobre `customer_name`/`customer_email`
+CONGELADOS en la propia fila de `reservations` (R9), no contra el
+`Customer` actual. Trade-off aceptado explícitamente: una reserva vieja se
+busca por el nombre/email que tenía el cliente AL MOMENTO de reservar, no
+el nombre actual si cambió después.
+
+- **Backend:** `ReservationFilters` (`reservation.repository.ts`) suma
+  `isLodging?: boolean` y `search?: string`. `sql.reservation.repository.ts`
+  — `isLodging` vía `EXISTS (SELECT 1 FROM resources res JOIN
+  resource_categories rc ...)` (no un `JOIN` en el `FROM` principal, que
+  también usan `getById`/`getByCustomerId`/etc., no solo `getFiltered`);
+  `search` vía `r.customer_name ILIKE $n OR r.customer_email ILIKE $n`
+  (mismo patrón que `customer.repository.ts`, sin `JOIN` porque el dato ya
+  está desnormalizado ahí). `in-memory.reservation.repository.ts` — mismo
+  filtro, pero necesitó inyectar `ICategoryRepository` opcional por
+  constructor (el `Resource` embebido en cada `Reservation` solo trae
+  `categoryId`, `isLodging` vive en la categoría) — si se pide `isLodging`
+  sin haber inyectado el repo, **falla fuerte** (`throw`), no devuelve todo
+  sin filtrar en silencio. `reservations.routes.ts` lee ambos de la query
+  string. 18 tests nuevos entre los dos repos (`sql.reservation.repository.test.ts`,
+  `in-memory.reservation.repository.test.ts`, nuevo). Suite completa de
+  `app-main` verde (976 tests).
+- **A7.2 — ✅ RESUELTO (sesión posterior, 23/08/2026).** Quedó anotado como
+  "deuda duplicada" (1 endpoint con PII en query string pasó a 2) y el
+  dueño pidió resolverlo de inmediato, en vez de postergarlo. Mismo
+  criterio que ya regía `POST /customers/search-by-tax-id`: `search`
+  (nombre/email tipeado por el usuario) se movió al body de un `POST`
+  nuevo, sacado por completo de la query string de los `GET` — no quedó
+  como alternativa conviviendo con la vieja, la vieja se eliminó.
+  - `POST /customers/search` (`customers.routes.ts`) — reemplaza
+    `GET /customers?search=`. `SearchCustomersSchema` (Zod) nueva.
+    `GET /customers` ya no lee `search` de la query, solo
+    `email`/`name`/`currentAccountEnabled`/`page`/`limit` (ninguno de esos
+    es el dato libre que tipea el usuario buscando por nombre/email).
+  - `POST /reservations/search` (`reservations.routes.ts`) — reemplaza
+    `GET /reservations?search=`. `SearchReservationsSchema` nueva
+    (`api/schemas/request.schemas.ts`, junto a `CreateReservationSchema`).
+    El resto de filtros (`status`/`resourceId`/`customerId`/`from`/`to`/
+    `isLodging`/`page`/`limit`) viaja en el mismo body — no es PII, pero
+    tiene que ir junto porque es un solo request, no dos.
+  - Las dos rutas reusan un helper nuevo (`respondWithCustomerList`/
+    `respondWithReservationsList`) para el envelope paginado — la única
+    diferencia entre la ruta GET y la POST/search es de dónde sale
+    `search`, no qué se hace con el resultado; evita duplicar esa lógica
+    entre las dos.
+  - Frontend: `customersApi.list()`/`reservationsApi.list()` — si
+    `filters.search` viene informado, pegan contra el `POST` nuevo con
+    todo en el body; si no, siguen con el `GET` de siempre (sin `search`
+    en la query, porque el backend ya no lo acepta ahí). `dataProvider.ts`
+    no necesitó ningún cambio — la decisión GET/POST queda encapsulada
+    adentro de `lib/clientes/api.ts`/`lib/reservas/api.ts`.
+  - `tsc --noEmit` + suite completa de `app-main` (976 tests, sin
+    regresiones) y `next build` de `appfrontend-main` verdes. **Sin tests
+    nuevos a nivel de ruta** — mismo criterio que ya regía
+    `search-by-tax-id` (tampoco tiene ninguno): este archivo de rutas no
+    tiene tests de integración HTTP en absoluto, la lógica de filtrado que
+    importa ya está cubierta a nivel de repositorio (`getFiltered`/
+    `countFiltered`, tests de la sesión anterior). No inventé un patrón de
+    test nuevo para esto puntual.
+  - CUIT/DNI (`search-by-tax-id`) no se tocó — ya estaba bien, por `POST`
+    desde que se creó (G1). R2 no aplica a ninguno de los dos cambios de
+    hoy (no filtran por estado); sin riesgo de fuga entre tenants porque
+    no hay `business_id` compartido, cada negocio tiene su propia base.
+- **Frontend:** `dataProvider.ts` — el adapter `reservas` es el segundo
+  migrado a `pagination: { mode: 'server' }`; `isLodging` viaja fijo por
+  pantalla vía `meta` (mismo patrón que `housekeeping` con `meta.date`).
+  `useReservationsScreen.ts` (hook compartido) — ya no filtra
+  `screenResourceIds`/status/search en memoria, delega todo al backend;
+  debounce de 400ms para status/search (antes era filtrado instantáneo en
+  memoria, ahora dispara un fetch). `dashboard/reservas/page.tsx` y
+  `dashboard/turnos/page.tsx` — paginación real (Anterior/Siguiente),
+  mismo patrón visual que Clientes.
+- **Hallazgo encontrado recién al implementar, no estaba en la
+  investigación previa:** la vista de calendario de Reservas
+  (`RoomCalendar`) recibía `reservations={filtered}` — con paginación
+  server-side, `filtered` pasó a ser solo la página actual (≤20), así que
+  el calendario iba a mostrar nada más que un puñado de reservas en vez
+  del rango completo de fechas. Arreglado agregando un segundo parámetro a
+  `useReservationsScreen(isLodging, paginationMode)`: la propia pantalla
+  de Reservas alterna `'server'`/`'off'` según la vista activa (lista vs.
+  calendario) — reusa el mismo `useTable`, así que la invalidación de
+  create/update/confirmar/cancelar/completar sigue funcionando sin
+  duplicar lógica. Turnos (sin calendario) no lo necesita, sigue siempre
+  en `'server'`. Las dos vistas son mutuamente excluyentes (un botón
+  Lista/Calendario, `view` es un único `useState`, nunca las dos montadas
+  a la vez) — confirmado en `dashboard/reservas/page.tsx` línea 469. El
+  calendario hereda el `status`/`search` activo de la lista (mismo
+  `useTable`, mismo estado de filtros — `dataProvider.ts` aplica ambos en
+  las dos ramas), igual que hacía antes de esta sesión.
+  **Costo nuevo, no estaba antes:** con `pagination.mode` fijo en `'off'`
+  (como era antes de K2), cambiar de vista no disparaba ningún fetch —
+  todo ya estaba en memoria. Ahora `pagination.mode` es parte de la config
+  reactiva de `useTable`, así que cada click en "Lista"/"Calendario"
+  dispara un fetch nuevo. Aceptable, es el costo esperado de que la lista
+  ya no traiga todo de arranque.
+
+  **Hallazgo importante que esto destapó (preguntado al dueño con
+  `AskUserQuestion`, resuelto en la misma sesión): el `'off'` del
+  calendario NO estaba acotado por fecha — ni antes de K2 ni en el primer
+  intento de este fix.** `RoomCalendar` nunca tuvo `from`/`to`, ni ningún
+  callback hacia el padre — administra su semana visible 100% adentro
+  (`weekStartMs`, `useState` propio) y siempre recibió el array COMPLETO
+  para cortar en memoria. Antes de K2 esto se pagaba en cada carga de la
+  pantalla (mode 'off' fijo, lista y calendario). El primer fix de K2 lo
+  redujo (solo se paga al entrar al calendario) pero no lo resolvió — el
+  fetch seguía sin límite de fecha, reintroduciendo en miniatura el mismo
+  problema estructural que K2 nació para resolver (todo el historial de
+  alojamiento, sin límite, cada vez que alguien abre el calendario).
+
+  **Resuelto de fondo (23/08/2026):** se agregó el plumbing real.
+  `RoomCalendar` exporta `onWeekChange(weekStartMs, weekEndMs)` — se llama
+  vía un efecto que depende SOLO de `weekStartMs` (no de la prop en sí,
+  que cambia de identidad en cada render del padre — evita un loop
+  render→setState→nueva identidad→efecto→setState). `dashboard/reservas/
+  page.tsx` mantiene `calendarRange` (arranca ya acotado a la semana de
+  "hoy", mismo default que usa `RoomCalendar` internamente — así el primer
+  fetch, antes de que el calendario llegue a montarse y avisar su semana
+  real, ya viene acotado, nunca sin límite) y se lo pasa a
+  `useReservationsScreen(isLodging, paginationMode, dateRange)` — tercer
+  parámetro nuevo, `undefined` para Turnos (no tiene calendario). Viaja
+  por `meta.from`/`meta.to` al `dataProvider.ts` (mismo criterio que
+  `meta.isLodging`), que ya tenían soporte end-to-end en el backend desde
+  antes de esta sesión (`ReservationFilters.from`/`to`, sin cambios acá).
+  `tsc --noEmit` y `next build` verdes.
+- `tsc --noEmit` y `next build` verdes en `appfrontend-main`. No
+  verificado en navegador — mismo límite de siempre (sin backend local
+  conectado). Falta que el dueño pruebe en producción: Reservas y Turnos
+  paginan de a 20, buscar por nombre/cliente trae resultados de más allá
+  de la primera página, y la vista de calendario de Reservas sigue
+  mostrando todas las reservas del rango (no solo 20).
+
 ### K3. ✅ RESUELTO — Cupo/capacidad al reservar: la validación existía pero nunca recibía el dato real
 
 `Reservation.ts` valida `partySize > resource.capacity`, pero
@@ -879,7 +1033,163 @@ oculta el `<select>` de recurso y manda `categoryId` en vez de
 
 ---
 
-## L. RBAC — auditoría de permisos por rol pendiente (23/08/2026, sin implementar)
+## L. RBAC — auditoría de permisos por rol (23/08/2026)
+
+**✅ RESUELTO (sesión posterior, 23/08/2026) — la base.** Tres
+exploraciones en paralelo levantaron el estado real completo (188
+call-sites de `authorize(Roles.X)` en 32 archivos `*.routes.ts`, el
+modelo de roles configurables por negocio, y qué existe hoy del lado de
+`/superadmin`/`PLAN_LIMITS`). De ahí salió:
+
+- **`docs/rbac-matriz-endpoints.md`** (nuevo) — el maestro pedido:
+  catálogo de los 8 grupos de permisos, matriz completa de los 188
+  endpoints por archivo, los 5 presets de rol de fábrica → qué grupos
+  tiene cada uno, las 14 rutas sin `authorize()` (con la razón real de
+  cada una), y los patrones que se apartan del `authorize()` simple
+  (2 chequeos de jerarquía a mano, el gate de router entero de
+  `customer.routes.ts`, los 2 sistemas de autorización separados —
+  tenant vs. plataforma).
+- **`src/tests/security/rbac-matrix-sync.test.ts`** (nuevo) — el
+  mecanismo "recurrente" pedido: cuenta los `authorize(Roles.X)` reales
+  contra un número fijo (188) y los archivos `*.routes.ts` contra otro
+  (32); si alguien agrega/saca un endpoint sin actualizar el maestro, el
+  test rompe. Instrucción agregada a `app-main/CLAUDE.md` para que
+  cualquier sesión futura sepa actualizar los dos juntos.
+- **✅ Hallazgo de seguridad real, corregido de paso**: `platform.routes.ts`
+  (crea/edita/lista TODOS los negocios de la plataforma) solo exigía
+  `authenticatePlatform()`, sin `authorizePlatform([SUPERADMIN])` —
+  a diferencia de `admin.routes.ts`, que sí lo exige desde el 19/08. Sin
+  efecto práctico hoy (un solo `PlatformRole` posible, un solo actor de
+  plataforma hardcodeado por env vars) pero es exactamente el agujero que
+  se vuelve real en cuanto exista una segunda cuenta/rol de plataforma —
+  cerrado ahora, gratis, antes de construir más encima.
+- `tsc --noEmit` limpio, suite completa de `app-main` verde (978 tests,
+  +2 del test nuevo).
+
+**Durante la investigación, el dueño recordó una conversación anterior
+sobre configurar roles/`PLAN_LIMITS` desde un panel de superadmin de la
+plataforma.** Se encontró la decisión real, `pendientes-2026-08-18.md:205-215`
+(19/08/2026): *"panel de superadmin: no por ahora, todo por script
+versionado"* — con la puerta abierta explícita a revisarla. El dueño la
+reabrió — inicialmente se investigó la superficie sin implementar nada
+todavía (sesión grande, ver el detalle resuelto más abajo), y en una
+sesión posterior se construyó completa.
+
+### ✅ RESUELTO (sesión posterior, 23/08/2026) — panel de superadmin + CRUD de roles propios con techo por plan
+
+El dueño reabrió la decisión y eligió las 4 piezas: editar `plan_limits`
+por plan, cambiar el plan de un negocio, editar `role_presets` (catálogo
+global), y CRUD de roles propios del negocio — con una condición de
+negocio explícita: un rol custom nunca puede superar en permisos al
+máximo que el plan contratado habilita (dos mecanismos: "bloqueo de
+acceso comercial" por cantidad, "techo de permisos" por grupo puntual).
+
+**Decisiones tomadas al implementar, no del dueño (declaradas antes de
+tocar código):**
+- **HTTP 402, no 403** para los dos rechazos por plan — el dueño escribió
+  403, pero el repo ya tiene `components/UpgradePrompt.tsx` con su propio
+  docblock ("se muestra cuando el backend responde con code:
+  'PLAN_LIMIT_REACHED' (HTTP 402)"), mismo patrón que
+  `PlanLimitError`/`RoleNotAvailableInPlanError` ya establecido en 3
+  lugares reales del código. Se siguió ese precedente.
+- El CTA de upsell reusa `UpgradePrompt.tsx` tal cual (apunta a
+  `/settings/billing`, un link que hoy no resuelve a nada porque no hay
+  self-serve billing — deuda preexistente, no se tocó).
+- Valores default de los límites nuevos (editables de inmediato desde el
+  panel construido en esta misma sesión): `max_custom_roles` — FREE 0,
+  STARTER 2, PRO 10, ENTERPRISE sin límite. Grupos de permiso habilitados
+  para un rol custom — FREE/STARTER excluyen `OWNER_ONLY`/`MANAGEMENT`
+  (evita armar un "dueño"/"gerente" a medida sin pasar por los presets
+  curados), PRO/ENTERPRISE sin restricción.
+
+**Backend:**
+- Schema (`platform.schema.sql`): `plan_limits.max_custom_roles` (nueva
+  columna) + tabla nueva `plan_limit_allowed_permission_groups` — calco
+  exacto de `plan_limit_allowed_roles` (0 filas = sin restricción). Sin
+  `CURRENT_SCHEMA_VERSION` de por medio — `platform.schema.sql` corre
+  completo en cada boot, no es el mecanismo de tenant.
+- `config/plan-limits.ts::PlanLimits` + `PlatformRepository.getPlanLimits()`
+  extendidos con `maxCustomRoles`/`allowedPermissionGroups`. Métodos
+  nuevos de lectura+escritura para el panel: `listPlanLimits`/
+  `updatePlanLimits`, `listRolePresets`/`updateRolePresetPermissionGroups`,
+  `updateBusinessPlan` — todos DELETE+INSERT para reemplazar el set
+  completo, mismo patrón que `updateRolePermissionGroups()` ya existente.
+- `domain/errors.ts`: `PlanLimitError.resource` suma `'customRoles'`;
+  `PermissionGroupNotAvailableInPlanError` nueva (402, mismo shape que
+  `RoleNotAvailableInPlanError`).
+- Endpoints nuevos en `platform.routes.ts` (ya bajo
+  `authorizePlatform([SUPERADMIN])`, fix de esta misma sesión):
+  `PATCH /businesses/:id/plan`, `GET/PUT /plan-limits[/:plan]`,
+  `GET/PUT /role-presets[/:name]`. No se pueden crear/borrar planes ni
+  presets desde acá — son cambios de código (enum/CHECK), no datos.
+- `GET /api/business/plan-limits` (`business-plan-limits.routes.ts`
+  nuevo) — mismo patrón que `business-modules.routes.ts`, sin
+  `authorize()`, para que el dashboard sepa sus propios límites sin ser
+  MANAGEMENT.
+- Gobernanza en `roles.routes.ts` (ahora recibe también `container:
+  AppContainer`): POST rechaza con 402 `PLAN_LIMIT_REACHED` si
+  `roles custom activos >= maxCustomRoles` (los 5 de fábrica, `isSystem`,
+  no cuentan) y con 402 `PERMISSION_GROUP_NOT_AVAILABLE_IN_PLAN` si
+  `permissionGroups` incluye un grupo fuera del techo del plan; PUT repite
+  solo el segundo chequeo (cambiar permisos no suma un rol nuevo).
+- 8 tests nuevos en `roles.routes.test.ts`, más los de `platform.repository.test.ts`
+  para el mapeo de los campos nuevos. Suite completa de `app-main` verde
+  (993 tests). `tsc --noEmit` limpio.
+
+**Frontend:**
+- `lib/platformApi.ts`: `planLimits.list/update`, `businesses.updatePlan`,
+  `rolePresets.list/update`.
+- `/superadmin` — nav nueva (Negocios/Planes/Roles de fábrica, antes no
+  tenía). `superadmin/page.tsx` suma un `<select>` de cambio de plan
+  (antes solo el de estado). `superadmin/planes/page.tsx` y
+  `superadmin/roles-de-fabrica/page.tsx` nuevos.
+- `lib/negocio/api.ts::businessPlanLimitsApi` nuevo (consume el endpoint
+  del punto anterior). `lib/http.ts::ApiError` y
+  `lib/apiErrors.ts::isPermissionGroupNotAvailableInPlan` nuevos, mismo
+  patrón que `isPlanLimitError`.
+- `lib/refine/dataProvider.ts` — adapter `roles` nuevo.
+  `dashboard/roles/page.tsx` nuevo (vía `useTable`/`useCreate`/`useUpdate`/
+  `useDelete` de Refine, regla del `CLAUDE.md` del repo): lista los 5 de
+  fábrica (no editables) + los custom, checkboxes de grupo de permiso
+  deshabilitados con ícono de candado si el plan no los habilita, botón
+  "Nuevo rol" bloqueado + `UpgradePrompt` si se alcanzó `maxCustomRoles`.
+  El 402 del backend queda de red de seguridad si se bypasea el form.
+  Nav item nuevo en `dashboard/layout.tsx` (`managementOnly: true`, mismo
+  criterio que "Usuarios").
+- `tsc --noEmit` y `next build` verdes en `appfrontend-main` (6 páginas
+  nuevas: `/superadmin/planes`, `/superadmin/roles-de-fabrica`,
+  `/dashboard/roles`, más las 3 de la sesión anterior).
+
+**Fuera de alcance, anotado a propósito:**
+- Reconciliar memberships/roles existentes cuando un negocio baja de plan
+  (downgrade) y queda con roles/asientos que ya no califican — mismo
+  comportamiento laxo que ya tenían los límites existentes, no se
+  resuelve acá.
+- Arreglar el link muerto de `UpgradePrompt` (`/settings/billing`) — no
+  existe self-serve billing, deuda preexistente sin relación con este
+  cambio.
+- Agregar/borrar planes o presets de rol nuevos — cambios de código, no
+  datos editables desde un panel.
+
+**No verificado en navegador** — mismo límite de toda la sesión (sin
+backend local conectado). Falta que el dueño pruebe en producción: crear
+un rol custom en un negocio FREE (debe rechazar, `maxCustomRoles=0`),
+subirlo a STARTER y crear uno con grupos restringidos, editar
+`plan_limits`/plan de un negocio/un preset desde `/superadmin`, y
+confirmar que un negocio creado DESPUÉS de editar un preset lo refleja
+(uno ya existente no cambia retroactivamente).
+- ~~`categories.routes.ts` GET `/` y `/:id` sin ningún `authorize()`~~ —
+  **✅ CONFIRMADO INTENCIONAL (sesión posterior, 23/08/2026), no era un
+  bug.** El portal de clientes SÍ depende de este acceso abierto —
+  `disponibilidad/page.tsx:37-41` llama a `GET /api/categories` logueado
+  como cliente para el filtro de categoría del buscador, con su propio
+  comentario explícito ya anotándolo. Agregar `authorize(Roles.STAFF)`
+  hubiera roto esa pantalla real. Se agregó el comentario espejo del lado
+  del backend — sin cambio de comportamiento, se queda como está.
+- ~~Self-service de "olvidé mi contraseña" para staff~~ — **✅ RESUELTO
+  (sesión posterior, 23/08/2026)**, ver detalle completo abajo.
+
+<details><summary>Contexto original de por qué apareció L (histórico, ya resuelto arriba)</summary>
 
 **Cómo apareció:** al confirmar en producción el fix de K1 (jerarquía de
 rol + link de reseteo), el dueño probó con su propia cuenta de OWNER y no
@@ -952,5 +1262,59 @@ contraseña) — no repetir, partir de acá:**
   clientes, `customer.auth.service.ts`, que tampoco lo tiene si algún día
   se pide para clientes también).
 
-**No implementado — queda para una sesión dedicada, con el mapa de
-permisos por rol primero.**
+**✅ RESUELTO (sesión posterior, 23/08/2026).** Implementado tal como
+quedó investigado, sin sorpresas nuevas:
+
+- **`POST /api/password-resets/request`** (`password-reset.routes.ts`,
+  renombrado de `createPasswordResetAcceptanceRouter` a
+  `createPasswordResetRouter` — ya no es solo "aceptar", también "pedir").
+  Body `{ email }`. Resuelve la identity por email
+  (`findIdentityByEmail`); si existe, genera+guarda el token
+  (`requestedByIdentityId = identity.id` — se lo pide a sí misma, sin
+  tocar esa columna del schema) y manda el mail; si no existe, no hace
+  nada — pero la respuesta HTTP es **exactamente la misma** en los dos
+  casos (`{ message: "Si el email existe..." }`), incluso si falla el
+  envío del mail internamente (se loguea, nunca se filtra al caller).
+- **`business_id` de `password_reset_tokens` pasó a nullable**
+  (`platform.schema.sql`, `ALTER TABLE ... DROP NOT NULL` — sin
+  `CURRENT_SCHEMA_VERSION` de por medio, `platform.schema.sql` corre
+  completo en cada boot contra la BD de plataforma, no es el mecanismo de
+  tenant). Mismo criterio que el login para auto-resolver negocio
+  (`AuthService.resolveLoginOutcome`): con exactamente 1 membership
+  activa se resuelve el negocio real (vía `getTenantClient`, sin
+  `req.db` porque no hay sesión) para el nombre/marca del mail; con 0 o
+  2+, `businessId: null` y el mail sale con el nombre genérico de la
+  plataforma. 0 memberships activas igual manda el mail — no es un
+  problema real: el reset no otorga acceso por sí solo, el login sigue
+  exigiendo ≥1 membership activa después.
+- **Rate limiting** — el mount `/api/password-resets` completo (`request`
+  + `lookup` + `accept`) pasó a llevar `authLimiter` (10/15min por IP),
+  que antes no tenía ninguno propio (solo el `globalLimiter` de 500/min
+  de toda la app). Ojo con el matiz que trae `authLimiter` para ESTE
+  caso puntual: su `skipSuccessfulRequests: true` (pensado para login,
+  donde una contraseña correcta no debe contar contra el límite) no
+  aplica igual acá — como `/request` responde 200 siempre (anti-
+  enumeración), *todo* cuenta como "éxito" para el limiter, así que el
+  límite de 10/15min sí frena a un atacante enumerando emails, a
+  diferencia de lo que `skipSuccessfulRequests` haría pensar a primera
+  lectura. No hizo falta un limiter nuevo — el comportamiento real
+  coincide con el deseado.
+- Helper compartido nuevo, `sendPasswordResetEmail()` (exportado de
+  `password-reset.routes.ts`), reusado por el flujo de admin
+  (`POST /users/:id/password-reset-link`, `users.routes.ts`) y el
+  self-service nuevo — antes la composición del mail estaba duplicada
+  inline en `users.routes.ts`.
+- **Frontend:** link "¿Olvidaste tu contraseña?" en `/login`, página
+  nueva `/restablecer-contrasena/solicitar` (mismo patrón visual que
+  `/restablecer-contrasena/confirmar`) — muestra el mismo mensaje de
+  "revisá tu email" siempre, nunca distingue si la cuenta existe.
+- 6 tests nuevos en `password-reset.routes.test.ts` (identity existente,
+  inexistente, fallo de mail no se filtra, 0 memberships, 2+
+  memberships, email inválido). Suite completa de `app-main` verde (984
+  tests). `tsc --noEmit` limpio en los dos repos, `next build` verde.
+- **No verificado en navegador** — mismo límite de siempre (sin backend
+  local conectado). Falta que el dueño pruebe el flujo completo de punta
+  a punta en producción: pedir el reset con un email real, que llegue el
+  mail, abrir el link, setear la contraseña nueva, loguearse.
+
+</details>
