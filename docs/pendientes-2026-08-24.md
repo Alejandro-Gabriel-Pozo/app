@@ -99,7 +99,7 @@ pipeline de deploy completo, solo el fix puntual en este entorno.
 
 ---
 
-## Rediseño visual ZULU (contenido externo) y housekeeping — 24/08/2026
+## Rediseño visual ZULU (contenido externo) — ✅ RESUELTO (24/08/2026)
 
 El dueño trajo una carpeta externa (`ZULU-frontend-actualizado/`, fuera de
 este repo) con una pasada de pulido visual hecha por otra sesión —
@@ -107,8 +107,23 @@ isotipo/logo nuevo (`ZuluBrand.tsx`), retintado de `/admin` + `ApiBlock` +
 pantallas de acceso, tokens navy/cian más refinados. Basada en una copia
 de `appfrontend-main` de más temprano en el día, **anterior** al trabajo
 de F1-Pieza 2/3 y C1-Fase C de hoy — una copia completa hubiera borrado
-todo eso. En progreso: traer solo lo nuevo (`ZuluBrand.tsx` + las pantallas
-de marca) sobre el estado actual del repo, sin pisar nada.
+todo eso. Se trajo solo lo nuevo (`ZuluBrand.tsx` + las pantallas de
+marca: login, registro, superadmin/login, invitaciones,
+restablecer-contraseña, `/admin`, `ApiBlock`, sidebar del dashboard)
+sobre el estado actual del repo, verificado archivo por archivo que no
+pisara nada de F1/C1-Fase C. De paso, corregidos los 2 errores reales de
+lint (React Compiler) que el informe externo mencionaba —
+`allocatedTotal` en cuentas-corrientes y el ref mutado en render de
+`RoomCalendar`. `tsc --noEmit`, `next build` y `eslint` verdes (0
+errores, 2 warnings preexistentes no bloqueantes). Commiteado y
+pusheado — `104ef1d`/`f5cc076`/`9b6e804` en `appfrontend-main`.
+
+**housekeeping-ventana-mantenimiento.md** (también en esa carpeta,
+movido a `docs/`) — diseño para reemplazar el flag `OUT_OF_SERVICE` por
+una entidad `maintenance_window` (inicio/fin, bloqueo por horizonte
+configurable, reasignación automática vía
+`findAvailableResourceInCategory()`). Sin implementar todavía — el
+dueño eligió encarar I11 primero.
 
 `housekeeping-ventana-mantenimiento.md` (también en esa carpeta, movido a
 `docs/`) — diseño para reemplazar el flag `OUT_OF_SERVICE` por una entidad
