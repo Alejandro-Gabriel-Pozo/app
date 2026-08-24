@@ -215,7 +215,7 @@ tres todavía figuraban abiertos en bloque ("E2–E7... falta que se defina
 alcance"). Desde el 19/08 no vuelven a aparecer ni como ✅ resueltos ni
 como descartados en ningún archivo posterior.
 
-### F1. ⚠️ EN PROGRESO (23/08/2026) — Reestructuración de Cuentas Corrientes (ex-E3)
+### F1. ✅ RESUELTO — las 4 piezas (sesión posterior, 23/08/2026) — Reestructuración de Cuentas Corrientes (ex-E3)
 
 Alcance recibido del dueño el 23/08 (spec completo, 4 piezas): (1)
 tipificación de cliente para habilitar cuenta corriente, (2) trazabilidad
@@ -238,11 +238,125 @@ bajo ninguna circunstancia". Checkbox "Habilitar cuenta corriente" en
 `dashboard/clientes`; el panel de Cuentas Corrientes ya pide la lista
 filtrada. `CURRENT_SCHEMA_VERSION` a 36.
 
-**Piezas 2, 3 y 4 — sin empezar.** Pieza 3 (facturación segregada +
-bloqueo de checkout) es la más grande y riesgosa — toca `StayService`,
-`InvoiceService` y el flujo de check-out; no arrancarla sin las piezas 1
-y 2 resueltas primero (así lo pidió el dueño). Retomar preguntando cuál
-sigue.
+**Pieza 2 — ✅ RESUELTA (sesión posterior, 23/08/2026) — trazabilidad de
+folio con documento de origen obligatorio.**
+
+- **Backend:** `SqlFinancialTransactionRepository.insert()` (choke point
+  único de `create()`/`createWithClient()`) rechaza un `CHARGE`/
+  `ADJUSTMENT` sin `reservationId`, `orderId` ni `stayId` — enforcement
+  real de A3.9 ("un cargo sin origen es un descuadre esperando",
+  `criterios-negocio.md`), que hasta ahora era una regla escrita pero no
+  exigida por ningún código. `PAYMENT`/`REFUND` siguen sin exigirlo (pago
+  genérico contra la cuenta del cliente, caso real). Guard a nivel
+  aplicación, no CHECK de Postgres — sin acceso a datos reales de
+  producción no se pudo confirmar que ninguna fila vieja violara el
+  invariante, y un CHECK que valida filas existentes al agregarse hubiera
+  arriesgado romper el deploy. Corolario documentado en
+  `criterios-negocio.md` bajo A3.9.
+- `getByCustomerId()` (el estado de cuenta) suma un LEFT JOIN a
+  `reservations` para traer `reservation_number` (D6) — campo derivado
+  nuevo `FinancialTransaction.reservationNumber`, solo poblado por esa
+  consulta.
+- 9 tests nuevos (`sql.financial-transaction.repository.test.ts`): guard
+  de origen (CHARGE/ADJUSTMENT rechazan, PAYMENT/REFUND no exigen) +
+  mapeo de `reservationNumber`. Dos tests viejos que creaban un CHARGE
+  sin ningún origen (no era su intención real, solo no lo contemplaban)
+  se ajustaron para seguir probando lo suyo sin violar el invariante
+  nuevo. Suite completa de `app-main` verde (1000 tests). `tsc --noEmit`
+  limpio.
+- **Frontend:** columna "Origen" nueva en `dashboard/cuentas-corrientes`
+  — cargo de una reserva muestra "Reserva #N"; de una orden, link a
+  `/dashboard/ordenes/[id]` (única de las tres con pantalla de detalle
+  hoy); de una estadía sin reserva/orden, etiqueta "Estadía". Reserva y
+  Estadía no tienen pantalla de detalle propia todavía (D6/backlog), así
+  que no son clickeables. `tsc --noEmit` y `next build` verdes.
+- **No verificado en navegador** — mismo límite de toda la sesión (sin
+  backend local conectado). Falta que el dueño confirme en producción:
+  la columna "Origen" muestra el tipo correcto por cargo, el link de
+  "Orden" abre el detalle real, y el número de reserva mostrado coincide
+  con el de la reserva real.
+
+**Pieza 3 — ✅ RESUELTA (sesión posterior, 23/08/2026) — facturación
+segregada por tipo de cliente + bloqueo de checkout con saldo pendiente.**
+
+Al investigar se encontró que la mayor parte YA estaba construida de una
+sesión anterior (A1, pasos 2/3/6), solo sin cruzar con el spec de F1:
+`StayService.checkOut()` ya bloqueaba con `StayBalanceOwedError` si el
+saldo de la estadía era > 0 (backend y UI, `dashboard/estadias`), y ya
+existía `AccountsReceivableService.transferStayBalanceToReceivable()`
+(backend y UI) para que un MANAGEMENT transfiera el saldo a una empresa
+(`kind='COMPANY'`) con pago diferido, desbloqueando el check-out. El
+gap real: el ciclo de vida de `accounts_receivable`
+(`PENDIENTE_FACTURAR → FACTURADO → COBRADO`) tenía los métodos de
+repositorio pero ningún endpoint los usaba — la deuda quedaba
+`PENDIENTE_FACTURAR` para siempre, y encima vivía solo en
+`accounts_receivable`, invisible en la cuenta corriente de la empresa.
+
+**Decisiones del dueño, confirmadas con `AskUserQuestion` + un mensaje
+de seguimiento:**
+- "Marcar facturado" es **solo un cambio de estado** — no genera ninguna
+  factura AFIP real. La emisión sigue siendo manual/externa; eso queda
+  para C1-Fase C (BillingEntity, facturación corporate consolidada),
+  sin diseñar todavía.
+- "Marcar cobrado" sí toca el ledger: crea un PAYMENT contra la empresa
+  (mismo patrón que `recordPayment`) que cierra su deuda.
+- La deuda transferida tiene que aparecer en la cuenta corriente de la
+  EMPRESA desde el momento de la transferencia, no recién al facturar.
+- Agregado sobre la marcha: columna `invoice_ref` (N° de comprobante
+  real, ej. "0001-00001234") anotada a mano al marcar facturado — para
+  no perder esa trazabilidad hasta que exista generación automática de
+  factura (el mismo campo se completaría solo ese día, sin cambiar de
+  forma).
+
+**Implementado:**
+- `AccountsReceivableService.transferStayBalanceToReceivable()` — suma,
+  en la misma transacción, un CHARGE contra `companyCustomerId`. **Sin
+  `stayId` a propósito** (a diferencia del PAYMENT que salda el folio del
+  huésped): `getNetBalanceByStayId()` suma por `stay_id` sin filtrar por
+  `customer_id` — si este CHARGE llevara el mismo `stayId`, el saldo de
+  la ESTADÍA volvería a quedar positivo y el check-out que la
+  transferencia recién desbloqueó volvería a rechazar. Usa
+  `reservationId` (la reserva de la estadía) como documento de origen
+  (F1-Pieza 2) sin ese efecto colateral.
+- `accounts_receivable.invoice_ref` nuevo (`CURRENT_SCHEMA_VERSION` a 38).
+- `AccountsReceivableService.markInvoiced(id, invoiceRef?)` — solo
+  cambia estado + guarda `invoiceRef`, no toca el ledger.
+  `markCollected(id)` — transaccional: PAYMENT contra la empresa +
+  `accounts_receivable.status = 'COBRADO'`
+  (`markCollectedWithClient` nuevo en el repo, mismo patrón que
+  `createWithClient`). `listByCompany(id)` — passthrough para el panel.
+  Errores nuevos `AccountReceivableNotFoundError`/
+  `InvalidAccountsReceivableTransitionError` (R12 — solo avanza, nunca
+  vuelve atrás).
+- Router nuevo `accounts-receivable.routes.ts`: `GET /accounts-receivable
+  ?companyCustomerId=`, `POST /:id/mark-invoiced` (body `invoiceRef`
+  opcional), `POST /:id/mark-collected` — los tres `MANAGEMENT`,
+  gateados por `requireModule(CUENTAS_CORRIENTES)`. RBAC matriz + test
+  de sincronización actualizados (191 call-sites, 34 archivos).
+- Frontend: panel "Gestionar cuentas por cobrar" nuevo en
+  `dashboard/reportes`, junto al reporte por período que ya existía —
+  elegir empresa, ver lo transferido, "Marcar facturado" (con input de
+  N° de comprobante) para filas `PENDIENTE_FACTURAR`, "Marcar cobrado"
+  para filas `FACTURADO`.
+- 19 tests nuevos entre `accounts-receivable.service.test.ts` y
+  `sql.accounts-receivable.repository.test.ts` (incluye la regresión
+  puntual: el CHARGE contra la empresa no lleva `stayId`). Suite completa
+  de `app-main` verde (1011 tests). `tsc --noEmit` limpio en los dos
+  repos, `next build` verde.
+- **No verificado en navegador** — mismo límite de toda la sesión (sin
+  backend local conectado). Falta que el dueño pruebe en producción:
+  transferir el saldo de una estadía a una empresa, confirmar que
+  aparece como cargo en la cuenta corriente de esa empresa, y recorrer
+  el ciclo completo marcar facturado (con N° de comprobante) → marcar
+  cobrado desde `dashboard/reportes`.
+
+**Pieza 4 — ✅ CONFIRMADA (sesión posterior, 23/08/2026) — ya cubierta por
+I4.** Comparado el pedido original ("conciliación de pagos contra
+facturas puntuales, no un 'registrar pago' ciego") contra I4
+(`recordPayment()` con `allocations` por factura, `GET /customers/:id/
+outstanding-invoices`, modal de "Registrar Pago" con checkbox + monto
+por factura en `dashboard/cuentas-corrientes`) — mismo mecanismo, sin
+código nuevo necesario. **F1 completa: las 4 piezas resueltas.**
 
 ### F2. ⚠️ PARCIAL (23/08/2026) — Estandarización de ABM/alta de usuarios (ex-E4a)
 
@@ -380,14 +494,88 @@ no reabrirlo por error pensando que sigue roto.
 
 ---
 
-## C. Decisiones de negocio sin resolver (arrastrado de 08-22, sin cambios)
+## C. Decisiones de negocio sin resolver
 
 - **C1-Fase B** (integración con gateway de pago real, hold corto para
-  canal web, auto-release automático) y **C1-Fase C** (`BillingEntity`
-  separado de `Guest`, facturación corporate consolidada, cuentas por
-  cobrar/statements) — documentadas como referencia en
-  `docs/diseno-sena-deposito-fase-a-2026-08-22.md`, sin diseñar en
-  detalle. **No elegir ninguna opción sin el dueño.**
+  canal web, auto-release automático) — sigue sin encarar, documentada
+  como referencia en `docs/diseno-sena-deposito-fase-a-2026-08-22.md` y
+  en el spec completo `spec-cobro-facturacion-sena-saldo (1).md` (fuera
+  de este repo). Depende de que el negocio elija un proveedor de pago
+  real (proyecto externo) antes de poder diseñarla en detalle. **No
+  elegir ninguna opción sin el dueño.**
+
+### C1-Fase C — ✅ RECORTE CONFIRMADO RESUELTO (sesión posterior, 23/08/2026)
+
+Spec completo en `spec-cobro-facturacion-sena-saldo (1).md` (puntos 6 y
+8, fuera de este repo). El dueño confirmó por `AskUserQuestion` un
+recorte de hoy — **BillingPolicy + facturación consolidada + "Facturar
+ahora"** — dejando afuera a propósito: `Reservation.billingEntityId`
+(sin consumidor real en este recorte, no rutea nada automáticamente
+todavía) y el disparador automático programado (`invoicingTrigger=
+'scheduled'`, sigue siendo config sin código que la haga cumplir).
+
+**Decisión de modelado confirmada con el dueño:** `BillingEntity` **no
+es una entidad nueva** — reusa `Customer` (`kind='COMPANY'`) +
+`customer_tax_profiles`, mismo criterio que F1-Pieza 1. `BillingPolicy`
+sí es tabla nueva, referenciando `customer_id` directo.
+
+**Hallazgo real encontrado al diseñar, cerrado en el mismo cambio:**
+`FacturarButton` (factura una `CHARGE` real, camino de siempre) y el
+ciclo de `accounts_receivable` (F1-Pieza 3, "marcar facturado") eran
+**dos caminos paralelos que no se hablaban** — facturar la CHARGE de una
+empresa transferida no actualizaba `accounts_receivable.status`, quedaba
+`PENDIENTE_FACTURAR` para siempre pese a tener una factura real. Cerrado:
+`InvoiceService` ahora cierra ese gap automáticamente tras cualquier
+emisión exitosa (`finalizeIssued()`, best-effort).
+
+**Implementado:**
+- `billing_policies` (nueva) — `requiresSenaToConfirm`/`invoicingScope`/
+  `invoicingTrigger`/`cycleFrequency`/`cycleCustomDays`/`dueDays` por
+  cliente. Solo `invoicingScope`/`dueDays` tienen efecto real hoy — el
+  resto se persiste para cuando exista el código que los use (mismo
+  criterio que `deposit_amount=0` en Fase A). `GET`/`PUT
+  /customers/:id/billing-policy`, `MANAGEMENT`.
+- `accounts_receivable.financial_transaction_id` (nueva) —
+  `transferStayBalanceToReceivable()` la completa desde ahora; sin
+  backfill posible para filas previas a esta columna (tenant de prueba).
+- `invoices.financial_transaction_id` pasa a **nullable** + tabla puente
+  nueva `invoice_charges` (N:1) — **sin migrar ninguna factura
+  existente**, decisión explícita del dueño. El camino per-reservation
+  (inmensa mayoría) sigue exactamente igual.
+- `InvoiceService.requestConsolidatedInvoice()` — "Facturar ahora": un
+  comprobante AFIP real cubriendo todo lo `PENDIENTE_FACTURAR` de una
+  empresa. Reusa `resolveInvoiceItems()` por cada cargo (R14, mismo
+  cómputo que per-reservation). Guard anti double-billing
+  (`getInvoicedFinancialTransactionIds`) + idempotencia por hash del set
+  de cargos, en ese orden (idempotencia primero: un reintento tras un
+  fallo a mitad de camino no debe chocar contra su propio guard). `POST
+  /api/invoices/consolidated`, `MANAGEMENT`.
+- Frontend: sección "Política de facturación" + botón "Facturar ahora"
+  en `dashboard/reportes`, dentro del panel de cuentas por cobrar que ya
+  existía (F1-Pieza 3).
+- 8 tests nuevos (`finalizeIssued`/gap-closing + `requestConsolidatedInvoice`:
+  guard anti double-billing, idempotencia tras fallo parcial, N cargos en
+  un comprobante). Suite completa de `app-main` verde (1017 tests).
+  `tsc --noEmit` limpio en los dos repos, `next build` verde. RBAC matriz
+  + test de sincronización actualizados (194 call-sites, 34 archivos).
+- **No verificado en navegador** — mismo límite de toda la sesión (sin
+  backend local conectado). Falta que el dueño pruebe en producción: (1)
+  configurar la política de una empresa (consolidada + días de
+  vencimiento), (2) transferir el saldo de 2+ estadías distintas a esa
+  empresa, (3) "Facturar ahora" y confirmar que sale UN comprobante real
+  cubriendo los dos cargos, con las dos filas de `accounts_receivable`
+  marcadas `FACTURADO` con el mismo N° de comprobante, y (4) que
+  facturar una CHARGE individual con `FacturarButton` (camino de
+  siempre) también cierra el gap si esa CHARGE tenía una fila
+  `accounts_receivable` asociada.
+- **Gap conocido, no cerrado a propósito:** `getByReservationId()`/
+  `getOutstandingByCustomerId()` (usadas por la nota de crédito de C2 y
+  la conciliación de pagos de I4) hacen `JOIN` directo contra
+  `financial_transaction_id` — una factura consolidada (`null`) no
+  aparece en ninguna de las dos. Aceptable para este recorte (las
+  facturas consolidadas son del lado corporate/cuentas por cobrar, no de
+  esos dos flujos), pero a tener en cuenta si en el futuro se necesita
+  cancelar una reserva cuyo cargo terminó en una factura consolidada.
 
 ## Backlog de UI arrastrado (arrastrado de 08-22, sin cambios)
 
