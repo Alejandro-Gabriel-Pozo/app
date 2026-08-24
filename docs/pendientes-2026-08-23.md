@@ -711,7 +711,7 @@ invitaciones) tiene la misma protección de jerarquía — no se revisó
 
 </details>
 
-### K2. ⚠️ PARCIAL (23/08/2026) — Paginación real: backend listo, frontend sin enchufar
+### K2. ✅ RESUELTO (sesión posterior, 23/08/2026) — Paginación real, Clientes + Reservas/Turnos + calendario
 
 Confirmado en código: `reservations.routes.ts` y `customers.routes.ts` no
 tenían `limit`/`offset`/`cursor`/`page` — siempre devolvían la tabla
