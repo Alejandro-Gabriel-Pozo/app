@@ -1,13 +1,29 @@
 diff --git a/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js b/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js
-index 2c7448f..24166db 100644
+index 2c7448f..2d0dde4 100644
 --- a/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js
 +++ b/node_modules/@arcasdk/pdf/lib/generator/invoice-pdf-generator.js
-@@ -115,7 +115,14 @@ class InvoicePdfGenerator {
+@@ -57,7 +57,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+ };
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.InvoicePdfGenerator = void 0;
+-const puppeteer_1 = __importDefault(require("puppeteer"));
+ const qrcode_1 = __importDefault(require("qrcode"));
+ const stream_1 = require("stream");
+ const qr_utils_1 = require("../utils/qr.utils");
+@@ -115,7 +114,22 @@ class InvoicePdfGenerator {
              const renderTemplate = this.renderTemplate;
              const optsWithCopy = Object.assign(Object.assign({}, this.opts), { copy });
              const html = renderTemplate({ data, options: optsWithCopy, qrDataUrl });
 -            const browser = yield puppeteer_1.default.launch({ headless: true });
-+            const browser = yield puppeteer_1.default.launch({
++            // I11 (23/08/2026, pendientes-2026-08-23.md -- vulnerabilidades npm
++            // @arcasdk/pdf -> puppeteer -> extract-zip) -- puppeteer 25 es ESM
++            // puro ("type": "module", sin entrada require()); un require()
++            // clásico tira ERR_REQUIRE_ESM. import() dinámico sí lo carga bien,
++            // sin depender de la interop require(esm) de Node (variable según
++            // versión exacta de Node 22.x/23.x). Patch aplicado con
++            // patch-package -- ver patches/@arcasdk+pdf+0.2.0.patch.
++            const puppeteer = (yield import("puppeteer")).default;
++            const browser = yield puppeteer.launch({
 +                headless: true,
 +                // Sin esto, Chromium falla al arrancar en contenedores sin los
 +                // privilegios de kernel que su sandbox necesita (ej. Render) con

@@ -37,7 +37,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
 
       # SSL para TODOS los pools de Postgres del proceso (platform, tenant,
       # legado) — ver db/pg.client.ts::sslConfig(). Sin esto, los pools caen
