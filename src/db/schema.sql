@@ -2022,6 +2022,17 @@ CREATE INDEX IF NOT EXISTS idx_ar_company_period
 CREATE INDEX IF NOT EXISTS idx_ar_stay
   ON accounts_receivable (stay_id);
 
+-- invoice_ref (F1-Pieza 3, 23/08/2026, pendientes-2026-08-23.md) -- N° de
+-- comprobante real (ej. "0001-00001234") que corresponde a esta fila una
+-- vez facturada. En ESTE alcance markInvoiced() no genera ninguna factura
+-- AFIP real (decisión explícita del dueño) -- el campo existe para que el
+-- usuario lo anote a mano al marcar "Facturado", sin perder la
+-- trazabilidad de "esta fila ya facturada, ¿con qué comprobante?". El día
+-- que se construya la generación real de factura (fase aparte, C1-Fase C),
+-- este mismo campo se completa automáticamente en vez de a mano -- la UI y
+-- el modelo no cambian de forma, solo cambia quién lo llena.
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS invoice_ref VARCHAR(255);
+
 -- ===========================================================================
 -- BLOQUE 10 — AUDIT LOG (docs/criterios-datos.md R8, docs/criterios-negocio.md A9.4)
 -- ===========================================================================
@@ -2750,4 +2761,100 @@ ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS settled_invoice_id V
 
 CREATE INDEX IF NOT EXISTS idx_ft_settled_invoice
   ON financial_transactions (settled_invoice_id) WHERE settled_invoice_id IS NOT NULL;
+
+-- ===========================================================================
+-- BLOQUE 11 — C1-FASE C (facturación corporate), recorte confirmado
+-- 23/08/2026, pendientes-2026-08-23.md — spec completo en
+-- "spec-cobro-facturacion-sena-saldo (1).md" (fuera de este repo).
+-- BillingEntity NO es una entidad nueva -- reusa Customer (kind='COMPANY')
+-- + customer_tax_profiles, decisión confirmada con el dueño (AskUserQuestion):
+-- "los datos fiscales para armar la factura salen de customer_tax_profiles
+-- resolviendo por billingEntityId -- no se crea ninguna tabla ni entidad
+-- BillingEntity nueva". `Reservation.billingEntityId` queda AFUERA de este
+-- recorte a propósito -- no tiene consumidor real todavía (nada en esta
+-- fase rutea automáticamente a cuenta corriente corporate sin pasar por
+-- transferStayBalanceToReceivable a mano); se suma cuando exista ese
+-- ruteo automático, no antes.
+-- ===========================================================================
+
+-- billing_policies -- config viva por cliente (no MAESTRO/TRANSACCIÓN/
+-- DOCUMENTO en el sentido estricto de criterios-datos.md Parte 1: no se
+-- "usa" en una transacción como un recurso, se LEE en el momento de
+-- facturar, mismo criterio que rate_catalog/customer_rates). PK =
+-- customer_id: a lo sumo una política por cliente, sin id técnico aparte
+-- (mismo patrón 1:1 que customer_tax_profiles, salvo que acá no hace
+-- falta permitir varias filas históricas).
+--
+-- requires_sena_to_confirm / invoicing_trigger / cycle_* quedan
+-- PERSISTIDOS pero SIN ningún código que los haga cumplir todavía -- son
+-- la config que la Fase B (gateway/hold) y el disparador automático
+-- programado van a leer el día que existan (mismo criterio que
+-- deposit_amount=0 en C1-Fase A: la config existe antes que el código que
+-- la usa, no al revés). Lo único que SÍ tiene efecto real hoy es
+-- `due_days` (vencimiento mostrado en el reporte de cuentas por cobrar) y
+-- `invoicing_scope`/"Facturar ahora" (facturación consolidada real).
+CREATE TABLE IF NOT EXISTS billing_policies (
+  customer_id               VARCHAR(255)  PRIMARY KEY REFERENCES customers(id) ON DELETE RESTRICT,
+  requires_sena_to_confirm  BOOLEAN       NOT NULL DEFAULT TRUE,
+  invoicing_scope           VARCHAR(20)   NOT NULL DEFAULT 'per_reservation'
+                               CHECK (invoicing_scope IN ('per_reservation', 'consolidated')),
+  invoicing_trigger         VARCHAR(20)   NOT NULL DEFAULT 'on_completion'
+                               CHECK (invoicing_trigger IN ('on_completion', 'scheduled')),
+  cycle_frequency           VARCHAR(20)   CHECK (cycle_frequency IN ('weekly', 'monthly', 'custom_days')),
+  cycle_custom_days         INTEGER       CHECK (cycle_custom_days IS NULL OR cycle_custom_days > 0),
+  due_days                  INTEGER       NOT NULL DEFAULT 0 CHECK (due_days >= 0),
+  updated_at                TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- accounts_receivable.financial_transaction_id -- F1-Pieza 3 creó el CHARGE
+-- contra la empresa (transferStayBalanceToReceivable) pero nunca guardó su
+-- id en la fila de accounts_receivable -- sin esto, "Facturar ahora"
+-- (consolidada) no tiene forma de encontrar QUÉ financial_transaction
+-- corresponde facturar por cada fila PENDIENTE_FACTURAR. Nullable: las
+-- filas creadas antes de esta columna (el tenant de prueba de hoy) quedan
+-- sin backfill posible -- no hay forma confiable de reconstruir cuál
+-- CHARGE le correspondía a cada una. Toda fila NUEVA (transferStayBalanceToReceivable
+-- actualizado en el mismo cambio) la completa siempre.
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS financial_transaction_id VARCHAR(255)
+  REFERENCES financial_transactions(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ar_financial_transaction
+  ON accounts_receivable (financial_transaction_id) WHERE financial_transaction_id IS NOT NULL;
+
+-- invoices.financial_transaction_id pasa a nullable -- una factura
+-- CONSOLIDADA (N cargos de N reservas/estadías distintas bajo un solo
+-- comprobante AFIP) no tiene UN financial_transaction de origen, tiene N.
+-- Decisión confirmada con el dueño: NO migrar ninguna fila existente de
+-- `invoices` -- el camino per-reservation (financial_transaction_id
+-- poblado) sigue exactamente igual que hoy, sin tocar una sola factura ya
+-- emitida. `invoice_charges` (abajo) es el único camino nuevo, exclusivo
+-- de facturas consolidadas.
+ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL;
+
+-- invoice_charges -- relación N:1 entre financial_transactions y una
+-- factura consolidada. Por qué tabla puente y no un array/JSON en
+-- `invoices`: cada fila necesita su propio `amount` (cuánto de esta
+-- factura corresponde a CADA cargo, para poder auditar/desglosar) y una
+-- FK real hacia financial_transactions (R15 -- una referencia rota falla
+-- fuerte, no un id suelto en JSONB sin integridad). ON DELETE RESTRICT en
+-- las dos FKs: ni una factura ISSUED ni un financial_transaction que ya
+-- se facturó se pueden hacer desaparecer (R12/DOCUMENTO -- nunca se
+-- borra). Único índice sobre financial_transaction_id: un mismo cargo no
+-- puede terminar facturado en dos comprobantes distintos -- el guard real
+-- contra double-billing vive en InvoiceService (chequea contra facturas
+-- ISSUED antes de armar una consolidada nueva), esto es la última línea
+-- de defensa a nivel de base.
+CREATE TABLE IF NOT EXISTS invoice_charges (
+  id                        VARCHAR(255)  PRIMARY KEY,
+  invoice_id                VARCHAR(255)  NOT NULL REFERENCES invoices(id) ON DELETE RESTRICT,
+  financial_transaction_id  VARCHAR(255)  NOT NULL REFERENCES financial_transactions(id) ON DELETE RESTRICT,
+  amount                    NUMERIC(12,2) NOT NULL CHECK (amount >= 0),
+  created_at                TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_charges_ft
+  ON invoice_charges (financial_transaction_id);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_charges_invoice
+  ON invoice_charges (invoice_id);
 

@@ -502,3 +502,31 @@ export class FiscalProfileLockedError extends DomainError {
     );
   }
 }
+
+/** C1-Fase C (23/08/2026) — "Facturar ahora" sobre una empresa sin ninguna fila PENDIENTE_FACTURAR con cargo asociado. */
+export class NothingToInvoiceError extends DomainError {
+  constructor(companyCustomerId: string) {
+    super(
+      `El cliente "${companyCustomerId}" no tiene nada pendiente de facturar.`,
+      'NOTHING_TO_INVOICE',
+    );
+  }
+}
+
+/**
+ * C1-Fase C (23/08/2026) — guard anti double-billing en
+ * InvoiceService.requestConsolidatedInvoice(): alguna de las filas
+ * PENDIENTE_FACTURAR que se iba a consolidar ya tiene una factura ISSUED
+ * real (inconsistencia -- normalmente por un fallo a mitad de camino al
+ * marcar la fila FACTURADO la vez anterior). Se rechaza toda la
+ * operación en vez de facturar una factura parcial en silencio (R15).
+ */
+export class AccountsReceivableAlreadyInvoicedError extends DomainError {
+  constructor(companyCustomerId: string, financialTransactionIds: string[]) {
+    super(
+      `El cliente "${companyCustomerId}" tiene cargos ya facturados que todavía figuran pendientes ` +
+      `(${financialTransactionIds.join(', ')}) -- revisar antes de facturar de nuevo, no se generó ningún comprobante.`,
+      'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED',
+    );
+  }
+}

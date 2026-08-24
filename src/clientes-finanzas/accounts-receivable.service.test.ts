@@ -3,6 +3,8 @@ import {
   AccountsReceivableService,
   CompanyCustomerRequiredError,
   NoBalanceToTransferError,
+  AccountReceivableNotFoundError,
+  InvalidAccountsReceivableTransitionError,
 } from './accounts-receivable.service.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 import { CustomerNotFoundError } from '../domain/errors.js';
@@ -22,23 +24,62 @@ const TEST_STAY_ID = 'stay-1';
 const TEST_COMPANY_ID = 'cust-empresa';
 const TEST_GUEST_ID = 'cust-huesped';
 
-/** Fake mínimo — solo lo que AccountsReceivableService llama. */
+/**
+ * Fake con estado real (no solo no-ops) — F1-Pieza 3 necesita probar las
+ * transiciones PENDIENTE_FACTURAR → FACTURADO → COBRADO, así que el fake
+ * tiene que rechazarlas igual que el UPDATE con WHERE status=... real
+ * (`SqlAccountsReceivableRepository.markInvoiced`/`markCollected`).
+ */
 class FakeAccountsReceivableRepository implements AccountsReceivableRepository {
   public created: Omit<AccountReceivable, 'createdAt' | 'invoicedAt' | 'collectedAt'>[] = [];
+  public rows = new Map<string, AccountReceivable>();
 
   async createWithClient(
     _client: SqlClient,
     ar: Omit<AccountReceivable, 'createdAt' | 'invoicedAt' | 'collectedAt'>,
   ): Promise<AccountReceivable> {
     this.created.push(ar);
-    return { ...ar, createdAt: new Date(), invoicedAt: null, collectedAt: null };
+    const full: AccountReceivable = { ...ar, createdAt: new Date(), invoicedAt: null, collectedAt: null };
+    this.rows.set(ar.id, full);
+    return full;
   }
 
-  async getById(): Promise<AccountReceivable | undefined> { return undefined; }
+  async getById(id: string): Promise<AccountReceivable | undefined> { return this.rows.get(id); }
   async getByStayId(): Promise<AccountReceivable[]> { return []; }
-  async getByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
-  async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
-  async markCollected(): Promise<AccountReceivable | undefined> { return undefined; }
+  async getByCompanyCustomerId(companyCustomerId: string): Promise<AccountReceivable[]> {
+    return [...this.rows.values()].filter((r) => r.companyCustomerId === companyCustomerId);
+  }
+
+  async getPendingByCompanyCustomerId(companyCustomerId: string): Promise<AccountReceivable[]> {
+    return [...this.rows.values()].filter(
+      (r) => r.companyCustomerId === companyCustomerId && r.status === 'PENDIENTE_FACTURAR' && r.financialTransactionId != null,
+    );
+  }
+
+  async getByFinancialTransactionId(financialTransactionId: string): Promise<AccountReceivable | undefined> {
+    return [...this.rows.values()].find((r) => r.financialTransactionId === financialTransactionId);
+  }
+
+  async markInvoiced(id: string, invoiceRef?: string | null): Promise<AccountReceivable | undefined> {
+    const ar = this.rows.get(id);
+    if (!ar || ar.status !== 'PENDIENTE_FACTURAR') return undefined;
+    const updated: AccountReceivable = { ...ar, status: 'FACTURADO', invoicedAt: new Date(), invoiceRef: invoiceRef ?? null };
+    this.rows.set(id, updated);
+    return updated;
+  }
+
+  async markCollected(id: string): Promise<AccountReceivable | undefined> {
+    return this.markCollectedWithClient({ async query() { return { rows: [], rowCount: 0 }; } }, id);
+  }
+
+  async markCollectedWithClient(_client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
+    const ar = this.rows.get(id);
+    if (!ar || ar.status !== 'FACTURADO') return undefined;
+    const updated: AccountReceivable = { ...ar, status: 'COBRADO', collectedAt: new Date() };
+    this.rows.set(id, updated);
+    return updated;
+  }
+
   async getReportByPeriod(): Promise<AccountsReceivableReportRow[]> { return []; }
 }
 
@@ -151,7 +192,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
     );
   });
 
-  it('crea un PAYMENT que salda el folio y una fila PENDIENTE_FACTURAR', async () => {
+  it('crea un PAYMENT que salda el folio, un CHARGE contra la empresa y una fila PENDIENTE_FACTURAR', async () => {
     financialRepo.netBalanceByStay = 15000;
 
     const ar = await service.transferStayBalanceToReceivable({
@@ -161,7 +202,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       transferredBy: 'user-manager',
     });
 
-    expect(financialRepo.created).toHaveLength(1);
+    expect(financialRepo.created).toHaveLength(2);
     expect(financialRepo.created[0]).toMatchObject({
       customerId: TEST_GUEST_ID,
       stayId: TEST_STAY_ID,
@@ -169,6 +210,23 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       amount: 15000,
       status: 'SETTLED',
     });
+
+    // F1-Pieza 3 (23/08/2026) — la deuda tiene que aparecer en la cuenta
+    // corriente de la EMPRESA desde el momento de la transferencia. Sin
+    // stayId a propósito: getNetBalanceByStayId() suma por stay_id sin
+    // filtrar por customer_id -- si este CHARGE llevara el mismo stayId
+    // que el PAYMENT de arriba, el saldo de la ESTADÍA volvería a quedar
+    // positivo y el check-out que la transferencia recién desbloqueó
+    // volvería a rechazar. reservationId cumple el mismo rol de
+    // trazabilidad (documento de origen, F1-Pieza 2) sin ese efecto.
+    expect(financialRepo.created[1]).toMatchObject({
+      customerId: TEST_COMPANY_ID,
+      reservationId: stay.reservationId,
+      type: 'CHARGE',
+      amount: 15000,
+      status: 'SETTLED',
+    });
+    expect(financialRepo.created[1]!.stayId).toBeUndefined();
 
     expect(arRepo.created).toHaveLength(1);
     expect(ar.status).toBe('PENDIENTE_FACTURAR');
@@ -193,6 +251,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
     });
 
     expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
+    expect(financialRepo.created[1]).toMatchObject({ currency: 'USD' });
     expect(ar.currency).toBe('USD');
   });
 
@@ -234,5 +293,122 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
       companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
     })).rejects.toThrow(NoBalanceToTransferError);
+  });
+});
+
+describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 23/08/2026)', () => {
+  let arRepo: FakeAccountsReceivableRepository;
+  let financialRepo: FakeFinancialTransactionRepository;
+  let service: AccountsReceivableService;
+
+  function seed(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+    const ar: AccountReceivable = {
+      id: 'ar-1',
+      businessId: TEST_BUSINESS_ID,
+      stayId: TEST_STAY_ID,
+      companyCustomerId: TEST_COMPANY_ID,
+      amount: 15000,
+      currency: 'ARS',
+      status: 'PENDIENTE_FACTURAR',
+      transferredBy: 'user-manager',
+      notes: null,
+      createdAt: new Date(),
+      invoicedAt: null,
+      collectedAt: null,
+      invoiceRef: null,
+      ...overrides,
+    };
+    arRepo.rows.set(ar.id, ar);
+    return ar;
+  }
+
+  beforeEach(() => {
+    arRepo = new FakeAccountsReceivableRepository();
+    financialRepo = new FakeFinancialTransactionRepository();
+    const customers = new Map([
+      [TEST_COMPANY_ID, new Customer(TEST_COMPANY_ID, 'Empresa SA', [], 'COMPANY')],
+    ]);
+    service = new AccountsReceivableService(
+      arRepo, financialRepo,
+      new FakeStayRepository(null) as unknown as StayRepository,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new InMemoryTransactionManager(),
+      new FakeBusinessProfileRepository(makeProfile()),
+    );
+  });
+
+  describe('markInvoiced — solo cambia el estado, NO toca el ledger', () => {
+    it('PENDIENTE_FACTURAR → FACTURADO, guarda invoiceRef', async () => {
+      seed();
+
+      const updated = await service.markInvoiced('ar-1', '0001-00001234');
+
+      expect(updated.status).toBe('FACTURADO');
+      expect(updated.invoiceRef).toBe('0001-00001234');
+      expect(updated.invoicedAt).not.toBeNull();
+      expect(financialRepo.created).toHaveLength(0);
+    });
+
+    it('invoiceRef es opcional', async () => {
+      seed();
+      const updated = await service.markInvoiced('ar-1');
+      expect(updated.invoiceRef).toBeNull();
+    });
+
+    it('rechaza si el id no existe', async () => {
+      await expect(service.markInvoiced('no-existe')).rejects.toThrow(AccountReceivableNotFoundError);
+    });
+
+    it('rechaza si ya está FACTURADO o COBRADO (R12 — solo avanza, nunca vuelve atrás)', async () => {
+      seed({ status: 'FACTURADO' });
+      await expect(service.markInvoiced('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
+    });
+  });
+
+  describe('markCollected — FACTURADO → COBRADO, crea el PAYMENT que cierra la deuda', () => {
+    it('crea un PAYMENT contra la empresa por el monto exacto', async () => {
+      seed({ status: 'FACTURADO', invoiceRef: '0001-00001234' });
+
+      const updated = await service.markCollected('ar-1');
+
+      expect(updated.status).toBe('COBRADO');
+      expect(updated.collectedAt).not.toBeNull();
+      expect(financialRepo.created).toHaveLength(1);
+      expect(financialRepo.created[0]).toMatchObject({
+        customerId: TEST_COMPANY_ID,
+        type: 'PAYMENT',
+        amount: 15000,
+        currency: 'ARS',
+        status: 'SETTLED',
+      });
+    });
+
+    it('rechaza si el id no existe', async () => {
+      await expect(service.markCollected('no-existe')).rejects.toThrow(AccountReceivableNotFoundError);
+    });
+
+    it('rechaza si todavía está PENDIENTE_FACTURAR (no se puede saltear FACTURADO)', async () => {
+      seed({ status: 'PENDIENTE_FACTURAR' });
+      await expect(service.markCollected('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
+      expect(financialRepo.created).toHaveLength(0);
+    });
+
+    it('rechaza si ya está COBRADO (no se cobra dos veces)', async () => {
+      seed({ status: 'COBRADO' });
+      await expect(service.markCollected('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
+      expect(financialRepo.created).toHaveLength(0);
+    });
+  });
+
+  describe('listByCompany', () => {
+    it('devuelve solo las filas de esa empresa', async () => {
+      seed({ id: 'ar-1', companyCustomerId: TEST_COMPANY_ID });
+      seed({ id: 'ar-2', companyCustomerId: 'otra-empresa' });
+
+      const rows = await service.listByCompany(TEST_COMPANY_ID);
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.id).toBe('ar-1');
+    });
   });
 });

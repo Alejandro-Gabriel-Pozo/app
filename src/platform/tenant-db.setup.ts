@@ -283,7 +283,14 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // v37 (23/08/2026): I4, pendientes-2026-08-23.md — conciliación de pagos.
 // `financial_transactions.settled_invoice_id` nuevo, espejo de
 // `reversed_invoice_id`.
-export const CURRENT_SCHEMA_VERSION = 37;
+// v38 (23/08/2026): F1-Pieza 3, pendientes-2026-08-23.md — ciclo de vida de
+// cuentas por cobrar. `accounts_receivable.invoice_ref` nuevo (N° de
+// comprobante anotado a mano al marcar "Facturado").
+// v39 (23/08/2026): C1-Fase C (recorte confirmado), pendientes-2026-08-23.md.
+// `billing_policies` nueva; `accounts_receivable.financial_transaction_id`
+// nuevo; `invoices.financial_transaction_id` pasa a nullable; `invoice_charges`
+// nueva (N:1 para facturación consolidada, sin migrar facturas existentes).
+export const CURRENT_SCHEMA_VERSION = 39;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

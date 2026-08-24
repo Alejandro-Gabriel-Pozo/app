@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
-import { InvoiceService } from './invoice.service.js';
+import { InvoiceService, hashIds } from './invoice.service.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
 import type { FinancialTransactionRepository, FinancialTransaction, PaymentInfo } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { AccountsReceivableRepository, AccountReceivable } from '../clientes-finanzas/accounts-receivable.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { IOrderRepository } from '../pos-menu/order.repository.js';
@@ -15,7 +16,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 
@@ -26,6 +27,8 @@ import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 class FakeInvoiceRepository implements InvoiceRepository {
   public invoices = new Map<string, Invoice>();
   public items = new Map<string, InvoiceItem[]>();
+  /** C1-Fase C -- financial_transaction_id -> invoice_id, para getInvoicedFinancialTransactionIds. */
+  public charges = new Map<string, string>();
 
   async getById(id: string) { return this.invoices.get(id) ?? null; }
   async getByIdempotencyKey(key: string) {
@@ -33,6 +36,13 @@ class FakeInvoiceRepository implements InvoiceRepository {
   }
   async getByFinancialTransactionId(ftId: string) {
     return [...this.invoices.values()].filter((i) => i.financialTransactionId === ftId);
+  }
+  async getInvoicedFinancialTransactionIds(ids: string[]): Promise<Set<string>> {
+    const result = new Set<string>();
+    for (const [ftId, invoiceId] of this.charges) {
+      if (ids.includes(ftId) && this.invoices.get(invoiceId)?.status === 'ISSUED') result.add(ftId);
+    }
+    return result;
   }
   async getByReservationId(): Promise<Invoice[]> { return []; }
   async getOutstandingByCustomerId(): Promise<Array<Invoice & { outstanding: number }>> { return []; }
@@ -44,6 +54,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
     input: CreateInvoiceInput,
     afipRequest: unknown,
     items: CreateInvoiceItemInput[],
+    charges?: { financialTransactionId: string; amount: number }[],
   ): Promise<Invoice> {
     const invoice: Invoice = {
       ...input,
@@ -56,6 +67,9 @@ class FakeInvoiceRepository implements InvoiceRepository {
     this.items.set(invoice.id, items.map((item, i) => ({
       ...item, id: `ii-${invoice.id}-${i}`, invoiceId: invoice.id, createdAt: new Date(),
     })));
+    for (const charge of charges ?? []) {
+      this.charges.set(charge.financialTransactionId, invoice.id);
+    }
     return invoice;
   }
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> {
@@ -143,6 +157,31 @@ class FakeTransactionManager implements TransactionManager {
   }
 }
 
+/** C1-Fase C -- Pick angosto, mismo que usa InvoiceService (bounded contexts). */
+class FakeAccountsReceivableRepo
+  implements Pick<AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId'>
+{
+  public rows = new Map<string, AccountReceivable>();
+  public markInvoicedCalls: { id: string; invoiceRef: string | null | undefined }[] = [];
+
+  async getByFinancialTransactionId(financialTransactionId: string): Promise<AccountReceivable | undefined> {
+    return [...this.rows.values()].find((r) => r.financialTransactionId === financialTransactionId);
+  }
+  async getPendingByCompanyCustomerId(companyCustomerId: string): Promise<AccountReceivable[]> {
+    return [...this.rows.values()].filter(
+      (r) => r.companyCustomerId === companyCustomerId && r.status === 'PENDIENTE_FACTURAR' && r.financialTransactionId != null,
+    );
+  }
+  async markInvoiced(id: string, invoiceRef?: string | null): Promise<AccountReceivable | undefined> {
+    this.markInvoicedCalls.push({ id, invoiceRef });
+    const ar = this.rows.get(id);
+    if (!ar) return undefined;
+    const updated: AccountReceivable = { ...ar, status: 'FACTURADO', invoiceRef: invoiceRef ?? null };
+    this.rows.set(id, updated);
+    return updated;
+  }
+}
+
 class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
   constructor(private readonly credentials: AfipCredentials | null) {}
   async getStatus(): Promise<AfipCredentialsStatus> {
@@ -226,9 +265,11 @@ function afipRejectedResponse(msg = '10015: Factura B no cumple condicion') {
 
 describe('InvoiceService', () => {
   let invoiceRepo: FakeInvoiceRepository;
+  let arRepo: FakeAccountsReceivableRepo;
 
   beforeEach(() => {
     invoiceRepo = new FakeInvoiceRepository();
+    arRepo = new FakeAccountsReceivableRepo();
   });
 
   function buildService(opts: {
@@ -255,6 +296,7 @@ describe('InvoiceService', () => {
       new FakeProductVariantRepository(opts.productVariants),
       new FakeReservationRepository(opts.reservation ?? null),
       new FakeTransactionManager(),
+      arRepo,
       // buildService sigue armando un Arca fake (fakeArcaClient) igual que
       // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
       // existentes de fakeArcaClient({...}) en esta suite no necesiten
@@ -302,6 +344,7 @@ describe('InvoiceService', () => {
         new FakeProductVariantRepository(),
         new FakeReservationRepository(),
         new FakeTransactionManager(),
+        arRepo,
         clientFactory,
       );
 
@@ -322,6 +365,7 @@ describe('InvoiceService', () => {
         new FakeProductVariantRepository(),
         new FakeReservationRepository(),
         new FakeTransactionManager(),
+        arRepo,
         clientFactory,
       );
 
@@ -915,6 +959,235 @@ describe('InvoiceService', () => {
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.cbteNro).toBe(11);
       expect(invoice.cae).toBe('CAE-RECOVERED');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1-Fase C (23/08/2026, pendientes-2026-08-23.md) -- facturación
+// consolidada + cierre del gap FacturarButton/accounts_receivable.
+// ---------------------------------------------------------------------------
+
+/** A diferencia de FakeFinancialTransactionRepository (un solo tx fijo), acá hacen falta N transactions distintas por id. */
+class FakeMultiFinancialTransactionRepository implements FinancialTransactionRepository {
+  constructor(private readonly txs: Map<string, FinancialTransaction>) {}
+  async create() { return null; }
+  async createWithClient() { return null; }
+  async getById(id: string) { return this.txs.get(id) ?? null; }
+  async getByReservationId() { return []; }
+  async getByOrderId() { return []; }
+  async getByCustomerId() { return []; }
+  async getByStayId() { return []; }
+  async getByShiftId() { return []; }
+  async getByIdempotencyKey() { return undefined; }
+  async settleByReservationId() { return 0; }
+  async voidByReservationId() { return 0; }
+  async settleByOrderId(_orderId: string, _paymentInfo?: PaymentInfo) { return 0; }
+  async voidByOrderId() { return 0; }
+  async getNetBalanceByCustomerId() { return 0; }
+  async getNetBalanceByStayId() { return 0; }
+  async getSettledPaymentTotalForReservation() { return 0; }
+  async getCollectedPaymentTotalForReservation() { return 0; }
+  async linkStayToReservationCharges() { return 0; }
+}
+
+describe('InvoiceService — C1-Fase C', () => {
+  const PROFILE = {
+    id: 'default', displayName: null, contactEmail: null,
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
+    legalName: 'Hotel Test SRL', taxId: '20111111112', taxIdType: 'CUIT', taxCondition: 'Responsable Inscripto',
+    fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+    fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: 3, afipCuit: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
+    defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+    createdAt: new Date(), updatedAt: new Date(),
+  } satisfies BusinessProfile;
+
+  function makeAr(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+    return {
+      id: 'ar-1', businessId: 'biz-1', stayId: 'stay-1', companyCustomerId: 'cust-empresa',
+      amount: 121, currency: 'ARS', status: 'PENDIENTE_FACTURAR', transferredBy: 'user-1',
+      financialTransactionId: 'ft-1',
+      ...overrides,
+    };
+  }
+
+  describe('finalizeIssued -- cierra el gap FacturarButton/accounts_receivable (camino per-reservation)', () => {
+    it('marca la fila accounts_receivable como FACTURADO con el comprobante real, tras emitir vía requestInvoice', async () => {
+      const invoiceRepo = new FakeInvoiceRepository();
+      const arRepo = new FakeAccountsReceivableRepo();
+      arRepo.rows.set('ar-1', makeAr());
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(42));
+      const service = new InvoiceService(
+        invoiceRepo,
+        new FakeFinancialTransactionRepository(makeTx({ id: 'ft-1', customerId: 'cust-empresa' })),
+        new FakeBusinessProfileRepository(PROFILE),
+        new FakeAfipCredentialsRepository(makeCredentials()),
+        new FakeOrderRepository(),
+        new FakeProductRepository(),
+        new FakeProductVariantRepository(),
+        new FakeReservationRepository(),
+        new FakeTransactionManager(),
+        arRepo,
+        () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
+      );
+
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(arRepo.rows.get('ar-1')!.status).toBe('FACTURADO');
+      expect(arRepo.rows.get('ar-1')!.invoiceRef).toBe('0003-00000042');
+    });
+
+    it('no hace nada si la CHARGE facturada no tiene ninguna fila accounts_receivable asociada (cliente individual, caso normal)', async () => {
+      const invoiceRepo = new FakeInvoiceRepository();
+      const arRepo = new FakeAccountsReceivableRepo(); // vacío
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = new InvoiceService(
+        invoiceRepo,
+        new FakeFinancialTransactionRepository(makeTx()),
+        new FakeBusinessProfileRepository(PROFILE),
+        new FakeAfipCredentialsRepository(makeCredentials()),
+        new FakeOrderRepository(),
+        new FakeProductRepository(),
+        new FakeProductVariantRepository(),
+        new FakeReservationRepository(),
+        new FakeTransactionManager(),
+        arRepo,
+        () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
+      );
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(arRepo.markInvoicedCalls).toHaveLength(0);
+    });
+  });
+
+  describe('requestConsolidatedInvoice -- "Facturar ahora"', () => {
+    function buildConsolidatedService(opts: {
+      pending: AccountReceivable[];
+      txs: Map<string, FinancialTransaction>;
+      createNextVoucher?: ReturnType<typeof vi.fn>;
+    }) {
+      const invoiceRepo = new FakeInvoiceRepository();
+      const arRepo = new FakeAccountsReceivableRepo();
+      for (const ar of opts.pending) arRepo.rows.set(ar.id, ar);
+      const createNextVoucher = opts.createNextVoucher ?? vi.fn().mockResolvedValue(afipApprovedResponse(99));
+      const service = new InvoiceService(
+        invoiceRepo,
+        new FakeMultiFinancialTransactionRepository(opts.txs),
+        new FakeBusinessProfileRepository(PROFILE),
+        new FakeAfipCredentialsRepository(makeCredentials()),
+        new FakeOrderRepository(),
+        new FakeProductRepository(),
+        new FakeProductVariantRepository(),
+        new FakeReservationRepository(),
+        new FakeTransactionManager(),
+        arRepo,
+        () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
+      );
+      return { service, invoiceRepo, arRepo, createNextVoucher };
+    }
+
+    it('rechaza si la empresa no tiene nada PENDIENTE_FACTURAR', async () => {
+      const { service } = buildConsolidatedService({ pending: [], txs: new Map() });
+      await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' }))
+        .rejects.toThrow(NothingToInvoiceError);
+    });
+
+    it('un comprobante cubre N cargos: suma los montos y marca las N filas FACTURADO con el mismo comprobante', async () => {
+      const pending = [
+        makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 }),
+        makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 50 }),
+      ];
+      const txs = new Map([
+        ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100, reservationId: 'res-1' })],
+        ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 50, reservationId: 'res-2' })],
+      ]);
+      const { service, invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs });
+
+      const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.financialTransactionId).toBeNull();
+      expect(invoice.impTotal).toBe(150); // suma de los dos cargos (100 + 50), precios con IVA incluido
+      expect(invoiceRepo.items.get(invoice.id)).toHaveLength(2); // una línea por cargo (resolveInvoiceItems x2)
+      expect(invoiceRepo.charges.get('ft-1')).toBe(invoice.id);
+      expect(invoiceRepo.charges.get('ft-2')).toBe(invoice.id);
+
+      expect(arRepo.rows.get('ar-1')!.status).toBe('FACTURADO');
+      expect(arRepo.rows.get('ar-2')!.status).toBe('FACTURADO');
+      expect(arRepo.rows.get('ar-1')!.invoiceRef).toBe(arRepo.rows.get('ar-2')!.invoiceRef); // mismo comprobante para las dos
+    });
+
+    it('idempotencia: reintentar tras un fallo a mitad de camino (factura ya ISSUED, accounts_receivable sin marcar todavía) no pide un segundo CAE', async () => {
+      // Simula el escenario real que la idempotencia tiene que cubrir: la
+      // factura consolidada YA se emitió (ISSUED, con invoice_charges),
+      // pero el loop best-effort que marca accounts_receivable FACTURADO
+      // falló a mitad de camino -- la fila sigue PENDIENTE_FACTURAR. Un
+      // reintento con el MISMO set de cargos pendientes tiene que
+      // encontrar la factura existente por idempotencyKey, no pedir un
+      // segundo CAE ni caer en el guard anti double-billing (ver el
+      // reordenamiento en requestConsolidatedInvoice: idempotencia antes
+      // que el guard, a propósito).
+      const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 })];
+      const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })]]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(5));
+      const { invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs, createNextVoucher });
+
+      const priorInvoiceId = 'inv-previa';
+      const idempotencyKey = `invoice:consolidated:${hashIds(['ft-1'])}`;
+      invoiceRepo.invoices.set(priorInvoiceId, {
+        id: priorInvoiceId, businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+        idempotencyKey, environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: 5, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 100, impIva: 0, impTotal: 100, cae: 'CAE-PREVIA', caeVto: '2026-12-31', status: 'ISSUED',
+        afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
+      });
+      invoiceRepo.charges.set('ft-1', priorInvoiceId);
+
+      const service = new InvoiceService(
+        invoiceRepo,
+        new FakeMultiFinancialTransactionRepository(txs),
+        new FakeBusinessProfileRepository(PROFILE),
+        new FakeAfipCredentialsRepository(makeCredentials()),
+        new FakeOrderRepository(),
+        new FakeProductRepository(),
+        new FakeProductVariantRepository(),
+        new FakeReservationRepository(),
+        new FakeTransactionManager(),
+        arRepo,
+        () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
+      );
+
+      const result = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' });
+
+      expect(result.id).toBe(priorInvoiceId);
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('rechaza (guard anti double-billing) si algún cargo pendiente YA tiene una factura ISSUED real', async () => {
+      const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 })];
+      const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })]]);
+      const { service, invoiceRepo } = buildConsolidatedService({ pending, txs });
+
+      // Simula la inconsistencia: ft-1 ya está en una factura ISSUED
+      // (ej. el paso de marcar accounts_receivable falló la vez anterior),
+      // pero la fila AR sigue diciendo PENDIENTE_FACTURAR.
+      const priorInvoiceId = 'inv-previa';
+      invoiceRepo.invoices.set(priorInvoiceId, {
+        id: priorInvoiceId, businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+        idempotencyKey: 'invoice:consolidated:otra', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: 1, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 100, impIva: 0, impTotal: 100, cae: 'CAE-X', caeVto: '2026-12-31', status: 'ISSUED',
+        afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
+      });
+      invoiceRepo.charges.set('ft-1', priorInvoiceId);
+
+      await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' }))
+        .rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
     });
   });
 });

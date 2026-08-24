@@ -24,3 +24,10 @@ export const RequestInvoiceSchema = z.object({
   /** 1=Productos, 2=Servicios, 3=Ambos. Default Servicios si se omite. */
   concepto: z.number().int().min(1).max(3).optional(),
 });
+
+/** C1-Fase C (23/08/2026) — "Facturar ahora": un comprobante cubriendo todo lo PENDIENTE_FACTURAR de una empresa. */
+export const RequestConsolidatedInvoiceSchema = z.object({
+  companyCustomerId: z.string().min(1),
+  buyer: BuyerSchema.optional(),
+  concepto: z.number().int().min(1).max(3).optional(),
+});

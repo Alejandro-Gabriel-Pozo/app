@@ -30,6 +30,16 @@ export interface InvoiceRepository {
    */
   getByReservationId(reservationId: string): Promise<Invoice[]>;
   /**
+   * C1-Fase C (23/08/2026) — de la lista dada, cuáles YA tienen una fila
+   * en `invoice_charges` apuntando a una factura `ISSUED`. Guard contra
+   * double-billing en `InvoiceService.requestConsolidatedInvoice()`: una
+   * fila `accounts_receivable` PENDIENTE_FACTURAR cuyo cargo YA está en
+   * una factura real (ej. se marcó FACTURADO por el paso de "mark
+   * invoiced" pero el paso siguiente falló a mitad de camino) no se puede
+   * facturar una segunda vez.
+   */
+  getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>>;
+  /**
    * I4 (23/08/2026, pendientes-2026-08-23.md — conciliación de pagos,
    * verificación de auditoría externa) — facturas `ISSUED` de un cliente
    * (excluye Notas de Crédito, que se emiten desde `type='REFUND'`) con
@@ -48,12 +58,18 @@ export interface InvoiceRepository {
    * (`InvoiceService.requestInvoice()` la envuelve en
    * `transactionManager.run()`) — nunca una factura creada sin ninguna
    * línea por una falla a mitad de camino.
+   *
+   * `charges` (C1-Fase C, 23/08/2026) — opcional, solo para facturas
+   * consolidadas: una fila `invoice_charges` por cada `financialTransactionId`
+   * cubierto (con `input.financialTransactionId = null`). Omitido/vacío en
+   * el camino per-reservation de siempre — comportamiento sin cambios.
    */
   createWithClient(
     client: SqlClient,
     input: CreateInvoiceInput,
     afipRequest: unknown,
     items: CreateInvoiceItemInput[],
+    charges?: { financialTransactionId: string; amount: number }[],
   ): Promise<Invoice>;
   markIssued(id: string, data: MarkIssuedInput): Promise<Invoice>;
   markFailed(id: string, data: MarkFailedInput): Promise<Invoice>;

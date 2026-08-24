@@ -46,6 +46,7 @@ import { CustomerRateConflictError, ResourceNotFoundError, RateCatalogEntryNotFo
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
 import { cuitSchema } from '../api/schemas/common.schemas.js';
 import { SqlCustomerTaxProfileRepository } from './sql.customer-tax-profile.repository.js';
+import { SqlBillingPolicyRepository } from './sql.billing-policy.repository.js';
 import { SqlAfipCredentialsRepository } from '../facturacion/sql.afip-credentials.repository.js';
 import { PadronService } from '../facturacion/padron.service.js';
 import { SqlInvoiceRepository } from '../facturacion/sql.invoice.repository.js';
@@ -122,6 +123,20 @@ const UpsertTaxProfileSchema = z.object({
     return;
   }
   data.taxId = result.data; // normalizado sin guiones -- lo que se persiste.
+});
+
+/** C1-Fase C (23/08/2026) — BillingPolicy por cliente. cycleCustomDays solo tiene sentido con cycleFrequency='custom_days'. */
+const UpsertBillingPolicySchema = z.object({
+  requiresSenaToConfirm: z.boolean(),
+  invoicingScope: z.enum(['per_reservation', 'consolidated']),
+  invoicingTrigger: z.enum(['on_completion', 'scheduled']),
+  cycleFrequency: z.enum(['weekly', 'monthly', 'custom_days']).nullable().optional(),
+  cycleCustomDays: z.number().int().positive().nullable().optional(),
+  dueDays: z.number().int().min(0),
+}).superRefine((data, ctx) => {
+  if (data.cycleFrequency === 'custom_days' && !data.cycleCustomDays) {
+    ctx.addIssue({ code: 'custom', message: 'cycleCustomDays es obligatorio con cycleFrequency="custom_days"', path: ['cycleCustomDays'] });
+  }
 });
 
 const LookupByCuitSchema = z.object({ cuit: cuitSchema });
@@ -349,6 +364,47 @@ export function createCustomersRouter(container: AppContainer): Router {
           }),
         });
         res.json(profile);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // GET /customers/:id/billing-policy — null si el cliente usa la política
+  // default (ver docblock de BillingPolicy). C1-Fase C, 23/08/2026.
+  router.get(
+    '/:id/billing-policy',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const policy = await new SqlBillingPolicyRepository(req.db!).getByCustomerId(String(req.params['id']));
+        res.json(policy);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // PUT /customers/:id/billing-policy — crea o actualiza (una política por cliente).
+  router.put(
+    '/:id/billing-policy',
+    facturacionGate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const id = String(req.params['id']);
+        const existing = await new SqlCustomerRepository(req.db!).getById(id);
+        if (!existing) {
+          res.status(404).json({ code: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' });
+          return;
+        }
+        const body = UpsertBillingPolicySchema.parse(req.body);
+        const policy = await new SqlBillingPolicyRepository(req.db!).upsert(id, {
+          requiresSenaToConfirm: body.requiresSenaToConfirm,
+          invoicingScope: body.invoicingScope,
+          invoicingTrigger: body.invoicingTrigger,
+          cycleFrequency: body.cycleFrequency ?? null,
+          cycleCustomDays: body.cycleCustomDays ?? null,
+          dueDays: body.dueDays,
+        });
+        res.json(policy);
       } catch (err) { next(err); }
     },
   );

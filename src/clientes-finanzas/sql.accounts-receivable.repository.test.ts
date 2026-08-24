@@ -50,6 +50,30 @@ describe('SqlAccountsReceivableRepository', () => {
     const [sql, params] = mockQuery.mock.calls[0]!;
     expect(sql).toContain("SET status = 'FACTURADO'");
     expect(sql).toContain("AND status = 'PENDIENTE_FACTURAR'");
+    expect(params).toEqual(['ar-1', null]);
+  });
+
+  it('markInvoiced guarda invoiceRef cuando se lo pasan (F1-Pieza 3, 23/08/2026)', async () => {
+    await repo.markInvoiced('ar-1', '0001-00001234');
+
+    const mockQuery = vi.mocked(mockSqlClient.query);
+    const [sql, params] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('invoice_ref');
+    expect(params).toEqual(['ar-1', '0001-00001234']);
+  });
+
+  it('markCollectedWithClient corre sobre el client recibido, no sobre this.sqlClient (F1-Pieza 3, 23/08/2026)', async () => {
+    const otherClient: SqlClient = {
+      query: vi.fn(async () => ({ rows: [] })) as unknown as SqlClient['query'],
+    };
+
+    await repo.markCollectedWithClient(otherClient, 'ar-1');
+
+    expect(otherClient.query).toHaveBeenCalledOnce();
+    expect(mockSqlClient.query).not.toHaveBeenCalled();
+    const [sql, params] = vi.mocked(otherClient.query).mock.calls[0]!;
+    expect(sql).toContain("SET status = 'COBRADO'");
+    expect(sql).toContain("AND status = 'FACTURADO'");
     expect(params).toEqual(['ar-1']);
   });
 

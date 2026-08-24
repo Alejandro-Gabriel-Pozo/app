@@ -23,6 +23,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getById(id: string) { return this.invoice?.id === id ? this.invoice : null; }
   async getByIdempotencyKey() { return null; }
   async getByFinancialTransactionId() { return []; }
+  async getInvoicedFinancialTransactionIds() { return new Set<string>(); }
   async getByReservationId() { return []; }
   async getOutstandingByCustomerId() { return []; }
   async create(_input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }

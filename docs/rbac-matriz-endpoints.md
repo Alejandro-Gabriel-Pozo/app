@@ -50,7 +50,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (188 call-sites, 33 archivos)
+## 2. Matriz de endpoints por archivo (194 call-sites, 34 archivos)
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién
@@ -134,14 +134,21 @@ sección 4.
 - GET `/:id/rates` — `FRONT_DESK`
 - POST `/:id/rates` — `MANAGEMENT`
 - DELETE `/:id/rates/:rateId` — `MANAGEMENT`
+- GET `/:id/billing-policy` — `MANAGEMENT` (`requireModule(FACTURACION)`, C1-Fase C)
+- PUT `/:id/billing-policy` — `MANAGEMENT` (`requireModule(FACTURACION)`, C1-Fase C)
 - GET `/:id/account` — `FRONT_DESK` (`requireModule(CUENTAS_CORRIENTES)`)
 - GET `/:id/outstanding-invoices` — `FRONT_DESK` (`requireModule(CUENTAS_CORRIENTES)`)
 - POST `/:id/payments` — `FRONT_DESK` (`requireModule(CUENTAS_CORRIENTES)`)
 
+**`accounts-receivable.routes.ts`** (F1-Pieza 3, 23/08/2026 — todo `requireModule(CUENTAS_CORRIENTES)`, aplicado en `app.ts`; la creación de la fila vive en `stays.routes.ts` POST `/:id/transfer-to-receivable`, ya listado arriba)
+- GET `/?companyCustomerId=` — `MANAGEMENT`
+- POST `/:id/mark-invoiced` — `MANAGEMENT`
+- POST `/:id/mark-collected` — `MANAGEMENT`
+
 ### `src/facturacion/`
 
 **`invoices.routes.ts`** (todo `requireModule(FACTURACION)`) — dos routers:
-- `createInvoicesRouter`: POST `/` — `FRONT_DESK`; GET `/:id` — `FRONT_DESK`; GET `/:id/pdf` — `FRONT_DESK`; GET `/` — `FRONT_DESK`
+- `createInvoicesRouter`: POST `/` — `FRONT_DESK`; POST `/consolidated` — `MANAGEMENT` (C1-Fase C, "Facturar ahora"); GET `/:id` — `FRONT_DESK`; GET `/:id/pdf` — `FRONT_DESK`; GET `/` — `FRONT_DESK`
 - `createAfipCredentialsRouter`: GET `/status` — `MANAGEMENT`; PUT `/` — `MANAGEMENT`; DELETE `/` — `MANAGEMENT`
 
 ### `src/platform/`

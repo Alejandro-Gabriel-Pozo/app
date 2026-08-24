@@ -24,6 +24,26 @@ export interface AccountReceivable {
   createdAt?: Date;
   invoicedAt?: Date | null;
   collectedAt?: Date | null;
+  /**
+   * F1-Pieza 3 (23/08/2026) — N° de comprobante real (ej.
+   * "0001-00001234") anotado a mano al marcar "Facturado". En este
+   * alcance `markInvoiced()` no genera ninguna factura AFIP real -- este
+   * campo es la única forma de no perder la trazabilidad de con qué
+   * comprobante se facturó cada fila. El día que exista generación real
+   * de factura (C1-Fase C, sin diseñar todavía) este campo se completa
+   * solo, en vez de a mano.
+   */
+  invoiceRef?: string | null;
+  /**
+   * C1-Fase C (23/08/2026) — id del CHARGE contra la empresa que
+   * `transferStayBalanceToReceivable()` crea en la misma transacción que
+   * esta fila (F1-Pieza 2/3). Sin esto no hay forma de encontrar QUÉ
+   * financial_transaction corresponde facturar por cada fila
+   * PENDIENTE_FACTURAR -- lo necesita `InvoiceService.requestConsolidatedInvoice()`.
+   * `null` en filas creadas antes de que esta columna existiera (sin
+   * backfill posible, ver comentario en schema.sql).
+   */
+  financialTransactionId?: string | null;
 }
 
 /** Fila del reporte por empresa/período — cierre de mes (A1, paso 5). */
@@ -57,11 +77,37 @@ export interface AccountsReceivableRepository {
   /** Todo lo que se le transfirió a una empresa — base del reporte por período. */
   getByCompanyCustomerId(companyCustomerId: string): Promise<AccountReceivable[]>;
 
-  /** PENDIENTE_FACTURAR → FACTURADO. No-op (retorna undefined) si no está en ese estado. */
-  markInvoiced(id: string): Promise<AccountReceivable | undefined>;
+  /**
+   * C1-Fase C (23/08/2026) — filas PENDIENTE_FACTURAR de una empresa con
+   * `financialTransactionId` poblado (candidatas reales a "Facturar
+   * ahora"). Filtra en la base, no en el servicio (mismo criterio que el
+   * resto del repo) -- las filas sin `financial_transaction_id` (previas a
+   * esta columna) quedan afuera, InvoiceService las reporta aparte si
+   * aparecen.
+   */
+  getPendingByCompanyCustomerId(companyCustomerId: string): Promise<AccountReceivable[]>;
+
+  /** A lo sumo una fila por financial_transaction_id (índice único en schema.sql) -- usado para cerrar el gap entre FacturarButton (per-charge) y el ciclo de accounts_receivable. */
+  getByFinancialTransactionId(financialTransactionId: string): Promise<AccountReceivable | undefined>;
+
+  /**
+   * PENDIENTE_FACTURAR → FACTURADO. No-op (retorna undefined) si no está
+   * en ese estado. `invoiceRef` opcional (F1-Pieza 3) -- N° de
+   * comprobante anotado a mano, no genera ninguna factura real.
+   */
+  markInvoiced(id: string, invoiceRef?: string | null): Promise<AccountReceivable | undefined>;
 
   /** FACTURADO → COBRADO. No-op (retorna undefined) si no está en ese estado. */
   markCollected(id: string): Promise<AccountReceivable | undefined>;
+
+  /**
+   * Igual que `markCollected`, pero corre sobre un `SqlClient` de una
+   * transacción ya abierta -- F1-Pieza 3 (23/08/2026), usado por
+   * `AccountsReceivableService.markCollected()` para que el cambio de
+   * estado y el PAYMENT que cierra la deuda de la empresa se confirmen
+   * juntos o no se confirme ninguno (mismo criterio que `createWithClient`).
+   */
+  markCollectedWithClient(client: SqlClient, id: string): Promise<AccountReceivable | undefined>;
 
   /**
    * Reporte agrupado por empresa para un período — base del cierre de mes.

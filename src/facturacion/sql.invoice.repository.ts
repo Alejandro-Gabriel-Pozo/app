@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 interface InvoiceRow {
   id: string;
   business_id: string;
-  financial_transaction_id: string;
+  financial_transaction_id: string | null;
   customer_id: string;
   idempotency_key: string;
   environment: AfipEnvironment;
@@ -115,6 +115,18 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map((row) => ({ ...rowToEntity(row), outstanding: parseFloat(row.outstanding) }));
   }
 
+  async getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>> {
+    if (financialTransactionIds.length === 0) return new Set();
+    const { rows } = await this.db.query<{ financial_transaction_id: string }>(
+      `SELECT ic.financial_transaction_id
+       FROM invoice_charges ic
+       JOIN invoices i ON i.id = ic.invoice_id
+       WHERE i.status = 'ISSUED' AND ic.financial_transaction_id = ANY($1::VARCHAR[])`,
+      [financialTransactionIds],
+    );
+    return new Set(rows.map((r) => r.financial_transaction_id));
+  }
+
   async getByReservationId(reservationId: string): Promise<Invoice[]> {
     const { rows } = await this.db.query<InvoiceRow>(
       `SELECT i.* FROM invoices i
@@ -135,6 +147,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     input: CreateInvoiceInput,
     afipRequest: unknown,
     items: CreateInvoiceItemInput[],
+    charges?: { financialTransactionId: string; amount: number }[],
   ): Promise<Invoice> {
     const { rows } = await client.query<InvoiceRow>(
       `INSERT INTO invoices
@@ -162,6 +175,15 @@ export class SqlInvoiceRepository implements InvoiceRepository {
           randomUUID(), input.id, item.orderItemId, item.reservationId, item.description,
           item.quantity, item.unitPrice, item.subtotal, item.ivaRate, item.unit, item.arcaUnitCode,
         ],
+      );
+    }
+
+    // C1-Fase C (23/08/2026) -- solo facturas consolidadas pasan `charges`.
+    for (const charge of charges ?? []) {
+      await client.query(
+        `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+         VALUES ($1, $2, $3, $4)`,
+        [randomUUID(), input.id, charge.financialTransactionId, charge.amount],
       );
     }
 

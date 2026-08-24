@@ -13,7 +13,13 @@ export type AfipEnvironment = 'homologacion' | 'produccion';
 export interface Invoice {
   id: string;
   businessId: string;
-  financialTransactionId: string;
+  /**
+   * `null` = factura CONSOLIDADA (C1-Fase C, 23/08/2026) -- cubre N
+   * financial_transactions distintos, ver `invoice_charges`. Facturas
+   * per-reservation (la inmensa mayoría, incluidas TODAS las emitidas
+   * antes de C1-Fase C) siguen con esto poblado, sin cambios.
+   */
+  financialTransactionId: string | null;
   customerId: string;
   idempotencyKey: string;
   environment: AfipEnvironment;
@@ -83,7 +89,8 @@ export type CreateInvoiceItemInput = Omit<InvoiceItem, 'id' | 'invoiceId' | 'cre
 export interface CreateInvoiceInput {
   id: string;
   businessId: string;
-  financialTransactionId: string;
+  /** `null` para una factura consolidada (C1-Fase C) -- ver `Invoice.financialTransactionId`. */
+  financialTransactionId: string | null;
   customerId: string;
   idempotencyKey: string;
   environment: AfipEnvironment;

@@ -57,6 +57,7 @@ import { createOrdersRouter }            from './pos-menu/orders.routes.js';
 import { createBookableServicesRouter }  from './reservas/bookable-services.routes.js';
 import { createHousekeepingRouter }      from './pms-estadias/housekeeping.routes.js';
 import { createStaysRouter }             from './pms-estadias/stays.routes.js';
+import { createAccountsReceivableRouter } from './clientes-finanzas/accounts-receivable.routes.js';
 import { createBusinessHoursRouter }     from './platform/business-hours.routes.js';
 import { createBusinessProfileRouter }   from './api/routes/business-profile.routes.js';
 import { createInvoicesRouter, createAfipCredentialsRouter } from './facturacion/invoices.routes.js';
@@ -384,6 +385,23 @@ export async function createApp(): Promise<{
       );
 
       const router = createStaysRouter(stayService, arService);
+      router(req, _res, next);
+    },
+  );
+
+  app.use(
+    '/api/accounts-receivable',
+    requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
+    (req: Request, _res: Response, next: NextFunction) => {
+      const arService = new AccountsReceivableService(
+        new SqlAccountsReceivableRepository(req.db),
+        new SqlFinancialTransactionRepository(req.db),
+        new SqlStayRepository(req.db),
+        new SqlCustomerRepository(req.db),
+        buildTenantTransactionManager(req),
+        new SqlBusinessProfileRepository(req.db),
+      );
+      const router = createAccountsReceivableRouter(arService);
       router(req, _res, next);
     },
   );

@@ -34,7 +34,8 @@ import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/s
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { SaveAfipCredentialsSchema, RequestInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
+import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
+import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 
 function buildInvoiceService(req: Request): InvoiceService {
   const db = req.db!;
@@ -48,6 +49,9 @@ function buildInvoiceService(req: Request): InvoiceService {
     new SqlProductVariantRepository(db),
     new SqlReservationRepository(db, new SqlResourceRepository(db)),
     buildTenantTransactionManager(req),
+    // C1-Fase C (23/08/2026) -- cierra el gap FacturarButton/accounts_receivable
+    // y resuelve los cargos pendientes de "Facturar ahora".
+    new SqlAccountsReceivableRepository(db),
   );
 }
 
@@ -66,6 +70,30 @@ export function createInvoicesRouter(container: AppContainer): Router {
         const invoice = await buildInvoiceService(req).requestInvoice({
           businessId: req.user!.businessId!,
           financialTransactionId: body.financialTransactionId,
+          ...(body.buyer !== undefined && { buyer: body.buyer }),
+          ...(body.concepto !== undefined && { concepto: body.concepto }),
+        });
+        res.status(201).json(invoice);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /api/invoices/consolidated ─────────────────────────────────────
+  // C1-Fase C (23/08/2026) -- "Facturar ahora": un comprobante cubriendo
+  // TODO lo PENDIENTE_FACTURAR de una empresa en este momento. Solo
+  // MANAGEMENT -- mismo criterio que transfer-to-receivable/mark-invoiced/
+  // mark-collected (stays.routes.ts / accounts-receivable.routes.ts): es
+  // una decisión de facturación corporate, no una operación de mostrador.
+  router.post(
+    '/consolidated',
+    gate,
+    authorize(Roles.MANAGEMENT),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const body = RequestConsolidatedInvoiceSchema.parse(req.body);
+        const invoice = await buildInvoiceService(req).requestConsolidatedInvoice({
+          businessId: req.user!.businessId!,
+          companyCustomerId: body.companyCustomerId,
           ...(body.buyer !== undefined && { buyer: body.buyer }),
           ...(body.concepto !== undefined && { concepto: body.concepto }),
         });

@@ -156,6 +156,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'FINANCIAL_TRANSACTION_NOT_FOUND':
     case 'INVOICE_NOT_FOUND':
     case 'RATE_CATALOG_ENTRY_NOT_FOUND':
+    case 'ACCOUNT_RECEIVABLE_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -170,6 +171,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'CUSTOMER_RATE_CONFLICT':
     case 'NO_BALANCE_TO_TRANSFER':
     case 'STAY_BALANCE_OWED':
+    case 'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED':
+    case 'NOTHING_TO_INVOICE':
     case 'PRODUCT_HAS_STOCK':
     case 'INVALID_OVERRIDE_TRANSITION':
     case 'DUPLICATE_RATE_PLAN_NAME':

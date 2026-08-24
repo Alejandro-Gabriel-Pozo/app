@@ -20,11 +20,15 @@ const SRC_DIR = join(__dirname, '../..');
  * endpoint que tocaste) Y el número de `EXPECTED_AUTHORIZE_CALL_SITES` de
  * abajo, en el mismo cambio -- no por separado.
  */
-const EXPECTED_AUTHORIZE_CALL_SITES = 188;
-// L (23/08/2026) -- 33, no 32: business-plan-limits.routes.ts nuevo (sin
-// ningún authorize(), mismo criterio que business-modules.routes.ts --
-// no mueve el conteo de arriba).
-const EXPECTED_ROUTES_FILE_COUNT = 33;
+// F1-Pieza 3 (23/08/2026) -- 191, no 188: accounts-receivable.routes.ts
+// nuevo suma 3 authorize(Roles.MANAGEMENT) (GET /, mark-invoiced, mark-collected).
+// C1-Fase C (23/08/2026) -- 192, no 191: invoices.routes.ts suma
+// POST /consolidated ("Facturar ahora"), authorize(Roles.MANAGEMENT).
+// C1-Fase C (23/08/2026) -- 194, no 192: customers.routes.ts suma
+// GET/PUT /:id/billing-policy, los dos authorize(Roles.MANAGEMENT).
+const EXPECTED_AUTHORIZE_CALL_SITES = 194;
+// F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
+const EXPECTED_ROUTES_FILE_COUNT = 34;
 
 function findRouteFiles(dir: string): string[] {
   const results: string[] = [];
