@@ -29,6 +29,7 @@ class FakeHousekeepingRepository implements HousekeepingRepository {
   async findByDate(): Promise<HousekeepingTask[]> { return []; }
   async findByAssignee(): Promise<HousekeepingTask[]> { return []; }
   async findActiveByResourceAndDate(): Promise<HousekeepingTask | null> { return null; }
+  async findByResourceAndDate(): Promise<HousekeepingTask | null> { return null; }
   async isOutOfService(resourceId: string): Promise<boolean> { return this.outOfServiceResourceIds.includes(resourceId); }
   async findByStatus(_businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]> {
     if (status !== 'OUT_OF_SERVICE') return [];

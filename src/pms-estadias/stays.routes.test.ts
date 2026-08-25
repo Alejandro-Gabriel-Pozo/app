@@ -179,6 +179,37 @@ describe('stays.routes', () => {
       expect(next).toHaveBeenCalled();
       expect(service.checkIn).not.toHaveBeenCalled();
     });
+
+    // 25/08/2026 (pendientes-2026-08-25.md) -- gating de check-in por
+    // limpieza: overrideHousekeeping=true exige MANAGEMENT (A6.6, chequeo
+    // en el SERVIDOR, no alcanza con ocultar el botón en el front).
+    it('rechaza con 403 overrideHousekeeping=true si el usuario no tiene MANAGEMENT', async () => {
+      const handler = getHandler(router, 'post', '/check-in');
+      const req = {
+        user: { businessId: BUSINESS_ID, id: 'user-1', permissionGroups: ['FRONT_DESK'] },
+        body: { reservationId: 'res-1', resourceId: 'room-1', overrideHousekeeping: true },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, throwingNext);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(service.checkIn).not.toHaveBeenCalled();
+    });
+
+    it('permite overrideHousekeeping=true si el usuario tiene MANAGEMENT', async () => {
+      const handler = getHandler(router, 'post', '/check-in');
+      const req = {
+        user: { businessId: BUSINESS_ID, id: 'manager-1', permissionGroups: ['FRONT_DESK', 'MANAGEMENT'] },
+        body: { reservationId: 'res-1', resourceId: 'room-1', overrideHousekeeping: true },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, throwingNext);
+
+      expect(service.checkIn).toHaveBeenCalledWith(expect.objectContaining({ overrideHousekeeping: true }));
+      expect(res.status).toHaveBeenCalledWith(201);
+    });
   });
 
   describe('POST /api/stays/:id/check-out', () => {

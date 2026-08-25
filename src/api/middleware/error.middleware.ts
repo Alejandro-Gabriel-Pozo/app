@@ -170,6 +170,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'SCHEDULE_CONFLICT':
     case 'RESERVATION_NOT_CONFIRMED':
     case 'RESOURCE_OCCUPIED':
+    case 'RESOURCE_NOT_READY_FOR_CHECKIN':
     case 'CUSTOMER_RATE_CONFLICT':
     case 'NO_BALANCE_TO_TRANSFER':
     case 'STAY_BALANCE_OWED':

@@ -11,6 +11,8 @@ export const CheckInSchema = z.object({
   reservationId: z.string().min(1, 'reservationId es obligatorio'),
   resourceId: z.string().min(1, 'resourceId es obligatorio'),
   notes: z.string().max(500).optional(),
+  /** Gating de check-in por limpieza (25/08/2026) — la ruta valida que quien lo pide sea MANAGEMENT antes de reenviarlo al servicio. */
+  overrideHousekeeping: z.boolean().optional(),
 });
 
 export const CheckOutSchema = z.object({

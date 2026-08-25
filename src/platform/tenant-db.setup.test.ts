@@ -93,7 +93,7 @@ describe('loadTenantSchema', () => {
 
 describe('applyTenantSchema', () => {
   const queryMock = vi.fn(async (sql: string): Promise<{ rows: Array<Record<string, unknown>> }> => {
-    if (sql.includes('SELECT MAX')) return { rows: [{ max: 40 }] };
+    if (sql.includes('SELECT MAX')) return { rows: [{ max: 41 }] };
     return { rows: [] };
   });
   const connectMock = vi.fn(async () => {});
@@ -129,8 +129,8 @@ describe('applyTenantSchema', () => {
     expect(calls.some((sql) => sql.includes('CREATE TABLE'))).toBe(true); // el propio schema.sql
     expect(calls.some((sql) => sql.includes('INSERT INTO schema_migrations'))).toBe(true);
     expect(calls.some((sql) => sql.includes('ON CONFLICT (version) DO NOTHING'))).toBe(true);
-    expect(version).toBe(40);
-    expect(CURRENT_SCHEMA_VERSION).toBe(40);
+    expect(version).toBe(41);
+    expect(CURRENT_SCHEMA_VERSION).toBe(41);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

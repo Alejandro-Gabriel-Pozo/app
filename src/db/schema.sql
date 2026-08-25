@@ -2946,3 +2946,24 @@ ALTER TABLE reservations ADD COLUMN IF NOT EXISTS needs_maintenance_review BOOLE
 CREATE INDEX IF NOT EXISTS idx_reservations_needs_maintenance_review
   ON reservations (needs_maintenance_review) WHERE needs_maintenance_review = TRUE;
 
+-- ===========================================================================
+-- BLOQUE 13 — GATING DE CHECK-IN POR LIMPIEZA (25/08/2026)
+-- docs/pendientes-2026-08-25.md, "Housekeeping vs. PMS comercial"
+-- ===========================================================================
+-- Gap encontrado contra PMS comerciales (Opera/Mews): antes se podía hacer
+-- check-in con la tarea de limpieza del recurso todavía sin INSPECTED.
+-- Decisión confirmada con el dueño (AskUserQuestion): bloqueo por defecto,
+-- con override de MANAGEMENT (mismo patrón que OUT_OF_SERVICE -> PENDING),
+-- que debe dejar rastro -- A6.5: quién, cuándo, desde qué estado. Sin tarea
+-- de limpieza planificada para hoy: fail-open (no bloquea).
+--
+-- Sin FK a `users` -- mismo criterio que stays.assigned_by (BLOQUE 6):
+-- identity vive en la platform DB, no en el tenant.
+ALTER TABLE stays ADD COLUMN IF NOT EXISTS housekeeping_override_by VARCHAR(255);
+ALTER TABLE stays ADD COLUMN IF NOT EXISTS housekeeping_override_at TIMESTAMPTZ;
+-- Snapshot del status de la tarea de housekeeping en el momento del
+-- override -- nunca 'INSPECTED' (esa no necesita override), documentado
+-- como comentario en vez de CHECK: la lista de HousekeepingStatus vive en
+-- código (housekeeping-task.ts), no se duplica acá.
+ALTER TABLE stays ADD COLUMN IF NOT EXISTS housekeeping_status_at_override VARCHAR(20);
+

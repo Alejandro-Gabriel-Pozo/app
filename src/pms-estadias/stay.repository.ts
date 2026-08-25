@@ -28,7 +28,8 @@ export interface StayRepository {
 const COLUMNS = `
   id, business_id, reservation_id, resource_id, customer_id,
   assigned_by, status, checked_in_at, checked_out_at,
-  no_show_at, notes, created_at, updated_at
+  no_show_at, notes, housekeeping_override_by, housekeeping_override_at,
+  housekeeping_status_at_override, created_at, updated_at
 `;
 
 function rowToStay(row: Record<string, unknown>): Stay {
@@ -44,6 +45,9 @@ function rowToStay(row: Record<string, unknown>): Stay {
     checkedOutAt:  row['checked_out_at'] ? new Date(row['checked_out_at'] as string) : null,
     noShowAt:      row['no_show_at'] ? new Date(row['no_show_at'] as string) : null,
     notes:         (row['notes'] as string | null) ?? null,
+    housekeepingOverrideBy:       (row['housekeeping_override_by'] as string | null) ?? null,
+    housekeepingOverrideAt:       row['housekeeping_override_at'] ? new Date(row['housekeeping_override_at'] as string) : null,
+    housekeepingStatusAtOverride: (row['housekeeping_status_at_override'] as StayProps['housekeepingStatusAtOverride']) ?? null,
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
   } satisfies StayProps);
@@ -57,12 +61,15 @@ export class SqlStayRepository implements StayRepository {
       `INSERT INTO stays
          (id, business_id, reservation_id, resource_id, customer_id,
           assigned_by, status, checked_in_at, checked_out_at,
-          no_show_at, notes, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          no_show_at, notes, housekeeping_override_by, housekeeping_override_at,
+          housekeeping_status_at_override, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         stay.id, stay.businessId, stay.reservationId, stay.resourceId,
         stay.customerId, stay.assignedBy, stay.status, stay.checkedInAt,
-        stay.checkedOutAt, stay.noShowAt, stay.notes, stay.createdAt, stay.updatedAt,
+        stay.checkedOutAt, stay.noShowAt, stay.notes,
+        stay.housekeepingOverrideBy, stay.housekeepingOverrideAt, stay.housekeepingStatusAtOverride,
+        stay.createdAt, stay.updatedAt,
       ],
     );
   }

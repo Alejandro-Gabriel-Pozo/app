@@ -10,7 +10,7 @@
  * | GET  /stays/:id                    | FRONT_DESK | Detalle de estadía |
  * | GET  /stays/reservation/:rid       | FRONT_DESK | Stay de una reserva |
  * | GET  /stays/resource/:rid          | STAFF      | Ocupación actual de habitación |
- * | POST /stays/check-in               | FRONT_DESK | Check-in (crea Stay) |
+ * | POST /stays/check-in               | FRONT_DESK | Check-in (crea Stay). `overrideHousekeeping: true` requiere además MANAGEMENT (403 si no) — gating de limpieza, 25/08/2026 |
  * | POST /stays/:id/check-out          | FRONT_DESK | Check-out (cierra Stay) |
  * | POST /stays/:id/no-show            | FRONT_DESK | Marcar NO_SHOW |
  * | POST /stays/:id/transfer-to-receivable | MANAGEMENT | Transfiere el saldo pendiente a cuenta por cobrar de una empresa (A1, paso 2) |
@@ -114,12 +114,25 @@ export function createStaysRouter(
     async (req, res, next) => {
       try {
         const body = CheckInSchema.parse(req.body);
+        // A6.6 — el rol condiciona la transición en el SERVIDOR, no alcanza
+        // con ocultar el botón en el front. overrideHousekeeping=true pide
+        // saltear el gating de limpieza (25/08/2026) -- rechazo explícito
+        // si quien lo pide no es MANAGEMENT, en vez de ignorarlo en
+        // silencio (que dejaría creer al front que se aplicó cuando no).
+        if (body.overrideHousekeeping && !(req.user!.permissionGroups ?? []).includes(Roles.MANAGEMENT)) {
+          res.status(403).json({
+            code: 'FORBIDDEN',
+            message: 'Solo un encargado puede forzar el check-in con la limpieza sin inspeccionar.',
+          });
+          return;
+        }
         const stay = await service.checkIn({
           reservationId: body.reservationId,
           resourceId:    body.resourceId,
           businessId:    req.user!.businessId as string,
           assignedBy:    req.user!.id,
           ...(body.notes !== undefined && { notes: body.notes }),
+          ...(body.overrideHousekeeping !== undefined && { overrideHousekeeping: body.overrideHousekeeping }),
         });
         res.status(201).json(stay.toJSON());
       } catch (err) { next(err); }

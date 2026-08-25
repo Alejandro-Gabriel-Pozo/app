@@ -294,7 +294,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `maintenance_windows` nueva (reemplaza OUT_OF_SERVICE de housekeeping_tasks
 // como mecanismo de bloqueo); `business_profile.maintenance_horizon_days`
 // nuevo; `reservations.needs_maintenance_review` nuevo.
-export const CURRENT_SCHEMA_VERSION = 40;
+// v41 (25/08/2026): gating de check-in por limpieza, pendientes-2026-08-25.md.
+// `stays.housekeeping_override_by`/`housekeeping_override_at`/
+// `housekeeping_status_at_override` nuevos (A6.5 — rastro del override de
+// MANAGEMENT cuando el check-in se fuerza con la limpieza sin INSPECTED).
+export const CURRENT_SCHEMA_VERSION = 41;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

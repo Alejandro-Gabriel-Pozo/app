@@ -38,6 +38,7 @@ import type { HousekeepingRepository } from './housekeeping.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { HousekeepingTask } from './housekeeping-task.js';
+import type { HousekeepingStatus } from './housekeeping-task.js';
 import { DomainError, ReservationNotFoundError, NextArrivalConflictError } from '../domain/errors.js';
 
 export class StayNotFoundError extends DomainError {
@@ -61,6 +62,22 @@ export class ResourceOccupiedError extends DomainError {
   }
 }
 
+/**
+ * Gating de check-in por limpieza (25/08/2026, gap vs. PMS comercial —
+ * pendientes-2026-08-25.md). El código HTTP concreto lo decide el
+ * errorHandler global a partir de `code`, mismo patrón que el resto de
+ * DomainError — no se fija acá.
+ */
+export class ResourceNotReadyForCheckInError extends DomainError {
+  constructor(resourceId: string, housekeepingStatus: HousekeepingStatus) {
+    super(
+      `La habitación ${resourceId} todavía no fue inspeccionada por housekeeping ` +
+      `(estado actual: ${housekeepingStatus}). Un encargado puede forzar el check-in igual.`,
+      'RESOURCE_NOT_READY_FOR_CHECKIN',
+    );
+  }
+}
+
 export class StayBalanceOwedError extends DomainError {
   constructor(stayId: string, balance: number) {
     super(
@@ -77,6 +94,14 @@ export interface CheckInInput {
   businessId: string;
   assignedBy: string;    // userId del empleado de recepción
   notes?: string;
+  /**
+   * MANAGEMENT confirma el check-in pese a que housekeeping no marcó la
+   * habitación INSPECTED todavía (25/08/2026, gating de check-in por
+   * limpieza). La autorización real (¿este usuario puede overridear?) se
+   * valida en la ruta ANTES de llegar acá (A6.6) -- este flag solo dice
+   * "ya se autorizó, procedé".
+   */
+  overrideHousekeeping?: boolean;
 }
 
 export interface StayFolio {
@@ -140,7 +165,28 @@ export class StayService {
       throw new ResourceOccupiedError(input.resourceId);
     }
 
-    // exactOptionalPropertyTypes: solo pasamos notes si está definido
+    // Gating de check-in por limpieza (25/08/2026, gap vs. PMS comercial —
+    // pendientes-2026-08-25.md). Sin tarea de housekeeping planificada para
+    // HOY: fail-open, no bloquea (decisión confirmada con el dueño). Con
+    // tarea y todavía sin INSPECTED: bloquea salvo que la ruta ya haya
+    // autorizado el override (MANAGEMENT, A6.6) — queda registrado en la
+    // Stay quién/cuándo/desde qué estado (A6.5).
+    const businessProfile = await this.businessProfileRepository.get();
+    const todayBusiness = DateTime.now().setZone(businessProfile.timezone).toISODate()!;
+    const housekeepingTask = await this.housekeepingRepository.findByResourceAndDate(
+      input.resourceId,
+      input.businessId,
+      todayBusiness,
+    );
+    let housekeepingOverride: { by: string; taskStatus: HousekeepingStatus } | undefined;
+    if (housekeepingTask && housekeepingTask.status !== 'INSPECTED') {
+      if (!input.overrideHousekeeping) {
+        throw new ResourceNotReadyForCheckInError(input.resourceId, housekeepingTask.status);
+      }
+      housekeepingOverride = { by: input.assignedBy, taskStatus: housekeepingTask.status };
+    }
+
+    // exactOptionalPropertyTypes: solo pasamos notes/housekeepingOverride si están definidos
     const stay = Stay.checkIn({
       businessId:    input.businessId,
       reservationId: input.reservationId,
@@ -148,6 +194,7 @@ export class StayService {
       customerId:    reservation.customer.id,
       assignedBy:    input.assignedBy,
       ...(input.notes !== undefined && { notes: input.notes }),
+      ...(housekeepingOverride !== undefined && { housekeepingOverride }),
     });
 
     await this.stayRepository.save(stay);

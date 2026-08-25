@@ -183,12 +183,8 @@ código real antes de anotarlos acá:
   sección `maintenance_window` de `pendientes-2026-08-24.md`). Hoy
   coexisten las dos cosas.
 - **Confirmado contra el código (`stay.service.ts::checkIn()`):
-  el check-in NO valida el estado de housekeeping.** Solo chequea
-  `reservation.status === 'CONFIRMED'` y que no haya otra `Stay` activa
-  en el recurso (`ResourceOccupiedError`). Se puede hacer check-in con la
-  tarea de limpieza todavía `PENDING` — es estándar en Opera/Mews bloquear
-  esto, acá **es una regla que falta escribir**, no una que ya exista y
-  esté rota.
+  el check-in NO valida el estado de housekeeping.** ✅ **RESUELTO
+  (25/08/2026)** — ver sección propia más abajo.
 - **Sin verificar en detalle, pero consistentes con leer el código una
   vez:** no hay campo de prioridad (VIP/early check-in), no hay
   checklists, no hay lost & found, no hay integración de minibar (la
@@ -200,9 +196,86 @@ código real antes de anotarlos acá:
   (`findByStatus`, `GET /status/:status`, `GET /` por fecha) pero no un
   endpoint de agregación — habría que armarlo del lado del cliente.
 
-**No priorizado todavía** — queda como mapa de gaps para cuando el dueño
-quiera encarar alguno puntual (el más fuerte, por impacto de negocio, es
-probablemente el gating de check-in por limpieza).
+**Resto sin priorizar** — prioridad VIP, checklists, lost & found,
+minibar, KPIs y dashboard de agregación quedan como mapa de gaps para más
+adelante, sin fecha.
+
+---
+
+## Gating de check-in por limpieza — ✅ RESUELTO (25/08/2026)
+
+El gap de mayor impacto de negocio de la lista de arriba, elegido por el
+dueño para encarar esta misma sesión. Antes: `StayService.checkIn()` no
+consultaba housekeeping para nada — se podía hacer check-in con la
+habitación todavía sucia.
+
+**Decisiones de negocio confirmadas con el dueño (`AskUserQuestion`,
+tres preguntas separadas porque cada una escondía una decisión distinta):**
+1. Bloqueo por defecto, con override de MANAGEMENT (mismo patrón que
+   `OUT_OF_SERVICE → PENDING`) — el override debe dejar rastro: quién,
+   cuándo, y el estado de la tarea de housekeeping en ese momento (A6.5).
+2. El umbral es `INSPECTED` — `DONE` (limpia, sin inspección de
+   supervisor) **no alcanza**.
+3. Sin ninguna tarea de limpieza planificada para hoy: **fail-open**
+   (no bloquea) — no hay nada que indique que está sucia.
+
+**Clasificación (`criterios-negocio`, obligatorio antes de tocar
+`HousekeepingTask`/`Stay`):** `Stay` y `HousekeepingTask` son TRANSACCIÓN
+(`criterios-datos.md` Parte 1). **Reglas aplicadas:** A4.2/A4.4 (huso y
+día de negocio, mismo criterio que el guard de arriba) y A6.5/A6.6
+(toda transición deja rastro; el rol condiciona la transición en el
+SERVIDOR, no en el botón oculto del front).
+
+**Implementado:**
+- **Schema v41** (`stays`): `housekeeping_override_by`,
+  `housekeeping_override_at`, `housekeeping_status_at_override` — sin FK
+  a `users` (mismo criterio que `assigned_by`). Migrado contra la BD real
+  con `npm run migrate:tenants` (`biz-demo-01` v40 → v41), idempotente.
+- **`housekeeping.repository.ts`** — método nuevo `findByResourceAndDate()`
+  (tarea de un recurso/fecha SIN filtrar por estado, a diferencia de
+  `findActiveByResourceAndDate()` que excluye DONE/INSPECTED a propósito
+  — acá hace falta saber si llegó específicamente a INSPECTED).
+- **`stay.ts`** — `checkIn()` acepta `housekeepingOverride?: { by,
+  taskStatus }` opcional; `Stay` gana 3 campos de solo-lectura
+  (`housekeepingOverrideBy/At`, `housekeepingStatusAtOverride`), null si
+  no hizo falta overridear.
+- **`stay.service.ts`** — antes de crear la `Stay`, resuelve el día de
+  negocio de HOY (mismo patrón `businessProfileRepository.get()` +
+  `DateTime` que el resto del módulo) y busca la tarea del recurso para
+  ese día. Sin tarea → sigue. Con tarea y `status !== 'INSPECTED'`: sin
+  `overrideHousekeeping` → `ResourceNotReadyForCheckInError` (409); con
+  `overrideHousekeeping` → sigue y estampa el rastro en la `Stay`. Error
+  nuevo agregado a `error.middleware.ts` (409).
+- **`stays.routes.ts`** — `POST /check-in` acepta `overrideHousekeeping`
+  en el body (schema Zod nuevo). A6.6: si viene `true` y el usuario NO
+  tiene `MANAGEMENT` en `req.user.permissionGroups`, 403 explícito ANTES
+  de llamar al servicio (no se ignora en silencio — eso haría creer al
+  front que el override se aplicó cuando no). `docs/rbac-matriz-endpoints.md`
+  actualizado (no sumó ningún `authorize(Roles.X)` nuevo — chequeo
+  inline — así que `EXPECTED_AUTHORIZE_CALL_SITES` no se tocó).
+- **Tests nuevos:** 5 casos en `stay.service.test.ts` (fail-open sin
+  tarea, rechaza PENDING, rechaza DONE-sin-INSPECTED, acepta INSPECTED,
+  override deja rastro completo) + 2 en `stays.routes.test.ts` (403 sin
+  MANAGEMENT, 201 con MANAGEMENT). `tenant-db.setup.test.ts` actualizado
+  a v41.
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios (mismo error
+pre-existente de siempre en `error.middleware.ts`, no tocado). Suite
+completa **129 archivos / 1475 tests verdes**. End-to-end contra el
+backend real y `biz-demo-01` ya migrada a v41: reserva de prueba creada
+y confirmada en `Habitación 01` (que ya tenía una tarea `PENDING` de hoy
+de una prueba anterior de esta misma sesión) — check-in sin override
+→ `409 RESOURCE_NOT_READY_FOR_CHECKIN`; con `overrideHousekeeping: true`
+→ `201`, con `housekeepingOverrideBy`/`housekeepingStatusAtOverride:
+"PENDING"` correctamente persistidos y devueltos.
+
+**Fuera de este alcance, anotado para después:** no se tocó el
+frontend — ni un cartel explicando el bloqueo en la pantalla de
+check-in, ni un botón de override para MANAGEMENT. El backend ya
+devuelve un mensaje de error claro (`"...encargado puede forzar el
+check-in igual."`), pero hoy el staff lo vería como un JSON crudo o un
+toast genérico hasta que se arme esa pantalla — mismo patrón que el
+resto del backlog "backend-only, sin pantalla" de este documento.
 
 ---
 

@@ -46,6 +46,14 @@ export class InMemoryHousekeepingRepository implements HousekeepingRepository {
     return candidates[0] ?? null;
   }
 
+  async findByResourceAndDate(resourceId: string, businessId: string, date: string): Promise<HousekeepingTask | null> {
+    const candidates = [...this.tasks.values()].filter(
+      (t) => t.resourceId === resourceId && t.businessId === businessId
+        && t.scheduledFor.toISOString().slice(0, 10) === date,
+    );
+    return candidates[0] ?? null;
+  }
+
   async findByAssignee(userId: string, businessId: string): Promise<HousekeepingTask[]> {
     return [...this.tasks.values()].filter(
       (t) => t.assignedTo === userId && t.businessId === businessId,

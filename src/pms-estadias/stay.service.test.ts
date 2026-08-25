@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { StayService, StayBalanceOwedError, ResourceOccupiedError } from './stay.service.js';
+import { StayService, StayBalanceOwedError, ResourceOccupiedError, ResourceNotReadyForCheckInError } from './stay.service.js';
+import { DateTime } from 'luxon';
 import type { Stay } from './stay.js';
 import { Reservation } from '../reservas/Reservation.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
@@ -201,6 +202,130 @@ describe('StayService — ledger (A1, paso 3)', () => {
 
     expect(folio.stayId).toBe(stay.id);
     expect(folio.balance).toBe(15000);
+  });
+});
+
+// 25/08/2026 (pendientes-2026-08-25.md) — gating de check-in por limpieza,
+// gap vs. PMS comercial (Opera/Mews). Decisiones confirmadas con el dueño:
+// bloqueo por defecto si la tarea de HOY no llegó a INSPECTED (DONE no
+// alcanza), con override de MANAGEMENT que deja rastro (A6.5); sin tarea
+// planificada para hoy, fail-open.
+describe('StayService — gating de check-in por limpieza', () => {
+  let stayRepo: FakeStayRepository;
+  let reservationRepo: InMemoryReservationRepository;
+  let housekeepingRepo: InMemoryHousekeepingRepository;
+  let financialRepo: FakeFinancialTransactionRepository;
+  let businessProfileRepo: FakeBusinessProfileRepository;
+  let service: StayService;
+
+  beforeEach(async () => {
+    stayRepo = new FakeStayRepository();
+    reservationRepo = new InMemoryReservationRepository();
+    housekeepingRepo = new InMemoryHousekeepingRepository();
+    financialRepo = new FakeFinancialTransactionRepository();
+    businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
+    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+
+    const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
+    const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
+    const reservation = new Reservation({
+      id: TEST_RESERVATION_ID,
+      customer,
+      resource,
+      startTime: new Date('2026-08-13T15:00:00Z'),
+      endTime: new Date('2026-08-14T11:00:00Z'),
+      details: {},
+      initialStatus: ReservationStatus.CONFIRMED,
+      totalPrice: 15000,
+      reservationNumber: 1,
+      appliedCustomerRateId: null,
+    });
+    await reservationRepo.save(reservation);
+  });
+
+  /** Tarea de housekeeping para HOY (huso del negocio) en el status pedido -- restore() no valida, alcanza para fijar cualquier status directo. */
+  function seedTaskForToday(status: HousekeepingTask['status']) {
+    const todayBusiness = DateTime.now().setZone('America/Argentina/Buenos_Aires').toISODate()!;
+    const now = new Date();
+    housekeepingRepo.seed(HousekeepingTask.restore({
+      id: `task-${Math.random()}`,
+      businessId: TEST_BUSINESS_ID,
+      resourceId: TEST_RESOURCE_ID,
+      assignedTo: null,
+      status,
+      notes: null,
+      shift: 'MORNING',
+      scheduledFor: DateTime.fromISO(todayBusiness, { zone: 'America/Argentina/Buenos_Aires' }).toJSDate(),
+      startedAt: null,
+      completedAt: null,
+      inspectedAt: null,
+      inspectedBy: null,
+      notBefore: null,
+      createdAt: now,
+      updatedAt: now,
+    }));
+  }
+
+  it('permite el check-in si no hay ninguna tarea de limpieza planificada para hoy (fail-open)', async () => {
+    const stay = await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+    expect(stay.housekeepingOverrideBy).toBeNull();
+  });
+
+  it('rechaza el check-in si la tarea de hoy está PENDING (sin override)', async () => {
+    seedTaskForToday('PENDING');
+    await expect(
+      service.checkIn({
+        reservationId: TEST_RESERVATION_ID,
+        resourceId: TEST_RESOURCE_ID,
+        businessId: TEST_BUSINESS_ID,
+        assignedBy: 'user-1',
+      }),
+    ).rejects.toThrow(ResourceNotReadyForCheckInError);
+  });
+
+  it('rechaza el check-in si la tarea de hoy está DONE pero no INSPECTED (DONE no alcanza)', async () => {
+    seedTaskForToday('DONE');
+    await expect(
+      service.checkIn({
+        reservationId: TEST_RESERVATION_ID,
+        resourceId: TEST_RESOURCE_ID,
+        businessId: TEST_BUSINESS_ID,
+        assignedBy: 'user-1',
+      }),
+    ).rejects.toThrow(ResourceNotReadyForCheckInError);
+  });
+
+  it('permite el check-in si la tarea de hoy está INSPECTED', async () => {
+    seedTaskForToday('INSPECTED');
+    const stay = await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+    expect(stay.housekeepingOverrideBy).toBeNull();
+  });
+
+  it('permite el check-in con overrideHousekeeping y deja rastro (A6.5: quién, cuándo, desde qué estado)', async () => {
+    seedTaskForToday('PENDING');
+    const before = new Date();
+    const stay = await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'manager-1',
+      overrideHousekeeping: true,
+    });
+
+    expect(stay.housekeepingOverrideBy).toBe('manager-1');
+    expect(stay.housekeepingStatusAtOverride).toBe('PENDING');
+    expect(stay.housekeepingOverrideAt).not.toBeNull();
+    expect(stay.housekeepingOverrideAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
   });
 });
 

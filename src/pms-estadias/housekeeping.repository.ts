@@ -30,6 +30,16 @@ export interface HousekeepingRepository {
    */
   findActiveByResourceAndDate(resourceId: string, businessId: string, date: string): Promise<HousekeepingTask | null>;
   /**
+   * Tarea de un recurso en una fecha dada, SIN filtrar por estado — a
+   * diferencia de `findActiveByResourceAndDate()` (que excluye DONE/
+   * INSPECTED a propósito, pensado para "hay algo pendiente que
+   * actualizar"), este método sirve para el gating de check-in por
+   * limpieza (25/08/2026, `StayService.checkIn()` — necesita saber si la
+   * tarea llegó específicamente a INSPECTED, no solo si "sigue activa").
+   * `date` es 'YYYY-MM-DD', mismo criterio que `findByDate`.
+   */
+  findByResourceAndDate(resourceId: string, businessId: string, date: string): Promise<HousekeepingTask | null>;
+  /**
    * True si el recurso tiene alguna tarea de housekeeping en estado
    * OUT_OF_SERVICE. Sin `businessId`: igual que `ResourceRepository.getById`,
    * un `resourceId` ya está scoped al tenant (una BD por negocio, sin
@@ -145,6 +155,17 @@ export class SqlHousekeepingRepository implements HousekeepingRepository {
       `SELECT ${COLUMNS} FROM housekeeping_tasks
        WHERE resource_id=$1 AND business_id=$2 AND scheduled_for::date = $3::date
          AND status NOT IN ('DONE', 'INSPECTED')
+       ORDER BY scheduled_for DESC
+       LIMIT 1`,
+      [resourceId, businessId, date],
+    );
+    return result.rows[0] ? rowToTask(result.rows[0]) : null;
+  }
+
+  async findByResourceAndDate(resourceId: string, businessId: string, date: string): Promise<HousekeepingTask | null> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT ${COLUMNS} FROM housekeeping_tasks
+       WHERE resource_id=$1 AND business_id=$2 AND scheduled_for::date = $3::date
        ORDER BY scheduled_for DESC
        LIMIT 1`,
       [resourceId, businessId, date],

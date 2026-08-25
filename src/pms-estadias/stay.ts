@@ -23,6 +23,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { DomainError } from '../domain/errors.js';
+import type { HousekeepingStatus } from './housekeeping-task.js';
 
 /** Ver nota equivalente en domain/housekeeping-task.ts — antes era Error plano. */
 export class InvalidStayTransitionError extends DomainError {
@@ -48,6 +49,18 @@ export interface StayProps {
   /** Queda registrado si fue NO_SHOW */
   noShowAt: Date | null;
   notes: string | null;
+  /**
+   * Gating de check-in por limpieza (25/08/2026, gap vs. PMS comercial —
+   * pendientes-2026-08-25.md, decisión confirmada con el dueño): si la
+   * tarea de housekeeping del recurso para HOY no llegó a INSPECTED,
+   * checkIn() rechaza salvo que MANAGEMENT lo fuerce explícitamente. Estos
+   * tres campos son el rastro de esa decisión (A6.5 — quién, cuándo, desde
+   * qué estado). Los tres `null` si no hizo falta overridear (sin tarea
+   * planificada para hoy, o la tarea ya estaba INSPECTED).
+   */
+  housekeepingOverrideBy: string | null;
+  housekeepingOverrideAt: Date | null;
+  housekeepingStatusAtOverride: HousekeepingStatus | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -66,6 +79,8 @@ export class Stay {
     customerId: string;
     assignedBy: string;
     notes?: string;
+    /** Presente solo cuando MANAGEMENT fuerza el check-in pese a housekeeping no listo — ver StayService.checkIn(). */
+    housekeepingOverride?: { by: string; taskStatus: HousekeepingStatus };
   }): Stay {
     const now = new Date();
     return new Stay({
@@ -80,6 +95,9 @@ export class Stay {
       checkedOutAt: null,
       noShowAt: null,
       notes: input.notes ?? null,
+      housekeepingOverrideBy: input.housekeepingOverride?.by ?? null,
+      housekeepingOverrideAt: input.housekeepingOverride ? now : null,
+      housekeepingStatusAtOverride: input.housekeepingOverride?.taskStatus ?? null,
       createdAt: now,
       updatedAt: now,
     });
@@ -140,6 +158,9 @@ export class Stay {
   get checkedOutAt(): Date|null { return this.props.checkedOutAt; }
   get noShowAt(): Date|null     { return this.props.noShowAt; }
   get notes(): string|null      { return this.props.notes; }
+  get housekeepingOverrideBy(): string|null           { return this.props.housekeepingOverrideBy; }
+  get housekeepingOverrideAt(): Date|null             { return this.props.housekeepingOverrideAt; }
+  get housekeepingStatusAtOverride(): HousekeepingStatus|null { return this.props.housekeepingStatusAtOverride; }
   get createdAt(): Date         { return this.props.createdAt; }
   get updatedAt(): Date         { return this.props.updatedAt; }
 
