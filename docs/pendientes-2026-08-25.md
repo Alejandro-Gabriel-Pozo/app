@@ -789,6 +789,43 @@ arriba y en `appfrontend-main/docs/auditoria-modales.md`.
 
 ---
 
+## ⚠️ Bug real: doble-booking bajo concurrencia — confirmado, sin arreglar a propósito (25/08/2026)
+
+Segunda opinión externa ("Recomendaciones técnicas — app-main") trajo un
+plan de auditoría del motor de reservas. Al ejecutar los dos primeros
+puntos (coverage + test de concurrencia real con `autocannon`) se
+encontró un bug real, no solo la falta de test que se esperaba:
+**`POST /api/reservations` puede crear más de una reserva para el mismo
+recurso + mismo rango horario si dos requests llegan lo bastante
+juntas.** Reproducido 3 veces contra el backend local real (3 reservas
+duplicadas por corrida). Causa raíz: `SELECT ... FOR UPDATE` en
+`sql.reservation.repository.ts::getActiveInRange()` no bloquea nada
+cuando el hueco está libre (0 filas que lockear — gotcha clásico de
+Postgres). Sin constraint `EXCLUDE`/`UNIQUE` de respaldo en la tabla
+`reservations`.
+
+**Decisión del dueño: documentar, no arreglar hoy** — el approach (constraint
+`EXCLUDE` a nivel de base vs. advisory lock por `resourceId`) se decide
+con el developer. Detalle técnico completo, las 3 reproducciones, y las
+opciones de arreglo con sus tradeoffs: `docs/auditoria-tecnica-infra-reservas.md`.
+
+Datos de prueba: las 9 reservas duplicadas creadas al reproducir el bug
+se cancelaron después de cada corrida — nada quedó activo en
+`biz-demo-01`. Dos usuarios de prueba (`test-concurrency-autocannon@
+example.com`, `test-concurrency-2@example.com`) creados para autenticar
+el script y desactivados al terminar.
+
+Script nuevo (queda en el repo para volver a correr cuando se
+implemente el fix): `src/scripts/concurrency-test-reservations.ts`.
+`autocannon`/`@types/autocannon` agregados como devDependency
+(`package.json`/`package-lock.json`, sin commitear todavía).
+
+De paso, el punto 1.3 del documento original (CI) estaba desactualizado:
+`ci.yml` ya corre typecheck y lint en cada push, contra lo que decía el
+documento — corregido en `docs/auditoria-tecnica-infra-reservas.md`.
+
+---
+
 ## Pendientes heredados de `pendientes-2026-08-24.md`, todavía abiertos
 
 - **C1-Fase B** — gateway de pago real, hold corto canal web, auto-release.
