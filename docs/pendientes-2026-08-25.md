@@ -1371,7 +1371,10 @@ se tocó.
   usaba (mismo criterio que el mock que ya existía en
   `products.routes.test.ts`).
 
-**No commiteado** — 63 archivos modificados sin commit, a la espera de
-que el dueño decida cuándo. Los pasos 2 (extender cobertura a
-`invoice.service.ts`/`order.service.ts`) y el resto del handoff de RBAC
-(mecanismos 1 y 2) quedan para otra sesión.
+**Commiteado y pusheado a `main`** (confirmado con `git status`/`git log`
+después, no solo por el reporte del trabajo): `04d7a8c` (los 64 archivos de
+esta sección) y `f3c9f4c` (playbook nuevo
+`conocimiento/playbook-audit-log-transaccional.md` + actualización de
+`indice-conocimiento.md` registrando el patrón). Los pasos 2 (extender
+cobertura a `invoice.service.ts`/`order.service.ts`) y el resto del handoff
+de RBAC (mecanismos 1 y 2) quedan para otra sesión.
