@@ -206,17 +206,22 @@ probablemente el gating de check-in por limpieza).
 
 ---
 
-## Hallazgo menor de UX — "Reactivar" visible en ventana ya cerrada — ENCONTRADO, NO CORREGIDO (25/08/2026)
+## Hallazgo menor de UX — "Reactivar" visible en ventana ya cerrada — ✅ RESUELTO (25/08/2026)
 
-La ficha de detalle de Housekeeping sigue mostrando el botón "Reactivar"
+La ficha de detalle de Housekeeping seguía mostrando el botón "Reactivar"
 para una ventana de mantenimiento que YA tiene `closedAt` seteado (cerrada
-antes). Tocarlo de nuevo devuelve `409 MaintenanceWindowAlreadyClosedError`
-— un error confuso para el staff ("no le devuelve nada evidente sobre por
-qué"). El backend hace lo correcto (rechaza el doble cierre); es la
-pantalla la que no oculta/deshabilita el botón cuando ya no aplica. No
-priorizado, solo anotado — encontrado de casualidad al reproducir el caso
-de la ventana de `Habitación 01` que ya venía cerrada de una prueba E2E
-anterior.
+antes). Tocarlo de nuevo devolvía `409 MaintenanceWindowAlreadyClosedError`
+— un error confuso para el staff, sin explicar nada. El backend hacía lo
+correcto (rechaza el doble cierre); era la pantalla la que no ocultaba el
+botón cuando ya no aplicaba.
+
+Fix (`housekeeping/page.tsx`): cuando `selectedMaintenanceWindow.closedAt`
+está seteado, el botón "Reactivar" se reemplaza por un texto informativo
+("Ya se reactivó — sigue bloqueado hasta el final de `endDate`, se libera
+solo después"), en vez de dejarlo clickeable hacia un 409. `tsc --noEmit`
+y `eslint` limpios. Verificado en navegador contra `Habitación 01` y
+`Habitación 03` (las dos ventanas de prueba que quedaron ya cerradas de
+la verificación de la sesión) — ambas muestran el texto nuevo, sin botón.
 
 ---
 
