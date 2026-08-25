@@ -309,7 +309,7 @@ export async function createApp(): Promise<{
   app.use('/api/business-profile/afip-credentials', createAfipCredentialsRouter(container));
   app.use('/api/business-profile',  createBusinessProfileRouter());
   app.use('/api/invoices',          createInvoicesRouter(container));
-  app.use('/api/audit-log',         createAuditLogRouter());
+  app.use('/api/audit-log',         createAuditLogRouter(platformRepo));
   app.use(
     '/api/cash-register',
     requireModule(container, ModuleKey.CUENTAS_CORRIENTES),
@@ -358,7 +358,8 @@ export async function createApp(): Promise<{
     requireModule(container, ModuleKey.HOUSEKEEPING),
     (req: Request, _res: Response, next: NextFunction) => {
       const housekeepingRepo    = new SqlHousekeepingRepository(req.db);
-      const housekeepingService = new HousekeepingService(housekeepingRepo);
+      const businessProfileRepo = new SqlBusinessProfileRepository(req.db);
+      const housekeepingService = new HousekeepingService(housekeepingRepo, businessProfileRepo);
       const resourceRepo    = new SqlResourceRepository(req.db);
       const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
       const router = createHousekeepingRouter(housekeepingService, reservationRepo);

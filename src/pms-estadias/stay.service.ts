@@ -206,6 +206,7 @@ export class StayService {
       resourceId:   stay.resourceId,
       shift:        input.nextCleaningShift ?? 'MORNING',
       scheduledFor: cleaningScheduledFor,
+      businessTimezone: businessProfile.timezone,
       notes:        `Limpieza post-checkout. Estadía: ${stay.id}`,
       notBefore,
     });

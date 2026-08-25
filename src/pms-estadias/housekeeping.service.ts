@@ -13,6 +13,7 @@
 import type { HousekeepingStatus } from './housekeeping-task.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 import type { HousekeepingRepository } from './housekeeping.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { DomainError } from '../domain/errors.js';
 
 export class HousekeepingTaskNotFoundError extends DomainError {
@@ -38,14 +39,17 @@ export interface AssignTaskInput {
 export class HousekeepingService {
   constructor(
     private readonly housekeepingRepository: HousekeepingRepository,
+    private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
   ) {}
 
   // ---------------------------------------------------------------------------
   // Crear tarea
   // ---------------------------------------------------------------------------
 
+  /** El guard de "no planificar en el pasado" de HousekeepingTask.create() compara día de negocio (A4.4) en el huso del negocio (A4.2), no instante -- ver pendientes-2026-08-25.md. */
   async createTask(input: CreateTaskInput): Promise<HousekeepingTask> {
-    const task = HousekeepingTask.create(input);
+    const profile = await this.businessProfileRepository.get();
+    const task = HousekeepingTask.create({ ...input, businessTimezone: profile.timezone });
     await this.housekeepingRepository.save(task);
     return task;
   }

@@ -17,6 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { DateTime } from 'luxon';
 import { DomainError } from '../domain/errors.js';
 
 /**
@@ -100,6 +101,8 @@ export class HousekeepingTask {
     resourceId: string;
     shift: string;
     scheduledFor: Date;
+    /** IANA (`business_profile.timezone`, A4.2) — el guard de abajo compara día de negocio, no instante. */
+    businessTimezone: string;
     notes?: string;
     notBefore?: Date | null;
   }): HousekeepingTask {
@@ -108,10 +111,21 @@ export class HousekeepingTask {
     // ALTA, no en el constructor privado: a diferencia de Reservation, acá
     // el constructor no valida nada, y restore() (rehidratación desde la
     // base) llama al constructor directo — un guard ahí rompería la
-    // lectura de tareas históricas. Instante exacto (no día de negocio,
-    // decisión confirmada) — stay.service.ts siempre agenda "mañana
-    // 08:00", así que nunca choca con este guard.
-    if (input.scheduledFor.getTime() < now.getTime()) {
+    // lectura de tareas históricas.
+    //
+    // 25/08/2026 (pendientes-2026-08-25.md) — el guard original comparaba
+    // INSTANTE exacto ("decisión confirmada" en su momento, asumiendo que
+    // solo stay.service.ts llamaba a este factory, siempre agendando
+    // "mañana 08:00"). Eso rompía la pantalla manual "Planificar tarea"
+    // (housekeeping/page.tsx), que sí deja elegir HOY y siempre manda
+    // medianoche como hora: apenas pasaba la medianoche local, CUALQUIER
+    // intento de planificar para hoy quedaba rechazado como "fecha ya
+    // pasada". Pasa a comparar DÍA DE NEGOCIO (A4.4) en el huso del negocio
+    // (A4.2) en vez de instante — "hoy" siempre es válido sin importar la
+    // hora actual, solo un día calendario anterior al de negocio rechaza.
+    const scheduledDay = DateTime.fromJSDate(input.scheduledFor).setZone(input.businessTimezone).startOf('day');
+    const todayInBusiness = DateTime.now().setZone(input.businessTimezone).startOf('day');
+    if (scheduledDay < todayInBusiness) {
       throw new InvalidHousekeepingTransitionError('No se puede planificar una tarea con fecha ya pasada.');
     }
     return new HousekeepingTask({
