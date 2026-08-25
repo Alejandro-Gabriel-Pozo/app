@@ -125,6 +125,17 @@ describe('orders.routes', () => {
     expect(res.json).toHaveBeenCalled();
   });
 
+  it('GET / -- 400 si `from` no es una fecha ISO válida', async () => {
+    const handler = getHandler(router, 'get', '/');
+    const req = baseReq({ query: { from: 'ayer' } } as Partial<Request>);
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.statusCode).toBe(400);
+    expect(listOrders).not.toHaveBeenCalled();
+  });
+
   it('POST / -- crea la orden (201)', async () => {
     const handler = getHandler(router, 'post', '/');
     const req = baseReq({

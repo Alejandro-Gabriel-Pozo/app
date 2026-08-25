@@ -63,8 +63,10 @@ import {
   CreateOrderSchema,
   CreateOrderItemSchema,
   CompleteOrderSchema,
+  GetOrdersQuerySchema,
   type CreateOrderItemBody,
 } from '../api/schemas/request.schemas.js';
+import { ZodError } from 'zod';
 
 function buildOrderService(req: Request, _container: AppContainer): OrderService {
   const productService = new ProductService(
@@ -125,18 +127,21 @@ export function createOrdersRouter(container: AppContainer): Router {
   router.get('/', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const service = buildOrderService(req, container);
-      const { customerId, status, from, to, limit, offset } = req.query as Record<string, string>;
+      const { customerId, status, from, to, limit, offset } = GetOrdersQuerySchema.parse(req.query);
       const optionalFilters = compact({
         ...(customerId !== undefined && { customerId }),
         ...(status     !== undefined && { status: status as OrderStatus }),
         ...(from       !== undefined && { from:   new Date(from) }),
         ...(to         !== undefined && { to:     new Date(to) }),
-        ...(limit      !== undefined && { limit:  Number(limit) }),
-        ...(offset     !== undefined && { offset: Number(offset) }),
+        ...(limit      !== undefined && { limit }),
+        ...(offset     !== undefined && { offset }),
       });
       const orders = await service.listOrders({ businessId: req.businessId!, ...optionalFilters });
       res.json(orders);
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
   });
 
   // ── POST /api/orders ────────────────────────────────────────────────────────

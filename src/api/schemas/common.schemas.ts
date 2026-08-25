@@ -20,6 +20,37 @@ export const timeOnlySchema = z.string().regex(TIME_ONLY_REGEX, {
   message: 'debe tener formato HH:MM o HH:MM:SS',
 });
 
+/** Fecha YYYY-MM-DD (sin hora). */
+export const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Cobertura de Zod, nivel 2 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md)
+ * — `reports.routes.ts` (11 endpoints), `orders.routes.ts` y
+ * `reservations.routes.ts` hacían `new Date(req.query.from as string)`
+ * directo: sin `from`, o con un valor tipo "ayer", da `Invalid Date` en
+ * silencio (no un 400) y el reporte/filtro sale con basura en vez de
+ * fallar. `dateOnlySchema` valida el formato Y que la fecha exista de
+ * verdad (rechaza "2026-02-30", que `new Date()` acepta corriéndose
+ * solo al 2 de marzo) antes de convertir a `Date` (medianoche UTC —
+ * mismo criterio que `startDate` de maintenance windows: la fecha es un
+ * día de negocio, no un instante con huso propio, A4.1/A4.2 de
+ * criterios-negocio.md).
+ */
+export const dateOnlySchema = z.string()
+  .regex(DATE_ONLY_REGEX, { message: 'debe tener formato YYYY-MM-DD' })
+  .transform((value, ctx) => {
+    const [year, month, day] = value.split('-').map(Number) as [number, number, number];
+    const date = new Date(Date.UTC(year, month - 1, day));
+    // new Date(Date.UTC(2026, 1, 30)) da 2026-03-02 (Date "rueda" el mes
+    // que no existe) en vez de fallar -- roundtrip contra los mismos
+    // componentes es la única forma de detectar eso.
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `"${value}" no es una fecha válida` });
+      return z.NEVER;
+    }
+    return date;
+  });
+
 /**
  * CUIT (Clave Única de Identificación Tributaria, AFIP) — 18/08/2026,
  * Facturación Electrónica AFIP Fase 1. Genuinamente transversal desde el

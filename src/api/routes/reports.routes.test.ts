@@ -180,6 +180,33 @@ describe('GET /api/reports/*', () => {
     expect(service.generateAppliedRatesReport).toHaveBeenCalledWith(new Date('2026-08-01'), new Date('2026-08-31'));
   });
 
+  it('/occupancy responde 400 si falta `from` en vez de generar un reporte con Invalid Date', async () => {
+    const service = fakeService();
+    const router = createReportsRouter(service);
+    const handler = getHandler(router, '/occupancy');
+    const req = { query: { to: '2026-08-31' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect((res as unknown as { body: { code: string } }).body.code).toBe('VALIDATION_ERROR');
+    expect(service.generateOccupancyReport).not.toHaveBeenCalled();
+  });
+
+  it('/occupancy responde 400 si `from` es una fecha calendario inválida (2026-02-30)', async () => {
+    const service = fakeService();
+    const router = createReportsRouter(service);
+    const handler = getHandler(router, '/occupancy');
+    const req = { query: { from: '2026-02-30', to: '2026-08-31' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(service.generateOccupancyReport).not.toHaveBeenCalled();
+  });
+
   it('un error del service se propaga a next(), nunca se responde 200 con datos parciales', async () => {
     const service = fakeService({ generateOccupancyReport: vi.fn(async () => { throw new Error('boom'); }) });
     const router = createReportsRouter(service);

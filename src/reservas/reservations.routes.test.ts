@@ -166,6 +166,16 @@ describe('reservations.routes', () => {
       expect(body.totalPages).toBe(1);
       expect(body.data).toHaveLength(1);
     });
+
+    it('400 -- `from` que no es un datetime ISO válido', async () => {
+      const handler = getHandler(router, 'get', '/');
+      const req = { db: fakeDb(state), query: { from: 'ayer' } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.statusCode).toBe(400);
+    });
   });
 
   describe('POST /reservations/search', () => {

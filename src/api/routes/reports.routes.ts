@@ -16,9 +16,16 @@
  */
 
 import { Router } from 'express';
+import { ZodError } from 'zod';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { ReportService } from '../../services/report.service.js';
+import {
+  DateRangeQuerySchema,
+  OccupancySummaryQuerySchema,
+  UnderutilizedQuerySchema,
+  PurgeQuerySchema,
+} from '../schemas/report.schemas.js';
 
 export function createReportsRouter(service: ReportService): Router {
   const router = Router();
@@ -31,13 +38,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateOccupancyReport(
-          new Date(from),
-          new Date(to),
-        );
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateOccupancyReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -51,16 +56,16 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to, limit } = req.query as { from: string; to: string; limit?: string };
-        const topLimit = limit ? parseInt(limit, 10) : 5;
+        const { from, to, limit } = OccupancySummaryQuerySchema.parse(req.query);
         const summary = await service.generateOccupancySummary(
           req.businessId!,
-          new Date(from),
-          new Date(to),
-          topLimit,
+          from,
+          to,
+          limit ?? 5,
         );
         res.json(summary);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -74,14 +79,15 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
         const report = await service.generateOccupancyByResourceType(
           req.businessId!,
-          new Date(from),
-          new Date(to),
+          from,
+          to,
         );
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -95,20 +101,16 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to, threshold } = req.query as {
-          from: string;
-          to: string;
-          threshold?: string;
-        };
-        const thresholdValue = threshold ? parseFloat(threshold) : 30;
+        const { from, to, threshold } = UnderutilizedQuerySchema.parse(req.query);
         const resources = await service.getUnderutilizedResources(
           req.businessId!,
-          new Date(from),
-          new Date(to),
-          thresholdValue,
+          from,
+          to,
+          threshold ?? 30,
         );
         res.json(resources);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -122,13 +124,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateAccountsReceivableReport(
-          new Date(from),
-          new Date(to),
-        );
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateAccountsReceivableReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -142,10 +142,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateSalesByProductReport(new Date(from), new Date(to));
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateSalesByProductReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -159,10 +160,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateWasteReport(new Date(from), new Date(to));
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateWasteReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -176,10 +178,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateTicketSummaryReport(new Date(from), new Date(to));
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateTicketSummaryReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -193,10 +196,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateNewVsRecurringReport(new Date(from), new Date(to));
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateNewVsRecurringReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -210,10 +214,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { from, to } = req.query as { from: string; to: string };
-        const report = await service.generateAppliedRatesReport(new Date(from), new Date(to));
+        const { from, to } = DateRangeQuerySchema.parse(req.query);
+        const report = await service.generateAppliedRatesReport(from, to);
         res.json(report);
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },
@@ -227,10 +232,11 @@ export function createReportsRouter(service: ReportService): Router {
     authorize(Roles.MANAGEMENT),
     async (req, res, next) => {
       try {
-        const { before } = req.query as { before: string };
-        const deleted = await service.purgeOldRecords(new Date(before));
+        const { before } = PurgeQuerySchema.parse(req.query);
+        const deleted = await service.purgeOldRecords(before);
         res.json({ deleted });
       } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
         next(err);
       }
     },

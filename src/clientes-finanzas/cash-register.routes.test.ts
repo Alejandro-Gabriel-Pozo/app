@@ -116,6 +116,15 @@ describe('GET /api/cash-register', () => {
 
     expect(listShifts).toHaveBeenCalledWith('biz-1', {});
   });
+
+  it('400 si limit no es numérico, en vez de mandar NaN a listShifts', async () => {
+    const res = fakeRes();
+
+    await getHandler(router, 'get', '/')(fakeReq({ query: { limit: 'abc' } }), res, () => { throw new Error('no next()'); });
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(listShifts).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/cash-register/:id', () => {

@@ -82,6 +82,7 @@ import type { Product, ProductVariant, CreateProductInput, CreateProductVariantI
 import type { InventoryLevel } from '../repositories/inventory-level.repository.js';
 import { compact } from '../api/utils/compact.js';
 import { RecordWasteSchema } from '../api/schemas/waste.schemas.js';
+import { CreateProductSchema, UpdateProductSchema, CreateProductVariantSchema, UpdateProductVariantSchema } from '../api/schemas/product.schemas.js';
 import { RecipeService } from './recipe.service.js';
 import { SqlRecipeItemRepository } from '../repositories/sql.recipe-item.repository.js';
 import {
@@ -187,19 +188,19 @@ export function createProductsRouter(_container: AppContainer): Router {
   router.post('/', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const locationId = await resolveLocation(req);
-      const { stockQuantity, stockMinAlert, companyProductId, ...body } = req.body;
+      const { stockQuantity, stockMinAlert, companyProductId, ...body } = CreateProductSchema.parse(req.body);
 
       let product: Product;
       if (companyProductId) {
-        product = await buildCompanyCatalogService(req).createLinkedProduct(req.businessId!, companyProductId as string);
+        product = await buildCompanyCatalogService(req).createLinkedProduct(req.businessId!, companyProductId);
       } else {
         const service = buildProductService(req);
         product = await service.createProduct(
           compact({
             ...body,
             businessId: req.businessId!,
-            initialStockQuantity: stockQuantity as number | undefined,
-            initialStockMinAlert: stockMinAlert as number | undefined,
+            initialStockQuantity: stockQuantity,
+            initialStockMinAlert: stockMinAlert,
           }) as CreateProductInput,
           req.db!,
           locationId,
@@ -213,7 +214,10 @@ export function createProductsRouter(_container: AppContainer): Router {
         locationId,
       });
       res.status(201).json(withStock(product, product.hasVariants ? undefined : level));
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
   });
 
   // ── GET /api/products/company-catalog ───────────────────────────────────────
@@ -249,14 +253,18 @@ export function createProductsRouter(_container: AppContainer): Router {
   // ── PUT /api/products/:id ────────────────────────────────────────────────────
   router.put('/:id', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const body = compact(UpdateProductSchema.parse(req.body));
       const service = buildProductService(req);
-      const product = await service.updateProduct(param(req, 'id'), req.body, req.user!.id);
+      const product = await service.updateProduct(param(req, 'id'), body, req.user!.id);
       if (!product) {
         res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: 'Producto no encontrado.' });
         return;
       }
       res.json(product);
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
   });
 
   // ── DELETE /api/products/:id ──────────────────────────────────────────────────
@@ -284,29 +292,36 @@ export function createProductsRouter(_container: AppContainer): Router {
     try {
       const service    = buildProductService(req);
       const locationId = await resolveLocation(req);
-      const { stockQuantity, stockMinAlert, ...body } = req.body;
+      const { stockQuantity, stockMinAlert, ...body } = CreateProductVariantSchema.parse(req.body);
       const variant = await service.createVariant(
         param(req, 'id'),
-        compact({ ...body, initialStockQuantity: stockQuantity as number | undefined, initialStockMinAlert: stockMinAlert as number | undefined }) as Omit<CreateProductVariantInput, 'productId'>,
+        compact({ ...body, initialStockQuantity: stockQuantity, initialStockMinAlert: stockMinAlert }) as Omit<CreateProductVariantInput, 'productId'>,
         req.db!,
         locationId,
       );
       const level = await new SqlInventoryLevelRepository(req.db!).get({ productId: null, productVariantId: variant.id, locationId });
       res.status(201).json(variantWithStock(variant, level));
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
   });
 
   // ── PUT /api/products/:id/variants/:variantId ───────────────────────────────
   router.put('/:id/variants/:variantId', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const body = compact(UpdateProductVariantSchema.parse(req.body));
       const service = buildProductService(req);
-      const variant = await service.updateVariant(param(req, 'variantId'), req.body, req.user!.id);
+      const variant = await service.updateVariant(param(req, 'variantId'), body, req.user!.id);
       if (!variant) {
         res.status(404).json({ code: 'VARIANT_NOT_FOUND', message: 'Variante no encontrada.' });
         return;
       }
       res.json(variant);
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
   });
 
   // ── DELETE /api/products/:id/variants/:variantId ───────────────────────────

@@ -29,6 +29,17 @@ import { SqlBusinessProfileRepository } from '../repositories/sql.business-profi
 import { authorize } from '../security/auth.middleware.js';
 import { Roles }     from '../security/roles.js';
 import { OpenShiftSchema, CloseShiftSchema } from '../api/schemas/request.schemas.js';
+import { z, ZodError } from 'zod';
+
+/**
+ * GET /api/cash-register (nivel 2 de cobertura de Zod, 25/08/2026,
+ * docs/auditoria-tecnica-infra-reservas.md) — `Number(limit)` sin chequear
+ * NaN: un `?limit=abc` pasaba `NaN` directo a `listShifts()`.
+ */
+const ListShiftsQuerySchema = z.object({
+  limit:  z.coerce.number().int().positive().optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
 
 function buildService(req: Request): CashRegisterService {
   return new CashRegisterService(
@@ -60,13 +71,16 @@ export function createCashRegisterRouter(_container: AppContainer): Router {
   // ── GET /api/cash-register ──────────────────────────────────────────────
   router.get('/', authorize(Roles.FRONT_DESK), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { limit, offset } = req.query as Record<string, string>;
+      const { limit, offset } = ListShiftsQuerySchema.parse(req.query);
       const shifts = await buildService(req).listShifts(req.businessId!, {
-        ...(limit  !== undefined && { limit:  Number(limit) }),
-        ...(offset !== undefined && { offset: Number(offset) }),
+        ...(limit  !== undefined && { limit }),
+        ...(offset !== undefined && { offset }),
       });
       res.json(shifts);
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+      next(err);
+    }
   });
 
   // ── GET /api/cash-register/:id ──────────────────────────────────────────

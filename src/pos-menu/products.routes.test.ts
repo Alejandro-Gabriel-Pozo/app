@@ -248,6 +248,34 @@ describe('products.routes', () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
+  it('POST / -- 400 si falta name/basePrice y no viene companyProductId', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = baseReq({ body: { locationId: 'loc-1' } } as Partial<Request>);
+    const res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'VALIDATION_ERROR' }));
+    expect(createProduct).not.toHaveBeenCalled();
+  });
+
+  it('POST / -- 400 si basePrice es negativo', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = baseReq({ body: { name: 'Coca-Cola', basePrice: -1, locationId: 'loc-1' } } as Partial<Request>);
+    const res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(createProduct).not.toHaveBeenCalled();
+  });
+
+  it('POST / -- 400 si assembleOnDemand=true con productType distinto de COMPOSITE', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = baseReq({ body: { name: 'Sandwich', basePrice: 50, productType: 'RETAIL', assembleOnDemand: true, locationId: 'loc-1' } } as Partial<Request>);
+    const res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(createProduct).not.toHaveBeenCalled();
+  });
+
   it('GET /company-catalog -- delega al catálogo de la empresa', async () => {
     const handler = getHandler(router, 'get', '/company-catalog');
     const res = fakeRes();
@@ -294,6 +322,15 @@ describe('products.routes', () => {
     expect(res.status).toHaveBeenCalledWith(404);
   });
 
+  it('PUT /:id -- 400 si basePrice no es un número', async () => {
+    const handler = getHandler(router, 'put', '/:id');
+    const req = baseReq({ params: { id: 'prod-1' }, body: { basePrice: 'gratis' } } as Partial<Request>);
+    const res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(updateProduct).not.toHaveBeenCalled();
+  });
+
   it('DELETE /:id -- 204', async () => {
     const handler = getHandler(router, 'delete', '/:id');
     const req = baseReq({ params: { id: 'prod-1' } } as Partial<Request>);
@@ -320,6 +357,15 @@ describe('products.routes', () => {
     await expectHappy(handler, req, res);
     expect(createVariant).toHaveBeenCalledOnce();
     expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it('POST /:id/variants -- 400 si falta name', async () => {
+    const handler = getHandler(router, 'post', '/:id/variants');
+    const req = baseReq({ params: { id: 'prod-1' }, body: { locationId: 'loc-1' } } as Partial<Request>);
+    const res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(createVariant).not.toHaveBeenCalled();
   });
 
   it('PUT /:id/variants/:variantId -- actualiza variante', async () => {

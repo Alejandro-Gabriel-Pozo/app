@@ -115,6 +115,26 @@ export const SearchReservationsSchema = z.object({
   limit:      z.number().int().positive().optional(),
 });
 
+/**
+ * GET /api/reservations (nivel 2 de cobertura de Zod, 25/08/2026,
+ * docs/auditoria-tecnica-infra-reservas.md) — mismos filtros que
+ * `SearchReservationsSchema` menos `search` (que vive en el body de
+ * POST /search desde A7.2, nunca en query string), pero acá vienen como
+ * query string (todo string) en vez de JSON body: `isLodging`/`page`/
+ * `limit` necesitan coerción explícita en vez de los tipos nativos que
+ * usa el schema de arriba.
+ */
+export const GetReservationsQuerySchema = z.object({
+  status:     z.string().optional(),
+  resourceId: z.string().min(1).optional(),
+  customerId: z.string().min(1).optional(),
+  from:       z.string().datetime().optional(),
+  to:         z.string().datetime().optional(),
+  isLodging:  z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+  page:       z.coerce.number().int().positive().optional(),
+  limit:      z.coerce.number().int().positive().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Schemas de Órdenes
 // ---------------------------------------------------------------------------
@@ -198,6 +218,21 @@ export const CreateOrderSchema = z.object({
   /** Fase 1 del carve-out de inventario (16/08/2026) — si no viene, la ruta resuelve la ubicación por defecto del tenant. */
   locationId: z.string().min(1).optional(),
   items:      z.array(CreateOrderItemSchema).optional().default([]),
+});
+
+/**
+ * GET /api/orders (nivel 2 de cobertura de Zod, 25/08/2026,
+ * docs/auditoria-tecnica-infra-reservas.md) — antes `from`/`to` iban
+ * directo a `new Date(...)` sin chequear formato, y `limit`/`offset` a
+ * `Number(...)` sin chequear NaN.
+ */
+export const GetOrdersQuerySchema = z.object({
+  customerId: z.string().min(1).optional(),
+  status:     z.string().optional(),
+  from:       z.string().datetime().optional(),
+  to:         z.string().datetime().optional(),
+  limit:      z.coerce.number().int().positive().optional(),
+  offset:     z.coerce.number().int().min(0).optional(),
 });
 
 export type CreateOrderItemBody = z.infer<typeof CreateOrderItemSchema>;

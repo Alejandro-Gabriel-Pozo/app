@@ -54,8 +54,68 @@ cuando haga falta cron/prioridades/backoff más sofisticado.
 
 ### 1.6 Cobertura de validación con Zod
 31 de 237 archivos de código importan Zod (**verificado, el documento
-decía 32 — diferencia despreciable**). Pendiente: pasada para confirmar
-que toda ruta con input externo valida.
+decía 32 — diferencia despreciable**).
+
+**Auditoría completa hecha (25/08/2026)** — recorridas las 34 rutas
+(`*.routes.ts`). La mayoría de los `POST /:id/accion` sin body (confirmar,
+cancelar, completar, etc.) están bien: no hay nada que validar más allá
+del `:id`, que ya resuelve a 404 si no existe. Gaps reales encontrados,
+por severidad:
+
+- **Nivel 1 — sin ninguna validación, `req.body` directo a SQL — ✅
+  RESUELTO (25/08/2026).** `POST /api/products`, `PUT /api/products/:id`,
+  `POST /api/products/:id/variants`, `PUT /api/products/:id/variants/:variantId`.
+  Antes llegaba crudo hasta `sql.product.repository.ts::create()` — sin
+  chequeo de tipo ni de presencia, contraste directo con las rutas
+  hermanas `/recipe-items` del mismo archivo, que sí usaban
+  `CreateRecipeItemSchema.parse()`. Agregado `src/api/schemas/product.schemas.ts`
+  (`CreateProductSchema`/`UpdateProductSchema`/`CreateProductVariantSchema`/
+  `UpdateProductVariantSchema`), límites 1:1 con las columnas reales
+  (`VARCHAR(255)`, `CHECK base_price >= 0`, `CHECK assemble_on_demand =
+  FALSE OR product_type = 'COMPOSITE'`, etc.). `CreateProductSchema` usa
+  `superRefine` porque `name`/`basePrice` son obligatorios solo cuando
+  NO viene `companyProductId` (el alta vinculada a una empresa copia esos
+  datos del maestro, el cliente no los manda). 6 tests nuevos en
+  `products.routes.test.ts` (antes 36, ahora 42) cubriendo los 400 que
+  antes no existían. Verificado además contra el backend real corriendo
+  (`biz-demo-01`): `POST /api/products` sin `name`/`basePrice` → 400 con
+  el mensaje de cada campo; `basePrice: -5` → 400; producto válido → 201,
+  cancelado después (dato de prueba).
+- **Nivel 2 — query params de fecha/número sin validar, `new
+  Date(undefined)`/`Number('abc')` en silencio — ✅ RESUELTO (25/08/2026).**
+  Clasificadas las ~25 rutas GET/DELETE originalmente marcadas por el
+  audit; la mayoría (`audit-log.routes.ts`, `customer.routes.ts /me`,
+  `accounts-receivable.routes.ts`, `customers.routes.ts` ×2,
+  `invoices.routes.ts`, `platform.routes.ts /businesses`,
+  `products.routes.ts GET /`, `bookable-services.routes.ts
+  /available-slots`) ya tenían guardas manuales (`typeof`, regex,
+  presencia) que devuelven 400 correctamente — falsos positivos del
+  regex del audit, sin tocar (inconsistencia de estilo nomás, no un bug).
+  Gaps reales, arreglados: `reports.routes.ts` (11 rutas, todas
+  compartían el mismo `req.query as {from, to}` → `new Date(from)`
+  directo), `orders.routes.ts GET /`, `reservations.routes.ts GET /`
+  (`from`/`to` sin validar + `page`/`limit` con `Number()` sin chequear
+  NaN) y `cash-register.routes.ts GET /` (mismo problema de NaN en
+  `limit`/`offset`). Agregado `dateOnlySchema`/`DATE_ONLY_REGEX` a
+  `common.schemas.ts` (valida formato Y que la fecha exista de verdad —
+  rechaza `2026-02-30`, que `new Date()` acepta corriéndose al 2 de
+  marzo) y `src/api/schemas/report.schemas.ts` con
+  `DateRangeQuerySchema`/`OccupancySummaryQuerySchema`/
+  `UnderutilizedQuerySchema`/`PurgeQuerySchema`. `orders`/`reservations`
+  usan `z.string().datetime()` en vez de `dateOnlySchema` — esos
+  filtros son sobre timestamps de reserva/orden, no días de negocio
+  calendario como los reportes. 6 tests 400 nuevos (uno por archivo
+  tocado + un caso de fecha calendario inválida en reports). Suite
+  completa: 1493/1493.
+  **Sin tocar a propósito:** `housekeeping.routes.ts` (`GET /` y
+  `/late-checkouts`) — su `date` ya viene validado con regex pero
+  deliberadamente NO se envuelve en `Date` (bug de zona horaria ya
+  encontrado y arreglado antes de esta sesión, ver nota en el propio
+  archivo); envolverlo en un schema que devuelva `Date` reintroduciría
+  ese bug. `POST /:id/complete` (housekeeping) y `PATCH /:id/notes`
+  (orders) siguen con `req.body.x as string` sin Zod; `POST
+  /:id/stock/decrement` (×2, products) sigue validando `quantity` a
+  mano — funciona, solo es inconsistente de estilo, no un gap real.
 
 ### 1.7 Higiene menor
 **`ts-prune` → `knip` — ✅ RESUELTO (25/08/2026).** Reemplazado como

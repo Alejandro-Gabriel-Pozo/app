@@ -103,7 +103,8 @@ import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repos
 import { CancellationRefundService }     from './cancellation-refund.service.js';
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema } from '../api/schemas/request.schemas.js';
+import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema } from '../api/schemas/request.schemas.js';
+import { ZodError } from 'zod';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
 
@@ -227,18 +228,21 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const resourceRepo = new SqlResourceRepository(req.db);
         const repo         = new SqlReservationRepository(req.db, resourceRepo);
-        const { status, resourceId, customerId, from, to, isLodging, page, limit } = req.query as Record<string, string>;
+        const { status, resourceId, customerId, from, to, isLodging, page, limit } = GetReservationsQuerySchema.parse(req.query);
         const filters = {
           ...(status     !== undefined && { status: status as ReservationStatus }),
           ...(resourceId !== undefined && { resourceId }),
           ...(customerId !== undefined && { customerId }),
           ...(from       !== undefined && { from: new Date(from) }),
           ...(to         !== undefined && { to:   new Date(to) }),
-          ...(isLodging  !== undefined && { isLodging: isLodging === 'true' }),
-          ...(page !== undefined && limit !== undefined && { page: Number(page), limit: Number(limit) }),
+          ...(isLodging  !== undefined && { isLodging }),
+          ...(page !== undefined && limit !== undefined && { page, limit }),
         };
         await respondWithReservationsList(repo, filters, res);
-      } catch (err) { next(err); }
+      } catch (err) {
+        if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
+        next(err);
+      }
     },
   );
 

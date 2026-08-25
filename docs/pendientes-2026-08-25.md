@@ -826,6 +826,43 @@ documento — corregido en `docs/auditoria-tecnica-infra-reservas.md`.
 
 ---
 
+## Cobertura de Zod (punto 1.6) — Nivel 1 resuelto (25/08/2026)
+
+Auditoría completa de las 34 rutas (`*.routes.ts`) buscando input externo
+sin validar con Zod. Gap real más serio, **resuelto**: `POST/PUT
+/api/products` y `/api/products/:id/variants` no validaban nada — `req.body`
+llegaba crudo hasta el INSERT/UPDATE parametrizado. Agregado
+`src/api/schemas/product.schemas.ts` con límites 1:1 contra las columnas
+reales de `products`/`product_variants`. 6 tests nuevos (`products.routes.test.ts`,
+36→42). Verificado contra el backend real: 400 con mensajes claros para
+`name`/`basePrice` faltantes o `basePrice` negativo, 201 para un producto
+válido.
+
+Quedan sin tocar (Nivel 2, menor severidad, para otra pasada): `notes` de
+housekeeping/orders con cast en vez de Zod, `quantity` de stock/decrement
+validado a mano (funciona, solo inconsistente), y ~10 rutas GET de
+reportes/fechas que castean `req.query` sin validar (mismo patrón de bug
+de fechas que ya apareció antes). Detalle completo en
+`docs/auditoria-tecnica-infra-reservas.md`.
+
+**Nivel 2 del Zod — ✅ RESUELTO (25/08/2026).** Las ~10 rutas GET de
+fechas mencionadas arriba: `reports.routes.ts` completo (11 rutas),
+`orders.routes.ts GET /`, `reservations.routes.ts GET /` y
+`cash-register.routes.ts GET /` — todas hacían `new Date(req.query.from
+as string)`/`Number(req.query.limit as string)` sin validar, dando
+`Invalid Date`/`NaN` en silencio con input faltante o mal formado.
+Agregado `dateOnlySchema` a `common.schemas.ts` (rechaza fechas
+calendario inválidas tipo `2026-02-30`, que `new Date()` acepta
+corriéndose de mes) y `src/api/schemas/report.schemas.ts`. Las otras
+~15 rutas que el audit original marcó ya tenían guardas manuales
+adecuadas — falsos positivos, sin tocar. `housekeeping.routes.ts`
+tampoco se tocó a propósito: su `date` string deliberadamente NO se
+envuelve en `Date` (evita reintroducir un bug de zona horaria ya
+arreglado antes). 6 tests 400 nuevos, suite completa 1493/1493. Detalle
+completo en `docs/auditoria-tecnica-infra-reservas.md`, sección 1.6.
+
+---
+
 ## Pendientes heredados de `pendientes-2026-08-24.md`, todavía abiertos
 
 - **C1-Fase B** — gateway de pago real, hold corto canal web, auto-release.
