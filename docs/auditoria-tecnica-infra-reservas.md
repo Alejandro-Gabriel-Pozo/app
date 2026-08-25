@@ -21,7 +21,7 @@ No hay tracking de errores en producción. Propuesta:
 una cuenta externa — no lo puede hacer Claude, lo tiene que dar de alta
 el dueño.
 
-### 1.3 CI — ⚠️ el diagnóstico original está desactualizado
+### 1.3 CI — ✅ RESUELTO (25/08/2026) — el diagnóstico original estaba desactualizado
 El documento decía que había dos workflows (uno funcional, uno
 `noop` placeholder) y que "no se ve un job de typecheck ni de lint
 corriendo". **Verificado contra `.github/workflows/`, 25/08/2026:**
@@ -36,9 +36,10 @@ corriendo". **Verificado contra `.github/workflows/`, 25/08/2026:**
   que su propio comentario dice borrar después de correrla. Ninguno de
   los dos compite con `ci.yml` ni deja huecos de validación.
 
-**Conclusión: el punto 1.3 tal como estaba planteado no aplica.** Lo
-único que queda, si molesta el ruido, es borrar `a.yml` y
-`lint-autofix.yml` — housekeeping cosmético, no una brecha de CI.
+**Conclusión: el punto 1.3 tal como estaba planteado no aplicaba.** Lo
+único real que quedaba era housekeeping cosmético — **hecho**: se
+borraron `a.yml` y `lint-autofix.yml` (25/08/2026). `ci.yml` sigue
+siendo el único workflow real, sin cambios.
 
 ### 1.4 Redis para rate-limiting
 `auth.routes.ts` ya tiene el comentario propio "Para multi-instancia
@@ -57,8 +58,25 @@ decía 32 — diferencia despreciable**). Pendiente: pasada para confirmar
 que toda ruta con input externo valida.
 
 ### 1.7 Higiene menor
-`ts-prune` → `knip` si molesta el ruido de falsos positivos. Duplicación
-2.16% backend (no prioridad) vs. 7.71% frontend (ahí rinde más el DRY).
+**`ts-prune` → `knip` — ✅ RESUELTO (25/08/2026).** Reemplazado como
+devDependency (`npm run deadcode`), con `knip.json` mínimo (declara
+`src/scripts/*.ts` y `.puppeteerrc.cjs` como entry points — si no,
+`knip` los marca "unused file" por no ser importados por nadie, son
+scripts que se invocan directo). Confirmado el "95% falsos positivos"
+que reportaba `auditoria-modularidad.md` para `ts-prune`: la primera
+corrida de `knip` sin ese `entry` marcó como "no usado" el propio
+script de concurrencia que se acababa de escribir y usar. Con el
+`entry` declarado, la lista bajó a algo revisable: 2 devDependencies
+sin uso (`dependency-cruiser`, `jscpd` — herramientas de auditorías
+puntuales anteriores, no se borraron: siguen siendo válidas para la
+próxima auditoría de modularidad), 1 dependencia no listada
+(`puppeteer`, usada solo por `.puppeteerrc.cjs`), y ~42 exports/tipos
+sin uso externo. **No se tocó ninguno de los 42** — es trabajo de
+limpieza de código, no de tooling, y no era lo que pedía este punto;
+queda para una pasada aparte si se decide hacerla.
+
+Duplicación 2.16% backend (no prioridad) vs. 7.71% frontend (ahí rinde
+más el DRY) — sin tocar, dato del documento original.
 
 ## 2. Auditoría del motor de reservas — plan original
 

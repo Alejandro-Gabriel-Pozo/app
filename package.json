@@ -15,7 +15,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "migrate:tenants": "tsx src/scripts/migrate-tenants.ts",
     "lint": "eslint src --ext .ts --max-warnings 0",
-    "lint:fix": "eslint src --ext .ts --fix"
+    "lint:fix": "eslint src --ext .ts --fix",
+    "deadcode": "knip"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -33,8 +34,8 @@
     "dependency-cruiser": "^18.2.0",
     "eslint": "^9.0.0",
     "jscpd": "^5.0.15",
+    "knip": "^6.32.2",
     "patch-package": "^8.0.1",
-    "ts-prune": "^0.10.3",
     "tsx": "^4.19.0",
     "typescript-eslint": "^8.0.0",
     "vitest": "^3.0.0"
