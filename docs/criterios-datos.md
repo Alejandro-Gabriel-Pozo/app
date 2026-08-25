@@ -20,7 +20,7 @@ declarar a qué clase pertenece.**
 | | **MAESTRO** | **TRANSACCIÓN** | **DOCUMENTO** |
 |---|---|---|---|
 | Qué es | Un ente que existe con independencia de lo que pase | Un hecho que ocurrió en el tiempo | Una declaración formal emitida |
-| Ejemplos tuyos | `Customer`, `PhysicalResource`, `ResourceCategory`, `BookableService`, `Product`, `Tag`, `Business` | `Reservation`, `Stay`, `Order`, `HousekeepingTask`, `StockMovement`, `FinancialTransaction` | Facturas AFIP, notas de crédito *(aún no existen)* |
+| Ejemplos tuyos | `Customer`, `PhysicalResource`, `ResourceCategory`, `BookableService`, `Product`, `Tag`, `Business` | `Reservation`, `Stay`, `Order`, `HousekeepingTask`, `StockMovement`, `FinancialTransaction` | Facturas AFIP y notas de crédito (`invoices`, módulo facturación; ver `diseno-cancelacion-notas-credito-c2-2026-08-23.md`) |
 | ¿Se borra? | **Nunca.** Se desactiva o se marca borrado | **Nunca.** Se cancela o se revierte | **Jamás.** Se anula con otro documento |
 | ¿Se edita? | Sí, con auditoría del valor anterior | Solo antes de confirmarse | Nunca, ni un carácter |
 | Identidad | ID técnico + **código de negocio** | ID técnico + correlativo | **Numeración correlativa e irrompible**¹ |

@@ -3,6 +3,7 @@
 Backend (API, dominio, infraestructura) de una app de reservas multi-tenant
 y multirubro (hotelería, servicios, POS). Ver también el `CLAUDE.md` de
 `App - frontend/` (nivel superior) para el contexto de los dos repos.
+Mapa de docs reutilizables: `docs/indice-conocimiento.md`.
 
 ## Criterios de negocio — cumplimiento obligatorio
 

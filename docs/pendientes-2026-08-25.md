@@ -1109,13 +1109,22 @@ entran (4/5), una tercera de 2 personas rechaza (llegaría a 6/5), una de
 - **C1-Fase B** — gateway de pago real, hold corto canal web, auto-release.
   Bloqueada hasta que el negocio elija un proveedor de pago (proyecto
   externo). No elegir ninguna opción sin el dueño.
+- **D9-Parte 2 — ✅ RESUELTO (confirmado 25/08/2026, ya estaba resuelto
+  desde el 22/08, commit `6bc6358`):** verificación server-side de precio
+  para productos en POS. Verificado contra el código real: `CreateOrderItemSchema`
+  (`request.schemas.ts`) rechaza `unitPrice` del cliente para
+  `PRODUCT`/`PRODUCT_VARIANT` con mensaje explícito ("el servidor lo
+  resuelve"), y `OrderPricingService` calcula el precio server-side (base
+  + tarifa especial, mismo algoritmo que `ReservationPricingService`).
+  Este ítem venía arrastrándose como abierto en el backlog de UI de
+  sesiones anteriores sin haberse revisado contra el código —encontrado
+  al auditar el roadmap de producto (ver sección de arriba).
 - **Backlog de UI, backend-only sin pantalla:** configurar/cobrar seña
   desde la ficha de reserva (C1-Fase A); preview/confirmar reembolso al
   cancelar (C2); líneas reales de factura en el detalle (C3); número de
   reserva/cliente en listados + prefijo editable (D6); pantalla de
   reportes POS/CRM (D7); carga de IVA/unidad/código ARCA al crear producto
-  (D8); verificación server-side de precio para productos en POS
-  (D9-Parte 2).
+  (D8).
 - **Gap conocido de C1-Fase C:** una factura consolidada (`invoices.
   financial_transaction_id = null`) no aparece en `getByReservationId()`
   (nota de crédito, C2) ni en `getOutstandingByCustomerId()` (conciliación
@@ -1219,3 +1228,15 @@ modularidad.md`, 18/08/2026); `auditor-circuitos-erp.md` citaba "la
 skill de casos operativos" como fuente a priorizar, pero esa skill no
 existe (`app-main/.claude/skills/` solo tiene `criterios-negocio` y
 `revision-pr-pms-erp`). Los dos `.md` corregidos.
+
+---
+
+## Memoria técnica — índice de conocimiento — ✅ HECHO (25/08/2026)
+
+Sesión sin cambio de producto: se armó el punto de entrada
+`docs/indice-conocimiento.md` + playbooks/runbook/glosario en
+`docs/conocimiento/`, y se enlazó desde `App - frontend/CLAUDE.md`.
+Contradicción corregida en `criterios-datos.md` (DOCUMENTO: facturas/NC
+ya existen). Detalle de clasificación y pendientes de confirmación
+(Sentry DSN en Render, staff vs huso del negocio) viven en el índice,
+no acá.
