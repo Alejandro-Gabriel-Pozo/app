@@ -301,6 +301,185 @@ que no cubre el caso de hueco vacío.
    esta sesión (25/08/2026). Retomar cuando se defina el approach con el
    developer.
 
+## 4. Auditoría de máquina de estados (2.3) — ⚠️ SEGUNDO BUG REAL, misma familia
+
+### 4.1 El grafo de transiciones en sí está bien
+
+`Reservation.ts::ALLOWED_TRANSITIONS` — `PENDING → {CONFIRMED, CANCELLED,
+EXPIRED}`, `CONFIRMED → {CANCELLED, COMPLETED}`, `CANCELLED`/`COMPLETED`/
+`EXPIRED` terminales sin salida. Ciclo de vida estándar de reservas, sin
+huecos ni transiciones espurias — `transitionTo()` lo hace cumplir de
+forma centralizada, no hay ningún lugar del código que mute `_status`
+por afuera de ese método (`Reservation.restore()` reconstruye desde
+persistencia sin pasar por ahí, a propósito, es el único escape y está
+documentado como tal).
+
+### 4.2 El problema no es el grafo — es el mismo gotcha de concurrencia de la sección 3, en el UPDATE en vez del INSERT
+
+`confirmReservation()`, `cancelReservation()`, `completeReservation()` y
+`confirmPriceAdjustment()` (`reservation.service.ts`), más
+`ReservationHoldExpiryWorker.expireOne()`, comparten el mismo patrón:
+
+```
+const reservation = await this.reservationRepository.getById(id);  // SELECT sin lock
+reservation.confirm();                                              // muta en memoria
+await this.transactionManager.run(async (client) => {
+  await this.reservationRepository.saveWithClient(client, reservation); // UPSERT ciego
+});
+```
+
+`getById()` es un `SELECT` liso — nunca `FOR UPDATE`. `saveWithClient()`
+es un `INSERT ... ON CONFLICT DO UPDATE` sobre TODAS las columnas del
+objeto en memoria, sin `WHERE status = $esperado` ni columna de versión
+— no detecta si la fila cambió entre el `SELECT` y el `UPDATE`, la
+pisa entera. `FOR UPDATE` en este código **solo se usa** para las
+consultas de disponibilidad (`getActiveForResourceInRangeWithLock`,
+sección 3) — nunca para leer-antes-de-mutar una reserva puntual.
+`ReservationHoldExpiryWorker.expireOne()` ya vuelve a leer el estado
+DENTRO de su transacción para no confiar en el `SELECT` viejo del
+`poll()` (comentario explícito: "Puede haberse cobrado/cancelado entre
+el SELECT del poll y acá") — pero esa relectura tampoco usa `FOR
+UPDATE`, así que solo protege contra staleness *secuencial*, no contra
+una transacción de verdad concurrente que lee la misma fila al mismo
+tiempo.
+
+### 4.3 Escenario concreto
+
+Depósito con vencimiento (`depositDueBy`) justo en el borde:
+
+1. `ReservationHoldExpiryWorker` lee la reserva `PENDING`, ve que el
+   depósito no está pagado todavía (`paidSoFar < depositAmount`).
+2. Al mismo instante, el huésped termina de pagar y confirma —
+   `confirmReservation()` lee la MISMA fila (`PENDING`, aún no expirada).
+3. Las dos transacciones commitean en cualquier orden. Si gana el
+   worker: la reserva queda `EXPIRED` pese a estar pagada y confirmada
+   — la disponibilidad ya pudo haberse marcado ocupada
+   (`recordOccupancy()`) antes de que el worker pisara el estado.
+4. Caso más simple, sin depósito de por medio: doble clic en
+   "Cancelar" (o un reintento de red) dispara dos `cancelReservation()`
+   casi simultáneos. Cada uno lee `CONFIRMED`, cada uno pasa la
+   validación de transición (las dos ven el mismo estado de origen
+   válido), cada uno inserta su propio evento `reservation.cancelled`
+   — dos filas en `domain_events`, dos disparos de efectos secundarios
+   por una sola acción del usuario.
+
+### 4.4 Consecuencias reales — no todas iguales de graves
+
+- **Pérdida silenciosa de la transición "correcta"** (el caso worker vs.
+  confirmación): sin ningún error, sin nada en los logs — la reserva
+  queda en el estado que ganó la carrera, no el que reflejaba la
+  realidad de negocio.
+- **Eventos duplicados no siempre son inofensivos.** `voidByReservationId`
+  (`financial-transaction.repository.ts`) SÍ es idempotente (`WHERE
+  status IN ('PENDING','SETTLED')` — voidear una fila ya `VOIDED` es un
+  no-op) — un doble `reservation.cancelled` no duplica el void. Pero
+  `handleReservationConfirmed` arma su `idempotencyKey` como
+  `` `${event.id}:CHARGE` `` — **incluye el id del evento**, no el id de
+  la reserva. Dos `confirmReservation()` concurrentes generan DOS filas
+  distintas en `domain_events` (dos `event.id` distintos), así que la
+  dedup por `idempotencyKey` no los agarra: un doble-confirm bajo
+  carrera puede terminar creando **dos CHARGE** para la misma reserva,
+  no uno.
+
+### 4.5 Opciones de arreglo (mismo criterio que la sección 3 — sin decidir, para charlar con el developer)
+
+1. **`SELECT ... FOR UPDATE` en `getById()` cuando se lee para mutar** —
+   requiere una variante con lock (mismo patrón `...WithLock` que ya
+   existe para disponibilidad) y que cada transición la use dentro de
+   `transactionManager.run()` (hoy el `SELECT` pasa ANTES de abrir la
+   transacción en los cuatro métodos de `reservation.service.ts` —
+   habría que mover el `getById` adentro). Cambio de forma, no de
+   schema.
+2. **Compare-and-swap explícito** — `UPDATE reservations SET status =
+   $nuevo WHERE id = $id AND status = $esperado RETURNING *`; si
+   `rowCount = 0`, la transición se perdió la carrera y hay que
+   rechazarla con un error claro (`INVALID_RESERVATION_CONFLICT`, ya
+   existe el code) en vez de pisar en silencio. No requiere lock
+   explícito, más simple que la opción 1, pero significa reescribir
+   `saveWithClient()` para que la transición-de-estado sea un UPDATE
+   angosto (columna por columna) en vez del UPSERT genérico actual que
+   graba el objeto entero.
+3. **`idempotencyKey` de `handleReservationConfirmed` con el id de la
+   reserva, no el del evento** (parche puntual, más chico, no arregla el
+   lost-update de `status` en sí, solo el riesgo de doble CHARGE) —
+   `` `${reservationId}:CHARGE` `` en vez de `` `${event.id}:CHARGE` ``.
+4. **No arreglar hoy, solo documentar** — mismo criterio que la sección
+   3, a confirmar con el dueño.
+
+## 5. Property-based testing (2.4) — `fast-check`
+
+### 5.1 Qué se probó
+
+`availability.ts` es la lógica pura de disponibilidad (sin BD, sin
+tiempo real) que sí está en el camino caliente de reservar
+(`ReservationAvailabilityService.checkAvailability()` la reusa vía
+`isBlockingStatus`/`hasTimeOverlap`). Ya tenía 19 tests con ejemplos a
+mano (`availability.test.ts`) — se sumó `availability.property.test.ts`
+(nuevo, `fast-check` como devDependency) con 13 propiedades que generan
+cientos de rangos de fecha y listas de reservas al azar por corrida, en
+vez de los casos puntuales que se nos ocurrieron:
+
+- `hasTimeOverlap`: simetría, reflexividad (todo rango se solapa
+  consigo mismo), semiabierto (dos rangos consecutivos NUNCA se
+  solapan), equivale a la definición directa (`!(aEnd<=bStart ||
+  bEnd<=aStart)`), monotonía (ensanchar un rango que ya se solapaba no
+  puede dejar de solaparse).
+- `assertValidTimeRange`: nunca lanza para `start<end`, siempre lanza
+  para `start>=end`.
+- `isResourceAvailable`: sin reservas activas siempre disponible;
+  reservas de OTRO `resourceId` nunca afectan; `CANCELLED`/
+  `COMPLETED`/`EXPIRED` nunca bloquean sin importar el solapamiento;
+  `PENDING`/`CONFIRMED` con el rango exacto siempre bloquean;
+  `excludeReservationId` libera exactamente esa reserva y ninguna otra;
+  y una propiedad "espejo" que recalcula el resultado esperado a mano
+  contra listas de reservas generadas al azar (mezcla de estados,
+  ids, solapamientos parciales) y lo compara contra el resultado real.
+
+**Resultado: las 13 propiedades pasan.** El motor de solapamiento en sí
+—la aritmética de fechas y el filtro por estado— está bien: no salió
+ningún caso límite nuevo (fechas exactamente iguales, rangos de 1
+minuto, offsets grandes, mezclas de estados bloqueantes/no bloqueantes
+en la misma lista). Esto acota el problema real del motor de reservas a
+lo ya encontrado en las secciones 3 y 4 — la capa pura de disponibilidad
+no es la fuente del bug de concurrencia, es la capa de acceso a datos
+(falta de lock/CAS) la que lo introduce después.
+
+### 5.2 Hallazgo colateral — `capacity`/`availableSlots()` no está conectado a nada
+
+Al armar los generadores para las propiedades de arriba se encontró que
+`PhysicalResource.availableSlots()` (pensado para recursos con
+`capacity > 1` — "clases grupales, tours", docblock del propio método)
+**no tiene ningún call site en el código real**, solo se referencia a
+sí mismo en su propio comentario. Se confirmó revisando
+`ReservationAvailabilityService.checkAvailability()`
+(`reservation-availability.service.ts`, el chequeo real que usa
+`ReservationService.createReservation()`): es binario — "¿hay
+CUALQUIER reserva activa que se solape?" — sin mirar `partySize` ni
+`capacity` en ningún punto. En la práctica, hoy un recurso con
+`capacity > 1` (una clase de yoga para 20 personas, un tour) se
+comporta exactamente igual que uno con `capacity = 1`: la primera
+reserva que se solapa con un rango lo marca "no disponible" para
+cualquier otra, aunque queden 19 lugares libres.
+
+`capacity` SÍ se usa en un solo lugar — la validación de
+`Reservation`'s constructor (`partySize > resource.capacity` rechaza al
+crear una reserva individual demasiado grande) — pero nada agrega los
+`partySize` de las reservas YA activas contra el `capacity` total del
+recurso al decidir si hay lugar para una más.
+
+**No es parte de los bugs de concurrencia de las secciones 3/4** — es
+un gap funcional distinto y más grande (¿el negocio realmente necesita
+reservas grupales con cupo parcial hoy, o `capacity > 1` es un campo
+que existe en el modelo pero nunca se terminó de cablear al flujo de
+reserva?). Además, si se decide cablearlo, `availableSlots()` en su
+forma actual tiene su propio bug menor: cuenta reservas `EXPIRED` como
+"todavía ocupando" (solo excluye `CANCELLED`), a diferencia de
+`isBlockingStatus()` (que excluye `EXPIRED` además de `CANCELLED`) —
+inconsistencia a arreglar de paso si se retoma. **Sin tocar a
+propósito** — es una decisión de alcance de producto, no un bug a
+arreglar hoy; documentado para decidir con el dueño cuándo/si conviene
+cablear reservas con capacidad parcial.
+
 ## Estado
 
 - Sección 1: 1.1 (Pino), 1.2 (Sentry), 1.3 (CI, era diagnóstico
@@ -308,17 +487,32 @@ que no cubre el caso de hueco vacío.
   (25/08/2026). Quedan sin empezar 1.4 (Redis rate-limiting — no urgente
   con la escala actual, requiere cuenta externa) y 1.5 (BullMQ —
   deferred a propósito).
-- Sección 2 (auditoría del motor de reservas): 2.1 (coverage) y 2.2
-  (test de concurrencia) hechas, derivaron en el hallazgo de la sección
-  3. 2.3 (máquina de estados) y 2.4 (property-based testing) sin
-  empezar.
-- Sección 3 (bug de doble-booking): **hallazgo confirmado y documentado,
-  sin arreglar a propósito** — decisión del dueño, 25/08/2026. Blast
-  radius real: cualquier resourceId/rango que hoy no tenga ya una
-  reserva encima está expuesto si dos requests de creación llegan lo
-  bastante juntas (en producción, con tráfico real, no solo bajo un
-  script de carga).
+- Sección 2 (auditoría del motor de reservas): 2.1, 2.2, 2.3 y 2.4
+  hechas (25/08/2026). 2.1/2.2/2.3 derivaron en los hallazgos de
+  concurrencia de las secciones 3 y 4; 2.4 (property-based testing,
+  `fast-check`, 13 propiedades sobre `availability.ts`) confirmó que la
+  capa pura de solapamiento está bien — el problema es de acceso a
+  datos, no de esta lógica — y de paso encontró que `capacity`/
+  `availableSlots()` (reservas grupales con cupo parcial) no está
+  conectado a ningún flujo real de reserva (sección 5.2, gap de
+  producto, no bug de concurrencia).
+- Sección 3 (bug de doble-booking, INSERT sin lock efectivo): **hallazgo
+  confirmado y documentado, sin arreglar a propósito** — decisión del
+  dueño, 25/08/2026. Blast radius real: cualquier resourceId/rango que
+  hoy no tenga ya una reserva encima está expuesto si dos requests de
+  creación llegan lo bastante juntas (en producción, con tráfico real,
+  no solo bajo un script de carga).
+- Sección 4 (lost-update en transiciones de estado, misma familia que la
+  3 pero en el UPDATE): **hallazgo confirmado y documentado, sin
+  arreglar** — pendiente de decidir el approach con el dueño/developer,
+  mismo criterio que la sección 3. Afecta `confirmReservation()`,
+  `cancelReservation()`, `completeReservation()`,
+  `confirmPriceAdjustment()` y `ReservationHoldExpiryWorker`.
 - Script `src/scripts/concurrency-test-reservations.ts` queda en el
   repo, listo para volver a correr una vez que se implemente cualquiera
-  de las dos opciones de arreglo — es la forma de confirmar que de
-  verdad quedó resuelto.
+  de las dos opciones de arreglo de la sección 3 — es la forma de
+  confirmar que de verdad quedó resuelto. No cubre el hallazgo de la
+  sección 4 (dispara `POST /reservations` en paralelo, no
+  confirmaciones/cancelaciones concurrentes sobre la misma reserva) —
+  si se decide arreglar la 4, hace falta un script de concurrencia
+  aparte para verificarlo del mismo modo.

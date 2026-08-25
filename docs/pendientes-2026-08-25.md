@@ -904,6 +904,46 @@ confirmando el formato pretty-printed en consola. Detalle en
 
 ---
 
+## Auditoría del motor de reservas — 2.3 (máquina de estados) y 2.4 (property-based testing) — hechas (25/08/2026)
+
+**2.3 — ⚠️ SEGUNDO BUG REAL, misma familia que el doble-booking (sección 3
+de `auditoria-tecnica-infra-reservas.md`).** El grafo de transiciones de
+`Reservation.ts` está bien (sin huecos, `transitionTo()` centraliza todo).
+El problema es el mismo gotcha de concurrencia de la sección 3 pero en el
+UPDATE en vez del INSERT: `confirmReservation()`, `cancelReservation()`,
+`completeReservation()`, `confirmPriceAdjustment()` y
+`ReservationHoldExpiryWorker.expireOne()` leen la reserva con un `SELECT`
+sin lock, mutan en memoria, y recién después abren la transacción para
+un UPSERT ciego (sin `WHERE status = $esperado`, sin columna de
+versión) — dos transiciones concurrentes sobre la MISMA reserva (ej. el
+worker de expiración de depósito vs. el huésped confirmando justo a
+tiempo, o un doble-clic en "Cancelar") pueden perder una transición en
+silencio, y en el caso de `confirmReservation()` hasta duplicar el
+CHARGE (su `idempotencyKey` incluye el id del EVENTO, no el de la
+reserva — dos confirmaciones concurrentes generan dos eventos con ids
+distintos, la dedup no los agarra). **Sin arreglar a propósito**, 3
+opciones documentadas (FOR UPDATE al leer para mutar / compare-and-swap
+explícito / arreglo puntual del idempotencyKey) — a decidir con el
+dueño/developer igual que la sección 3. Detalle completo en
+`docs/auditoria-tecnica-infra-reservas.md`, sección 4.
+
+**2.4 — `fast-check` como devDependency, 13 propiedades nuevas
+(`availability.property.test.ts`)** sobre `hasTimeOverlap`/
+`assertValidTimeRange`/`isResourceAvailable` — simetría, monotonía,
+reflexividad, equivalencia con la definición directa, y un "espejo" que
+recalcula el resultado esperado contra listas de reservas generadas al
+azar. **Las 13 pasan** — la capa pura de solapamiento está bien, el bug
+de concurrencia vive en la capa de acceso a datos, no acá. Hallazgo
+colateral sin relación con la concurrencia: `PhysicalResource.
+capacity`/`availableSlots()` (pensado para reservas grupales con cupo
+parcial) no tiene NINGÚN call site real — `checkAvailability()` es
+binario, no mira `partySize`/`capacity` en ningún punto, así que hoy un
+recurso `capacity > 1` se comporta igual que uno `capacity = 1`. Gap de
+producto (¿hace falta cupo parcial hoy?), no un bug — sin tocar,
+documentado para decidir. Suite completa tras ambos puntos: 1506/1506.
+
+---
+
 ## Pendientes heredados de `pendientes-2026-08-24.md`, todavía abiertos
 
 - **C1-Fase B** — gateway de pago real, hold corto canal web, auto-release.
