@@ -417,6 +417,72 @@ la verificación de la sesión) — ambas muestran el texto nuevo, sin botón.
 
 ---
 
+## L — reconciliación de asientos al bajar de plan (Etapa 1) — ✅ RESUELTO (25/08/2026)
+
+`PlatformRepository.updateBusinessPlan()` cambiaba el plan de un negocio
+sin ninguna reconciliación — si quedaba con más membresías activas de las
+que el plan nuevo permite, no pasaba nada (ni bloqueo, ni aviso, ni
+desactivación). Decisión de negocio pendiente en 3 sesiones seguidas.
+
+**Propuesta externa traída por el dueño** (confirmada como decisión
+comercial correcta, pero con alcance mucho mayor a lo que se encaró hoy):
+degradación asistida en 3 etapas — (1) selección obligatoria de a quién
+desactivar antes de aplicar el downgrade, (2) fallback de período de
+gracia (3-7 días) con desactivación automática LIFO + notificaciones si
+nadie elige a mano, (3) un estado "solo lectura" nuevo (no solo activo/
+inactivo) con middleware de 403 en cada endpoint de escritura para
+usuarios en ese estado. **Confirmado con el dueño: solo la Etapa 1 esta
+sesión** — las etapas 2 y 3 son varias sesiones más de trabajo (job de
+período de gracia, sistema de notificaciones, un estado de membership
+nuevo, enforcement por endpoint) y quedan sin encarar.
+
+**Implementado (Etapa 1 — selección obligatoria, sin bloqueo previo del
+downgrade en sí):**
+- `PATCH /platform/businesses/:id/plan` acepta `membershipIdsToDeactivate?: string[]`.
+  Si el negocio queda con más asientos activos de los que el plan nuevo
+  permite (`maxActiveMemberships`), el cambio de plan **no se aplica**
+  todavía: responde `409 SEAT_LIMIT_EXCEEDS_NEW_PLAN` con
+  `{ newLimit, currentActive, excess, activeMemberships: [{id, fullName,
+  email, roleName, createdAt}] }` — la lista completa para que el
+  superadmin arme el picker. Reintentando el mismo PATCH con
+  `membershipIdsToDeactivate` (suficientes para entrar en el límite)
+  desactiva exactamente esas membresías (`deactivateMembership()`, mismo
+  mecanismo que `DELETE /users/:id` — deja el rastro A6.5 con
+  `req.platformUser.id` como quien lo hizo) y recién ahí aplica el plan.
+- **Todo o nada, a propósito:** si la selección no alcanza (ej. elige 1 de
+  los 2 que sobran), NO desactiva a nadie todavía — evita el caso raro de
+  dejar a alguien sin acceso mientras el superadmin sigue decidiendo el
+  resto.
+- `PlatformRepository.findActiveStaffMembershipsByBusiness()` nuevo (lista
+  con nombre/email/rol, mismo filtro que `countActiveStaffMembershipsByBusiness`
+  — excluye OWNER, no ocupa asiento).
+- **Alcance acotado a ASIENTOS, no roles** — reconciliar `maxCustomRoles`/
+  `allowedRoleNames` (roles que dejan de estar permitidos, o de más, al
+  bajar de plan) queda sin resolver: no hay una acción tan directa como
+  "elegí a quién desactivar" para un rol con gente asignada (implica
+  reasignar personas antes de poder tocar el rol), es un problema
+  distinto que no se diseñó hoy.
+- 4 tests nuevos en `platform.routes.test.ts` (409 sin selección, 409
+  selección insuficiente sin efecto, éxito con selección suficiente, 500
+  `PLAN_LIMITS_NOT_CONFIGURED` si el plan destino no tiene fila en
+  `plan_limits`).
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios, suite completa
+**129 archivos / 1483 tests verdes**. **No verificado en navegador/vivo**
+— el backend local no tiene `PLATFORM_ADMIN_EMAIL`/`PLATFORM_ADMIN_PASSWORD`
+configurados en `.env`, así que no hay forma de loguearse como superadmin
+sin agregar esas credenciales primero (no se hizo sin confirmarlo aparte).
+Queda pendiente de probar en vivo cuando haya esas credenciales a mano.
+
+**Fuera de este alcance:** Etapas 2 (período de gracia + LIFO +
+notificaciones) y 3 (estado "solo lectura" + middleware de 403 por
+endpoint) de la propuesta original, y la reconciliación de roles/
+`maxCustomRoles` — todo documentado acá para retomar si hace falta. Sin
+frontend todavía para el picker del superadmin (el 409 ya trae toda la
+data lista para renderizarlo).
+
+---
+
 ## Datos de prueba dejados en la base real (demo, confirmado con el dueño)
 
 Durante la verificación se creó una `maintenance_window` de prueba sobre
@@ -442,11 +508,6 @@ limpió porque no hay endpoint de borrado (solo `close()`).
   reportes POS/CRM (D7); carga de IVA/unidad/código ARCA al crear producto
   (D8); verificación server-side de precio para productos en POS
   (D9-Parte 2).
-- **L** — reconciliar roles/asientos al bajar de plan (downgrade, sigue
-  laxo) — sigue abierto, es una decisión de negocio (¿bloquear el
-  downgrade si sobran asientos/roles, desactivar membresías más nuevas
-  automático, o algo intermedio?), no se resolvió sin confirmar con el
-  dueño.
 - **Gap conocido de C1-Fase C:** una factura consolidada (`invoices.
   financial_transaction_id = null`) no aparece en `getByReservationId()`
   (nota de crédito, C2) ni en `getOutstandingByCustomerId()` (conciliación

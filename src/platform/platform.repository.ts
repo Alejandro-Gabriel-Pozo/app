@@ -866,6 +866,29 @@ export class PlatformRepository {
     return result.rows[0]?.total ?? 0;
   }
 
+  /**
+   * Mismo filtro que `countActiveStaffMembershipsByBusiness()`, pero
+   * devolviendo las filas — L (25/08/2026, pendientes-2026-08-25.md,
+   * downgrade de plan). El superadmin necesita ver QUIÉN ocupa cada
+   * asiento para elegir a quién desactivar cuando bajar el plan deja al
+   * negocio por encima del límite nuevo.
+   */
+  async findActiveStaffMembershipsByBusiness(businessId: string): Promise<MembershipWithIdentity[]> {
+    const result = await this.db.query<MembershipJoinRow & IdentityProfileColumns>(
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at,
+              m.deactivated_by, m.deactivated_at, m.reactivated_by, m.reactivated_at, m.created_at,
+              b.name AS business_name, r.name AS role_name, i.email, i.full_name, i.dni, i.phone
+       FROM memberships m
+       JOIN businesses b ON b.id = m.business_id
+       JOIN roles r ON r.id = m.role_id
+       JOIN identities i ON i.id = m.identity_id
+       WHERE m.business_id = $1 AND m.active = TRUE AND r.name != 'OWNER'
+       ORDER BY m.created_at ASC`,
+      [businessId],
+    );
+    return result.rows.map((r) => this.rowToMembershipWithIdentity(r));
+  }
+
   // -------------------------------------------------------------------------
   // Roles — CRUD de la entidad configurable (14/08/2026)
   // -------------------------------------------------------------------------

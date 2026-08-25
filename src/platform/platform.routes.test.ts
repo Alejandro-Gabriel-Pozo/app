@@ -128,6 +128,16 @@ function fakePlatformRepo(overrides: Partial<PlatformRepository> = {}): Platform
     updatePlanLimits: vi.fn(async (plan: BusinessPlan) => ({ plan, maxCategories: null, maxResources: null, maxActiveMemberships: null, maxCustomRoles: null, allowedRoleNames: [], allowedPermissionGroups: [] })),
     listRolePresets: vi.fn(async () => []),
     updateRolePresetPermissionGroups: vi.fn(async (name: string, permissionGroups: string[]) => ({ name, permissionGroups })),
+    // L (25/08/2026) -- downgrade de plan asistido. Default sin límite de
+    // asientos (Infinity) para no romper los tests de arriba que no le
+    // interesa este chequeo -- los tests puntuales de la sección propia
+    // más abajo lo overridean con un límite real.
+    getPlanLimits: vi.fn(async (plan: BusinessPlan) => ({
+      plan, maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships: Infinity,
+      maxCustomRoles: Infinity, allowedRoleNames: 'ALL' as const, allowedPermissionGroups: 'ALL' as const,
+    })),
+    findActiveStaffMembershipsByBusiness: vi.fn(async () => []),
+    deactivateMembership: vi.fn(async () => true),
     ...overrides,
   } as unknown as PlatformRepository;
 }
@@ -339,6 +349,99 @@ describe('PATCH /businesses/:id/plan', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toMatchObject({ code: 'SAME_PLAN' });
+  });
+
+  // L (25/08/2026, pendientes-2026-08-25.md) -- "degradación asistida",
+  // Etapa 1: bajar el plan no debe dejar al negocio silenciosamente por
+  // encima del límite nuevo de asientos sin que nadie lo haya decidido.
+  describe('reconciliación de asientos al bajar de plan', () => {
+    function fakeMember(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'mem-1', identityId: 'ident-1', businessId: 'biz-1', businessName: 'Biz Test',
+        roleId: 'role-recep', roleName: 'RECEPTIONIST', active: true,
+        employeeNumber: null, hiredAt: null,
+        deactivatedBy: null, deactivatedAt: null, reactivatedBy: null, reactivatedAt: null,
+        createdAt: new Date('2026-01-01'),
+        email: 'e1@example.com', fullName: 'Empleado Uno', dni: null, phone: null,
+        ...overrides,
+      };
+    }
+    function limitedPlanLimits(maxActiveMemberships: number) {
+      return vi.fn(async (plan: BusinessPlan) => ({
+        plan, maxCategories: Infinity, maxResources: Infinity, maxActiveMemberships,
+        maxCustomRoles: Infinity, allowedRoleNames: 'ALL' as const, allowedPermissionGroups: 'ALL' as const,
+      }));
+    }
+
+    it('rechaza con 409 SEAT_LIMIT_EXCEEDS_NEW_PLAN si el plan nuevo no alcanza y no se eligió a nadie', async () => {
+      const platformRepo = fakePlatformRepo({
+        findById: vi.fn(async () => fakeBusiness({ plan: BusinessPlan.STARTER })),
+        getPlanLimits: limitedPlanLimits(1),
+        findActiveStaffMembershipsByBusiness: vi.fn(async () => [fakeMember({ id: 'mem-1' }), fakeMember({ id: 'mem-2' })]),
+      });
+      const router = createPlatformRouter(buildContainer(platformRepo));
+
+      const res = await runRoute(router, 'patch', '/businesses/:id/plan', reqWith({
+        token: superadminToken(), params: { id: 'biz-1' }, body: { plan: BusinessPlan.FREE },
+      }));
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SEAT_LIMIT_EXCEEDS_NEW_PLAN', newLimit: 1, currentActive: 2, excess: 1 });
+      expect(platformRepo.deactivateMembership).not.toHaveBeenCalled();
+      expect(platformRepo.updateBusinessPlan).not.toHaveBeenCalled();
+    });
+
+    it('todo o nada: si la selección no alcanza, no desactiva a nadie', async () => {
+      const platformRepo = fakePlatformRepo({
+        findById: vi.fn(async () => fakeBusiness({ plan: BusinessPlan.STARTER })),
+        getPlanLimits: limitedPlanLimits(1),
+        findActiveStaffMembershipsByBusiness: vi.fn(async () => [fakeMember({ id: 'mem-1' }), fakeMember({ id: 'mem-2' }), fakeMember({ id: 'mem-3' })]),
+      });
+      const router = createPlatformRouter(buildContainer(platformRepo));
+
+      // Necesita bajar 2 (de 3 a 1), pero solo eligió 1.
+      const res = await runRoute(router, 'patch', '/businesses/:id/plan', reqWith({
+        token: superadminToken(), params: { id: 'biz-1' }, body: { plan: BusinessPlan.FREE, membershipIdsToDeactivate: ['mem-1'] },
+      }));
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SEAT_LIMIT_EXCEEDS_NEW_PLAN', excess: 2 });
+      expect(platformRepo.deactivateMembership).not.toHaveBeenCalled();
+      expect(platformRepo.updateBusinessPlan).not.toHaveBeenCalled();
+    });
+
+    it('con selección suficiente, desactiva exactamente esas membresías (con quién/A6.5) y aplica el plan', async () => {
+      const platformRepo = fakePlatformRepo({
+        findById: vi.fn(async () => fakeBusiness({ plan: BusinessPlan.STARTER })),
+        getPlanLimits: limitedPlanLimits(1),
+        findActiveStaffMembershipsByBusiness: vi.fn(async () => [fakeMember({ id: 'mem-1' }), fakeMember({ id: 'mem-2' })]),
+      });
+      const router = createPlatformRouter(buildContainer(platformRepo));
+
+      const res = await runRoute(router, 'patch', '/businesses/:id/plan', reqWith({
+        token: superadminToken(), params: { id: 'biz-1' }, body: { plan: BusinessPlan.FREE, membershipIdsToDeactivate: ['mem-2'] },
+      }));
+
+      expect(platformRepo.deactivateMembership).toHaveBeenCalledExactlyOnceWith('mem-2', 'biz-1', expect.any(String));
+      expect(platformRepo.updateBusinessPlan).toHaveBeenCalledWith('biz-1', BusinessPlan.FREE);
+      expect(res.statusCode).toBeUndefined();
+    });
+
+    it('responde 500 PLAN_LIMITS_NOT_CONFIGURED si el plan destino no tiene fila en plan_limits', async () => {
+      const platformRepo = fakePlatformRepo({
+        findById: vi.fn(async () => fakeBusiness({ plan: BusinessPlan.STARTER })),
+        getPlanLimits: vi.fn(async () => undefined),
+      });
+      const router = createPlatformRouter(buildContainer(platformRepo));
+
+      const res = await runRoute(router, 'patch', '/businesses/:id/plan', reqWith({
+        token: superadminToken(), params: { id: 'biz-1' }, body: { plan: BusinessPlan.FREE },
+      }));
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toMatchObject({ code: 'PLAN_LIMITS_NOT_CONFIGURED' });
+      expect(platformRepo.updateBusinessPlan).not.toHaveBeenCalled();
+    });
   });
 });
 

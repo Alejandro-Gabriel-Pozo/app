@@ -41,8 +41,18 @@ const UpdateBusinessStatusSchema = z.object({
 // L (23/08/2026) — a diferencia del status, cambiar de plan no tiene
 // transiciones restringidas (cualquier plan a cualquier plan, en
 // cualquier dirección).
+//
+// L (25/08/2026, pendientes-2026-08-25.md) — `membershipIdsToDeactivate`
+// nuevo: "degradación asistida", Etapa 1 (decisión confirmada con el
+// dueño, alcance acotado a asientos -- NO roles, eso queda para otra
+// sesión). Si el negocio queda con más asientos activos de los que el
+// plan nuevo permite, el handler rechaza con 409 y devuelve la lista de
+// quién los ocupa -- el superadmin elige a quién desactivar y reintenta
+// el mismo PATCH con esos ids acá. Sin esto: mismo comportamiento laxo de
+// siempre (rechaza igual, sin aplicar nada).
 const UpdateBusinessPlanSchema = z.object({
   plan: z.nativeEnum(BusinessPlan),
+  membershipIdsToDeactivate: z.array(z.string()).optional(),
 });
 
 // L (23/08/2026) — editar plan_limits/plan_limit_allowed_roles/
@@ -220,9 +230,19 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
   // PATCH /platform/businesses/:id/plan — L (23/08/2026). Antes el único
   // camino para cambiar el plan de un negocio ya creado era un UPDATE a
-  // mano en la BD central (pendientes-2026-08-18.md). No reconcilia
-  // memberships/roles que queden fuera de los límites del plan nuevo — ver
-  // docblock de PlatformRepository.updateBusinessPlan().
+  // mano en la BD central (pendientes-2026-08-18.md).
+  //
+  // L (25/08/2026, pendientes-2026-08-25.md) — "degradación asistida",
+  // Etapa 1 (decisión confirmada con el dueño; alcance acotado a
+  // ASIENTOS, no roles -- eso queda sin resolver para otra sesión). Si el
+  // negocio va a quedar con más membresías activas de las que el plan
+  // nuevo permite, el cambio de plan NO se aplica todavía: responde 409
+  // con la lista de quién ocupa cada asiento para que el superadmin elija
+  // a quién desactivar, y reintente el mismo PATCH pasando
+  // `membershipIdsToDeactivate`. Con la lista puesta, desactiva esas
+  // membresías (mismo `deactivateMembership()` que DELETE /users/:id,
+  // dejando el rastro A6.5 de quién lo hizo -- acá, el superadmin) y
+  // recién ahí aplica el plan nuevo, todo antes de confirmar 200.
   router.patch(
     '/businesses/:id/plan',
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -237,6 +257,44 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           res.status(400).json({ code: 'SAME_PLAN', message: `El negocio ya está en el plan ${body.plan}.` });
           return;
         }
+
+        const newLimits = await platformRepository.getPlanLimits(body.plan);
+        if (!newLimits) {
+          res.status(500).json({ code: 'PLAN_LIMITS_NOT_CONFIGURED', message: `El plan '${body.plan}' no tiene límites configurados en plan_limits.` });
+          return;
+        }
+
+        if (Number.isFinite(newLimits.maxActiveMemberships)) {
+          const currentActive = await platformRepository.findActiveStaffMembershipsByBusiness(business.id);
+          if (currentActive.length > newLimits.maxActiveMemberships) {
+            const excess = currentActive.length - newLimits.maxActiveMemberships;
+            const requestedIds = new Set(body.membershipIdsToDeactivate ?? []);
+            const validSelected = currentActive.filter((m) => requestedIds.has(m.id));
+
+            // Todo o nada: si la selección no alcanza, no se desactiva a
+            // NADIE todavía -- elegir "2 de 3" no debe dejar a esas 2 sin
+            // acceso mientras el superadmin sigue decidiendo la tercera.
+            if (validSelected.length < excess) {
+              res.status(409).json({
+                code: 'SEAT_LIMIT_EXCEEDS_NEW_PLAN',
+                message: `El plan '${body.plan}' permite ${newLimits.maxActiveMemberships} asiento(s) — este negocio tiene ${currentActive.length} activo(s). ` +
+                  'Elegí a quién desactivar y reintentá con membershipIdsToDeactivate.',
+                newLimit: newLimits.maxActiveMemberships,
+                currentActive: currentActive.length,
+                excess,
+                activeMemberships: currentActive.map((m) => ({
+                  id: m.id, fullName: m.fullName, email: m.email, roleName: m.roleName, createdAt: m.createdAt,
+                })),
+              });
+              return;
+            }
+
+            for (const m of validSelected) {
+              await platformRepository.deactivateMembership(m.id, business.id, req.platformUser!.id);
+            }
+          }
+        }
+
         await platformRepository.updateBusinessPlan(business.id, body.plan);
         const updated = await platformRepository.findById(business.id);
         res.json({ message: `Plan actualizado a ${body.plan}`, business: updated ? toBusinessDto(updated) : null });
