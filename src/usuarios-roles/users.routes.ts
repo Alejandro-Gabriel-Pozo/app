@@ -9,6 +9,7 @@
  * PUT    /users/:id                    — MANAGEMENT
  * POST   /users/:id/password-reset-link — MANAGEMENT (K1, 23/08/2026 — manda un link, no fija la password a mano)
  * DELETE /users/:id                    — OWNER_ONLY (solo el propietario puede eliminar usuarios)
+ * POST   /users/:id/reactivate         — MANAGEMENT (F2, 25/08/2026 — reincorpora una membership desactivada)
  *
  * Nota: el rol OWNER no puede ser asignado desde la API — se asigna al crear
  * el negocio en la plataforma. El endpoint de creación lo rechaza explícitamente.
@@ -156,6 +157,21 @@ export function createUsersRouter(
         if (existingIdentity) {
           const alreadyMember = await platformRepo.findMembership(existingIdentity.id, businessId);
           if (alreadyMember) {
+            // F2 (25/08/2026, pendientes-2026-08-25.md) -- una membership
+            // desactivada NO debe bloquear para siempre: un negocio real
+            // recontrata gente. El UNIQUE(identity_id, business_id) impide
+            // insertar una fila nueva, así que la única salida es
+            // reactivar la existente -- se lo decimos al caller en vez de
+            // dejarlo sin salida con el mismo 409 genérico de "ya existe".
+            if (!alreadyMember.active) {
+              res.status(409).json({
+                code: 'MEMBERSHIP_DEACTIVATED',
+                message: 'Ese email ya tuvo una cuenta en este negocio, pero está desactivada. ' +
+                  'Reactivala (POST /users/:id/reactivate) en vez de crear una nueva.',
+                membershipId: alreadyMember.id,
+              });
+              return;
+            }
             res.status(409).json({
               code: 'MEMBERSHIP_ALREADY_EXISTS',
               message: 'Ese email ya es parte de este negocio.',
@@ -391,8 +407,66 @@ export function createUsersRouter(
     async (req, res, next) => {
       try {
         const businessId = req.user!.businessId as string;
-        await platformRepo.deactivateMembership(req.params['id'] as string, businessId);
+        await platformRepo.deactivateMembership(req.params['id'] as string, businessId, req.user!.id);
         res.status(204).send();
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /users/:id/reactivate ──────────────────────────────────────────
+  // F2 (25/08/2026, pendientes-2026-08-25.md) -- reincorpora una membership
+  // desactivada. Antes no existía NINGÚN camino de vuelta: POST /users y
+  // POST /users/invitations rechazaban con MEMBERSHIP_ALREADY_EXISTS apenas
+  // existía cualquier membership previa (activa o no) para esa identity+
+  // negocio, y el UNIQUE(identity_id, business_id) impide insertar una fila
+  // nueva -- un negocio real que recontrata a alguien no tenía forma de
+  // hacerlo. Reusa los mismos chequeos de plan que POST /users (rol
+  // permitido + asiento libre): reactivar un empleado ocupa un asiento
+  // igual que crear uno nuevo, así que no debe saltear el límite.
+  router.post(
+    '/:id/reactivate',
+    authorize(Roles.MANAGEMENT),
+    async (req, res, next) => {
+      try {
+        const businessId = req.user!.businessId as string;
+        const membershipId = req.params['id'] as string;
+
+        const member = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);
+        if (!member) {
+          res.status(404).json({ code: 'NOT_FOUND', message: 'Usuario no encontrado' });
+          return;
+        }
+        if (member.active) {
+          res.status(409).json({ code: 'MEMBERSHIP_ALREADY_ACTIVE', message: 'Este usuario ya está activo.' });
+          return;
+        }
+
+        const role = await platformRepo.getRoleById(member.roleId, businessId);
+        if (!role || !role.active) {
+          res.status(422).json({ code: 'INVALID_ROLE', message: 'El rol que tenía asignado ya no existe o está desactivado en este negocio — asignale uno nuevo primero (PUT /users/:id) antes de reactivar.' });
+          return;
+        }
+
+        const resolved = await resolvePlanLimits(container, res, businessId);
+        if (!resolved) return;
+        const { plan, limits } = resolved;
+
+        if (limits.allowedRoleNames !== 'ALL' && !limits.allowedRoleNames.includes(role.name)) {
+          const err = new RoleNotAvailableInPlanError(plan, role.name);
+          res.status(402).json({ code: err.code, message: err.message, plan: err.plan, roleName: err.roleName });
+          return;
+        }
+
+        const activeStaffCount = await platformRepo.countActiveStaffMembershipsByBusiness(businessId);
+        if (activeStaffCount >= limits.maxActiveMemberships) {
+          const err = new PlanLimitError(plan, limits.maxActiveMemberships, 'memberships');
+          res.status(402).json({ code: err.code, message: err.message, plan: err.plan, limit: err.limit });
+          return;
+        }
+
+        await platformRepo.reactivateMembership(membershipId, businessId, req.user!.id);
+        const updated = await platformRepo.findMembershipByIdAndBusiness(membershipId, businessId);
+        res.json(updated);
       } catch (err) { next(err); }
     },
   );

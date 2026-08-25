@@ -319,6 +319,85 @@ Housekeeping (tablero, planificar tarea) sigue funcionando sin cambios.
 
 ---
 
+## F2 — flujos de alta/baja de empleados vs. normativa/ERPs reales — ✅ RESUELTO EL HALLAZGO PRINCIPAL (25/08/2026)
+
+F2 llevaba tres sesiones seguidas (13/08, 23/08, 24/08) como "investigación
+amplia, sin alcance concreto" — nadie lo había acotado. Confirmado con el
+dueño: encarar puntualmente "flujos de alta/baja de empleados" (no
+protección de datos personales, que queda para otra sesión si hace falta).
+
+**Investigado contra el código real** (no contra documentación externa —
+mismo criterio que el resto de esta sesión):
+
+- **Ya resuelto, no son gaps:** revocación de acceso inmediata al
+  desactivar (`isMembershipActive` corre en cada request vía
+  `authenticate(undefined, checker)` global en `app.ts` — no espera a que
+  expire el JWT) y el login (elegir negocio) ya filtra
+  `WHERE active = TRUE` — un empleado dado de baja tampoco puede sacar un
+  token nuevo.
+- **Gap real y concreto, "flujo ficticio sin aplicabilidad comercial":**
+  **no había NINGUNA forma de reincorporar a un empleado dado de baja.**
+  Tanto "Crear usuario" (`POST /users`) como "Invitar usuario"
+  (`POST /users/invitations`) rechazaban con `409 MEMBERSHIP_ALREADY_EXISTS`
+  apenas existía *cualquier* membership previa para esa identity+negocio
+  (`findMembership()` no filtra por `active` — correcto, R2 — pero el
+  CALLER trataba "existe la fila" y "es miembro activo" como lo mismo), y
+  el `UNIQUE(identity_id, business_id)` de la tabla impide insertar una
+  fila nueva. Sin ningún `reactivateMembership()` en ningún lado. Cualquier
+  negocio real re-contrata gente — no había ningún camino, ni siquiera manual.
+- **Gap menor, ya resuelto de paso:** `deactivateMembership()` solo hacía
+  `SET active = FALSE`, sin dejar rastro de quién dio de baja a quién ni
+  cuándo (A6.5) — la única acción de "sacarle el acceso a alguien" del
+  sistema que no lo dejaba, a diferencia de todo lo demás tocado en esta
+  sesión (`MaintenanceWindow.closedBy/At`, `Stay.housekeepingOverride*`).
+
+**Implementado:**
+- `memberships` (platform DB): 4 columnas nuevas —
+  `deactivated_by`/`deactivated_at`/`reactivated_by`/`reactivated_at`, sin
+  FK a `users` (mismo criterio que el resto de columnas "quién" de este
+  archivo). Un par por dirección (no historial completo), mismo rigor que
+  `maintenance_windows.closed_by/closed_at`. `platform.schema.sql` se
+  re-aplica solo en cada arranque del server (sin versión propia, a
+  diferencia del schema por tenant) — no hizo falta correr ningún script
+  de migración aparte.
+- `PlatformRepository.reactivateMembership()` nuevo — solo si la
+  membership está `active = FALSE` (no pisa una ya activa).
+  `deactivateMembership()` ahora recibe `deactivatedBy` y lo graba.
+- `POST /users/:id/reactivate` (MANAGEMENT) nuevo — reusa EXACTAMENTE los
+  mismos chequeos de plan que `POST /users` (rol todavía permitido en el
+  plan actual, asiento libre): reincorporar ocupa un asiento igual que
+  crear, no debe saltear el límite. `409 MEMBERSHIP_ALREADY_ACTIVE` si ya
+  estaba activa (no es un idempotente silencioso — A6.3).
+- `POST /users` y `POST /users/invitations`: cuando la membership existente
+  está inactiva, el 409 cambia de `MEMBERSHIP_ALREADY_EXISTS` a
+  `MEMBERSHIP_DEACTIVATED` (con `membershipId`) — le dice al caller que
+  reactive en vez de dejarlo sin salida con el mismo mensaje genérico.
+- `docs/rbac-matriz-endpoints.md` y `EXPECTED_AUTHORIZE_CALL_SITES`
+  actualizados (196 → 197, un `authorize(Roles.MANAGEMENT)` nuevo).
+- 8 tests nuevos entre `users.routes.test.ts` (reactivar: éxito, 404, 409
+  ya activa, 402 asiento, 402 rol no permitido, 422 rol inexistente) y
+  `user-invitation.routes.test.ts` (409 `MEMBERSHIP_DEACTIVATED` con
+  `membershipId`).
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios, suite completa
+**129 archivos / 1479 tests verdes**. End-to-end contra la base real
+(`biz-demo-01`): usuario de prueba creado → desactivado → reintento de
+alta con el mismo email → `409 MEMBERSHIP_DEACTIVATED` con el
+`membershipId` correcto → `POST .../reactivate` → `200` con
+`active: true` y `deactivatedBy`/`deactivatedAt`/`reactivatedBy`/
+`reactivatedAt` los 4 persistidos correctamente → reintentar reactivar
+→ `409 MEMBERSHIP_ALREADY_ACTIVE`. Usuario de prueba desactivado de nuevo
+al terminar (no se dejó como asiento activo del demo).
+
+**Fuera de este alcance:** protección de datos personales (Ley 25.326) no
+se investigó — es el otro eje que quedó ofrecido y no elegido. Sin
+frontend todavía (el 409 `MEMBERSHIP_DEACTIVATED` ya trae el
+`membershipId` listo para que una pantalla ofrezca "reactivar" ahí mismo,
+pero no se construyó esa UI) — mismo patrón "backend-only, sin pantalla"
+del resto del backlog.
+
+---
+
 ## Hallazgo menor de UX — "Reactivar" visible en ventana ya cerrada — ✅ RESUELTO (25/08/2026)
 
 La ficha de detalle de Housekeeping seguía mostrando el botón "Reactivar"
@@ -363,8 +442,6 @@ limpió porque no hay endpoint de borrado (solo `close()`).
   reportes POS/CRM (D7); carga de IVA/unidad/código ARCA al crear producto
   (D8); verificación server-side de precio para productos en POS
   (D9-Parte 2).
-- **F2** — research amplio contra normativa nacional para ABM de usuarios,
-  nadie lo pidió puntualmente todavía.
 - **L** — reconciliar roles/asientos al bajar de plan (downgrade, sigue
   laxo) — sigue abierto, es una decisión de negocio (¿bloquear el
   downgrade si sobran asientos/roles, desactivar membresías más nuevas

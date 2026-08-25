@@ -164,10 +164,10 @@ describe('POST /api/users/invitations — crear + enviar mail', () => {
     expect(platformRepo.createInvitation).not.toHaveBeenCalled();
   });
 
-  it('rechaza con 409 MEMBERSHIP_ALREADY_EXISTS si el email ya es miembro de este negocio', async () => {
+  it('rechaza con 409 MEMBERSHIP_ALREADY_EXISTS si el email ya es miembro ACTIVO de este negocio', async () => {
     const platformRepo = fakePlatformRepo({
       findIdentityByEmail: vi.fn(async () => ({ id: 'ident-2', email: 'ya-miembro@example.com', passwordHash: 'x', googleSub: null, createdAt: now })),
-      findMembership: vi.fn(async () => ({ id: 'mem-2' })),
+      findMembership: vi.fn(async () => ({ id: 'mem-2', active: true })),
     });
     const router = createUserInvitationsRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new FakeEmailSender(), 'https://app.example.com');
     const handler = getHandler(router, 'post', '/');
@@ -178,6 +178,26 @@ describe('POST /api/users/invitations — crear + enviar mail', () => {
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.body).toMatchObject({ code: 'MEMBERSHIP_ALREADY_EXISTS' });
+    expect(platformRepo.createInvitation).not.toHaveBeenCalled();
+  });
+
+  // F2 (25/08/2026, pendientes-2026-08-25.md) -- una membership desactivada
+  // no debe bloquear para siempre: se le indica al caller que reactive en
+  // vez de dejarlo con el mismo 409 genérico sin salida.
+  it('rechaza con 409 MEMBERSHIP_DEACTIVATED (con membershipId) si el email ya fue miembro pero está desactivado', async () => {
+    const platformRepo = fakePlatformRepo({
+      findIdentityByEmail: vi.fn(async () => ({ id: 'ident-2', email: 'ex-empleado@example.com', passwordHash: 'x', googleSub: null, createdAt: now })),
+      findMembership: vi.fn(async () => ({ id: 'mem-2', active: false })),
+    });
+    const router = createUserInvitationsRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new FakeEmailSender(), 'https://app.example.com');
+    const handler = getHandler(router, 'post', '/');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, db: fakeDb(), body: { email: 'ex-empleado@example.com', roleId: 'role-recep' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.body).toMatchObject({ code: 'MEMBERSHIP_DEACTIVATED', membershipId: 'mem-2' });
     expect(platformRepo.createInvitation).not.toHaveBeenCalled();
   });
 

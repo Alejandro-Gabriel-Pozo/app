@@ -199,6 +199,20 @@ ALTER TABLE memberships ADD COLUMN IF NOT EXISTS hired_at        DATE;
 CREATE INDEX IF NOT EXISTS idx_memberships_business
   ON memberships (business_id);
 
+-- F2 (25/08/2026, pendientes-2026-08-25.md) -- rastro de auditoría (A6.5)
+-- para dar de baja/reincorporar acceso: antes `deactivateMembership()`
+-- solo hacía `SET active = FALSE`, sin dejar registro de quién ni cuándo.
+-- Un solo par de columnas por dirección (no historial completo) -- mismo
+-- nivel de rigor que `maintenance_windows.closed_by/closed_at`: cada
+-- transición pisa su propio par, no acumula filas. Sin FK a `users` --
+-- mismo criterio que el resto de columnas "quién" en este archivo
+-- (identity vive en la platform DB, pero esto es más simple guardar el
+-- identity_id crudo que resolverlo acá).
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(255);
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS reactivated_by VARCHAR(255);
+ALTER TABLE memberships ADD COLUMN IF NOT EXISTS reactivated_at TIMESTAMPTZ;
+
 -- ===========================================================================
 -- BLOQUE ROLES — reemplaza el enum hardcodeado de rol por una entidad
 -- configurable (Gap analysis - Tango ERP vs modelo actual.md, hallazgo #2;

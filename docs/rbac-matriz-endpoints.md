@@ -297,6 +297,7 @@ GET `/`, POST `/`, GET `/company-catalog`, GET `/:id`, PUT `/:id`, DELETE `/:id`
 - PUT `/:id` — `MANAGEMENT` (+ chequeo manual de jerarquía de rol en el cambio de contraseña — ver sección 5)
 - POST `/:id/password-reset-link` — `MANAGEMENT`
 - DELETE `/:id` — `OWNER_ONLY` (único call-site de este grupo fuera de `password-reset.routes.ts`)
+- POST `/:id/reactivate` — `MANAGEMENT` (25/08/2026, F2 — reincorpora una membership desactivada)
 
 **`password-reset.routes.ts`** — público, ver sección 4.
 

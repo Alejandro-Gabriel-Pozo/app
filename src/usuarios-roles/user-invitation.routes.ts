@@ -129,6 +129,18 @@ export function createUserInvitationsRouter(
       if (existingIdentity) {
         const alreadyMember = await platformRepo.findMembership(existingIdentity.id, businessId);
         if (alreadyMember) {
+          // F2 (25/08/2026, pendientes-2026-08-25.md) -- mismo criterio que
+          // POST /users: una membership desactivada no debe bloquear para
+          // siempre, se reactiva en vez de reinvitar.
+          if (!alreadyMember.active) {
+            res.status(409).json({
+              code: 'MEMBERSHIP_DEACTIVATED',
+              message: 'Ese email ya tuvo una cuenta en este negocio, pero está desactivada. ' +
+                'Reactivala (POST /users/:id/reactivate) en vez de invitarla de nuevo.',
+              membershipId: alreadyMember.id,
+            });
+            return;
+          }
           res.status(409).json({ code: 'MEMBERSHIP_ALREADY_EXISTS', message: 'Ese email ya es parte de este negocio.' });
           return;
         }

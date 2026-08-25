@@ -88,7 +88,9 @@ function makeMembership(overrides: Partial<Membership> = {}): Membership {
   return {
     id: 'mem-1', identityId: 'ident-1', businessId: 'biz-1', businessName: 'Biz Test',
     roleId: 'role-admin', roleName: 'ADMIN', active: true,
-    employeeNumber: null, hiredAt: null, createdAt: now,
+    employeeNumber: null, hiredAt: null,
+    deactivatedBy: null, deactivatedAt: null, reactivatedBy: null, reactivatedAt: null,
+    createdAt: now,
     ...overrides,
   };
 }
@@ -109,6 +111,8 @@ function fakePlatformRepo(overrides: Record<string, unknown> = {}): PlatformRepo
     updateMembershipRole: vi.fn(async () => true),
     findActiveMembershipsByIdentityId: vi.fn(async () => []),
     updateIdentityPassword: vi.fn(async () => {}),
+    deactivateMembership: vi.fn(async () => true),
+    reactivateMembership: vi.fn(async () => true),
     upsertPasswordResetToken: vi.fn(async (input: { identityId: string }) => ({
       id: 'prt-1', identityId: input.identityId, identityEmail: 'staff@example.com',
       requestedByIdentityId: 'ident-admin', businessId: 'biz-1', status: 'PENDING',
@@ -387,5 +391,110 @@ describe('POST /api/users/:id/password-reset-link (K1)', () => {
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(platformRepo.upsertPasswordResetToken).not.toHaveBeenCalled();
+  });
+});
+
+// F2 (25/08/2026, pendientes-2026-08-25.md) -- antes no existía NINGÚN
+// camino para reincorporar a un empleado dado de baja (el 409
+// MEMBERSHIP_ALREADY_EXISTS lo bloqueaba para siempre, sin distinguir
+// activa de inactiva).
+describe('POST /api/users/:id/reactivate', () => {
+  function fakeReactivateRepo(overrides: Record<string, unknown> = {}) {
+    return fakePlatformRepo({
+      findMembershipByIdAndBusiness: vi.fn(async () => ({
+        ...makeMembership({ active: false, roleId: 'role-recep', roleName: 'RECEPTIONIST' }),
+        email: 'ex-empleado@example.com',
+      })),
+      getRoleById: vi.fn(async () => makeRole({ id: 'role-recep', name: 'RECEPTIONIST' })),
+      ...overrides,
+    });
+  }
+
+  it('reactiva la membership y devuelve el registro actualizado', async () => {
+    const platformRepo = fakeReactivateRepo();
+    const router = createUsersRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new NoopEmailSender(), TEST_FRONTEND_URL);
+    const handler = getHandler(router, 'post', '/:id/reactivate');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, params: { id: 'mem-1' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(platformRepo.reactivateMembership).toHaveBeenCalledWith('mem-1', 'biz-1', 'ident-admin');
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ id: 'mem-1' }));
+  });
+
+  it('responde 404 si la membership no existe', async () => {
+    const platformRepo = fakeReactivateRepo({ findMembershipByIdAndBusiness: vi.fn(async () => undefined) });
+    const router = createUsersRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new NoopEmailSender(), TEST_FRONTEND_URL);
+    const handler = getHandler(router, 'post', '/:id/reactivate');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, params: { id: 'missing' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(platformRepo.reactivateMembership).not.toHaveBeenCalled();
+  });
+
+  it('responde 409 MEMBERSHIP_ALREADY_ACTIVE si ya está activa (no es idempotente en silencio)', async () => {
+    const platformRepo = fakeReactivateRepo({
+      findMembershipByIdAndBusiness: vi.fn(async () => ({ ...makeMembership({ active: true }), email: 'x@example.com' })),
+    });
+    const router = createUsersRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new NoopEmailSender(), TEST_FRONTEND_URL);
+    const handler = getHandler(router, 'post', '/:id/reactivate');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, params: { id: 'mem-1' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.body).toMatchObject({ code: 'MEMBERSHIP_ALREADY_ACTIVE' });
+    expect(platformRepo.reactivateMembership).not.toHaveBeenCalled();
+  });
+
+  it('responde 402 PLAN_LIMIT_REACHED si reactivar superaría el asiento del plan (mismo chequeo que crear)', async () => {
+    // STARTER permite RECEPTIONIST (a diferencia de FREE) -- así el rechazo
+    // es puntualmente por asiento, no por rol, aislando el chequeo que este
+    // test quiere probar.
+    const platformRepo = fakeReactivateRepo({ countActiveStaffMembershipsByBusiness: vi.fn(async () => 5) }); // STARTER.maxActiveMemberships = 5
+    const router = createUsersRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new NoopEmailSender(), TEST_FRONTEND_URL);
+    const handler = getHandler(router, 'post', '/:id/reactivate');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, params: { id: 'mem-1' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(402);
+    expect(res.body).toMatchObject({ code: 'PLAN_LIMIT_REACHED' });
+    expect(platformRepo.reactivateMembership).not.toHaveBeenCalled();
+  });
+
+  it('responde 402 ROLE_NOT_AVAILABLE_IN_PLAN si el rol que tenía ya no está permitido en el plan actual', async () => {
+    // FREE solo permite ADMIN -- el ex-empleado era RECEPTIONIST.
+    const platformRepo = fakeReactivateRepo();
+    const router = createUsersRouter(platformRepo, fakeContainer(BusinessPlan.FREE), new NoopEmailSender(), TEST_FRONTEND_URL);
+    const handler = getHandler(router, 'post', '/:id/reactivate');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, params: { id: 'mem-1' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(402);
+    expect(res.body).toMatchObject({ code: 'ROLE_NOT_AVAILABLE_IN_PLAN' });
+    expect(platformRepo.reactivateMembership).not.toHaveBeenCalled();
+  });
+
+  it('responde 422 INVALID_ROLE si el rol que tenía ya no existe/está desactivado', async () => {
+    const platformRepo = fakeReactivateRepo({ getRoleById: vi.fn(async () => undefined) });
+    const router = createUsersRouter(platformRepo, fakeContainer(BusinessPlan.STARTER), new NoopEmailSender(), TEST_FRONTEND_URL);
+    const handler = getHandler(router, 'post', '/:id/reactivate');
+    const req = { user: { businessId: 'biz-1', id: 'ident-admin' }, params: { id: 'mem-1' } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => {});
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.body).toMatchObject({ code: 'INVALID_ROLE' });
+    expect(platformRepo.reactivateMembership).not.toHaveBeenCalled();
   });
 });

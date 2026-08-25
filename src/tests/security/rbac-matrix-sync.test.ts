@@ -30,7 +30,9 @@ const SRC_DIR = join(__dirname, '../..');
 // pierde los 2 authorize(Roles.MANAGEMENT) de /:id/out-of-service y
 // /:id/reset, borradas por no tener caller real (maintenance_window las
 // reemplazó el 24/08/2026).
-const EXPECTED_AUTHORIZE_CALL_SITES = 196;
+// F2 (25/08/2026) -- 197, no 196: users.routes.ts suma
+// POST /:id/reactivate, authorize(Roles.MANAGEMENT).
+const EXPECTED_AUTHORIZE_CALL_SITES = 197;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 const EXPECTED_ROUTES_FILE_COUNT = 35;
 

@@ -91,6 +91,11 @@ export interface Membership {
   /** F2 (23/08/2026) — del EMPLEO en este negocio, no de la persona (ver `Identity.fullName`/`dni`/`phone`). Null hasta que un admin los carga. */
   employeeNumber: string | null;
   hiredAt: Date | null;
+  /** F2 (25/08/2026, A6.5) — rastro de la última baja/reincorporación. Null si nunca pasó (o si el otro par es el vigente). */
+  deactivatedBy: string | null;
+  deactivatedAt: Date | null;
+  reactivatedBy: string | null;
+  reactivatedAt: Date | null;
   createdAt: Date;
 }
 
@@ -713,7 +718,8 @@ export class PlatformRepository {
     const result = await this.db.query<MembershipJoinRow>(
       `INSERT INTO memberships (id, identity_id, business_id, role_id, employee_number, hired_at)
        VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, identity_id, business_id, role_id, active, employee_number, hired_at, created_at,
+       RETURNING id, identity_id, business_id, role_id, active, employee_number, hired_at,
+         deactivated_by, deactivated_at, reactivated_by, reactivated_at, created_at,
          (SELECT name FROM businesses WHERE id = $3) AS business_name,
          (SELECT name FROM roles WHERE id = $4) AS role_name`,
       [input.id, input.identityId, input.businessId, input.roleId, input.employeeNumber ?? null, input.hiredAt ?? null],
@@ -737,7 +743,8 @@ export class PlatformRepository {
    */
   async findActiveMembershipsByIdentityId(identityId: string): Promise<Membership[]> {
     const result = await this.db.query<MembershipJoinRow>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at,
+              m.deactivated_by, m.deactivated_at, m.reactivated_by, m.reactivated_at, m.created_at,
               b.name AS business_name, r.name AS role_name
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
@@ -751,7 +758,8 @@ export class PlatformRepository {
 
   async findMembership(identityId: string, businessId: string): Promise<Membership | undefined> {
     const result = await this.db.query<MembershipJoinRow>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at,
+              m.deactivated_by, m.deactivated_at, m.reactivated_by, m.reactivated_at, m.created_at,
               b.name AS business_name, r.name AS role_name
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
@@ -789,7 +797,8 @@ export class PlatformRepository {
    */
   async listMembershipsByBusiness(businessId: string): Promise<MembershipWithIdentity[]> {
     const result = await this.db.query<MembershipJoinRow & IdentityProfileColumns>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at,
+              m.deactivated_by, m.deactivated_at, m.reactivated_by, m.reactivated_at, m.created_at,
               b.name AS business_name, r.name AS role_name, i.email, i.full_name, i.dni, i.phone
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
@@ -812,7 +821,8 @@ export class PlatformRepository {
     businessId: string,
   ): Promise<MembershipWithIdentity | undefined> {
     const result = await this.db.query<MembershipJoinRow & IdentityProfileColumns>(
-      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at, m.created_at,
+      `SELECT m.id, m.identity_id, m.business_id, m.role_id, m.active, m.employee_number, m.hired_at,
+              m.deactivated_by, m.deactivated_at, m.reactivated_by, m.reactivated_at, m.created_at,
               b.name AS business_name, r.name AS role_name, i.email, i.full_name, i.dni, i.phone
        FROM memberships m
        JOIN businesses b ON b.id = m.business_id
@@ -954,12 +964,35 @@ export class PlatformRepository {
    * ni toca la identity — la persona puede seguir usando su cuenta
    * en otros negocios.
    */
-  async deactivateMembership(membershipId: string, businessId: string): Promise<boolean> {
+  /** `deactivatedBy` — identity_id de quien la da de baja (A6.5). */
+  async deactivateMembership(membershipId: string, businessId: string, deactivatedBy: string): Promise<boolean> {
     const result = await this.db.query(
       `UPDATE memberships
-       SET active = FALSE
+       SET active = FALSE, deactivated_by = $3, deactivated_at = NOW()
        WHERE id = $1 AND business_id = $2 AND active = TRUE`,
-      [membershipId, businessId],
+      [membershipId, businessId, deactivatedBy],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Reincorpora una membership dada de baja (25/08/2026, F2 —
+   * pendientes-2026-08-25.md). Antes no existía ningún camino de vuelta:
+   * `POST /users`/`POST /users/invitations` rechazaban con
+   * MEMBERSHIP_ALREADY_EXISTS apenas existía CUALQUIER membership previa
+   * (el UNIQUE(identity_id, business_id) impide crear una fila nueva),
+   * sin distinguir activa de inactiva — un negocio real que recontrata a
+   * alguien no tenía forma de hacerlo. `reactivatedBy` — identity_id de
+   * quien la reincorpora (A6.5). El caller (users.routes.ts) es
+   * responsable de re-chequear límites de plan/asiento antes de llamar
+   * esto, igual que hace POST /users al crear.
+   */
+  async reactivateMembership(membershipId: string, businessId: string, reactivatedBy: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE memberships
+       SET active = TRUE, reactivated_by = $3, reactivated_at = NOW()
+       WHERE id = $1 AND business_id = $2 AND active = FALSE`,
+      [membershipId, businessId, reactivatedBy],
     );
     return (result.rowCount ?? 0) > 0;
   }
@@ -1198,6 +1231,10 @@ export class PlatformRepository {
       active: row.active,
       employeeNumber: row.employee_number,
       hiredAt: row.hired_at ? new Date(row.hired_at) : null,
+      deactivatedBy: row.deactivated_by,
+      deactivatedAt: row.deactivated_at ? new Date(row.deactivated_at) : null,
+      reactivatedBy: row.reactivated_by,
+      reactivatedAt: row.reactivated_at ? new Date(row.reactivated_at) : null,
       createdAt: new Date(row.created_at),
     };
   }
@@ -1283,6 +1320,10 @@ interface MembershipJoinRow {
   active: boolean;
   employee_number: string | null;
   hired_at: string | null;
+  deactivated_by: string | null;
+  deactivated_at: string | null;
+  reactivated_by: string | null;
+  reactivated_at: string | null;
   created_at: string;
 }
 
