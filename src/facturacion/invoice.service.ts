@@ -51,6 +51,9 @@ import {
   AccountsReceivableAlreadyInvoicedError,
 } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
+import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+
+const AUDIT_ENTITY = 'invoices';
 
 export interface Buyer {
   docTipo: number;
@@ -71,6 +74,8 @@ export interface RequestInvoiceInput {
   buyer?: Buyer;
   /** 1=Productos, 2=Servicios, 3=Ambos. Default Servicios (PMS/reservas). */
   concepto?: number;
+  /** I9 (24/08/2026) — quién pidió este comprobante (identity id), para audit_log. Ver docblock de `recordInvoiceAudit()`. */
+  changedBy: string;
 }
 
 /** C1-Fase C (23/08/2026) — "Facturar ahora": UN comprobante cubriendo TODO lo PENDIENTE_FACTURAR de una empresa en este momento. */
@@ -79,6 +84,8 @@ export interface RequestConsolidatedInvoiceInput {
   companyCustomerId: string;
   buyer?: Buyer;
   concepto?: number;
+  /** I9 (24/08/2026) — ver `RequestInvoiceInput.changedBy`. */
+  changedBy: string;
 }
 
 /** yyyymmdd, el formato que exige WSFEv1 (nunca ISO) — ver referencia-afip-wsfev1.md. Exportada: la reusa InvoicePdfService. */
@@ -136,8 +143,31 @@ export class InvoiceService {
       AccountsReceivableRepository,
       'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId'
     >,
+    /**
+     * I9 (24/08/2026, pendientes-2026-08-24.md) — invoices es DOCUMENTO
+     * (criterios-datos.md Parte 1): nunca se edita, así que no aplica
+     * `recordFieldChanges()` (diff before/after, para MAESTROS). Se audita
+     * como evento único al crear la fila -- mismo patrón que
+     * `role.service.ts` (alta de rol) -- y cubre tanto una Factura B normal
+     * como una Nota de Crédito B (`buildCreditNote()`, C2) y la consolidada
+     * (C1-Fase C): las tres pasan por `recordInvoiceAudit()` justo después
+     * de `invoiceRepo.createWithClient()`. Un reintento idempotente
+     * (`retryExisting()`) NO vuelve a auditar -- no crea una fila nueva.
+     */
+    private readonly auditLogRepo: AuditLogRepository,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
+
+  private async recordInvoiceAudit(invoice: Invoice, changedBy: string): Promise<void> {
+    await this.auditLogRepo.record([{
+      entity: AUDIT_ENTITY,
+      entityId: invoice.id,
+      field: 'cbteTipo',
+      oldValue: null,
+      newValue: invoice.cbteTipo,
+      changedBy,
+    }]);
+  }
 
   /**
    * Desglosa `amount` en neto + IVA para UNA tasa (A2.9 — nunca un
@@ -290,6 +320,7 @@ export class InvoiceService {
     // afipRequest/los ítems.
     if (tx.type === 'REFUND') {
       const invoice = await this.buildCreditNote(tx, input, profile, authCuit, credentials, idempotencyKey);
+      await this.recordInvoiceAudit(invoice, input.changedBy);
       const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
       return this.issue(client, invoice, invoice.afipRequest as Record<string, unknown>, credentials.environment, profile.afipSalesPoint!);
     }
@@ -339,6 +370,7 @@ export class InvoiceService {
         items,
       );
     });
+    await this.recordInvoiceAudit(invoice, input.changedBy);
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
@@ -433,6 +465,7 @@ export class InvoiceService {
         pending.map((ar) => ({ financialTransactionId: ar.financialTransactionId!, amount: ar.amount })),
       );
     });
+    await this.recordInvoiceAudit(invoice, input.changedBy);
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     const issued = await this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);

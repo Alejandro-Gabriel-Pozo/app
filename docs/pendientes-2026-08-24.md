@@ -27,19 +27,122 @@ resueltos**. Detalle completo de ambos ahí, no se repite acá.
   reportes POS/CRM (D7); carga de IVA/unidad/código ARCA al crear producto
   (D8); verificación server-side de precio para productos en POS
   (D9-Parte 2).
-- **I3** — `audit_log.changed_by` sigue sin poder resolverse a un nombre
-  (identities vive en la BD de plataforma, audit_log en la del tenant).
-- **I7** — cobertura de rutas mala: 15 de 17 archivos medidos en 0%, 14 ni
-  se miden (excluidos de `vitest.config.ts`).
-- **I8** — mensaje de error obsoleto en `users.routes.ts:135,151` ("no
-  existe flujo de invitación automático" — sí existe desde D2).
-- **I9** — falta auditar documentos (facturas, notas de crédito) — solo se
-  resolvió la mitad (campos propios de Cliente).
+- **I3** — ✅ RESUELTO (24/08/2026). `PlatformRepository.
+  findIdentitiesByIds()` nuevo (batch, un solo `WHERE id = ANY($1)` sobre
+  la BD de plataforma — no hay JOIN posible entre bases). `GET
+  /api/audit-log` junta los `changedBy` únicos del lote devuelto y agrega
+  `changedByName` (fullName si lo cargó, si no email, `"Usuario
+  desconocido"` si el id no aparece) a cada fila, sin tocar `changedBy`.
+  3 tests nuevos (`audit-log.routes.test.ts`), suite completa 1039/1039,
+  `tsc --noEmit` limpio.
+- **I7** — ✅ RESUELTO (24/08/2026), alcance completo confirmado con el
+  dueño. Dos partes:
+  1. **15 archivos `*.routes.ts` en 0%** (customers.routes.ts 857 líneas,
+     products.routes.ts 755, reservations.routes.ts 559, etc., en
+     reservas/clientes-finanzas/pos-menu/pms-estadias/facturación) — cada
+     uno tiene ahora `*.routes.test.ts` con el patrón ya establecido en
+     el repo (handler extraído del stack del router, sin supertest — ver
+     docblock de `tenant-isolation.test.ts`). Hallazgo estructural
+     encontrado en el camino: la mayoría de estos routers instancian
+     `new SqlXxxRepository(req.db!)` DIRECTO dentro del handler, sin
+     ningún seam de inyección (a diferencia de `users.routes.ts`/
+     `roles.routes.ts`, los únicos con test antes de hoy) — se resolvió
+     con un fake de `SqlClient` que despacha por substring de SQL, o
+     mockeando el módulo del service entero con `vi.mock` +
+     `importOriginal` (patrón ya usado por `admin.routes.test.ts`/
+     `customer.routes.test.ts`, generalizado hoy: `import type * as X`
+     en vez de `importOriginal<typeof import('...')>()` inline, que
+     dispara un warning de lint).
+  2. **14 archivos que ni se medían** (`src/api/**`, `src/platform/**`,
+     `src/security/**` excluidos del todo en `vitest.config.ts`) — se
+     sacó la exclusión. Bastantes YA tenían test (`platform.repository.
+     test.ts`, `tenant.middleware.test.ts`, `auth.middleware.test.ts`,
+     etc.), solo no se medían; el resto (rutas de plataforma, repos de
+     `company`/`location`/`operating-hours`, workers de sync, setup de
+     tenant DB, provisioning de Neon, servicios de seguridad restantes)
+     se testeó hoy. Único archivo dejado sin test a propósito:
+     `platform.container.ts` — composición pura, mismo criterio que
+     `container.ts`/`app.ts`/`server.ts` (ya excluidos), ahora también en
+     el exclude de coverage.
+
+  **Resultado medido:** de 38.8%/82.4%/63.6% (líneas/branches/funciones)
+  con 1039 tests a **63.7%/79.3%/69.8% con 1466 tests**, 130 archivos de
+  test. `thresholds` de `vitest.config.ts` subidos de 30/25/30 a
+  60/50/60 (Fase 2 del TODO que ya estaba en el archivo) — con margen
+  real debajo del estado actual, no al límite. `tsc --noEmit` y
+  `eslint src` (que corre con `--max-warnings 0`) limpios en todo el
+  repo — quedan 3 errores de lint pre-existentes, no tocados hoy
+  (`error.middleware.ts`, `invoice.service.ts` import sin usar,
+  `maintenance-window.service.ts` import sin usar), y ninguno bloquea
+  este cambio.
+
+  **Gaps aceptados a propósito, documentados por cada fork que los dejó:**
+  - `reservations.routes.ts` — confirm/cancel/complete/price-preview/
+    confirm-price-adjustment/cancellation-refund/schedule-request×3 sin
+    test de ruta: son wrappers de 2-3 líneas sobre servicios que ya
+    tienen 94-100% de cobertura propia: fakear con fidelidad las ~10
+    tablas que cada uno toca solo para probar el wrapper no se
+    justificaba en costo/fragilidad.
+  - `customers.routes.ts` — `GET /:id/account`, `/:id/outstanding-
+    invoices`, `POST /:id/payments` sin test: pasan por
+    `CustomerAccountService` (5 repos + `TransactionManager`
+    encadenados) — fakear eso a nivel SQL dejaría de probar el contrato
+    real. Necesitan test de INTEGRACIÓN contra `TEST_DATABASE_URL`
+    (`vitest.integration.config.ts`, infraestructura ya existente desde
+    I1/I2), no un unit test con mocks — no se armó hoy, queda anotado
+    para cuando se prioricen tests de integración.
+  - `bookable-services.routes.ts` — `PUT resource-locks` (camino feliz)
+    y `available-slots` (camino feliz): el primero arma un
+    `PgTransactionManager` real de forma *eager* en el constructor
+    (explota sin `tenantMiddleware` real corriendo antes); el segundo
+    arma un `ReservationService` con 11 repos SQL propios. Se cubrieron
+    los 404 que ocurren ANTES de tocar esas dependencias, no el resto.
+  - `GET /api/invoices/:id/pdf` — Puppeteer real vía `@arcasdk/pdf`,
+    fuera de alcance de un test de ruta.
+  - No se re-testearon en cada router los middlewares genéricos
+    (`authorize()`, `authenticate()`, rate limiters) en aislamiento — ya
+    los cubren sus propios tests dedicados; cada router solo verifica
+    que el 401/403/402/429 correspondiente se dispare en el punto justo.
+- **I8** — ✅ RESUELTO (24/08/2026). Mensaje de `users.routes.ts` (alta
+  directa con email que ya tiene identity en otro negocio) corregido:
+  antes decía que no existía flujo de invitación automático, ahora manda
+  a usar "Invitar usuario" (`/api/users/invitations`, D2). Ningún test
+  dependía del texto viejo.
+- **I9** — ✅ RESUELTO (24/08/2026). La mitad que faltaba: auditar
+  facturas/notas de crédito. Vía skill `criterios-negocio` antes de tocar
+  código: `Invoice` es DOCUMENTO (criterios-datos.md Parte 1) — "¿se
+  edita? Nunca, ni un carácter" — así que `recordFieldChanges()` (diff
+  before/after, pensado para MAESTROS) no aplica; no hay nada que
+  diffear. Se audita como EVENTO ÚNICO al crear la fila, mismo patrón que
+  ya usa `role.service.ts` para alta de rol: `InvoiceService` ahora recibe
+  `AuditLogRepository` y graba `{entity: 'invoices', field: 'cbteTipo',
+  oldValue: null, newValue: <tipo de comprobante>, changedBy}` justo
+  después de `invoiceRepo.createWithClient()` — en los 3 puntos de
+  creación (Factura B normal, Nota de Crédito vía `buildCreditNote()`
+  cuando `tx.type === 'REFUND'`, y la consolidada de C1-Fase C), todos
+  vía el mismo `recordInvoiceAudit()`. `changedBy` viaja como campo nuevo
+  y OBLIGATORIO en `RequestInvoiceInput`/`RequestConsolidatedInvoiceInput`
+  (`req.user!.id` desde las rutas) — un reintento idempotente contra la
+  misma `financial_transaction_id` no vuelve a auditar (no crea fila
+  nueva). Se beneficia directo de I3 (`changedByName` ya resuelve el id a
+  nombre). 5 tests nuevos/extendidos, suite completa 1041/1041, `tsc
+  --noEmit` limpio. **Nota de alcance:** el audit se graba DESPUÉS de que
+  la transacción de creación de la factura ya confirmó (no adentro del
+  mismo `transactionManager.run()`) — mismo patrón que ya usan
+  `role.service.ts`/`recordFieldChanges()` en todo el repo, no es una
+  inconsistencia nueva de este cambio.
 - **F2** — research amplio contra normativa nacional para ABM de usuarios,
   nadie lo pidió puntualmente todavía.
 - **L** — reconciliar roles/asientos al bajar de plan (downgrade, sigue
-  laxo) + link muerto de `UpgradePrompt` → `/settings/billing` (no existe
-  self-serve billing).
+  laxo) — sigue abierto, es una decisión de negocio (¿bloquear el
+  downgrade si sobran asientos/roles, desactivar membresías más nuevas
+  automático, o algo intermedio?), no se resolvió sin confirmar con el
+  dueño. La otra mitad — link muerto de `UpgradePrompt` →
+  `/settings/billing` — ✅ RESUELTO (24/08/2026, `appfrontend-main`): no
+  hay ninguna página real a la que mandar (no existe self-serve billing
+  ni un contacto de soporte cargado en el código), así que se sacó el CTA
+  roto y se lo reemplazó por texto ("contactá a quien administra tu
+  cuenta") en vez de inventar una URL. `tsc --noEmit` y `eslint` limpios.
 - **Gap conocido de C1-Fase C:** una factura consolidada (`invoices.
   financial_transaction_id = null`) no aparece en `getByReservationId()`
   (nota de crédito, C2) ni en `getOutstandingByCustomerId()` (conciliación

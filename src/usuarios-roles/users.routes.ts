@@ -148,10 +148,11 @@ export function createUsersRouter(
 
         const existingIdentity = await platformRepo.findIdentityByEmail(body.email);
 
-        // Todavía no hay flujo de invitación (requeriría envío de emails).
-        // Rechazamos explícito en vez de pisar la contraseña de otra cuenta
-        // o crear una membership silenciosa con una password que el dueño
-        // real de esa identity no conoce.
+        // Esta alta directa sigue pisando la contraseña de la persona nueva
+        // (el ADMIN la tipea acá) — para un email que ya tiene identity en
+        // otro negocio eso pisaría su contraseña real, así que rechazamos
+        // explícito y mandamos a usar el flujo de invitación (D2,
+        // user-invitation.routes.ts) en vez de esta alta directa.
         if (existingIdentity) {
           const alreadyMember = await platformRepo.findMembership(existingIdentity.id, businessId);
           if (alreadyMember) {
@@ -164,7 +165,8 @@ export function createUsersRouter(
           res.status(409).json({
             code: 'IDENTITY_ALREADY_EXISTS',
             message: 'Ese email ya tiene una cuenta en la plataforma (en otro negocio). ' +
-              'Pedile a esa persona que inicie sesión — todavía no existe un flujo de invitación automático.',
+              'Usá "Invitar usuario" en vez de esta alta directa — la persona acepta desde su email ' +
+              'y se le agrega una membership nueva sin tocar su contraseña actual.',
           });
           return;
         }

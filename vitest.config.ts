@@ -27,10 +27,7 @@ export default defineConfig({
         // test files
         'src/**/*.test.ts',
         // infra / sin tests todavía
-        'src/api/**',
         'src/services/**',
-        'src/platform/**',
-        'src/security/**',
         'src/schemas/**',
         'src/seed/**',
         'src/db/**',
@@ -38,6 +35,10 @@ export default defineConfig({
         'src/server.ts',
         'src/app.ts',
         'src/container.ts',
+        // I7 (24/08/2026, pendientes-2026-08-24.md) -- composición pura,
+        // mismo criterio que container.ts/app.ts/server.ts de arriba: solo
+        // instancia clases, sin lógica propia que testear.
+        'src/platform/platform.container.ts',
         'src/repositories/supabase.occupancy.repository.ts',
         // interfaces y tipos puros — sin lógica ejecutable
         'src/repositories/customer.repository.ts',
@@ -47,17 +48,24 @@ export default defineConfig({
         'src/repositories/sql.client.ts',
         'src/domain/**/*.types.ts',
         'src/types/**',
+        'src/security/user.types.ts',
         // implementaciones SQL sin tests todavía
         'src/repositories/sql.customer.repository.ts',
       ],
       thresholds: {
-        // TODO: subir gradualmente por módulo a medida que se agregan tests.
-        // Objetivo Fase 2: lines/functions/statements → 60%, branches → 50%
+        // I7 (24/08/2026, pendientes-2026-08-24.md) -- Fase 2 alcanzada:
+        // se sacaron las exclusiones de src/api/**, src/platform/**,
+        // src/security/** (antes ni se medían) y se escribieron tests de
+        // ruta para los 15 archivos *.routes.ts que estaban en 0%. Estado
+        // real tras el cambio: lines/statements 63.6%, functions 69.8%,
+        // branches 79.3% -- el piso de acá abajo queda debajo de eso a
+        // propósito (margen para fluctuación normal, no para que baje sin
+        // que nadie lo note).
         // Objetivo Fase 3: lines/functions/statements → 80%, branches → 70%
-        lines: 30,
-        functions: 30,
-        branches: 25,
-        statements: 30,
+        lines: 60,
+        functions: 60,
+        branches: 50,
+        statements: 60,
       },
     },
   },

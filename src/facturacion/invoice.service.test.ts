@@ -19,6 +19,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
+import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -267,10 +268,12 @@ function afipRejectedResponse(msg = '10015: Factura B no cumple condicion') {
 describe('InvoiceService', () => {
   let invoiceRepo: FakeInvoiceRepository;
   let arRepo: FakeAccountsReceivableRepo;
+  let auditLogRepo: InMemoryAuditLogRepository;
 
   beforeEach(() => {
     invoiceRepo = new FakeInvoiceRepository();
     arRepo = new FakeAccountsReceivableRepo();
+    auditLogRepo = new InMemoryAuditLogRepository();
   });
 
   function buildService(opts: {
@@ -298,6 +301,7 @@ describe('InvoiceService', () => {
       new FakeReservationRepository(opts.reservation ?? null),
       new FakeTransactionManager(),
       arRepo,
+      auditLogRepo,
       // buildService sigue armando un Arca fake (fakeArcaClient) igual que
       // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
       // existentes de fakeArcaClient({...}) en esta suite no necesiten
@@ -309,25 +313,25 @@ describe('InvoiceService', () => {
   describe('validaciones antes de llamar a AFIP', () => {
     it('rechaza si la financial_transaction no existe (A3.9 -- no se factura un monto sin origen)', async () => {
       const service = buildService({ tx: null });
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-inexistente' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-inexistente', changedBy: 'identity-1' }))
         .rejects.toThrow(FinancialTransactionNotFoundError);
     });
 
     it('rechaza si falta el CUIT del negocio', async () => {
       const service = buildService({ profile: makeProfile({ taxId: null }) });
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
     });
 
     it('rechaza si falta el punto de venta AFIP', async () => {
       const service = buildService({ profile: makeProfile({ afipSalesPoint: null }) });
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
     });
 
     it('rechaza si todavía no se cargó el certificado AFIP', async () => {
       const service = buildService({ credentials: null });
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
     });
   });
@@ -346,10 +350,11 @@ describe('InvoiceService', () => {
         new FakeReservationRepository(),
         new FakeTransactionManager(),
         arRepo,
+        new InMemoryAuditLogRepository(),
         clientFactory,
       );
 
-      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(clientFactory).toHaveBeenCalledWith(expect.anything(), '20111111112', expect.anything());
     });
@@ -367,18 +372,46 @@ describe('InvoiceService', () => {
         new FakeReservationRepository(),
         new FakeTransactionManager(),
         arRepo,
+        new InMemoryAuditLogRepository(),
         clientFactory,
       );
 
-      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(clientFactory).toHaveBeenCalledWith(expect.anything(), '20333333335', expect.anything());
     });
 
     it('sin taxId NI afipCuit, rechaza (nada con qué autenticarse)', async () => {
       const service = buildService({ profile: makeProfile({ taxId: null, afipCuit: null }) });
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
+    });
+  });
+
+  describe('I9 (24/08/2026) -- auditoría de comprobantes (invoices es DOCUMENTO, se audita como evento único, no como diff)', () => {
+    it('registra un evento en audit_log al crear una Factura B, con el id de quien la pidió', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-admin' });
+
+      const entries = await auditLogRepo.findByEntity('invoices', invoice.id);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        entity: 'invoices', entityId: invoice.id, field: 'cbteTipo',
+        oldValue: null, changedBy: 'identity-admin',
+      });
+    });
+
+    it('un reintento idempotente (mismo financialTransactionId) no duplica el evento de auditoría', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      const first = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-admin' });
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-admin' });
+
+      const entries = await auditLogRepo.findByEntity('invoices', first.id);
+      expect(entries).toHaveLength(1);
     });
   });
 
@@ -391,7 +424,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
@@ -406,7 +439,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
@@ -444,7 +477,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
@@ -471,7 +504,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.impNeto).toBe(131);
       expect(invoice.impIva).toBe(24.25);
@@ -499,7 +532,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
@@ -517,7 +550,7 @@ describe('InvoiceService', () => {
         } as unknown as Order,
       });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(UnsupportedIvaRateError);
     });
 
@@ -529,7 +562,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.impNeto).toBe(100);
       expect(invoice.impIva).toBe(21);
@@ -581,7 +614,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
@@ -612,7 +645,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items[0]?.description).toBe('Remera (Talle M)');
@@ -633,7 +666,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items[0]).toMatchObject({ description: 'Mesa Ventana', orderItemId: expect.any(String), reservationId: 'res-1' });
@@ -650,7 +683,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
@@ -667,7 +700,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
@@ -702,7 +735,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(InvoiceNotReversibleError);
       expect(createNextVoucher).not.toHaveBeenCalled();
     });
@@ -712,7 +745,7 @@ describe('InvoiceService', () => {
         tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: 'inv-inexistente' }),
       });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(InvoiceNotReversibleError);
     });
 
@@ -722,7 +755,7 @@ describe('InvoiceService', () => {
         tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: 'inv-original' }),
       });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(InvoiceNotReversibleError);
     });
 
@@ -734,7 +767,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.cbteTipo).toBe(CBTE_TIPO_NOTA_CREDITO_B);
       expect(invoice.impTotal).toBe(100);
@@ -746,6 +779,11 @@ describe('InvoiceService', () => {
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({ unitPrice: 100, subtotal: 100, reservationId: 'res-1' });
+
+      // I9 -- la NC también se audita, con SU PROPIO id (no el de la factura original).
+      const entries = await auditLogRepo.findByEntity('invoices', invoice.id);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ field: 'cbteTipo', newValue: String(CBTE_TIPO_NOTA_CREDITO_B), changedBy: 'identity-1' });
     });
 
     it('reembolso parcial: escala proporcionalmente el neto/IVA de la factura original, no los recalcula desde la config actual', async () => {
@@ -760,7 +798,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       // factor = 50/100 = 0.5 -- mitad del neto/IVA original, no un IVA recalculado sobre 50.
       expect(invoice.impTotal).toBe(50);
@@ -774,8 +812,8 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
       const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
 
-      const first = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
-      const second = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const first = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      const second = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(second.id).toBe(first.id);
       expect(createNextVoucher).toHaveBeenCalledTimes(1);
@@ -788,13 +826,13 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(11));
       const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher }) });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipRequestUncertainError);
       const failed = await invoiceRepo.getByIdempotencyKey('invoice:ft-1');
       expect(failed?.status).toBe('FAILED_UNCERTAIN');
       expect(failed?.afipContacted).toBe(false);
 
-      const retried = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const retried = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
       expect(retried.status).toBe('ISSUED');
       expect(retried.id).toBe(failed!.id); // misma fila, nunca una segunda
       expect(createNextVoucher).toHaveBeenCalledTimes(1);
@@ -805,12 +843,12 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
       const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher }) });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipRequestUncertainError);
       const failed = await invoiceRepo.getByIdempotencyKey('invoice:ft-1');
       expect(failed?.afipContacted).toBe(true);
 
-      const second = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const second = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
       expect(second.status).toBe('FAILED_UNCERTAIN');
       expect(second.id).toBe(failed!.id);
       // nunca se volvió a llamar createNextVoucher -- ambiguo, requiere revisión manual antes de reintentar
@@ -823,12 +861,12 @@ describe('InvoiceService', () => {
         .mockResolvedValueOnce(afipApprovedResponse(5));
       const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipRequestRejectedError);
       const rejected = await invoiceRepo.getByIdempotencyKey('invoice:ft-1');
       expect(rejected?.status).toBe('REJECTED');
 
-      const retried = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const retried = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
       expect(retried.status).toBe('ISSUED');
       expect(retried.id).toBe(rejected!.id);
       expect(createNextVoucher).toHaveBeenCalledTimes(2);
@@ -840,7 +878,7 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(42, 'CAE-XYZ', '20261231'));
       const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.cbteNro).toBe(42);
@@ -852,7 +890,7 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
       const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
 
-      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(createNextVoucher).toHaveBeenCalledWith(expect.objectContaining({ DocTipo: 99, DocNro: 0 }));
     });
@@ -862,7 +900,7 @@ describe('InvoiceService', () => {
       const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
 
       await service.requestInvoice({
-        businessId: 'biz-1', financialTransactionId: 'ft-1',
+        businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1',
         buyer: { docTipo: 80, docNro: '20333333335', condicionIvaReceptorId: 1 },
       });
 
@@ -881,7 +919,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.paymentMethod).toBe('CARD');
       expect(invoice.cardInstallments).toBe(3);
@@ -896,7 +934,7 @@ describe('InvoiceService', () => {
         client: fakeArcaClient({ createNextVoucher }),
       });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.paymentMethod).toBeNull();
       expect(invoice.cardInstallments).toBeNull();
@@ -908,7 +946,7 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipRejectedResponse('10015: motivo de prueba'));
       const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipRequestRejectedError);
 
       const invoice = [...invoiceRepo.invoices.values()][0]!;
@@ -923,7 +961,7 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn();
       const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher }) });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipRequestUncertainError);
 
       expect(createNextVoucher).not.toHaveBeenCalled();
@@ -937,7 +975,7 @@ describe('InvoiceService', () => {
       const getVoucherInfo = vi.fn();
       const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher, getVoucherInfo }) });
 
-      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' }))
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipRequestUncertainError);
 
       expect(getVoucherInfo).not.toHaveBeenCalled(); // no avanzó -- no hay nada que reconciliar
@@ -954,7 +992,7 @@ describe('InvoiceService', () => {
       const getVoucherInfo = vi.fn().mockResolvedValue({ codAutorizacion: 'CAE-RECOVERED', fchVto: '20261231' });
       const service = buildService({ client: fakeArcaClient({ getLastVoucher, createNextVoucher, getVoucherInfo }) });
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(getVoucherInfo).toHaveBeenCalledWith(11, 3, CBTE_TIPO_FACTURA_B);
       expect(invoice.status).toBe('ISSUED');
@@ -1031,10 +1069,11 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeReservationRepository(),
         new FakeTransactionManager(),
         arRepo,
+        new InMemoryAuditLogRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
-      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(arRepo.rows.get('ar-1')!.status).toBe('FACTURADO');
       expect(arRepo.rows.get('ar-1')!.invoiceRef).toBe('0003-00000042');
@@ -1055,10 +1094,11 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeReservationRepository(),
         new FakeTransactionManager(),
         arRepo,
+        new InMemoryAuditLogRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
-      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1' });
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       expect(invoice.status).toBe('ISSUED');
       expect(arRepo.markInvoicedCalls).toHaveLength(0);
@@ -1073,6 +1113,7 @@ describe('InvoiceService — C1-Fase C', () => {
     }) {
       const invoiceRepo = new FakeInvoiceRepository();
       const arRepo = new FakeAccountsReceivableRepo();
+      const auditLogRepo = new InMemoryAuditLogRepository();
       for (const ar of opts.pending) arRepo.rows.set(ar.id, ar);
       const createNextVoucher = opts.createNextVoucher ?? vi.fn().mockResolvedValue(afipApprovedResponse(99));
       const service = new InvoiceService(
@@ -1086,14 +1127,15 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeReservationRepository(),
         new FakeTransactionManager(),
         arRepo,
+        auditLogRepo,
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
-      return { service, invoiceRepo, arRepo, createNextVoucher };
+      return { service, invoiceRepo, arRepo, auditLogRepo, createNextVoucher };
     }
 
     it('rechaza si la empresa no tiene nada PENDIENTE_FACTURAR', async () => {
       const { service } = buildConsolidatedService({ pending: [], txs: new Map() });
-      await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' }))
+      await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
         .rejects.toThrow(NothingToInvoiceError);
     });
 
@@ -1106,9 +1148,9 @@ describe('InvoiceService — C1-Fase C', () => {
         ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100, reservationId: 'res-1' })],
         ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 50, reservationId: 'res-2' })],
       ]);
-      const { service, invoiceRepo, arRepo } = buildConsolidatedService({ pending, txs });
+      const { service, invoiceRepo, arRepo, auditLogRepo } = buildConsolidatedService({ pending, txs });
 
-      const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' });
+      const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
 
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.financialTransactionId).toBeNull();
@@ -1120,6 +1162,9 @@ describe('InvoiceService — C1-Fase C', () => {
       expect(arRepo.rows.get('ar-1')!.status).toBe('FACTURADO');
       expect(arRepo.rows.get('ar-2')!.status).toBe('FACTURADO');
       expect(arRepo.rows.get('ar-1')!.invoiceRef).toBe(arRepo.rows.get('ar-2')!.invoiceRef); // mismo comprobante para las dos
+
+      // I9 -- un solo evento de auditoría para la consolidada, no uno por cargo cubierto.
+      expect(await auditLogRepo.findByEntity('invoices', invoice.id)).toHaveLength(1);
     });
 
     it('idempotencia: reintentar tras un fallo a mitad de camino (factura ya ISSUED, accounts_receivable sin marcar todavía) no pide un segundo CAE', async () => {
@@ -1160,10 +1205,11 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeReservationRepository(),
         new FakeTransactionManager(),
         arRepo,
+        new InMemoryAuditLogRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
-      const result = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' });
+      const result = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
 
       expect(result.id).toBe(priorInvoiceId);
       expect(createNextVoucher).not.toHaveBeenCalled();
@@ -1188,7 +1234,7 @@ describe('InvoiceService — C1-Fase C', () => {
       });
       invoiceRepo.charges.set('ft-1', priorInvoiceId);
 
-      await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa' }))
+      await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
         .rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
     });
   });

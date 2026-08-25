@@ -36,6 +36,7 @@ import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
+import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 
 function buildInvoiceService(req: Request): InvoiceService {
   const db = req.db!;
@@ -52,6 +53,9 @@ function buildInvoiceService(req: Request): InvoiceService {
     // C1-Fase C (23/08/2026) -- cierra el gap FacturarButton/accounts_receivable
     // y resuelve los cargos pendientes de "Facturar ahora".
     new SqlAccountsReceivableRepository(db),
+    // I9 (24/08/2026) -- quién pidió cada comprobante, ver docblock del
+    // constructor de InvoiceService.
+    new SqlAuditLogRepository(db),
   );
 }
 
@@ -70,6 +74,7 @@ export function createInvoicesRouter(container: AppContainer): Router {
         const invoice = await buildInvoiceService(req).requestInvoice({
           businessId: req.user!.businessId!,
           financialTransactionId: body.financialTransactionId,
+          changedBy: req.user!.id,
           ...(body.buyer !== undefined && { buyer: body.buyer }),
           ...(body.concepto !== undefined && { concepto: body.concepto }),
         });
@@ -94,6 +99,7 @@ export function createInvoicesRouter(container: AppContainer): Router {
         const invoice = await buildInvoiceService(req).requestConsolidatedInvoice({
           businessId: req.user!.businessId!,
           companyCustomerId: body.companyCustomerId,
+          changedBy: req.user!.id,
           ...(body.buyer !== undefined && { buyer: body.buyer }),
           ...(body.concepto !== undefined && { concepto: body.concepto }),
         });

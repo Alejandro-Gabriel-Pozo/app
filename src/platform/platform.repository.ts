@@ -640,6 +640,22 @@ export class PlatformRepository {
   }
 
   /**
+   * Búsqueda en lote (I3, pendientes-2026-08-24.md) — resolver `changed_by`
+   * de audit_log a un nombre real requiere esto: audit_log vive en la BD del
+   * tenant e identities en la de plataforma, dos bases distintas, así que no
+   * hay JOIN posible — el caller junta los ids únicos de un lote de filas de
+   * auditoría y pide todas las identities de una sola consulta acá.
+   */
+  async findIdentitiesByIds(ids: string[]): Promise<Identity[]> {
+    if (ids.length === 0) return [];
+    const result = await this.db.query<IdentityRow>(
+      'SELECT * FROM identities WHERE id = ANY($1)',
+      [ids],
+    );
+    return result.rows.map((row) => this.rowToIdentity(row));
+  }
+
+  /**
    * Login con Google — matchear primero por `sub` (estable de por vida),
    * ver docblock de la columna en platform.schema.sql para el porqué.
    */
