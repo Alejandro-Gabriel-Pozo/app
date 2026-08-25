@@ -56,6 +56,7 @@ import { createCancellationPoliciesRouter } from './reservas/cancellation-polici
 import { createOrdersRouter }            from './pos-menu/orders.routes.js';
 import { createBookableServicesRouter }  from './reservas/bookable-services.routes.js';
 import { createHousekeepingRouter }      from './pms-estadias/housekeeping.routes.js';
+import { createMaintenanceWindowsRouter } from './pms-estadias/maintenance-windows.routes.js';
 import { createStaysRouter }             from './pms-estadias/stays.routes.js';
 import { createAccountsReceivableRouter } from './clientes-finanzas/accounts-receivable.routes.js';
 import { createBusinessHoursRouter }     from './platform/business-hours.routes.js';
@@ -82,8 +83,10 @@ import type { AppContainer} from './container.js';
 import { createAppContainer, createPlatformPool, closePlatformPool } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
 import { SqlHousekeepingRepository }     from './pms-estadias/housekeeping.repository.js';
+import { SqlMaintenanceWindowRepository } from './pms-estadias/sql.maintenance-window.repository.js';
 import { SqlStayRepository }             from './pms-estadias/stay.repository.js';
 import { HousekeepingService }           from './pms-estadias/housekeeping.service.js';
+import { MaintenanceWindowService }      from './pms-estadias/maintenance-window.service.js';
 import { StayService }                   from './pms-estadias/stay.service.js';
 import { SqlResourceRepository }         from './reservas/sql.resource.repository.js';
 import { SqlReservationRepository }      from './reservas/sql.reservation.repository.js';
@@ -359,6 +362,25 @@ export async function createApp(): Promise<{
       const resourceRepo    = new SqlResourceRepository(req.db);
       const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
       const router = createHousekeepingRouter(housekeepingService, reservationRepo);
+      router(req, _res, next);
+    },
+  );
+
+  app.use(
+    '/api/maintenance-windows',
+    requireModule(container, ModuleKey.HOUSEKEEPING),
+    (req: Request, _res: Response, next: NextFunction) => {
+      const maintenanceWindowRepo = new SqlMaintenanceWindowRepository(req.db);
+      const resourceRepo    = new SqlResourceRepository(req.db);
+      const reservationRepo = new SqlReservationRepository(req.db, resourceRepo);
+      const businessProfileRepo = new SqlBusinessProfileRepository(req.db);
+      const maintenanceWindowService = new MaintenanceWindowService(
+        maintenanceWindowRepo,
+        resourceRepo,
+        reservationRepo,
+        businessProfileRepo,
+      );
+      const router = createMaintenanceWindowsRouter(maintenanceWindowService);
       router(req, _res, next);
     },
   );

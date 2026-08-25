@@ -290,7 +290,11 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `billing_policies` nueva; `accounts_receivable.financial_transaction_id`
 // nuevo; `invoices.financial_transaction_id` pasa a nullable; `invoice_charges`
 // nueva (N:1 para facturación consolidada, sin migrar facturas existentes).
-export const CURRENT_SCHEMA_VERSION = 39;
+// v40 (24/08/2026): ventana de mantenimiento, pendientes-2026-08-24.md.
+// `maintenance_windows` nueva (reemplaza OUT_OF_SERVICE de housekeeping_tasks
+// como mecanismo de bloqueo); `business_profile.maintenance_horizon_days`
+// nuevo; `reservations.needs_maintenance_review` nuevo.
+export const CURRENT_SCHEMA_VERSION = 40;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

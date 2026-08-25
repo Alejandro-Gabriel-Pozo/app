@@ -105,6 +105,18 @@ export interface BusinessProfile {
    */
   customerNumberPrefix: string;
   reservationNumberPrefix: string;
+  /**
+   * 24/08/2026 (docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md)
+   * — cuántos días de anticipación bloquea una ventana de mantenimiento
+   * ABIERTA (`maintenance_windows.end_date IS NULL`, "hasta nuevo aviso").
+   * Una reserva pedida dentro de este horizonte se rechaza; más allá, se
+   * acepta pero queda marcada para revisión
+   * (`Reservation.needsMaintenanceReview`). Nunca `null` — DEFAULT 30 en
+   * la base, a diferencia de `depositHoldHours` (donde `null` es un
+   * default seguro): acá `null` sería ambiguo entre "bloquear todo" y "no
+   * bloquear nada".
+   */
+  maintenanceHorizonDays: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -133,4 +145,5 @@ export interface UpdateBusinessProfileInput {
   depositHoldHours?: number | null | undefined;
   customerNumberPrefix?: string | undefined;
   reservationNumberPrefix?: string | undefined;
+  maintenanceHorizonDays?: number | undefined;
 }

@@ -56,7 +56,7 @@ import { SqlResourceLockRepository }          from '../../reservas/sql.resource-
 import { SqlBookableServiceRepository }       from '../../reservas/sql.bookable-service.repository.js';
 import { SqlCustomerRateRepository }          from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }        from '../../platform/sql.operating-hours.repository.js';
-import { SqlHousekeepingRepository }          from '../../pms-estadias/housekeeping.repository.js';
+import { SqlMaintenanceWindowRepository }     from '../../pms-estadias/sql.maintenance-window.repository.js';
 import { SqlDepositPolicyRepository }         from '../../reservas/sql.deposit-policy.repository.js';
 import { SqlBusinessProfileRepository }       from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository }  from '../../clientes-finanzas/sql.financial-transaction.repository.js';
@@ -94,7 +94,7 @@ async function buildService() {
   const bookableServiceRepo = new SqlBookableServiceRepository(db);
   const customerRateRepo = new SqlCustomerRateRepository(db);
   const operatingHoursRepo = new SqlOperatingHoursRepository(db);
-  const housekeepingRepo = new SqlHousekeepingRepository(db);
+  const maintenanceWindowRepo = new SqlMaintenanceWindowRepository(db);
   const txManager       = new PostgresTransactionManager(pool);
   const depositPolicyRepo = new SqlDepositPolicyRepository(db);
   const businessProfileRepo = new SqlBusinessProfileRepository(db);
@@ -112,7 +112,7 @@ async function buildService() {
     bookableServiceRepo,
     customerRateRepo,
     operatingHoursRepo,
-    housekeepingRepo,
+    maintenanceWindowRepo,
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,

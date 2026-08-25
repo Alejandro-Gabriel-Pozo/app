@@ -12,9 +12,9 @@ import { InMemoryBookableServiceRepository } from './in-memory.bookable-service.
 import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.customer-rate.repository.js';
 import { InMemoryDepositPolicyRepository } from './in-memory.deposit-policy.repository.js';
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
-import { InMemoryHousekeepingRepository } from '../pms-estadias/in-memory.housekeeping.repository.js';
+import { InMemoryMaintenanceWindowRepository } from '../pms-estadias/in-memory.maintenance-window.repository.js';
 import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.number-sequence.repository.js';
-import { HousekeepingTask } from '../pms-estadias/housekeeping-task.js';
+import { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
 import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
@@ -91,7 +91,7 @@ describe('ReservationService', () => {
   let bookableServiceRepo: InMemoryBookableServiceRepository;
   let customerRateRepo: InMemoryCustomerRateRepository;
   let operatingHoursRepo: InMemoryOperatingHoursRepository;
-  let housekeepingRepo: InMemoryHousekeepingRepository;
+  let maintenanceWindowRepo: InMemoryMaintenanceWindowRepository;
   let depositPolicyRepo: InMemoryDepositPolicyRepository;
   let financialTransactionRepo: FakePaymentLedger;
   let numberSequenceRepo: InMemoryNumberSequenceRepository;
@@ -111,6 +111,7 @@ describe('ReservationService', () => {
         defaultIvaRate: 21, pricesIncludeIva: true,
         defaultDepositPercentage: null, depositHoldHours: null,
         customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+        maintenanceHorizonDays: 30,
         createdAt: new Date(), updatedAt: new Date(),
       };
     },
@@ -156,7 +157,7 @@ describe('ReservationService', () => {
     bookableServiceRepo   = new InMemoryBookableServiceRepository();
     customerRateRepo      = new InMemoryCustomerRateRepository();
     operatingHoursRepo    = new InMemoryOperatingHoursRepository();
-    housekeepingRepo      = new InMemoryHousekeepingRepository();
+    maintenanceWindowRepo = new InMemoryMaintenanceWindowRepository();
     depositPolicyRepo     = new InMemoryDepositPolicyRepository();
     financialTransactionRepo = new FakePaymentLedger();
     numberSequenceRepo    = new InMemoryNumberSequenceRepository();
@@ -172,7 +173,7 @@ describe('ReservationService', () => {
       bookableServiceRepo,
       customerRateRepo,
       operatingHoursRepo,
-      housekeepingRepo,
+      maintenanceWindowRepo,
       depositPolicyRepo,
       businessProfileRepo,
       financialTransactionRepo,
@@ -235,21 +236,19 @@ describe('ReservationService', () => {
       ).rejects.toThrow(InvalidReservationError);
     });
 
-    it('debe rechazar si el recurso está marcado OUT_OF_SERVICE por housekeeping', async () => {
-      // J3 (23/08/2026) — restore(), no create(): simula una tarea que YA
-      // existe (rehidratada, como si viniera de la base), no una de alta
-      // nueva — create() rechazaría un scheduledFor pasado (J2), pero acá
-      // lo que importa es que isOutOfService() mire tareas cuyo
-      // scheduled_for ya llegó (J3), así que tiene que quedar en el pasado
-      // real a propósito.
-      const task = HousekeepingTask.restore({
-        id: 'hk-out-1', businessId: TEST_BUSINESS_ID, resourceId: 't1',
-        assignedTo: null, status: 'OUT_OF_SERVICE', notes: 'Cañería rota',
-        shift: 'MORNING', scheduledFor: new Date('2020-01-01T08:00:00'),
-        startedAt: null, completedAt: null, inspectedAt: null, inspectedBy: null,
-        notBefore: null, createdAt: new Date('2020-01-01T08:00:00'), updatedAt: new Date('2020-01-01T08:00:00'),
+    it('debe rechazar si el recurso tiene una ventana de mantenimiento vigente que se solapa', async () => {
+      // 24/08/2026 — reemplaza al viejo test de OUT_OF_SERVICE (housekeeping):
+      // el mecanismo de bloqueo ahora es maintenance_windows, no un status
+      // de HousekeepingTask. Ventana con endDate fijo que cubre por completo
+      // el rango de la reserva ('2026-07-01') -- endDate 2026-12-31 queda
+      // >= "hoy" real (findActiveByResourceId lo filtra por eso), así el
+      // test no depende de la fecha real del sistema en el momento de correr.
+      const window = MaintenanceWindow.create({
+        businessId: TEST_BUSINESS_ID, resourceId: 't1',
+        startDate: '2026-01-01', endDate: '2026-12-31',
+        reason: 'Cañería rota', createdBy: 'user-1',
       });
-      housekeepingRepo.seed(task);
+      maintenanceWindowRepo.seed(window);
 
       await expect(
         service.createReservation({
@@ -622,7 +621,7 @@ describe('ReservationService', () => {
       const lodgingService = new ReservationService(
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
-        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
@@ -670,7 +669,7 @@ describe('ReservationService', () => {
       const depositService = new ReservationService(
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
-        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
@@ -690,7 +689,7 @@ describe('ReservationService', () => {
       const depositService = new ReservationService(
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
-        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
@@ -715,7 +714,7 @@ describe('ReservationService', () => {
       const depositService = new ReservationService(
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
-        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
@@ -732,7 +731,7 @@ describe('ReservationService', () => {
       const depositService = new ReservationService(
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
-        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
@@ -820,17 +819,15 @@ describe('ReservationService', () => {
       expect(available).toBe(false);
     });
 
-    it('debe retornar false cuando el recurso está OUT_OF_SERVICE, sin conflicto de horario', async () => {
-      // J3 (23/08/2026) — restore(), no create(): ver comentario del test
-      // equivalente en el describe de createReservation más arriba.
-      const task = HousekeepingTask.restore({
-        id: 'hk-out-2', businessId: TEST_BUSINESS_ID, resourceId: 't1',
-        assignedTo: null, status: 'OUT_OF_SERVICE', notes: null,
-        shift: 'MORNING', scheduledFor: new Date('2020-01-01T08:00:00'),
-        startedAt: null, completedAt: null, inspectedAt: null, inspectedBy: null,
-        notBefore: null, createdAt: new Date('2020-01-01T08:00:00'), updatedAt: new Date('2020-01-01T08:00:00'),
+    it('debe retornar false cuando el recurso tiene una ventana de mantenimiento vigente, sin conflicto de horario', async () => {
+      // 24/08/2026 — reemplaza al viejo test de OUT_OF_SERVICE (housekeeping):
+      // ver comentario del test equivalente en el describe de createReservation.
+      const window = MaintenanceWindow.create({
+        businessId: TEST_BUSINESS_ID, resourceId: 't1',
+        startDate: '2026-01-01', endDate: '2026-12-31',
+        reason: null, createdBy: 'user-1',
       });
-      housekeepingRepo.seed(task);
+      maintenanceWindowRepo.seed(window);
 
       const available = await service.checkAvailability(
         't1',
@@ -1551,7 +1548,7 @@ describe('ReservationService', () => {
       const lodgingService = new ReservationService(
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
-        customerRateRepo, operatingHoursRepo, housekeepingRepo,
+        customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );

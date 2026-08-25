@@ -160,6 +160,20 @@ export interface ReservationProps {
    * `ReservationPricingService.resolvePrice()`.
    */
   appliedCustomerRateId: string | null;
+  /**
+   * 24/08/2026 (docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md)
+   * — la reserva se aceptó igual (no se rechazó), pero su recurso tiene una
+   * ventana de mantenimiento ABIERTA ("hasta nuevo aviso") cuya fecha cae
+   * más allá del horizonte configurado del negocio. Queda para revisión
+   * humana -- reasignar a otro recurso si aparece uno libre, o esperar a
+   * que se acerque la fecha. Default `false` (la inmensa mayoría de las
+   * reservas no tiene nada que revisar) -- lo resuelve
+   * `ReservationAvailabilityService.needsMaintenanceReview()` en
+   * `ReservationService.createReservation()`, no se recalcula después.
+   * Sin mutador todavía (R14, YAGNI): la pantalla de revisión/reasignación
+   * que lo va a limpiar queda para una sesión aparte.
+   */
+  needsMaintenanceReview?: boolean;
 }
 
 export class Reservation {
@@ -183,6 +197,7 @@ export class Reservation {
   public readonly depositDueBy: Date | null;
   public readonly reservationNumber: number;
   public readonly appliedCustomerRateId: string | null;
+  public readonly needsMaintenanceReview: boolean;
 
   constructor(props: ReservationProps) {
     const {
@@ -211,6 +226,7 @@ export class Reservation {
       depositDueBy = null,
       reservationNumber,
       appliedCustomerRateId,
+      needsMaintenanceReview = false,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -271,6 +287,7 @@ export class Reservation {
     this.depositDueBy  = depositDueBy;
     this.reservationNumber = reservationNumber;
     this.appliedCustomerRateId = appliedCustomerRateId;
+    this.needsMaintenanceReview = needsMaintenanceReview;
     this._status     = initialStatus;
   }
 

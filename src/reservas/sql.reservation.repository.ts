@@ -35,6 +35,7 @@ interface ReservationRow {
   deposit_due_by?: string | Date | null;
   reservation_number: number;
   applied_customer_rate_id: string | null;
+  needs_maintenance_review?: boolean | null;
 }
 
 /**
@@ -90,6 +91,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.depositDueBy ? reservation.depositDueBy.toISOString() : null,
       reservation.reservationNumber,
       reservation.appliedCustomerRateId,
+      reservation.needsMaintenanceReview,
     ];
   }
 
@@ -135,9 +137,9 @@ export class SqlReservationRepository implements ReservationRepository {
       service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id,
       requested_check_in_time, requested_check_out_time, schedule_approval_status,
       schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by,
-      reservation_number, applied_customer_rate_id
+      reservation_number, applied_customer_rate_id, needs_maintenance_review
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -161,7 +163,8 @@ export class SqlReservationRepository implements ReservationRepository {
       deposit_amount           = $23,
       deposit_due_by           = $24,
       reservation_number       = $25,
-      applied_customer_rate_id = $26
+      applied_customer_rate_id = $26,
+      needs_maintenance_review = $27
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -446,7 +449,8 @@ export class SqlReservationRepository implements ReservationRepository {
         r.adultos, r.ninos, r.rate_plan_id,
         r.requested_check_in_time, r.requested_check_out_time,
         r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount,
-        r.deposit_amount, r.deposit_due_by, r.reservation_number, r.applied_customer_rate_id
+        r.deposit_amount, r.deposit_due_by, r.reservation_number, r.applied_customer_rate_id,
+        r.needs_maintenance_review
       FROM reservations r
     `;
   }
@@ -496,6 +500,7 @@ export class SqlReservationRepository implements ReservationRepository {
       depositDueBy:  row.deposit_due_by ? new Date(row.deposit_due_by) : null,
       reservationNumber: row.reservation_number,
       appliedCustomerRateId: row.applied_customer_rate_id,
+      needsMaintenanceReview: row.needs_maintenance_review ?? false,
     });
   }
 

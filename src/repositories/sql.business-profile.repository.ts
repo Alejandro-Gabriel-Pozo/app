@@ -28,6 +28,7 @@ function rowToProfile(row: Record<string, unknown>): BusinessProfile {
     depositHoldHours:         (row['deposit_hold_hours'] as number | null) ?? null,
     customerNumberPrefix:    row['customer_number_prefix']    as string,
     reservationNumberPrefix: row['reservation_number_prefix'] as string,
+    maintenanceHorizonDays:  row['maintenance_horizon_days'] as number,
     createdAt:    new Date(row['created_at'] as string),
     updatedAt:    new Date(row['updated_at'] as string),
   };
@@ -142,6 +143,10 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
     if (input.reservationNumberPrefix !== undefined) {
       fields.push(`reservation_number_prefix = $${idx++}`);
       params.push(input.reservationNumberPrefix);
+    }
+    if (input.maintenanceHorizonDays !== undefined) {
+      fields.push(`maintenance_horizon_days = $${idx++}`);
+      params.push(input.maintenanceHorizonDays);
     }
 
     if (fields.length === 0) return this.get();

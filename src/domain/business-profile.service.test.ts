@@ -56,6 +56,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     depositHoldHours: null,
     customerNumberPrefix: 'CLI',
     reservationNumberPrefix: 'RES',
+    maintenanceHorizonDays: 30,
     createdAt: now,
     updatedAt: now,
     ...overrides,

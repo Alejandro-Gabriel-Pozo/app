@@ -97,6 +97,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'BUSINESS_NOT_IN_COMPANY':
     case 'RATE_PLAN_NOT_AVAILABLE':
     case 'INVALID_RATE_PLAN_VALIDITY':
+    case 'INVALID_MAINTENANCE_WINDOW_DATES':
       return 400;
 
     // --- 422 Unprocessable Entity ---
@@ -157,6 +158,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'INVOICE_NOT_FOUND':
     case 'RATE_CATALOG_ENTRY_NOT_FOUND':
     case 'ACCOUNT_RECEIVABLE_NOT_FOUND':
+    case 'MAINTENANCE_WINDOW_NOT_FOUND':
       return 404;
 
     // --- 409 Conflict ---
@@ -173,6 +175,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'STAY_BALANCE_OWED':
     case 'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED':
     case 'NOTHING_TO_INVOICE':
+    case 'MAINTENANCE_WINDOW_CONFLICT':
+    case 'MAINTENANCE_WINDOW_ALREADY_CLOSED':
     case 'PRODUCT_HAS_STOCK':
     case 'INVALID_OVERRIDE_TRANSITION':
     case 'DUPLICATE_RATE_PLAN_NAME':

@@ -2858,3 +2858,91 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_charges_ft
 CREATE INDEX IF NOT EXISTS idx_invoice_charges_invoice
   ON invoice_charges (invoice_id);
 
+-- ===========================================================================
+-- BLOQUE 12 — VENTANA DE MANTENIMIENTO (housekeeping), 24/08/2026
+-- docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md
+-- ===========================================================================
+-- Reemplaza el flag OUT_OF_SERVICE de housekeeping_tasks como mecanismo de
+-- bloqueo de disponibilidad (decisión confirmada con el dueño,
+-- AskUserQuestion) -- "fuera de servicio" pasa a ser una entidad con
+-- inicio y fin, como una estadía, en vez de un valor más de `status` sobre
+-- una tarea de limpieza puntual. housekeeping_tasks.status sigue
+-- aceptando 'OUT_OF_SERVICE' a nivel de columna (no se migra ni se borra
+-- ninguna fila histórica), pero el motor de disponibilidad
+-- (reservation-availability.service.ts) deja de consultarlo -- el botón
+-- "Fuera de servicio" del frontend ahora crea una maintenance_window.
+--
+-- TRANSACCIÓN (criterios-datos.md Parte 1): un hecho con inicio y fin,
+-- nunca se edita libremente -- solo avanza (R12): abrirse y, opcionalmente,
+-- cerrarse antes de tiempo. `end_date` nullable = ventana abierta ("hasta
+-- nuevo aviso"), se resuelve con horizonte configurable por negocio
+-- (business_profile.maintenance_horizon_days) en vez de bloquear
+-- indefinidamente -- ver ReservationAvailabilityService.
+CREATE TABLE IF NOT EXISTS maintenance_windows (
+  id           VARCHAR(255)  PRIMARY KEY,
+  business_id  VARCHAR(255)  NOT NULL,
+  resource_id  VARCHAR(255)  NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+  start_date   DATE          NOT NULL,
+  -- NULL = abierta ("hasta nuevo aviso"). Cerrar la ventana (setear esto)
+  -- es la ÚNICA forma de liberar el recurso -- reemplaza al `reset` actual
+  -- sobre la tarea de limpieza.
+  end_date     DATE,
+  reason       VARCHAR(500),
+  -- identity_id (JWT sub) de quien la creó/cerró. SIN FK a `users` a
+  -- propósito -- misma razón que stays.assigned_by (BLOQUE 6): identity
+  -- vive en la platform DB, no en el tenant.
+  created_by   VARCHAR(255)  NOT NULL,
+  closed_by    VARCHAR(255),
+  closed_at    TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT chk_maintenance_window_dates CHECK (end_date IS NULL OR end_date >= start_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_windows_resource
+  ON maintenance_windows (resource_id, business_id);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_windows_business
+  ON maintenance_windows (business_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'maintenance_windows_updated_at') THEN
+    CREATE TRIGGER maintenance_windows_updated_at
+      BEFORE UPDATE ON maintenance_windows
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- business_profile.maintenance_horizon_days -- política general del
+-- negocio (A2.9, nunca una constante de código), mismo criterio que
+-- deposit_hold_hours: cuántos días de anticipación bloquea una ventana
+-- ABIERTA (sin end_date). Default 30 -- valor conservador, no NULL: a
+-- diferencia de deposit_hold_hours (NULL = "sin seña, comportamiento sin
+-- cambios" es un default seguro), acá NULL significaría "sin horizonte
+-- definido", ambiguo entre "bloquear todo" y "no bloquear nada" -- un
+-- número concreto desde el arranque evita esa ambigüedad. Editable por el
+-- negocio como el resto de esta tabla.
+ALTER TABLE business_profile ADD COLUMN IF NOT EXISTS maintenance_horizon_days INTEGER NOT NULL DEFAULT 30;
+
+ALTER TABLE business_profile DROP CONSTRAINT IF EXISTS chk_business_profile_maintenance_horizon_days;
+ALTER TABLE business_profile ADD CONSTRAINT chk_business_profile_maintenance_horizon_days
+  CHECK (maintenance_horizon_days >= 0);
+
+-- reservations.needs_maintenance_review -- una reserva nueva cuyo recurso
+-- tiene una maintenance_window ABIERTA pero la fecha pedida cae MÁS ALLÁ
+-- del horizonte configurado: se acepta igual (no se rechaza una reserva
+-- futura por un mantenimiento sin fecha de fin clara), pero queda
+-- marcada para revisión humana -- reasignar a otro recurso de la misma
+-- categoría si aparece uno libre, o resolver más cerca de la fecha.
+-- Bandera simple, no una tabla de "casos a revisar" aparte: la pantalla
+-- de revisión (sin construir todavía, ver el diseño) puede listar
+-- reservations WHERE needs_maintenance_review = TRUE directo.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS needs_maintenance_review BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Sin business_id -- mismo criterio que el resto de `reservations`
+-- (BLOQUE 1): el aislamiento de tenant ya lo da la base (una BD por
+-- negocio), no una columna acá.
+CREATE INDEX IF NOT EXISTS idx_reservations_needs_maintenance_review
+  ON reservations (needs_maintenance_review) WHERE needs_maintenance_review = TRUE;
+

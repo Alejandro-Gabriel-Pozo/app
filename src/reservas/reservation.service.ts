@@ -9,7 +9,7 @@
  * - `ReservationPricingService` (reservation-pricing.service.ts) — cascada
  *   de precio y desglose en líneas.
  * - `ReservationAvailabilityService` (reservation-availability.service.ts)
- *   — conflictos, resource_locks, OUT_OF_SERVICE, registro de ocupación.
+ *   — conflictos, resource_locks, ventanas de mantenimiento, registro de ocupación.
  * - `ReservationScheduleService` (reservation-schedule.service.ts) —
  *   grilla de turnos disponibles de un servicio `slot`, a partir del
  *   horario de atención (usa `ReservationAvailabilityService.
@@ -46,8 +46,10 @@
  *   es NOT NULL sin default). `confirmReservation` manda `totalPrice` en
  *   el payload de `reservation.confirmed` para que el worker de outbox
  *   pueda crear el CHARGE correspondiente.
- * - `checkAvailability`/disponibilidad consultan `housekeepingRepository.
- *   isOutOfService()` — un recurso OUT_OF_SERVICE no se puede reservar.
+ * - `checkAvailability`/disponibilidad consultan `maintenanceWindowRepository`
+ *   (24/08/2026, reemplaza a `housekeepingRepository.isOutOfService()`) —
+ *   un recurso con una ventana de mantenimiento vigente no se puede
+ *   reservar, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md`.
  */
 
 import { Reservation }                  from './Reservation.js';
@@ -71,7 +73,7 @@ import type { IResourceLockRepository }      from './resource-lock.repository.js
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
-import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
+import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
 import type { IDepositPolicyRepository } from './deposit-policy.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
@@ -114,7 +116,8 @@ export class ReservationService {
     private readonly bookableServiceRepository: IBookableServiceRepository,
     customerRateRepository:  ICustomerRateRepository,
     operatingHoursRepository: IOperatingHoursRepository,
-    housekeepingRepository:  HousekeepingRepository,
+    /** 24/08/2026 — reemplaza a HousekeepingRepository (isOutOfService), ver docblock del archivo. */
+    maintenanceWindowRepository: MaintenanceWindowRepository,
     /** C1-Fase A — resuelve el % de seña (deposit_policies), reenviado a ReservationPricingService. */
     depositPolicyRepository: IDepositPolicyRepository,
     /** C1-Fase A — `default_deposit_percentage`/`deposit_hold_hours` (política general del negocio, A2.9). */
@@ -142,9 +145,10 @@ export class ReservationService {
       this.resourceRepository,
       resourceLockRepository,
       this.reservationRepository,
-      housekeepingRepository,
+      maintenanceWindowRepository,
       occupancyRepository,
       this.bookableServiceRepository,
+      this.businessProfileRepository,
     );
     this.schedule = new ReservationScheduleService(
       this.bookableServiceRepository,
@@ -268,6 +272,17 @@ export class ReservationService {
         endTime,
       );
 
+      // 24/08/2026 — la disponibilidad ya pasó (si hubiera bloqueado, la
+      // llamada de arriba ya tiró). Esto es aparte: ¿el recurso PRINCIPAL
+      // tiene una ventana de mantenimiento ABIERTA cuyo horizonte no llega
+      // hasta esta fecha? Se acepta la reserva igual, queda marcada para
+      // revisión humana en vez de reasignarse sola.
+      const needsMaintenanceReview = await this.availability.needsMaintenanceReview(
+        params.resourceId,
+        params.startTime,
+        endTime,
+      );
+
       reservation = new Reservation({
         id:        params.id,
         customer:  params.customer,
@@ -285,6 +300,7 @@ export class ReservationService {
         depositDueBy,
         reservationNumber,
         appliedCustomerRateId,
+        needsMaintenanceReview,
         lines: lines.map((line, i) => ({
           id:            `${params.id}-L${i + 1}`,
           reservationId: params.id,

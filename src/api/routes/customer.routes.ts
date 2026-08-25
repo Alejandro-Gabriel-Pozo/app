@@ -114,7 +114,7 @@ import { SqlResourceLockRepository } from '../../reservas/sql.resource-lock.repo
 import { SqlBookableServiceRepository } from '../../reservas/sql.bookable-service.repository.js';
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository } from '../../platform/sql.operating-hours.repository.js';
-import { SqlHousekeepingRepository } from '../../pms-estadias/housekeeping.repository.js';
+import { SqlMaintenanceWindowRepository } from '../../pms-estadias/sql.maintenance-window.repository.js';
 import { ReservationService }        from '../../reservas/reservation.service.js';
 
 // ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const bookableServiceRepo = new SqlBookableServiceRepository(client);
   const customerRateRepo = new SqlCustomerRateRepository(client);
   const operatingHoursRepo = new SqlOperatingHoursRepository(client);
-  const housekeepingRepo = new SqlHousekeepingRepository(client);
+  const maintenanceWindowRepo = new SqlMaintenanceWindowRepository(client);
   const depositPolicyRepo = new SqlDepositPolicyRepository(client);
   const businessProfileRepo = new SqlBusinessProfileRepository(client);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(client);
@@ -249,7 +249,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     bookableServiceRepo,
     customerRateRepo,
     operatingHoursRepo,
-    housekeepingRepo,
+    maintenanceWindowRepo,
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,

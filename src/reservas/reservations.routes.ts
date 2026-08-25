@@ -92,6 +92,7 @@ import { SqlCustomerRepository }         from '../clientes-finanzas/sql.customer
 import { SqlCustomerRateRepository }     from '../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }   from '../platform/sql.operating-hours.repository.js';
 import { SqlHousekeepingRepository }     from '../pms-estadias/housekeeping.repository.js';
+import { SqlMaintenanceWindowRepository } from '../pms-estadias/sql.maintenance-window.repository.js';
 import { SqlStayRepository }             from '../pms-estadias/stay.repository.js';
 import { StayService }                   from '../pms-estadias/stay.service.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
@@ -117,7 +118,7 @@ function buildReservationService(req: Request): ReservationService {
   const bookableServiceRepo   = new SqlBookableServiceRepository(db);
   const customerRateRepo      = new SqlCustomerRateRepository(db);
   const operatingHoursRepo    = new SqlOperatingHoursRepository(db);
-  const housekeepingRepo      = new SqlHousekeepingRepository(db);
+  const maintenanceWindowRepo = new SqlMaintenanceWindowRepository(db);
   const transactionManager    = buildTenantTransactionManager(req);
   const depositPolicyRepo     = new SqlDepositPolicyRepository(db);
   const businessProfileRepo   = new SqlBusinessProfileRepository(db);
@@ -134,7 +135,7 @@ function buildReservationService(req: Request): ReservationService {
     bookableServiceRepo,
     customerRateRepo,
     operatingHoursRepo,
-    housekeepingRepo,
+    maintenanceWindowRepo,
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,

@@ -26,9 +26,9 @@ const SRC_DIR = join(__dirname, '../..');
 // POST /consolidated ("Facturar ahora"), authorize(Roles.MANAGEMENT).
 // C1-Fase C (23/08/2026) -- 194, no 192: customers.routes.ts suma
 // GET/PUT /:id/billing-policy, los dos authorize(Roles.MANAGEMENT).
-const EXPECTED_AUTHORIZE_CALL_SITES = 194;
+const EXPECTED_AUTHORIZE_CALL_SITES = 198;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
-const EXPECTED_ROUTES_FILE_COUNT = 34;
+const EXPECTED_ROUTES_FILE_COUNT = 35;
 
 function findRouteFiles(dir: string): string[] {
   const results: string[] = [];

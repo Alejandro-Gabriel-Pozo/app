@@ -530,3 +530,26 @@ export class AccountsReceivableAlreadyInvoicedError extends DomainError {
     );
   }
 }
+
+/**
+ * 24/08/2026 (docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md)
+ * — decisión confirmada con el dueño (AskUserQuestion): no se puede abrir
+ * una ventana de mantenimiento mientras haya una reserva CONFIRMED/PENDING
+ * que caiga dentro de sus fechas -- fuerza a resolverla primero
+ * (reasignar o cancelar) en vez de dejarla en un estado ambiguo.
+ */
+export class MaintenanceWindowConflictError extends DomainError {
+  constructor(resourceId: string, conflictingReservationIds: string[]) {
+    super(
+      `El recurso "${resourceId}" tiene ${conflictingReservationIds.length} reserva(s) que se solapan ` +
+      `con las fechas pedidas (${conflictingReservationIds.join(', ')}) -- reasignalas o cancelalas antes de abrir la ventana.`,
+      'MAINTENANCE_WINDOW_CONFLICT',
+    );
+  }
+}
+
+export class MaintenanceWindowNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`No existe una ventana de mantenimiento con id "${id}".`, 'MAINTENANCE_WINDOW_NOT_FOUND');
+  }
+}

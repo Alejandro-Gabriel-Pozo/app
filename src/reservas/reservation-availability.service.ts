@@ -15,6 +15,7 @@
  * chequeo de conflictos.
  */
 
+import { DateTime } from 'luxon';
 import type { Reservation } from './Reservation.js';
 import type { PhysicalResource } from './resource.entities.js';
 import { assertValidTimeRange } from './availability.js';
@@ -24,19 +25,100 @@ import type { ResourceRepository } from './resource.repository.js';
 import type { OccupancyRepository } from './occupancy.repository.js';
 import type { IResourceLockRepository } from './resource-lock.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
-import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
+import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { resolveEndTime } from './reservation-time.utils.js';
+import { resolveEndTime, combineDateAndTime } from './reservation-time.utils.js';
+
+/** Resultado de evaluar las ventanas de mantenimiento vigentes de un recurso contra un rango pedido. */
+interface MaintenanceEvaluation {
+  /** `true` = el recurso no está disponible para este rango (ventana con `endDate` que se solapa, o ventana abierta dentro del horizonte). */
+  blocked: boolean;
+  /** `true` = se acepta la reserva, pero queda marcada para revisión humana (ventana abierta, pedido más allá del horizonte configurado). Solo tiene sentido si `blocked` es `false`. */
+  needsReview: boolean;
+}
 
 export class ReservationAvailabilityService {
   constructor(
     private readonly resourceRepository:        ResourceRepository,
     private readonly resourceLockRepository:    IResourceLockRepository,
     private readonly reservationRepository:     ReservationRepository,
-    private readonly housekeepingRepository:    HousekeepingRepository,
+    /** 24/08/2026 — reemplaza a HousekeepingRepository.isOutOfService(), ver docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md. */
+    private readonly maintenanceWindowRepository: MaintenanceWindowRepository,
     private readonly occupancyRepository:       OccupancyRepository,
     private readonly bookableServiceRepository: IBookableServiceRepository,
+    /** 24/08/2026 — timezone + maintenanceHorizonDays para evaluar ventanas abiertas ("hasta nuevo aviso"). */
+    private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
   ) {}
+
+  /**
+   * 24/08/2026 — evalúa las ventanas de mantenimiento VIGENTES de un
+   * recurso contra un rango [startTime, endTime). Una ventana con
+   * `endDate` bloquea si se solapa con el rango pedido. Una ventana
+   * ABIERTA (`endDate = null`) bloquea si el rango pedido empieza dentro
+   * del horizonte configurado (`business_profile.maintenance_horizon_days`)
+   * — más allá del horizonte, se acepta pero queda marcada
+   * (`needsMaintenanceReview`) en vez de rechazarse (no tiene sentido
+   * rechazar una reserva lejana por un mantenimiento sin fecha de fin
+   * clara todavía).
+   */
+  private async evaluateMaintenanceWindows(
+    resourceId: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<MaintenanceEvaluation> {
+    const profile = await this.businessProfileRepository.get();
+    const today = DateTime.now().setZone(profile.timezone).toISODate()!;
+    const windows = await this.maintenanceWindowRepository.findActiveByResourceId(resourceId, today);
+
+    let blocked = false;
+    let needsReview = false;
+
+    for (const window of windows) {
+      const windowStartInstant = combineDateAndTime(new Date(window.startDate), '00:00:00', profile.timezone);
+
+      if (window.endDate !== null) {
+        // Ventana con fin fijo -- bloquea si se solapa con el rango pedido
+        // (inclusive el día completo de endDate).
+        const windowEndInstant = combineDateAndTime(new Date(window.endDate), '23:59:59', profile.timezone);
+        if (startTime.getTime() < windowEndInstant.getTime() && endTime.getTime() > windowStartInstant.getTime()) {
+          blocked = true;
+        }
+        continue;
+      }
+
+      // Ventana abierta -- solo importa si el rango pedido empieza en o
+      // después de que arrancó la ventana (antes de eso, el recurso no
+      // estaba en mantenimiento todavía).
+      if (startTime.getTime() < windowStartInstant.getTime()) continue;
+
+      const horizonEndInstant = combineDateAndTime(
+        DateTime.fromISO(today, { zone: profile.timezone }).plus({ days: profile.maintenanceHorizonDays }).toJSDate(),
+        '23:59:59',
+        profile.timezone,
+      );
+      if (startTime.getTime() <= horizonEndInstant.getTime()) {
+        blocked = true;
+      } else {
+        needsReview = true;
+      }
+    }
+
+    return { blocked, needsReview };
+  }
+
+  /**
+   * 24/08/2026 — usado por `ReservationService.createReservation()` DESPUÉS
+   * de que la disponibilidad ya pasó, para decidir si la reserva nueva
+   * necesita `needsMaintenanceReview = true`. Solo mira el recurso
+   * PRINCIPAL (no los bloqueados por resource_locks) -- la marca es sobre
+   * "esta reserva depende de un recurso en mantenimiento sin fecha de fin
+   * clara", no sobre cualquier recurso compartido que toque de paso.
+   */
+  async needsMaintenanceReview(resourceId: string, startTime: Date, endTime: Date): Promise<boolean> {
+    const { needsReview } = await this.evaluateMaintenanceWindows(resourceId, startTime, endTime);
+    return needsReview;
+  }
 
   /**
    * @param serviceId - Opcional. Si se especifica, además del `resourceId`
@@ -73,7 +155,8 @@ export class ReservationAvailabilityService {
         return false;
       }
 
-      if (await this.housekeepingRepository.isOutOfService(id)) {
+      const { blocked } = await this.evaluateMaintenanceWindows(id, startTime, endTime);
+      if (blocked) {
         return false;
       }
 
@@ -185,7 +268,8 @@ export class ReservationAvailabilityService {
         throw new InvalidReservationError(`El recurso ${resourceId} está desactivado.`);
       }
 
-      if (await this.housekeepingRepository.isOutOfService(resourceId)) {
+      const { blocked } = await this.evaluateMaintenanceWindows(resourceId, startTime, endTime);
+      if (blocked) {
         throw new InvalidReservationError(
           `El recurso ${resourceId} está fuera de servicio.`,
         );

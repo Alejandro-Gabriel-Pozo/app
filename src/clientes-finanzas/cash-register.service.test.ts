@@ -117,6 +117,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
     fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
     defaultIvaRate: 21, pricesIncludeIva: true,
     defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+    maintenanceHorizonDays: 30,
     createdAt: now, updatedAt: now,
     ...overrides,
   };

@@ -438,4 +438,6 @@ export const UpdateBusinessProfileSchema = z.object({
   // prefijo, DEFAULT 'CLI'/'RES' en schema.sql.
   customerNumberPrefix:    z.string().trim().toUpperCase().regex(/^[A-Z0-9]{1,10}$/, { message: 'customerNumberPrefix debe ser de 1 a 10 letras/números' }).optional(),
   reservationNumberPrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{1,10}$/, { message: 'reservationNumberPrefix debe ser de 1 a 10 letras/números' }).optional(),
+  /** 24/08/2026 -- días de anticipación que bloquea una ventana de mantenimiento abierta, ver business-profile.entities.ts. Nunca null. */
+  maintenanceHorizonDays: z.number().int().min(0).optional(),
 });

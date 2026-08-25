@@ -118,15 +118,90 @@ lint (React Compiler) que el informe externo mencionaba —
 errores, 2 warnings preexistentes no bloqueantes). Commiteado y
 pusheado — `104ef1d`/`f5cc076`/`9b6e804` en `appfrontend-main`.
 
-**housekeeping-ventana-mantenimiento.md** (también en esa carpeta,
-movido a `docs/`) — diseño para reemplazar el flag `OUT_OF_SERVICE` por
-una entidad `maintenance_window` (inicio/fin, bloqueo por horizonte
-configurable, reasignación automática vía
-`findAvailableResourceInCategory()`). Sin implementar todavía — el
-dueño eligió encarar I11 primero.
+**housekeeping-ventana-mantenimiento.md** (también en esa carpeta, movido a
+`docs/` como `diseno-housekeeping-ventana-mantenimiento-2026-08-24.md`) —
+diseño para reemplazar el flag `OUT_OF_SERVICE` por una entidad
+`maintenance_window`. Sin implementar en el momento en que se escribió esto
+— el dueño eligió encarar I11 primero. Ver sección propia más abajo:
+**implementado en esta misma sesión, después de I11.**
 
-`housekeeping-ventana-mantenimiento.md` (también en esa carpeta, movido a
-`docs/`) — diseño para reemplazar el flag `OUT_OF_SERVICE` por una entidad
-`maintenance_window` (inicio/fin, bloqueo por horizonte configurable,
-reasignación automática vía `findAvailableResourceInCategory()`). Sin
-implementar todavía — el dueño eligió encarar I11 primero.
+---
+
+## maintenance_window — ✅ RESUELTO backend + frontend (24/08/2026)
+
+Reemplaza el flag `OUT_OF_SERVICE` de `housekeeping_tasks` como mecanismo
+de bloqueo de disponibilidad, según
+`docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md`. Dos
+decisiones confirmadas con el dueño (`AskUserQuestion`): (1)
+`maintenance_window` REEMPLAZA a OUT_OF_SERVICE, no coexisten; (2) crear
+una ventana se BLOQUEA si ya hay una reserva conflictiva (no se auto-marca
+la reserva).
+
+**Backend:**
+- Schema v40: tabla `maintenance_windows` (resource_id, start_date,
+  end_date nullable = ventana abierta, reason, created_by/closed_by),
+  `business_profile.maintenance_horizon_days` (default 30),
+  `reservations.needs_maintenance_review`.
+- Entidad `MaintenanceWindow` (TRANSACCIÓN, fechas 'YYYY-MM-DD' — nunca
+  `Date`, A4) + repos SQL/in-memory + `MaintenanceWindowService`
+  (crear con guard anti-conflicto, cerrar, listar) + rutas
+  `/api/maintenance-windows` (GET STAFF, POST/close MANAGEMENT).
+- `ReservationAvailabilityService` reescrito: `HousekeepingRepository.
+  isOutOfService()` reemplazado por `evaluateMaintenanceWindows()` —
+  ventana con `endDate` bloquea por solapamiento; ventana ABIERTA bloquea
+  dentro del horizonte configurado y más allá marca
+  `needsMaintenanceReview` en vez de rechazar. Los 3 sitios que
+  construyen `ReservationService` (`reservations.routes.ts`,
+  `bookable-services.routes.ts`, `customer.routes.ts`) actualizados —
+  sin tocar el `housekeepingRepo` de `buildStayService()`, que sigue
+  usándose para crear tareas de limpieza reales (consumidor distinto).
+- RBAC: `docs/rbac-matriz-endpoints.md` y
+  `rbac-matrix-sync.test.ts` actualizados (35 archivos, 198 call-sites).
+- Tests nuevos (`maintenance-window.test.ts`,
+  `maintenance-window.service.test.ts`) + ~12 fixtures de
+  `BusinessProfile` en tests existentes actualizados con
+  `maintenanceHorizonDays`. Suite completa: 88 archivos / 1036 tests
+  verdes, `tsc --noEmit` limpio.
+
+**Frontend:** `lib/maintenance-windows/` (types + api) nuevo. Pantalla de
+Housekeeping rewireada: el rack y el modal de detalle reflejan la ventana
+activa por RECURSO (no por tarea del día), "Marcar fuera de servicio"
+abre un form con desde/hasta opcional/motivo, "Reactivar" cierra la
+ventana. Botones viejos de OUT_OF_SERVICE/reset (atados a
+`HousekeepingTask.status`) sacados de la UI. `tsc`, `eslint` y
+`next build` verdes.
+
+**Migración y verificación en vivo (24/08/2026, continuación de la misma sesión):**
+Confirmado con el dueño (`AskUserQuestion`) y corrida contra la base real.
+Las credenciales que tenía `.env` (`PLATFORM_DATABASE_URL` y
+`DB_ENCRYPTION_KEY`) estaban vencidas/desactualizadas — el dueño pasó las
+vigentes, actualizadas en `.env` (no versionado). `npm run migrate:tenants`
+subió `biz-demo-01` (único negocio con BD asignada) de v37 a v40 —
+verificado por consulta directa a `information_schema.columns`/
+`pg_indexes` que `maintenance_windows`, `business_profile.
+maintenance_horizon_days` y `reservations.needs_maintenance_review`
+quedaron bien creados.
+
+Verificación end-to-end en navegador real (login `admin@demo.com`,
+Housekeeping → Habitación 01/03): crear ventana bloquea `POST
+/reservations` con `INVALID_RESERVATION — "está fuera de servicio"`;
+cerrarla la desbloquea (misma reserva de prueba, `201`, después cancelada
+para no dejar basura). Encontrado y corregido en el camino un bug real:
+`todayStr()` en `housekeeping/page.tsx` usaba `new Date().toISOString()`
+(UTC) en vez de fecha local — con reloj real pasada la medianoche UTC
+(tarde-noche en Argentina, UTC-3), el "Desde" por default quedaba un día
+adelantado del "hoy" que calcula el servidor con el huso del negocio, y
+`close()` rechazaba "Reactivar" con motivo de fecha inválida. Corregido
+con el mismo patrón `getFullYear/getMonth/getDate` que ya usa
+`toLocalInput()` en `useReservationsScreen.ts`. `tsc --noEmit` limpio
+después del fix.
+
+**Fuera de este alcance, anotado para después:**
+- Pantalla de reasignación/revisión para reservas con
+  `needsMaintenanceReview = true` (reusar
+  `findAvailableResourceInCategory()` + `PUT /reservations/:id`) —
+  diferida a propósito, confirmado con el dueño.
+- Las rutas viejas `POST /housekeeping/:id/out-of-service` y `/:id/reset`
+  siguen existiendo en el backend pero quedaron huérfanas (ninguna
+  pantalla las llama ya) — no se decidió todavía si se borran, se
+  deprecan o se dejan inertes.

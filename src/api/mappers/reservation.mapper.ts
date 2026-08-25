@@ -76,6 +76,8 @@ export interface ReservationDto {
   scheduleChargeAmount: number | null;
   /** D7 (22/08/2026) — qué CustomerRate se aplicó, si hubo alguna. `null` = precio de catálogo/rate plan, sin descuento. */
   appliedCustomerRateId: string | null;
+  /** 24/08/2026 — el recurso tiene una ventana de mantenimiento abierta más allá del horizonte configurado, ver Reservation.needsMaintenanceReview. */
+  needsMaintenanceReview: boolean;
 }
 
 export function toResourceDto(resource: BookableResource): ResourceDto {
@@ -123,5 +125,6 @@ export function toReservationDto(reservation: Reservation): ReservationDto {
     scheduleApprovedBy: reservation.scheduleApprovedBy,
     scheduleChargeAmount: reservation.scheduleChargeAmount,
     appliedCustomerRateId: reservation.appliedCustomerRateId,
+    needsMaintenanceReview: reservation.needsMaintenanceReview,
   };
 }

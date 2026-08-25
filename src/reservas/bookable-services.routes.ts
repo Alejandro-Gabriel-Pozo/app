@@ -50,7 +50,7 @@ import { SqlCategoryRepository }        from './sql.category.repository.js';
 import { SqlDomainEventRepository }     from '../repositories/sql.domain-event.repository.js';
 import { SqlCustomerRateRepository }    from '../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository }  from '../platform/sql.operating-hours.repository.js';
-import { SqlHousekeepingRepository }    from '../pms-estadias/housekeeping.repository.js';
+import { SqlMaintenanceWindowRepository } from '../pms-estadias/sql.maintenance-window.repository.js';
 import { SqlAuditLogRepository }        from '../repositories/audit-log.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { SqlDepositPolicyRepository } from './sql.deposit-policy.repository.js';
@@ -99,7 +99,7 @@ function buildReservationService(req: Request): ReservationService {
     new SqlBookableServiceRepository(db),
     new SqlCustomerRateRepository(db),
     new SqlOperatingHoursRepository(db),
-    new SqlHousekeepingRepository(db),
+    new SqlMaintenanceWindowRepository(db),
     new SqlDepositPolicyRepository(db),
     new SqlBusinessProfileRepository(db),
     new SqlFinancialTransactionRepository(db),

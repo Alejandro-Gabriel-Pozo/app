@@ -50,7 +50,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (194 call-sites, 34 archivos)
+## 2. Matriz de endpoints por archivo (198 call-sites, 35 archivos)
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién
@@ -187,6 +187,14 @@ sección 4.
 - POST `/:id/inspect` — `HOUSEKEEPING_AND_MANAGEMENT`
 - POST `/:id/out-of-service` — `MANAGEMENT`
 - POST `/:id/reset` — `MANAGEMENT`
+
+**`maintenance-windows.routes.ts`** (todo `requireModule(HOUSEKEEPING)`, 24/08/2026 —
+reemplaza OUT_OF_SERVICE/reset de arriba como mecanismo de bloqueo de
+disponibilidad, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md`)
+- GET `/` — `STAFF`
+- GET `/resource/:resourceId` — `STAFF`
+- POST `/` — `MANAGEMENT`
+- POST `/:id/close` — `MANAGEMENT`
 
 **`stays.routes.ts`** (todo `requireModule(ALOJAMIENTO)`)
 - GET `/` — `FRONT_DESK`
