@@ -15,11 +15,32 @@
 sin logger estructurado. Propuesta: [Pino](https://github.com/pinojs/pino)
 + `pino-http`. Esfuerzo bajo, reemplazo incremental.
 
-### 1.2 Error tracking — Sentry
-No hay tracking de errores en producción. Propuesta:
-[Sentry](https://sentry.io/) (alternativa: Better Stack). Requiere crear
-una cuenta externa — no lo puede hacer Claude, lo tiene que dar de alta
-el dueño.
+### 1.2 Error tracking — Sentry — ✅ RESUELTO (25/08/2026)
+Cuenta creada por el dueño, DSN provisto en el chat. Instalado
+`@sentry/node`. `src/instrument.ts` (nuevo) llama a `Sentry.init()` y se
+importa como PRIMERA línea de `server.ts` — Sentry instrumenta paquetes
+CommonJS (express, pg) enganchándose al cache de `require()`, necesita
+correr antes de que algo más los importe. `app.ts` monta
+`Sentry.setupExpressErrorHandler(app, { shouldHandleError })` justo antes
+del `errorHandler` propio, con un filtro que excluye `DomainError`/
+`ValidationError`/`ZodError` — esos ya se mapean a su status HTTP correcto
+en `error.middleware.ts`, no son bugs; sin el filtro, Sentry se llenaría
+de "ruido" (404 NOT_FOUND, 400 VALIDATION_ERROR) y taparía los 500
+genuinos. `main().catch()` y el catch de la migración de
+`platform.schema.sql` en `server.ts` también capturan y hacen `flush()`
+antes de `process.exit(1)` — un fallo al arrancar es justamente el caso
+que más urge ver en Sentry.
+
+**DSN — no es secreto pero no se hardcodea:** `SENTRY_DSN` agregada a
+`render.yaml` con `sync: false` (mismo criterio que `GOOGLE_CLIENT_ID`).
+Sin la variable, `Sentry.init({dsn: undefined})` queda en no-op — el
+proceso arranca igual, fail-open a propósito. Falta que el dueño la
+pegue en el dashboard de Render.
+
+**Verificado:** build + lint + suite completa (1493/1493) sin romper
+nada. Verificación end-to-end real: script standalone con el DSN
+provisto, `Sentry.captureException()` + `await Sentry.flush(5000)` →
+`true` (el evento se mandó y confirmó contra el ingest de Sentry).
 
 ### 1.3 CI — ✅ RESUELTO (25/08/2026) — el diagnóstico original estaba desactualizado
 El documento decía que había dos workflows (uno funcional, uno

@@ -30,6 +30,9 @@ import express from 'express';
 import cors    from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import type http from 'node:http';
+import * as Sentry from '@sentry/node';
+import { ZodError } from 'zod';
+import { DomainError, ValidationError } from './domain/errors.js';
 
 import { createResourcesRouter }         from './reservas/resources.routes.js';
 import { createLocationsRouter }         from './api/routes/locations.routes.js';
@@ -430,8 +433,18 @@ export async function createApp(): Promise<{
   );
 
   // -------------------------------------------------------------------------
-  // 17. Error handler — siempre al final
+  // 17. Sentry + error handler — siempre al final
+  // shouldHandleError filtra los errores esperados del negocio (ya se
+  // mapean a su propio status en error.middleware.ts, no son bugs) --
+  // sin esto, Sentry se llenaría de "ruido" tipo RESOURCE_NOT_FOUND (404)
+  // o VALIDATION_ERROR (400) y taparía los errores 500 genuinos.
   // -------------------------------------------------------------------------
+  Sentry.setupExpressErrorHandler(app, {
+    shouldHandleError: (err) =>
+      !(err instanceof DomainError) &&
+      !(err instanceof ValidationError) &&
+      !(err instanceof ZodError),
+  });
   app.use(errorHandler);
 
   return { app, container };

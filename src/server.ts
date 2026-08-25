@@ -14,10 +14,13 @@
  * - Tenant schemas se aplican vía tenant.middleware al primer request del tenant.
  */
 
+import './instrument.js'; // SIEMPRE primero -- ver docblock de instrument.ts
+
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp, registerGracefulShutdown } from './app.js';
+import * as Sentry from '@sentry/node';
 import { closePlatformPool } from './container.js';
 import { closeTenantPools } from './platform/tenant.middleware.js';
 import { sslConfig } from './db/pg.client.js';
@@ -49,6 +52,8 @@ async function main(): Promise<void> {
     console.log('[migrate] ✅ platform.schema.sql aplicado.');
   } catch (err) {
     console.error('[migrate] ❌ Error en platform.schema.sql:', err);
+    Sentry.captureException(err);
+    await Sentry.flush(2000);
     process.exit(1);
   }
 
@@ -77,7 +82,9 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error('[server] Error fatal al arrancar:', err);
+  Sentry.captureException(err);
+  await Sentry.flush(2000);
   process.exit(1);
 });

@@ -863,6 +863,25 @@ completo en `docs/auditoria-tecnica-infra-reservas.md`, sección 1.6.
 
 ---
 
+## Sentry (punto 1.2) — ✅ RESUELTO (25/08/2026)
+
+Cuenta creada por el dueño, DSN pegado en el chat. Instalado
+`@sentry/node`; nuevo `src/instrument.ts` (primer import de
+`server.ts` — necesario para que Sentry instrumente express/pg antes de
+que se importen). `app.ts` monta `Sentry.setupExpressErrorHandler()`
+justo antes del `errorHandler` propio, filtrando `DomainError`/
+`ValidationError`/`ZodError` (esos ya tienen su status HTTP correcto,
+no son bugs — sin el filtro Sentry se llenaría de 404s/400s normales).
+`SENTRY_DSN` agregada a `render.yaml` con `sync: false` (no es secreto,
+mismo criterio que `GOOGLE_CLIENT_ID`, pero no se hardcodea) — **falta
+que el dueño la pegue en el dashboard de Render** para que funcione en
+producción. Verificado: build+lint+suite completa sin romper nada, y un
+script standalone con el DSN real confirmó el envío end-to-end
+(`Sentry.flush()` → `true`). Detalle en
+`docs/auditoria-tecnica-infra-reservas.md`, sección 1.2.
+
+---
+
 ## Pendientes heredados de `pendientes-2026-08-24.md`, todavía abiertos
 
 - **C1-Fase B** — gateway de pago real, hold corto canal web, auto-release.

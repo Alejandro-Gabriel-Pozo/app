@@ -134,3 +134,17 @@ services:
       # igual va acá para no tenerlo hardcodeado en el código del backend.
       - key: GOOGLE_CLIENT_ID
         sync: false
+
+      # ---------------------------------------------------------------------------
+      # Error tracking — Sentry (1.2, docs/auditoria-tecnica-infra-reservas.md,
+      # cuenta creada por el dueño 25/08/2026)
+      # ---------------------------------------------------------------------------
+
+      # Sentry → Settings del proyecto → Client Keys (DSN). Igual que
+      # GOOGLE_CLIENT_ID, el DSN no es secreto (solo permite escribir
+      # eventos, no leerlos) pero va acá para no hardcodearlo en
+      # instrument.ts. Sin esta variable, Sentry.init() queda en no-op
+      # (fail-open a propósito) -- el proceso arranca igual, simplemente
+      # sin reportar errores.
+      - key: SENTRY_DSN
+        sync: false
