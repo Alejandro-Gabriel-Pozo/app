@@ -49,6 +49,8 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Detalle de entidad ERP = ruta `/dashboard/{entidad}/[id]` in-place, no `/edit` | [../appfrontend-main/docs/auditoria-modales.md](../../appfrontend-main/docs/auditoria-modales.md) + `appfrontend-main/CLAUDE.md` | implementado (8 entidades) |
 | Alta mínima puede seguir en modal; no reducir el alta de Usuarios sin decisión de producto | pendientes 25/08 Fase 2 | aceptado |
 | Rutas `OUT_OF_SERVICE`/`reset` de housekeeping: borrar, no deprecar | pendientes 25/08 | implementado |
+| `audit_log` ya existe (R8/A9.4) — no crear una tabla nueva paralela ante un handoff externo que la desconozca | [conocimiento/playbook-audit-log-transaccional.md](conocimiento/playbook-audit-log-transaccional.md) | implementado (12 call sites transaccionales) |
+| `RoleService.updatePermissionGroups()`: sin transacción real posible (plataforma+tenant); orden plataforma-primero es el mitigante aceptado | mismo playbook | aceptado, sin atomicidad real |
 | `console.log` en `src/scripts/` a propósito; Pino solo en el proceso del servidor | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) §1.1 | implementado |
 | Sentry no captura `DomainError`/`ValidationError`/`ZodError` | misma §1.2 | implementado |
 
@@ -77,6 +79,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | Wiring tenant: `req.db` vs pool de plataforma; `Pick<Repo>` en servicios | [DEFENSIVE_DEVELOPING.md](DEFENSIVE_DEVELOPING.md) §3 + `app.ts` |
 | 404 de detalle: `isApiError` + `err.code`, nunca `err.status` | `appfrontend-main/src/lib/apiErrors.ts`; caso Órdenes 25/08 |
 | Cambiar `authorize(Roles.X)`: matriz RBAC + `EXPECTED_AUTHORIZE_CALL_SITES` | `app-main/CLAUDE.md` sección RBAC |
+| `update()`/`deactivate()` de una entidad auditada: el UPDATE y el INSERT en `audit_log` deben compartir transacción, no dos `await` sueltos | [conocimiento/playbook-audit-log-transaccional.md](conocimiento/playbook-audit-log-transaccional.md) |
 
 ### Mapas del sistema
 
@@ -91,7 +94,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 
 ### Deuda técnica (conocida, no resolver en este índice)
 
-Ver pendientes 25/08 “Pendientes heredados” y auditoría infra **Estado**: Redis rate-limit (1.4), BullMQ (1.5), UI de flujos backend-only, C1-Fase B pagos, etapas 2–3 de downgrade, gap facturas consolidadas en JOINs.
+Ver pendientes 25/08 “Pendientes heredados” y auditoría infra **Estado**: Redis rate-limit (1.4), BullMQ (1.5), UI de flujos backend-only, C1-Fase B pagos, etapas 2–3 de downgrade, gap facturas consolidadas en JOINs, `PlatformRepository.updateRolePermissionGroups()`/`updatePlanLimits()` no atómicos ni dentro de su propia BD (`conocimiento/playbook-audit-log-transaccional.md`).
 
 ### Incidentes
 
