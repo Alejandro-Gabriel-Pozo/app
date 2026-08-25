@@ -1,4 +1,5 @@
 import type { DomainEvent, DomainEventRepository } from '../repositories/domain-event.repository.js';
+import { logger } from '../logger.js';
 
 export type EventHandler = (event: DomainEvent) => Promise<void>;
 
@@ -102,7 +103,7 @@ export class OutboxWorker {
     // Resetear el flag al (re)arrancar para que se pueda detectar de nuevo
     this.missingTableWarned = false;
     this.intervalId = setInterval(() => void this.poll(), this.pollIntervalMs);
-    console.log(`[OutboxWorker] Iniciado — polling cada ${this.pollIntervalMs}ms`);
+    logger.info({ pollIntervalMs: this.pollIntervalMs }, '[OutboxWorker] Iniciado');
   }
 
   /**
@@ -120,7 +121,7 @@ export class OutboxWorker {
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
     }
 
-    console.log('[OutboxWorker] Detenido');
+    logger.info('[OutboxWorker] Detenido');
   }
 
   // ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ export class OutboxWorker {
       const pending = await this.eventRepository.getPending(50);
       if (pending.length === 0) return;
 
-      console.log(`[OutboxWorker] ${pending.length} evento(s) pendiente(s)`);
+      logger.debug({ count: pending.length }, '[OutboxWorker] Eventos pendientes');
 
       for (const event of pending) {
         await this.dispatch(event);
@@ -163,10 +164,10 @@ export class OutboxWorker {
       // relation does not exist — tabla todavía no creada en la BD
       if (!this.missingTableWarned) {
         this.missingTableWarned = true;
-        console.warn(
-          '[OutboxWorker] ⚠️  La tabla domain_events no existe en la tenant DB.\n' +
-          '               Ejecutá src/db/schema.sql contra esa tenant DB.\n' +
-          '               El worker queda en pausa hasta que se llame a worker.start() de nuevo.',
+        logger.warn(
+          '[OutboxWorker] La tabla domain_events no existe en la tenant DB. ' +
+          'Ejecutá src/db/schema.sql contra esa tenant DB. ' +
+          'El worker queda en pausa hasta que se llame a worker.start() de nuevo.',
         );
         // Detener polling para no llenar los logs
         void this.stop();
@@ -174,7 +175,7 @@ export class OutboxWorker {
       return;
     }
 
-    console.error('[OutboxWorker] Error leyendo domain_events:', err);
+    logger.error({ err }, '[OutboxWorker] Error leyendo domain_events');
   }
 
   private async dispatch(event: DomainEvent): Promise<void> {
@@ -182,8 +183,9 @@ export class OutboxWorker {
 
     if (handlers.length === 0) {
       // Evento sin handler registrado → marcar como despachado para no bloquear la cola
-      console.warn(
-        `[OutboxWorker] Sin handler para '${event.eventType}' (id=${event.id}). Marcando como despachado.`,
+      logger.warn(
+        { eventId: event.id, eventType: event.eventType },
+        '[OutboxWorker] Sin handler registrado. Marcando como despachado.',
       );
       await this.eventRepository.markDispatched(event.id!);
       return;
@@ -194,9 +196,9 @@ export class OutboxWorker {
       await this.eventRepository.markDispatched(event.id!);
     } catch (err) {
       // No marcar dispatched → se reintenta al próximo ciclo, hasta maxRetries.
-      console.error(
-        `[OutboxWorker] Error despachando evento id=${event.id} (${event.eventType}):`,
-        err,
+      logger.error(
+        { err, eventId: event.id, eventType: event.eventType },
+        '[OutboxWorker] Error despachando evento',
       );
 
       const deadLettered = await this.eventRepository.recordFailure(
@@ -206,9 +208,9 @@ export class OutboxWorker {
       );
 
       if (deadLettered) {
-        console.error(
-          `[OutboxWorker] ⚠️  Evento id=${event.id} (${event.eventType}) pasó a dead-letter ` +
-          `tras ${this.maxRetries} intentos. Requiere reintento manual (panel de negocio).`,
+        logger.error(
+          { eventId: event.id, eventType: event.eventType, maxRetries: this.maxRetries },
+          '[OutboxWorker] Evento pasó a dead-letter. Requiere reintento manual (panel de negocio).',
         );
         await this.runDeadLetterHandlers(event);
       }
@@ -228,10 +230,9 @@ export class OutboxWorker {
     const results = await Promise.allSettled(handlers.map((h) => h(event)));
     for (const result of results) {
       if (result.status === 'rejected') {
-        console.error(
-          `[OutboxWorker] Falló la compensación de dead-letter para evento id=${event.id} ` +
-          `(${event.eventType}):`,
-          result.reason,
+        logger.error(
+          { err: result.reason, eventId: event.id, eventType: event.eventType },
+          '[OutboxWorker] Falló la compensación de dead-letter',
         );
       }
     }

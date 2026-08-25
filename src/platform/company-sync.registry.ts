@@ -8,6 +8,7 @@
  */
 
 import { CompanyCatalogPropagationWorker } from './company-sync.worker.js';
+import { logger } from '../logger.js';
 import type { CompanyRepository } from './company.repository.js';
 import type { PlatformRepository } from './platform.repository.js';
 
@@ -19,7 +20,7 @@ export function startCompanySyncWorker(companyRepo: CompanyRepository, platformR
   if (worker) return;
   worker = new CompanyCatalogPropagationWorker(companyRepo, platformRepo);
   worker.start(POLL_INTERVAL_MS);
-  console.log('[company-sync] Worker de propagación de catálogo arrancado.');
+  logger.info('[company-sync] Worker de propagación de catálogo arrancado.');
 }
 
 export async function stopCompanySyncWorker(): Promise<void> {

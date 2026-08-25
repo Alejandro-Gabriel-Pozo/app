@@ -10,10 +10,46 @@
 
 ## 1. Observabilidad e infraestructura (documento original, sin tocar)
 
-### 1.1 Logging estructurado — Pino
-93 usos de `console.log/error/warn` en `src/` (**verificado exacto**),
-sin logger estructurado. Propuesta: [Pino](https://github.com/pinojs/pino)
-+ `pino-http`. Esfuerzo bajo, reemplazo incremental.
+### 1.1 Logging estructurado — Pino — ✅ RESUELTO (25/08/2026)
+Instalados `pino` + `pino-http` (+ `pino-pretty` como devDependency, solo
+para consola local — en producción sale JSON de una línea, lo que espera
+cualquier agregador de logs). Nuevo `src/logger.ts`, único punto de
+creación de la instancia (mismo criterio que `sslConfig()` en
+`db/pg.client.ts`). `pino-http` montado en `app.ts` como paso 2 (justo
+después de `trust proxy`, antes de helmet/rate-limit) — loguea cada
+request/response con `req.id` autogenerado para correlación.
+
+**Alcance del reemplazo:** los 110 usos reales de `console.log/error/warn`
+en `src/` (no 93 — recontado 25/08/2026) se dividían en dos grupos.
+47 viven en `src/scripts/*.ts` (CLI corridos a mano por un humano que lee
+la terminal — `encrypt-database-url.ts`, `concurrency-test-reservations.ts`,
+`migrate-tenants.ts`) y quedaron **a propósito sin tocar**: no corren
+dentro del proceso del servidor, `console.log` ahí es la herramienta
+correcta, no una omisión. Los otros 63, en 20 archivos que sí corren en
+el proceso real (workers, middlewares, `app.ts`/`server.ts`,
+`container.ts`, rutas de plataforma, `email.sender.ts`, `pg.client.ts`,
+etc.), se reemplazaron todos por `logger.info/warn/error` con campos
+estructurados (`businessId`, `err`, `eventId`, etc. como objeto, nunca
+interpolados en el string). Las 2-3 ocurrencias de `console.log` que
+aparecían DENTRO de un string (mensajes de ayuda tipo `"Generá una con:
+node -e \"console.log(...)\""`) se dejaron intactas, no son logging real.
+
+**Tests rotos por el cambio — arreglados:** 3 tests
+(`tenant.middleware.test.ts` ×2, `company-sync.worker.test.ts`,
+`email.sender.test.ts`) espiaban `console.warn`/`console.error`
+directamente. `tenant.middleware.test.ts` hace `vi.resetModules()` +
+`await import(...)` en cada test — un `vi.spyOn(logger, ...)` normal no
+sobrevive a eso (el reimport crea una instancia de `logger.js` nueva); se
+resolvió con `vi.mock('../logger.js', ...)`, que sí persiste. Los otros
+dos, con import estático simple, solo necesitaron apuntar el spy a
+`logger` en vez de `console`. Suite completa: 1493/1493.
+
+**Verificado además contra el proceso real:** `npm run build` +
+`node dist/server.js` local — la salida pretty-printed confirma formato
+coloreado, correlación por línea y, en el catch de la migración fallida
+(sin Postgres local corriendo), el error serializado completo (stack +
+`AggregateError` con sus causas anidadas) en vez de un `console.error`
+plano.
 
 ### 1.2 Error tracking — Sentry — ✅ RESUELTO (25/08/2026)
 Cuenta creada por el dueño, DSN provisto en el chat. Instalado
@@ -267,8 +303,15 @@ que no cubre el caso de hueco vacío.
 
 ## Estado
 
-- Secciones 1 y 2: sin empezar (excepto la corrección del punto 1.3,
-  hecha en la verificación de arriba).
+- Sección 1: 1.1 (Pino), 1.2 (Sentry), 1.3 (CI, era diagnóstico
+  desactualizado), 1.6 (Zod niveles 1 y 2) y 1.7 (knip) resueltas
+  (25/08/2026). Quedan sin empezar 1.4 (Redis rate-limiting — no urgente
+  con la escala actual, requiere cuenta externa) y 1.5 (BullMQ —
+  deferred a propósito).
+- Sección 2 (auditoría del motor de reservas): 2.1 (coverage) y 2.2
+  (test de concurrencia) hechas, derivaron en el hallazgo de la sección
+  3. 2.3 (máquina de estados) y 2.4 (property-based testing) sin
+  empezar.
 - Sección 3 (bug de doble-booking): **hallazgo confirmado y documentado,
   sin arreglar a propósito** — decisión del dueño, 25/08/2026. Blast
   radius real: cualquier resourceId/rango que hoy no tenga ya una

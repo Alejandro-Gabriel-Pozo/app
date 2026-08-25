@@ -40,6 +40,7 @@ import type { PlatformRepository } from './platform.repository.js';
 import { encryptConnectionString, applyTenantSchema } from './tenant-db.setup.js';
 import { evictTenantPool } from './tenant.middleware.js';
 import { PlatformRole } from '../types/enums.js';
+import { logger } from '../logger.js';
 
 const RepairTenantDbSchema = z.object({
   businessId: z.string().min(1),
@@ -86,7 +87,7 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
 
         const { businessId } = RepairTenantDbSchema.parse(req.body);
 
-        console.log(`[admin] repair-tenant-db iniciado para negocio ${businessId}`);
+        logger.info({ businessId }, '[admin] repair-tenant-db iniciado');
 
         // Corre schema.sql (idempotente) y registra la versión ANTES de
         // activar el negocio — si la BD no responde o el schema falla, mejor
@@ -100,14 +101,14 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
         // usando la connection string vieja hasta que el proceso reinicie.
         await evictTenantPool(businessId);
 
-        console.log(`[admin] ✅ Negocio ${businessId} activado correctamente (schema v${schemaVersion}).`);
+        logger.info({ businessId, schemaVersion }, '[admin] Negocio activado correctamente.');
 
         res.json({
           message: `Negocio ${businessId} activado y apuntado a DATABASE_URL.`,
           schemaVersion,
         });
       } catch (err) {
-        console.error('[admin] repair-tenant-db ERROR:', err);
+        logger.error({ err }, '[admin] repair-tenant-db ERROR');
         next(err);
       }
     },
@@ -135,7 +136,7 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
 
         const { businessId, databaseUrl } = SetTenantUrlSchema.parse(req.body);
 
-        console.log(`[admin] set-tenant-url iniciado para negocio ${businessId}`);
+        logger.info({ businessId }, '[admin] set-tenant-url iniciado');
 
         // Mismo criterio que repair-tenant-db: aplicar y verificar el schema
         // antes de activar el negocio contra esta URL.
@@ -148,14 +149,14 @@ export function createAdminRouter(platformRepo: PlatformRepository): Router {
         // usando la connection string vieja hasta que el proceso reinicie.
         await evictTenantPool(businessId);
 
-        console.log(`[admin] ✅ Negocio ${businessId} apuntado a URL de Tenant DB (schema v${schemaVersion}).`);
+        logger.info({ businessId, schemaVersion }, '[admin] Negocio apuntado a URL de Tenant DB.');
 
         res.json({
           message: `Negocio ${businessId} apuntado a la Tenant DB correctamente.`,
           schemaVersion,
         });
       } catch (err) {
-        console.error('[admin] set-tenant-url ERROR:', err);
+        logger.error({ err }, '[admin] set-tenant-url ERROR');
         next(err);
       }
     },

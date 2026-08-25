@@ -24,6 +24,7 @@ import * as Sentry from '@sentry/node';
 import { closePlatformPool } from './container.js';
 import { closeTenantPools } from './platform/tenant.middleware.js';
 import { sslConfig } from './db/pg.client.js';
+import { logger } from './logger.js';
 import pg from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
   // Migración de la BD central (PLATFORM_DATABASE_URL — siempre requerida)
   // -------------------------------------------------------------------------
   try {
-    console.log('[migrate] Ejecutando platform.schema.sql...');
+    logger.info('[migrate] Ejecutando platform.schema.sql...');
     const schemaPath = join(__dirname, 'db', 'platform.schema.sql');
     const sql = await readFile(schemaPath, 'utf-8');
 
@@ -49,9 +50,9 @@ async function main(): Promise<void> {
     });
     await pool.query(sql);
     await pool.end();
-    console.log('[migrate] ✅ platform.schema.sql aplicado.');
+    logger.info('[migrate] ✅ platform.schema.sql aplicado.');
   } catch (err) {
-    console.error('[migrate] ❌ Error en platform.schema.sql:', err);
+    logger.error({ err }, '[migrate] ❌ Error en platform.schema.sql');
     Sentry.captureException(err);
     await Sentry.flush(2000);
     process.exit(1);
@@ -64,9 +65,7 @@ async function main(): Promise<void> {
   const { app } = await createApp();
 
   const server = app.listen(PORT, () => {
-    console.log(`\n🚀 Reservations API en http://localhost:${PORT}`);
-    console.log(`   Swagger UI: http://localhost:${PORT}/docs`);
-    console.log(`   Modo:       multi-tenant\n`);
+    logger.info({ port: PORT }, `🚀 Reservations API en http://localhost:${PORT} (Swagger: /docs, modo: multi-tenant)`);
   });
 
   // -------------------------------------------------------------------------
@@ -77,13 +76,13 @@ async function main(): Promise<void> {
     onShutdown: async () => {
       await closeTenantPools();
       await closePlatformPool();
-      console.log('[server] Pools PostgreSQL cerrados.');
+      logger.info('[server] Pools PostgreSQL cerrados.');
     },
   });
 }
 
 main().catch(async (err) => {
-  console.error('[server] Error fatal al arrancar:', err);
+  logger.error({ err }, '[server] Error fatal al arrancar');
   Sentry.captureException(err);
   await Sentry.flush(2000);
   process.exit(1);

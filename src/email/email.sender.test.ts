@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ResendEmailSender, NoopEmailSender, createEmailSender } from './email.sender.js';
+import { logger } from '../logger.js';
 
 describe('ResendEmailSender', () => {
   const originalFetch = global.fetch;
@@ -52,7 +53,7 @@ describe('ResendEmailSender', () => {
 
 describe('NoopEmailSender', () => {
   it('no falla y loguea cuando no hay credenciales', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     const sender = new NoopEmailSender();
     await expect(
       sender.send({ to: 'cliente@example.com', fromName: 'ZuluHub', subject: 's', html: 'h' }),

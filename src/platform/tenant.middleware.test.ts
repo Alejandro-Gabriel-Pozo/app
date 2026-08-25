@@ -9,6 +9,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BusinessStatus } from '../types/enums.js';
 import type { PlatformRepository } from './platform.repository.js';
 
+// `vi.mock` (a diferencia de `vi.spyOn`) sobrevive a `vi.resetModules()` --
+// necesario acá porque cada test reimporta tenant.middleware.js con
+// `await import(...)` después de resetModules(), lo que crearía una
+// instancia de logger.js nueva y distinta de cualquier spy tomado antes.
+const loggerMock = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+vi.mock('../logger.js', () => ({ logger: loggerMock }));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -123,39 +130,36 @@ describe('tenant.middleware — chequeo de schema_version (fail-soft)', () => {
   });
 
   it('no advierte cuando schema_version coincide con CURRENT_SCHEMA_VERSION', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loggerMock.warn.mockClear();
     const { getTenantClient } = await import('./tenant.middleware.js');
     const platformRepo = fakePlatformRepo({ schemaVersion: 1 });
 
     await getTenantClient('biz-al-dia', platformRepo);
 
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(loggerMock.warn).not.toHaveBeenCalled();
   });
 
   it('advierte (sin bloquear) cuando schema_version es null — tenant nunca migrado', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loggerMock.warn.mockClear();
     const { getTenantClient } = await import('./tenant.middleware.js');
     const platformRepo = fakePlatformRepo({ schemaVersion: null });
 
     const client = await getTenantClient('biz-sin-migrar', platformRepo);
 
     expect(client).toBeDefined(); // no lanza — la request sigue
-    expect(warnSpy).toHaveBeenCalledOnce();
-    expect(warnSpy.mock.calls[0]![0]).toContain('schema_version=null');
-    warnSpy.mockRestore();
+    expect(loggerMock.warn).toHaveBeenCalledOnce();
+    expect(loggerMock.warn.mock.calls[0]![1]).toContain('schema_version=null');
   });
 
   it('advierte (sin bloquear) cuando schema_version está desactualizada', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loggerMock.warn.mockClear();
     const { getTenantClient } = await import('./tenant.middleware.js');
     const platformRepo = fakePlatformRepo({ schemaVersion: 0 });
 
     const client = await getTenantClient('biz-desactualizado', platformRepo);
 
     expect(client).toBeDefined();
-    expect(warnSpy).toHaveBeenCalledOnce();
-    expect(warnSpy.mock.calls[0]![0]).toContain('schema_version=0');
-    warnSpy.mockRestore();
+    expect(loggerMock.warn).toHaveBeenCalledOnce();
+    expect(loggerMock.warn.mock.calls[0]![1]).toContain('schema_version=0');
   });
 });

@@ -39,6 +39,7 @@ import { signToken, verifyToken } from './auth.middleware.js';
 import { verifyPassword } from './user.store.js';
 import { verifyGoogleIdToken } from './google-oauth.js';
 import type { PlatformRepository, Identity, Membership } from '../platform/platform.repository.js';
+import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -314,13 +315,13 @@ export function parseExpiresIn(value: string): number {
   }
 
   if (!Number.isFinite(seconds) || seconds < 60) {
-    console.warn(`[AuthService] JWT_EXPIRES_IN="${value}" inválido, usando 24h`);
+    logger.warn({ value }, '[AuthService] JWT_EXPIRES_IN inválido, usando 24h');
     return 86_400;
   }
 
   const MAX_TTL = 30 * 86_400;
   if (seconds > MAX_TTL) {
-    console.warn(`[AuthService] JWT_EXPIRES_IN supera 30 días, limitando a 30d`);
+    logger.warn({ value }, '[AuthService] JWT_EXPIRES_IN supera 30 días, limitando a 30d');
     return MAX_TTL;
   }
 

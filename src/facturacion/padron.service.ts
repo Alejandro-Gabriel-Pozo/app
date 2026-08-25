@@ -46,6 +46,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import { resolveAfipClient, buildAfipClient } from './afip-client.factory.js';
 import type { AfipClientFactory } from './afip-client.factory.js';
 import { AfipPadronUnavailableError } from '../domain/errors.js';
+import { logger } from '../logger.js';
 
 /**
  * El SDK (`base-register-repository.js::getTaxpayerDetails`,
@@ -65,7 +66,7 @@ async function callPadron<T>(operation: string, fn: () => Promise<T>): Promise<T
   try {
     return await fn();
   } catch (error) {
-    console.error(`[PadronService] Falla no esperada en ${operation}:`, error);
+    logger.error({ err: error, operation }, '[PadronService] Falla no esperada');
     const cause = error instanceof Error ? error.message : String(error);
     throw new AfipPadronUnavailableError(operation, cause);
   }

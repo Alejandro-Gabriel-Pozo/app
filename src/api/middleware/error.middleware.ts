@@ -23,6 +23,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { ZodError }                        from 'zod';
 import type { DomainIssue } from '../../domain/errors.js';
 import { DomainError, ValidationError } from '../../domain/errors.js';
+import { logger } from '../../logger.js';
 
 export function errorHandler(
   err: unknown,
@@ -68,7 +69,7 @@ export function errorHandler(
   }
 
   // Error genérico no tipado — loguear siempre para detectar fugas
-  console.error('[errorHandler] Error no manejado:', err);
+  logger.error({ err }, '[errorHandler] Error no manejado');
   res.status(500).json({
     code:    'INTERNAL_ERROR',
     message: 'Error interno del servidor',
@@ -207,7 +208,7 @@ function domainErrorStatus(error: DomainError): number {
     default:
       // DomainError con code no mapeado — es un bug del servidor.
       // Logueamos para detectar codes nuevos que necesiten mapeo explícito.
-      console.error(`[errorHandler] DomainError sin mapeo de status: "${error.code}"`);
+      logger.error({ code: error.code }, '[errorHandler] DomainError sin mapeo de status');
       return 500;
   }
 }

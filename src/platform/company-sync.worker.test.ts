@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CompanyRepository, CompanyProduct, CompanyRecipeItem, PropagationQueueRow } from './company.repository.js';
 import type { PlatformRepository, Business } from './platform.repository.js';
+import { logger } from '../logger.js';
 
 const queryMock = vi.fn(async (_sql?: string, _params?: unknown[]) => ({ rows: [] as unknown[] }));
 const connectMock = vi.fn(async () => {});
@@ -146,7 +147,7 @@ describe('CompanyCatalogPropagationWorker', () => {
     });
 
     it('cuando recordPropagationFailure devuelve true (dead-letter), loguea pero no revienta', async () => {
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
       const companyRepo = makeCompanyRepo({
         getPendingPropagation: vi.fn(async () => [makeRow()]),
         recordPropagationFailure: vi.fn(async () => true),
@@ -156,8 +157,8 @@ describe('CompanyCatalogPropagationWorker', () => {
 
       await expect(worker.poll()).resolves.not.toThrow();
 
-      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('dead-letter'), expect.any(String));
-      consoleErrorSpy.mockRestore();
+      expect(errorSpy).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('dead-letter'));
+      errorSpy.mockRestore();
     });
   });
 

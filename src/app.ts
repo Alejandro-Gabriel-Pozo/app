@@ -4,35 +4,41 @@
  *
  * ## Orden de middlewares
  * 1.  trust proxy (Render/Cloudflare)
- * 2.  helmetBase — security headers globales (sin CSP, se aplica por ruta)
- * 3.  globalLimiter — baseline anti-DoS (500 req/min/IP)
- * 4.  cors, express.json
- * 5.  /health               — chequea platformClient (PLATFORM_DATABASE_URL)
- * 6.  /docs                 — helmetDocs (CSP permisiva para Swagger UI)
- * 7.  /openapi.json         — helmetBase ya aplicado
- * 8.  /platform/*           — helmetApi + platformLimiter (SUPERADMIN)
- * 9.  POST /register        — helmetApi + authLimiter (público)
- * 10. POST /api/login       — helmetApi + authLimiter (público)
- * 11. /api/customer/*       — helmetApi (portal del cliente)
- * 12. authenticate()        — verifica JWT, protege /api/* restante
- * 13. /api/admin            — mantenimiento (ADMIN, SIN tenantMiddleware)
+ * 2.  pino-http — log estructurado de cada request (1.1,
+ *     docs/auditoria-tecnica-infra-reservas.md), antes de todo lo demás
+ *     para que también quede loggeado un request frenado por el rate
+ *     limiter o por helmet.
+ * 3.  helmetBase — security headers globales (sin CSP, se aplica por ruta)
+ * 4.  globalLimiter — baseline anti-DoS (500 req/min/IP)
+ * 5.  cors, express.json
+ * 6.  /health               — chequea platformClient (PLATFORM_DATABASE_URL)
+ * 7.  /docs                 — helmetDocs (CSP permisiva para Swagger UI)
+ * 8.  /openapi.json         — helmetBase ya aplicado
+ * 9.  /platform/*           — helmetApi + platformLimiter (SUPERADMIN)
+ * 10. POST /register        — helmetApi + authLimiter (público)
+ * 11. POST /api/login       — helmetApi + authLimiter (público)
+ * 12. /api/customer/*       — helmetApi (portal del cliente)
+ * 13. authenticate()        — verifica JWT, protege /api/* restante
+ * 14. /api/admin            — mantenimiento (ADMIN, SIN tenantMiddleware)
  *     ⚠️  Montado ANTES de tenantMiddleware a propósito: repair-tenant-db
  *        necesita correr cuando la BD del tenant todavía no está activa.
- * 14. tenantMiddleware()    — inyecta req.db + arranca OutboxWorker por tenant
- * 15. apiLimiter            — 200 req/min/IP sobre /api/* autenticado
- * 16. /api/resources, /reservations, /reports, /customers, /users,
+ * 15. tenantMiddleware()    — inyecta req.db + arranca OutboxWorker por tenant
+ * 16. apiLimiter            — 200 req/min/IP sobre /api/* autenticado
+ * 17. /api/resources, /reservations, /reports, /customers, /users,
  *     /categories, /products, /orders, /waste-reasons, /bookable-services,
  *     /housekeeping, /stays
- * 17. errorHandler
+ * 18. Sentry + errorHandler
  */
 
 import express from 'express';
 import cors    from 'cors';
 import swaggerUi from 'swagger-ui-express';
+import { pinoHttp } from 'pino-http';
 import type http from 'node:http';
 import * as Sentry from '@sentry/node';
 import { ZodError } from 'zod';
 import { DomainError, ValidationError } from './domain/errors.js';
+import { logger } from './logger.js';
 
 import { createResourcesRouter }         from './reservas/resources.routes.js';
 import { createLocationsRouter }         from './api/routes/locations.routes.js';
@@ -123,12 +129,19 @@ export async function createApp(): Promise<{
   app.set('trust proxy', 1);
 
   // -------------------------------------------------------------------------
-  // 2. Helmet base — security headers globales, sin CSP.
+  // 2. pino-http — log estructurado de cada request/response (1.1). `req.id`
+  //    autogenerado (UUID) queda disponible como correlación en el resto de
+  //    los logs de ese request si algún handler lo necesita.
+  // -------------------------------------------------------------------------
+  app.use(pinoHttp({ logger }));
+
+  // -------------------------------------------------------------------------
+  // 3. Helmet base — security headers globales, sin CSP.
   // -------------------------------------------------------------------------
   app.use(helmetBase);
 
   // -------------------------------------------------------------------------
-  // 3. Global limiter — baseline anti-DoS.
+  // 4. Global limiter — baseline anti-DoS.
   // -------------------------------------------------------------------------
   app.use(globalLimiter);
 
@@ -146,7 +159,7 @@ export async function createApp(): Promise<{
   startCompanySyncWorker(companyRepo, platformRepo);
 
   // -------------------------------------------------------------------------
-  // 4. CORS + body parser
+  // 5. CORS + body parser
   // -------------------------------------------------------------------------
   const corsOrigin =
     process.env.CORS_ORIGIN ??
@@ -170,7 +183,7 @@ export async function createApp(): Promise<{
   app.use(express.json());
 
   // -------------------------------------------------------------------------
-  // 5. /health — chequea platformClient (PLATFORM_DATABASE_URL), no DATABASE_URL.
+  // 6. /health — chequea platformClient (PLATFORM_DATABASE_URL), no DATABASE_URL.
   //    Antes usaba el pool interno de pg.client.ts (DATABASE_URL legacy)
   //    que no está seteada en Render → siempre retornaba db:"error".
   // -------------------------------------------------------------------------
@@ -193,24 +206,24 @@ export async function createApp(): Promise<{
   }));
 
   // -------------------------------------------------------------------------
-  // 8. /platform/* — helmetApi (CSP estricta) + platformLimiter
+  // 9. /platform/* — helmetApi (CSP estricta) + platformLimiter
   // -------------------------------------------------------------------------
   const platformContainer = createPlatformContainer();
   app.use('/platform', ...helmetApi, platformLimiter, createPlatformRouter(platformContainer));
 
   // -------------------------------------------------------------------------
-  // 9-10. /register + /api/login — helmetApi + authLimiter (anti brute-force)
+  // 10-11. /register + /api/login — helmetApi + authLimiter (anti brute-force)
   // -------------------------------------------------------------------------
   app.use('/register',  ...helmetApi, authLimiter, createBusinessRouter(platformRepo));
   app.use('/api/login', ...helmetApi, authLimiter, createAuthRouter(authService));
 
   // -------------------------------------------------------------------------
-  // 11. /api/customer — portal del cliente
+  // 12. /api/customer — portal del cliente
   // -------------------------------------------------------------------------
   app.use('/api/customer', createCustomerRouter(container, platformRepo));
 
   // -------------------------------------------------------------------------
-  // 12. helmetApi sobre todo /api/* — cubre customer, admin y rutas de tenant.
+  // 13. helmetApi sobre todo /api/* — cubre customer, admin y rutas de tenant.
   // -------------------------------------------------------------------------
   app.use('/api', ...helmetApi);
 
@@ -275,17 +288,17 @@ export async function createApp(): Promise<{
   app.use('/api/business/plan-limits', createBusinessPlanLimitsRouter(container));
 
   // -------------------------------------------------------------------------
-  // 14. tenantMiddleware — inyecta req.db + arranca OutboxWorker por tenant
+  // 15. tenantMiddleware — inyecta req.db + arranca OutboxWorker por tenant
   // -------------------------------------------------------------------------
   app.use('/api', tenantMiddleware(platformRepo));
 
   // -------------------------------------------------------------------------
-  // 15. apiLimiter — después de autenticación y resolución de tenant
+  // 16. apiLimiter — después de autenticación y resolución de tenant
   // -------------------------------------------------------------------------
   app.use('/api', apiLimiter);
 
   // -------------------------------------------------------------------------
-  // 16. Rutas protegidas de empleados (todas usan req.db del tenant)
+  // 17. Rutas protegidas de empleados (todas usan req.db del tenant)
   // -------------------------------------------------------------------------
   app.use('/api/resources',         createResourcesRouter());
   app.use('/api/locations',         createLocationsRouter());
@@ -433,7 +446,7 @@ export async function createApp(): Promise<{
   );
 
   // -------------------------------------------------------------------------
-  // 17. Sentry + error handler — siempre al final
+  // 18. Sentry + error handler — siempre al final
   // shouldHandleError filtra los errores esperados del negocio (ya se
   // mapean a su propio status en error.middleware.ts, no son bugs) --
   // sin esto, Sentry se llenaría de "ruido" tipo RESOURCE_NOT_FOUND (404)
@@ -461,32 +474,32 @@ export function registerGracefulShutdown(
   const { onShutdown } = options;
 
   const shutdown = async (signal: string) => {
-    console.log(`\n[server] ${signal} recibido. Cerrando servidor...`);
+    logger.info({ signal }, 'Señal recibida. Cerrando servidor...');
 
     try { await stopAllWorkers(); }
-    catch (err) { console.error('[server] Error al detener outbox workers:', err); }
+    catch (err) { logger.error({ err }, 'Error al detener outbox workers'); }
 
     try { await stopCompanySyncWorker(); }
-    catch (err) { console.error('[server] Error al detener el worker de propagación de empresas:', err); }
+    catch (err) { logger.error({ err }, 'Error al detener el worker de propagación de empresas'); }
 
     if (onShutdown) {
       try { await onShutdown(); }
-      catch (err) { console.error('[server] Error en onShutdown:', err); }
+      catch (err) { logger.error({ err }, 'Error en onShutdown'); }
     }
 
     try { await closeTenantPools(); }
-    catch (err) { console.error('[server] Error al cerrar tenant pools:', err); }
+    catch (err) { logger.error({ err }, 'Error al cerrar tenant pools'); }
 
     try { await closePlatformPool(); }
-    catch (err) { console.error('[server] Error al cerrar platform pool:', err); }
+    catch (err) { logger.error({ err }, 'Error al cerrar platform pool'); }
 
     server.close(() => {
-      console.log('[server] Servidor cerrado correctamente.');
+      logger.info('Servidor cerrado correctamente.');
       process.exit(0);
     });
 
     setTimeout(() => {
-      console.error('[server] Cierre forzado por timeout.');
+      logger.error('Cierre forzado por timeout.');
       process.exit(1);
     }, 10_000).unref();
   };

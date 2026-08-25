@@ -16,6 +16,7 @@ import { Router } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { DomainEventRepository } from '../../repositories/domain-event.repository.js';
+import { logger } from '../../logger.js';
 
 export function createSystemRouter(repo: DomainEventRepository): Router {
   const router = Router();
@@ -57,8 +58,9 @@ export function createSystemRouter(repo: DomainEventRepository): Router {
         // A6.5 (rastro de la transición) — no hay audit_log wireado para
         // esto todavía (A9.4 nota que hoy solo cubre precios); queda en el
         // log del servidor con quién y qué evento, no en la tabla.
-        console.log(
-          `[system] Reintento manual de evento id=${id} por identity=${req.user?.id} (business=${req.user?.businessId})`,
+        logger.info(
+          { eventId: id, identityId: req.user?.id, businessId: req.user?.businessId },
+          '[system] Reintento manual de evento',
         );
 
         res.status(204).send();

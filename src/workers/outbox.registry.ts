@@ -22,6 +22,7 @@ import { SqlInventoryLevelRepository }         from '../repositories/sql.invento
 import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';
 import { SqlAuditLogRepository }               from '../repositories/audit-log.repository.js';
 import { ProductService }                      from '../pos-menu/product.service.js';
+import { logger }                              from '../logger.js';
 import { PgTransactionManager }                from '../db/pg.transaction-manager.js';
 import { registerInventoryHandlers }           from './inventory.handlers.js';
 import { registerEmailHandlers }               from './email.handlers.js';
@@ -74,7 +75,7 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   worker.start();
 
   workers.set(businessId, worker);
-  console.log(`[outbox] Worker arrancado para tenant ${businessId}`);
+  logger.info({ businessId }, '[outbox] Worker arrancado para tenant');
 
   // C1-Fase A (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md)
   // -- worker de liberación de holds vencidos, mismo ciclo de vida que el

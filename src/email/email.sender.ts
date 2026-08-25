@@ -35,6 +35,8 @@
  * envíos con índice único por (aggregateId, eventType).
  */
 
+import { logger } from '../logger.js';
+
 export interface EmailMessage {
   to: string;
   /** Nombre para mostrar en el remitente — el del negocio, o un default de plataforma. */
@@ -85,9 +87,7 @@ export class NoopEmailSender implements EmailSender {
     // A7.1 (criterios-negocio.md): nunca PII en logs -- ni `message.to` (email
     // del cliente) ni el asunto (puede llevar el nombre del negocio/cliente).
     void message;
-    console.warn(
-      '[EmailSender] RESEND_API_KEY/RESEND_FROM_EMAIL no configuradas -- mail NO enviado.',
-    );
+    logger.warn('[EmailSender] RESEND_API_KEY/RESEND_FROM_EMAIL no configuradas -- mail NO enviado.');
   }
 }
 

@@ -52,6 +52,7 @@ import {
 } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import { logger } from '../logger.js';
 
 const AUDIT_ENTITY = 'invoices';
 
@@ -480,8 +481,9 @@ export class InvoiceService {
         try {
           await this.accountsReceivableRepo.markInvoiced(ar.id, invoiceRef);
         } catch (err) {
-          console.error(
-            `[InvoiceService] no se pudo marcar accounts_receivable "${ar.id}" como FACTURADO tras emitir la consolidada ${issued.id}: ${errMessage(err)}`,
+          logger.error(
+            { accountsReceivableId: ar.id, invoiceId: issued.id, err: errMessage(err) },
+            '[InvoiceService] no se pudo marcar accounts_receivable como FACTURADO tras emitir la consolidada',
           );
         }
       }
@@ -717,8 +719,9 @@ export class InvoiceService {
           await this.accountsReceivableRepo.markInvoiced(ar.id, invoiceRef);
         }
       } catch (err) {
-        console.error(
-          `[InvoiceService] no se pudo cerrar el gap de accounts_receivable para financial_transaction "${issued.financialTransactionId}" (factura ${issued.id}): ${errMessage(err)}`,
+        logger.error(
+          { financialTransactionId: issued.financialTransactionId, invoiceId: issued.id, err: errMessage(err) },
+          '[InvoiceService] no se pudo cerrar el gap de accounts_receivable',
         );
       }
     }

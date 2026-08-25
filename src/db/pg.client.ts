@@ -27,6 +27,7 @@
 
 import pg from 'pg';
 import type { SqlClient } from '../repositories/sql.client.js';
+import { logger } from '../logger.js';
 
 const { Pool } = pg;
 
@@ -97,7 +98,7 @@ function getPool(): InstanceType<typeof Pool> {
   });
 
   _pool.on('error', (err) => {
-    console.error('[pg.client] Error inesperado del pool:', err.message);
+    logger.error({ err: err.message }, '[pg.client] Error inesperado del pool');
   });
 
   return _pool;

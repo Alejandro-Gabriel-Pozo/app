@@ -873,12 +873,34 @@ justo antes del `errorHandler` propio, filtrando `DomainError`/
 `ValidationError`/`ZodError` (esos ya tienen su status HTTP correcto,
 no son bugs — sin el filtro Sentry se llenaría de 404s/400s normales).
 `SENTRY_DSN` agregada a `render.yaml` con `sync: false` (no es secreto,
-mismo criterio que `GOOGLE_CLIENT_ID`, pero no se hardcodea) — **falta
-que el dueño la pegue en el dashboard de Render** para que funcione en
-producción. Verificado: build+lint+suite completa sin romper nada, y un
-script standalone con el DSN real confirmó el envío end-to-end
-(`Sentry.flush()` → `true`). Detalle en
-`docs/auditoria-tecnica-infra-reservas.md`, sección 1.2.
+mismo criterio que `GOOGLE_CLIENT_ID`, pero no se hardcodea). El dueño
+confirmó haberla pegado en el dashboard de Render el mismo día — el
+próximo deploy (automático al guardar la env var, salvo Auto-Deploy
+apagado) queda con Sentry activo en producción. Verificado:
+build+lint+suite completa sin romper nada, y un script standalone con el
+DSN real confirmó el envío end-to-end (`Sentry.flush()` → `true`).
+Detalle en `docs/auditoria-tecnica-infra-reservas.md`, sección 1.2.
+
+---
+
+## Logging estructurado — Pino (punto 1.1) — ✅ RESUELTO (25/08/2026)
+
+Instalados `pino`+`pino-http`(+`pino-pretty` dev). Nuevo `src/logger.ts`
+(única instancia del proceso). `pino-http` montado en `app.ts` como paso
+2, antes de helmet/rate-limit, para loguear también lo que esos frenan.
+Reemplazados los 63 `console.log/error/warn` reales que corrían dentro
+del proceso del servidor (20 archivos: workers, middlewares, `app.ts`/
+`server.ts`, `container.ts`, rutas de plataforma, etc.) por
+`logger.info/warn/error` con campos estructurados. Los 47 de
+`src/scripts/*.ts` (CLI, corridos a mano) quedaron sin tocar a
+propósito — no son parte del proceso del servidor. 3 tests que espiaban
+`console.warn/error` directamente se rompieron y se arreglaron
+(`tenant.middleware.test.ts` necesitó `vi.mock('../logger.js', ...)` en
+vez de `vi.spyOn` porque el archivo hace `vi.resetModules()` + reimport
+dinámico en cada test). Verificado: build+lint+suite completa
+(1493/1493) y arranque real del proceso compilado (`node dist/server.js`)
+confirmando el formato pretty-printed en consola. Detalle en
+`docs/auditoria-tecnica-infra-reservas.md`, sección 1.1.
 
 ---
 

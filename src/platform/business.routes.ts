@@ -42,6 +42,7 @@ import { signToken, setAuthCookie } from '../security/auth.middleware.js';
 import { BusinessPlan, BusinessStatus } from '../types/enums.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
+import { logger } from '../logger.js';
 
 /**
  * @swagger
@@ -179,7 +180,7 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           await platformRepo.updateSchemaVersion(businessId, schemaVersion);
           finalStatus = BusinessStatus.ACTIVE;
         } catch (provisionErr) {
-          console.error(`[register] Aprovisionamiento falló para ${businessId}, queda PENDING:`, provisionErr);
+          logger.error({ err: provisionErr, businessId }, '[register] Aprovisionamiento falló, queda PENDING');
         }
 
         // El JWT de staff ya no lleva `role` (ver security/roles.ts) — los
@@ -204,7 +205,7 @@ export function createBusinessRouter(platformRepo: PlatformRepository): Router {
           : 'Negocio registrado. Todavía falta activar su base de datos — contactá a soporte para completar el alta antes de operar.';
 
         if (finalStatus !== BusinessStatus.ACTIVE) {
-          console.log(`[register] Negocio ${businessId} creado (PENDING) — falta activar su BD.`);
+          logger.info({ businessId }, '[register] Negocio creado (PENDING) — falta activar su BD.');
         }
 
         res.status(201).json({

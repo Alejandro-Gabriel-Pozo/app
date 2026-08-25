@@ -24,6 +24,7 @@ import { BusinessPlan }        from './types/enums.js';
 import type { PlanLimits }     from './config/plan-limits.js';
 import type { SqlClient }           from './repositories/sql.client.js';
 import { stripSslMode, sslConfig } from './db/pg.client.js';
+import { logger } from './logger.js';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -58,7 +59,7 @@ export function createPlatformPool(): SqlClient {
       connectionTimeoutMillis: 10_000,
     });
     _platformPool.on('error', (err) => {
-      console.error('[platform] Error en pool central:', err.message);
+      logger.error({ err: err.message }, '[platform] Error en pool central');
     });
   }
 
@@ -110,7 +111,7 @@ export async function createAppContainer(): Promise<AppContainer> {
 }
 
 async function createPostgresContainer(): Promise<AppContainer> {
-  console.log('[container] 🐘 Modo PostgreSQL — conectando a PLATFORM_DATABASE_URL');
+  logger.info('[container] Modo PostgreSQL — conectando a PLATFORM_DATABASE_URL');
 
   const platformSqlClient  = createPlatformPool();
   const platformRepository = new PlatformRepository(platformSqlClient);
@@ -178,7 +179,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
     return limits;
   };
 
-  console.log('[container] ✅ PostgreSQL listo.');
+  logger.info('[container] PostgreSQL listo.');
 
   return {
     getBusinessPlan,

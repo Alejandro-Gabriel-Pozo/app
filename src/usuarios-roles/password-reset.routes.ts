@@ -27,6 +27,7 @@ import type { EmailSender } from '../email/email.sender.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { getTenantClient } from '../platform/tenant.middleware.js';
 import type { PlatformRepository, PasswordResetToken } from '../platform/platform.repository.js';
+import { logger } from '../logger.js';
 
 /** Más corto que los 7 días de invitación — acá ya existe una cuenta activa. */
 export const PASSWORD_RESET_EXPIRES_HOURS = 24;
@@ -123,7 +124,7 @@ export function createPasswordResetRouter(
     } catch (err) {
       // Negocio suspendido/sin BD lista/lo que sea -- no es motivo para
       // fallar el pedido de reseteo entero, cae a DEFAULT_SENDER_NAME.
-      console.error(`[password-resets/request] no se pudo resolver el negocio ${businessId} para el mail:`, err);
+      logger.error({ err, businessId }, '[password-resets/request] no se pudo resolver el negocio para el mail');
       return { displayName: null, businessId };
     }
   }
@@ -155,7 +156,7 @@ export function createPasswordResetRouter(
           await sendPasswordResetEmail(emailSender, frontendUrl, resetToken.identityEmail, token, branding);
         }
       } catch (err) {
-        console.error('[password-resets/request] fallo interno, respuesta genérica igual:', err);
+        logger.error({ err }, '[password-resets/request] fallo interno, respuesta genérica igual');
       }
 
       res.json(GENERIC_REQUEST_RESPONSE);

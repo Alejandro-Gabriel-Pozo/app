@@ -16,6 +16,7 @@ import pg from 'pg';
 import type { CompanyRepository, CompanyProduct, CompanyRecipeItem, PropagationQueueRow } from './company.repository.js';
 import type { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './tenant-db.setup.js';
+import { logger } from '../logger.js';
 
 const BATCH_SIZE = 20;
 const MAX_RETRIES = 5;
@@ -51,7 +52,7 @@ export class CompanyCatalogPropagationWorker {
         await this.processOne(row);
       }
     } catch (err) {
-      console.error('[CompanyCatalogPropagationWorker] Error en poll():', err);
+      logger.error({ err }, '[CompanyCatalogPropagationWorker] Error en poll()');
     } finally {
       this.running = false;
     }
@@ -87,9 +88,9 @@ export class CompanyCatalogPropagationWorker {
       const message = err instanceof Error ? err.message : String(err);
       const wentDeadLetter = await this.companyRepo.recordPropagationFailure(row.id, message, MAX_RETRIES);
       if (wentDeadLetter) {
-        console.error(
-          `[CompanyCatalogPropagationWorker] ⚠️ Propagación ${row.id} (company_product=${row.companyProductId}, target=${row.targetBusinessId}) pasó a dead-letter tras ${MAX_RETRIES} intentos:`,
-          message,
+        logger.error(
+          { propagationId: row.id, companyProductId: row.companyProductId, targetBusinessId: row.targetBusinessId, maxRetries: MAX_RETRIES, message },
+          '[CompanyCatalogPropagationWorker] Propagación pasó a dead-letter',
         );
       }
     }

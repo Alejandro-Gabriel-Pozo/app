@@ -36,6 +36,7 @@ import { decryptConnectionString, CURRENT_SCHEMA_VERSION } from './tenant-db.set
 import { BusinessStatus, UserRole } from '../types/enums.js';
 import { ensureTenantWorker, stopTenantWorker } from '../workers/outbox.registry.js';
 import { stripSslMode, sslConfig } from '../db/pg.client.js';
+import { logger } from '../logger.js';
 
 const { Pool } = pg;
 type PgPool = InstanceType<typeof Pool>;
@@ -88,7 +89,8 @@ export async function getTenantClient(
   // posterior, una vez confirmado que todos los tenants activos ya fueron
   // migrados al menos una vez.
   if (business.schemaVersion !== CURRENT_SCHEMA_VERSION) {
-    console.warn(
+    logger.warn(
+      { businessId, schemaVersion: business.schemaVersion, currentSchemaVersion: CURRENT_SCHEMA_VERSION },
       `[tenant] ${businessId}: schema_version=${business.schemaVersion ?? 'null'} ` +
       `≠ CURRENT_SCHEMA_VERSION=${CURRENT_SCHEMA_VERSION}. Corré \`npm run migrate:tenants\`.`,
     );
@@ -107,7 +109,7 @@ export async function getTenantClient(
   });
 
   pool.on('error', (err) => {
-    console.error(`[tenant] Error en pool de ${businessId}:`, err.message);
+    logger.error({ err: err.message, businessId }, '[tenant] Error en pool');
     tenantPools.delete(businessId);
     void stopTenantWorker(businessId);
   });
@@ -125,9 +127,9 @@ export async function getTenantClient(
   if (tenantPools.size >= MAX_TENANT_POOLS) {
     const lruBusinessId = findLeastRecentlyUsed();
     if (lruBusinessId) {
-      console.warn(
-        `[tenant] Límite de pools alcanzado (${MAX_TENANT_POOLS}). ` +
-        `Desalojando el menos usado (${lruBusinessId}) para dar lugar a ${businessId}.`,
+      logger.warn(
+        { maxTenantPools: MAX_TENANT_POOLS, evicted: lruBusinessId, businessId },
+        '[tenant] Límite de pools alcanzado. Desalojando el menos usado.',
       );
       await evictTenantPool(lruBusinessId);
     }
@@ -174,11 +176,11 @@ export async function evictTenantPool(businessId: string): Promise<void> {
 
   try {
     await entry.pool.end();
-    console.log(`[tenant] Pool de ${businessId} invalidado.`);
+    logger.info({ businessId }, '[tenant] Pool invalidado.');
   } catch (err) {
-    console.error(
-      `[tenant] Error al cerrar pool de ${businessId}:`,
-      err instanceof Error ? err.message : err,
+    logger.error(
+      { err: err instanceof Error ? err.message : err, businessId },
+      '[tenant] Error al cerrar pool',
     );
   }
 }
@@ -234,11 +236,11 @@ export async function closeTenantPools(): Promise<void> {
       try {
         await pool.end();
       } catch (err) {
-        console.error(`[tenant] Error cerrando pool de ${businessId}:`, err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err, businessId }, '[tenant] Error cerrando pool');
       }
     }),
   );
-  console.log(`[tenant] ${entries.length} pool(s) cerrados.`);
+  logger.info({ count: entries.length }, '[tenant] Pools cerrados.');
 }
 
 // ---------------------------------------------------------------------------

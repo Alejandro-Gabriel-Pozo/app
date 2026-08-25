@@ -22,6 +22,7 @@ import type { FinancialTransactionRepository } from '../clientes-finanzas/financ
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import { logger } from '../logger.js';
 
 export class ReservationHoldExpiryWorker {
   private intervalId: ReturnType<typeof setInterval> | undefined = undefined;
@@ -39,7 +40,10 @@ export class ReservationHoldExpiryWorker {
   start(): void {
     if (this.intervalId) return;
     this.intervalId = setInterval(() => void this.poll(), this.pollIntervalMs);
-    console.log(`[ReservationHoldExpiryWorker] Iniciado (${this.businessId}) — polling cada ${this.pollIntervalMs}ms`);
+    logger.info(
+      { businessId: this.businessId, pollIntervalMs: this.pollIntervalMs },
+      '[ReservationHoldExpiryWorker] Iniciado',
+    );
   }
 
   async stop(): Promise<void> {
@@ -61,7 +65,7 @@ export class ReservationHoldExpiryWorker {
         try {
           await this.expireOne(reservation.id);
         } catch (err) {
-          console.error(`[ReservationHoldExpiryWorker] Error venciendo reserva id=${reservation.id}:`, err);
+          logger.error({ err, reservationId: reservation.id }, '[ReservationHoldExpiryWorker] Error venciendo reserva');
         }
       }
     } finally {
