@@ -50,13 +50,18 @@ describe('InMemoryHousekeepingRepository.isOutOfService', () => {
     expect(await repo.isOutOfService('room-1')).toBe(true);
   });
 
-  it('resetear la tarea vigente a PENDING desbloquea el recurso', async () => {
+  // 25/08/2026 -- resetToPending() se borró (huérfano, ver
+  // pendientes-2026-08-25.md); el caso que importa acá es que isOutOfService()
+  // mire el status VIGENTE de la tarea, no que exista un comando que la
+  // cambie -- se simula la actualización con restore() + update() directo,
+  // igual que hacía la fila real después de un reset manual histórico.
+  it('una tarea vigente que pasa a PENDING desbloquea el recurso', async () => {
     const task = restoreTask({ id: 'hk-1', status: 'OUT_OF_SERVICE', scheduledFor: new Date('2020-01-01T08:00:00Z') });
     repo.seed(task);
     expect(await repo.isOutOfService('room-1')).toBe(true);
 
-    task.resetToPending();
-    await repo.update(task);
+    const updated = restoreTask({ id: 'hk-1', status: 'PENDING', scheduledFor: new Date('2020-01-01T08:00:00Z') });
+    await repo.update(updated);
     expect(await repo.isOutOfService('room-1')).toBe(false);
   });
 

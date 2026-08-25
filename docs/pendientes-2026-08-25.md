@@ -279,6 +279,46 @@ resto del backlog "backend-only, sin pantalla" de este documento.
 
 ---
 
+## Rutas huérfanas de housekeeping — ✅ RESUELTO, se borraron (25/08/2026)
+
+`POST /housekeeping/:id/out-of-service` y `/:id/reset` no tenían ningún
+caller real — confirmado por grep tanto en `appfrontend-main` (la pantalla
+ya no las llama desde el 24/08, cuando `maintenance_window` reemplazó ese
+mecanismo) como en el resto de `app-main` (nada más invocaba
+`HousekeepingService.setOutOfService()`/`resetToPending()` que esas dos
+rutas). Decisión confirmada con el dueño: borrarlas, no deprecarlas ni
+dejarlas inertes.
+
+**Borrado:**
+- Las 2 rutas (`housekeeping.routes.ts`) y sus 2 métodos de servicio
+  (`housekeeping.service.ts`).
+- Los 2 comandos de dominio (`HousekeepingTask.setOutOfService()`/
+  `resetToPending()`, `housekeeping-task.ts`). `OUT_OF_SERVICE` sigue
+  siendo un valor válido de `HousekeepingStatus` (filas históricas siguen
+  legibles, R2) y `assign()` lo sigue rechazando explícitamente — solo se
+  sacó el mecanismo para TRANSICIONAR hacia/desde ese status.
+  `ALLOWED_TRANSITIONS` actualizado para no advertir esas transiciones en
+  `allowedTransitions` (A6.2: el DTO no debe prometer acciones sin código
+  que las invoque) — una tarea histórica en `OUT_OF_SERVICE` queda con
+  `allowedTransitions: []`.
+- `docs/rbac-matriz-endpoints.md` y `EXPECTED_AUTHORIZE_CALL_SITES`
+  (198 → 196, se fueron los 2 `authorize(Roles.MANAGEMENT)` de esas rutas).
+- Frontend: `housekeepingApi.outOfService`/`.reset` en
+  `lib/housekeeping/api.ts` también borrados (dead code apuntando a rutas
+  que ya no existen).
+- Tests actualizados: `housekeeping-task.test.ts` (transiciones sin
+  OUT_OF_SERVICE, nuevo caso "histórico sin transiciones"),
+  `housekeeping.routes.test.ts` (los 2 describe de las rutas borradas),
+  `in-memory.housekeeping.repository.test.ts` (el caso que llamaba
+  `resetToPending()` reescrito sin depender del comando borrado).
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios en ambos repos, suite
+completa de `app-main` **129 archivos / 1472 tests verdes**. En vivo
+contra el backend real: ambas rutas devuelven `404` ahora, el resto de
+Housekeeping (tablero, planificar tarea) sigue funcionando sin cambios.
+
+---
+
 ## Hallazgo menor de UX — "Reactivar" visible en ventana ya cerrada — ✅ RESUELTO (25/08/2026)
 
 La ficha de detalle de Housekeeping seguía mostrando el botón "Reactivar"
@@ -339,8 +379,5 @@ limpió porque no hay endpoint de borrado (solo `close()`).
 - **I11 — pendiente de verificar:** correr el build real de Render (o al
   menos `npm run build` local) con Node 22 antes de deployar — no se
   probó el pipeline de deploy completo, solo el fix puntual.
-- **Rutas huérfanas:** `POST /housekeeping/:id/out-of-service` y `/:id/reset`
-  siguen existiendo en el backend pero ninguna pantalla las llama ya — no
-  se decidió todavía si se borran, se deprecan o se dejan inertes.
 - **Pantalla de reasignación/revisión** para reservas con
   `needsMaintenanceReview = true` — diferida a propósito.

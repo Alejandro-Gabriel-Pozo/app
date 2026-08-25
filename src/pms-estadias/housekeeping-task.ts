@@ -7,13 +7,22 @@
  *
  * ## Estados
  * PENDING    → ASSIGNED → IN_PROGRESS → DONE → INSPECTED
- *                                         ↓
- *                                    OUT_OF_SERVICE  (recurso fuera de servicio)
  *
  * ## Invariantes
  * - No se puede completar una tarea que no esté IN_PROGRESS.
  * - No se puede inspeccionar una tarea que no esté DONE.
- * - Un recurso OUT_OF_SERVICE requiere autorización de MANAGEMENT para volver a PENDING.
+ *
+ * ## OUT_OF_SERVICE — status histórico, sin transición viva (25/08/2026)
+ * `maintenance_window` (24/08/2026, ver `maintenance-window.ts`) reemplazó
+ * a este mecanismo como forma de sacar un recurso de disponibilidad — sigue
+ * siendo un valor válido de `HousekeepingStatus` (nunca se migran filas
+ * históricas, R2/criterios-datos.md) y `assign()` sigue rechazando
+ * explícitamente una tarea en ese estado, pero ya no existe ningún comando
+ * de dominio que TRANSICIONE una tarea a/desde OUT_OF_SERVICE — `setOutOfService()`/
+ * `resetToPending()` y las rutas que los llamaban se borraron por no tener
+ * ningún caller real (confirmado: ni el frontend ni ningún otro punto del
+ * backend los usaba). Una fila vieja con este status queda congelada tal
+ * cual quedó, coherente con ser un registro histórico.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -43,8 +52,14 @@ export type HousekeepingStatus =
 
 /**
  * Transiciones técnicamente válidas por estado — reflejan exactamente los
- * guards de start()/complete()/inspect()/setOutOfService()/resetToPending()
- * de abajo (proyección de solo lectura, no reemplaza esos guards).
+ * guards de start()/complete()/inspect() de abajo (proyección de solo
+ * lectura, no reemplaza esos guards).
+ *
+ * OUT_OF_SERVICE queda afuera de todas las listas (25/08/2026) — sin
+ * `setOutOfService()`/`resetToPending()` ya no hay ningún comando que
+ * transicione hacia o desde ese status, así que `allowedTransitions` no
+ * debe advertirlo como posible (A6.2: el DTO tiene que reflejar acciones
+ * que de verdad se puedan invocar).
  *
  * Excepción deliberada: `assign()` en el dominio solo bloquea desde
  * OUT_OF_SERVICE/INSPECTED (permite reasignar desde ASSIGNED/IN_PROGRESS/
@@ -54,12 +69,12 @@ export type HousekeepingStatus =
  * angosta que lo que el dominio permite, no una duplicación a corregir.
  */
 const ALLOWED_TRANSITIONS: Record<HousekeepingStatus, readonly HousekeepingStatus[]> = {
-  PENDING:        ['ASSIGNED', 'IN_PROGRESS', 'OUT_OF_SERVICE'],
-  ASSIGNED:       ['IN_PROGRESS', 'OUT_OF_SERVICE'],
-  IN_PROGRESS:    ['DONE', 'OUT_OF_SERVICE'],
-  DONE:           ['INSPECTED', 'OUT_OF_SERVICE'],
+  PENDING:        ['ASSIGNED', 'IN_PROGRESS'],
+  ASSIGNED:       ['IN_PROGRESS'],
+  IN_PROGRESS:    ['DONE'],
+  DONE:           ['INSPECTED'],
   INSPECTED:      [],
-  OUT_OF_SERVICE: ['PENDING'],
+  OUT_OF_SERVICE: [],
 };
 
 export interface HousekeepingTaskProps {
@@ -216,25 +231,6 @@ export class HousekeepingTask {
     this.props.updatedAt = new Date();
   }
 
-  setOutOfService(reason?: string): void {
-    this.props.status = 'OUT_OF_SERVICE';
-    if (reason) this.props.notes = reason;
-    this.props.updatedAt = new Date();
-  }
-
-  resetToPending(): void {
-    if (this.props.status !== 'OUT_OF_SERVICE') {
-      throw new InvalidHousekeepingTransitionError('Solo se puede resetear a PENDING desde OUT_OF_SERVICE.');
-    }
-    this.props.status = 'PENDING';
-    this.props.assignedTo = null;
-    this.props.startedAt = null;
-    this.props.completedAt = null;
-    this.props.inspectedAt = null;
-    this.props.inspectedBy = null;
-    this.props.updatedAt = new Date();
-  }
-
   updateNotes(notes: string): void {
     this.props.notes = notes;
     this.props.updatedAt = new Date();
@@ -252,10 +248,7 @@ export class HousekeepingTask {
 
   /**
    * Transiciones técnicamente válidas desde el estado actual (deuda
-   * estructural A3). No incluye el chequeo de rol de `resetToPending()`/
-   * `setOutOfService()` (MANAGEMENT) — eso lo sigue validando
-   * `authorize()` en la ruta, es una responsabilidad distinta de "¿es
-   * válido este cambio de estado?".
+   * estructural A3).
    */
   get allowedTransitions(): readonly HousekeepingStatus[] {
     return ALLOWED_TRANSITIONS[this.props.status];

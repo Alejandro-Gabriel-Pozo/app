@@ -6,8 +6,11 @@
  * - Crear y planificar tareas de limpieza por turno
  * - Asignar tareas a personal de housekeeping
  * - Transicionar estados: start → complete → inspect
- * - Marcar recursos como fuera de servicio / volver a PENDING
  * - Consultar tablero por fecha, recurso o empleado asignado
+ *
+ * "Fuera de servicio" ya no vive acá — reemplazado por `maintenance_window`
+ * (24/08/2026, ver `maintenance-window.service.ts`). `setOutOfService()`/
+ * `resetToPending()` se borraron el 25/08/2026 por no tener caller real.
  */
 
 import type { HousekeepingStatus } from './housekeeping-task.js';
@@ -86,24 +89,6 @@ export class HousekeepingService {
   async inspectTask(taskId: string, businessId: string, inspectorId: string): Promise<HousekeepingTask> {
     const task = await this.getTaskOrThrow(taskId, businessId);
     task.inspect(inspectorId);
-    await this.housekeepingRepository.update(task);
-    return task;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Fuera de servicio
-  // ---------------------------------------------------------------------------
-
-  async setOutOfService(taskId: string, businessId: string, reason?: string): Promise<HousekeepingTask> {
-    const task = await this.getTaskOrThrow(taskId, businessId);
-    task.setOutOfService(reason);
-    await this.housekeepingRepository.update(task);
-    return task;
-  }
-
-  async resetToPending(taskId: string, businessId: string): Promise<HousekeepingTask> {
-    const task = await this.getTaskOrThrow(taskId, businessId);
-    task.resetToPending();
     await this.housekeepingRepository.update(task);
     return task;
   }

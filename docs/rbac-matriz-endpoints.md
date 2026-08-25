@@ -185,8 +185,10 @@ sección 4.
 - POST `/:id/start` — `STAFF`
 - POST `/:id/complete` — `STAFF`
 - POST `/:id/inspect` — `HOUSEKEEPING_AND_MANAGEMENT`
-- POST `/:id/out-of-service` — `MANAGEMENT`
-- POST `/:id/reset` — `MANAGEMENT`
+
+(POST `/:id/out-of-service` y `/:id/reset` se borraron el 25/08/2026 —
+huérfanas, cero callers reales desde que `maintenance_window` las
+reemplazó el 24/08/2026.)
 
 **`maintenance-windows.routes.ts`** (todo `requireModule(HOUSEKEEPING)`, 24/08/2026 —
 reemplaza OUT_OF_SERVICE/reset de arriba como mecanismo de bloqueo de

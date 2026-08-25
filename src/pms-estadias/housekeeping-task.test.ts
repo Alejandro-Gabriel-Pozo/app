@@ -14,31 +14,31 @@ describe('HousekeepingTask.allowedTransitions (A3, deuda estructural)', () => {
     });
   }
 
-  it('PENDING permite ASSIGNED, IN_PROGRESS y OUT_OF_SERVICE', () => {
+  it('PENDING permite ASSIGNED e IN_PROGRESS', () => {
     const task = makeTask();
     expect(task.status).toBe('PENDING');
-    expect(task.allowedTransitions).toEqual(['ASSIGNED', 'IN_PROGRESS', 'OUT_OF_SERVICE']);
+    expect(task.allowedTransitions).toEqual(['ASSIGNED', 'IN_PROGRESS']);
   });
 
-  it('ASSIGNED permite IN_PROGRESS y OUT_OF_SERVICE (no incluye reasignar)', () => {
+  it('ASSIGNED permite IN_PROGRESS (no incluye reasignar)', () => {
     const task = makeTask();
     task.assign('user-1');
-    expect(task.allowedTransitions).toEqual(['IN_PROGRESS', 'OUT_OF_SERVICE']);
+    expect(task.allowedTransitions).toEqual(['IN_PROGRESS']);
   });
 
-  it('IN_PROGRESS permite DONE y OUT_OF_SERVICE', () => {
+  it('IN_PROGRESS permite DONE', () => {
     const task = makeTask();
     task.assign('user-1');
     task.start();
-    expect(task.allowedTransitions).toEqual(['DONE', 'OUT_OF_SERVICE']);
+    expect(task.allowedTransitions).toEqual(['DONE']);
   });
 
-  it('DONE permite INSPECTED y OUT_OF_SERVICE', () => {
+  it('DONE permite INSPECTED', () => {
     const task = makeTask();
     task.assign('user-1');
     task.start();
     task.complete();
-    expect(task.allowedTransitions).toEqual(['INSPECTED', 'OUT_OF_SERVICE']);
+    expect(task.allowedTransitions).toEqual(['INSPECTED']);
   });
 
   it('INSPECTED es terminal — sin transiciones', () => {
@@ -50,15 +50,24 @@ describe('HousekeepingTask.allowedTransitions (A3, deuda estructural)', () => {
     expect(task.allowedTransitions).toEqual([]);
   });
 
-  it('OUT_OF_SERVICE solo permite volver a PENDING', () => {
-    const task = makeTask();
-    task.setOutOfService('rota');
-    expect(task.allowedTransitions).toEqual(['PENDING']);
+  // 25/08/2026 -- OUT_OF_SERVICE ya no tiene ningún comando que
+  // transicione hacia/desde ese status (setOutOfService()/resetToPending()
+  // se borraron, huérfanos desde que maintenance_window los reemplazó el
+  // 24/08/2026) -- una fila histórica con ese status queda sin transiciones.
+  it('OUT_OF_SERVICE (histórico) no tiene transiciones -- sin comando que lo alcance', () => {
+    const task = HousekeepingTask.restore({
+      id: 'task-legacy', businessId: 'biz-1', resourceId: 'room-1',
+      assignedTo: null, status: 'OUT_OF_SERVICE', notes: 'rota', shift: 'MORNING',
+      scheduledFor: new Date('2026-01-01T08:00:00Z'),
+      startedAt: null, completedAt: null, inspectedAt: null, inspectedBy: null,
+      notBefore: null, createdAt: new Date(), updatedAt: new Date(),
+    });
+    expect(task.allowedTransitions).toEqual([]);
   });
 
   it('toJSON() incluye allowedTransitions', () => {
     const task = makeTask();
-    expect(task.toJSON().allowedTransitions).toEqual(['ASSIGNED', 'IN_PROGRESS', 'OUT_OF_SERVICE']);
+    expect(task.toJSON().allowedTransitions).toEqual(['ASSIGNED', 'IN_PROGRESS']);
   });
 });
 

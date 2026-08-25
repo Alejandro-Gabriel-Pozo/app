@@ -26,7 +26,11 @@ const SRC_DIR = join(__dirname, '../..');
 // POST /consolidated ("Facturar ahora"), authorize(Roles.MANAGEMENT).
 // C1-Fase C (23/08/2026) -- 194, no 192: customers.routes.ts suma
 // GET/PUT /:id/billing-policy, los dos authorize(Roles.MANAGEMENT).
-const EXPECTED_AUTHORIZE_CALL_SITES = 198;
+// Rutas huérfanas (25/08/2026) -- 196, no 198: housekeeping.routes.ts
+// pierde los 2 authorize(Roles.MANAGEMENT) de /:id/out-of-service y
+// /:id/reset, borradas por no tener caller real (maintenance_window las
+// reemplazó el 24/08/2026).
+const EXPECTED_AUTHORIZE_CALL_SITES = 196;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 const EXPECTED_ROUTES_FILE_COUNT = 35;
 

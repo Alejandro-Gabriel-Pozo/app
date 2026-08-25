@@ -16,8 +16,10 @@
  * | POST /housekeeping/:id/start     | HOUSEKEEPING (el asignado inicia) |
  * | POST /housekeeping/:id/complete  | HOUSEKEEPING |
  * | POST /housekeeping/:id/inspect   | HOUSEKEEPING_AND_MANAGEMENT |
- * | POST /housekeeping/:id/out-of-service | MANAGEMENT |
- * | POST /housekeeping/:id/reset     | MANAGEMENT |
+ *
+ * POST /:id/out-of-service y /:id/reset se borraron el 25/08/2026 --
+ * huérfanas desde que maintenance_window (24/08/2026) reemplazó ese
+ * mecanismo, sin ningún caller real.
  *
  * authenticate() fue removido de cada handler: app.ts lo aplica
  * globalmente sobre /api/* antes de tenantMiddleware. Doble authenticate()
@@ -248,35 +250,10 @@ export function createHousekeepingRouter(
     },
   );
 
-  // ── POST /housekeeping/:id/out-of-service ───────────────────────────────
-  router.post(
-    '/:id/out-of-service',
-    authorize(Roles.MANAGEMENT),
-    async (req, res, next) => {
-      try {
-        const businessId = req.user!.businessId!;
-        const task = await service.setOutOfService(
-          String(req.params['id']),
-          businessId,
-          req.body.reason as string | undefined,
-        );
-        res.json(task.toJSON());
-      } catch (err) { next(err); }
-    },
-  );
-
-  // ── POST /housekeeping/:id/reset ─────────────────────────────────────────
-  router.post(
-    '/:id/reset',
-    authorize(Roles.MANAGEMENT),
-    async (req, res, next) => {
-      try {
-        const businessId = req.user!.businessId!;
-        const task = await service.resetToPending(String(req.params['id']), businessId);
-        res.json(task.toJSON());
-      } catch (err) { next(err); }
-    },
-  );
+  // POST /housekeeping/:id/out-of-service y /:id/reset se borraron
+  // (25/08/2026) -- huérfanas desde que maintenance_window reemplazó este
+  // mecanismo el 24/08/2026, cero callers reales confirmados (ni frontend
+  // ni backend). Ver pendientes-2026-08-25.md.
 
   return router;
 }

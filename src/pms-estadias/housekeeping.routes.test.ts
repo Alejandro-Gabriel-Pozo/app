@@ -326,45 +326,6 @@ describe('POST /api/housekeeping/:id/inspect', () => {
   });
 });
 
-describe('POST /api/housekeeping/:id/out-of-service', () => {
-  it('marca la tarea fuera de servicio con el motivo dado', async () => {
-    const { repo, router } = build();
-    const task = seedTask(repo);
-    const handler = getHandler(router, 'post', '/:id/out-of-service');
-    const req = { user: { businessId: BUSINESS_ID }, params: { id: task.id }, body: { reason: 'pérdida de agua' } } as unknown as Request;
-    const res = fakeRes();
-
-    await handler(req, res, throwingNext);
-
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'OUT_OF_SERVICE', notes: 'pérdida de agua' }));
-  });
-});
-
-describe('POST /api/housekeeping/:id/reset', () => {
-  it('resetea a PENDING desde OUT_OF_SERVICE', async () => {
-    const { repo, router } = build();
-    const task = seedTask(repo);
-    task.setOutOfService();
-    await repo.update(task);
-    const handler = getHandler(router, 'post', '/:id/reset');
-    const req = { user: { businessId: BUSINESS_ID }, params: { id: task.id } } as unknown as Request;
-    const res = fakeRes();
-
-    await handler(req, res, throwingNext);
-
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'PENDING' }));
-  });
-
-  it('next(err) con InvalidHousekeepingTransitionError si no está OUT_OF_SERVICE', async () => {
-    const { repo, router } = build();
-    const task = seedTask(repo); // PENDING
-    const handler = getHandler(router, 'post', '/:id/reset');
-    const req = { user: { businessId: BUSINESS_ID }, params: { id: task.id } } as unknown as Request;
-    const res = fakeRes();
-    const next = vi.fn();
-
-    await handler(req, res, next);
-
-    expect(next).toHaveBeenCalledWith(expect.any(InvalidHousekeepingTransitionError));
-  });
-});
+// POST /:id/out-of-service y /:id/reset se borraron (25/08/2026) --
+// huérfanas desde que maintenance_window las reemplazó el 24/08/2026, sin
+// caller real. Ver pendientes-2026-08-25.md.
