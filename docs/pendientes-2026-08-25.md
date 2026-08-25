@@ -496,6 +496,299 @@ limpió porque no hay endpoint de borrado (solo `close()`).
 
 ---
 
+## Auditoría UX — migración de modales a rutas dedicadas (Clientes, Fase 1) — ✅ RESUELTO (25/08/2026)
+
+Segunda opinión externa traída por el dueño (analista de UX, no generada
+acá): el frontend depende demasiado de `<Modal>` para un ERP — 12 archivos
+de `dashboard/` lo usan, incluyendo entidades con perfiles extensos
+(Clientes, Usuarios, Reservas, Estadías) que deberían tener URL propia en
+vez de vivir comprimidas en un overlay de `max-w-md`. Verificado contra el
+repo real antes de actuar: `productos/[id]/` existe como carpeta pero sin
+`page.tsx` propio (solo `receta/` y `variantes/` adentro), confirmando el
+hallazgo central de la auditoría.
+
+Confirmado con el dueño: arrancar la migración ya, por **Clientes** — el
+modal más extenso (perfil básico, etiquetas, datos fiscales, tarifas
+especiales, ~330 líneas de JSX).
+
+**Decisión técnica tomada sin preguntar aparte** (no es una decisión de
+negocio, es un patrón ya establecido en el repo): página única con
+secciones editables in-place, sin ruta `/edit` separada — mismo criterio
+que `dashboard/ordenes/[id]/page.tsx` ("mejor patrón actual" según la
+propia auditoría), no el patrón `[id]` + `[id]/edit` que proponía el
+documento externo.
+
+**Implementado:**
+- `dashboard/clientes/[id]/page.tsx` nuevo — trasladó el contenido íntegro
+  del modal de edición (`openEdit`, `handleSave`, tags, datos fiscales con
+  autocompletado ARCA, tarifas especiales) a una página con breadcrumb
+  ("← Clientes"), estado `loading`/`notFound` (siguiendo el patrón de
+  `ordenes/[id]`) y 4 cards: Información básica, Etiquetas, Datos
+  fiscales, Tarifas especiales.
+- Detección de 404 vía `isApiError(err) && err.code === 'CUSTOMER_NOT_FOUND'`
+  (`lib/apiErrors.ts`) — no `httpStatus`, que es justo lo que ese archivo
+  pide no hacer. De paso quedó anotado (sin tocar): `ordenes/[id]/page.tsx`
+  sí compara `err.status` para su 404, un campo que no existe en
+  `ApiErrorWithStatus` (es `httpStatus`) — ese chequeo nunca es cierto, la
+  pantalla "Orden no encontrada" probablemente no se muestra nunca y cae
+  al toast de error genérico. No corregido ahora — fuera del alcance de
+  esta sesión (es Órdenes, no Clientes), queda anotado para retomar.
+- `dashboard/clientes/page.tsx` recortado: se sacó todo el estado y los
+  handlers de edición/tags/datos fiscales/tarifas (ya no aplican al
+  listado), la fila de la tabla y el botón "Editar" ahora navegan a
+  `/dashboard/clientes/${id}` (`router.push` en la fila, `<Link>` en el
+  botón, ahora "Ver detalle"). El modal de alta ("Nuevo cliente") se dejó
+  intacto — alta mínima de 2 campos, calza con el criterio de la propia
+  auditoría de qué sí puede seguir en modal.
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios en ambos archivos. En
+navegador real contra `biz-demo-01`: listado → "Ver detalle" en Juan
+García → URL propia (`/dashboard/clientes/e7c467db-...`), las 4 secciones
+cargan con datos reales (incluye selects de Recurso/Servicio para tarifas
+ya poblados). Prueba de escritura real: se agregó la etiqueta
+"VIP-prueba-migracion" (persistió, `invalidate()` corrió bien) y se quitó
+de nuevo (sin dejar datos de prueba). Botón "← Clientes" vuelve al listado
+en `/dashboard/clientes`.
+
+**Fuera de esta sesión, backlog priorizado por la auditoría (orden
+sugerido, sin fecha):** Usuarios, Reservas, Estadías, Recursos,
+Housekeeping, Productos (página base — hoy solo tiene `receta/` y
+`variantes/` sin `[id]/page.tsx` propio), Turnos. Mismo patrón a replicar:
+página única con secciones in-place, no `[id]/edit` separado.
+
+**Retomado en la misma sesión — pedido explícito del dueño de dejar esto
+como regla, no como hallazgo puntual:**
+- `ordenes/[id]/page.tsx` — corregido el bug anotado arriba: comparaba
+  `err.status` (campo inexistente en `ApiErrorWithStatus`, que es
+  `httpStatus`) para detectar 404, así que "Orden no encontrada" nunca se
+  mostraba. Cambiado a `isApiError(err) && err.code === 'ORDER_NOT_FOUND'`
+  (mismo criterio que se usó al migrar Clientes). Verificado en navegador
+  contra un id inexistente: ahora sí muestra "Orden no encontrada" en vez
+  de caer al toast genérico. `tsc`/`eslint` limpios.
+- La auditoría completa (inventario, evidencia por dominio, modelo de
+  interacción, orden de migración) se guardó como documento vivo en
+  `appfrontend-main/docs/auditoria-modales.md`, y la regla de "modal breve
+  / panel lateral / ruta dedicada" quedó codificada en
+  `appfrontend-main/CLAUDE.md` (sección "Interacción — modal, panel o
+  ruta dedicada") — para que la migración de Usuarios, Reservas, etc. (y
+  cualquier pantalla nueva que edite una entidad con relaciones o más de
+  ~4 campos) siga ese patrón sin tener que redecidirlo cada vez.
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Usuarios, Fase 2) — ✅ RESUELTO (25/08/2026)
+
+Continuación directa de la Fase 1 (Clientes, sección de arriba) — mismo
+orden de prioridad que fija `appfrontend-main/docs/auditoria-modales.md`.
+Confirmado con el dueño: seguir con Usuarios.
+
+**Implementado**, mismo patrón que Clientes (página única, secciones
+in-place, sin `/edit` separado):
+- `dashboard/usuarios/[id]/page.tsx` nuevo — sin `GET /api/users/:id` en
+  el backend, así que reusa el mismo criterio que ya tenía el adapter
+  `usuarios` de `lib/refine/dataProvider.ts`: `usersApi.list()` + buscar
+  por id (si no aparece, "Usuario no encontrado"). Card "Información"
+  (nombre, DNI, teléfono, legajo, fecha de ingreso, rol, contraseña o
+  "enviar link" según el guard de jerarquía K1 ya existente) y card
+  "Acceso" (desactivar — solo visible para el propietario, nunca para
+  OWNER, con el mismo texto de antes cuando no corresponde).
+- `dashboard/usuarios/page.tsx` recortado: se sacó todo el estado/lógica
+  de edición (`editing`, `openEdit`, rama de update de `handleSubmit`,
+  `canSetPasswordDirectly`, `handleSendResetLink`) y de borrado
+  (`deleteTarget`, `handleDelete`, `useDelete`). El modal "Nuevo usuario"
+  se dejó con todos sus campos tal cual estaban — **decisión: no
+  reducirlo a alta mínima como se hizo con "Nuevo cliente"**, porque
+  achicar qué pide el alta es una decisión de producto (qué es
+  obligatorio vs. opcional al crear un empleado), no algo que esta
+  migración de UI deba resolver de paso. La fila de la tabla y el botón
+  ahora navegan a `/dashboard/usuarios/${id}` en vez de abrir el modal de
+  edición. Invitaciones (lista + modal "Invitar por mail") se quedaron en
+  el listado sin cambios — no son una membership todavía, no tienen
+  detalle propio al que migrar.
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios. En navegador contra
+`biz-demo-01`: editar y guardar el nombre completo de un usuario real
+(Recepción) persistió y se reflejó en el listado; el diálogo "¿Desactivar
+usuario?" abre correctamente con el email correcto — **cancelado a
+propósito, sin confirmar**, para no desactivar de verdad una cuenta real
+sin forma de reactivarla desde la UI todavía (`POST /users/:id/reactivate`
+existe en el backend desde F2, 25/08/2026, pero sigue sin pantalla); "Nuevo
+usuario" sigue funcionando igual que antes; `/dashboard/usuarios/<id
+inexistente>` muestra "Usuario no encontrado".
+
+**Nota de datos:** quedó un usuario de prueba real (`aleposmc@gmail.com`)
+con el nombre "Ale Prueba Migracion" — no se pudo revertir a "sin nombre"
+porque el formulario nunca mandó `fullName: null` (limitación preexistente,
+no introducida acá: un string vacío se trata como "no cambiar este campo",
+no como "vaciarlo" — mismo criterio en el modal viejo). No es dato
+sensible, pero queda para quien lo note después.
+
+**Backlog restante del orden de la auditoría, sin fecha:** Reservas,
+Estadías, Recursos, Housekeeping, Productos, Turnos.
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Reservas, Fase 3) — ✅ RESUELTO (25/08/2026)
+
+Continuación directa de las Fases 1 (Clientes) y 2 (Usuarios) — mismo
+orden de prioridad de `appfrontend-main/docs/auditoria-modales.md`.
+Confirmado con el dueño: seguir con Reservas, la entidad de mayor riesgo
+de negocio de la lista (transaccional, consecuencias financieras).
+
+**Implementado**, mismo patrón que las dos fases anteriores (página única,
+sin `/edit` separado):
+- `dashboard/reservas/[id]/page.tsx` nuevo — usa `reservationsApi.get(id)`
+  (GET real, ya existía, a diferencia de Usuarios). Una sola card
+  "Detalle de reserva" que alterna vista/edición con un toggle
+  (`editingDetail`) en vez de partirse en varias cards siempre-visibles —
+  el modal original ya era una sola vista con ese mismo toggle, no varias
+  secciones independientes como Clientes. Mantiene todo lo que tenía el
+  modal: estado, huéspedes, notas, horario especial (pedir/aprobar/
+  rechazar), botón "Facturar", y el preview de ajuste de precio con
+  confirmación gateada a MANAGEMENT.
+- `dashboard/reservas/page.tsx` recortado: se sacaron ~190 líneas de
+  estado/handlers del modal de detalle. El drag-to-move del calendario
+  (`handleCalendarUpdate`) se simplificó de paso — ya no necesita
+  preguntar si el detalle de esa reserva estaba abierto en esta misma
+  página para refrescar el ajuste de precio, porque el detalle ahora vive
+  en otra ruta. La fila de la tabla y el click en una barra del calendario
+  (`onReservationClick`) navegan a `/dashboard/reservas/${id}` en vez de
+  abrir el modal.
+- **`hooks/useReservationsScreen.ts` (compartido con Turnos) no se
+  tocó** — ya declaraba explícitamente que el formulario de detalle no es
+  su responsabilidad, así que esta migración no le afecta.
+- "Nueva reserva" se queda en modal, sin tocar — mismo criterio que
+  Clientes/Usuarios: reducir el alta a "modal breve" es una decisión de
+  producto aparte, no parte de esta migración de UI.
+
+**Verificado:** `tsc --noEmit` y `eslint` limpios. En navegador contra
+`biz-demo-01`: reserva de prueba creada por API (PENDING, para no
+depender de encontrar una reserva viva en el estado correcto) → abierta
+en `/dashboard/reservas/<id>` → "Confirmar" (pasa a CONFIRMED, aparecen
+los botones de edición/horario especial) → "Editar horario" cambia el
+check-out (persistió, "Facturar" aparece porque ya había un CHARGE real
+del confirm) → "Cancelar reserva" al final, sin dejar datos de prueba
+activos. `/dashboard/reservas/<id inexistente>` → "Reserva no encontrada"
+(código real `NOT_FOUND` del backend). Click en una barra del calendario
+navega a la ruta de detalle igual que una fila de la tabla — probado
+contra una reserva real ya existente en la demo.
+
+**Backlog restante del orden de la auditoría, sin fecha:** Estadías,
+Recursos, Housekeeping, Productos, Turnos.
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Estadías, Fase 4) — ✅ RESUELTO (25/08/2026)
+
+Continuación de las Fases 1-3. Confirmado con el dueño: seguir con todo el
+backlog restante en una sola tanda ("hasta donde puedas, según el
+límite").
+
+**Implementado:** `dashboard/estadias/[id]/page.tsx` nuevo — sin
+`GET /api/stays/:id`, reusa `staysApi.listActive()` + find por id (mismo
+criterio que el adapter `estadias`; una estadía cerrada no aparece, mismo
+alcance que ya tenía el listado). 3 cards: "Detalle", "Check-out" (folio
+cargado automático al entrar, no al hacer click — la razón de fondo del
+hallazgo original) con transferencia a cuenta por cobrar inline, y "No
+show" con `ConfirmDialog`. Check-out/no-show navegan de vuelta al listado
+al confirmar. `dashboard/estadias/page.tsx` recortado a listar + "Nuevo
+check-in" (modal, sin tocar). Reemplazado el modal de no-show hecho a
+mano por `ConfirmDialog` — el comentario que lo desaconsejaba
+("colores hardcodeados fuera de Bastión") está desactualizado.
+
+**Verificado:** `tsc`/`eslint` limpios. En navegador contra
+`biz-demo-01`: la única estadía activa real (huésped real en check-in, no
+dato de prueba) carga folio y las 3 cards correctas; diálogo de "No show"
+abre bien — **cancelado sin confirmar**, para no cerrarle la estadía a un
+huésped real solo para probar la UI. `/dashboard/estadias/<inexistente>`
+→ "Estadía no encontrada".
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Recursos, Fase 5) — ✅ RESUELTO (25/08/2026)
+
+`dashboard/recursos/[id]/page.tsx` nuevo — mismo criterio de list+find que
+el adapter `recursos`. Card "Información" (nombre, categoría, precio base
+colapsado), card "Horario propio" (franjas + alta/baja) y card "Eliminar"
+con `ConfirmDialog` (reemplaza el overlay de borrado hecho a mano).
+`dashboard/recursos/page.tsx` recortado a listar + "Nuevo recurso"
+(modal). Verificado con `tsc`/`eslint` y en navegador: franja horaria de
+prueba agregada y quitada en Habitación 02 (persistió en ambos sentidos),
+"Recurso no encontrado" para id inexistente.
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Housekeeping, Fase 6) — ✅ RESUELTO (25/08/2026)
+
+Caso distinto a Clientes/Usuarios/Reservas/Estadías/Recursos: la ficha del
+rack se abre por RECURSO, no por tarea (una tarea es "recurso + fecha",
+puede no existir ese día). `dashboard/housekeeping/[id]/page.tsx` — `id`
+es el id del recurso, `date` viaja por query string (leída una sola vez
+de `window.location.search` al montar, mismo criterio que
+`portal/[businessSlug]/cuenta/reservas/page.tsx` para no arrastrar el
+requisito de `<Suspense>` de `useSearchParams()`). 2 cards:
+"Mantenimiento" (ventana activa + reactivar, o alta inline) y
+"Tarea — {fecha}" (estado + acciones inline, o "Planificar tarea" inline
+si no hay tarea ese día). El rack en sí no se tocó como entrada — la
+auditoría ya lo marcaba como patrón correcto, solo el tile ahora navega
+en vez de abrir modal.
+
+**"Mis tareas" no migró a ruta** — es la lista de trabajo del
+housekeeper logueado cruzando recursos/fechas distintas, no el detalle
+de un recurso. Se quedó con su propio mini-modal de asignar/completar
+(alcance recortado: ya no incluye la rama de ventana de mantenimiento,
+exclusiva ahora de la ficha de detalle).
+
+**Verificado:** `tsc`/`eslint` limpios. En navegador contra
+`biz-demo-01`: click en una ficha del rack navega a
+`/dashboard/housekeeping/<id>?date=...` con la fecha correcta ya cargada,
+card de Mantenimiento y Tarea mostrando el estado real (INSPECTED, sin
+ventana activa).
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Productos, Fase 7) — ✅ RESUELTO (25/08/2026)
+
+Primera página canónica real del producto (`dashboard/productos/[id]/page.tsx`)
+— antes solo existían las subrutas `receta/` y `variantes/`, sin base
+(`productsApi.get(id)`, GET real). 3 cards: "Información" (el form
+completo de "Editar producto", movido tal cual del modal), "Empresa"
+(compartir con la empresa o manejo completo de override de precio/receta
+si ya está vinculado — antes `CompanyLinkModal` aparte) y "Eliminar" con
+`ConfirmDialog` (antes un `confirm()` de navegador liso). El encabezado
+linkea a `/receta` y `/variantes` cuando aplican.
+
+`dashboard/productos/page.tsx` recortado: "Nuevo producto" se queda en
+modal, "Merma" y "Producción" también (2-3 campos, no necesitan el
+contexto completo). La fila navega a la ruta de detalle.
+
+**Verificado:** `tsc`/`eslint` limpios. En navegador: producto de prueba
+creado → cambiado a tipo Compuesto en el detalle (apareció "Armar en vivo
+al vender" y el link "Ver receta →", ambos condicionales) → eliminado con
+`ConfirmDialog` → vuelta automática al listado. "Producto no encontrado"
+para id inexistente.
+
+---
+
+## Auditoría UX — migración de modales a rutas dedicadas (Turnos, Fase 8) — ✅ RESUELTO (25/08/2026)
+
+Última entidad del backlog. `dashboard/turnos/[id]/page.tsx` — clon
+recortado de `dashboard/reservas/[id]/page.tsx` (sin calendario, ajuste de
+precio, facturación ni horario especial — específicos de alojamiento).
+Una sola card con toggle vista/edición. `dashboard/turnos/page.tsx`
+recortado, "Nuevo turno" se queda en modal.
+
+**Verificado:** `tsc`/`eslint` limpios. En navegador: un turno real
+(Completada) muestra los datos sin botones (correcto, estado terminal);
+"Turno no encontrado" para id inexistente.
+
+**Backlog de la auditoría de modales completo — las 8 entidades migradas
+hoy: Clientes, Usuarios, Reservas, Estadías, Recursos, Housekeeping,
+Productos, Turnos.** Detalle completo de cada fase en las secciones de
+arriba y en `appfrontend-main/docs/auditoria-modales.md`.
+
+---
+
 ## Pendientes heredados de `pendientes-2026-08-24.md`, todavía abiertos
 
 - **C1-Fase B** — gateway de pago real, hold corto canal web, auto-release.
