@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReportService } from './report.service.js';
 import type { OccupancyRepository, OccupancyStats } from '../reservas/occupancy.repository.js';
-import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
-import type { HousekeepingTask, HousekeepingStatus } from '../pms-estadias/housekeeping-task.js';
 import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
@@ -12,6 +10,10 @@ import type { StockMovementRepository, WasteReportRow } from '../repositories/st
 import type { CustomerRepository, NewVsRecurringReport } from '../clientes-finanzas/customer.repository.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
+import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
+import type { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 
 /** Fake mínimo — solo lo que ReportService llama. */
 class FakeAccountsReceivableRepository implements Pick<AccountsReceivableRepository, 'getReportByPeriod'> {
@@ -19,22 +21,35 @@ class FakeAccountsReceivableRepository implements Pick<AccountsReceivableReposit
   async getReportByPeriod(): Promise<AccountsReceivableReportRow[]> { return this.rows; }
 }
 
-/** Fake mínimo — solo `findByStatus()` es lo que ReportService llama (filtrado OOO). */
-class FakeHousekeepingRepository implements HousekeepingRepository {
-  public outOfServiceResourceIds: string[] = [];
-  async save(): Promise<void> {}
-  async update(): Promise<void> {}
-  async findById(): Promise<HousekeepingTask | null> { return null; }
-  async findByResource(): Promise<HousekeepingTask[]> { return []; }
-  async findByDate(): Promise<HousekeepingTask[]> { return []; }
-  async findByAssignee(): Promise<HousekeepingTask[]> { return []; }
-  async findActiveByResourceAndDate(): Promise<HousekeepingTask | null> { return null; }
-  async findByResourceAndDate(): Promise<HousekeepingTask | null> { return null; }
-  async isOutOfService(resourceId: string): Promise<boolean> { return this.outOfServiceResourceIds.includes(resourceId); }
-  async findByStatus(_businessId: string, status: HousekeepingStatus): Promise<HousekeepingTask[]> {
-    if (status !== 'OUT_OF_SERVICE') return [];
-    return this.outOfServiceResourceIds.map((resourceId) => ({ resourceId }) as unknown as HousekeepingTask);
+/** Fake mínimo — solo `findAllActive()` es lo que ReportService llama (filtrado de recursos bajo mantenimiento). */
+class FakeMaintenanceWindowRepository implements Pick<MaintenanceWindowRepository, 'findAllActive'> {
+  public activeResourceIds: string[] = [];
+  async findAllActive(): Promise<MaintenanceWindow[]> {
+    return this.activeResourceIds.map((resourceId) => ({ resourceId }) as unknown as MaintenanceWindow);
   }
+}
+
+/** Fake mínimo — devuelve un perfil fijo (mismo patrón que cash-register.service.test.ts). */
+class FakeBusinessProfileRepository implements Pick<BusinessProfileRepository, 'get'> {
+  constructor(private readonly profile: BusinessProfile) {}
+  async get(): Promise<BusinessProfile> { return this.profile; }
+  async update(_input: UpdateBusinessProfileInput): Promise<BusinessProfile> { return this.profile; }
+}
+
+function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile {
+  const now = new Date();
+  return {
+    id: 'default', displayName: null, contactEmail: null,
+    currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires', defaultCheckInTime: '14:00:00', defaultCheckOutTime: '11:00:00',
+    legalName: null, taxId: null, taxIdType: null, taxCondition: null,
+    fiscalAddressLine1: null, fiscalAddressCity: null, fiscalAddressState: null,
+    fiscalAddressPostalCode: null, fiscalAddressCountry: null, afipSalesPoint: null, afipCuit: null,
+    defaultIvaRate: 21, pricesIncludeIva: true,
+    defaultDepositPercentage: null, depositHoldHours: null, customerNumberPrefix: 'CLI', reservationNumberPrefix: 'RES',
+    maintenanceHorizonDays: 30,
+    createdAt: now, updatedAt: now,
+    ...overrides,
+  };
 }
 
 // Mock repository
@@ -107,7 +122,8 @@ const BUSINESS_ID = 'biz-1';
 describe('ReportService', () => {
   let mockRepository: OccupancyRepository;
   let arRepository: FakeAccountsReceivableRepository;
-  let housekeepingRepository: FakeHousekeepingRepository;
+  let maintenanceWindowRepository: FakeMaintenanceWindowRepository;
+  let businessProfileRepository: FakeBusinessProfileRepository;
   let orderRepository: FakeOrderRepository;
   let stockMovementRepository: FakeStockMovementRepository;
   let customerRepository: FakeCustomerRepository;
@@ -117,7 +133,8 @@ describe('ReportService', () => {
   beforeEach(() => {
     mockRepository = new MockOccupancyRepository();
     arRepository = new FakeAccountsReceivableRepository();
-    housekeepingRepository = new FakeHousekeepingRepository();
+    maintenanceWindowRepository = new FakeMaintenanceWindowRepository();
+    businessProfileRepository = new FakeBusinessProfileRepository(makeProfile());
     orderRepository = new FakeOrderRepository();
     stockMovementRepository = new FakeStockMovementRepository();
     customerRepository = new FakeCustomerRepository();
@@ -125,7 +142,8 @@ describe('ReportService', () => {
     service = new ReportService(
       mockRepository,
       arRepository as unknown as AccountsReceivableRepository,
-      housekeepingRepository,
+      maintenanceWindowRepository,
+      businessProfileRepository,
       orderRepository,
       stockMovementRepository,
       customerRepository,
@@ -358,14 +376,16 @@ describe('ReportService', () => {
     });
   });
 
-  // Regresión: auditoría de producto (19/08/2026) — un recurso OUT_OF_SERVICE
-  // seguía contando como "capacidad disponible" en los reportes agregados.
-  describe('recursos OUT_OF_SERVICE quedan excluidos de los reportes agregados', () => {
+  // Regresión: auditoría de producto (19/08/2026) — un recurso fuera de
+  // servicio seguía contando como "capacidad disponible" en los reportes
+  // agregados. Reescrito 25/08/2026: el filtro pasó de HousekeepingRepository
+  // (mecanismo viejo, ya sin caller real) a MaintenanceWindowRepository.
+  describe('recursos bajo mantenimiento activo quedan excluidos de los reportes agregados', () => {
     const startDate = new Date('2026-06-21');
     const endDate = new Date('2026-06-22');
 
     it('generateOccupancySummary: no cuenta r2 (OOO) en total/promedio/rankings', async () => {
-      housekeepingRepository.outOfServiceResourceIds = ['r2'];
+      maintenanceWindowRepository.activeResourceIds = ['r2'];
 
       const summary = await service.generateOccupancySummary(BUSINESS_ID, startDate, endDate);
 
@@ -376,7 +396,7 @@ describe('ReportService', () => {
     });
 
     it('generateOccupancyByResourceType: r2 (OOO) no aparece en ninguna categoría', async () => {
-      housekeepingRepository.outOfServiceResourceIds = ['r2'];
+      maintenanceWindowRepository.activeResourceIds = ['r2'];
 
       const result = await service.generateOccupancyByResourceType(BUSINESS_ID, startDate, endDate);
 
@@ -385,7 +405,7 @@ describe('ReportService', () => {
     });
 
     it('getUnderutilizedResources: r2 (OOO, 15% < 30%) no aparece pese a estar bajo el umbral', async () => {
-      housekeepingRepository.outOfServiceResourceIds = ['r2'];
+      maintenanceWindowRepository.activeResourceIds = ['r2'];
 
       const underutilized = await service.getUnderutilizedResources(BUSINESS_ID, startDate, endDate, 30);
 

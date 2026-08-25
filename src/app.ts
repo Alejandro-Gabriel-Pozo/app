@@ -338,7 +338,8 @@ export async function createApp(): Promise<{
     (req: Request, _res: Response, next: NextFunction) => {
       const occupancyRepo = new SqlOccupancyRepository(req.db);
       const accountsReceivableRepo = new SqlAccountsReceivableRepository(req.db);
-      const housekeepingRepo = new SqlHousekeepingRepository(req.db);
+      const maintenanceWindowRepo = new SqlMaintenanceWindowRepository(req.db);
+      const businessProfileRepo = new SqlBusinessProfileRepository(req.db);
       // D7 (22/08/2026) — reportes POS/CRM.
       const orderRepo = new SqlOrderRepository(req.db);
       const stockMovementRepo = new SqlStockMovementRepository(req.db);
@@ -347,7 +348,8 @@ export async function createApp(): Promise<{
       const reportService = new ReportService(
         occupancyRepo,
         accountsReceivableRepo,
-        housekeepingRepo,
+        maintenanceWindowRepo,
+        businessProfileRepo,
         orderRepo,
         stockMovementRepo,
         customerRepo,

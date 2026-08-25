@@ -1122,8 +1122,100 @@ entran (4/5), una tercera de 2 personas rechaza (llegaría a 6/5), una de
   de pagos, I4) — ambas hacen `JOIN` directo contra esa columna. Aceptado
   a propósito para el recorte de esa sesión, revisar si hace falta más
   adelante.
-- **I11 — pendiente de verificar:** correr el build real de Render (o al
-  menos `npm run build` local) con Node 22 antes de deployar — no se
-  probó el pipeline de deploy completo, solo el fix puntual.
+- **I11 — ✅ RESUELTO (25/08/2026):** verificado en la práctica durante el
+  incidente de deploy de esta misma sesión — ver sección nueva más abajo
+  ("Incidente de deploy"). El build real de Render con Node 22 corrió
+  completo (patch-package, build, migrate:tenants) hasta pasar.
 - **Pantalla de reasignación/revisión** para reservas con
   `needsMaintenanceReview = true` — diferida a propósito.
+
+---
+
+## Incidente de deploy — ✅ RESUELTO (25/08/2026, sesión de continuidad)
+
+El deploy de `e84c779` (commit de Bug 1/2/3 doble-booking) falló dos
+veces seguidas en Render, por dos causas distintas y sin relación entre
+sí:
+
+1. **`patch-package` fallaba sobre `@arcasdk/pdf`.** Probado aparte
+   (instalación limpia del paquete en una carpeta de scratch) que el
+   parche aplica perfecto — no era el parche. Causa real: `render.yaml`
+   fija `NODE_VERSION: "22"`, pero el log mostraba Node 26.7.0 en uso
+   ("`Using Node.js version 26.7.0 via .../package.json`") — Render
+   ignoró el env var y usó el rango sin techo de `engines.node`
+   (`>=22.12.0`). Un "Clear build cache & deploy" resolvió el síntoma
+   inmediato; **fix de raíz:** `package.json` `engines.node` acotado a
+   `>=22.12.0 <23.0.0` (commit `1fcba6d`, pusheado).
+2. **`migrate:tenants` fallaba al crear el `EXCLUDE constraint`
+   `reservations_no_overlap_exclusive`** (schema v42, el respaldo a nivel
+   DB de Bug 2). Causa: 6 reservas de prueba `PENDING` solapadas en
+   "Habitación 01" (fechas 2029), restos del script de `autocannon` de
+   la sesión de Bug 2/3 que no se habían cancelado del todo pese a lo
+   que decía la nota de "datos de prueba" de más arriba en este mismo
+   documento. Resueltas manualmente contra `biz-demo-01` (confirmado con
+   el dueño antes de cada paso): columnas de v42 aplicadas statement por
+   statement (sin el constraint, para no repetir el rollback completo),
+   las 6 reservas canceladas vía `ReservationService.cancelReservation()`
+   (no `UPDATE` directo — mismo rastro/eventos que una cancelación real),
+   y recién ahí `migrate:tenants` completo corrió limpio:
+   `biz-demo-01 — migrado a v42`. Deploy reintentado con el commit
+   `1fcba6d` ya pusheado — pasó completo (Node 22, patch-package,
+   migración, build).
+
+Scripts de un solo uso (`_apply-v42-columns-only.ts`,
+`_cancel-stray-reservations.ts`, `_diagnose-overlap.ts`,
+`_list-businesses.ts`) borrados al terminar, nunca se commitearon.
+
+---
+
+## Auditoría del roadmap de producto — ✅ RESUELTO (25/08/2026)
+
+`docs/roadmap-pms-multirubro.md` llevaba desde el 11/08 sin revalidarse
+contra el código (salvo inventario, 17/08) y nunca se cruzaba con
+`pendientes` — ver la nueva sección "Cómo se mantiene esto sincronizado
+con pendientes" al final de ese documento, y la sección nueva en
+`CLAUDE.md` (nivel `App - frontend/`) que codifica la regla para
+adelante. Los 21 ítems del roadmap se revisaron contra el código real
+(fork dedicado); corregido en las dos direcciones — AFIP y Portal de
+clientes estaban ❌ en el doc pero construidos; Cuentas Corrientes y
+Cargo a la habitación tenían mucho más backend del que decía. Detalle
+completo, con evidencia archivo por archivo, en el roadmap mismo.
+
+**Bug real encontrado de paso (no solo gap de roadmap) — ✅ RESUELTO
+(25/08/2026):** `report.service.ts::filterOutOfService()` seguía
+filtrando los reportes de ocupación por el mecanismo VIEJO
+(`HousekeepingRepository.findByStatus(..., 'OUT_OF_SERVICE')`), que
+quedó sin caller real desde que se borraron esas rutas más temprano en
+esta misma sesión (ver sección "Rutas huérfanas de housekeeping" más
+arriba) — código muerto que nunca volvía a excluir nada. Reescrito para
+usar `MaintenanceWindowRepository.findAllActive()` (mismo mecanismo que
+ya bloquea el calendario de Reservas desde el 24-25/08). `tsc --noEmit`
+y `eslint` limpios, suite completa **1519/1519 verde**. Sin commitear
+todavía — pendiente de confirmar con el dueño si se pushea junto con
+otro cambio o aparte.
+
+**Pendiente de verificar, no confirmado a fondo:** un commit
+(`6bc6358 feat(D9-Parte 2)...`) sugiere que **D9-Parte 2** (verificación
+server-side de precio para productos en POS, arriba en "Backlog de UI")
+podría estar total o parcialmente resuelta ya, contra lo que dice ese
+ítem tal como está redactado. No se investigó a fondo esta sesión —
+revisar antes de asumir que sigue abierto tal cual.
+
+---
+
+## Agentes custom del proyecto (`.agents/`) — revisados (25/08/2026)
+
+Dos agentes nuevos en `App - frontend/.agents/` (fuera de los dos repos,
+compartido): `auditor-circuitos-erp` (gaps de negocio por rubro, hace
+básicamente lo mismo que se hizo a mano en la auditoría del roadmap de
+arriba — usarlo a él la próxima vez en vez de improvisar un fork) y
+`auditor-estructura` (acoplamiento/duplicación/convenciones de código).
+Dos correcciones de contexto desactualizado en sus prompts (mismo patrón
+que el bug del roadmap): `auditor-estructura.md` decía que la Fase 7 de
+`Customer` (separar Reservas/Finanzas) "tiene alcance cerrado" como si
+fuera una decisión sin ejecutar — en realidad las 7 fases del roadmap de
+modularidad ya están aplicadas y verificadas (`docs/auditoria-
+modularidad.md`, 18/08/2026); `auditor-circuitos-erp.md` citaba "la
+skill de casos operativos" como fuente a priorizar, pero esa skill no
+existe (`app-main/.claude/skills/` solo tiene `criterios-negocio` y
+`revision-pr-pms-erp`). Los dos `.md` corregidos.

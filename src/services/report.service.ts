@@ -1,5 +1,5 @@
+import { DateTime } from 'luxon';
 import type { OccupancyRepository, OccupancyStats } from '../reservas/occupancy.repository.js';
-import type { HousekeepingRepository } from '../pms-estadias/housekeeping.repository.js';
 import type {
   AccountsReceivableRepository,
   AccountsReceivableReportRow,
@@ -9,6 +9,8 @@ import type { StockMovementRepository, WasteReportRow } from '../repositories/st
 import type { CustomerRepository, NewVsRecurringReport } from '../clientes-finanzas/customer.repository.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
+import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
+import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 
 /**
  * Reporte de ocupación diaria
@@ -44,7 +46,8 @@ export class ReportService {
   constructor(
     private readonly occupancyRepository: OccupancyRepository,
     private readonly accountsReceivableRepository: AccountsReceivableRepository,
-    private readonly housekeepingRepository: HousekeepingRepository,
+    private readonly maintenanceWindowRepository: Pick<MaintenanceWindowRepository, 'findAllActive'>,
+    private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
     /** D7 (22/08/2026, pendientes-2026-08-19.md sección D) — reportes POS/CRM. */
     private readonly orderRepository: Pick<IOrderRepository, 'getSalesByProduct' | 'getTicketSummary' | 'getAppliedRatesReport'>,
     private readonly stockMovementRepository: Pick<StockMovementRepository, 'getWasteReport'>,
@@ -53,25 +56,35 @@ export class ReportService {
   ) {}
 
   /**
-   * Recursos actualmente OUT_OF_SERVICE (auditoría de producto, 19/08/2026)
-   * — se excluyen de los reportes agregados de ocupación: un recurso fuera
-   * de servicio no era "capacidad disponible sin usar", así que contarlo
+   * Recursos bajo mantenimiento activo HOY (día de negocio, A4.2/A4.4) —
+   * se excluyen de los reportes agregados de ocupación: un recurso fuera
+   * de servicio no es "capacidad disponible sin usar", así que contarlo
    * en el promedio/ranking distorsiona la lectura hacia abajo.
    *
-   * Límite conocido: `isOutOfService` (housekeeping.repository.ts) es un
-   * estado ACTUAL del recurso, no fechado — no hay forma hoy de saber si
-   * ya estaba OOO en el rango histórico que pide el reporte. Para un
-   * reporte de un período pasado, esto puede excluir de más (un recurso
-   * que se rompió ayer desaparece también de reportes de meses
-   * anteriores). Aceptado a propósito: mejor subestimar por exceso de
-   * exclusión que seguir sumando un recurso roto como "disponible" en el
-   * reporte de HOY, que es el caso de uso real que motivó este fix.
+   * Reescrito 25/08/2026 (bug encontrado en auditoría de roadmap): esto
+   * filtraba antes por `HousekeepingRepository.findByStatus(...,
+   * 'OUT_OF_SERVICE')`, el mecanismo VIEJO. El 25/08 se borraron las
+   * rutas que seteaban ese status (housekeeping migró a
+   * `maintenance_window`, ver pendientes-2026-08-25.md) — el filtro viejo
+   * quedó imposible de activar, código muerto que nunca volvía a excluir
+   * nada. Ahora usa `maintenance_window` (mismo mecanismo que ya bloquea
+   * el calendario de Reservas desde el 25/08).
+   *
+   * Límite conocido (igual que antes del rewrite): es un estado ACTUAL
+   * del recurso (ventanas activas HOY), no fechado contra el rango del
+   * reporte — no hay forma de saber si un recurso ya estaba bajo
+   * mantenimiento en un rango histórico pasado. Aceptado a propósito:
+   * mejor subestimar por exceso de exclusión que seguir sumando un
+   * recurso roto como "disponible" en el reporte de HOY, que es el caso
+   * de uso real que motivó este filtro.
    */
   private async filterOutOfService(businessId: string, stats: OccupancyStats[]): Promise<OccupancyStats[]> {
-    const outOfService = await this.housekeepingRepository.findByStatus(businessId, 'OUT_OF_SERVICE');
-    if (outOfService.length === 0) return stats;
-    const outOfServiceIds = new Set(outOfService.map((t) => t.resourceId));
-    return stats.filter((s) => !outOfServiceIds.has(s.resourceId));
+    const profile = await this.businessProfileRepository.get();
+    const today = DateTime.now().setZone(profile.timezone).toISODate()!;
+    const activeWindows = await this.maintenanceWindowRepository.findAllActive(businessId, today);
+    if (activeWindows.length === 0) return stats;
+    const blockedResourceIds = new Set(activeWindows.map((w) => w.resourceId));
+    return stats.filter((s) => !blockedResourceIds.has(s.resourceId));
   }
 
   /**
