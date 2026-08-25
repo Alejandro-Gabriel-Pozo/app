@@ -99,3 +99,48 @@ describe('PhysicalResource — isAvailable', () => {
     expect(r.isAvailable(start2, end2, [snap])).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug 1 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md sección 5.2)
+describe('PhysicalResource — availableSlots (cupo compartido)', () => {
+  const makeShared = (capacity: number) =>
+    new PhysicalResource('r1', 'Tour', 100, 'cat-tour', null, capacity);
+
+  it('capacity completo libre sin reservas', () => {
+    const r = makeShared(3);
+    expect(r.availableSlots(start, end, NO_RESERVATIONS)).toBe(3);
+  });
+
+  it('resta partySize de reservas PENDING/CONFIRMED solapadas', () => {
+    const r = makeShared(3);
+    const reservations = [
+      makeSnapshot({ id: 'a', partySize: 1, status: ReservationStatus.PENDING }),
+      makeSnapshot({ id: 'b', partySize: 1, status: ReservationStatus.CONFIRMED }),
+    ];
+    expect(r.availableSlots(start, end, reservations)).toBe(1);
+  });
+
+  it('CANCELLED no ocupa lugar', () => {
+    const r = makeShared(3);
+    const reservations = [makeSnapshot({ partySize: 2, status: ReservationStatus.CANCELLED })];
+    expect(r.availableSlots(start, end, reservations)).toBe(3);
+  });
+
+  it('COMPLETED tampoco ocupa lugar — bug real corregido esta sesión (antes solo excluía CANCELLED)', () => {
+    const r = makeShared(3);
+    const reservations = [makeSnapshot({ partySize: 2, status: ReservationStatus.COMPLETED })];
+    expect(r.availableSlots(start, end, reservations)).toBe(3);
+  });
+
+  it('EXPIRED tampoco ocupa lugar (mismo isBlockingStatus que el resto del código)', () => {
+    const r = makeShared(3);
+    const reservations = [makeSnapshot({ partySize: 2, status: ReservationStatus.EXPIRED })];
+    expect(r.availableSlots(start, end, reservations)).toBe(3);
+  });
+
+  it('nunca devuelve negativo aunque la ocupación supere capacity', () => {
+    const r = makeShared(2);
+    const reservations = [makeSnapshot({ partySize: 5, status: ReservationStatus.CONFIRMED })];
+    expect(r.availableSlots(start, end, reservations)).toBe(0);
+  });
+});

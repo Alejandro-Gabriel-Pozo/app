@@ -789,7 +789,7 @@ arriba y en `appfrontend-main/docs/auditoria-modales.md`.
 
 ---
 
-## ⚠️ Bug real: doble-booking bajo concurrencia — confirmado, sin arreglar a propósito (25/08/2026)
+## ⚠️ Bug real: doble-booking bajo concurrencia — ✅ RESUELTO (25/08/2026, sesión de continuidad)
 
 Segunda opinión externa ("Recomendaciones técnicas — app-main") trajo un
 plan de auditoría del motor de reservas. Al ejecutar los dos primeros
@@ -823,6 +823,109 @@ implemente el fix): `src/scripts/concurrency-test-reservations.ts`.
 De paso, el punto 1.3 del documento original (CI) estaba desactualizado:
 `ci.yml` ya corre typecheck y lint en cada push, contra lo que decía el
 documento — corregido en `docs/auditoria-tecnica-infra-reservas.md`.
+
+**Retomado en sesión de continuidad, mismo día — decisiones del dueño
+confirmadas antes de codear:** clasificación `Reservation`=TRANSACCIÓN,
+`PhysicalResource`/`ResourceCategory`=MAESTRO (`criterios-datos.md` Parte
+1); reglas A8.1 (recurso escaso serializado en la base), A8.2 (invariante
+como constraint) y R9 (transacción congela lo que necesita del maestro).
+
+**Fix real:** `ResourceRepository.lockByIds()` — lockea las filas de
+`resources` (`SELECT ... FOR UPDATE`, ordenadas por id para evitar
+deadlocks) ANTES de leer disponibilidad, en
+`ReservationAvailabilityService.assertAllResourcesAvailable()`. El `FOR
+UPDATE` viejo (sobre `reservations`) no alcanzaba porque con el rango
+libre no hay filas que lockear — el gotcha real. La nota `✅ Ya resuelto`
+de A8.1 en `criterios-negocio.md` (la que ocultó este bug) quedó
+corregida con el detalle completo.
+
+**Respaldo a nivel DB (A8.2), schema v42:** `resource_categories` gana
+**`is_exclusive`** — decisión explícita del dueño en esta sesión: NO
+reutilizar `is_lodging` (pricing por noche) para exclusividad de reserva,
+son dos ejes de negocio que hoy coinciden pero no tienen por qué seguir
+así (ej. un recurso exclusivo que no sea alojamiento — evento, alquiler
+por hora). Backfill copiando `is_lodging` al agregar la columna, gateado
+por `schema_migrations` (una sola vez, no se re-sincroniza en cada
+`migrate:tenants` — evitaría que el dueño pueda desacoplarlos después).
+`reservations` gana **`is_exclusive_resource`** (snapshot R9, resuelto vía
+`ICategoryRepository` en `createReservation()`/`updateReservation()`,
+mismo mecanismo que `isLodging`) + constraint `reservations_no_overlap_exclusive`
+(`EXCLUDE USING gist`, requiere `btree_gist`) — solo aplica a recursos
+exclusivos, nunca a cupo compartido.
+
+**2 bugs no relacionados encontrados de paso, verificando esto contra una
+BD fresca con `TEST_DATABASE_URL` (nunca se había corrido antes en este
+proyecto):**
+- `schema.sql` no se podía aplicar de una sola vez contra una base vacía
+  — `rate_catalog`/`customer_rates` referenciaban `products(id)` ~200
+  líneas ANTES de `CREATE TABLE products`. Nunca se vio porque cada tenant
+  real fue migrado incrementalmente; pero **rompía el alta de un negocio
+  nuevo desde cero** (`applyTenantSchema()`). Reordenado (bloque D9-Parte
+  1 movido después de `products`), sin cambiar una línea de contenido.
+- Helpers de seed de test (`seedResource`/`seedReservation`,
+  `src/tests/integration/helpers/seed.ts`) no mandaban `location_id`/
+  `deposit_amount` (`NOT NULL` sin default) — cualquier test de
+  integración que los usara fallaba. Corregido con los mismos defaults
+  que ya usa producción (`'loc-default'`, `0`).
+- Tuning de infraestructura de test (no afecta producción):
+  `vitest.integration.config.ts` ganó `testTimeout: 30_000` (el default
+  de 5s no alcanza contra un `TEST_DATABASE_URL` remoto) y el pool de
+  `createTestDatabase()` subió de `max: 3` a `max: 15` (con 3, un test de
+  10 operaciones concurrentes se quedaba sin conexiones y parecía
+  colgado, no era ningún bug).
+
+**Verificado contra Postgres real** (Neon, conexión directa —
+`TEST_DATABASE_URL`, BD escrachable creada/borrada por el propio helper,
+nunca tocó `biz-demo-01`): suite de integración completa
+`src/tests/integration/reservation.service.integration.test.ts`
+**18/18 verde**, incluyendo el test de concurrencia viejo (2 requests) y
+uno nuevo de 10 requests simultáneos sobre el mismo slot (exactamente 1
+éxito) y los 2 tests nuevos del EXCLUDE constraint (rechaza en recurso
+exclusivo, no rechaza en cupo compartido). `tsc --noEmit`/`eslint` limpios
+en todo el árbol, suite unitaria completa **1507/1507 verde**.
+
+---
+
+## Bug 3 — lost update en transiciones de estado — ✅ RESUELTO (25/08/2026, misma sesión)
+
+Mismo hallazgo que el doble-booking, pero en el UPDATE en vez del INSERT
+(ver sección 2.3/4 de `docs/auditoria-tecnica-infra-reservas.md`, hallazgo
+del 25/08/2026 temprano en el día): `confirmReservation()`,
+`cancelReservation()`, `completeReservation()`, `confirmPriceAdjustment()`
+y `ReservationHoldExpiryWorker.expireOne()` leían la reserva FUERA de la
+transacción (o, en el worker, dentro del callback pero sin pasar `client`
+— en una conexión distinta a la de la transacción), mutaban en memoria, y
+recién después abrían la transacción para un UPSERT ciego. Dos
+transiciones concurrentes sobre la misma reserva podían perder una en
+silencio.
+
+**Fix:** `ReservationRepository` gana `getByIdWithLock?()` (`SELECT ...
+FOR UPDATE`, opcional — mismo criterio que
+`getActiveForResourceInRangeWithLock?`, no rompe mocks unitarios). La
+lectura + mutación (`.confirm()`/`.cancel()`/`.complete()`) se mueve
+DENTRO de `transactionManager.run()` en los 4 métodos del servicio y en
+el worker — reusa `ALLOWED_TRANSITIONS`/`transitionTo()` (ya centralizado
+en `Reservation.ts`) para el rechazo de transición inválida, sin
+mecanismo nuevo de versión/optimistic-lock.
+
+**`confirmPriceAdjustment()` necesitó un ajuste extra** (no es una
+transición de `status`, así que `transitionTo()` no la protege sola): el
+cálculo de `difference` se movió a comparar contra `locked.totalPrice`
+(recién lockeado) en vez de `existing.totalPrice` (leído antes de esperar
+el lock) — dos ajustes concurrentes ahora recalculan el MISMO precio
+destino contra el valor ya actualizado por el primero, `difference = 0`,
+`NoPriceAdjustmentPendingError` en el segundo en vez de un evento
+`reservation.price_adjusted` duplicado.
+
+Cubre gratis, sin diseño nuevo: doble cancelación (la segunda ve el
+estado ya `CANCELLED` y `transitionTo()` la rechaza), carrera
+pago-vs-liberación automática (worker de expiración vs. huésped
+confirmando justo a tiempo), riesgo de `CHARGE` duplicado en confirmar.
+
+**Verificado:** mismos 18/18 tests de integración de arriba (incluye
+`confirmReservation`/`cancelReservation`/`completeReservation`/
+`updateReservation`, todos verdes contra Postgres real) + suite unitaria
+1507/1507 + `tsc`/`eslint` limpios.
 
 ---
 
@@ -941,6 +1044,63 @@ binario, no mira `partySize`/`capacity` en ningún punto, así que hoy un
 recurso `capacity > 1` se comporta igual que uno `capacity = 1`. Gap de
 producto (¿hace falta cupo parcial hoy?), no un bug — sin tocar,
 documentado para decidir. Suite completa tras ambos puntos: 1506/1506.
+
+---
+
+## Bug 1 — cupo compartido (recursos NO exclusivos) — ✅ RESUELTO (25/08/2026, sesión de continuidad)
+
+Retoma el hallazgo colateral de 2.4 de arriba. Decisiones del dueño
+confirmadas antes de codear: recursos exclusivos (alojamiento y similares
+— `resource_categories.is_exclusive`, ver sección Bug 2) quedan tal cual,
+`checkAvailability()` binaria sin tocar. Recursos de cupo compartido
+(tours, clases) sí tienen que contar por `partySize` contra `capacity`.
+
+**Bug prerequisito encontrado, no en el plan original:**
+`SqlResourceRepository` nunca leía/escribía `capacity`/`description` —
+`save()` no las incluía en el `INSERT`/`ON CONFLICT`, `rowToResource()`
+hardcodeaba `capacity=1`/`description=null` sin importar la fila real.
+`resources.routes.ts` ya construía el `PhysicalResource` en memoria con
+los valores correctos (el 200/201 de la respuesta se veía bien), pero
+nada se persistía — todo recurso en la base real quedaba con
+`capacity=1` para siempre. Sin esto, Bug 1 no podía funcionar en
+producción sin importar qué tan bien estuviera el resto del fix.
+Corregido (ambas columnas agregadas al `SELECT`/`INSERT`/`ON CONFLICT
+SET`/`rowToResource()`) — sin riesgo para datos existentes: nada había
+escrito `capacity` nunca, así que toda fila real ya estaba en el default
+`1` de la columna.
+
+**Implementado:**
+- `PhysicalResource.availableSlots()` — filtraba con `status !==
+  'CANCELLED'` (contaba una reserva COMPLETED como ocupando para
+  siempre). Cambiado a `isBlockingStatus()` (PENDING/CONFIRMED), el mismo
+  filtro que ya usa el resto del código.
+- `ReservationAvailabilityService` gana `categoryRepository` inyectado
+  (constructor, `Pick<ICategoryRepository, 'findById'>` — mismo mecanismo
+  que `ReservationPricingService` ya usa para `isLodging`) y un helper
+  privado `isExclusiveResource()`: `category?.isExclusive ?? true` —
+  default exclusivo (conservador) si la categoría no se puede resolver,
+  mismo comportamiento binario que tenía TODO recurso antes de esta
+  sesión.
+- `checkAvailability()`/`assertAllResourcesAvailable()` ganan un
+  parámetro `partySize` (default 1, no rompe callers existentes) y
+  branchean: exclusivo → sin cambios (cualquier solapamiento bloquea);
+  cupo compartido → `resolveOccupyingReservations()` (ya filtra
+  correctamente y es lock-aware) mapeado a `.toSnapshot()` +
+  `resource.availableSlots()`, bloquea solo si `partySize` pedido supera
+  el cupo restante.
+- `ReservationService.createReservation()`/`updateReservation()` pasan el
+  `partySize` ya resuelto (K3) al chequeo de disponibilidad.
+  `findAvailableResourceInCategory()` también lo acepta (opcional).
+
+**Verificado:** `tsc`/`eslint` limpios en todo el árbol, suite unitaria
+completa **1519/1519** (12 tests nuevos: 5 en
+`resource.entities.test.ts` sobre `availableSlots()`, 6 en
+`reservation-availability.service.test.ts` — archivo nuevo, cubre
+cupo compartido + exclusivo + default conservador —, 1 en la suite de
+integración). Contra Postgres real (mismo mecanismo que Bug 2/3): recurso
+`capacity=5`, categoría `is_exclusive=false` — 2 reservas de 2 personas
+entran (4/5), una tercera de 2 personas rechaza (llegaría a 6/5), una de
+1 persona entra justo (5/5). **19/19 tests de integración verdes.**
 
 ---
 

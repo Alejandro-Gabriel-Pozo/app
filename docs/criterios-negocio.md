@@ -328,13 +328,42 @@ existir la forma de dárselos.
 
 # 8. Concurrencia 🟠
 
-**A8.1 — Toda operación con recurso escaso se serializa en la base.** *Ya
-resuelto en solapamiento de reservas con `FOR UPDATE`.*
+**A8.1 — Toda operación con recurso escaso se serializa en la base.**
+
+✅ *Corregido (25/08/2026) — el `✅ Ya resuelto` que tenía esta línea antes
+era la causa raíz de que el bug pasara desapercibido varias sesiones: el
+`FOR UPDATE` de `getActiveForResourceInRangeWithLock()` bloquea filas de
+`reservations`, no de `resources` — si el rango pedido está libre no hay
+filas de `reservations` que lockear, así que dos transacciones
+concurrentes pasan el chequeo de disponibilidad las dos antes de que
+ninguna haga el INSERT (gotcha clásico de Postgres, `SELECT ... FOR
+UPDATE` sobre 0 filas no serializa nada). Reproducido con autocannon (20
+conexiones → 3 duplicados), detalle completo en
+`docs/auditoria-tecnica-infra-reservas.md`. Fix real:
+`ResourceRepository.lockByIds()` lockea la fila del RECURSO (que siempre
+existe) antes de leer disponibilidad —
+`ReservationAvailabilityService.assertAllResourcesAvailable()`, ordenado
+por id para evitar deadlocks. Respaldo A8.2: EXCLUDE constraint en
+`reservations` para recursos exclusivos (`resource_categories.is_exclusive`
+— ver A8.2 más abajo).*
 
 **A8.2 — Los invariantes se expresan como constraint, no como validación.**
 Un chequeo en la capa de servicio es read-then-write: dos requests
 concurrentes lo pasan los dos. En Postgres, `EXCLUDE USING gist` con
 `tstzrange` para solapamiento, índices únicos parciales para duplicados.
+
+✅ *Aplicado parcialmente (25/08/2026) — `reservations_no_overlap_exclusive`
+(`EXCLUDE USING gist`, requiere `btree_gist`) como capa de respaldo del
+fix de A8.1, solo para recursos EXCLUSIVOS
+(`resource_categories.is_exclusive`, columna nueva y desacoplada de
+`is_lodging` — pricing y exclusividad son ejes de negocio distintos que
+hoy coinciden pero no tienen por qué seguir coincidiendo). No aplica a
+recursos de cupo compartido (tours/clases): ahí SÍ debe haber filas
+solapadas hasta llenar `capacity`, un EXCLUDE por solapamiento los
+rompería. `reservations.is_exclusive_resource` snapshotea (R9) el valor
+de la categoría al momento de crear/reasignar la reserva — el EXCLUDE
+constraint no puede hacer JOIN a otra tabla, necesita el dato ya
+congelado en su propia fila.*
 
 **A8.3 — Verificar límite y escribir, en la misma transacción.**
 `SELECT COUNT` seguido de `INSERT` sin serializar deja pasar dos altas

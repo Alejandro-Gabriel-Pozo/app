@@ -77,7 +77,16 @@ export class ReservationHoldExpiryWorker {
     let shouldVoid = false;
 
     await this.transactionManager.run(async (client: SqlClient) => {
-      const reservation = await this.reservationRepository.getById(reservationId);
+      // Bug 3 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md) —
+      // antes esto llamaba a getById(reservationId) SIN pasar `client`: el
+      // repo consultaba con su propia conexión (no la de esta transacción),
+      // así que el "re-chequeo" de abajo no corría contra una lectura
+      // realmente lockeada -- una carrera con confirmReservation() del
+      // huésped confirmando justo a tiempo podía perder una transición en
+      // silencio. getByIdWithLock (FOR UPDATE) cierra esa ventana.
+      const reservation = this.reservationRepository.getByIdWithLock
+        ? await this.reservationRepository.getByIdWithLock(client, reservationId)
+        : await this.reservationRepository.getById(reservationId);
       // Puede haberse cobrado/cancelado entre el SELECT del poll y acá --
       // re-chequear el estado real dentro de la transacción antes de expirar.
       if (!reservation || reservation.status !== 'PENDING') return;

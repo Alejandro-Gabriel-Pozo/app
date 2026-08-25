@@ -298,7 +298,14 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `stays.housekeeping_override_by`/`housekeeping_override_at`/
 // `housekeeping_status_at_override` nuevos (A6.5 — rastro del override de
 // MANAGEMENT cuando el check-in se fuerza con la limpieza sin INSPECTED).
-export const CURRENT_SCHEMA_VERSION = 41;
+// v42 (25/08/2026): Bug 2 — doble booking bajo concurrencia,
+// docs/auditoria-tecnica-infra-reservas.md. `resource_categories.is_exclusive`
+// nuevo (desacoplado de `is_lodging`, ver comentario en schema.sql);
+// `reservations.is_exclusive_resource` (snapshot R9) y constraint
+// `reservations_no_overlap_exclusive` (EXCLUDE USING gist, requiere
+// btree_gist) como respaldo A8.2 del fix aplicativo
+// (`ResourceRepository.lockByIds()`).
+export const CURRENT_SCHEMA_VERSION = 42;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

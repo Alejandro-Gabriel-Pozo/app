@@ -20,6 +20,7 @@ export interface SeededCategory {
   description: string | null;
   fields: unknown[];
   active: boolean;
+  isExclusive: boolean;
 }
 
 export interface SeededResource {
@@ -60,19 +61,24 @@ export interface SeededReservation {
 
 export async function seedCategory(
   db: SqlClient,
-  overrides: Partial<{ id: string; name: string; description: string; fields: unknown[] }> = {},
+  overrides: Partial<{ id: string; name: string; description: string; fields: unknown[]; isExclusive: boolean }> = {},
 ): Promise<SeededCategory> {
   const id = overrides.id ?? randomUUID();
   const name = overrides.name ?? 'Habitación';
   const description = overrides.description ?? null;
   const fields = overrides.fields ?? [];
+  // Default FALSE (mismo default que la columna, schema v42) -- los tests
+  // existentes que no lo pasan siguen funcionando igual porque además usan
+  // capacity=1 por default (seedResource): 1 ocupado + 1 pedido ya supera
+  // capacity=1, mismo resultado práctico que "exclusivo".
+  const isExclusive = overrides.isExclusive ?? false;
 
   await db.query(
-    `INSERT INTO resource_categories (id, name, description, fields)
-     VALUES ($1, $2, $3, $4::jsonb)`,
-    [id, name, description, JSON.stringify(fields)],
+    `INSERT INTO resource_categories (id, name, description, fields, is_exclusive)
+     VALUES ($1, $2, $3, $4::jsonb, $5)`,
+    [id, name, description, JSON.stringify(fields), isExclusive],
   );
-  return { id, name, description, fields, active: true };
+  return { id, name, description, fields, active: true, isExclusive };
 }
 
 export async function seedResource(
@@ -85,9 +91,16 @@ export async function seedResource(
   const basePrice = overrides.basePrice ?? 1000;
   const capacity = overrides.capacity ?? 1;
 
+  // location_id es NOT NULL (bloque LOCATIONS, schema.sql) -- mismo default
+  // 'loc-default' que usa SqlResourceRepository.save() en producción
+  // (COALESCE($6, 'loc-default')). Encontrado 25/08/2026 verificando Bug 2
+  // contra una BD fresca: sin esto, CUALQUIER test que llame a
+  // seedResource() falla con "null value in column location_id" -- no
+  // relacionado con Bug 1/2/3, la suite de integración nunca se había
+  // corrido antes contra una BD nueva de verdad.
   await db.query(
-    `INSERT INTO resources (id, name, category_id, base_price, capacity)
-     VALUES ($1, $2, $3, $4, $5)`,
+    `INSERT INTO resources (id, name, category_id, base_price, capacity, location_id)
+     VALUES ($1, $2, $3, $4, $5, 'loc-default')`,
     [id, name, categoryId, basePrice, capacity],
   );
   return { id, name, categoryId, basePrice, capacity, active: true };
@@ -157,6 +170,9 @@ export async function seedReservation(
 
   // reservation_number es NOT NULL (D6, 22/08/2026) -- mismo mecanismo
   // atómico que seedCustomer() más arriba, ver el comentario ahí.
+  // deposit_amount es NOT NULL (C1-Fase A, 22/08/2026) sin default -- 0 =
+  // "sin seña" (encontrado 25/08/2026 verificando Bug 2 contra una BD
+  // fresca, mismo patrón que el bug de location_id de arriba).
   await db.query(
     `WITH n AS (
        UPDATE number_sequences SET next_value = next_value + 1
@@ -164,8 +180,8 @@ export async function seedReservation(
        RETURNING next_value - 1 AS value
      )
      INSERT INTO reservations
-       (id, resource_id, customer_id, customer_name, start_time, end_time, status, total_price, reservation_number)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT value FROM n))`,
+       (id, resource_id, customer_id, customer_name, start_time, end_time, status, total_price, reservation_number, deposit_amount)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT value FROM n), 0)`,
     [id, resourceId, customerId, customerName, startTime, endTime, status, totalPrice],
   );
   return { id, resourceId, customerId, startTime, endTime, status };

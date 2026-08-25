@@ -3,8 +3,9 @@
 > Documento vivo. Segunda opinión externa (25/08/2026, "Recomendaciones
 > técnicas — app-main", traída por el dueño) más lo que se verificó/
 > encontró al empezar a ejecutarla. No son cambios urgentes en su
-> mayoría — es una lista para priorizar con el developer, salvo el
-> hallazgo de la sección 3, que sí es un bug real en producción.
+> mayoría — es una lista para priorizar con el developer. Los hallazgos
+> de las secciones 3 y 4 (bugs reales en producción) quedaron resueltos
+> en una sesión de continuidad el mismo día — ver "Estado" al final.
 
 Última actualización: 2026-08-25.
 
@@ -444,7 +445,7 @@ lo ya encontrado en las secciones 3 y 4 — la capa pura de disponibilidad
 no es la fuente del bug de concurrencia, es la capa de acceso a datos
 (falta de lock/CAS) la que lo introduce después.
 
-### 5.2 Hallazgo colateral — `capacity`/`availableSlots()` no está conectado a nada
+### 5.2 Hallazgo colateral — `capacity`/`availableSlots()` no está conectado a nada — ✅ RESUELTO (25/08/2026, sesión de continuidad, "Bug 1")
 
 Al armar los generadores para las propiedades de arriba se encontró que
 `PhysicalResource.availableSlots()` (pensado para recursos con
@@ -467,18 +468,19 @@ crear una reserva individual demasiado grande) — pero nada agrega los
 `partySize` de las reservas YA activas contra el `capacity` total del
 recurso al decidir si hay lugar para una más.
 
-**No es parte de los bugs de concurrencia de las secciones 3/4** — es
-un gap funcional distinto y más grande (¿el negocio realmente necesita
-reservas grupales con cupo parcial hoy, o `capacity > 1` es un campo
-que existe en el modelo pero nunca se terminó de cablear al flujo de
-reserva?). Además, si se decide cablearlo, `availableSlots()` en su
-forma actual tiene su propio bug menor: cuenta reservas `EXPIRED` como
-"todavía ocupando" (solo excluye `CANCELLED`), a diferencia de
-`isBlockingStatus()` (que excluye `EXPIRED` además de `CANCELLED`) —
-inconsistencia a arreglar de paso si se retoma. **Sin tocar a
-propósito** — es una decisión de alcance de producto, no un bug a
-arreglar hoy; documentado para decidir con el dueño cuándo/si conviene
-cablear reservas con capacidad parcial.
+**No es parte de los bugs de concurrencia de las secciones 3/4** — era
+un gap funcional distinto (¿el negocio realmente necesita reservas
+grupales con cupo parcial, o `capacity > 1` es un campo que existe en
+el modelo pero nunca se terminó de cablear al flujo de reserva?). El
+dueño confirmó que sí hace falta (recursos exclusivos vs. cupo
+compartido, decisión de negocio explícita) y se implementó en la misma
+sesión de continuidad que las secciones 3/4 — ver `pendientes-2026-08-25.md`,
+sección "Bug 1 — cupo compartido", para el detalle completo (incluye un
+bug prerequisito encontrado de paso: `capacity`/`description` nunca se
+persistían en `SqlResourceRepository`). El bug menor de `availableSlots()`
+que este párrafo señalaba (contaba `EXPIRED`/`COMPLETED` como "todavía
+ocupando", inconsistente con `isBlockingStatus()`) quedó corregido como
+parte del mismo fix.
 
 ## Estado
 
@@ -496,23 +498,38 @@ cablear reservas con capacidad parcial.
   `availableSlots()` (reservas grupales con cupo parcial) no está
   conectado a ningún flujo real de reserva (sección 5.2, gap de
   producto, no bug de concurrencia).
-- Sección 3 (bug de doble-booking, INSERT sin lock efectivo): **hallazgo
-  confirmado y documentado, sin arreglar a propósito** — decisión del
-  dueño, 25/08/2026. Blast radius real: cualquier resourceId/rango que
-  hoy no tenga ya una reserva encima está expuesto si dos requests de
-  creación llegan lo bastante juntas (en producción, con tráfico real,
-  no solo bajo un script de carga).
+- Sección 3 (bug de doble-booking, INSERT sin lock efectivo) — **✅
+  RESUELTO (25/08/2026, sesión de continuidad)**. Fix elegido:
+  `ResourceRepository.lockByIds()` (lock de fila en `resources`, ordenado
+  por id) en `ReservationAvailabilityService.assertAllResourcesAvailable()`,
+  más EXCLUDE constraint de respaldo (`reservations_no_overlap_exclusive`)
+  solo para recursos exclusivos (`resource_categories.is_exclusive`,
+  columna nueva, desacoplada de `is_lodging` a pedido explícito del
+  dueño). Detalle completo, decisiones de negocio y verificación:
+  `pendientes-2026-08-25.md`, sección "Bug real: doble-booking bajo
+  concurrencia".
 - Sección 4 (lost-update en transiciones de estado, misma familia que la
-  3 pero en el UPDATE): **hallazgo confirmado y documentado, sin
-  arreglar** — pendiente de decidir el approach con el dueño/developer,
-  mismo criterio que la sección 3. Afecta `confirmReservation()`,
-  `cancelReservation()`, `completeReservation()`,
-  `confirmPriceAdjustment()` y `ReservationHoldExpiryWorker`.
-- Script `src/scripts/concurrency-test-reservations.ts` queda en el
-  repo, listo para volver a correr una vez que se implemente cualquiera
-  de las dos opciones de arreglo de la sección 3 — es la forma de
-  confirmar que de verdad quedó resuelto. No cubre el hallazgo de la
-  sección 4 (dispara `POST /reservations` en paralelo, no
-  confirmaciones/cancelaciones concurrentes sobre la misma reserva) —
-  si se decide arreglar la 4, hace falta un script de concurrencia
-  aparte para verificarlo del mismo modo.
+  3 pero en el UPDATE) — **✅ RESUELTO (25/08/2026, misma sesión)**.
+  `ReservationRepository.getByIdWithLock()` + lectura/mutación movida
+  adentro de la transacción en `confirmReservation()`/`cancelReservation()`/
+  `completeReservation()`/`confirmPriceAdjustment()`/
+  `ReservationHoldExpiryWorker.expireOne()`. Detalle en
+  `pendientes-2026-08-25.md`, sección "Bug 3 — lost update en
+  transiciones de estado".
+- Script `src/scripts/concurrency-test-reservations.ts` sigue en el
+  repo (sin volver a correrlo con autocannon esta sesión — la
+  verificación se hizo con la suite de integración real, ver más abajo).
+  No cubre el hallazgo de la sección 4 (dispara `POST /reservations` en
+  paralelo, no confirmaciones/cancelaciones concurrentes sobre la misma
+  reserva) — si hace falta un script de carga real para la 4, es aparte.
+- **Verificación real de ambos fixes**, contra Postgres real (no solo
+  mocks/in-memory): `src/tests/integration/reservation.service.integration.test.ts`,
+  18/18 tests verdes — incluye un test nuevo de 10 `createReservation()`
+  concurrentes sobre el mismo slot (exactamente 1 éxito) y 2 tests nuevos
+  del EXCLUDE constraint. De paso se encontraron y corrigieron 2 bugs sin
+  relación que bloqueaban CUALQUIER test de integración en este repo
+  (nunca se habían corrido con `TEST_DATABASE_URL` antes): orden de
+  statements en `schema.sql` (`products` referenciado ~200 líneas antes
+  de crearse — rompía el alta de un negocio nuevo desde cero) y
+  `location_id`/`deposit_amount` faltantes en los helpers de seed de
+  test. Detalle completo en `pendientes-2026-08-25.md`.

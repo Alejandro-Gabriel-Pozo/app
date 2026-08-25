@@ -27,7 +27,7 @@
  */
 
 import type { VisualMetadata } from '../types/visual.interface.js';
-import { isResourceAvailable } from './availability.js';
+import { isResourceAvailable, isBlockingStatus } from './availability.js';
 import type { ReservationSnapshot } from './reservation.types.js';
 
 export class PhysicalResource {
@@ -90,6 +90,14 @@ export class PhysicalResource {
   /**
    * Para recursos con capacity > 1 (clases, tours).
    * Retorna cuántos lugares quedan en el rango dado.
+   *
+   * Bug 1 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md sección
+   * 5.2) — filtraba con `status !== 'CANCELLED'`, que cuenta una reserva
+   * COMPLETED como si siguiera ocupando lugar para siempre. Cambiado a
+   * `isBlockingStatus()` (PENDING/CONFIRMED), el mismo filtro que ya usa
+   * `getActiveInRange()`/`resolveOccupyingReservations()` en el resto del
+   * código — antes de esta sesión este método no tenía ningún call site
+   * real, así que el bug nunca se manifestó en producción.
    */
   availableSlots(
     start: Date,
@@ -99,7 +107,7 @@ export class PhysicalResource {
     const overlapping = reservations.filter(
       (r) =>
         r.resourceId === this.id &&
-        r.status !== 'CANCELLED' &&
+        isBlockingStatus(r.status) &&
         r.startTime < end &&
         r.endTime > start,
     );

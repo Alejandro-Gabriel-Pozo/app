@@ -174,6 +174,19 @@ export interface ReservationProps {
    * que lo va a limpiar queda para una sesión aparte.
    */
   needsMaintenanceReview?: boolean;
+  /**
+   * Bug 2 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md) — snapshot
+   * R9 de `resource_categories.is_exclusive` al momento de crear/reasignar
+   * la reserva. El EXCLUDE constraint de la base
+   * (`reservations_no_overlap_exclusive`) no puede hacer JOIN a otra tabla
+   * para resolverlo en tiempo real, necesita el dato ya congelado acá.
+   * Resuelto vía `ICategoryRepository` en `ReservationService.
+   * createReservation()`/`updateReservation()`, mismo mecanismo que ya usa
+   * `ReservationPricingService` para `isLodging`. Default `false` — mismo
+   * criterio que `needsMaintenanceReview`, sin mutador (no cambia después
+   * de creada salvo reasignación de recurso).
+   */
+  isExclusiveResource?: boolean;
 }
 
 export class Reservation {
@@ -198,6 +211,7 @@ export class Reservation {
   public readonly reservationNumber: number;
   public readonly appliedCustomerRateId: string | null;
   public readonly needsMaintenanceReview: boolean;
+  public readonly isExclusiveResource: boolean;
 
   constructor(props: ReservationProps) {
     const {
@@ -227,6 +241,7 @@ export class Reservation {
       reservationNumber,
       appliedCustomerRateId,
       needsMaintenanceReview = false,
+      isExclusiveResource = false,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -288,6 +303,7 @@ export class Reservation {
     this.reservationNumber = reservationNumber;
     this.appliedCustomerRateId = appliedCustomerRateId;
     this.needsMaintenanceReview = needsMaintenanceReview;
+    this.isExclusiveResource = isExclusiveResource;
     this._status     = initialStatus;
   }
 

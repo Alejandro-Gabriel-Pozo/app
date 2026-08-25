@@ -114,7 +114,14 @@ export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: str
   url.pathname = `/${dbName}`;
   const tenantUrl = url.toString();
 
-  const pool = new Pool({ connectionString: tenantUrl, max: 3 });
+  // max: 3 (valor original) hacía que tests con varias operaciones
+  // concurrentes (ej. Bug 2, 10 createReservation() en paralelo, cada uno
+  // con ~15-20 queries antes/fuera de la sección lockeada) encolaran casi
+  // todo detrás de solo 3 conexiones -- contra un TEST_DATABASE_URL remoto
+  // (latencia de red real, no localhost) eso alcanzaba a superar el
+  // testTimeout sin que hubiera ningún bug real, solo cola. Encontrado
+  // 25/08/2026 verificando Bug 2.
+  const pool = new Pool({ connectionString: tenantUrl, max: 15 });
   // PgSqlClient es la clase concreta; SqlClient es solo la interfaz.
   const db = new PgSqlClient(pool);
 

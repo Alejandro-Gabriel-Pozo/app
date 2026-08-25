@@ -111,6 +111,32 @@ ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 -- deploy.
 ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS is_lodging BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Bug 1/Bug 2 (25/08/2026, schema v42, docs/auditoria-tecnica-infra-reservas.md)
+-- -- decisión explícita del dueño: NO reutilizar is_lodging para esto.
+-- Pricing (is_lodging, tarifa por noche) y exclusividad de reserva
+-- (is_exclusive, capacidad=1 sin importar resources.capacity) son dos ejes
+-- de negocio distintos que hoy coinciden 1:1 pero no tienen por qué seguir
+-- coincidiendo -- a futuro puede haber recursos exclusivos que no son
+-- alojamiento (eventos, alquileres por hora). true = uso exclusivo
+-- (checkAvailability() binaria sin cambios). false = cupo compartido
+-- (capacity real, ver ReservationAvailabilityService). Backfill: copia
+-- is_lodging como punto de partida (coinciden hoy) -- igual que is_lodging,
+-- requiere revisión manual del dueño antes de que Bug 1/Bug 2 confíen en
+-- este campo en producción.
+ALTER TABLE resource_categories ADD COLUMN IF NOT EXISTS is_exclusive BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Backfill UNA SOLA VEZ (gateado por schema_migrations, no por el valor de
+-- la columna) -- schema.sql se re-corre completo en cada migrate:tenants
+-- (idempotente por diseño), así que un UPDATE sin este guard pisaría para
+-- siempre cualquier decoupling manual que el dueño haga más adelante
+-- (ej. marcar is_exclusive = FALSE en una categoría de alojamiento que deja
+-- de ser exclusiva) cada vez que se vuelva a correr.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 42) THEN
+    UPDATE resource_categories SET is_exclusive = is_lodging WHERE is_lodging = TRUE;
+  END IF;
+END $$;
+
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'resource_categories_updated_at') THEN
     CREATE TRIGGER resource_categories_updated_at
@@ -809,92 +835,6 @@ WHERE cr.id = base.id
   AND (1 - cr.fixed_price / base.base_price) * 100 > 0;
 
 -- ---------------------------------------------------------------------------
--- D9-Parte 1 (pendientes-2026-08-22.md, docs/diseno-scope-multinivel-
--- tarifas-2026-08-22.md) — scope multi-nivel para customer_rates/
--- rate_catalog. Antes: el target era siempre ÍTEM (resource_id XOR
--- service_id). Ahora, EXCLUYENTE entre 5 columnas:
---   - resource_id / service_id / product_id -- nivel ÍTEM (como antes,
---     + un tercer tipo nuevo)
---   - category_id -- nivel CATEGORÍA. Una sola columna para los 3 tipos
---     de ítem: resources/bookable_services/products ya comparten
---     resource_categories (mismo FK, sin discriminador de "para qué
---     bucket es" -- el match es por igualdad de category_id contra el
---     ítem concreto, no hace falta saberlo).
---   - bucket -- nivel BUCKET (ALOJAMIENTO/TURNOS/SERVICIOS/PRODUCTOS).
---     No es FK: ALOJAMIENTO/TURNOS no son tablas, son
---     resource_categories.is_lodging (TRUE/FALSE) de la categoría del
---     recurso -- ver ReservationPricingService.
---
--- product_id/bucket='PRODUCTOS' se agregan YA (evita una segunda
--- migración) pero la API los rechaza hasta D9-Parte 2 (el gancho en
--- pos-menu que los va a consultar de verdad) -- ver
--- CreateCustomerRateSchema/CreateRateCatalogEntrySchema.
---
--- Solapamiento y unicidad: con scope multi-nivel, un mismo ítem puede
--- quedar alcanzado por varias filas activas simultáneas (una a nivel
--- ítem, una de categoría, una de bucket) sin que eso sea un duplicado —
--- gana la más específica (ítem > categoría > bucket), resuelto en
--- ReservationPricingService al cotizar, no en un índice único (decisión
--- confirmada con el dueño: la garantía de unicidad por cliente+ítem
--- concreto deja de poder vivir sola en Postgres). Lo que SÍ sigue
--- viviendo en la base: como máximo una fila activa por cliente+valor
--- EXACTO de scope (un índice único por columna, igual que antes).
--- ---------------------------------------------------------------------------
-
-ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
-ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
-ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
-
-ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_bucket;
-ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_bucket
-  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
-
--- Reemplaza chk_rate_catalog_target (2 vías) -- ya no tiene sentido con
--- 5 columnas de scope posibles.
-ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_target;
-ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_scope;
-ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_scope CHECK (
-  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
-);
-
-ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
-ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
-ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
-
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_bucket;
-ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_bucket
-  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
-
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_target;
-ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_scope;
-ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_scope CHECK (
-  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
-);
-
--- Un único override ACTIVO por cliente+valor exacto de scope -- mismo
--- criterio que los 2 índices de resource/service ya existentes arriba,
--- uno más por cada columna de scope nueva.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_product
-  ON customer_rates (customer_id, product_id)
-  WHERE active = TRUE AND product_id IS NOT NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_category
-  ON customer_rates (customer_id, category_id)
-  WHERE active = TRUE AND category_id IS NOT NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_bucket
-  ON customer_rates (customer_id, bucket)
-  WHERE active = TRUE AND bucket IS NOT NULL;
-
--- ---------------------------------------------------------------------------
 -- deposit_policies (22/08/2026, docs/diseno-sena-deposito-fase-a-2026-08-22.md,
 -- C1-Fase A) — % de seña por ítem/categoría/bucket, mismo patrón de scope de
 -- 4 vías que rate_catalog/customer_rates usaban ANTES de que D9 les
@@ -1070,6 +1010,106 @@ DO $$ BEGIN
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Bug de orden encontrado 25/08/2026 (verificando Bug 2 contra una BD
+-- fresca con TEST_DATABASE_URL): este bloque D9-Parte 1 vivía justo
+-- después de customer_rates/rate_catalog (BLOQUE 1), ANTES de que
+-- `products` existiera todavía -- aplicar schema.sql completo contra una
+-- base VACÍA (el camino real de aprovisionar un negocio nuevo,
+-- applyTenantSchema()) fallaba con "relation products does not exist" en
+-- el primer ALTER de abajo. En producción nunca se vio porque cada tenant
+-- ya migrado fue aplicando el archivo incrementalmente, sesión a sesión,
+-- siempre con `products` ya creado de antes. Reordenado acá (después de
+-- CREATE TABLE products) sin cambiar una sola línea de contenido -- mismo
+-- SQL, mismo resultado final para un tenant ya migrado.
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- D9-Parte 1 (pendientes-2026-08-22.md, docs/diseno-scope-multinivel-
+-- tarifas-2026-08-22.md) — scope multi-nivel para customer_rates/
+-- rate_catalog. Antes: el target era siempre ÍTEM (resource_id XOR
+-- service_id). Ahora, EXCLUYENTE entre 5 columnas:
+--   - resource_id / service_id / product_id -- nivel ÍTEM (como antes,
+--     + un tercer tipo nuevo)
+--   - category_id -- nivel CATEGORÍA. Una sola columna para los 3 tipos
+--     de ítem: resources/bookable_services/products ya comparten
+--     resource_categories (mismo FK, sin discriminador de "para qué
+--     bucket es" -- el match es por igualdad de category_id contra el
+--     ítem concreto, no hace falta saberlo).
+--   - bucket -- nivel BUCKET (ALOJAMIENTO/TURNOS/SERVICIOS/PRODUCTOS).
+--     No es FK: ALOJAMIENTO/TURNOS no son tablas, son
+--     resource_categories.is_lodging (TRUE/FALSE) de la categoría del
+--     recurso -- ver ReservationPricingService.
+--
+-- product_id/bucket='PRODUCTOS' se agregan YA (evita una segunda
+-- migración) pero la API los rechaza hasta D9-Parte 2 (el gancho en
+-- pos-menu que los va a consultar de verdad) -- ver
+-- CreateCustomerRateSchema/CreateRateCatalogEntrySchema.
+--
+-- Solapamiento y unicidad: con scope multi-nivel, un mismo ítem puede
+-- quedar alcanzado por varias filas activas simultáneas (una a nivel
+-- ítem, una de categoría, una de bucket) sin que eso sea un duplicado —
+-- gana la más específica (ítem > categoría > bucket), resuelto en
+-- ReservationPricingService al cotizar, no en un índice único (decisión
+-- confirmada con el dueño: la garantía de unicidad por cliente+ítem
+-- concreto deja de poder vivir sola en Postgres). Lo que SÍ sigue
+-- viviendo en la base: como máximo una fila activa por cliente+valor
+-- EXACTO de scope (un índice único por columna, igual que antes).
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
+ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
+ALTER TABLE rate_catalog ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
+
+ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_bucket;
+ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_bucket
+  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+
+-- Reemplaza chk_rate_catalog_target (2 vías) -- ya no tiene sentido con
+-- 5 columnas de scope posibles.
+ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_target;
+ALTER TABLE rate_catalog DROP CONSTRAINT IF EXISTS chk_rate_catalog_scope;
+ALTER TABLE rate_catalog ADD CONSTRAINT chk_rate_catalog_scope CHECK (
+  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
+);
+
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS product_id  VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE;
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS category_id VARCHAR(255) REFERENCES resource_categories(id) ON DELETE CASCADE;
+ALTER TABLE customer_rates ADD COLUMN IF NOT EXISTS bucket      VARCHAR(20);
+
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_bucket;
+ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_bucket
+  CHECK (bucket IS NULL OR bucket IN ('ALOJAMIENTO', 'TURNOS', 'SERVICIOS', 'PRODUCTOS'));
+
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_target;
+ALTER TABLE customer_rates DROP CONSTRAINT IF EXISTS chk_customer_rate_scope;
+ALTER TABLE customer_rates ADD CONSTRAINT chk_customer_rate_scope CHECK (
+  (CASE WHEN resource_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN service_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN product_id   IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN category_id  IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN bucket       IS NOT NULL THEN 1 ELSE 0 END) = 1
+);
+
+-- Un único override ACTIVO por cliente+valor exacto de scope -- mismo
+-- criterio que los 2 índices de resource/service ya existentes arriba,
+-- uno más por cada columna de scope nueva.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_product
+  ON customer_rates (customer_id, product_id)
+  WHERE active = TRUE AND product_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_category
+  ON customer_rates (customer_id, category_id)
+  WHERE active = TRUE AND category_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_rates_customer_bucket
+  ON customer_rates (customer_id, bucket)
+  WHERE active = TRUE AND bucket IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS product_variants (
   id               VARCHAR(255)   PRIMARY KEY,
@@ -2966,4 +3006,69 @@ ALTER TABLE stays ADD COLUMN IF NOT EXISTS housekeeping_override_at TIMESTAMPTZ;
 -- como comentario en vez de CHECK: la lista de HousekeepingStatus vive en
 -- código (housekeeping-task.ts), no se duplica acá.
 ALTER TABLE stays ADD COLUMN IF NOT EXISTS housekeeping_status_at_override VARCHAR(20);
+
+-- ===========================================================================
+-- BLOQUE 14 — DOBLE-BOOKING BAJO CONCURRENCIA, RESPALDO A NIVEL DB (25/08/2026)
+-- docs/auditoria-tecnica-infra-reservas.md sección 3, criterios-negocio.md A8.1/A8.2
+-- ===========================================================================
+-- Bug real reproducido con autocannon (20 conexiones -> 3 duplicados): el
+-- FOR UPDATE de getActiveForResourceInRangeWithLock() bloquea filas de
+-- `reservations`, no de `resources` -- con el rango libre no hay filas que
+-- lockear, así que dos transacciones concurrentes pasan el chequeo de
+-- disponibilidad las dos. El fix real es aplicativo
+-- (ResourceRepository.lockByIds(), ver reservation-availability.service.ts).
+-- Esto de acá es la capa de respaldo que pide A8.2 ("los invariantes se
+-- expresan como constraint, no como validación") -- protege contra un
+-- futuro call site que se salte el lock aplicativo.
+--
+-- Solo para recursos EXCLUSIVOS (is_exclusive, BLOQUE de resource_categories
+-- más arriba) -- un recurso de cupo compartido (tours/clases) SÍ debe tener
+-- filas solapadas hasta llenar `capacity`, un EXCLUDE por solapamiento puro
+-- lo rompería.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- Snapshot R9 (criterios-datos.md: "una transacción congela lo que
+-- necesita del maestro") -- un EXCLUDE constraint no puede hacer JOIN a
+-- otra tabla, necesita el dato ya resuelto en su propia fila. Se
+-- resuelve una sola vez en ReservationService.createReservation()/
+-- updateReservation() vía ICategoryRepository, mismo mecanismo que ya usa
+-- ReservationPricingService para is_lodging.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS is_exclusive_resource BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Backfill de reservas EXISTENTES activas -- sin esto, is_exclusive_resource
+-- queda en el default FALSE para toda la historia y el EXCLUDE de abajo no
+-- protege ninguna reserva ya creada (solo las nuevas, que sí lo resuelven en
+-- ReservationService). Solo PENDING/CONFIRMED -- una reserva CANCELLED/
+-- COMPLETED no participa del EXCLUDE (WHERE de abajo), no hace falta
+-- resolverla. Una sola vez (mismo guard que resource_categories.is_exclusive
+-- más arriba, misma migración v42).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 42) THEN
+    UPDATE reservations r
+    SET is_exclusive_resource = rc.is_exclusive
+    FROM resources res
+    JOIN resource_categories rc ON rc.id = res.category_id
+    WHERE r.resource_id = res.id AND r.status IN ('PENDING', 'CONFIRMED');
+  END IF;
+END $$;
+
+-- ATENCIÓN antes de aplicar esto contra una BD real: si ya existen dos
+-- reservas PENDING/CONFIRMED solapadas en un recurso que el backfill de
+-- arriba marca como exclusivo (justamente el bug que este constraint
+-- previene a futuro), este ADD CONSTRAINT falla al validar los datos
+-- existentes -- correcto (avisa en vez de aplicar el constraint a medias),
+-- pero hay que resolver esos duplicados a mano (cancelar uno de los dos)
+-- ANTES de correr esto contra producción. Verificar primero con:
+--   SELECT r1.id, r2.id FROM reservations r1 JOIN reservations r2
+--     ON r1.resource_id = r2.resource_id AND r1.id < r2.id
+--     AND r1.status IN ('PENDING','CONFIRMED') AND r2.status IN ('PENDING','CONFIRMED')
+--     AND tstzrange(r1.start_time, r1.end_time, '[)') && tstzrange(r2.start_time, r2.end_time, '[)')
+--   JOIN resources res ON res.id = r1.resource_id
+--   JOIN resource_categories rc ON rc.id = res.category_id AND rc.is_exclusive;
+ALTER TABLE reservations DROP CONSTRAINT IF EXISTS reservations_no_overlap_exclusive;
+ALTER TABLE reservations ADD CONSTRAINT reservations_no_overlap_exclusive
+  EXCLUDE USING gist (
+    resource_id WITH =,
+    tstzrange(start_time, end_time, '[)') WITH &&
+  ) WHERE (status IN ('PENDING', 'CONFIRMED') AND is_exclusive_resource);
 

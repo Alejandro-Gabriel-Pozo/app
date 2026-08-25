@@ -15,7 +15,7 @@ function fakeCategoryRepository(categories: Record<string, boolean>): ICategoryR
     findAll: async () => [],
     findById: async (id: string): Promise<ResourceCategory | null> =>
       id in categories
-        ? { id, name: id, fields: [], isLodging: categories[id]!, active: true, createdAt: new Date(), updatedAt: new Date() }
+        ? { id, name: id, fields: [], isLodging: categories[id]!, isExclusive: false, active: true, createdAt: new Date(), updatedAt: new Date() }
         : null,
     countActive: async () => 0,
     create: async () => { throw new Error('no usado en este test'); },

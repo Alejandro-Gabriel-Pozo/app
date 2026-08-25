@@ -40,6 +40,23 @@ export interface ResourceCategory {
    * categorías ya existentes — el dueño tiene que marcarlas a mano.
    */
   isLodging: boolean;
+  /**
+   * Bug 1/Bug 2 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md) —
+   * decisión explícita del dueño: NO reutilizar `isLodging` para esto.
+   * Pricing (`isLodging`, tarifa por noche) y exclusividad de reserva
+   * (`isExclusive`, capacidad=1 sin importar `resources.capacity`) son dos
+   * ejes de negocio distintos que hoy coinciden 1:1 (toda categoría de
+   * alojamiento es también exclusiva) pero no tienen por qué seguir
+   * coincidiendo — a futuro puede haber recursos exclusivos que no son
+   * alojamiento (eventos, alquileres por hora). true = uso exclusivo
+   * (`checkAvailability()` binaria, cualquier solapamiento bloquea, mismo
+   * comportamiento que ya existía). false = cupo compartido (`capacity`
+   * real, varias reservas conviven hasta llenarlo — tours, clases). Default
+   * false, backfill copiando `isLodging` al agregar la columna (coinciden
+   * hoy) — igual que `isLodging`, requiere revisión manual antes de que el
+   * negocio confíe en el valor.
+   */
+  isExclusive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -51,6 +68,7 @@ export interface CreateCategoryDTO {
   description?: string;
   fields: CategoryField[];
   isLodging?: boolean;
+  isExclusive?: boolean;
 }
 
 /** DTO para actualizar una categoría */
@@ -60,4 +78,5 @@ export interface UpdateCategoryDTO {
   fields?: CategoryField[];
   active?: boolean;
   isLodging?: boolean;
+  isExclusive?: boolean;
 }

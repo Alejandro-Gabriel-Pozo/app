@@ -173,8 +173,11 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
     it('usa la tarifa especial del cliente en vez del basePrice cuando existe una activa', async () => {
       const { resource, customer, service } = await setupFixture();
 
+      // `price` se renombró a `fixed_price` (D9-Parte 1, 22/08/2026) --
+      // este test seguía usando el nombre viejo, encontrado 25/08/2026
+      // verificando Bug 2 contra una BD fresca.
       await db.query(
-        `INSERT INTO customer_rates (id, business_id, customer_id, resource_id, price)
+        `INSERT INTO customer_rates (id, business_id, customer_id, resource_id, fixed_price)
          VALUES ($1, $2, $3, $4, $5)`,
         [randomUUID(), BUSINESS_ID, customer.id, resource.id, 42],
       );
@@ -275,6 +278,58 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       );
       expect(Number(count.rows[0]!.count)).toBe(1);
     });
+
+    it('Bug 2 (25/08/2026) — 10 requests simultáneos sobre el mismo slot → exactamente 1 éxito', async () => {
+      // Timeout largo a propósito: el fix (lockByIds) SERIALIZA los 10
+      // intentos sobre el mismo recurso -- contra un TEST_DATABASE_URL
+      // remoto (no localhost) cada uno paga latencia de red real, y encima
+      // hacen cola por el pool de 3 conexiones de createTestDatabase(). No
+      // es un signo de que el fix esté mal, es la consecuencia esperada de
+      // serializar 10 flujos completos en vez de dejarlos correr en
+      // paralelo (que es justamente el bug que este test reproduce).
+      // Con solo 2 promesas in-process el gotcha de FOR UPDATE sobre 0 filas
+      // (docs/auditoria-tecnica-infra-reservas.md sección 3) no se reproducía
+      // de forma confiable -- el event loop de Node podía serializar las dos
+      // llamadas lo suficiente como para no exponer la carrera. Con 10
+      // intentos concurrentes (mismo orden de magnitud que el script
+      // concurrency-test-reservations.ts que sí lo reprodujo con autocannon)
+      // este test falla de forma confiable SIN el fix de lockByIds() y pasa
+      // con él.
+      const { resource, service } = await setupFixture();
+      const attempts = 10;
+      const customers = await Promise.all(
+        Array.from({ length: attempts }, () => seedCustomer(db)),
+      );
+
+      const slot = {
+        startTime: new Date('2030-06-11T10:00:00Z'),
+        endTime:   new Date('2030-06-11T12:00:00Z'),
+      };
+
+      const results = await Promise.allSettled(
+        customers.map((c) =>
+          service.createReservation({
+            id:         randomUUID(),
+            resourceId: resource.id,
+            customer:   new Customer(c.id, c.fullName, c.email),
+            ...slot,
+            details:    {},
+          }),
+        ),
+      );
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      expect(fulfilled).toHaveLength(1);
+
+      const count = await db.query<{ count: string }>(
+        `SELECT COUNT(*) FROM reservations
+         WHERE resource_id = $1
+           AND start_time = $2
+           AND status != 'CANCELLED'`,
+        [resource.id, slot.startTime],
+      );
+      expect(Number(count.rows[0]!.count)).toBe(1);
+    }, 60_000);
   });
 
   // ─── confirmReservation ────────────────────────────────────────────────
@@ -464,6 +519,125 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
           endTime:   new Date('2030-10-03T15:00:00Z'),
         }),
       ).rejects.toThrow(InvalidReservationError);
+    });
+  });
+
+  // ─── EXCLUDE constraint — respaldo A8.2 del Bug 2 ─────────────────────
+
+  describe('reservations_no_overlap_exclusive (EXCLUDE constraint)', () => {
+    // Bypasea el service a propósito -- lo que se está probando es el
+    // constraint de la BASE, no la validación de la capa de aplicación
+    // (esa ya la cubren los tests de arriba).
+    async function insertRawReservation(params: {
+      resourceId: string;
+      customerId: string;
+      startTime: Date;
+      endTime: Date;
+      isExclusiveResource: boolean;
+    }) {
+      await db.query(
+        `WITH n AS (
+           UPDATE number_sequences SET next_value = next_value + 1
+           WHERE entity_type = 'RESERVATION'
+           RETURNING next_value - 1 AS value
+         )
+         INSERT INTO reservations
+           (id, resource_id, customer_id, customer_name, start_time, end_time,
+            status, total_price, deposit_amount, reservation_number, is_exclusive_resource)
+         VALUES ($1, $2, $3, 'Test', $4, $5, 'PENDING', 1000, 0, (SELECT value FROM n), $6)`,
+        [
+          randomUUID(), params.resourceId, params.customerId,
+          params.startTime, params.endTime, params.isExclusiveResource,
+        ],
+      );
+    }
+
+    it('rechaza un solapamiento directo en un recurso EXCLUSIVO', async () => {
+      const { resource, customer } = await setupFixture();
+      const customer2 = await seedCustomer(db);
+
+      await insertRawReservation({
+        resourceId: resource.id, customerId: customer.id,
+        startTime: new Date('2031-01-01T10:00:00Z'), endTime: new Date('2031-01-01T12:00:00Z'),
+        isExclusiveResource: true,
+      });
+
+      await expect(
+        insertRawReservation({
+          resourceId: resource.id, customerId: customer2.id,
+          startTime: new Date('2031-01-01T11:00:00Z'), endTime: new Date('2031-01-01T13:00:00Z'),
+          isExclusiveResource: true,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('NO rechaza un solapamiento equivalente en un recurso de CUPO COMPARTIDO', async () => {
+      const { resource, customer } = await setupFixture();
+      const customer2 = await seedCustomer(db);
+
+      await insertRawReservation({
+        resourceId: resource.id, customerId: customer.id,
+        startTime: new Date('2031-02-01T10:00:00Z'), endTime: new Date('2031-02-01T12:00:00Z'),
+        isExclusiveResource: false,
+      });
+
+      // No debe tirar -- is_exclusive_resource = false queda fuera del
+      // WHERE parcial del EXCLUDE, mismo recurso y rango solapado.
+      await expect(
+        insertRawReservation({
+          resourceId: resource.id, customerId: customer2.id,
+          startTime: new Date('2031-02-01T11:00:00Z'), endTime: new Date('2031-02-01T13:00:00Z'),
+          isExclusiveResource: false,
+        }),
+      ).resolves.not.toThrow();
+    });
+  });
+
+  // ─── Bug 1 — cupo compartido ───────────────────────────────────────────
+
+  describe('cupo compartido (isExclusive = false)', () => {
+    it('permite varias reservas hasta llenar capacity, rechaza al superarlo', async () => {
+      const category = await seedCategory(db, { isExclusive: false });
+      const resource = await seedResource(db, category.id, { capacity: 5 });
+      const service = await buildService();
+
+      const slot = {
+        startTime: new Date('2031-03-01T10:00:00Z'),
+        endTime:   new Date('2031-03-01T12:00:00Z'),
+      };
+
+      // 2 + 2 = 4/5 -- entran las dos.
+      const c1 = await seedCustomer(db);
+      await service.createReservation({
+        id: randomUUID(), resourceId: resource.id,
+        customer: new Customer(c1.id, c1.fullName, c1.email),
+        ...slot, details: {}, partySize: 2,
+      });
+      const c2 = await seedCustomer(db);
+      await service.createReservation({
+        id: randomUUID(), resourceId: resource.id,
+        customer: new Customer(c2.id, c2.fullName, c2.email),
+        ...slot, details: {}, partySize: 2,
+      });
+
+      // 4/5 ocupados, pide 2 más (llegaría a 6) -- rechaza.
+      const c3 = await seedCustomer(db);
+      await expect(
+        service.createReservation({
+          id: randomUUID(), resourceId: resource.id,
+          customer: new Customer(c3.id, c3.fullName, c3.email),
+          ...slot, details: {}, partySize: 2,
+        }),
+      ).rejects.toThrow(InvalidReservationError);
+
+      // Pide 1 (entra justo en el lugar que queda) -- sí entra.
+      const c4 = await seedCustomer(db);
+      const last = await service.createReservation({
+        id: randomUUID(), resourceId: resource.id,
+        customer: new Customer(c4.id, c4.fullName, c4.email),
+        ...slot, details: {}, partySize: 1,
+      });
+      expect(last.status).toBe('PENDING');
     });
   });
 });

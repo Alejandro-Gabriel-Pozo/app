@@ -11,6 +11,7 @@
 
 import type { PhysicalResource } from './resource.entities.js';
 import type { ResourceRepository } from './resource.repository.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export class InMemoryResourceRepository implements ResourceRepository {
   private readonly resources = new Map<string, PhysicalResource>();
@@ -45,5 +46,10 @@ export class InMemoryResourceRepository implements ResourceRepository {
 
   async delete(id: string): Promise<boolean> {
     return this.resources.delete(id);
+  }
+
+  /** No-op — no hay concurrencia real cross-conexión en los tests que usan este repo. */
+  async lockByIds(_client: SqlClient, _ids: string[]): Promise<void> {
+    return;
   }
 }

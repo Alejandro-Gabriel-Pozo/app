@@ -32,6 +32,8 @@ interface ResourceRow {
   category_name: string | null;
   base_price: number | string;
   visual_data: Record<string, unknown> | string | null;
+  capacity: number;
+  description: string | null;
   active: boolean;
   location_id: string | null;
 }
@@ -44,6 +46,8 @@ const SELECT_WITH_CATEGORY = `
     rc.name AS category_name,
     r.base_price,
     r.visual_data,
+    r.capacity,
+    r.description,
     r.active,
     r.location_id
   FROM resources r
@@ -63,16 +67,31 @@ export class SqlResourceRepository implements ResourceRepository {
     // de llegar acá — resources.routes.ts sí lo hace). En el UPDATE
     // (ON CONFLICT) un valor nulo NO pisa la location ya guardada — evita
     // que un PUT que no toca locationId resetee el recurso a la default.
+    //
+    // capacity/description (Bug 1, 25/08/2026, docs/auditoria-tecnica-
+    // infra-reservas.md sección 5.2) — faltaban ACÁ, así que
+    // resources.routes.ts los construía bien en el `PhysicalResource` de
+    // memoria (el 201/200 de la respuesta los mostraba correctos) pero
+    // nunca se escribían: todo recurso en la base real quedaba con
+    // capacity=1/description=NULL para siempre, sin importar qué se
+    // hubiera cargado. `description` sí puede resetearse a NULL a
+    // propósito (borrar la descripción es una edición válida), a
+    // diferencia de `visual_data`/`location_id` -- por eso sin COALESCE.
     await this.sqlClient.query(
-      `INSERT INTO resources (id, name, category_id, base_price, visual_data, location_id)
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'loc-default'))
+      `INSERT INTO resources (id, name, category_id, base_price, visual_data, capacity, description, location_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'loc-default'))
        ON CONFLICT (id) DO UPDATE SET
          name        = EXCLUDED.name,
          category_id = EXCLUDED.category_id,
          base_price  = EXCLUDED.base_price,
          visual_data = COALESCE(EXCLUDED.visual_data, resources.visual_data),
+         capacity    = EXCLUDED.capacity,
+         description = EXCLUDED.description,
          location_id = COALESCE(EXCLUDED.location_id, resources.location_id)`,
-      [resource.id, resource.name, resource.categoryId, resource.basePrice, visualData, resource.locationId],
+      [
+        resource.id, resource.name, resource.categoryId, resource.basePrice, visualData,
+        resource.capacity, resource.description, resource.locationId,
+      ],
     );
   }
 
@@ -133,6 +152,15 @@ export class SqlResourceRepository implements ResourceRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /** Ver docblock en resource.repository.ts — fix del Bug 2 (25/08/2026). */
+  async lockByIds(client: SqlClient, ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await client.query(
+      `SELECT id FROM resources WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+      [ids],
+    );
+  }
+
   private rowToResource(row: ResourceRow): PhysicalResource {
     let visualData: VisualMetadata | null = null;
 
@@ -150,8 +178,8 @@ export class SqlResourceRepository implements ResourceRepository {
       Number(row.base_price),
       row.category_id,
       visualData,
-      /* capacity    */ 1,
-      /* description */ null,
+      row.capacity,
+      row.description,
       row.category_name ?? null,
       row.location_id,
       row.active,

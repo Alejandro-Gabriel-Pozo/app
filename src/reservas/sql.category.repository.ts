@@ -30,20 +30,21 @@ import type {
 import { CategoryNotFoundError } from '../domain/errors.js';
 
 const RETURNING_COLS = `
-  id, name, description, fields, active, is_lodging, created_at, updated_at
+  id, name, description, fields, active, is_lodging, is_exclusive, created_at, updated_at
 `;
 
 function mapRow(row: Record<string, unknown>): ResourceCategory {
   const description = row['description'] as string | undefined;
   return {
-    id:        row['id'] as string,
-    name:      row['name'] as string,
+    id:          row['id'] as string,
+    name:        row['name'] as string,
     ...(description !== undefined && { description }),
-    fields:    (row['fields'] as CategoryField[]) ?? [],
-    active:    row['active'] as boolean,
-    isLodging: row['is_lodging'] as boolean,
-    createdAt: new Date(row['created_at'] as string),
-    updatedAt: new Date(row['updated_at'] as string),
+    fields:      (row['fields'] as CategoryField[]) ?? [],
+    active:      row['active'] as boolean,
+    isLodging:   row['is_lodging'] as boolean,
+    isExclusive: row['is_exclusive'] as boolean,
+    createdAt:   new Date(row['created_at'] as string),
+    updatedAt:   new Date(row['updated_at'] as string),
   };
 }
 
@@ -88,10 +89,13 @@ export class SqlCategoryRepository implements ICategoryRepository {
 
   async create(dto: CreateCategoryDTO): Promise<ResourceCategory> {
     const result = await this.sqlClient.query(
-      `INSERT INTO resource_categories (id, name, description, fields, is_lodging)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO resource_categories (id, name, description, fields, is_lodging, is_exclusive)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING ${RETURNING_COLS}`,
-      [dto.id, dto.name, dto.description ?? null, JSON.stringify(dto.fields ?? []), dto.isLodging ?? false],
+      [
+        dto.id, dto.name, dto.description ?? null, JSON.stringify(dto.fields ?? []),
+        dto.isLodging ?? false, dto.isExclusive ?? false,
+      ],
     );
     const rows = result.rows as Record<string, unknown>[];
     return mapRow(rows[0] ?? {});
@@ -107,6 +111,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
     if (dto.fields      !== undefined) { setClauses.push(`fields = $${idx++}`);      values.push(JSON.stringify(dto.fields)); }
     if (dto.active      !== undefined) { setClauses.push(`active = $${idx++}`);      values.push(dto.active); }
     if (dto.isLodging   !== undefined) { setClauses.push(`is_lodging = $${idx++}`);  values.push(dto.isLodging); }
+    if (dto.isExclusive !== undefined) { setClauses.push(`is_exclusive = $${idx++}`); values.push(dto.isExclusive); }
 
     if (setClauses.length === 0) {
       const cat = await this.findById(id);

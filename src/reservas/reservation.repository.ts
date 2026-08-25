@@ -37,6 +37,15 @@ export interface ReservationRepository {
 
   // Lectura — métodos específicos
   getById(id: string): Promise<Reservation | undefined>;
+
+  /**
+   * Bug 3 (25/08/2026) — igual que getById pero con SELECT ... FOR UPDATE.
+   * Debe llamarse dentro de una transacción activa, justo antes de mutar
+   * el estado (confirmar/cancelar/completar/expirar). Opcional (?:) —
+   * mismo criterio que getActiveForResourceInRangeWithLock? — para no
+   * romper mocks/stubs en tests unitarios que no necesiten el lock.
+   */
+  getByIdWithLock?(client: SqlClient, id: string): Promise<Reservation | undefined>;
   getByCustomerId(customerId: string): Promise<Reservation[]>;
   getByResourceId(resourceId: string): Promise<Reservation[]>;
   getByStatus(status: ReservationStatus): Promise<Reservation[]>;

@@ -25,6 +25,7 @@ export const CreateCategorySchema = z.object({
   description: z.string().max(500).optional(),
   fields:      z.array(CategoryFieldSchema).default([]),
   isLodging:   z.boolean().optional(),
+  isExclusive: z.boolean().optional(),
 });
 
 export const UpdateCategorySchema = z.object({
@@ -33,4 +34,5 @@ export const UpdateCategorySchema = z.object({
   fields:      z.array(CategoryFieldSchema).optional(),
   active:      z.boolean().optional(),
   isLodging:   z.boolean().optional(),
+  isExclusive: z.boolean().optional(),
 });

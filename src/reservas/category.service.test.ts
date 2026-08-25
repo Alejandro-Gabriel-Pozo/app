@@ -45,6 +45,7 @@ class FakeCategoryRepository implements ICategoryRepository {
       fields: dto.fields,
       active: true,
       isLodging: dto.isLodging ?? false,
+      isExclusive: dto.isExclusive ?? false,
       createdAt: now,
       updatedAt: now,
     };
@@ -89,6 +90,7 @@ describe('CategoryService — auditoría (R8/A9.4)', () => {
       fields: [],
       active: true,
       isLodging: false,
+      isExclusive: false,
       createdAt: new Date(),
       updatedAt: new Date(),
     });

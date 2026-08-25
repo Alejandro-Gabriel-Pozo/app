@@ -149,6 +149,7 @@ export class ReservationService {
       occupancyRepository,
       this.bookableServiceRepository,
       this.businessProfileRepository,
+      this.categoryRepository,
     );
     this.schedule = new ReservationScheduleService(
       this.bookableServiceRepository,
@@ -265,11 +266,15 @@ export class ReservationService {
 
     await this.transactionManager.run(async (client: SqlClient) => {
       // Verificar disponibilidad de todos los recursos (principal + bloqueados)
+      // partySize (Bug 1, 25/08/2026) -- solo importa para recursos de cupo
+      // compartido, ver docblock de assertAllResourcesAvailable().
       await this.availability.assertAllResourcesAvailable(
         client,
         lockedResourceIds,
         params.startTime,
         endTime,
+        undefined,
+        partySize,
       );
 
       // 24/08/2026 — la disponibilidad ya pasó (si hubiera bloqueado, la
@@ -301,6 +306,12 @@ export class ReservationService {
         reservationNumber,
         appliedCustomerRateId,
         needsMaintenanceReview,
+        // Bug 2 (25/08/2026) — snapshot R9 de resource_categories.is_exclusive
+        // (mismo `category` ya resuelto arriba para validateDetailsAgainstFields,
+        // sin query extra). Lo usa el EXCLUDE constraint de respaldo
+        // (reservations_no_overlap_exclusive), que no puede resolverlo con un
+        // JOIN en tiempo real.
+        isExclusiveResource: category?.isExclusive ?? false,
         lines: lines.map((line, i) => ({
           id:            `${params.id}-L${i + 1}`,
           reservationId: params.id,
@@ -392,6 +403,15 @@ export class ReservationService {
       validateDetailsAgainstFields(rawDetails, category.fields);
     }
 
+    // Bug 2 (25/08/2026) — recalcula el snapshot SOLO si hubo reasignación
+    // de recurso (mismo criterio R9 que totalPrice/lines más abajo: no se
+    // resincroniza en cada edición si el negocio cambia is_exclusive de la
+    // categoría después de creada la reserva).
+    const reassigned = changes.resourceId !== undefined && changes.resourceId !== existing.resource.id;
+    const isExclusiveResource = reassigned
+      ? (category?.isExclusive ?? false)
+      : existing.isExclusiveResource;
+
     // Recursos bloqueados por el servicio, sobre el recurso EFECTIVO
     // (el nuevo si hubo reasignación, el mismo de siempre si no)
     const lockedResourceIds = await this.availability.resolveLockedResourceIds(
@@ -439,12 +459,18 @@ export class ReservationService {
     let updated!: Reservation;
 
     await this.transactionManager.run(async (client: SqlClient) => {
+      // partySize (Bug 1, 25/08/2026): updateReservation() no lo recalcula
+      // (permanece congelado desde la creación, mismo criterio que ya
+      // aplicaba antes de esta sesión) -- se reenvía existing.partySize tal
+      // cual para que el chequeo de cupo compartido sea consistente con lo
+      // que la reserva ya tiene.
       await this.availability.assertAllResourcesAvailable(
         client,
         lockedResourceIds,
         newStartTime,
         newEndTime,
         id, // excluir la reserva actual del chequeo
+        existing.partySize,
       );
 
       updated = Reservation.restore({
@@ -478,6 +504,7 @@ export class ReservationService {
         scheduleChargeAmount:   existing.scheduleChargeAmount,
         reservationNumber:      existing.reservationNumber,
         appliedCustomerRateId,
+        isExclusiveResource,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -577,46 +604,68 @@ export class ReservationService {
     if (!businessId) throw new Error('businessId es obligatorio en confirmPriceAdjustment');
     if (!confirmedByUserId) throw new Error('confirmedByUserId es obligatorio en confirmPriceAdjustment');
 
-    const existing = await this.requireReservation(id);
-    if (existing.status !== 'CONFIRMED') {
-      throw new InvalidReservationError(
-        `Solo se puede ajustar el precio de una reserva CONFIRMED. Estado actual: ${existing.status}`,
-      );
-    }
-
-    const recalculated = await this.recalculatePriceFor(existing);
-    const difference = recalculated.totalPrice - existing.totalPrice;
-    if (difference === 0) throw new NoPriceAdjustmentPendingError(id);
-
     let updated!: Reservation;
 
+    // Bug 3 (25/08/2026) — a diferencia de confirmar/cancelar/completar,
+    // acá la carrera NO es sobre `status` (un ajuste de precio no lo
+    // cambia) sino sobre `totalPrice`: dos llamadas concurrentes podían
+    // leer el mismo `existing.totalPrice` FUERA de la transacción, calcular
+    // la MISMA `difference`, y las dos aplicarla — dos eventos
+    // `reservation.price_adjusted` (dos ADJUSTMENT financieros) para un
+    // solo cambio real de precio. Fix: todo el cálculo se mueve ADENTRO de
+    // la transacción, contra el `totalPrice` recién LOCKEADO (no el leído
+    // antes de esperar el lock) — la segunda llamada, tras esperar a que la
+    // primera haga COMMIT, recalcula la MISMA `recalculated.totalPrice`
+    // (determinística) contra un `locked.totalPrice` que ya es igual a esa
+    // cifra → `difference = 0` → `NoPriceAdjustmentPendingError`, sin
+    // segundo evento.
     await this.transactionManager.run(async (client: SqlClient) => {
+      const locked = await this.requireReservationWithLock(client, id);
+      if (locked.status !== 'CONFIRMED') {
+        throw new InvalidReservationError(
+          `Solo se puede ajustar el precio de una reserva CONFIRMED. Estado actual: ${locked.status}`,
+        );
+      }
+
+      const recalculated = await this.recalculatePriceFor(locked);
+      const difference = recalculated.totalPrice - locked.totalPrice;
+      if (difference === 0) throw new NoPriceAdjustmentPendingError(id);
+
       updated = Reservation.restore({
-        id:            existing.id,
-        customer:      existing.customer,
-        resource:      existing.resource,
-        startTime:     existing.startTime,
-        endTime:       existing.endTime,
-        details:       existing.details as Record<string, unknown>,
-        initialStatus: existing.status,
-        serviceId:     existing.serviceId,
-        partySize:     existing.partySize,
-        notes:         existing.notes,
-        orderItemId:   existing.orderItemId,
-        adultos:       existing.adultos,
-        ninos:         existing.ninos,
-        ratePlanId:    existing.ratePlanId,
+        id:            locked.id,
+        customer:      locked.customer,
+        resource:      locked.resource,
+        startTime:     locked.startTime,
+        endTime:       locked.endTime,
+        details:       locked.details as Record<string, unknown>,
+        initialStatus: locked.status,
+        serviceId:     locked.serviceId,
+        partySize:     locked.partySize,
+        notes:         locked.notes,
+        orderItemId:   locked.orderItemId,
+        adultos:       locked.adultos,
+        ninos:         locked.ninos,
+        ratePlanId:    locked.ratePlanId,
         totalPrice:    recalculated.totalPrice,
         lines:         recalculated.lines,
-        requestedCheckInTime:   existing.requestedCheckInTime,
-        requestedCheckOutTime:  existing.requestedCheckOutTime,
-        scheduleApprovalStatus: existing.scheduleApprovalStatus,
-        scheduleApprovedBy:     existing.scheduleApprovedBy,
-        scheduleChargeAmount:   existing.scheduleChargeAmount,
-        reservationNumber:      existing.reservationNumber,
-        depositAmount:          existing.depositAmount,
-        depositDueBy:           existing.depositDueBy,
+        requestedCheckInTime:   locked.requestedCheckInTime,
+        requestedCheckOutTime:  locked.requestedCheckOutTime,
+        scheduleApprovalStatus: locked.scheduleApprovalStatus,
+        scheduleApprovedBy:     locked.scheduleApprovedBy,
+        scheduleChargeAmount:   locked.scheduleChargeAmount,
+        reservationNumber:      locked.reservationNumber,
+        depositAmount:          locked.depositAmount,
+        depositDueBy:           locked.depositDueBy,
         appliedCustomerRateId:  recalculated.appliedCustomerRateId,
+        // Bug 2 (25/08/2026) — sin esto, cada ajuste de precio resetearía
+        // el snapshot a `false` en silencio (Reservation.restore() defaultea
+        // los props no pasados), apagando la protección del EXCLUDE
+        // constraint para esta reserva. NOTA (encontrado de paso, sin
+        // corregir — fuera de alcance de Bug 2): needsMaintenanceReview
+        // tiene el mismo problema acá (no se reenvía, cae a `false`) desde
+        // antes de este cambio; mismo patrón de bug que ya se corrigió una
+        // vez para requestedCheckInTime/scheduleApprovalStatus.
+        isExclusiveResource:    locked.isExclusiveResource,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -627,7 +676,7 @@ export class ReservationService {
         eventType:     'reservation.price_adjusted',
         payload: {
           reservationId: id,
-          customerId:    existing.customer.id,
+          customerId:    locked.customer.id,
           // Con signo -- outbox.handlers.ts lo pasa tal cual como `amount`
           // del ADJUSTMENT. Positivo = cargo extra, negativo = nota de
           // crédito (A10.2, payload autocontenido).
@@ -638,7 +687,7 @@ export class ReservationService {
           // método exige Roles.MANAGEMENT, no el mismo FRONT_DESK que edita
           // fechas: separa "quien pide el cambio" de "quien aprueba la plata".
           confirmedByUserId,
-          previousTotalPrice: existing.totalPrice,
+          previousTotalPrice: locked.totalPrice,
           newTotalPrice:      recalculated.totalPrice,
         },
       });
@@ -664,16 +713,18 @@ export class ReservationService {
   async confirmReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en confirmReservation');
 
-    const reservation = await this.requireReservation(id);
-
-    if (reservation.depositAmount > 0) {
+    // Pre-chequeo FUERA de la transacción -- financial_transactions es otra
+    // tabla, no hace falta el lock de reservations para leerla. No es la
+    // protección real contra la carrera (eso lo da el getByIdWithLock +
+    // transitionTo() de abajo) -- solo evita abrir una transacción para un
+    // caso obviamente inválido.
+    const preCheck = await this.requireReservation(id);
+    if (preCheck.depositAmount > 0) {
       const paidSoFar = await this.financialTransactionRepository.getSettledPaymentTotalForReservation(id);
-      if (paidSoFar < reservation.depositAmount) {
-        throw new DepositNotPaidError(id, reservation.depositAmount, paidSoFar);
+      if (paidSoFar < preCheck.depositAmount) {
+        throw new DepositNotPaidError(id, preCheck.depositAmount, paidSoFar);
       }
     }
-
-    reservation.confirm();
 
     // email.handlers.ts necesita saber si esto es alojamiento (E1) para
     // formatear Desde/Hasta como día calendario + horario ESTÁNDAR del
@@ -683,10 +734,23 @@ export class ReservationService {
     // significado real de hora. Aplicarles el huso del negocio como si
     // fueran un instante real corría el horario mostrado (bug reportado
     // 19/08/2026: "Desde"/"Hasta" mostraban 9pm-9pm sin relación con el
-    // check-in/check-out configurado).
-    const category = await this.categoryRepository.findById(reservation.resource.categoryId);
+    // check-in/check-out configurado). El recurso no cambia al confirmar,
+    // así que categoryId es el mismo con o sin lock.
+    const category = await this.categoryRepository.findById(preCheck.resource.categoryId);
 
+    let reservation!: Reservation;
+
+    // Bug 3 (25/08/2026) — la lectura + `.confirm()` se mueven ADENTRO de
+    // la transacción, con FOR UPDATE sobre esta fila puntual. Sin esto,
+    // dos confirmaciones concurrentes (o el worker de expiración vs. el
+    // huésped confirmando justo a tiempo) podían generar dos eventos
+    // `reservation.confirmed` (dos CHARGEs) -- con el lock, la segunda ve
+    // el estado ya CONFIRMED y `transitionTo()` la rechaza ANTES de que
+    // el evento se inserte.
     await this.transactionManager.run(async (client: SqlClient) => {
+      reservation = await this.requireReservationWithLock(client, id);
+      reservation.confirm();
+
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
         businessId,
@@ -723,10 +787,15 @@ export class ReservationService {
   async cancelReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en cancelReservation');
 
-    const reservation = await this.requireReservation(id);
-    reservation.cancel();
+    let reservation!: Reservation;
 
+    // Bug 3 (25/08/2026) — lectura+mutación adentro de la transacción, ver
+    // docblock de confirmReservation(). Cubre gratis la doble cancelación:
+    // la segunda ve el estado ya CANCELLED y transitionTo() la rechaza.
     await this.transactionManager.run(async (client: SqlClient) => {
+      reservation = await this.requireReservationWithLock(client, id);
+      reservation.cancel();
+
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
         businessId,
@@ -748,10 +817,14 @@ export class ReservationService {
   async completeReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en completeReservation');
 
-    const reservation = await this.requireReservation(id);
-    reservation.complete();
+    let reservation!: Reservation;
 
+    // Bug 3 (25/08/2026) — mismo criterio que cancelReservation()/
+    // confirmReservation(), ver docblock de arriba.
     await this.transactionManager.run(async (client: SqlClient) => {
+      reservation = await this.requireReservationWithLock(client, id);
+      reservation.complete();
+
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
         businessId,
@@ -783,8 +856,10 @@ export class ReservationService {
     endTime: Date,
     excludeReservationId?: string,
     serviceId?: string,
+    /** Bug 1 (25/08/2026) — ver docblock en ReservationAvailabilityService.checkAvailability(). */
+    partySize?: number,
   ): Promise<boolean> {
-    return this.availability.checkAvailability(resourceId, startTime, endTime, excludeReservationId, serviceId);
+    return this.availability.checkAvailability(resourceId, startTime, endTime, excludeReservationId, serviceId, partySize);
   }
 
   async getReservation(id: string): Promise<Reservation | undefined> {
@@ -810,6 +885,28 @@ export class ReservationService {
 
   private async requireReservation(id: string): Promise<Reservation> {
     const reservation = await this.reservationRepository.getById(id);
+    if (!reservation) {
+      throw new ReservationNotFoundError(id);
+    }
+    return reservation;
+  }
+
+  /**
+   * Bug 3 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md) — igual
+   * que requireReservation() pero con SELECT ... FOR UPDATE (dentro de una
+   * transacción activa). Usar SIEMPRE que se vaya a mutar el estado de una
+   * reserva (confirmar/cancelar/completar/ajustar precio) — sin esto, dos
+   * transiciones concurrentes sobre la MISMA reserva (ej. el worker de
+   * expiración de depósito vs. el huésped confirmando justo a tiempo, o un
+   * doble-clic en "Cancelar") podían perder una transición en silencio.
+   * `getByIdWithLock` es opcional en la interfaz (mismo criterio que
+   * `getActiveForResourceInRangeWithLock?`) — cae a `getById()` sin lock
+   * en repos que no lo implementan (in-memory, tests unitarios).
+   */
+  private async requireReservationWithLock(client: SqlClient, id: string): Promise<Reservation> {
+    const reservation = this.reservationRepository.getByIdWithLock
+      ? await this.reservationRepository.getByIdWithLock(client, id)
+      : await this.reservationRepository.getById(id);
     if (!reservation) {
       throw new ReservationNotFoundError(id);
     }

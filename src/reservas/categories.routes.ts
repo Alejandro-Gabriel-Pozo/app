@@ -129,6 +129,7 @@ export function createCategoryRouter(container: AppContainer): Router {
           fields: body.fields as CategoryField[],
           ...(body.description !== undefined && { description: body.description }),
           ...(body.isLodging   !== undefined && { isLodging: body.isLodging }),
+          ...(body.isExclusive !== undefined && { isExclusive: body.isExclusive }),
         },
         plan,
         limits,
@@ -170,6 +171,7 @@ export function createCategoryRouter(container: AppContainer): Router {
           ...(body.fields      !== undefined && { fields:      body.fields as CategoryField[] }),
           ...(body.active      !== undefined && { active:      body.active }),
           ...(body.isLodging   !== undefined && { isLodging:   body.isLodging }),
+          ...(body.isExclusive !== undefined && { isExclusive: body.isExclusive }),
         },
         req.user!.id,
       );

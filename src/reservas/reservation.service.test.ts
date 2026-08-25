@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ReservationStatus } from '../types/enums.js';
 import { BookableResource } from './resource.entities.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
@@ -199,6 +199,30 @@ describe('ReservationService', () => {
       expect(reservation.id).toBe('res-1');
       expect(reservation.status).toBe(ReservationStatus.PENDING);
       expect(await reservationRepo.getById('res-1')).toBeDefined();
+    });
+
+    it('Bug 2 (25/08/2026) — lockea los recursos (ordenados por id) antes de chequear disponibilidad', async () => {
+      // Segundo recurso, id menor a 't1' a propósito -- si el fix ordenara
+      // mal (o no ordenara), este test lo detecta.
+      const other = new BookableResource('a-other', 'Otro recurso', 30, 'cat-table', null, 4);
+      await resourceRepo.save(other);
+      lockRepo.seed([{ serviceId: 'svc-1', resourceId: 'a-other', sortOrder: 0 }]);
+
+      const lockSpy = vi.spyOn(resourceRepo, 'lockByIds');
+
+      await service.createReservation({
+        id: 'res-1',
+        resourceId: 't1',
+        serviceId: 'svc-1',
+        customer,
+        startTime: new Date('2026-07-01T20:00:00'),
+        endTime:   new Date('2026-07-01T22:00:00'),
+        details: {},
+      });
+
+      expect(lockSpy).toHaveBeenCalledOnce();
+      const [, lockedIds] = lockSpy.mock.calls[0]!;
+      expect(lockedIds).toEqual(['a-other', 't1']); // orden alfabético, no el orden de resolveLockedResourceIds()
     });
 
     it('debe rechazar si el recurso no existe', async () => {
@@ -609,7 +633,7 @@ describe('ReservationService', () => {
         async findById() {
           return {
             id: 'cat-table', name: 'Habitaciones', fields: [], active: true,
-            isLodging: true, createdAt: new Date(), updatedAt: new Date(),
+            isLodging: true, isExclusive: true, createdAt: new Date(), updatedAt: new Date(),
           };
         },
         async findAll() { return []; },
@@ -1536,7 +1560,7 @@ describe('ReservationService', () => {
         async findById() {
           return {
             id: 'cat-table', name: 'Habitaciones', fields: [], active: true,
-            isLodging: true, createdAt: new Date(), updatedAt: new Date(),
+            isLodging: true, isExclusive: true, createdAt: new Date(), updatedAt: new Date(),
           };
         },
         async findAll() { return []; },

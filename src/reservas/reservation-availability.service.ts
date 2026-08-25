@@ -27,6 +27,7 @@ import type { IResourceLockRepository } from './resource-lock.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
 import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { ICategoryRepository } from './category.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { resolveEndTime, combineDateAndTime } from './reservation-time.utils.js';
 
@@ -49,6 +50,15 @@ export class ReservationAvailabilityService {
     private readonly bookableServiceRepository: IBookableServiceRepository,
     /** 24/08/2026 — timezone + maintenanceHorizonDays para evaluar ventanas abiertas ("hasta nuevo aviso"). */
     private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
+    /**
+     * Bug 1 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md sección
+     * 5.2) — resuelve `resource_categories.is_exclusive` por recurso:
+     * exclusivo (default histórico) sigue con el chequeo binario de
+     * siempre; cupo compartido cuenta ocupación por `partySize` contra
+     * `capacity` en vez de bloquear ante cualquier solapamiento. Mismo
+     * mecanismo que ya usa `ReservationPricingService` para `isLodging`.
+     */
+    private readonly categoryRepository: Pick<ICategoryRepository, 'findById'>,
   ) {}
 
   /**
@@ -121,10 +131,28 @@ export class ReservationAvailabilityService {
   }
 
   /**
+   * Bug 1 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md sección
+   * 5.2) — `resource_categories.is_exclusive` decide cómo se cuenta la
+   * ocupación de un recurso: exclusivo (default si la categoría no se
+   * puede resolver — mismo comportamiento binario que todo el código tenía
+   * antes de esta sesión, conservador) = cualquier solapamiento bloquea,
+   * sin importar `capacity`. Cupo compartido (tours, clases) = varias
+   * reservas conviven hasta llenar `capacity`.
+   */
+  private async isExclusiveResource(resource: PhysicalResource): Promise<boolean> {
+    const category = await this.categoryRepository.findById(resource.categoryId);
+    return category?.isExclusive ?? true;
+  }
+
+  /**
    * @param serviceId - Opcional. Si se especifica, además del `resourceId`
    *   principal se verifican todos los recursos que ese servicio bloquea
    *   (`resource_locks`) — sin esto, un servicio con recursos compartidos
    *   podía reportarse "disponible" mirando solo su recurso primario.
+   * @param partySize - Bug 1 (25/08/2026) — personas que pide ESTA reserva.
+   *   Solo importa para recursos de cupo compartido (`isExclusive = false`);
+   *   un recurso exclusivo sigue siendo binario sin importar este valor.
+   *   Default 1 para no romper callers existentes.
    */
   async checkAvailability(
     resourceId: string,
@@ -132,6 +160,7 @@ export class ReservationAvailabilityService {
     endTime: Date,
     excludeReservationId?: string,
     serviceId?: string,
+    partySize = 1,
   ): Promise<boolean> {
     assertValidTimeRange(startTime, endTime);
 
@@ -160,15 +189,20 @@ export class ReservationAvailabilityService {
         return false;
       }
 
-      const activeReservations = await this.resolveOccupyingReservations(
-        undefined,
-        id,
-        startTime,
-        endTime,
-      );
+      const activeReservations = (
+        await this.resolveOccupyingReservations(undefined, id, startTime, endTime)
+      ).filter((r) => r.id !== excludeReservationId);
 
-      const conflicting = activeReservations.some((r) => r.id !== excludeReservationId);
-      if (conflicting) return false;
+      if (await this.isExclusiveResource(lockedResource)) {
+        if (activeReservations.length > 0) return false;
+      } else {
+        const slotsLeft = lockedResource.availableSlots(
+          startTime,
+          endTime,
+          activeReservations.map((r) => r.toSnapshot()),
+        );
+        if (partySize > slotsLeft) return false;
+      }
     }
 
     return true;
@@ -202,6 +236,8 @@ export class ReservationAvailabilityService {
     startTime: Date;
     endTime?: Date;
     serviceId?: string;
+    /** Bug 1 (25/08/2026) — ver docblock de checkAvailability(). Default 1. */
+    partySize?: number;
   }): Promise<PhysicalResource | null> {
     const service = params.serviceId
       ? await this.bookableServiceRepository.findById(params.serviceId)
@@ -216,6 +252,7 @@ export class ReservationAvailabilityService {
         endTime,
         undefined,
         params.serviceId,
+        params.partySize,
       );
       if (available) return resource;
     }
@@ -248,6 +285,9 @@ export class ReservationAvailabilityService {
    * Verifica disponibilidad de todos los resourceIds dentro de una
    * transacción activa (usa FOR UPDATE si está disponible).
    * Lanza `InvalidReservationError` en el primer conflicto encontrado.
+   *
+   * @param partySize - Bug 1 (25/08/2026) — ver docblock de
+   *   `checkAvailability()`. Default 1 para no romper callers existentes.
    */
   async assertAllResourcesAvailable(
     client: SqlClient,
@@ -255,7 +295,18 @@ export class ReservationAvailabilityService {
     startTime: Date,
     endTime: Date,
     excludeReservationId?: string,
+    partySize = 1,
   ): Promise<void> {
+    // Bug 2 (25/08/2026) — lockea las filas de `resources` ANTES de leer
+    // disponibilidad. Sin esto, dos transacciones concurrentes sobre un
+    // slot libre pasan el chequeo de abajo las dos: el FOR UPDATE de
+    // `resolveOccupyingReservations()` corre sobre `reservations`, y con
+    // 0 filas solapadas no bloquea nada. Ordenado por id (no por el orden
+    // de `resourceIds`, que puede variar entre callers) para que dos
+    // transacciones que tocan el mismo conjunto de recursos en distinto
+    // orden no se deadlockeen entre sí.
+    await this.resourceRepository.lockByIds(client, [...resourceIds].sort());
+
     for (const resourceId of resourceIds) {
       const resource = await this.resourceRepository.getById(resourceId);
       if (!resource) {
@@ -275,18 +326,28 @@ export class ReservationAvailabilityService {
         );
       }
 
-      const activeReservations = await this.resolveOccupyingReservations(
-        client,
-        resourceId,
-        startTime,
-        endTime,
-      );
+      const activeReservations = (
+        await this.resolveOccupyingReservations(client, resourceId, startTime, endTime)
+      ).filter((r) => r.id !== excludeReservationId);
 
-      const conflicting = activeReservations.some((r) => r.id !== excludeReservationId);
-      if (conflicting) {
-        throw new InvalidReservationError(
-          `El recurso ${resourceId} no está disponible en el rango solicitado`,
+      if (await this.isExclusiveResource(resource)) {
+        if (activeReservations.length > 0) {
+          throw new InvalidReservationError(
+            `El recurso ${resourceId} no está disponible en el rango solicitado`,
+          );
+        }
+      } else {
+        const slotsLeft = resource.availableSlots(
+          startTime,
+          endTime,
+          activeReservations.map((r) => r.toSnapshot()),
         );
+        if (partySize > slotsLeft) {
+          throw new InvalidReservationError(
+            `El recurso ${resourceId} no tiene cupo suficiente en el rango solicitado ` +
+            `(pide ${partySize}, quedan ${slotsLeft}).`,
+          );
+        }
       }
     }
   }

@@ -36,6 +36,7 @@ interface ReservationRow {
   reservation_number: number;
   applied_customer_rate_id: string | null;
   needs_maintenance_review?: boolean | null;
+  is_exclusive_resource?: boolean | null;
 }
 
 /**
@@ -92,6 +93,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.reservationNumber,
       reservation.appliedCustomerRateId,
       reservation.needsMaintenanceReview,
+      reservation.isExclusiveResource,
     ];
   }
 
@@ -137,9 +139,10 @@ export class SqlReservationRepository implements ReservationRepository {
       service_id, party_size, notes, order_item_id, adultos, ninos, rate_plan_id,
       requested_check_in_time, requested_check_out_time, schedule_approval_status,
       schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by,
-      reservation_number, applied_customer_rate_id, needs_maintenance_review
+      reservation_number, applied_customer_rate_id, needs_maintenance_review,
+      is_exclusive_resource
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -164,7 +167,8 @@ export class SqlReservationRepository implements ReservationRepository {
       deposit_due_by           = $24,
       reservation_number       = $25,
       applied_customer_rate_id = $26,
-      needs_maintenance_review = $27
+      needs_maintenance_review = $27,
+      is_exclusive_resource    = $28
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -215,6 +219,24 @@ export class SqlReservationRepository implements ReservationRepository {
   async getById(id: string): Promise<Reservation | undefined> {
     const result = await this.sqlClient.query<ReservationRow>(
       `${this.baseSelect()} WHERE r.id = $1`,
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? await this.rowToReservation(row) : undefined;
+  }
+
+  /**
+   * Bug 3 (25/08/2026, docs/auditoria-tecnica-infra-reservas.md) — igual
+   * que getById pero con SELECT ... FOR UPDATE. Debe llamarse dentro de una
+   * transacción activa (`client` de transactionManager.run()), justo antes
+   * de mutar el estado — sin esto, confirmar/cancelar/completar leían la
+   * reserva FUERA de la transacción (o, en el worker de expiración, en una
+   * conexión distinta a la de la transacción), así que dos transiciones
+   * concurrentes sobre la misma reserva podían perder una en silencio.
+   */
+  async getByIdWithLock(client: SqlClient, id: string): Promise<Reservation | undefined> {
+    const result = await client.query<ReservationRow>(
+      `${this.baseSelect()} WHERE r.id = $1 FOR UPDATE`,
       [id],
     );
     const row = result.rows[0];
@@ -450,7 +472,7 @@ export class SqlReservationRepository implements ReservationRepository {
         r.requested_check_in_time, r.requested_check_out_time,
         r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount,
         r.deposit_amount, r.deposit_due_by, r.reservation_number, r.applied_customer_rate_id,
-        r.needs_maintenance_review
+        r.needs_maintenance_review, r.is_exclusive_resource
       FROM reservations r
     `;
   }
@@ -501,6 +523,7 @@ export class SqlReservationRepository implements ReservationRepository {
       reservationNumber: row.reservation_number,
       appliedCustomerRateId: row.applied_customer_rate_id,
       needsMaintenanceReview: row.needs_maintenance_review ?? false,
+      isExclusiveResource: row.is_exclusive_resource ?? false,
     });
   }
 
