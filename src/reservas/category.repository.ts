@@ -8,6 +8,7 @@ import type {
   CreateCategoryDTO,
   UpdateCategoryDTO,
 } from './resource-category.types.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface ICategoryRepository {
   /** Devuelve todas las categorías activas */
@@ -24,6 +25,13 @@ export interface ICategoryRepository {
 
   /** Actualiza campos de una categoría existente */
   update(id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory>;
+
+  /**
+   * Igual que `update()`, pero contra un `client` explícito — para que el
+   * UPDATE comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional en la interfaz.
+   */
+  updateWithClient?(client: SqlClient, id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory>;
 
   /** Soft-delete: activa = false */
   deactivate(id: string): Promise<void>;

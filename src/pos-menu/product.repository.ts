@@ -11,6 +11,7 @@ import type {
   CreateProductVariantInput,
   UpdateProductVariantInput,
 } from './product.entities.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 /**
  * Empresas multipropiedad (17/08/2026) — patch de los campos de
@@ -66,6 +67,14 @@ export interface IProductRepository {
   update(id: string, input: UpdateProductInput): Promise<Product | undefined>;
   updateCompanySyncState(id: string, patch: CompanySyncStatePatch): Promise<void>;
 
+  /**
+   * Igual que `update()`, pero contra un `client` explícito — para que el
+   * UPDATE pueda compartir transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional: no todos los
+   * callers necesitan atomicidad real.
+   */
+  updateWithClient?(client: SqlClient, id: string, input: UpdateProductInput): Promise<Product | undefined>;
+
   delete(id: string): Promise<boolean>;
 }
 
@@ -85,6 +94,9 @@ export interface IProductVariantRepository {
   save(variant: ProductVariant): Promise<void>;
   create(input: CreateProductVariantInput): Promise<ProductVariant>;
   update(id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined>;
+
+  /** Ver `IProductRepository.updateWithClient()` — mismo criterio. */
+  updateWithClient?(client: SqlClient, id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined>;
 
   delete(id: string): Promise<boolean>;
 }

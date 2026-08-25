@@ -9,6 +9,7 @@ import type {
   AuditLogRepository,
   RecordAuditChangeInput,
 } from './audit-log.repository.js';
+import type { SqlClient } from './sql.client.js';
 
 function serializeValue(value: unknown): string | null {
   if (value === null || value === undefined) return null;
@@ -34,6 +35,16 @@ export class InMemoryAuditLogRepository implements AuditLogRepository {
         changedAt: now,
       });
     }
+  }
+
+  /**
+   * En memoria no hay dos conexiones distintas — `client` se ignora a
+   * propósito, el efecto (push al mismo array) es idéntico a `record()`.
+   * Existe para que los tests puedan ejercitar el mismo código de
+   * producción que usa `recordWithClient()` sin mockear una BD real.
+   */
+  async recordWithClient(_client: SqlClient, changes: RecordAuditChangeInput[]): Promise<void> {
+    await this.record(changes);
   }
 
   async findByEntity(entity: string, entityId: string): Promise<AuditLogEntry[]> {

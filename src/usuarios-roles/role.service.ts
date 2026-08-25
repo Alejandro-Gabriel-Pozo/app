@@ -131,6 +131,15 @@ export class RoleService {
       { permissionGroups: [...before.permissionGroups].sort() },
       { permissionGroups: [...permissionGroups].sort() },
     );
+    // Orden a propósito (25/08/2026, paso 1 del handoff de RBAC/auditoría):
+    // el update de plataforma ya se hizo arriba, ANTES de este audit de
+    // tenant — sin transacción real posible entre las dos BDs (ver docblock
+    // de archivo), este es el orden más seguro de los dos. Si este segundo
+    // paso falla, se pierde el rastro pero el permiso ya cambió de verdad
+    // (mismo riesgo que existía antes de que audit_log existiera). Si fuera
+    // al revés (audit primero), un fallo del update de plataforma dejaría
+    // una fila de audit_log afirmando un cambio que nunca pasó — mucho peor
+    // para algo que se usa como fuente de verdad de "quién cambió qué".
     await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
     return updated;

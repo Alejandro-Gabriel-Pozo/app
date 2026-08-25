@@ -3,6 +3,15 @@ import { CancellationPolicyService } from './cancellation-policy.service.js';
 import { CancellationPolicyNotFoundError } from '../domain/errors.js';
 import { InMemoryCancellationPolicyRepository } from './in-memory.cancellation-policy.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 describe('CancellationPolicyService', () => {
   let policyRepo: InMemoryCancellationPolicyRepository;
@@ -12,7 +21,7 @@ describe('CancellationPolicyService', () => {
   beforeEach(() => {
     policyRepo = new InMemoryCancellationPolicyRepository();
     auditRepo  = new InMemoryAuditLogRepository();
-    service    = new CancellationPolicyService(policyRepo, auditRepo);
+    service    = new CancellationPolicyService(policyRepo, auditRepo, new InMemoryTransactionManager());
   });
 
   it('createPolicy() crea un tramo activo scoped al negocio', async () => {

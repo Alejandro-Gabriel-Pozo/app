@@ -6,6 +6,7 @@ import type {
   UpdateCancellationPolicyInput,
 } from './cancellation-policy.repository.js';
 import { CancellationPolicyNotFoundError } from '../domain/errors.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export class InMemoryCancellationPolicyRepository implements CancellationPolicyRepository {
   private policies: CancellationPolicy[] = [];
@@ -55,6 +56,11 @@ export class InMemoryCancellationPolicyRepository implements CancellationPolicyR
     };
     this.policies[index] = updated;
     return updated;
+  }
+
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, input: UpdateCancellationPolicyInput): Promise<CancellationPolicy> {
+    return this.update(id, input);
   }
 
   async deactivate(id: string): Promise<void> {

@@ -37,7 +37,8 @@ import type {
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { InventoryLevelRepository, InventoryLevelKey } from '../repositories/inventory-level.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import { diffFields, updateWithAudit } from '../domain/audit.js';
 import { DomainError, ProductHasStockError } from '../domain/errors.js';
 
 const AUDIT_ENTITY_PRODUCT = 'products';
@@ -58,6 +59,18 @@ export class VariantNotFoundError extends Error {
   constructor(variantId: string) {
     super(`Variante no encontrada: ${variantId}`);
     this.name = 'VariantNotFoundError';
+  }
+}
+
+/**
+ * Sentinel interno (no exportado) — ver `updateProduct()`/`updateVariant()`.
+ * Nunca cruza el límite del service: se lanza dentro de la transacción para
+ * abortarla sin escribir auditoría, y se atrapa antes de devolver `null` al
+ * caller (mismo contrato público de siempre).
+ */
+class ProductRaceNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Fila desaparecida durante update() -- carrera con delete concurrente: ${id}`);
   }
 }
 
@@ -99,6 +112,7 @@ export class ProductService {
     /** Requerido para que updateProduct()/updateVariant() dejen rastro (R8/A9.4). */
     private readonly auditLogRepo: AuditLogRepository,
     private readonly inventoryLevelRepo: InventoryLevelRepository,
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -155,13 +169,35 @@ export class ProductService {
     const before = await this.productRepo.getById(id);
     if (!before) return null;
 
-    const updated = await this.productRepo.update(id, input);
-    if (!updated) return null;
-
+    if (!this.productRepo.updateWithClient) {
+      throw new Error('IProductRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.productRepo.updateWithClient.bind(this.productRepo);
     const changes = diffFields(before, input);
-    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY_PRODUCT, id, changes, changedBy);
 
-    return updated;
+    try {
+      return await updateWithAudit(
+        this.transactionManager,
+        this.auditLogRepo,
+        AUDIT_ENTITY_PRODUCT,
+        id,
+        changedBy,
+        changes,
+        async (client) => {
+          const updated = await updateWithClient(client, id, input);
+          // No encontró la fila (carrera con un delete concurrente) --
+          // aborta la transacción ANTES del INSERT de auditoría, para no
+          // dejar una fila de audit_log describiendo un cambio que nunca
+          // pasó (mismo criterio que la sección de RoleService en
+          // domain/audit.ts). rollback vía throw, capturado abajo.
+          if (updated === undefined) throw new ProductRaceNotFoundError(id);
+          return updated;
+        },
+      );
+    } catch (err) {
+      if (err instanceof ProductRaceNotFoundError) return null;
+      throw err;
+    }
   }
 
   /**
@@ -229,13 +265,30 @@ export class ProductService {
     const before = await this.variantRepo.getById(variantId);
     if (!before) return null;
 
-    const updated = await this.variantRepo.update(variantId, input);
-    if (!updated) return null;
-
+    if (!this.variantRepo.updateWithClient) {
+      throw new Error('IProductVariantRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.variantRepo.updateWithClient.bind(this.variantRepo);
     const changes = diffFields(before, input);
-    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY_VARIANT, variantId, changes, changedBy);
 
-    return updated;
+    try {
+      return await updateWithAudit(
+        this.transactionManager,
+        this.auditLogRepo,
+        AUDIT_ENTITY_VARIANT,
+        variantId,
+        changedBy,
+        changes,
+        async (client) => {
+          const updated = await updateWithClient(client, variantId, input);
+          if (updated === undefined) throw new ProductRaceNotFoundError(variantId);
+          return updated;
+        },
+      );
+    } catch (err) {
+      if (err instanceof ProductRaceNotFoundError) return null;
+      throw err;
+    }
   }
 
   /** Mismo bloqueo por stock físico que deleteProduct() — ver comentario ahí. */

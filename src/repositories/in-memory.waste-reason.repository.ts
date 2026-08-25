@@ -6,6 +6,7 @@ import type {
   UpdateWasteReasonInput,
 } from './waste-reason.repository.js';
 import { WasteReasonNotFoundError } from '../domain/errors.js';
+import type { SqlClient } from './sql.client.js';
 
 /** Test double en memoria — mismo criterio que el resto de los InMemory*Repository. */
 export class InMemoryWasteReasonRepository implements WasteReasonRepository {
@@ -52,6 +53,11 @@ export class InMemoryWasteReasonRepository implements WasteReasonRepository {
     };
     this.rows.set(id, updated);
     return updated;
+  }
+
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, input: UpdateWasteReasonInput): Promise<WasteReason> {
+    return this.update(id, input);
   }
 
   async deactivate(id: string): Promise<void> {

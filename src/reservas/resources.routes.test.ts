@@ -20,6 +20,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createResourcesRouter } from './resources.routes.js';
 import type { Request, Response } from 'express';
 
+// PUT /:id ahora es transaccional (25/08/2026, paso 1 del handoff de
+// RBAC/auditoría) -- mismo mock que categories.routes.test.ts: `run()`
+// ejecuta el callback contra el mismo `req.db` (fakeDb) en vez de resolver
+// un pool de tenant real.
+vi.mock('../db/tenant-context.js', () => ({
+  buildTenantTransactionManager: vi.fn((req: Request) => ({
+    run: vi.fn(async (fn: (client: unknown) => unknown) => fn(req.db)),
+  })),
+}));
+
 interface FakeCategoryRow {
   id: string; name: string; active: boolean; is_lodging: boolean;
   created_at: string; updated_at: string;

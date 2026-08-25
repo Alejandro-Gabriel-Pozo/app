@@ -202,6 +202,14 @@ export class SqlProductRepository implements IProductRepository {
   }
 
   async update(id: string, input: UpdateProductInput): Promise<Product | undefined> {
+    return this.updateWith(this.db, id, input);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, input: UpdateProductInput): Promise<Product | undefined> {
+    return this.updateWith(client, id, input);
+  }
+
+  private async updateWith(client: SqlClient, id: string, input: UpdateProductInput): Promise<Product | undefined> {
     const fields: string[] = [];
     const params: unknown[] = [];
     let idx = 1;
@@ -233,7 +241,7 @@ export class SqlProductRepository implements IProductRepository {
     fields.push('updated_at = NOW()');
     params.push(id);
 
-    const { rows } = await this.db.query<Record<string, unknown>>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `UPDATE products SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
       params,
     );
@@ -367,6 +375,14 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
   }
 
   async update(id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined> {
+    return this.updateWith(this.db, id, input);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined> {
+    return this.updateWith(client, id, input);
+  }
+
+  private async updateWith(client: SqlClient, id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined> {
     const fields: string[] = [];
     const params: unknown[] = [];
     let idx = 1;
@@ -382,7 +398,7 @@ export class SqlProductVariantRepository implements IProductVariantRepository {
     fields.push('updated_at = NOW()');
     params.push(id);
 
-    const { rows } = await this.db.query<Record<string, unknown>>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `UPDATE product_variants SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
       params,
     );

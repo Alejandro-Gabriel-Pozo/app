@@ -102,6 +102,14 @@ export class SqlCategoryRepository implements ICategoryRepository {
   }
 
   async update(id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory> {
+    return this.updateWith(this.sqlClient, id, dto);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory> {
+    return this.updateWith(client, id, dto);
+  }
+
+  private async updateWith(client: SqlClient, id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory> {
     const setClauses: string[] = [];
     const values: unknown[]    = [];
     let idx = 1;
@@ -124,7 +132,7 @@ export class SqlCategoryRepository implements ICategoryRepository {
     // una categoría pausada tiene que funcionar — antes quedaba atrapada
     // como "no encontrada" en cuanto se desactivaba, sin forma de arreglarla
     // salvo escribiendo SQL a mano.
-    const result = await this.sqlClient.query(
+    const result = await client.query(
       `UPDATE resource_categories
        SET ${setClauses.join(', ')}
        WHERE id = $${idx}

@@ -32,6 +32,7 @@ import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { CreateWasteReasonSchema, UpdateWasteReasonSchema } from '../api/schemas/waste.schemas.js';
 import { ZodError } from 'zod';
 import type { AppContainer } from '../container.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
 export function createWasteReasonsRouter(_container: AppContainer): Router {
   const router = Router();
@@ -40,6 +41,7 @@ export function createWasteReasonsRouter(_container: AppContainer): Router {
     return new WasteReasonService(
       new SqlWasteReasonRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
+      buildTenantTransactionManager(req),
     );
   }
 

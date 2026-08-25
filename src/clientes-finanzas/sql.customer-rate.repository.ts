@@ -141,7 +141,15 @@ export class SqlCustomerRateRepository implements ICustomerRateRepository {
   }
 
   async deactivate(id: string): Promise<void> {
-    await this.db.query(
+    await this.deactivateWith(this.db, id);
+  }
+
+  async deactivateWithClient(client: SqlClient, id: string): Promise<void> {
+    await this.deactivateWith(client, id);
+  }
+
+  private async deactivateWith(client: SqlClient, id: string): Promise<void> {
+    await client.query(
       `UPDATE customer_rates SET active = FALSE WHERE id = $1`,
       [id],
     );

@@ -53,6 +53,14 @@ export class SqlCancellationPolicyRepository implements CancellationPolicyReposi
   }
 
   async update(id: string, input: UpdateCancellationPolicyInput): Promise<CancellationPolicy> {
+    return this.updateWith(this.db, id, input);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, input: UpdateCancellationPolicyInput): Promise<CancellationPolicy> {
+    return this.updateWith(client, id, input);
+  }
+
+  private async updateWith(client: SqlClient, id: string, input: UpdateCancellationPolicyInput): Promise<CancellationPolicy> {
     const fields: string[]  = [];
     const params: unknown[] = [];
     let idx = 1;
@@ -70,7 +78,7 @@ export class SqlCancellationPolicyRepository implements CancellationPolicyReposi
     fields.push('updated_at = NOW()');
     params.push(id);
 
-    const { rows } = await this.db.query<Record<string, unknown>>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `UPDATE cancellation_policies SET ${fields.join(', ')} WHERE id = $${idx} RETURNING ${RETURNING_COLS}`,
       params,
     );

@@ -73,6 +73,7 @@ function buildService(req: Request): BookableServiceService {
   return new BookableServiceService(
     new SqlBookableServiceRepository(req.db!),
     new SqlAuditLogRepository(req.db!),
+    buildTenantTransactionManager(req),
   );
 }
 

@@ -44,6 +44,15 @@ export interface CustomerRepository {
   save(customer: Customer): Promise<void>;
 
   /**
+   * Igual que `save()`, pero contra un `client` explícito — para que el
+   * UPSERT comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Nombre distinto de
+   * `saveWithClient()` de abajo (esa es la variante transaccional de
+   * `saveWithPassword()`, firma distinta) para no pisarlas. Opcional.
+   */
+  saveEntityWithClient?(client: SqlClient, customer: Customer): Promise<void>;
+
+  /**
    * Persiste un cliente junto con su password hash.
    * Usado por CustomerAuthService al registrar un cliente nuevo.
    */
@@ -126,8 +135,14 @@ export interface CustomerRepository {
    */
   updateKindAndActive(customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void>;
 
+  /** Igual que `updateKindAndActive()`, contra un `client` explícito. Opcional. */
+  updateKindAndActiveWithClient?(client: SqlClient, customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void>;
+
   /** F1-Pieza 1 (23/08/2026) — habilita/deshabilita la cuenta corriente de un cliente. */
   setCurrentAccountEnabled(customerId: string, enabled: boolean): Promise<void>;
+
+  /** Igual que `setCurrentAccountEnabled()`, contra un `client` explícito. Opcional. */
+  setCurrentAccountEnabledWithClient?(client: SqlClient, customerId: string, enabled: boolean): Promise<void>;
 
   getTagsByCustomerId(customerId: string): Promise<Tag[]>;
   getAllTags(): Promise<Tag[]>;

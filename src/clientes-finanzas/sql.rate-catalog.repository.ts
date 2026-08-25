@@ -47,6 +47,14 @@ export class SqlRateCatalogRepository implements IRateCatalogRepository {
   }
 
   async update(id: string, businessId: string, dto: UpdateRateCatalogEntryDto): Promise<RateCatalogEntry | undefined> {
+    return this.updateWith(this.db, id, businessId, dto);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, businessId: string, dto: UpdateRateCatalogEntryDto): Promise<RateCatalogEntry | undefined> {
+    return this.updateWith(client, id, businessId, dto);
+  }
+
+  private async updateWith(client: SqlClient, id: string, businessId: string, dto: UpdateRateCatalogEntryDto): Promise<RateCatalogEntry | undefined> {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -56,7 +64,7 @@ export class SqlRateCatalogRepository implements IRateCatalogRepository {
     if (fields.length === 0) return this.findById(id, businessId);
 
     values.push(id, businessId);
-    const result = await this.db.query<RateCatalogRow>(
+    const result = await client.query<RateCatalogRow>(
       `UPDATE rate_catalog SET ${fields.join(', ')}
        WHERE id = $${idx++} AND business_id = $${idx++}
        RETURNING *`,
@@ -66,7 +74,15 @@ export class SqlRateCatalogRepository implements IRateCatalogRepository {
   }
 
   async deactivate(id: string, businessId: string): Promise<boolean> {
-    const result = await this.db.query(
+    return this.deactivateWith(this.db, id, businessId);
+  }
+
+  async deactivateWithClient(client: SqlClient, id: string, businessId: string): Promise<boolean> {
+    return this.deactivateWith(client, id, businessId);
+  }
+
+  private async deactivateWith(client: SqlClient, id: string, businessId: string): Promise<boolean> {
+    const result = await client.query(
       `UPDATE rate_catalog SET active = FALSE WHERE id = $1 AND business_id = $2 AND active = TRUE`,
       [id, businessId],
     );

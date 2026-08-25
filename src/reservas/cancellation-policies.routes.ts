@@ -29,6 +29,7 @@ import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { CreateCancellationPolicySchema, UpdateCancellationPolicySchema } from '../api/schemas/cancellation-policy.schemas.js';
 import { ZodError } from 'zod';
 import type { AppContainer } from '../container.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
 export function createCancellationPoliciesRouter(_container: AppContainer): Router {
   const router = Router();
@@ -37,6 +38,7 @@ export function createCancellationPoliciesRouter(_container: AppContainer): Rout
     return new CancellationPolicyService(
       new SqlCancellationPolicyRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
+      buildTenantTransactionManager(req),
     );
   }
 

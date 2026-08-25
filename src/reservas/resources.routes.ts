@@ -43,7 +43,8 @@ import { z }                              from 'zod';
 import { CreateOperatingWindowSchema }   from '../api/schemas/request.schemas.js';
 import type { VisualMetadata }           from '../types/visual.interface.js';
 import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import { diffFields, recordFieldChangesWithClient } from '../domain/audit.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
 const AUDIT_ENTITY_RESOURCE = 'resources';
 
@@ -239,7 +240,6 @@ export function createResourcesRouter(): Router {
           existing.categoryName,
           body.locationId ?? body.location_id ?? existing.locationId,
         );
-        await repo.save(updated);
 
         // Auditoría (R8/A9.4) — diff contra lo que realmente vino en el
         // body, no contra el objeto merged de arriba (si no cambió no debe
@@ -248,7 +248,9 @@ export function createResourcesRouter(): Router {
         // disputar — auditarlo generaría ruido en cada drag-and-drop.
         // Sin ResourceService propio (ver comentario de archivo), se
         // audita acá directo, mismo patrón que CategoryService/
-        // ProductService/BookableServiceService.
+        // ProductService/BookableServiceService. save() + el INSERT de
+        // auditoría comparten transacción (25/08/2026, paso 1 del handoff
+        // de RBAC/auditoría).
         const changes = diffFields(existing, {
           name:        body.name,
           basePrice:   body.basePrice ?? body.base_price,
@@ -257,13 +259,13 @@ export function createResourcesRouter(): Router {
           description: body.description,
           locationId:  body.locationId ?? body.location_id,
         });
-        await recordFieldChanges(
-          new SqlAuditLogRepository(req.db),
-          AUDIT_ENTITY_RESOURCE,
-          existing.id,
-          changes,
-          req.user!.id,
-        );
+        const auditLogRepo = new SqlAuditLogRepository(req.db);
+        await buildTenantTransactionManager(req).run(async (client) => {
+          await repo.saveWithClient!(client, updated);
+          if (changes.length > 0) {
+            await recordFieldChangesWithClient(client, auditLogRepo, AUDIT_ENTITY_RESOURCE, existing.id, changes, req.user!.id);
+          }
+        });
 
         res.json(updated);
       } catch (err) { next(err); }

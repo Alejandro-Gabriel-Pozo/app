@@ -6,6 +6,8 @@
  * criterio que ICategoryRepository (reservas/category.repository.ts).
  */
 
+import type { SqlClient } from './sql.client.js';
+
 export interface WasteReason {
   id: string;
   businessId: string;
@@ -35,6 +37,13 @@ export interface WasteReasonRepository {
   create(input: CreateWasteReasonInput): Promise<WasteReason>;
 
   update(id: string, input: UpdateWasteReasonInput): Promise<WasteReason>;
+
+  /**
+   * Igual que `update()`, pero contra un `client` explícito — para que el
+   * UPDATE comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional en la interfaz.
+   */
+  updateWithClient?(client: SqlClient, id: string, input: UpdateWasteReasonInput): Promise<WasteReason>;
 
   /** Soft-delete: active = false. */
   deactivate(id: string): Promise<void>;

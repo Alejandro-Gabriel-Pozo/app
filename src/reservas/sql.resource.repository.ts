@@ -58,6 +58,14 @@ export class SqlResourceRepository implements ResourceRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
   async save(resource: PhysicalResource): Promise<void> {
+    await this.saveWith(this.sqlClient, resource);
+  }
+
+  async saveWithClient(client: SqlClient, resource: PhysicalResource): Promise<void> {
+    await this.saveWith(client, resource);
+  }
+
+  private async saveWith(client: SqlClient, resource: PhysicalResource): Promise<void> {
     const visualData = resource.visualData
       ? JSON.stringify(resource.visualData)
       : null;
@@ -77,7 +85,7 @@ export class SqlResourceRepository implements ResourceRepository {
     // hubiera cargado. `description` sí puede resetearse a NULL a
     // propósito (borrar la descripción es una edición válida), a
     // diferencia de `visual_data`/`location_id` -- por eso sin COALESCE.
-    await this.sqlClient.query(
+    await client.query(
       `INSERT INTO resources (id, name, category_id, base_price, visual_data, capacity, description, location_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'loc-default'))
        ON CONFLICT (id) DO UPDATE SET

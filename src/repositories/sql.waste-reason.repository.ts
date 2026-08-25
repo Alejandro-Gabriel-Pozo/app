@@ -59,6 +59,14 @@ export class SqlWasteReasonRepository implements WasteReasonRepository {
   }
 
   async update(id: string, input: UpdateWasteReasonInput): Promise<WasteReason> {
+    return this.updateWith(this.db, id, input);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, input: UpdateWasteReasonInput): Promise<WasteReason> {
+    return this.updateWith(client, id, input);
+  }
+
+  private async updateWith(client: SqlClient, id: string, input: UpdateWasteReasonInput): Promise<WasteReason> {
     const fields: string[]  = [];
     const params: unknown[] = [];
     let idx = 1;
@@ -75,7 +83,7 @@ export class SqlWasteReasonRepository implements WasteReasonRepository {
     fields.push('updated_at = NOW()');
     params.push(id);
 
-    const { rows } = await this.db.query<Record<string, unknown>>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `UPDATE waste_reasons SET ${fields.join(', ')} WHERE id = $${idx} RETURNING ${RETURNING_COLS}`,
       params,
     );

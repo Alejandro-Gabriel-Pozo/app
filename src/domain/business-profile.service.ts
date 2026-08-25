@@ -36,8 +36,9 @@
 
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from './business-profile.entities.js';
-import { diffFields, recordFieldChanges } from './audit.js';
+import { diffFields, updateWithAudit } from './audit.js';
 import { FiscalProfileLockedError } from './errors.js';
 
 const AUDIT_ENTITY = 'business_profile';
@@ -53,6 +54,7 @@ export class BusinessProfileService {
   constructor(
     private readonly repository: BusinessProfileRepository,
     private readonly auditLogRepository: AuditLogRepository,
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   async get(): Promise<BusinessProfile> {
@@ -84,10 +86,19 @@ export class BusinessProfileService {
       throw new FiscalProfileLockedError();
     }
 
-    const updated = await this.repository.update(input);
+    if (!this.repository.updateWithClient) {
+      throw new Error('BusinessProfileRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.repository.updateWithClient.bind(this.repository);
 
-    await recordFieldChanges(this.auditLogRepository, AUDIT_ENTITY, current.id, changes, changedBy);
-
-    return updated;
+    return updateWithAudit(
+      this.transactionManager,
+      this.auditLogRepository,
+      AUDIT_ENTITY,
+      current.id,
+      changedBy,
+      changes,
+      (client) => updateWithClient(client, input),
+    );
   }
 }

@@ -14,6 +14,13 @@ import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface ResourceRepository {
   save(resource: PhysicalResource): Promise<void>;
+
+  /**
+   * Igual que `save()`, pero contra un `client` explícito — para que el
+   * UPSERT comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional.
+   */
+  saveWithClient?(client: SqlClient, resource: PhysicalResource): Promise<void>;
   getById(id: string): Promise<PhysicalResource | undefined>;
   getByCategory(categoryId: string): Promise<PhysicalResource[]>;
   getAll(): Promise<PhysicalResource[]>;

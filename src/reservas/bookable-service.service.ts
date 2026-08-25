@@ -16,7 +16,8 @@ import type {
 } from './bookable-service.types.js';
 import { DomainError } from '../domain/errors.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import { diffFields, updateWithAudit } from '../domain/audit.js';
 
 const AUDIT_ENTITY = 'bookable_services';
 
@@ -71,6 +72,7 @@ export class BookableServiceService {
     private readonly repo: IBookableServiceRepository,
     /** Requerido para que updateService() deje rastro (R8/A9.4). */
     private readonly auditLogRepo: AuditLogRepository,
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   async listServices(): Promise<BookableService[]> {
@@ -102,12 +104,21 @@ export class BookableServiceService {
     const existing = await this.repo.findById(id);
     if (!existing) throw new BookableServiceNotFoundError(id);
 
-    const updated = await this.repo.update(id, data);
-
+    if (!this.repo.updateWithClient) {
+      throw new Error('IBookableServiceRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.repo.updateWithClient.bind(this.repo);
     const changes = diffFields(existing, data);
-    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
-    return updated;
+    return updateWithAudit(
+      this.transactionManager,
+      this.auditLogRepo,
+      AUDIT_ENTITY,
+      id,
+      changedBy,
+      changes,
+      (client) => updateWithClient(client, id, data),
+    );
   }
 
   async deleteService(id: string): Promise<void> {

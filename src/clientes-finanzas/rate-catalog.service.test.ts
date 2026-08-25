@@ -14,6 +14,15 @@ import { RateCatalogEntryNotFoundError } from '../domain/errors.js';
 import { InMemoryRateCatalogRepository } from './in-memory.rate-catalog.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import type { RateCatalogEntry } from './rate-catalog.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 function seedEntry(repo: InMemoryRateCatalogRepository, overrides: Partial<RateCatalogEntry> = {}): RateCatalogEntry {
   const now = new Date();
@@ -31,7 +40,7 @@ describe('RateCatalogService', () => {
   it('create() no escribe auditoría (es el valor inicial, no hay "antes" contra qué diffear)', async () => {
     const repo = new InMemoryRateCatalogRepository();
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new RateCatalogService(repo, auditLog);
+    const service = new RateCatalogService(repo, auditLog, new InMemoryTransactionManager());
 
     await service.create({ id: 'cat-1', businessId: 'biz-1', name: 'Corporativo', discountPercentage: 10, resourceId: 'r1' });
 
@@ -42,7 +51,7 @@ describe('RateCatalogService', () => {
     const repo = new InMemoryRateCatalogRepository();
     seedEntry(repo);
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new RateCatalogService(repo, auditLog);
+    const service = new RateCatalogService(repo, auditLog, new InMemoryTransactionManager());
 
     const updated = await service.update('cat-1', 'biz-1', { discountPercentage: 15 }, 'ident-admin');
 
@@ -59,7 +68,7 @@ describe('RateCatalogService', () => {
   it('update() de una entrada inexistente tira RateCatalogEntryNotFoundError, sin auditoría', async () => {
     const repo = new InMemoryRateCatalogRepository();
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new RateCatalogService(repo, auditLog);
+    const service = new RateCatalogService(repo, auditLog, new InMemoryTransactionManager());
 
     await expect(service.update('cat-x', 'biz-1', { discountPercentage: 15 }, 'ident-admin'))
       .rejects.toThrow(RateCatalogEntryNotFoundError);
@@ -70,7 +79,7 @@ describe('RateCatalogService', () => {
     const repo = new InMemoryRateCatalogRepository();
     seedEntry(repo);
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new RateCatalogService(repo, auditLog);
+    const service = new RateCatalogService(repo, auditLog, new InMemoryTransactionManager());
 
     const ok = await service.deactivate('cat-1', 'biz-1', 'ident-admin');
 
@@ -85,7 +94,7 @@ describe('RateCatalogService', () => {
     const repo = new InMemoryRateCatalogRepository();
     seedEntry(repo, { active: false });
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new RateCatalogService(repo, auditLog);
+    const service = new RateCatalogService(repo, auditLog, new InMemoryTransactionManager());
 
     const ok = await service.deactivate('cat-1', 'biz-1', 'ident-admin');
 

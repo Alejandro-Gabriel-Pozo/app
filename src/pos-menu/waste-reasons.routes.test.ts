@@ -23,6 +23,13 @@ import type { AppContainer } from '../container.js';
 vi.mock('./waste-reason.service.js', () => ({
   WasteReasonService: vi.fn(),
 }));
+// updateReason() ahora es transaccional (25/08/2026, paso 1 del handoff de
+// RBAC/auditoría) -- buildService() resuelve buildTenantTransactionManager(req)
+// como tercer argumento del constructor antes de construirlo, aunque
+// WasteReasonService esté mockeado arriba.
+vi.mock('../db/tenant-context.js', () => ({
+  buildTenantTransactionManager: vi.fn(() => ({ run: vi.fn(async (fn: (client: unknown) => unknown) => fn({})) })),
+}));
 
 function fakeRes() {
   const res: Partial<Response> & { statusCode?: number; body?: unknown } = {};

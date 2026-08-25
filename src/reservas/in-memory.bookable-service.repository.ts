@@ -15,6 +15,7 @@ import type {
   CreateRatePlanDTO,
   UpdateRatePlanDTO,
 } from './bookable-service.types.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export class InMemoryBookableServiceRepository implements IBookableServiceRepository {
   private readonly services = new Map<string, BookableService>();
@@ -62,6 +63,11 @@ export class InMemoryBookableServiceRepository implements IBookableServiceReposi
     };
     this.services.set(id, updated);
     return updated;
+  }
+
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, dto: UpdateBookableServiceDTO): Promise<BookableService> {
+    return this.update(id, dto);
   }
 
   async deactivate(id: string): Promise<void> {

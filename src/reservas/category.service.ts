@@ -25,7 +25,8 @@ import type {
 import type { PlanLimits } from '../config/plan-limits.js';
 import type { BusinessPlan } from '../types/enums.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import { diffFields, updateWithAudit } from '../domain/audit.js';
 import { CategoryNotFoundError, PlanLimitError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'resource_categories';
@@ -87,6 +88,7 @@ export class CategoryService {
      * en updateCategory().
      */
     private readonly auditLogRepository: AuditLogRepository,
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   async listCategories(): Promise<ResourceCategory[]> {
@@ -133,12 +135,22 @@ export class CategoryService {
     changedBy: string,
   ): Promise<ResourceCategory> {
     const before = await this.getCategoryById(id); // throws if not found
-    const updated = await this.categoryRepository.update(id, dto);
-
     const changes = diffFields(before, dto);
-    await recordFieldChanges(this.auditLogRepository, AUDIT_ENTITY, id, changes, changedBy);
 
-    return updated;
+    if (!this.categoryRepository.updateWithClient) {
+      throw new Error('ICategoryRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.categoryRepository.updateWithClient.bind(this.categoryRepository);
+
+    return updateWithAudit(
+      this.transactionManager,
+      this.auditLogRepository,
+      AUDIT_ENTITY,
+      id,
+      changedBy,
+      changes,
+      (client) => updateWithClient(client, id, dto),
+    );
   }
 
   async deleteCategory(id: string): Promise<void> {

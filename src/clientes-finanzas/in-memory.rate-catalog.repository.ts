@@ -9,6 +9,7 @@ import type {
   CreateRateCatalogEntryDto,
   UpdateRateCatalogEntryDto,
 } from './rate-catalog.repository.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export class InMemoryRateCatalogRepository implements IRateCatalogRepository {
   private readonly entries: RateCatalogEntry[] = [];
@@ -60,11 +61,21 @@ export class InMemoryRateCatalogRepository implements IRateCatalogRepository {
     return { ...entry };
   }
 
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, businessId: string, dto: UpdateRateCatalogEntryDto): Promise<RateCatalogEntry | undefined> {
+    return this.update(id, businessId, dto);
+  }
+
   async deactivate(id: string, businessId: string): Promise<boolean> {
     const entry = this.entries.find((e) => e.id === id && e.businessId === businessId && e.active);
     if (!entry) return false;
     entry.active = false;
     return true;
+  }
+
+  /** En memoria no hay transacción real — delega a `deactivate()`, el `client` se ignora. */
+  async deactivateWithClient(_client: SqlClient, id: string, businessId: string): Promise<boolean> {
+    return this.deactivate(id, businessId);
   }
 
   /** Helper de test. */

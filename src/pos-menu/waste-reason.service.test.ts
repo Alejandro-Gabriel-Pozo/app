@@ -3,6 +3,15 @@ import { WasteReasonService } from './waste-reason.service.js';
 import { WasteReasonNotFoundError } from '../domain/errors.js';
 import { InMemoryWasteReasonRepository } from '../repositories/in-memory.waste-reason.repository.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 describe('WasteReasonService', () => {
   let wasteReasonRepo: InMemoryWasteReasonRepository;
@@ -12,7 +21,7 @@ describe('WasteReasonService', () => {
   beforeEach(() => {
     wasteReasonRepo = new InMemoryWasteReasonRepository();
     auditRepo       = new InMemoryAuditLogRepository();
-    service         = new WasteReasonService(wasteReasonRepo, auditRepo);
+    service         = new WasteReasonService(wasteReasonRepo, auditRepo, new InMemoryTransactionManager());
   });
 
   it('createReason() crea un motivo activo scoped al negocio', async () => {

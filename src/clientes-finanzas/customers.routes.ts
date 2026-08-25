@@ -29,7 +29,7 @@ import { SqlCustomerRateRepository } from './sql.customer-rate.repository.js';
 import type { CreateCustomerRateDto } from './customer-rate.repository.js';
 import { SqlRateCatalogRepository } from './sql.rate-catalog.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import { diffFields, recordFieldChangesWithClient } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
 import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
@@ -262,46 +262,50 @@ export function createCustomersRouter(container: AppContainer): Router {
 
         const body = UpdateCustomerSchema.parse(req.body);
 
-        if (body.displayName !== undefined) {
-          const updated = new Customer(
-            existing.id,
-            body.displayName,
-            existing.contactMethods,
-            existing.kind,
-            existing.active,
-            existing.customerNumber,
-          );
-          await repo.save(updated);
-        }
-
-        if (body.kind !== undefined || body.active !== undefined) {
-          await repo.updateKindAndActive(
-            id,
-            body.kind ?? existing.kind,
-            body.active ?? existing.active,
-          );
-        }
-
-        if (body.enableCurrentAccount !== undefined) {
-          await repo.setCurrentAccountEnabled(id, body.enableCurrentAccount);
-        }
-
         // Auditoría (R8/A9.4, I9) — diff contra lo que realmente vino en
         // el body y el estado ANTES de escribir, mismo patrón que
-        // resources.routes.ts/CategoryService/ProductService.
+        // resources.routes.ts/CategoryService/ProductService. Las 3
+        // escrituras condicionales + el INSERT de auditoría comparten la
+        // MISMA transacción (25/08/2026, paso 1 del handoff de RBAC/
+        // auditoría) — si alguna falla a mitad de camino, ninguna queda.
         const changes = diffFields(existing, {
           displayName:          body.displayName,
           kind:                 body.kind,
           active:               body.active,
           enableCurrentAccount: body.enableCurrentAccount,
         });
-        await recordFieldChanges(
-          new SqlAuditLogRepository(req.db!),
-          AUDIT_ENTITY_CUSTOMER,
-          id,
-          changes,
-          req.user!.id,
-        );
+
+        const auditLogRepo = new SqlAuditLogRepository(req.db!);
+        await buildTenantTransactionManager(req).run(async (client) => {
+          if (body.displayName !== undefined) {
+            const updated = new Customer(
+              existing.id,
+              body.displayName,
+              existing.contactMethods,
+              existing.kind,
+              existing.active,
+              existing.customerNumber,
+            );
+            await repo.saveEntityWithClient!(client, updated);
+          }
+
+          if (body.kind !== undefined || body.active !== undefined) {
+            await repo.updateKindAndActiveWithClient!(
+              client,
+              id,
+              body.kind ?? existing.kind,
+              body.active ?? existing.active,
+            );
+          }
+
+          if (body.enableCurrentAccount !== undefined) {
+            await repo.setCurrentAccountEnabledWithClient!(client, id, body.enableCurrentAccount);
+          }
+
+          if (changes.length > 0) {
+            await recordFieldChangesWithClient(client, auditLogRepo, AUDIT_ENTITY_CUSTOMER, id, changes, req.user!.id);
+          }
+        });
 
         const refreshed = await repo.getById(id);
         const tags = await repo.getTagsByCustomerId(id);
@@ -765,17 +769,26 @@ export function createCustomersRouter(container: AppContainer): Router {
         const rateRepo = new SqlCustomerRateRepository(req.db!);
 
         const before = await rateRepo.findById(rateId, businessId);
-        await rateRepo.deactivate(rateId);
 
+        // Si de verdad estaba activa, deactivate() + el INSERT de auditoría
+        // comparten transacción (25/08/2026, paso 1 del handoff de RBAC/
+        // auditoría) — si no había nada que auditar, deactivate() solo
+        // (idempotente, no necesita atomicidad con nada más).
         if (before?.active) {
           const auditLogRepo = new SqlAuditLogRepository(req.db!);
-          await recordFieldChanges(
-            auditLogRepo,
-            'customer_rates',
-            rateId,
-            [{ field: 'active', oldValue: true, newValue: false }],
-            req.user!.id,
-          );
+          await buildTenantTransactionManager(req).run(async (client) => {
+            await rateRepo.deactivateWithClient!(client, rateId);
+            await recordFieldChangesWithClient(
+              client,
+              auditLogRepo,
+              'customer_rates',
+              rateId,
+              [{ field: 'active', oldValue: true, newValue: false }],
+              req.user!.id,
+            );
+          });
+        } else {
+          await rateRepo.deactivate(rateId);
         }
 
         res.status(204).send();

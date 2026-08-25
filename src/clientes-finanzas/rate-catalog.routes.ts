@@ -36,6 +36,7 @@ import { ResourceNotFoundError, RateCatalogEntryNotFoundError, RateCatalogEntryC
 import { BookableServiceNotFoundError } from '../reservas/bookable-service.service.js';
 import { SqlProductRepository } from '../pos-menu/sql.product.repository.js';
 import { ProductNotFoundError } from '../pos-menu/product.service.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 
 export function createRateCatalogRouter(): Router {
   const router = Router();
@@ -44,6 +45,7 @@ export function createRateCatalogRouter(): Router {
     return new RateCatalogService(
       new SqlRateCatalogRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
+      buildTenantTransactionManager(req),
     );
   }
 

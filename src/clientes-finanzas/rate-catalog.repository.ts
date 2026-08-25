@@ -20,6 +20,8 @@
  * Ver db/schema.sql BLOQUE rate_catalog / D9-Parte 1.
  */
 
+import type { SqlClient } from '../repositories/sql.client.js';
+
 export interface RateCatalogEntry {
   id: string;
   businessId: string;
@@ -64,4 +66,12 @@ export interface IRateCatalogRepository {
   update(id: string, businessId: string, dto: UpdateRateCatalogEntryDto): Promise<RateCatalogEntry | undefined>;
   /** Soft — pone active=FALSE, no borra la fila (tarifas ya creadas la siguen referenciando). */
   deactivate(id: string, businessId: string): Promise<boolean>;
+
+  /**
+   * Igual que `update()`/`deactivate()`, pero contra un `client` explícito
+   * — para que el UPDATE comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcionales en la interfaz.
+   */
+  updateWithClient?(client: SqlClient, id: string, businessId: string, dto: UpdateRateCatalogEntryDto): Promise<RateCatalogEntry | undefined>;
+  deactivateWithClient?(client: SqlClient, id: string, businessId: string): Promise<boolean>;
 }

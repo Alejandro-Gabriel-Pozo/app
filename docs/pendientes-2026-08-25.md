@@ -1240,3 +1240,138 @@ Contradicción corregida en `criterios-datos.md` (DOCUMENTO: facturas/NC
 ya existen). Detalle de clasificación y pendientes de confirmación
 (Sentry DSN en Render, staff vs huso del negocio) viven en el índice,
 no acá.
+
+---
+
+## RBAC granular + auditoría — paso 1 (transaccionalidad del audit log) — ✅ RESUELTO (25/08/2026)
+
+Handoff externo (research comparativo `app-main`/`proyecto_script`/
+`inventario-api-main`, traído por el dueño) proponía "mecanismo 3: crear
+`audit_log` transaccional" como punto de partida de RBAC granular. Antes
+de tocar código, siguiendo `criterios-negocio`: **ya existe un sistema de
+audit_log completo** (`schema.sql` BLOQUE 10, R8/A9.4; `domain/audit.ts::
+diffFields()`/`recordFieldChanges()`; `repositories/audit-log.repository.ts`;
+`GET /api/audit-log` gateado a `MANAGEMENT`) — crear una tabla nueva
+hubiera chocado de nombre y duplicado algo que ya funciona. El gap real,
+verificado contra el código: `recordFieldChanges()` corría en un `await`
+suelto DESPUÉS del `await` que actualizaba la entidad, no dentro de una
+transacción — si el segundo fallaba, la entidad quedaba actualizada pero
+el rastro se perdía en silencio.
+
+**Alcance real, más grande de lo que parecía al principio:** el plan
+inicial mencionaba "4 services" (Category/Product/BusinessProfile/
+RateCatalog), pero un grep real de `recordFieldChanges(` encontró **12
+call sites** con el mismo patrón, en 9 archivos:
+`category.service.ts::updateCategory()`, `product.service.ts::
+updateProduct()/updateVariant()`, `business-profile.service.ts::update()`,
+`rate-catalog.service.ts::update()/deactivate()`, `waste-reason.service.ts`,
+`bookable-service.service.ts`, `cancellation-policy.service.ts`,
+`customers.routes.ts` (2 call sites inline, PATCH `/:id` y DELETE
+`/:id/rates/:rateId`), `resources.routes.ts` (1 call site inline). Los 12
+viven en la misma BD del tenant — arreglables con el mismo mecanismo.
+Confirmado con el dueño: los 12 ahora, no solo los 4 originales.
+
+**Caso aparte, no tocado estructuralmente:** `RoleService.
+updatePermissionGroups()` actualiza el rol contra la BD de PLATAFORMA y
+graba el audit contra la BD del TENANT — dos bases distintas,
+`TransactionManager.run()` no puede envolver las dos. Decisión del dueño:
+no perseguir atomicidad real ahí, solo dejar explícito por qué el ORDEN
+actual (primero plataforma, después audit) ya es el más seguro de los dos
+posibles — comentario agregado en el código, sin cambio estructural.
+
+**Implementado:**
+- `repositories/audit-log.repository.ts` — `recordWithClient(client, changes)`
+  nuevo en la interfaz (opcional) + `SqlAuditLogRepository`
+  (implementación refactorizada en un helper `insertChanges()` compartido
+  con `record()`) + `InMemoryAuditLogRepository` (delega a `record()`, el
+  `client` se ignora).
+- `domain/audit.ts` — `recordFieldChangesWithClient()` (variante
+  transaccional) y `updateWithAudit()` (helper que envuelve
+  `transactionManager.run()` + la escritura de la entidad + el audit, para
+  no repetir el mismo boilerplate en los 12 call sites — pedido explícito
+  del dueño). `recordFieldChanges()` (sin client) se mantiene, ahora
+  documentada como de uso exclusivo de `RoleService` (caso cross-DB).
+- **10 repositorios** ganan un método `updateWithClient`/
+  `deactivateWithClient`/`saveWithClient` opcional (mismo criterio que
+  `getByIdWithLock?`/`saveWithClient` ya usado en
+  `ReservationRepository`): `category.repository.ts`, `product.repository.ts`
+  (producto + variante), `business-profile.repository.ts`,
+  `rate-catalog.repository.ts` (update + deactivate),
+  `waste-reason.repository.ts`, `bookable-service.repository.ts`,
+  `cancellation-policy.repository.ts`, `customer.repository.ts`
+  (`saveEntityWithClient` — nombre distinto de `saveWithClient` porque esa
+  firma ya la usa `saveWithPassword()` — más
+  `updateKindAndActiveWithClient`/`setCurrentAccountEnabledWithClient`),
+  `customer-rate.repository.ts`, `resource.repository.ts`. Cada
+  implementación SQL se refactorizó a un método privado parametrizado por
+  `client` (`update()`/`updateWithClient()` son dos wrappers finos sobre el
+  mismo cuerpo) — no hay SQL duplicado.
+- **7 services** ganan `transactionManager: TransactionManager` en el
+  constructor y usan `updateWithAudit()`: `CategoryService`,
+  `ProductService`, `BusinessProfileService`, `RateCatalogService`,
+  `WasteReasonService`, `BookableServiceService`,
+  `CancellationPolicyService`. Wiring actualizado en cada `*.routes.ts`
+  correspondiente vía `buildTenantTransactionManager(req)` (mismo helper
+  ya usado por `reservations.routes.ts`/`products.routes.ts` — nunca un
+  `PgTransactionManager` armado a mano con el pool de plataforma por
+  error, C1 histórico).
+- **2 call sites inline sin service propio** (`customers.routes.ts` PATCH
+  `/:id` y DELETE `/:id/rates/:rateId`, `resources.routes.ts` PUT `/:id`)
+  — envueltos directo en `buildTenantTransactionManager(req).run(...)` en
+  el handler, mismo criterio.
+- **Race defendida donde el UPDATE puede no encontrar la fila**
+  (`ProductService.updateProduct()`/`updateVariant()`,
+  `RateCatalogService.update()`/`deactivate()`): si `updateWithClient()`
+  devuelve `undefined`/`false` (carrera con un delete concurrente entre el
+  `findById()` de antes y el `UPDATE` de adentro), se lanza un error
+  DENTRO de la transacción para abortarla ANTES del INSERT de auditoría
+  (nunca queda una fila de `audit_log` describiendo un cambio que no pasó)
+  y se atrapa afuera para devolver el mismo `null`/`false` de siempre —
+  `CategoryService`/`WasteReasonService`/`BookableServiceService`/
+  `CancellationPolicyService` no lo necesitaron porque sus repos ya
+  tiraban una excepción tipada (`CategoryNotFoundError`, etc.) en vez de
+  devolver un valor falsy.
+
+**Hallazgo colateral, documentado — NO ARREGLADO (fuera de este alcance):**
+`PlatformRepository.updateRolePermissionGroups()`
+(`src/platform/platform.repository.ts` ~línea 944) hace `DELETE FROM
+role_permission_groups` seguido de un loop de `INSERT` sueltos, sin
+transacción propia — ni siquiera dentro de la BD de plataforma sola. Si un
+`INSERT` del medio falla, el rol queda con un subconjunto incompleto de
+permission_groups. El comentario de `updatePlanLimits()` (~línea 582) dice
+explícitamente "mismo patrón que `updateRolePermissionGroups()`, sin
+transacción explícita" — así que tiene el mismo bug. Ninguno de los dos
+se tocó.
+
+**Verificado:**
+- `tsc --noEmit` limpio en todo el árbol.
+- `eslint` limpio en los ~63 archivos tocados (los 4 errores que quedan en
+  el repo — `error.middleware.ts`, `invoice.service.ts`,
+  `maintenance-window.service.ts`, `password-reset.routes.test.ts` — son
+  preexistentes, no tocados en esta sesión).
+- Suite unitaria completa **1519/1519 verde** (mismo número que antes —
+  no se agregaron tests nuevos dedicados a la atomicidad en sí; los tests
+  de auditoría ya existentes siguen pasando porque ahora ejercitan el
+  camino transaccional en vez del viejo). **No se corrió contra Postgres
+  real** (`TEST_DATABASE_URL`) para confirmar con un rollback forzado que
+  una falla a mitad de camino no deja ni la entidad ni el audit — quedó
+  fuera por tiempo, la suite unitaria + tsc + eslint fue lo que alcanzó a
+  correr en esta pasada.
+- 8 archivos de test de rutas (`categories.routes.test.ts`,
+  `resources.routes.test.ts`, `business-profile.routes.test.ts`,
+  `customers.routes.test.ts`, `rate-catalog.routes.test.ts`,
+  `waste-reasons.routes.test.ts`, `bookable-services.routes.test.ts`,
+  `cancellation-policies.routes.test.ts`) rompieron de entrada porque
+  `buildTenantTransactionManager(req)` real exige `req.businessId` +un
+  pool de tenant ya cacheado (`getTenantRawPool`), ninguno de los dos
+  existe en el harness de test (handler invocado directo, sin
+  `tenantMiddleware` real corriendo antes) — se les agregó un
+  `vi.mock('../db/tenant-context.js', ...)` que hace que `run()` ejecute
+  el callback contra el mismo `req.db`/fakeDb que el resto del test ya
+  usaba (mismo criterio que el mock que ya existía en
+  `products.routes.test.ts`).
+
+**No commiteado** — 63 archivos modificados sin commit, a la espera de
+que el dueño decida cuándo. Los pasos 2 (extender cobertura a
+`invoice.service.ts`/`order.service.ts`) y el resto del handoff de RBAC
+(mecanismos 1 y 2) quedan para otra sesión.

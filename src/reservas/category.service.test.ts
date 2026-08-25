@@ -5,11 +5,20 @@ import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.
 import { BusinessPlan } from '../types/enums.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { PlanLimits } from '../config/plan-limits.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type {
   ResourceCategory,
   CreateCategoryDTO,
   UpdateCategoryDTO,
 } from './resource-category.types.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 /**
  * Fake mínimo de ICategoryRepository — no hay InMemoryCategoryRepository en
@@ -68,6 +77,11 @@ class FakeCategoryRepository implements ICategoryRepository {
     return updated;
   }
 
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, dto: UpdateCategoryDTO): Promise<ResourceCategory> {
+    return this.update(id, dto);
+  }
+
   async deactivate(id: string): Promise<void> {
     const current = this.rows.get(id);
     if (current) this.rows.set(id, { ...current, active: false });
@@ -82,7 +96,7 @@ describe('CategoryService — auditoría (R8/A9.4)', () => {
   beforeEach(() => {
     categoryRepo = new FakeCategoryRepository();
     auditRepo    = new InMemoryAuditLogRepository();
-    service      = new CategoryService(categoryRepo, auditRepo);
+    service      = new CategoryService(categoryRepo, auditRepo, new InMemoryTransactionManager());
 
     categoryRepo.seed({
       id: 'cat-salon-1',
@@ -154,7 +168,7 @@ describe('CategoryService.createCategory() — límite de plan', () => {
 
   beforeEach(() => {
     categoryRepo = new FakeCategoryRepository();
-    service      = new CategoryService(categoryRepo, new InMemoryAuditLogRepository());
+    service      = new CategoryService(categoryRepo, new InMemoryAuditLogRepository(), new InMemoryTransactionManager());
   });
 
   const limitsFor = (maxCategories: number): PlanLimits => ({

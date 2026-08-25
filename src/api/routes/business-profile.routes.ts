@@ -23,6 +23,7 @@ import { SqlBusinessProfileRepository } from '../../repositories/sql.business-pr
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { BusinessProfileService } from '../../domain/business-profile.service.js';
 import { UpdateBusinessProfileSchema } from '../schemas/request.schemas.js';
+import { buildTenantTransactionManager } from '../../db/tenant-context.js';
 
 export function createBusinessProfileRouter(): Router {
   const router = Router();
@@ -31,6 +32,7 @@ export function createBusinessProfileRouter(): Router {
     return new BusinessProfileService(
       new SqlBusinessProfileRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
+      buildTenantTransactionManager(req),
     );
   }
 

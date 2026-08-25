@@ -18,6 +18,15 @@ import type {
   CreateProductVariantInput,
   UpdateProductVariantInput,
 } from './product.entities.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 /**
  * Fakes mínimos — no hay InMemoryProductRepository en el repo todavía.
@@ -86,6 +95,11 @@ class FakeProductRepository implements IProductRepository {
     return updated;
   }
 
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, input: UpdateProductInput): Promise<Product | undefined> {
+    return this.update(id, input);
+  }
+
   async updateCompanySyncState(id: string, patch: CompanySyncStatePatch): Promise<void> {
     const current = this.rows.get(id);
     if (current) this.rows.set(id, { ...current, ...patch });
@@ -144,6 +158,11 @@ class FakeProductVariantRepository implements IProductVariantRepository {
     return updated;
   }
 
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, input: UpdateProductVariantInput): Promise<ProductVariant | undefined> {
+    return this.update(id, input);
+  }
+
   async delete(id: string): Promise<boolean> {
     return this.rows.delete(id);
   }
@@ -159,7 +178,7 @@ describe('ProductService — auditoría (R8/A9.4)', () => {
     productRepo = new FakeProductRepository();
     variantRepo = new FakeProductVariantRepository();
     auditRepo   = new InMemoryAuditLogRepository();
-    service     = new ProductService(productRepo, variantRepo, auditRepo, new InMemoryInventoryLevelRepository());
+    service     = new ProductService(productRepo, variantRepo, auditRepo, new InMemoryInventoryLevelRepository(), new InMemoryTransactionManager());
 
     const now = new Date();
     productRepo.seed({
@@ -246,7 +265,7 @@ describe('ProductService — bloqueo de desactivación por stock físico (17/08/
     productRepo        = new FakeProductRepository();
     variantRepo         = new FakeProductVariantRepository();
     inventoryLevelRepo  = new InMemoryInventoryLevelRepository();
-    service             = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository(), inventoryLevelRepo);
+    service             = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository(), inventoryLevelRepo, new InMemoryTransactionManager());
 
     const now = new Date();
     productRepo.seed({
@@ -378,6 +397,7 @@ describe('ProductService — listProducts() con búsqueda', () => {
     const service = new ProductService(
       productRepo, new FakeProductVariantRepository(),
       new InMemoryAuditLogRepository(), new InMemoryInventoryLevelRepository(),
+      new InMemoryTransactionManager(),
     );
 
     await service.listProducts('biz-1', 'coca');
@@ -400,6 +420,7 @@ describe('ProductService — listProducts() con búsqueda', () => {
     const service = new ProductService(
       productRepo, new FakeProductVariantRepository(),
       new InMemoryAuditLogRepository(), new InMemoryInventoryLevelRepository(),
+      new InMemoryTransactionManager(),
     );
 
     await service.listProducts('biz-1');

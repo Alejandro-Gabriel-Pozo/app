@@ -135,9 +135,9 @@ describe('inventory.handlers', () => {
     productRepo        = new FakeProductRepository();
     variantRepo         = new FakeProductVariantRepository();
     inventoryLevelRepo  = new InMemoryInventoryLevelRepository();
-    productService      = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository(), inventoryLevelRepo);
-    stockMovementRepo   = new FakeStockMovementRepository();
     txManager           = new FakeTransactionManager();
+    productService      = new ProductService(productRepo, variantRepo, new InMemoryAuditLogRepository(), inventoryLevelRepo, txManager);
+    stockMovementRepo   = new FakeStockMovementRepository();
 
     // Reserva ya tomada por confirmOrder() ANTES de que el outbox procese el
     // evento -- mismo punto de partida que D1 (15/08/2026): reservedQuantity

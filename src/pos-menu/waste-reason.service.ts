@@ -8,7 +8,8 @@
 
 import type { WasteReasonRepository, WasteReason } from '../repositories/waste-reason.repository.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import { diffFields, updateWithAudit } from '../domain/audit.js';
 import { WasteReasonNotFoundError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'waste_reasons';
@@ -18,6 +19,7 @@ export class WasteReasonService {
     private readonly wasteReasonRepo: WasteReasonRepository,
     /** Requerido para que updateReason() deje rastro (R8/A9.4) — mismo criterio que CategoryService.updateCategory(). */
     private readonly auditLogRepo: AuditLogRepository,
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   async listReasons(businessId: string): Promise<WasteReason[]> {
@@ -44,13 +46,23 @@ export class WasteReasonService {
     input: { name?: string; active?: boolean },
     changedBy: string,
   ): Promise<WasteReason> {
-    const before  = await this.getReasonById(id); // throws if not found
-    const updated = await this.wasteReasonRepo.update(id, input);
+    const before = await this.getReasonById(id); // throws if not found
 
+    if (!this.wasteReasonRepo.updateWithClient) {
+      throw new Error('WasteReasonRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.wasteReasonRepo.updateWithClient.bind(this.wasteReasonRepo);
     const changes = diffFields(before, input);
-    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
-    return updated;
+    return updateWithAudit(
+      this.transactionManager,
+      this.auditLogRepo,
+      AUDIT_ENTITY,
+      id,
+      changedBy,
+      changes,
+      (client) => updateWithClient(client, id, input),
+    );
   }
 
   async deactivateReason(id: string): Promise<void> {

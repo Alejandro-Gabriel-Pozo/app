@@ -4,6 +4,15 @@ import { FiscalProfileLockedError } from './errors.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from './business-profile.entities.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 /**
  * D3 (pendientes-2026-08-19.md): el perfil fiscal se bloquea para
@@ -25,6 +34,11 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
   async update(input: UpdateBusinessProfileInput): Promise<BusinessProfile> {
     this.profile = { ...this.profile, ...input, updatedAt: new Date() } as BusinessProfile;
     return this.profile;
+  }
+
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, input: UpdateBusinessProfileInput): Promise<BusinessProfile> {
+    return this.update(input);
   }
 }
 
@@ -67,7 +81,7 @@ describe('BusinessProfileService.update — candado del perfil fiscal (D3)', () 
   it('antes de la primera carga (taxId null), cualquier MANAGEMENT puede cargar el perfil fiscal completo', async () => {
     const repo = new FakeBusinessProfileRepository(makeProfile());
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new BusinessProfileService(repo, auditLog);
+    const service = new BusinessProfileService(repo, auditLog, new InMemoryTransactionManager());
 
     const updated = await service.update(
       { legalName: 'Los Álamos SRL', taxId: '30-12345678-9' },
@@ -81,7 +95,7 @@ describe('BusinessProfileService.update — candado del perfil fiscal (D3)', () 
   it('con el CUIT ya cargado, un MANAGEMENT no-dueño no puede tocar un campo fiscal', async () => {
     const repo = new FakeBusinessProfileRepository(makeProfile({ taxId: '30-12345678-9', legalName: 'Los Álamos SRL' }));
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new BusinessProfileService(repo, auditLog);
+    const service = new BusinessProfileService(repo, auditLog, new InMemoryTransactionManager());
 
     await expect(
       service.update({ legalName: 'Otro Nombre SRL' }, 'ident-admin', false),
@@ -94,7 +108,7 @@ describe('BusinessProfileService.update — candado del perfil fiscal (D3)', () 
   it('con el CUIT ya cargado, el dueño (isOwner=true) sí puede corregir un dato fiscal, y queda auditado', async () => {
     const repo = new FakeBusinessProfileRepository(makeProfile({ taxId: '30-12345678-9', legalName: 'Los Álamos SRL' }));
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new BusinessProfileService(repo, auditLog);
+    const service = new BusinessProfileService(repo, auditLog, new InMemoryTransactionManager());
 
     const updated = await service.update({ legalName: 'Los Álamos Hotel SRL' }, 'ident-owner', true);
 
@@ -110,7 +124,7 @@ describe('BusinessProfileService.update — candado del perfil fiscal (D3)', () 
   it('con el CUIT ya cargado, un MANAGEMENT no-dueño SÍ puede seguir editando campos NO fiscales (displayName)', async () => {
     const repo = new FakeBusinessProfileRepository(makeProfile({ taxId: '30-12345678-9' }));
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new BusinessProfileService(repo, auditLog);
+    const service = new BusinessProfileService(repo, auditLog, new InMemoryTransactionManager());
 
     const updated = await service.update({ displayName: 'Los Álamos (nuevo nombre de fantasía)' }, 'ident-admin', false);
 
@@ -121,7 +135,7 @@ describe('BusinessProfileService.update — candado del perfil fiscal (D3)', () 
   it('reenviar un campo fiscal con el MISMO valor (formulario completo) no dispara el candado -- solo importa si el VALOR cambia', async () => {
     const repo = new FakeBusinessProfileRepository(makeProfile({ taxId: '30-12345678-9', legalName: 'Los Álamos SRL', defaultIvaRate: 21 }));
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new BusinessProfileService(repo, auditLog);
+    const service = new BusinessProfileService(repo, auditLog, new InMemoryTransactionManager());
 
     // Mismo patrón que el formulario real (mi-negocio/page.tsx): reenvía
     // TODOS los campos fiscales tal cual están, solo cambia defaultIvaRate.
@@ -138,7 +152,7 @@ describe('BusinessProfileService.update — candado del perfil fiscal (D3)', () 
   it('un patch que no cambia nada no escribe filas de auditoría (recordFieldChanges es no-op)', async () => {
     const repo = new FakeBusinessProfileRepository(makeProfile({ displayName: 'Hotel Los Álamos' }));
     const auditLog = new InMemoryAuditLogRepository();
-    const service = new BusinessProfileService(repo, auditLog);
+    const service = new BusinessProfileService(repo, auditLog, new InMemoryTransactionManager());
 
     await service.update({ displayName: 'Hotel Los Álamos' }, 'ident-admin', false);
 

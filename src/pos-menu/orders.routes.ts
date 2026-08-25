@@ -74,6 +74,7 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
     new SqlProductVariantRepository(req.db!),
     new SqlAuditLogRepository(req.db!),
     new SqlInventoryLevelRepository(req.db!),
+    buildTenantTransactionManager(req),
   );
   return new OrderService(
     new SqlOrderRepository(req.db!),

@@ -13,6 +13,16 @@ import { createBusinessProfileRouter } from './business-profile.routes.js';
 import type { Request, Response } from 'express';
 import { Roles } from '../../security/roles.js';
 
+// update() ahora es transaccional (25/08/2026, paso 1 del handoff de
+// RBAC/auditoría) -- mismo mock que categories.routes.test.ts: `run()`
+// ejecuta el callback contra el mismo `req.db` (fakeDb) en vez de resolver
+// un pool de tenant real.
+vi.mock('../../db/tenant-context.js', () => ({
+  buildTenantTransactionManager: vi.fn((req: Request) => ({
+    run: vi.fn(async (fn: (client: unknown) => unknown) => fn(req.db)),
+  })),
+}));
+
 function fakeRes() {
   const res: Partial<Response> & { statusCode?: number; body?: unknown } = {};
   res.status = vi.fn((code: number) => { res.statusCode = code; return res as Response; });

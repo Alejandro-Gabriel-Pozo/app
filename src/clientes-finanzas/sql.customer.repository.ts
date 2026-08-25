@@ -64,6 +64,10 @@ export class SqlCustomerRepository implements CustomerRepository {
     await this._upsertCustomer(this.sqlClient, customer, null);
   }
 
+  async saveEntityWithClient(client: SqlClient, customer: Customer): Promise<void> {
+    await this._upsertCustomer(client, customer, null);
+  }
+
   async saveWithPassword(customer: Customer, passwordHash: string): Promise<void> {
     await this._upsertCustomer(this.sqlClient, customer, passwordHash);
   }
@@ -290,14 +294,30 @@ export class SqlCustomerRepository implements CustomerRepository {
   // ── Clientes especiales (kind/active/tags) ──────────────────────────────
 
   async updateKindAndActive(customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void> {
-    await this.sqlClient.query(
+    await this.updateKindAndActiveWith(this.sqlClient, customerId, kind, active);
+  }
+
+  async updateKindAndActiveWithClient(client: SqlClient, customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void> {
+    await this.updateKindAndActiveWith(client, customerId, kind, active);
+  }
+
+  private async updateKindAndActiveWith(client: SqlClient, customerId: string, kind: 'INDIVIDUAL' | 'COMPANY', active: boolean): Promise<void> {
+    await client.query(
       `UPDATE customers SET kind = $2, active = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [customerId, kind, active],
     );
   }
 
   async setCurrentAccountEnabled(customerId: string, enabled: boolean): Promise<void> {
-    await this.sqlClient.query(
+    await this.setCurrentAccountEnabledWith(this.sqlClient, customerId, enabled);
+  }
+
+  async setCurrentAccountEnabledWithClient(client: SqlClient, customerId: string, enabled: boolean): Promise<void> {
+    await this.setCurrentAccountEnabledWith(client, customerId, enabled);
+  }
+
+  private async setCurrentAccountEnabledWith(client: SqlClient, customerId: string, enabled: boolean): Promise<void> {
+    await client.query(
       `UPDATE customers SET enable_current_account = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [customerId, enabled],
     );

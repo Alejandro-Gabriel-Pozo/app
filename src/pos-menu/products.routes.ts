@@ -102,6 +102,7 @@ function buildProductService(req: Request): ProductService {
     new SqlProductVariantRepository(db),
     new SqlAuditLogRepository(db),
     new SqlInventoryLevelRepository(db),
+    buildTenantTransactionManager(req),
   );
 }
 

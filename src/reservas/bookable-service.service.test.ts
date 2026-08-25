@@ -20,6 +20,15 @@ import type {
   CreateRatePlanDTO,
   UpdateRatePlanDTO,
 } from './bookable-service.types.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
+
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
+    return work(noopClient);
+  }
+}
 
 /**
  * Fake mínimo de IBookableServiceRepository — no hay
@@ -79,6 +88,11 @@ class FakeBookableServiceRepository implements IBookableServiceRepository {
     return updated;
   }
 
+  /** En memoria no hay transacción real — delega a `update()`, el `client` se ignora. */
+  async updateWithClient(_client: SqlClient, id: string, dto: UpdateBookableServiceDTO): Promise<BookableService> {
+    return this.update(id, dto);
+  }
+
   async deactivate(id: string): Promise<void> {
     const current = this.rows.get(id);
     if (current) this.rows.set(id, { ...current, active: false });
@@ -129,7 +143,7 @@ describe('BookableServiceService — auditoría (R8/A9.4)', () => {
   beforeEach(() => {
     repo      = new FakeBookableServiceRepository();
     auditRepo = new InMemoryAuditLogRepository();
-    service   = new BookableServiceService(repo, auditRepo);
+    service   = new BookableServiceService(repo, auditRepo, new InMemoryTransactionManager());
 
     const now = new Date();
     repo.seed({
@@ -184,7 +198,7 @@ describe('BookableServiceService — Rate Plans', () => {
 
   beforeEach(() => {
     repo = new InMemoryBookableServiceRepository();
-    service = new BookableServiceService(repo, new InMemoryAuditLogRepository());
+    service = new BookableServiceService(repo, new InMemoryAuditLogRepository(), new InMemoryTransactionManager());
 
     repo.seed({
       id: 'svc-doble', categoryId: 'cat-doble', name: 'Habitación Doble',

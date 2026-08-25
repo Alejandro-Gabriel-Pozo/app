@@ -14,6 +14,7 @@ import type {
   CreateRatePlanDTO,
   UpdateRatePlanDTO,
 } from './bookable-service.types.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface IBookableServiceRepository {
   // ---- Bookable Services ----
@@ -21,6 +22,12 @@ export interface IBookableServiceRepository {
   findById(id: string): Promise<BookableService | null>;
   create(dto: CreateBookableServiceDTO): Promise<BookableService>;
   update(id: string, dto: UpdateBookableServiceDTO): Promise<BookableService>;
+  /**
+   * Igual que `update()`, pero contra un `client` explícito — para que el
+   * UPDATE comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional en la interfaz.
+   */
+  updateWithClient?(client: SqlClient, id: string, dto: UpdateBookableServiceDTO): Promise<BookableService>;
   deactivate(id: string): Promise<void>;
 
   // ---- Service Schedules ----

@@ -52,6 +52,7 @@ import { ZodError } from 'zod';
 import { SqlCategoryRepository } from './sql.category.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { resolvePlanLimits } from '../security/resolve-plan-limits.js';
+import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import type { AppContainer } from '../container.js';
 
 export function createCategoryRouter(container: AppContainer): Router {
@@ -61,6 +62,7 @@ export function createCategoryRouter(container: AppContainer): Router {
     return new CategoryService(
       new SqlCategoryRepository(req.db!),
       new SqlAuditLogRepository(req.db!),
+      buildTenantTransactionManager(req),
     );
   }
 

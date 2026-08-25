@@ -50,6 +50,8 @@
  * `ReservationRepository.getAppliedRatesReport()` (mismo shape, orígenes
  * distintos) en un solo reporte.
  */
+import type { SqlClient } from '../repositories/sql.client.js';
+
 export interface AppliedRateReportRow {
   customerRateId: string;
   customerId: string;
@@ -151,4 +153,11 @@ export interface ICustomerRateRepository {
 
   /** Soft — pone active=FALSE, no borra la fila. */
   deactivate(id: string): Promise<void>;
+
+  /**
+   * Igual que `deactivate()`, pero contra un `client` explícito — para que
+   * el UPDATE comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional.
+   */
+  deactivateWithClient?(client: SqlClient, id: string): Promise<void>;
 }

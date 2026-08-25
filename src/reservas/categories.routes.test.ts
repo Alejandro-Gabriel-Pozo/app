@@ -21,6 +21,19 @@ import type { AppContainer } from '../container.js';
 import type { PlanLimits } from '../config/plan-limits.js';
 import type { Request, Response } from 'express';
 
+// updateCategory() ahora es transaccional (25/08/2026, paso 1 del handoff de
+// RBAC/auditoría) -- buildTenantTransactionManager() real necesita
+// req.businessId + un pool de tenant cacheado, ninguno de los dos existe en
+// este harness de test. Se mockea para que `run()` ejecute el callback
+// directo contra el mismo `req.db` (fakeDb) que ya entienden
+// SqlCategoryRepository/SqlAuditLogRepository -- mismo criterio que
+// products.routes.test.ts.
+vi.mock('../db/tenant-context.js', () => ({
+  buildTenantTransactionManager: vi.fn((req: Request) => ({
+    run: vi.fn(async (fn: (client: unknown) => unknown) => fn(req.db)),
+  })),
+}));
+
 function fakeRes() {
   const res: Partial<Response> & { statusCode?: number; body?: unknown } = {};
   res.status = vi.fn((code: number) => { res.statusCode = code; return res as Response; });

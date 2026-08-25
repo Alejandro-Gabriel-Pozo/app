@@ -108,6 +108,14 @@ export class SqlBookableServiceRepository implements IBookableServiceRepository 
   }
 
   async update(id: string, dto: UpdateBookableServiceDTO): Promise<BookableService> {
+    return this.updateWith(this.db, id, dto);
+  }
+
+  async updateWithClient(client: SqlClient, id: string, dto: UpdateBookableServiceDTO): Promise<BookableService> {
+    return this.updateWith(client, id, dto);
+  }
+
+  private async updateWith(client: SqlClient, id: string, dto: UpdateBookableServiceDTO): Promise<BookableService> {
     const setClauses: string[] = [];
     const values: unknown[]   = [];
     let   idx = 1;
@@ -127,7 +135,7 @@ export class SqlBookableServiceRepository implements IBookableServiceRepository 
     }
 
     values.push(id);
-    const result = await this.db.query(
+    const result = await client.query(
       `UPDATE bookable_services SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
       values,
     );

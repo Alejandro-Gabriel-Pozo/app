@@ -10,7 +10,8 @@ import type {
   CancellationPolicy,
 } from './cancellation-policy.repository.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
-import { diffFields, recordFieldChanges } from '../domain/audit.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import { diffFields, updateWithAudit } from '../domain/audit.js';
 import { CancellationPolicyNotFoundError } from '../domain/errors.js';
 
 const AUDIT_ENTITY = 'cancellation_policies';
@@ -20,6 +21,7 @@ export class CancellationPolicyService {
     private readonly policyRepo: CancellationPolicyRepository,
     /** Requerido para que updatePolicy() deje rastro (R8/A9.4) — mismo criterio que WasteReasonService. */
     private readonly auditLogRepo: AuditLogRepository,
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   async listPolicies(businessId: string): Promise<CancellationPolicy[]> {
@@ -45,13 +47,23 @@ export class CancellationPolicyService {
     input: { minDaysBeforeCheckin?: number; refundPercentage?: number; active?: boolean },
     changedBy: string,
   ): Promise<CancellationPolicy> {
-    const before  = await this.getPolicyById(id); // throws if not found
-    const updated = await this.policyRepo.update(id, input);
+    const before = await this.getPolicyById(id); // throws if not found
 
+    if (!this.policyRepo.updateWithClient) {
+      throw new Error('CancellationPolicyRepository.updateWithClient no está implementado.');
+    }
+    const updateWithClient = this.policyRepo.updateWithClient.bind(this.policyRepo);
     const changes = diffFields(before, input);
-    await recordFieldChanges(this.auditLogRepo, AUDIT_ENTITY, id, changes, changedBy);
 
-    return updated;
+    return updateWithAudit(
+      this.transactionManager,
+      this.auditLogRepo,
+      AUDIT_ENTITY,
+      id,
+      changedBy,
+      changes,
+      (client) => updateWithClient(client, id, input),
+    );
   }
 
   async deactivatePolicy(id: string): Promise<void> {

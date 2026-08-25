@@ -48,6 +48,14 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
   }
 
   async update(input: UpdateBusinessProfileInput): Promise<BusinessProfile> {
+    return this.updateWith(this.db, input);
+  }
+
+  async updateWithClient(client: SqlClient, input: UpdateBusinessProfileInput): Promise<BusinessProfile> {
+    return this.updateWith(client, input);
+  }
+
+  private async updateWith(client: SqlClient, input: UpdateBusinessProfileInput): Promise<BusinessProfile> {
     const fields: string[] = [];
     const params: unknown[] = [];
     let idx = 1;
@@ -153,7 +161,7 @@ export class SqlBusinessProfileRepository implements BusinessProfileRepository {
 
     fields.push('updated_at = NOW()');
 
-    const { rows } = await this.db.query<Record<string, unknown>>(
+    const { rows } = await client.query<Record<string, unknown>>(
       `UPDATE business_profile SET ${fields.join(', ')} WHERE id = 'default' RETURNING *`,
       params,
     );

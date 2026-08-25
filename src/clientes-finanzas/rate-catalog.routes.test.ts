@@ -26,6 +26,14 @@ vi.mock('../reservas/sql.resource.repository.js', () => ({ SqlResourceRepository
 vi.mock('../reservas/sql.bookable-service.repository.js', () => ({ SqlBookableServiceRepository: vi.fn().mockImplementation(() => ({ findById: serviceFindById })) }));
 vi.mock('../reservas/sql.category.repository.js', () => ({ SqlCategoryRepository: vi.fn().mockImplementation(() => ({ findById: categoryFindById })) }));
 vi.mock('../pos-menu/sql.product.repository.js', () => ({ SqlProductRepository: vi.fn().mockImplementation(() => ({ getById: productGetById })) }));
+// RateCatalogService.update()/deactivate() ahora son transaccionales
+// (25/08/2026, paso 1 del handoff de RBAC/auditoría) -- buildService()
+// resuelve buildTenantTransactionManager(req) como tercer argumento del
+// constructor ANTES de construirlo, aunque RateCatalogService esté
+// mockeado arriba (el valor real nunca se usa, pero se resuelve igual).
+vi.mock('../db/tenant-context.js', () => ({
+  buildTenantTransactionManager: vi.fn(() => ({ run: vi.fn(async (fn: (client: unknown) => unknown) => fn({})) })),
+}));
 
 const { createRateCatalogRouter } = await import('./rate-catalog.routes.js');
 const { RateCatalogEntryNotFoundError } = await import('../domain/errors.js');

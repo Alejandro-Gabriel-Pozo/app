@@ -7,6 +7,8 @@
  * recurso/servicio -- el dueño pidió tramos por anticipación, no por ítem.
  */
 
+import type { SqlClient } from '../repositories/sql.client.js';
+
 export interface CancellationPolicy {
   id: string;
   businessId: string;
@@ -36,6 +38,13 @@ export interface CancellationPolicyRepository {
   create(input: CreateCancellationPolicyInput): Promise<CancellationPolicy>;
 
   update(id: string, input: UpdateCancellationPolicyInput): Promise<CancellationPolicy>;
+
+  /**
+   * Igual que `update()`, pero contra un `client` explícito — para que el
+   * UPDATE comparta transacción con el INSERT de auditoría
+   * (`domain/audit.ts::updateWithAudit()`). Opcional en la interfaz.
+   */
+  updateWithClient?(client: SqlClient, id: string, input: UpdateCancellationPolicyInput): Promise<CancellationPolicy>;
 
   /** Soft-delete: active = false. */
   deactivate(id: string): Promise<void>;

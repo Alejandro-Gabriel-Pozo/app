@@ -64,8 +64,8 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   const productVariantRepo       = new SqlProductVariantRepository(db);
   const auditLogRepo             = new SqlAuditLogRepository(db);
   const inventoryLevelRepo       = new SqlInventoryLevelRepository(db);
-  const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo, inventoryLevelRepo);
   const transactionManager       = new PgTransactionManager(rawPool);
+  const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo, inventoryLevelRepo, transactionManager);
   const businessProfileRepo      = new SqlBusinessProfileRepository(db);
 
   const worker = new OutboxWorker(domainEventRepo);

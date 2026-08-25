@@ -33,6 +33,17 @@ export interface AuditLogRepository {
   /** No-op si `changes` está vacío — no escribe filas de "nada cambió". */
   record(changes: RecordAuditChangeInput[]): Promise<void>;
 
+  /**
+   * Mismo comportamiento que `record()`, pero contra un `client` explícito
+   * (ej. el de una transacción abierta con `TransactionManager.run()`) en vez
+   * de la conexión/pool inyectada en el constructor — así el INSERT de
+   * auditoría puede compartir la MISMA transacción que el UPDATE de la
+   * entidad que audita (si el commit falla, ninguna de las dos filas queda;
+   * si tiene éxito, las dos quedan). Opcional en la interfaz: no todos los
+   * callers necesitan atomicidad real todavía.
+   */
+  recordWithClient?(client: SqlClient, changes: RecordAuditChangeInput[]): Promise<void>;
+
   /** Historial de una entidad puntual, más reciente primero. */
   findByEntity(entity: string, entityId: string): Promise<AuditLogEntry[]>;
 }
@@ -69,34 +80,42 @@ function rowToEntry(row: AuditLogRow): AuditLogEntry {
   };
 }
 
+async function insertChanges(client: SqlClient, changes: RecordAuditChangeInput[]): Promise<void> {
+  if (changes.length === 0) return;
+
+  const values: unknown[] = [];
+  const rows: string[] = [];
+  let idx = 1;
+
+  for (const change of changes) {
+    rows.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+    values.push(
+      randomUUID(),
+      change.entity,
+      change.entityId,
+      change.field,
+      serializeValue(change.oldValue),
+      serializeValue(change.newValue),
+      change.changedBy,
+    );
+  }
+
+  await client.query(
+    `INSERT INTO audit_log (id, entity, entity_id, field, old_value, new_value, changed_by)
+     VALUES ${rows.join(', ')}`,
+    values,
+  );
+}
+
 export class SqlAuditLogRepository implements AuditLogRepository {
   constructor(private readonly db: SqlClient) {}
 
   async record(changes: RecordAuditChangeInput[]): Promise<void> {
-    if (changes.length === 0) return;
+    await insertChanges(this.db, changes);
+  }
 
-    const values: unknown[] = [];
-    const rows: string[] = [];
-    let idx = 1;
-
-    for (const change of changes) {
-      rows.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
-      values.push(
-        randomUUID(),
-        change.entity,
-        change.entityId,
-        change.field,
-        serializeValue(change.oldValue),
-        serializeValue(change.newValue),
-        change.changedBy,
-      );
-    }
-
-    await this.db.query(
-      `INSERT INTO audit_log (id, entity, entity_id, field, old_value, new_value, changed_by)
-       VALUES ${rows.join(', ')}`,
-      values,
-    );
+  async recordWithClient(client: SqlClient, changes: RecordAuditChangeInput[]): Promise<void> {
+    await insertChanges(client, changes);
   }
 
   async findByEntity(entity: string, entityId: string): Promise<AuditLogEntry[]> {
