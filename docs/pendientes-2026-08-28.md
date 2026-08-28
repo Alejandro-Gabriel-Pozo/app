@@ -218,6 +218,59 @@ preguntarse si hacía falta una sola taxonomía.
 
 ---
 
+## Commit + push de la sesión (28/08/2026, tarde) — hallazgo: 27/08 llevaba un día sin subirse
+
+Con OK explícito del dueño ("commit y push"), antes de commitear encontré
+que `appfrontend-main` tenía bastante más sin subir de lo que se hizo hoy:
+trabajo del **27/08** (fechado y documentado en comentarios del propio
+código) que nunca se pusheó, aunque el backend correspondiente sí está
+deployado desde ayer y el índice de conocimiento lo daba por
+"implementado — backend + dashboard + los 3 caminos del portal". No era
+así: solo el backend había salido. La pantalla "Destinos de Consumo", el
+guard de servicio obligatorio en alojamiento (Reservas + portal de
+clientes) y el SKU obligatorio en variantes de producto llevaban 24hs+
+completos, verificados en el propio código, pero **sin pushear**.
+
+**Corregido, con confirmación del dueño de incluirlo en el mismo push:**
+
+- `app-main`, 1 commit (`f05b5eb`) — taxonomía (`is_exclusive`
+  obligatorio, `DROP DEFAULT` en schema, docs).
+- `appfrontend-main`, 4 commits atómicos (`0ee207b..728b8f9`):
+  1. `feat(consumo): destinos de consumo interno + guards de servicio obligatorio`
+     — el lote del 27/08.
+  2. `fix(productos): SKU obligatorio + registrar consumo interno` — 2
+     archivos del mismo lote del 27/08 que se habían quedado afuera del
+     commit 1 al armarlo (`productos/page.tsx`,
+     `productos/[id]/page.tsx`, `lib/productos/api.ts`).
+  3. `feat(productos): UI fiscal de producto` — D8, paso 1 de hoy.
+  4. `feat(taxonomia): selector nombrado de is_exclusive/booking_mode`
+     — el resto de hoy.
+
+Varios archivos (`dashboard/layout.tsx`, `lib/catalogo/api.ts`,
+`lib/catalogo/types.ts`, `lib/refine/dataProvider.ts`,
+`productos/page.tsx`, `productos/[id]/page.tsx`) tenían el 27/08 y el
+28/08 entreverados en los mismos hunks — se separaron a mano (revertir
+la parte propia, commitear el resto, reaplicar) en vez de `git add -p`,
+para no partir mal un hunk con contexto compartido. `tsc`/`eslint`
+verificados limpios en cada estado intermedio, no solo al final. Push
+confirmado a `origin/main` en los dos repos.
+
+**Corrección de exactitud en el índice** (mismo criterio que la sección
+"Contradicciones código ↔ docs"): la fila de
+`indice-conocimiento.md` sobre
+`diseno-precio-servicio-vs-recurso-2026-08-27.md` decía "implementado
+— backend + dashboard + los 3 caminos del portal". El backend sí; el
+frontend recién se pusheó hoy — corregido en el mismo cambio, con nota
+de la fecha real.
+
+**Lección para sesiones futuras:** "está en el código local, con
+comentario fechado y tests verdes" **no** es lo mismo que "está
+pusheado" — verificar `git status`/`git log origin/main..HEAD` antes de
+dar por deployado algo que el índice describe como "implementado",
+sobre todo si pasó más de una sesión desde que se escribió esa fila.
+
+---
+
 ## Plan de ejecución acordado — estado actualizado
 
 Pasos 0, 3, 4, 5 ✅ resueltos (ver `plan-resolucion-bugs-deuda-2026-08-27.md`
