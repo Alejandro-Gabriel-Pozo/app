@@ -32,9 +32,15 @@ const SRC_DIR = join(__dirname, '../..');
 // reemplazó el 24/08/2026).
 // F2 (25/08/2026) -- 197, no 196: users.routes.ts suma
 // POST /:id/reactivate, authorize(Roles.MANAGEMENT).
-const EXPECTED_AUTHORIZE_CALL_SITES = 197;
+// A6.1 en stock (27/08/2026, pendientes-2026-08-27.md, adoptado de
+// `proyecto script`) -- 203, no 197: consumption-destinations.routes.ts
+// nuevo suma 5 authorize(Roles.MANAGEMENT) (GET /, GET /:id, POST /,
+// PUT /:id, DELETE /:id) + products.routes.ts suma 1 más
+// (POST /stock/consumption).
+const EXPECTED_AUTHORIZE_CALL_SITES = 203;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
-const EXPECTED_ROUTES_FILE_COUNT = 35;
+// A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
+const EXPECTED_ROUTES_FILE_COUNT = 36;
 
 function findRouteFiles(dir: string): string[] {
   const results: string[] = [];

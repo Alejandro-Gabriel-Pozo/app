@@ -13,6 +13,22 @@ export const CreateBookableServiceSchema = z.object({
   bookingMode:     z.enum(['slot', 'block', 'event']),
   durationMinutes: z.number().int().positive().nullable().optional(),
   price:           z.number().min(0),
+}).superRefine((b, ctx) => {
+  // 27/08/2026, auditoría de columnas obligatorias (docs/pendientes-2026-08-27.md):
+  // un servicio 'slot' (turno con horario) necesita duración para que el
+  // sistema pueda calcular `endTime` -- hasta este cambio fallaba recién al
+  // RESERVAR (resolveEndTime() en reservation-time.utils.ts), nunca al
+  // cargar el servicio. 'block' (alojamiento, dura lo que dure la estadía)
+  // y 'event' (precio plano por el bloque completo) legítimamente no
+  // llevan duración fija -- el CHECK espejo en la base
+  // (chk_bookable_services_slot_duration) solo restringe 'slot'.
+  if (b.bookingMode === 'slot' && b.durationMinutes == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'durationMinutes es obligatorio cuando bookingMode es "slot".',
+      path: ['durationMinutes'],
+    });
+  }
 });
 
 export const UpdateBookableServiceSchema = z.object({

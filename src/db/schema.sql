@@ -1527,6 +1527,44 @@ DO $$ BEGIN
 END $$;
 
 -- ===========================================================================
+-- BLOQUE 20 — CONSUMPTION_DESTINATIONS (27/08/2026, pendientes-2026-08-27.md,
+-- adoptado de `proyecto script` — DESTINOS_CONSUMO)
+-- ===========================================================================
+-- MAESTRO gemelo de `waste_reasons`, mismo criterio: catálogo propio por
+-- negocio, no un CHECK fijo. Existe para separar dos conceptos que hasta
+-- ahora compartían `movement_type = 'WASTE'` y NO deberían: una merma es una
+-- PÉRDIDA (vencido, roto, robado); un consumo interno es COSTO OPERATIVO
+-- (comida de personal, degustación, evento, elaboración interna) -- ninguna
+-- de las dos es la otra, y mezclarlas distorsiona la métrica que
+-- `docs/manual-inventario.md` §10 marca como la que importa ("porcentaje de
+-- merma por período y por motivo": la comida del personal contando como
+-- merma infla esa métrica sin que sea un problema real de pérdida).
+--
+-- Mismas decisiones que BLOQUE 17 y por el mismo motivo (ver comentario de
+-- arriba): sin `deleted_at` (no es uno de los 3 maestros del incidente del
+-- 13/08), sin código de negocio propio todavía (R1/R6 quedan para cuando se
+-- resuelva en conjunto para todo maestro).
+CREATE TABLE IF NOT EXISTS consumption_destinations (
+  id           VARCHAR(255)  PRIMARY KEY,
+  business_id  VARCHAR(255)  NOT NULL,
+  name         VARCHAR(255)  NOT NULL,
+  active       BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_consumption_destinations_business_active
+  ON consumption_destinations (business_id) WHERE active = TRUE;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'consumption_destinations_updated_at') THEN
+    CREATE TRIGGER consumption_destinations_updated_at
+      BEFORE UPDATE ON consumption_destinations
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
 -- BLOQUE 5 — STOCK
 -- ===========================================================================
 
@@ -1728,6 +1766,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_movements_order_item_resolution_varia
   ON stock_movements (order_item_id, product_variant_id)
   WHERE order_item_id IS NOT NULL AND product_variant_id IS NOT NULL
     AND movement_type IN ('OUT', 'RESERVATION_RELEASED');
+
+-- ---------------------------------------------------------------------------
+-- 'CONSUMPTION' (27/08/2026, pendientes-2026-08-27.md — adoptado de
+-- `proyecto script`). Gemelo estructural de 'WASTE' (BLOQUE 17): decrementa
+-- stock, exige un motivo propio -- pero es COSTO OPERATIVO, no pérdida (ver
+-- el comentario de `consumption_destinations`, BLOQUE 20, para el porqué de
+-- separarlo). `consumption_destination_id` espeja `waste_reason_id` uno a
+-- uno: NULL para todo tipo que no sea CONSUMPTION, obligatorio cuando sí lo
+-- es.
+-- ---------------------------------------------------------------------------
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS consumption_destination_id VARCHAR(255)
+  REFERENCES consumption_destinations(id) ON DELETE RESTRICT;
+
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_consumption_requires_destination;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_consumption_requires_destination CHECK (
+  movement_type != 'CONSUMPTION' OR consumption_destination_id IS NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_consumption_destination
+  ON stock_movements (consumption_destination_id) WHERE consumption_destination_id IS NOT NULL;
+
+ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
+ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
+  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER', 'WASTE', 'PRODUCTION', 'CONSUMPTION'));
 
 -- ===========================================================================
 -- BLOQUE 6 — STAYS (Check-in / Check-out)
@@ -3071,4 +3133,112 @@ ALTER TABLE reservations ADD CONSTRAINT reservations_no_overlap_exclusive
     resource_id WITH =,
     tstzrange(start_time, end_time, '[)') WITH &&
   ) WHERE (status IN ('PENDING', 'CONFIRMED') AND is_exclusive_resource);
+
+-- ===========================================================================
+-- Auditoría de columnas obligatorias (27/08/2026, docs/pendientes-2026-08-27.md,
+-- disparada por un caso real: products.sku nullable cuando en cualquier ERP
+-- básico un producto sin identificador no debería poder existir).
+--
+-- Se auditaron las ~172 columnas nullable del schema. La mayoría son
+-- legítimas (fechas de un hecho que todavía no ocurrió, columnas de scope
+-- excluyente ya protegidas por CHECK, campos que dependen del rubro). Estas
+-- cuatro NO lo eran -- ninguna capa (Zod, UI, ni la base) las exigía, y las
+-- tres primeras ya tenían el gap gemelo: la app SÍ falla si falta el dato,
+-- pero recién en un paso posterior (reservar, en vez de cargar el
+-- servicio), con un error que no señala la causa real.
+--
+-- Descartados de esta pasada, con motivo (no "se olvidaron"):
+--   - financial_transactions.payment_method: RecordPaymentSchema lo deja
+--     `.optional()` hoy -- forzar NOT NULL cambiaría un 400 limpio de la
+--     API por un 500 crudo de Postgres para pedidos que hoy son válidos.
+--     Es una decisión de producto ("¿todo pago exige forma de pago?"), no
+--     una prolijidad de schema -- queda para cuando el dueño la confirme.
+--   - business_profile.display_name/contact_email: el INSERT de
+--     aprovisionamiento de un negocio nuevo (más abajo en este archivo,
+--     `INSERT INTO business_profile (id) SELECT 'default' WHERE NOT
+--     EXISTS...`) solo manda `id` -- un NOT NULL acá rompería el alta de
+--     CUALQUIER negocio nuevo, no solo cerraría el gap. Mismo criterio:
+--     decisión de producto (¿con qué valor arranca un negocio nuevo?), no
+--     un ALTER mecánico.
+--   - recipe_items.cost_per_unit: nullable A PROPÓSITO -- comentario
+--     existente más arriba en este archivo (BLOQUE 18) documenta que el
+--     dueño pidió capturarlo desde el día uno "aunque el cálculo de COGS
+--     teórico-vs-real siga pospuesto" (15/08/2026). Zod ya lo refleja
+--     (`.nullable().optional()`). No se toca -- es exactamente el caso que
+--     `criterios-negocio` (skill) marca como "no mejores lo que ya está
+--     marcado como correcto".
+--   - customer_tax_profiles.tax_condition, customer_addresses.city/
+--     postal_code, products.category_id: legítimamente vacíos hasta que
+--     hace falta el dato (facturar, o un negocio chico sin categorías) --
+--     el guard correcto es en el momento de uso, no en la carga.
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- customers.full_name -- nunca lo llena el usuario: las dos rutas de INSERT
+-- de este repo (saveWithGoogle, saveWithPassword en
+-- sql.customer.repository.ts) lo escriben SIEMPRE igual a display_name, en
+-- el mismo INSERT, con el mismo parámetro ($2 dos veces). Es, en los
+-- hechos, una columna redundante mantenida por compatibilidad
+-- (`Customer.fullName` es un getter que devuelve `displayName`) -- nunca
+-- puede quedar NULL por un camino legítimo. Cero filas NULL verificado
+-- contra la BD real antes de este cambio (27/08/2026).
+-- ---------------------------------------------------------------------------
+UPDATE customers SET full_name = display_name WHERE full_name IS NULL;
+ALTER TABLE customers ALTER COLUMN full_name SET NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- bookable_services.duration_minutes -- obligatorio SOLO para
+-- booking_mode = 'slot' (un turno con horario necesita duración para
+-- calcular `endTime`, ver resolveEndTime() en reservation-time.utils.ts).
+-- 'block' (alojamiento, dura lo que dure la estadía) y 'event' (precio
+-- plano por el bloque completo) legítimamente no la llevan -- por eso CHECK
+-- condicionado, no NOT NULL liso. Zod (CreateBookableServiceSchema,
+-- UpdateBookableServiceSchema vía BookableServiceService.updateService())
+-- ya lo exige del lado de la aplicación -- esto es la misma regla puesta
+-- también en la base (A8.2), para que ningún otro camino de escritura
+-- pueda saltearla. Cero violaciones verificado contra la BD real.
+-- ---------------------------------------------------------------------------
+ALTER TABLE bookable_services DROP CONSTRAINT IF EXISTS chk_bookable_services_slot_duration;
+ALTER TABLE bookable_services ADD CONSTRAINT chk_bookable_services_slot_duration
+  CHECK (booking_mode <> 'slot' OR duration_minutes IS NOT NULL);
+
+-- ---------------------------------------------------------------------------
+-- product_variants.sku -- la variante es la unidad real que se vende y se
+-- cuenta (un producto con variantes no se vende "pelado", cada variante es
+-- su propio artículo). A diferencia de products.sku (abajo), no hay camino
+-- companyProductId que la exceptúe: las variantes no forman parte del
+-- catálogo de empresas multipropiedad. Zod (CreateProductVariantSchema) ya
+-- la exige. Tabla vacía verificado contra la BD real -- NOT NULL directo,
+-- sin backfill.
+-- ---------------------------------------------------------------------------
+ALTER TABLE product_variants ALTER COLUMN sku SET NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- products.sku -- el caso que disparó esta auditoría. Backfill primero: 2
+-- filas reales sin sku a la fecha de este cambio (verificado contra la BD),
+-- ambos productos de prueba/scratch (`Prueba Migracion`, `Test Zod
+-- Producto`), ninguno company-linked (company_product_id NULL en los dos) y
+-- ninguno activo. Se les asigna un SKU placeholder explícito -- no hay
+-- valor "correcto" que inventar para datos de prueba, y quedan marcados
+-- como tales en el propio código para que no se confundan con inventario
+-- real si alguna vez se reactivan.
+--
+-- Zod (CreateProductSchema) ya exige sku salvo companyProductId --
+-- consistente con este NOT NULL.
+--
+-- ATENCIÓN, tensión NO resuelta acá (fuera de alcance de esta auditoría --
+-- pertenece al catálogo de empresas multipropiedad, que vive en la BD de
+-- PLATAFORMA, platform.schema.sql, no en este archivo): un producto creado
+-- vía companyProductId copia `sku` del maestro de la empresa
+-- (CompanyCatalogService.createLinkedProduct(), company-catalog.service.ts)
+-- y `company_products.sku` sigue siendo nullable hoy. Mientras
+-- company_products tenga 0 filas (verificado 27/08/2026) este NOT NULL no
+-- puede romper nada -- pero el día que exista un producto maestro de
+-- empresa sin sku, linkearlo va a fallar acá con un 500 crudo en vez de un
+-- 400 limpio. Antes de que el catálogo de empresas tenga uso real, hace
+-- falta la misma auditoría (Zod + NOT NULL) sobre `company_products.sku`.
+-- ---------------------------------------------------------------------------
+UPDATE products SET sku = 'SKU-PLACEHOLDER-' || substr(id, 1, 8)
+  WHERE sku IS NULL;
+ALTER TABLE products ALTER COLUMN sku SET NOT NULL;
 

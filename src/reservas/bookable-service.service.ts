@@ -14,7 +14,7 @@ import type {
   UpdateServiceScheduleDTO,
   UpdateRatePlanDTO,
 } from './bookable-service.types.js';
-import { DomainError } from '../domain/errors.js';
+import { DomainError, InvalidReservationError } from '../domain/errors.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import { diffFields, updateWithAudit } from '../domain/audit.js';
@@ -103,6 +103,21 @@ export class BookableServiceService {
   ): Promise<BookableService> {
     const existing = await this.repo.findById(id);
     if (!existing) throw new BookableServiceNotFoundError(id);
+
+    // 27/08/2026, auditoría de columnas obligatorias -- mismo invariante que
+    // el superRefine de CreateBookableServiceSchema, pero acá hace falta
+    // mirar el resultado FINAL (existing + data), no solo el body del PATCH:
+    // un servicio ya 'slot' con duración cargada puede mandar solo
+    // `{ durationMinutes: null }` (la limpia sin tocar bookingMode), o un
+    // servicio 'block' puede pasar a 'slot' sin mandar duración en el mismo
+    // PATCH. Zod no puede validar esto porque no conoce `existing`.
+    const resultingMode = data.bookingMode ?? existing.bookingMode;
+    const resultingDuration = data.durationMinutes !== undefined ? data.durationMinutes : existing.durationMinutes;
+    if (resultingMode === 'slot' && resultingDuration == null) {
+      throw new InvalidReservationError(
+        'durationMinutes es obligatorio para un servicio "slot" -- no se puede dejar sin duración.',
+      );
+    }
 
     if (!this.repo.updateWithClient) {
       throw new Error('IBookableServiceRepository.updateWithClient no está implementado.');

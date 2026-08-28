@@ -190,7 +190,10 @@ describe('servicios agendables -- CRUD', () => {
     const handler = getHandler(router, 'post', '/');
     const req = {
       db: fakeDb(),
-      body: { categoryId: 'cat-1', name: 'Manicura', bookingMode: 'slot', price: 800 },
+      // durationMinutes: 27/08/2026, auditoría de columnas obligatorias --
+      // un 'slot' ya no puede crearse sin duración (superRefine de
+      // CreateBookableServiceSchema).
+      body: { categoryId: 'cat-1', name: 'Manicura', bookingMode: 'slot', durationMinutes: 45, price: 800 },
     } as unknown as Request;
     const res = fakeRes();
 

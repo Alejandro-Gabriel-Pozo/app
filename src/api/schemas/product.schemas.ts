@@ -22,15 +22,24 @@ const ProductTypeSchema = z.enum(['RAW_MATERIAL', 'COMPOSITE', 'RETAIL']);
 
 export const CreateProductSchema = z.object({
   categoryId:       z.string().min(1).nullable().optional(),
-  // name/basePrice son obligatorios para un alta local, pero NO cuando
+  // name/basePrice/sku son obligatorios para un alta local, pero NO cuando
   // viene companyProductId -- ahí products.routes.ts salta directo a
-  // CompanyCatalogService.createLinkedProduct() (copia nombre/precio del
-  // maestro de la empresa, el cliente no manda nada de eso). El refine de
-  // abajo es el que de verdad exige name/basePrice en el caso normal.
+  // CompanyCatalogService.createLinkedProduct() (copia nombre/precio/sku
+  // del maestro de la empresa, el cliente no manda nada de eso). El refine
+  // de abajo es el que de verdad exige name/basePrice/sku en el caso
+  // normal.
   name:             z.string().min(1).max(255).optional(),
   description:      z.string().nullable().optional(),
   basePrice:        z.number().min(0).optional(),
-  sku:              z.string().max(100).nullable().optional(),
+  // 27/08/2026, auditoría de columnas obligatorias (docs/pendientes-2026-08-27.md):
+  // un producto sin SKU no debería poder existir (identidad del artículo
+  // para conteo físico, import/export, cruce con proveedor) -- hasta este
+  // cambio era `.nullable().optional()` sin ninguna capa que lo exigiera,
+  // y la base de datos tampoco (products.sku sin NOT NULL). `.min(1)`
+  // dentro de `.nullable()`: sigue aceptando `null` explícito para el
+  // camino companyProductId (el refine de abajo exige uno de los dos), pero
+  // un string vacío ya no cuela como "tiene SKU".
+  sku:              z.string().min(1).max(100).nullable().optional(),
   hasVariants:      z.boolean().optional(),
   stockQuantity:    z.number().min(0).optional(),
   stockMinAlert:    z.number().min(0).optional(),
@@ -45,6 +54,7 @@ export const CreateProductSchema = z.object({
   if (!b.companyProductId) {
     if (!b.name) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'name es obligatorio salvo que mandes companyProductId.', path: ['name'] });
     if (b.basePrice === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'basePrice es obligatorio salvo que mandes companyProductId.', path: ['basePrice'] });
+    if (!b.sku) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'sku es obligatorio salvo que mandes companyProductId.', path: ['sku'] });
   }
   if (b.assembleOnDemand && b.productType !== 'COMPOSITE') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'assembleOnDemand solo puede ser true cuando productType es COMPOSITE (chk_products_assemble_on_demand).', path: ['assembleOnDemand'] });
@@ -56,7 +66,11 @@ export const UpdateProductSchema = z.object({
   name:             z.string().min(1).max(255).optional(),
   description:      z.string().nullable().optional(),
   basePrice:        z.number().min(0).optional(),
-  sku:              z.string().max(100).nullable().optional(),
+  // Sin `.nullable()`: a diferencia de CreateProductSchema, acá no hay
+  // camino companyProductId que justifique aceptar `null` -- el producto ya
+  // existe y ya tiene un sku (products.sku es NOT NULL). Omitido = no se
+  // toca; si se manda, tiene que ser un string real, nunca vaciarlo.
+  sku:              z.string().min(1).max(100).optional(),
   hasVariants:      z.boolean().optional(),
   active:           z.boolean().optional(),
   productType:      ProductTypeSchema.optional(),
@@ -69,7 +83,10 @@ export const UpdateProductSchema = z.object({
 export const CreateProductVariantSchema = z.object({
   name:             z.string().min(1).max(255),
   attributes:       z.record(z.string()).optional(),
-  sku:              z.string().max(100).nullable().optional(),
+  // 27/08/2026, misma auditoría que CreateProductSchema.sku -- una variante
+  // es la unidad que se vende y se cuenta, sin camino companyProductId que
+  // la exceptúe (las variantes no forman parte del catálogo de empresas).
+  sku:              z.string().min(1).max(100),
   priceOverride:    z.number().min(0).nullable().optional(),
   stockQuantity:    z.number().min(0).optional(),
   stockMinAlert:    z.number().min(0).optional(),
@@ -78,7 +95,8 @@ export const CreateProductVariantSchema = z.object({
 export const UpdateProductVariantSchema = z.object({
   name:          z.string().min(1).max(255).optional(),
   attributes:    z.record(z.string()).optional(),
-  sku:           z.string().max(100).nullable().optional(),
+  // Sin `.nullable()`, mismo criterio que UpdateProductSchema.sku.
+  sku:           z.string().min(1).max(100).optional(),
   priceOverride: z.number().min(0).nullable().optional(),
   active:        z.boolean().optional(),
 });

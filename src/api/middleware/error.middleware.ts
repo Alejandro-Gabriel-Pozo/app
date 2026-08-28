@@ -86,6 +86,12 @@ function domainErrorStatus(error: DomainError): number {
     // 17/08/2026, docs/diseno-inventario-carve-out.md) porque también la
     // lanza; de paso cierra el mismo hueco en /:id/stock/decrement, que no
     // la capturaba localmente y dependía de esta red de seguridad.
+    //
+    // INVALID_STOCK_MOVEMENT (27/08/2026, A6.1 -- STOCK_MOVEMENT_RULES en
+    // repositories/stock-movement.repository.ts): el movimiento no respeta
+    // las reglas declaradas para su propio tipo (ubicación, motivo de merma,
+    // notas). Es un request mal armado, no una regla de negocio que dependa
+    // del estado -- mismo criterio que INVALID_RESERVATION.
     case 'INVALID_RESERVATION':
     case 'INVALID_CUSTOMER':
     case 'INVALID_RESOURCE':
@@ -99,6 +105,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RATE_PLAN_NOT_AVAILABLE':
     case 'INVALID_RATE_PLAN_VALIDITY':
     case 'INVALID_MAINTENANCE_WINDOW_DATES':
+    case 'INVALID_STOCK_MOVEMENT':
       return 400;
 
     // --- 422 Unprocessable Entity ---
@@ -106,7 +113,14 @@ function domainErrorStatus(error: DomainError): number {
     // que INVALID_CATEGORY en resources.routes.ts). AFIP_REQUEST_REJECTED:
     // el request llegó bien formado, pero AFIP rechazó el comprobante por
     // una regla de negocio suya — mismo criterio.
+    // LODGING_REQUIRES_SERVICE (27/08/2026, docs/diseno-precio-servicio-vs-
+    // recurso-2026-08-27.md): el request está bien formado -- `serviceId` es
+    // opcional en el esquema porque un turno o una mesa legítimamente no lo
+    // llevan. Lo que se viola es una regla de negocio: en una categoría de
+    // ALOJAMIENTO el precio vive en el servicio, así que la reserva tiene
+    // que declarar cuál. Mismo criterio que COMPANY_CUSTOMER_REQUIRED.
     case 'COMPANY_CUSTOMER_REQUIRED':
+    case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
     case 'UNSUPPORTED_IVA_RATE':
       return 422;
@@ -150,6 +164,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CUSTOMER_RATE_NOT_FOUND':
     case 'CUSTOMER_NOT_FOUND':
     case 'WASTE_REASON_NOT_FOUND':
+    case 'CONSUMPTION_DESTINATION_NOT_FOUND':
     case 'CANCELLATION_POLICY_NOT_FOUND':
     case 'RECIPE_ITEM_NOT_FOUND':
     case 'PRODUCT_NOT_SHARED':
