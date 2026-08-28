@@ -599,6 +599,12 @@ auditoría de columnas obligatorias (pedido separado). Sigue:
   `applied_customer_rate_id` en `order_items` y `reservations` desde el 22/08).
 - **RBAC — mecanismos 1 y 2** del handoff externo, sin empezar.
 - **Calidad:** la suite del audit transaccional (RBAC paso 1) nunca se corrió
-  contra Postgres real con un rollback forzado. Ver paso 4 de arriba.
+  contra Postgres real con un rollback forzado — ✅ RESUELTO (28/08/2026):
+  branch de Neon dedicado (`test-integration-db`), suite de integración
+  22/22 verde por primera vez contra Postgres real, y 3 tests nuevos
+  (`audit-log-transactional.integration.test.ts`) que fuerzan un error a
+  mitad de transacción y confirman `ROLLBACK` real de negocio+auditoría
+  juntos. Ver `plan-resolucion-bugs-deuda-2026-08-27.md`, sección "Sesión
+  28/08/2026".
 - **Operación:** datos de prueba (demo) dejados en la base real, confirmado con
   el dueño en su momento.
