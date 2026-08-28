@@ -29,8 +29,9 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Dominios / CORS / hosting | [auditoria-dominios.md](auditoria-dominios.md) | Mapa + Runbook de auditoría |
 | Nombres de archivo `<entidad>.<capa>.ts` | [convenciones-nombres.md](convenciones-nombres.md) (propuesta; patrón backend ya aplicado) | Convención (parcial) |
 | Contexto de operación del negocio | [conocimiento-del-negocio.md](conocimiento-del-negocio.md) | Glosario de negocio |
-| Log de sesión (más reciente) | [pendientes-2026-08-25.md](pendientes-2026-08-25.md) | Historial, no catálogo |
+| Log de sesión (más reciente) | [pendientes-2026-08-27.md](pendientes-2026-08-27.md) | Historial, no catálogo |
 | Backlog de producto por rubro | [roadmap-pms-multirubro.md](roadmap-pms-multirubro.md) | Roadmap (no pendientes) |
+| **Referencia externa de inventario** — `C:\Users\Usuario\Downloads\proyecto script` (NQNTUR, ERP-lite sobre Apps Script). Es el espejo de este repo: su `REVIEW-ERP-LITE.md` lista como gaps propios lo que acá ya está (AFIP, hospedaje, caja, cuentas corrientes), y su fuerte es el inventario que acá falta. Ya se adoptaron su mapa `TRANSICIONES` y `DESTINOS_CONSUMO` (consumo≠merma); conteo físico (3 acciones: AJUSTAR/FALTA_MOVIMIENTO/DESCARTAR) y lotes/FEFO siguen sin adoptar (ver pendientes 27/08) | Fuera del repo | Referencia externa |
 
 ---
 
@@ -51,12 +52,20 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Rutas `OUT_OF_SERVICE`/`reset` de housekeeping: borrar, no deprecar | pendientes 25/08 | implementado |
 | `audit_log` ya existe (R8/A9.4) — no crear una tabla nueva paralela ante un handoff externo que la desconozca | [conocimiento/playbook-audit-log-transaccional.md](conocimiento/playbook-audit-log-transaccional.md) | implementado (12 call sites transaccionales) |
 | `RoleService.updatePermissionGroups()`: sin transacción real posible (plataforma+tenant); orden plataforma-primero es el mitigante aceptado | mismo playbook | aceptado, sin atomicidad real |
+| El precio vive en el **servicio**, no en el recurso — reserva de alojamiento sin `serviceId` rechaza con `LodgingRequiresServiceError` (422) | [diseno-precio-servicio-vs-recurso-2026-08-27.md](diseno-precio-servicio-vs-recurso-2026-08-27.md) | implementado (27/08/2026) — backend + dashboard + los 3 caminos del portal |
+| Servicio = qué recurso se ocupa y por cuánto tiempo; rate plan = cuánto cuesta y qué incluye | mismo doc §2 | aceptado |
+| Tarifas especiales de cliente con scope `resource_id`/`bucket=ALOJAMIENTO` quedan inalcanzables en alojamiento (la cascada entra por SERVICIO y no llega al recurso); se re-scopean sobre servicio/categoría | mismo doc, pendientes 27/08 | aceptado (decisión del dueño, 27/08/2026) |
+| Un producto sin `sku` no puede existir; `customers.full_name` NOT NULL; `bookable_services.duration_minutes` obligatorio solo en `booking_mode='slot'` | pendientes 27/08, comentario en `schema.sql` (final del archivo) | implementado (27/08/2026), verificado en navegador real |
+| Las reglas por tipo de movimiento de stock se declaran como DATO en `STOCK_MOVEMENT_RULES` (A6.1), no repartidas entre CHECKs y call sites — adoptado del mapa `TRANSICIONES` de `proyecto script` | `repositories/stock-movement.repository.ts`, pendientes 27/08 | implementado (27/08/2026) |
+| Consumo interno (personal, degustación, elaboración interna) es COSTO OPERATIVO, nunca `movement_type='WASTE'` — catálogo `consumption_destinations` propio, nunca se mezcla con `waste_reasons` (el guard lo rechaza en los dos sentidos) — adoptado de `DESTINOS_CONSUMO` de `proyecto script` | `consumption-destination.service.ts`, `consumption-destinations.routes.ts`, `products.routes.ts` (`POST /stock/consumption`), `dashboard/destinos-consumo/page.tsx`, pendientes 27/08 | implementado (27/08/2026), verificado en navegador real contra la base real (10→7 unidades, movimiento correcto) |
+| Seña con 3 formas (`PERCENTAGE`/`FIXED`/`UNITS`); UI expone 2, el resolver implementa las 3 | [diseno-sena-unidades-c1a-2026-08-27.md](diseno-sena-unidades-c1a-2026-08-27.md) | aceptado, sin implementar — el prerequisito (paso 0) ya está resuelto |
+| `UNITS` = suma de las primeras N líneas, nunca `N × promedio` | mismo doc §2 | aceptado |
 | `console.log` en `src/scripts/` a propósito; Pino solo en el proceso del servidor | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) §1.1 | implementado |
 | Sentry no captura `DomainError`/`ValidationError`/`ZodError` | misma §1.2 | implementado |
 
 ### Diseño técnico / RFC (propuesta o cambio complejo)
 
-Documentos `diseno-*.md` y referencias: seña C1, cancelación/NC C2, líneas de factura C3, tarifas multinivel, POS mesas, housekeeping/`maintenance_window`, inventario carve-out, empresas multipropiedad, AFIP WSFE, QloApps, mejoras PMS 18/08.
+Documentos `diseno-*.md` y referencias: seña C1 (Fase A 22/08 + **3 formas 27/08**), **precio servicio vs. recurso 27/08 (paso 0, prerequisito de C1-A)**, cancelación/NC C2, líneas de factura C3, tarifas multinivel, POS mesas, housekeeping/`maintenance_window`, inventario carve-out, empresas multipropiedad, AFIP WSFE, QloApps, mejoras PMS 18/08.
 
 Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes del día.
 
@@ -94,7 +103,9 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 
 ### Deuda técnica (conocida, no resolver en este índice)
 
-Ver pendientes 25/08 “Pendientes heredados” y auditoría infra **Estado**: Redis rate-limit (1.4), BullMQ (1.5), UI de flujos backend-only, C1-Fase B pagos, etapas 2–3 de downgrade, gap facturas consolidadas en JOINs, `PlatformRepository.updateRolePermissionGroups()`/`updatePlanLimits()` no atómicos ni dentro de su propia BD (`conocimiento/playbook-audit-log-transaccional.md`).
+Ver pendientes **27/08** (“Deuda nueva” + “Pendientes heredados”) y auditoría infra **Estado**: Redis rate-limit (1.4), BullMQ (1.5), UI de flujos backend-only, C1-Fase B pagos, etapas 2–3 de downgrade, gap facturas consolidadas en JOINs, `PlatformRepository.updateRolePermissionGroups()`/`updatePlanLimits()`/`createRole()` no atómicos ni dentro de su propia BD (`conocimiento/playbook-audit-log-transaccional.md`).
+
+Nuevo el 27/08: tarifa de temporada que cruza el rango de la estadía (se valida solo la fecha de inicio); `rate_plans` no reutilizables entre servicios; `resource_locks` solo bloquea recursos concretos por ID, no un pool de categoría; `updateReservation()` resetea `depositAmount` y `needsMaintenanceReview` a su default.
 
 ### Incidentes
 

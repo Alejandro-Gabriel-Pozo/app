@@ -213,6 +213,8 @@ disponibilidad, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.m
 
 **`waste-reasons.routes.ts`** — GET `/`, GET `/:id`, POST `/`, PUT `/:id`, DELETE `/:id` — todo `MANAGEMENT`.
 
+**`consumption-destinations.routes.ts`** (27/08/2026, gemelo de `waste-reasons.routes.ts`) — GET `/`, GET `/:id`, POST `/`, PUT `/:id`, DELETE `/:id` — todo `MANAGEMENT`.
+
 **`orders.routes.ts`**
 - GET `/` — `ORDERS`
 - POST `/` — `BOOKING`
@@ -226,7 +228,7 @@ disponibilidad, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.m
 - DELETE `/:id/items/:itemId` — `ORDERS`
 
 **`products.routes.ts`** — todo `MANAGEMENT` salvo:
-GET `/`, POST `/`, GET `/company-catalog`, GET `/:id`, PUT `/:id`, DELETE `/:id`, GET/POST/PUT/DELETE `/:id/variants*`, GET/POST/PUT/DELETE `/:id/recipe-items*`, POST `/stock/transfer`, POST `/stock/waste`, POST `/stock/production`, POST `/:id/company/share`, `/publish`, `/price-override/*`, `/recipe-override/*`
+GET `/`, POST `/`, GET `/company-catalog`, GET `/:id`, PUT `/:id`, DELETE `/:id`, GET/POST/PUT/DELETE `/:id/variants*`, GET/POST/PUT/DELETE `/:id/recipe-items*`, POST `/stock/transfer`, POST `/stock/waste`, POST `/stock/consumption`, POST `/stock/production`, POST `/:id/company/share`, `/publish`, `/price-override/*`, `/recipe-override/*`
 → excepciones **`ORDERS`**: POST `/:id/stock/decrement`, POST `/:id/variants/:variantId/stock/decrement`.
 
 ### `src/reservas/`
