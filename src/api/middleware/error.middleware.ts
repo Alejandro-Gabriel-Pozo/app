@@ -136,10 +136,16 @@ function domainErrorStatus(error: DomainError): number {
     // para ROLE_NOT_AVAILABLE_IN_PLAN (17/08/2026, F2) -- el problema no es
     // un número agotado sino una capacidad no incluida en el plan, pero la
     // semántica HTTP y el mensaje ("actualizá tu plan") son los mismos.
+    // PERMISSION_GROUP_NOT_AVAILABLE_IN_PLAN (L, 23/08/2026) -- mismo
+    // criterio: techo de permisos de un rol CUSTOM por plan, capacidad no
+    // incluida, no un número agotado.
+    //
+    // Los tres case comparten cuerpo a propósito. El comentario va acá
+    // arriba y no entre los case porque un case cuyo "cuerpo" es solo un
+    // comentario deja de contar como vacío para no-fallthrough y la regla
+    // lo reporta como si faltara un break (eslint, allowEmptyCase: false).
     case 'PLAN_LIMIT_REACHED':
     case 'ROLE_NOT_AVAILABLE_IN_PLAN':
-    // L (23/08/2026) -- mismo criterio: techo de permisos de un rol CUSTOM
-    // por plan, capacidad no incluida, no un número agotado.
     case 'PERMISSION_GROUP_NOT_AVAILABLE_IN_PLAN':
       return 402;
 

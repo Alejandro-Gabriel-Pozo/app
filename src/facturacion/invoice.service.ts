@@ -22,7 +22,7 @@ import type { InvoiceRepository, MarkIssuedInput } from './invoice.repository.js
 import type { Invoice, AfipEnvironment, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
-import type { AccountsReceivableRepository, AccountReceivable } from '../clientes-finanzas/accounts-receivable.repository.js';
+import type { AccountsReceivableRepository } from '../clientes-finanzas/accounts-receivable.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile } from '../domain/business-profile.entities.js';
 import type { IOrderRepository } from '../pos-menu/order.repository.js';

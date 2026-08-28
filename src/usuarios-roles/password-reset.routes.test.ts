@@ -42,7 +42,7 @@ function makeIdentity(overrides: Partial<Identity> = {}): Identity {
 }
 
 function makeMembership(overrides: Partial<Membership> = {}): Membership {
-  return { businessId: 'biz-1', businessName: 'Hotel Los Álamos', roleName: 'RECEPTIONIST' } as Membership;
+  return { businessId: 'biz-1', businessName: 'Hotel Los Álamos', roleName: 'RECEPTIONIST', ...overrides } as Membership;
 }
 
 function fakeEmailSender(overrides: Partial<EmailSender> = {}): EmailSender {

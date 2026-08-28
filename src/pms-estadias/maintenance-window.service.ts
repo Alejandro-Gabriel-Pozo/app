@@ -8,7 +8,6 @@
  */
 
 import { DateTime } from 'luxon';
-import { randomUUID } from 'node:crypto';
 import { MaintenanceWindow } from './maintenance-window.js';
 import type { MaintenanceWindowRepository } from './maintenance-window.repository.js';
 import type { ResourceRepository } from '../reservas/resource.repository.js';
