@@ -119,7 +119,11 @@ describe('OrderService', () => {
   let recipeItemRepo: InMemoryRecipeItemRepository;
   let productService: ProductService;
   let customerRateRepo: InMemoryCustomerRateRepository;
+  let auditLogRepo: InMemoryAuditLogRepository;
   let service: OrderService;
+
+  // Bug #4 (27/08/2026) — actor de las transiciones auditadas.
+  const ACTOR = 'user-actor-1';
 
   beforeEach(() => {
     orderRepo          = new InMemoryOrderRepository();
@@ -132,7 +136,8 @@ describe('OrderService', () => {
     const recipeService = new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository());
     customerRateRepo     = new InMemoryCustomerRateRepository();
     const orderPricingService = new OrderPricingService(productService, customerRateRepo);
-    service             = new OrderService(orderRepo, txManager, eventRepo, productService, recipeService, orderPricingService);
+    auditLogRepo        = new InMemoryAuditLogRepository();
+    service             = new OrderService(orderRepo, txManager, eventRepo, productService, recipeService, orderPricingService, auditLogRepo);
 
     seedProduct1(10);
     inventoryLevelRepo.seed({
@@ -177,7 +182,7 @@ describe('OrderService', () => {
     it('emite order.confirmed con el total de la orden', async () => {
       const id = await createDraftOrderWithItem(100);
 
-      const confirmed = await service.confirmOrder(id);
+      const confirmed = await service.confirmOrder(id, ACTOR);
 
       expect(confirmed.status).toBe('CONFIRMED');
       expect(eventRepo.events).toHaveLength(1);
@@ -199,10 +204,10 @@ describe('OrderService', () => {
       const draft = await service.getOrder(id);
       expect(draft?.allowedTransitions).toEqual(['CONFIRMED', 'CANCELLED']);
 
-      const confirmed = await service.confirmOrder(id);
+      const confirmed = await service.confirmOrder(id, ACTOR);
       expect(confirmed.allowedTransitions).toEqual(['COMPLETED', 'CANCELLED']);
 
-      const completed = await service.completeOrder(id);
+      const completed = await service.completeOrder(id, ACTOR);
       expect(completed.allowedTransitions).toEqual([]);
     });
 
@@ -215,30 +220,30 @@ describe('OrderService', () => {
         items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
       });
 
-      await service.confirmOrder(order.id);
+      await service.confirmOrder(order.id, ACTOR);
 
       expect(eventRepo.events[0]).toMatchObject({ payload: { stayId: 'stay-1' } });
     });
 
     it('rechaza confirmar una orden que no está en DRAFT', async () => {
       const id = await createDraftOrderWithItem(100);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      await expect(service.confirmOrder(id)).rejects.toThrow(InvalidOrderTransitionError);
+      await expect(service.confirmOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
       expect(eventRepo.events).toHaveLength(1); // no se emite un segundo evento
     });
 
     it('lanza OrderNotFoundError si la orden no existe', async () => {
-      await expect(service.confirmOrder('no-existe')).rejects.toThrow(OrderNotFoundError);
+      await expect(service.confirmOrder('no-existe', ACTOR)).rejects.toThrow(OrderNotFoundError);
     });
   });
 
   describe('completeOrder', () => {
     it('emite order.completed solo con orderId en el payload', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      const completed = await service.completeOrder(id);
+      const completed = await service.completeOrder(id, ACTOR);
 
       expect(completed.status).toBe('COMPLETED');
       expect(eventRepo.events[1]).toMatchObject({
@@ -249,14 +254,14 @@ describe('OrderService', () => {
 
     it('rechaza completar una orden que no está CONFIRMED', async () => {
       const id = await createDraftOrderWithItem(50);
-      await expect(service.completeOrder(id)).rejects.toThrow(InvalidOrderTransitionError);
+      await expect(service.completeOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
     });
 
     it('propaga paymentMethod al payload de order.completed (Gap Tango #2 — caja/turno)', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      await service.completeOrder(id, { paymentMethod: 'CASH' });
+      await service.completeOrder(id, ACTOR, { paymentMethod: 'CASH' });
 
       expect(eventRepo.events[1]).toMatchObject({
         eventType: 'order.completed',
@@ -266,9 +271,9 @@ describe('OrderService', () => {
 
     it('paymentMethod queda null en el payload si no se pasa', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      await service.completeOrder(id);
+      await service.completeOrder(id, ACTOR);
 
       expect(eventRepo.events[1]).toMatchObject({
         eventType: 'order.completed',
@@ -278,9 +283,9 @@ describe('OrderService', () => {
 
     it('propaga cardInstallments/cardSurchargeAmount al payload (Gap Tango #3)', async () => {
       const id = await createDraftOrderWithItem(500); // total 1000
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      await service.completeOrder(id, { paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 });
+      await service.completeOrder(id, ACTOR, { paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 });
 
       expect(eventRepo.events[1]).toMatchObject({
         eventType: 'order.completed',
@@ -290,10 +295,10 @@ describe('OrderService', () => {
 
     it('rechaza cardSurchargeAmount mayor al total de la orden (Gap Tango #3)', async () => {
       const id = await createDraftOrderWithItem(50); // total 100
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       await expect(
-        service.completeOrder(id, { paymentMethod: 'CARD', cardSurchargeAmount: 200 }),
+        service.completeOrder(id, ACTOR, { paymentMethod: 'CARD', cardSurchargeAmount: 200 }),
       ).rejects.toThrow(InvalidPaymentInfoError);
     });
   });
@@ -302,7 +307,7 @@ describe('OrderService', () => {
     it('emite order.cancelled desde DRAFT', async () => {
       const id = await createDraftOrderWithItem(50);
 
-      const cancelled = await service.cancelOrder(id);
+      const cancelled = await service.cancelOrder(id, ACTOR);
 
       expect(cancelled.status).toBe('CANCELLED');
       expect(eventRepo.events[0]).toMatchObject({
@@ -313,9 +318,9 @@ describe('OrderService', () => {
 
     it('emite order.cancelled desde CONFIRMED', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      await service.cancelOrder(id);
+      await service.cancelOrder(id, ACTOR);
 
       expect(eventRepo.events).toHaveLength(2); // confirmed + cancelled
       expect(eventRepo.events[1]!.eventType).toBe('order.cancelled');
@@ -323,17 +328,17 @@ describe('OrderService', () => {
 
     it('rechaza cancelar una orden COMPLETED', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
-      await service.completeOrder(id);
+      await service.confirmOrder(id, ACTOR);
+      await service.completeOrder(id, ACTOR);
 
-      await expect(service.cancelOrder(id)).rejects.toThrow(InvalidOrderTransitionError);
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
     });
 
     it('payload lleva wasServed=false al cancelar una orden CONFIRMED que no se sirvió', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
-      await service.cancelOrder(id);
+      await service.cancelOrder(id, ACTOR);
 
       expect(eventRepo.events[1]).toMatchObject({
         eventType: 'order.cancelled',
@@ -343,10 +348,10 @@ describe('OrderService', () => {
 
     it('payload lleva wasServed=true al cancelar una orden ya servida (no debe restaurar stock)', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
       await service.markServed(id);
 
-      await service.cancelOrder(id);
+      await service.cancelOrder(id, ACTOR);
 
       expect(eventRepo.events[1]).toMatchObject({
         eventType: 'order.cancelled',
@@ -357,12 +362,60 @@ describe('OrderService', () => {
     it('payload lleva previousStatus=DRAFT y wasServed=false al cancelar desde DRAFT', async () => {
       const id = await createDraftOrderWithItem(50);
 
-      await service.cancelOrder(id);
+      await service.cancelOrder(id, ACTOR);
 
       expect(eventRepo.events[0]).toMatchObject({
         eventType: 'order.cancelled',
         payload:   { previousStatus: 'DRAFT', wasServed: false },
       });
+    });
+  });
+
+  describe('auditoría de transiciones (Bug #4, 27/08/2026)', () => {
+    it('confirmOrder deja una fila de audit_log status DRAFT→CONFIRMED con el actor', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+
+      const entries = await auditLogRepo.findByEntity('orders', id);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        entity: 'orders', entityId: id, field: 'status',
+        oldValue: 'DRAFT', newValue: 'CONFIRMED', changedBy: ACTOR,
+      });
+    });
+
+    it('el ciclo confirmar→completar deja las dos filas de auditoría', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.completeOrder(id, ACTOR);
+
+      const entries = await auditLogRepo.findByEntity('orders', id);
+      // Agnóstico al orden: el doble in-memory devuelve inserción-primero,
+      // el repo SQL más-reciente-primero (findByEntity) — no acoplar el test.
+      expect(entries).toHaveLength(2);
+      expect(entries.map((e) => `${String(e.oldValue)}→${String(e.newValue)}`))
+        .toEqual(expect.arrayContaining(['DRAFT→CONFIRMED', 'CONFIRMED→COMPLETED']));
+    });
+
+    it('cancelOrder registra la transición previousStatus→CANCELLED', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.cancelOrder(id, ACTOR);
+
+      const entries = await auditLogRepo.findByEntity('orders', id);
+      const cancelEntry = entries.find((e) => e.newValue === 'CANCELLED');
+      expect(cancelEntry).toMatchObject({ oldValue: 'CONFIRMED', newValue: 'CANCELLED', changedBy: ACTOR });
+    });
+
+    it('sin AuditLogRepository inyectado, una transición falla RUIDOSAMENTE (no en silencio)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      const bare = new OrderService(
+        orderRepo, txManager, eventRepo, productService,
+        new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository()),
+        new OrderPricingService(productService, customerRateRepo),
+        // sin auditLogRepo a propósito
+      );
+      await expect(bare.confirmOrder(id, ACTOR)).rejects.toThrow(/AuditLogRepository/);
     });
   });
 
@@ -407,7 +460,7 @@ describe('OrderService', () => {
       await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
       const id = await createSandwichDraftOrder(3);
 
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       const jamonLevel = await inventoryLevelRepo.get({ productId: 'prod-jamon', productVariantId: null, locationId: 'loc-default' });
       expect(jamonLevel?.reservedQuantity).toBe(6); // 2 por unidad * 3 unidades
@@ -417,7 +470,7 @@ describe('OrderService', () => {
       await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
       const id = await createSandwichDraftOrder(3);
 
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       const order = await service.getOrder(id);
       expect(order?.items[0]!.stockSnapshot).toEqual([{ productId: 'prod-jamon', productVariantId: null, quantity: 6 }]);
@@ -427,7 +480,7 @@ describe('OrderService', () => {
       await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
       const id = await createSandwichDraftOrder(3);
 
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       const payload = eventRepo.events[0]!.payload as { items: Array<{ productId: string; quantity: number }> };
       expect(payload.items).toHaveLength(1);
@@ -437,7 +490,7 @@ describe('OrderService', () => {
     it('un ítem simple (sin receta) NO persiste stock_snapshot -- cero cambio de comportamiento', async () => {
       const id = await createDraftOrderWithItem(100); // prod-1, RETAIL simple
 
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       const order = await service.getOrder(id);
       expect(order?.items[0]!.stockSnapshot).toBeNull();
@@ -451,13 +504,13 @@ describe('OrderService', () => {
       // diga ahora. Ver order_items.stock_snapshot en schema.sql.
       await recipeItemRepo.create({ parentProductId: 'prod-sandwich', componentProductId: 'prod-jamon', componentVariantId: null, quantityPerUnit: 2 });
       const id = await createSandwichDraftOrder(3);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       // La receta cambia DESPUÉS de confirmar -- ahora usa el doble de jamón.
       const [item] = await recipeItemRepo.getByParent('prod-sandwich');
       await recipeItemRepo.update(item!.id, { quantityPerUnit: 4 });
 
-      await service.cancelOrder(id);
+      await service.cancelOrder(id, ACTOR);
 
       // Si cancelOrder() re-explotara con la receta ACTUAL, el payload
       // llevaría 12 (4*3). Debe llevar exactamente lo reservado al
@@ -477,7 +530,7 @@ describe('OrderService', () => {
         items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 5000 }],
       });
 
-      await expect(service.confirmOrder(order.id)).rejects.toThrow(InsufficientStockError);
+      await expect(service.confirmOrder(order.id, ACTOR)).rejects.toThrow(InsufficientStockError);
       expect(eventRepo.events).toHaveLength(0); // no se emitió order.confirmed
     });
   });
@@ -485,7 +538,7 @@ describe('OrderService', () => {
   describe('markServed', () => {
     it('marca servedAt sin cambiar status ni emitir un domain event', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
 
       const served = await service.markServed(id);
 
@@ -502,7 +555,7 @@ describe('OrderService', () => {
 
     it('rechaza marcar como servida una orden ya servida', async () => {
       const id = await createDraftOrderWithItem(50);
-      await service.confirmOrder(id);
+      await service.confirmOrder(id, ACTOR);
       await service.markServed(id);
 
       await expect(service.markServed(id)).rejects.toThrow(OrderAlreadyServedError);

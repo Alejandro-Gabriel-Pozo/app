@@ -31,6 +31,7 @@ import type {
 import type { TransactionManager }      from '../db/transaction-manager.js';
 import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
+import type { AuditLogRepository }      from '../repositories/audit-log.repository.js';
 import type { PaymentInfo }             from '../clientes-finanzas/financial-transaction.repository.js';
 import { DomainError }                  from '../domain/errors.js';
 import type { ProductService }          from './product.service.js';
@@ -296,7 +297,36 @@ export class OrderService {
      * resolveUnitPrice() más abajo.
      */
     private readonly orderPricingService: OrderPricingService,
+    /**
+     * Bug #4 (27/08/2026, pendientes-2026-08-27.md) — audita las transiciones
+     * de estado de la orden (A6.5: toda transición de una TRANSACCIÓN deja
+     * rastro de QUIÉN la hizo). Antes OrderService no recibía auditLogRepo y
+     * confirmar/completar/cancelar no dejaban ninguna huella. La auditoría se
+     * graba con recordWithClient() DENTRO de la misma transacción que la
+     * transición (atómica: si la transición hace rollback, no queda una fila
+     * de auditoría de algo que no pasó). Opcional para no romper call sites que
+     * no auditan; los métodos que transicionan lo EXIGEN vía requireAuditRepo().
+     */
+    private readonly auditLogRepo?: AuditLogRepository,
   ) {}
+
+  /**
+   * Graba la transición `from → to` de una orden en audit_log, dentro de la
+   * transacción `client`. Fail-loud si no se inyectó auditLogRepo o si la impl
+   * no soporta recordWithClient (mismo idiom que InvoiceService): preferible un
+   * error claro a una transición sin rastro.
+   */
+  private async recordStatusTransition(
+    client: SqlClient, orderId: string, from: OrderStatus, to: OrderStatus, changedBy: string,
+  ): Promise<void> {
+    if (!this.auditLogRepo?.recordWithClient) {
+      throw new Error('OrderService requiere un AuditLogRepository con recordWithClient para auditar transiciones.');
+    }
+    await this.auditLogRepo.recordWithClient(client, [{
+      entity: 'orders', entityId: orderId, field: 'status',
+      oldValue: from, newValue: to, changedBy,
+    }]);
+  }
 
   /**
    * D9-Parte 2 -- reemplaza al viejo `buildOrderItemInput()` (function
@@ -438,7 +468,7 @@ export class OrderService {
    * momento. Un ítem simple (la mayoría) sigue exactamente igual que antes
    * — resolveConfirmStockItems() lo detecta trivial y no persiste nada.
    */
-  async confirmOrder(id: string): Promise<OrderWithTransitions> {
+  async confirmOrder(id: string, changedBy: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
@@ -457,6 +487,7 @@ export class OrderService {
       }
 
       const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
+      await this.recordStatusTransition(client, updated.id, 'DRAFT', 'CONFIRMED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
         businessId:    order.businessId,
         aggregateType: 'ORDER',
@@ -483,7 +514,7 @@ export class OrderService {
    * un turno de caja (Gap Tango #2) y/o guardar cuotas/recargo de tarjeta
    * (Gap Tango #3).
    */
-  async completeOrder(id: string, paymentInfo?: PaymentInfo): Promise<OrderWithTransitions> {
+  async completeOrder(id: string, changedBy: string, paymentInfo?: PaymentInfo): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status !== 'CONFIRMED') throw new InvalidOrderTransitionError(order.status, 'COMPLETED');
@@ -502,6 +533,7 @@ export class OrderService {
 
     return this.transactionManager.run(async (client: SqlClient) => {
       const updated = (await this.orderRepo.completeWithClient(client, id))!;
+      await this.recordStatusTransition(client, updated.id, 'CONFIRMED', 'COMPLETED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
         businessId:    order.businessId,
         aggregateType: 'ORDER',
@@ -540,7 +572,7 @@ export class OrderService {
    * `stock_snapshot`, nunca vuelve a consultar recipe_items) — la receta
    * pudo haber cambiado desde que se confirmó esta orden.
    */
-  async cancelOrder(id: string): Promise<OrderWithTransitions> {
+  async cancelOrder(id: string, changedBy: string): Promise<OrderWithTransitions> {
     const order = await this.orderRepo.getById(id);
     if (!order) throw new OrderNotFoundError(id);
     if (order.status === 'COMPLETED') throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
@@ -550,6 +582,7 @@ export class OrderService {
 
     return this.transactionManager.run(async (client: SqlClient) => {
       const updated = (await this.orderRepo.cancelWithClient(client, id))!;
+      await this.recordStatusTransition(client, updated.id, previousStatus, 'CANCELLED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
         businessId:    order.businessId,
         aggregateType: 'ORDER',

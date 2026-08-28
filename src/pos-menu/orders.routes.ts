@@ -88,6 +88,9 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
     ),
     // D9-Parte 2 -- resuelve unitPrice server-side para PRODUCT/PRODUCT_VARIANT.
     new OrderPricingService(productService, new SqlCustomerRateRepository(req.db!)),
+    // Bug #4 (27/08/2026) -- audita las transiciones de estado de la orden.
+    // Mismo pool de tenant (req.db!) que el resto, así comparte la transacción.
+    new SqlAuditLogRepository(req.db!),
   );
 }
 
@@ -184,7 +187,7 @@ export function createOrdersRouter(container: AppContainer): Router {
   // ── POST /api/orders/:id/confirm ─────────────────────────────────────────────
   router.post('/:id/confirm', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req, container).confirmOrder(param(req, 'id'));
+      const order = await buildOrderService(req, container).confirmOrder(param(req, 'id'), req.user!.id);
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)                res.status(404).json({ code: 'ORDER_NOT_FOUND',       message: (err as Error).message });
@@ -226,6 +229,7 @@ export function createOrdersRouter(container: AppContainer): Router {
       }
       const order = await buildOrderService(req, container).completeOrder(
         param(req, 'id'),
+        req.user!.id,
         {
           paymentMethod:       parsed.data.paymentMethod ?? null,
           cardInstallments:    parsed.data.cardInstallments ?? null,
@@ -244,7 +248,7 @@ export function createOrdersRouter(container: AppContainer): Router {
   // ── POST /api/orders/:id/cancel ──────────────────────────────────────────────
   router.post('/:id/cancel', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req, container).cancelOrder(param(req, 'id'));
+      const order = await buildOrderService(req, container).cancelOrder(param(req, 'id'), req.user!.id);
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });

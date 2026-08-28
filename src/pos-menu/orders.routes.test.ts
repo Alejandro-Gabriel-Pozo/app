@@ -209,7 +209,8 @@ describe('orders.routes', () => {
 
     await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
-    expect(confirmOrder).toHaveBeenCalledWith('ord-1');
+    // Bug #4 (27/08/2026) -- la ruta ahora pasa el actor (req.user.id) para auditar la transición.
+    expect(confirmOrder).toHaveBeenCalledWith('ord-1', 'identity-1');
     expect(res.json).toHaveBeenCalledWith(makeOrder({ status: 'CONFIRMED' }));
   });
 
@@ -284,7 +285,7 @@ describe('orders.routes', () => {
 
     let res = fakeRes();
     await handler(req, res, () => { throw new Error('no next'); });
-    expect(cancelOrder).toHaveBeenCalledWith('ord-1');
+    expect(cancelOrder).toHaveBeenCalledWith('ord-1', 'identity-1');
 
     cancelOrder.mockRejectedValueOnce(new InvalidOrderTransitionError('COMPLETED', 'CANCELLED'));
     res = fakeRes();
