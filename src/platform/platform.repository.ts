@@ -289,6 +289,27 @@ export class PlatformRepository {
     return this.transactionManager.run(work);
   }
 
+  /**
+   * Versión pública de `txRun` — deja que un caller envuelva VARIAS
+   * operaciones de este repositorio (más su rastro de auditoría) en una sola
+   * transacción de la BD de plataforma.
+   *
+   * Existe por la Fase 2 del plan de dominios (28/08/2026): sin esto, el
+   * UPDATE del plan de un negocio y el INSERT en `platform_audit_log` iban en
+   * dos conexiones distintas del pool, y si el segundo fallaba el cambio
+   * quedaba aplicado sin rastro de quién lo hizo — exactamente el defecto que
+   * `recordFieldChangesWithClient()` ya había resuelto del lado del tenant
+   * (docs/conocimiento/playbook-audit-log-transaccional.md).
+   *
+   * Los métodos de escritura de este repo aceptan un `client` opcional: si se
+   * les pasa el de esta transacción, corren dentro; si no, abren la suya. No
+   * anidar (`runInTransaction` dentro de `runInTransaction`): el
+   * TransactionManager toma una conexión nueva por llamada.
+   */
+  async runInTransaction<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    return this.txRun('runInTransaction', work);
+  }
+
   // -------------------------------------------------------------------------
   // Businesses
   // -------------------------------------------------------------------------
@@ -443,12 +464,17 @@ export class PlatformRepository {
   /**
    * Actualiza el estado de un negocio.
    * Usado por el SUPERADMIN para suspender, activar o cancelar negocios.
+   *
+   * `client` opcional (28/08/2026, Fase 2): si viene, corre dentro de la
+   * transacción del caller — así el UPDATE y el INSERT en `platform_audit_log`
+   * confirman o se caen juntos. Sin él, se comporta igual que antes.
    */
   async updateBusinessStatus(
     businessId: string,
     status: BusinessStatus,
+    client?: SqlClient,
   ): Promise<void> {
-    await this.db.query(
+    await (client ?? this.db).query(
       `UPDATE businesses
        SET status = $1, updated_at = NOW()
        WHERE id = $2`,
@@ -466,8 +492,9 @@ export class PlatformRepository {
   async updateBusinessPlan(
     businessId: string,
     plan: BusinessPlan,
+    client?: SqlClient,
   ): Promise<void> {
-    await this.db.query(
+    await (client ?? this.db).query(
       `UPDATE businesses
        SET plan = $1, updated_at = NOW()
        WHERE id = $2`,
@@ -622,8 +649,16 @@ export class PlatformRepository {
    * antes, un fallo a mitad podía dejar el plan con los roles nuevos pero los
    * permission_groups viejos (o ninguno), un estado que nadie eligió.
    */
-  async updatePlanLimits(plan: BusinessPlan, input: UpdatePlanLimitsInput): Promise<PlanLimitsAdmin> {
-    await this.txRun('updatePlanLimits', async (client) => {
+  async updatePlanLimits(
+    plan: BusinessPlan,
+    input: UpdatePlanLimitsInput,
+    externalClient?: SqlClient,
+  ): Promise<PlanLimitsAdmin> {
+    // Si el caller ya abrió una transacción (para meter el audit adentro),
+    // se corre en la SUYA; si no, abre la propia. Nunca las dos —
+    // TransactionManager.run() toma una conexión nueva por llamada y anidar
+    // dejaría dos transacciones distintas creyendo que son una.
+    const work = async (client: SqlClient): Promise<void> => {
       await client.query(
         `UPDATE plan_limits SET max_categories = $2, max_resources = $3, max_active_memberships = $4, max_custom_roles = $5 WHERE plan = $1`,
         [plan, input.maxCategories, input.maxResources, input.maxActiveMemberships, input.maxCustomRoles],
@@ -636,7 +671,11 @@ export class PlatformRepository {
       for (const group of input.allowedPermissionGroups) {
         await client.query(`INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group) VALUES ($1, $2)`, [plan, group]);
       }
-    });
+    };
+
+    if (externalClient) await work(externalClient);
+    else await this.txRun('updatePlanLimits', work);
+
     return (await this.listPlanLimits()).find((p) => p.plan === plan)!;
   }
 
@@ -657,7 +696,11 @@ export class PlatformRepository {
   }
 
   /** `undefined` si `name` no es uno de los 5 presets existentes — no se pueden crear/borrar presets desde acá, ver docblock de platform.routes.ts. */
-  async updateRolePresetPermissionGroups(name: string, permissionGroups: string[]): Promise<RolePresetAdmin | undefined> {
+  async updateRolePresetPermissionGroups(
+    name: string,
+    permissionGroups: string[],
+    externalClient?: SqlClient,
+  ): Promise<RolePresetAdmin | undefined> {
     const exists = await this.db.query(`SELECT 1 FROM role_presets WHERE name = $1`, [name]);
     if (exists.rows.length === 0) return undefined;
 
@@ -665,12 +708,19 @@ export class PlatformRepository {
     // updateRolePermissionGroups, encontrado de paso en la misma pasada (no
     // estaba nombrado en pendientes-2026-08-27.md, es el mismo defecto en el
     // catálogo de presets). Un fallo a mitad dejaba el preset sin permisos.
-    await this.txRun('updateRolePresetPermissionGroups', async (client) => {
+    // `externalClient` (28/08/2026, Fase 2): mismo criterio que
+    // updatePlanLimits — corre en la transacción del caller si la hay, para
+    // que el rastro de auditoría entre con el cambio o no entre ninguno.
+    const work = async (client: SqlClient): Promise<void> => {
       await client.query(`DELETE FROM role_preset_permission_groups WHERE preset_name = $1`, [name]);
       for (const group of permissionGroups) {
         await client.query(`INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES ($1, $2)`, [name, group]);
       }
-    });
+    };
+
+    if (externalClient) await work(externalClient);
+    else await this.txRun('updateRolePresetPermissionGroups', work);
+
     return { name, permissionGroups };
   }
 

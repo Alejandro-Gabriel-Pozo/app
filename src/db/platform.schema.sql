@@ -910,6 +910,103 @@ CREATE INDEX IF NOT EXISTS idx_propagation_queue_pending
   ON company_catalog_propagation_queue (created_at)
   WHERE processed_at IS NULL AND failed_at IS NULL;
 
+-- ===========================================================================
+-- BLOQUE AUDITORÍA DE PLATAFORMA — platform_audit_log
+-- (28/08/2026, Fase 2 de docs/plan-separacion-dominios-multirubro-2026-08-28.md)
+-- ===========================================================================
+-- Hueco real encontrado al planear el multirubro: `audit_log` (A9.4/R8) vive
+-- SOLO en schema.sql, o sea en la BD de cada tenant. Todo lo que hace el
+-- superadmin desde /platform/* -- cambiar el plan de un negocio, suspenderlo,
+-- editar `plan_limits`, editar `role_presets` -- no dejaba NINGÚN rastro de
+-- quién ni cuándo. Y son, por lejos, los cambios de mayor alcance del sistema:
+-- tocan a un negocio entero, o a todos los negocios de un plan a la vez.
+--
+-- MISMA FORMA que `audit_log` a propósito (entity/entity_id/field/old_value/
+-- new_value/changed_by/changed_at), para poder reusar `domain/audit.ts`
+-- (`diffFields()` + `recordFieldChanges()`) sin inventar un segundo modelo de
+-- auditoría — mismo criterio que
+-- docs/conocimiento/playbook-audit-log-transaccional.md ("no crear una tabla
+-- paralela ante un handoff externo que la desconozca"). Lo ÚNICO que se suma
+-- es `business_id`:
+--
+--   business_id NOT NULL -> el cambio afecta a un negocio puntual
+--                           (entity='businesses', plan/status)
+--   business_id NULL     -> el cambio es global, afecta a todos los negocios
+--                           presentes y futuros (entity='plan_limits',
+--                           'role_presets'). Es información, no un dato
+--                           faltante: por eso es nullable y no un centinela
+--                           tipo '*'.
+--
+-- No es MAESTRO/TRANSACCIÓN/DOCUMENTO (docs/criterios-datos.md Parte 1): es
+-- un log append-only. No se edita, no se borra, no se desactiva. Sin FK a
+-- `businesses` a propósito -- si algún día se borra un negocio, el rastro de
+-- lo que se le hizo tiene que sobrevivirlo; una FK con CASCADE borraría
+-- justo la evidencia. Mismo criterio que `changed_by` (identity de
+-- platform_users, sin FK) en `audit_log` del tenant.
+--
+-- `changed_by` acá es un platform_user (superadmin), no un identity de
+-- negocio. Los dos logs se leen por separado y nunca se mezclan: un
+-- `changed_by` de este archivo no significa lo mismo que uno de schema.sql.
+CREATE TABLE IF NOT EXISTS platform_audit_log (
+  id           VARCHAR(255)  PRIMARY KEY,
+  business_id  VARCHAR(255),
+  entity       VARCHAR(50)   NOT NULL,
+  entity_id    VARCHAR(255)  NOT NULL,
+  field        VARCHAR(100)  NOT NULL,
+  old_value    TEXT,
+  new_value    TEXT,
+  changed_by   VARCHAR(255)  NOT NULL,
+  changed_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_audit_log_entity
+  ON platform_audit_log (entity, entity_id, changed_at DESC);
+
+-- "Qué le pasó a este negocio" es la consulta que va a hacer el panel; las
+-- filas globales (business_id NULL) quedan fuera de este índice a propósito.
+CREATE INDEX IF NOT EXISTS idx_platform_audit_log_business
+  ON platform_audit_log (business_id, changed_at DESC)
+  WHERE business_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- modules — metadata de catálogo (28/08/2026, aprobado por el dueño)
+-- ---------------------------------------------------------------------------
+-- Preparación de la Fase 3 (Business Context). `modules` ya es un catálogo
+-- consultable, pero no distingue dos cosas que el panel de Superadmin
+-- necesita separar:
+--
+--   active      -> el módulo se OFRECE hoy. Un módulo puede existir,
+--                  estar implementado y aun así retirarse de la oferta
+--                  (se deja de vender) sin borrar la fila, que sigue
+--                  referenciada por `business_modules` de negocios viejos.
+--                  Mismo criterio R2/R3 que el resto de los catálogos.
+--
+--   implemented -> el módulo está REALMENTE SOPORTADO POR CÓDIGO: tiene
+--                  rutas montadas, un `requireModule(ModuleKey.X)` que lo
+--                  lee, permisos y pantalla. Es la distinción que evita la
+--                  ilusión de "Superadmin puede crear capacidades sin
+--                  deploy": una fila nueva acá es descubrible y asignable,
+--                  pero hasta que exista el código no apaga ni prende nada.
+--                  El panel muestra esas filas como "catalogada, sin
+--                  soporte" en vez de dejar prender una casilla que no hace
+--                  nada. Los 6 módulos que ya existen son implemented=TRUE.
+--
+-- Son ejes independientes: implemented=TRUE + active=FALSE es "existe y
+-- anda, pero ya no se ofrece"; implemented=FALSE + active=TRUE es "anunciado,
+-- todavía no construido". Ninguno de los dos se puede expresar con una sola
+-- columna.
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS active      BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS implemented BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Los 6 del catálogo original tienen código detrás desde antes de que
+-- existiera esta columna (rutas montadas en app.ts con requireModule()).
+-- Acotado por lista explícita, no un UPDATE sin WHERE: un módulo que se
+-- agregue mañana debe arrancar en FALSE y ganarse el TRUE con su código.
+UPDATE modules SET implemented = TRUE
+ WHERE module_key IN ('REPORTES', 'HOUSEKEEPING', 'CUENTAS_CORRIENTES',
+                      'POS_RESTAURANTE', 'FACTURACION', 'ALOJAMIENTO')
+   AND implemented = FALSE;
+
 -- =============================================================================
 -- Fin del schema central
 -- =============================================================================

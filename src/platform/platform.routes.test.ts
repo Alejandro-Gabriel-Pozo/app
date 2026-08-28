@@ -138,12 +138,38 @@ function fakePlatformRepo(overrides: Partial<PlatformRepository> = {}): Platform
     })),
     findActiveStaffMembershipsByBusiness: vi.fn(async () => []),
     deactivateMembership: vi.fn(async () => true),
+    // Fase 2 (28/08/2026) — las 4 mutaciones de superadmin ahora envuelven
+    // "cambio + rastro de auditoría" en una transacción. El fake la ejecuta
+    // derecho con un client sentinela: lo que los tests verifican es que el
+    // repo y el audit reciban EL MISMO client, no el BEGIN/COMMIT real (eso
+    // se prueba contra Postgres de verdad, no acá).
+    runInTransaction: vi.fn(async (work: (client: unknown) => Promise<unknown>) => work(FAKE_TX_CLIENT)),
     ...overrides,
   } as unknown as PlatformRepository;
 }
 
-function buildContainer(platformRepository: PlatformRepository, login = vi.fn()): PlatformContainer {
-  return { platformRepository, platformAuthService: { login } } as unknown as PlatformContainer;
+/** Sentinela para poder afirmar "estas dos escrituras compartieron transacción". */
+const FAKE_TX_CLIENT = { __tx: true };
+
+function fakeAuditRepo() {
+  return {
+    record: vi.fn(async () => {}),
+    recordWithClient: vi.fn(async () => {}),
+    findByEntity: vi.fn(async () => []),
+    findByBusiness: vi.fn(async () => []),
+  };
+}
+
+function buildContainer(
+  platformRepository: PlatformRepository,
+  login = vi.fn(),
+  platformAuditLogRepository: ReturnType<typeof fakeAuditRepo> = fakeAuditRepo(),
+): PlatformContainer {
+  return {
+    platformRepository,
+    platformAuthService: { login },
+    platformAuditLogRepository,
+  } as unknown as PlatformContainer;
 }
 
 describe('gate SUPERADMIN -- todo excepto /login', () => {
@@ -296,7 +322,7 @@ describe('PATCH /businesses/:id/status', () => {
       token: superadminToken(), params: { id: 'biz-1' }, body: { status: BusinessStatus.SUSPENDED },
     }));
 
-    expect(platformRepo.updateBusinessStatus).toHaveBeenCalledWith('biz-1', BusinessStatus.SUSPENDED);
+    expect(platformRepo.updateBusinessStatus).toHaveBeenCalledWith('biz-1', BusinessStatus.SUSPENDED, FAKE_TX_CLIENT);
     expect(res.body).toMatchObject({ message: expect.stringContaining('SUSPENDED') });
   });
 
@@ -335,7 +361,7 @@ describe('PATCH /businesses/:id/plan', () => {
       token: superadminToken(), params: { id: 'biz-1' }, body: { plan: BusinessPlan.PRO },
     }));
 
-    expect(platformRepo.updateBusinessPlan).toHaveBeenCalledWith('biz-1', BusinessPlan.PRO);
+    expect(platformRepo.updateBusinessPlan).toHaveBeenCalledWith('biz-1', BusinessPlan.PRO, FAKE_TX_CLIENT);
     expect(res.statusCode).toBeUndefined();
   });
 
@@ -423,7 +449,7 @@ describe('PATCH /businesses/:id/plan', () => {
       }));
 
       expect(platformRepo.deactivateMembership).toHaveBeenCalledExactlyOnceWith('mem-2', 'biz-1', expect.any(String));
-      expect(platformRepo.updateBusinessPlan).toHaveBeenCalledWith('biz-1', BusinessPlan.FREE);
+      expect(platformRepo.updateBusinessPlan).toHaveBeenCalledWith('biz-1', BusinessPlan.FREE, FAKE_TX_CLIENT);
       expect(res.statusCode).toBeUndefined();
     });
 
@@ -502,7 +528,7 @@ describe('GET/PUT /plan-limits', () => {
       body: { maxCategories: 5, maxResources: null, maxActiveMemberships: null, maxCustomRoles: null, allowedRoleNames: ['ADMIN'], allowedPermissionGroups: [] },
     }));
 
-    expect(platformRepo.updatePlanLimits).toHaveBeenCalledWith(BusinessPlan.STARTER, expect.objectContaining({ maxCategories: 5 }));
+    expect(platformRepo.updatePlanLimits).toHaveBeenCalledWith(BusinessPlan.STARTER, expect.objectContaining({ maxCategories: 5 }), FAKE_TX_CLIENT);
     expect(res.statusCode).toBeUndefined();
   });
 });
@@ -530,14 +556,145 @@ describe('GET/PUT /role-presets', () => {
   });
 
   it('PUT /role-presets/:name actualiza los grupos de permiso de un preset existente', async () => {
-    const platformRepo = fakePlatformRepo();
+    // Desde la Fase 2 (28/08/2026) la ruta lee el preset ANTES de escribir,
+    // para poder auditar el valor anterior. El fake tiene que devolverlo: con
+    // `listRolePresets: []` la ruta responde 404 sin llegar a escribir — que
+    // es el comportamiento correcto, no un bug del código.
+    const platformRepo = fakePlatformRepo({
+      listRolePresets: vi.fn(async () => [{ name: 'WAITER', permissionGroups: ['STAFF'] }]),
+    });
     const router = createPlatformRouter(buildContainer(platformRepo));
 
     const res = await runRoute(router, 'put', '/role-presets/:name', reqWith({
       token: superadminToken(), params: { name: 'WAITER' }, body: { permissionGroups: ['ORDERS'] },
     }));
 
-    expect(platformRepo.updateRolePresetPermissionGroups).toHaveBeenCalledWith('WAITER', ['ORDERS']);
+    expect(platformRepo.updateRolePresetPermissionGroups).toHaveBeenCalledWith('WAITER', ['ORDERS'], FAKE_TX_CLIENT);
     expect(res.body).toMatchObject({ name: 'WAITER', permissionGroups: ['ORDERS'] });
+  });
+});
+
+// ===========================================================================
+// Auditoría de plataforma (Fase 2, 28/08/2026)
+// ===========================================================================
+// Hasta hoy, cambiar el plan o suspender un negocio desde el panel de
+// superadmin no dejaba rastro en ningún lado: `audit_log` vive solo en la BD
+// del tenant. Estos tests son la cerca de que eso no vuelva a pasar en
+// silencio si alguien toca las rutas.
+describe('platform_audit_log — rastro de las acciones de SUPERADMIN', () => {
+  it('audita el cambio de estado, con el motivo como campo propio, en la misma transacción', async () => {
+    const platformRepo = fakePlatformRepo();
+    const audit = fakeAuditRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo, vi.fn(), audit));
+
+    await runRoute(router, 'patch', '/businesses/:id/status', reqWith({
+      token: superadminToken(), params: { id: 'biz-1' },
+      body: { status: BusinessStatus.SUSPENDED, reason: 'falta de pago' },
+    }));
+
+    expect(audit.recordWithClient).toHaveBeenCalledOnce();
+    const [client, rows] = audit.recordWithClient.mock.calls[0]! as unknown as [unknown, Array<Record<string, unknown>>];
+
+    // Mismo client que el UPDATE ⇒ misma transacción: o quedan las dos
+    // escrituras o no queda ninguna.
+    expect(client).toBe(FAKE_TX_CLIENT);
+    expect(rows).toEqual([
+      { businessId: 'biz-1', entity: 'businesses', entityId: 'biz-1', field: 'status',
+        oldValue: BusinessStatus.ACTIVE, newValue: BusinessStatus.SUSPENDED, changedBy: 'admin-1' },
+      { businessId: 'biz-1', entity: 'businesses', entityId: 'biz-1', field: 'status_reason',
+        oldValue: null, newValue: 'falta de pago', changedBy: 'admin-1' },
+    ]);
+  });
+
+  it('sin motivo, audita solo el estado (no inventa una fila vacía)', async () => {
+    const platformRepo = fakePlatformRepo();
+    const audit = fakeAuditRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo, vi.fn(), audit));
+
+    await runRoute(router, 'patch', '/businesses/:id/status', reqWith({
+      token: superadminToken(), params: { id: 'biz-1' }, body: { status: BusinessStatus.SUSPENDED },
+    }));
+
+    const [, rows] = audit.recordWithClient.mock.calls[0]! as unknown as [unknown, unknown[]];
+    expect(rows).toHaveLength(1);
+  });
+
+  it('audita el cambio de plan con el plan anterior real', async () => {
+    const platformRepo = fakePlatformRepo();   // fakeBusiness() arranca en STARTER
+    const audit = fakeAuditRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo, vi.fn(), audit));
+
+    await runRoute(router, 'patch', '/businesses/:id/plan', reqWith({
+      token: superadminToken(), params: { id: 'biz-1' }, body: { plan: BusinessPlan.PRO },
+    }));
+
+    const [client, rows] = audit.recordWithClient.mock.calls[0]! as unknown as [unknown, Array<Record<string, unknown>>];
+    expect(client).toBe(FAKE_TX_CLIENT);
+    expect(rows).toEqual([
+      { businessId: 'biz-1', entity: 'businesses', entityId: 'biz-1', field: 'plan',
+        oldValue: BusinessPlan.STARTER, newValue: BusinessPlan.PRO, changedBy: 'admin-1' },
+    ]);
+  });
+
+  it('audita plan_limits con business_id null — es un cambio global, no de un negocio', async () => {
+    const platformRepo = fakePlatformRepo({
+      listPlanLimits: vi.fn(async () => [{
+        plan: BusinessPlan.STARTER, maxCategories: 3, maxResources: null,
+        maxActiveMemberships: null, maxCustomRoles: null,
+        allowedRoleNames: [], allowedPermissionGroups: [],
+      }]),
+    });
+    const audit = fakeAuditRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo, vi.fn(), audit));
+
+    await runRoute(router, 'put', '/plan-limits/:plan', reqWith({
+      token: superadminToken(), params: { plan: BusinessPlan.STARTER },
+      body: {
+        maxCategories: 5, maxResources: null, maxActiveMemberships: null, maxCustomRoles: null,
+        allowedRoleNames: [], allowedPermissionGroups: [],
+      },
+    }));
+
+    const [, rows] = audit.recordWithClient.mock.calls[0]! as unknown as [unknown, Array<Record<string, unknown>>];
+    // Solo maxCategories cambió (3 → 5): diffFields no reporta lo que quedó igual.
+    expect(rows).toEqual([
+      { businessId: null, entity: 'plan_limits', entityId: BusinessPlan.STARTER, field: 'maxCategories',
+        oldValue: 3, newValue: 5, changedBy: 'admin-1' },
+    ]);
+  });
+
+  it('audita role_presets con business_id null y los grupos anteriores', async () => {
+    const platformRepo = fakePlatformRepo({
+      listRolePresets: vi.fn(async () => [{ name: 'WAITER', permissionGroups: ['STAFF'] }]),
+    });
+    const audit = fakeAuditRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo, vi.fn(), audit));
+
+    await runRoute(router, 'put', '/role-presets/:name', reqWith({
+      token: superadminToken(), params: { name: 'WAITER' }, body: { permissionGroups: ['ORDERS'] },
+    }));
+
+    const [, rows] = audit.recordWithClient.mock.calls[0]! as unknown as [unknown, Array<Record<string, unknown>>];
+    expect(rows).toEqual([
+      { businessId: null, entity: 'role_presets', entityId: 'WAITER', field: 'permissionGroups',
+        oldValue: ['STAFF'], newValue: ['ORDERS'], changedBy: 'admin-1' },
+    ]);
+  });
+
+  it('no escribe rastro si el PUT no cambió nada', async () => {
+    // diffFields devuelve [] y recordPlatformChanges es no-op: no se escriben
+    // filas de "nada cambió" (mismo criterio que audit_log del tenant).
+    const platformRepo = fakePlatformRepo({
+      listRolePresets: vi.fn(async () => [{ name: 'WAITER', permissionGroups: ['ORDERS'] }]),
+    });
+    const audit = fakeAuditRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo, vi.fn(), audit));
+
+    await runRoute(router, 'put', '/role-presets/:name', reqWith({
+      token: superadminToken(), params: { name: 'WAITER' }, body: { permissionGroups: ['ORDERS'] },
+    }));
+
+    expect(audit.recordWithClient).not.toHaveBeenCalled();
+    expect(platformRepo.updateRolePresetPermissionGroups).toHaveBeenCalled();
   });
 });

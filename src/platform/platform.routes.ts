@@ -14,6 +14,8 @@ import type { Business } from './platform.repository.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
 import { PlatformRole } from '../types/enums.js';
+import { recordPlatformChanges } from './platform-audit-log.repository.js';
+import { diffFields } from '../domain/audit.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -85,7 +87,7 @@ function firstString(val: unknown): string | undefined {
 
 export function createPlatformRouter(container: PlatformContainer): Router {
   const router = Router();
-  const { platformRepository, platformAuthService } = container;
+  const { platformRepository, platformAuthService, platformAuditLogRepository } = container;
 
   router.post(
     '/login',
@@ -218,10 +220,25 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           res.status(400).json({ code: 'SAME_STATUS', message: `El negocio ya está en estado ${body.status}.` });
           return;
         }
-        await platformRepository.updateBusinessStatus(business.id, body.status as BusinessStatus);
-        if (body.reason) {
-          console.info(`[platform] Negocio ${business.id} (${business.name}) → ${body.status}. Motivo: ${body.reason}`);
-        }
+        // El cambio de estado y su rastro van en la MISMA transacción
+        // (28/08/2026, Fase 2): suspender un negocio le corta el acceso a
+        // todo su personal, es de lo más disputable que hace el superadmin.
+        // Antes no quedaba registro de quién ni cuándo en ningún lado.
+        await platformRepository.runInTransaction(async (client) => {
+          await platformRepository.updateBusinessStatus(business.id, body.status as BusinessStatus, client);
+          await recordPlatformChanges(
+            client,
+            platformAuditLogRepository,
+            { businessId: business.id, entity: 'businesses', entityId: business.id, changedBy: req.platformUser!.id },
+            // `reason` viaja como campo propio, no concatenado al valor: es un
+            // dato aparte y hasta hoy solo iba a console.info (se perdía con
+            // el log). oldValue null — no había motivo previo que reemplazar.
+            [
+              { field: 'status', oldValue: business.status, newValue: body.status },
+              ...(body.reason ? [{ field: 'status_reason', oldValue: null, newValue: body.reason }] : []),
+            ],
+          );
+        });
         const updated = await platformRepository.findById(business.id);
         res.json({ message: `Estado actualizado a ${body.status}`, business: updated ? toBusinessDto(updated) : null });
       } catch (err) { next(err); }
@@ -295,7 +312,20 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           }
         }
 
-        await platformRepository.updateBusinessPlan(business.id, body.plan);
+        // Las desactivaciones de membresías de arriba ya dejaron su propio
+        // rastro A6.5 en `memberships` (deactivated_by/deactivated_at) — acá
+        // se audita el cambio de plan en sí, que es lo que no quedaba en
+        // ningún lado.
+        await platformRepository.runInTransaction(async (client) => {
+          await platformRepository.updateBusinessPlan(business.id, body.plan, client);
+          await recordPlatformChanges(
+            client,
+            platformAuditLogRepository,
+            { businessId: business.id, entity: 'businesses', entityId: business.id, changedBy: req.platformUser!.id },
+            [{ field: 'plan', oldValue: business.plan, newValue: body.plan }],
+          );
+        });
+
         const updated = await platformRepository.findById(business.id);
         res.json({ message: `Plan actualizado a ${body.plan}`, business: updated ? toBusinessDto(updated) : null });
       } catch (err) { next(err); }
@@ -360,7 +390,27 @@ export function createPlatformRouter(container: PlatformContainer): Router {
           return;
         }
         const body = UpdatePlanLimitsSchema.parse(req.body);
-        const updated = await platformRepository.updatePlanLimits(plan as BusinessPlan, body);
+
+        // business_id NULL: editar un plan afecta a TODOS los negocios de ese
+        // plan, presentes y futuros. Es el cambio de mayor alcance de todo el
+        // panel y era el que menos rastro dejaba.
+        const before = (await platformRepository.listPlanLimits()).find((p) => p.plan === plan);
+
+        const updated = await platformRepository.runInTransaction(async (client) => {
+          const result = await platformRepository.updatePlanLimits(plan as BusinessPlan, body, client);
+          await recordPlatformChanges(
+            client,
+            platformAuditLogRepository,
+            { businessId: null, entity: 'plan_limits', entityId: plan, changedBy: req.platformUser!.id },
+            // `before` puede no existir si el plan no tenía fila (no debería:
+            // se seedean los 4 juntos). Con undefined, diffFields reporta
+            // todos los campos como cambio — es lo correcto, no hay estado
+            // anterior conocido que declarar igual.
+            diffFields(before ?? {}, body),
+          );
+          return result;
+        });
+
         res.json(updated);
       } catch (err) { next(err); }
     },
@@ -387,11 +437,27 @@ export function createPlatformRouter(container: PlatformContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = UpdateRolePresetSchema.parse(req.body);
-        const updated = await platformRepository.updateRolePresetPermissionGroups(String(req.params['name']), body.permissionGroups);
-        if (!updated) {
+        const name = String(req.params['name']);
+
+        const before = (await platformRepository.listRolePresets()).find((p) => p.name === name);
+        if (!before) {
           res.status(404).json({ code: 'NOT_FOUND', message: 'Preset de rol no encontrado' });
           return;
         }
+
+        // business_id NULL, igual que plan_limits: editar un preset cambia
+        // con qué permisos nace todo negocio creado de acá en adelante.
+        const updated = await platformRepository.runInTransaction(async (client) => {
+          const result = await platformRepository.updateRolePresetPermissionGroups(name, body.permissionGroups, client);
+          await recordPlatformChanges(
+            client,
+            platformAuditLogRepository,
+            { businessId: null, entity: 'role_presets', entityId: name, changedBy: req.platformUser!.id },
+            diffFields(before, { permissionGroups: body.permissionGroups }),
+          );
+          return result;
+        });
+
         res.json(updated);
       } catch (err) { next(err); }
     },
