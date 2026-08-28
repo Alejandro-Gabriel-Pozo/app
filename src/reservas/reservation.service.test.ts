@@ -1938,7 +1938,14 @@ describe('ReservationService', () => {
       ).rejects.toThrow(RatePlanNotAvailableError);
     });
 
-    it('rechaza una tarifa fuera de su vigencia (validFrom/validTo)', async () => {
+    // Temporada (28/08/2026, pendientes-2026-08-27.md ítem 5) -- antes esto
+    // RECHAZABA la reserva completa (RatePlanNotAvailableError) si la fecha
+    // de INICIO caía fuera de la vigencia de la fila elegida. Ahora resuelve
+    // por noche: sin ninguna fila de temporada que cubra esa noche puntual,
+    // cae al precio de CATÁLOGO del servicio (mismo fallback que "sin
+    // ratePlanId elegido") en vez de romper toda la cotización -- un hueco
+    // de configuración en una noche no debe impedir reservar.
+    it('sin ninguna fila de temporada vigente esa noche, cae al precio de catálogo (ya no rechaza)', async () => {
       bookableServiceRepo.seed({
         id: 'svc-doble-5', categoryId: 'cat-table', name: 'Habitación Doble 5',
         bookingMode: 'block', durationMinutes: null, price: 15000,
@@ -1951,15 +1958,54 @@ describe('ReservationService', () => {
         createdAt: new Date(), updatedAt: new Date(),
       });
 
-      // La reserva es en julio, la tarifa solo vale en junio.
-      await expect(
-        service.createReservation({
-          id: 'res-rate-plan-5', resourceId: 't1', serviceId: 'svc-doble-5', ratePlanId: 'rp-temporada',
-          customer,
-          startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
-          details: {},
-        }),
-      ).rejects.toThrow(RatePlanNotAvailableError);
+      // La reserva es en julio, la única fila de "Temporada baja" solo vale en junio.
+      const reservation = await service.createReservation({
+        id: 'res-rate-plan-5', resourceId: 't1', serviceId: 'svc-doble-5', ratePlanId: 'rp-temporada',
+        customer,
+        startTime: new Date('2026-07-10T15:00:00'), endTime: new Date('2026-07-11T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.totalPrice).toBe(15000); // precio de catálogo de svc-doble-5, no 12000 ni un error
+    });
+
+    // El bug real reportado (pendientes-2026-08-27.md): una estadía que
+    // cruza el cambio de temporada cobraba TODAS las noches a la tarifa del
+    // día de entrada. Dos filas "Estadía" con el MISMO nombre y vigencias
+    // consecutivas sin solapar (permitido desde este fix, ver
+    // excl_rate_plans_overlapping_validity en schema.sql) -- cada noche debe
+    // cobrar la que le corresponde.
+    it('una estadía que cruza el cambio de temporada cobra cada noche a SU tarifa, no todas a la del día de entrada', async () => {
+      bookableServiceRepo.seed({
+        id: 'svc-cruce-temporada', categoryId: 'cat-table', name: 'Cabaña Lago',
+        bookingMode: 'block', durationMinutes: null, price: 10000,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-alta', serviceId: 'svc-cruce-temporada', name: 'Estadía', price: 15000,
+        includesBreakfast: false, cancellationPolicy: null,
+        validFrom: '2026-02-01', validTo: '2026-02-28', active: true,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+      bookableServiceRepo.seedRatePlan({
+        id: 'rp-baja', serviceId: 'svc-cruce-temporada', name: 'Estadía', price: 10000,
+        includesBreakfast: false, cancellationPolicy: null,
+        validFrom: '2026-03-01', validTo: null, active: true,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      // 28/02 (alta) -> 05/03 (baja): 5 noches (28-feb, 1/2/3/4-mar) --
+      // 1 a $15000 + 4 a $10000.
+      const reservation = await service.createReservation({
+        id: 'res-cruce-temporada', resourceId: 't1', serviceId: 'svc-cruce-temporada', ratePlanId: 'rp-alta',
+        customer,
+        startTime: new Date('2026-02-28T15:00:00'), endTime: new Date('2026-03-05T10:00:00'),
+        details: {},
+      });
+
+      expect(reservation.lines).toHaveLength(5);
+      expect(reservation.lines.map((l) => l.price)).toEqual([15000, 10000, 10000, 10000, 10000]);
+      expect(reservation.totalPrice).toBe(15000 + 10000 * 4); // 55000, NO 15000 * 5 (75000, el bug reportado)
     });
 
     it('acepta una tarifa vigente dentro de su rango validFrom/validTo', async () => {

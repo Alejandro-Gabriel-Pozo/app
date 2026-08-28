@@ -127,14 +127,65 @@ dejó construida es la que hizo posible probarlo.
 
 ## FASE 3 — Deuda de cobro promovida (features reales; `respaldo` + skill `criterios-negocio`)
 
-### 5. 🔴 Temporada que cruza el rango de la estadía — ⏳ PENDIENTE (bug de cobro vivo)
+### 5. 🔴 Temporada que cruza el rango de la estadía — ✅ RESUELTO (28/08/2026)
 
-`rate_plans.valid_from`/`valid_to` se valida solo contra la fecha de **inicio** y
-todas las líneas llevan el mismo precio unitario. Estadía 28/02→05/03 cobra las 6
-noches a tarifa alta. **No es fix chico:** es el motor de tarifa por noche que
-`buildLines()` anticipa como estructura pero no implementa.
-**Fix:** resolver la tarifa por noche contra la fecha de cada línea en
-`buildLines()`. **Verif.:** reserva que cruza el borde cobra cada noche a su tarifa.
+`rate_plans.valid_from`/`valid_to` se validaba solo contra la fecha de
+**inicio** y todas las líneas llevaban el mismo precio unitario. Estadía
+28/02→05/03 cobraba las 5 noches a tarifa alta.
+
+**Diseño acordado con el dueño** (arquitectura completa: base/temporada/
+fecha especial/revenue management, en capas — ver el intercambio de esta
+sesión): se implementó la **Fase 1** (resolución determinística por noche),
+deliberadamente SIN fechas especiales ni revenue management todavía.
+
+**Causa raíz real, más profunda que "falta lógica en buildLines()":**
+`rate_plans` tenía `UNIQUE (service_id, name)` — era **literalmente
+imposible** cargar "Estadía" dos veces con vigencias distintas, pese a que
+el comentario original de la tabla (18/08) ya anticipaba "temporada alta/
+baja". Sin poder cargar el dato, ningún cambio de lógica solo hubiera
+alcanzado.
+
+**Implementado:**
+- **Schema (v43):** `UNIQUE(service_id, name)` → `EXCLUDE USING gist
+  (service_id WITH =, upper(btrim(name)) WITH =, daterange(valid_from,
+  valid_to + 1, '[)') WITH &&) WHERE (active = TRUE)`. Dos cuidados
+  técnicos que el dueño señaló explícitamente y quedaron implementados: (1)
+  rango **semiabierto** `[from, to+1)` para que una temporada que termina el
+  30/06 y otra que empieza el 01/07 no se detecten como falso solapamiento;
+  (2) `service_id` es NOT NULL (sin ambigüedad de NULL en el `WITH =`) y
+  `upper(btrim(name))` para la misma unicidad normalizada que R6.
+- **`bookable-service.service.ts`:** `addRatePlan()`/`updateRatePlan()` ya
+  no rechazan CUALQUIER nombre repetido — solo uno cuya vigencia se solapa
+  (`validityRangesOverlap()`, espejo en JS del EXCLUDE de la base — A8.2,
+  guard legible + constraint dura).
+- **`reservation-pricing.service.ts`:** `resolveUnitPrice()` devuelve un
+  `priceForDate(unitDate)` en vez de un `unitPrice` fijo. Para el escalón
+  `ratePlanId`, resuelve TODAS las filas que comparten (service_id, name)
+  con el plan elegido UNA sola vez (no una consulta por noche), y
+  `resolveSeasonalPrice()` elige la vigente para cada noche. Sin ninguna que
+  cubra una noche puntual, cae al precio de catálogo del servicio (mismo
+  fallback que "sin ratePlanId elegido" — A3.x, nunca 0/null). Los demás
+  escalones (tarifa de cliente, catálogo plano, precio base) siguen sin
+  variar por fecha — no tienen concepto de temporada.
+- Reservas ya confirmadas: sin cambios (R9, snapshot ya congelado).
+
+**Deliberadamente NO en esta tanda** (documentado, no lo pidió el dueño
+para este fix puntual): fechas especiales como entidad separada, revenue
+management, estado borrador/publicada, floor/ceiling price, pantalla de
+"Tarifas y calendario" con las 3 vistas.
+
+**Verificado:**
+- `tsc`/`eslint` limpios, **suite local 1566/1566** (7 tests nuevos: el bug
+  real reproducido con `lines` por noche a precio distinto, el fallback a
+  catálogo, y 4 tests de `addRatePlan`/`updateRatePlan` sobre solape/no
+  solape/rango semiabierto/update que introduce un solape nuevo).
+- **Contra Postgres real** (`TEST_DATABASE_URL`, branch `test-integration-db`):
+  suite de integración completa 25/25 (schema v43 aplica limpio desde
+  cero) + `rate-plans-seasonal-exclude.integration.test.ts` nuevo, 5/5 —
+  prueba EN VIVO los dos cuidados técnicos del dueño: rechaza solape real,
+  permite temporadas consecutivas, el rango semiabierto no genera falso
+  conflicto en el borde 30/06→01/07, nombre normalizado, y `active=FALSE`
+  nunca bloquea (R2/R3).
 
 ### 6. 🟠 Rate plans no reutilizables entre servicios — ⏳ PENDIENTE
 

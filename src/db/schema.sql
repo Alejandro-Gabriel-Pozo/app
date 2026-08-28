@@ -3242,3 +3242,49 @@ UPDATE products SET sku = 'SKU-PLACEHOLDER-' || substr(id, 1, 8)
   WHERE sku IS NULL;
 ALTER TABLE products ALTER COLUMN sku SET NOT NULL;
 
+-- ---------------------------------------------------------------------------
+-- rate_plans -- temporada que cruza el rango de la estadía (28/08/2026,
+-- pendientes-2026-08-27.md ítem 5 -- bug de cobro vivo,
+-- plan-resolucion-bugs-deuda-2026-08-27.md). Antes UNIQUE (service_id, name)
+-- hacía IMPOSIBLE cargar "Estadía" dos veces con vigencias distintas
+-- (temporada alta/baja), pese a que el comentario original de la tabla
+-- (18/08, BLOQUE de rate_plans arriba en este archivo) ya anticipaba ese
+-- caso de uso ("Igual patrón de vigencia... que un rate plan hotelero sí
+-- necesita, temporada alta/baja"). Se reemplaza por un EXCLUDE: varias
+-- filas pueden compartir (service_id, nombre normalizado) SIEMPRE que sus
+-- vigencias no se solapen -- reservation-pricing.service.ts las resuelve
+-- por NOCHE (unitDate de cada reservation_line), no una sola vez contra el
+-- inicio de la reserva como hacía resolveRatePlanPrice() antes de este fix.
+--
+-- Rango SEMIABIERTO [valid_from, valid_to + 1) en la expresión del EXCLUDE
+-- -- decisión explícita del dueño (28/08/2026): de cara al usuario/JS la
+-- vigencia sigue siendo INCLUSIVE en los dos extremos (30/06 incluido),
+-- pero el operador `&&` de daterange es semiabierto por defecto -- sin el
+-- +1, dos temporadas consecutivas (una hasta 30/06, otra desde 01/07) se
+-- detectarían como solapadas por error, un falso conflicto. NULL en
+-- cualquier extremo de daterange() = sin límite de ese lado (propaga solo
+-- a través de valid_to + 1, no hace falta COALESCE). service_id es NOT
+-- NULL (columna de la tabla) -- WITH = nunca compara contra NULL ahí, sin
+-- ambigüedad de semántica de NULL en el EXCLUDE.
+--
+-- upper(btrim(name)) en vez de name crudo -- misma unicidad normalizada
+-- que R6 (criterios-datos.md, ver resources_code_uniq más arriba).
+--
+-- WHERE (active = TRUE) -- R2/R3: una tarifa desactivada nunca bloquea
+-- crear una nueva con el mismo nombre/vigencia (mismo criterio que
+-- reservations_no_overlap_exclusive más arriba, que solo protege
+-- PENDING/CONFIRMED). btree_gist ya se habilitó para ese EXCLUDE -- se
+-- repite acá IF NOT EXISTS por las dudas (idempotente, no rompe nada si ya
+-- existe), para que este bloque no dependa de dónde caiga en el archivo.
+-- ---------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+ALTER TABLE rate_plans DROP CONSTRAINT IF EXISTS uq_rate_plans_service_name;
+ALTER TABLE rate_plans DROP CONSTRAINT IF EXISTS excl_rate_plans_overlapping_validity;
+ALTER TABLE rate_plans ADD CONSTRAINT excl_rate_plans_overlapping_validity
+  EXCLUDE USING gist (
+    service_id WITH =,
+    upper(btrim(name)) WITH =,
+    daterange(valid_from, valid_to + 1, '[)') WITH &&
+  ) WHERE (active = TRUE);
+

@@ -223,10 +223,65 @@ describe('BookableServiceService — Rate Plans', () => {
     expect(plans).toHaveLength(3);
   });
 
-  it('rechaza un nombre de tarifa duplicado para el mismo servicio', async () => {
+  it('rechaza un nombre de tarifa duplicado con vigencia sin límite (siempre se solapa) para el mismo servicio', async () => {
     await service.addRatePlan('svc-doble', { name: 'Rack', price: 20000 });
     await expect(
       service.addRatePlan('svc-doble', { name: 'rack', price: 21000 }), // case-insensitive
+    ).rejects.toBeInstanceOf(DuplicateRatePlanNameError);
+  });
+
+  // Temporada (28/08/2026, pendientes-2026-08-27.md ítem 5) -- antes esto
+  // rechazaba SIEMPRE que el nombre se repitiera, sin importar la vigencia.
+  // Ahora solo rechaza si las vigencias se SOLAPAN -- permite cargar
+  // "Estadía" temporada alta y "Estadía" temporada baja como dos filas.
+  it('permite el mismo nombre con vigencias que NO se solapan (temporada alta/baja)', async () => {
+    const alta = await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 15000, validFrom: '2026-02-01', validTo: '2026-02-28',
+    });
+    const baja = await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 10000, validFrom: '2026-03-01', validTo: null,
+    });
+
+    expect(alta.name).toBe('Estadía');
+    expect(baja.name).toBe('Estadía');
+    const plans = await service.listRatePlans('svc-doble');
+    expect(plans).toHaveLength(2);
+  });
+
+  it('rechaza el mismo nombre con vigencias que SÍ se solapan', async () => {
+    await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 15000, validFrom: '2026-02-01', validTo: '2026-02-28',
+    });
+    await expect(
+      service.addRatePlan('svc-doble', {
+        // Se solapa con la anterior (comparte el 15/02-28/02).
+        name: 'Estadía', price: 12000, validFrom: '2026-02-15', validTo: '2026-03-15',
+      }),
+    ).rejects.toBeInstanceOf(DuplicateRatePlanNameError);
+  });
+
+  it('el rango es semiabierto: una temporada que termina el 30/06 y otra que empieza el 01/07 NO se solapan', async () => {
+    await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 15000, validFrom: '2026-01-01', validTo: '2026-06-30',
+    });
+    const segunda = await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 10000, validFrom: '2026-07-01', validTo: '2026-12-31',
+    });
+    expect(segunda.validFrom).toBe('2026-07-01');
+  });
+
+  it('updateRatePlan rechaza si cambiar SOLO la vigencia (mismo nombre) genera un solape nuevo', async () => {
+    await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 15000, validFrom: '2026-02-01', validTo: '2026-02-28',
+    });
+    const baja = await service.addRatePlan('svc-doble', {
+      name: 'Estadía', price: 10000, validFrom: '2026-03-01', validTo: '2026-12-31',
+    });
+
+    // Estirar "baja" hacia atrás hasta pisar a "alta" -- mismo nombre, sin
+    // tocarlo, solo la fecha.
+    await expect(
+      service.updateRatePlan(baja.id, { validFrom: '2026-02-15' }),
     ).rejects.toBeInstanceOf(DuplicateRatePlanNameError);
   });
 

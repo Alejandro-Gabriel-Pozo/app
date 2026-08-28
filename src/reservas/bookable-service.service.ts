@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { DateTime } from 'luxon';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
 import type {
   BookableService,
@@ -53,7 +54,11 @@ export class RatePlanNotFoundError extends DomainError {
 
 export class DuplicateRatePlanNameError extends DomainError {
   constructor(name: string) {
-    super(`Ya existe una tarifa llamada '${name}' para este servicio.`, 'DUPLICATE_RATE_PLAN_NAME');
+    // Temporada (28/08/2026, pendientes-2026-08-27.md ítem 5) — ya NO es
+    // "nunca repetir el nombre" (eso bloqueaba cargar temporada alta/baja
+    // de la misma tarifa), sino "no repetirlo con una vigencia que se
+    // solapa" — ver validityRangesOverlap() más abajo.
+    super(`Ya existe una tarifa llamada '${name}' con una vigencia que se solapa para este servicio.`, 'DUPLICATE_RATE_PLAN_NAME');
   }
 }
 
@@ -200,10 +205,17 @@ export class BookableServiceService {
 
     assertValidRange(data.validFrom, data.validTo);
 
+    // Temporada (28/08/2026) — ya no rechaza CUALQUIER nombre repetido, solo
+    // uno cuya vigencia se solapa con la de un hermano existente. Espejo del
+    // EXCLUDE de la base (excl_rate_plans_overlapping_validity, schema.sql) —
+    // este chequeo da el error legible en el camino normal; el EXCLUDE es la
+    // garantía dura contra una carrera (A8.2).
     const existing = await this.repo.findRatePlansByService(serviceId);
-    if (existing.some((rp) => rp.name.toLowerCase() === data.name.toLowerCase())) {
-      throw new DuplicateRatePlanNameError(data.name);
-    }
+    const conflict = existing.find((rp) =>
+      rp.name.toLowerCase() === data.name.toLowerCase()
+      && validityRangesOverlap(rp.validFrom, rp.validTo, data.validFrom, data.validTo),
+    );
+    if (conflict) throw new DuplicateRatePlanNameError(data.name);
 
     return this.repo.createRatePlan({ id: randomUUID(), serviceId, ...data });
   }
@@ -212,17 +224,22 @@ export class BookableServiceService {
     const existing = await this.repo.findRatePlanById(ratePlanId);
     if (!existing) throw new RatePlanNotFoundError(ratePlanId);
 
-    assertValidRange(
-      data.validFrom !== undefined ? data.validFrom : existing.validFrom,
-      data.validTo   !== undefined ? data.validTo   : existing.validTo,
-    );
+    const effectiveName     = data.name      !== undefined ? data.name      : existing.name;
+    const effectiveFrom     = data.validFrom !== undefined ? data.validFrom : existing.validFrom;
+    const effectiveTo       = data.validTo   !== undefined ? data.validTo   : existing.validTo;
 
-    if (data.name !== undefined && data.name.toLowerCase() !== existing.name.toLowerCase()) {
-      const siblings = await this.repo.findRatePlansByService(existing.serviceId);
-      if (siblings.some((rp) => rp.id !== ratePlanId && rp.name.toLowerCase() === data.name!.toLowerCase())) {
-        throw new DuplicateRatePlanNameError(data.name);
-      }
-    }
+    assertValidRange(effectiveFrom, effectiveTo);
+
+    // Se chequea siempre (no solo cuando cambia el nombre) — editar SOLO la
+    // vigencia de una fila puede hacerla solapar con un hermano del mismo
+    // nombre igual que renombrarla. Mismo criterio de solape que addRatePlan().
+    const siblings = await this.repo.findRatePlansByService(existing.serviceId);
+    const conflict = siblings.find((rp) =>
+      rp.id !== ratePlanId
+      && rp.name.toLowerCase() === effectiveName.toLowerCase()
+      && validityRangesOverlap(rp.validFrom, rp.validTo, effectiveFrom, effectiveTo),
+    );
+    if (conflict) throw new DuplicateRatePlanNameError(effectiveName);
 
     return this.repo.updateRatePlan(ratePlanId, data);
   }
@@ -241,4 +258,28 @@ function assertValidRange(validFrom: string | null | undefined, validTo: string 
   if (validFrom && validTo && validTo < validFrom) {
     throw new InvalidRatePlanValidityError();
   }
+}
+
+/**
+ * ¿Se solapan dos vigencias [from, to] (fechas de calendario YYYY-MM-DD,
+ * INCLUSIVE en los dos extremos de cara al usuario)? Espejo en JS del
+ * EXCLUDE de la base (excl_rate_plans_overlapping_validity, schema.sql) —
+ * mismo rango SEMIABIERTO [from, to+1) para que una temporada que termina
+ * el 30/06 y otra que empieza el 01/07 NO se detecten como solapadas
+ * (decisión explícita del dueño, 28/08/2026). NULL en cualquier extremo =
+ * sin límite de ese lado.
+ */
+function validityRangesOverlap(
+  aFrom: string | null | undefined, aTo: string | null | undefined,
+  bFrom: string | null | undefined, bTo: string | null | undefined,
+): boolean {
+  const MIN_DATE = '0001-01-01';
+  const MAX_DATE_EXCLUSIVE = '9999-12-31';
+
+  const aStart = aFrom ?? MIN_DATE;
+  const aEndExclusive = aTo ? DateTime.fromISO(aTo).plus({ days: 1 }).toISODate()! : MAX_DATE_EXCLUSIVE;
+  const bStart = bFrom ?? MIN_DATE;
+  const bEndExclusive = bTo ? DateTime.fromISO(bTo).plus({ days: 1 }).toISODate()! : MAX_DATE_EXCLUSIVE;
+
+  return aStart < bEndExclusive && bStart < aEndExclusive;
 }

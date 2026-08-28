@@ -305,7 +305,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // `reservations_no_overlap_exclusive` (EXCLUDE USING gist, requiere
 // btree_gist) como respaldo A8.2 del fix aplicativo
 // (`ResourceRepository.lockByIds()`).
-export const CURRENT_SCHEMA_VERSION = 42;
+// v43 (28/08/2026): temporada que cruza el rango de la estadía (bug de
+// cobro vivo, pendientes-2026-08-27.md ítem 5). `rate_plans` cambia
+// UNIQUE(service_id, name) por `excl_rate_plans_overlapping_validity`
+// (EXCLUDE USING gist, rango semiabierto) -- varias filas pueden compartir
+// nombre si sus vigencias no se solapan, resueltas por noche en
+// reservation-pricing.service.ts.
+export const CURRENT_SCHEMA_VERSION = 43;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

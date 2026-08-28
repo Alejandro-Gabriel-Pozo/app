@@ -21,7 +21,7 @@
  */
 
 import type { PhysicalResource } from './resource.entities.js';
-import type { BookableService } from './bookable-service.types.js';
+import type { BookableService, RatePlan } from './bookable-service.types.js';
 import { InvalidReservationError, RatePlanNotAvailableError } from '../domain/errors.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
@@ -100,15 +100,19 @@ export class ReservationPricingService {
    * por noche si `bookingMode: 'block'`, una única línea para todo lo
    * demás — ver reservation_lines en db/schema.sql).
    *
-   * El precio UNITARIO (por noche o por turno) se resuelve con el mismo
-   * orden que antes: tarifa especial de cliente+servicio > precio de
-   * catálogo del servicio > tarifa especial de cliente+recurso > precio
-   * base del recurso. Todas las líneas de una misma reserva reciben hoy el
-   * mismo precio unitario — no existe (todavía) nada que lo varíe por
-   * fecha dentro de la misma reserva; `buildLines()` es la estructura que
-   * lo permitiría el día que exista un motor de tarifas por temporada, no
-   * ese motor en sí. `totalPrice` es la suma de las líneas, no un cálculo
-   * aparte — evita que las dos cosas puedan desincronizarse.
+   * El precio se resuelve con el mismo orden que antes: tarifa especial de
+   * cliente+servicio > tarifa elegida (`ratePlanId`) > precio de catálogo
+   * del servicio > tarifa especial de cliente+recurso > precio base del
+   * recurso. Cuando el escalón que gana es una tarifa elegida (`ratePlanId`)
+   * de un servicio `block`, el precio se resuelve POR NOCHE contra la fecha
+   * de cada línea (temporada, 28/08/2026, pendientes-2026-08-27.md ítem 5 —
+   * antes era el mismo precio para todas las noches, resuelto una sola vez
+   * contra el inicio de la reserva; una estadía que cruzaba un cambio de
+   * temporada cobraba TODAS las noches a la tarifa del día de entrada). Los
+   * demás escalones (tarifa de cliente, catálogo, precio base) siguen sin
+   * variar por fecha — no tienen concepto de temporada, ver
+   * resolveUnitPrice(). `totalPrice` es la suma de las líneas, no un
+   * cálculo aparte — evita que las dos cosas puedan desincronizarse.
    */
   async resolvePrice(params: {
     customerId: string;
@@ -136,8 +140,8 @@ export class ReservationPricingService {
       ? this.calculateNights(params.startTime, params.endTime)
       : 1;
 
-    const { unitPrice, appliedCustomerRateId } = await this.resolveUnitPrice(params);
-    const lines = this.buildLines(params.startTime, units, unitPrice);
+    const { priceForDate, appliedCustomerRateId } = await this.resolveUnitPrice(params);
+    const lines = this.buildLines(params.startTime, units, priceForDate);
     const totalPrice = lines.reduce((sum, line) => sum + line.price, 0);
 
     return { totalPrice, lines, appliedCustomerRateId };
@@ -161,7 +165,7 @@ export class ReservationPricingService {
     service: BookableService | null;
     startTime?: Date;
     endTime?: Date;
-  }): Promise<{ unitPrice: number; appliedCustomerRateId: string | null }> {
+  }): Promise<{ priceForDate: (unitDate: Date) => number; appliedCustomerRateId: string | null }> {
     if (params.serviceId) {
       // categoryId del SERVICIO -- '' si `service` no vino cargado (mismo
       // caso ya tolerado por requireServicePrice más abajo). '' nunca
@@ -181,23 +185,44 @@ export class ReservationPricingService {
         // el nivel del scope (ítem/categoría/bucket) -- el eje servicio
         // sigue ganando entre ejes con cualquier nivel (decisión
         // confirmada con el dueño, docs/diseno-scope-multinivel-tarifas-2026-08-22.md).
-        return {
-          unitPrice: this.resolveRateAmount(serviceRate, this.requireServicePrice(params)),
-          appliedCustomerRateId: serviceRate.id,
-        };
+        // Sin variación por fecha -- un descuento negociado por cliente no
+        // tiene concepto de temporada.
+        const amount = this.resolveRateAmount(serviceRate, this.requireServicePrice(params));
+        return { priceForDate: () => amount, appliedCustomerRateId: serviceRate.id };
       }
 
       if (params.ratePlanId) {
         // ratePlanId es un escalón DISTINTO de CustomerRate (D7,
         // 22/08/2026) -- elegir un rate_plan público no es un descuento
-        // negociado, así que no cuenta como "tarifa aplicada" para ese reporte.
+        // negociado, así que no cuenta como "tarifa aplicada" para ese
+        // reporte.
+        //
+        // Temporada (28/08/2026) -- el operador elige un PLAN por NOMBRE
+        // (ej. "Con desayuno"), no una fila puntual: pueden existir varias
+        // filas activas con ese mismo (service_id, name), cada una vigente
+        // en un rango de fechas distinto (excl_rate_plans_overlapping_
+        // validity en schema.sql garantiza que nunca se solapan). Se
+        // resuelven TODAS acá, UNA sola vez (no una consulta por noche) --
+        // resolveSeasonalPrice() elige, para cada unitDate, la fila
+        // vigente esa fecha.
+        const chosenPlan = await this.bookableServiceRepository.findRatePlanById(params.ratePlanId);
+        if (!chosenPlan) throw new RatePlanNotAvailableError(params.ratePlanId, 'no existe');
+        if (!chosenPlan.active) throw new RatePlanNotAvailableError(params.ratePlanId, 'está desactivada');
+
+        const siblings = await this.bookableServiceRepository.findRatePlansByService(chosenPlan.serviceId);
+        const seasonRows = siblings.filter((rp) => rp.name.toLowerCase() === chosenPlan.name.toLowerCase());
+        const fallbackPrice = this.requireServicePrice(params);
+
         return {
-          unitPrice: await this.resolveRatePlanPrice(params.ratePlanId, params.startTime, params.endTime),
+          priceForDate: (unitDate) => this.resolveSeasonalPrice(seasonRows, unitDate, fallbackPrice),
           appliedCustomerRateId: null,
         };
       }
 
-      if (params.service) return { unitPrice: params.service.price, appliedCustomerRateId: null };
+      if (params.service) {
+        const price = params.service.price;
+        return { priceForDate: () => price, appliedCustomerRateId: null };
+      }
     }
 
     const resourceCategory = await this.categoryRepository.findById(params.resource.categoryId);
@@ -208,13 +233,12 @@ export class ReservationPricingService {
       resourceCategory?.isLodging ?? false,
     );
     if (resourceRate) {
-      return {
-        unitPrice: this.resolveRateAmount(resourceRate, params.resource.basePrice),
-        appliedCustomerRateId: resourceRate.id,
-      };
+      const amount = this.resolveRateAmount(resourceRate, params.resource.basePrice);
+      return { priceForDate: () => amount, appliedCustomerRateId: resourceRate.id };
     }
 
-    return { unitPrice: params.resource.basePrice, appliedCustomerRateId: null };
+    const basePrice = params.resource.basePrice;
+    return { priceForDate: () => basePrice, appliedCustomerRateId: null };
   }
 
   /**
@@ -248,40 +272,42 @@ export class ReservationPricingService {
   }
 
   /**
-   * Valida que la tarifa elegida exista, esté activa, y que el rango de la
-   * reserva caiga dentro de su vigencia (`validFrom`/`validTo`, fechas de
-   * calendario) — chequea la fecha de INICIO únicamente; una estadía que
-   * empieza dentro de la vigencia pero termina después queda fuera de
-   * alcance de esta pasada (simplificación deliberada, mismo criterio que
-   * el resto de "no resolver todos los bordes sin caso de uso real").
+   * Temporada (28/08/2026) — para UNA noche puntual, busca entre
+   * `seasonRows` (todas las filas activas que comparten (service_id, name)
+   * con el plan elegido por el operador/cliente) la que tiene vigencia
+   * sobre esa fecha. `validFrom`/`validTo` son fechas de calendario
+   * (YYYY-MM-DD), INCLUSIVE en los dos extremos — comparación por string
+   * ISO, mismo criterio que ya usaba la versión anterior de este chequeo
+   * (`resolveRatePlanPrice()`, ahora reemplazado). NULL en cualquier
+   * extremo = sin límite de ese lado. `excl_rate_plans_overlapping_validity`
+   * (schema.sql) garantiza que nunca hay dos filas del mismo nombre
+   * vigentes la misma fecha -- como mucho una matchea.
+   *
+   * Sin ninguna fila que cubra la fecha (hueco de configuración -- nadie
+   * cargó la temporada de esa noche), cae al precio de CATÁLOGO del
+   * servicio (`fallbackPrice`) -- mismo fallback que ya existía para "sin
+   * ratePlanId elegido en absoluto". Un hueco puntual en una noche no debe
+   * romper la cotización completa de la estadía (A3.x: nunca 0/null).
    */
-  private async resolveRatePlanPrice(ratePlanId: string, startTime: Date | undefined, _endTime: Date | undefined): Promise<number> {
-    const ratePlan = await this.bookableServiceRepository.findRatePlanById(ratePlanId);
-    if (!ratePlan) throw new RatePlanNotAvailableError(ratePlanId, 'no existe');
-    if (!ratePlan.active) throw new RatePlanNotAvailableError(ratePlanId, 'está desactivada');
-
-    if (startTime) {
-      const dateStr = startTime.toISOString().slice(0, 10);
-      if (ratePlan.validFrom && dateStr < ratePlan.validFrom) {
-        throw new RatePlanNotAvailableError(ratePlanId, `no es válida hasta ${ratePlan.validFrom}`);
-      }
-      if (ratePlan.validTo && dateStr > ratePlan.validTo) {
-        throw new RatePlanNotAvailableError(ratePlanId, `dejó de ser válida el ${ratePlan.validTo}`);
-      }
-    }
-
-    return ratePlan.price;
+  private resolveSeasonalPrice(seasonRows: RatePlan[], unitDate: Date, fallbackPrice: number): number {
+    const dateStr = unitDate.toISOString().slice(0, 10);
+    const match = seasonRows.find((rp) =>
+      (!rp.validFrom || dateStr >= rp.validFrom) && (!rp.validTo || dateStr <= rp.validTo),
+    );
+    return match ? match.price : fallbackPrice;
   }
 
   /**
    * `unitDate` de cada línea: día calendario de `startTime` + i. Se calcula
    * en UTC — mismo criterio que `calculateNights()` — para no depender de
-   * la zona horaria del proceso.
+   * la zona horaria del proceso. `priceForDate()` puede variar por noche
+   * (temporada, 28/08/2026) o ser constante (el resto de los escalones de
+   * la cascada) — ver resolveUnitPrice().
    */
   private buildLines(
     startTime: Date,
     units: number,
-    unitPrice: number,
+    priceForDate: (unitDate: Date) => number,
   ): Array<{ unitDate: Date; price: number }> {
     const lines: Array<{ unitDate: Date; price: number }> = [];
     for (let i = 0; i < units; i++) {
@@ -290,7 +316,7 @@ export class ReservationPricingService {
         startTime.getMonth(),
         startTime.getDate() + i,
       ));
-      lines.push({ unitDate, price: unitPrice });
+      lines.push({ unitDate, price: priceForDate(unitDate) });
     }
     return lines;
   }

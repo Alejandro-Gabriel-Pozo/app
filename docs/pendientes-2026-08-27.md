@@ -496,13 +496,14 @@ Se anotó como "deuda, no trabajo de ahora". Las respuestas de negocio de más
 arriba (la Hostería usa hoy las tres variantes) la volvieron activa. Ninguna
 bloquea `UNITS`, pero ya no son "cuando duela".
 
-- **🔴 Temporada que cruza el rango de la estadía — ERROR DE COBRO VIVO.**
-  `rate_plans.valid_from` / `valid_to` se valida solo contra la fecha de
-  INICIO. Una estadía que entra el 28/02 en temporada alta y sale el 5/03 cobra
-  **las seis noches a tarifa alta**, y no hay forma de expresar otra cosa
-  (todas las líneas llevan el mismo precio unitario). Es el "motor de tarifas
-  por temporada" que `buildLines()` anticipa como estructura pero no existe
-  como lógica. **Con temporada en uso real, pasa en cada cruce de temporada.**
+- **🔴 Temporada que cruza el rango de la estadía — ERROR DE COBRO VIVO.** —
+  ✅ RESUELTO (28/08/2026). Causa raíz real: `rate_plans` tenía
+  `UNIQUE(service_id, name)`, imposible cargar dos vigencias del mismo
+  nombre. Fix: `EXCLUDE USING gist` (schema v43, rango semiabierto
+  `[from, to+1)`) + `reservation-pricing.service.ts` resuelve por noche.
+  Verificado en Postgres real (branch de test): rechaza solape, permite
+  temporadas consecutivas, sin falso conflicto en el borde. Suite
+  1566/1566. Ver `plan-resolucion-bugs-deuda-2026-08-27.md`.
 - **🟠 Rate plans no reutilizables entre servicios — duele ya.**
   `rate_plans.service_id` es NOT NULL con unique `(service_id, name)`: "Con
   desayuno" se crea una vez por tipo de habitación, y renombrarlo son N
