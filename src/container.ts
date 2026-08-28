@@ -24,6 +24,8 @@ import { BusinessPlan }        from './types/enums.js';
 import type { PlanLimits }     from './config/plan-limits.js';
 import type { SqlClient }           from './repositories/sql.client.js';
 import { stripSslMode, sslConfig } from './db/pg.client.js';
+import { PgTransactionManager } from './db/pg.transaction-manager.js';
+import type { TransactionManager } from './db/transaction-manager.js';
 import { logger } from './logger.js';
 import pg from 'pg';
 
@@ -82,6 +84,19 @@ export function getPlatformRawPool(): InstanceType<typeof Pool> {
   return _platformPool!;
 }
 
+/**
+ * TransactionManager sobre la BD de PLATAFORMA (Bug #5, 27/08/2026). Lo exige
+ * `PlatformRepository` para las escrituras multi-tabla (createBusiness,
+ * createRole, updateRolePermissionGroups, updatePlanLimits,
+ * updateRolePresetPermissionGroups) — antes iban en conexiones sueltas del
+ * pool sin BEGIN/COMMIT. Usa el pool crudo de plataforma (PgTransactionManager
+ * necesita el pool, no el wrapper SqlClient), NUNCA un pool de tenant
+ * (DEFENSIVE_DEVELOPING §3).
+ */
+export function buildPlatformTransactionManager(): TransactionManager {
+  return new PgTransactionManager(getPlatformRawPool());
+}
+
 export async function closePlatformPool(): Promise<void> {
   if (_platformPool) {
     await _platformPool.end();
@@ -114,7 +129,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
   logger.info('[container] Modo PostgreSQL — conectando a PLATFORM_DATABASE_URL');
 
   const platformSqlClient  = createPlatformPool();
-  const platformRepository = new PlatformRepository(platformSqlClient);
+  const platformRepository = new PlatformRepository(platformSqlClient, buildPlatformTransactionManager());
 
   /**
    * Obtiene el plan del negocio desde la BD de plataforma.

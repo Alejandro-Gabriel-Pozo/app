@@ -1,7 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { PlatformRepository } from './platform.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
 import { BusinessPlan } from '../types/enums.js';
+
+/**
+ * Bug #5 (27/08/2026) — createBusiness/createRole/etc. ahora corren en una
+ * transacción real. En los tests el TM ejecuta el `work` contra el MISMO
+ * FakeSqlClient inyectado, para que los INSERT se sigan capturando (misma
+ * técnica que el FakeTransactionManager de invoice.service.test.ts).
+ */
+const fakeTxManager = (db: SqlClient): TransactionManager => ({ run: (work) => work(db) });
 
 /**
  * Guardia de regresión para el bug de duplicación resuelto el 18/08/2026
@@ -67,7 +76,7 @@ class FakeSqlClient implements SqlClient {
 describe('PlatformRepository.createBusiness() -> provisionSystemRoles()', () => {
   it('inserta un rol por cada preset devuelto por la query a role_presets, sin lista hardcodeada', async () => {
     const db = new FakeSqlClient();
-    const repo = new PlatformRepository(db);
+    const repo = new PlatformRepository(db, fakeTxManager(db));
 
     await repo.createBusiness({
       id: 'biz-1',
@@ -89,6 +98,30 @@ describe('PlatformRepository.createBusiness() -> provisionSystemRoles()', () => 
     // El id determinístico sigue el mismo formato role-<businessId>-<nombre en minúscula>.
     const presetARole = roleInserts.find((i) => i.params[2] === 'PRESET_A')!;
     expect(presetARole.params[0]).toBe('role-biz-1-preset_a');
+  });
+});
+
+/**
+ * Bug #5 (27/08/2026, pendientes-2026-08-27.md) — las escrituras multi-tabla
+ * exigen un TransactionManager inyectado. Sin él fallan RUIDOSAMENTE (guard
+ * fail-loud), en vez de reintroducir en silencio el DELETE/INSERT no atómico.
+ */
+describe('PlatformRepository — escrituras multi-tabla exigen TransactionManager', () => {
+  it('createRole sin TransactionManager falla con error claro (no escribe a medias)', async () => {
+    const repo = new PlatformRepository(new FakeSqlClient()); // sin TM
+    await expect(
+      repo.createRole({ id: 'r1', businessId: 'biz-1', name: 'Rol', permissionGroups: ['G1'] }),
+    ).rejects.toThrow(/requiere un TransactionManager/);
+  });
+
+  it('updatePlanLimits sin TransactionManager falla con error claro', async () => {
+    const repo = new PlatformRepository(new FakeSqlClient());
+    await expect(
+      repo.updatePlanLimits(BusinessPlan.STARTER, {
+        maxCategories: 5, maxResources: 10, maxActiveMemberships: 3, maxCustomRoles: 2,
+        allowedRoleNames: [], allowedPermissionGroups: [],
+      }),
+    ).rejects.toThrow(/requiere un TransactionManager/);
   });
 });
 

@@ -13,8 +13,10 @@
  *   (usadas directo en la ruta para stock/enriquecimiento)
  * - buildTenantTransactionManager (stock/transfer, stock/waste, stock/production
  *   -- la implementación real busca un pool de tenant registrado que no existe acá)
- * - createPlatformPool (buildCompanyCatalogService la llama antes de construir
- *   CompanyCatalogService -- explota si PLATFORM_DATABASE_URL no está seteada)
+ * - createPlatformPool y buildPlatformTransactionManager (buildCompanyCatalog-
+ *   Service las llama antes de construir CompanyCatalogService -- ambas explotan
+ *   si PLATFORM_DATABASE_URL no está seteada; buildPlatformTransactionManager
+ *   se agregó con Bug #5, 27/08/2026, y toca el pool real de plataforma)
  *
  * `locationId` se pasa siempre explícito por query/body en los tests -- la
  * implementación real de resolveDefaultLocationId (no mockeada) hace
@@ -42,10 +44,15 @@ vi.mock('./company-catalog.service.js', () => ({ CompanyCatalogService: vi.fn() 
 vi.mock('../repositories/sql.inventory-level.repository.js', () => ({ SqlInventoryLevelRepository: vi.fn() }));
 vi.mock('../repositories/sql.stock-movement.repository.js', () => ({ SqlStockMovementRepository: vi.fn() }));
 vi.mock('../repositories/sql.waste-reason.repository.js', () => ({ SqlWasteReasonRepository: vi.fn() }));
+vi.mock('../repositories/sql.consumption-destination.repository.js', () => ({ SqlConsumptionDestinationRepository: vi.fn() }));
 vi.mock('../db/tenant-context.js', () => ({ buildTenantTransactionManager: vi.fn(() => ({ run: vi.fn(async (fn: (c: unknown) => unknown) => fn({})) })) }));
 vi.mock('../container.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ContainerModule>();
-  return { ...actual, createPlatformPool: vi.fn(() => ({})) };
+  return {
+    ...actual,
+    createPlatformPool: vi.fn(() => ({})),
+    buildPlatformTransactionManager: vi.fn(() => ({ run: vi.fn(async (fn: (c: unknown) => unknown) => fn({})) })),
+  };
 });
 vi.mock('../platform/company.repository.js', () => ({ CompanyRepository: vi.fn() }));
 vi.mock('../platform/platform.repository.js', () => ({ PlatformRepository: vi.fn() }));
@@ -133,6 +140,7 @@ describe('products.routes', () => {
   let invIncrementStock: ReturnType<typeof vi.fn>;
   let stockCreateWithClient: ReturnType<typeof vi.fn>;
   let wasteFindById: ReturnType<typeof vi.fn>;
+  let consumptionDestinationFindById: ReturnType<typeof vi.fn>;
 
   let router: ReturnType<typeof createProductsRouter>;
 
@@ -204,6 +212,12 @@ describe('products.routes', () => {
       findById: wasteFindById,
     } as unknown as InstanceType<typeof SqlWasteReasonRepository>));
 
+    consumptionDestinationFindById = vi.fn(async () => ({ id: 'cd-1', businessId: 'biz-1', name: 'Personal', active: true, createdAt: new Date(), updatedAt: new Date() }));
+    const { SqlConsumptionDestinationRepository } = await import('../repositories/sql.consumption-destination.repository.js');
+    vi.mocked(SqlConsumptionDestinationRepository).mockImplementation(() => ({
+      findById: consumptionDestinationFindById,
+    } as unknown as InstanceType<typeof SqlConsumptionDestinationRepository>));
+
     router = createProductsRouter({} as AppContainer);
   });
 
@@ -230,7 +244,9 @@ describe('products.routes', () => {
 
   it('POST / -- crea un producto local (sin companyProductId)', async () => {
     const handler = getHandler(router, 'post', '/');
-    const req = baseReq({ body: { name: 'Coca-Cola', basePrice: 100, locationId: 'loc-1' } } as Partial<Request>);
+    // sku: 27/08/2026, auditoría de columnas obligatorias -- ya no alcanza
+    // con name/basePrice para un alta local.
+    const req = baseReq({ body: { name: 'Coca-Cola', basePrice: 100, sku: 'COCA-500', locationId: 'loc-1' } } as Partial<Request>);
     const res = fakeRes();
     await expectHappy(handler, req, res);
     expect(createProduct).toHaveBeenCalledOnce();
@@ -352,7 +368,8 @@ describe('products.routes', () => {
 
   it('POST /:id/variants -- crea variante (201)', async () => {
     const handler = getHandler(router, 'post', '/:id/variants');
-    const req = baseReq({ params: { id: 'prod-1' }, body: { name: 'Talle M', locationId: 'loc-1' } } as Partial<Request>);
+    // sku: 27/08/2026, auditoría de columnas obligatorias -- CreateProductVariantSchema ya lo exige.
+    const req = baseReq({ params: { id: 'prod-1' }, body: { name: 'Talle M', sku: 'PROD-1-M', locationId: 'loc-1' } } as Partial<Request>);
     const res = fakeRes();
     await expectHappy(handler, req, res);
     expect(createVariant).toHaveBeenCalledOnce();
@@ -533,6 +550,42 @@ describe('products.routes', () => {
     await expectHappy(handler, req, res);
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'WASTE_REASON_INACTIVE' }));
+
+    invGet.mockResolvedValueOnce(makeLevel({ stockQuantity: 1, reservedQuantity: 1 })); // available = 0 < quantity 1
+    res = fakeRes();
+    const next = vi.fn();
+    await handler(req, res, next);
+    expect(next).toHaveBeenCalledWith(expect.any(InsufficientStockError));
+  });
+
+  // 27/08/2026, pendientes-2026-08-27.md — adoptado de `proyecto script`.
+  // Gemelo exacto de los dos tests de /stock/waste de arriba.
+  it('POST /stock/consumption -- camino feliz (201)', async () => {
+    const handler = getHandler(router, 'post', '/stock/consumption');
+    const req = baseReq({
+      body: { productId: 'prod-1', quantity: 1, consumptionDestinationId: 'cd-1' },
+    } as Partial<Request>);
+    const res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(consumptionDestinationFindById).toHaveBeenCalledWith('cd-1');
+    expect(stockCreateWithClient).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it('POST /stock/consumption -- 404 destino inexistente, 400 destino inactivo, 400 stock insuficiente', async () => {
+    const handler = getHandler(router, 'post', '/stock/consumption');
+    const req = baseReq({ body: { productId: 'prod-1', quantity: 1, consumptionDestinationId: 'cd-1' } } as Partial<Request>);
+
+    consumptionDestinationFindById.mockResolvedValueOnce(undefined);
+    let res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(404);
+
+    consumptionDestinationFindById.mockResolvedValueOnce({ id: 'cd-1', businessId: 'biz-1', name: 'x', active: false, createdAt: new Date(), updatedAt: new Date() });
+    res = fakeRes();
+    await expectHappy(handler, req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'CONSUMPTION_DESTINATION_INACTIVE' }));
 
     invGet.mockResolvedValueOnce(makeLevel({ stockQuantity: 1, reservedQuantity: 1 })); // available = 0 < quantity 1
     res = fakeRes();

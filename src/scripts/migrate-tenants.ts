@@ -40,13 +40,13 @@
  * próximo deploy, o para reintentar un tenant que falló).
  */
 
-import { createPlatformPool, closePlatformPool } from '../container.js';
+import { createPlatformPool, closePlatformPool, buildPlatformTransactionManager } from '../container.js';
 import { PlatformRepository } from '../platform/platform.repository.js';
 import { decryptConnectionString, applyTenantSchema, CURRENT_SCHEMA_VERSION } from '../platform/tenant-db.setup.js';
 
 async function main(): Promise<void> {
   const platformClient = createPlatformPool();
-  const platformRepo = new PlatformRepository(platformClient);
+  const platformRepo = new PlatformRepository(platformClient, buildPlatformTransactionManager());
 
   const businesses = (await platformRepo.listAll()).filter((b) => b.dbUrlEncrypted);
 

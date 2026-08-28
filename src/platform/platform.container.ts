@@ -10,7 +10,7 @@
 
 import { PlatformRepository } from './platform.repository.js';
 import { PlatformAuthService } from './platform.auth.service.js';
-import { createPlatformPool } from '../container.js';
+import { createPlatformPool, buildPlatformTransactionManager } from '../container.js';
 
 export interface PlatformContainer {
   platformRepository: PlatformRepository;
@@ -25,7 +25,7 @@ export function createPlatformContainer(): PlatformContainer {
   const platformSqlClient = createPlatformPool();
 
   return {
-    platformRepository:  new PlatformRepository(platformSqlClient),
+    platformRepository:  new PlatformRepository(platformSqlClient, buildPlatformTransactionManager()),
     platformAuthService: new PlatformAuthService(),
   };
 }

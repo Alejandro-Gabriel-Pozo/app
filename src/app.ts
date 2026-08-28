@@ -61,6 +61,7 @@ import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
 import { createProductsRouter }          from './pos-menu/products.routes.js';
 import { createWasteReasonsRouter }      from './pos-menu/waste-reasons.routes.js';
+import { createConsumptionDestinationsRouter } from './pos-menu/consumption-destinations.routes.js';
 import { createCancellationPoliciesRouter } from './reservas/cancellation-policies.routes.js';
 import { createOrdersRouter }            from './pos-menu/orders.routes.js';
 import { createBookableServicesRouter }  from './reservas/bookable-services.routes.js';
@@ -89,7 +90,7 @@ import { CompanyRepository }             from './platform/company.repository.js'
 import { createCompaniesRouter }         from './platform/companies.routes.js';
 import { startCompanySyncWorker, stopCompanySyncWorker } from './platform/company-sync.registry.js';
 import type { AppContainer} from './container.js';
-import { createAppContainer, createPlatformPool, closePlatformPool } from './container.js';
+import { createAppContainer, createPlatformPool, closePlatformPool, buildPlatformTransactionManager } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
 import { SqlHousekeepingRepository }     from './pms-estadias/housekeeping.repository.js';
 import { SqlMaintenanceWindowRepository } from './pms-estadias/sql.maintenance-window.repository.js';
@@ -148,7 +149,7 @@ export async function createApp(): Promise<{
   // platformClient se crea UNA sola vez y se reutiliza en toda la app,
   // incluyendo el health check. Es el pool real de PLATFORM_DATABASE_URL.
   const platformClient = createPlatformPool();
-  const platformRepo   = new PlatformRepository(platformClient);
+  const platformRepo   = new PlatformRepository(platformClient, buildPlatformTransactionManager());
   const companyRepo    = new CompanyRepository(platformClient);
 
   const authService = new AuthService(platformRepo);
@@ -316,6 +317,7 @@ export async function createApp(): Promise<{
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));
   app.use('/api/waste-reasons', requireModule(container, ModuleKey.POS_RESTAURANTE), createWasteReasonsRouter(container));
+  app.use('/api/consumption-destinations', requireModule(container, ModuleKey.POS_RESTAURANTE), createConsumptionDestinationsRouter(container));
   app.use('/api/bookable-services', createBookableServicesRouter(container));
   app.use('/api/business-hours',    createBusinessHoursRouter(container));
   // Montado ANTES de /api/business-profile a propósito: es más específico

@@ -23,6 +23,7 @@
  * POST   /api/products/:id/variants/:variantId/stock/decrement — ORDERS
  * POST   /api/products/stock/transfer                     — MANAGEMENT
  * POST   /api/products/stock/waste                        — MANAGEMENT
+ * POST   /api/products/stock/consumption                   — MANAGEMENT
  * POST   /api/products/stock/production                   — MANAGEMENT
  *
  * POST   /api/products/:id/company/share                  — MANAGEMENT (solo para un producto que YA era local antes de vincular el negocio a una empresa -- el alta normal ya comparte sola, ver POST /api/products)
@@ -72,6 +73,7 @@ import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { SqlInventoryLevelRepository } from '../repositories/sql.inventory-level.repository.js';
 import { SqlStockMovementRepository } from '../repositories/sql.stock-movement.repository.js';
 import { SqlWasteReasonRepository } from '../repositories/sql.waste-reason.repository.js';
+import { SqlConsumptionDestinationRepository } from '../repositories/sql.consumption-destination.repository.js';
 import { resolveDefaultLocationId } from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { authorize } from '../security/auth.middleware.js';
@@ -82,6 +84,7 @@ import type { Product, ProductVariant, CreateProductInput, CreateProductVariantI
 import type { InventoryLevel } from '../repositories/inventory-level.repository.js';
 import { compact } from '../api/utils/compact.js';
 import { RecordWasteSchema } from '../api/schemas/waste.schemas.js';
+import { RecordConsumptionSchema } from '../api/schemas/consumption.schemas.js';
 import { CreateProductSchema, UpdateProductSchema, CreateProductVariantSchema, UpdateProductVariantSchema } from '../api/schemas/product.schemas.js';
 import { RecipeService } from './recipe.service.js';
 import { SqlRecipeItemRepository } from '../repositories/sql.recipe-item.repository.js';
@@ -93,7 +96,7 @@ import {
 import { CompanyCatalogService } from './company-catalog.service.js';
 import { CompanyRepository } from '../platform/company.repository.js';
 import { PlatformRepository } from '../platform/platform.repository.js';
-import { createPlatformPool } from '../container.js';
+import { createPlatformPool, buildPlatformTransactionManager } from '../container.js';
 
 function buildProductService(req: Request): ProductService {
   const db = req.db!;
@@ -121,7 +124,7 @@ function buildCompanyCatalogService(req: Request): CompanyCatalogService {
     new SqlProductRepository(req.db!),
     new SqlRecipeItemRepository(req.db!),
     new CompanyRepository(platformClient),
-    new PlatformRepository(platformClient),
+    new PlatformRepository(platformClient, buildPlatformTransactionManager()),
   );
 }
 
@@ -580,6 +583,92 @@ export function createProductsRouter(_container: AppContainer): Router {
         // `inserted`, un reintento legítimo vería el stock YA descontado por el
         // intento anterior y fallaría con "insuficiente" en vez de no-opear).
         // decrementAvailableStock() abajo sigue siendo la guarda atómica real.
+        const level = await inventoryLevelRepo.get(key);
+        const available = (level?.stockQuantity ?? 0) - (level?.reservedQuantity ?? 0);
+        if (available < body.quantity) {
+          throw new InsufficientStockError(available, body.quantity);
+        }
+
+        await inventoryLevelRepo.decrementAvailableStock(client, key, body.quantity);
+      });
+
+      res.status(201).json({ movementId });
+    } catch (err) {
+      if (err instanceof ZodError) {
+        res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // ── POST /api/products/stock/consumption ────────────────────────────────────
+  // 27/08/2026, pendientes-2026-08-27.md — adoptado de `proyecto script`
+  // (DESTINOS_CONSUMO). Gemelo exacto de /stock/waste, movement_type propio
+  // (CONSUMPTION, no WASTE): comida de personal, degustación, evento,
+  // elaboración interna son COSTO OPERATIVO, no pérdida -- mezclarlas con
+  // WASTE distorsionaba "porcentaje de merma por período"
+  // (manual-inventario.md §10). Misma mecánica atómica que /stock/waste:
+  // movementId opcional, insert-then-act (A8.5), decrementa contra lo
+  // DISPONIBLE. MANAGEMENT, mismo razonamiento técnico-vs-organizacional.
+  router.post('/stock/consumption', authorize(Roles.MANAGEMENT), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body        = RecordConsumptionSchema.parse(req.body);
+      const locationId  = await resolveLocation(req);
+      const service     = buildProductService(req);
+
+      if (body.productId) {
+        const product = await service.getProduct(body.productId);
+        if (!product) {
+          res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: `Producto ${body.productId} no encontrado.` });
+          return;
+        }
+        if (product.hasVariants) {
+          res.status(400).json({
+            code: 'PRODUCT_HAS_VARIANTS',
+            message: `El producto ${body.productId} maneja stock por variante (has_variants=true). ` +
+              'Especificá productVariantId, no productId.',
+          });
+          return;
+        }
+      }
+
+      const consumptionDestinationRepo = new SqlConsumptionDestinationRepository(req.db!);
+      const destination = await consumptionDestinationRepo.findById(body.consumptionDestinationId);
+      if (!destination) {
+        res.status(404).json({ code: 'CONSUMPTION_DESTINATION_NOT_FOUND', message: `Destino de consumo ${body.consumptionDestinationId} no encontrado.` });
+        return;
+      }
+      if (!destination.active) {
+        res.status(400).json({ code: 'CONSUMPTION_DESTINATION_INACTIVE', message: `El destino de consumo ${body.consumptionDestinationId} está desactivado.` });
+        return;
+      }
+
+      const inventoryLevelRepo = new SqlInventoryLevelRepository(req.db!);
+      const key = { productId: body.productId ?? null, productVariantId: body.productVariantId ?? null, locationId };
+
+      const stockMovementRepo  = new SqlStockMovementRepository();
+      const transactionManager = buildTenantTransactionManager(req);
+      const movementId          = body.movementId ?? randomUUID();
+
+      await transactionManager.run(async (client) => {
+        const inserted = await stockMovementRepo.createWithClient(client, movementId, {
+          businessId:                req.businessId!,
+          productId:                 body.productId ?? null,
+          productVariantId:          body.productVariantId ?? null,
+          movementType:              'CONSUMPTION',
+          quantity:                  body.quantity,
+          orderItemId:               null,
+          createdBy:                 req.user!.id,
+          notes:                     body.notes ?? null,
+          locationId,
+          consumptionDestinationId:  body.consumptionDestinationId,
+        });
+
+        if (!inserted) return; // reintento con el mismo movementId -- ya aplicada, no-op
+
+        // Pre-check informativo DENTRO del insert-then-act -- mismo criterio
+        // que /stock/waste, ver ese comentario para el porqué.
         const level = await inventoryLevelRepo.get(key);
         const available = (level?.stockQuantity ?? 0) - (level?.reservedQuantity ?? 0);
         if (available < body.quantity) {

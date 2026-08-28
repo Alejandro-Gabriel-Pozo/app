@@ -10,6 +10,7 @@
  */
 
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessPlan} from '../types/enums.js';
 import { BusinessStatus, ModuleKey } from '../types/enums.js';
 import type { PlanLimits } from '../config/plan-limits.js';
@@ -257,23 +258,58 @@ export interface UpsertPasswordResetTokenInput {
 // ---------------------------------------------------------------------------
 
 export class PlatformRepository {
-  constructor(private readonly db: SqlClient) {}
+  /**
+   * `transactionManager` (27/08/2026, Bug #5 pendientes-2026-08-27.md) —
+   * opcional para no romper los ~15 call sites de solo-lectura, pero los
+   * métodos que escriben en varias tablas (createBusiness, createRole,
+   * updateRolePermissionGroups, updatePlanLimits) lo EXIGEN vía txRun(): antes
+   * hacían DELETE/INSERT sueltos con this.db.query() — cada uno en una conexión
+   * distinta del pool, sin BEGIN/COMMIT — así que un fallo a mitad dejaba, p.ej.,
+   * un negocio sin roles o un plan con la mitad de los permisos. Debe apuntar a
+   * la MISMA BD de plataforma que `db` (buildPlatformTransactionManager(), sobre
+   * getPlatformRawPool()) — nunca a un pool de tenant (DEFENSIVE_DEVELOPING §3).
+   */
+  constructor(
+    private readonly db: SqlClient,
+    private readonly transactionManager?: TransactionManager,
+  ) {}
+
+  /**
+   * Corre `work` en una transacción real de la BD de plataforma. Fail-loud si
+   * no se inyectó un TransactionManager (mismo idiom que el guard de
+   * recordWithClient): preferible un error claro a reintroducir en silencio el
+   * bug de escrituras no atómicas.
+   */
+  private async txRun<T>(method: string, work: (client: SqlClient) => Promise<T>): Promise<T> {
+    if (!this.transactionManager) {
+      throw new Error(
+        `PlatformRepository.${method} requiere un TransactionManager inyectado (ver buildPlatformTransactionManager/createPlatformContainer).`,
+      );
+    }
+    return this.transactionManager.run(work);
+  }
 
   // -------------------------------------------------------------------------
   // Businesses
   // -------------------------------------------------------------------------
 
   async createBusiness(input: CreateBusinessInput): Promise<Business> {
-    const result = await this.db.query<Business>(
-      `INSERT INTO businesses (id, name, slug, plan, status, owner_email)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [input.id, input.name, input.slug, input.plan, BusinessStatus.PENDING, input.ownerEmail],
-    );
-    const business = this.rowToBusiness(result.rows[0]!);
-    await this.provisionDefaultModules(business.id);
-    await this.provisionSystemRoles(business.id);
-    return business;
+    // Bug #5 (27/08/2026) — las tres escrituras (business + módulos + roles)
+    // van en UNA transacción: getBusinessModules/getRoleById son fail-closed,
+    // así que un business creado sin sus módulos/roles por un fallo a mitad
+    // queda inservible. Antes cada INSERT usaba una conexión suelta del pool.
+    return this.txRun('createBusiness', async (client) => {
+      const result = await client.query<Business>(
+        `INSERT INTO businesses (id, name, slug, plan, status, owner_email)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [input.id, input.name, input.slug, input.plan, BusinessStatus.PENDING, input.ownerEmail],
+      );
+      const business = this.rowToBusiness(result.rows[0]!);
+      await this.provisionDefaultModules(client, business.id);
+      await this.provisionSystemRoles(client, business.id);
+      return business;
+    });
   }
 
   /**
@@ -290,8 +326,8 @@ export class PlatformRepository {
    * antes de que role_presets existiera se migran aparte en el backfill
    * de ese mismo archivo (BLOQUE ROLES).
    */
-  private async provisionSystemRoles(businessId: string): Promise<void> {
-    const presets = await this.db.query<{ name: string; permission_group: string | null }>(
+  private async provisionSystemRoles(client: SqlClient, businessId: string): Promise<void> {
+    const presets = await client.query<{ name: string; permission_group: string | null }>(
       `SELECT rp.name, rppg.permission_group
        FROM role_presets rp
        LEFT JOIN role_preset_permission_groups rppg ON rppg.preset_name = rp.name`,
@@ -305,14 +341,14 @@ export class PlatformRepository {
 
     for (const [name, groups] of groupsByPreset) {
       const roleId = `role-${businessId}-${name.toLowerCase()}`;
-      await this.db.query(
+      await client.query(
         `INSERT INTO roles (id, business_id, name, is_system)
          VALUES ($1, $2, $3, TRUE)
          ON CONFLICT (business_id, name) DO NOTHING`,
         [roleId, businessId, name],
       );
       for (const group of groups) {
-        await this.db.query(
+        await client.query(
           `INSERT INTO role_permission_groups (role_id, permission_group)
            VALUES ($1, $2)
            ON CONFLICT (role_id, permission_group) DO NOTHING`,
@@ -336,13 +372,13 @@ export class PlatformRepository {
    * TODO habilitado (ver backfill en platform.schema.sql) para no cortarles
    * nada de un día para el otro.
    */
-  private async provisionDefaultModules(businessId: string): Promise<void> {
-    const catalog = await this.db.query<{ module_key: string }>(
+  private async provisionDefaultModules(client: SqlClient, businessId: string): Promise<void> {
+    const catalog = await client.query<{ module_key: string }>(
       `SELECT module_key FROM modules`,
     );
     for (const { module_key: moduleKey } of catalog.rows) {
       const enabled = moduleKey === ModuleKey.ALOJAMIENTO;
-      await this.db.query(
+      await client.query(
         `INSERT INTO business_modules (business_id, module_key, enabled)
          VALUES ($1, $2, $3)
          ON CONFLICT (business_id, module_key) DO NOTHING`,
@@ -579,20 +615,28 @@ export class PlatformRepository {
     }));
   }
 
-  /** Reemplaza el set completo de límites de un plan — mismo patrón que `updateRolePermissionGroups()` (DELETE + INSERT, sin transacción explícita, volumen de filas chico). */
+  /**
+   * Reemplaza el set completo de límites de un plan — mismo patrón que
+   * `updateRolePermissionGroups()` (DELETE + INSERT, volumen de filas chico).
+   * Bug #5 (27/08/2026) — UPDATE + los dos DELETE/INSERT van en UNA transacción:
+   * antes, un fallo a mitad podía dejar el plan con los roles nuevos pero los
+   * permission_groups viejos (o ninguno), un estado que nadie eligió.
+   */
   async updatePlanLimits(plan: BusinessPlan, input: UpdatePlanLimitsInput): Promise<PlanLimitsAdmin> {
-    await this.db.query(
-      `UPDATE plan_limits SET max_categories = $2, max_resources = $3, max_active_memberships = $4, max_custom_roles = $5 WHERE plan = $1`,
-      [plan, input.maxCategories, input.maxResources, input.maxActiveMemberships, input.maxCustomRoles],
-    );
-    await this.db.query(`DELETE FROM plan_limit_allowed_roles WHERE plan = $1`, [plan]);
-    for (const roleName of input.allowedRoleNames) {
-      await this.db.query(`INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES ($1, $2)`, [plan, roleName]);
-    }
-    await this.db.query(`DELETE FROM plan_limit_allowed_permission_groups WHERE plan = $1`, [plan]);
-    for (const group of input.allowedPermissionGroups) {
-      await this.db.query(`INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group) VALUES ($1, $2)`, [plan, group]);
-    }
+    await this.txRun('updatePlanLimits', async (client) => {
+      await client.query(
+        `UPDATE plan_limits SET max_categories = $2, max_resources = $3, max_active_memberships = $4, max_custom_roles = $5 WHERE plan = $1`,
+        [plan, input.maxCategories, input.maxResources, input.maxActiveMemberships, input.maxCustomRoles],
+      );
+      await client.query(`DELETE FROM plan_limit_allowed_roles WHERE plan = $1`, [plan]);
+      for (const roleName of input.allowedRoleNames) {
+        await client.query(`INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES ($1, $2)`, [plan, roleName]);
+      }
+      await client.query(`DELETE FROM plan_limit_allowed_permission_groups WHERE plan = $1`, [plan]);
+      for (const group of input.allowedPermissionGroups) {
+        await client.query(`INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group) VALUES ($1, $2)`, [plan, group]);
+      }
+    });
     return (await this.listPlanLimits()).find((p) => p.plan === plan)!;
   }
 
@@ -617,10 +661,16 @@ export class PlatformRepository {
     const exists = await this.db.query(`SELECT 1 FROM role_presets WHERE name = $1`, [name]);
     if (exists.rows.length === 0) return undefined;
 
-    await this.db.query(`DELETE FROM role_preset_permission_groups WHERE preset_name = $1`, [name]);
-    for (const group of permissionGroups) {
-      await this.db.query(`INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES ($1, $2)`, [name, group]);
-    }
+    // Bug #5 (27/08/2026) — mismo DELETE + INSERTs no atómico que
+    // updateRolePermissionGroups, encontrado de paso en la misma pasada (no
+    // estaba nombrado en pendientes-2026-08-27.md, es el mismo defecto en el
+    // catálogo de presets). Un fallo a mitad dejaba el preset sin permisos.
+    await this.txRun('updateRolePresetPermissionGroups', async (client) => {
+      await client.query(`DELETE FROM role_preset_permission_groups WHERE preset_name = $1`, [name]);
+      for (const group of permissionGroups) {
+        await client.query(`INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES ($1, $2)`, [name, group]);
+      }
+    });
     return { name, permissionGroups };
   }
 
@@ -922,16 +972,21 @@ export class PlatformRepository {
   }
 
   async createRole(input: CreateRoleInput): Promise<Role> {
-    await this.db.query(
-      `INSERT INTO roles (id, business_id, name, is_system) VALUES ($1, $2, $3, FALSE)`,
-      [input.id, input.businessId, input.name],
-    );
-    for (const group of input.permissionGroups) {
-      await this.db.query(
-        `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, $2)`,
-        [input.id, group],
+    // Bug #5 (27/08/2026) — el rol y sus permission_groups en una sola
+    // transacción: un rol creado sin sus grupos por un fallo a mitad es un rol
+    // sin permisos. getRoleById lee después del COMMIT (ve el estado ya escrito).
+    await this.txRun('createRole', async (client) => {
+      await client.query(
+        `INSERT INTO roles (id, business_id, name, is_system) VALUES ($1, $2, $3, FALSE)`,
+        [input.id, input.businessId, input.name],
       );
-    }
+      for (const group of input.permissionGroups) {
+        await client.query(
+          `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, $2)`,
+          [input.id, group],
+        );
+      }
+    });
     return (await this.getRoleById(input.id, input.businessId))!;
   }
 
@@ -942,13 +997,18 @@ export class PlatformRepository {
    * diff y suficiente para el volumen de filas de esta tabla.
    */
   async updateRolePermissionGroups(roleId: string, businessId: string, permissionGroups: string[]): Promise<Role> {
-    await this.db.query(`DELETE FROM role_permission_groups WHERE role_id = $1`, [roleId]);
-    for (const group of permissionGroups) {
-      await this.db.query(
-        `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, $2)`,
-        [roleId, group],
-      );
-    }
+    // Bug #5 (27/08/2026) — DELETE + INSERTs en una transacción: sin esto, un
+    // fallo entre el DELETE y los INSERT dejaba el rol SIN NINGÚN permiso (peor
+    // que dejarlo como estaba). Antes cada query iba en una conexión suelta.
+    await this.txRun('updateRolePermissionGroups', async (client) => {
+      await client.query(`DELETE FROM role_permission_groups WHERE role_id = $1`, [roleId]);
+      for (const group of permissionGroups) {
+        await client.query(
+          `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, $2)`,
+          [roleId, group],
+        );
+      }
+    });
     return (await this.getRoleById(roleId, businessId))!;
   }
 
