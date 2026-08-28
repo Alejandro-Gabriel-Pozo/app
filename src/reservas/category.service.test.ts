@@ -54,7 +54,7 @@ class FakeCategoryRepository implements ICategoryRepository {
       fields: dto.fields,
       active: true,
       isLodging: dto.isLodging ?? false,
-      isExclusive: dto.isExclusive ?? false,
+      isExclusive: dto.isExclusive,
       createdAt: now,
       updatedAt: now,
     };
@@ -182,7 +182,7 @@ describe('CategoryService.createCategory() — límite de plan', () => {
 
   it('crea la categoría si todavía no alcanzó el límite del plan', async () => {
     const category = await service.createCategory(
-      { name: 'Salon', fields: [] },
+      { name: 'Salon', fields: [], isExclusive: false },
       BusinessPlan.FREE,
       limitsFor(1),
     );
@@ -190,16 +190,16 @@ describe('CategoryService.createCategory() — límite de plan', () => {
   });
 
   it('rechaza con PlanLimitError si ya alcanzó maxCategories', async () => {
-    await service.createCategory({ name: 'Salon', fields: [] }, BusinessPlan.FREE, limitsFor(1));
+    await service.createCategory({ name: 'Salon', fields: [], isExclusive: false }, BusinessPlan.FREE, limitsFor(1));
 
     await expect(
-      service.createCategory({ name: 'Otra', fields: [] }, BusinessPlan.FREE, limitsFor(1)),
+      service.createCategory({ name: 'Otra', fields: [], isExclusive: false }, BusinessPlan.FREE, limitsFor(1)),
     ).rejects.toBeInstanceOf(PlanLimitError);
   });
 
   it('plan con maxCategories = Infinity nunca rechaza', async () => {
     for (let i = 0; i < 5; i++) {
-      await service.createCategory({ name: `Cat ${i}`, fields: [] }, BusinessPlan.PRO, limitsFor(Infinity));
+      await service.createCategory({ name: `Cat ${i}`, fields: [], isExclusive: false }, BusinessPlan.PRO, limitsFor(Infinity));
     }
     expect(await categoryRepo.countActive()).toBe(5);
   });

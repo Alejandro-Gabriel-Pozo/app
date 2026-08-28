@@ -3296,3 +3296,26 @@ ALTER TABLE rate_plans ADD CONSTRAINT excl_rate_plans_overlapping_validity
     daterange(valid_from, valid_to + 1, '[)') WITH &&
   ) WHERE (active = TRUE);
 
+-- ---------------------------------------------------------------------------
+-- resource_categories.is_exclusive / bookable_services.booking_mode --
+-- sacar el DEFAULT (28/08/2026, docs/diseno-taxonomia-tipos-reserva-2026-08-28.md
+-- §5). El `ADD COLUMN IF NOT EXISTS ... DEFAULT FALSE`/`DEFAULT 'slot'` de
+-- más arriba en este archivo solo corre la primera vez que se crea la
+-- columna (no-op en cualquier tenant ya migrado) -- este bloque sí corre
+-- SIEMPRE (DROP DEFAULT es idempotente, no rompe nada si ya no hay
+-- default) y es lo que realmente saca el default de un tenant ya existente
+-- como biz-demo-01.
+--
+-- Motivo: el default de Postgres ya era código muerto para el camino real
+-- de la app -- sql.category.repository.ts SIEMPRE manda `dto.isExclusive`
+-- explícito (ya no hay `?? false`, ver el mismo diseño §5) y
+-- CreateBookableServiceSchema exige `bookingMode` sin `.optional()` desde
+-- que existe. El default solo protegía un INSERT directo por SQL que no
+-- pase por el repositorio (script, seed) -- ninguno activo hoy en el repo.
+-- Sacarlo hace que un camino nuevo de ese tipo falle fuerte en vez de
+-- heredar en silencio el mismo bug que tenían Peluquería/Spa (cupo
+-- compartido por defecto en una categoría que debía ser exclusiva).
+-- ---------------------------------------------------------------------------
+ALTER TABLE resource_categories ALTER COLUMN is_exclusive DROP DEFAULT;
+ALTER TABLE bookable_services   ALTER COLUMN booking_mode DROP DEFAULT;
+

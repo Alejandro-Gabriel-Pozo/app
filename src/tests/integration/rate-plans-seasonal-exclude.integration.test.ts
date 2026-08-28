@@ -43,8 +43,10 @@ describe.skipIf(skipIfNoDb)('rate_plans -- excl_rate_plans_overlapping_validity 
     ({ db, pool, dbName } = await createTestDatabase());
 
     // Fixture mínima -- rate_plans exige bookable_services.id real (FK).
+    // is_exclusive explícito (28/08/2026, diseno-taxonomia-tipos-reserva-
+    // 2026-08-28.md §5) -- la columna ya no tiene DEFAULT.
     await db.query(
-      `INSERT INTO resource_categories (id, name) VALUES ('cat-seasonal-test', 'Habitaciones')`,
+      `INSERT INTO resource_categories (id, name, is_exclusive) VALUES ('cat-seasonal-test', 'Habitaciones', TRUE)`,
     );
     await db.query(
       `INSERT INTO bookable_services (id, category_id, name, booking_mode, price)

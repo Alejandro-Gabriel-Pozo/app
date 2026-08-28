@@ -12,12 +12,18 @@
 -- =============================================================================
 
 -- 1. Categoría: Mesa
+-- is_exclusive/is_lodging explícitos (28/08/2026,
+-- diseno-taxonomia-tipos-reserva-2026-08-28.md §5) -- is_exclusive ya no
+-- tiene DEFAULT en schema.sql, este INSERT rompía sin esto. Una mesa se
+-- ocupa de a una reserva por vez -> exclusiva; no es alojamiento.
 INSERT INTO resource_categories (
   id,
   name,
   description,
   fields,
-  active
+  active,
+  is_lodging,
+  is_exclusive
 )
 VALUES (
   'cat-mesa-01',
@@ -37,6 +43,8 @@ VALUES (
       "required": false
     }
   ]'::jsonb,
+  TRUE,
+  FALSE,
   TRUE
 )
 ON CONFLICT (id) DO NOTHING;

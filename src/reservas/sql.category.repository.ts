@@ -94,7 +94,10 @@ export class SqlCategoryRepository implements ICategoryRepository {
        RETURNING ${RETURNING_COLS}`,
       [
         dto.id, dto.name, dto.description ?? null, JSON.stringify(dto.fields ?? []),
-        dto.isLodging ?? false, dto.isExclusive ?? false,
+        // isExclusive ya no cae a `?? false` (28/08/2026, diseno-taxonomia-
+        // tipos-reserva-2026-08-28.md §5) -- CreateCategoryDTO lo exige, un
+        // valor faltante ahora es un error de tipos, no un `false` silencioso.
+        dto.isLodging ?? false, dto.isExclusive,
       ],
     );
     const rows = result.rows as Record<string, unknown>[];

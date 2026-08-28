@@ -68,7 +68,15 @@ export interface CreateCategoryDTO {
   description?: string;
   fields: CategoryField[];
   isLodging?: boolean;
-  isExclusive?: boolean;
+  /**
+   * Obligatorio desde 28/08/2026 (docs/diseno-taxonomia-tipos-reserva-2026-08-28.md
+   * §5) -- ya no tiene default silencioso ni en el schema ni en el
+   * repositorio. Antes de esto no había NINGÚN control en la UI para este
+   * campo, así que toda categoría de Turnos quedaba en `false` (cupo
+   * compartido) sin que nadie lo hubiera elegido -- caso real: Peluquería
+   * y Spa de biz-demo-01.
+   */
+  isExclusive: boolean;
 }
 
 /** DTO para actualizar una categoría */

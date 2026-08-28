@@ -158,11 +158,128 @@ seña en 3 formas, ya definido). Lo que falta:
 
 ---
 
+## Taxonomía de tipos de reserva — análisis, diseño y corrección de datos (28/08/2026)
+
+Sesión aparte del plan de ejecución de abajo — hallazgo traído por el
+dueño sobre `is_lodging`/`is_exclusive`/`booking_mode` sumándose sin
+preguntarse si hacía falta una sola taxonomía.
+
+- **Análisis:** los 3 campos son ejes independientes, no una taxonomía
+  disfrazada — confirmado contra código real (cada uno lo lee un
+  módulo distinto) y contra el único caso que parecía nonsensical
+  (`is_lodging=true` + `booking_mode≠'block'`), explícitamente
+  legítimo según comentario del propio equipo
+  (`reservation.service.ts:236-238`). No se unifican en un enum.
+- **Hallazgo real, no de modelo:** `is_exclusive` no tiene NINGÚN
+  control en la UI hoy (ni Categorías ni Servicios) — por eso
+  Peluquería y Spa de `biz-demo-01` quedaron en `false` (cupo
+  compartido) cuando debían ser `true` (exclusivo). No fue un error
+  de carga, fue una combinación imposible de cargar bien.
+- **Corregido en datos reales, con OK explícito del dueño:**
+  `UPDATE resource_categories SET is_exclusive = true WHERE id IN
+  ('cat-salon-barberia-1786584586896', 'cat-spa-1786546869768')` —
+  verificado por SELECT posterior.
+- **Diseño de UI documentado, sin implementar todavía:** selector
+  nombrado en 2 lugares (categoría controla `is_exclusive` con 2
+  opciones nombradas; servicio controla `booking_mode` con 3 opciones
+  cuyo copy se adapta al `is_exclusive` heredado), resumen siempre
+  visible de los valores reales (nunca oculto), sin opción
+  pre-seleccionada, lista de opciones creciente en vez de modo
+  avanzado. Documento completo:
+  `diseno-taxonomia-tipos-reserva-2026-08-28.md`. Patrón extraído
+  como playbook reutilizable:
+  `conocimiento/playbook-campos-interactuantes-selector-nombrado.md`.
+- **Implementado y verificado (28/08/2026), mismo día:**
+  - Backend: `isExclusive` obligatorio de punta a punta (DTO/Zod/
+    repositorio, sin `?? false`); `schema.sql` saca el `DEFAULT` de
+    `is_exclusive`/`booking_mode` (`ALTER COLUMN ... DROP DEFAULT`,
+    idempotente). Corregidos 2 lugares que dependían del default y
+    hubieran roto: `src/db/seed.tenant.sql` (script manual legado) y
+    la fixture de `rate-plans-seasonal-exclude.integration.test.ts`.
+  - Frontend: selector nombrado de 2 opciones en Categorías
+    (`is_exclusive`) y de 3 opciones contextuales en Servicios
+    (`booking_mode`, copy según la categoría elegida), sin
+    preselección, resumen siempre visible. **Hallazgo de paso, no
+    buscado:** el adapter `categorias.create` de
+    `lib/refine/dataProvider.ts` descartaba `isLodging` en el alta
+    (solo sobrevivía editando la categoría después de creada) —
+    corregido en el mismo cambio, no era optativo dejarlo así.
+  - Verificado con click real (login del dueño, resto por el agente)
+    contra `biz-demo-01`: alta de categoría exclusiva → confirmado en
+    la respuesta y en Postgres; alta de servicio `slot` sobre esa
+    categoría con el copy de "Turno" → confirmado en respuesta y en
+    Postgres; copy contextual de cupo compartido verificado sobre
+    Mesas. `tsc`/`eslint` limpios, suite 1566/1566 (1 flake
+    preexistente de timing, no relacionado). Datos de prueba
+    desactivados al cerrar.
+  - Detalle completo: `diseno-taxonomia-tipos-reserva-2026-08-28.md`
+    §6; patrón reutilizable en
+    `conocimiento/playbook-campos-interactuantes-selector-nombrado.md`.
+
+---
+
 ## Plan de ejecución acordado — estado actualizado
 
 Pasos 0, 3, 4, 5 ✅ resueltos (ver `plan-resolucion-bugs-deuda-2026-08-27.md`
-para el detalle completo de cada uno, incluida la sesión de hoy). Siguen
-abiertos, en el orden ya acordado: **1** (D8), **2** (D6), **6** (Gap C1-C),
-**7** (C3), **8** (C1-A.2, cobrar seña), **9** (C2, reembolso), **10**
-(C1-A.1, configurar seña — necesita las 4 decisiones de arriba), **11**
-(pantalla de reasignación de mantenimiento).
+para el detalle completo de cada uno, incluida la sesión de hoy). **Paso 1
+(D8) ✅ resuelto** (ver detalle abajo). Siguen abiertos, en el orden ya
+acordado: **2** (D6), **6** (Gap C1-C), **7** (C3), **8** (C1-A.2, cobrar
+seña), **9** (C2, reembolso), **10** (C1-A.1, configurar seña — necesita
+las 4 decisiones de arriba), **11** (pantalla de reasignación de
+mantenimiento).
+
+### Paso 1 — D8: UI fiscal de producto — ✅ RESUELTO (28/08/2026)
+
+Deuda de UI pura (el backend ya aceptaba `ivaRate`/`unit`/`arcaUnitCode`
+desde el 22/08). Implementado en `appfrontend-main`:
+
+- `src/lib/productos/types.ts` — los 3 campos agregados a `Product`/
+  `CreateProductInput`/`UpdateProductInput`.
+- `src/hooks/useBusinessModules.ts` (nuevo) — extraído del bloque
+  duplicado que tenía `dashboard/layout.tsx` para el gating por módulo del
+  nav; ahora también lo usan las 2 pantallas de producto. `layout.tsx`
+  refactorizado para usarlo (elimina la duplicación en el mismo cambio).
+- `dashboard/productos/page.tsx` (alta) y `dashboard/productos/[id]/page.tsx`
+  (edición) — sección `<details>` colapsable "Datos fiscales (AFIP/ARCA)",
+  gateada por `modules['FACTURACION'] !== false` (mismo criterio que el
+  nav). `unit` es `<input list>` con datalist de sugerencias (unidad, kg,
+  g, litro, ml, hora, m², docena) — texto libre, no restringe.
+  `arcaUnitCode` es número crudo sin selector, con nota de que no se
+  valida contra catálogo todavía (tal como pedía el enunciado del paso).
+  `ivaRate`/`arcaUnitCode` coercionan `''`→`null` recién en el submit
+  (nunca a 0 — vacío es "hereda"/"sin código", no "cero").
+
+**Verificado de punta a punta, con click real** (el dueño hizo login en
+`localhost:3000`, el agente hizo el resto sin tocar la sesión):
+alta de un producto de prueba con los 3 campos → confirmado en la
+respuesta 201 de `POST /api/products`; edición (cambio de `ivaRate`/`unit`,
+`arcaUnitCode` vaciado) → confirmado en la respuesta 200 de
+`PUT /api/products/:id` (`arcaUnitCode` quedó `null`, no `0`, al vaciarlo).
+Confirmación final **contra la base, no contra la pantalla**: SQL de solo
+lectura contra el proyecto Neon `ancient-king-17098519` (BD de tenant de
+`biz-demo-01`, distinta de la BD de plataforma) — la fila real tenía
+`iva_rate=10.50`, `unit='litro'`, `arca_unit_code=NULL`, calzando exacto
+con lo cargado. El producto de prueba (`TEST fiscal D8 — borrar`,
+`SKU TEST-D8-001`) se desactivó al cerrar (soft-delete, `active=false`
+confirmado por SQL — `deleteProduct()` nunca hace hard-delete, ver
+`sql.product.repository.ts:285-291`), con OK explícito del dueño.
+
+**Hallazgo de entorno, no bloqueante, anotar para la próxima sesión que
+necesite levantar el backend local:** `app-main/src/server.ts` lee
+`process.env.PLATFORM_DATABASE_URL` pero el proyecto no usa `dotenv` —
+nada carga `.env` automáticamente. `source .env` en Git Bash tampoco
+alcanza: las URLs de Neon en el `.env` llevan `?sslmode=require&channel_binding=require`
+sin comillas, y bash interpreta ese `&` como operador de background job,
+así que la asignación se pierde (corre en una subshell que no persiste).
+Hubo que exportar variable por variable con un loop `IFS='=' read`. Si
+esto se repite seguido, vale la pena agregar `dotenv`/`--env-file` al
+script `dev`, pero no se tocó en esta sesión (fuera de alcance del paso).
+
+**Hallazgo confirmado, no nuevo pero re-verificado:** el
+`PLATFORM_DATABASE_URL` del `.env` local de `app-main` apunta a la
+**misma base de producción** (proyecto Neon `pdb-ppms` /
+`morning-unit-50056927`, único negocio `biz-demo-01`) — no hay BD de
+desarrollo separada. Cualquier verificación "local" en esta etapa del
+proyecto toca datos reales; no es nuevo (mismo patrón que la sesión
+27-28/08 con Neon) pero vale dejarlo explícito para quien levante el
+backend local de acá en más.

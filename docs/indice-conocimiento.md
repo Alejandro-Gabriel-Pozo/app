@@ -60,12 +60,16 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Consumo interno (personal, degustación, elaboración interna) es COSTO OPERATIVO, nunca `movement_type='WASTE'` — catálogo `consumption_destinations` propio, nunca se mezcla con `waste_reasons` (el guard lo rechaza en los dos sentidos) — adoptado de `DESTINOS_CONSUMO` de `proyecto script` | `consumption-destination.service.ts`, `consumption-destinations.routes.ts`, `products.routes.ts` (`POST /stock/consumption`), `dashboard/destinos-consumo/page.tsx`, pendientes 27/08 | implementado (27/08/2026), verificado en navegador real contra la base real (10→7 unidades, movimiento correcto) |
 | Seña con 3 formas (`PERCENTAGE`/`FIXED`/`UNITS`); UI expone 2, el resolver implementa las 3 | [diseno-sena-unidades-c1a-2026-08-27.md](diseno-sena-unidades-c1a-2026-08-27.md) | aceptado, sin implementar — el prerequisito (paso 0) ya está resuelto |
 | `UNITS` = suma de las primeras N líneas, nunca `N × promedio` | mismo doc §2 | aceptado |
+| `is_lodging`/`is_exclusive`/`booking_mode` son 3 ejes independientes, no una taxonomía disfrazada — no se unifican en un enum | [diseno-taxonomia-tipos-reserva-2026-08-28.md](diseno-taxonomia-tipos-reserva-2026-08-28.md) | aceptado |
+| Selector de alta en 2 lugares (categoría controla `is_exclusive`, servicio controla `booking_mode` con copy contextual), no un único selector combinado; `isExclusive`/`bookingMode` obligatorios (sin default silencioso ni en schema ni en app) | mismo doc §3/§5/§6 | implementado (28/08/2026), verificado con click real + Postgres |
+| Peluquería/Spa de `biz-demo-01` corregidas a `is_exclusive=true` (estaban en `false` por falta de control en la UI, no por decisión) | mismo doc §1b | implementado (28/08/2026), verificado por SQL |
+| El adapter `categorias.create` de Refine descartaba `isLodging` en el alta (solo sobrevivía editando después) — hallazgo de paso al implementar el selector, corregido en el mismo cambio | mismo doc §6 | implementado (28/08/2026) |
 | `console.log` en `src/scripts/` a propósito; Pino solo en el proceso del servidor | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) §1.1 | implementado |
 | Sentry no captura `DomainError`/`ValidationError`/`ZodError` | misma §1.2 | implementado |
 
 ### Diseño técnico / RFC (propuesta o cambio complejo)
 
-Documentos `diseno-*.md` y referencias: seña C1 (Fase A 22/08 + **3 formas 27/08**), **precio servicio vs. recurso 27/08 (paso 0, prerequisito de C1-A)**, cancelación/NC C2, líneas de factura C3, tarifas multinivel, POS mesas, housekeeping/`maintenance_window`, inventario carve-out, empresas multipropiedad, AFIP WSFE, QloApps, mejoras PMS 18/08.
+Documentos `diseno-*.md` y referencias: seña C1 (Fase A 22/08 + **3 formas 27/08**), **precio servicio vs. recurso 27/08 (paso 0, prerequisito de C1-A)**, **taxonomía de tipos de reserva y selector de alta 28/08**, cancelación/NC C2, líneas de factura C3, tarifas multinivel, POS mesas, housekeeping/`maintenance_window`, inventario carve-out, empresas multipropiedad, AFIP WSFE, QloApps, mejoras PMS 18/08.
 
 Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes del día.
 
@@ -89,6 +93,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | 404 de detalle: `isApiError` + `err.code`, nunca `err.status` | `appfrontend-main/src/lib/apiErrors.ts`; caso Órdenes 25/08 |
 | Cambiar `authorize(Roles.X)`: matriz RBAC + `EXPECTED_AUTHORIZE_CALL_SITES` | `app-main/CLAUDE.md` sección RBAC |
 | `update()`/`deactivate()` de una entidad auditada: el UPDATE y el INSERT en `audit_log` deben compartir transacción, no dos `await` sueltos | [conocimiento/playbook-audit-log-transaccional.md](conocimiento/playbook-audit-log-transaccional.md) |
+| 2+ campos independientes que forman un concepto de negocio con nombre — antes de construir el alta, agrupar en selector nombrado + resumen visible, no controles sueltos | [conocimiento/playbook-campos-interactuantes-selector-nombrado.md](conocimiento/playbook-campos-interactuantes-selector-nombrado.md) |
 
 ### Mapas del sistema
 

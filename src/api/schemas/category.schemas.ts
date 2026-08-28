@@ -25,7 +25,10 @@ export const CreateCategorySchema = z.object({
   description: z.string().max(500).optional(),
   fields:      z.array(CategoryFieldSchema).default([]),
   isLodging:   z.boolean().optional(),
-  isExclusive: z.boolean().optional(),
+  // Obligatorio desde 28/08/2026 (diseno-taxonomia-tipos-reserva-2026-08-28.md
+  // §5) -- sin esto, cualquier categoría de Turnos quedaba en cupo
+  // compartido sin que nadie lo hubiera elegido (caso real: Peluquería/Spa).
+  isExclusive: z.boolean(),
 });
 
 export const UpdateCategorySchema = z.object({

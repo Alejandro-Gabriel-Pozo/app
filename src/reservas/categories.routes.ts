@@ -131,7 +131,10 @@ export function createCategoryRouter(container: AppContainer): Router {
           fields: body.fields as CategoryField[],
           ...(body.description !== undefined && { description: body.description }),
           ...(body.isLodging   !== undefined && { isLodging: body.isLodging }),
-          ...(body.isExclusive !== undefined && { isExclusive: body.isExclusive }),
+          // Ya no es condicional: CreateCategorySchema lo exige (28/08/2026,
+          // diseno-taxonomia-tipos-reserva-2026-08-28.md §5), body.isExclusive
+          // nunca es undefined acá.
+          isExclusive: body.isExclusive,
         },
         plan,
         limits,

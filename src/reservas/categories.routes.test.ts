@@ -170,7 +170,7 @@ describe('POST /api/categories', () => {
     const req = {
       db: fakeDb([]),
       user: { id: 'identity-1', businessId: 'biz-1' },
-      body: { name: 'Salones', fields: [] },
+      body: { name: 'Salones', fields: [], isExclusive: true },
     } as unknown as Request;
     const res = fakeRes();
 
@@ -183,7 +183,7 @@ describe('POST /api/categories', () => {
   it('401 TOKEN_MISSING_BUSINESS si el JWT no trae businessId', async () => {
     const router = createCategoryRouter(fakeContainer());
     const handler = getHandler(router, 'post', '/');
-    const req = { db: fakeDb([]), user: { id: 'identity-1' }, body: { name: 'Salones' } } as unknown as Request;
+    const req = { db: fakeDb([]), user: { id: 'identity-1' }, body: { name: 'Salones', isExclusive: true } } as unknown as Request;
     const res = fakeRes();
 
     await handler(req, res, () => { throw new Error('no next'); });
@@ -210,7 +210,7 @@ describe('POST /api/categories', () => {
     const req = {
       db: fakeDb([makeCategoryRow()]),
       user: { id: 'identity-1', businessId: 'biz-1' },
-      body: { name: 'Salones', fields: [] },
+      body: { name: 'Salones', fields: [], isExclusive: true },
     } as unknown as Request;
     const res = fakeRes();
 
