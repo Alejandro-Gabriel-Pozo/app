@@ -243,6 +243,36 @@ mostraba todo como local). Con OK explícito del dueño:
   a pedido del dueño). Con eso disponible, la creación de los 2 branches y la
   verificación SQL las hice yo en vez de pedirle al dueño que entre a la
   consola.
+- **Ítem 5 (🔴 temporada) — ✅ RESUELTO.** Ver detalle completo en la sección
+  5 más abajo (FASE 3). Diseño en capas acordado con el dueño antes de tocar
+  schema — solo se implementó la Fase 1 (resolución determinística).
+- **Incidente de deploy real encontrado y corregido (no estaba planeado):**
+  al pushear el fix de temporada, el build de Render falló:
+  `check constraint "chk_stock_movements_movement_type"... is violated by
+  some row` (log completo pasado por el dueño desde el dashboard de Render —
+  el agente no tiene acceso propio a esos logs). Causa: `schema.sql` tenía
+  **dos** bloques `DROP CONSTRAINT`/`ADD CONSTRAINT` para la misma constraint
+  — uno viejo (fase PRODUCTION del carve-out, sin `'CONSUMPTION'`) y uno
+  nuevo (sesión 27/08, con `'CONSUMPTION'`). Como `schema.sql` se reaplica
+  ENTERO como una transacción en cada deploy, y ya había una fila
+  `movement_type='CONSUMPTION'` real (se probó la feature contra el server
+  real el mismo día que se agregó), el bloque viejo reventaba ANTES de
+  llegar al nuevo. Bloqueaba cualquier deploy futuro, no solo el de
+  temporada. Fix: se eliminó el bloque muerto (R14, un solo camino de
+  escritura); `grep` confirmó que no hay otro par de constraints duplicadas
+  del mismo tipo en todo el archivo. Test de regresión nuevo
+  (`schema-redeploy-idempotent.integration.test.ts`) reproduce el incidente
+  exacto contra Postgres real: aplica schema, inserta una fila CONSUMPTION
+  real, reaplica schema entero — antes del fix tiraba el mismo error que el
+  log de producción, ahora pasa limpio. Segundo push, deploy re-verificado
+  exitoso (`✅ biz-demo-01 — migrado a v43`, confirmado por SQL directa:
+  `excl_rate_plans_overlapping_validity` existe, `uq_rate_plans_service_name`
+  ya no).
+
+**Lección para el futuro:** al ampliar un `CHECK`/constraint ya existente,
+editar el bloque in-place (o borrar el viejo) — nunca agregar un segundo
+bloque `DROP`/`ADD` más abajo en el archivo. Con datos reales entre medio,
+el bloque viejo revienta antes de que Postgres llegue al nuevo.
 
 ## FASE 4 — C1-A: decisiones del dueño, no son código todavía
 
