@@ -159,8 +159,20 @@ export class InvoiceService {
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
-  private async recordInvoiceAudit(invoice: Invoice, changedBy: string): Promise<void> {
-    await this.auditLogRepo.record([{
+  /**
+   * RBAC paso 2 (27/08/2026, pendientes-2026-08-27.md) — antes corría con
+   * `record()` DESPUÉS de cerrar el `transactionManager.run()` que crea la
+   * factura, en los tres call sites. Si el INSERT de auditoría fallaba, la
+   * factura ya estaba persistida sin su fila de auditoría (A6.5/A8.2). Ahora
+   * recibe el `client` de la MISMA transacción y usa `recordWithClient()`: si
+   * el commit falla, ni la factura ni la auditoría quedan. Mismo fix que RBAC
+   * paso 1 aplicó en los otros call sites.
+   */
+  private async recordInvoiceAudit(client: SqlClient, invoice: Invoice, changedBy: string): Promise<void> {
+    if (!this.auditLogRepo.recordWithClient) {
+      throw new Error('AuditLogRepository.recordWithClient no está implementado.');
+    }
+    await this.auditLogRepo.recordWithClient(client, [{
       entity: AUDIT_ENTITY,
       entityId: invoice.id,
       field: 'cbteTipo',
@@ -320,8 +332,9 @@ export class InvoiceService {
     // transacción -- el branching vive solo acá, en cómo se arma el
     // afipRequest/los ítems.
     if (tx.type === 'REFUND') {
-      const invoice = await this.buildCreditNote(tx, input, profile, authCuit, credentials, idempotencyKey);
-      await this.recordInvoiceAudit(invoice, input.changedBy);
+      // RBAC paso 2 — la auditoría se graba ADENTRO de la transacción de
+      // buildCreditNote (recibe changedBy), no acá afuera con la NC ya creada.
+      const invoice = await this.buildCreditNote(tx, input, profile, authCuit, credentials, idempotencyKey, input.changedBy);
       const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
       return this.issue(client, invoice, invoice.afipRequest as Record<string, unknown>, credentials.environment, profile.afipSalesPoint!);
     }
@@ -370,8 +383,8 @@ export class InvoiceService {
         afipRequest,
         items,
       );
+      await this.recordInvoiceAudit(client, invoice, input.changedBy);
     });
-    await this.recordInvoiceAudit(invoice, input.changedBy);
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
@@ -465,8 +478,8 @@ export class InvoiceService {
         allItems,
         pending.map((ar) => ({ financialTransactionId: ar.financialTransactionId!, amount: ar.amount })),
       );
+      await this.recordInvoiceAudit(client, invoice, input.changedBy);
     });
-    await this.recordInvoiceAudit(invoice, input.changedBy);
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
     const issued = await this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
@@ -570,6 +583,7 @@ export class InvoiceService {
     authCuit: string,
     credentials: AfipCredentials,
     idempotencyKey: string,
+    changedBy: string,
   ): Promise<Invoice> {
     if (!tx.reversedInvoiceId) throw new InvoiceNotReversibleError(tx.id);
     const original = await this.invoiceRepo.getById(tx.reversedInvoiceId);
@@ -654,6 +668,7 @@ export class InvoiceService {
         afipRequest,
         items,
       );
+      await this.recordInvoiceAudit(client, invoice, changedBy);
     });
 
     return invoice;
