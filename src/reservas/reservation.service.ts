@@ -61,7 +61,9 @@ import {
   ReservationNotFoundError,
   NoPriceAdjustmentPendingError,
   DepositNotPaidError,
+  LodgingRequiresServiceError,
 } from '../domain/errors.js';
+import { BookableServiceNotFoundError } from './bookable-service.service.js';
 import type { ReservationLine } from './reservation.types.js';
 import { validateDetailsAgainstFields } from './category.service.js';
 import type { ReservationRepository }        from './reservation.repository.js';
@@ -209,6 +211,35 @@ export class ReservationService {
     const service = params.serviceId
       ? await this.bookableServiceRepository.findById(params.serviceId)
       : null;
+
+    // 27/08/2026, docs/diseno-precio-servicio-vs-recurso-2026-08-27.md.
+    // Mismo criterio que el guard J1 de arriba: va en el caso de uso de
+    // ALTA, no en el constructor de Reservation (restore() reconstruye
+    // reservas históricas que se crearon antes de esta regla y tienen que
+    // seguir leyéndose — R10/R2).
+    //
+    // (a) Un `serviceId` que no resuelve fallaba en SILENCIO cuando el
+    //     caller además mandaba `endTime`: resolveEndTime() solo exige el
+    //     servicio para derivar la duración, y la cascada de precio caía al
+    //     `basePrice` del recurso como si no se hubiera pedido ninguno.
+    //     R15 — una referencia rota falla fuerte, nunca degrada.
+    if (params.serviceId && !service) {
+      throw new BookableServiceNotFoundError(params.serviceId);
+    }
+
+    // (b) En ALOJAMIENTO el precio vive en el SERVICIO ("Estadía"), no en el
+    //     recurso: la habitación habilita, no es lo que se cobra. Sin
+    //     servicio la estadía cotizaba `resource.base_price` como monto
+    //     ÚNICO (units = 1 salvo bookingMode 'block') — una noche y diez
+    //     noches salían lo mismo — y quedaban inertes los rate plans,
+    //     resource_locks y la asignación automática por categoría (K4).
+    //     No se exige `bookingMode === 'block'`: un servicio 'slot' sobre un
+    //     recurso de alojamiento es legítimo (actividad guiada con horario).
+    //     Fuera de alojamiento no aplica: una mesa de restaurante se reserva
+    //     sin servicio a propósito, con base_price = 0.
+    if (category?.isLodging && !service) {
+      throw new LodgingRequiresServiceError(category.name);
+    }
 
     const endTime = await resolveEndTime(params.serviceId, params.startTime, params.endTime, service);
 
@@ -503,7 +534,21 @@ export class ReservationService {
         scheduleApprovedBy:     existing.scheduleApprovedBy,
         scheduleChargeAmount:   existing.scheduleChargeAmount,
         reservationNumber:      existing.reservationNumber,
+        // Bug seña/mantenimiento (27/08/2026, pendientes-2026-08-27.md) —
+        // MISMA familia que requestedCheckInTime/scheduleApprovalStatus/
+        // isExclusiveResource: Reservation.restore() defaultea a 0/null/false
+        // los props no pasados, y el UPSERT los escribe sin condicional
+        // (sql.reservation.repository.ts $23/$24/$27). Sin reenviarlos, editar
+        // fechas/recurso de una reserva PENDING o CONFIRMED (incl. drag-to-move
+        // del calendario) borraba la seña ya cobrada (dinero, A3.9) y apagaba
+        // el snapshot de mantenimiento (protección del EXCLUDE constraint,
+        // A6.x) en silencio. Son snapshot (R9): se preservan tal cual, NO se
+        // recalcula la seña acá — eso es resolveDepositAmount()/C1-A, fuera de
+        // alcance de este fix.
+        depositAmount:          existing.depositAmount,
+        depositDueBy:           existing.depositDueBy,
         appliedCustomerRateId,
+        needsMaintenanceReview: existing.needsMaintenanceReview,
         isExclusiveResource,
       });
 
@@ -660,11 +705,14 @@ export class ReservationService {
         // Bug 2 (25/08/2026) — sin esto, cada ajuste de precio resetearía
         // el snapshot a `false` en silencio (Reservation.restore() defaultea
         // los props no pasados), apagando la protección del EXCLUDE
-        // constraint para esta reserva. NOTA (encontrado de paso, sin
-        // corregir — fuera de alcance de Bug 2): needsMaintenanceReview
-        // tiene el mismo problema acá (no se reenvía, cae a `false`) desde
-        // antes de este cambio; mismo patrón de bug que ya se corrigió una
-        // vez para requestedCheckInTime/scheduleApprovalStatus.
+        // constraint para esta reserva.
+        //
+        // needsMaintenanceReview (27/08/2026, pendientes-2026-08-27.md) —
+        // tenía el MISMO problema acá (no se reenviaba, caía a `false`); la
+        // NOTA previa que lo dejaba "sin corregir, fuera de alcance de Bug 2"
+        // ya no aplica: se reenvía junto con isExclusiveResource. Mismo patrón
+        // de bug ya corregido para requestedCheckInTime/scheduleApprovalStatus.
+        needsMaintenanceReview: locked.needsMaintenanceReview,
         isExclusiveResource:    locked.isExclusiveResource,
       });
 

@@ -50,6 +50,36 @@ export class ResourceNotFoundError extends DomainError {
 }
 
 /**
+ * Una reserva sobre una categoría de ALOJAMIENTO (`resource_categories.
+ * is_lodging`) tiene que decir qué servicio se está vendiendo — 27/08/2026,
+ * docs/diseno-precio-servicio-vs-recurso-2026-08-27.md.
+ *
+ * El precio de una estadía vive en el SERVICIO ("Estadía"), no en el
+ * recurso: la habitación habilita, no es lo que se cobra. Sin `serviceId`
+ * la reserva cotizaba `resource.base_price` como un monto ÚNICO por toda la
+ * estadía (`units = 1` salvo `bookingMode === 'block'`) — una noche y diez
+ * noches salían lo mismo —, y de paso quedaban inertes los rate plans,
+ * `resource_locks` y la asignación automática por categoría (K4).
+ *
+ * NO se exige `bookingMode === 'block'`: un servicio `slot` sobre un recurso
+ * de alojamiento es un caso legítimo (una actividad guiada con horario
+ * dentro del hotel). Lo que se exige es que la reserva declare QUÉ vende.
+ *
+ * Tampoco aplica fuera de alojamiento: una reserva de mesa de restaurante
+ * legítimamente no tiene servicio y su recurso tiene `base_price = 0` a
+ * propósito (ver los ejemplos canónicos de `openapi/spec.ts`).
+ */
+export class LodgingRequiresServiceError extends DomainError {
+  constructor(categoryName: string) {
+    super(
+      `Las reservas de "${categoryName}" son de alojamiento y necesitan un servicio ` +
+      `(ej. "Estadía"): el precio por noche sale del servicio, no de la habitación.`,
+      'LODGING_REQUIRES_SERVICE',
+    );
+  }
+}
+
+/**
  * Cubre las tres formas en que una tarifa (RatePlan) puede no ser usable
  * para una reserva puntual: no existe, está desactivada, o las fechas de
  * la reserva caen fuera de su vigencia (validFrom/validTo). Un solo error
@@ -266,6 +296,13 @@ export class InvalidOverrideTransitionError extends DomainError {
 export class WasteReasonNotFoundError extends DomainError {
   constructor(id: string) {
     super(`Motivo de merma con id "${id}" no encontrado`, 'WASTE_REASON_NOT_FOUND');
+  }
+}
+
+/** 27/08/2026 — gemelo de `WasteReasonNotFoundError` para el catálogo de destinos de consumo interno. */
+export class ConsumptionDestinationNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Destino de consumo con id "${id}" no encontrado`, 'CONSUMPTION_DESTINATION_NOT_FOUND');
   }
 }
 
@@ -551,5 +588,26 @@ export class MaintenanceWindowConflictError extends DomainError {
 export class MaintenanceWindowNotFoundError extends DomainError {
   constructor(id: string) {
     super(`No existe una ventana de mantenimiento con id "${id}".`, 'MAINTENANCE_WINDOW_NOT_FOUND');
+  }
+}
+
+/**
+ * El movimiento de stock no respeta las reglas declaradas para su tipo en
+ * `STOCK_MOVEMENT_RULES` (27/08/2026, A6.1 — ver el docblock de ese mapa en
+ * `repositories/stock-movement.repository.ts`).
+ *
+ * Estos invariantes ya existían como CHECK de Postgres
+ * (`chk_stock_movements_location`, `chk_waste_requires_reason`,
+ * `chk_adjustment_requires_notes`), pero violarlos llegaba al usuario como
+ * un 500 crudo de la base en vez de un error del dominio: A8.2 pide el
+ * invariante como constraint Y como guard (defensa en profundidad), y R15
+ * pide que falle fuerte con un mensaje que diga qué pasó.
+ */
+export class InvalidStockMovementError extends DomainError {
+  constructor(movementType: string, motivo: string) {
+    super(
+      `Movimiento de stock "${movementType}" inválido: ${motivo}`,
+      'INVALID_STOCK_MOVEMENT',
+    );
   }
 }

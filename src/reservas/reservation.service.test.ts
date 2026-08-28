@@ -206,6 +206,15 @@ describe('ReservationService', () => {
       // mal (o no ordenara), este test lo detecta.
       const other = new BookableResource('a-other', 'Otro recurso', 30, 'cat-table', null, 4);
       await resourceRepo.save(other);
+      // 27/08/2026: el fixture referenciaba 'svc-1' sin sembrarlo nunca. Pasaba
+      // en silencio (endTime explícito + fallback de precio a basePrice); el
+      // guard de serviceId inexistente (R15) lo destapó. El test es sobre el
+      // ORDEN de lockByIds, así que el servicio solo tiene que existir.
+      bookableServiceRepo.seed({
+        id: 'svc-1', categoryId: 'cat-table', name: 'Servicio de locks',
+        bookingMode: 'slot', durationMinutes: null, price: 30,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
       lockRepo.seed([{ serviceId: 'svc-1', resourceId: 'a-other', sortOrder: 0 }]);
 
       const lockSpy = vi.spyOn(resourceRepo, 'lockByIds');
@@ -650,8 +659,21 @@ describe('ReservationService', () => {
         FROZEN_TEST_NOW,
       );
 
+      // 27/08/2026 — una reserva de ALOJAMIENTO necesita servicio
+      // (LodgingRequiresServiceError). Este test es sobre el payload del
+      // evento, no sobre el precio: alcanza con que el servicio exista.
+      // 'slot' y no 'block' a propósito: la reserva de este test es de 20:00 a
+      // 22:00 del mismo día (0 noches), y 'block' exigiría al menos una.
+      // Un servicio 'slot' sobre un recurso de alojamiento es un caso
+      // legítimo y el guard nuevo lo permite explícitamente.
+      bookableServiceRepo.seed({
+        id: 'svc-estadia', categoryId: 'cat-table', name: 'Actividad en el hotel',
+        bookingMode: 'slot', durationMinutes: null, price: 50,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+
       await lodgingService.createReservation({
-        id: 'res-lodging', resourceId: 't1', customer,
+        id: 'res-lodging', resourceId: 't1', serviceId: 'svc-estadia', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
       await lodgingService.confirmReservation('res-lodging', TEST_BUSINESS_ID);
@@ -1124,6 +1146,40 @@ describe('ReservationService', () => {
       // número operativo tampoco puede perderse en un restore() de update.
       expect(updated.reservationNumber).toBe(42);
     });
+
+    // Bug seña/mantenimiento (27/08/2026, pendientes-2026-08-27.md) — misma
+    // familia que el test de arriba: updateReservation() no reenviaba
+    // depositAmount/depositDueBy/needsMaintenanceReview a Reservation.restore(),
+    // que los defaultea a 0/null/false, y el UPSERT los escribía sin
+    // condicional. Editar/mover una reserva con seña cobrada la ponía en $0 en
+    // silencio (dinero, A3.9) y apagaba el snapshot de mantenimiento (A6.x).
+    it('updateReservation NO borra la seña ni el snapshot de mantenimiento (deposit/needsMaintenanceReview)', async () => {
+      const dueBy = new Date('2026-08-30T23:59:00Z');
+      const seeded = Reservation.restore({
+        id: 'res-deposit-preserve',
+        customer,
+        resource: table,
+        startTime: new Date('2026-09-01T15:00:00Z'),
+        endTime:   new Date('2026-09-03T10:00:00Z'),
+        details: {},
+        initialStatus: ReservationStatus.CONFIRMED, // CONFIRMED no recotiza: totalPrice queda congelado
+        totalPrice: 200,
+        depositAmount: 50,
+        depositDueBy: dueBy,
+        needsMaintenanceReview: true,
+        reservationNumber: 77,
+        appliedCustomerRateId: null,
+      });
+      await reservationRepo.save(seeded);
+
+      const updated = await service.updateReservation('res-deposit-preserve', {
+        resourceId: 't1', // fuerza el camino de restore, igual que el test de horario especial
+      });
+
+      expect(updated.depositAmount).toBe(50);
+      expect(updated.depositDueBy).toEqual(dueBy);
+      expect(updated.needsMaintenanceReview).toBe(true);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1261,6 +1317,36 @@ describe('ReservationService', () => {
 
       await expect(service.confirmPriceAdjustment('res-confirm-pending', TEST_BUSINESS_ID, 'user-manager-1'))
         .rejects.toThrow(InvalidReservationError);
+    });
+
+    // Bug needsMaintenanceReview (27/08/2026, pendientes-2026-08-27.md) — el
+    // restore() de confirmPriceAdjustment tampoco reenviaba
+    // needsMaintenanceReview (la NOTA previa lo dejaba documentado sin
+    // corregir). Un ajuste de precio apagaba el snapshot de mantenimiento en
+    // silencio. Se siembra una CONFIRMED con totalPrice congelado desfasado
+    // para que el ajuste dispare sin pasar por updateReservation — aísla este
+    // restore().
+    it('confirmPriceAdjustment NO borra el snapshot de mantenimiento (needsMaintenanceReview)', async () => {
+      const seeded = Reservation.restore({
+        id: 'res-adjust-maint',
+        customer,
+        resource: table,
+        serviceId: 'svc-noche-adjust',
+        startTime: new Date('2026-09-01T15:00:00Z'),
+        endTime:   new Date('2026-09-05T10:00:00Z'), // 4 noches = $400 hoy
+        details: {},
+        initialStatus: ReservationStatus.CONFIRMED,
+        totalPrice: 200, // congelado/desfasado a propósito → ajuste pendiente de $200
+        needsMaintenanceReview: true,
+        reservationNumber: 88,
+        appliedCustomerRateId: null,
+      });
+      await reservationRepo.save(seeded);
+
+      const updated = await service.confirmPriceAdjustment('res-adjust-maint', TEST_BUSINESS_ID, 'user-manager-1');
+
+      expect(updated.totalPrice).toBe(400); // el ajuste se aplicó
+      expect(updated.needsMaintenanceReview).toBe(true); // y el snapshot sobrevivió
     });
   });
 
@@ -1576,19 +1662,40 @@ describe('ReservationService', () => {
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
-      // t1 tiene basePrice=50 -- 30% de descuento a nivel BUCKET ALOJAMIENTO = 35.
+      // 27/08/2026 — decisión del dueño, docs/diseno-precio-servicio-vs-
+      // recurso-2026-08-27.md: desde que una reserva de ALOJAMIENTO exige
+      // servicio (LodgingRequiresServiceError), la cascada entra siempre por
+      // la rama de SERVICIO y retorna ahí -- nunca llega a la del recurso.
+      // Eso deja inalcanzables los dos alcances que se resolvían por recurso:
+      // `resource_id` y `bucket = 'ALOJAMIENTO'`.
+      //
+      // Se aceptó a propósito ("re-scopear las tarifas"): en alojamiento una
+      // tarifa especial se define sobre el SERVICIO o sobre la CATEGORÍA (que
+      // sí sigue funcionando -- el servicio pertenece a la misma categoría
+      // que el recurso). Este test dejó de verificar que el bucket se aplica
+      // y pasa a ser la cerca que avisa si alguien lo revive sin querer.
+      //
+      // Mismo cortocircuito, mismo criterio, en `deposit_policies` (C1-A):
+      // una política de seña con `bucket = 'ALOJAMIENTO'` tampoco se alcanza.
       customerRateRepo.seed([{
         id: 'rate-bucket-aloj', businessId: TEST_BUSINESS_ID, customerId: 'cust-1',
         resourceId: null, serviceId: null, productId: null, categoryId: null, bucket: 'ALOJAMIENTO',
         fixedPrice: null, discountPercentage: 30, rateCatalogId: null, active: true,
       }]);
+      bookableServiceRepo.seed({
+        id: 'svc-estadia-bucket', categoryId: 'cat-table', name: 'Estadía',
+        bookingMode: 'slot', durationMinutes: null, price: 50,
+        active: true, createdAt: new Date(), updatedAt: new Date(),
+      });
 
       const reservation = await lodgingService.createReservation({
-        id: 'res-bucket-aloj', resourceId: 't1', customer,
+        id: 'res-bucket-aloj', resourceId: 't1', serviceId: 'svc-estadia-bucket', customer,
         startTime: new Date('2026-07-01T09:00:00'), endTime: new Date('2026-07-01T10:00:00'), details: {},
       });
 
-      expect(reservation.totalPrice).toBe(35);
+      // 50 (precio de catálogo del servicio), NO 35: el 30% del bucket
+      // ALOJAMIENTO ya no interviene.
+      expect(reservation.totalPrice).toBe(50);
     });
 
     it('D9-Parte 1: el eje servicio sigue ganando aunque su tarifa sea de nivel BUCKET y la del recurso sea de nivel ÍTEM (default confirmado, no al revés)', async () => {
