@@ -464,6 +464,39 @@ bordes. Si el fondo de trabajo es warm-white, la señal brass va con `brass-stro
 pueden ir en paralelo a la Fase 3; V3 espera la Fase 4 (`BusinessContext` para el sidebar
 dinámico) y V5 espera la Fase 5 (las pantallas de Superadmin tienen que existir).
 
+### Formalización en el repo de frontend (28/08/2026, cierre)
+
+Los dos archivos de referencia estaban commiteados en `appfrontend-main/docs/` pero **no
+entrados en las convenciones del repo**: una sesión nueva leía su `CLAUDE.md` y no se
+enteraba de que existen.
+
+**Hallazgo: el `CLAUDE.md` del frontend mandaba a usar un sistema que ya no existe.** El
+párrafo de tipografías decía que una pantalla nueva use la clase `.bastion` y que las
+fuentes son `Fraunces`/IBM Plex. Las dos cosas eran falsas desde la migración del 23/08:
+`.bastion` no la usa **ningún** `.tsx` (0 ocurrencias, la clase real es `.zulu`) y la
+display es `Space_Grotesk` (`dashboard/layout.tsx:25-27`). Corregido, con nota de qué decía
+antes.
+
+- **Sección nueva "Sistema de diseño — ZULU Hub"** en `appfrontend-main/CLAUDE.md`. Declara
+  la brecha en vez de esconderla (el `.zulu` navy+cian es legado y es lo que se ve; el
+  sistema vigente todavía no está implementado) y fija **5 reglas que rigen para código
+  nuevo ya**, antes de la V2: cero hex en `.tsx`, cero clases Tailwind de color crudas,
+  color nunca como única señal, no reasignar `.btn-mini-clay`/`-sage` sin revisar call
+  sites, y el texto de color es siempre `*-strong`. Más una regla de qué **no** hacer: no
+  migrar pantallas sueltas — el orden es tokens → shell → pantallas.
+- **`sistema-diseno-bastion.md` marcado como histórico.** Se presentaba como "sistema visual
+  a usar en pantallas nuevas" e incluía la instrucción "pegarle este archivo completo a
+  Claude Code" — una instrucción viva apuntando al sistema equivocado. Encabezado de
+  deprecación + cuerpo plegado. Se conserva porque el sistema del 28/08 **recupera el
+  mecanismo** de Bastión (color por vertical) que ZULU había descartado; el encabezado avisa
+  que los **valores** no se recuperan (brass `#B8892E` vs `#B8935F`).
+- **`docs/README.md` nuevo** — el frontend no tenía punto de entrada a su documentación (el
+  backend sí, `indice-conocimiento.md`). Vigentes, superados con motivo de conservación, la
+  brecha código↔sistema en una tabla, y los documentos del proyecto que viven en el otro
+  repo.
+
+Commit: `8440d42` en `appfrontend-main`.
+
 ### Revisión del diff antes de commitear (pedida por el dueño)
 
 - **Migraciones de tenant** (`schema.sql`, v43 -> **v44**): 4 `ADD COLUMN IF NOT EXISTS` +

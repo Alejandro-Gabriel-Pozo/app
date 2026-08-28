@@ -1,8 +1,10 @@
 # Plan — Separación de dominios y adaptación multirubro (ZULU Hub)
 
 - **Fecha:** 2026-08-28
-- **Estado:** **Fases 0, 1 y 2 ejecutadas y verificadas** (28/08/2026, sin commitear).
-  Fases 3–9 y V1–V6: aprobadas, sin implementar. Las 7 decisiones de §14 están cerradas.
+- **Estado:** **Fases 0, 1 y 2 ejecutadas y verificadas** (28/08/2026; commiteadas local,
+  sin pushear ni deployar). Fases 3–9: aprobadas, sin implementar.
+  **Corriente visual V1–V7: 0 de 7 ejecutadas, ninguna pantalla migrada** — lo hecho es
+  preparación documental (§16). Las 7 decisiones de §14 están cerradas.
 - **Alcance:** `app-main` (backend) + `appfrontend-main` (frontend), incluido el panel de Superadmin.
 - **Documentos que NO reemplaza:** `arquitectura-monolito-modular.md` (ADR de monolito
   modular), `plan-multirubro.md` (cierre de restos hardcodeados, casi todo ya resuelto),
@@ -667,10 +669,31 @@ Se incorpora como corriente propia: Fases **V1–V6**, §16.
 
 ---
 
-## 16. Corriente visual — Fases V1–V6 (D7)
+## 16. Corriente visual — Fases V1–V7 (D7)
 
-**Especificación normativa completa:**
-[`appfrontend-main/docs/sistema-diseno-zulu-hub.md`](../../appfrontend-main/docs/sistema-diseno-zulu-hub.md).
+> ### Estado: **0 de 7 fases ejecutadas. Ninguna pantalla migrada.**
+>
+> Lo hecho al 28/08/2026 es **preparación documental**, no migración: la
+> especificación, el boceto y las convenciones del repo de frontend. **Ni un solo token,
+> componente o pantalla cambió.** El bloque `.zulu` de `globals.css` sigue siendo navy +
+> cian y sigue siendo lo que se ve en producción.
+>
+> Los commits de esta sesión **no deben presentarse como migración visual terminada.**
+
+### 16.0 Artefactos de la corriente
+
+Los tres son parte del plan, no anexos:
+
+| Artefacto | Qué es | Rol en las fases |
+|---|---|---|
+| [`sistema-diseno-zulu-hub.md`](../../appfrontend-main/docs/sistema-diseno-zulu-hub.md) | **Especificación normativa.** Paleta con contrastes medidos, tipografía, layout, componentes, pantallas, responsive, accesibilidad | Fuente de verdad de V1–V7. Contra esto se acepta cada fase |
+| [`zulu-hub-sketch.html`](../../appfrontend-main/docs/zulu-hub-sketch.html) | **Boceto de referencia.** Los 3 contextos sobre el mismo shell, autocontenido | Insumo de V1 (clasificar los 53 usos de `var(--accent)`) y referencia de aceptación de V2/V4. **No es el boceto original del dueño** — si aparece, lo reemplaza |
+| [`appfrontend-main/CLAUDE.md`](../../appfrontend-main/CLAUDE.md) §Sistema de diseño + [`docs/README.md`](../../appfrontend-main/docs/README.md) | **Convención del repo.** Las 5 reglas que rigen para código nuevo antes de la V2, y el índice que las hace encontrables | Vigentes desde ya, sin esperar a ninguna fase |
+
+**Orden no negociable:** tokens/primitives (V2) → shell de ZULU Hub (V3) → pantallas
+prioritarias, Superadmin incluido (V4/V5) → cobertura restante (V6) → **V7, responsive y
+accesibilidad como fase propia con entregable propio**, no como chequeo al pasar.
+
 Acá va solo cómo se cruza con las fases de backend y qué hay que resolver antes de arrancar.
 
 ### 16.1 El hallazgo que cambió el alcance de D7
