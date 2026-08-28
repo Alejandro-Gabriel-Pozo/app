@@ -1722,9 +1722,17 @@ CREATE INDEX IF NOT EXISTS idx_stock_movements_waste_reason
 -- a propósito (si se retoma esa métrica, ahí se decide si hace falta un
 -- registro más granular -- hoy alcanza con recipe_items + esta fila para
 -- reconstruir qué se consumió, salvo que la receta haya cambiado después).
-ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS chk_stock_movements_movement_type;
-ALTER TABLE stock_movements ADD CONSTRAINT chk_stock_movements_movement_type
-  CHECK (movement_type IN ('IN', 'OUT', 'ADJUSTMENT', 'RETURN', 'RESERVATION_RELEASED', 'TRANSFER', 'WASTE', 'PRODUCTION'));
+--
+-- El DROP/ADD CONSTRAINT de chk_stock_movements_movement_type que iba ACÁ
+-- (con 'PRODUCTION' pero sin 'CONSUMPTION' todavía) se sacó el 28/08/2026 --
+-- incidente de deploy real: schema.sql corre de arriba a abajo como UNA
+-- transacción, así que con una fila CONSUMPTION real ya en la BD (la
+-- feature se probó contra el server real el mismo día que se agregó), este
+-- bloque VIEJO reventaba el migrate:tenants del deploy siguiente ANTES de
+-- llegar al bloque de más abajo (BLOQUE 'CONSUMPTION') que sí la permite --
+-- nunca llegaba a corregirlo. R14 (criterios-datos.md, un solo camino de
+-- escritura): quedaba UNA sola definición de esta constraint, la de abajo
+-- (BLOQUE 'CONSUMPTION'), la única que importa en la práctica.
 
 -- Explosión de receta al vender (assemble_on_demand=true, BLOQUE 18): un
 -- mismo order_item puede ahora generar UN OUT/RESERVATION_RELEASED/RETURN
