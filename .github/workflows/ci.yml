@@ -87,6 +87,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Fase 0 de docs/plan-separacion-dominios-multirubro-2026-08-28.md.
+      # eslint mira higiene de archivo (no-any, no-unused-vars); esto mira
+      # los límites entre bounded contexts que el CLAUDE.md de este repo y
+      # docs/arquitectura-monolito-modular.md §4 declaran por escrito y que
+      # hasta ahora solo sostenía la disciplina. Va acá, en el mismo job que
+      # eslint, a propósito: una regla de arquitectura que no corre en CI no
+      # es una regla. Las 6 reglas se verificaron contra violaciones de
+      # prueba antes de commitearlas — ninguna es decorativa.
+      - name: Lint de arquitectura (límites entre dominios)
+        run: npm run lint:arch
+
   # ------------------------------------------------------------
   # Job 4 — Chequeo de versión de schema (A4, pendientes-2026-08-13.md)
   #

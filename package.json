@@ -16,6 +16,7 @@
     "migrate:tenants": "tsx src/scripts/migrate-tenants.ts",
     "lint": "eslint src --ext .ts --max-warnings 0",
     "lint:fix": "eslint src --ext .ts --fix",
+    "lint:arch": "depcruise src --config .dependency-cruiser.cjs --output-type err",
     "deadcode": "knip"
   },
   "engines": {
