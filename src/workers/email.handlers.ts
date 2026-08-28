@@ -1,10 +1,26 @@
 /**
  * @file email.handlers.ts
  * @description Handler de mail del OutboxWorker — punto 5/E5,
- * pendientes-2026-08-15.md. Hoy solo `reservation.confirmed`. Ver
- * email/email.sender.ts para el límite conocido de idempotencia (riesgo
- * aceptado: un reintento del outbox por OTRO handler puede reenviar el
- * mail).
+ * pendientes-2026-08-15.md. Hoy solo `reservation.confirmed`.
+ *
+ * ## Idempotencia — resuelto el 28/08/2026 (antes: riesgo aceptado)
+ * Este archivo decía que "un reintento del outbox por OTRO handler puede
+ * reenviar el mail", y era literal: `reservation.confirmed` tiene dos
+ * consumidores (este y el financiero de `outbox.handlers.ts`), el worker los
+ * corre juntos con `Promise.all`, y si el financiero fallaba el evento
+ * entero se reintentaba — reenviando la confirmación al huésped. A diferencia
+ * de los otros handlers, este no tiene ninguna clave natural que reclamar:
+ * mandar un mail no deja fila con la que chocar.
+ *
+ * Lo resuelve el casillero `processed_events` del worker (A10.3): el nombre
+ * `email:reservation.confirmed` de abajo ES esa clave. Si el handler manda el
+ * mail y termina bien, el casillero queda tomado y un reintento del evento lo
+ * saltea. Si falla, el casillero se libera y se reintenta.
+ *
+ * Límite que SIGUE abierto: si el proceso muere entre `emailSender.send()` y
+ * el commit del casillero, el mail se reenvía. Es la ventana irreducible de
+ * cualquier efecto externo sin transacción — mucho más chica que la de antes
+ * (que era "cada vez que otro handler falla"), pero no es cero.
  */
 
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
@@ -20,7 +36,11 @@ export function registerEmailHandlers(
   emailSender: EmailSender,
   businessProfileRepo: BusinessProfileRepository,
 ): void {
-  worker.on('reservation.confirmed', handleReservationConfirmedEmail(emailSender, businessProfileRepo));
+  worker.on(
+    'reservation.confirmed',
+    handleReservationConfirmedEmail(emailSender, businessProfileRepo),
+    { name: 'email:reservation.confirmed' },
+  );
 }
 
 export function handleReservationConfirmedEmail(

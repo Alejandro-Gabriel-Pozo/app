@@ -1,7 +1,49 @@
 import type { DomainEvent, DomainEventRepository } from '../repositories/domain-event.repository.js';
+import type { ProcessedEventRepository } from '../repositories/processed-event.repository.js';
 import { logger } from '../logger.js';
 
 export type EventHandler = (event: DomainEvent) => Promise<void>;
+
+/** Opciones de registro de un handler. Ver `OutboxWorker.on()`. */
+export interface HandlerOptions {
+  /**
+   * Identidad estable del handler dentro de `processed_events`. Obligatoria
+   * cuando el worker tiene `processedEventRepository` (o sea, en producción).
+   * Cambiarla equivale a decir "este handler nunca corrió": todos los eventos
+   * pendientes lo volverían a ejecutar. Tratarla como una clave, no como una
+   * etiqueta.
+   */
+  name?: string;
+  /**
+   * Versión del contrato de payload que este handler entiende (A10.1).
+   * Default 1 — todo lo emitido hasta el 28/08/2026 es v1.
+   */
+  version?: number;
+}
+
+interface HandlerRegistration {
+  handler: EventHandler;
+  name: string | undefined;
+  version: number;
+}
+
+/**
+ * A10.4 — "versión desconocida se rechaza ruidosamente, nunca se asume
+ * compatible". Se lanza cuando un evento llega con una `version` para la que
+ * hay handlers del mismo `eventType` registrados, pero ninguno de esa
+ * versión. NO se lanza cuando no hay ningún handler para el eventType: eso
+ * es "a nadie le interesa este evento" y ya tenía su camino (marcar
+ * despachado y seguir).
+ */
+export class UnsupportedEventVersionError extends Error {
+  constructor(eventType: string, version: number, supported: number[]) {
+    super(
+      `No hay handler para ${eventType} v${version}. ` +
+      `Versiones registradas: ${supported.join(', ') || 'ninguna'}.`,
+    );
+    this.name = 'UnsupportedEventVersionError';
+  }
+}
 
 /**
  * Worker de outbox transaccional.
@@ -12,11 +54,33 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  * - Marcar el evento como despachado SOLO si todos los handlers tuvieron éxito.
  * - Si algún handler falla, el evento queda pendiente y se reintenta al próximo ciclo.
  *
- * ## Garantas
+ * ## Garantías
  * - Entrega at-least-once: un evento puede procesarse más de una vez si el
- *   worker muere entre el handler y el markDispatched. Los handlers deben ser
- *   idempotentes (usar el aggregateId + eventType + occurredAt como clave).
+ *   worker muere entre el handler y el markDispatched, o si OTRO handler del
+ *   mismo evento falla y el evento entero se reintenta.
  * - No entrega out-of-order dentro del mismo aggregate: getPending ordena por id ASC.
+ *
+ * ## Idempotencia por handler (A10.3, 28/08/2026 — Fase 1 del plan de dominios)
+ * Antes de esto, "los handlers deben ser idempotentes" era una instrucción en
+ * este docblock, no un mecanismo. Se cumplía handler por handler con una
+ * clave natural distinta en cada uno (`idempotencyKey` en los financieros,
+ * insert-then-act en los de inventario) y NO se cumplía en el de mail, que lo
+ * decía explícitamente en su propio archivo. Como `reservation.confirmed`
+ * tiene dos consumidores (financiero + mail), cada fallo del financiero
+ * reenviaba el mail de confirmación al huésped.
+ *
+ * Ahora, si se inyecta `processedEventRepository`, cada handler con nombre
+ * reclama su casillero `(domain_event_id, handler_name)` antes de correr y lo
+ * libera si falla. Un handler que ya corrió para un evento se saltea; uno que
+ * falló se reintenta. Esto NO reemplaza las claves naturales que ya existen
+ * — son la defensa de adentro, esto es la de afuera.
+ *
+ * ## Versionado (A10.1/A10.4)
+ * `event.version` (columna, no sufijo en el nombre del evento) se compara
+ * contra la versión declarada al registrar el handler (default 1). Si hay
+ * handlers para el eventType pero ninguno para esa versión, el evento va a
+ * dead-letter EN EL PRIMER INTENTO con `UnsupportedEventVersionError` — nunca
+ * se le corre encima un handler de otra versión.
  *
  * ## Dead-letter (A9.5/A8.7, 15/08/2026)
  * Antes de esto, un evento que fallaba se reintentaba cada `pollIntervalMs`
@@ -61,7 +125,7 @@ export type EventHandler = (event: DomainEvent) => Promise<void>;
  * ```
  */
 export class OutboxWorker {
-  private readonly handlers = new Map<string, EventHandler[]>();
+  private readonly handlers = new Map<string, HandlerRegistration[]>();
   private readonly deadLetterHandlers = new Map<string, EventHandler[]>();
   private intervalId: ReturnType<typeof setInterval> | undefined = undefined;
   private polling = false;
@@ -74,15 +138,41 @@ export class OutboxWorker {
     private readonly pollIntervalMs = 5_000,
     /** ~5 min de fallas seguidas a pollIntervalMs=5s antes de dead-letter. */
     private readonly maxRetries = 60,
+    /**
+     * Idempotencia por handler (A10.3). Opcional a propósito: los tests
+     * unitarios del worker construyen handlers descartables sin BD y no la
+     * necesitan. En producción SIEMPRE se inyecta (outbox.registry.ts), y
+     * cuando está presente `on()` exige nombre — ver ahí el porqué.
+     */
+    private readonly processedEventRepository?: ProcessedEventRepository,
   ) {}
 
   /**
    * Registra un handler para un tipo de evento.
    * Chainable — puede llamarse varias veces para el mismo eventType.
+   *
+   * ## Por qué `options.name` es obligatorio si hay processedEventRepository
+   * Sin nombre no hay casillero que reclamar en `processed_events`, así que
+   * el handler correría sin protección de idempotencia. Dejarlo pasar en
+   * silencio es exactamente cómo se degrada este tipo de mecanismo: alguien
+   * agrega un handler nuevo, no pone nombre, y la red deja de cubrirlo sin
+   * que nadie se entere. Falla al arrancar el proceso, no en producción a
+   * las tres semanas.
    */
-  on(eventType: string, handler: EventHandler): this {
+  on(eventType: string, handler: EventHandler, options: HandlerOptions = {}): this {
+    if (this.processedEventRepository && !options.name) {
+      throw new Error(
+        `[OutboxWorker] El handler de "${eventType}" se registró sin options.name. ` +
+        'Con idempotencia por handler activa, todo handler necesita un nombre ' +
+        'estable para su casillero en processed_events.',
+      );
+    }
+
     const existing = this.handlers.get(eventType) ?? [];
-    this.handlers.set(eventType, [...existing, handler]);
+    this.handlers.set(eventType, [
+      ...existing,
+      { handler, name: options.name, version: options.version ?? 1 },
+    ]);
     return this;
   }
 
@@ -191,8 +281,22 @@ export class OutboxWorker {
       return;
     }
 
+    // Eventos anteriores a schema v44 no tienen `version` en la fila; son v1
+    // por definición (ver el comentario de la columna en schema.sql).
+    const version = event.version ?? 1;
+
     try {
-      await Promise.all(handlers.map((h) => h(event)));
+      const matching = handlers.filter((h) => h.version === version);
+
+      if (matching.length === 0) {
+        throw new UnsupportedEventVersionError(
+          event.eventType,
+          version,
+          [...new Set(handlers.map((h) => h.version))].sort((a, b) => a - b),
+        );
+      }
+
+      await Promise.all(matching.map((reg) => this.runHandler(event, reg)));
       await this.eventRepository.markDispatched(event.id!);
     } catch (err) {
       // No marcar dispatched → se reintenta al próximo ciclo, hasta maxRetries.
@@ -201,10 +305,16 @@ export class OutboxWorker {
         '[OutboxWorker] Error despachando evento',
       );
 
+      // Una versión sin handler NUNCA se arregla sola: reintentarla 60 veces
+      // (5 min) solo retrasa que alguien la vea. maxRetries=1 la manda a
+      // dead-letter en el primer fallo, reusando la MISMA UPDATE atómica que
+      // el resto — no un segundo camino de escritura (R14).
+      const maxRetries = err instanceof UnsupportedEventVersionError ? 1 : this.maxRetries;
+
       const deadLettered = await this.eventRepository.recordFailure(
         event.id!,
         categorizeError(err),
-        this.maxRetries,
+        maxRetries,
       );
 
       if (deadLettered) {
@@ -214,6 +324,55 @@ export class OutboxWorker {
         );
         await this.runDeadLetterHandlers(event);
       }
+    }
+  }
+
+  /**
+   * Corre un handler, con el casillero de `processed_events` si corresponde
+   * (A10.3).
+   *
+   * El casillero se RECLAMA antes de correr, no se marca después: reclamar
+   * después dejaría abierta la ventana de dos ciclos de poll solapados
+   * corriendo el mismo handler a la vez. Y se LIBERA si el handler falla —
+   * sin eso, un fallo transitorio (la BD un segundo caída) quedaría marcado
+   * como "ya procesado" y el reintento lo saltearía: trabajo perdido en
+   * silencio, peor que la duplicación que se quería evitar.
+   */
+  private async runHandler(event: DomainEvent, reg: HandlerRegistration): Promise<void> {
+    const repo = this.processedEventRepository;
+
+    // Sin repo (tests) o sin id persistido: se corre como antes de v44.
+    if (!repo || !reg.name || event.id === undefined) {
+      await reg.handler(event);
+      return;
+    }
+
+    const won = await repo.claim(event.id, reg.name);
+    if (!won) {
+      logger.debug(
+        { eventId: event.id, eventType: event.eventType, handler: reg.name },
+        '[OutboxWorker] Handler ya procesado para este evento. Salteado.',
+      );
+      return;
+    }
+
+    try {
+      await reg.handler(event);
+    } catch (err) {
+      try {
+        await repo.release(event.id, reg.name);
+      } catch (releaseErr) {
+        // Que falle la liberación no puede tapar el error real del handler:
+        // se loguea aparte y se relanza el original. El costo de este caso
+        // (el casillero queda tomado sin que el handler haya terminado) es
+        // que ese handler no se reintenta para ESE evento — visible en el
+        // log, no en silencio.
+        logger.error(
+          { err: releaseErr, eventId: event.id, handler: reg.name },
+          '[OutboxWorker] No se pudo liberar el casillero de processed_events',
+        );
+      }
+      throw err;
     }
   }
 

@@ -1951,6 +1951,92 @@ CREATE INDEX IF NOT EXISTS idx_domain_events_pending
 CREATE INDEX IF NOT EXISTS idx_domain_events_dead_letter
   ON domain_events (business_id) WHERE failed_at IS NOT NULL;
 
+-- ---------------------------------------------------------------------------
+-- Sobre del evento — event_id / correlation_id / causation_id / version
+-- (28/08/2026, Fase 1 de docs/plan-separacion-dominios-multirubro-2026-08-28.md)
+-- ---------------------------------------------------------------------------
+-- `id` (BIGSERIAL) identifica el evento DENTRO de esta tenant DB. Alcanza
+-- mientras el único consumidor es el OutboxWorker del mismo proceso; no
+-- alcanza para nada que cruce el límite de la base (integraciones, webhooks,
+-- read models externos): dos tenants tienen su propio `id = 1`.
+-- `event_id` es esa identidad global. Nullable a propósito, y el DEFAULT se
+-- pone en un ALTER aparte del ADD COLUMN: `ADD COLUMN` sin default es
+-- metadata-only (instantáneo), mientras que `ADD COLUMN ... DEFAULT
+-- gen_random_uuid()` en un solo paso obliga a Postgres a REESCRIBIR la tabla
+-- entera para darle un valor distinto a cada fila (la optimización de
+-- fast-default no aplica a defaults volátiles). Separarlo deja las filas
+-- viejas en NULL — que es lo que se quiere: no tenían identidad global — y
+-- le da UUID a toda fila nueva. pgcrypto ya está habilitado más arriba.
+--
+-- `correlation_id`/`causation_id` cierran A9.2 a nivel de MODELO, no de
+-- runtime: hoy no hay correlationId de request en ningún lado del backend
+-- (verificado por grep, 28/08/2026) y ningún handler emite eventos, así que
+-- las dos columnas van a quedar en NULL hasta que exista contexto por
+-- request. Se agregan igual acá para que ese día sea una línea de código y
+-- no una migración con datos ya cargados.
+--
+-- `version` cierra A10.1/A10.4 sin renombrar los eventos existentes. El
+-- nombre del evento NO lleva sufijo `.v1` (7 tipos ya emitidos en producción
+-- con el nombre pelado); la versión es esta columna. NOT NULL DEFAULT 1 =
+-- todo lo emitido hasta hoy es v1 por definición. OutboxWorker rechaza
+-- ruidosamente un evento cuya versión no tenga handler registrado (A10.4) en
+-- vez de correrle un handler de otra versión encima.
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS event_id       UUID;
+ALTER TABLE domain_events ALTER COLUMN event_id SET DEFAULT gen_random_uuid();
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(255);
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS causation_id   VARCHAR(255);
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS version        INT NOT NULL DEFAULT 1;
+
+-- UNIQUE tolera varios NULL en Postgres, así que las filas viejas (event_id
+-- NULL) no chocan entre sí. Mismo patrón CREATE UNIQUE INDEX IF NOT EXISTS
+-- que el resto del archivo (products, variants, stays, occupancy_records).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_domain_events_event_id
+  ON domain_events (event_id);
+
+CREATE INDEX IF NOT EXISTS idx_domain_events_correlation
+  ON domain_events (correlation_id) WHERE correlation_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- processed_events — idempotencia POR HANDLER (A10.3)
+-- ---------------------------------------------------------------------------
+-- No es MAESTRO/TRANSACCIÓN/DOCUMENTO (docs/criterios-datos.md Parte 1): es
+-- estado interno del despachador, mismo trato que `schema_migrations`. Nadie
+-- la consulta desde el negocio, no se audita, no tiene ciclo de vida propio.
+--
+-- POR QUÉ, con el detalle real (no "por las dudas"): el worker entrega
+-- at-least-once y corre TODOS los handlers de un evento con Promise.all; si
+-- UNO falla, el evento entero se reintenta y los que ya habían salido bien
+-- vuelven a correr. Hasta hoy eso se resolvía handler por handler, con una
+-- clave natural distinta en cada uno:
+--   - financieros  -> `idempotencyKey = "${event.id}:CHARGE"` + ON CONFLICT
+--                     DO NOTHING (outbox.handlers.ts)
+--   - inventario   -> insert-then-act sobre el casillero único de
+--                     stock_movements (inventory.handlers.ts)
+--   - MAIL         -> NADA. El propio email.handlers.ts lo dice: "un
+--                     reintento del outbox por OTRO handler puede reenviar
+--                     el mail".
+-- Y `reservation.confirmed` tiene exactamente dos consumidores: el
+-- financiero y el de mail. O sea que el reenvío duplicado de la confirmación
+-- de reserva no es un riesgo teórico a futuro: es el comportamiento de hoy
+-- cada vez que el handler financiero falla. Esta tabla es la red genérica
+-- para el caso en que el handler no tiene (ni puede tener) una clave natural
+-- propia, como mandar un mail.
+--
+-- Referencia al BIGINT `id`, no a `event_id`: es NOT NULL, es la PK real y
+-- permite FK con ON DELETE CASCADE. `event_id` es para afuera de la base.
+CREATE TABLE IF NOT EXISTS processed_events (
+  domain_event_id BIGINT       NOT NULL REFERENCES domain_events(id) ON DELETE CASCADE,
+  handler_name    VARCHAR(100) NOT NULL,
+  processed_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (domain_event_id, handler_name)
+);
+
+-- Purga: una fila de processed_events solo sirve mientras su evento puede
+-- volver a despacharse. Una vez que el evento tiene dispatched_at, nadie la
+-- vuelve a leer. No se purga automáticamente todavía (con el volumen actual
+-- no hace falta y un DELETE periódico es otra pieza que puede fallar en
+-- silencio) -- queda anotado acá para cuando el volumen lo justifique.
+
 CREATE TABLE IF NOT EXISTS occupancy_records (
   id             SERIAL        PRIMARY KEY,
   resource_id    VARCHAR(255)  NOT NULL,

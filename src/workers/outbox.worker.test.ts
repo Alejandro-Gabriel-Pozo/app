@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OutboxWorker } from './outbox.worker.js';
 import type { DomainEvent, DomainEventRepository } from '../repositories/domain-event.repository.js';
+import { InMemoryProcessedEventRepository } from '../repositories/in-memory.processed-event.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
 // ---------------------------------------------------------------------------
@@ -354,5 +355,175 @@ describe('OutboxWorker', () => {
 
     await expect(triggerPoll(deadLetterWorker)).resolves.not.toThrow();
     expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+  });
+
+  // ==========================================================================
+  // Idempotencia por handler (A10.3) — 28/08/2026, Fase 1 del plan de dominios
+  // ==========================================================================
+
+  describe('idempotencia por handler (processed_events)', () => {
+    let processed: InMemoryProcessedEventRepository;
+    let guardedWorker: OutboxWorker;
+
+    beforeEach(() => {
+      processed     = new InMemoryProcessedEventRepository();
+      guardedWorker = new OutboxWorker(repo, 5_000, 60, processed);
+    });
+
+    it('exige nombre de handler cuando la idempotencia está activa', () => {
+      // La cerca: un handler nuevo sin nombre correría sin protección. Falla
+      // al registrar (arranque del proceso), no en producción semanas después.
+      expect(() => guardedWorker.on('reservation.confirmed', vi.fn()))
+        .toThrow(/sin options\.name/);
+    });
+
+    it('sigue permitiendo handlers sin nombre si NO hay repositorio de idempotencia', () => {
+      // Los tests unitarios del worker construyen handlers descartables sin BD.
+      expect(() => worker.on('reservation.confirmed', vi.fn())).not.toThrow();
+    });
+
+    it('EL BUG REAL: un handler que ya salió bien no se re-ejecuta cuando OTRO handler del mismo evento falla', async () => {
+      // reservation.confirmed tiene dos consumidores en producción: el
+      // financiero y el de mail. Antes de processed_events, cada fallo del
+      // financiero reenviaba el mail de confirmación al huésped — el propio
+      // email.handlers.ts lo documentaba como riesgo aceptado.
+      repo.insert(makeEvent('reservation.confirmed'));
+
+      const mail = vi.fn().mockResolvedValue(undefined);
+      let financieroFalla = true;
+      const financiero = vi.fn().mockImplementation(async () => {
+        if (financieroFalla) throw new Error('BD momentáneamente caída');
+      });
+
+      guardedWorker
+        .on('reservation.confirmed', mail,       { name: 'email:reservation.confirmed' })
+        .on('reservation.confirmed', financiero, { name: 'financial:reservation.confirmed' });
+
+      await triggerPoll(guardedWorker);           // 1º intento: financiero rompe
+      expect(mail).toHaveBeenCalledOnce();
+      expect(repo.getAll()[0]!.dispatchedAt).toBeNull();
+
+      financieroFalla = false;
+      await triggerPoll(guardedWorker);           // 2º intento: financiero anda
+
+      expect(mail).toHaveBeenCalledOnce();        // ← el mail NO se reenvía
+      expect(financiero).toHaveBeenCalledTimes(2);
+      expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
+    });
+
+    it('libera el casillero si el handler falla, para que el reintento vuelva a correrlo', async () => {
+      // Sin release(), un fallo transitorio quedaría marcado como "ya
+      // procesado" y el trabajo se perdería en silencio — peor que duplicar.
+      repo.insert(makeEvent('reservation.confirmed'));
+
+      let falla = true;
+      const handler = vi.fn().mockImplementation(async () => {
+        if (falla) throw new Error('transitorio');
+      });
+
+      guardedWorker.on('reservation.confirmed', handler, { name: 'email:reservation.confirmed' });
+
+      await triggerPoll(guardedWorker);
+      falla = false;
+      await triggerPoll(guardedWorker);
+
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
+    });
+
+    it('CONTRASTE: sin casillero, el mismo escenario SÍ re-ejecuta el handler que ya había salido bien', async () => {
+      // Este test documenta el comportamiento anterior al 28/08/2026 y es lo
+      // que le da sentido al de arriba: si algún día alguien saca el
+      // processedEventRepository del registry, el test de arriba pasaría a
+      // fallar y este a pasar — la diferencia entre los dos ES el mecanismo,
+      // no una coincidencia del mock.
+      repo.insert(makeEvent('reservation.confirmed'));
+
+      const mail = vi.fn().mockResolvedValue(undefined);
+      let financieroFalla = true;
+      const financiero = vi.fn().mockImplementation(async () => {
+        if (financieroFalla) throw new Error('BD momentáneamente caída');
+      });
+
+      worker      // <- sin processedEventRepository
+        .on('reservation.confirmed', mail)
+        .on('reservation.confirmed', financiero);
+
+      await triggerPoll(worker);
+      financieroFalla = false;
+      await triggerPoll(worker);
+
+      expect(mail).toHaveBeenCalledTimes(2);   // ← el mail duplicado de antes
+    });
+
+    it('el casillero es por (evento, handler): dos eventos distintos no se tapan entre sí', async () => {
+      repo.insert(makeEvent('reservation.confirmed', 1));
+      repo.insert(makeEvent('reservation.confirmed', 2));
+
+      const handler = vi.fn().mockResolvedValue(undefined);
+      guardedWorker.on('reservation.confirmed', handler, { name: 'email:reservation.confirmed' });
+
+      await triggerPoll(guardedWorker);
+
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ==========================================================================
+  // Versionado del sobre (A10.1/A10.4)
+  // ==========================================================================
+
+  describe('versión del evento', () => {
+    it('trata como v1 un evento sin version (filas anteriores a schema v44)', async () => {
+      repo.insert(makeEvent('reservation.confirmed'));   // sin `version`
+      const handler = vi.fn().mockResolvedValue(undefined);
+      worker.on('reservation.confirmed', handler);       // default version 1
+
+      await triggerPoll(worker);
+
+      expect(handler).toHaveBeenCalledOnce();
+      expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
+    });
+
+    it('manda a dead-letter EN EL PRIMER INTENTO un evento cuya versión no tiene handler', async () => {
+      // maxRetries del worker es 60; una versión sin handler no se arregla
+      // sola, así que no se reintenta 60 veces antes de que alguien la vea.
+      repo.insert({ ...makeEvent('reservation.confirmed'), version: 2 });
+      const handlerV1 = vi.fn().mockResolvedValue(undefined);
+      worker.on('reservation.confirmed', handlerV1, { version: 1 });
+
+      await triggerPoll(worker);
+
+      expect(handlerV1).not.toHaveBeenCalled();
+      expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+      expect(repo.getAll()[0]!.lastError).toBe('UnsupportedEventVersionError');
+      expect(repo.getAll()[0]!.dispatchedAt).toBeNull();
+    });
+
+    it('corre solo el handler de la versión que trae el evento', async () => {
+      repo.insert({ ...makeEvent('reservation.confirmed'), version: 2 });
+      const v1 = vi.fn().mockResolvedValue(undefined);
+      const v2 = vi.fn().mockResolvedValue(undefined);
+      worker
+        .on('reservation.confirmed', v1, { version: 1 })
+        .on('reservation.confirmed', v2, { version: 2 });
+
+      await triggerPoll(worker);
+
+      expect(v1).not.toHaveBeenCalled();
+      expect(v2).toHaveBeenCalledOnce();
+      expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
+    });
+
+    it('un evento SIN ningún handler sigue marcándose despachado, no va a dead-letter', async () => {
+      // Distinto de "versión desconocida": acá a nadie le interesa el evento
+      // (ej. reservation.expired hoy). No debe trabar la cola.
+      repo.insert({ ...makeEvent('reservation.expired'), version: 7 });
+
+      await triggerPoll(worker);
+
+      expect(repo.getAll()[0]!.dispatchedAt).not.toBeNull();
+      expect(repo.getAll()[0]!.failedAt).toBeNull();
+    });
   });
 });

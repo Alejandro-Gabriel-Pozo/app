@@ -15,6 +15,7 @@
 import type pg                                 from 'pg';
 import { OutboxWorker }                        from './outbox.worker.js';
 import { SqlDomainEventRepository }            from '../repositories/sql.domain-event.repository.js';
+import { SqlProcessedEventRepository }         from '../repositories/processed-event.repository.js';
 import { SqlFinancialTransactionRepository }   from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { registerFinancialHandlers }           from './outbox.handlers.js';
 import { SqlStockMovementRepository }          from '../repositories/sql.stock-movement.repository.js';
@@ -68,7 +69,16 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo, inventoryLevelRepo, transactionManager);
   const businessProfileRepo      = new SqlBusinessProfileRepository(db);
 
-  const worker = new OutboxWorker(domainEventRepo);
+  // `db` es el SqlClient DEL TENANT (lo pasa tenant.middleware.ts), igual que
+  // el resto de los repos de arriba — processed_events vive en la tenant DB,
+  // no en la de plataforma (docs/DEFENSIVE_DEVELOPING.md §3).
+  const processedEventRepo = new SqlProcessedEventRepository(db);
+
+  // Con el 4º argumento presente, OutboxWorker.on() exige nombre en todo
+  // handler — la cerca que evita que un handler nuevo quede sin idempotencia
+  // por olvido. pollIntervalMs/maxRetries van explícitos porque TypeScript no
+  // deja saltear posicionales; son los mismos defaults de la clase.
+  const worker = new OutboxWorker(domainEventRepo, 5_000, 60, processedEventRepo);
   registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo);
   registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
   registerEmailHandlers(worker, emailSender, businessProfileRepo);

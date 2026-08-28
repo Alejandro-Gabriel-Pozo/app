@@ -3,6 +3,10 @@ import type { DomainEvent, DomainEventRepository } from './domain-event.reposito
 
 interface DomainEventRow {
   id: number;
+  event_id: string | null;
+  correlation_id: string | null;
+  causation_id: string | null;
+  version: number;
   business_id: string;
   aggregate_type: string;
   aggregate_id: string;
@@ -15,9 +19,25 @@ interface DomainEventRow {
   last_error: string | null;
 }
 
+/**
+ * Columnas del sobre + del cuerpo, en un solo lugar — las leen `getPending()`
+ * y `getDeadLettered()`. Estaban duplicadas literal entre las dos consultas
+ * y agregar una columna al sobre (28/08/2026) obligaba a acordarse de tocar
+ * las dos: exactamente el modo de falla de "un solo camino por
+ * responsabilidad" (docs/DEFENSIVE_DEVELOPING.md).
+ */
+const EVENT_COLUMNS = `id, event_id, correlation_id, causation_id, version,
+              business_id, aggregate_type, aggregate_id,
+              event_type, payload, occurred_at, dispatched_at,
+              retry_count, failed_at, last_error`;
+
 function toDomainEvent(row: DomainEventRow): DomainEvent {
   return {
     id:            row.id,
+    eventId:       row.event_id,
+    correlationId: row.correlation_id,
+    causationId:   row.causation_id,
+    version:       row.version,
     businessId:    row.business_id,
     aggregateType: row.aggregate_type,
     aggregateId:   row.aggregate_id,
@@ -44,29 +64,37 @@ function toDomainEvent(row: DomainEventRow): DomainEvent {
 export class SqlDomainEventRepository implements DomainEventRepository {
   constructor(private readonly sqlClient: SqlClient) {}
 
+  /**
+   * `event_id` no se pasa: lo genera el DEFAULT de la columna. `version` cae
+   * a 1 si el emisor no la manda — el DEFAULT de la base dice lo mismo, pero
+   * mandarla explícita deja el valor visible en el INSERT en vez de escondido
+   * en el schema.
+   */
   async insertWithClient(
     client: SqlClient,
-    event: Omit<DomainEvent, 'id' | 'occurredAt' | 'dispatchedAt'>,
+    event: Omit<DomainEvent, 'id' | 'eventId' | 'occurredAt' | 'dispatchedAt'>,
   ): Promise<void> {
     await client.query(
       `INSERT INTO domain_events
-         (business_id, aggregate_type, aggregate_id, event_type, payload)
-       VALUES ($1, $2, $3, $4, $5)`,
+         (business_id, aggregate_type, aggregate_id, event_type, payload,
+          correlation_id, causation_id, version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         event.businessId,
         event.aggregateType,
         event.aggregateId,
         event.eventType,
         JSON.stringify(event.payload),
+        event.correlationId ?? null,
+        event.causationId ?? null,
+        event.version ?? 1,
       ],
     );
   }
 
   async getPending(limit = 50): Promise<DomainEvent[]> {
     const result = await this.sqlClient.query<DomainEventRow>(
-      `SELECT id, business_id, aggregate_type, aggregate_id,
-              event_type, payload, occurred_at, dispatched_at,
-              retry_count, failed_at, last_error
+      `SELECT ${EVENT_COLUMNS}
        FROM domain_events
        WHERE dispatched_at IS NULL AND failed_at IS NULL
        ORDER BY id ASC
@@ -114,9 +142,7 @@ export class SqlDomainEventRepository implements DomainEventRepository {
 
   async getDeadLettered(limit = 50): Promise<DomainEvent[]> {
     const result = await this.sqlClient.query<DomainEventRow>(
-      `SELECT id, business_id, aggregate_type, aggregate_id,
-              event_type, payload, occurred_at, dispatched_at,
-              retry_count, failed_at, last_error
+      `SELECT ${EVENT_COLUMNS}
        FROM domain_events
        WHERE failed_at IS NOT NULL
        ORDER BY failed_at DESC

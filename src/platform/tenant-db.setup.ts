@@ -311,7 +311,16 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // (EXCLUDE USING gist, rango semiabierto) -- varias filas pueden compartir
 // nombre si sus vigencias no se solapan, resueltas por noche en
 // reservation-pricing.service.ts.
-export const CURRENT_SCHEMA_VERSION = 43;
+// v44 (28/08/2026): sobre del evento + idempotencia por handler — Fase 1 de
+// docs/plan-separacion-dominios-multirubro-2026-08-28.md. `domain_events`
+// gana `event_id`/`correlation_id`/`causation_id`/`version` (A9.2/A10.1/
+// A10.4; las dos del medio quedan en NULL hasta que exista contexto por
+// request — se agregan ahora para no migrar con datos cargados después), y
+// `processed_events` nueva: idempotencia genérica por (evento, handler) para
+// el caso en que el handler no tiene clave natural propia. El disparador
+// concreto es el handler de mail, que hoy reenvía la confirmación de reserva
+// cada vez que el handler financiero del MISMO evento falla.
+export const CURRENT_SCHEMA_VERSION = 44;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

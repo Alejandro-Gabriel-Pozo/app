@@ -45,14 +45,19 @@ export function registerFinancialHandlers(
   financialRepo: FinancialTransactionRepository,
   businessProfileRepo: BusinessProfileRepository,
 ): void {
+  // Los nombres (`financial:*`) son la clave del casillero en
+  // `processed_events` (28/08/2026, A10.3). Renombrar uno equivale a declarar
+  // que ese handler nunca corrió: todos los eventos pendientes lo volverían a
+  // ejecutar. El prefijo `financial:` evita chocar con el handler de
+  // inventario, que escucha los MISMOS `order.confirmed`/`order.cancelled`.
   worker
-    .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo))
-    .on('reservation.completed',      handleReservationCompleted(financialRepo))
-    .on('reservation.cancelled',      handleReservationCancelled(financialRepo))
-    .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo))
-    .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo))
-    .on('order.completed',       handleOrderCompleted(financialRepo))
-    .on('order.cancelled',       handleOrderCancelled(financialRepo));
+    .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo), { name: 'financial:reservation.confirmed' })
+    .on('reservation.completed',      handleReservationCompleted(financialRepo),                      { name: 'financial:reservation.completed' })
+    .on('reservation.cancelled',      handleReservationCancelled(financialRepo),                      { name: 'financial:reservation.cancelled' })
+    .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo), { name: 'financial:reservation.price_adjusted' })
+    .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo), { name: 'financial:order.confirmed' })
+    .on('order.completed',       handleOrderCompleted(financialRepo),                      { name: 'financial:order.completed' })
+    .on('order.cancelled',       handleOrderCancelled(financialRepo),                      { name: 'financial:order.cancelled' });
 }
 
 // ---------------------------------------------------------------------------

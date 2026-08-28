@@ -130,9 +130,17 @@ export function registerInventoryHandlers(
   stockMovementRepo: StockMovementRepository,
   transactionManager: TransactionManager,
 ): void {
+  // Prefijo `inventory:` — escuchan los MISMOS order.confirmed/order.cancelled
+  // que los handlers financieros, así que el casillero de `processed_events`
+  // tiene que ser distinto o uno taparía al otro (28/08/2026, A10.3).
+  // El casillero NO reemplaza el insert-then-act sobre `stock_movements` que
+  // documenta la sección "Idempotencia" de arriba: ese sigue siendo la
+  // defensa real contra la carrera entre order.confirmed y order.cancelled
+  // del mismo agregado, que es una carrera entre DOS eventos distintos y por
+  // lo tanto entre dos casilleros distintos.
   worker
-    .on('order.confirmed', handleOrderConfirmedStock(productService, stockMovementRepo, transactionManager))
-    .on('order.cancelled', handleOrderCancelledStock(productService, stockMovementRepo, transactionManager))
+    .on('order.confirmed', handleOrderConfirmedStock(productService, stockMovementRepo, transactionManager), { name: 'inventory:order.confirmed' })
+    .on('order.cancelled', handleOrderCancelledStock(productService, stockMovementRepo, transactionManager), { name: 'inventory:order.cancelled' })
     .onDeadLetter(
       'order.confirmed',
       handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, transactionManager),
