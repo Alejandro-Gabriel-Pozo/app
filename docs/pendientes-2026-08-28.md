@@ -271,6 +271,253 @@ sobre todo si pasó más de una sesión desde que se escribió esa fila.
 
 ---
 
+## Separación de dominios y multirubro — plan + Fases 0/1/2 (28/08/2026, noche)
+
+Pedido del dueño: plan por fases para separar dominios y hacer el producto
+multirubro administrable desde Superadmin. **Plan completo:**
+`plan-separacion-dominios-multirubro-2026-08-28.md`.
+
+**Hallazgo que cambió el pedido:** buena parte de lo que pedía ya existía.
+`src/` ya está por bounded context desde el 15/08; los 3 ejes de reserva ya
+tienen ADR (28/08); el heurístico de rubro por nombre de recurso ya se había
+sacado de `report.service.ts`; el gating por módulo ya existe
+(`ModuleKey` + `business_modules`, fail-closed). Lo que falta de verdad es la
+mitad **configurable**: rubro, terminología, presets, cascada con `source`, y
+auditoría de plataforma.
+
+### ✅ Fase 0 — cerca eléctrica de dependencias
+
+`.dependency-cruiser.cjs` pasa de 3 reglas genéricas de higiene a 9: se suman
+6 de dominio (repos concretos de otro dominio, reservas↔POS, entidades sin
+express/pg, reportes como hoja, platform sin dominios de negocio, y una
+preventiva para `business-context/`). `npm run lint:arch` nuevo, agregado al
+job `lint` de la CI junto a eslint.
+
+**Las 6 reglas se midieron contra el código ANTES de escribirlas** — pasan sin
+excepciones ni allowlists. Y cada una se verificó con un archivo de violación
+de prueba: la de `entidades-sin-express-ni-pg` **no mordía** con
+`path: '^(express|pg)$'` (para un paquete npm, `to.path` es la ruta resuelta
+`node_modules/express/index.js`, no el especificador). Sin la prueba negativa
+habría quedado una regla decorativa que nunca falla. Lección: una regla nueva
+de dependency-cruiser no está lista hasta que se la vio fallar.
+
+**Hallazgo de la medición:** el composition root de este repo son los
+`*.routes.ts`, no `app.ts` — construyen sus repos por request desde `req.db`
+porque el pool depende del tenant del token. Por eso la regla de repos
+concretos los exceptúa: `reservations.routes.ts` importando
+`SqlCustomerRateRepository` es cableado, no acoplamiento.
+
+### ✅ Fase 1 — sobre del evento e idempotencia (schema v44)
+
+**Encontrado en el camino, y es un bug vivo, no una mejora:** el docblock de
+`outbox.worker.ts` pedía handlers idempotentes, y se cumplía handler por
+handler con claves naturales distintas (financieros: `idempotencyKey` +
+ON CONFLICT; inventario: insert-then-act sobre `stock_movements`) — **salvo el
+de mail, que no tiene ninguna clave natural que reclamar**. Su propio archivo
+lo decía como riesgo aceptado. Como `reservation.confirmed` tiene DOS
+consumidores (financiero + mail) y el worker los corre con `Promise.all`,
+**cada fallo del handler financiero reenviaba la confirmación de reserva al
+huésped**. Estaba pasando, no era un riesgo a futuro.
+
+- `domain_events` gana `event_id` (UUID, identidad global — `id` solo es único
+  dentro de una tenant DB), `correlation_id`, `causation_id` y `version`.
+  `event_id` se agrega SIN default y el `SET DEFAULT` va en un ALTER aparte:
+  `ADD COLUMN ... DEFAULT gen_random_uuid()` en un solo paso obliga a reescribir
+  la tabla entera (fast-default no aplica a defaults volátiles).
+- `processed_events (domain_event_id, handler_name)` nueva — casillero por
+  handler, reclamado ANTES de correr (`ON CONFLICT DO NOTHING`, no SELECT+INSERT)
+  y **liberado si el handler falla**: sin el release, un fallo transitorio
+  quedaría marcado como procesado y el trabajo se perdería en silencio, peor
+  que duplicar.
+- `OutboxWorker.on()` acepta `{ name, version }`. **Con el repo de idempotencia
+  inyectado, el nombre es obligatorio y falta de nombre revienta al registrar**
+  (arranque del proceso), no en producción tres semanas después.
+- A10.4 implementado: un evento cuya `version` no tiene handler registrado va a
+  dead-letter **en el primer intento** (`maxRetries=1` reusando la misma UPDATE
+  atómica), no tras 60 reintentos — una versión sin handler no se arregla sola.
+- `correlation_id`/`causation_id` quedan en NULL: no hay contexto de request en
+  el backend todavía (A9.2 sigue abierto). Se agregan ahora para que ese día sea
+  una línea y no una migración con datos cargados.
+
+### ✅ Fase 2 — auditoría de plataforma
+
+`audit_log` vivía **solo** en la BD de tenant: todo lo que hace el superadmin
+(cambiar plan, suspender un negocio, editar `plan_limits`, editar
+`role_presets`) no dejaba rastro de quién ni cuándo. Y son los cambios de mayor
+alcance del sistema.
+
+- `platform_audit_log` en `platform.schema.sql`, con la **misma forma** que
+  `audit_log` para reusar `domain/audit.ts::diffFields()` sin inventar un
+  segundo modelo. Único campo extra: `business_id`, nullable —
+  `NULL` = cambio global (`plan_limits`, `role_presets`), que es información,
+  no un dato faltante. Sin FK a `businesses`: una CASCADE borraría justo la
+  evidencia.
+- Las 4 mutaciones quedan **transaccionales**: `PlatformRepository` expone
+  `runInTransaction()` y sus 4 métodos de escritura aceptan un `client`
+  opcional, así el cambio y su rastro confirman o se caen juntos.
+- `modules` gana `active` e `implemented` (aprobado por el dueño). Son ejes
+  independientes: `implemented=TRUE + active=FALSE` es "anda pero ya no se
+  ofrece"; `implemented=FALSE + active=TRUE` es "anunciado, sin construir". El
+  backfill a TRUE es **por lista explícita** de los 6 módulos existentes, no un
+  `UPDATE` sin `WHERE` — un módulo agregado mañana arranca en FALSE y se gana
+  el TRUE con su código.
+
+### Verificación
+
+`tsc` limpio, `lint:arch` limpio (272 módulos), **suite 1582/1582** (+16), e
+**integración contra Postgres real 50/50** (+19) — incluidos 2 archivos nuevos:
+`event-envelope-idempotency.integration.test.ts` y
+`platform-schema.integration.test.ts`. Este último cierra otro hueco:
+`platform.schema.sql` **no tenía ninguna cobertura de integración** aunque se
+aplica en cada arranque del servidor — mismo modo de falla del incidente de
+deploy del 28/08, pero en el archivo que es único para toda la plataforma.
+
+**Sin commitear ni deployar todavía** (no se pidió).
+
+### Corrección al plan, hecha sobre el propio documento
+
+La primera redacción decía "hoy no duplica" sobre la idempotencia del outbox y
+listaba 9 eventos existentes. Las dos cosas estaban mal: sí duplicaba (mail), y
+`customer.created` figura en un docblock pero **no lo emite nadie** — son 8
+emitidos, CRM no publica ningún evento.
+
+### Decisiones del dueño registradas
+
+4 de las 7 preguntas abiertas quedaron cerradas (default de `ALOJAMIENTO` por
+preset; el tenant edita su terminología dentro de las claves de Superadmin;
+`resources.base_price` se mantiene con plan de migración previo a borrarla;
+`/platform/*` se conserva). Siguen abiertas y **bloquean la Fase 3**: si el
+tenant puede cambiar su propio rubro, qué se hace con `locale`, y si el panel de
+Superadmin se migra a los tokens ZULU. Detalle en §14 del plan.
+
+**Pregunta nueva que abre D1:** un negocio dado de alta **sin rubro** (el flujo
+de hoy) no tiene preset del cual derivar módulos, y con el fail-closed vigente
+nacería sin ninguno. Hay que decidir si el rubro pasa a ser obligatorio en el
+alta o si existe un preset `GENERICO`.
+
+### Decisiones D5–D7 cerradas + corriente visual (28/08/2026, cierre de sesión)
+
+Las 3 que quedaban abiertas se resolvieron. **D5:** el rubro lo cambia solo Superadmin, con
+preview de consecuencias y confirmación explícita, y el cambio **nunca** apaga módulos ni
+borra overrides, categorías, reservas o estadías (se parte en
+`GET .../industry-change-preview` + `PATCH .../industry`). **D6:** `locale` existe desde el
+día uno en la PK de `terminology_defaults`, producto en `es-AR`, resolver de una sola pasada.
+**D7:** la reconstrucción visual pasa a ser corriente formal (Fases V1–V6). Más el preset
+**`GENERIC`** para negocios sin rubro, que cierra el agujero que abría D1.
+
+**🔴 Hallazgo que cambia el alcance de D7 — y contradice mi recomendación anterior.** Yo había
+dicho "es UI pura, no bloquea nada, va aparte", asumiendo que el dashboard ya usaba los tokens
+de la especificación y solo faltaba aplicarlos a Superadmin. Al medir `globals.css`:
+
+- El sistema ZULU implementado el 23/08 es **navy oscuro `#060a1f` + cian neón `#00e0ff`**.
+- Su propio comentario (`globals.css:645-656`, guía del 23/08 **también aportada por el
+  dueño**) dice textual: *"a diferencia de Bastión (brass/clay por módulo) acá no hay
+  modificador de color por vertical; PMS vs. POS se distingue por vocabulario, no por
+  acento"*.
+- La especificación del 28/08 pide **lo contrario en los tres ejes**: base blanca, cian
+  restringido al plano técnico, y brass/clay por módulo — o sea, restaura el mecanismo de
+  Bastión bajo nomenclatura ZULU.
+
+No es una extensión del sistema actual: es un reemplazo del token layer y una inversión de
+polaridad. El dueño lo reafirmó con el enunciado completo, así que se ejecuta — queda
+registrado que fue deliberado, no un olvido de la guía anterior.
+
+**Medición real (insumo de la Fase V1, no estimación):** 53 páginas/layouts · 34 con scope
+`.zulu` · **53 usos de `var(--accent)` en 31 archivos** (cada uno es una decisión de contexto)
+· 20 usos del acento dentro de las primitives · 21 hex hardcodeados en 10 archivos · 69 clases
+Tailwind de color crudas, concentradas en Superadmin.
+
+**Trampa concreta para el criterio 15 de la especificación** ("no cambiar silenciosamente la
+semántica"): `brass`/`clay`/`sage` no existen como colores hoy, pero sí existen dos alias
+engañosos — `.btn-mini-clay -> var(--danger)` (rojo) y `.btn-mini-sage -> var(--success)`.
+Repintarlos al clay/sage reales sin revisar call sites convertiría los botones "Eliminar" en
+botones de contexto comercio.
+
+**Los tres bloqueantes de la Fase V2 — ✅ cerrados el mismo día, con medición:**
+1. **`zulu-hub-sketch.html` creado** (`appfrontend-main/docs/`). HTML autocontenido derivado
+   de la especificación, con los 3 contextos (reservas/brass, comercio/clay,
+   Superadmin/técnico) sobre el mismo shell. Declara en el propio archivo que **no es el
+   boceto original del dueño** — si aparece, lo reemplaza. Verificado renderizando en
+   navegador a 1280px: sidebar negro, contenido blanco cálido, señal contextual solo en el
+   módulo activo.
+2. **Rojo destructivo `#B42318`** — 6.57 sobre blanco / 5.97 sobre cálido (AA texto), y
+   **ΔE 28.3 contra clay** (>25 = "claramente distinto"). La preocupación de que "Eliminar" y
+   "comercio" se parecieran queda descartada con número, no a ojo. Ya pasa AA como texto, así
+   que `danger-strong` es el mismo valor.
+3. **Contraste resuelto por la separación señal/`*-strong` que definió el dueño**:
+   `brass-strong #805F19` (5.88) y `sage-strong #4F765F` (5.14) pasan AA. Se sumó
+   **`clay-strong #944E37`** (6.17), que faltaba — sin él comercio no podía escribir en su
+   propio color mientras reservas sí.
+
+**Cuatro reglas que salieron de medir, a codificar en las primitives:** el texto es siempre
+`*-strong`; sobre cualquier `*-soft` el texto es `--zulu-black` (el par
+`sage-strong`/`sage-soft` da 4.24 y no llega a AA); `cyan-technical` nunca sobre blanco
+(2.05) — para superficie clara se agregó **`--zulu-cyan-deep #1F6D77`** (5.98); y el
+destructivo tiene token propio, independiente de clay.
+
+**Hallazgo extra:** `brass` sobre `--zulu-warm-white` da **2.87** — no alcanza ni para
+bordes. Si el fondo de trabajo es warm-white, la señal brass va con `brass-strong`.
+
+**Especificación normativa completa:**
+`appfrontend-main/docs/sistema-diseno-zulu-hub.md`. Cruce con las fases de backend:
+`plan-separacion-dominios-multirubro-2026-08-28.md` §16. V1 y V2 no dependen del backend y
+pueden ir en paralelo a la Fase 3; V3 espera la Fase 4 (`BusinessContext` para el sidebar
+dinámico) y V5 espera la Fase 5 (las pantallas de Superadmin tienen que existir).
+
+### Revisión del diff antes de commitear (pedida por el dueño)
+
+- **Migraciones de tenant** (`schema.sql`, v43 -> **v44**): 4 `ADD COLUMN IF NOT EXISTS` +
+  1 `ALTER COLUMN ... SET DEFAULT` sobre `domain_events`, 2 índices, y `CREATE TABLE IF NOT
+  EXISTS processed_events`. Todo aditivo e idempotente. **Cero `DROP`/`ADD CONSTRAINT`** — la
+  trampa del incidente de deploy de esta mañana no se repite.
+- **Migraciones de plataforma** (`platform.schema.sql`, sin versionar — se aplica en cada
+  arranque desde `server.ts`): `CREATE TABLE IF NOT EXISTS platform_audit_log` + 2 índices,
+  2 `ADD COLUMN IF NOT EXISTS` sobre `modules`, y 1 `UPDATE` de backfill acotado por lista
+  explícita de los 6 módulos.
+- **Rutas: ninguna.** Verificado con `git diff` filtrando `router.get/post/put/patch/delete/use`
+  y `app.use` -> 0 líneas. `app.ts` no está en el diff. Las 4 rutas de superadmin existentes
+  cambiaron por dentro (transacción + auditoría), no en su firma, método, path ni contrato de
+  respuesta.
+- **Cambio de comportamiento observable, uno solo:** `PUT /platform/role-presets/:name` ahora
+  lee el preset **antes** de escribir (para auditar el valor anterior), así que el 404 de
+  preset inexistente sale de esa lectura y no del repositorio. Mismo código, mismo body.
+
+### Lint pre-existente — ✅ RESUELTO (28/08/2026)
+
+Eran 4 errores en archivos que la sesión de dominios/multirubro no tocó,
+venidos de antes de `ccb7c7a`. `npm run lint` queda en 0.
+
+- **`api/middleware/error.middleware.ts:143` (`no-fallthrough`) — NO era un
+  bug.** Los 3 `case` (`PLAN_LIMIT_REACHED`, `ROLE_NOT_AVAILABLE_IN_PLAN`,
+  `PERMISSION_GROUP_NOT_AVAILABLE_IN_PLAN`) comparten cuerpo a propósito y
+  devuelven 402 los tres; no hay ninguna sentencia entre ellos. Lo que
+  disparaba la regla era el **comentario** metido entre `case` y `case`: con
+  `allowEmptyCase: false` (el default), un `case` cuyo cuerpo es solo un
+  comentario deja de contar como vacío y eslint lo reporta como si faltara un
+  `break`. Arreglado reagrupando: el comentario subió arriba del grupo y los
+  3 `case` quedaron contiguos. Ningún status ni `body.code` cambia.
+  Cotejado además contra `HTTP_CONTRACTS.md` (402 = "límite/capacidad de
+  plan") y, de paso, verificado que los **50 códigos declarados en
+  `domain/errors.ts` tienen su `case`** — ninguno se está cayendo al
+  `default → 500`.
+- **`facturacion/invoice.service.ts:25`** — `AccountReceivable` sacado del
+  type-import (quedó solo `AccountsReceivableRepository`).
+- **`pms-estadias/maintenance-window.service.ts:11`** — import muerto de
+  `randomUUID` eliminado.
+- **`usuarios-roles/password-reset.routes.test.ts:44` — era un defecto real
+  del helper, no ruido.** `makeMembership(overrides)` recibía `overrides` y
+  **nunca lo aplicaba** (a diferencia de `makeIdentity`, que sí hace
+  `...overrides`). Por eso el test "2+ memberships activas" armaba
+  `makeMembership({businessId:'biz-1'})` y `makeMembership({businessId:'biz-2'})`
+  y en realidad obtenía **dos veces `biz-1`** — pasaba de casualidad porque
+  el router corta por `memberships.length !== 1`, no por negocios distintos.
+  Arreglado agregando el spread, así el test expresa lo que dice expresar.
+
+Verificado: `tsc` limpio, `lint` 0 errores, `lint:arch` limpio (272 módulos),
+suite **1582/1582**.
+
+---
+
 ## Plan de ejecución acordado — estado actualizado
 
 Pasos 0, 3, 4, 5 ✅ resueltos (ver `plan-resolucion-bugs-deuda-2026-08-27.md`
