@@ -25,7 +25,7 @@ clasificado (hecho con el escáner de V2.6.1, ignora comentarios):
 | **Plata en verde, sin semántica** | **4** | `clientes/[id]:591`, `empresa:148`, `productos:614`, `variantes:251` |
 | Balance con signo | 2 | `cuentas-corrientes:253`, `estadias/[id]:266` — usan `balance > 0 ? danger : success`. Eso **sí** es estado ("debe" vs "saldado"), no color de plata. Revisar, no necesariamente cambiar |
 | Estado legítimo | 22 | badges, alerts, `btn-success`, `kpi-trend.up`, housekeeping, `RoomCalendar` |
-| A decidir aparte | 1 | `FacturarButton:74` pinta de verde el **CAE de AFIP**. No es plata ni estado: es un dato técnico, y el sistema tiene grafito para eso |
+| Otro problema, ver SEM-002 | 1 | `FacturarButton:74` |
 
 **Lo que hay que hacer, en este orden:** decidir si existe un token de valor
 monetario (o si los importes van simplemente en texto primario, que es lo que
@@ -39,6 +39,28 @@ pantallas están detrás del login.
 **Dependencia:** esto va **antes** de aplicar el patrón `Propio`/`Heredado`
 en los recorridos de tarifas de V4/V6 — ese patrón necesita una semántica
 monetaria limpia debajo. No bloquea V3.
+
+### SEM-002 — el CAE de AFIP pintado como estado positivo
+
+**Dónde:** `appfrontend-main/src/components/FacturarButton.tsx:74`.
+
+```
+<span className="text-xs mono" style={{ color: 'var(--success)' }}>
+  CAE {invoice.cae} · Cbte {invoice.cbteNro}
+</span>
+```
+
+Salió del inventario de SEM-001 pero **no es el mismo problema**, y por eso
+va separado: el CAE no es plata ni un estado. Es un **dato técnico** — un
+código de autorización que devuelve AFIP — y el sistema ya decidió cómo se
+expresa eso sobre superficie clara: grafito, no cian, no verde
+(valores-v25 §2, opción A del dueño).
+
+Hoy comparte color con "confirmado" y con "healthy", así que un número de
+autorización se lee como si fuera un estado favorable.
+
+Chico y contenido: un call site. Pero conviene resolverlo junto con SEM-001,
+porque los dos salen de la misma pregunta — qué significa el verde.
 
 ### TOAST-003 — hay un tercer sistema de toast
 
@@ -288,7 +310,7 @@ sesión prueba la composición, y hay bugs que sólo aparecen en uno de los dos.
 invertida, el instrumental es confiable y la deuda que destapó está saldada
 salvo lo que quedó asignado a fases posteriores.
 
-Las tres deudas nuevas del día — **SEM-001**, **TOAST-003** y **A11Y-001** —
+Las cuatro deudas nuevas del día — **SEM-001**, **SEM-002**, **TOAST-003** y **A11Y-001** —
 no tienen fase todavía y no deberían tenerla por inercia: cada una se decide
 cuando se la encare. Lo que sí está fijado es que **SEM-001 va antes que los
 recorridos de tarifas de V4/V6**.
