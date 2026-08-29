@@ -1,11 +1,11 @@
 # Runbook — deploy Render (Node pin + migraciones con EXCLUDE)
 
-- **Fecha:** 2026-08-25
+- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base)
 - **Estado:** implementado (`engines.node` acotado; incidente del día resuelto)
 - **Categoría:** Runbook + Incidente
-- **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42`
-- **Alcance:** `app-main` en Render. No documenta secretos.
-- **Referencias:** pendientes 25/08 “Incidente de deploy”; `package.json` `engines`; `render.yaml` `NODE_VERSION`; `i11-arcasdk-pdf-puppeteer.md`.
+- **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42` `v44` `rollback` `neon`
+- **Alcance:** `app-main` en Render + los dos proyectos Neon (tenants y plataforma). No documenta secretos.
+- **Referencias:** pendientes 25/08 “Incidente de deploy”; pendientes 28/08 (deploy v44); `package.json` `engines`; `render.yaml` `NODE_VERSION`; `i11-arcasdk-pdf-puppeteer.md`; `auditoria-dominios.md` (URLs reales).
 
 ## Contexto
 
@@ -38,9 +38,228 @@ No ampliar el rango de `engines` “para que instale en cualquier Node”.
 3. Aplicar columnas nuevas **sin** el constraint si hace falta destrabar; cancelar solapes; recién ahí `migrate:tenants` completo.
 4. Scripts de un solo uso: no commitear.
 
+## Procedimiento 3 — Rollback: qué revertir y qué NO
+
+> **Agregado el 28/08/2026**, después del deploy de la v44. Hasta ese día el runbook no
+> tenía sección de rollback y hubo que reconstruir a mano cuál era el punto de restauración
+> — que además **no existía** para la BD de plataforma.
+
+### Antes que nada: la mayoría de las veces NO se restaura la base
+
+**El error caro acá es restaurar la BD por un problema de código.** Las migraciones de este
+repo son aditivas e idempotentes (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`,
+índices, `UPDATE` acotados por `WHERE`): una columna nueva que nadie lee **no rompe nada**.
+Si el deploy salió mal, casi siempre alcanza con revertir el código y dejar el schema como
+está.
+
+Restaurar la base **pierde todos los datos de negocio escritos desde el punto de
+restauración** — reservas, órdenes, pagos, estadías de la jornada. Es una operación de
+último recurso, no el primer botón.
+
+| Síntoma | Qué revertir |
+|---|---|
+| El build falla | **Nada.** Render no despliega; sigue sirviendo la versión anterior (fail-loud intencional, R15) |
+| El proceso no arranca (`platform.schema.sql` reventó al boot) | El **archivo de schema**: arreglarlo y redeployar. La BD de plataforma quedó a medias solo si el bloque no era idempotente |
+| Bug funcional con el schema nuevo aplicado | **Solo el código**: `git revert` de los commits de app + redeploy. Las columnas y tablas nuevas quedan sin uso, inertes |
+| Corrupción o pérdida de datos comprobada | Recién acá, restaurar la base (abajo) — **con OK explícito del dueño** |
+
+### Puntos de restauración reales
+
+Neon tiene dos mecanismos, y conviene no confundirlos:
+
+| | Alcance | Dura |
+|---|---|---|
+| **Branch de respaldo** | Copia copy-on-write del estado exacto de `production` en un LSN | **Durable**: no expira |
+| **PITR** (point-in-time restore) | Cualquier instante dentro de la ventana | **6 h** (`history_retention_seconds: 21600`, plan `launch_v3`) |
+
+**La ventana PITR de 6 horas es corta.** Un problema que se detecta al día siguiente ya no
+se puede restaurar por PITR: solo por branch. Por eso **antes de cada deploy con migración
+se crea un branch de respaldo en LOS DOS proyectos**, no solo en el de tenants.
+
+Proyectos reales (los dos son de la org `org-bold-unit-53932069`, región `aws-us-east-2`):
+
+| Rol | Proyecto | Branch `production` |
+|---|---|---|
+| **Tenants** (una BD por negocio) | `ancient-king-17098519` — *DB-APP-PPMS* | `br-snowy-tree-ax5wmq70` |
+| **Plataforma** (central, `PLATFORM_DATABASE_URL`) | `morning-unit-50056927` — *pdb-ppms* | `br-royal-mouse-aybe2ai3` |
+
+Respaldos existentes al 28/08/2026:
+
+| Proyecto | Branch de respaldo | Id | Estado capturado |
+|---|---|---|---|
+| Tenants | `respaldo-pre-v44-2026-08-28` | `br-square-snow-ax4hgrmo` | v43, sin las columnas del sobre ni `processed_events` |
+| Plataforma | `respaldo-pre-v44-2026-08-28` | `br-ancient-flower-ays1lofk` | sin `platform_audit_log` ni `modules.active/implemented` |
+| Tenants | `respaldo-pre-temporada-2026-08-28` | `br-soft-frost-axh918xl` | anterior, del mismo día 16:53Z |
+
+Los branches de respaldo se crean con **`no_compute: true`**: son almacenamiento, sin
+compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint.
+
+**No confundir con estos, que NO son respaldos:** `tenant-template-empty`
+(`br-polished-hill-axn1uibp`, plantilla de aprovisionamiento — ver `neon-provisioning.ts`),
+`test-integration-db` (`br-bold-cell-axuvmork`, `TEST_DATABASE_URL`) y `vercel-dev`
+(`br-square-king-ay2uaubg`, lo crea Vercel).
+
+### Crear el respaldo antes de deployar (2 min, hacerlo siempre que haya migración)
+
+Vía Neon MCP, uno por proyecto, con `parent_id` = el branch `production` de la tabla de
+arriba y `no_compute: true`. Nombre: `respaldo-pre-<versión>-<fecha>`.
+
+Después, **verificar contra la base que el respaldo capturó el estado PRE-migración** — no
+alcanza con que el branch exista:
+
+```sql
+-- tenants: tiene que devolver la versión VIEJA
+SELECT MAX(version) FROM schema_migrations;
+-- plataforma: tiene que devolver NULL si la tabla nueva todavía no existe
+SELECT to_regclass('public.platform_audit_log');
+```
+
+Se corre contra `production` **antes** del push: el branch se tomó de ahí, así que ese es su
+contenido.
+
+### Restaurar (último recurso, con OK explícito del dueño)
+
+**Camino A — repuntar la aplicación al branch de respaldo.** No muta `production`, así que
+es reversible: si el diagnóstico estaba errado, se vuelve a apuntar y no se perdió nada.
+
+1. Crear un compute en el branch de respaldo (`create_postgres_endpoint`) y obtener su
+   connection string.
+2. **Plataforma:** cambiar `PLATFORM_DATABASE_URL` en el dashboard de Render y redeployar.
+3. **Tenants:** la URL de cada tenant vive **cifrada** en `businesses.db_url_encrypted`
+   (AES-256-GCM con `DB_ENCRYPTION_KEY`). No se edita a mano: se cifra la nueva con
+   `src/scripts/encrypt-database-url.ts` y se actualiza esa columna.
+
+**Camino B — restaurar `production` desde el respaldo.** Deja la app sin tocar, pero
+**sobrescribe `production`**: todo lo escrito después del punto de restauración se pierde.
+Solo con OK explícito y por escrito de qué se acepta perder.
+
+### Lo que no hay que hacer
+
+- **No restaurar la base porque falló el build.** Render no llegó a desplegar; la base está
+  intacta.
+- **No usar `reset_from_parent` sobre `production`.** `production` es el branch raíz de los
+  dos proyectos — no tiene padre del cual resetear.
+- **No borrar el branch de respaldo** hasta confirmar que el deploy quedó estable, y
+  después de eso tampoco: son baratos (copy-on-write) y el límite es 5000 por proyecto.
+- **No confiar en PITR** para nada que se pueda detectar con más de 6 h de retraso.
+
 ## Verificación
 
-Tras un deploy: proceso up, `migrate:tenants` en el log hasta la versión esperada, `patch-package` OK, Node 22.x en el log. El 25/08 el reintento con `1fcba6d` pasó (Node 22, parche, v42, build).
+Tras un deploy: proceso up, `migrate:tenants` en el log hasta la versión esperada,
+`patch-package` OK, Node 22.x en el log. El 25/08 el reintento con `1fcba6d` pasó (Node 22,
+parche, v42, build).
+
+### Verificación contra la base, no contra el log (28/08/2026)
+
+El log dice lo que el proceso *intentó*; la base dice lo que *quedó*. Con SQL de solo
+lectura vía Neon MCP, sin autenticarse contra la app (el agente no puede loguearse — ver
+`pendientes-2026-08-28.md`):
+
+```sql
+-- 1. tenants: ¿la migración llegó a la versión esperada, con sus objetos?
+SELECT (SELECT MAX(version) FROM schema_migrations)              AS schema_version,
+       to_regclass('public.<tabla_nueva>')::text                 AS tabla_nueva;
+
+-- 2. plataforma: platform.schema.sql se aplica AL ARRANCAR, no en el build.
+--    Que exista lo nuevo es la prueba de que el proceso nuevo booteó.
+SELECT to_regclass('public.platform_audit_log')::text AS aplicado;
+
+-- 3. columnas nuevas: verificar DEFAULT y nullability reales, no asumirlos
+SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+ WHERE table_name = '<tabla>' AND column_name IN (...);
+
+-- 4. outbox sano: ni dead-letter ni cola trabada
+SELECT COUNT(*) FILTER (WHERE failed_at IS NOT NULL)                        AS dead_letter,
+       COUNT(*) FILTER (WHERE dispatched_at IS NULL AND failed_at IS NULL)  AS pendientes
+  FROM domain_events;
+```
+
+Más `curl https://app-chny.onrender.com/health` (200 + `db: connected`) y, en GitHub
+Actions, los 4 jobs verdes — incluido `lint:arch`, que corre desde el 28/08.
+
+**Límite conocido:** todo esto verifica esquema e infraestructura. **No prueba un flujo de
+negocio.** Crear una reserva real y confirmar que sale un solo mail requiere login, que el
+agente no puede hacer — esa parte la corre el dueño.
+
+### Validación funcional punta a punta del outbox (la corre el dueño)
+
+Aplica a todo deploy que toque `domain_events`, el worker o sus handlers. Confirmar una
+reserva de prueba en el panel y, con el `id` del evento recién emitido:
+
+```sql
+-- Estado del último evento: un solo evento, despachado, sin reintentos
+SELECT id, event_id, event_type, version, correlation_id,
+       dispatched_at IS NOT NULL AS despachado, retry_count, failed_at, last_error
+  FROM domain_events
+ ORDER BY id DESC LIMIT 5;
+
+-- UNA fila por cada handler REGISTRADO para ese tipo de evento, ni más ni
+-- menos. El número no es fijo: se cuenta en el código, no se memoriza (ver
+-- abajo).
+SELECT handler_name, COUNT(*) AS filas
+  FROM processed_events
+ WHERE domain_event_id = <id>
+ GROUP BY handler_name ORDER BY handler_name;
+
+-- Sin cargos duplicados: la clave de idempotencia es única por evento
+SELECT idempotency_key, COUNT(*)
+  FROM financial_transactions
+ WHERE idempotency_key LIKE '<id>:%'
+ GROUP BY idempotency_key HAVING COUNT(*) > 1;   -- debe devolver 0 filas
+```
+
+Qué tiene que dar:
+
+| | Esperado |
+|---|---|
+| `event_id` del evento nuevo | **UUID, no NULL** (las filas anteriores a v44 quedan en NULL a propósito) |
+| `version` | `1` |
+| `retry_count` / `failed_at` | `0` / `NULL` |
+| Filas en `processed_events` | **una por cada handler registrado para ese `event_type`** — ni más (duplicado) ni menos (handler que no corrió). El número se cuenta en el código, no se memoriza: ver abajo |
+| Mails recibidos | **1** — este es el bug que cerró la v44: antes, cada fallo del handler financiero reenviaba la confirmación |
+| Cargos duplicados | ninguno |
+
+### Cuántos handlers tiene que haber: contarlos, no recordarlos
+
+El esperado sale de las registraciones reales. Se pasan por
+`OutboxWorker.on(eventType, handler, { name })`, y ese `name` **es** el `handler_name` de la
+tabla — así que contar los `name:` da el número exacto de filas que tiene que haber:
+
+```bash
+grep -rho "name: '[a-z]*:\([a-z._]*\)'" src/workers/*.handlers.ts \
+  | sed "s/name: '[a-z]*://;s/'//" | sort | uniq -c
+```
+
+Salida al 28/08/2026 — el número de la izquierda es cuántas filas esperar en
+`processed_events` para ese `event_type`:
+
+```
+  2 order.cancelled          2 reservation.confirmed
+  1 order.completed          1 reservation.completed
+  2 order.confirmed          1 reservation.cancelled
+                             1 reservation.price_adjusted
+```
+
+**Ese número cambia cada vez que se suma o saca un consumidor**, por eso se cuenta en el
+momento en vez de quedar escrito como regla: un número hardcodeado en un runbook envejece
+sin que nadie se entere, y este chequeo solo sirve si el esperado es el real.
+
+> **Por qué se filtra por `name:` y no por `.on(`:** el handler de mail registra con la
+> llamada partida en varias líneas (`email.handlers.ts`), así que un `grep "\.on('"` **no lo
+> encuentra** y daría 1 en vez de 2 para `reservation.confirmed`. Se detectó corriendo el
+> comando antes de dejarlo escrito acá. El `name:` siempre está en una sola línea.
+
+Los `onDeadLetter()` **no** cuentan: son compensación, no consumidores, y no reclaman
+casillero.
+
+### Si el conteo no da
+
+| Qué se ve | Qué significa |
+|---|---|
+| Más mails que filas `email:*` | El casillero no se está reclamando. Revisar que `outbox.registry.ts` siga inyectando `SqlProcessedEventRepository` al `OutboxWorker` (4º argumento) — sin él, `on()` no exige nombre y la idempotencia queda apagada en silencio |
+| Falta la fila de un handler y el evento figura despachado | Ese handler no corrió. Revisar que su `name` no haya cambiado (renombrarlo equivale a declarar que nunca corrió) |
+| Filas de más para un mismo `handler_name` | Imposible por la PK `(domain_event_id, handler_name)`. Si aparece, la tabla no es la que el worker está usando: verificar que el repo apunte a la BD del tenant, no a la de plataforma |
 
 ## Limitaciones
 
