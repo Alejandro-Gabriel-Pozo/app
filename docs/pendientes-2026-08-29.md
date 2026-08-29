@@ -7,6 +7,60 @@ cerrados de ayer quedan allá, no se repiten acá.
 
 ## 🔴 Abierto — encontrado hoy
 
+### SEM-001 — `--success` se usa como "color de plata"
+
+**Dónde:** `appfrontend-main`, 4 pantallas del dashboard.
+
+Apareció en V2.6.4, buscando otras pantallas con el patrón de "precio propio
+vs heredado". `--success` (hoy `--zulu-sage-strong`) significa **estado
+positivo** en el sistema: `badge-active`, `badge-completed`, healthy,
+housekeeping DONE. Pero también pinta importes, así que **un precio y un
+badge "confirmado" comparten color** — y un precio no es un estado positivo.
+
+Inventario completo de los 29 usos de `var(--success*)` en código activo,
+clasificado (hecho con el escáner de V2.6.1, ignora comentarios):
+
+| Clase | Cuántos | Qué son |
+|---|---:|---|
+| **Plata en verde, sin semántica** | **4** | `clientes/[id]:591`, `empresa:148`, `productos:614`, `variantes:251` |
+| Balance con signo | 2 | `cuentas-corrientes:253`, `estadias/[id]:266` — usan `balance > 0 ? danger : success`. Eso **sí** es estado ("debe" vs "saldado"), no color de plata. Revisar, no necesariamente cambiar |
+| Estado legítimo | 22 | badges, alerts, `btn-success`, `kpi-trend.up`, housekeeping, `RoomCalendar` |
+| A decidir aparte | 1 | `FacturarButton:74` pinta de verde el **CAE de AFIP**. No es plata ni estado: es un dato técnico, y el sistema tiene grafito para eso |
+
+**Lo que hay que hacer, en este orden:** decidir si existe un token de valor
+monetario (o si los importes van simplemente en texto primario, que es lo que
+V2.6.4 hizo para el precio efectivo de variantes), migrar los 4 como
+conjunto, y recién ahí revisar los 2 de balance y el CAE.
+
+**No reemplazar `success` por otro color a ciegas** — hay que separar importe,
+estado y dato técnico primero. Y verificar en sesión autenticada: las 4
+pantallas están detrás del login.
+
+**Dependencia:** esto va **antes** de aplicar el patrón `Propio`/`Heredado`
+en los recorridos de tarifas de V4/V6 — ese patrón necesita una semántica
+monetaria limpia debajo. No bloquea V3.
+
+### TOAST-003 — hay un tercer sistema de toast
+
+**Dónde:** `appfrontend-main/src/app/admin/page.tsx:40-50`.
+
+Apareció en V2.6.3, confirmando el rol de un `shadow-xl`. No es
+`ToastContext` ni la clase `.toast`: es una tercera implementación inline,
+con sus propios colores Tailwind oscuros (`bg-emerald-900/90`,
+`bg-red-900/90`, `text-emerald-300`, `text-red-300`).
+
+V2.6.2a había unificado dos sistemas de toast; éste no estaba en el
+inventario porque no usa ni el contexto ni la clase. Sólo se le migró la
+sombra en V2.6.3.
+
+Qué falta: migrar los colores a tokens, unificar la estructura con
+`.toast-stack` + `.toast`, cubrir los cuatro tipos, eliminar la tercera
+implementación y verificar en runtime detrás del login.
+
+**No asignado a V5(a) a propósito:** vive en `app/admin`, que no es
+Superadmin. Es deuda del sistema de notificaciones; se decide después si
+entra en V3 o en una fase de consolidación propia.
+
 ### A11Y-001 — el modal no tiene focus trap
 
 **Dónde:** `appfrontend-main/src/components/Modal.tsx`.
@@ -35,18 +89,29 @@ role="dialog" y aria-modal="true"
 
 **Va a V2.7**, la fase de accesibilidad. No se mezcla con las fases de color.
 
-### V2.6.3 — la escala de sombras quedó calibrada para navy
+### ✅ V2.6.3 — la escala de sombras estaba calibrada para navy — RESUELTO
 
-**Dónde:** `appfrontend-main/src/app/globals.css`, bloque "Sombras toneadas".
+`--shadow-sm/md/lg` tenían alfas de 0.30 / 0.35 / 0.45. No era un descuido:
+sobre navy, negro sobre casi-negro no se ve, y las tres medían 1.03-1.04 de
+visibilidad. Al invertir la polaridad pasaron a 3.19 / 3.80 / 5.64 sobre
+`#F5F4EF` — un factor de 3 a 5, sin que nadie tocara la escala.
 
-`--shadow-sm/md/lg` usan alfas de **0.30 / 0.35 / 0.45**. Ese rango tiene
-sentido sobre un fondo navy oscuro; sobre la página clara de V2.5 son
-sombras pesadas. El comentario del bloque todavía es el del sistema viejo.
+Recalibradas a `.06/.04`, `.10/.06`, `.16/.08` (`0308c14`), misma geometría,
+misma progresión relativa. Y se migraron los dos usos de Tailwind que
+mantenían una escala paralela: `Modal.tsx` (`shadow-2xl`) y
+`admin/page.tsx` (`shadow-xl`), los dos a `--shadow-lg` por rol.
 
-No se tocó junto con los colores porque mover la escala afecta cards,
-toasts, modales y sidebar a la vez: es decisión de diseño, no limpieza.
-El orden acordado con el dueño es medir primero sobre la base clara,
-verificar los cuatro componentes, y recién después cambiar alfas.
+### ✅ V2.6.4 — los 3 estados mal expresados — RESUELTO
+
+Y **dos de los tres estaban mal clasificados** por la auditoría V1:
+"métrica destacada" era un hipervínculo (→ `--zulu-link`), y "valor de
+threshold" era el número de un slider que el usuario arrastra, sin
+semántica de salud (→ énfasis tipográfico). El tercero, precio propio vs
+heredado, sí era el caso de manual y pasó a etiqueta `Propio`/`Heredado`
+con un solo color (`43f3aeb`).
+
+El token puente `--zulu-status-emphasis` quedó sin consumidores y se
+eliminó. De ahí salió **SEM-001**, arriba.
 
 ### 6 overlays blancos de Tailwind en Superadmin
 
@@ -212,17 +277,26 @@ sesión prueba la composición, y hay bugs que sólo aparecen en uno de los dos.
 ✅ V2.3   hex y fallbacks          ✅ V2.4  alias y Bastión
 ✅ V2.5   inversión de polaridad   ✅ V2.6.1 instrumental
 ✅ V2.6.2 a/b/c/d + glows
-🔜 V2.6.3 recalibración de sombras
-🔜 V2.7   accesibilidad (A11Y-001 entra acá)
+✅ V2.6.3 recalibración de sombras   ✅ V2.6.4 los 3 estados mal expresados
 🔜 V3     reconstrucción del shell   — espera Fase 4 (BusinessContext)
-🔜 V4     contexto de módulo (brass/clay)
+🔜 V4     contexto de módulo (brass/clay)  — depende de SEM-001 para tarifas
 🔜 V5(a)  migración visual de Superadmin — espera Fase 5
+🔜 V7     responsive y accesibilidad (A11Y-001 entra acá)
 ```
 
-Los tres estados mal expresados que marcó la auditoría V1 (precio propio vs
-heredado, métrica destacada, valor de threshold) siguen con el token puente
-`--zulu-status-emphasis` y **todavía no tienen fase asignada**. Salieron de
-V2.6 cuando la fase se partió en instrumental + deuda.
+**V2 está cerrada.** El token layer está reemplazado, la polaridad
+invertida, el instrumental es confiable y la deuda que destapó está saldada
+salvo lo que quedó asignado a fases posteriores.
+
+Las tres deudas nuevas del día — **SEM-001**, **TOAST-003** y **A11Y-001** —
+no tienen fase todavía y no deberían tenerla por inercia: cada una se decide
+cuando se la encare. Lo que sí está fijado es que **SEM-001 va antes que los
+recorridos de tarifas de V4/V6**.
+
+Nota de numeración: A11Y-001 va a **V7**, no a un "V2.7". El plan (§16 del
+documento de separación de dominios) ya define V7 como responsive y
+accesibilidad con entregable propio; no hacen falta dos numeraciones para
+lo mismo.
 
 ---
 
