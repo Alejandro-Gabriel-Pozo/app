@@ -8,10 +8,17 @@
 
 ## Cómo usar esto
 
+0. **Sesión nueva** → `zulu-hub-continuidad-<fecha más reciente>.md`: dónde quedó el proyecto y cuál es el próximo bloque. Después, este índice.
 1. Tarea nueva → buscar acá por categoría o etiqueta.
 2. Si el hallazgo es de **una sesión** (quién decidió, qué se verificó ese día) → `docs/pendientes-*.md`.
 3. Si es **regla permanente de dominio** → `criterios-negocio.md` / `criterios-datos.md` (skill `criterios-negocio`).
-4. Si es **visión de producto** → `roadmap-pms-multirubro.md` (no se lee solo al arrancar; cruzarlo cuando la tarea toca un rubro).
+4. Si es **visión de producto** → `plan-multirubro-maestro-*.md` (dirección multirubro, con su tabla de conciliación) y `roadmap-pms-multirubro.md` (backlog por rubro). Ninguno de los dos se lee solo al arrancar: se cruzan cuando la tarea toca un rubro.
+
+**Orden de lectura para retomar el trabajo:**
+
+```text
+continuidad → plan maestro → plan de dominios ejecutado → pendientes del día → runbook
+```
 
 No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 
@@ -29,7 +36,11 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Dominios / CORS / hosting | [auditoria-dominios.md](auditoria-dominios.md) | Mapa + Runbook de auditoría |
 | Nombres de archivo `<entidad>.<capa>.ts` | [convenciones-nombres.md](convenciones-nombres.md) (propuesta; patrón backend ya aplicado) | Convención (parcial) |
 | Contexto de operación del negocio | [conocimiento-del-negocio.md](conocimiento-del-negocio.md) | Glosario de negocio |
-| Log de sesión (más reciente) | [pendientes-2026-08-27.md](pendientes-2026-08-27.md) | Historial, no catálogo |
+| **Dónde quedó el proyecto y cuál es el próximo bloque** — lo primero que conviene abrir en una sesión nueva | [zulu-hub-continuidad-2026-08-29.md](zulu-hub-continuidad-2026-08-29.md) | Estado + punto de entrada |
+| **Visión de producto multirubro**, con la tabla que concilia el plan contra lo implementado | [plan-multirubro-maestro-2026-08-29.md](plan-multirubro-maestro-2026-08-29.md) | Dirección (no orden de implementación) |
+| Plan ejecutado de separación de dominios + las 7 decisiones cerradas + contrato de `BusinessContext` (§5.4 payload, §5.5 consumo) | [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md) | Diseño ejecutado |
+| Deploy, respaldos, rollback y las trampas que ya costaron un incidente | [conocimiento/runbook-deploy-render.md](conocimiento/runbook-deploy-render.md) | Runbook |
+| Log de sesión (más reciente) | [pendientes-2026-08-29.md](pendientes-2026-08-29.md) | Historial, no catálogo |
 | Backlog de producto por rubro | [roadmap-pms-multirubro.md](roadmap-pms-multirubro.md) | Roadmap (no pendientes) |
 | **Referencia externa de inventario** — `C:\Users\Usuario\Downloads\proyecto script` (NQNTUR, ERP-lite sobre Apps Script). Es el espejo de este repo: su `REVIEW-ERP-LITE.md` lista como gaps propios lo que acá ya está (AFIP, hospedaje, caja, cuentas corrientes), y su fuerte es el inventario que acá falta. Ya se adoptaron su mapa `TRANSICIONES` y `DESTINOS_CONSUMO` (consumo≠merma); conteo físico (3 acciones: AJUSTAR/FALTA_MOVIMIENTO/DESCARTAR) y lotes/FEFO siguen sin adoptar (ver pendientes 27/08) | Fuera del repo | Referencia externa |
 

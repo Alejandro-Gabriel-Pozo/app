@@ -38,6 +38,79 @@ No ampliar el rango de `engines` “para que instale en cualquier Node”.
 3. Aplicar columnas nuevas **sin** el constraint si hace falta destrabar; cancelar solapes; recién ahí `migrate:tenants` completo.
 4. Scripts de un solo uso: no commitear.
 
+## Procedimiento 2b — `platform.schema.sql` rompe el boot (29/08/2026)
+
+**Síntoma en el log de Render:**
+
+```text
+[migrate] ❌ Error en platform.schema.sql
+syntax error at or near "$"   (code 42601, position 56181)
+==> Exited with status 1
+```
+
+**Lo primero: `/health` va a seguir respondiendo 200.** Render mantiene la
+instancia anterior sirviendo porque la nueva nunca pasa el health check. El
+sitio no se cae, pero **el deploy no entró**. Si se toma el 200 como
+evidencia, se cierra un deploy que en realidad falló — pasó.
+
+La señal real es la contradicción: `/health` 200 y las tablas nuevas
+**ausentes** en la base. Ante esa combinación, revisar el log de Render.
+
+**Causa observada:** ocho bloques quedaron escritos `DO $ BEGIN` / `END $;`
+con **un solo** signo en vez de `$$`. No fue tipeo: el bloque se insertó con
+
+```js
+s.replace(ancla, bloque)     // ← rompe
+```
+
+y `String.prototype.replace` interpreta `$$` **dentro del reemplazo** como un
+`$` literal. Cada `$$` del SQL se volvió `$` al insertarlo. Para insertar SQL
+con dollar-quoting, el reemplazo va como **función**:
+
+```js
+s.replace(ancla, () => bloque)   // ← el motor no interpreta $$, $&, $1…
+```
+
+**Cómo ubicar el error rápido:** el campo `position` del error es la posición
+en caracteres dentro de la query. Como `server.ts` manda el archivo entero,
+`position` es un offset directo sobre `platform.schema.sql`. Normalizar CRLF
+antes de contar.
+
+### La trampa de verificación, que es lo que hay que llevarse
+
+El bloque **se validó contra una base real** en un branch descartable y
+**pasó**. La validación mandaba las sentencias **de a una** por la MCP de
+Neon. `server.ts:51` no hace eso:
+
+```ts
+const sql = await readFile(schemaPath, 'utf-8');
+await pool.query(sql);          // el ARCHIVO ENTERO, una sola query
+```
+
+Con las sentencias sueltas, un `DO $ …` roto nunca se parsea como el lote que
+falla. **Probar las sentencias no es probar el archivo.**
+
+El chequeo de balance tampoco sirvió: contar `DO $$` daba 11/11 en verde
+porque los rotos no matcheaban el patrón — el contador no sabía mirar la
+forma en que el problema estaba escrito. Es el mismo mecanismo que dejó pasar
+`rgba()` y `bg-white/10` en el guard visual del frontend.
+
+**Verificación correcta**, contra el branch descartable, antes de commitear:
+
+```js
+// mismo camino que server.ts
+const sql = readFileSync('src/db/platform.schema.sql', 'utf-8');
+await pool.query(sql);          // 1ª pasada
+await pool.query(sql);          // 2ª: el archivo se reaplica en CADA arranque
+```
+
+Medido el 29/08: 68.139 bytes, 3.185 ms la primera pasada y 557 ms la
+segunda, sin duplicar filas, constraints ni triggers.
+
+Chequeo barato antes de correr nada: contar los `$` que **no** forman parte
+de un par. Al 29/08 el único legítimo está dentro de un comentario
+(`psql $PLATFORM_DATABASE_URL`).
+
 ## Procedimiento 3 — Rollback: qué revertir y qué NO
 
 > **Agregado el 28/08/2026**, después del deploy de la v44. Hasta ese día el runbook no
@@ -101,12 +174,21 @@ compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint.
 `test-integration-db` (`br-bold-cell-axuvmork`, `TEST_DATABASE_URL`) y `vercel-dev`
 (`br-square-king-ay2uaubg`, lo crea Vercel).
 
-**Tampoco es un respaldo `prueba-fase3-2026-08-29`** (`br-polished-forest-ayhgmb7m`, proyecto
-de plataforma, creado 17:25Z). Es el branch descartable donde se validó el bloque de la
-Fase 3 de `platform.schema.sql`, y quedó **mutado por las pruebas**: se le asignó y
-desasignó un rubro al negocio y se corrieron inserts que las constraints rechazaron. Sirve
-como evidencia de la validación, no como punto de retorno. Borrarlo una vez verificada la
-producción.
+**Branch de validación de la Fase 3, ya eliminado.** Se deja registrado porque el patrón se
+repite en cada migración:
+
+```text
+branch:       br-polished-forest-ayhgmb7m
+nombre:       prueba-fase3-2026-08-29
+origen:       production del proyecto de plataforma (17:25Z)
+uso:          validar que platform.schema.sql aplica ENTERO en una sola query
+resultado:    validación exitosa (ver Procedimiento 2b)
+estado final: eliminado el 29/08 tras confirmar producción
+```
+
+Nunca fue un respaldo: quedó mutado por las pruebas (se le asignó y desasignó un rubro al
+negocio, y se corrieron inserts que las constraints rechazaron). Los puntos de retorno son
+los `respaldo-*` de la tabla de arriba.
 
 > **Aviso de la MCP de Neon (29/08/2026):** `create_branch` puede devolver
 > `NeonApiError: unknown error` **y haber creado el branch igual** — pasó al crear
