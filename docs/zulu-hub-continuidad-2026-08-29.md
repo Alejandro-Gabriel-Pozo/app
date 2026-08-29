@@ -14,8 +14,18 @@ el próximo bloque?*
 
 | Repo | `origin/main` | En producción |
 |---|---|---|
-| `app-main` | `67151fb` | sí — Render, verificado contra la base |
+| `app-main` | `c6c4185` | Fase 3 sí, verificada contra la base. `c6c4185` (Fase 4 Bloque 1) no tiene efecto observable en runtime: no se pudo confirmar que el deploy entró |
 | `appfrontend-main` | `515bc3f` | sí — Vercel, `host.zuluhub.com.ar` |
+
+> **Sobre esta tabla:** hasta el 29/08 decía `67151fb`, que ya estaba
+> desactualizado al escribirse — el commit siguiente (`dab960f`) fue
+> justamente el que agregó este documento, y un doc no puede citar su propio
+> hash. Al actualizarla, verificar contra `git rev-parse origin/main`, no
+> contra lo que diga la fila anterior.
+>
+> `c6c4185` agrega `app-main/src/business-context/` — el resolver puro de la
+> cascada, **sin cablear**: no toca `getBusinessModules()`, `requireModule()`
+> ni ninguna ruta. Ver §4.
 
 **Fase 3 confirmada en producción** (29/08, 17:5x UTC). Verificado
 consultando la BD de plataforma, sin aplicar nada a mano:
@@ -88,9 +98,20 @@ técnica heredada, los dos en `pendientes-2026-08-29.md`.
 
 ## 4. Próximo bloque, único
 
-**Fase 4 — `src/business-context/`:** resolver de la cascada +
-`GET /api/business/context`. Después, el frontend cambia `mockSource()` por
-la fuente real **sin tocar pantallas**.
+**Fase 4 — `GET /api/business/context` (Bloque 2).** El resolver de la
+cascada **ya está**: `c6c4185` agregó `src/business-context/` como funciones
+puras, con 48 tests, sin cablear a nada. Lo que falta es el adaptador de
+lectura contra las tablas reales y la ruta, montada **después** de
+`tenantMiddleware` (necesita `req.db` para `currency`/`timezone` de
+`business_profile`). Después, el frontend cambia `mockSource()` por la
+fuente real **sin tocar pantallas**.
+
+**El Bloque 2 no es un refactor de lectura.** Meter la cascada dentro de
+`getBusinessModules()` cambia `requireModule()` y con eso el 402 de todas
+las rutas con gate. Hoy sería inerte —el único negocio tiene `industry_key`
+NULL, `min_plan` NULL y los 6 módulos `active`+`implemented`— pero deja de
+serlo en cuanto una de esas precondiciones se caiga. Va con su propio diff y
+pruebas sobre los gates, no arrastrado por el endpoint.
 
 El contrato está cerrado: payload en §5.4 y consumo (los tres estados,
 `permissionGroups`, `industryName`, `industryKey` NULL ≠ `GENERIC`) en §5.5
