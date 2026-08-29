@@ -83,10 +83,12 @@ Proyectos reales (los dos son de la org `org-bold-unit-53932069`, región `aws-u
 | **Tenants** (una BD por negocio) | `ancient-king-17098519` — *DB-APP-PPMS* | `br-snowy-tree-ax5wmq70` |
 | **Plataforma** (central, `PLATFORM_DATABASE_URL`) | `morning-unit-50056927` — *pdb-ppms* | `br-royal-mouse-aybe2ai3` |
 
-Respaldos existentes al 28/08/2026:
+Respaldos existentes al 29/08/2026:
 
 | Proyecto | Branch de respaldo | Id | Estado capturado |
 |---|---|---|---|
+| Plataforma | `respaldo-pre-fase3-2026-08-29` | `br-purple-mud-aycvlyj4` | LSN `0/347F870`, 17:33:25Z. **Sin** `industries`, `industry_capabilities`, `terminology_defaults`, `businesses.industry_key`, `business_modules.source` ni `modules.context_color` — verificado consultando producción antes de crearlo |
+| Tenants | `respaldo-pre-fase3-2026-08-29` | `br-twilight-poetry-axtplxx1` | LSN `0/3D3BC38`, 17:33:19Z. La Fase 3 no toca el schema de tenant; se respalda igual porque el deploy reinicia el backend y reaplica **los dos** esquemas |
 | Tenants | `respaldo-pre-v44-2026-08-28` | `br-square-snow-ax4hgrmo` | v43, sin las columnas del sobre ni `processed_events` |
 | Plataforma | `respaldo-pre-v44-2026-08-28` | `br-ancient-flower-ays1lofk` | sin `platform_audit_log` ni `modules.active/implemented` |
 | Tenants | `respaldo-pre-temporada-2026-08-28` | `br-soft-frost-axh918xl` | anterior, del mismo día 16:53Z |
@@ -98,6 +100,19 @@ compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint.
 (`br-polished-hill-axn1uibp`, plantilla de aprovisionamiento — ver `neon-provisioning.ts`),
 `test-integration-db` (`br-bold-cell-axuvmork`, `TEST_DATABASE_URL`) y `vercel-dev`
 (`br-square-king-ay2uaubg`, lo crea Vercel).
+
+**Tampoco es un respaldo `prueba-fase3-2026-08-29`** (`br-polished-forest-ayhgmb7m`, proyecto
+de plataforma, creado 17:25Z). Es el branch descartable donde se validó el bloque de la
+Fase 3 de `platform.schema.sql`, y quedó **mutado por las pruebas**: se le asignó y
+desasignó un rubro al negocio y se corrieron inserts que las constraints rechazaron. Sirve
+como evidencia de la validación, no como punto de retorno. Borrarlo una vez verificada la
+producción.
+
+> **Aviso de la MCP de Neon (29/08/2026):** `create_branch` puede devolver
+> `NeonApiError: unknown error` **y haber creado el branch igual** — pasó al crear
+> `prueba-fase3-2026-08-29`. Antes de reintentar, listar branches: si se reintenta a ciegas
+> quedan dos branches del mismo estado con nombres distintos. Con `no_compute: true` el
+> error no apareció, probablemente porque no espera a que el compute quede listo.
 
 ### Crear el respaldo antes de deployar (2 min, hacerlo siempre que haya migración)
 
