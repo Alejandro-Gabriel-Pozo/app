@@ -274,6 +274,77 @@ identidad ZULU es monocromática y global; el color es una señal de contexto de
 tema de negocio. Superadmin elige de un enum cerrado (`BRASS`/`CLAY`/`SAGE`/`NEUTRAL`), nunca
 un color libre — el cian queda reservado al plano técnico y **no** es asignable.
 
+### 5.5 Contrato de consumo en el frontend — precondición de V3
+
+Pedido del dueño (29/08/2026) al cerrar V2: antes de implementar V3 hay que
+fijar qué consume el shell, y sobre todo **qué hace cuando el contexto no
+está**. §5.4 define el payload; esto define el consumo.
+
+#### 5.5.1 Lo que falta en el payload de §5.4
+
+| Campo | Por qué |
+|---|---|
+| `permissionGroups: string[]` | §5.4 no expone permisos. Hoy el frontend sólo conoce `user.role` (`useIsManagement`/`useIsOwner`) y eso alcanza para OWNER/ADMIN, pero **no** para roles armados con `role_presets` desde Superadmin. Se exponen los **grupos** que ya calcula `security/roles.ts`, no una lista de permisos nueva: un segundo catálogo de permisos en el frontend se desincroniza del backend, que es el que autoriza de verdad |
+| `industryName: string \| null` | El shell tiene que poder decir "Barbería" sin un mapa de `industryKey → nombre` hardcodeado en el frontend, que es justo lo que la corriente viene a eliminar |
+
+#### 5.5.2 Los tres estados, y por qué hoy son dos
+
+Hoy `useBusinessModules()` devuelve `Record<string,boolean> | null`, y `null`
+significa **las dos cosas a la vez**: "todavía estoy cargando" y "el fetch
+falló". El nav usa `modules === null` para no ocultar nada.
+
+Fallar abierto es la decisión correcta y **se conserva** — el gate real es el
+backend, que responde 402 `MODULE_NOT_ENABLED`; ocultar de más deja al
+usuario sin camino a una función que sí tiene. Lo que no se conserva es
+**confundir los dos estados**: con un solo `null` el shell no puede mostrar
+un esqueleto mientras carga y un aviso discreto si falló, porque no sabe en
+cuál está.
+
+```ts
+type BusinessContextState =
+  | { status: 'loading' }
+  | { status: 'ready';  context: BusinessContext }
+  | { status: 'error';  error: unknown }   // se sigue mostrando todo
+```
+
+| Estado | Navegación | Terminología | Color de módulo |
+|---|---|---|---|
+| `loading` | esqueleto, sin ítems | claves del sistema | NEUTRAL |
+| `ready` | `context.navigation` | `context.terminology` | `contextColor` de cada ítem |
+| `error` | **todos** los ítems, como hoy | claves del sistema | NEUTRAL |
+
+En `error` el shell no bloquea ni muestra una pantalla de fallo: el producto
+sigue usable y el backend sigue rechazando lo que corresponda.
+
+#### 5.5.3 `industryKey = null` no es `GENERIC`
+
+Son dos cosas distintas y el shell tiene que distinguirlas (D1):
+
+- **`GENERIC`** es una fila de `industries` como cualquier otra, con su
+  preset de capacidades y su terminología. Un negocio con `GENERIC` está
+  clasificado.
+- **`industryKey = null`** es un negocio **sin clasificar** — los que ya
+  existen hoy, de antes de que el rubro existiera.
+
+Con `null`: terminología del sistema, `enabledModules` tal como estén en
+`business_modules`, `contextColor` NEUTRAL, y **nada de inferir el rubro**.
+En particular no se cae a `ALOJAMIENTO`, que es exactamente lo que la
+decisión 1 del dueño prohíbe. Superadmin ve esos negocios como pendientes de
+clasificar; el shell no los trata como error.
+
+#### 5.5.4 V3 se parte en dos capas
+
+| Capa | Depende del endpoint | Puede arrancar |
+|---|---|---|
+| Estructura visual del shell — grilla, sidebar, topbar, densidad, responsive | No | **ya**: tokens y primitives cerrados en V2 |
+| Navegación, labels, módulos efectivos y color por módulo | **Sí** | tras la Fase 4 |
+
+La razón de partirlo: un sidebar visualmente terminado pero alimentado por
+un array estático o por un `if (industry === …)` es deuda nueva, del mismo
+tipo que la corriente visual acaba de sacar. La capa visual se puede armar
+contra un contexto **mockeado con la forma real** del contrato; lo que no se
+hace es inventar la fuente de datos.
+
 ---
 
 ## 6. Terminología — claves y alcance (pregunta 6)

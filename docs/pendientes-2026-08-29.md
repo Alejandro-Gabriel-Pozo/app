@@ -109,7 +109,13 @@ al cerrar, el foco vuelve al elemento que lo abrió
 role="dialog" y aria-modal="true"
 ```
 
-**Va a V2.7**, la fase de accesibilidad. No se mezcla con las fases de color.
+**Va a V7**, que el plan (§16) ya define como responsive y accesibilidad con
+entregable propio. No se mezcla con las fases de color.
+
+**Regla que aplica desde ya, sin esperar a V7:** todo componente nuevo de V3
+nace con teclado, foco visible, roles y nombres accesibles. V7 concentra la
+deuda existente — el focus trap y los 15 modales a mano — no habilita a
+crear deuda nueva mientras tanto.
 
 ### ✅ V2.6.3 — la escala de sombras estaba calibrada para navy — RESUELTO
 
