@@ -149,6 +149,28 @@ Tras un deploy: proceso up, `migrate:tenants` en el log hasta la versión espera
 `patch-package` OK, Node 22.x en el log. El 25/08 el reintento con `1fcba6d` pasó (Node 22,
 parche, v42, build).
 
+### Cómo leer el resultado de CI sin equivocarse (29/08/2026)
+
+**Un `$?` después de un pipe no es el del comando que importa.** Esto dio un falso "CI verde"
+el 28/08: `gh run watch --exit-status | tail -25` devuelve el estado de `tail`, y encima el
+`tail` cortó justo el job que fallaba dejando a la vista los tres que habían pasado —
+conclusión equivocada con evidencia truncada.
+
+```bash
+set -o pipefail          # al principio del comando, siempre que haya un pipe
+
+# Verificar una corrida: redirigir, no pipear
+RUN=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN" --exit-status --interval 15 > /tmp/ci.log 2>&1; echo "exit=$?"
+```
+
+Y confirmarlo con una **segunda fuente independiente**, porque el watch puede engancharse
+tarde o soltar antes: `gh run view <id>` lista el estado job por job, y `gh run list` da el
+`success`/`failure` final de la corrida. Los tres tienen que coincidir.
+
+La regla generaliza más allá de `gh`: cualquier verificación que pase por un pipe
+(`npm test | tail`, `curl | jq`) necesita `pipefail`, o el error del primer comando se pierde.
+
 ### Verificación contra la base, no contra el log (28/08/2026)
 
 El log dice lo que el proceso *intentó*; la base dice lo que *quedó*. Con SQL de solo
