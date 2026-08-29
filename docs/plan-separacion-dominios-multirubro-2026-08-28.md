@@ -1,10 +1,11 @@
 # Plan — Separación de dominios y adaptación multirubro (ZULU Hub)
 
 - **Fecha:** 2026-08-28
-- **Estado:** **Fases 0, 1 y 2 ejecutadas y verificadas** (28/08/2026; commiteadas local,
-  sin pushear ni deployar). Fases 3–9: aprobadas, sin implementar.
-  **Corriente visual V1–V7: 0 de 7 ejecutadas, ninguna pantalla migrada** — lo hecho es
-  preparación documental (§16). Las 7 decisiones de §14 están cerradas.
+- **Estado (29/08/2026):** **Fases 0, 1 y 2 ejecutadas, desplegadas y verificadas**
+  (schema v44 + `platform_audit_log`). Fases 3–9: aprobadas, sin implementar.
+  **Corriente visual: V1 y V2 ejecutadas y en producción** — el token layer está
+  reemplazado y la polaridad invertida; las pantallas siguen sin migrar y el color por
+  módulo todavía no está conectado (§16.6). Las 7 decisiones de §14 están cerradas.
 - **Alcance:** `app-main` (backend) + `appfrontend-main` (frontend), incluido el panel de Superadmin.
 - **Documentos que NO reemplaza:** `arquitectura-monolito-modular.md` (ADR de monolito
   modular), `plan-multirubro.md` (cierre de restos hardcodeados, casi todo ya resuelto),
@@ -671,14 +672,16 @@ Se incorpora como corriente propia: Fases **V1–V6**, §16.
 
 ## 16. Corriente visual — Fases V1–V7 (D7)
 
-> ### Estado: **0 de 7 fases ejecutadas. Ninguna pantalla migrada.**
+> ### Estado al 29/08/2026: **V1 y V2 ejecutadas. Ninguna pantalla migrada todavía.**
 >
-> Lo hecho al 28/08/2026 es **preparación documental**, no migración: la
-> especificación, el boceto y las convenciones del repo de frontend. **Ni un solo token,
-> componente o pantalla cambió.** El bloque `.zulu` de `globals.css` sigue siendo navy +
-> cian y sigue siendo lo que se ve en producción.
+> El sistema de tokens está reemplazado y la polaridad invertida: lo que se ve en
+> producción ya es blanco cálido con shell negro, no navy + cian. Lo que **no** cambió
+> son las pantallas: siguen con su layout y su estructura, ahora pintadas con los
+> tokens nuevos. El color por módulo (brass/clay) **todavía no está conectado** — eso
+> es V4.
 >
-> Los commits de esta sesión **no deben presentarse como migración visual terminada.**
+> Detalle por sub-fase en §16.6. El estado anterior de este bloque decía "0 de 7,
+> preparación documental" y era correcto el 28/08; quedó viejo al día siguiente.
 
 ### 16.0 Artefactos de la corriente
 
@@ -773,3 +776,61 @@ El criterio pide screenshots de cada pantalla modificada. El agente **no puede h
 (restricción registrada el 28/08). Los screenshots detrás de autenticación los produce el
 dueño, o el agente sobre una sesión que el dueño abra. Hay que contemplarlo al planificar
 cada PR visual, no descubrirlo al cerrarlo.
+
+### 16.6 Sub-fases de V2 — ejecutadas el 29/08/2026
+
+V2 no entró de una vez. Se partió en sub-fases para que cada una fuera
+reversible sola, y el corte resultó clave: la inversión de polaridad (V2.5)
+destapó bugs que ninguna revisión de diff habría encontrado.
+
+| Sub-fase | Commit | Qué hizo |
+|---|---|---|
+| V2.1 | `ff2f148` | Separar el significado: 20 tokens semánticos. Cero pixeles |
+| V2.2 | `7b3fc5e` | Centralizar los 24 overlays en un tint. Cero pixeles |
+| V2.3 | `10c9e2f` | Sacar los hex de las pantallas y los fallbacks. Cero pixeles |
+| V2.4 | `92025c1` | Alias engañosos y restos de Bastión. Cero pixeles |
+| V2.5 | `4624f95` | **Inversión de polaridad.** Primer cambio visible |
+| — | `9ce9338` | Hotfix: `.toast.error` cayó a 2.57 con la inversión |
+| V2.6.1 | `7fb3d4e` | **El instrumental.** Guard con parser + banco honesto |
+| V2.6.2a | `f0f6007` | Un solo sistema de toast, sobre tokens |
+| V2.6.2b | `2a3de19` | `--zulu-scrim`: 17 scrims con dos valores → uno |
+| V2.6.2c | `a378fee` | Cero color crudo en pantallas |
+| — | `11fbc2d` | Decisión sobre los dos glows de cian |
+| V2.6.2d | `371d9c5` | Borrado `styles.css`, sistema de diseño muerto |
+
+**Lo que hay que llevarse de V2.6.1**, porque cambia cómo se acepta cualquier
+fase futura: el guard decía "0 deuda" y era falso — sólo miraba hex, y los
+colores reales estaban escritos como `rgba()`. El cian neón sobrevivió a
+V2.2, V2.3, V2.4 y V2.5 por ese hueco, y se descubrió midiendo el CSS
+servido **en producción**. *"Lint sin deuda" no significa que no haya deuda;
+puede significar que el guard no la ve.*
+
+### 16.7 Lo que falta de V2, con fase asignada
+
+Al partir V2.6 en instrumental (2.6.1) y deuda (2.6.2), dos cosas quedaron
+sin número. Se les asigna acá para que no repitan lo que le pasó al roadmap
+en agosto: quedar fuera de todo documento que se lea seguido.
+
+| Ítem | Fase | Por qué ahí |
+|---|---|---|
+| Recalibrar `--shadow-sm/md/lg` (alfas 0.30/0.35/0.45, calibradas para navy) | **V2.6.3** | Es token layer, y toca cards, toasts, modales y sidebar a la vez. Medir primero sobre la base clara |
+| Los 3 estados mal expresados de la auditoría V1 | **V2.6.4** | Ver abajo |
+| 6 overlays blancos de Tailwind en Superadmin | **V5(a)** | Superadmin se migra entero, no de a parches |
+| Focus trap del modal (A11Y-001) | **V7** | Accesibilidad es fase propia con entregable propio |
+
+**Los 3 estados mal expresados — V2.6.4.** La auditoría V1 §1.1 los marcó
+como color haciendo un trabajo que le corresponde a la estructura. Siguen con
+el token puente `--zulu-status-emphasis`, que preserva el valor viejo y marca
+los call sites. Lo decidido por el dueño para cada uno:
+
+| Caso | Cómo se expresa |
+|---|---|
+| Precio propio vs heredado | Con **etiqueta**, no con color |
+| Métrica destacada | Con **énfasis tipográfico**, no con color |
+| Valor de threshold | Con la escala **sage / brass / danger** |
+
+Dos de los tres se resuelven en las primitives y entran enteros en V2.6.4.
+El de **precio propio vs heredado** es distinto: la etiqueta hay que ponerla
+en las pantallas que muestran tarifas (recursos, servicios, tarifas de
+cliente), así que V2.6.4 define el patrón y **su aplicación cae en V4/V6**.
+Anotarlo así evita que la fase se dé por cerrada con un caso a medias.
