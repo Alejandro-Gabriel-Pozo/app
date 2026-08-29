@@ -1081,13 +1081,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS industries_key_normalizada
   ON industries (upper(btrim(key)))
   WHERE deleted_at IS NULL;
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'industries_updated_at') THEN
     CREATE TRIGGER industries_updated_at
       BEFORE UPDATE ON industries
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
-END $;
+END $$;
 
 
 -- ---------------------------------------------------------------------------
@@ -1114,22 +1114,22 @@ ALTER TABLE modules ADD COLUMN IF NOT EXISTS updated_at  TIMESTAMPTZ NOT NULL DE
 ALTER TABLE modules ADD COLUMN IF NOT EXISTS context_color VARCHAR(20)
   NOT NULL DEFAULT 'NEUTRAL';
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'modules_context_color_valido'
   ) THEN
     ALTER TABLE modules ADD CONSTRAINT modules_context_color_valido
       CHECK (context_color IN ('BRASS', 'CLAY', 'SAGE', 'NEUTRAL'));
   END IF;
-END $;
+END $$;
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'modules_updated_at') THEN
     CREATE TRIGGER modules_updated_at
       BEFORE UPDATE ON modules
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
-END $;
+END $$;
 
 -- Color por módulo de los 6 que existen. Acotado por lista explícita, no un
 -- UPDATE sin WHERE, y sólo sobre los que siguen en el default: un módulo
@@ -1176,25 +1176,25 @@ CREATE TABLE IF NOT EXISTS industry_capabilities (
 -- Una capacidad `required` que no viene prendida por defecto es una fila
 -- contradictoria: el preset diría "sin esto el rubro no funciona" y a la vez
 -- "no lo prendas". Se prohíbe en la base, no por convención.
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'industry_capabilities_required_coherente'
   ) THEN
     ALTER TABLE industry_capabilities ADD CONSTRAINT industry_capabilities_required_coherente
       CHECK (NOT required OR enabled_by_default);
   END IF;
-END $;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_industry_capabilities_industria
   ON industry_capabilities (industry_key);
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'industry_capabilities_updated_at') THEN
     CREATE TRIGGER industry_capabilities_updated_at
       BEFORE UPDATE ON industry_capabilities
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
-END $;
+END $$;
 
 
 -- ---------------------------------------------------------------------------
@@ -1227,7 +1227,7 @@ CREATE TABLE IF NOT EXISTS terminology_defaults (
   PRIMARY KEY (scope_type, scope_id, term_key, locale)
 );
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'terminology_defaults_scope_valido'
   ) THEN
@@ -1238,18 +1238,18 @@ DO $ BEGIN
         (scope_type = 'TENANT'   AND scope_id <> '')
       );
 END IF;
-END $;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_terminology_lookup
   ON terminology_defaults (scope_type, scope_id, locale);
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'terminology_defaults_updated_at') THEN
     CREATE TRIGGER terminology_defaults_updated_at
       BEFORE UPDATE ON terminology_defaults
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   END IF;
-END $;
+END $$;
 
 
 -- ---------------------------------------------------------------------------
@@ -1287,14 +1287,14 @@ ALTER TABLE business_modules ADD COLUMN IF NOT EXISTS source VARCHAR(20)
   NOT NULL DEFAULT 'SUPERADMIN';
 ALTER TABLE business_modules ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255);
 
-DO $ BEGIN
+DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'business_modules_source_valido'
   ) THEN
     ALTER TABLE business_modules ADD CONSTRAINT business_modules_source_valido
       CHECK (source IN ('PRESET', 'SUPERADMIN', 'TENANT'));
   END IF;
-END $;
+END $$;
 
 
 -- ---------------------------------------------------------------------------
