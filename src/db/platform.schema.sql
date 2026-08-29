@@ -1007,6 +1007,338 @@ UPDATE modules SET implemented = TRUE
                       'POS_RESTAURANTE', 'FACTURACION', 'ALOJAMIENTO')
    AND implemented = FALSE;
 
+-- ===========================================================================
+-- BLOQUE BUSINESS CONTEXT — Fase 3 (29/08/2026)
+-- plan-separacion-dominios-multirubro-2026-08-28.md §5.2, §5.3, §7 y D1
+-- ===========================================================================
+-- Modelo del rubro y de la cascada de resolución. SIN API ni UI: la Fase 4
+-- agrega `src/business-context/` y `GET /api/business/context`.
+--
+-- Alcance acotado por decisión del dueño (29/08/2026): se establece el
+-- MODELO común, la precedencia y el caso seguro del negocio histórico. NO se
+-- cargan todavía los presets de HOSPITALITY / RESTAURANTE / BARBERIA / etc.
+-- Sólo `GENERIC`, que es el que cierra el agujero de D1.
+--
+-- Por qué eso importa: un rubro sembrado sin su preset de capacidades sería
+-- peor que no tenerlo. Con el fail-closed vigente, un negocio asignado a ese
+-- rubro nacería sin ningún módulo.
+--
+-- ---------------------------------------------------------------------------
+-- Clasificación (docs/criterios-datos.md Parte 1), declarada por tabla:
+--
+--   industries             MAESTRO
+--   industry_capabilities  ni maestro ni transacción — tabla de vínculo,
+--                          mismo criterio que business_modules
+--   terminology_defaults   ni maestro ni transacción — configuración con
+--                          scope, mismo criterio
+--   modules                ya existía; se AMPLÍA, no se duplica
+-- ---------------------------------------------------------------------------
+
+
+-- ---------------------------------------------------------------------------
+-- industries — MAESTRO
+-- ---------------------------------------------------------------------------
+-- R1 (código de negocio además del ID técnico): la PK **es** el código.
+-- Se sigue el patrón de `modules` (PK = module_key), no el de `businesses`
+-- (id opaco + campos). Es deliberado: acá no hay un id opaco del cual
+-- distinguir el código, así que la segunda identidad no aporta. El §5.2 del
+-- plan esbozaba `id` + `key`; se adopta el patrón que el schema ya usa para
+-- su tabla hermana, y `industry_capabilities` referencia por key igual que
+-- `business_modules` referencia `modules(module_key)`.
+--
+-- R3 (borrado ≠ pausado): `active` y `deleted_at` separados.
+--   active=FALSE     -> "ya no se ofrece a negocios nuevos"; los que lo
+--                       tienen asignado siguen funcionando.
+--   deleted_at NOT NULL -> "se cargó mal, nunca debió existir".
+-- Ninguno de los dos apaga los módulos de un negocio que ya lo tiene: la
+-- cascada de §5.3 lee `industry_capabilities` sólo como DEFAULT, y lo
+-- efectivo vive en `business_modules`.
+--
+-- R4 (vigencia): NO aplica y se declara. Un rubro no cambia de valor con el
+-- tiempo como una tarifa; no hay pregunta del tipo "¿qué rubro era esto el 3
+-- de marzo?" que el negocio necesite responder. Si algún día la hubiera, se
+-- agrega valid_from/valid_to sin romper nada.
+--
+-- R8 (auditoría): la cubre `platform_audit_log`, que existe desde la Fase 2
+-- e incluye `business_id` nullable para cambios globales como éstos.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS industries (
+  key          VARCHAR(50)   PRIMARY KEY,
+  name         VARCHAR(100)  NOT NULL,
+  description  TEXT,
+  active       BOOLEAN       NOT NULL DEFAULT TRUE,
+  deleted_at   TIMESTAMPTZ,
+  sort_order   INT           NOT NULL DEFAULT 100,
+  created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- R6 (unicidad sobre la forma normalizada). La PK ya es única exacta; esto
+-- evita `Hospitality` conviviendo con `HOSPITALITY`, que serían dos rubros
+-- distintos para la base y el mismo para una persona.
+CREATE UNIQUE INDEX IF NOT EXISTS industries_key_normalizada
+  ON industries (upper(btrim(key)))
+  WHERE deleted_at IS NULL;
+
+DO $ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'industries_updated_at') THEN
+    CREATE TRIGGER industries_updated_at
+      BEFORE UPDATE ON industries
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $;
+
+
+-- ---------------------------------------------------------------------------
+-- modules — se AMPLÍA para cumplir el rol de `platform_capabilities`
+-- ---------------------------------------------------------------------------
+-- El §5.2 del plan lo dice explícitamente: `platform_capabilities` ES la
+-- tabla `modules` existente, ampliada. Crear una paralela rompería
+-- requireModule(), getBusinessModules(), createBusiness() y el nav del
+-- frontend sin ganar nada.
+--
+-- `active` e `implemented` ya se agregaron antes (ver más arriba en este
+-- archivo). Faltan las cuatro de abajo.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS deleted_at  TIMESTAMPTZ;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS min_plan    VARCHAR(20);
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS sort_order  INT NOT NULL DEFAULT 100;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Color de contexto del módulo. Enum CERRADO, y el cian NO está: queda
+-- reservado al plano técnico y no es asignable por Superadmin
+-- (decisión visual del dueño, criterio 12; ver
+--  appfrontend-main/docs/sistema-diseno-zulu-hub.md §4).
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS context_color VARCHAR(20)
+  NOT NULL DEFAULT 'NEUTRAL';
+
+DO $ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'modules_context_color_valido'
+  ) THEN
+    ALTER TABLE modules ADD CONSTRAINT modules_context_color_valido
+      CHECK (context_color IN ('BRASS', 'CLAY', 'SAGE', 'NEUTRAL'));
+  END IF;
+END $;
+
+DO $ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'modules_updated_at') THEN
+    CREATE TRIGGER modules_updated_at
+      BEFORE UPDATE ON modules
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $;
+
+-- Color por módulo de los 6 que existen. Acotado por lista explícita, no un
+-- UPDATE sin WHERE, y sólo sobre los que siguen en el default: un módulo
+-- nuevo arranca NEUTRAL y Superadmin le asigna el suyo.
+UPDATE modules SET context_color = v.color
+  FROM (VALUES
+    ('ALOJAMIENTO',        'BRASS'),
+    ('POS_RESTAURANTE',    'CLAY'),
+    ('FACTURACION',        'CLAY'),
+    ('HOUSEKEEPING',       'SAGE'),
+    ('CUENTAS_CORRIENTES', 'NEUTRAL'),
+    ('REPORTES',           'NEUTRAL')
+  ) AS v(mk, color)
+ WHERE modules.module_key = v.mk
+   AND modules.context_color = 'NEUTRAL'
+   AND v.color <> 'NEUTRAL';
+
+
+-- ---------------------------------------------------------------------------
+-- industry_capabilities — preset de capacidades por rubro
+-- ---------------------------------------------------------------------------
+-- No es maestro ni transacción: es el vínculo rubro→capacidad, mismo criterio
+-- que `business_modules` (ver su bloque más arriba).
+--
+-- `enabled_by_default` es un DEFAULT, no un estado efectivo: lo efectivo vive
+-- en `business_modules`. Apagar acá no apaga nada de lo ya provisionado.
+--
+-- `required` = el rubro no funciona sin esa capacidad (HOSPITALITY sin
+-- ALOJAMIENTO no es un hotel). Hoy nadie lo consume: lo va a leer la pantalla
+-- de Superadmin de la Fase 5 para no dejar apagar lo que rompe el rubro.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS industry_capabilities (
+  industry_key        VARCHAR(50) NOT NULL REFERENCES industries(key) ON DELETE CASCADE,
+  module_key          VARCHAR(50) NOT NULL REFERENCES modules(module_key),
+  enabled_by_default  BOOLEAN     NOT NULL DEFAULT FALSE,
+  required            BOOLEAN     NOT NULL DEFAULT FALSE,
+  sort_order          INT         NOT NULL DEFAULT 100,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (industry_key, module_key)
+);
+
+-- Una capacidad `required` que no viene prendida por defecto es una fila
+-- contradictoria: el preset diría "sin esto el rubro no funciona" y a la vez
+-- "no lo prendas". Se prohíbe en la base, no por convención.
+DO $ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'industry_capabilities_required_coherente'
+  ) THEN
+    ALTER TABLE industry_capabilities ADD CONSTRAINT industry_capabilities_required_coherente
+      CHECK (NOT required OR enabled_by_default);
+  END IF;
+END $;
+
+CREATE INDEX IF NOT EXISTS idx_industry_capabilities_industria
+  ON industry_capabilities (industry_key);
+
+DO $ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'industry_capabilities_updated_at') THEN
+    CREATE TRIGGER industry_capabilities_updated_at
+      BEFORE UPDATE ON industry_capabilities
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $;
+
+
+-- ---------------------------------------------------------------------------
+-- terminology_defaults — terminología por scope
+-- ---------------------------------------------------------------------------
+-- Cascada de §5.3: TENANT -> INDUSTRY -> SYSTEM -> la clave misma. El último
+-- escalón es a propósito: una pantalla nunca se rompe por un término que
+-- falte.
+--
+-- `locale` desde el día uno en la PK (decisión D6 del dueño). El producto
+-- arranca en es-AR y el resolver hace una sola pasada.
+--
+-- OJO con `scope_id`: el §5.2 del plan lo esbozaba nullable dentro de la PK.
+-- Eso NO funciona -- una PRIMARY KEY de Postgres no admite NULL, así que la
+-- fila de scope SYSTEM no se podría insertar. Se usa cadena vacía como
+-- centinela, con un CHECK que amarra el centinela al scope: SYSTEM va con
+-- '' y los otros dos con un id de verdad. La alternativa (UNIQUE NULLS NOT
+-- DISTINCT) existe desde PG15 pero deja el invariante implícito.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS terminology_defaults (
+  scope_type  VARCHAR(20)  NOT NULL,
+  scope_id    VARCHAR(255) NOT NULL DEFAULT '',
+  term_key    VARCHAR(100) NOT NULL,
+  locale      VARCHAR(10)  NOT NULL DEFAULT 'es-AR',
+  value       TEXT         NOT NULL,
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_by  VARCHAR(255),
+  PRIMARY KEY (scope_type, scope_id, term_key, locale)
+);
+
+DO $ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'terminology_defaults_scope_valido'
+  ) THEN
+    ALTER TABLE terminology_defaults ADD CONSTRAINT terminology_defaults_scope_valido
+      CHECK (
+        (scope_type = 'SYSTEM'   AND scope_id = '') OR
+        (scope_type = 'INDUSTRY' AND scope_id <> '') OR
+        (scope_type = 'TENANT'   AND scope_id <> '')
+      );
+END IF;
+END $;
+
+CREATE INDEX IF NOT EXISTS idx_terminology_lookup
+  ON terminology_defaults (scope_type, scope_id, locale);
+
+DO $ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'terminology_defaults_updated_at') THEN
+    CREATE TRIGGER terminology_defaults_updated_at
+      BEFORE UPDATE ON terminology_defaults
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $;
+
+
+-- ---------------------------------------------------------------------------
+-- Cambios a tablas existentes
+-- ---------------------------------------------------------------------------
+-- `industry_key` NULLABLE y así se queda. NULL ≠ 'GENERIC':
+--   NULL      -> nunca se le preguntó (negocios anteriores a esta fase, que
+--                conservan los módulos que ya tenían).
+--   'GENERIC' -> se le preguntó y no eligió rubro.
+-- Pasar un negocio viejo a GENERIC es una migración de datos aparte, con su
+-- propia decisión — NO un efecto secundario de este deploy.
+--
+-- ON DELETE es implícitamente NO ACTION: no se puede borrar un rubro que
+-- algún negocio tenga asignado. Es lo correcto (R15, las referencias rotas
+-- fallan fuerte) y por eso `industries` tiene `deleted_at`, que es el camino
+-- para sacarlo de circulación sin romper a quien lo usa.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS industry_key VARCHAR(50)
+  REFERENCES industries(key);
+
+CREATE INDEX IF NOT EXISTS idx_businesses_industria
+  ON businesses (industry_key) WHERE industry_key IS NOT NULL;
+
+-- `source` dice de DÓNDE vino que el módulo esté prendido. Es lo que hace
+-- estructuralmente imposible que reaplicar un preset pise un override: el
+-- preset sólo escribe filas inexistentes o con source='PRESET', nunca sobre
+-- 'TENANT' ni 'SUPERADMIN'.
+--
+-- El DEFAULT es 'SUPERADMIN' y no 'PRESET' a propósito: las filas que YA
+-- existen se crearon a mano o por createBusiness(), no por un preset de
+-- rubro. Marcarlas 'PRESET' habría hecho que el primer preset que se aplique
+-- las pise, que es exactamente lo que esta columna viene a evitar.
+ALTER TABLE business_modules ADD COLUMN IF NOT EXISTS source VARCHAR(20)
+  NOT NULL DEFAULT 'SUPERADMIN';
+ALTER TABLE business_modules ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255);
+
+DO $ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'business_modules_source_valido'
+  ) THEN
+    ALTER TABLE business_modules ADD CONSTRAINT business_modules_source_valido
+      CHECK (source IN ('PRESET', 'SUPERADMIN', 'TENANT'));
+  END IF;
+END $;
+
+
+-- ---------------------------------------------------------------------------
+-- Seed — sólo GENERIC y la terminología de sistema
+-- ---------------------------------------------------------------------------
+-- Los otros 7 rubros de §7 NO se cargan todavía (decisión del dueño,
+-- 29/08/2026): primero el modelo común y la precedencia. Un rubro sembrado
+-- sin preset dejaría a cualquier negocio que se le asigne sin ningún módulo.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO industries (key, name, description, sort_order) VALUES
+  ('GENERIC', 'Genérico',
+   'Negocio sin rubro específico. Preset mínimo: lo que ningún negocio deja de necesitar.',
+   10)
+ON CONFLICT (key) DO NOTHING;
+
+-- Preset GENERIC (§7): REPORTES + CUENTAS_CORRIENTES + FACTURACION.
+-- Sin `required` en ninguna: un negocio genérico puede apagar todo.
+INSERT INTO industry_capabilities (industry_key, module_key, enabled_by_default, required, sort_order) VALUES
+  ('GENERIC', 'REPORTES',           TRUE,  FALSE, 10),
+  ('GENERIC', 'CUENTAS_CORRIENTES', TRUE,  FALSE, 20),
+  ('GENERIC', 'FACTURACION',        TRUE,  FALSE, 30),
+  ('GENERIC', 'HOUSEKEEPING',       FALSE, FALSE, 40),
+  ('GENERIC', 'POS_RESTAURANTE',    FALSE, FALSE, 50),
+  ('GENERIC', 'ALOJAMIENTO',        FALSE, FALSE, 60)
+ON CONFLICT (industry_key, module_key) DO NOTHING;
+
+-- Terminología de sistema — el último escalón de la cascada antes de caer a
+-- la clave misma. La de GENERIC son estos mismos valores, así que no se
+-- duplica en scope INDUSTRY: la cascada ya cae acá sola.
+INSERT INTO terminology_defaults (scope_type, scope_id, term_key, locale, value) VALUES
+  ('SYSTEM', '', 'resource.singular',    'es-AR', 'Recurso'),
+  ('SYSTEM', '', 'resource.plural',      'es-AR', 'Recursos'),
+  ('SYSTEM', '', 'reservation.singular', 'es-AR', 'Reserva'),
+  ('SYSTEM', '', 'reservation.plural',   'es-AR', 'Reservas'),
+  ('SYSTEM', '', 'customer.singular',    'es-AR', 'Cliente'),
+  ('SYSTEM', '', 'customer.plural',      'es-AR', 'Clientes'),
+  ('SYSTEM', '', 'service.singular',     'es-AR', 'Servicio'),
+  ('SYSTEM', '', 'service.plural',       'es-AR', 'Servicios'),
+  ('SYSTEM', '', 'staff.singular',       'es-AR', 'Personal'),
+  ('SYSTEM', '', 'staff.plural',         'es-AR', 'Personal')
+ON CONFLICT (scope_type, scope_id, term_key, locale) DO NOTHING;
+
+
 -- =============================================================================
 -- Fin del schema central
 -- =============================================================================
