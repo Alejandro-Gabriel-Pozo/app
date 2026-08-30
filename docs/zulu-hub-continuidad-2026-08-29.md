@@ -48,10 +48,30 @@ el próximo bloque?*
 > **Qué prueba y qué no:** prueba el **comportamiento desplegado** — Vercel
 > sirve `9ea8a62`, el dashboard hace la llamada, el payload es el contrato
 > D-A. **No** prueba: el estado interno `provider = ready` (no observado
-> introspectivamente); `productos/*` con `useBusinessModules()` (sin
-> verificar); el fail-open forzado con bloqueo local de la request (sin
-> verificar). Los commits en los remotos prueban que **existen**, no el
+> introspectivamente); el fail-open forzado con bloqueo local de la request
+> (sin verificar). Los commits en los remotos prueban que **existen**, no el
 > comportamiento.
+>
+> **Verificación manual de `productos/*` (30/08/2026).** Sesión real de staff,
+> sin ejecutar ninguna mutación (guardar, eliminar, merma, consumo):
+>
+> - `/dashboard/productos` carga bien y lista 4 productos; sin pantalla en
+>   blanco ni error de consola durante la carga.
+> - Detalle de `Producto de prueba CONSUMPTION`
+>   (`/dashboard/productos/f3377b29-1cb8-44df-a70d-6575f85e1c98`), sólo lectura:
+>   carga bien.
+> - **En el detalle**, `performance.getEntriesByType('resource')` registró
+>   **exactamente 1** `GET /api/business/modules` → `useBusinessModules()` sigue
+>   vivo ahí (doble fuente, coexistencia esperada de V3-a).
+> - **En la lista**, el mismo chequeo devolvió 0 recursos. **No** es prueba
+>   negativa: `PerformanceResourceTiming` puede no conservar/mostrar la request
+>   en ese punto. Sólo se afirma que la lista carga correctamente.
+>
+> Coexistencia verificada positivamente en el detalle; la lista carga
+> correctamente, pero no se afirma allí la request por la limitación de
+> `PerformanceResourceTiming`. Sigue **sin verificar** el fail-open forzado
+> (bloquear `/api/business/context`) — no se probó para no alterar producción;
+> sólo abordable en local o con bloqueo de DevTools.
 
 **Fase 3 confirmada en producción** (29/08, 17:5x UTC). Verificado
 consultando la BD de plataforma, sin aplicar nada a mano:
@@ -142,9 +162,11 @@ ninguna autorizada todavía**:
 | Retiro de `useBusinessModules()` | Migrar `productos/*` (2 pantallas) al contexto y eliminar la doble fuente: hoy `/api/business/context` (dashboard) y `/api/business/modules` (`productos/*`) conviven | Bloque de limpieza |
 | **Cableado de la cascada** | Meter `resolveCapabilities` dentro de `PlatformRepository.getBusinessModules()`. Cambia `requireModule()` y con eso el **402** de todas las rutas con gate. Hoy sería inerte (el único negocio tiene `industry_key` NULL, sin `min_plan`, 6 módulos `active`+`implemented`) pero deja de serlo apenas una precondición se caiga | Diff propio + pruebas sobre los gates. **NO** arrastrado por otro cambio |
 
-**Verificaciones manuales pendientes** (dueño; no bloquean código):
-`productos/*` sigue funcionando con `useBusinessModules()`; el fail-open del
-sidebar cuando el endpoint del contexto falla (bloqueo local de la request).
+**Verificaciones manuales pendientes** (dueño; no bloquean código): el
+fail-open del sidebar cuando `/api/business/context` falla (bloqueo local de
+la request). — `productos/*` quedó observado el 30/08 (§1): ambas pantallas
+cargan y el detalle registra `GET /api/business/modules`; la ausencia de la
+request en la lista no se cuenta como evidencia.
 
 El contrato de `BusinessContext` está cerrado: §5.4 (payload) y §5.5 (consumo:
 tres estados, `permissionGroups`, `industryName`, `industryKey` NULL ≠
