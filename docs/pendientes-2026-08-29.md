@@ -148,7 +148,7 @@ eliminó. De ahí salió **SEM-001**, arriba.
 contados con techo en `lint:visual` y **se saldan en V5(a)**, cuando
 Superadmin se migre entero — hoy sigue con Tailwind crudo.
 
-### `auditoria-dominios.md` tiene 3 filas desactualizadas
+### ✅ `auditoria-dominios.md` tiene 3 filas desactualizadas — RESUELTO (`3111b33`)
 
 Detectado al verificar el deploy de V2.5. La auditoría es del 15/08 y decía
 que `host.zuluhub.com.ar` estaba esperando propagación de DNS:
@@ -159,8 +159,27 @@ que `host.zuluhub.com.ar` estaba esperando propagación de DNS:
 | `reservasapp-teal.vercel.app` | Devuelve 404 en `/`. Ya no es la URL de referencia. |
 | `CORS_ORIGIN` | Ya apunta a `host.zuluhub.com.ar` (verificado con `curl`, el header vuelve con ese valor para cualquier Origin). |
 
-Actualizar esas tres filas y la fecha de "última actualización". Cambio
-documental, va en su propio commit.
+**Cerrado en `3111b33`** (pusheado el 30/08 — ver continuidad §1):
+
+- Las **3 filas corregidas** contra producción con `curl`: `host.zuluhub.com.ar`
+  (GET / → 200, `Server: Vercel`), `CORS_ORIGIN` (valor **fijo**
+  `https://host.zuluhub.com.ar`, verificado con 3 `Origin` distintos —
+  no refleja el `Origin` pedido), y `app-main/render.yaml` (4ª aparición del
+  mismo dato viejo). Fecha de "última actualización" → 29/08.
+- **`host.zuluhub.com.ar` es el único dominio propio activo** del frontend.
+  `zuluhub.com.ar` raíz sigue sin nada desplegado.
+- **`reservasapp-teal.vercel.app`** pasó a una sección "Histórico — fuera de
+  servicio": responde `DEPLOYMENT_NOT_FOUND` y el backend ya no lo aceptaría
+  por CORS. La fila se conserva (no se borra) para que una sesión futura que
+  encuentre la URL en un documento viejo sepa que ya no existe.
+- **4 dependencias externas de runtime incorporadas** — nunca habían estado
+  en la auditoría: `api.resend.com/emails`, `www.googleapis.com/oauth2/v3/certs`
+  (JWKS), `accounts.google.com` (trust boundary, no endpoint — allowlist del
+  claim `iss`), `console.neon.tech/api/v2` (provisioning, fuera del camino de
+  un request normal). Cada una con call site, datos que cruzan y modo de falla.
+- **`evil.example.com` NO se registró**: fue sólo el `Origin` de control para
+  probar que el CORS no refleja orígenes no autorizados. No es un dominio del
+  proyecto.
 
 ---
 
