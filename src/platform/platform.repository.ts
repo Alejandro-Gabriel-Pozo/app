@@ -14,6 +14,8 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessPlan} from '../types/enums.js';
 import { BusinessStatus, ModuleKey } from '../types/enums.js';
 import type { PlanLimits } from '../config/plan-limits.js';
+import type { RawContextInputs } from '../business-context/business-context.types.js';
+import { assertContextRowShape } from '../business-context/context.row-validation.js';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -433,6 +435,95 @@ export class PlatformRepository {
       modules[moduleKey] = enabledByKey.get(moduleKey) ?? false;
     }
     return modules;
+  }
+
+  /**
+   * Fase 4 Bloque 4A — todo lo que la BD de plataforma aporta para armar el
+   * `BusinessContext`, en UNA sentencia (un snapshot consistente entre
+   * `catalog`, `industry_capabilities`, `business_modules` y las filas de
+   * terminología). NO toca `getBusinessModules()` ni el gate de módulos.
+   *
+   * - `industry_key IS NULL` -> `industry_capabilities` y las filas de
+   *   terminología `INDUSTRY` salen vacías por el JOIN / la comparación
+   *   (NULL nunca matchea), sin usar `IS NULL` como sustituto.
+   * - Los defaults de sistema salen SOLO con `scope_id = ''` (además del
+   *   CHECK que ya lo garantiza).
+   * - `TENANT` usa exactamente el `businessId` recibido (parámetro `$1`),
+   *   nunca params/body/query de la request.
+   * - Devuelve `null` si el negocio no existe (la CTE `b` queda vacía y
+   *   `FROM b` no produce filas). La traducción a 404 es de la ruta (4B).
+   * - La FORMA de la fila (columnas presentes, nulabilidad, agregados que
+   *   sean arrays, items con sus campos) la valida `assertContextRowShape()`
+   *   -> `ContextDataError`. **Sin defaults silenciosos** (`?? []`, `?? ''`).
+   * - `plan` y los enums (`source`, `contextColor`) + el parseo de
+   *   `deletedAt` los valida el adaptador (dominio).
+   */
+  async getContextInputs(
+    businessId: string,
+    locale: string,
+  ): Promise<RawContextInputs | null> {
+    const result = await this.db.query(
+      `WITH b AS (
+         SELECT id, plan, industry_key
+         FROM businesses
+         WHERE id = $1
+       )
+       SELECT
+         b.plan          AS plan,
+         b.industry_key  AS industry_key,
+         (SELECT i.name
+            FROM industries i
+            WHERE i.key = b.industry_key
+              AND i.deleted_at IS NULL)                                   AS industry_name,
+         (SELECT COALESCE(json_agg(json_build_object(
+                   'moduleKey',    m.module_key,
+                   'active',       m.active,
+                   'implemented',  m.implemented,
+                   'deletedAt',    m.deleted_at,
+                   'minPlan',      m.min_plan,
+                   'contextColor', m.context_color,
+                   'sortOrder',    m.sort_order
+                 ) ORDER BY m.sort_order, m.module_key), '[]'::json)
+            FROM modules m)                                               AS catalog,
+         (SELECT COALESCE(json_agg(json_build_object(
+                   'moduleKey',        ic.module_key,
+                   'enabledByDefault', ic.enabled_by_default,
+                   'required',         ic.required
+                 )), '[]'::json)
+            FROM industry_capabilities ic
+            JOIN b ON ic.industry_key = b.industry_key)                   AS industry_capabilities,
+         (SELECT COALESCE(json_agg(json_build_object(
+                   'moduleKey', bm.module_key,
+                   'enabled',   bm.enabled,
+                   'source',    bm.source
+                 )), '[]'::json)
+            FROM business_modules bm
+            WHERE bm.business_id = b.id)                                  AS business_modules,
+         (SELECT COALESCE(json_agg(json_build_object(
+                   'scopeType', td.scope_type,
+                   'scopeId',   td.scope_id,
+                   'termKey',   td.term_key,
+                   'locale',    td.locale,
+                   'value',     td.value
+                 )), '[]'::json)
+            FROM terminology_defaults td
+            WHERE td.locale = $2
+              AND (
+                    (td.scope_type = 'SYSTEM'   AND td.scope_id = '')
+                 OR (td.scope_type = 'INDUSTRY' AND td.scope_id = b.industry_key)
+                 OR (td.scope_type = 'TENANT'   AND td.scope_id = b.id)
+              ))                                                          AS terminology_rows
+       FROM b`,
+      [businessId, locale],
+    );
+
+    // Negocio inexistente: la CTE `b` queda vacía y `FROM b` no produce filas.
+    // -> null, NO throw (decisión 2). Esto es "0 filas", distinto de "columna
+    // ausente en una fila presente", que lo maneja assertContextRowShape con
+    // hasOwnProperty.
+    if (result.rows.length === 0) return null;
+
+    return assertContextRowShape(result.rows[0]);   // forma SQL -> RawContextInputs, o ContextDataError
   }
 
   async activateBusiness(

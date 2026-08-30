@@ -130,3 +130,57 @@ export interface TerminologyResolutionInput {
   locale:      string;
   rows:        readonly TerminologyRow[];
 }
+
+// ---------------------------------------------------------------------------
+// Read path del Business Context — Fase 4 Bloque 4A
+// ---------------------------------------------------------------------------
+
+/**
+ * `ModuleCatalogRow` tal como sale de `json_build_object` en la sentencia de
+ * `PlatformRepository.getContextInputs()`: `deleted_at` (timestamptz) se
+ * serializa a **string ISO** dentro del JSON, no a `Date`. El adaptador lo
+ * normaliza explícitamente a `Date | null` antes de pasarlo al resolver — no
+ * hay cast silencioso ni unión ambigua (decisión 1 del Bloque 4A).
+ */
+export interface RawModuleCatalogRow extends Omit<ModuleCatalogRow, 'deletedAt'> {
+  deletedAt: string | null;
+}
+
+/**
+ * Salida CRUDA de `PlatformRepository.getContextInputs()` — todo lo que vive
+ * en la BD de plataforma para armar el contexto, en una sola lectura.
+ *
+ * `plan` viene SIN validar (la columna `businesses.plan` es `VARCHAR(50)` sin
+ * CHECK): el adaptador lo valida contra `BusinessPlan` y aplica fail-closed
+ * para un valor desconocido (decisión / condición 4 del Bloque 4A).
+ *
+ * `null` (no esta interfaz) representa "negocio inexistente" — el método
+ * devuelve `null`, no lanza; la traducción a `404 BUSINESS_NOT_FOUND` es de
+ * la ruta del Bloque 4B (decisión 2).
+ */
+export interface RawContextInputs {
+  industryKey:          string | null;
+  industryName:         string | null;
+  plan:                 string;
+  catalog:              RawModuleCatalogRow[];
+  industryCapabilities: IndustryCapabilityRow[];
+  businessModules:      BusinessModuleRow[];
+  terminologyRows:      TerminologyRow[];
+}
+
+/**
+ * Contexto resuelto SIN los tres campos que completa la ruta (Bloque 4B):
+ * `currency` y `timezone` (de `business_profile`, vía `req.db`) y
+ * `permissionGroups` (de `req.user`). No es el payload HTTP completo — por
+ * eso `Core`.
+ */
+export interface ContextPayloadCore {
+  businessId:     string;
+  industryKey:    string | null;
+  industryName:   string | null;
+  enabledModules: string[];
+  moduleSources:  Partial<Record<string, ModuleSource>>;
+  moduleColors:   Record<string, ContextColor>;
+  terminology:    Record<string, string>;
+  locale:         string;
+}

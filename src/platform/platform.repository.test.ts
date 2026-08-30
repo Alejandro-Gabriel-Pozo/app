@@ -279,3 +279,78 @@ describe('PlatformRepository — perfil de identity vs. empleo de membership (F2
     expect(db.calls[0]!.sql).toContain('UPDATE memberships SET employee_number');
   });
 });
+
+// ---------------------------------------------------------------------------
+// getContextInputs() — Fase 4 Bloque 4A. Read path del Business Context.
+// El SQL se verifica aparte contra Postgres real (ver el diseño); acá se
+// prueban el mapeo fila->RawContextInputs, la parametrización y el null.
+// ---------------------------------------------------------------------------
+
+/** Fake que devuelve una fila canónica para la query de getContextInputs,
+ *  imitando lo que `pg` entrega tras auto-parsear los `json_agg`. */
+class ContextInputsFakeClient implements SqlClient {
+  lastSql = '';
+  lastParams: unknown[] = [];
+  constructor(private readonly rows: unknown[]) {}
+  async query<T = unknown>(sql: string, params: unknown[] = []): Promise<{ rows: T[]; rowCount?: number }> {
+    this.lastSql = sql;
+    this.lastParams = params;
+    return { rows: this.rows as T[], rowCount: this.rows.length };
+  }
+}
+
+const FILA_CANONICA = {
+  plan:         'PRO',
+  industry_key: null,
+  industry_name: null,
+  catalog: [
+    { moduleKey: 'ALOJAMIENTO', active: true, implemented: true, deletedAt: null, minPlan: null, contextColor: 'BRASS', sortOrder: 100 },
+    { moduleKey: 'REPORTES',    active: true, implemented: true, deletedAt: null, minPlan: null, contextColor: 'NEUTRAL', sortOrder: 100 },
+  ],
+  industry_capabilities: [],
+  business_modules: [
+    { moduleKey: 'ALOJAMIENTO', enabled: true,  source: 'SUPERADMIN' },
+    { moduleKey: 'REPORTES',    enabled: false, source: 'TENANT' },
+  ],
+  terminology_rows: [
+    { scopeType: 'SYSTEM', scopeId: '', termKey: 'resource.singular', locale: 'es-AR', value: 'Recurso' },
+  ],
+};
+
+describe('PlatformRepository.getContextInputs()', () => {
+  it('mapea la fila (con json_agg ya parseado) a RawContextInputs', async () => {
+    const db = new ContextInputsFakeClient([FILA_CANONICA]);
+    const out = await new PlatformRepository(db).getContextInputs('biz-1', 'es-AR');
+
+    expect(out).not.toBeNull();
+    expect(out).toEqual({
+      industryKey:          null,
+      industryName:         null,
+      plan:                 'PRO',                 // sin validar acá: lo valida el adaptador
+      catalog:              FILA_CANONICA.catalog,
+      industryCapabilities: [],                    // industry_key NULL -> [] por el JOIN
+      businessModules:      FILA_CANONICA.business_modules,
+      terminologyRows:      FILA_CANONICA.terminology_rows,
+    });
+  });
+
+  it('devuelve null si el negocio no existe (FROM b sin filas)', async () => {
+    const db = new ContextInputsFakeClient([]);
+    const out = await new PlatformRepository(db).getContextInputs('no-existe', 'es-AR');
+    expect(out).toBeNull();
+  });
+
+  it('parametriza la query: usa $1/$2 y pasa exactamente [businessId, locale]', async () => {
+    const db = new ContextInputsFakeClient([FILA_CANONICA]);
+    await new PlatformRepository(db).getContextInputs('biz-42', 'es-AR');
+
+    expect(db.lastParams).toEqual(['biz-42', 'es-AR']);
+    expect(db.lastSql).toContain('WHERE id = $1');
+    expect(db.lastSql).toContain('td.locale = $2');
+    expect(db.lastSql).not.toContain('biz-42');   // el id nunca se interpola en el texto
+    // defaults de sistema SOLO con scope_id = '' (además del CHECK)
+    expect(db.lastSql).toContain("td.scope_type = 'SYSTEM'   AND td.scope_id = ''");
+    // rubro por JOIN contra b.industry_key, sin IS NULL como sustituto
+    expect(db.lastSql).toContain('JOIN b ON ic.industry_key = b.industry_key');
+  });
+});
