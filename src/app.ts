@@ -74,6 +74,7 @@ import { createBusinessProfileRouter }   from './api/routes/business-profile.rou
 import { createInvoicesRouter, createAfipCredentialsRouter } from './facturacion/invoices.routes.js';
 import { createBusinessModulesRouter }   from './platform/business-modules.routes.js';
 import { createBusinessPlanLimitsRouter } from './platform/business-plan-limits.routes.js';
+import { createBusinessContextRouter }    from './platform/business-context.routes.js';
 import { createCashRegisterRouter }      from './clientes-finanzas/cash-register.routes.js';
 import { errorHandler }                  from './api/middleware/error.middleware.js';
 import { globalLimiter, authLimiter, platformLimiter, apiLimiter } from './api/middleware/rate-limit.middleware.js';
@@ -326,6 +327,11 @@ export async function createApp(): Promise<{
   // casualidad).
   app.use('/api/business-profile/afip-credentials', createAfipCredentialsRouter(container));
   app.use('/api/business-profile',  createBusinessProfileRouter());
+  // /api/business/context — Fase 4 Bloque 4B. Va ACÁ (post-tenantMiddleware +
+  // apiLimiter) porque necesita req.db para business_profile, a diferencia de
+  // /api/business/modules y /api/business/plan-limits (pre-tenant). authorize
+  // (Roles.STAFF) vive dentro del router.
+  app.use('/api/business/context', createBusinessContextRouter(platformRepo));
   app.use('/api/invoices',          createInvoicesRouter(container));
   app.use('/api/audit-log',         createAuditLogRouter(platformRepo));
   app.use(
