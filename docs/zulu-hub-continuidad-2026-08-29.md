@@ -12,20 +12,31 @@ el próximo bloque?*
 
 ## 1. Estado de producción
 
-| Repo | `origin/main` | En producción |
-|---|---|---|
-| `app-main` | `c6c4185` | Fase 3 sí, verificada contra la base. `c6c4185` (Fase 4 Bloque 1) no tiene efecto observable en runtime: no se pudo confirmar que el deploy entró |
-| `appfrontend-main` | `515bc3f` | sí — Vercel, `host.zuluhub.com.ar` |
+| Repo | `origin/main` | Local sin pushear | En producción |
+|---|---|---|---|
+| `app-main` | `7dc2de5` | `fa9a1c6` | Fase 3 sí, verificada contra la base. La cadena `16e65c2..7dc2de5` (pusheada 30/08) **no tiene efecto observable en runtime**. Deploy de Render no verificado |
+| `appfrontend-main` | `515bc3f` | `943b0b9` | sí — Vercel, `host.zuluhub.com.ar` |
 
-> **Sobre esta tabla:** hasta el 29/08 decía `67151fb`, que ya estaba
-> desactualizado al escribirse — el commit siguiente (`dab960f`) fue
-> justamente el que agregó este documento, y un doc no puede citar su propio
-> hash. Al actualizarla, verificar contra `git rev-parse origin/main`, no
-> contra lo que diga la fila anterior.
+> **Sobre esta tabla:** al actualizarla, verificar contra
+> `git rev-parse origin/main` / `git ls-remote`, no contra lo que diga la
+> fila anterior. Historial de la fila de `app-main`: `67151fb` (desactualizado
+> al escribirse) → `c6c4185` → `7dc2de5`.
 >
-> `c6c4185` agrega `app-main/src/business-context/` — el resolver puro de la
-> cascada, **sin cablear**: no toca `getBusinessModules()`, `requireModule()`
-> ni ninguna ruta. Ver §4.
+> **`origin/main` de `app-main` = `7dc2de5`** — push del 30/08/2026,
+> autorizado por el dueño en el chat (no había gate técnico; ver GATE-001
+> RETIRADO en `pendientes-2026-08-29.md`). Fast-forward, 4 commits:
+> - `3111b33` — `auditoria-dominios.md` revalidada contra producción + 4 dependencias externas de runtime
+> - `630d2ea` — GATE-001 registrado (retirado después, ver `fa9a1c6` local)
+> - `4ef41b1` — Fase 4 Bloque 1b: `contextColor` **efectivo** (`industryKey === null ⇒ NEUTRAL`), tipos de proyección honestos, +4 tests (48 → 52). **Sin cablear**
+> - `7dc2de5` — formalización **D-A**: el contrato de `BusinessContext` pierde `navigation` y gana `moduleColors`; namespace de terminología canónico `reservation.*`
+>
+> Ninguno toca `src/db/`, schema ni runtime de negocio. `src/business-context/*`
+> sigue **sin cablear** (no lo importa nada salvo su test): aunque Render
+> despliegue `7dc2de5`, el comportamiento en producción es idéntico. Ver §4.
+>
+> **Local, sin pushear:** `fa9a1c6` en `app-main` (docs — GATE-001 retirado) y
+> `943b0b9` en `appfrontend-main` (types/mocks/`ShellBench` a `moduleColors`,
+> D-A). Los dos esperan autorización de push por separado.
 
 **Fase 3 confirmada en producción** (29/08, 17:5x UTC). Verificado
 consultando la BD de plataforma, sin aplicar nada a mano:
