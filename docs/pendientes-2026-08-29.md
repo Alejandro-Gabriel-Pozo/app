@@ -201,6 +201,31 @@ configurar seña sin ese módulo. Detalle en
   (`rate_catalog`), falta aplicarlo.
 - **`resource_locks` solo bloquea recursos concretos por ID**, no "uno
   cualquiera de la categoría X". Sin caso de uso activo todavía.
+- **🟠 GATE-001 — el gate de aprobación sólo cubre Bash.** El hook
+  `PreToolUse` de `.claude/settings.json` (raíz del workspace, **fuera de
+  este repo**) está registrado con `"matcher": "Bash"`. Todo lo que no sea
+  Bash —`Write`, `Edit`, `NotebookEdit`, y cualquier herramienta MCP con
+  capacidad de escribir, pushear o deployar— **no pasa por el gate ni deja
+  entrada en `gate.log`**.
+
+  Hoy no es una brecha, pero por dos razones que no comparten mecanismo: el
+  subagente `architecture-governor` no tiene `Write`/`Edit` en su
+  frontmatter, y nada más en el entorno puede pushear sin Bash. O sea que la
+  contención depende de **dos cosas que nadie mantiene sincronizadas** — la
+  lista de `tools` de cada agente y el matcher del hook.
+
+  **Cómo se rompe:** agregarle `Write` a un agente, o sumar un MCP con una
+  herramienta de deploy. El gate queda intacto y aparentemente funcionando
+  mientras la operación pasa por al lado. Sin error y sin log.
+
+  Verificado el 29/08/2026 al probar la regla 1 del hook (que sí funciona:
+  `agent_type` llega y la regla dispara). Se anota **acá además del
+  `CLAUDE.md` de la raíz** porque ese archivo no está versionado: la raíz
+  del workspace no es un repositorio, así que lo que se documenta ahí no
+  sobrevive a un clone ni queda en el historial.
+
+  **Revisar este supuesto ANTES de sumar cualquier tool con capacidad de
+  escritura o deploy, no después.**
 
 ### Heredados, todavía abiertos
 
