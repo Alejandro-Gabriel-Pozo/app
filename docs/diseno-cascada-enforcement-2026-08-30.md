@@ -40,11 +40,11 @@ la versión completa:
 
 | # | Cambio |
 |---|---|
-| **a** | Rutear `getBusinessModules()` por `resolveCapabilities()` + `comoRecordDeModulos()`, enforcando **sólo escalones 1-3** (= comportamiento actual) **+ `NOT_IMPLEMENTED`** (módulo catalogado sin código detrás — genuino "no disponible"). Para `biz-demo-01` es un refactor sin cambio de resultado. |
+| **a** | Reemplazar el cuerpo de `getBusinessModules()` por la forma **2 queries + `implemented`**: `SELECT module_key, implemented FROM modules` + `SELECT module_key, enabled FROM business_modules WHERE business_id = $1`, y `modules[k] = (enabledByKey.get(k) ?? false) && implemented`. Es escalón 1 + 3 + `NOT_IMPLEMENTED` exacto. **No se rutea por `resolveCapabilities()`** en el bloque acotado: hacerlo obligaría a alimentarle input adulterado (`industryKey: null` mentido, `active: true` fingido) para neutralizar los 3 escalones diferidos — el anti-patrón de `DEFENSIVE_DEVELOPING.md` §1.5. El resolver se cablea en **Fase 5** con input real completo, sin parámetro de modo (ver `diseno-lifecycle-plan-fase5-2026-08-30.md` §5). Para `biz-demo-01` (todo `implemented`) el resultado es idéntico al `getBusinessModules()` actual. |
 | **b** | **Diferir a Fase 5**: escalón 2 (preset — puede *habilitar* un módulo sin fila en `business_modules`) y escalón 4 (`min_plan`). |
-| **c** | `NOT_ACTIVE` (`active=false`) y `DELETED` (`deleted_at`): son kill-switches de plataforma con blast-radius total → se manejan como **acción explícita y auditada**, no como input pasivo de un gate por request. No entran en el enforcement de este bloque. |
-| **d** | **Sacar `requireModule` de las rutas GET de DOCUMENTO/TRANSACCIÓN** (`GET /api/invoices/*`, `GET /api/reservations/:id`, listados equivalentes) — o reemplazar por un chequeo "estuvo habilitado alguna vez". El gate de entitlement queda sobre **creación/mutación**. Invariante: la lectura de documentos/transacciones ya emitidos **nunca** se gatea por un entitlement revocable. |
-| **e** | Llevar `origin` (`SYSTEM_DEFAULT`/`INDUSTRY_PRESET`/`TENANT_OVERRIDE`) y `restrictedBy` (`MIN_PLAN`/`NOT_ACTIVE`/`NOT_IMPLEMENTED`/`DELETED`) — que `resolveCapabilities` produce y `comoRecordDeModulos` descarta — al body del `402` y a un log estructurado. Sin PII (`criterios-negocio.md` A7.1). |
+| **c** | `NOT_ACTIVE` (`active=false`) y `DELETED` (`deleted_at`): son kill-switches de plataforma con blast-radius total → se manejan como **acción explícita y auditada**, no como input pasivo de un gate por request. No entran en el enforcement de este bloque (la forma 2-queries sólo mira `implemented`). |
+| **d** | En este bloque, **sacar `requireModule` de `GET /api/invoices/*`** — el caso legalmente forzado (lectura de comprobantes AFIP ya emitidos). `POST`/`DELETE` de invoices quedan gateados. La clasificación amplia de lecturas de TRANSACCIÓN (reservas, órdenes, estadías, cuentas corrientes, housekeeping GET) es **prerequisito de Fase 5** — debe hacerse *antes* de que escalón 2/4 entren en vivo. Nota: con la versión acotada un módulo sólo se apaga vía `NOT_IMPLEMENTED` ("sin código" ⟹ sin documentos detrás), así que el lockout de lectura no es load-bearing todavía; se cementa la invariante antes de Fase 5. Invariante: la lectura de documentos/transacciones ya emitidos **nunca** se gatea por un entitlement revocable. |
+| **e** | En el `402`, incluir `restrictedBy` — con la forma 2-queries se deriva inline: `implemented ? null : 'NOT_IMPLEMENTED'` (en el bloque acotado es el único valor posible), y `origin` = `enabledByKey.has(k) ? 'TENANT_OVERRIDE' : 'SYSTEM_DEFAULT'`. Al body del `402` y a un log estructurado. Contrato aditivo/opcional en `MODULE_NOT_ENABLED` (`http.ts`), backend-only, sin cambio de frontend. Sin PII (`criterios-negocio.md` A7.1). |
 
 ## 4. Qué NO cambia
 
@@ -78,6 +78,13 @@ Escalón 2 (preset), escalón 4 (`min_plan`), los kill-switches `active`/`delete
 con superficie controlada, y las decisiones de producto (retroactividad de
 presets, acople plan↔módulo, aviso/gracia/corte). Todo en
 [diseno-lifecycle-plan-fase5-2026-08-30.md](diseno-lifecycle-plan-fase5-2026-08-30.md).
+
+**Forma del ruteo por el resolver, decidida (B):** Fase 5 reemplaza el cuerpo de
+2 queries por `comoRecordDeModulos(resolveCapabilities(inputReal))` con el input
+**real completo** (`industryKey` real, `plan` real, catálogo real) y el resolver
+corre los 5 escalones. **Sin parámetro de "qué escalones".** El motivo —que hoy
+el nav ya consume la cascada completa y el gate sólo 1+3, y Fase 5 los hace
+converger— está en `diseno-lifecycle-plan-fase5-2026-08-30.md` §5.
 
 ## 7. Referencias
 

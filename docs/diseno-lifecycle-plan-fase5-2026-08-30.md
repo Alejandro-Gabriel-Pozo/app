@@ -113,12 +113,73 @@ Cada edición de preset queda en `platform_audit_log` (cierra el gap de §10).
 - Canal por tipo de mensaje: ¿email para todo al principio, WhatsApp para los
   urgentes después?
 
-## 5. Referencias
+## 5. Hallazgo — nav y gate ya divergen; por qué Fase 5 converge en el resolver completo
 
-- [diseno-cascada-enforcement-2026-08-30.md](diseno-cascada-enforcement-2026-08-30.md).
+Encontrado el 30/08/2026 en una ronda de análisis de implicancias
+(`DECISION_REVIEW.md`), no en la pregunta original.
+
+### 5.1 La divergencia estructural que ya existe
+
+El nav del sidebar consume la cascada **completa**: `context.adapter.ts:119`
+llama a `resolveCapabilities` con el input real (5 escalones) para
+`/api/business/context`, y el `enabledModules` que gatea la navegación (V3-a /
+V3-b) lo refleja **hoy**. `requireModule` (`security/module.middleware.ts:18` →
+`PlatformRepository.getBusinessModules()`, `platform.repository.ts:420`) resuelve
+sólo con los escalones 1 y 3. **Nav y gate calculan "enabled" distinto** — inerte
+para el único negocio en producción (`industry_key` NULL, sin `min_plan`, todo
+`implemented`), pero estructural.
+
+El [cableado acotado](diseno-cascada-enforcement-2026-08-30.md) cierra el escalón
+`NOT_IMPLEMENTED`; quedan el escalón 2 (preset) y el 4 (`min_plan`).
+
+### 5.2 La pregunta que esto resuelve
+
+No era "¿parámetro de escalones vs. input completo?". Era: **¿el gate converge en
+la misma definición de "efectivo" que la UI ya muestra?**
+
+### 5.3 Decisión — (B): input real completo, resolver corre los 5, sin parámetro
+
+- **No hay pregunta de negocio** que sea "resolvé escalones 1,3,5 pero no 2,4".
+  El subconjunto acotado fue un dispositivo transicional para diferir riesgo, no
+  un concepto de dominio. Meterlo en la API de una función pura central deja a un
+  lector futuro con un `{ skipPlanRestriction: true }` y la duda de cuándo es
+  correcto.
+- Un knob tipo `skipPlanRestriction` en el **path de autorización** es un footgun
+  de seguridad: mal pasado en un gate, un módulo queda enforced-abierto que un
+  plan debería restringir.
+- `DEFENSIVE_DEVELOPING.md` §1.5 ("un solo camino por responsabilidad"): dos
+  definiciones de "enabled" (una para nav, otra para gate) es exactamente eso.
+- **Diseño de industria** (entitlements de Stripe / LaunchDarkly): una resolución
+  **determinística por sujeto+recurso** dado el dato actual; el rollout de una
+  regla nueva se controla en una **capa aparte** —una migración, un período de
+  gracia, una regla de targeting sobre el dato—, nunca un modo sobre el resolver.
+- `comoRecordDeModulos` (`capability.resolver.ts:245`) hoy dice *"Existe para
+  comparar, no para consumir"*: promoverlo a consumo en Fase 5 es un paso
+  deliberado, con su docstring actualizado.
+
+Fase 5 **converge**: el gate enforcea el mismo "efectivo" que la UI muestra —
+evita el escenario de soporte "el nav dice que tengo Reportes pero la API me da
+402". El acotado interino se logra **no llamando al resolver** (2 queries +
+`implemented`); Fase 5 lo **reemplaza** por la llamada real completa. Es un swap,
+no "prender un flag".
+
+### 5.4 Lo que queda abierto (más angosto)
+
+La **mecánica de rollout** per-negocio del pasaje "escalón 2/4 inerte → en vivo":
+¿flag en `businesses`? ¿columna `cascade_enforcement_version`? ¿entra para todos
+el día que sale el código y la maquinaria de aviso/gracia/corte (Parte A) absorbe
+el impacto? Este documento se inclina por lo último.
+
+## 6. Referencias
+
+- [diseno-cascada-enforcement-2026-08-30.md](diseno-cascada-enforcement-2026-08-30.md);
+  `DECISION_REVIEW.md` (el método de la ronda que produjo §5).
 - `pendientes-2026-08-25.md` L (degradación asistida en 3 etapas — asientos).
 - `plan-separacion-dominios-multirubro-2026-08-28.md` §10 (auditoría — gap), §12
   (fases), §14 D5 (cambio de rubro).
 - `criterios-negocio.md` A5 / A7.6 (política de retención) / A9.4 (audit log
   append-only); `criterios-datos.md`.
 - `roadmap-pms-multirubro.md` (Promociones ❌).
+- Anclas del hallazgo nav-vs-gate: `src/business-context/context.adapter.ts:119`,
+  `src/platform/platform.repository.ts:420`, `src/security/module.middleware.ts:18`,
+  `src/business-context/capability.resolver.ts:245`.

@@ -31,6 +31,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Integridad de datos (maestro/transacción/documento) | [criterios-datos.md](criterios-datos.md) | Convención |
 | Reglas A1–A9 (tenant, dinero, tiempo, estados, privacidad, concurrencia…) | [criterios-negocio.md](criterios-negocio.md) | Convención |
 | Checklist de PRs / wiring multi-tenant | [DEFENSIVE_DEVELOPING.md](DEFENSIVE_DEVELOPING.md) | Convención |
+| Análisis de implicancias — método de revisión antes de implementar. **Leer antes de cualquier decisión de forma/diseño que toque autorización, datos legales/fiscales, o arquitectura de módulos.** Invocador: "aplicá el análisis de implicancias" | [DECISION_REVIEW.md](DECISION_REVIEW.md) | Convención |
 | Códigos HTTP y `body.code` | [HTTP_CONTRACTS.md](HTTP_CONTRACTS.md) | Convención |
 | RBAC por endpoint + cerca eléctrica de tests | [rbac-matriz-endpoints.md](rbac-matriz-endpoints.md) | Mapa + Convención |
 | Dominios / CORS / hosting | [auditoria-dominios.md](auditoria-dominios.md) | Mapa + Runbook de auditoría |
