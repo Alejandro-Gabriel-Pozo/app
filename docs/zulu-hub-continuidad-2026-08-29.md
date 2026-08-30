@@ -15,19 +15,20 @@ el próximo bloque?*
 
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
-| `app-main` | `9119a50` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). El resto de `src/business-context/*` **no cambia el comportamiento**: no está cableado en `getBusinessModules()` |
+| `app-main` | `f08024f` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). El resto de `src/business-context/*` **no cambia el comportamiento**: no está cableado en `getBusinessModules()`; sólo commits de continuidad/pendientes (no tocan código) |
 | `appfrontend-main` | `9ea8a62` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `9ea8a62…`. **4C + V3-a**: el dashboard consume `GET /api/business/context` para el gating de navegación (`BusinessContextProvider` montado en `dashboard/layout.tsx`) |
 
 > **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
 > origin/main`, no contra la fila anterior. Historial de `app-main`: `67151fb`
-> → `c6c4185` → `7dc2de5` → `9c590e5` → `9119a50`.
+> → `c6c4185` → `7dc2de5` → `9c590e5` → `9119a50` → `6630c16` → `bb5e6a4` → `f08024f`.
 >
-> **`app-main/origin/main` = `9119a50`** — pushes del 30/08/2026, autorizados
+> **`app-main/origin/main` = `f08024f`** — pushes del 30/08/2026, autorizados
 > en el chat (sin gate técnico; GATE-001 RETIRADO en `pendientes-2026-08-29.md`).
 > Sobre `9c590e5` (docs: D-A + GATE-001 retirado + auditoria-dominios) se
 > agregaron:
 > - `abe8228` — Fase 4 **Bloque 4A**: `PlatformRepository.getContextInputs()` (una sentencia, snapshot consistente entre catálogo / preset / overrides / terminología) + `context.adapter.ts` (compone con los resolvers puros) + `context.row-validation.ts` (forma SQL: columna ausente, `NULL` no permitido, agregado no-array, item incompleto → `ContextDataError`). +44 tests (64 → 108). **No cablea `getBusinessModules()`**
 > - `9119a50` — Fase 4 **Bloque 4B**: `GET /api/business/context` con `authorize(Roles.STAFF)`, montada tras `tenantMiddleware` + `apiLimiter`. `ContextDataError` → 503; negocio inexistente → 404. Payload = contrato D-A + `currency`/`timezone` (de `business_profile`, vía `req.db`) + `permissionGroups` (de `req.user`)
+> - `6630c16` · `bb5e6a4` · `f08024f` — **sólo continuidad/pendientes** (no tocan código): verificación manual de `productos/*` (detalle) y `FAILOPEN-001` (fail-open del sidebar diferido, cubierto por diseño, sin prueba empírica)
 >
 > **`appfrontend-main/origin/main` = `9ea8a62`** — sobre `515bc3f`:
 > - `943b0b9` — types/mocks/`ShellBench` a `moduleColors` (D-A)
