@@ -37,10 +37,16 @@ const SRC_DIR = join(__dirname, '../..');
 // nuevo suma 5 authorize(Roles.MANAGEMENT) (GET /, GET /:id, POST /,
 // PUT /:id, DELETE /:id) + products.routes.ts suma 1 más
 // (POST /stock/consumption).
-const EXPECTED_AUTHORIZE_CALL_SITES = 203;
+// Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 204, no 203:
+// business-context.routes.ts nuevo suma 1 authorize(Roles.STAFF) en
+// GET /api/business/context. La sync del maestro quedó pendiente en ese
+// commit; se cierra acá.
+const EXPECTED_AUTHORIZE_CALL_SITES = 204;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
-const EXPECTED_ROUTES_FILE_COUNT = 36;
+// Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:
+// business-context.routes.ts nuevo.
+const EXPECTED_ROUTES_FILE_COUNT = 37;
 
 function findRouteFiles(dir: string): string[] {
   const results: string[] = [];

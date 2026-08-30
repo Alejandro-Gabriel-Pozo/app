@@ -171,6 +171,9 @@ sección 4.
 
 **`business-modules.routes.ts`** — ver sección 4 (`api/routes/`, listado ahí por el mount real).
 
+**`business-context.routes.ts`** (Fase 4 Bloque 4B, 30/08/2026 — commit `9119a50`; montado en `/api/business/context` post-`tenantMiddleware`)
+- GET `/` — `STAFF` (deja fuera a los tokens `CUSTOMER`; el contexto del portal de clientes es otro contrato)
+
 ### `src/pms-estadias/`
 
 **`housekeeping.routes.ts`** (todo `requireModule(HOUSEKEEPING)`)
