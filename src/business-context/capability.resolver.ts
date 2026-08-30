@@ -26,6 +26,14 @@
  * Si las restricciones pudieran prender, subir de plan encendería módulos
  * que alguien apagó a propósito.
  *
+ * ## Color de contexto efectivo
+ *
+ * `EffectiveCapability.contextColor` es el color EFECTIVO, no el crudo del
+ * catálogo: con `industryKey === null` (negocio sin clasificar) todos los
+ * módulos quedan en `NEUTRAL` — §5.5.3 y §5.5.2. Con `GENERIC` o un rubro
+ * concreto, `modules.context_color`. La regla vive acá para que
+ * `moduleColors()` sea sólo una proyección y quede fijada por test.
+ *
  * ## Por qué esto todavía no está cableado
  *
  * `PlatformRepository.getBusinessModules()` implementa hoy los escalones 1 y
@@ -40,8 +48,10 @@ import { BusinessPlan } from '../types/enums.js';
 import type {
   CapabilityResolutionInput,
   CapabilityRestriction,
+  ContextColor,
   EffectiveCapability,
   ModuleCatalogRow,
+  ModuleSource,
 } from './business-context.types.js';
 
 /**
@@ -157,7 +167,14 @@ export function resolveCapabilities(
       origin,
       restrictedBy: restriccion,
       source:       override?.source ?? null,
-      contextColor: modulo.contextColor,
+      // Color EFECTIVO, no el crudo del catálogo. Un negocio SIN CLASIFICAR
+      // (`industryKey === null`) no muestra color de contexto: todo NEUTRAL,
+      // coherente con §5.5.3 y con los estados loading/error de §5.5.2. Con
+      // `GENERIC` o un rubro concreto, el color del catálogo
+      // (`modules.context_color`). La semántica vive acá, en el resolver, no
+      // en el adaptador — así `moduleColors()` es una proyección fiel y hay
+      // un test puro que la fija.
+      contextColor: industryKey === null ? 'NEUTRAL' : modulo.contextColor,
     };
   });
 
@@ -184,26 +201,34 @@ export function enabledModuleKeys(capacidades: readonly EffectiveCapability[]): 
 
 /**
  * `Record<moduleKey, ContextColor>` — lo que reemplaza a `navigation` en el
- * payload (decisión D-A, 29/08/2026). El backend dice qué color le
- * corresponde a cada módulo; las rutas, los iconos y `managementOnly` siguen
- * siendo del catálogo de presentación del frontend.
+ * payload (decisión D-A, aprobada por el dueño el 30/08/2026). El backend dice
+ * qué color le corresponde a cada módulo; las rutas, los iconos y
+ * `managementOnly` siguen siendo del catálogo de presentación del frontend.
  *
- * Se emite para TODOS los módulos del catálogo, no sólo los habilitados: el
- * color de un módulo no depende de si está prendido.
+ * Proyección fiel de `EffectiveCapability.contextColor`, que ya es el color
+ * EFECTIVO: se emite para TODOS los módulos del catálogo, no sólo los
+ * habilitados (el color no depende de si el módulo está prendido), y con
+ * `industryKey === null` todos son `NEUTRAL` — la regla está en
+ * `resolveCapabilities()`, no acá.
  */
 export function moduleColors(
   capacidades: readonly EffectiveCapability[],
-): Record<string, string> {
-  const colores: Record<string, string> = {};
+): Record<string, ContextColor> {
+  const colores: Record<string, ContextColor> = {};
   for (const c of capacidades) colores[c.moduleKey] = c.contextColor;
   return colores;
 }
 
-/** `moduleSources` de §5.4 — sólo los módulos que tienen override de tenant. */
+/**
+ * `moduleSources` de §5.4 — **sparse**: sólo los módulos que tienen fila en
+ * `business_modules` (override de tenant). Un módulo resuelto por default no
+ * aparece. El tipo lo dice (`Partial<...>`), y el frontend lo espeja como
+ * `Partial<Record<ModuleKey, ModuleSource>>`.
+ */
 export function moduleSources(
   capacidades: readonly EffectiveCapability[],
-): Record<string, string> {
-  const fuentes: Record<string, string> = {};
+): Partial<Record<string, ModuleSource>> {
+  const fuentes: Partial<Record<string, ModuleSource>> = {};
   for (const c of capacidades) if (c.source !== null) fuentes[c.moduleKey] = c.source;
   return fuentes;
 }

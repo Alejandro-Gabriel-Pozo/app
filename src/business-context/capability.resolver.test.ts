@@ -323,7 +323,10 @@ describe('resolveCapabilities — las restricciones sólo RESTAN, nunca prenden'
 });
 
 describe('proyecciones del resultado', () => {
+  // industryKey concreto: los colores del catálogo aplican (ver el grupo
+  // "color de contexto efectivo" para el caso industryKey === null).
   const resultado = resolveCapabilities(entrada({
+    industryKey: 'GENERIC',
     catalog: [
       modulo('ALOJAMIENTO', { contextColor: 'BRASS' }),
       modulo('REPORTES',    { contextColor: 'NEUTRAL' }),
@@ -353,6 +356,57 @@ describe('proyecciones del resultado', () => {
       ALOJAMIENTO: 'SUPERADMIN',
       REPORTES:    'TENANT',
     });
+  });
+});
+
+describe('resolveCapabilities — color de contexto efectivo', () => {
+  const catalogoConColor: ModuleCatalogRow[] = [
+    modulo('ALOJAMIENTO', { contextColor: 'BRASS' }),
+    modulo('FACTURACION', { contextColor: 'CLAY' }),
+    modulo('HOUSEKEEPING', { contextColor: 'SAGE' }),
+    modulo('REPORTES',    { contextColor: 'NEUTRAL' }),
+  ];
+
+  it('con industryKey concreto, cada módulo usa el color del catálogo', () => {
+    const resultado = resolveCapabilities(entrada({
+      industryKey: 'GENERIC',
+      catalog:     catalogoConColor,
+    }));
+
+    expect(moduleColors(resultado)).toEqual({
+      ALOJAMIENTO: 'BRASS',
+      FACTURACION: 'CLAY',
+      HOUSEKEEPING: 'SAGE',
+      REPORTES:    'NEUTRAL',
+    });
+  });
+
+  it('con industryKey === null (sin clasificar), TODO es NEUTRAL', () => {
+    const resultado = resolveCapabilities(entrada({
+      industryKey: null,
+      catalog:     catalogoConColor,
+    }));
+
+    // El campo de cada capacidad, no sólo la proyección.
+    for (const cap of resultado) expect(cap.contextColor).toBe('NEUTRAL');
+
+    expect(moduleColors(resultado)).toEqual({
+      ALOJAMIENTO: 'NEUTRAL',
+      FACTURACION: 'NEUTRAL',
+      HOUSEKEEPING: 'NEUTRAL',
+      REPORTES:    'NEUTRAL',
+    });
+  });
+
+  it('el color NO depende de si el módulo está habilitado', () => {
+    const resultado = resolveCapabilities(entrada({
+      industryKey:     'GENERIC',
+      catalog:         catalogoConColor,
+      businessModules: [{ moduleKey: 'ALOJAMIENTO', enabled: false, source: 'TENANT' }],
+    }));
+
+    expect(porClave(resultado, 'ALOJAMIENTO').enabled).toBe(false);
+    expect(porClave(resultado, 'ALOJAMIENTO').contextColor).toBe('BRASS');
   });
 });
 
@@ -434,6 +488,18 @@ describe('equivalencia con el comportamiento vigente', () => {
       HOUSEKEEPING:       true,
       POS_RESTAURANTE:    true,
       REPORTES:           true,
+    });
+  });
+
+  it('y como biz-demo-01 no tiene rubro, moduleColors es todo NEUTRAL', () => {
+    // El catálogo trae BRASS/CLAY/SAGE, pero industryKey === null los aplana.
+    expect(moduleColors(resolveCapabilities(PRODUCCION_29_08))).toEqual({
+      ALOJAMIENTO:        'NEUTRAL',
+      CUENTAS_CORRIENTES: 'NEUTRAL',
+      FACTURACION:        'NEUTRAL',
+      HOUSEKEEPING:       'NEUTRAL',
+      POS_RESTAURANTE:    'NEUTRAL',
+      REPORTES:           'NEUTRAL',
     });
   });
 

@@ -94,6 +94,12 @@ export interface EffectiveCapability {
   restrictedBy: CapabilityRestriction | null;
   /** `business_modules.source`, o `null` si no hay override del tenant. */
   source:       ModuleSource | null;
+  /**
+   * Color de contexto EFECTIVO. `modules.context_color` cuando el negocio
+   * tiene rubro (`GENERIC` incluido); `NEUTRAL` para todos los módulos si
+   * `industryKey === null` (sin clasificar — §5.5.3). No es el color crudo
+   * del catálogo: lo resuelve `resolveCapabilities()`.
+   */
   contextColor: ContextColor;
 }
 
