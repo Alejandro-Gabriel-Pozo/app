@@ -201,31 +201,39 @@ configurar seña sin ese módulo. Detalle en
   (`rate_catalog`), falta aplicarlo.
 - **`resource_locks` solo bloquea recursos concretos por ID**, no "uno
   cualquiera de la categoría X". Sin caso de uso activo todavía.
-- **🟠 GATE-001 — el gate de aprobación sólo cubre Bash.** El hook
-  `PreToolUse` de `.claude/settings.json` (raíz del workspace, **fuera de
-  este repo**) está registrado con `"matcher": "Bash"`. Todo lo que no sea
-  Bash —`Write`, `Edit`, `NotebookEdit`, y cualquier herramienta MCP con
-  capacidad de escribir, pushear o deployar— **no pasa por el gate ni deja
-  entrada en `gate.log`**.
+- **✅ GATE-001 — RETIRADO (30/08/2026): se retiró el gate `.claude/.gate-approved`.**
 
-  Hoy no es una brecha, pero por dos razones que no comparten mecanismo: el
-  subagente `architecture-governor` no tiene `Write`/`Edit` en su
-  frontmatter, y nada más en el entorno puede pushear sin Bash. O sea que la
-  contención depende de **dos cosas que nadie mantiene sincronizadas** — la
-  lista de `tools` de cada agente y el matcher del hook.
+  **El hallazgo original (29/08/2026):** el hook `PreToolUse` de
+  `.claude/settings.json` (raíz del workspace, **fuera de este repo**) estaba
+  registrado con `"matcher": "Bash"`. Todo lo que no fuera Bash —`Write`,
+  `Edit`, `NotebookEdit`, y cualquier herramienta MCP con capacidad de
+  escribir, pushear o deployar— **no pasaba por el gate ni dejaba entrada en
+  `gate.log`**. La contención dependía de dos cosas que nadie mantenía
+  sincronizadas: la lista de `tools` de cada agente y el matcher del hook.
 
-  **Cómo se rompe:** agregarle `Write` a un agente, o sumar un MCP con una
-  herramienta de deploy. El gate queda intacto y aparentemente funcionando
-  mientras la operación pasa por al lado. Sin error y sin log.
+  **Lo que lo cerró (30/08/2026):** al pushear la cadena `16e65c2..7dc2de5`
+  (autorizada y verificada) con `git -C <path> push`, la operación **evadió
+  el matcher por completo** — la regex `git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*push`
+  no acepta el argumento de `-C` entre `-C` y `push`. El push no se bloqueó y
+  **no dejó línea en `gate.log`**. Sumado a la limitación Bash-only, el
+  mecanismo del token no sirve ni como control ni como registro.
 
-  Verificado el 29/08/2026 al probar la regla 1 del hook (que sí funciona:
-  `agent_type` llega y la regla dispara). Se anota **acá además del
-  `CLAUDE.md` de la raíz** porque ese archivo no está versionado: la raíz
-  del workspace no es un repositorio, así que lo que se documenta ahí no
-  sobrevive a un clone ni queda en el historial.
+  **Decisión:** se retira el gate técnico completo. **No se crea un
+  `GATE-002`** — la brecha de `git -C` queda documentada acá como la
+  evidencia de por qué se retira, no como un bloqueo nuevo.
 
-  **Revisar este supuesto ANTES de sumar cualquier tool con capacidad de
-  escritura o deploy, no después.**
+  Retirado (filesystem, sin versionar — raíz del workspace):
+  - el bloque `PreToolUse` de `.claude/settings.json` (quedó `{}`);
+  - `.claude/hooks/gate-git.sh` y `.claude/hooks/tripwire.sh` (borrados);
+  - la exigencia y el consumo de `.claude/.gate-approved` (el archivo ya no existe);
+  - `APP-MAIN-FRONTEND/CLAUDE.md` reescrito: ya no presenta el token como obligatorio.
+
+  Se conserva:
+  - **la autorización de push/deploy sigue siendo explícita y conversacional**
+    — el dueño la da en el chat, con el hash y el alcance;
+  - la revisión del diff y el checklist de tests / lint / schema / backup / rollback;
+  - la regla operativa de **no usar force-push**;
+  - `.claude/gate.log` como registro histórico, ya inerte.
 
 ### Heredados, todavía abiertos
 
