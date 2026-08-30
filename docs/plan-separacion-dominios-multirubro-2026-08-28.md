@@ -254,25 +254,52 @@ antes de exponer la pantalla.
 ```ts
 interface BusinessContext {
   businessId: string
-  industryKey: string | null
-  enabledModules: string[]                       // claves efectivas, ya resueltas
-  moduleSources: Record<string, 'PRESET' | 'SUPERADMIN' | 'TENANT'>
+  industryKey: string | null                     // null ≠ 'GENERIC' (§5.5.3)
+  industryName: string | null                    // nombre visible del rubro; null si sin clasificar
+  enabledModules: string[]                        // claves efectivas, ya resueltas
+  moduleSources: Partial<Record<string, 'PRESET' | 'SUPERADMIN' | 'TENANT'>>  // SPARSE: sólo módulos con override en business_modules
+  moduleColors: Record<string, 'BRASS' | 'CLAY' | 'SAGE' | 'NEUTRAL'>  // TOTAL: todos los módulos del catálogo
   terminology: Record<string, string>            // ya resuelto por cascada
+  permissionGroups: string[]                      // grupos de security/roles.ts, NO una lista de permisos (§5.5.1)
   locale: string
   currency: string                               // business_profile
   timezone: string                               // business_profile
-  navigation: Array<{
-    moduleKey: string
-    label: string
-    contextColor: 'BRASS' | 'CLAY' | 'SAGE' | 'NEUTRAL'
-  }>
 }
 ```
 
-`theme.primaryContext` del enunciado se reemplaza por `contextColor` **por módulo**: la
-identidad ZULU es monocromática y global; el color es una señal de contexto de módulo, no un
-tema de negocio. Superadmin elige de un enum cerrado (`BRASS`/`CLAY`/`SAGE`/`NEUTRAL`), nunca
-un color libre — el cian queda reservado al plano técnico y **no** es asignable.
+`theme.primaryContext` del enunciado se reemplaza por `moduleColors` — el color de
+contexto **por módulo del catálogo**, no un tema de negocio: la identidad ZULU es
+monocromática y global. Superadmin elige de un enum cerrado
+(`BRASS`/`CLAY`/`SAGE`/`NEUTRAL`); el cian queda reservado al plano técnico y **no** es
+asignable. Se emite para todos los módulos del catálogo, no sólo los habilitados — el
+color no depende de si el módulo está prendido.
+
+`moduleColors` es el color **efectivo**, no el crudo de `modules.context_color`:
+
+| `industryKey` | `moduleColors` |
+|---|---|
+| `null` (negocio **sin clasificar**) | **todos `NEUTRAL`** — coherente con §5.5.3 y con los estados `loading`/`error` de §5.5.2. No se infiere rubro, así que no hay color de contexto |
+| `GENERIC` o rubro concreto | el color del catálogo (`modules.context_color`) de cada módulo |
+
+La regla vive en `resolveCapabilities()` (`src/business-context/capability.resolver.ts`),
+fijada por test — `moduleColors()` es sólo una proyección de
+`EffectiveCapability.contextColor`, que ya es el efectivo. El adaptador del endpoint no
+la reimplementa.
+
+**Decisión D-A — aprobada por el dueño el 30/08/2026.** El payload **no lleva
+`navigation`**. La primera redacción de §5.4 (29/08, `65d037e`) definía
+`navigation: Array<{ moduleKey, label, contextColor }>` emitido por el backend, y el
+frontend (`515bc3f`) lo espejó agregándole `href`. El resolver de `c6c4185` ya había
+dejado un comentario proponiendo reemplazarlo por `moduleColors`, pero sin registrarlo
+como decisión y sin actualizar este documento. Se formaliza acá: el backend expone
+**capacidades efectivas, colores, terminología y grupos de permiso**; la **navegación
+—labels visibles, rutas `href`, iconos, `managementOnly`— es catálogo de presentación
+del frontend**. El shell compone su sidebar con
+`catálogo local × enabledModules × terminology × moduleColors`, que es como el dashboard
+real ya arma su nav hoy (`appfrontend-main/src/app/dashboard/layout.tsx`, array `NAV`).
+Verificado antes de aprobar: `navigation` no tenía ningún consumidor en producción —
+sólo `/dev/shell`, que devuelve 404 fuera de `npm run dev`. Registro en la tabla de
+conciliación de [`plan-multirubro-maestro-2026-08-29.md`](plan-multirubro-maestro-2026-08-29.md) §1.
 
 ### 5.5 Contrato de consumo en el frontend — precondición de V3
 
@@ -280,7 +307,15 @@ Pedido del dueño (29/08/2026) al cerrar V2: antes de implementar V3 hay que
 fijar qué consume el shell, y sobre todo **qué hace cuando el contexto no
 está**. §5.4 define el payload; esto define el consumo.
 
-#### 5.5.1 Lo que falta en el payload de §5.4
+#### 5.5.1 `permissionGroups` e `industryName` — por qué están en el payload
+
+> **Actualización 30/08/2026.** Los dos campos ya están incorporados al interface de
+> §5.4 (antes esta sección decía "lo que falta"). Quedan acá el porqué de cada uno y
+> **de dónde salen**: los resuelve la capa de ruta/adaptador de
+> `GET /api/business/context`, **no** el resolver de capacidades
+> (`src/business-context/capability.resolver.ts`), que es una función pura sobre filas
+> de catálogo. `industryName` sale de `industries.name`; `permissionGroups` sale de lo
+> que ya calcula `security/roles.ts` para el `req.user`.
 
 | Campo | Por qué |
 |---|---|
@@ -310,8 +345,11 @@ type BusinessContextState =
 | Estado | Navegación | Terminología | Color de módulo |
 |---|---|---|---|
 | `loading` | esqueleto, sin ítems | claves del sistema | NEUTRAL |
-| `ready` | `context.navigation` | `context.terminology` | `contextColor` de cada ítem |
-| `error` | **todos** los ítems, como hoy | claves del sistema | NEUTRAL |
+| `ready` | catálogo local del frontend, filtrado por `context.enabledModules` | `context.terminology` | `context.moduleColors[moduleKey]` |
+| `error` | **todos** los ítems del catálogo local, como hoy | claves del sistema | NEUTRAL |
+
+> Navegación por catálogo local, no por `navigation` en el payload — decisión D-A
+> (§5.4). El backend no emite labels ni rutas.
 
 En `error` el shell no bloquea ni muestra una pantalla de fallo: el producto
 sigue usable y el backend sigue rechazando lo que corresponda.
@@ -360,6 +398,14 @@ staff.singular         staff.plural
 stay.singular          stay.plural
 location.singular      location.plural
 ```
+
+**Namespace canónico: `reservation.*`, no `booking.*` (fijado 30/08/2026).** Es lo
+sembrado en producción (`src/db/platform.schema.sql`, scope SYSTEM: `resource`,
+`reservation`, `customer`, `service`, `staff` — falta sembrar `stay` y `location`) y lo
+que usan estos mismos §6/§7 y los tests del resolver. La única variante `booking.*` vivía
+en los mocks del frontend (`appfrontend-main/src/lib/business-context/sources.ts`) y en
+`/dev/shell` — sin consumidor en producción, corregida en el mismo cambio, **sin alias
+transitorio** porque no había nada a qué dar compatibilidad.
 
 **Tres consumidores, tres mecanismos — el sidebar es el más fácil de los tres:**
 
