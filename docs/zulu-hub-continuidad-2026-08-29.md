@@ -1,7 +1,7 @@
 # ZULU Hub — Continuidad operativa
 
 - **Fecha de corte:** 2026-08-29, después del deploy de la Fase 3
-- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a y V3-b (color de contexto por módulo en el ítem activo del sidebar) en producción, verificados dentro de sus límites
+- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites
 - **Para qué:** que una sesión nueva sepa **dónde quedó el proyecto y qué sigue**, sin depender del historial conversacional
 - **Etiquetas:** `mapa-del-sistema` `continuidad`
 
@@ -16,7 +16,7 @@ el próximo bloque?*
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
 | `app-main` | `f08024f` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). El resto de `src/business-context/*` **no cambia el comportamiento**: no está cableado en `getBusinessModules()`; sólo commits de continuidad/pendientes (no tocan código) |
-| `appfrontend-main` | `8b647a0` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `8b647a0`. **4C + V3-a + V3-b**: el dashboard consume `GET /api/business/context` para el gating de navegación; el ítem activo del sidebar toma el color de contexto por módulo (`moduleColors[key]` → `--zulu-module-context` de la barra + glow; etiqueta/icono en `--text-primary`; píldora sin recolor) |
+| `appfrontend-main` | `367a65f` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `367a65f`. **4C + V3-a + V3-b + retiro de `useBusinessModules()`**: el dashboard consume `GET /api/business/context` para el gating de navegación; el ítem activo del sidebar toma el color de contexto por módulo (`moduleColors[key]` → `--zulu-module-context` de la barra + glow; etiqueta/icono en `--text-primary`; píldora sin recolor); `productos/*` también consumen el contexto (`useModuloVisible('FACTURACION')`) — sin la doble fuente `/api/business/modules` |
 
 > **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
 > origin/main`, no contra la fila anterior. Historial de `app-main`: `67151fb`
@@ -30,11 +30,12 @@ el próximo bloque?*
 > - `9119a50` — Fase 4 **Bloque 4B**: `GET /api/business/context` con `authorize(Roles.STAFF)`, montada tras `tenantMiddleware` + `apiLimiter`. `ContextDataError` → 503; negocio inexistente → 404. Payload = contrato D-A + `currency`/`timezone` (de `business_profile`, vía `req.db`) + `permissionGroups` (de `req.user`)
 > - `6630c16` · `bb5e6a4` · `f08024f` — **sólo continuidad/pendientes** (no tocan código): verificación manual de `productos/*` (detalle) y `FAILOPEN-001` (fail-open del sidebar diferido, cubierto por diseño, sin prueba empírica)
 >
-> **`appfrontend-main/origin/main` = `8b647a0`** — sobre `515bc3f`:
+> **`appfrontend-main/origin/main` = `367a65f`** — sobre `515bc3f`:
 > - `943b0b9` — types/mocks/`ShellBench` a `moduleColors` (D-A)
 > - `a4b3b89` — Fase 4 **Bloque 4C**: `endpointSource()` real (`apiFetch('/api/business/context')` + `isBusinessContext()` type-guard, valida enums sin casts de forma)
-> - `9ea8a62` — **V3-a**: `BusinessContextProvider` montado en `dashboard/layout.tsx` (**sólo si `isAuthenticated`**), `NavList.tsx` extraído (única copia del catálogo `NAV` — href/label/icono/`moduleKey`/`managementOnly`, todo local, D-A), gating por `context.enabledModules` con **fail-open** (loading/error → muestra todo). `useBusinessModules()` **intacto** para `productos/*` (doble fuente temporal)
+> - `9ea8a62` — **V3-a**: `BusinessContextProvider` montado en `dashboard/layout.tsx` (**sólo si `isAuthenticated`**), `NavList.tsx` extraído (única copia del catálogo `NAV` — href/label/icono/`moduleKey`/`managementOnly`, todo local, D-A), gating por `context.enabledModules` con **fail-open** (loading/error → muestra todo). `useBusinessModules()` **intacto** para `productos/*` (doble fuente temporal — cerrada en `367a65f`)
 > - `8b647a0` — **V3-b**: en `NavList.tsx`, `contextColorDe(item, ctx)` emite `data-context-color` (enum cerrado) sólo en el ítem activo con `moduleKey`; 4 reglas nuevas en `globals.css`, bajo `.zulu-shell-dark`, redefinen **sólo `--zulu-module-context`** (barra + glow) según `moduleColors[key]` → BRASS/CLAY/SAGE/NEUTRAL. Etiqueta e icono del activo pasan a `--text-primary` (blanco); `--zulu-surface-selected` no se redefine. Ítem sin `moduleKey` → sin atributo, hereda BRASS. `ctx` null (loading/error) o valor fuera del enum → NEUTRAL. `tsc` / `eslint` / `lint:visual` / `test:visual` / `build` en verde
+> - `367a65f` — **retiro de `useBusinessModules()`**: `productos/page.tsx` y `productos/[id]/page.tsx` pasan el gate de la sección "Datos fiscales (AFIP/ARCA)" a `useModuloVisible('FACTURACION')` del `BusinessContext`. **Contrato objetivo**: en `ready`, `enabledModules` es el conjunto efectivo completo → FACTURACION ausente **oculta** la sección; `loading`/`error` conservan el fail-open. Se borra el hook `useBusinessModules` y `businessModulesApi` (sin consumidores). **No** toca `form` init ni `handleSave`/`handleSubmit` → los atributos fiscales del MAESTRO (`ivaRate`/`unit`/`arcaUnitCode`) hacen round-trip con la sección oculta. Ruta backend `/api/business/modules` **intacta**. `tsc` / `eslint` / `lint:visual` / `test:visual` / `build` en verde
 >
 > **Evidencia externa (30/08/2026):** Vercel `reservasapp` → deployment
 > `Ready`, SHA servido `9ea8a62f99b6f972557313d7149cb644fdeb8b16`. Con sesión
@@ -148,14 +149,17 @@ el color de contexto por módulo al ítem activo del sidebar: barra + glow =
 `moduleColors[key]` (BRASS/CLAY/SAGE/NEUTRAL); etiqueta e icono en
 `--text-primary`; píldora sin recolor. Ambos verificados en producción **dentro
 de sus límites** (§1: en prod sólo se observó NEUTRAL — no hay negocio
-clasificado). **No** incluye: retiro de `useBusinessModules()`, ni el cableado
-de la cascada en `getBusinessModules()` / `requireModule()` / 402.
+clasificado). **`367a65f`** retiró `useBusinessModules()`: `productos/*` pasan a
+`useModuloVisible('FACTURACION')` del contexto y se elimina la doble fuente
+(`/api/business/modules` queda sólo del lado servidor). **No** incluye: el
+cableado de la cascada en `getBusinessModules()` / `requireModule()` / 402.
 
 **V3 capa 1** (`515bc3f`): `BusinessContextProvider` con fuente reemplazable,
 estados `loading`/`ready`/`error`, `industryKey: null` neutral, y estructura
 responsive. `endpointSource()` **ya no rechaza** — desde `a4b3b89` (4C) llama
-al endpoint real, desde `9ea8a62` (V3-a) el dashboard lo consume, y desde
-`8b647a0` (V3-b) el ítem activo toma el color por módulo.
+al endpoint real, desde `9ea8a62` (V3-a) el dashboard lo consume, desde
+`8b647a0` (V3-b) el ítem activo toma el color por módulo, y desde `367a65f`
+`productos/*` también consumen el contexto (última doble fuente cerrada).
 
 ---
 
@@ -181,13 +185,12 @@ técnica heredada, los dos en `pendientes-2026-08-29.md`.
 
 ## 4. Próximo bloque
 
-**Fase 4 read path + V3-a + V3-b: CERRADOS y en producción** (§1). Ya no hay un
-"próximo bloque único" obligado — lo que sigue son decisiones **separadas,
-ninguna autorizada todavía**:
+**Fase 4 read path + V3-a + V3-b + retiro de `useBusinessModules()`: CERRADOS y
+en producción** (§1). Ya no hay un "próximo bloque único" obligado — lo que
+sigue son decisiones **separadas, ninguna autorizada todavía**:
 
 | Bloque | Qué | Nota |
 |---|---|---|
-| Retiro de `useBusinessModules()` | Migrar `productos/*` (2 pantallas) al contexto y eliminar la doble fuente: hoy `/api/business/context` (dashboard) y `/api/business/modules` (`productos/*`) conviven | Bloque de limpieza |
 | **Cableado de la cascada** | Meter `resolveCapabilities` dentro de `PlatformRepository.getBusinessModules()`. Cambia `requireModule()` y con eso el **402** de todas las rutas con gate. Hoy sería inerte (el único negocio tiene `industry_key` NULL, sin `min_plan`, 6 módulos `active`+`implemented`) pero deja de serlo apenas una precondición se caiga | Diff propio + pruebas sobre los gates. **NO** arrastrado por otro cambio |
 
 **Verificaciones manuales pendientes** (dueño; no bloquean código): el
@@ -199,7 +202,12 @@ quedó observado el 30/08 (§1): ambas pantallas cargan y el detalle registra
 `GET /api/business/modules`; la ausencia de la request en la lista no se
 cuenta como evidencia. **V3-b**: en producción sólo se observó NEUTRAL (y BRASS
 en ítems sin módulo) — CLAY y SAGE necesitan un negocio con rubro y siguen
-verificados sólo por construcción + medición, no en runtime.
+verificados sólo por construcción + medición, no en runtime. **Retiro de
+`useBusinessModules()` (`367a65f`)**: falta confirmar en prod (`biz-demo-01`) que
+la sección "Datos fiscales" sigue visible y que `productos/*` ya no llama a
+`/api/business/modules`; y con fixture, que `ivaRate`/`unit`/`arcaUnitCode` de un
+MAESTRO no se pierden al ocultar la sección (no hay tenant con FACTURACION
+deshabilitada en prod).
 
 El contrato de `BusinessContext` está cerrado: §5.4 (payload) y §5.5 (consumo:
 tres estados, `permissionGroups`, `industryName`, `industryKey` NULL ≠
