@@ -22,6 +22,8 @@
 import { PlatformRepository } from './platform/platform.repository.js';
 import { BusinessPlan }        from './types/enums.js';
 import type { PlanLimits }     from './config/plan-limits.js';
+import type { ModuleGate }     from './business-context/business-context.types.js';
+export type { ModuleGate };
 import type { SqlClient }           from './repositories/sql.client.js';
 import { stripSslMode, sslConfig } from './db/pg.client.js';
 import { PgTransactionManager } from './db/pg.transaction-manager.js';
@@ -111,6 +113,7 @@ export async function closePlatformPool(): Promise<void> {
 export interface AppContainer {
   getBusinessPlan: (businessId: string) => Promise<BusinessPlan>;
   getBusinessModules: (businessId: string) => Promise<Record<string, boolean>>;
+  getBusinessModuleGates: (businessId: string) => Promise<Record<string, ModuleGate>>;
   getPlanLimits: (plan: BusinessPlan) => Promise<PlanLimits>;
   mode: 'postgresql';
 }
@@ -174,6 +177,25 @@ async function createPostgresContainer(): Promise<AppContainer> {
   };
 
   /**
+   * Igual que getBusinessModules pero conservando el PORQUÉ de cada gate
+   * (`restrictedBy` / `origin`) — lo consume `requireModule` para el body
+   * del `402` y el log estructurado. Mismo contrato de error: lanza si el
+   * negocio no existe (→ 503), distinto de "módulo deshabilitado" (→ 402).
+   */
+  const getBusinessModuleGates = async (businessId: string): Promise<Record<string, ModuleGate>> => {
+    const business = await platformRepository.findById(businessId);
+
+    if (!business) {
+      throw new Error(
+        `[getBusinessModuleGates] businessId "${businessId}" no encontrado en la BD de plataforma. ` +
+        'Verificá que el negocio esté registrado correctamente y que el JWT contenga el business_id correcto.',
+      );
+    }
+
+    return platformRepository.getBusinessModuleGates(businessId);
+  };
+
+  /**
    * Límites de uso del plan (18/08/2026, deuda estructural — reemplaza la
    * constante TS `PLAN_LIMITS`, ver platform.schema.sql BLOQUE PLAN_LIMITS).
    * Mismo contrato de error que getBusinessPlan/getBusinessModules: lanza
@@ -199,6 +221,7 @@ async function createPostgresContainer(): Promise<AppContainer> {
   return {
     getBusinessPlan,
     getBusinessModules,
+    getBusinessModuleGates,
     getPlanLimits,
     mode: 'postgresql',
   };

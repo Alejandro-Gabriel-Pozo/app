@@ -11,9 +11,13 @@
  * GET  /api/invoices/:id      — FRONT_DESK
  * GET  /api/invoices?financialTransactionId=... — FRONT_DESK
  *
- * Todo detrás de requireModule(ModuleKey.FACTURACION) — módulo ya definido
- * (types/enums.ts) y sembrado en `modules`/`business_modules` desde antes,
- * sin ninguna ruta que lo usara hasta ahora.
+ * `requireModule(ModuleKey.FACTURACION)` gatea las MUTACIONES (POST /,
+ * POST /consolidated) y el router de credenciales AFIP. Los GET de
+ * `/api/invoices/*` van SIN gate a propósito: leer un comprobante fiscal ya
+ * emitido es una obligación legal de exhibición/retención
+ * (`docs/criterios-datos.md` línea 24 — un DOCUMENTO "jamás" se borra) y no
+ * puede quedar detrás de un entitlement revocable. Ver
+ * docs/diseno-cascada-enforcement-2026-08-30.md §3d.
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
@@ -111,7 +115,6 @@ export function createInvoicesRouter(container: AppContainer): Router {
   // ── GET /api/invoices/:id ─────────────────────────────────────────────────
   router.get(
     '/:id',
-    gate,
     authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
@@ -130,7 +133,6 @@ export function createInvoicesRouter(container: AppContainer): Router {
   // docblock de InvoicePdfService para las simplificaciones de este corte.
   router.get(
     '/:id/pdf',
-    gate,
     authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
@@ -152,7 +154,6 @@ export function createInvoicesRouter(container: AppContainer): Router {
   // ── GET /api/invoices?financialTransactionId=... ───────────────────────────
   router.get(
     '/',
-    gate,
     authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {

@@ -354,3 +354,67 @@ describe('PlatformRepository.getContextInputs()', () => {
     expect(db.lastSql).toContain('JOIN b ON ic.industry_key = b.industry_key');
   });
 });
+
+/* Bloque acotado de la cascada (diseno-cascada-enforcement-2026-08-30.md §3a):
+ * escalones 1 + 3 + NOT_IMPLEMENTED, sin resolveCapabilities(). El fake
+ * distingue las dos queries por el FROM. */
+class ModuleGatesFakeClient implements SqlClient {
+  constructor(
+    private readonly catalog: Array<{ module_key: string; implemented: boolean }>,
+    private readonly overrides: Array<{ module_key: string; enabled: boolean }>,
+  ) {}
+  async query<T = unknown>(sql: string, _params: unknown[] = []): Promise<{ rows: T[]; rowCount?: number }> {
+    const rows = sql.includes('FROM business_modules') ? this.overrides : this.catalog;
+    return { rows: rows as T[], rowCount: rows.length };
+  }
+}
+
+describe('PlatformRepository.getBusinessModuleGates() / getBusinessModules()', () => {
+  it('implemented=FALSE tumba el módulo aunque el override lo prenda -> restrictedBy=NOT_IMPLEMENTED', async () => {
+    const db = new ModuleGatesFakeClient(
+      [{ module_key: 'FACTURACION', implemented: false }],
+      [{ module_key: 'FACTURACION', enabled: true }],
+    );
+    const gates = await new PlatformRepository(db).getBusinessModuleGates('biz-1');
+    expect(gates['FACTURACION']).toEqual({
+      moduleKey: 'FACTURACION', enabled: false, origin: 'TENANT_OVERRIDE', restrictedBy: 'NOT_IMPLEMENTED',
+    });
+  });
+
+  it('override enabled + implemented -> enabled, origin TENANT_OVERRIDE, sin restricción', async () => {
+    const db = new ModuleGatesFakeClient(
+      [{ module_key: 'ALOJAMIENTO', implemented: true }],
+      [{ module_key: 'ALOJAMIENTO', enabled: true }],
+    );
+    const gates = await new PlatformRepository(db).getBusinessModuleGates('biz-1');
+    expect(gates['ALOJAMIENTO']).toEqual({
+      moduleKey: 'ALOJAMIENTO', enabled: true, origin: 'TENANT_OVERRIDE', restrictedBy: null,
+    });
+  });
+
+  it('sin fila de override -> fail-closed: enabled=false, origin SYSTEM_DEFAULT, restrictedBy null (nunca estuvo prendido)', async () => {
+    const db = new ModuleGatesFakeClient(
+      [{ module_key: 'REPORTES', implemented: true }],
+      [],
+    );
+    const gates = await new PlatformRepository(db).getBusinessModuleGates('biz-1');
+    expect(gates['REPORTES']).toEqual({
+      moduleKey: 'REPORTES', enabled: false, origin: 'SYSTEM_DEFAULT', restrictedBy: null,
+    });
+  });
+
+  it('getBusinessModules() proyecta enabled: implemented=FALSE + override=true da false', async () => {
+    const db = new ModuleGatesFakeClient(
+      [
+        { module_key: 'FACTURACION', implemented: false },
+        { module_key: 'ALOJAMIENTO', implemented: true },
+      ],
+      [
+        { module_key: 'FACTURACION', enabled: true },
+        { module_key: 'ALOJAMIENTO', enabled: true },
+      ],
+    );
+    const modules = await new PlatformRepository(db).getBusinessModules('biz-1');
+    expect(modules).toEqual({ FACTURACION: false, ALOJAMIENTO: true });
+  });
+});

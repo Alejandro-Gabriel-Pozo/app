@@ -30,6 +30,7 @@ function fakeContainer(plan: BusinessPlan): AppContainer {
   return {
     getBusinessPlan: vi.fn(async () => plan),
     getBusinessModules: vi.fn(async () => ({})),
+    getBusinessModuleGates: vi.fn(async () => ({})),
     getPlanLimits: vi.fn(async () => { throw new Error('no usado en este test'); }),
     mode: 'postgresql',
   };

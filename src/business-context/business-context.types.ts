@@ -103,6 +103,29 @@ export interface EffectiveCapability {
   contextColor: ContextColor;
 }
 
+/**
+ * Gate de módulo del bloque ACOTADO de la cascada (escalones 1 + 3 +
+ * `NOT_IMPLEMENTED`), tal como lo resuelve
+ * `PlatformRepository.getBusinessModuleGates()` SIN llamar a
+ * `resolveCapabilities()`.
+ *
+ * NO es una `EffectiveCapability`: el preset de rubro (escalón 2) y
+ * `min_plan` (escalón 4) quedan diferidos a Fase 5
+ * (`docs/diseno-cascada-enforcement-2026-08-30.md` §3b). Por eso acá
+ * `origin` sólo toma `SYSTEM_DEFAULT` | `TENANT_OVERRIDE`, y `restrictedBy`
+ * sólo `NOT_IMPLEMENTED` | `null`.
+ *
+ * Reusa `CapabilityOrigin` / `CapabilityRestriction` a propósito: en Fase 5
+ * este gate se reemplaza por la `EffectiveCapability` completa sin cambiar
+ * la forma del `402 MODULE_NOT_ENABLED` (§3e).
+ */
+export interface ModuleGate {
+  moduleKey:    string;
+  enabled:      boolean;
+  origin:       Extract<CapabilityOrigin, 'SYSTEM_DEFAULT' | 'TENANT_OVERRIDE'>;
+  restrictedBy: Extract<CapabilityRestriction, 'NOT_IMPLEMENTED'> | null;
+}
+
 /** Scope de `terminology_defaults`. */
 export type TerminologyScope = 'SYSTEM' | 'INDUSTRY' | 'TENANT';
 

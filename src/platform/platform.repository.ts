@@ -14,7 +14,7 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessPlan} from '../types/enums.js';
 import { BusinessStatus, ModuleKey } from '../types/enums.js';
 import type { PlanLimits } from '../config/plan-limits.js';
-import type { RawContextInputs } from '../business-context/business-context.types.js';
+import type { ModuleGate, RawContextInputs } from '../business-context/business-context.types.js';
 import { assertContextRowShape } from '../business-context/context.row-validation.js';
 
 // ---------------------------------------------------------------------------
@@ -411,28 +411,63 @@ export class PlatformRepository {
   }
 
   /**
-   * Entitlements del negocio, FAIL-CLOSED: un module_key del catálogo que
-   * no tenga fila en business_modules se devuelve como `false`, nunca
-   * `true`. Así, si se agrega un módulo nuevo al catálogo después, no
-   * queda gratis por accidente para negocios que nunca lo pidieron — ver
-   * el bloque ENTITLEMENTS en platform.schema.sql.
+   * Gate de módulo del bloque ACOTADO de la cascada
+   * (`docs/diseno-cascada-enforcement-2026-08-30.md` §3a): escalón 1
+   * (system default -> `false`, fail-closed) + escalón 3 (override del
+   * tenant en `business_modules.enabled`) + `NOT_IMPLEMENTED`
+   * (`modules.implemented = FALSE` => catalogado, sin código detrás).
+   *
+   * NO llama a `resolveCapabilities()`: el preset de rubro (escalón 2) y
+   * `min_plan` (escalón 4) quedan para Fase 5 — cablearlos ahora obligaría
+   * a alimentar input adulterado a una función pura
+   * (`DEFENSIVE_DEVELOPING.md` §1.5). FAIL-CLOSED: un `module_key` del
+   * catálogo sin fila en `business_modules` queda `enabled: false`.
+   *
+   * `restrictedBy` sólo se completa cuando el override PRENDÍA el módulo y
+   * `implemented` lo tumbó — si ya estaba en `false` por los defaults, no
+   * hubo "restricción": quedó apagado desde el vamos.
    */
-  async getBusinessModules(businessId: string): Promise<Record<string, boolean>> {
+  async getBusinessModuleGates(businessId: string): Promise<Record<string, ModuleGate>> {
     const [catalog, entitlements] = await Promise.all([
-      this.db.query<{ module_key: string }>(`SELECT module_key FROM modules`),
+      this.db.query<{ module_key: string; implemented: boolean }>(
+        `SELECT module_key, implemented FROM modules`,
+      ),
       this.db.query<{ module_key: string; enabled: boolean }>(
         `SELECT module_key, enabled FROM business_modules WHERE business_id = $1`,
         [businessId],
       ),
     ]);
 
-    const enabledByKey = new Map(
+    const overrideByKey = new Map(
       entitlements.rows.map(row => [row.module_key, row.enabled]),
     );
 
+    const gates: Record<string, ModuleGate> = {};
+    for (const { module_key: moduleKey, implemented } of catalog.rows) {
+      const override    = overrideByKey.get(moduleKey);
+      const enabledBase = override ?? false;              // escalón 1 (false) + escalón 3
+      gates[moduleKey] = {
+        moduleKey,
+        enabled:      enabledBase && implemented,         // + NOT_IMPLEMENTED
+        origin:       override === undefined ? 'SYSTEM_DEFAULT' : 'TENANT_OVERRIDE',
+        restrictedBy: enabledBase && !implemented ? 'NOT_IMPLEMENTED' : null,
+      };
+    }
+    return gates;
+  }
+
+  /**
+   * Proyección `Record<moduleKey, boolean>` de `getBusinessModuleGates()`
+   * — la forma que consume `GET /api/business/modules`. Mismo resultado que
+   * antes para un negocio con todo `implemented`; un módulo con
+   * `implemented = FALSE` cae a `false` aunque tenga
+   * `business_modules.enabled = TRUE` (§3a, divergencia por `NOT_IMPLEMENTED`).
+   */
+  async getBusinessModules(businessId: string): Promise<Record<string, boolean>> {
+    const gates = await this.getBusinessModuleGates(businessId);
     const modules: Record<string, boolean> = {};
-    for (const { module_key: moduleKey } of catalog.rows) {
-      modules[moduleKey] = enabledByKey.get(moduleKey) ?? false;
+    for (const [moduleKey, gate] of Object.entries(gates)) {
+      modules[moduleKey] = gate.enabled;
     }
     return modules;
   }

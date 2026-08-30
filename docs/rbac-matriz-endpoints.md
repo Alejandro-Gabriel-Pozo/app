@@ -147,9 +147,9 @@ sección 4.
 
 ### `src/facturacion/`
 
-**`invoices.routes.ts`** (todo `requireModule(FACTURACION)`) — dos routers:
-- `createInvoicesRouter`: POST `/` — `FRONT_DESK`; POST `/consolidated` — `MANAGEMENT` (C1-Fase C, "Facturar ahora"); GET `/:id` — `FRONT_DESK`; GET `/:id/pdf` — `FRONT_DESK`; GET `/` — `FRONT_DESK`
-- `createAfipCredentialsRouter`: GET `/status` — `MANAGEMENT`; PUT `/` — `MANAGEMENT`; DELETE `/` — `MANAGEMENT`
+**`invoices.routes.ts`** — `requireModule(FACTURACION)` en las MUTACIONES y en `createAfipCredentialsRouter`. Los GET de `/api/invoices` van **sin** gate de módulo: leer un comprobante fiscal ya emitido es obligación legal de exhibición (`criterios-datos.md` línea 24; ver `diseno-cascada-enforcement-2026-08-30.md` §3d — 30/08/2026). Dos routers:
+- `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo)
+- `createAfipCredentialsRouter` (todo `requireModule(FACTURACION)`): GET `/status` — `MANAGEMENT`; PUT `/` — `MANAGEMENT`; DELETE `/` — `MANAGEMENT`
 
 ### `src/platform/`
 

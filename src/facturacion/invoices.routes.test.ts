@@ -40,14 +40,17 @@ function getHandler(
   const stack = (router as unknown as { stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> }).stack;
   const layer = stack.find((l) => l.route?.path === path && l.route.methods[method]);
   if (!layer?.route) throw new Error(`${method.toUpperCase()} ${path} no está montado`);
-  // stack real: [requireModule(gate), authorize(), handler] -- el handler final es siempre el último.
+  // stack real: mutaciones [requireModule(gate), authorize(), handler]; GET de
+  // /api/invoices [authorize(), handler]. El handler final es siempre el último.
   return layer.route.stack[layer.route.stack.length - 1]!.handle as (req: Request, res: Response, next: (err?: unknown) => void) => Promise<void>;
 }
 
-// requireModule(container, ModuleKey.FACTURACION) es el primer layer de
-// TODAS las rutas de este archivo -- no se ejercita acá (module.middleware.ts
-// ya tiene su propio test), solo hace falta que container exista para
-// construir el router.
+// requireModule(container, ModuleKey.FACTURACION) gatea las MUTACIONES de
+// /api/invoices (POST /, POST /consolidated) y todo el router de credenciales
+// AFIP; los GET de /api/invoices van SIN gate (exhibición legal de comprobantes
+// ya emitidos, diseno-cascada-enforcement-2026-08-30.md §3d). El gate no se
+// ejercita acá (module.middleware.ts tiene su propio test), solo hace falta que
+// container exista para construir el router.
 const FAKE_CONTAINER = {} as AppContainer;
 
 function fakeDb(queryImpl: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>) {
@@ -64,6 +67,26 @@ const INVOICE_ROW = {
   afip_request: {}, afip_response: {}, error_message: null,
   created_at: new Date(), issued_at: new Date(),
 };
+
+describe('gating de FACTURACION en el router', () => {
+  it('los 3 GET de /api/invoices NO llevan el gate: stack [authorize, handler]', () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
+      stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: unknown[] } }>;
+    };
+    const gets = router.stack.filter((l) => l.route && l.route.methods['get']);
+    expect(gets.map((l) => l.route!.path).sort()).toEqual(['/', '/:id', '/:id/pdf']);
+    for (const l of gets) expect(l.route!.stack.length).toBe(2);
+  });
+
+  it('las mutaciones de /api/invoices SÍ llevan el gate: stack [gate, authorize, handler]', () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
+      stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: unknown[] } }>;
+    };
+    const posts = router.stack.filter((l) => l.route && l.route.methods['post']);
+    expect(posts.map((l) => l.route!.path).sort()).toEqual(['/', '/consolidated']);
+    for (const l of posts) expect(l.route!.stack.length).toBe(3);
+  });
+});
 
 describe('GET /api/invoices/:id', () => {
   it('devuelve el comprobante', async () => {

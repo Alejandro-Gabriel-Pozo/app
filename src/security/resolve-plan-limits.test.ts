@@ -28,6 +28,7 @@ function fakeContainer(mode: 'ok' | 'planError' | 'limitsError'): AppContainer {
       return BusinessPlan.PRO;
     }),
     getBusinessModules: vi.fn(async () => ({})),
+    getBusinessModuleGates: vi.fn(async () => ({})),
     getPlanLimits: vi.fn(async () => {
       if (mode === 'limitsError') throw new Error('plan sin límites configurados');
       return FAKE_LIMITS;

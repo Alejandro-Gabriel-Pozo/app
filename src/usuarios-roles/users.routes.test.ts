@@ -129,6 +129,7 @@ function fakeContainer(plan: BusinessPlan | 'ERROR'): AppContainer {
       return plan;
     }),
     getBusinessModules: vi.fn(async () => ({})),
+    getBusinessModuleGates: vi.fn(async () => ({})),
     getPlanLimits: vi.fn(async (p: BusinessPlan) => PLAN_LIMITS_FIXTURE[p]),
     mode: 'postgresql',
   };
