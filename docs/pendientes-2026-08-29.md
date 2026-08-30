@@ -193,6 +193,55 @@ por cada handler registrado para ese tipo de evento**, una transacción
 financiera, cero en dead-letter. Las consultas están en
 `docs/conocimiento/runbook-deploy-render.md`.
 
+### FAILOPEN-001 — fail-open del sidebar: cubierto por diseño, sin prueba empírica (30/08/2026)
+
+Al montar `BusinessContextProvider` en el dashboard (V3-a, `9ea8a62`), el
+gating de navegación pasó a depender de `GET /api/business/context`. El
+comportamiento cuando ese endpoint **no** resuelve con un payload válido está
+**cubierto por diseño**, pero **no se verificó en runtime**. Las dos cosas no
+son lo mismo.
+
+**Cubierto por diseño** (leído en el código el 30/08/2026):
+
+- `loading` y `error` hacen que `useBusinessContext()` devuelva `null`
+  (`appfrontend-main/src/lib/business-context/provider.tsx`).
+- `NavList` (`appfrontend-main/src/app/dashboard/NavList.tsx`) interpreta
+  `ctx === null` como fail-open:
+  `!item.moduleKey || !ctx || ctx.enabledModules.includes(item.moduleKey)` →
+  muestra los ítems modulados.
+- `managementOnly` sigue dependiendo **por separado** de `isManagement` (rol),
+  no del contexto.
+- `provider.tsx` captura el rechazo de la fuente en su `try/catch`; el error
+  no llega como throw al árbol de render del shell.
+- `apiFetch` reintenta 3× (error de red y 503) con backoff 1,5s→3s→6s antes de
+  propagar el rechazo (`appfrontend-main/src/lib/http.ts`).
+
+**No verificado empíricamente:**
+
+- el estado `status: 'error'` del provider (no observado introspectivamente);
+- la ausencia de overlay de Next / pantalla en blanco tras agotar los 3
+  reintentos de red;
+- que `NavList` efectivamente renderice la lista completa en ese estado;
+- las ramas HTTP 503, HTTP 500 y JSON con shape inválido — las tres convergen
+  en el mismo `.catch` y producen el mismo `ctx = null`, pero ninguna se
+  ejecutó contra el shell real.
+- **No hay `error.tsx` ni `ErrorBoundary` en `appfrontend-main/src/app/dashboard/`**:
+  si la suposición del `.catch` del provider fuese falsa, no hay red de
+  seguridad; por eso la prueba directa queda pendiente.
+
+**Por qué se difiere (30/08/2026):** la prueba directa (bloqueo de la request
+`*/api/business/context` en DevTools) necesita un entorno no productivo con
+sesión real de staff no-management, hoy no confirmado. La alternativa
+(`endpointSource` que lanza, o el handler devolviendo 503 en local) es código
+descartable de baja ganancia porque las tres entradas de fallo ya convergen en
+el mismo camino. **No** se crea infraestructura ni se bloquean requests en
+producción para cerrar esto.
+
+**Para cerrarlo:** cuando haya un entorno no-prod ejecutable, correr el bloqueo
+de request en DevTools y confirmar los cinco puntos de arriba; o dejar que
+V3-b o el retiro de `useBusinessModules()` ejerciten el camino de paso y
+registrar la observación entonces.
+
 ### Backlog de producto (HALLAZGO 1 del 27/08, sigue vigente)
 
 | Ítem | Qué falta | Tipo |

@@ -71,7 +71,8 @@ el próximo bloque?*
 > correctamente, pero no se afirma allí la request por la limitación de
 > `PerformanceResourceTiming`. Sigue **sin verificar** el fail-open forzado
 > (bloquear `/api/business/context`) — no se probó para no alterar producción;
-> sólo abordable en local o con bloqueo de DevTools.
+> sólo abordable en local o con bloqueo de DevTools. Diferido como
+> `FAILOPEN-001` (§4): cubierto por diseño, sin prueba empírica.
 
 **Fase 3 confirmada en producción** (29/08, 17:5x UTC). Verificado
 consultando la BD de plataforma, sin aplicar nada a mano:
@@ -163,10 +164,13 @@ ninguna autorizada todavía**:
 | **Cableado de la cascada** | Meter `resolveCapabilities` dentro de `PlatformRepository.getBusinessModules()`. Cambia `requireModule()` y con eso el **402** de todas las rutas con gate. Hoy sería inerte (el único negocio tiene `industry_key` NULL, sin `min_plan`, 6 módulos `active`+`implemented`) pero deja de serlo apenas una precondición se caiga | Diff propio + pruebas sobre los gates. **NO** arrastrado por otro cambio |
 
 **Verificaciones manuales pendientes** (dueño; no bloquean código): el
-fail-open del sidebar cuando `/api/business/context` falla (bloqueo local de
-la request). — `productos/*` quedó observado el 30/08 (§1): ambas pantallas
-cargan y el detalle registra `GET /api/business/modules`; la ausencia de la
-request en la lista no se cuenta como evidencia.
+fail-open del sidebar cuando `/api/business/context` falla está **cubierto por
+diseño pero sin prueba empírica** — `FAILOPEN-001` en
+[pendientes-2026-08-29.md](pendientes-2026-08-29.md), diferido el 30/08 por
+falta de entorno no productivo con sesión de staff no-management. `productos/*`
+quedó observado el 30/08 (§1): ambas pantallas cargan y el detalle registra
+`GET /api/business/modules`; la ausencia de la request en la lista no se
+cuenta como evidencia.
 
 El contrato de `BusinessContext` está cerrado: §5.4 (payload) y §5.5 (consumo:
 tres estados, `permissionGroups`, `industryName`, `industryKey` NULL ≠
