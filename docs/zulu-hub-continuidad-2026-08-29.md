@@ -1,6 +1,7 @@
 # ZULU Hub — Continuidad operativa
 
 - **Fecha de corte:** 2026-08-29, después del deploy de la Fase 3
+- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C) y montaje V3-a en producción, verificados
 - **Para qué:** que una sesión nueva sepa **dónde quedó el proyecto y qué sigue**, sin depender del historial conversacional
 - **Etiquetas:** `mapa-del-sistema` `continuidad`
 
@@ -14,31 +15,43 @@ el próximo bloque?*
 
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
-| `app-main` | `9c590e5` | — | Fase 3 sí, verificada contra la base. La cadena `16e65c2..9c590e5` (pusheada 30/08, en dos tandas) **no tiene efecto observable en runtime** — código sin cablear + docs. Deploy de Render no verificado |
-| `appfrontend-main` | `515bc3f` | `943b0b9` | sí — Vercel, `host.zuluhub.com.ar` |
+| `app-main` | `9119a50` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). El resto de `src/business-context/*` **no cambia el comportamiento**: no está cableado en `getBusinessModules()` |
+| `appfrontend-main` | `9ea8a62` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `9ea8a62…`. **4C + V3-a**: el dashboard consume `GET /api/business/context` para el gating de navegación (`BusinessContextProvider` montado en `dashboard/layout.tsx`) |
 
-> **Sobre esta tabla:** al actualizarla, verificar contra
-> `git rev-parse origin/main` / `git ls-remote`, no contra lo que diga la
-> fila anterior. Historial de la fila de `app-main`: `67151fb` (desactualizado
-> al escribirse) → `c6c4185` → `7dc2de5` → `9c590e5`.
+> **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
+> origin/main`, no contra la fila anterior. Historial de `app-main`: `67151fb`
+> → `c6c4185` → `7dc2de5` → `9c590e5` → `9119a50`.
 >
-> **`origin/main` de `app-main` = `9c590e5`** — pushes del 30/08/2026,
-> autorizados por el dueño en el chat (no había gate técnico; ver GATE-001
-> RETIRADO en `pendientes-2026-08-29.md`). Dos fast-forward, 6 commits:
-> - `3111b33` — `auditoria-dominios.md` revalidada contra producción + 4 dependencias externas de runtime
-> - `630d2ea` — GATE-001 registrado (retirado en `fa9a1c6`)
-> - `4ef41b1` — Fase 4 Bloque 1b: `contextColor` **efectivo** (`industryKey === null ⇒ NEUTRAL`), tipos de proyección honestos, +4 tests (48 → 52). **Sin cablear**
-> - `7dc2de5` — formalización **D-A**: el contrato de `BusinessContext` pierde `navigation` y gana `moduleColors`; namespace de terminología canónico `reservation.*`
-> - `fa9a1c6` — GATE-001 RETIRADO (docs)
-> - `9c590e5` — registro de estos pushes en esta continuidad (docs)
+> **`app-main/origin/main` = `9119a50`** — pushes del 30/08/2026, autorizados
+> en el chat (sin gate técnico; GATE-001 RETIRADO en `pendientes-2026-08-29.md`).
+> Sobre `9c590e5` (docs: D-A + GATE-001 retirado + auditoria-dominios) se
+> agregaron:
+> - `abe8228` — Fase 4 **Bloque 4A**: `PlatformRepository.getContextInputs()` (una sentencia, snapshot consistente entre catálogo / preset / overrides / terminología) + `context.adapter.ts` (compone con los resolvers puros) + `context.row-validation.ts` (forma SQL: columna ausente, `NULL` no permitido, agregado no-array, item incompleto → `ContextDataError`). +44 tests (64 → 108). **No cablea `getBusinessModules()`**
+> - `9119a50` — Fase 4 **Bloque 4B**: `GET /api/business/context` con `authorize(Roles.STAFF)`, montada tras `tenantMiddleware` + `apiLimiter`. `ContextDataError` → 503; negocio inexistente → 404. Payload = contrato D-A + `currency`/`timezone` (de `business_profile`, vía `req.db`) + `permissionGroups` (de `req.user`)
 >
-> Ninguno toca `src/db/`, schema ni runtime de negocio. `src/business-context/*`
-> sigue **sin cablear** (no lo importa nada salvo su test): aunque Render
-> despliegue `9c590e5`, el comportamiento en producción es idéntico. Ver §4.
+> **`appfrontend-main/origin/main` = `9ea8a62`** — sobre `515bc3f`:
+> - `943b0b9` — types/mocks/`ShellBench` a `moduleColors` (D-A)
+> - `a4b3b89` — Fase 4 **Bloque 4C**: `endpointSource()` real (`apiFetch('/api/business/context')` + `isBusinessContext()` type-guard, valida enums sin casts de forma)
+> - `9ea8a62` — **V3-a**: `BusinessContextProvider` montado en `dashboard/layout.tsx` (**sólo si `isAuthenticated`**), `NavList.tsx` extraído (única copia del catálogo `NAV` — href/label/icono/`moduleKey`/`managementOnly`, todo local, D-A), gating por `context.enabledModules` con **fail-open** (loading/error → muestra todo). `--zulu-module-context` sigue **brass estático** (color por módulo = V3-b, aparte). `useBusinessModules()` **intacto** para `productos/*` (doble fuente temporal)
 >
-> **Local, sin pushear:** sólo `943b0b9` en `appfrontend-main`
-> (types/mocks/`ShellBench` a `moduleColors`, D-A). Espera autorización de push
-> por separado.
+> **Evidencia externa (30/08/2026):** Vercel `reservasapp` → deployment
+> `Ready`, SHA servido `9ea8a62f99b6f972557313d7149cb644fdeb8b16`. Con sesión
+> de staff en `host.zuluhub.com.ar/dashboard`: la página carga sin pantalla en
+> blanco ni error de runtime/hidratación; Network **en `/dashboard`** muestra
+> **1** `GET /api/business/context` y **0** `/api/business/modules` (sólo lo
+> observado en esa pantalla — `productos/*` no se abrió); el endpoint responde
+> `200` con `validShape: true`, `industryKey`/`industryName`
+> null, 6 módulos habilitados, 6 `moduleColors` `NEUTRAL`, 10 términos SYSTEM,
+> 7 `permissionGroups`, `hasNavigation: false`. ~2,4 s en una toma (cold-start
+> de Render; sin líneas de retry 503 en consola).
+>
+> **Qué prueba y qué no:** prueba el **comportamiento desplegado** — Vercel
+> sirve `9ea8a62`, el dashboard hace la llamada, el payload es el contrato
+> D-A. **No** prueba: el estado interno `provider = ready` (no observado
+> introspectivamente); `productos/*` con `useBusinessModules()` (sin
+> verificar); el fail-open forzado con bloqueo local de la request (sin
+> verificar). Los commits en los remotos prueban que **existen**, no el
+> comportamiento.
 
 **Fase 3 confirmada en producción** (29/08, 17:5x UTC). Verificado
 consultando la BD de plataforma, sin aplicar nada a mano:
@@ -82,10 +95,18 @@ parser/guard visual y banco de primitives.
 dependencias, sobre de eventos con idempotencia (`processed_events`, schema
 v44), `platform_audit_log`, y el modelo de Business Context.
 
+**Fase 4 — read path completo, en producción.** `4A` (`getContextInputs` +
+adapter + validación de forma SQL), `4B` (`GET /api/business/context`), `4C`
+(`endpointSource()` real). **V3-a** montó el `BusinessContextProvider` en el
+dashboard: el gating de navegación pasó de `useBusinessModules()` a
+`context.enabledModules`, con fail-open preservado. Verificado en producción
+(§1). **No** incluye: color por módulo (V3-b), retiro de `useBusinessModules()`,
+ni el cableado de la cascada en `getBusinessModules()` / `requireModule()` / 402.
+
 **V3 capa 1** (`515bc3f`): `BusinessContextProvider` con fuente reemplazable,
 estados `loading`/`ready`/`error`, `industryKey: null` neutral, y estructura
-responsive. `endpointSource()` **rechaza a propósito** mientras no exista el
-endpoint.
+responsive. `endpointSource()` **ya no rechaza** — desde `a4b3b89` (4C) llama
+al endpoint real, y desde `9ea8a62` (V3-a) el dashboard lo consume.
 
 ---
 
@@ -102,37 +123,34 @@ sólo la lista, para no duplicar:
 | `A11Y-001` | Sin focus trap en `Modal` + 15 modales a mano | Va a **V7**. Todo componente nuevo de V3 nace accesible |
 | — | 6 overlays blancos de Tailwind en Superadmin | V5(a) |
 | — | Prueba E2E del Outbox | La corre el dueño; consultas en el runbook |
-| — | 3 filas desactualizadas en `auditoria-dominios.md` | Cambio documental propio |
+| ✅ | ~~3 filas desactualizadas en `auditoria-dominios.md`~~ | RESUELTO (`3111b33`; cierre del ítem en `0dbbf91`). Clasificación vigente: `host.zuluhub.com.ar` = único dominio propio activo · `reservasapp-teal.vercel.app` = histórico, fuera de servicio · `evil.example.com` = control negativo de CORS, no infraestructura |
 
 Más el backlog de producto (D8, D6, C1-A, C3, C2, Gap C1-C) y la deuda
 técnica heredada, los dos en `pendientes-2026-08-29.md`.
 
 ---
 
-## 4. Próximo bloque, único
+## 4. Próximo bloque
 
-**Fase 4 — `GET /api/business/context` (Bloque 2).** El resolver de la
-cascada **ya está**: `c6c4185` agregó `src/business-context/` como funciones
-puras, con 48 tests, sin cablear a nada. Lo que falta es el adaptador de
-lectura contra las tablas reales y la ruta, montada **después** de
-`tenantMiddleware` (necesita `req.db` para `currency`/`timezone` de
-`business_profile`). Después, el frontend cambia `mockSource()` por la
-fuente real **sin tocar pantallas**.
+**Fase 4 read path + V3-a: CERRADOS y en producción** (§1). Ya no hay un
+"próximo bloque único" obligado — lo que sigue son decisiones **separadas,
+ninguna autorizada todavía**:
 
-**El Bloque 2 no es un refactor de lectura.** Meter la cascada dentro de
-`getBusinessModules()` cambia `requireModule()` y con eso el 402 de todas
-las rutas con gate. Hoy sería inerte —el único negocio tiene `industry_key`
-NULL, `min_plan` NULL y los 6 módulos `active`+`implemented`— pero deja de
-serlo en cuanto una de esas precondiciones se caiga. Va con su propio diff y
-pruebas sobre los gates, no arrastrado por el endpoint.
+| Bloque | Qué | Nota |
+|---|---|---|
+| **V3-b** | Color por módulo: `context.moduleColors[key]` → `--zulu-module-context` inline en el ítem activo del sidebar (hoy brass estático) | Decisión de producto. Diseño propio |
+| Retiro de `useBusinessModules()` | Migrar `productos/*` (2 pantallas) al contexto y eliminar la doble fuente: hoy `/api/business/context` (dashboard) y `/api/business/modules` (`productos/*`) conviven | Bloque de limpieza |
+| **Cableado de la cascada** | Meter `resolveCapabilities` dentro de `PlatformRepository.getBusinessModules()`. Cambia `requireModule()` y con eso el **402** de todas las rutas con gate. Hoy sería inerte (el único negocio tiene `industry_key` NULL, sin `min_plan`, 6 módulos `active`+`implemented`) pero deja de serlo apenas una precondición se caiga | Diff propio + pruebas sobre los gates. **NO** arrastrado por otro cambio |
 
-El contrato está cerrado: payload en §5.4 y consumo (los tres estados,
-`permissionGroups`, `industryName`, `industryKey` NULL ≠ `GENERIC`) en §5.5
-de [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md).
+**Verificaciones manuales pendientes** (dueño; no bloquean código):
+`productos/*` sigue funcionando con `useBusinessModules()`; el fail-open del
+sidebar cuando el endpoint del contexto falla (bloqueo local de la request).
 
-No implementar la navegación con arrays estáticos ni con
-`if (industry === …)`. El shell visual ya existe contra un mock fiel;
-labels, módulos efectivos y colores dependen del contexto del backend.
+El contrato de `BusinessContext` está cerrado: §5.4 (payload) y §5.5 (consumo:
+tres estados, `permissionGroups`, `industryName`, `industryKey` NULL ≠
+`GENERIC`) de [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md).
+La navegación es **catálogo local del frontend** (D-A) — nunca `if (industry === …)`
+ni arrays inferidos del rubro.
 
 ---
 
