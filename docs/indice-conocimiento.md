@@ -91,6 +91,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | `locale` existe en la PK de `terminology_defaults` desde el día uno, pero el producto queda en `es-AR`: resolver de una sola pasada, sin selector de idioma ni fallback entre locales | mismo doc §14 D6 | aceptado |
 | `console.log` en `src/scripts/` a propósito; Pino solo en el proceso del servidor | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) §1.1 | implementado |
 | Sentry no captura `DomainError`/`ValidationError`/`ZodError` | misma §1.2 | implementado |
+| Modelo RBAC = `authorize(Roles.X)` por call-site + matriz + cerca eléctrica, **no** RLS ni router deny-by-default — el aislamiento entre tenants ya es físico (una BD por negocio). La skill `authorization-surface-mapping` se acota a 2 huecos: ownership del portal de cliente (sin tests negativos) y ruta nueva sin `authorize()` en archivo `*.routes.ts` existente | [diseno-rbac-modelo-y-alcance-2026-08-30.md](diseno-rbac-modelo-y-alcance-2026-08-30.md) | aceptado (30/08/2026) |
 
 ### Diseño técnico / RFC (propuesta o cambio complejo)
 
