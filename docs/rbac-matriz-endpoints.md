@@ -336,6 +336,27 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
 
 ## 4. Rutas sin `authorize()` — inventario completo
 
+> **Enforced desde el 30/08/2026.** Este inventario dejó de ser solo
+> documentación: `src/tests/security/rbac-route-coverage.test.ts` lo replica
+> en su allowlist `PUBLIC_ROUTES` (22 entradas, 1:1 con las 22 filas **de
+> ruta** de esta tabla) y falla si una ruta sin capa de autz no figura ahí — o
+> si una entrada del allowlist dejó de matchear ninguna ruta. Las otras dos
+> filas no tienen contraparte y no deben tenerla: la de `app.ts` son rutas que
+> el test no escanea, y la de `platform.routes.ts (resto)` es historial de algo
+> ya resuelto.
+> Agregar una fila acá obliga a agregar la entrada allá, y al revés.
+> **Ese cruce no lo verifica nada automático: es a ojo** (RBAC-SYNC-001).
+>
+> Verificado contra producción el 31/08/2026, sin token: `GET /api/auth/me`,
+> `/api/business/modules`, `/api/business/plan-limits` y `/api/categories`
+> devuelven `401 UNAUTHORIZED` con el JSON de la app, no un 401 de nginx. Eso
+> prueba que **hoy** el mount de esas rutas está después del `authenticate()`
+> de `src/app.ts:267`. Nada lo mantiene así: mover un `app.use` por encima de
+> esa línea las deja públicas y las dos cercas siguen en verde (RBAC-MOUNT-001
+> en `pendientes-2026-08-31.md`). Contra-chequeo:
+> `GET /api/customer/foo/availability` devuelve `404 BUSINESS_NOT_FOUND`,
+> llega al handler sin token, pública como dice esta tabla.
+
 | Ruta | Por qué |
 |---|---|
 | `business.routes.ts` POST `/register` | Pública — alta de negocio nuevo, nadie tiene JWT todavía |
@@ -392,7 +413,9 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
 - Panel de superadmin real para editar `plan_limits`/`role_presets` por
   plan y cambiar el plan de un negocio — sesión de diseño de producto
   aparte, con las preguntas de negocio ya relevadas.
-- `categories.routes.ts` GET sin gate de rol (sección 4) — pendiente de
-  confirmar con el dueño.
+- ~~`categories.routes.ts` GET sin gate de rol (sección 4) — pendiente de
+  confirmar con el dueño~~ — ✅ confirmado intencional en la sesión posterior
+  del 23/08/2026; la fila de la sección 4 es la buena. Desde el 30/08/2026
+  queda fijado en código en `PUBLIC_ROUTES`.
 - ~~Self-service de "olvidé mi contraseña" para staff~~ — ✅ resuelto
   (sesión posterior, 23/08/2026): `POST /api/password-resets/request`.

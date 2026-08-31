@@ -41,7 +41,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | **Visión de producto multirubro**, con la tabla que concilia el plan contra lo implementado | [plan-multirubro-maestro-2026-08-29.md](plan-multirubro-maestro-2026-08-29.md) | Dirección (no orden de implementación) |
 | Plan ejecutado de separación de dominios + las 7 decisiones cerradas + contrato de `BusinessContext` (§5.4 payload, §5.5 consumo) | [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md) | Diseño ejecutado |
 | Deploy, respaldos, rollback y las trampas que ya costaron un incidente | [conocimiento/runbook-deploy-render.md](conocimiento/runbook-deploy-render.md) | Runbook |
-| Log de sesión (más reciente) | [pendientes-2026-08-29.md](pendientes-2026-08-29.md) | Historial, no catálogo |
+| Log de sesión (más reciente) | [pendientes-2026-08-31.md](pendientes-2026-08-31.md) | Historial, no catálogo. Siempre el de **fecha más alta** en `docs/`; si esta fila quedó vieja, gana el archivo |
 | Backlog de producto por rubro | [roadmap-pms-multirubro.md](roadmap-pms-multirubro.md) | Roadmap (no pendientes) |
 | **Referencia externa de inventario** — `C:\Users\Usuario\Downloads\proyecto script` (NQNTUR, ERP-lite sobre Apps Script). Es el espejo de este repo: su `REVIEW-ERP-LITE.md` lista como gaps propios lo que acá ya está (AFIP, hospedaje, caja, cuentas corrientes), y su fuerte es el inventario que acá falta. Ya se adoptaron su mapa `TRANSICIONES` y `DESTINOS_CONSUMO` (consumo≠merma); conteo físico (3 acciones: AJUSTAR/FALTA_MOVIMIENTO/DESCARTAR) y lotes/FEFO siguen sin adoptar (ver pendientes 27/08) | Fuera del repo | Referencia externa |
 
@@ -91,7 +91,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | `locale` existe en la PK de `terminology_defaults` desde el día uno, pero el producto queda en `es-AR`: resolver de una sola pasada, sin selector de idioma ni fallback entre locales | mismo doc §14 D6 | aceptado |
 | `console.log` en `src/scripts/` a propósito; Pino solo en el proceso del servidor | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) §1.1 | implementado |
 | Sentry no captura `DomainError`/`ValidationError`/`ZodError` | misma §1.2 | implementado |
-| Modelo RBAC = `authorize(Roles.X)` por call-site + matriz + cerca eléctrica, **no** RLS ni router deny-by-default — el aislamiento entre tenants ya es físico (una BD por negocio). La skill `authorization-surface-mapping` se acota a 2 huecos: ownership del portal de cliente (sin tests negativos) y ruta nueva sin `authorize()` en archivo `*.routes.ts` existente | [diseno-rbac-modelo-y-alcance-2026-08-30.md](diseno-rbac-modelo-y-alcance-2026-08-30.md) | aceptado (30/08/2026) |
+| Modelo RBAC = `authorize(Roles.X)` por call-site + matriz + cerca eléctrica, **no** RLS ni router deny-by-default — el aislamiento entre tenants ya es físico (una BD por negocio). La skill `authorization-surface-mapping` se acota a 2 huecos: ownership del portal de cliente (sin tests negativos, **sigue abierto** — RBAC-OWN-001) y ruta nueva sin `authorize()` en archivo `*.routes.ts` existente (**mitigado el 30/08/2026** por `src/tests/security/rbac-route-coverage.test.ts`) | [diseno-rbac-modelo-y-alcance-2026-08-30.md](diseno-rbac-modelo-y-alcance-2026-08-30.md) | aceptado (30/08/2026) |
 
 ### Diseño técnico / RFC (propuesta o cambio complejo)
 
@@ -120,7 +120,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | `SELECT FOR UPDATE` sobre 0 filas; recurso exclusivo vs cupo | [conocimiento/playbook-locks-exclusividad.md](conocimiento/playbook-locks-exclusividad.md) |
 | Wiring tenant: `req.db` vs pool de plataforma; `Pick<Repo>` en servicios | [DEFENSIVE_DEVELOPING.md](DEFENSIVE_DEVELOPING.md) §3 + `app.ts` |
 | 404 de detalle: `isApiError` + `err.code`, nunca `err.status` | `appfrontend-main/src/lib/apiErrors.ts`; caso Órdenes 25/08 |
-| Cambiar `authorize(Roles.X)`: matriz RBAC + `EXPECTED_AUTHORIZE_CALL_SITES` | `app-main/CLAUDE.md` sección RBAC |
+| Cambiar `authorize(Roles.X)`: matriz RBAC + `EXPECTED_AUTHORIZE_CALL_SITES` + `PUBLIC_ROUTES` (si la ruta es pública) | `app-main/CLAUDE.md` sección RBAC |
 | `update()`/`deactivate()` de una entidad auditada: el UPDATE y el INSERT en `audit_log` deben compartir transacción, no dos `await` sueltos | [conocimiento/playbook-audit-log-transaccional.md](conocimiento/playbook-audit-log-transaccional.md) |
 | Regla nueva de `dependency-cruiser`: verificarla con un archivo de violación de prueba ANTES de darla por buena — para un paquete npm, `to.path` es la ruta resuelta (`node_modules/express/index.js`), no el especificador, y una regla mal escrita nunca falla | `.dependency-cruiser.cjs` (docblock); pendientes 28/08 |
 | 2+ campos independientes que forman un concepto de negocio con nombre — antes de construir el alta, agrupar en selector nombrado + resumen visible, no controles sueltos | [conocimiento/playbook-campos-interactuantes-selector-nombrado.md](conocimiento/playbook-campos-interactuantes-selector-nombrado.md) |

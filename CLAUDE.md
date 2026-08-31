@@ -66,6 +66,23 @@ test es una cerca eléctrica (cuenta call-sites reales contra un número
 fijo), no un sistema que interpreta código; si rompe, es la señal de que
 el maestro se desactualizó.
 
+Desde el 30/08/2026 hay una **segunda cerca**:
+`src/tests/security/rbac-route-coverage.test.ts` recorre los `*.routes.ts` y
+falla si un `router.<method>()` no tiene `authorize(Roles.X)` /
+`authorizePlatform(...)` en su cadena ni un `router.use()` de autz previo,
+salvo que figure en su allowlist `PUBLIC_ROUTES` con el motivo. Cubre lo que
+la cerca de conteo NO ve: una ruta agregada a un archivo que YA existe, sin
+`authorize()` (Hueco 2 del ADR
+`docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`).
+
+Consecuencia práctica: ahora son **tres** artefactos a mantener en sync a
+mano — la sección 4 de la matriz, el `PUBLIC_ROUTES` del test nuevo y los
+`authorize()` reales. El test cubre el cruce `PUBLIC_ROUTES` contra el código
+en las dos direcciones (ruta sin autz que falta en el allowlist, y entrada del
+allowlist que ya no matchea); **nada verifica sección 4 de la matriz contra
+`PUBLIC_ROUTES`** — es a ojo
+(RBAC-SYNC-001). Si agregás una ruta pública, tocá los dos.
+
 ## Skills de ingeniería (capa técnica)
 
 14 skills genéricas de ingeniería y seguridad en `.claude/skills/`,

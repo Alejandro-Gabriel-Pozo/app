@@ -54,7 +54,7 @@ repetirla con el token de otro cliente, esperar 403/404).
 Es el **Hueco 1** del ADR `docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`
 y el territorio directo de la skill `authorization-surface-mapping`.
 
-### RBAC-ROUTE-001 — una ruta sin `authorize()` pasa la cerca eléctrica sin ser vista
+### ✅ RBAC-ROUTE-001 — una ruta sin `authorize()` pasa la cerca eléctrica sin ser vista — RESUELTO (`a17fdd2`)
 
 **Dónde:** `src/tests/security/rbac-matrix-sync.test.ts`, cualquier
 `*.routes.ts` existente.
@@ -66,10 +66,37 @@ ninguno de los dos números → pasa verde. La autorización es opt-in por
 ruta, no deny-by-default, así que esa ruta queda abierta a cualquier
 usuario autenticado sin que nada avise.
 
-**Mitigación propuesta (no implementada):** un test que recorra los
-`*.routes.ts` y falle si un `router.get/post/patch/put/delete(...)` no
-tiene `authenticate` / `authorize` en su cadena. Es el **Hueco 2** del
-mismo ADR.
+**Resuelto el 30/08/2026** — `src/tests/security/rbac-route-coverage.test.ts`
+(commit `a17fdd2`). Recorre los `*.routes.ts` y falla si un
+`router.<method>()` no tiene `authorize(Roles.X)` / `authorizePlatform(...)`
+en su cadena ni un `router.use()` de autz previo, salvo que figure en el
+allowlist `PUBLIC_ROUTES` con su motivo; también falla si una entrada del
+allowlist dejó de matchear. Sobre las 245 registraciones de ruta del repo:
+203 con autz propia, 20 por `router.use()`, 22 en el allowlist — y esas 22
+son 1:1 con las 22 filas **de ruta** de la sección 4 de
+`rbac-matriz-endpoints.md` (inventario ya auditado el 23/08/2026), o sea que
+no blanquea nada nuevo. Las otras 2 filas de esa tabla (`app.ts` y
+`platform.routes.ts (resto)`) no tienen ni deben tener contraparte.
+
+Ojo con dos números parecidos que miden cosas distintas: estos 203 son
+**registraciones de ruta cubiertas por su propia cadena**; el
+`EXPECTED_AUTHORIZE_CALL_SITES = 204` de `rbac-matrix-sync.test.ts` cuenta
+**call-sites de `authorize`**. No hay que hacerlos coincidir.
+
+**Desviación del ADR:** se exige `authorize`/`authorizePlatform`, no
+`authenticate` — este último se aplica a nivel de montaje en `src/app.ts`,
+no por ruta.
+
+**Verificación empírica (31/08/2026, producción, sin token):** `GET
+/api/auth/me`, `/api/business/modules`, `/api/business/plan-limits` y
+`/api/categories` → `401 UNAUTHORIZED` con el JSON de la app;
+`GET /api/customer/foo/availability` → `404 BUSINESS_NOT_FOUND` (pública a
+propósito, y sirve de contra-chequeo de que el probe discrimina).
+
+**Huecos residuales** (en el docblock del test, y ver RBAC-SYNC-001 en
+`pendientes-2026-08-31.md`): `guardLines` es por archivo y por línea, no por
+instancia de `Router()`; `src/app.ts` no se escanea; no se valida el orden
+de montaje.
 
 ---
 

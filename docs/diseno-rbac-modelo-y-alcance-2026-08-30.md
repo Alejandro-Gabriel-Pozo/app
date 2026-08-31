@@ -98,11 +98,26 @@ de que `req.user.customerId` se enhebre en cada query del portal
 `Roles.CUSTOMER_ONLY`). No hay guard estructural ni tests negativos
 (capturar como dueño → repetir como otro cliente → esperar 403/404).
 
-**Hueco 2 — Ruta nueva sin `authorize()` en un archivo `*.routes.ts`
-existente.** La cerca de conteo no la ve (no suma un `authorize(Roles.X)`)
+**Hueco 2 (mitigado el 30/08/2026) — Ruta nueva sin `authorize()` en un
+archivo `*.routes.ts` existente.** La cerca de conteo no la ve (no suma un `authorize(Roles.X)`)
 y `EXPECTED_ROUTES_FILE_COUNT` tampoco (no es archivo nuevo). Mitigación
 que empuja la skill: un test que falle si un `router.get/post/patch/...`
 no tiene `authenticate` / `authorize` en su cadena.
+
+> **Mitigado** por `src/tests/security/rbac-route-coverage.test.ts` (commit
+> `a17fdd2`, 30/08/2026). **Desviación deliberada respecto del párrafo de
+> arriba:** el test exige `authorize(Roles.X)` / `authorizePlatform(...)`, y
+> **no** `authenticate` — `authenticate()` se aplica a nivel de montaje en
+> `src/app.ts`, no por ruta — y resuelve ese eje con un allowlist
+> (`PUBLIC_ROUTES`, 22 entradas, 1:1 con la sección 4 de la matriz).
+>
+> Quedan tres huecos residuales, anotados en el docblock del test:
+> `guardLines` es por archivo y por número de línea, no por instancia de
+> `Router()`; `src/app.ts` no se escanea (registra 3 rutas a mano); y no se
+> valida el orden de montaje, del que depende la seguridad de 7 de las 22
+> entradas del allowlist.
+>
+> **Hueco 1 sigue abierto** — este trabajo no lo toca.
 
 ## Gatillo de revisión
 
