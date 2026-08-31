@@ -1,7 +1,7 @@
 # ZULU Hub — Continuidad operativa
 
 - **Fecha de corte:** 2026-08-29, después del deploy de la Fase 3
-- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites
+- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites. **Cableado acotado de la cascada** (`dbf9503`, precedido por `e384e3a`): `getBusinessModuleGates()` con escalones 1+3+`NOT_IMPLEMENTED`, `restrictedBy`/`origin` en el 402, GET de `/api/invoices` sin gate de módulo — **pusheado a `origin/main`, sin verificación en el runtime desplegado todavía**
 - **Para qué:** que una sesión nueva sepa **dónde quedó el proyecto y qué sigue**, sin depender del historial conversacional
 - **Etiquetas:** `mapa-del-sistema` `continuidad`
 
@@ -15,21 +15,25 @@ el próximo bloque?*
 
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
-| `app-main` | `fb70e22` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). El resto de `src/business-context/*` **no cambia el comportamiento**: no está cableado en `getBusinessModules()`; sólo commits de continuidad/pendientes (no tocan código) |
+| `app-main` | `dbf9503` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para `biz-demo-01` (6 módulos `implemented`) el `Record` es **idéntico** al anterior. **Pusheado a `origin/main`; NO verificado en el runtime desplegado** |
 | `appfrontend-main` | `367a65f` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `367a65f`. **4C + V3-a + V3-b + retiro de `useBusinessModules()`**: el dashboard consume `GET /api/business/context` para el gating de navegación; el ítem activo del sidebar toma el color de contexto por módulo (`moduleColors[key]` → `--zulu-module-context` de la barra + glow; etiqueta/icono en `--text-primary`; píldora sin recolor); `productos/*` también consumen el contexto (`useModuloVisible('FACTURACION')`) — sin la doble fuente `/api/business/modules` |
 
 > **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
 > origin/main`, no contra la fila anterior. Historial de `app-main`: `67151fb`
 > → `c6c4185` → `7dc2de5` → `9c590e5` → `9119a50` → `6630c16` → `bb5e6a4` → `f08024f`
-> → `9068dc5` → `4a2b6fa` → `fb70e22`.
+> → `9068dc5` → `4a2b6fa` → `fb70e22` → `8979ebc` → `24cac16` → `847168c`
+> → `e384e3a` → `dbf9503`.
 >
-> **`app-main/origin/main` = `fb70e22`** — pushes del 30/08/2026, autorizados
+> **`app-main/origin/main` = `dbf9503`** — pushes del 30/08/2026, autorizados
 > en el chat (sin gate técnico; GATE-001 RETIRADO en `pendientes-2026-08-29.md`).
 > Sobre `9c590e5` (docs: D-A + GATE-001 retirado + auditoria-dominios) se
 > agregaron:
 > - `abe8228` — Fase 4 **Bloque 4A**: `PlatformRepository.getContextInputs()` (una sentencia, snapshot consistente entre catálogo / preset / overrides / terminología) + `context.adapter.ts` (compone con los resolvers puros) + `context.row-validation.ts` (forma SQL: columna ausente, `NULL` no permitido, agregado no-array, item incompleto → `ContextDataError`). +44 tests (64 → 108). **No cablea `getBusinessModules()`**
 > - `9119a50` — Fase 4 **Bloque 4B**: `GET /api/business/context` con `authorize(Roles.STAFF)`, montada tras `tenantMiddleware` + `apiLimiter`. `ContextDataError` → 503; negocio inexistente → 404. Payload = contrato D-A + `currency`/`timezone` (de `business_profile`, vía `req.db`) + `permissionGroups` (de `req.user`)
-> - `6630c16` · `bb5e6a4` · `f08024f` · `9068dc5` · `4a2b6fa` · `fb70e22` — **sólo continuidad/pendientes** (no tocan código): verificación manual de `productos/*`, `FAILOPEN-001` (diferido), corrección del estado remoto de `app-main`, V3-b verificado en producción, y el registro del retiro de `useBusinessModules()`
+> - `6630c16` · `bb5e6a4` · `f08024f` · `9068dc5` · `4a2b6fa` · `fb70e22` · `8979ebc` — **sólo continuidad/pendientes** (no tocan código): verificación manual de `productos/*`, `FAILOPEN-001` (diferido), correcciones del estado remoto de `app-main`, V3-b verificado en producción, y el registro del retiro de `useBusinessModules()`
+> - `24cac16` · `847168c` — **docs de diseño y método** (no tocan código): `diseno-cascada-enforcement-2026-08-30.md` (versión acotada a-e), `diseno-lifecycle-plan-fase5-2026-08-30.md` (downgrade/preset + hallazgo nav-vs-gate), `DECISION_REVIEW.md` (método "análisis de implicancias"), entradas en `indice-conocimiento.md`
+> - `e384e3a` — **sync del maestro RBAC**: `rbac-matrix-sync.test.ts` 203→204 / 36→37 + fila de `business-context.routes.ts` en `rbac-matriz-endpoints.md` (el Bloque 4B `9119a50` lo dejó pendiente). Cierra 2 fallos pre-existentes de la cerca eléctrica
+> - `dbf9503` — **cableado acotado de la cascada** (primer commit que toca runtime desde `9119a50`): `getBusinessModuleGates()` (escalones 1+3+`NOT_IMPLEMENTED`, sin `resolveCapabilities()`), `getBusinessModules()` como proyección, `requireModule` con `restrictedBy`/`origin` en el 402 + log `info`/`warn`, GET de `/api/invoices` sin gate de módulo (exhibición legal — `criterios-datos.md` L24). `tsc`/`lint`/`lint:arch`/`vitest` (1695) en verde. Inerte para `biz-demo-01`; deja de serlo si un módulo pasa a `implemented=false`
 >
 > **`appfrontend-main/origin/main` = `367a65f`** — sobre `515bc3f`:
 > - `943b0b9` — types/mocks/`ShellBench` a `moduleColors` (D-A)
@@ -152,8 +156,17 @@ el color de contexto por módulo al ítem activo del sidebar: barra + glow =
 de sus límites** (§1: en prod sólo se observó NEUTRAL — no hay negocio
 clasificado). **`367a65f`** retiró `useBusinessModules()`: `productos/*` pasan a
 `useModuloVisible('FACTURACION')` del contexto y se elimina la doble fuente
-(`/api/business/modules` queda sólo del lado servidor). **No** incluye: el
-cableado de la cascada en `getBusinessModules()` / `requireModule()` / 402.
+(`/api/business/modules` queda sólo del lado servidor).
+
+**Cableado acotado de la cascada — `dbf9503` (precedido por `e384e3a`).**
+`getBusinessModules()` / `requireModule()` / 402 ahora resuelven la **versión
+acotada**: escalones 1 (fail-closed) + 3 (override del tenant) + `NOT_IMPLEMENTED`,
+vía `PlatformRepository.getBusinessModuleGates()`, **sin** `resolveCapabilities()`.
+El 402 suma `restrictedBy`/`origin` (aditivo, backend-only) y un log
+(`info` normal, `warn` sólo en `NOT_IMPLEMENTED`). Los GET de `/api/invoices`
+salen del gate de módulo (exhibición legal). Los escalones 2 (preset de rubro) y
+4 (`min_plan`) y los kill-switches `active`/`deleted` **siguen fuera**, para
+Fase 5. Pusheado a `origin/main`; **no verificado en el runtime desplegado**.
 
 **V3 capa 1** (`515bc3f`): `BusinessContextProvider` con fuente reemplazable,
 estados `loading`/`ready`/`error`, `industryKey: null` neutral, y estructura
@@ -186,13 +199,15 @@ técnica heredada, los dos en `pendientes-2026-08-29.md`.
 
 ## 4. Próximo bloque
 
-**Fase 4 read path + V3-a + V3-b + retiro de `useBusinessModules()`: CERRADOS y
-en producción** (§1). Ya no hay un "próximo bloque único" obligado — lo que
+**Fase 4 read path + V3-a + V3-b + retiro de `useBusinessModules()` + cableado
+acotado de la cascada (`dbf9503`): CERRADOS** (§1; el acotado pusheado pero sin
+verificación en runtime). Ya no hay un "próximo bloque único" obligado — lo que
 sigue son decisiones **separadas, ninguna autorizada todavía**:
 
 | Bloque | Qué | Nota |
 |---|---|---|
-| **Cableado de la cascada** | Meter `resolveCapabilities` dentro de `PlatformRepository.getBusinessModules()`. Cambia `requireModule()` y con eso el **402** de todas las rutas con gate. Hoy sería inerte (el único negocio tiene `industry_key` NULL, sin `min_plan`, 6 módulos `active`+`implemented`) pero deja de serlo apenas una precondición se caiga | Diff propio + pruebas sobre los gates. **NO** arrastrado por otro cambio |
+| **Cascada — escalones 2 y 4** | El bloque acotado (`dbf9503`) ya cableó escalones 1+3+`NOT_IMPLEMENTED`. Faltan el escalón 2 (preset de rubro) y el 4 (`min_plan`), más los kill-switches `active`/`deleted` con superficie controlada. Requieren las pantallas de Superadmin (Fase 5) para no armar un kill-switch de blast-radius total sin rastro ni preview | Fase 5 — `diseno-lifecycle-plan-fase5-2026-08-30.md`. **Decisión (B)**: se reemplaza el cuerpo de 2 queries por `comoRecordDeModulos(resolveCapabilities(inputReal))` con input real completo, sin parámetro de "qué escalones" |
+| **Verificar el acotado en runtime** | `dbf9503` está en `origin/main` pero no se corrió contra el runtime desplegado ni la BD de `biz-demo-01`. Confirmar: `Record` idéntico al anterior, 402 con `restrictedBy`/`origin`, GET de `/api/invoices` sin 402 de módulo | Read-only; no bloquea código |
 
 **Verificaciones manuales pendientes** (dueño; no bloquean código): el
 fail-open del sidebar cuando `/api/business/context` falla está **cubierto por

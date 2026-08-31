@@ -1,9 +1,13 @@
 # Diseño — cableado acotado de la cascada de capacidades en el gate de módulos
 
 - **Fecha:** 2026-08-30
-- **Estado:** decidido. La implementación de la versión acotada (a-e) está
-  **autorizada**, sin encarar todavía. Los escalones y decisiones diferidos van
-  a Fase 5 — ver [diseno-lifecycle-plan-fase5-2026-08-30.md](diseno-lifecycle-plan-fase5-2026-08-30.md).
+- **Estado:** **implementada** en `dbf9503` (app-main, 30/08/2026), precedida
+  por `e384e3a` (sync del maestro RBAC). Ajustes del análisis de implicancias
+  aplicados: **P5** — nivel de log (`info` en el 402 fail-closed normal, `warn`
+  sólo cuando `restrictedBy = NOT_IMPLEMENTED`); **P6** — bloque
+  `invoices.routes.ts` de `rbac-matriz-endpoints.md` reescrito. Los escalones y
+  decisiones diferidos van a Fase 5 — ver
+  [diseno-lifecycle-plan-fase5-2026-08-30.md](diseno-lifecycle-plan-fase5-2026-08-30.md).
 - **Etiquetas:** `capacidades` `entitlements` `autorización` `Fase-5`
 
 ## 1. Contexto
@@ -60,17 +64,26 @@ la versión completa:
 
 ## 5. Verificación
 
-- `tsc --noEmit`; suite `vitest` completa verde.
+**Ejecutado en `dbf9503`:** `tsc --noEmit`, `npm run lint`, `npm run lint:arch`
+(0 violaciones) y `npx vitest run` (1695 pasan, 1 skip, 1 todo, 0 fallan) en
+verde. Pendiente: chequeo en el runtime desplegado y contra la BD de plataforma
+de `biz-demo-01` (abajo).
+
+- `tsc --noEmit`; suite `vitest` completa verde. ✅ (`dbf9503`)
 - Test de **equivalencia**: para un snapshot tipo `biz-demo-01` (`industry_key`
   NULL, sin `min_plan`, todos `active`+`implemented`), el `Record` resultante es
   idéntico al del `getBusinessModules()` actual — la función
   `equivaleAGetBusinessModules()` (`capability.resolver.ts`) ya lo predice.
+  Cubierto por `platform.repository.test.ts` (caso "override + `implemented` →
+  enabled"). ✅
 - Test de **divergencia por `NOT_IMPLEMENTED`**: un módulo con `implemented=false`
   → `false` en el nuevo, aunque tenga fila `business_modules.enabled=true`.
+  Cubierto por `platform.repository.test.ts` + `module.middleware.test.ts`. ✅
 - **Chequeo read-only contra la BD de plataforma de `biz-demo-01`**: correr la
   nueva resolución contra datos reales y confirmar `Record` idéntico al actual.
-- **Rollback:** `git revert`. Sin cambio de schema ni de datos — la cascada lee
-  columnas que ya existen.
+  ⏳ pendiente (runtime).
+- **Rollback:** `git revert dbf9503` (y `e384e3a` si hace falta). Sin cambio de
+  schema ni de datos — la cascada lee columnas que ya existen.
 
 ## 6. Qué queda para Fase 5
 
