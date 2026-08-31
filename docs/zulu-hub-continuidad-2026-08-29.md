@@ -15,7 +15,7 @@ el próximo bloque?*
 
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
-| `app-main` | `dbf9503` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para `biz-demo-01` (6 módulos `implemented`) el `Record` es **idéntico** al anterior. **Pusheado a `origin/main`; NO verificado en el runtime desplegado** |
+| `app-main` | `dbf9503` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para los 2 negocios de la BD el `Record` es **idéntico** al anterior — equivalencia verificada contra `pdb-ppms` el 30/08 (§1, re-chequeo). **Pusheado a `origin/main`; falta la confirmación en el runtime desplegado (sesión de staff)** |
 | `appfrontend-main` | `367a65f` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `367a65f`. **4C + V3-a + V3-b + retiro de `useBusinessModules()`**: el dashboard consume `GET /api/business/context` para el gating de navegación; el ítem activo del sidebar toma el color de contexto por módulo (`moduleColors[key]` → `--zulu-module-context` de la barra + glow; etiqueta/icono en `--text-primary`; píldora sin recolor); `productos/*` también consumen el contexto (`useModuloVisible('FACTURACION')`) — sin la doble fuente `/api/business/modules` |
 
 > **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
@@ -115,6 +115,24 @@ business_modules en PRESET: 0     businesses sin rubro: 1 de 1
 Las 6 filas de `business_modules` tienen `created_at = updated_at`: el
 trigger nunca disparó, así que ningún UPDATE tocó datos históricos.
 
+**Re-chequeo de la BD de plataforma (`pdb-ppms`, 30/08/2026)** — read-only, sin
+aplicar nada:
+
+```text
+businesses 2 (biz-demo-01 PRO · cd6cd508 FREE) · sin rubro: 2 de 2
+business_modules 12 (6 por negocio) · biz-demo-01: 6 enabled ·
+  cd6cd508: sólo ALOJAMIENTO enabled
+modules 6 · implemented=false: 0 · active=false ó deleted_at: 0 · min_plan: 0
+```
+
+Se registró un segundo negocio (`cd6cd508-f219-4bde-81ec-7a1d74f02074`, FREE,
+sin rubro) después del corte de Fase 3. **Equivalencia del cableado acotado
+(`dbf9503`) verificada contra estos datos**: para los 2 negocios y los 6
+módulos, `getBusinessModules()` nuevo == viejo (el `&& implemented` es no-op
+porque no hay módulos `implemented=false`; escalones 2/4 inertes porque no hay
+`min_plan` ni `industry_key`). Falta sólo la confirmación en el runtime
+desplegado con sesión de staff.
+
 **Respaldos durables vigentes y sin uso:**
 
 | Proyecto | Branch | Id |
@@ -207,7 +225,7 @@ sigue son decisiones **separadas, ninguna autorizada todavía**:
 | Bloque | Qué | Nota |
 |---|---|---|
 | **Cascada — escalones 2 y 4** | El bloque acotado (`dbf9503`) ya cableó escalones 1+3+`NOT_IMPLEMENTED`. Faltan el escalón 2 (preset de rubro) y el 4 (`min_plan`), más los kill-switches `active`/`deleted` con superficie controlada. Requieren las pantallas de Superadmin (Fase 5) para no armar un kill-switch de blast-radius total sin rastro ni preview | Fase 5 — `diseno-lifecycle-plan-fase5-2026-08-30.md`. **Decisión (B)**: se reemplaza el cuerpo de 2 queries por `comoRecordDeModulos(resolveCapabilities(inputReal))` con input real completo, sin parámetro de "qué escalones" |
-| **Verificar el acotado en runtime** | `dbf9503` está en `origin/main` pero no se corrió contra el runtime desplegado ni la BD de `biz-demo-01`. Confirmar: `Record` idéntico al anterior, 402 con `restrictedBy`/`origin`, GET de `/api/invoices` sin 402 de módulo | Read-only; no bloquea código |
+| **Verificar el acotado en runtime** | Equivalencia del `Record` **ya verificada** contra la BD (`pdb-ppms`, 30/08 — §1). Falta en el runtime desplegado con sesión de staff: que el deploy corrió `dbf9503`, que un 402 gateado responde con `restrictedBy`/`origin`, y que un GET de `/api/invoices` ya no da 402 de módulo | Owner-side, como `FAILOPEN-001`; no bloquea código |
 
 **Verificaciones manuales pendientes** (dueño; no bloquean código): el
 fail-open del sidebar cuando `/api/business/context` falla está **cubierto por
