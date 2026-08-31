@@ -1,7 +1,7 @@
 # ZULU Hub — Continuidad operativa
 
 - **Fecha de corte:** 2026-08-29, después del deploy de la Fase 3
-- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites. **Cableado acotado de la cascada** (`dbf9503`, precedido por `e384e3a`): `getBusinessModuleGates()` con escalones 1+3+`NOT_IMPLEMENTED`, `restrictedBy`/`origin` en el 402, GET de `/api/invoices` sin gate de módulo — **pusheado a `origin/main`, sin verificación en el runtime desplegado todavía**
+- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites. **Cableado acotado de la cascada** (`dbf9503`, precedido por `e384e3a`): `getBusinessModuleGates()` con escalones 1+3+`NOT_IMPLEMENTED`, `restrictedBy`/`origin` en el 402, GET de `/api/invoices` sin gate de módulo — **pusheado y verificado en el runtime desplegado el 30/08** (sesión de staff; §1)
 - **Para qué:** que una sesión nueva sepa **dónde quedó el proyecto y qué sigue**, sin depender del historial conversacional
 - **Etiquetas:** `mapa-del-sistema` `continuidad`
 
@@ -15,7 +15,7 @@ el próximo bloque?*
 
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
-| `app-main` | `dbf9503` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para los 2 negocios de la BD el `Record` es **idéntico** al anterior — equivalencia verificada contra `pdb-ppms` el 30/08 (§1, re-chequeo). **Pusheado a `origin/main`; falta la confirmación en el runtime desplegado (sesión de staff)** |
+| `app-main` | `dbf9503` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para los 2 negocios de la BD el `Record` es **idéntico** al anterior — equivalencia verificada contra `pdb-ppms` el 30/08 (§1, re-chequeo). **Verificado en el runtime desplegado el 30/08** (sesión de staff en `cd6cd508`): `GET /api/products` y `GET /api/reports/` → `402` con `restrictedBy: null` + `origin: 'TENANT_OVERRIDE'`; `GET /api/invoices/:id` → `404`, `GET /api/invoices` → `400` (ninguno `402` de módulo). Confirma que Render sirve `dbf9503` |
 | `appfrontend-main` | `367a65f` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `367a65f`. **4C + V3-a + V3-b + retiro de `useBusinessModules()`**: el dashboard consume `GET /api/business/context` para el gating de navegación; el ítem activo del sidebar toma el color de contexto por módulo (`moduleColors[key]` → `--zulu-module-context` de la barra + glow; etiqueta/icono en `--text-primary`; píldora sin recolor); `productos/*` también consumen el contexto (`useModuloVisible('FACTURACION')`) — sin la doble fuente `/api/business/modules` |
 
 > **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
@@ -184,7 +184,7 @@ El 402 suma `restrictedBy`/`origin` (aditivo, backend-only) y un log
 (`info` normal, `warn` sólo en `NOT_IMPLEMENTED`). Los GET de `/api/invoices`
 salen del gate de módulo (exhibición legal). Los escalones 2 (preset de rubro) y
 4 (`min_plan`) y los kill-switches `active`/`deleted` **siguen fuera**, para
-Fase 5. Pusheado a `origin/main`; **no verificado en el runtime desplegado**.
+Fase 5. Pusheado a `origin/main` y **verificado en el runtime desplegado el 30/08** (§1).
 
 **V3 capa 1** (`515bc3f`): `BusinessContextProvider` con fuente reemplazable,
 estados `loading`/`ready`/`error`, `industryKey: null` neutral, y estructura
@@ -218,14 +218,14 @@ técnica heredada, los dos en `pendientes-2026-08-29.md`.
 ## 4. Próximo bloque
 
 **Fase 4 read path + V3-a + V3-b + retiro de `useBusinessModules()` + cableado
-acotado de la cascada (`dbf9503`): CERRADOS** (§1; el acotado pusheado pero sin
-verificación en runtime). Ya no hay un "próximo bloque único" obligado — lo que
-sigue son decisiones **separadas, ninguna autorizada todavía**:
+acotado de la cascada (`dbf9503`): CERRADOS** (§1; el acotado verificado contra
+la BD y en el runtime desplegado el 30/08). Ya no hay un "próximo bloque único"
+obligado — lo que sigue son decisiones **separadas, ninguna autorizada todavía**:
 
 | Bloque | Qué | Nota |
 |---|---|---|
 | **Cascada — escalones 2 y 4** | El bloque acotado (`dbf9503`) ya cableó escalones 1+3+`NOT_IMPLEMENTED`. Faltan el escalón 2 (preset de rubro) y el 4 (`min_plan`), más los kill-switches `active`/`deleted` con superficie controlada. Requieren las pantallas de Superadmin (Fase 5) para no armar un kill-switch de blast-radius total sin rastro ni preview | Fase 5 — `diseno-lifecycle-plan-fase5-2026-08-30.md`. **Decisión (B)**: se reemplaza el cuerpo de 2 queries por `comoRecordDeModulos(resolveCapabilities(inputReal))` con input real completo, sin parámetro de "qué escalones" |
-| **Verificar el acotado en runtime** | Equivalencia del `Record` **ya verificada** contra la BD (`pdb-ppms`, 30/08 — §1). Falta en el runtime desplegado con sesión de staff: que el deploy corrió `dbf9503`, que un 402 gateado responde con `restrictedBy`/`origin`, y que un GET de `/api/invoices` ya no da 402 de módulo | Owner-side, como `FAILOPEN-001`; no bloquea código |
+| ~~**Verificar el acotado en runtime**~~ ✅ | **Hecho el 30/08.** Equivalencia contra `pdb-ppms` (§1) + comportamiento en el runtime desplegado con sesión de staff en `cd6cd508`: `402` de módulo con `restrictedBy: null` / `origin: 'TENANT_OVERRIDE'` (POS_RESTAURANTE, REPORTES); GET de `/api/invoices` sin `402` de módulo (`404`/`400`). Render sirve `dbf9503`. **Sin probar** (menor, no bloquea): `restrictedBy: 'NOT_IMPLEMENTED'` (no hay módulo sin código con override), `origin: 'SYSTEM_DEFAULT'` (no hay tenant sin fila), y `POST /api/invoices` sigue con `402` (el gate en mutaciones no se tocó) | — |
 
 **Verificaciones manuales pendientes** (dueño; no bloquean código): el
 fail-open del sidebar cuando `/api/business/context` falla está **cubierto por
