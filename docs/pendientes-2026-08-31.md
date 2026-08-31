@@ -79,6 +79,38 @@ tres.
 
 ---
 
+### CONTRACT-001 — el OpenAPI no lo verifica nada, y hay 5 recursos sin documentar
+
+**Dónde:** `src/openapi/spec.ts`, `docs/HTTP_CONTRACTS.md`, `src/tests/`.
+
+El spec cubre **18 rutas** (no 10, como decía la primera versión de este
+ítem); `HTTP_CONTRACTS.md` cubre 5 recursos y **solo códigos**, no formas de
+payload (lo dice su propia línea 3). Quedan sin
+documentar productos, clientes, facturas, perfil de negocio, los 5 reportes
+POS/CRM, `occupancy/by-category` y `accounts-receivable`.
+`reservationNumber` y `customerNumber` no figuran: el contrato que D6
+necesita no está escrito.
+
+Y **ningún test contrasta el spec contra las rutas reales** — `src/tests/`
+tiene `domain`, `integration`, `repositories` y `security`, ninguno lo toca.
+**Ya hay deriva real, no hipotética:** el spec documenta
+`/api/reports/summary` y `/api/reports/underutilized`, pero las rutas
+montadas son `/api/reports/occupancy/summary` y
+`/api/reports/occupancy/underutilized` — **2 de las 18 documentadas dan 404**
+(hallazgo del governor, 31/08).
+Documentar los 5 recursos agrega un artefacto más mantenido a mano que nadie
+chequea: **misma enfermedad que RBAC-SYNC-001**, mismo modo de falla (el
+handler cambia, el spec miente en silencio, el frontend le cree).
+
+**Dónde va cada cosa (decidido, sin implementar):** la forma en el OpenAPI,
+la fila de códigos en `HTTP_CONTRACTS.md` — meter payloads en este último
+contradice el alcance que el propio documento declara.
+
+**Prioridad:** media. Bloquea el paso 2 del pedido de UI (documentar el
+contrato antes de escribir la pantalla) para los 4 ítems vivos.
+
+---
+
 ## 🔴 Abierto — arrastrado del 30/08
 
 Detalle completo en `pendientes-2026-08-30.md`.
@@ -115,17 +147,58 @@ Detalle completo en `pendientes-2026-08-29.md`. Un renglón por ítem.
 - **FAILOPEN-001** — fail-open del sidebar cubierto por diseño pero sin prueba
   empírica; falta entorno no-prod con sesión de staff no-management.
 
-### Backlog de producto (HALLAZGO 1 del 27/08, sigue vigente)
+### Backlog de producto — **revalidado contra el código el 31/08/2026**
 
-- **D8** — UI fiscal de producto (`ivaRate`/`unit`/`arcaUnitCode`).
-- **D6** — números de reserva/cliente + prefijos en listados.
-- **C1-Fase A** — CRUD de `deposit_policies` + rutas + pantalla.
-- **C3** — líneas de factura no salen por `GET /api/invoices/:id`.
+Análisis completo, con qué se trabajaría y qué `ModuleKey` toca cada ítem:
+**`diseno-implicancias-backlog-ui-2026-08-31.md`**. Lo de abajo es el
+resumen; el detalle y las citas están allá.
+
+- **D8** — ✅ **YA ESTABA HECHO** (28/08, `pendientes-2026-08-28.md` L619).
+  **Confirmado por `architecture-governor` el 31/08** leyendo el código de
+  `appfrontend-main` en `367a65f`: los 3 campos están en
+  `lib/productos/types.ts` y en las 2 pantallas de producto. Verificación a
+  nivel de código fuente, **no** re-corrida contra la base ni con click. Se
+  arrastró como abierto por el 29, el 30 y el 31 sin revalidar. **Sale de la
+  lista en cuanto el dueño lo confirme.** Módulos: `POS_RESTAURANTE` +
+  `FACTURACION`, hacen falta los dos.
+- **D6** — números con prefijo. **UI pura, confirmado, listo para empezar.**
+  Criterio resuelto (`criterios-datos.md:26`: el prefijo no es parte de la
+  identidad). No toca ningún `ModuleKey`.
+- **C3** — líneas de factura. **No es frontend-only y no hay pantalla de
+  detalle que tocar**: falta sumar `items` al `GET /:id` (el
+  `getItemsByInvoiceId()` ya existe) y construir la pantalla. Las líneas van
+  por el GET existente, no por una sub-ruta: los GET de `/api/invoices/*`
+  están fuera del gate de `FACTURACION` por exhibición legal, y una sub-ruta
+  gateada partiría la exhibición al medio.
+- **C1-Fase A** — CRUD de `deposit_policies`. **El backend no existe**: el
+  repo sigue con 2 métodos de lectura y sin rutas montadas. Al darle la CRUD
+  se activan R8 (auditoría vía `updateWithAudit()`) y R3 (`deleted_at`,
+  decisión abierta). Necesita guard de `CUENTAS_CORRIENTES` o el negocio se
+  autobloquea. **Bloqueado por 3 decisiones del dueño**, no 2: el fallback de
+  la §4, `deleted_at`, y el snapshot `applied_deposit_policy_id` (este
+  tercero faltaba, lo detectó el governor el 31/08).
+- **D7** — reportes POS/CRM. **Media pantalla ya hecha** (5 paneles cableados
+  de 10 endpoints). Los 3 reportes de POS van detrás de `REPORTES` y **no** de
+  `POS_RESTAURANTE`, así que un negocio sin POS vería paneles vacíos —
+  conflaciona dos módulos que `enums.ts:78` manda no conflacionar.
+  **Resuelto por el dueño el 31/08, tras la corrección del governor:**
+  consumir `BusinessContext` **está permitido** — la restricción es no
+  modificar `lib/business-context/`, el provider, el resolver ni el contrato.
+  Los 3 paneles POS van condicionados a `useModuloVisible('POS_RESTAURANTE')`
+  o como bloque de implementación separado; los 2 CRM
+  (`new-vs-recurring`, `applied-rates`) no quedan vacíos sin POS y siguen su
+  propio análisis funcional. **Sigue prohibido en este frente:** agregar
+  `requireModule(POS_RESTAURANTE)` al backend y tocar `getBusinessModules()`,
+  `requireModule()` o el 402. D7 **ya no es una decisión atómica**.
 - **Gap C1-C** — 2 queries con `JOIN financial_transactions` sin vista
-  unificada.
-- **C2** — "Cancelar reserva" no usa el preview/confirm de reembolso existente.
-- **C1-A** — decisiones y datos del dueño pendientes. Detalle en
-  `diseno-sena-unidades-c1a-2026-08-27.md`.
+  unificada. **No revalidado en esta pasada.**
+- **C2** — "Cancelar reserva" no usa el preview/confirm de reembolso
+  existente. **No revalidado en esta pasada.**
+
+**Lección, segunda vez que se anota:** la etiqueta "backend-only, falta UI"
+no se revalidó entre el 27/08 y hoy, y D8 estuvo cerrado todo ese tiempo. El
+`pendientes-2026-08-27.md` (HALLAZGO 1) ya había dejado escrita exactamente
+esta advertencia para estos mismos 6 ítems.
 
 ### Deuda técnica activa
 
