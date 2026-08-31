@@ -1,7 +1,7 @@
 # ZULU Hub — Continuidad operativa
 
 - **Fecha de corte:** 2026-08-29, después del deploy de la Fase 3
-- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites. **Cableado acotado de la cascada** (`dbf9503`, precedido por `e384e3a`): `getBusinessModuleGates()` con escalones 1+3+`NOT_IMPLEMENTED`, `restrictedBy`/`origin` en el 402, GET de `/api/invoices` sin gate de módulo — **pusheado y verificado en el runtime desplegado el 30/08** (sesión de staff; §1)
+- **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites. **Cableado acotado de la cascada** (`dbf9503`, precedido por `e384e3a`): `getBusinessModuleGates()` con escalones 1+3+`NOT_IMPLEMENTED`, `restrictedBy`/`origin` en el 402, GET de `/api/invoices` sin gate de módulo — **pusheado y verificado en el runtime desplegado el 30/08** (sesión de staff; §1). **31/08:** cerrado el Hueco 2 del RBAC con una segunda cerca (`a17fdd2`) + su documentación (`bb851e4`, `7c83928`) — **los 3 siguen locales, sin pushear**; producción no cambió
 - **Para qué:** que una sesión nueva sepa **dónde quedó el proyecto y qué sigue**, sin depender del historial conversacional
 - **Etiquetas:** `mapa-del-sistema` `continuidad`
 
@@ -15,16 +15,49 @@ el próximo bloque?*
 
 | Repo | `origin/main` | Local sin pushear | En producción |
 |---|---|---|---|
-| `app-main` | `dbf9503` | — | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para los 2 negocios de la BD el `Record` es **idéntico** al anterior — equivalencia verificada contra `pdb-ppms` el 30/08 (§1, re-chequeo). **Verificado en el runtime desplegado el 30/08** (sesión de staff en `cd6cd508`): `GET /api/products` y `GET /api/reports/` → `402` con `restrictedBy: null` + `origin: 'TENANT_OVERRIDE'`; `GET /api/invoices/:id` → `404`, `GET /api/invoices` → `400` (ninguno `402` de módulo). Confirma que Render sirve `dbf9503` |
+| `app-main` | `898db8d` | `a17fdd2` · `bb851e4` · `7c83928` + este mismo commit (31/08 — **sin pushear, sin desplegar**) | Fase 3 verificada contra la base (ver abajo). **Fase 4 read path 4A+4B** desplegado: `GET /api/business/context` responde en `host.zuluhub.com.ar` (200, contrato D-A). **Cableado acotado de la cascada** (`dbf9503`): `getBusinessModules()` resuelve escalones 1+3+`NOT_IMPLEMENTED` vía `getBusinessModuleGates()`; `requireModule` suma `restrictedBy`/`origin` al 402 + log `info`/`warn`; los GET de `/api/invoices` salen del gate de módulo. Para los 2 negocios de la BD el `Record` es **idéntico** al anterior — equivalencia verificada contra `pdb-ppms` el 30/08 (§1, re-chequeo). **Verificado en el runtime desplegado el 30/08** (sesión de staff en `cd6cd508`): `GET /api/products` y `GET /api/reports/` → `402` con `restrictedBy: null` + `origin: 'TENANT_OVERRIDE'`; `GET /api/invoices/:id` → `404`, `GET /api/invoices` → `400` (ninguno `402` de módulo). Confirma que Render sirve `dbf9503` |
 | `appfrontend-main` | `367a65f` | — | Vercel `reservasapp` · `host.zuluhub.com.ar` · deployment **`Ready`** · SHA servido `367a65f`. **4C + V3-a + V3-b + retiro de `useBusinessModules()`**: el dashboard consume `GET /api/business/context` para el gating de navegación; el ítem activo del sidebar toma el color de contexto por módulo (`moduleColors[key]` → `--zulu-module-context` de la barra + glow; etiqueta/icono en `--text-primary`; píldora sin recolor); `productos/*` también consumen el contexto (`useModuloVisible('FACTURACION')`) — sin la doble fuente `/api/business/modules` |
 
 > **Sobre esta tabla:** verificar contra `git ls-remote` / `git rev-parse
 > origin/main`, no contra la fila anterior. Historial de `app-main`: `67151fb`
 > → `c6c4185` → `7dc2de5` → `9c590e5` → `9119a50` → `6630c16` → `bb5e6a4` → `f08024f`
 > → `9068dc5` → `4a2b6fa` → `fb70e22` → `8979ebc` → `24cac16` → `847168c`
-> → `e384e3a` → `dbf9503`.
+> → `e384e3a` → `dbf9503` → (10 commits de documentación y skills, enumerados
+> abajo) → `898db8d`.
 >
-> **`app-main/origin/main` = `dbf9503`** — pushes del 30/08/2026, autorizados
+> **`app-main/origin/main` = `898db8d`** — verificado con
+> `git ls-remote origin main` el 31/08/2026. Esta fila decía `dbf9503` y había
+> quedado vieja: el remoto avanzó **10 commits**, y **ninguno toca `src/`**
+> (`git diff --stat dbf9503..898db8d -- src/` sale vacío). O sea que **lo que
+> Render ejecuta sigue siendo el código de `dbf9503`**; lo que cambió es
+> documentación, el ADR de RBAC y las 14 skills de `.claude/`:
+> `c95db1b` · `8b3dacc` · `b38e630` · `fc40fd2` · `8f306a6` · `3c6d29c`
+> (continuidad y diseño) · `b11ccb4` (las 14 skills) · `cb05999` (ADR del
+> modelo RBAC) · `9e3b375` (sección de skills en `CLAUDE.md`) · `898db8d`
+> (`pendientes-2026-08-30.md`). Se enumeran como historial: **no fueron
+> revisados en la sesión del 31/08**.
+>
+> **Local sin pushear (31/08/2026) — 4 commits, ninguno desplegado:**
+>
+> - `a17fdd2` — `src/tests/security/rbac-route-coverage.test.ts`: segunda cerca
+>   RBAC, cobertura de `authorize()` por ruta (Hueco 2 / RBAC-ROUTE-001). Es el
+>   único de los tres que toca `src/`, y es un test: no entra al runtime.
+> - `bb851e4` — documentación del cierre: matriz *enforced*, ADR, pendientes
+>   del 30 y del 31, índice de conocimiento.
+> - `7c83928` — corrige `11` → `7` en el docblock del test (las 5 rutas de
+>   `customer.routes.ts` se montan ANTES del `authenticate()`, no dependen del
+>   orden para su seguridad).
+> - **Este mismo commit** de continuidad, que corrige esta sección. No lleva
+>   SHA acá por razones obvias: un documento que se lista a sí mismo no puede
+>   conocer su propio hash antes de existir. Para el número exacto,
+>   `git log origin/main..main`.
+>
+> Sobre `7c83928`: suite completa en verde (1696 tests), `tsc --noEmit` exit 0,
+> las dos cercas RBAC verdes. Revisados por `architecture-governor` (GO con
+> condiciones, aplicadas). **Esperan autorización explícita del dueño para el
+> push.**
+>
+> **Historial hasta `dbf9503`** — pushes del 30/08/2026, autorizados
 > en el chat (sin gate técnico; GATE-001 RETIRADO en `pendientes-2026-08-29.md`).
 > Sobre `9c590e5` (docs: D-A + GATE-001 retirado + auditoria-dominios) se
 > agregaron:
