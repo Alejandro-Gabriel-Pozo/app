@@ -4,7 +4,9 @@
 - **Estado:** diseño para **Fase 5**, sin encarar. Las decisiones de negocio
   (patrón aviso+gracia+corte; confirmación itemizada al editar un preset) están
   **confirmadas por el dueño el 30/08/2026**. Los mecanismos y las preguntas
-  abiertas quedan acá para retomar.
+  abiertas quedan acá para retomar. **§5.5–§5.7 (revisión del 30/08, tras cerrar
+  el bloque acotado `dbf9503`)**: la mecánica del cableado de escalones 2 y 4, el
+  orden de sub-bloques, y 5 decisiones abiertas (A–E) sin cerrar.
 - **Etiquetas:** `Fase-5` `plan` `entitlements` `downgrade` `presets` `mensajería`
 
 ## 0. Por qué existe este documento
@@ -168,7 +170,142 @@ no "prender un flag".
 La **mecánica de rollout** per-negocio del pasaje "escalón 2/4 inerte → en vivo":
 ¿flag en `businesses`? ¿columna `cascade_enforcement_version`? ¿entra para todos
 el día que sale el código y la maquinaria de aviso/gracia/corte (Parte A) absorbe
-el impacto? Este documento se inclina por lo último.
+el impacto? Este documento se inclina por lo último. **Resuelto en §5.5.5** (sin
+flag; el rollout vive en el dato) tras la revisión del 30/08.
+
+## 5.5 Mecánica del cableado de escalones 2 y 4 — revisión del 30/08
+
+Hecha tras cerrar el bloque acotado (`dbf9503`). La **decisión (B)** de §5.3
+sigue firme (resolver completo, input real, sin parámetro de modo); esto es el
+*cómo*, en 6 puntos, con 5 decisiones abiertas en §5.7.
+
+### 5.5.1 El método compartido — `resolveEffectiveModules(businessId)`
+
+El input real ya lo arma `getContextInputs(businessId, locale)`
+(`platform.repository.ts`) → `RawContextInputs` → `buildContextPayloadCore`
+(`context.adapter.ts`; valida forma SQL / `plan` / `source` / `contextColor`) →
+`resolveCapabilities()`. Hoy sólo lo consume `GET /api/business/context` (nav).
+
+Fase 5: extraer `resolveEffectiveModules(businessId): EffectiveCapability[]` en
+el repo (la misma sentencia de `getContextInputs`, **sin** el subselect de
+terminología) y que lo consuman **los dos** lados:
+
+- `context.adapter` → proyecta `enabledModuleKeys` (el `enabledModules` del payload).
+- `requireModule` (vía `getBusinessModuleGates`) → proyecta `comoRecordDeModulos`
+  para el `enabled`, más `restrictedBy`/`origin` por módulo para el `402`.
+
+Una sola definición de "efectivo" para nav y gate (DEFENSIVE §1.5). El
+`context.adapter` deja de llamar a `resolveCapabilities` directo. Invariante a
+preservar: un `ContextDataError` (forma SQL rota / `plan` inválido) en el gate →
+`503 PLATFORM_UNAVAILABLE`, **nunca** "todo `false`" ni "todo `true`" (ya en
+`diseno-cascada-enforcement-2026-08-30.md` §4).
+
+### 5.5.2 Prerequisito duro — lecturas de TRANSACCIÓN/DOCUMENTO detrás de gates
+
+Criterio: `criterios-datos.md` R2/R3 (líneas 83, 218 — una reserva histórica
+cuyo recurso ya se había desactivado **dejaba de poder leerse**, y quedó
+**corregido**) + §1.4 de este doc. Apenas se cargue el primer preset o
+`min_plan`, una edición de preset o un downgrade movería el `402` de **lecturas
+de registros que siguen existiendo**.
+
+Inventario de GET gateados por módulo (verificado contra `src/app.ts` el 30/08):
+
+| Ruta | Módulo | Gate | Clase | Acción Fase 5 |
+|---|---|---|---|---|
+| `GET /api/orders*` | POS_RESTAURANTE | mount-level (todos los verbos) | TRANSACCIÓN | ungate GET |
+| `GET /api/stays*` | ALOJAMIENTO | mount-level | TRANSACCIÓN | ungate GET |
+| `GET /api/accounts-receivable*` | CUENTAS_CORRIENTES | mount-level | TRANSACCIÓN | ungate GET |
+| `GET /api/cash-register*` | CUENTAS_CORRIENTES | mount-level | TRANSACCIÓN (arqueos) | ungate GET |
+| `GET /api/housekeeping*` | HOUSEKEEPING | mount-level | TRANSACCIÓN (tareas) | ungate GET |
+| `GET /customers/:id/account` | CUENTAS_CORRIENTES | per-route | TRANSACCIÓN | ungate |
+| `GET /customers/:id/outstanding-invoices` | CUENTAS_CORRIENTES | per-route | DOCUMENTO | ungate |
+| `GET /api/reservations*` | — | ya sin gate de módulo | TRANSACCIÓN | nada |
+| `GET /api/products*`, `/waste-reasons`, `/consumption-destinations` | POS_RESTAURANTE | mount-level | MAESTRO (config) | decisión — §5.7 B |
+| `GET /api/reports*` | REPORTES | mount-level | vista derivada | decisión — §5.7 E |
+
+Trabajo: pasar los `app.use('/api/x', requireModule(container, mod), router)` a
+gating **per-route** (como `invoices` en `dbf9503`) o un helper
+`gateMutations(container, module)` que aplique `requireModule` sólo a
+`POST/PUT/PATCH/DELETE`. Es el bloque de código más grande y va **antes** de
+cargar datos de escalón 2/4. Inerte hasta entonces.
+
+### 5.5.3 Escalón 2 prende sin fila en `business_modules`
+
+`resolveCapabilities` ya lo maneja (`origin: 'INDUSTRY_PRESET'`, `source: null`).
+El `402` de otros módulos puede entonces traer `origin: 'INDUSTRY_PRESET'` —
+valor nuevo, aditivo, backend-only (`http.ts` sigue como subconjunto).
+
+### 5.5.4 `industry_capabilities.required` no lo mira el resolver
+
+`plan-separacion-dominios-multirubro-2026-08-28.md` §5.3b (línea 516: `PATCH
+/api/business/modules/:moduleKey` opera dentro del `required` del rubro) lo trata
+como **duro**: el tenant no puede apagar un módulo obligatorio. Pero
+`resolveCapabilities` deja ganar siempre al override (escalón 3); `required` no
+se consulta. **Gap.** Dos caminos:
+
+- **(i)** enforcement sólo en el write path: `PATCH` rechaza `enabled = false`
+  para un módulo `required`. El resolver queda "last writer wins". No cubre el
+  caso de `required` agregado a un preset *después*, con una fila
+  `business_modules.enabled = false` preexistente.
+- **(ii)** `required` como **piso en el resolver** (escalón 3.5:
+  `if (preset.required) enabled = true`). Cierra el gap retroactivo; es un
+  escalón nuevo.
+
+Hoy no hay presets → no bloquea. Resolver antes de cargar el primero.
+
+### 5.5.5 Rollout — sin flag; el rollout vive en el dato
+
+Expande §5.4. El resolver corre **siempre** los 5 escalones. Escalón 2/4 son
+inertes **porque no hay datos** (0 `industry_key`, 0 `min_plan` — verificado
+contra `pdb-ppms` el 30/08, ver `zulu-hub-continuidad` §1 re-chequeo). Entran en
+vivo cuando se carga el primer preset/`min_plan`, con su preview (§2) y su
+aviso/gracia/corte (§1).
+
+**No** hay `cascade_enforcement` en `businesses`: eso sería un modo sobre el
+resolver, contra la decisión (B). El control es un **gate de release**: un script
+read-only que corre `resolveEffectiveModules` contra la BD de cada tenant y
+**falla si algún `Record` cambia** sin una fila de escalón 2/4 que lo justifique
+— el mismo método usado para verificar el bloque acotado.
+
+### 5.5.6 Contrato del `402`
+
+`ModuleGate.origin` / `restrictedBy` pasan de los `Extract<>` acotados
+(`SYSTEM_DEFAULT|TENANT_OVERRIDE` / `NOT_IMPLEMENTED|null`) al `CapabilityOrigin`
+/ `CapabilityRestriction` completos — o `ModuleGate` se vuelve alias de
+`{ moduleKey, enabled, origin, restrictedBy }` de `EffectiveCapability`. `http.ts`
+(frontend) sigue como subconjunto tipado (backend-only, ya decidido en §3e del
+enforcement doc). `restrictedBy: 'MIN_PLAN'` en el body → el frontend puede
+rutear a `UpgradePrompt` (ya existe para `PLAN_LIMIT_REACHED`).
+
+## 5.6 Orden de sub-bloques (un commit cada uno)
+
+1. **Prerequisito** — ungate de GET de TRANSACCIÓN (per-route / `gateMutations`).
+   El más grande. Inerte hoy. **Se puede hacer ya.**
+2. **Convergencia** — `resolveEffectiveModules(businessId)` compartido
+   gate ↔ adapter. Verificado por equivalencia. **Se puede hacer ya.**
+3. **`required`** — decidir (i) write-path o (ii) piso en el resolver.
+4. **Superadmin** (`plan-separacion` §12) — pantallas de preset/`min_plan` con
+   preview + confirmación itemizada (§2) + auditoría (`platform_audit_log`).
+   Recién acá se **cargan** datos de escalón 2/4.
+5. **aviso/gracia/corte** (Parte A) — para el primer downgrade real.
+
+1 y 2 son código chico e inerte, verificable ahora. 3 es una decisión de
+negocio. 4 y 5 son Fase 5 plena.
+
+## 5.7 Decisiones abiertas — cerrar antes de un commit de código
+
+- **A.** Mecanismo: ¿`resolveEffectiveModules` compartido gate ↔ adapter (§5.5.1)?
+- **B.** ¿Los GET de MAESTRO (`products`, `waste-reasons`,
+  `consumption-destinations`) se ungatean, o quedan gateados como config — mismo
+  criterio que `afip-credentials/status` (perdés el producto → perdés su config,
+  no tus registros)?
+- **C.** `required` → write-path (i) o piso en el resolver (ii) (§5.5.4)?
+- **D.** Rollout: ¿§5.5.5 (sin flag; rollout en el dato) + gate de release por
+  equivalencia?
+- **E.** ¿`GET /api/reports` sigue gateado? Un reporte es vista derivada, no
+  registro emitido — pero hoy no hay export crudo fuera de los módulos, así que
+  un negocio downgradeado no tiene **ninguna** vía de leer sus históricos
+  agregados. Gap de roadmap, no de este diseño.
 
 ## 6. Referencias
 
@@ -183,3 +320,10 @@ el impacto? Este documento se inclina por lo último.
 - Anclas del hallazgo nav-vs-gate: `src/business-context/context.adapter.ts:119`,
   `src/platform/platform.repository.ts:420`, `src/security/module.middleware.ts:18`,
   `src/business-context/capability.resolver.ts:245`.
+- Anclas de §5.5 (revisión 30/08): `src/business-context/capability.resolver.ts`
+  (`resolveCapabilities`, `restriccionQueAplica`, `comoRecordDeModulos`),
+  `src/business-context/context.adapter.ts::buildContextPayloadCore`,
+  `src/platform/platform.repository.ts::getContextInputs`,
+  `src/platform/platform.repository.ts::getBusinessModuleGates` (post-`dbf9503`),
+  `src/app.ts` (montaje de gates de módulo), `plan-separacion` §5.3b (línea 516,
+  `required`).
