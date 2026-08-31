@@ -66,6 +66,121 @@ test es una cerca eléctrica (cuenta call-sites reales contra un número
 fijo), no un sistema que interpreta código; si rompe, es la señal de que
 el maestro se desactualizó.
 
+## Skills de ingeniería (capa técnica)
+
+14 skills genéricas de ingeniería y seguridad en `.claude/skills/`,
+seleccionadas de las 72 del set "SKILLS — Engineering Discipline Skill Set"
+y copiadas el 30/08/2026 desde una copia local desempaquetada (sin repo git,
+sin commit upstream registrado). Se activan en una **capa distinta** de
+`criterios-negocio` y `revision-pr-pms-erp`: arquitectura, proceso de cambio
+y auditoría, no reglas de negocio ni integridad de datos. Cada `SKILL.md`
+lleva al final una sección "Precedencia en este repo".
+
+**Ninguna de las 14 sustituye el paso obligatorio de `criterios-negocio`**
+(ni el de `docs/DEFENSIVE_DEVELOPING.md`): son capa adicional, no alternativa.
+El riesgo a vigilar no es que contradigan a `criterios-negocio` —para eso
+está la cláusula de precedencia al final de cada `SKILL.md`— sino que una
+tarea dispare solo la skill técnica y nunca cargue `criterios-negocio`. La
+instrucción de más arriba ("Antes de crear o modificar cualquier entidad…
+usá la skill `criterios-negocio`") se aplica igual, la haya disparado una
+skill técnica o no.
+
+- **`atomic-state-mutation`** — varias escrituras que tienen que ser una sola
+  unidad atómica. Caso vivo: `domain/audit.ts` — `updateWithAudit()` /
+  `recordFieldChangesWithClient()` envuelven "UPDATE de la entidad + INSERT de
+  auditoría" en una `TransactionManager.run()` (fix del 25/08/2026; antes eran
+  dos `await` sueltos y si el segundo fallaba se perdía el rastro). La
+  `recordFieldChanges()` no transaccional queda a propósito para el único caso
+  cross-DB (`RoleService.updatePermissionGroups()`: rol en BD de plataforma,
+  auditoría en BD de tenant).
+- **`concurrency-reasoning`** — código que corre más de una vez a la vez:
+  réplicas, retries, cron que se solapa, doble click. Toca los `SELECT ... FOR
+  UPDATE` de `reservation.service.ts` / `reservation-availability.service.ts`
+  (serializan disponibilidad + INSERT), el `FOR UPDATE` sobre `orders` de
+  `sql.order.repository.ts`, `reservation-hold-expiry.worker.ts` y el
+  `OutboxWorker` (polls solapados). Para el caso puramente transaccional de BD,
+  deriva a `atomic-state-mutation`.
+- **`versioned-schema-evolution`** — formatos serializados que sobreviven al
+  código que los escribió. Aplica a `schema.sql` reaplicado idempotente a cada
+  tenant en cada deploy (`npm run migrate:tenants`), a los `migrations/NNN_*.sql`
+  numerados, y al campo `version` de los handlers del outbox (A10.1/A10.4:
+  `UnsupportedEventVersionError` — "versión desconocida se rechaza ruidosamente").
+- **`honest-degradation`** — que una ruta degradada falle visible en vez de
+  devolver algo plausible y mal. El repo ya decide fail-loud vs fail-open por
+  subsistema: `migrate:tenants` que falla tumba el build entero (R15); mail
+  sin `RESEND_API_KEY` → `NoopEmailSender` (fail-open a propósito); OAuth sin
+  `GOOGLE_CLIENT_ID` → fail-closed; superadmin sin envs → 503
+  `PLATFORM_AUTH_NOT_CONFIGURED`. Hallazgo abierto que esta skill levantaría:
+  `db/pg.client.ts::sslConfig()` cae a `ssl: false` en silencio (sin warn) si
+  falta `NEON_SSL` — eso es deuda, no una decisión. Usarla al agregar un
+  fallback nuevo.
+- **`authorization-surface-mapping`** — construir la matriz actor × recurso ×
+  acción y probar las celdas sin test (las ausencias no se grepean). El
+  aislamiento entre tenants **ya es estructural** (una BD por negocio,
+  `platform/tenant.middleware.ts` → `req.db`): ahí la skill no aporta. Se acota
+  a los 2 huecos reales, registrados en
+  `docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`: (1) ownership dentro de un
+  tenant en el portal de cliente (`api/routes/me.routes.ts`,
+  `Roles.BOOKING`/`CUSTOMER_ONLY`) — sin guard estructural ni tests negativos;
+  (2) ruta nueva sin `authorize()` en un `*.routes.ts` existente — invisible
+  para la cerca de conteo `src/tests/security/rbac-matrix-sync.test.ts`.
+  Complementa —no reemplaza— `authorize(Roles.X)` + `docs/rbac-matriz-endpoints.md`.
+- **`irreversible-action-gate`** — clasificar por reversibilidad y radio antes
+  de ejecutar algo destructivo, masivo o hacia afuera. Casos: `migrate:tenants`
+  en cada deploy (escribe en todas las tenant DB), la cancelación C2 de reserva
+  que hoy no usa el preview/confirm de reembolso (backlog en pendientes), el
+  aprovisionamiento de tenant en Neon, y toda decisión de "¿desactivar /
+  soft-delete / hard-delete?" (esa parte la manda `criterios-negocio`).
+- **`secret-lifecycle-discipline`** — credenciales como ciclo de vida (emisión,
+  alcance, rotación, revocación) y redacción en el borde. Toca los `sync: false`
+  de `render.yaml` (`JWT_SECRET`, `PLATFORM_DATABASE_URL`, `DB_ENCRYPTION_KEY`,
+  `NEON_API_KEY`, `RESEND_API_KEY`, `PLATFORM_JWT_SECRET`/`_ADMIN_PASSWORD`), el
+  `db_url_encrypted` guardado en la BD central, y la separación deliberada
+  `PLATFORM_JWT_SECRET` ≠ `JWT_SECRET`. No hay historia de rotación para
+  `DB_ENCRYPTION_KEY` — eso es un hallazgo, no un dato.
+- **`crypto-misuse-reasoning`** — juzgar el uso, no el nombre del primitivo.
+  Este repo hace crypto a mano a propósito ("sin SDK nuevo"): `tenant-db.setup.ts`
+  cifra connection strings con AES-256-GCM (`createCipheriv`, IV de 16 bytes
+  random, authTag, formato `iv:authTag:ct`); `google-oauth.ts` verifica JWT
+  RS256 + JWKS con `node:crypto` (lookup por `kid`, chequeo de `iss`/`aud`/`exp`
+  — sin el `aud` pasaría cualquier token de Google de otra app);
+  `auth.middleware.ts` firma el JWT propio igual. Revisá las costuras al tocar
+  cualquiera.
+- **`dependency-provenance`** — saber qué se ejecuta realmente y de dónde vino
+  (manifest vs lock vs instalado vs shipped). Contexto: el build de Render corre
+  `npm install` (no `npm ci`), el `postinstall` de Puppeteer no se dispara con
+  `node_modules` cacheado (`npx puppeteer browsers install chrome` explícito en
+  `render.yaml`), `@arcasdk/pdf` arrastra Chromium, y hay `patches/`
+  (patch-package). Usarla al sumar o subir una dependencia.
+- **`pipeline-trust`** — el pipeline de CI/CD como entorno privilegiado que
+  corre código con credenciales de producción. El `buildCommand` de `render.yaml`
+  encadena `npm install && npx puppeteer … && npm run build && npm run
+  migrate:tenants`: el build tiene `PLATFORM_DATABASE_URL` y **escribe en todas
+  las tenant DB**. Deploy = migración contra producción, no "un poco de YAML".
+- **`decision-record-discipline`** — capturar la decisión con su contexto
+  (fuerzas del momento, alternativas descartadas, supuesto, gatillo de revisión).
+  El repo ya lo hace informal: comentarios fechados por todo `render.yaml` y el
+  código, los `docs/pendientes-YYYY-MM-DD.md`, el
+  `plan-separacion-dominios-multirubro`. Usarla cuando una elección de librería,
+  modelo de datos o límite vaya a ser difícil de deshacer.
+- **`audit-before-patch`** — validar todo hallazgo de auditoría contra el
+  archivo vivo antes de tocar una línea. Directo al flujo de `revision-pr-pms-erp`
+  y a cuando otro modelo pasa una lista de findings: confirmá el ancla, confirmá
+  que el bug existe en este código (que no haya ya un guard), y recién ahí parchá.
+- **`surgical-patcher`** — cambiar archivos por parches anclados, verificados y
+  reversibles, nunca reescribiéndolos de memoria. Aplica a cualquier edición
+  sobre `src/` existente, sobre todo al aplicar un diff de un auditor o de otro
+  modelo. Este repo commitea directo a `main` sin PR: el radio de un reemplazo
+  mal hecho es toda la rama.
+- **`git-discipline`** — proteger la historia: tag de restore antes de la sesión,
+  prohibido reescribir historia compartida, verificar el estado real del repo
+  antes de afirmarlo. El repo commitea seguido directo a `main` sin PR y ya
+  tiene la regla "no force-push" en el `CLAUDE.md` raíz. El hook de
+  `scripts/install_guard_hooks.sh` la refuerza a nivel git —bloquea el push
+  non-fast-forward, incluido vía `git -C <path> push`— pero es una red
+  parcial: vive en `.git/hooks/`, no se versiona (hay que reinstalarlo en
+  cada clon) y se saltea con `git push --no-verify`.
+
 ## Modularidad — convenciones aplicadas (no aspiracionales)
 
 Estado real del código después de `docs/auditoria-modularidad.md`
