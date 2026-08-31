@@ -45,14 +45,22 @@ const SRC_DIR = join(__dirname, '../..');
  *    `platform.routes.ts` (L120) haría pasar todas sus rutas como cubiertas sin
  *    tener guard. Si agregás un `Router()` a uno de esos archivos, revisá acá.
  *
- * 2. NO valida el orden de montaje de `src/app.ts`. 11 de las 22 entradas de
- *    `PUBLIC_ROUTES` (las de `me.routes.ts`, `business-modules`,
- *    `business-plan-limits`, `categories` y `customer.routes.ts`) son seguras
- *    solo porque su `app.use(...)` va DESPUÉS del
- *    `app.use('/api', authenticate(...))` de `src/app.ts:267`. Mover un mount
- *    por encima de esa línea deja la ruta pública y este test sigue en verde.
- *    Tampoco escanea `src/app.ts`, que registra 3 rutas directas a mano
- *    (`/health`, `/`, `/openapi.json`), públicas a propósito.
+ * 2. NO valida el orden de montaje de `src/app.ts`. **7** de las 22 entradas
+ *    de `PUBLIC_ROUTES` (`me.routes.ts` x3, `business-modules`,
+ *    `business-plan-limits`, `categories` x2) son seguras solo porque su
+ *    `app.use(...)` va DESPUÉS del `app.use('/api', authenticate(...))` de
+ *    `src/app.ts:267`. Mover un mount por encima de esa línea las deja
+ *    públicas y este test sigue en verde (RBAC-MOUNT-001).
+ *
+ *    Las otras 15 NO cuentan acá, y la distinción importa para que nadie
+ *    "corrija" este 7 de vuelta a 11: son públicas a propósito y muchas se
+ *    montan ANTES del `authenticate()` — `customer.routes.ts` en L225, el
+ *    login en L220. Dependen del orden para FUNCIONAR, no para estar
+ *    protegidas: moverlas debajo de L267 haría que el login pida token, o
+ *    sea que rompe la app de forma ruidosa, no que abra un agujero callado.
+ *
+ *    Tampoco escanea `src/app.ts`, que registra 3 rutas a mano con
+ *    `app.get` (`/health`, `/`, `/openapi.json`) más `/docs` por `app.use`.
  */
 
 /** Clave: "<ruta rel. a src>|<METHOD> <path>". Cada entrada es una ruta que NO
