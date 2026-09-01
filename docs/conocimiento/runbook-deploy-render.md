@@ -294,8 +294,27 @@ SELECT COUNT(*) FILTER (WHERE failed_at IS NOT NULL)                        AS d
   FROM domain_events;
 ```
 
-Más `curl https://app-chny.onrender.com/health` (200 + `db: connected`) y, en GitHub
-Actions, los 4 jobs verdes — incluido `lint:arch`, que corre desde el 28/08.
+Más **dos** curl (01/09/2026 — `/health` dejó de informar el estado de la base):
+
+```bash
+curl -i https://app-chny.onrender.com/health
+curl -i 'https://app-chny.onrender.com/health/db?fresh=1'
+```
+
+- `/health` → **200** con `status: "ok"`. Es liveness: **no consulta la base**,
+  y nunca devuelve 503 aunque la base esté caída (es el `healthCheckPath` de
+  Render; un 503 ahí solo produciría reinicios que no arreglan una caída de
+  Neon).
+- `/health/db?fresh=1` → **200** con `db: "connected"`. Si la base no responde,
+  **503** con `db: "error"`.
+
+**El `?fresh=1` no es opcional acá:** sin él la respuesta puede venir de la
+caché (TTL de 30 s) y se estaría cerrando el deploy contra un OK medido
+**antes** del deploy. La respuesta trae `cached` y `ageMs` justamente para que
+esto se pueda auditar.
+
+Y, en GitHub Actions, los 4 jobs verdes — incluido `lint:arch`, que corre desde
+el 28/08.
 
 **Límite conocido:** todo esto verifica esquema e infraestructura. **No prueba un flujo de
 negocio.** Crear una reserva real y confirmar que sale un solo mail requiere login, que el

@@ -370,7 +370,7 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
 | `business-plan-limits.routes.ts` GET `/` (nuevo, L 23/08/2026) | Solo `authenticate()`, mismo criterio — cualquier usuario ve los límites de plan de SU PROPIO negocio (lo necesita el gating visual del CRUD de roles propios) |
 | **`categories.routes.ts` GET `/`, GET `/:id`** | **✅ Confirmado intencional (sesión posterior, 23/08/2026) — no es un bug.** El portal de clientes (`appfrontend-main/.../portal/[businessSlug]/disponibilidad/page.tsx:37-41`) llama a este endpoint logueado, con su propio comentario explícito: *"El filtro de categoría solo está disponible logueado: GET /api/categories requiere autenticación aunque no exija un rol específico"* — un cliente necesita leer las categorías para filtrar el buscador de disponibilidad. `authorize(Roles.STAFF)` rompería esa pantalla real. Se agregó el comentario espejo del lado del backend (`categories.routes.ts`) para que no se "corrija" por error en el futuro. Sin cambio de código — se queda tal como está. |
 | `platform.routes.ts` (resto) | **Resuelto 23/08/2026** — ver sección 2, ahora exige `authorizePlatform([SUPERADMIN])` |
-| `app.ts` GET `/health`, `/`, `/openapi.json`, `/docs` | Infraestructura, públicos a propósito |
+| `app.ts` GET `/health`, `/health/db`, `/`, `/openapi.json`, `/docs` | Infraestructura, públicos a propósito. `/health/db` agregado el 01/09/2026 al separar liveness de readiness |
 
 ---
 

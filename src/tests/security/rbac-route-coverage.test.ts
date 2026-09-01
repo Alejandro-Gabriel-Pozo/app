@@ -59,8 +59,9 @@ const SRC_DIR = join(__dirname, '../..');
  *    protegidas: moverlas debajo de L267 haría que el login pida token, o
  *    sea que rompe la app de forma ruidosa, no que abra un agujero callado.
  *
- *    Tampoco escanea `src/app.ts`, que registra 3 rutas a mano con
- *    `app.get` (`/health`, `/`, `/openapi.json`) más `/docs` por `app.use`.
+ *    Tampoco escanea `src/app.ts`, que registra 4 rutas a mano con
+ *    `app.get` (`/health`, `/health/db`, `/`, `/openapi.json`) más `/docs`
+ *    por `app.use`.
  */
 
 /** Clave: "<ruta rel. a src>|<METHOD> <path>". Cada entrada es una ruta que NO

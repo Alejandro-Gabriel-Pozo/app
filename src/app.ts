@@ -11,7 +11,8 @@
  * 3.  helmetBase — security headers globales (sin CSP, se aplica por ruta)
  * 4.  globalLimiter — baseline anti-DoS (500 req/min/IP)
  * 5.  cors, express.json
- * 6.  /health               — chequea platformClient (PLATFORM_DATABASE_URL)
+ * 6.  /health               — LIVENESS, no toca la base
+ *     /health/db            — READINESS, chequea platformClient (cacheado)
  * 7.  /docs                 — helmetDocs (CSP permisiva para Swagger UI)
  * 8.  /openapi.json         — helmetBase ya aplicado
  * 9.  /platform/*           — helmetApi + platformLimiter (SUPERADMIN)
@@ -93,6 +94,7 @@ import { startCompanySyncWorker, stopCompanySyncWorker } from './platform/compan
 import type { AppContainer} from './container.js';
 import { createAppContainer, createPlatformPool, closePlatformPool, buildPlatformTransactionManager } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
+import { CachedDbHealth }                from './db/health-cache.js';
 import { SqlHousekeepingRepository }     from './pms-estadias/housekeeping.repository.js';
 import { SqlMaintenanceWindowRepository } from './pms-estadias/sql.maintenance-window.repository.js';
 import { SqlStayRepository }             from './pms-estadias/stay.repository.js';
@@ -185,16 +187,50 @@ export async function createApp(): Promise<{
   app.use(express.json());
 
   // -------------------------------------------------------------------------
-  // 6. /health — chequea platformClient (PLATFORM_DATABASE_URL), no DATABASE_URL.
-  //    Antes usaba el pool interno de pg.client.ts (DATABASE_URL legacy)
-  //    que no está seteada en Render → siempre retornaba db:"error".
+  // 6. Salud del servicio.
+  //
+  //    Historia previa, conservada porque explica de dónde viene el uso de
+  //    platformClient: el chequeo usaba el pool interno de pg.client.ts
+  //    (DATABASE_URL legacy), que no está seteada en Render y por eso siempre
+  //    devolvía db:"error". Se corrigió a platformClient
+  //    (PLATFORM_DATABASE_URL) y ese sigue siendo el pool que se consulta —
+  //    ahora desde /health/db, no desde /health.
   // -------------------------------------------------------------------------
-  app.get('/health', async (_req, res) => {
-    const dbOk = await checkDatabaseHealth(platformClient);
+  // /health         — LIVENESS. No toca la base. Es el `healthCheckPath` de
+  //                   render.yaml y el destino del bot que mantiene despierto
+  //                   el servicio: un ping acá ya no despierta Neon.
+  // /health/db      — READINESS. Chequea la base, con caché de TTL corto y
+  //                   single-flight (ver db/health-cache.ts). 503 si no
+  //                   responde. `?fresh=1` fuerza consulta real.
+  //
+  // Se separan a propósito: antes un solo endpoint devolvía `status: 'ok'`
+  // junto con `db: 'error'` — dos afirmaciones contradictorias en la misma
+  // respuesta, y con 200 en las dos. "El proceso está vivo" y "la base
+  // responde" son preguntas distintas y ahora tienen respuestas distintas.
+  //
+  // `/health` NUNCA devuelve 503 por un problema de base: Render lo usa como
+  // health check y reiniciaría el servicio por una caída de Neon que el
+  // proceso no puede resolver reiniciándose.
+  const dbHealth = new CachedDbHealth(() => checkDatabaseHealth(platformClient), {
+    okTtlMs:   parseInt(process.env['HEALTH_DB_TTL_MS'] ?? '30000', 10),
+    failTtlMs: parseInt(process.env['HEALTH_DB_FAIL_TTL_MS'] ?? '5000', 10),
+  });
+
+  app.get('/health', (_req, res) => {
     res.json({
-      status: 'ok',
-      mode:   'multi-tenant',
-      db:     dbOk ? 'connected' : 'error',
+      status:        'ok',
+      mode:          'multi-tenant',
+      uptimeSeconds: Math.floor(process.uptime()),
+    });
+  });
+
+  app.get('/health/db', async (req, res) => {
+    const snapshot = await dbHealth.get({ fresh: req.query['fresh'] === '1' });
+    res.status(snapshot.ok ? 200 : 503).json({
+      db:        snapshot.ok ? 'connected' : 'error',
+      checkedAt: new Date(snapshot.checkedAt).toISOString(),
+      ageMs:     snapshot.ageMs,
+      cached:    snapshot.cached,
     });
   });
 

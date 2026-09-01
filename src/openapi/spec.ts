@@ -46,15 +46,61 @@ export const openApiSpec = {
     // -------------------------------------------------------------------------
     '/health': {
       get: {
-        summary: 'Health check',
+        summary: 'Liveness — el proceso responde',
+        description:
+          'NO consulta la base. Es el `healthCheckPath` de Render y el destino ' +
+          'del ping que mantiene despierto el servicio. Para saber si la base ' +
+          'responde, usar `/health/db`.',
         tags: ['System'],
         security: [],
         responses: {
           '200': {
-            description: 'Servicio operativo',
+            description: 'El proceso está vivo',
             content: {
               'application/json': {
-                example: { status: 'ok', mode: 'multi-tenant', db: 'connected' },
+                example: { status: 'ok', mode: 'multi-tenant', uptimeSeconds: 3600 },
+              },
+            },
+          },
+        },
+      },
+    },
+
+    '/health/db': {
+      get: {
+        summary: 'Readiness — la base responde',
+        description:
+          'Resultado cacheado con TTL corto y single-flight, para que un monitor ' +
+          'no genere una consulta por sonda. `ageMs` indica la antigüedad del ' +
+          'valor: un OK cacheado no se presenta como fresco. `?fresh=1` fuerza ' +
+          'una consulta real (deploys, incidentes).',
+        tags: ['System'],
+        security: [],
+        parameters: [{
+          name: 'fresh', in: 'query', required: false,
+          schema: { type: 'string', enum: ['1'] },
+          description: 'Saltea la caché y consulta la base.',
+        }],
+        responses: {
+          '200': {
+            description: 'La base responde',
+            content: {
+              'application/json': {
+                example: {
+                  db: 'connected', checkedAt: '2026-09-01T12:00:00.000Z',
+                  ageMs: 12000, cached: true,
+                },
+              },
+            },
+          },
+          '503': {
+            description: 'La base no responde',
+            content: {
+              'application/json': {
+                example: {
+                  db: 'error', checkedAt: '2026-09-01T12:00:00.000Z',
+                  ageMs: 0, cached: false,
+                },
               },
             },
           },
