@@ -83,6 +83,43 @@ allowlist que ya no matchea); **nada verifica sección 4 de la matriz contra
 `PUBLIC_ROUTES`** — es a ojo
 (RBAC-SYNC-001). Si agregás una ruta pública, tocá los dos.
 
+## Pendientes — revalidar antes de arrastrar
+
+**Auditoría del 01/09/2026:** de 28 ítems abiertos de
+`docs/pendientes-2026-08-31.md` (commit `3a40ba4`), **6 no eran lo que decían**
+(21%). Uno estaba
+resuelto hacía tres días, tres estaban mal dimensionados, uno no tenía
+referente en ningún lado del repo y uno estaba duplicado.
+
+**Lo que se pudre no es lo viejo.** Los 5 ítems de frontend —los más antiguos,
+los sospechados— verificaron **todos, al número de línea**. Se pudre lo que
+queda **fuera de una categoría que alguien relee**: los tres peores hallazgos
+compartían no estar en ninguna sección revisable.
+
+Cuatro reglas, cada una de un caso real de este repo:
+
+1. **Ningún ítem sin ancla verificable.** Cada uno lleva `archivo:línea`, un
+   comando que lo reproduce, o una etiqueta explícita de por qué no se puede
+   verificar (`requiere decisión del dueño`, `requiere query`, `requiere
+   entorno`). Un ítem sin referente **no se arrastra: se reescribe o se borra**.
+   → *"RBAC — mecanismos 1 y 2" viajó idéntico por 5 archivos sin que en ningún
+   lado se defina qué son.*
+2. **Al arrastrar, se re-chequea el ancla.** Es barato: ¿el `archivo:línea`
+   sigue existiendo?, ¿el grep sigue pegando? Si el ancla se movió, el ítem
+   cambió. → *D8 se arrastró 3 días como abierto estando implementado.*
+3. **El ítem describe la consecuencia, no el mecanismo.** *"2 queries con JOIN
+   sin vista unificada"* se lee como refactor; *"el saldo del cliente queda
+   subdeclarado y se devuelve plata sin nota de crédito"* se lee como lo que es.
+   → *Gap C1-C, subdimensionado desde el 27/08.*
+4. **Si el ítem cita un documento versionado, cita la versión — y se re-chequea
+   en el mismo commit.** → *FACT-BORRADOR-001 nació citando v2.7 cuando el
+   commit padre del suyo ya era v2.8. **El arrastre no necesita semanas: le
+   alcanzaron dos commits de la misma sesión.***
+
+**Cuándo aplica:** al crear un `pendientes-<fecha>.md` nuevo arrastrando ítems
+del anterior. **No** exige re-auditar todo el archivo cada sesión —eso nadie lo
+sostiene—: exige no copiar una línea sin mirar lo que afirma.
+
 ## Skills de ingeniería (capa técnica)
 
 14 skills genéricas de ingeniería y seguridad en `.claude/skills/`,
@@ -193,7 +230,7 @@ skill técnica o no.
   prohibido reescribir historia compartida, verificar el estado real del repo
   antes de afirmarlo. El repo commitea seguido directo a `main` sin PR y ya
   tiene la regla "no force-push" en el `CLAUDE.md` raíz. El hook de
-  `scripts/install_guard_hooks.sh` la refuerza a nivel git —bloquea el push
+  `.claude/skills/git-discipline/scripts/install_guard_hooks.sh` la refuerza a nivel git —bloquea el push
   non-fast-forward, incluido vía `git -C <path> push`— pero es una red
   parcial: vive en `.git/hooks/`, no se versiona (hay que reinstalarlo en
   cada clon) y se saltea con `git push --no-verify`.

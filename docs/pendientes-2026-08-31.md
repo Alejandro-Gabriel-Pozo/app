@@ -40,6 +40,13 @@ una ruta pública tocando solo una de las dos no rompe nada.
 tabla §4 de la matriz y compararla contra `PUBLIC_ROUTES`. Costo bajo, pero
 ata un test a un formato de markdown — evaluar si conviene.
 
+**Corrección del 01/09 — la deriva que este ítem temía YA OCURRIÓ, en otra
+sección.** El "coinciden 1:1" vale solo para la §4. La **§2** de la matriz ya
+está desincronizada: su encabezado dice *"(198 call-sites, 35 archivos)"*
+(`rbac-matriz-endpoints.md:53`) mientras `rbac-matrix-sync.test.ts:44,49`
+exige **204** y **37** — y el test pasa. El documento miente por 6 call-sites y
+2 archivos, hoy.
+
 **Prioridad:** baja. Es deuda de consistencia documental, no una exposición.
 
 ### RBAC-MOUNT-001 — ninguna cerca valida el orden de montaje de `src/app.ts`
@@ -113,8 +120,8 @@ contrato antes de escribir la pantalla) para los 4 ítems vivos.
 
 ### FACT-BORRADOR-001 — diseño de factura como borrador editable, en curso
 
-**Documento:** `docs/diseno-factura-borrador-2026-08-31.md` (v2.7). El detalle
-está allá; acá va solo lo que hay que no perder de vista.
+**Documento:** `docs/diseno-factura-borrador-2026-08-31.md` (**v2.8**). El
+detalle está allá; acá va solo lo que hay que no perder de vista.
 
 Etapa de proforma editable antes de pedir el CAE. **Diseño, no implementado:
 `CREATE TABLE` en HOLD.** Decisiones ya cerradas por el dueño: D1-D6 (§4),
@@ -128,14 +135,23 @@ persistente, presupuesto de reintentos, quién ve la cola, caducidad de
 borradores abandonados, si se puede facturar a un cliente dado de baja, y si el
 cierre de caja advierte o bloquea.
 
-**Pendiente sobre el documento (§26.1):** 4 correcciones, ninguna depende de una
-decisión. La seria es **C-2**: §12.2 y el paso 9 de §11 **contradicen a §23**
-sobre cuándo nace el cargo, con claves de idempotencia distintas. Quien lea §12
-antes que §23 construye el modelo que el dueño descartó.
+**Pendiente sobre el documento (§26.1) — corregido el 01/09.** La primera
+versión de este renglón decía "4 correcciones" y describía C-2 como "§12.2 y el
+paso 9 de §11". **Las dos cosas estaban mal**, y el propio documento lo dice en
+su §26.1: el inventario real eran **~19 sitios en 6 secciones**, no 2. Los
+marcadores `SUPERSEDIDO por §23` **ya están aplicados** (7 en el documento), así
+que de C-2 **queda vivo solo el conflicto de claves**: `charge:invoice:<invoiceId>`
+en §12.2 contra `invoice_draft_id` en §23.4. Elegir una es decisión de diseño.
+
+**Este renglón nació desactualizado contra el commit padre de su propio commit**
+(citaba v2.7 cuando `ef3ba6a` ya había subido a v2.8). Es el caso que originó
+la regla 4 de `CLAUDE.md`.
 
 **Hallazgos sobre código existente, fuera del alcance del borrador:** el `catch`
-de `finalizeIssued()` (`invoice.service.ts:727-744`) se traga en silencio el
-cierre de `accounts_receivable` después de un CAE real; el PDF de una factura
+de `finalizeIssued()` (`invoice.service.ts:727-744`) se come el cierre de
+`accounts_receivable` después de un CAE real — **precisión del 01/09: sí hay un
+`logger.error` en `:738`**, así que es invisible para el usuario y para el
+caller, pero no para los logs; el PDF de una factura
 emitida lee maestros vivos (§18); `ImpTotConc`/`ImpOpEx` en 0 impiden
 representar exento y no gravado (§25.1); y no hay chequeo de `customer.active`
 al facturar.
@@ -193,9 +209,11 @@ resumen; el detalle y las citas están allá.
   `appfrontend-main` en `367a65f`: los 3 campos están en
   `lib/productos/types.ts` y en las 2 pantallas de producto. Verificación a
   nivel de código fuente, **no** re-corrida contra la base ni con click. Se
-  arrastró como abierto por el 29, el 30 y el 31 sin revalidar. **Sale de la
-  lista en cuanto el dueño lo confirme.** Módulos: `POS_RESTAURANTE` +
-  `FACTURACION`, hacen falta los dos.
+  arrastró como abierto por el 29, el 30 y el 31 sin revalidar.
+  **✅ CERRADO — el dueño lo confirmó el 31/08.** Verificado una **tercera** vez
+  de forma independiente el 01/09 (`lib/productos/types.ts:32,34,36`;
+  `productos/page.tsx:63,225-249`; `productos/[id]/page.tsx:440-441`).
+  Módulos: `POS_RESTAURANTE` + `FACTURACION`, hacen falta los dos.
 - **D6** — números con prefijo. **UI pura, confirmado, listo para empezar.**
   Criterio resuelto (`criterios-datos.md:26`: el prefijo no es parte de la
   identidad). No toca ningún `ModuleKey`.
@@ -225,10 +243,27 @@ resumen; el detalle y las citas están allá.
   propio análisis funcional. **Sigue prohibido en este frente:** agregar
   `requireModule(POS_RESTAURANTE)` al backend y tocar `getBusinessModules()`,
   `requireModule()` o el 402. D7 **ya no es una decisión atómica**.
-- **Gap C1-C** — 2 queries con `JOIN financial_transactions` sin vista
-  unificada. **No revalidado en esta pasada.**
+- **Gap C1-C** — ⚠️ **REESCRITO el 01/09: no es un refactor, es un bug de
+  plata.** La redacción vieja ("2 queries con `JOIN` sin vista unificada,
+  backend puro") se arrastró desde el 27/08 y **escondía la consecuencia**.
+  Los dos `INNER JOIN` siguen en `sql.invoice.repository.ts:108` y `:133`, sin
+  moverse. Una factura **consolidada** tiene `financial_transaction_id` en
+  `NULL` por diseño (`schema.sql:3028`), así que el JOIN la descarta en
+  silencio. Quiénes llaman:
+    - `customer-account.service.ts:59` → modal de conciliación: **el saldo
+      pendiente del cliente queda subdeclarado**.
+    - `cancellation-refund.service.ts:95` → cálculo de reembolso: la
+      consolidada no entra en `issuedInvoices`, el resto cae en
+      `reversedInvoiceId: null` (`:108`) y **se devuelve plata sin nota de
+      crédito contra la factura real**.
+  **Atenuante verificado:** las 11 facturas de la base son de homologación
+  (§26.4 del diseño), así que hoy no hay exposición en producción. No existe
+  ninguna vista: `CREATE VIEW` → 0 en `schema.sql`.
 - **C2** — "Cancelar reserva" no usa el preview/confirm de reembolso
-  existente. **No revalidado en esta pasada.**
+  existente. **Revalidado el 01/09, descripción exacta:** el backend está listo
+  (`reservations.routes.ts:454` y `:473`) y el frontend tiene **cero
+  ocurrencias de `refund`** en todo `appfrontend-main/src/`;
+  `lib/reservas/api.ts:65` llama al `/cancel` pelado.
 
 **Lección, segunda vez que se anota:** la etiqueta "backend-only, falta UI"
 no se revalidó entre el 27/08 y hoy, y D8 estuvo cerrado todo ese tiempo. El
@@ -249,6 +284,15 @@ esta advertencia para estos mismos 6 ítems.
   reconciliación al bajar de plan.
 - **C1-Fase B** — gateway de pago real. Bloqueada hasta que el negocio elija
   proveedor. **No elegir ninguna opción sin el dueño.**
-- **D7** — pantalla de reportes POS/CRM, sin UI desde el 22/08.
-- **RBAC — mecanismos 1 y 2** del handoff externo, sin empezar.
+- ~~**D7** — pantalla de reportes POS/CRM, sin UI desde el 22/08.~~
+  **Duplicado**: el ítem vivo, con el análisis del 31/08, está arriba en
+  "Backlog de producto". Esta fila era residuo de arrastre.
+- **RBAC — mecanismos 1 y 2** del handoff externo. ⚠️ **FILA SIN REFERENTE —
+  requiere la memoria del dueño, no código.** Auditado el 01/09: **en ninguna
+  parte de los dos repos se define qué son el mecanismo 1 y el 2.** La única
+  traza es una subordinada en `pendientes-2026-08-25.md:1379-1380` (*"el resto
+  del handoff de RBAC (mecanismos 1 y 2) quedan para otra sesión"*); no existe
+  el documento de handoff. Viajó idéntica por 5 archivos (27, 28, 29, 30, 31).
+  **O alguien la recupera y la escribe, o se borra: como está no se puede ni
+  verificar ni cerrar.**
 - **Operación:** datos de prueba (demo) en la base real.
