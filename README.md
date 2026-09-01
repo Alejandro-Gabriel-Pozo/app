@@ -120,7 +120,10 @@ src/
    - **Build command:** `npm install && npm run build`
    - **Start command:** `npm start`
    - **Health check path:** `/health`
-4. Tras el deploy, la API queda en `https://<tu-servicio>.onrender.com` con Swagger en `/docs`.
+4. Tras el deploy, la API queda en `https://<tu-servicio>.onrender.com`. **Swagger
+   NO se monta en producción** (01/09/2026, `src/api/docs-exposure.ts`): `/docs`,
+   `/openapi.json` y el redirect de `/` responden 404 con `NODE_ENV=production`.
+   En desarrollo siguen disponibles en `/docs`.
 
 ## Publicar en GitHub
 

@@ -65,7 +65,9 @@ async function main(): Promise<void> {
   const { app } = await createApp();
 
   const server = app.listen(PORT, () => {
-    logger.info({ port: PORT }, `🚀 Reservations API en http://localhost:${PORT} (Swagger: /docs, modo: multi-tenant)`);
+    // El detalle de Swagger lo loguea app.ts, que es quien sabe si lo montó
+    // o no — acá afirmarlo siempre seria mentir en produccion.
+    logger.info({ port: PORT }, `🚀 Reservations API en http://localhost:${PORT} (modo: multi-tenant)`);
   });
 
   // -------------------------------------------------------------------------

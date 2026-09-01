@@ -14,15 +14,13 @@ export const openApiSpec = {
       'API de reservas multi-recurso: cualquier tipo de recurso agendable ' +
       '(cabañas, mesas, boxes de peluquería, salas, equipamiento, etc.).\n\n' +
       '## Autenticación\n\n' +
-      '1. Usa `POST /api/login` con las credenciales demo para obtener un JWT.\n' +
-      '2. Haz clic en el botón **Authorize** 🔒 e ingresa el token.\n' +
+      '1. Usá `POST /api/login` con tus propias credenciales para obtener un JWT.\n' +
+      '2. Hacé clic en el botón **Authorize** 🔒 e ingresá el token.\n' +
       '3. Swagger enviará `Authorization: Bearer <token>` automáticamente.\n\n' +
-      '**Credenciales demo**\n\n' +
-      '| Email | Contraseña | Rol |\n' +
-      '|---|---|---|\n' +
-      '| admin@demo.com | Admin1234! | ADMIN |\n' +
-      '| recepcion@demo.com | recep123 | RECEPTIONIST |\n' +
-      '| mesero@demo.com | waiter123 | WAITER |',
+      '> Este documento **no** publica credenciales. Antes del 01/09/2026 incluía ' +
+      'una tabla de usuarios demo con sus contraseñas en texto plano, servida sin ' +
+      'autenticación en producción. Si necesitás credenciales para probar, pedilas ' +
+      'por un canal privado — no vuelvan acá.',
   },
   servers: [
     { url: 'https://app-chny.onrender.com', description: 'Render (producción)' },
@@ -121,20 +119,12 @@ export const openApiSpec = {
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/LoginRequest' },
-              examples: {
-                admin: {
-                  summary: 'Administrador (acceso total)',
-                  value: { email: 'admin@demo.com', password: 'Admin1234!' },
-                },
-                recepcionista: {
-                  summary: 'Recepcionista (crea y gestiona reservas)',
-                  value: { email: 'recepcion@demo.com', password: 'recep123' },
-                },
-                mesero: {
-                  summary: 'Mesero (solo lectura y completar)',
-                  value: { email: 'mesero@demo.com', password: 'waiter123' },
-                },
-              },
+              // Sin `examples` a propósito. Swagger UI los precarga en el
+              // "Try it out", que dispara contra `servers[0]` — producción.
+              // Hasta el 01/09/2026 había acá tres pares email/contraseña
+              // reales, listos para enviar con un clic. Un ejemplo de login
+              // es, por definición, una credencial: no hay forma segura de
+              // poner uno.
             },
           },
         },
@@ -857,8 +847,10 @@ export const openApiSpec = {
         type: 'object',
         required: ['email', 'password'],
         properties: {
-          email:    { type: 'string', format: 'email', example: 'admin@demo.com' },
-          password: { type: 'string', minLength: 6,    example: 'Admin1234!' },
+          email:    { type: 'string', format: 'email', example: 'usuario@ejemplo.com' },
+          // Sin `example` en password: cualquier valor puesto acá queda
+          // publicado en el spec y precargado en el formulario.
+          password: { type: 'string', minLength: 6 },
         },
       },
 
@@ -872,7 +864,7 @@ export const openApiSpec = {
             type: 'object',
             properties: {
               id:    { type: 'string', example: 'usr-admin-01' },
-              email: { type: 'string', example: 'admin@demo.com' },
+              email: { type: 'string', example: 'usuario@ejemplo.com' },
               role:  { type: 'string', enum: ['ADMIN', 'RECEPTIONIST', 'WAITER'] },
             },
           },

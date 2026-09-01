@@ -14,7 +14,9 @@
  * 6.  /health               — LIVENESS, no toca la base
  *     /health/db            — READINESS, chequea platformClient (cacheado)
  * 7.  /docs                 — helmetDocs (CSP permisiva para Swagger UI)
- * 8.  /openapi.json         — helmetBase ya aplicado
+ *     /openapi.json         — helmetBase ya aplicado
+ *     /  (redirect a /docs)
+ *     ⚠️  Los tres se montan SOLO fuera de producción (api/docs-exposure.ts)
  * 9.  /platform/*           — helmetApi + platformLimiter (SUPERADMIN)
  * 10. POST /register        — helmetApi + authLimiter (público)
  * 11. POST /api/login       — helmetApi + authLimiter (público)
@@ -95,6 +97,7 @@ import type { AppContainer} from './container.js';
 import { createAppContainer, createPlatformPool, closePlatformPool, buildPlatformTransactionManager } from './container.js';
 import { checkDatabaseHealth }           from './db/pg.client.js';
 import { CachedDbHealth }                from './db/health-cache.js';
+import { shouldExposeApiDocs }           from './api/docs-exposure.js';
 import { SqlHousekeepingRepository }     from './pms-estadias/housekeeping.repository.js';
 import { SqlMaintenanceWindowRepository } from './pms-estadias/sql.maintenance-window.repository.js';
 import { SqlStayRepository }             from './pms-estadias/stay.repository.js';
@@ -234,14 +237,24 @@ export async function createApp(): Promise<{
     });
   });
 
-  app.get('/', (_req, res) => res.redirect('/docs'));
-  app.get('/openapi.json', (_req, res) => res.json(openApiSpec));
+  // Documentación interactiva — NO se monta en producción (ver
+  // api/docs-exposure.ts para el porqué y las alternativas descartadas).
+  // Sin montar, Express responde 404 por sí solo: un 401 confirmaría que el
+  // recurso existe.
+  if (shouldExposeApiDocs()) {
+    app.get('/', (_req, res) => res.redirect('/docs'));
+    app.get('/openapi.json', (_req, res) => res.json(openApiSpec));
 
-  // /docs — CSP permisiva para que Swagger UI cargue sus assets de CDN
-  app.use('/docs', helmetDocs, swaggerUi.serve, swaggerUi.setup(openApiSpec, {
-    customSiteTitle: 'Reservations API',
-    swaggerOptions:  { persistAuthorization: true, docExpansion: 'list', filter: true },
-  }));
+    // /docs — CSP permisiva para que Swagger UI cargue sus assets de CDN
+    app.use('/docs', helmetDocs, swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+      customSiteTitle: 'Reservations API',
+      swaggerOptions:  { persistAuthorization: true, docExpansion: 'list', filter: true },
+    }));
+  } else {
+    // Ruidoso a propósito: que no se monte tiene que verse en el boot, no
+    // deducirse de un 404 (DEFENSIVE_DEVELOPING.md:33).
+    logger.info('[docs] /docs, /openapi.json y el redirect de / NO se montan (NODE_ENV=production)');
+  }
 
   // -------------------------------------------------------------------------
   // 9. /platform/* — helmetApi (CSP estricta) + platformLimiter
