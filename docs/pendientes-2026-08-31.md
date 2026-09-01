@@ -111,6 +111,41 @@ contrato antes de escribir la pantalla) para los 4 ítems vivos.
 
 ---
 
+### FACT-BORRADOR-001 — diseño de factura como borrador editable, en curso
+
+**Documento:** `docs/diseno-factura-borrador-2026-08-31.md` (v2.7). El detalle
+está allá; acá va solo lo que hay que no perder de vista.
+
+Etapa de proforma editable antes de pedir el CAE. **Diseño, no implementado:
+`CREATE TABLE` en HOLD.** Decisiones ya cerradas por el dueño: D1-D6 (§4),
+PN-1 = origen `invoice_draft_id` con el `CHARGE` **después** del CAE (§23),
+origen de línea con discriminador `source_kind` (§24), y D5 con condición —
+los 4 tratamientos en el modelo, pero `EXENTO`/`NO_GRAVADO` **rechazan la
+emisión** mientras `ImpTotConc`/`ImpOpEx` sigan hardcodeados en 0 (§25).
+
+**Pendiente del dueño (§26.3):** salida de `ISSUED_PENDING_LEDGER` ante fallo
+persistente, presupuesto de reintentos, quién ve la cola, caducidad de
+borradores abandonados, si se puede facturar a un cliente dado de baja, y si el
+cierre de caja advierte o bloquea.
+
+**Pendiente sobre el documento (§26.1):** 4 correcciones, ninguna depende de una
+decisión. La seria es **C-2**: §12.2 y el paso 9 de §11 **contradicen a §23**
+sobre cuándo nace el cargo, con claves de idempotencia distintas. Quien lea §12
+antes que §23 construye el modelo que el dueño descartó.
+
+**Hallazgos sobre código existente, fuera del alcance del borrador:** el `catch`
+de `finalizeIssued()` (`invoice.service.ts:727-744`) se traga en silencio el
+cierre de `accounts_receivable` después de un CAE real; el PDF de una factura
+emitida lee maestros vivos (§18); `ImpTotConc`/`ImpOpEx` en 0 impiden
+representar exento y no gravado (§25.1); y no hay chequeo de `customer.active`
+al facturar.
+
+**Medido contra la base real el 31/08** (§26.4, ejecutado por el dueño en
+`ancient-king-17098519`): 11 facturas, **todas de homologación**, cero
+emisiones fiscales reales, ninguna trabada. **Nada de esto tiene rodaje.**
+
+---
+
 ## 🔴 Abierto — arrastrado del 30/08
 
 Detalle completo en `pendientes-2026-08-30.md`.
