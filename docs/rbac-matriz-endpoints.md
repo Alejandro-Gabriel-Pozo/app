@@ -50,7 +50,18 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (198 call-sites, 35 archivos)
+## 2. Matriz de endpoints por archivo (204 call-sites, 37 archivos)
+
+> **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
+> archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts:44,49`
+> exigía **204** y **37** — y la cerca pasaba. O sea que el documento mentía
+> por 6 call-sites y 2 archivos, sin que nada lo detectara: la cerca valida
+> el código contra sus constantes, **no** contra esta prosa.
+>
+> **No forma parte de D6.** Es la mitad visible de RBAC-SYNC-001 y se corrige
+> en su propio commit, aparte, para no atribuirle a D6 una deuda ajena. La
+> otra mitad del ítem **sigue abierta**: nada verifica la sección 4 de este
+> documento contra el `PUBLIC_ROUTES` del test — ese cruce se mantiene a ojo.
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién
