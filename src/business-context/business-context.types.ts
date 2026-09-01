@@ -192,10 +192,15 @@ export interface RawContextInputs {
 }
 
 /**
- * Contexto resuelto SIN los tres campos que completa la ruta (Bloque 4B):
- * `currency` y `timezone` (de `business_profile`, vía `req.db`) y
+ * Contexto resuelto SIN los CINCO campos que completa la ruta:
+ * `currency`, `timezone`, `reservationNumberPrefix` y
+ * `customerNumberPrefix` (de `business_profile`, vía `req.db`) y
  * `permissionGroups` (de `req.user`). No es el payload HTTP completo — por
  * eso `Core`.
+ *
+ * Los dos prefijos se agregaron el 01/09/2026 (D6). No van acá porque no
+ * salen del resolver de capacidades: los completa la ruta, igual que
+ * `currency`/`timezone`.
  */
 export interface ContextPayloadCore {
   businessId:     string;

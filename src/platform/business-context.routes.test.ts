@@ -66,12 +66,21 @@ function fakePlatformRepo(getContextInputs = vi.fn(async () => RAW as RawContext
   return { getContextInputs } as unknown as RepoFake;
 }
 
-/** `req.db` fake: la query de `business_profile` devuelve currency/timezone. */
+/**
+ * `req.db` fake: la query de `business_profile` devuelve la FILA CRUDA, con
+ * nombres de columna — `SqlBusinessProfileRepository.get()` es quien mapea a
+ * camelCase (`:29-30` para los prefijos).
+ */
 function fakeDbWithProfile() {
   return {
     query: vi.fn(async (sql: string) => {
       if (sql.includes('business_profile')) {
-        return { rows: [{ currency: 'ARS', timezone: 'America/Argentina/Buenos_Aires' }] };
+        return { rows: [{
+          currency:                 'ARS',
+          timezone:                 'America/Argentina/Buenos_Aires',
+          reservation_number_prefix: 'RES',
+          customer_number_prefix:    'CLI',
+        }] };
       }
       return { rows: [] };
     }),
@@ -114,10 +123,67 @@ describe('GET /api/business/context — handler', () => {
       locale:           'es-AR',
       currency:         'ARS',
       timezone:         'America/Argentina/Buenos_Aires',
+      reservationNumberPrefix: 'RES',                   // D6 (01/09/2026)
+      customerNumberPrefix:    'CLI',
       permissionGroups: ['STAFF', 'MANAGEMENT'],
     });
     for (const k of ['navigation', 'href', 'icon', 'managementOnly']) {
       expect(body).not.toHaveProperty(k);
+    }
+  });
+
+  /**
+   * D6 (01/09/2026) — cerca de contrato.
+   *
+   * Los dos chequeos que ya existían NO detectan una clave de más:
+   * `toMatchObject` es tolerante a claves extra por diseño, y el loop de
+   * `not.toHaveProperty` solo cubre 4 nombres conocidos. Si alguien agrega
+   * `taxId` al payload, los dos pasan en verde.
+   *
+   * Este `it` congela el CONJUNTO EXACTO. Rompe ante cualquier adición, que
+   * es el punto: agregar una clave al contrato entre repos tiene que ser un
+   * acto deliberado, no un efecto colateral de spreadear una entidad.
+   *
+   * SI ESTO ROMPE: agregaste (o sacaste) una clave del payload de
+   * `GET /api/business/context`. Actualizá, EN EL MISMO CAMBIO, el espejo de
+   * `appfrontend-main/src/lib/business-context/types.ts`, su type-guard
+   * `isBusinessContext()` y la §5.4 del plan canónico. Y acordate del orden
+   * de deploy: backend primero — el guard del frontend rechaza con `Error` y
+   * tumba el contexto entero del dashboard si recibe una forma que no espera.
+   */
+  it('el payload tiene EXACTAMENTE 13 claves, y ninguna es fiscal', async () => {
+    const repo = fakePlatformRepo();
+    const handler = getHandler(createBusinessContextRouter(repo));
+    const req = fakeReq({ permissionGroups: ['STAFF'] });
+    const res = fakeRes();
+
+    await handler(req, res, vi.fn());
+
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>;
+
+    expect(Object.keys(body).sort()).toEqual([
+      'businessId',
+      'currency',
+      'customerNumberPrefix',
+      'enabledModules',
+      'industryKey',
+      'industryName',
+      'locale',
+      'moduleColors',
+      'moduleSources',
+      'permissionGroups',
+      'reservationNumberPrefix',
+      'terminology',
+      'timezone',
+    ]);
+
+    // El endpoint es Roles.STAFF y `BusinessProfile` trae el perfil fiscal
+    // entero. La construcción es por destructuring explícito, no por spread;
+    // esto lo vuelve verificable si alguien cambia esa línea.
+    for (const fiscal of ['taxId', 'taxIdType', 'taxCondition', 'legalName',
+                          'afipCuit', 'afipSalesPoint', 'defaultIvaRate',
+                          'fiscalAddressLine1', 'pricesIncludeIva']) {
+      expect(body).not.toHaveProperty(fiscal);
     }
   });
 

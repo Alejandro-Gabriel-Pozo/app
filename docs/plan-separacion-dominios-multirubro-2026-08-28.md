@@ -264,6 +264,8 @@ interface BusinessContext {
   locale: string
   currency: string                               // business_profile
   timezone: string                               // business_profile
+  reservationNumberPrefix: string                // business_profile (D6, 01/09/2026)
+  customerNumberPrefix: string                   // business_profile (D6, 01/09/2026)
 }
 ```
 

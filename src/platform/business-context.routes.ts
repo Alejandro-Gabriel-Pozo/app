@@ -4,7 +4,7 @@
  *
  * Contexto que consume el shell del dashboard de staff: capacidades
  * efectivas, colores por módulo, terminología resuelta, grupos de permiso,
- * y `currency`/`timezone` del negocio.
+ * y `currency`/`timezone`/prefijos de numeración del negocio.
  *
  * ## Montaje (ver app.ts)
  *
@@ -16,9 +16,12 @@
  *
  * ## Respuestas
  *
- * - **200** — `{ ...ContextPayloadCore, currency, timezone, permissionGroups }`.
- *   Contrato D-A: sin `navigation` / `href` / `icon` / `managementOnly`
- *   (eso es catálogo local del frontend). `locale` es `'es-AR'` (D6).
+ * - **200** — `{ ...ContextPayloadCore, currency, timezone,
+ *   reservationNumberPrefix, customerNumberPrefix, permissionGroups }`.
+ *   **13 claves exactas**, congeladas por el test de conjunto en
+ *   `business-context.routes.test.ts`. Contrato D-A: sin `navigation` /
+ *   `href` / `icon` / `managementOnly` (eso es catálogo local del
+ *   frontend). `locale` es `'es-AR'` (D6).
  * - **404 `BUSINESS_NOT_FOUND`** — `getContextInputs` devolvió `null` (el
  *   negocio no existe). En la práctica `tenantMiddleware` ya lo cortó antes;
  *   esto cubre la race de un borrado entre medio.
@@ -60,7 +63,17 @@ export function createBusinessContextRouter(
           return;   // no se consulta business_profile
         }
 
-        const { currency, timezone } = await new SqlBusinessProfileRepository(req.db!).get();
+        // Destructuring EXPLÍCITO, nunca spread de BusinessProfile: esa entidad
+        // trae `taxId`, `taxCondition`, `afipCuit`, `afipSalesPoint` y el resto
+        // del perfil fiscal, y este endpoint es `Roles.STAFF`. Spreadearla
+        // filtraría datos fiscales a recepción. El test de conjunto exacto de
+        // claves es la cerca que lo detecta si alguien cambia esta línea.
+        const {
+          currency,
+          timezone,
+          reservationNumberPrefix,
+          customerNumberPrefix,
+        } = await new SqlBusinessProfileRepository(req.db!).get();
 
         res.json({
           ...core,                                      // businessId, industryKey, industryName,
@@ -68,6 +81,14 @@ export function createBusinessContextRouter(
                                                         // terminology, locale
           currency,
           timezone,
+          // D6 (01/09/2026) — prefijos del número operativo. Van acá y no en un
+          // endpoint propio porque son configuración de PRESENTACIÓN por
+          // negocio, de la misma naturaleza que `currency`/`timezone`, y este
+          // contrato ya lee `business_profile`. Un endpoint nuevo habría
+          // sumado un call-site de `authorize`, un round-trip en la pantalla
+          // más usada, y un segundo lector del mismo concepto.
+          reservationNumberPrefix,
+          customerNumberPrefix,
           permissionGroups: req.user?.permissionGroups ?? [],
         });
       } catch (err) {
