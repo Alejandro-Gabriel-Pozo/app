@@ -26,13 +26,29 @@ Y dos documentos de diseño, los dos en **HOLD**:
 `diseno-fiscal-profile-resolver-2026-09-01.md` (nuevo, se versiona con este
 commit).
 
+> **Nota agregada 02/09/2026, registro histórico sin editar arriba:** el HOLD de
+> `diseno-fiscal-profile-resolver-2026-09-01.md` se dividió más tarde el mismo
+> 01/09 en HOLD de diseño (levantado) y HOLD de implementación (vigente) — ver
+> `indice-conocimiento.md` para el estado actual, no esta línea.
+> `diseno-factura-borrador-2026-08-31.md` es un documento distinto, no tocado
+> por ese cambio, y sigue en HOLD sin matices nuevos.
+
 ---
 
 ## 🔴 Abierto — encontrado hoy (01/09/2026)
 
-### D6-FRONTEND-001 — backend hecho y pusheado; falta el frontend
+### D6-FRONTEND-001 — backend hecho y pusheado; falta el frontend — ✅ RESUELTO (02/09/2026)
 
-**Estado:** backend en `ef6afcc`, ya en `origin/main`. **Frontend sin empezar.**
+**Cerrado.** Verificado hoy contra `appfrontend-main` (`HEAD` = `origin/main` = `e36d24f`):
+mirror de tipo en `src/lib/business-context/types.ts:93-94`, type-guard en
+`src/lib/business-context/sources.ts:177-178`, helper único en
+`src/lib/business-context/numero-operativo.ts` (commits `5cae5b3`, `472d5f2`),
+usado en las tres pantallas requeridas —
+`dashboard/reservas/page.tsx`, `dashboard/clientes/page.tsx`,
+`dashboard/cuentas-corrientes/page.tsx` — más `dashboard/page.tsx` y
+`dashboard/turnos/page.tsx` de más. Sin divergencia entre pantallas.
+
+**Estado original (01/09/2026), registro histórico — superado por el cierre de arriba:** backend en `ef6afcc`, ya en `origin/main`. **Frontend sin empezar.**
 
 **D6 NO era "UI pura", y las tres revisiones que lo dijeron se equivocaron.**
 `GET /api/business-profile` exige `MANAGEMENT`
