@@ -248,16 +248,39 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // -------------------------------------------------------------------------
 
   async cancel(id: string): Promise<Order | undefined> {
-    return this.cancelWithClient(this.db, id);
+    return (await this.cancelWithClient(this.db, id)).order;
   }
 
-  async cancelWithClient(client: SqlClient, id: string): Promise<Order | undefined> {
-    await client.query(
+  /** ORDER-01/02 -- ver docblock de IOrderRepositoryWithClient.cancelWithClient. */
+  async cancelWithClient(
+    client: SqlClient,
+    id: string,
+  ): Promise<{ order: Order | undefined; changed: boolean }> {
+    const result = await client.query(
       `UPDATE orders
        SET status = 'CANCELLED', cancelled_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND status NOT IN ('CANCELLED', 'COMPLETED')`,
       [id],
     );
+    // `rowCount` es OPCIONAL en SqlClient (repositories/sql.client.ts). Si el
+    // driver no lo informa NO se puede saber si la fila cambió: fail-closed,
+    // se propaga como indeterminado y el caller NO publica evento.
+    if (result.rowCount === undefined) {
+      throw new Error(
+        `cancelWithClient: el driver no informó rowCount para la orden "${id}" -- ` +
+        `no se puede determinar si la transición ocurrió.`,
+      );
+    }
+    return { order: await this.getByIdWithClient(client, id), changed: result.rowCount === 1 };
+  }
+
+  /** ORDER-01/02 -- igual que getByIdWithClient pero con SELECT ... FOR UPDATE. */
+  async getByIdForUpdate(client: SqlClient, id: string): Promise<Order | undefined> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      'SELECT id FROM orders WHERE id = $1 FOR UPDATE',
+      [id],
+    );
+    if (!rows[0]) return undefined;
     return this.getByIdWithClient(client, id);
   }
 

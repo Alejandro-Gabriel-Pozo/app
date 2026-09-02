@@ -126,16 +126,27 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
   }
 
   async cancel(id: string): Promise<Order | undefined> {
-    return this.cancelWithClient({} as SqlClient, id);
+    return (await this.cancelWithClient({} as SqlClient, id)).order;
   }
 
-  async cancelWithClient(_client: SqlClient, id: string): Promise<Order | undefined> {
+  async cancelWithClient(
+    _client: SqlClient,
+    id: string,
+  ): Promise<{ order: Order | undefined; changed: boolean }> {
     const order = this.orders.get(id);
-    if (!order || order.status === 'CANCELLED' || order.status === 'COMPLETED') return order;
+    if (!order) return { order: undefined, changed: false };
+    if (order.status === 'CANCELLED' || order.status === 'COMPLETED') {
+      return { order, changed: false };
+    }
     order.status = 'CANCELLED';
     order.cancelledAt = new Date();
     order.updatedAt = new Date();
-    return order;
+    return { order, changed: true };
+  }
+
+  /** ORDER-01/02 -- sin locks en memoria; misma lectura que getById. */
+  async getByIdForUpdate(_client: SqlClient, id: string): Promise<Order | undefined> {
+    return this.orders.get(id);
   }
 
   async complete(id: string): Promise<Order | undefined> {

@@ -369,6 +369,61 @@ describe('OrderService', () => {
         payload:   { previousStatus: 'DRAFT', wasServed: false },
       });
     });
+
+    // -------------------------------------------------------------------
+    // ORDER-01/02 (02/09/2026) — la lectura y validación de estado vivían
+    // FUERA de la transacción y el resultado del UPDATE condicional se
+    // descartaba. Consecuencia real: cancelar dos veces "tenía éxito" y
+    // publicaba un segundo order.cancelled (ORDER-01); y con un
+    // completeOrder concurrente ganando la carrera, igual se publicaba el
+    // evento -> el worker anulaba los cargos de una orden ya cobrada
+    // (ORDER-02). Ver order.service.ts:cancelOrder.
+    // -------------------------------------------------------------------
+
+    it('ORD-01: la segunda cancelación es idempotente — sin segundo evento ni auditoría', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+
+      await service.cancelOrder(id, ACTOR);
+      const secondResult = await service.cancelOrder(id, ACTOR);
+
+      expect(secondResult.status).toBe('CANCELLED');
+      // confirmed + cancelled -- NO un segundo cancelled.
+      expect(eventRepo.events).toHaveLength(2);
+      expect(eventRepo.events.filter((e) => e.eventType === 'order.cancelled')).toHaveLength(1);
+
+      // DRAFT->CONFIRMED + CONFIRMED->CANCELLED. La segunda cancelación
+      // (idempotente) NO agrega una tercera fila.
+      const entries = await auditLogRepo.findByEntity('orders', id);
+      expect(entries).toHaveLength(2);
+    });
+
+    it('ORD-02: cancelar una orden COMPLETED rechaza sin evento ni anulación financiera', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.completeOrder(id, ACTOR);
+      const eventsBeforeCancel = eventRepo.events.length;
+
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+
+      // Ningún order.cancelled nuevo: el worker de outbox nunca recibiría la
+      // señal para anular los cargos de una orden ya completada y cobrada.
+      expect(eventRepo.events).toHaveLength(eventsBeforeCancel);
+      expect(eventRepo.events.some((e) => e.eventType === 'order.cancelled')).toBe(false);
+    });
+
+    it('ORD-08: un estado fuera del dominio conocido rechaza fail-closed, sin evento', async () => {
+      const id = await createDraftOrderWithItem(50);
+      const order = await orderRepo.getById(id);
+      // Simula una fila con un status fuera de OrderStatus -- el CHECK de
+      // schema.sql lo impediría en producción; este test defiende la rama
+      // de código para el caso en que igual llegara (dato legado, migración
+      // a medio camino, corrupción).
+      (order as { status: string }).status = 'ESTADO_DESCONOCIDO';
+
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+      expect(eventRepo.events).toHaveLength(0);
+    });
   });
 
   describe('auditoría de transiciones (Bug #4, 27/08/2026)', () => {

@@ -143,7 +143,25 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
 
   completeWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
 
-  cancelWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
+  /**
+   * ORDER-01/02 (02/09/2026) -- devuelve también si el UPDATE condicional
+   * modificó la fila. Antes devolvía solo la orden releída, así que el caller
+   * no podía distinguir "la cancelé yo" de "ya estaba cancelada" ni de "está
+   * COMPLETED": publicaba `order.cancelled` en los tres casos.
+   * `changed` es la única señal autoritativa para publicar el evento.
+   */
+  cancelWithClient(
+    client: SqlClient,
+    id: string,
+  ): Promise<{ order: Order | undefined; changed: boolean }>;
+
+  /**
+   * ORDER-01/02 -- lectura del agregado raíz CON LOCK, dentro de la
+   * transacción. `previousStatus`/`wasServed` viajan al evento de outbox y
+   * `wasServed` decide si se restaura stock: leerlos fuera de la transacción
+   * los deja expuestos a un markServed concurrente.
+   */
+  getByIdForUpdate(client: SqlClient, id: string): Promise<Order | undefined>;
 
   /**
    * Persiste el snapshot de componentes exploded (Fase 3, 17/08/2026) para
@@ -573,15 +591,48 @@ export class OrderService {
    * pudo haber cambiado desde que se confirmó esta orden.
    */
   async cancelOrder(id: string, changedBy: string): Promise<OrderWithTransitions> {
-    const order = await this.orderRepo.getById(id);
-    if (!order) throw new OrderNotFoundError(id);
-    if (order.status === 'COMPLETED') throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
-
-    const previousStatus = order.status;
-    const wasServed      = order.servedAt !== null;
-
     return this.transactionManager.run(async (client: SqlClient) => {
-      const updated = (await this.orderRepo.cancelWithClient(client, id))!;
+      // ORDER-01/02 (02/09/2026) -- la lectura y la validación de estado vivían
+      // FUERA de la transacción, y el resultado del UPDATE condicional se
+      // descartaba. Consecuencias reales:
+      //   ORDER-01: cancelar dos veces "tenía éxito" y publicaba un SEGUNDO
+      //             order.cancelled.
+      //   ORDER-02: con un completeOrder concurrente el UPDATE no tocaba nada,
+      //             pero igual se publicaba order.cancelled -> el worker corría
+      //             voidByOrderId sobre una orden COMPLETED y cobrada.
+      // Ahora: lectura CON LOCK dentro de la transacción, y el evento se publica
+      // solo si la fila cambió efectivamente.
+      const order = await this.orderRepo.getByIdForUpdate(client, id);
+      if (!order) throw new OrderNotFoundError(id);
+
+      const previousStatus = order.status;
+      const wasServed      = order.servedAt !== null;
+
+      // Rama idempotente: ya estaba en el estado pedido. Sin evento, sin
+      // auditoría, sin anulación financiera. El usuario reintenta por timeout,
+      // no por error: 200 con el mismo cuerpo.
+      if (previousStatus === 'CANCELLED') {
+        return withAllowedTransitions(order);
+      }
+
+      // Rama de conflicto: estado que no admite la transición. Fail-closed para
+      // cualquier estado no cancelable, no solo COMPLETED.
+      if (previousStatus !== 'DRAFT' && previousStatus !== 'CONFIRMED') {
+        throw new InvalidOrderTransitionError(previousStatus, 'CANCELLED');
+      }
+
+      const { order: updated, changed } = await this.orderRepo.cancelWithClient(client, id);
+      if (!updated) throw new OrderNotFoundError(id);
+
+      // Con el lock tomado nadie pudo cambiar la fila entre la lectura y el
+      // UPDATE, así que `changed === false` acá es un invariante roto, no una
+      // carrera. Fail-closed: no se publica evento.
+      if (!changed) {
+        throw new Error(
+          `cancelOrder: la orden "${id}" no cambió pese al lock (estado leído: ${previousStatus}).`,
+        );
+      }
+
       await this.recordStatusTransition(client, updated.id, previousStatus, 'CANCELLED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
         businessId:    order.businessId,
