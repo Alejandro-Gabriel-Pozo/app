@@ -93,6 +93,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | `console.log` en `src/scripts/` a propósito; Pino solo en el proceso del servidor | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) §1.1 | implementado |
 | Sentry no captura `DomainError`/`ValidationError`/`ZodError` | misma §1.2 | implementado |
 | Modelo RBAC = `authorize(Roles.X)` por call-site + matriz + cerca eléctrica, **no** RLS ni router deny-by-default — el aislamiento entre tenants ya es físico (una BD por negocio). La skill `authorization-surface-mapping` se acota a 2 huecos: ownership del portal de cliente (sin tests negativos, **sigue abierto** — RBAC-OWN-001) y ruta nueva sin `authorize()` en archivo `*.routes.ts` existente (**mitigado el 30/08/2026** por `src/tests/security/rbac-route-coverage.test.ts`) | [diseno-rbac-modelo-y-alcance-2026-08-30.md](diseno-rbac-modelo-y-alcance-2026-08-30.md) | aceptado (30/08/2026) |
+| "Sucursal" (sin calificar) queda reservado para el eje `companies`/tenant (Modelo A); una ubicación física dentro de un mismo tenant se nombra "ubicación"/"local", nunca "sucursal" a secas (Modelo B, `locations`). Un segundo local físico es una `location` nueva bajo la misma `company`, salvo que sea una nueva entidad legal, en cuyo caso es un tenant nuevo | [mapa-companies-vs-locations-2026-09-01.md](mapa-companies-vs-locations-2026-09-01.md) §5 Q1/Q2 | aceptado (01/09/2026) |
 
 ### Diseño técnico / RFC (propuesta o cambio complejo)
 
@@ -138,6 +139,8 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | Multi-cliente | [roadmap-multi-cliente-arquitectura.md](roadmap-multi-cliente-arquitectura.md) |
 | Sitios corporativos | [roadmap-sitios-corporativos-reservas.md](roadmap-sitios-corporativos-reservas.md) |
 | Frontend: Bastión, Refine, modales | `appfrontend-main/docs/` |
+| Catálogo compartido entre sucursales-tenant de una misma empresa (`companies`, `company_products`) | [diseno-empresas-multipropiedad.md](diseno-empresas-multipropiedad.md) |
+| `companies` (multi-tenant/empresa) vs. `locations` (multi-ubicación dentro de un tenant) — los dos ejes que comparten la palabra "sucursal"; consolida lo que estaba disperso en `diseno-empresas-multipropiedad.md` y `diseno-inventario-carve-out.md` | [mapa-companies-vs-locations-2026-09-01.md](mapa-companies-vs-locations-2026-09-01.md) |
 
 ### Deuda técnica (conocida, no resolver en este índice)
 
