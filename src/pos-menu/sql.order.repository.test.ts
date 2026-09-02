@@ -80,6 +80,46 @@ describe('SqlOrderRepository — ORDER-01/02', () => {
     });
   });
 
+  describe('completeWithClient — ORDER-03', () => {
+    it('ORD3-07: lanza si el driver no informa rowCount (fail-closed, no relee)', async () => {
+      const client = new FakeSqlClient([{ rows: [], rowCount: undefined }]);
+      const repo = new SqlOrderRepository(client);
+
+      await expect(repo.completeWithClient(client, 'ord-1')).rejects.toThrow(/rowCount/);
+      expect(client.queries).toHaveLength(1);
+    });
+
+    it('ORD3-16: devuelve changed=true y la orden releída cuando el UPDATE afectó 1 fila', async () => {
+      const client = new FakeSqlClient([
+        { rows: [], rowCount: 1 },                                        // UPDATE
+        { rows: [makeOrderRow({ status: 'COMPLETED' })], rowCount: 1 },   // getByIdWithClient: orden
+        { rows: [], rowCount: 0 },                                        // getByIdWithClient: items
+      ]);
+      const repo = new SqlOrderRepository(client);
+
+      const result = await repo.completeWithClient(client, 'ord-1');
+
+      expect(result.changed).toBe(true);
+      expect(result.order?.status).toBe('COMPLETED');
+    });
+
+    it('ORD3-06/15: devuelve changed=false cuando el UPDATE no afectó filas (ya CANCELLED)', async () => {
+      const client = new FakeSqlClient([
+        { rows: [], rowCount: 0 },                                       // UPDATE, ya CANCELLED
+        { rows: [makeOrderRow({ status: 'CANCELLED' })], rowCount: 1 },  // getByIdWithClient: orden
+        { rows: [], rowCount: 0 },                                       // getByIdWithClient: items
+      ]);
+      const repo = new SqlOrderRepository(client);
+
+      const result = await repo.completeWithClient(client, 'ord-1');
+
+      // Igual que en cancelWithClient: el repositorio nunca miente sobre si
+      // escribió o no. La decisión de idempotente/conflicto es del caller.
+      expect(result.changed).toBe(false);
+      expect(result.order?.status).toBe('CANCELLED');
+    });
+  });
+
   describe('getByIdForUpdate', () => {
     it('emite SELECT ... FOR UPDATE sobre orders antes de releer', async () => {
       const client = new FakeSqlClient([

@@ -150,16 +150,20 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
   }
 
   async complete(id: string): Promise<Order | undefined> {
-    return this.completeWithClient({} as SqlClient, id);
+    return (await this.completeWithClient({} as SqlClient, id)).order;
   }
 
-  async completeWithClient(_client: SqlClient, id: string): Promise<Order | undefined> {
+  async completeWithClient(
+    _client: SqlClient,
+    id: string,
+  ): Promise<{ order: Order | undefined; changed: boolean }> {
     const order = this.orders.get(id);
-    if (!order || order.status !== 'CONFIRMED') return order;
+    if (!order) return { order: undefined, changed: false };
+    if (order.status !== 'CONFIRMED') return { order, changed: false };
     order.status = 'COMPLETED';
     order.completedAt = new Date();
     order.updatedAt = new Date();
-    return order;
+    return { order, changed: true };
   }
 
   async markServed(id: string): Promise<Order | undefined> {

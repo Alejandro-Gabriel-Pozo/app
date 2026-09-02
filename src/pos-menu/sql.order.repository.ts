@@ -289,17 +289,30 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // -------------------------------------------------------------------------
 
   async complete(id: string): Promise<Order | undefined> {
-    return this.completeWithClient(this.db, id);
+    return (await this.completeWithClient(this.db, id)).order;
   }
 
-  async completeWithClient(client: SqlClient, id: string): Promise<Order | undefined> {
-    await client.query(
+  /** ORDER-03 -- ver docblock de IOrderRepositoryWithClient.completeWithClient. */
+  async completeWithClient(
+    client: SqlClient,
+    id: string,
+  ): Promise<{ order: Order | undefined; changed: boolean }> {
+    const result = await client.query(
       `UPDATE orders
        SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
        WHERE id = $1 AND status = 'CONFIRMED'`,
       [id],
     );
-    return this.getByIdWithClient(client, id);
+    // `rowCount` es OPCIONAL en SqlClient (repositories/sql.client.ts). Si el
+    // driver no lo informa NO se puede saber si la fila cambió: fail-closed,
+    // se propaga como indeterminado y el caller NO publica evento.
+    if (result.rowCount === undefined) {
+      throw new Error(
+        `completeWithClient: el driver no informó rowCount para la orden "${id}" -- ` +
+        `no se puede determinar si la transición ocurrió.`,
+      );
+    }
+    return { order: await this.getByIdWithClient(client, id), changed: result.rowCount === 1 };
   }
 
   // -------------------------------------------------------------------------

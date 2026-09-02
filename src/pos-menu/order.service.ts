@@ -141,7 +141,20 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
     input: UpdateOrderInput,
   ): Promise<Order | undefined>;
 
-  completeWithClient(client: SqlClient, id: string): Promise<Order | undefined>;
+  /**
+   * ORDER-03 (02/09/2026) -- devuelve también si el UPDATE condicional
+   * modificó la fila, mismo criterio que `cancelWithClient` (ORDER-01/02).
+   * Antes devolvía solo la orden releída: con una cancelación concurrente
+   * ganando la carrera, el UPDATE no tocaba nada y el caller igual auditaba
+   * una transición CONFIRMED->COMPLETED que nunca ocurrió y publicaba
+   * `order.completed` -> el worker liquidaba el CHARGE (PENDING->SETTLED) de
+   * una orden que había quedado CANCELLED.
+   * `changed` es la única señal autoritativa para publicar el evento.
+   */
+  completeWithClient(
+    client: SqlClient,
+    id: string,
+  ): Promise<{ order: Order | undefined; changed: boolean }>;
 
   /**
    * ORDER-01/02 (02/09/2026) -- devuelve también si el UPDATE condicional
@@ -533,25 +546,63 @@ export class OrderService {
    * (Gap Tango #3).
    */
   async completeOrder(id: string, changedBy: string, paymentInfo?: PaymentInfo): Promise<OrderWithTransitions> {
-    const order = await this.orderRepo.getById(id);
-    if (!order) throw new OrderNotFoundError(id);
-    if (order.status !== 'CONFIRMED') throw new InvalidOrderTransitionError(order.status, 'COMPLETED');
-
-    // Mismo invariante que el CHECK de BD (BLOQUE 12) — validado acá antes
-    // de emitir el evento para que el error sea síncrono (400 al request
-    // que completa la orden), no una excepción perdida en el outbox worker.
-    if (
-      paymentInfo?.cardSurchargeAmount != null &&
-      paymentInfo.cardSurchargeAmount > order.totalAmount
-    ) {
-      throw new InvalidPaymentInfoError(
-        `cardSurchargeAmount (${paymentInfo.cardSurchargeAmount}) no puede ser mayor que el total de la orden (${order.totalAmount}).`,
-      );
-    }
-
     return this.transactionManager.run(async (client: SqlClient) => {
-      const updated = (await this.orderRepo.completeWithClient(client, id))!;
-      await this.recordStatusTransition(client, updated.id, 'CONFIRMED', 'COMPLETED', changedBy);
+      // ORDER-03 (02/09/2026) -- simétrico a ORDER-01/02 en cancelOrder. La
+      // lectura y la validación de estado vivían FUERA de la transacción y el
+      // resultado del UPDATE condicional se descartaba: con una cancelación
+      // concurrente ganando la carrera, el UPDATE no tocaba nada pero igual se
+      // auditaba CONFIRMED->COMPLETED y se publicaba `order.completed` -> el
+      // worker liquidaba el CHARGE (PENDING->SETTLED) de una orden CANCELLED,
+      // estampando payment_method/tarjeta que ninguna anulación limpia.
+      // Ahora: lectura CON LOCK dentro de la transacción, y el evento se
+      // publica solo si la fila pasó efectivamente a COMPLETED.
+      //
+      // Precedencia de errores (decisión del dueño, 02/09/2026): sintaxis (400,
+      // ya resuelta por CompleteOrderSchema en la ruta) -> estado bajo lock
+      // (409) -> validaciones específicas como cardSurchargeAmount (400).
+      const order = await this.orderRepo.getByIdForUpdate(client, id);
+      if (!order) throw new OrderNotFoundError(id);
+
+      const previousStatus = order.status;
+
+      // Rama idempotente: ya estaba en el estado pedido. Sin evento, sin
+      // auditoría, sin liquidación. El usuario reintenta por timeout, no por
+      // error: 200 con el mismo cuerpo.
+      if (previousStatus === 'COMPLETED') {
+        return withAllowedTransitions(order);
+      }
+
+      // Rama de conflicto: fail-closed para cualquier estado que no sea
+      // CONFIRMED -- incluye CANCELLED, DRAFT y cualquier valor desconocido.
+      if (previousStatus !== 'CONFIRMED') {
+        throw new InvalidOrderTransitionError(previousStatus, 'COMPLETED');
+      }
+
+      // Mismo invariante que el CHECK de BD (BLOQUE 12). Ahora contra el total
+      // leído BAJO LOCK, y después del chequeo de estado. Sigue siendo síncrono
+      // (400 al request), no una excepción perdida en el outbox worker.
+      if (
+        paymentInfo?.cardSurchargeAmount != null &&
+        paymentInfo.cardSurchargeAmount > order.totalAmount
+      ) {
+        throw new InvalidPaymentInfoError(
+          `cardSurchargeAmount (${paymentInfo.cardSurchargeAmount}) no puede ser mayor que el total de la orden (${order.totalAmount}).`,
+        );
+      }
+
+      const { order: updated, changed } = await this.orderRepo.completeWithClient(client, id);
+      if (!updated) throw new OrderNotFoundError(id);
+
+      // Con el lock tomado nadie pudo cambiar la fila entre la lectura y el
+      // UPDATE, así que `changed === false` acá es un invariante roto, no una
+      // carrera. Fail-closed: no se publica evento, no se liquida nada.
+      if (!changed) {
+        throw new Error(
+          `completeOrder: la orden "${id}" no cambió pese al lock (estado leído: ${previousStatus}).`,
+        );
+      }
+
+      await this.recordStatusTransition(client, updated.id, previousStatus, 'COMPLETED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
         businessId:    order.businessId,
         aggregateType: 'ORDER',

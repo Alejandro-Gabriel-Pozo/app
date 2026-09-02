@@ -301,6 +301,71 @@ describe('OrderService', () => {
         service.completeOrder(id, ACTOR, { paymentMethod: 'CARD', cardSurchargeAmount: 200 }),
       ).rejects.toThrow(InvalidPaymentInfoError);
     });
+
+    // -------------------------------------------------------------------
+    // ORDER-03 (02/09/2026) — simétrico a ORDER-01/02 en cancelOrder. La
+    // lectura y validación de estado vivían FUERA de la transacción y el
+    // resultado del UPDATE condicional se descartaba. Consecuencia real:
+    // con una cancelación concurrente ganando la carrera, el UPDATE no
+    // tocaba nada pero igual se auditaba CONFIRMED->COMPLETED y se
+    // publicaba order.completed -> el worker liquidaba el CHARGE
+    // (PENDING->SETTLED) de una orden CANCELLED, estampando
+    // payment_method/tarjeta que ninguna anulación limpia.
+    // -------------------------------------------------------------------
+
+    it('ORD3-01: completar una orden CANCELLED rechaza sin evento ni liquidación', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.cancelOrder(id, ACTOR);
+      const eventsBeforeComplete = eventRepo.events.length;
+
+      await expect(service.completeOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+
+      // Sin esto, el worker liquidaría el CHARGE de una orden ya cancelada.
+      expect(eventRepo.events).toHaveLength(eventsBeforeComplete);
+      expect(eventRepo.events.some((e) => e.eventType === 'order.completed')).toBe(false);
+    });
+
+    it('ORD3-02: completar una orden ya COMPLETED es idempotente — sin segundo evento', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.completeOrder(id, ACTOR);
+      const eventsAfterFirst = eventRepo.events.length;
+
+      const secondResult = await service.completeOrder(id, ACTOR);
+
+      expect(secondResult.status).toBe('COMPLETED');
+      expect(eventRepo.events).toHaveLength(eventsAfterFirst);
+      expect(eventRepo.events.filter((e) => e.eventType === 'order.completed')).toHaveLength(1);
+    });
+
+    it('ORD3-04: un estado fuera del dominio conocido rechaza fail-closed, sin evento', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const order = await orderRepo.getById(id);
+      (order as { status: string }).status = 'ESTADO_DESCONOCIDO';
+      const eventsBeforeComplete = eventRepo.events.length;
+
+      await expect(service.completeOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+      expect(eventRepo.events).toHaveLength(eventsBeforeComplete);
+    });
+
+    it('ORD3-05: orden inexistente lanza OrderNotFoundError', async () => {
+      await expect(service.completeOrder('orden-inexistente', ACTOR)).rejects.toThrow(OrderNotFoundError);
+      expect(eventRepo.events).toHaveLength(0);
+    });
+
+    it('ORD3-09: precedencia — CANCELLED con cardSurchargeAmount inválido da conflicto de estado, no error de pago', async () => {
+      const id = await createDraftOrderWithItem(50); // total 100
+      await service.confirmOrder(id, ACTOR);
+      await service.cancelOrder(id, ACTOR);
+
+      // El recargo es inválido (200 > 100) PERO el estado se evalúa primero:
+      // el error debe ser de transición, no de InvalidPaymentInfoError.
+      await expect(
+        service.completeOrder(id, ACTOR, { paymentMethod: 'CARD', cardSurchargeAmount: 200 }),
+      ).rejects.toThrow(InvalidOrderTransitionError);
+    });
   });
 
   describe('cancelOrder', () => {
