@@ -96,7 +96,7 @@ los sospechados— verificaron **todos, al número de línea**. Se pudre lo que
 queda **fuera de una categoría que alguien relee**: los tres peores hallazgos
 compartían no estar en ninguna sección revisable.
 
-Cuatro reglas, cada una de un caso real de este repo:
+Cinco reglas, cada una de un caso real de este repo:
 
 1. **Ningún ítem sin ancla verificable.** Cada uno lleva `archivo:línea`, un
    comando que lo reproduce, o una etiqueta explícita de por qué no se puede
@@ -115,6 +115,14 @@ Cuatro reglas, cada una de un caso real de este repo:
    en el mismo commit.** → *FACT-BORRADOR-001 nació citando v2.7 cuando el
    commit padre del suyo ya era v2.8. **El arrastre no necesita semanas: le
    alcanzaron dos commits de la misma sesión.***
+5. **Verificar accesibilidad, no solo existencia.** Que el backend **exponga**
+   un dato no significa que **el usuario de esa pantalla pueda leerlo**: hay
+   que mirar el `authorize(Roles.X)` del endpoint contra los grupos que tiene
+   el rol que la usa (`platform.schema.sql`, presets). → *D6 pasó por **tres**
+   revisiones que lo declararon "UI pura". Las tres verificaron que los campos
+   existieran; ninguna miró quién podía leerlos. `GET /api/business-profile`
+   exige `MANAGEMENT` y el preset `RECEPTIONIST` no lo tiene — el usuario que
+   más usa esa pantalla recibía 403. El bloqueo apareció recién al implementar.*
 
 **Cuándo aplica:** al crear un `pendientes-<fecha>.md` nuevo arrastrando ítems
 del anterior. **No** exige re-auditar todo el archivo cada sesión —eso nadie lo
