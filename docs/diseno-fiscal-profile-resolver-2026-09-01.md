@@ -1,14 +1,23 @@
 # Diseño — `FiscalProfile` y `ComprobanteTypeResolver`
 
 - **Fecha:** 2026-09-01
-- **Estado:** **análisis y diseño. HOLD de implementación.** Revisado por el
-  dueño el 01/09/2026: aceptado como **diseño preliminar**, con el snapshot
+- **Estado:** **HOLD DE DISEÑO LEVANTADO (01/09/2026, más tarde el mismo día). HOLD DE IMPLEMENTACIÓN: VIGENTE** — ningún código, schema ni migración de este documento está autorizado; requiere su propia autorización específica y separada cuando llegue ese bloque. Historial: revisado por el
+  dueño el 01/09/2026, aceptado como **diseño preliminar**, con el snapshot
   ampliado a los dos lados del comprobante (§2.3), tres estados operativos en
   vez de dos (§5) y redacción neutral del impacto tributario (§8.1). Segunda
   revisión el mismo día: snapshot bilateral cerrado como decisión y `cbteLetra`
-  elevado a **identidad canónica del comprobante** (§2.4). No modifica
-  `diseno-factura-borrador-2026-08-31.md` (v2.5+), ni schema, ni código, ni
-  hay commit. Deuda **transversal**, fuera de D5 y del borrador.
+  elevado a **identidad canónica del comprobante** (§2.4). Tercera revisión, más
+  tarde el mismo día: el HOLD **de diseño** queda levantado por decisión del dueño ("es un
+  ERP, la sobreingeniería acá es bienvenida, esto es lo fundamental") — **la
+  arquitectura de este documento puede empezar a diseñarse en
+  detalle.** Levantar el HOLD de diseño no autoriza implementación: ese es un HOLD distinto, que sigue vigente. Lo que NO cambia con esta decisión: la hipótesis **[H]** sobre
+  `getIvaReceptorTypes()` (tabla al final del documento) sigue sin confirmar —
+  es un hecho externo (certificado ARCA / validación profesional), no una
+  cuestión de ambición de producto. El resolver se sigue diseñando para
+  funcionar sin esa hipótesis y mejorar si se confirma, tal como ya especificaba
+  §0. No modifica `diseno-factura-borrador-2026-08-31.md` (v2.5+) todavía —
+  eso es su propio bloque de implementación, no automático por este cambio de
+  estado.
 - **Origen:** al verificar §25 contra el manual del desarrollador de WSFEv1
   (fuente primaria, revisión del 17/05/2024) apareció una limitación mayor que
   la que se estaba mirando: el sistema **fuerza siempre Factura B** aunque
