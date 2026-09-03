@@ -2152,6 +2152,67 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_idempotency_key
   ON financial_transactions (idempotency_key)
   WHERE idempotency_key IS NOT NULL;
 
+-- ---------------------------------------------------------------------------
+-- O2 / schema v45 (03/09/2026) — un solo CHARGE por orden, estructural
+-- ---------------------------------------------------------------------------
+-- La identidad del acto económico de una orden es su `order_id`: una orden se
+-- confirma como máximo una vez (`TRANSICION_CONFIRMAR` sólo acepta DRAFT y
+-- ninguna transición vuelve ahí), así que el acto y la orden son la misma
+-- cosa. `handleOrderConfirmed` ya lo hace cumplir con un lock + `NOT EXISTS`,
+-- pero eso es DISCIPLINARIO: depende de que todo caller tome el lock. Este
+-- índice lo vuelve ESTRUCTURAL — la base lo hace imposible de violar.
+--
+-- Parcial por dos razones: `order_id` es nullable (los CHARGE de reserva no lo
+-- tienen) y el invariante es sólo sobre CHARGE — un ADJUSTMENT con `order_id`,
+-- que hoy no existe, no está limitado a uno (ver ORDER-15).
+--
+-- ROLLBACK: `DROP INDEX IF EXISTS uq_ft_un_charge_por_orden;` — instantáneo,
+-- no toca datos. El bump de CURRENT_SCHEMA_VERSION a 45 no se revierte solo:
+-- queda en 45 con el índice caído, que es un estado consistente pero hay que
+-- anotarlo.
+--
+-- PRECONDICIÓN, verificada contra los 2 tenants de producción el 03/09/2026
+-- (D1, sólo lectura): cero órdenes con más de un CHARGE. Devolvió cero porque
+-- las tablas de órdenes están VACÍAS -- el módulo nunca se usó --, no porque
+-- el invariante haya aguantado tráfico. Es el momento más barato para crearlo
+-- y también el que menos prueba.
+
+-- Guarda de precondición. Un `CREATE UNIQUE INDEX` sobre datos duplicados
+-- falla con un 23505 opaco que no dice QUÉ órdenes lo rompen, y como
+-- `migrate:tenants` corre en cada deploy contra TODAS las tenant DB, eso
+-- tumbaría el deploy entero con un mensaje inútil. Esta guarda falla igual
+-- -- a propósito, R15: un tenant que no puede sostener el invariante tiene
+-- que detener el deploy, no quedarse sin él en silencio -- pero nombrando
+-- las órdenes en conflicto para que la decisión sea posible.
+DO $bloque$
+DECLARE
+  ordenes_duplicadas TEXT;
+BEGIN
+  SELECT string_agg(order_id, ', ' ORDER BY order_id)
+    INTO ordenes_duplicadas
+    FROM (
+      SELECT order_id
+        FROM financial_transactions
+       WHERE order_id IS NOT NULL AND type = 'CHARGE'
+       GROUP BY order_id
+      HAVING count(*) > 1
+    ) d;
+
+  IF ordenes_duplicadas IS NOT NULL THEN
+    RAISE EXCEPTION
+      'uq_ft_un_charge_por_orden: este tenant tiene ordenes con MAS DE UN CHARGE (%). '
+      'No se crea el indice y se detiene la migracion a proposito: cada duplicado es '
+      'una decision de correccion de datos financieros, no algo que se resuelva '
+      'borrando el mas nuevo. Correr D1 y decidir antes de reintentar el deploy.',
+      ordenes_duplicadas;
+  END IF;
+END
+$bloque$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ft_un_charge_por_orden
+  ON financial_transactions (order_id)
+  WHERE order_id IS NOT NULL AND type = 'CHARGE';
+
 CREATE INDEX IF NOT EXISTS idx_ft_order
   ON financial_transactions (order_id)
   WHERE order_id IS NOT NULL;

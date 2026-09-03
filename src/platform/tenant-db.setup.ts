@@ -320,7 +320,7 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // el caso en que el handler no tiene clave natural propia. El disparador
 // concreto es el handler de mail, que hoy reenvía la confirmación de reserva
 // cada vez que el handler financiero del MISMO evento falla.
-export const CURRENT_SCHEMA_VERSION = 44;
+export const CURRENT_SCHEMA_VERSION = 45;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

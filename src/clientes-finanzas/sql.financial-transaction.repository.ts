@@ -495,7 +495,9 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     //     'order:<id>:CHARGE' es la segunda defensa, y el NOT EXISTS cubre
     //     además la migración: un cargo viejo creado con la clave de evento
     //     bloquea igual al de clave nueva.
-    const { rows } = await client.query<{ id: string }>(
+    let rows: { id: string }[];
+    try {
+      ({ rows } = await client.query<{ id: string }>(
       `INSERT INTO financial_transactions
          (id, business_id, customer_id, order_id, stay_id, idempotency_key,
           type, amount, currency, status)
@@ -511,10 +513,36 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         input.stayId, `order:${input.orderId}:CHARGE`,
         input.amount, input.currency,
       ],
-    );
+      ));
+    } catch (err) {
+      // El indice de v45 y el NOT EXISTS detectan el MISMO hecho; el segundo
+      // llega un instante antes. Que gane el indice no cambia el desenlace.
+      if (SqlFinancialTransactionRepository.esConflictoDeCargoUnico(err)) {
+        return { tipo: 'RECHAZADO', rechazos: ['CARGO_YA_EXISTE'] };
+      }
+      throw err;
+    }
 
     if (rows.length === 0) return { tipo: 'RECHAZADO', rechazos: ['CARGO_YA_EXISTE'] };
     return { tipo: 'APLICADO', filas: rows.length, rechazos: [] };
+  }
+
+  /**
+   * schema v45 -- el indice `uq_ft_un_charge_por_orden` hace ESTRUCTURAL el
+   * invariante "un CHARGE por orden". Si dos handlers concurrentes llegaran a
+   * pasar los dos el `NOT EXISTS` -- imposible con el lock, pero el indice no
+   * depende del lock --, el segundo INSERT muere con 23505 contra ESE indice.
+   *
+   * Eso NO es un fallo tecnico: es el mismo hecho de negocio que el
+   * `NOT EXISTS` detecta un instante antes. Propagarlo haria que el worker
+   * reintentara 60 veces algo ya resuelto. Se traduce al mismo desenlace.
+   *
+   * Cualquier OTRO 23505 -- el de `idx_ft_idempotency_key`, por ejemplo -- se
+   * propaga: no es este invariante y no corresponde interpretarlo aca.
+   */
+  private static esConflictoDeCargoUnico(err: unknown): boolean {
+    const e = err as { code?: string; constraint?: string };
+    return e?.code === '23505' && e?.constraint === 'uq_ft_un_charge_por_orden';
   }
 
   /**
