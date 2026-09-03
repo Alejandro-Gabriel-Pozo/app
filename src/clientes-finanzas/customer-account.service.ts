@@ -26,6 +26,7 @@ import type {
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import { CustomerNotFoundError, InvoiceNotFoundError, ValidationError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 
@@ -50,7 +51,10 @@ export class CustomerAccountService {
     private readonly financialRepo: FinancialTransactionRepository,
     private readonly customerRepo: CustomerRepository,
     private readonly businessProfileRepo: BusinessProfileRepository,
-    private readonly invoiceRepo: Pick<InvoiceRepository, 'getById' | 'getOutstandingByCustomerId'>,
+    private readonly invoiceRepo: Pick<
+      InvoiceRepository,
+      'getById' | 'getOutstandingByCustomerId' | 'getOutstandingForUpdate'
+    >,
     private readonly transactionManager: TransactionManager,
   ) {}
 
@@ -165,13 +169,31 @@ export class CustomerAccountService {
     // cliente, y estar ISSUED -- mismo criterio de guardia multi-tenant que
     // el resto del repo (no confiar en un id que vino del cliente sin
     // verificar a quién pertenece).
-    const allocatedTotal = round2(allocations.reduce((sum, a) => sum + a.amount, 0));
+    //
+    // O2-F1 (03/09/2026, decisión del dueño: opción B -- truncamiento
+    // controlado) -- consolidar allocations duplicadas por factura antes de
+    // validar: el cliente puede mandar la misma factura dos veces en la
+    // misma request (ej. el modal arma el array a mano), y procesarlas por
+    // separado abriría dos locks distintos sobre la misma fila dentro de
+    // la misma transacción. Orden estable por id -- mismo criterio que
+    // `ResourceRepository.lockByIds()` -- para que dos pagos concurrentes
+    // que tocan las mismas facturas las bloqueen siempre en el mismo orden
+    // y ninguno espere en deadlock.
+    const consolidatedMap = new Map<string, number>();
+    for (const a of allocations) {
+      consolidatedMap.set(a.invoiceId, round2((consolidatedMap.get(a.invoiceId) ?? 0) + a.amount));
+    }
+    const consolidatedAllocations = [...consolidatedMap.entries()]
+      .map(([invoiceId, amount]) => ({ invoiceId, amount }))
+      .sort((a, b) => a.invoiceId.localeCompare(b.invoiceId));
+
+    const allocatedTotal = round2(consolidatedAllocations.reduce((sum, a) => sum + a.amount, 0));
     if (allocatedTotal > params.amount) {
       throw new ValidationError(
         `La suma de lo asignado a facturas (${allocatedTotal}) no puede superar el monto pagado (${params.amount})`,
       );
     }
-    for (const alloc of allocations) {
+    for (const alloc of consolidatedAllocations) {
       const invoice = await this.invoiceRepo.getById(alloc.invoiceId);
       if (!invoice) throw new InvoiceNotFoundError(alloc.invoiceId);
       if (invoice.customerId !== params.customerId) {
@@ -182,32 +204,52 @@ export class CustomerAccountService {
       }
     }
 
-    const remainder = round2(params.amount - allocatedTotal);
-    const chunks: { amount: number; settledInvoiceId: string | null }[] = allocations.map((a) => ({
-      amount: a.amount,
-      settledInvoiceId: a.invoiceId,
-    }));
-    if (remainder > 0) chunks.push({ amount: remainder, settledInvoiceId: null });
+    // Lo no asignado explícitamente por el caller (paga más de lo que
+    // suman las allocations) es la primera parte del "sin asignar" -- la
+    // segunda parte (excedente por factura ya saldada) se suma abajo,
+    // dentro de la transacción, a medida que se relee el saldo real.
+    const preRemainder = round2(params.amount - allocatedTotal);
 
     const created: FinancialTransaction[] = [];
     await this.transactionManager.run(async (client) => {
+      let unassigned = preRemainder;
       let first = true;
-      for (const chunk of chunks) {
-        const tx = await this.financialRepo.createWithClient(client, {
+
+      for (const alloc of consolidatedAllocations) {
+        const allocKey = params.idempotencyKey ? `${params.idempotencyKey}:${alloc.invoiceId}` : null;
+
+        // Reintento de un intento anterior ya comprometido: esa transacción
+        // ya aplicó y ya derivó su excedente -- no se vuelve a lockear la
+        // factura ni a recalcular (el saldo real ya cambió desde
+        // entonces, y como el commit fue atómico, si esta fila existe la
+        // fila "sin asignar" de esa misma vez también existe).
+        const existingAlloc = allocKey ? await this.financialRepo.getByIdempotencyKey(allocKey) : undefined;
+        if (existingAlloc) {
+          created.push(existingAlloc);
+          first = false;
+          continue;
+        }
+
+        // Saldo releído CON lock dentro de la transacción, justo antes de
+        // aplicar (A8.1/A8.2): si dos pagos concurrentes llegan acá para
+        // la misma factura, el segundo espera a que el primero commitee y
+        // lee el saldo YA descontado -- nunca los dos aplican contra el
+        // mismo saldo viejo y sobre-aplican los dos.
+        const outstanding = await this.invoiceRepo.getOutstandingForUpdate(client, alloc.invoiceId);
+        const applied = round2(Math.min(alloc.amount, Math.max(outstanding, 0)));
+        const excess = round2(alloc.amount - applied);
+        unassigned = round2(unassigned + excess);
+
+        const tx = await this.createPaymentChunkWithClient(client, {
           id: randomUUID(),
           businessId: params.businessId,
           customerId: params.customerId,
           reservationId: params.reservationId ?? null,
           type: 'PAYMENT',
-          amount: chunk.amount,
+          amount: applied,
           currency,
           status: 'SETTLED',
-          // Idempotencia por fila -- una fila por factura, sufijada, para
-          // que un reintento del mismo click no duplique ninguna (mismo
-          // criterio que el outbox: `${eventId}:${type}`).
-          idempotencyKey: params.idempotencyKey
-            ? `${params.idempotencyKey}:${chunk.settledInvoiceId ?? 'sin-asignar'}`
-            : null,
+          idempotencyKey: allocKey,
           notes: params.notes ?? null,
           paymentMethod: params.paymentMethod ?? null,
           // cardInstallments/cardSurchargeAmount son del PAGO completo, no
@@ -215,12 +257,64 @@ export class CustomerAccountService {
           // cualquier reporte que sume esta columna. Van solo en la primera.
           cardInstallments: first ? (params.cardInstallments ?? null) : null,
           cardSurchargeAmount: first ? (params.cardSurchargeAmount ?? null) : null,
-          settledInvoiceId: chunk.settledInvoiceId,
+          settledInvoiceId: alloc.invoiceId,
         });
         if (tx) created.push(tx);
         first = false;
       }
+
+      // Una única fila combinada para todo lo sin asignar (remainder de
+      // entrada + excedente por factura ya saldada) -- preserva el monto
+      // total recibido y queda trazable como crédito del cliente, nunca
+      // se pierde ni se descarta (regla del dueño, O2-F1).
+      const unassignedKey = params.idempotencyKey ? `${params.idempotencyKey}:sin-asignar` : null;
+      const unassignedTx = await this.createPaymentChunkWithClient(client, {
+        id: randomUUID(),
+        businessId: params.businessId,
+        customerId: params.customerId,
+        reservationId: params.reservationId ?? null,
+        type: 'PAYMENT',
+        amount: unassigned,
+        currency,
+        status: 'SETTLED',
+        idempotencyKey: unassignedKey,
+        notes: params.notes ?? null,
+        paymentMethod: params.paymentMethod ?? null,
+        cardInstallments: first ? (params.cardInstallments ?? null) : null,
+        cardSurchargeAmount: first ? (params.cardSurchargeAmount ?? null) : null,
+        settledInvoiceId: null,
+      });
+      if (unassignedTx) created.push(unassignedTx);
     });
     return created;
+  }
+
+  /**
+   * O2-F1 (03/09/2026) -- crea una fila PAYMENT dentro de la transacción de
+   * `recordPayment()`, o devuelve la fila ya existente si el mismo
+   * `idempotencyKey` ya se usó en un intento anterior que sí llegó a
+   * commitear (reintento de red tras un éxito). `amount <= 0` sin fila
+   * previa no crea nada -- una fila en cero no documenta ningún movimiento
+   * real, y sin `idempotencyKey` no hay forma de saber si "ya existe".
+   */
+  private async createPaymentChunkWithClient(
+    client: SqlClient,
+    tx: Omit<FinancialTransaction, 'createdAt'>,
+  ): Promise<FinancialTransaction | null> {
+    if (tx.idempotencyKey) {
+      const existing = await this.financialRepo.getByIdempotencyKey(tx.idempotencyKey);
+      if (existing) return existing;
+    }
+    if (tx.amount <= 0) return null;
+    const createdTx = await this.financialRepo.createWithClient(client, tx);
+    if (createdTx) return createdTx;
+    // ON CONFLICT DO NOTHING -- otro intento concurrente con el mismo
+    // idempotencyKey ganó la carrera entre el chequeo de arriba y este
+    // insert; la fila real es la suya.
+    const existing = tx.idempotencyKey ? await this.financialRepo.getByIdempotencyKey(tx.idempotencyKey) : undefined;
+    if (!existing) {
+      throw new Error('createPaymentChunkWithClient: createWithClient() devolvió null sin idempotencyKey -- no debería pasar');
+    }
+    return existing;
   }
 }

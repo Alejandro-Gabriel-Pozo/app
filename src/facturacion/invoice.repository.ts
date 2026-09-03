@@ -50,6 +50,24 @@ export interface InvoiceRepository {
    * un pago nuevo.
    */
   getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>>;
+  /**
+   * O2-F1 (03/09/2026, decisión del dueño: opción B, aplicación parcial
+   * controlada) — saldo pendiente de UNA factura puntual, calculado con
+   * `SELECT ... FOR UPDATE` sobre la fila de `invoices` dentro de la
+   * transacción del caller. No es una lectura suelta: `recordPayment()`
+   * la usa para serializar dos pagos concurrentes contra la misma
+   * factura -- el segundo espera a que el primero commitee y recién ahí
+   * lee el saldo YA actualizado, en vez de los dos leyendo el saldo viejo
+   * a la vez y sobre-aplicando los dos (A8.1/A8.2, mismo patrón que
+   * `ResourceRepository.lockByIds()`).
+   *
+   * Misma fórmula que `getOutstandingByCustomerId` (impTotal - pagado -
+   * acreditado, ambos solo SETTLED) pero acotada a un id y con el lock.
+   * Lanza si la factura no existe -- a esta altura ya se validó su
+   * existencia fuera de la transacción; que no aparezca acá es un
+   * invariante roto, no un 404 de negocio.
+   */
+  getOutstandingForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

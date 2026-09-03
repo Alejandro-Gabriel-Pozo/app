@@ -16,11 +16,15 @@ class FakeCustomerRepository {
 }
 
 class InMemoryFinancialTransactionRepository implements FinancialTransactionRepository {
-  public created: Omit<FinancialTransaction, 'createdAt'>[] = [];
+  /** Filas ya "confirmadas" -- createdAt se fija una sola vez, al crear, para que un reintento (getByIdempotencyKey) devuelva el mismo objeto en vez de uno con un timestamp nuevo. */
+  public created: FinancialTransaction[] = [];
 
+  /** Simula ON CONFLICT DO NOTHING sobre idempotencyKey -- null si ya existe una fila con la misma key. */
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) {
-    this.created.push(tx);
-    return { ...tx, createdAt: new Date() };
+    if (tx.idempotencyKey && this.created.some((c) => c.idempotencyKey === tx.idempotencyKey)) return null;
+    const stored: FinancialTransaction = { ...tx, createdAt: new Date() };
+    this.created.push(stored);
+    return stored;
   }
   async createWithClient(_client: SqlClient, tx: Omit<FinancialTransaction, 'createdAt'>) { return this.create(tx); }
   async getById() { return null; }
@@ -29,7 +33,9 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async getByCustomerId() { return []; }
   async getByStayId() { return []; }
   async getByShiftId() { return []; }
-  async getByIdempotencyKey() { return undefined; }
+  async getByIdempotencyKey(key: string) {
+    return this.created.find((c) => c.idempotencyKey === key);
+  }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
   // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
@@ -43,11 +49,27 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async linkStayToReservationCharges() { return 0; }
 }
 
-/** Fake mínimo para el path de allocations (I4) — un mapa de facturas por id, todas ISSUED por default. */
+/**
+ * Fake mínimo para el path de allocations (I4/O2-F1) — un mapa de facturas
+ * por id, todas ISSUED por default. `getOutstandingForUpdate` devuelve
+ * `impTotal` salvo que el test configure un override explícito con
+ * `setOutstanding()` (para simular una factura parcialmente saldada por
+ * un pago anterior, el caso central de O2-F1).
+ */
 class FakeInvoiceRepository {
+  private readonly outstandingOverrides = new Map<string, number>();
   constructor(private readonly invoices: Map<string, Invoice>) {}
   async getById(id: string): Promise<Invoice | null> { return this.invoices.get(id) ?? null; }
   async getOutstandingByCustomerId(): Promise<Array<Invoice & { outstanding: number }>> { return []; }
+  async getOutstandingForUpdate(_client: SqlClient, invoiceId: string): Promise<number> {
+    if (this.outstandingOverrides.has(invoiceId)) return this.outstandingOverrides.get(invoiceId)!;
+    const invoice = this.invoices.get(invoiceId);
+    if (!invoice) throw new Error(`getOutstandingForUpdate: factura "${invoiceId}" no existe en el fake`);
+    return invoice.impTotal;
+  }
+  setOutstanding(invoiceId: string, outstanding: number) {
+    this.outstandingOverrides.set(invoiceId, outstanding);
+  }
 }
 
 /** Corre el callback directo, sin BEGIN/COMMIT real -- alcanza para testear la orquestación. */
@@ -158,6 +180,7 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
 describe('CustomerAccountService.recordPayment — allocations (I4)', () => {
   let financialRepo: InMemoryFinancialTransactionRepository;
   let invoices: Map<string, Invoice>;
+  let invoiceRepo: FakeInvoiceRepository;
   let service: CustomerAccountService;
 
   function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
@@ -176,12 +199,13 @@ describe('CustomerAccountService.recordPayment — allocations (I4)', () => {
   beforeEach(() => {
     financialRepo = new InMemoryFinancialTransactionRepository();
     invoices = new Map([['inv-1', makeInvoice()]]);
+    invoiceRepo = new FakeInvoiceRepository(invoices);
     const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
     service = new CustomerAccountService(
       financialRepo,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new FakeBusinessProfileRepository(makeProfile()),
-      new FakeInvoiceRepository(invoices) as unknown as InvoiceRepository,
+      invoiceRepo as unknown as InvoiceRepository,
       new FakeTransactionManager(),
     );
   });
@@ -250,5 +274,130 @@ describe('CustomerAccountService.recordPayment — allocations (I4)', () => {
 
     expect(financialRepo.created[0]).toMatchObject({ cardInstallments: 3, cardSurchargeAmount: 100 });
     expect(financialRepo.created[1]).toMatchObject({ cardInstallments: null, cardSurchargeAmount: null });
+  });
+});
+
+// O2-F1 (03/09/2026, decisión del dueño: opción B -- truncamiento
+// controlado) -- recordPayment() no puede sobre-aplicar contra el saldo
+// vigente de una factura; el excedente queda como pago sin asignar,
+// nunca se pierde ni se rechaza el pago completo.
+describe('CustomerAccountService.recordPayment — truncamiento controlado (O2-F1)', () => {
+  let financialRepo: InMemoryFinancialTransactionRepository;
+  let invoices: Map<string, Invoice>;
+  let invoiceRepo: FakeInvoiceRepository;
+  let service: CustomerAccountService;
+
+  function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
+    return {
+      id: 'inv-1', businessId: BUSINESS_ID, financialTransactionId: 'ft-orig',
+      customerId: CUSTOMER_ID, idempotencyKey: 'idem-1', environment: 'homologacion',
+      ptoVta: 1, cbteTipo: 6, cbteNro: 1, concepto: 1, docTipo: 96, docNro: '0',
+      condicionIvaReceptorId: 5, moneda: 'PES', impNeto: 1000, impIva: 210, impTotal: 1210,
+      cae: '123', caeVto: '2026-09-01', status: 'ISSUED', afipContacted: true, emisorCuit: null,
+      paymentMethod: null, cardInstallments: null, afipRequest: null, afipResponse: null,
+      errorMessage: null, createdAt: new Date(), issuedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    financialRepo = new InMemoryFinancialTransactionRepository();
+    invoices = new Map([['inv-1', makeInvoice()], ['inv-2', makeInvoice({ id: 'inv-2' })]]);
+    invoiceRepo = new FakeInvoiceRepository(invoices);
+    const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
+    service = new CustomerAccountService(
+      financialRepo,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile()),
+      invoiceRepo as unknown as InvoiceRepository,
+      new FakeTransactionManager(),
+    );
+  });
+
+  it('ejemplo del dueño: factura con saldo 250, allocation de 400 -- aplica 250, 150 queda sin asignar', async () => {
+    invoiceRepo.setOutstanding('inv-1', 250);
+
+    const result = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 400,
+      allocations: [{ invoiceId: 'inv-1', amount: 400 }],
+    });
+
+    expect(result).toHaveLength(2);
+    expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 250 });
+    expect(financialRepo.created[1]).toMatchObject({ settledInvoiceId: null, amount: 150 });
+  });
+
+  it('nunca aplica de más aunque la factura ya esté saldada (saldo 0)', async () => {
+    invoiceRepo.setOutstanding('inv-1', 0);
+
+    const result = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 300,
+      allocations: [{ invoiceId: 'inv-1', amount: 300 }],
+    });
+
+    // amount=0 no genera fila propia (no documenta ningún movimiento real);
+    // los 300 completos van a la fila sin asignar.
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ settledInvoiceId: null, amount: 300 });
+  });
+
+  it('pago exacto al saldo vigente no deja excedente sin asignar', async () => {
+    invoiceRepo.setOutstanding('inv-1', 250);
+
+    const result = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 250,
+      allocations: [{ invoiceId: 'inv-1', amount: 250 }],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 250 });
+  });
+
+  it('consolida allocations duplicadas a la misma factura en una sola fila', async () => {
+    const result = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 1210,
+      allocations: [{ invoiceId: 'inv-1', amount: 600 }, { invoiceId: 'inv-1', amount: 610 }],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 1210 });
+  });
+
+  it('reintento con la misma idempotencyKey no duplica filas, aunque el saldo haya cambiado entre medio', async () => {
+    invoiceRepo.setOutstanding('inv-1', 250);
+
+    const first = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 400, idempotencyKey: 'pay-1',
+      allocations: [{ invoiceId: 'inv-1', amount: 400 }],
+    });
+    expect(financialRepo.created).toHaveLength(2);
+
+    // Simula que, entre el primer intento (ya commiteado) y el reintento,
+    // el saldo de la factura cambió -- no tiene que afectar el resultado
+    // del reintento, que debe devolver las filas YA creadas, no recalcular.
+    invoiceRepo.setOutstanding('inv-1', 0);
+
+    const retry = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 400, idempotencyKey: 'pay-1',
+      allocations: [{ invoiceId: 'inv-1', amount: 400 }],
+    });
+
+    expect(financialRepo.created).toHaveLength(2);
+    expect(retry).toEqual(first);
+  });
+
+  it('cada factura se trunca de forma independiente en un pago multi-factura', async () => {
+    invoiceRepo.setOutstanding('inv-1', 250);
+    invoiceRepo.setOutstanding('inv-2', 1210);
+
+    const result = await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 1460,
+      allocations: [{ invoiceId: 'inv-1', amount: 400 }, { invoiceId: 'inv-2', amount: 1060 }],
+    });
+
+    expect(result).toHaveLength(3);
+    expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 250 });
+    expect(financialRepo.created[1]).toMatchObject({ settledInvoiceId: 'inv-2', amount: 1060 });
+    expect(financialRepo.created[2]).toMatchObject({ settledInvoiceId: null, amount: 150 });
   });
 });
