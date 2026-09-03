@@ -104,48 +104,67 @@ que el dueño elija (a) o (b).
 
 ---
 
-## 3. `O4` — auditoría formal de cobertura del OutboxWorker
+## 3. `O4` — cerrado en cobertura técnica PostgreSQL dentro del alcance definido
 
 El handoff original decía: *"Existe una propuesta/test nuevo sin commit:
 `src/tests/integration/outbox-worker.integration.test.ts`. Incluye 14 tests sobre Postgres
 descartable… No commitear O4 sin revisión del diff exacto, alcance y resultados."*
 
-`[V]` **Ese archivo no existe en este árbol.** No se commiteó nunca (`find` sobre el repo,
-`git log --all` no lo tiene). No hay diff que revisar — la auditoría de esta sesión partió
-de cero, leyendo el código real (`src/workers/outbox.worker.ts`, 445 líneas) y la cobertura
-existente.
+`[V]` **Ese archivo no existía en este árbol** al momento de auditar (03/09, antes del bloque
+2). No se había commiteado nunca (`find` sobre el repo, `git log --all` no lo tenía). No había
+diff que revisar — la auditoría de esa primera pasada partió de cero, leyendo el código real
+(`src/workers/outbox.worker.ts`, 445 líneas) y la cobertura existente. Esa auditoría encontró
+los seis escenarios pedidos con cobertura unitaria sólida, pero ninguno ejercitando la clase
+`OutboxWorker` real contra Postgres: cinco no tenían cobertura de Postgres real en absoluto, y
+el sexto (claim/release) sí la tenía, pero llamando al repositorio directo, nunca a través del
+worker. `SqlDomainEventRepository` no tenía ningún test propio.
+
+`[V]` **Segundo bloque (mismo día, posterior):** se escribió y commiteó un archivo nuevo con
+ese mismo nombre —
+[`src/tests/integration/outbox-worker.integration.test.ts`](../src/tests/integration/outbox-worker.integration.test.ts)
+(453 líneas, 19 tests) — PR #44, commit `627e6fd`, mergeado a `main` en `63d8fd5` (merge
+commit real, sin squash ni rebase). Corre contra PostgreSQL real (`createTestDatabase()`,
+mismo helper que el resto de `src/tests/integration/`).
 
 ### Veredicto por escenario, con ancla
 
 | Escenario | Unitario (repo fake) | Integración (Postgres real) | Veredicto |
 |---|---|---|---|
-| **Retry** tras fallo transitorio | `[V]` `outbox.worker.test.ts:132` (queda pendiente si el handler lanza), `:217` (idempotencia at-least-once) | `[H]` ninguno — `recordFailure()` (`sql.domain-event.repository.ts:122-131`, UPDATE atómica) nunca corrió contra Postgres real | **Parcial** |
-| **Claim/release** (`processed_events`) | `[V]` `outbox.worker.test.ts:385-476` (el "BUG REAL": un handler que ya salió bien no se re-ejecuta si otro falla; libera el casillero si falla) | `[V]` `event-envelope-idempotency.integration.test.ts:147-206` — `ON CONFLICT DO NOTHING` real, release real, cascada FK real | **Cubierto** — el único de los seis con los dos niveles |
-| **Evento fuera de orden** | `[V]` `outbox.worker.test.ts:199` (`getPending` no reordena, contra repo fake que preserva orden de inserción) | `[H]` el `ORDER BY id ASC` real (`sql.domain-event.repository.ts:100`) nunca se probó bajo Postgres con eventos insertados por transacciones concurrentes. El caso de negocio ("completed llega antes que confirmed") **sí** está probado (`order-effects.integration.test.ts:281-306`, O2I-09/O2I-10) pero llamando al handler directo, no al `worker.dispatch()` con reintentos reales | **Parcial** |
-| **Cargo inexistente** (`ChargeNotYetCreatedError`/`ChargeNeverCreatedError`) | `[V]` lógica de negocio cubierta en el worker unitario (rama `maxRetries=1` para `ChargeNeverCreatedError`, `outbox.worker.ts:340-347`) | `[V]` `order-effects.integration.test.ts` O2I-09/O2I-10/O2I-12 — pero también llamando al handler directo, no al ciclo completo del worker | **Parcial** — la regla de negocio sí, el camino worker+dead-letter con Postgres real no |
-| **Dead-letter** | `[V]` `outbox.worker.test.ts:244-268`, `:309-364` (incluye `onDeadLetter`) | `[H]` ninguno contra Postgres real. El endpoint (`GET /api/system/outbox/dead-letter`) está probado en `system.routes.test.ts` pero con el servicio mockeado, no con datos reales en dead-letter | **Parcial** |
-| **Límite de reintentos** (`maxRetries`) | `[V]` `outbox.worker.test.ts:244` | `[H]` mismo caso que dead-letter — la condición `retry_count + 1 >= $3` (`sql.domain-event.repository.ts:126`) nunca se ejecutó contra Postgres real bajo poll solapado | **Parcial** |
+| **Retry** tras fallo transitorio | `[V]` `outbox.worker.test.ts:132` (queda pendiente si el handler lanza), `:217` (idempotencia at-least-once) | `[V]` `outbox-worker.integration.test.ts:137-150` (`recordFailure` bajo dos llamadas concurrentes, A8.2) y `:243-263` (worker real: `retry_count` sube en la fila real cada ciclo fallido, hasta el éxito) | **`[V]` Cubierto** |
+| **Evento fuera de orden** | `[V]` `outbox.worker.test.ts:199` (`getPending` no reordena, contra repo fake que preserva orden de inserción) | `[V]` `outbox-worker.integration.test.ts:127-135` (`getPending` con `ORDER BY id ASC` real) y `:374-424` (dos conexiones Postgres dedicadas, MVCC real: una fila con id MENOR se vuelve visible DESPUÉS de una con id MAYOR ya despachada — el worker la procesa igual en el poll siguiente, sin duplicar ni perder) | **`[V]` Cubierto** |
+| **Cargo inexistente** (`ChargeNotYetCreatedError`/`ChargeNeverCreatedError`) | `[V]` lógica de negocio cubierta en el worker unitario (rama `maxRetries=1` para `ChargeNeverCreatedError`, `outbox.worker.ts:340-347`) | `[V]` `outbox-worker.integration.test.ts:307-321` (`ChargeNeverCreatedError` → dead-letter en el primer intento, contra el worker real) y `:323-337` (`ChargeNotYetCreatedError` → reintento normal, sin dead-letter inmediato) — a través del ciclo completo del worker, no del handler llamado a mano | **`[V]` Cubierto** |
+| **Dead-letter** | `[V]` `outbox.worker.test.ts:244-268`, `:309-364` (incluye `onDeadLetter`) | `[V]` `outbox-worker.integration.test.ts:189-201` (`getDeadLettered` con `ORDER BY failed_at DESC` real), `:264-283` (transición real a dead-letter), `:426-440` y `:442-452` (`onDeadLetter`, persistencia real de `failed_at` antes y después del compensador) | **`[V]` Cubierto** |
+| **Límite de reintentos** (`maxRetries`) | `[V]` `outbox.worker.test.ts:244` | `[V]` `outbox-worker.integration.test.ts:152-161` (bajo el umbral, no pasa a dead-letter) y `:163-170` (`retry_count+1 == maxRetries`, SÍ pasa, en la misma `UPDATE`) — contra la condición real `retry_count + 1 >= $3` de `sql.domain-event.repository.ts:126` | **`[V]` Cubierto** |
+| **Claim/release** (`processed_events`) | `[V]` `outbox.worker.test.ts:385-476` (el "BUG REAL": un handler que ya salió bien no se re-ejecuta si otro falla; libera el casillero si falla) | `[V]` `event-envelope-idempotency.integration.test.ts:147-206` (repositorio directo) **+** `outbox-worker.integration.test.ts:339-373` (a través del worker real: dos handlers en el mismo evento, uno falla, `processed_events` real refleja el casillero tomado/liberado, y el reintento sólo re-corre el que falló) | **`[V]` Cubierto** |
 
-`[V]` **Hallazgo adicional de esta auditoría:** `SqlDomainEventRepository`
-(`src/repositories/sql.domain-event.repository.ts`) **no tiene ningún archivo de test
-propio** — ni unitario ni de integración. Se ejercita solo indirectamente, de forma parcial,
-a través de las suites de `orders`. `getPending`, `recordFailure` y `retryDeadLettered` — los
-tres métodos con comentarios que reclaman garantías de atomicidad/concurrencia explícitas —
-no tienen ninguna prueba dedicada.
+`[V]` **`SqlDomainEventRepository` — 9 tests propios**, contra Postgres real
+(`outbox-worker.integration.test.ts:127-224`): `getPending` (`ORDER BY id ASC`), `recordFailure`
+(atomicidad bajo concurrencia, umbral exacto, truncado de `last_error` a 255 — A7.1), un evento
+en dead-letter sale de `getPending`, `getDeadLettered` (`ORDER BY failed_at DESC`), y
+`retryDeadLettered` (reset real + no-op si no estaba en dead-letter). Antes de este bloque no
+tenía ningún archivo de test propio, ni unitario ni de integración.
 
 ### Veredicto de cierre de O4
 
-**No se cierra.** La cobertura unitaria (con dobles fake) de los seis escenarios es sólida y
-completa — el diseño del worker está bien pensado y bien probado en su lógica. Lo que falta,
-y es exactamente lo que O4 original prometía (14 tests sobre Postgres descartable), es
-ejercitar la **clase `OutboxWorker` real** — `poll()`/`dispatch()`/`start()`/`stop()` — contra
-Postgres real: reintentos que de verdad incrementan `retry_count` en la fila, una transición
-real a dead-letter con `failed_at` puesto por la UPDATE atómica, y un `retryDeadLettered()`
-real devolviendo el evento a la cola. Nada de esto existe hoy contra una base real.
+**Cerrado en cobertura técnica PostgreSQL dentro del alcance definido.** Los seis escenarios
+pedidos (retry, evento fuera de orden, cargo inexistente, dead-letter, límite de reintentos,
+claim/release) tienen ahora cobertura `[V]` contra Postgres real, ejercitando la clase
+`OutboxWorker` (`poll()`/`dispatch()`) real, no solo el handler llamado a mano ni un repo fake.
+`SqlDomainEventRepository` tiene cobertura propia por primera vez.
 
-**Esta auditoría queda cerrada como auditoría** (la pregunta "¿qué falta probar de O4?" tiene
-respuesta completa, con ancla, en la tabla de arriba). **El trabajo de escribir esos tests
-sigue abierto** — no se escribió código nuevo en esta sesión, por instrucción explícita.
+**Qué significa "cerrado" acá, y qué NO significa** — la distinción es la que separa este
+punto de O5:
+
+- **Cerrado:** la *mecánica técnica* del worker — polling, reintentos, dead-letter,
+  claim/release, orden de entrega bajo concurrencia real — está probada contra una base real,
+  con anclas verificables, dentro del alcance que se definió para este bloque (los seis
+  escenarios nombrados).
+- **Sigue sin existir, y no es lo que O4 prometía:** ningún sistema de **gestión operativa
+  durable de incidentes** — eso es `O5` (tabla de incidentes, señal persistente, panel para que
+  alguien no-técnico vea "esto está en dead-letter y hace cuánto"). `O4` prueba que el mecanismo
+  hace lo que dice que hace; `O5` es un problema de negocio distinto (¿cómo se entera un
+  operador, sin leer logs, de que algo quedó atascado?) y sigue **abierto**, sin diseño ni diff,
+  por instrucción explícita — no se tocó en este bloque ni en el anterior.
 
 ---
 
@@ -177,8 +196,8 @@ decisión del dueño donde corresponde.
 
 1. Decisión del dueño sobre `ORDER-16` (§2) — recién ahí, si corresponde, un diff acotado a
    agregar evento/auditoría a `markServed()`.
-2. Si se prioriza, retomar `O4` escribiendo los tests de integración reales sobre
-   `OutboxWorker` que la tabla de §3 marca `[H]` — empezando por `recordFailure` y
-   `retryDeadLettered`, que son los dos métodos con comentario de atomicidad y cero prueba.
+2. `O4` (§3) ya está cerrado en cobertura técnica — el próximo paso de esa línea de trabajo,
+   si se prioriza, es `O5` (tabla de incidentes / gestión operativa durable), que sigue sin
+   diseño ni diff.
 3. Nada de esto es urgente para el cierre de H1: H1 está cerrada y en producción, verificada
    con datos reales.
