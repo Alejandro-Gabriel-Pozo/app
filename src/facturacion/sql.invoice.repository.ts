@@ -94,6 +94,39 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map(rowToEntity);
   }
 
+  async getOutstandingForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
+    // `FOR UPDATE` sobre la fila de `invoices` -- no sobre las de
+    // `financial_transactions` que se suman en las subconsultas. Es el
+    // recurso escaso que hay que serializar (A8.1): dos `recordPayment()`
+    // concurrentes contra la misma factura toman esta misma fila, uno
+    // espera al otro, y el segundo lee el saldo YA descontado por el
+    // primero -- nunca los dos calculan sobre el mismo saldo viejo.
+    //
+    // Sin el JOIN a `financial_transactions ft ON ft.id = i.financial_transaction_id`
+    // que usa `getOutstandingByCustomerId`: acá se busca por `i.id`
+    // directo, y ese JOIN excluiría toda factura CONSOLIDADA
+    // (`financial_transaction_id IS NULL` a propósito, ver schema.sql:3139) --
+    // exactamente el tipo de factura contra la que este método también
+    // tiene que poder calcular saldo.
+    const { rows } = await client.query<{ outstanding: string }>(
+      `SELECT
+         (i.imp_total
+           - COALESCE((SELECT SUM(p.amount) FROM financial_transactions p
+                       WHERE p.settled_invoice_id = i.id AND p.status = 'SETTLED'), 0)
+           - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+                       WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
+         ) AS outstanding
+       FROM invoices i
+       WHERE i.id = $1
+       FOR UPDATE OF i`,
+      [invoiceId],
+    );
+    if (rows.length === 0) {
+      throw new Error(`getOutstandingForUpdate: factura "${invoiceId}" no existe -- invariante roto, se validó su existencia antes de entrar a la transacción`);
+    }
+    return parseFloat(rows[0]!.outstanding);
+  }
+
   async getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>> {
     const { rows } = await this.db.query<InvoiceRow & { outstanding: string }>(
       `SELECT * FROM (

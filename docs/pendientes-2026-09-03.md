@@ -214,6 +214,80 @@ la autorización de higiene documental de esta sesión.
 
 ---
 
+## Continuación — circuito O2 (Order-to-Cash financiero), sesión posterior (03/09/2026)
+
+Sesión distinta a la de higiene documental de arriba — Orders ya estaba cerrado
+(H1/v46, ORDER-16), y esta sesión se autodirigió al circuito **O2**. Sí tocó
+código: `src/facturacion/invoice.repository.ts`,
+`src/facturacion/sql.invoice.repository.ts`,
+`src/clientes-finanzas/customer-account.service.ts`, tests y
+`docs/diseno-truncamiento-pagos-o2-f1-2026-09-03.md`. **No tocó** Caja,
+Facturación AFIP, Refund/C2, ni `O1-b`/`ORDER-15`/A7.6 de la sección de arriba.
+
+### O2-F1 — sobreaplicación de pagos (`recordPayment` con `allocations`) · ✅ CERRADO — BACKEND Y PERSISTENCIA (03/09/2026)
+
+`[V]` **Consecuencia que se cerró:** `CustomerAccountService.recordPayment()`
+con `allocations` aplicaba el monto pedido contra una factura sin verificar su
+saldo real — podía sobre-aplicar (incluso con dos pagos concurrentes contra la
+misma factura, sin ningún lock).
+
+Decisión del dueño (opción B, truncamiento controlado): cada allocation se
+aplica como máximo hasta el saldo vigente (releído con `SELECT ... FOR UPDATE
+OF i` dentro de la misma transacción — nuevo
+`InvoiceRepository.getOutstandingForUpdate()`); el excedente se preserva
+siempre, en una única fila `PAYMENT` sin asociar, nunca se pierde ni se
+rechaza el pago completo; `outstanding` nunca queda negativo. También
+consolida allocations duplicadas a la misma factura y cierra un gap de
+idempotencia que esa rama tenía desde I4 (no miraba el retorno `null` de
+`createWithClient()` en un reintento).
+
+**Evidencia:** `[V]` commit `a2aaf40` en la rama
+`fix/o2-f1-payment-allocation-overapplication` — **NO mergeada a
+`origin/main`, sin PR abierto todavía**. `tsc --noEmit`, `lint`, `lint:arch`
+limpios. 1792 tests unitarios (20 en
+`customer-account.service.test.ts`, 6 nuevos para O2-F1) + 107 de integración
+contra Postgres real (13 archivos, 4 nuevos en
+`src/tests/integration/customer-account-payment.integration.test.ts`,
+incluida concurrencia real: dos `recordPayment()` simultáneos, dos pools
+separados, contra una factura de 1000 pagando 600 cada uno → aplicado total
+exactamente 1000, excedente exactamente 200, saldo final 0). Diseño en
+`docs/diseno-truncamiento-pagos-o2-f1-2026-09-03.md`.
+
+**Por qué "backend y persistencia" y no "end-to-end":** no hay repositorio de
+frontend adjunto a esta sesión — no se puede verificar que la UI muestre
+recibido/aplicado/sin-asignar/saldo a favor. El contrato de
+`POST /:id/payments` (array de `FinancialTransaction[]`, `amount` +
+`settledInvoiceId` por fila) parece suficiente para que el frontend arme esa
+vista sin cambios de contrato — pero eso es una hipótesis de compatibilidad,
+no una verificación frontend. **No cerrar como end-to-end hasta esa
+verificación.**
+
+**Siguiente acción:** ninguna de código. Rama lista para PR — pendiente de
+que el dueño autorice abrirlo/mergearlo.
+
+### O2-F2 — visibilidad y conciliación de facturas consolidadas
+
+| Dimensión | |
+|---|---|
+| **Definición** | `getOutstandingByCustomerId()` hace `JOIN financial_transactions ft ON ft.id = i.financial_transaction_id` para listar facturas `ISSUED` con saldo pendiente — pero una factura **consolidada** (C1-Fase C) tiene `financial_transaction_id IS NULL` a propósito (`schema.sql:3139`, decisión confirmada con el dueño). El JOIN la excluye estructuralmente, siempre, sin importar su saldo real |
+| **Consecuencia** | Una factura consolidada con saldo pendiente real nunca aparece en el modal de conciliación de "Registrar Pago" — el operador no tiene forma de elegirla en `allocations`. El pago igual podría aplicarse contra su saldo si alguien conociera el `invoiceId` a mano (`getOutstandingForUpdate`, nuevo en O2-F1, sí calcula bien ese saldo por id directo) — pero nadie lo descubre desde la UI de conciliación |
+| **Severidad** | S2 — dato de gestión ausente, no corrompido; la factura sigue existiendo y su saldo se puede calcular bien, solo no es descubrible por el camino normal |
+| **Evidencia** | `[V]` `src/facturacion/sql.invoice.repository.ts:141` (`JOIN financial_transactions ft ON ft.id = i.financial_transaction_id`, dentro de `getOutstandingByCustomerId`, línea 130). `src/db/schema.sql:3139` (`ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL`, con el comentario de la decisión del dueño para consolidadas) |
+| **Dependencia** | Ninguna bloqueante de O2-F1 — descubierto durante ese trabajo pero deliberadamente no mezclado (el patch de O2-F1 corrige aplicación, no visibilidad). Cruza con C1-Fase C (consolidadas) y con `accounts_receivable` (cierre de facturación) |
+| **Criterio de cierre** | Que el modal de conciliación liste también facturas consolidadas con saldo > 0 (probablemente una query separada o un `UNION`/`OR` que cubra `financial_transaction_id IS NULL` vía `invoice_charges`), con su propio cálculo de saldo, concurrencia e idempotencia probados igual que O2-F1, más la pieza de frontend |
+| **Siguiente acción** | Ninguna todavía — issue registrado, sin diseño ni diff. Alcance completo (por decisión del dueño, no de esta sesión): listado de consolidadas pendientes, cálculo de saldo, relación con `invoice_charges`, pago contra factura consolidada, concurrencia, idempotencia, frontend, cuenta corriente, cierre de `accounts_receivable` |
+
+### Estado formal de O2 (03/09/2026)
+
+| Ítem | Estado |
+|---|---|
+| O2-F1 | **CERRADA** — backend, datos e integración (Postgres real, incl. concurrencia). No mergeada a `main` todavía |
+| O2-F2 | **ABIERTA** — visibilidad/conciliación de facturas consolidadas, sin diseño |
+| Frontend O2 | **NO VERIFICABLE** en esta sesión — repositorio de frontend no disponible |
+| O2 completo | **ABIERTO** |
+
+---
+
 ## 🔴 Arrastrado de `pendientes-2026-09-02.md`
 
 **Sin re-verificar en esta sesión, salvo donde se indica.** Su estado se conserva
