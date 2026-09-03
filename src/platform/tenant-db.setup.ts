@@ -320,7 +320,16 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // el caso en que el handler no tiene clave natural propia. El disparador
 // concreto es el handler de mail, que hoy reenvía la confirmación de reserva
 // cada vez que el handler financiero del MISMO evento falla.
-export const CURRENT_SCHEMA_VERSION = 45;
+// v46 (03/09/2026): las cuatro columnas de sello de `orders` (`confirmed_at`,
+// `cancelled_at`, `completed_at`, `served_at`) pasan a tener su
+// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Estaban declaradas sólo dentro
+// del `CREATE TABLE IF NOT EXISTS orders`, que es un no-op en una BD donde la
+// tabla ya existe: `served_at`, agregada al schema el 15/08/2026, nunca se
+// creó en `biz-demo-01` (provisionado el 09/08) y ningún deploy posterior la
+// creó -- verificado contra los dos tenants el 03/09/2026. `markServed()`
+// respondía 42703 -> 500 y la lectura lo enmascaraba como `null`. Sin
+// backfill: el NULL de las órdenes viejas significa "no consta".
+export const CURRENT_SCHEMA_VERSION = 46;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
