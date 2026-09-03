@@ -130,6 +130,135 @@ especificación (documento propio, o esperar a que el Bloque 0 se autorice y
 documentar junto con la implementación). No se resuelve en esta
 reconciliación — solo se registra para que no se pierda en silencio.
 
+### Familia ORDER-* — integridad del ciclo de vida de una orden
+
+Trece hallazgos sobre el mismo ciclo: confirmar, completar y cancelar una
+orden, y los efectos financieros y de inventario que eso dispara. Tres
+cerrados, uno con diff aplicado sin commitear, nueve abiertos. Cada fila
+describe **la consecuencia**, no el mecanismo (regla 3), con ancla
+verificable (regla 1). El mapa completo, la matriz de estados y el plan de
+slices viven en `docs/continuidad-da-orden-estados-2026-09-02.md`.
+
+| ID | Consecuencia | Estado | Ancla |
+|---|---|---|---|
+| ORDER-01/02 | Cancelar dos veces publicaba un segundo evento; con un completar concurrente se anulaban los cargos de una orden ya cobrada | ✅ RESUELTO (`0e0ee9e`) | — |
+| ORDER-03-a | Lo mismo al completar: se liquidaba el cargo de una orden que había quedado cancelada | ✅ RESUELTO (`feb153a`) | — |
+| ORDER-03-b | Un evento viejo o duplicado liquidaba —y contaminaba con datos de pago— el cargo de una orden que nunca se completó | Diff aplicado **sin commitear**. Entra a O2; **no se commitea aislado** (decisión del dueño, 02/09) | `sql.financial-transaction.repository.ts:315` |
+| **ORDER-04** | **Una orden cancelada puede volver a confirmarse y generar un cargo nuevo**: plata nueva sobre algo que el negocio dio por terminado | Abierto — **prioridad máxima**, slice O1 | `order.service.ts:503-505`<br>`sql.order.repository.ts:353-357` |
+| **ORDER-05** | **Dos confirmaciones simultáneas de la misma orden cobran dos veces y dejan stock reservado que nadie libera**: ese producto deja de poder venderse | Abierto — slice O1 | `sql.inventory-level.repository.ts:71-84` |
+| **ORDER-06** | **Se puede anular un cobro ya realizado** sin mirar si la orden está cancelada — la guarda se puso al liquidar y no al anular | Abierto — slice O2 | `sql.financial-transaction.repository.ts:365-376` |
+| ORDER-07 | Se crea un cargo sin verificar que la orden esté confirmada | Abierto — slice O2 | `outbox.handlers.ts:210-241` |
+| ORDER-08 | "Marcar como servida" puede responder que sí sin haber hecho nada | Abierto — slice O1 | `order.service.ts:712-720` |
+| ORDER-09 | Un pago pendiente de la orden se liquidaría junto con los cargos | Abierto — slice O2 | `sql.financial-transaction.repository.ts:344-362` |
+| **ORDER-10** | **Se puede cancelar una orden ya facturada**: queda una factura con CAE apuntando a un movimiento anulado, sin nota de crédito | Abierto — slice O4 | `invoice.service.ts:304-316` |
+| **ORDER-11** | **Desde el panel no se puede crear una orden ni agregarle un ítem**: el frontend manda un precio que el backend rechaza desde el 22/08 (`6bc6358`, ya en `origin/main`) | Abierto — bloque F1, **otro repo** | `api/schemas/request.schemas.ts:184-186`<br>appfrontend: `app/dashboard/ordenes/page.tsx:171-176` |
+| ORDER-12 | El panel nunca informa el medio de pago: la caja no registra el efectivo del POS | Abierto — bloque F2 | appfrontend: `lib/ordenes/api.ts:22` |
+| **ORDER-13** | **Si el evento de confirmación se demora, el de completado liquida cero y el cargo queda pendiente para siempre**, sin que nadie se entere | Abierto — slice O2 | `outbox.worker.ts:267-325` (el `catch` de `dispatch()` no relanza) |
+| CAJA-ORD-01 | Anular un cargo en efectivo ya imputado a un turno abierto baja el esperado sin contrapartida: el arqueo marca sobrante sin explicación | Abierto — bloque C1 | `sql.cash-register-shift.repository.ts:64-84` |
+| AUDIT-ORD-01 | Un cargo puede pasar de pendiente a anulado sin que quede registro de quién ni por qué | Abierto — bloque A1 | `workers/outbox.registry.ts:82` |
+| **ORDER-14** | **Los reportes de POS devuelven siempre vacío**: ventas por producto, ticket promedio, tarifas aplicadas y el reporte por cliente filtran por una fecha de confirmación que nunca se escribe | Abierto — el sellado entra en O1; el rescate de lo histórico es bloque aparte | `sql.order.repository.ts:520`, `:549`, `:581`<br>`sql.customer.repository.ts:394` |
+| EVT-ORF-01 | `reservation.expired` se emite y ningún handler lo escucha | Abierto — fuera de esta familia | `workers/reservation-hold-expiry.worker.ts:110` |
+
+**ORDER-03-b NO está cerrado.** Se dice explícito porque el diff aplicado
+podría leerse como si lo estuviera: su guarda funciona —verificada contra
+PostgreSQL real, ver abajo— pero (a) liquida un `PAYMENT` de la misma orden,
+que es `ORDER-09` vivo adentro del propio diff; (b) devuelve un cero
+indistinguible para siete causas distintas; (c) colapsa "el driver no informó"
+con "cero filas"; y (d) su única huella es un log de proceso, no una señal
+durable. **No se commitea aislado**: entra a O2 corregido.
+
+### INV-ORF-01 — reservas de stock que ningún camino libera
+
+**Hallazgo de inventario, independiente de la familia ORDER-*.** Se registra
+aparte a propósito: `ORDER-05` es una de sus causas, no su definición, y
+**arreglar `ORDER-05` no borra las reservas huérfanas que ya existan**.
+
+| Dimensión | |
+|---|---|
+| **Tipo** | Reserva de stock tomada (`inventory_levels.reserved_quantity`) que nunca se consolida ni se libera. No hay estado "huérfano": es una diferencia entre lo reservado y lo que los movimientos justifican |
+| **Origen** | Dos caminos distintos. **(a)** Dos confirmaciones concurrentes de la misma orden reservan dos veces, pero el índice único parcial de `stock_movements (order_item_id) WHERE movement_type IN ('OUT','RESERVATION_RELEASED')` sólo deja consolidar una — la otra queda tomada (`ORDER-05`). **(b)** La compensación de dead-letter de `order.confirmed` pierde la carrera del casillero y no libera, trade-off ya documentado en `workers/inventory.handlers.ts:51-82` |
+| **Impacto** | El disponible se calcula como `stock_quantity - reserved_quantity`. Una reserva huérfana baja el disponible **para siempre**: el producto deja de poder venderse aunque el stock físico esté ahí. No hay alerta, no hay pantalla que lo muestre, y no aparece como faltante en ningún reporte |
+| **Verificado** | **[V]** contra PostgreSQL real el 02/09: dos reservas de 3 sobre stock 10 quedan en 6 reservados; el segundo `OUT` sobre el mismo `order_item_id` lo rechaza el índice (`23505`); se consolidan 3 y **quedan 3 reservados que ningún camino toca** |
+| **Criterio de cierre** | Tres cosas, no una: **(1)** una consulta que detecte la diferencia entre `reserved_quantity` y lo que los `stock_movements` justifican, para saber cuánto hay hoy; **(2)** un camino de reconciliación para lo existente —corrección de datos, con su propia autorización—; **(3)** prueba contra PostgreSQL real de que después de O1 dos confirmaciones concurrentes ya no generan ninguna nueva |
+| **Requiere** | Decisión del dueño sobre (2): liberar automáticamente lo huérfano es tocar inventario real de un negocio en operación |
+
+**Verificado contra PostgreSQL real el 02/09.** Base descartable creada sobre
+`TEST_DATABASE_URL` con `schema.sql` completo, sentencias **copiadas literal**
+de producción, y carreras forzadas de forma determinística: T1 abre
+transacción y toma el lock de la fila; T2 emite la suya sin esperarla y queda
+bloqueada; recién con el `COMMIT` de T1 reevalúa su predicado. Es la ventana
+real de `READ COMMITTED`, no una simulación. **19 chequeos, los 19 con el
+resultado esperado.** Esto deja de ser razonamiento sobre el código y pasa a
+ser comportamiento observado.
+
+| # | Chequeo | Resultado observado | Qué prueba |
+|---|---|---|---|
+| E1-a | Dos reservas de 6 sobre stock 10: quién gana | Sólo una | La guarda de disponibilidad **sí** aguanta concurrencia real |
+| E1-b | `reserved_quantity` resultante | 6, no 12 | Ídem |
+| E2-a | Dos reservas de 3 **de la misma orden** sobre stock 10 | **Las dos ganan** | `ORDER-05`: no hay ninguna clave por orden |
+| E2-b | `reserved_quantity` resultante | 6 para una orden que necesita 3 | `ORDER-05` · `INV-ORF-01` |
+| E3-a | Dos `order.confirmed` con `event.id` distinto | Los dos insertan | `ORDER-05`: la idempotencia es del evento, no de la orden |
+| E3-b | Total financiero de la orden | **2 cargos, $600 sobre una orden de $300** | `ORDER-05` |
+| E3-c | El mismo `event.id` reintentado | No duplica | La idempotencia que **sí** funciona |
+| E4-a | Primer `OUT` sobre el `order_item_id` | Entra | Consolidación normal |
+| E4-b | Segundo `OUT` sobre el mismo `order_item_id` | Rechazado (`23505`) | El índice protege la consolidación |
+| E4-c | Consecuencia sobre el stock | Se consolidan 3, **quedan 3 reservados huérfanos** | `INV-ORF-01`: el índice no protege la reserva |
+| E5-a | Cancelación concurrente contra la escritura incondicional de `status` | Las dos sentencias afectan una fila | `ORDER-04` |
+| E5-b | Estado final de la orden | `CONFIRMED` **con `cancelled_at` puesto** | `ORDER-04`: fila imposible, y consultable como query histórica |
+| E6-a | Reserva dentro de una transacción abortada | `reserved_quantity` vuelve a 0 | El rollback funciona |
+| E6-b | Reserva + conflicto de índice en la misma transacción | Revierte entera | Ídem, con error real de por medio |
+| E7-a | Guarda de ORDER-03-b, orden `CONFIRMED` | No liquida | La guarda hace lo que dice |
+| E7-b | Guarda de ORDER-03-b, orden `CANCELLED` | No liquida | Ídem |
+| E7-c | `payment_method` tras los dos rechazos | Sigue nulo | No contamina: era el punto del diff |
+| E7-d | Guarda de ORDER-03-b, orden `COMPLETED` | Liquida | Camino feliz intacto |
+| E7-e | Un `PAYMENT` `PENDING` de la misma orden | **Se liquida igual** | `ORDER-09` **vivo dentro del diff actual** |
+
+El script vive fuera del repositorio (scratchpad de la sesión): verificar no
+era autorización para agregar archivos a `src/`. Los tests reales se escriben
+en el slice O3, y ahí el criterio sube — `ORDER-05` hay que probarlo **a nivel
+de la unidad de negocio** (dos `confirmOrder` concurrentes de la misma orden
+produciendo como máximo una reserva efectiva y un CHARGE), no sentencia por
+sentencia como acá.
+
+**Decisiones del dueño ya tomadas sobre esta familia (02/09):** quitar
+`status` de `UpdateOrderInput` (radio re-verificado: un solo llamador
+interno); primitiva única `transitionWithClient` en vez de cuatro
+implementaciones paralelas; `409 ORDER_STATE_UNKNOWN` distinto de
+`INVALID_TRANSITION`; reintento diferido con techo propio para el caso de
+ORDER-13; sellar `confirmed_at` dentro de la primitiva (ORDER-14) **sin
+backfill histórico sin fuente confiable**; liquidar por orden **sólo tipo
+`CHARGE`**; y **no commitear el diff de ORDER-03-b aislado**.
+
+**Nota de método — desvío declarado de la regla de archivos por fecha.** Estos
+hallazgos se descubrieron el 02/09 y se registran acá, en el archivo de esa
+fecha, aunque el bloque se escribió después. No se abrió un
+`pendientes-2026-09-03.md`: la autorización del dueño para este commit está
+limitada **exactamente** a dos archivos, y abrir uno nuevo la excedería. El
+próximo archivo de pendientes arrastra esta sección.
+
+### Corrección de una limitación que se venía arrastrando
+
+*"Sin `TEST_DATABASE_URL` en este entorno"* quedó registrado como limitación
+en cuatro lugares: los mensajes de `0e0ee9e` y `feb153a`, la revisión del
+`architecture-governor` sobre ORDER-03-b, y un comentario de código en
+`src/clientes-finanzas/sql.financial-transaction.repository.ts:74`.
+
+**Es obsoleto para este árbol.** La variable está cargada en `.env` y la
+suite corre: `npm run test:integration` → **50 tests en verde**, incluidos
+dos de concurrencia real. Lo que faltaba era escribir los tests, no el
+entorno. Se conserva la historia; deja de valer como estado actual.
+
+**El comentario de código no se tocó en este commit**, a propósito: ese
+archivo forma parte del diff sin commitear de ORDER-03-b y este bloque es
+documental puro. Se corrige en O2, que reescribe esa misma sentencia.
+
+*(Nota aparte sobre ese comentario: su argumento de fondo tampoco dependía
+de `TEST_DATABASE_URL`. Justificaba un guard de aplicación en vez de un
+`CHECK` por no poder verificar si alguna fila vieja **de producción** ya
+violaba el invariante — y para eso `TEST_DATABASE_URL`, que apunta a un
+branch vacío, nunca habría servido. La decisión sigue siendo correcta; la
+razón escrita, no.)*
+
 ---
 
 ## 🔄 Actualizado hoy — el estado cambió
