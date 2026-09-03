@@ -265,24 +265,33 @@ verificación.**
 **Siguiente acción:** ninguna de código. Rama lista para PR — pendiente de
 que el dueño autorice abrirlo/mergearlo.
 
-### O2-F2 — visibilidad y conciliación de facturas consolidadas
+### O2-F2 — facturas consolidadas y cobro corporativo · Discovery CERRADA (03/09/2026)
+
+**Actualizado tras una segunda auditoría independiente (mismo día) y reproducción
+real contra Postgres.** Ya no es solo un hallazgo de visibilidad — se confirmó
+un camino de **doble cobro real** en `AccountsReceivableService.markCollected()`.
+Detalle completo, evidencia, matriz de relaciones, diseño propuesto y
+decisiones pendientes: **`docs/continuidad-o2-f2-facturas-consolidadas-2026-09-03.md`**
+(checkpoint transferible, rama `docs/o2-f2-checkpoint-2026-09-03`). Acá solo
+el resumen — no dupliques el detalle, andá al checkpoint.
 
 | Dimensión | |
 |---|---|
-| **Definición** | `getOutstandingByCustomerId()` hace `JOIN financial_transactions ft ON ft.id = i.financial_transaction_id` para listar facturas `ISSUED` con saldo pendiente — pero una factura **consolidada** (C1-Fase C) tiene `financial_transaction_id IS NULL` a propósito (`schema.sql:3139`, decisión confirmada con el dueño). El JOIN la excluye estructuralmente, siempre, sin importar su saldo real |
-| **Consecuencia** | Una factura consolidada con saldo pendiente real nunca aparece en el modal de conciliación de "Registrar Pago" — el operador no tiene forma de elegirla en `allocations`. El pago igual podría aplicarse contra su saldo si alguien conociera el `invoiceId` a mano (`getOutstandingForUpdate`, nuevo en O2-F1, sí calcula bien ese saldo por id directo) — pero nadie lo descubre desde la UI de conciliación |
-| **Severidad** | S2 — dato de gestión ausente, no corrompido; la factura sigue existiendo y su saldo se puede calcular bien, solo no es descubrible por el camino normal |
-| **Evidencia** | `[V]` `src/facturacion/sql.invoice.repository.ts:141` (`JOIN financial_transactions ft ON ft.id = i.financial_transaction_id`, dentro de `getOutstandingByCustomerId`, línea 130). `src/db/schema.sql:3139` (`ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL`, con el comentario de la decisión del dueño para consolidadas) |
-| **Dependencia** | Ninguna bloqueante de O2-F1 — descubierto durante ese trabajo pero deliberadamente no mezclado (el patch de O2-F1 corrige aplicación, no visibilidad). Cruza con C1-Fase C (consolidadas) y con `accounts_receivable` (cierre de facturación) |
-| **Criterio de cierre** | Que el modal de conciliación liste también facturas consolidadas con saldo > 0 (probablemente una query separada o un `UNION`/`OR` que cubra `financial_transaction_id IS NULL` vía `invoice_charges`), con su propio cálculo de saldo, concurrencia e idempotencia probados igual que O2-F1, más la pieza de frontend |
-| **Siguiente acción** | Ninguna todavía — issue registrado, sin diseño ni diff. Alcance completo (por decisión del dueño, no de esta sesión): listado de consolidadas pendientes, cálculo de saldo, relación con `invoice_charges`, pago contra factura consolidada, concurrencia, idempotencia, frontend, cuenta corriente, cierre de `accounts_receivable` |
+| **Definición** | Dos causas relacionadas pero distintas: (1) `getOutstandingByCustomerId()` excluye facturas consolidadas del listado por el `JOIN` (visibilidad); (2) `AccountsReceivableService.markCollected()` (`accounts-receivable.service.ts:195-225`) crea un `PAYMENT` sin `settledInvoiceId` — el saldo de la factura nunca refleja un cobro hecho por el camino de `accounts_receivable` |
+| **Consecuencia** | **Elevada de S2 a severidad alta/crítica** tras reproducción: una factura consolidada cobrada vía `markCollected()` sigue viéndose con saldo completo, y si alguien la concilia también por `recordPayment(allocations)` (camino ya corregido por O2-F1), el sistema acepta un segundo cobro real — confirmado con Postgres real: factura de 1000, total cobrado 2000 |
+| **Severidad** | S1 para el subhallazgo de aplicación (O2-F2.3) — riesgo de doble cobro real en cualquier tenant con City Ledger corporativo activo. S2 para visibilidad pura (O2-F2.1/.2) |
+| **Evidencia** | `[V]` Reproducción real en `src/tests/integration/scratch-o2-f2-ar-invoice-gap.integration.test.ts` (2 tests, Postgres real, commiteado en `docs/o2-f2-checkpoint-2026-09-03`). Código: `accounts-receivable.service.ts:203-212` (PAYMENT sin settledInvoiceId), `accounts-receivable.repository.ts:36` (`invoiceRef` es string de display, no FK), `sql.invoice.repository.ts:97-128` (`getOutstandingForUpdate` calcula por id directo, sin saber del cobro de AR) |
+| **Dependencia** | Ninguna bloqueante de O2-F1 (cerrada, sin reabrir). Cruza con C1-Fase C (consolidadas) y con el cierre de `accounts_receivable` |
+| **Criterio de cierre** | Ver §9 del checkpoint — resolución de `invoiceId` desde AR (individual y consolidada), lock compartido con `recordPayment()`, idempotencia, tests de concurrencia real |
+| **Siguiente acción** | Decisión de negocio pendiente (§5 del checkpoint: filas AR legacy sin `financial_transaction_id`, alcance del cierre) antes de crear la rama de implementación `fix/o2-f2-accounts-receivable-invoice-linkage` |
 
-### Estado formal de O2 (03/09/2026)
+### Estado formal de O2 (03/09/2026, actualizado)
 
 | Ítem | Estado |
 |---|---|
 | O2-F1 | **CERRADA** — backend, datos e integración (Postgres real, incl. concurrencia). No mergeada a `main` todavía |
-| O2-F2 | **ABIERTA** — visibilidad/conciliación de facturas consolidadas, sin diseño |
+| O2-F2 Discovery/Due Diligence | **CERRADA** — ver checkpoint dedicado |
+| O2-F2 Implementación | **PENDIENTE** — bloqueada por dos decisiones de negocio (§5 del checkpoint) |
 | Frontend O2 | **NO VERIFICABLE** en esta sesión — repositorio de frontend no disponible |
 | O2 completo | **ABIERTO** |
 
