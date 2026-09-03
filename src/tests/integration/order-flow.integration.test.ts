@@ -327,4 +327,54 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
     await service.confirmOrder(orden.id, ACTOR);
     expect(await foto()).toEqual(g);
   });
+
+  // ── servir: el único paso del ciclo que nunca se había ejecutado ──────────
+
+  /**
+   * T-SERVIR-01 (03/09/2026) — el caso que le faltaba a esta suite y que
+   * habría atajado el incidente del 03/09 en `biz-demo-01`.
+   *
+   * `markServed()` tenía cobertura de unit (repo in-memory), de repo con
+   * `FakeSqlClient` -- que **assertaba el texto** del SQL sin ejecutarlo -- y
+   * de ruta con el servicio mockeado. Ninguna de las tres toca Postgres, así
+   * que el `UPDATE orders SET served_at = NOW()` nunca se ejecutó contra una
+   * tabla real en todo el repo: era la única de las cuatro transiciones sin
+   * ese piso. En producción la columna no existía y el UPDATE respondía 42703
+   * -> 500 (ver schema v46 en schema.sql, BLOQUE 4).
+   *
+   * Verifica las tres cosas que el contrato promete: que `served_at` se
+   * SELLA, que `status` NO cambia (servedAt es independiente del estado,
+   * schema.sql BLOQUE 14) y que no aparece ningún otro efecto -- el `{}` de
+   * `paso()` exige delta cero en reservas, cargos, eventos, auditorías y
+   * dead-letter.
+   */
+  it('O3-04 / T-SERVIR-01: servir sella served_at, no cambia status y no deja ningún otro efecto', async () => {
+    const { resultado: orden } = await paso(
+      'crear', await foto(), { ordenes: +1, items: +1 }, crear);
+    await paso('confirmar', await foto(), { reservado: +3, eventos: +1, auditorias: +1 },
+      () => service.confirmOrder(orden.id, ACTOR));
+
+    // Servir: ni un contador se mueve. No emite domain event (nada reacciona
+    // a esto todavía) y no toca stock ni finanzas.
+    const { resultado: servida } = await paso(
+      'servir', await foto(), {}, () => service.markServed(orden.id));
+
+    expect(servida.status).toBe('CONFIRMED');       // NO pasa a un estado nuevo
+    expect(servida.servedAt).not.toBeNull();        // el sello ocurrió
+    expect(servida.completedAt).toBeNull();
+    expect(servida.cancelledAt).toBeNull();
+
+    // Persistido de verdad, no sólo en el objeto devuelto: es exactamente la
+    // lectura que en producción devolvía 42703.
+    const { rows } = await db.query<{ status: string; served_at: string | null }>(
+      `SELECT status, served_at FROM orders WHERE id = $1`, [orden.id]);
+    expect(rows[0]!.status).toBe('CONFIRMED');
+    expect(rows[0]!.served_at).not.toBeNull();
+
+    // Servir de nuevo: 200 idempotente, mismo sello, cero efectos nuevos
+    // (CAMBIO DE CONTRATO del 02/09 -- ORDER_ALREADY_SERVED ya no existe).
+    const { resultado: repetida } = await paso(
+      'servir otra vez', await foto(), {}, () => service.markServed(orden.id));
+    expect(repetida.servedAt).toEqual(servida.servedAt);
+  });
 });

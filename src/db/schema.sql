@@ -1418,6 +1418,56 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS location_id VARCHAR(255)
 UPDATE orders SET location_id = 'loc-default' WHERE location_id IS NULL;
 ALTER TABLE orders ALTER COLUMN location_id SET NOT NULL;
 
+-- ---------------------------------------------------------------------------
+-- schema v46 (03/09/2026) — las cuatro columnas de sello, para tablas `orders`
+-- que ya existían cuando cada una se agregó
+-- ---------------------------------------------------------------------------
+-- Las cuatro están declaradas DENTRO del `CREATE TABLE IF NOT EXISTS orders`
+-- de arriba, que es un no-op donde la tabla ya existe. `served_at` se agregó
+-- el 15/08/2026 (BLOQUE 14) a un schema que el tenant `biz-demo-01` ya tenía
+-- creado desde el 09/08 -- así que ahí la columna nunca se creó, y ningún
+-- deploy posterior la creó.
+--
+-- Verificado el 03/09/2026 con `information_schema` contra los dos tenants,
+-- sólo lectura: `biz-demo-01` tenía 13 columnas en `orders` y ninguna
+-- `served_at`; `Hotel los Álamos`, provisionado el 30/08, tenía 14 con ella.
+-- Los dos estaban en v45, aplicada ese mismo 03/09 a las 10:38 -- el deploy
+-- corrió entero y correctamente, y aun así no la agregó. Es exactamente lo
+-- que `CREATE TABLE IF NOT EXISTS` promete, no un fallo del deploy. El resto
+-- del esquema coincidía tabla por tabla: la superficie del drift era esta
+-- única columna.
+--
+-- Consecuencia observada en producción (orden 7a328402-…, 03/09 11:48):
+-- `markServed()` emite `UPDATE orders SET served_at = NOW() ...`, Postgres
+-- responde 42703 (undefined_column), que no es `DomainError` y sale como 500
+-- INTERNAL_ERROR. La lectura no lo delataba: `SELECT *` + el mapper
+-- `row['served_at'] ? ... : null` devolvía `null`, indistinguible de "no
+-- servida" -- por eso el síntoma parecía de refresco de UI.
+--
+-- Se agregan las CUATRO, no sólo `served_at`. Las otras tres hoy existen en
+-- los dos tenants (verificado), así que son no-op; pero comparten el mismo
+-- defecto de origen y un tenant clonado de un snapshot más viejo podría no
+-- tenerlas. El costo de las tres de más es cero.
+--
+-- SIN BACKFILL, a propósito. `served_at` queda NULL en las órdenes que ya
+-- existían, y ese NULL significa "no consta", NO "no se sirvió": mientras la
+-- columna no existió no hubo forma de registrar el hecho, así que ninguna
+-- orden anterior al 03/09/2026 puede distinguir las dos cosas. Cualquier
+-- reporte que cuente "no servidas" sobre datos previos está contando también
+-- las que no se pudieron registrar (mismo problema que O1-b). Inventar un
+-- timestamp acá sería fabricar un hecho físico que nadie observó.
+--
+-- ROLLBACK: no hay rollback automático. `ALTER TABLE orders DROP COLUMN`
+-- sobre estas columnas es DESTRUCTIVO -- borra los sellos que se hayan
+-- escrito desde el deploy -- así que es una operación manual y excepcional,
+-- con branch de respaldo previo (mismo criterio que v44/v45) y decisión
+-- explícita del dueño. Revertir el código sin tocar la BD es seguro y
+-- suficiente: las columnas de más no molestan a un binario viejo.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS served_at    TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_orders_business_status   ON orders (business_id, status);
 CREATE INDEX IF NOT EXISTS idx_orders_business_customer ON orders (business_id, customer_id) WHERE customer_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_orders_created_at        ON orders (created_at DESC);
