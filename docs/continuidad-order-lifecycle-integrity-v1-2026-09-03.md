@@ -74,6 +74,41 @@ incidente, no un caso de prueba reutilizable.
 
 ## 2. `ORDER-16` (nuevo) — Servir no genera evento ni auditoría propia
 
+> **ACTUALIZACIÓN (03/09/2026, más tarde el mismo día) — `ORDER-16` CERRADA.**
+> El dueño resolvió la pregunta de negocio de abajo: **opción (b), Servir es un
+> hecho auditable**. Decisiones cerradas: **D1 = sí, solo `audit_log`, SIN domain
+> event** (Servir no tiene efecto asíncrono, nada reacciona a esto); **D9 = servir
+> admite solo `CONFIRMED`** (`COMPLETED`/`CANCELLED` → 409 `ORDER_NOT_SERVABLE`).
+> Fix en `1002e04` (`fix(pos-menu): ORDER-16 -- Servir deja rastro de quien lo hizo (A6.5)`),
+> pusheado a `origin/main` (`e794fd3..b05d964`, fast-forward), desplegado por Render
+> auto-deploy. Sin DDL, sin migración, sin bump de `CURRENT_SCHEMA_VERSION` —
+> `audit_log` ya tenía la forma. Gate: `architecture-governor` APROBADO CON
+> CONDICIONES (C1–C4 aplicadas) + criterios A6.5/A6.1/A6.3/A6.6/A9.4/R8.
+>
+> **`markServed()` ahora escribe UNA fila `audit_log` (`entity='orders'`,
+> `field='served_at'`, `old_value=NULL`, `new_value` = sello en ISO-8601,
+> `changed_by` = `req.user!.id`) en la MISMA transacción que el `UPDATE` del sello.**
+> La rama `YA_ESTABA` (servir dos veces) sigue 200 idempotente y NO audita (D5).
+> Rollback probado en integración (E-I5: falla el `recordWithClient`; E-I6: actor
+> ausente viola `changed_by NOT NULL`) → `served_at` queda `NULL`, 0 filas.
+>
+> `[V]` **Verificación post-deploy contra `biz-demo-01` real** (Neon
+> `ancient-king-17098519`, branch `production`), orden
+> `bf8b235d-90c0-4fd2-ac43-4eb9d02c6213`: recorrido crear → confirmar → servir vía
+> la aplicación; `served_at = 2026-09-03T17:31:41.581Z`; **exactamente 1** fila
+> `audit_log` `field='served_at'`, `old_value=NULL`, `new_value` = `served_at`
+> exacto, `changed_by='ident-454141dab8fba2c55bc2d81247a629a4'` (actor real).
+> Cero deltas por Servir: `order_items=1`, `financial_transactions=1` (cargo de la
+> confirmación), `domain_events=2` (`order.confirmed` + `order.completed`, ninguno
+> de serve → confirma D1), `dead_letter=0`.
+>
+> **Sigue abierto (fuera del alcance de este fix):** D8 (mostrar `servedAt` + actor
+> en el detalle de la orden — frontend), D6 (des-servir), D7 (retención → A7.6), y
+> `O5` (gestión operativa durable de incidentes). Ver `docs/pendientes-2026-09-03.md`.
+>
+> El texto de abajo se conserva como registro de por qué existió `ORDER-16` y de la
+> pregunta que el dueño respondió.
+
 `[V]` `markServed()` no emite domain event ni graba fila en `audit_log` propia —
 `order.service.ts:741-746` lo declara explícito ("No emite domain event: hoy nada más
 reacciona a esto"). Confirmado con los dos `audit_log` reales de arriba: cada orden tiene
@@ -99,8 +134,9 @@ pregunta de alcance que admite más de una respuesta razonable es su propia preg
   problema que `BRECHA-AUDIT-01` (`continuidad-da-orden-estados-2026-09-02.md:§4`, "ningún
   intento fiscal rechazado deja rastro").
 
-**Estado:** `ORDER-16` — Abierta, sin diff, sin decisión. **No se modifica código** hasta
-que el dueño elija (a) o (b).
+**Estado:** ~~`ORDER-16` — Abierta, sin diff, sin decisión.~~ **CERRADA (03/09/2026):**
+el dueño eligió **(b)**; fix `1002e04` desplegado y verificado en vivo (ver la
+actualización al inicio de esta sección). D6/D7/D8 y `O5` siguen abiertos.
 
 ---
 

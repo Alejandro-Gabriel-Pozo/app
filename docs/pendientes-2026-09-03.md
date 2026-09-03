@@ -84,7 +84,30 @@ desaparece del radar sin que nadie lo haya decidido.
 | **Criterio de cierre** | Que cada reporte declare el corte: distinguir explícitamente "sin datos anteriores a la fecha del sellado" de "cero en el período". Es cambio de presentación y de contrato de lectura, no de datos |
 | **Siguiente acción** | Ninguna todavía. Diseño pendiente, sin autorización |
 
-### ORDER-16 — servir una orden no deja ningún rastro de quién lo hizo
+### ORDER-16 — servir una orden no deja ningún rastro de quién lo hizo · ✅ RESUELTO (03/09/2026)
+
+**Cerrada.** El dueño respondió la pregunta de negocio (opción **b**: Servir es
+auditable). **D1 = sí, solo `audit_log`, SIN domain event; D9 = solo `CONFIRMED`**
+(`COMPLETED`/`CANCELLED` → 409 `ORDER_NOT_SERVABLE`). Fix en **`1002e04`**
+(`fix(pos-menu): ORDER-16 -- Servir deja rastro de quien lo hizo (A6.5)`),
+pusheado a `origin/main` (`e794fd3..b05d964`, fast-forward) y desplegado por
+Render auto-deploy. Sin DDL, sin migración, sin bump de `CURRENT_SCHEMA_VERSION`.
+Gate: `architecture-governor` APROBADO CON CONDICIONES (C1–C4) + criterios
+A6.5/A6.1/A6.3/A6.6/A9.4/R8. Tests: E-U1..E-U5 (unit) + E-I1..E-I6 (integración
+Postgres real, incl. rollback por fallo del repo de auditoría y por actor
+ausente). `[V]` **Verificado en vivo** contra `biz-demo-01` (Neon
+`ancient-king-17098519`, branch `production`), orden
+`bf8b235d-90c0-4fd2-ac43-4eb9d02c6213`: `served_at = 2026-09-03T17:31:41.581Z`,
+**1** fila `audit_log` `field='served_at'`, `old_value=NULL`, `new_value` = sello
+exacto, `changed_by='ident-454141dab8fba2c55bc2d81247a629a4'` (actor real); cero
+deltas por Servir (`order_items=1`, `financial_transactions=1`, `domain_events=2`
+—`order.confirmed`+`order.completed`, ninguno de serve—, `dead_letter=0`).
+
+**Sigue abierto (fuera del alcance de este fix):** **D6** (des-servir), **D7**
+(retención → `A7.6`), **D8** (mostrar `servedAt` + actor en el detalle de la
+orden — frontend), y **`O5`** (gestión operativa durable de incidentes).
+
+La fila de abajo se conserva como registro del estado previo al cierre.
 
 | Dimensión | |
 |---|---|
@@ -94,24 +117,24 @@ desaparece del radar sin que nadie lo haya decidido.
 | **Evidencia** | `[V]` `src/pos-menu/order.service.ts:747` (`markServed(id: string)`, sin `changedBy`; el docblock `:741-746` declara explícito que no emite evento). `src/pos-menu/orders.routes.ts:209` no pasa `req.user!.id`, a diferencia de `:190` para confirmar. El efecto sobre inventario: `order.service.ts:720` (`wasServed`) → `src/workers/inventory.handlers.ts:287` (`if (wasServed) continue`). No existe reversa: la allowlist completa está en `src/pos-menu/order.repository.ts:82-98`. Confirmado además contra las dos bases reales el 03/09 — cada orden tiene exactamente 2 filas de `audit_log`, ninguna para el sello de `servedAt` |
 | **Dependencia** | `audit_log` **ya tiene la forma necesaria** (`src/db/schema.sql:2378`, una fila por campo): la variante con auditoría no requiere DDL, ni migración, ni bump de `CURRENT_SCHEMA_VERSION`. Cruza con `AUDIT-ORD-01` (misma familia de atribución) y con `A7.6` (no existe política de retención escrita para `audit_log` ni `domain_events` — verificado por grep, sin purga en ningún punto del repo) |
 | **Criterio de cierre** | Que todo sellado de `served_at` posterior al bloque tenga exactamente una fila de auditoría con actor real, en la misma transacción que el sello, sin efectos nuevos sobre stock, cargos ni eventos; y que servir dos veces siga dejando una sola fila. Las órdenes servidas antes se leen como "no consta", nunca como "no se sirvió" |
-| **Siguiente acción** | **Decisión del dueño.** Sin diff hasta entonces |
+| **Siguiente acción** | ~~**Decisión del dueño.** Sin diff hasta entonces~~ → **HECHO.** Fix `1002e04`, desplegado y verificado en vivo. |
 
-#### ORDER-16 · decisiones abiertas
+#### ORDER-16 · decisiones — estado al cierre (03/09/2026)
 
-**Ninguna de estas es final.** Se registran para que la decisión quede trazada
-cuando se tome, no para darla por tomada.
+Las `[P]` de la sesión se elevaron a decisión del dueño y se implementaron en
+`1002e04`, salvo D6/D7/D8 que quedan fuera de alcance.
 
 | # | Decisión | Estado |
 |---|---|---|
-| D1 | ¿Servir se audita? ¿Con evento propio, sólo `audit_log`, o nada? | Abierta. `[P]` sólo `audit_log`, sin evento: no hay ningún consumidor para un `order.served`, y agregarlo sería un segundo caso deliberado de `EVT-ORF-01` (evento emitido que nadie escucha) |
-| D2 | Forma de la fila: `field='served_at'` o un `status` sintético | Abierta. `[P]` `field='served_at'` — el `status` no cambió, y escribir que sí sería falsear la tabla que existe para no falsear |
-| D3 | Actor: `changedBy` real desde la ruta, o `SYSTEM_ACTOR` | Abierta. `[P]` actor real: sin él la fila no responde la única pregunta que justifica escribirla |
-| D4 | Atomicidad con el sello | Abierta. `[P]` misma transacción, patrón ya establecido en `docs/conocimiento/playbook-audit-log-transaccional.md` |
-| D5 | ¿La rama idempotente (servir dos veces) audita? | Abierta. `[P]` no — convertiría el doble-submit del panel en ruido permanente |
-| D6 | Reversibilidad: ¿se agrega un "des-servir"? | Abierta. `[P]` no en este bloque: cambia `wasServed` y por lo tanto si el stock se restaura — es decisión de inventario, con su propio diseño |
-| D7 | Retención de esas filas | Abierta. `[P]` remitir a `A7.6`, declarándolo: no hay política global ni volumen medido, y fijar un número sin eso es inventarlo |
-| D8 | Visibilidad: mostrar `servedAt` y su actor en el detalle de la orden | Abierta. `[P]` sí, en bloque de frontend separado. `[V]` hoy el detalle muestra confirmado/completado/cancelado y **no** `servedAt` (`appfrontend-main`, `src/app/dashboard/ordenes/[id]/page.tsx:385-400`) |
-| **D9** | **¿Servir admite una orden `COMPLETED`, o sólo `CONFIRMED`?** | **Abierta.** Es la 8ª pregunta del handoff, la única de las ocho **sin responder**. `[P]` **mantener sólo `CONFIRMED`** — pero es una propuesta, **no una decisión final**, y no se implementa nada hasta que el dueño resuelva |
+| D1 | ¿Servir se audita? ¿Con evento propio, sólo `audit_log`, o nada? | **RESUELTA:** sólo `audit_log`, SIN domain event. Aplicada. |
+| D2 | Forma de la fila: `field='served_at'` o un `status` sintético | **RESUELTA:** `field='served_at'`, `old_value=NULL`, `new_value` = sello ISO-8601. Aplicada. |
+| D3 | Actor: `changedBy` real desde la ruta, o `SYSTEM_ACTOR` | **RESUELTA:** actor real (`req.user!.id`). Aplicada — verificado en vivo (`ident-454141…`). |
+| D4 | Atomicidad con el sello | **RESUELTA:** misma transacción (`transactionManager.run`). Rollback probado en E-I5/E-I6. |
+| D5 | ¿La rama idempotente (servir dos veces) audita? | **RESUELTA:** no. El INSERT vive sólo en la rama `CAMBIO`; `YA_ESTABA` es 200 idempotente sin fila. |
+| D6 | Reversibilidad: ¿se agrega un "des-servir"? | **Abierta, fuera de alcance.** `[P]` no en este bloque: cambia `wasServed` y la restitución de stock — diseño de inventario propio. |
+| D7 | Retención de esas filas | **Abierta, fuera de alcance.** Remite a `A7.6`: sin política global ni volumen medido. Este fix suma ~1 fila por orden servida. |
+| D8 | Visibilidad: mostrar `servedAt` y su actor en el detalle de la orden | **Abierta, fuera de alcance.** `[V]` hoy el detalle no muestra `servedAt` (`appfrontend-main`, `src/app/dashboard/ordenes/[id]/page.tsx:385-400`). Bloque de frontend separado. |
+| **D9** | **¿Servir admite una orden `COMPLETED`, o sólo `CONFIRMED`?** | **RESUELTA:** sólo `CONFIRMED`. `COMPLETED`/`CANCELLED` → 409 `ORDER_NOT_SERVABLE`. `TRANSICION_SERVIR` sin tocar; fijada con tests (E-I2/E-I3, E-U2/E-U3). |
 
 **Por qué D9 no es cosmética `[V]`:** hoy backend y frontend coinciden en admitir
 sólo `CONFIRMED` —`TRANSICION_SERVIR` declara `desde: ['CONFIRMED']`
@@ -124,10 +147,13 @@ sobre una orden ya cobrada. Si el dueño decide (a), la fila de auditoría de
 ORDER-16 ancla la decisión con evidencia; si decide (b), ORDER-16 deja de ser
 opcional y pasa a ser precondición.
 
-**Brecha de trazabilidad, declarada y no resuelta:** mientras D1 siga abierta, la
-ausencia de evento y auditoría propios para Servir **sigue siendo una brecha de
-trazabilidad de ERP**, no un detalle de implementación pendiente. Se registra
-como tal a propósito: que esté esperando decisión no la vuelve inocua.
+**Brecha de trazabilidad — ~~declarada y no resuelta~~ CERRADA (03/09/2026):**
+D1 se resolvió por (b) y se implementó en `1002e04`. Todo sellado de `served_at`
+posterior al deploy deja exactamente una fila de `audit_log` con actor real, en
+la misma transacción que el sello (verificado en vivo, orden `bf8b235d`). Las
+órdenes servidas antes del fix conservan `served_at` con valor y **cero** filas
+de auditoría — se leen como "no consta quién", nunca como "no se sirvió". Sin
+backfill.
 
 ---
 
