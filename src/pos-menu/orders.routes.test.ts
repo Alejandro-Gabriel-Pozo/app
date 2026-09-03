@@ -22,7 +22,7 @@ import {
   InvalidOrderTransitionError,
   InvalidPaymentInfoError,
   OrderNotServableError,
-  OrderAlreadyServedError,
+  OrderStateUnknownError,
 } from './order.service.js';
 import { ProductNotFoundError, InsufficientStockError } from './product.service.js';
 import type { Order, OrderItem } from './order.entities.js';
@@ -250,11 +250,14 @@ describe('orders.routes', () => {
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'ORDER_NOT_SERVABLE' }));
 
-    markServed.mockRejectedValueOnce(new OrderAlreadyServedError('ord-1'));
+    // O1 (02/09/2026): ORDER_ALREADY_SERVED dejó de existir -- servir una
+    // orden ya servida es 200 idempotente. Lo que sí tiene que mapear acá es
+    // el estado desconocido, con código propio y distinto de INVALID_TRANSITION.
+    markServed.mockRejectedValueOnce(new OrderStateUnknownError('ord-1'));
     res = fakeRes();
     await handler(req, res, () => { throw new Error('no next'); });
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'ORDER_ALREADY_SERVED' }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'ORDER_STATE_UNKNOWN' }));
   });
 
   it('POST /:id/complete -- camino feliz, 400 validación, 409 InvalidPaymentInfoError', async () => {

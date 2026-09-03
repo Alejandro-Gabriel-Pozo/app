@@ -17,7 +17,19 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto';
-import type { IOrderRepository, ListOrdersFilter } from './order.repository.js';
+import type {
+  IOrderRepository,
+  ListOrdersFilter,
+  OrderTransitionSpec,
+  OrderTransitionOutcome,
+} from './order.repository.js';
+import {
+  TRANSICION_CONFIRMAR,
+  TRANSICION_COMPLETAR,
+  TRANSICION_CANCELAR,
+  TRANSICION_SERVIR,
+} from './order.repository.js';
+import { logger } from '../logger.js';
 import type {
   Order,
   OrderItem,
@@ -78,9 +90,22 @@ export class OrderNotServableError extends DomainError {
   }
 }
 
-export class OrderAlreadyServedError extends DomainError {
+/**
+ * ORDER-04 (02/09/2026) -- `status` fuera del enum de `orders.status`.
+ * Separado de `InvalidOrderTransitionError` a propósito: un estado que el
+ * sistema no conoce no es "una transición inválida más", es una fila que no
+ * debería existir. Los dos responden 409, con códigos distintos, para que
+ * uno se pueda buscar en los logs sin arrastrar al otro.
+ *
+ * El mensaje NO incluye el valor real del estado: es un dato interno y el
+ * cliente no puede hacer nada con él. El valor va al log del servidor.
+ */
+export class OrderStateUnknownError extends DomainError {
   constructor(id: string) {
-    super(`La orden ${id} ya fue marcada como servida.`, 'ORDER_ALREADY_SERVED');
+    super(
+      `La orden ${id} está en un estado que el sistema no puede procesar.`,
+      'ORDER_STATE_UNKNOWN',
+    );
   }
 }
 
@@ -142,31 +167,25 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
   ): Promise<Order | undefined>;
 
   /**
-   * ORDER-03 (02/09/2026) -- devuelve también si el UPDATE condicional
-   * modificó la fila, mismo criterio que `cancelWithClient` (ORDER-01/02).
-   * Antes devolvía solo la orden releída: con una cancelación concurrente
-   * ganando la carrera, el UPDATE no tocaba nada y el caller igual auditaba
-   * una transición CONFIRMED->COMPLETED que nunca ocurrió y publicaba
-   * `order.completed` -> el worker liquidaba el CHARGE (PENDING->SETTLED) de
-   * una orden que había quedado CANCELLED.
-   * `changed` es la única señal autoritativa para publicar el evento.
+   * ORDER-04/05/08/14 (02/09/2026) -- la ÚNICA escritura de estado de una
+   * orden. Reemplaza a `cancelWithClient`, `completeWithClient` y a la vía
+   * genérica `updateWithClient({ status })` que usaba `confirmOrder`.
+   *
+   * Antes eran cuatro caminos con cuatro guardas distintas, y el de
+   * confirmación no tenía ninguna: escribía `status` sin condición sobre el
+   * estado previo, así que una cancelación concurrente quedaba sobrescrita
+   * (ORDER-04, verificado contra PostgreSQL real). Consolidarlos en uno no
+   * es una simplificación estética: es lo que hace imposible que la próxima
+   * transición nazca sin guarda.
+   *
+   * El desenlace `CAMBIO` es la única señal autoritativa para publicar el
+   * evento y disparar efectos.
    */
-  completeWithClient(
+  transitionWithClient(
     client: SqlClient,
     id: string,
-  ): Promise<{ order: Order | undefined; changed: boolean }>;
-
-  /**
-   * ORDER-01/02 (02/09/2026) -- devuelve también si el UPDATE condicional
-   * modificó la fila. Antes devolvía solo la orden releída, así que el caller
-   * no podía distinguir "la cancelé yo" de "ya estaba cancelada" ni de "está
-   * COMPLETED": publicaba `order.cancelled` en los tres casos.
-   * `changed` es la única señal autoritativa para publicar el evento.
-   */
-  cancelWithClient(
-    client: SqlClient,
-    id: string,
-  ): Promise<{ order: Order | undefined; changed: boolean }>;
+    spec: OrderTransitionSpec,
+  ): Promise<OrderTransitionOutcome>;
 
   /**
    * ORDER-01/02 -- lectura del agregado raíz CON LOCK, dentro de la
@@ -342,6 +361,44 @@ export class OrderService {
   ) {}
 
   /**
+   * Traduce los cuatro desenlaces que NO son `CAMBIO` a la respuesta que
+   * corresponde. Un solo lugar para las tres reglas de precedencia, así las
+   * cuatro transiciones se comportan igual:
+   *
+   *   - `NO_EXISTE`          -> 404
+   *   - `ESTADO_DESCONOCIDO` -> 409 ORDER_STATE_UNKNOWN (fail-closed)
+   *   - `YA_ESTABA`          -> 200 idempotente, sin evento y SIN efectos
+   *   - `NO_ELEGIBLE`        -> 409 conflicto conocido
+   *
+   * Devolver la orden significa "respondé 200 con esto"; cualquier otra cosa
+   * lanza. El caller nunca decide esto por su cuenta.
+   */
+  private resolverNoCambio(
+    outcome: Exclude<OrderTransitionOutcome, { resultado: 'CAMBIO' }>,
+    id: string,
+    destino: OrderStatus | 'SERVIDA',
+  ): OrderWithTransitions {
+    switch (outcome.resultado) {
+      case 'NO_EXISTE':
+        throw new OrderNotFoundError(id);
+      case 'ESTADO_DESCONOCIDO':
+        // El valor real del estado NO viaja al cliente (es interno y no puede
+        // hacer nada con él); sí queda en el log, porque una fila fuera del
+        // CHECK de `orders.status` no debería existir.
+        logger.error(
+          { evento: 'orden_estado_desconocido', orderId: id, estadoLeido: outcome.order.status },
+          '[orders] estado fuera del enum: transición rechazada fail-closed',
+        );
+        throw new OrderStateUnknownError(id);
+      case 'YA_ESTABA':
+        return withAllowedTransitions(outcome.order);
+      case 'NO_ELEGIBLE':
+        if (destino === 'SERVIDA') throw new OrderNotServableError(id, outcome.order.status);
+        throw new InvalidOrderTransitionError(outcome.order.status, destino);
+    }
+  }
+
+  /**
    * Graba la transición `from → to` de una orden en audit_log, dentro de la
    * transacción `client`. Fail-loud si no se inyectó auditLogRepo o si la impl
    * no soporta recordWithClient (mismo idiom que InvoiceService): preferible un
@@ -500,16 +557,39 @@ export class OrderService {
    * — resolveConfirmStockItems() lo detecta trivial y no persiste nada.
    */
   async confirmOrder(id: string, changedBy: string): Promise<OrderWithTransitions> {
-    const order = await this.orderRepo.getById(id);
-    if (!order) throw new OrderNotFoundError(id);
-    if (order.status !== 'DRAFT') throw new InvalidOrderTransitionError(order.status, 'CONFIRMED');
-
-    const { stockItems, snapshots } = await resolveConfirmStockItems(order.items, this.recipeService);
-
     return this.transactionManager.run(async (client: SqlClient) => {
+      // ORDER-04/05 (02/09/2026) -- la lectura y la validación de estado
+      // vivían FUERA de la transacción y la escritura era INCONDICIONAL
+      // (updateWithClient sin condición sobre el estado previo). Con una
+      // cancelación concurrente commiteando en la ventana, esto sobrescribía
+      // CANCELLED con CONFIRMED, reservaba stock y publicaba order.confirmed
+      // -> CHARGE nuevo sobre una orden que el negocio había dado por
+      // terminada. Verificado contra PostgreSQL real: la fila quedaba
+      // CONFIRMED con cancelled_at puesto.
+      //
+      // Además, el stock se reservaba ANTES de la transición: dos
+      // confirmaciones concurrentes de la misma orden reservaban las dos
+      // (ORDER-05, verificado: 6 reservados para una orden que necesita 3).
+      // Ahora la reserva cuelga de CAMBIO, así que la rama idempotente no
+      // vuelve a reservar, y el orden de locks queda fijo: orden ->
+      // inventario.
+      const outcome = await this.orderRepo.transitionWithClient(client, id, TRANSICION_CONFIRMAR);
+      if (outcome.resultado !== 'CAMBIO') return this.resolverNoCambio(outcome, id, 'CONFIRMED');
+
+      const { previa, order: updated } = outcome;
+
+      // La explosión de receta usa los ítems leídos BAJO LOCK, no una lectura
+      // previa que pudo quedar vieja.
+      const { stockItems, snapshots } = await resolveConfirmStockItems(updated.items, this.recipeService);
+
+      // Orden canónico antes de reservar -- evita deadlock entre dos
+      // confirmOrder() concurrentes que tocan los mismos productos.
+      // InsufficientStockError revienta acá y hace rollback de TODO,
+      // incluida la transición: la orden vuelve a DRAFT y el mesero ve un
+      // 400. Precedencia: estado (409) antes que stock (400).
       for (const item of canonicalStockItemOrder(stockItems)) {
         await this.productService.reserveStock(
-          client, order.businessId, item.productId, item.productVariantId ?? undefined, order.locationId, item.quantity,
+          client, updated.businessId, item.productId, item.productVariantId ?? undefined, updated.locationId, item.quantity,
         );
       }
 
@@ -517,10 +597,9 @@ export class OrderService {
         await this.orderRepo.setItemStockSnapshotWithClient(client, orderItemId, snapshot);
       }
 
-      const updated = (await this.orderRepo.updateWithClient(client, id, { status: 'CONFIRMED' }))!;
-      await this.recordStatusTransition(client, updated.id, 'DRAFT', 'CONFIRMED', changedBy);
+      await this.recordStatusTransition(client, updated.id, previa.status, 'CONFIRMED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
-        businessId:    order.businessId,
+        businessId:    updated.businessId,
         aggregateType: 'ORDER',
         aggregateId:   updated.id,
         eventType:     'order.confirmed',
@@ -560,51 +639,28 @@ export class OrderService {
       // Precedencia de errores (decisión del dueño, 02/09/2026): sintaxis (400,
       // ya resuelta por CompleteOrderSchema en la ruta) -> estado bajo lock
       // (409) -> validaciones específicas como cardSurchargeAmount (400).
-      const order = await this.orderRepo.getByIdForUpdate(client, id);
-      if (!order) throw new OrderNotFoundError(id);
+      const outcome = await this.orderRepo.transitionWithClient(client, id, TRANSICION_COMPLETAR);
+      if (outcome.resultado !== 'CAMBIO') return this.resolverNoCambio(outcome, id, 'COMPLETED');
 
-      const previousStatus = order.status;
+      const { previa, order: updated } = outcome;
 
-      // Rama idempotente: ya estaba en el estado pedido. Sin evento, sin
-      // auditoría, sin liquidación. El usuario reintenta por timeout, no por
-      // error: 200 con el mismo cuerpo.
-      if (previousStatus === 'COMPLETED') {
-        return withAllowedTransitions(order);
-      }
-
-      // Rama de conflicto: fail-closed para cualquier estado que no sea
-      // CONFIRMED -- incluye CANCELLED, DRAFT y cualquier valor desconocido.
-      if (previousStatus !== 'CONFIRMED') {
-        throw new InvalidOrderTransitionError(previousStatus, 'COMPLETED');
-      }
-
-      // Mismo invariante que el CHECK de BD (BLOQUE 12). Ahora contra el total
-      // leído BAJO LOCK, y después del chequeo de estado. Sigue siendo síncrono
-      // (400 al request), no una excepción perdida en el outbox worker.
+      // Mismo invariante que el CHECK de BD (BLOQUE 12), contra el total leído
+      // BAJO LOCK y DESPUÉS del chequeo de estado. Lanzar acá hace rollback de
+      // la transición junto con todo lo demás, así que el efecto neto es el de
+      // siempre: 400 y la orden sin completar. Sigue siendo síncrono, no una
+      // excepción perdida en el outbox worker.
       if (
         paymentInfo?.cardSurchargeAmount != null &&
-        paymentInfo.cardSurchargeAmount > order.totalAmount
+        paymentInfo.cardSurchargeAmount > updated.totalAmount
       ) {
         throw new InvalidPaymentInfoError(
-          `cardSurchargeAmount (${paymentInfo.cardSurchargeAmount}) no puede ser mayor que el total de la orden (${order.totalAmount}).`,
+          `cardSurchargeAmount (${paymentInfo.cardSurchargeAmount}) no puede ser mayor que el total de la orden (${updated.totalAmount}).`,
         );
       }
 
-      const { order: updated, changed } = await this.orderRepo.completeWithClient(client, id);
-      if (!updated) throw new OrderNotFoundError(id);
-
-      // Con el lock tomado nadie pudo cambiar la fila entre la lectura y el
-      // UPDATE, así que `changed === false` acá es un invariante roto, no una
-      // carrera. Fail-closed: no se publica evento, no se liquida nada.
-      if (!changed) {
-        throw new Error(
-          `completeOrder: la orden "${id}" no cambió pese al lock (estado leído: ${previousStatus}).`,
-        );
-      }
-
-      await this.recordStatusTransition(client, updated.id, previousStatus, 'COMPLETED', changedBy);
+      await this.recordStatusTransition(client, updated.id, previa.status, 'COMPLETED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
-        businessId:    order.businessId,
+        businessId:    updated.businessId,
         aggregateType: 'ORDER',
         aggregateId:   updated.id,
         eventType:     'order.completed',
@@ -653,40 +709,19 @@ export class OrderService {
       //             voidByOrderId sobre una orden COMPLETED y cobrada.
       // Ahora: lectura CON LOCK dentro de la transacción, y el evento se publica
       // solo si la fila cambió efectivamente.
-      const order = await this.orderRepo.getByIdForUpdate(client, id);
-      if (!order) throw new OrderNotFoundError(id);
+      const outcome = await this.orderRepo.transitionWithClient(client, id, TRANSICION_CANCELAR);
+      if (outcome.resultado !== 'CAMBIO') return this.resolverNoCambio(outcome, id, 'CANCELLED');
 
-      const previousStatus = order.status;
-      const wasServed      = order.servedAt !== null;
-
-      // Rama idempotente: ya estaba en el estado pedido. Sin evento, sin
-      // auditoría, sin anulación financiera. El usuario reintenta por timeout,
-      // no por error: 200 con el mismo cuerpo.
-      if (previousStatus === 'CANCELLED') {
-        return withAllowedTransitions(order);
-      }
-
-      // Rama de conflicto: estado que no admite la transición. Fail-closed para
-      // cualquier estado no cancelable, no solo COMPLETED.
-      if (previousStatus !== 'DRAFT' && previousStatus !== 'CONFIRMED') {
-        throw new InvalidOrderTransitionError(previousStatus, 'CANCELLED');
-      }
-
-      const { order: updated, changed } = await this.orderRepo.cancelWithClient(client, id);
-      if (!updated) throw new OrderNotFoundError(id);
-
-      // Con el lock tomado nadie pudo cambiar la fila entre la lectura y el
-      // UPDATE, así que `changed === false` acá es un invariante roto, no una
-      // carrera. Fail-closed: no se publica evento.
-      if (!changed) {
-        throw new Error(
-          `cancelOrder: la orden "${id}" no cambió pese al lock (estado leído: ${previousStatus}).`,
-        );
-      }
+      const { previa, order: updated } = outcome;
+      // `previa` es la lectura BAJO LOCK anterior al UPDATE: de ahí salen
+      // `previousStatus` y `wasServed`, que viajan al evento y deciden si el
+      // handler de inventario restaura stock.
+      const previousStatus = previa.status;
+      const wasServed      = previa.servedAt !== null;
 
       await this.recordStatusTransition(client, updated.id, previousStatus, 'CANCELLED', changedBy);
       await this.domainEventRepository.insertWithClient(client, {
-        businessId:    order.businessId,
+        businessId:    updated.businessId,
         aggregateType: 'ORDER',
         aggregateId:   updated.id,
         eventType:     'order.cancelled',
@@ -695,7 +730,7 @@ export class OrderService {
           previousStatus,
           wasServed,
           locationId:     updated.locationId,
-          items:          expandStockItemsFromSnapshot(order.items),
+          items:          expandStockItemsFromSnapshot(previa.items),
         },
       });
       return withAllowedTransitions(updated);
@@ -710,13 +745,23 @@ export class OrderService {
    * cancelOrder() lee más tarde.
    */
   async markServed(id: string): Promise<OrderWithTransitions> {
-    const order = await this.orderRepo.getById(id);
-    if (!order) throw new OrderNotFoundError(id);
-    if (order.status !== 'CONFIRMED') throw new OrderNotServableError(id, order.status);
-    if (order.servedAt) throw new OrderAlreadyServedError(id);
-
-    const updated = (await this.orderRepo.markServed(id))!;
-    return withAllowedTransitions(updated);
+    return this.transactionManager.run(async (client: SqlClient) => {
+      // ORDER-08 (02/09/2026) -- antes esto validaba FUERA de transacción y
+      // descartaba el resultado del UPDATE condicional: con una cancelación
+      // concurrente devolvía 200 sin haber marcado nada, y el mozo veía
+      // "marcada como servida" sobre una orden que quedó CANCELLED. Como
+      // `wasServed` decide si cancelOrder() restaura stock, el efecto era
+      // silencioso pero real.
+      //
+      // CAMBIO DE CONTRATO (02/09/2026): marcar como servida una orden que YA
+      // estaba servida pasa de 409 ORDER_ALREADY_SERVED a **200 idempotente**,
+      // igual que completar una orden ya COMPLETED o cancelar una ya
+      // CANCELLED. Es la misma regla para las cuatro transiciones; el error
+      // ORDER_ALREADY_SERVED deja de existir.
+      const outcome = await this.orderRepo.transitionWithClient(client, id, TRANSICION_SERVIR);
+      if (outcome.resultado !== 'CAMBIO') return this.resolverNoCambio(outcome, id, 'SERVIDA');
+      return withAllowedTransitions(outcome.order);
+    });
   }
 
   async updateNotes(id: string, notes: string | null): Promise<OrderWithTransitions> {

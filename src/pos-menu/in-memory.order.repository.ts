@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { IOrderRepositoryWithClient } from './order.service.js';
-import type { ListOrdersFilter, SalesByProductRow, TicketSummaryReport } from './order.repository.js';
+import type {
+  ListOrdersFilter,
+  SalesByProductRow,
+  TicketSummaryReport,
+  OrderTransitionSpec,
+  OrderTransitionOutcome,
+} from './order.repository.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type {
@@ -9,6 +15,7 @@ import type {
   CreateOrderInput,
   UpdateOrderInput,
 } from './order.entities.js';
+import { isOrderStatus } from './order.entities.js';
 
 /**
  * Test double en memoria de IOrderRepositoryWithClient — mismo criterio que
@@ -119,59 +126,58 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
   async updateWithClient(_client: SqlClient, id: string, input: UpdateOrderInput): Promise<Order | undefined> {
     const order = this.orders.get(id);
     if (!order) return undefined;
-    if (input.status !== undefined) order.status = input.status;
+    // ORDER-04: `status` ya no existe en UpdateOrderInput. Toda transición
+    // pasa por transitionWithClient().
     if (input.notes  !== undefined) order.notes  = input.notes;
     order.updatedAt = new Date();
     return order;
   }
 
-  async cancel(id: string): Promise<Order | undefined> {
-    return (await this.cancelWithClient({} as SqlClient, id)).order;
-  }
-
-  async cancelWithClient(
+  /**
+   * ORDER-04/05/08/14 -- misma máquina de estados que SqlOrderRepository,
+   * sin locks (en memoria no hay concurrencia real que serializar). Lo que
+   * SÍ replica exacto es el ORDEN de las decisiones: estado desconocido
+   * primero, idempotencia después, elegibilidad al final. Si el doble
+   * decidiera en otro orden, los tests del servicio validarían un
+   * comportamiento que producción no tiene.
+   */
+  async transitionWithClient(
     _client: SqlClient,
     id: string,
-  ): Promise<{ order: Order | undefined; changed: boolean }> {
+    spec: OrderTransitionSpec,
+  ): Promise<OrderTransitionOutcome> {
     const order = this.orders.get(id);
-    if (!order) return { order: undefined, changed: false };
-    if (order.status === 'CANCELLED' || order.status === 'COMPLETED') {
-      return { order, changed: false };
+    if (!order) return { resultado: 'NO_EXISTE' };
+
+    if (!isOrderStatus(order.status)) return { resultado: 'ESTADO_DESCONOCIDO', order };
+
+    const yaEstaba = spec.hacia !== null
+      ? order.status === spec.hacia
+      : order.servedAt !== null;
+    if (yaEstaba) return { resultado: 'YA_ESTABA', order };
+
+    if (!spec.desde.includes(order.status)) return { resultado: 'NO_ELEGIBLE', order };
+
+    // Copia ANTES de mutar: el mapa guarda referencias vivas, así que sin
+    // esto `previa` y `order` serían el mismo objeto y el caller leería el
+    // estado nuevo donde espera el viejo.
+    const previa: Order = { ...order, items: [...order.items] };
+
+    if (spec.hacia !== null) order.status = spec.hacia;
+    switch (spec.sella) {
+      case 'confirmed_at': order.confirmedAt = new Date(); break;
+      case 'completed_at': order.completedAt = new Date(); break;
+      case 'cancelled_at': order.cancelledAt = new Date(); break;
+      case 'served_at':    order.servedAt    = new Date(); break;
     }
-    order.status = 'CANCELLED';
-    order.cancelledAt = new Date();
     order.updatedAt = new Date();
-    return { order, changed: true };
+
+    return { resultado: 'CAMBIO', previa, order };
   }
 
   /** ORDER-01/02 -- sin locks en memoria; misma lectura que getById. */
   async getByIdForUpdate(_client: SqlClient, id: string): Promise<Order | undefined> {
     return this.orders.get(id);
-  }
-
-  async complete(id: string): Promise<Order | undefined> {
-    return (await this.completeWithClient({} as SqlClient, id)).order;
-  }
-
-  async completeWithClient(
-    _client: SqlClient,
-    id: string,
-  ): Promise<{ order: Order | undefined; changed: boolean }> {
-    const order = this.orders.get(id);
-    if (!order) return { order: undefined, changed: false };
-    if (order.status !== 'CONFIRMED') return { order, changed: false };
-    order.status = 'COMPLETED';
-    order.completedAt = new Date();
-    order.updatedAt = new Date();
-    return { order, changed: true };
-  }
-
-  async markServed(id: string): Promise<Order | undefined> {
-    const order = this.orders.get(id);
-    if (!order || order.status !== 'CONFIRMED' || order.servedAt) return order;
-    order.servedAt = new Date();
-    order.updatedAt = new Date();
-    return order;
   }
 
   // ---------------------------------------------------------------------------

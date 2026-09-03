@@ -35,7 +35,7 @@ import {
   InvalidOrderTransitionError,
   InvalidPaymentInfoError,
   OrderNotServableError,
-  OrderAlreadyServedError,
+  OrderStateUnknownError,
 } from './order.service.js';
 import {
   ProductService,
@@ -192,6 +192,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     } catch (err) {
       if (err instanceof OrderNotFoundError)                res.status(404).json({ code: 'ORDER_NOT_FOUND',       message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError)  res.status(409).json({ code: 'INVALID_TRANSITION',    message: (err as Error).message });
+      else if (err instanceof OrderStateUnknownError)       res.status(409).json({ code: 'ORDER_STATE_UNKNOWN',   message: (err as Error).message });
       else if (err instanceof InsufficientStockError)       res.status(400).json({ code: 'INSUFFICIENT_STOCK',    message: (err as Error).message });
       else if (err instanceof VariantRequiredError)         res.status(400).json({ code: 'VARIANT_REQUIRED',      message: (err as Error).message });
       else if (err instanceof ProductNotFoundError)         res.status(404).json({ code: 'PRODUCT_NOT_FOUND',     message: (err as Error).message });
@@ -210,7 +211,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     } catch (err) {
       if (err instanceof OrderNotFoundError)          res.status(404).json({ code: 'ORDER_NOT_FOUND',      message: (err as Error).message });
       else if (err instanceof OrderNotServableError)  res.status(409).json({ code: 'ORDER_NOT_SERVABLE',   message: (err as Error).message });
-      else if (err instanceof OrderAlreadyServedError) res.status(409).json({ code: 'ORDER_ALREADY_SERVED', message: (err as Error).message });
+      else if (err instanceof OrderStateUnknownError) res.status(409).json({ code: 'ORDER_STATE_UNKNOWN',  message: (err as Error).message });
       else next(err);
     }
   });
@@ -240,6 +241,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
+      else if (err instanceof OrderStateUnknownError)      res.status(409).json({ code: 'ORDER_STATE_UNKNOWN', message: (err as Error).message });
       else if (err instanceof InvalidPaymentInfoError)     res.status(400).json({ code: 'VALIDATION_ERROR',   message: (err as Error).message });
       else next(err);
     }
@@ -253,6 +255,7 @@ export function createOrdersRouter(container: AppContainer): Router {
     } catch (err) {
       if (err instanceof OrderNotFoundError)               res.status(404).json({ code: 'ORDER_NOT_FOUND',    message: (err as Error).message });
       else if (err instanceof InvalidOrderTransitionError) res.status(409).json({ code: 'INVALID_TRANSITION', message: (err as Error).message });
+      else if (err instanceof OrderStateUnknownError)      res.status(409).json({ code: 'ORDER_STATE_UNKNOWN', message: (err as Error).message });
       else next(err);
     }
   });

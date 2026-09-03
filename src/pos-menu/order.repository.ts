@@ -11,6 +11,91 @@ import type {
 } from './order.entities.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
+// ---------------------------------------------------------------------------
+// Primitiva única de transición de estado (ORDER-04/05/08/14, 02/09/2026)
+// ---------------------------------------------------------------------------
+
+/**
+ * Qué es una transición de una orden, como dato.
+ *
+ * Antes cada transición era su propia implementación: `cancelWithClient`,
+ * `completeWithClient`, `markServed`, y `confirmOrder` escribiendo por la vía
+ * genérica de `updateWithClient`. Cuatro caminos con cuatro guardas distintas
+ * -- y la cuarta no tenía ninguna (ORDER-04). Ahora la transición es un dato y
+ * el camino es uno solo: `transitionWithClient`.
+ *
+ * Toda guarda es una **allowlist positiva**. Nunca una exclusión: un estado
+ * nuevo en el enum tiene que ser agregado a mano acá para ser aceptado, no
+ * entrar por omisión.
+ */
+export interface OrderTransitionSpec {
+  /** Estados de origen aceptados. Allowlist: lo que no está, no pasa. */
+  desde:   readonly OrderStatus[];
+  /** Estado destino. `null` = no se toca `status` (el caso de markServed). */
+  hacia:   OrderStatus | null;
+  /** Columna de sello temporal, escrita en el MISMO UPDATE que la transición. */
+  sella:   OrderStampColumn;
+  /** Condición extra sobre la fila. Hoy sólo markServed la usa. */
+  ademas?: 'served_at IS NULL';
+}
+
+/**
+ * Columnas de sello permitidas. Es una allowlist porque `sella` se interpola
+ * en el SQL: aunque hoy sólo puede venir de las constantes de abajo, la
+ * primitiva la valida contra esta lista antes de construir la sentencia.
+ */
+export const ORDER_STAMP_COLUMNS = ['confirmed_at', 'completed_at', 'cancelled_at', 'served_at'] as const;
+export type OrderStampColumn = typeof ORDER_STAMP_COLUMNS[number];
+
+/**
+ * Los cinco desenlaces posibles. `rowCount === undefined` NO es uno de ellos:
+ * la primitiva lanza, porque no poder saber si la fila cambió no es un
+ * resultado de negocio.
+ *
+ * - `CAMBIO`: la fila cambió efectivamente. **Es la única señal autoritativa
+ *   para publicar el evento y disparar efectos** (reservar stock, auditar).
+ *   Trae la orden ANTES (`previa`) y DESPUÉS (`order`) del UPDATE.
+ * - `YA_ESTABA`: la orden ya estaba en el estado pedido. 200 idempotente,
+ *   sin evento y **sin repetir efectos** -- que es lo que evita ORDER-05.
+ * - `NO_ELEGIBLE`: estado conocido que no admite esta transición. 409.
+ * - `ESTADO_DESCONOCIDO`: `status` fuera del enum. Fail-closed, 409 con
+ *   código propio -- nunca se lo trata como "no elegible" a secas.
+ * - `NO_EXISTE`: no hay orden con ese id. 404.
+ */
+export type OrderTransitionOutcome =
+  | { resultado: 'CAMBIO';             previa: Order; order: Order }
+  | { resultado: 'YA_ESTABA';          order: Order }
+  | { resultado: 'NO_ELEGIBLE';        order: Order }
+  | { resultado: 'ESTADO_DESCONOCIDO'; order: Order }
+  | { resultado: 'NO_EXISTE' };
+
+/**
+ * Las cuatro transiciones del ciclo de vida, completas. Esto es todo lo que
+ * hay que leer para saber qué puede pasarle a una orden.
+ *
+ * `CONFIRMAR` sella `confirmed_at` (ORDER-14): antes nadie escribía esa
+ * columna -- ni el INSERT, ni un DEFAULT, ni un trigger -- así que estaba en
+ * NULL para todas las órdenes que existieron y los cuatro reportes que
+ * filtran por ella devolvían siempre vacío.
+ */
+export const TRANSICION_CONFIRMAR: OrderTransitionSpec = {
+  desde: ['DRAFT'], hacia: 'CONFIRMED', sella: 'confirmed_at',
+};
+export const TRANSICION_COMPLETAR: OrderTransitionSpec = {
+  desde: ['CONFIRMED'], hacia: 'COMPLETED', sella: 'completed_at',
+};
+export const TRANSICION_CANCELAR: OrderTransitionSpec = {
+  desde: ['DRAFT', 'CONFIRMED'], hacia: 'CANCELLED', sella: 'cancelled_at',
+};
+/**
+ * markServed no cambia `status` (servedAt es independiente, schema.sql
+ * BLOQUE 14): `hacia: null`. Su idempotencia tampoco se mide contra el
+ * estado sino contra `served_at`, por eso lleva `ademas`.
+ */
+export const TRANSICION_SERVIR: OrderTransitionSpec = {
+  desde: ['CONFIRMED'], hacia: null, sella: 'served_at', ademas: 'served_at IS NULL',
+};
+
 export interface ListOrdersFilter {
   businessId:  string;
   customerId?: string;
@@ -50,17 +135,24 @@ export interface IOrderRepository {
   getAll(filter: ListOrdersFilter): Promise<Order[]>;
   create(input: CreateOrderInput): Promise<Order>;
   update(id: string, input: UpdateOrderInput): Promise<Order | undefined>;
-  /** Soft-cancel: pone status=CANCELLED y cancelled_at=NOW() */
-  cancel(id: string): Promise<Order | undefined>;
-  /** CONFIRMED → COMPLETED y pone completed_at=NOW() */
-  complete(id: string): Promise<Order | undefined>;
   /**
-   * Marca la orden como servida/entregada (served_at=NOW()) — no toca
-   * `status`. El guard (solo desde CONFIRMED, solo si no estaba servida ya)
-   * vive en OrderService.markServed(), igual que el resto de las
-   * transiciones.
+   * ORDER-04/08 (02/09/2026) -- `cancel()`, `complete()` y `markServed()`
+   * se ELIMINARON de este contrato.
+   *
+   * Eran mutaciones de estado que corrían con el `SqlClient` de la
+   * instancia, en autocommit: su `SELECT ... FOR UPDATE` tomaba y soltaba
+   * el lock en la misma sentencia, o sea que no protegía nada. Presentarlas
+   * como camino equivalente al transaccional habría sido exactamente la
+   * ruta paralela sin las mismas guardas que este bloque vino a eliminar.
+   *
+   * Ningún código las consumía: `OrderService` usa `transitionWithClient`
+   * dentro de `transactionManager.run()`, que es el único camino. Se
+   * borran en vez de documentarse.
+   *
+   * Si alguna vez hace falta transicionar una orden fuera de un servicio,
+   * el camino es abrir una transacción y llamar a la primitiva -- no
+   * reintroducir un atajo en autocommit.
    */
-  markServed(id: string): Promise<Order | undefined>;
   /**
    * Agrega una línea a una orden existente en estado DRAFT.
    * La implementación debe usar SELECT FOR UPDATE sobre la fila de `orders`

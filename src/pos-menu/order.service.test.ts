@@ -3,9 +3,9 @@ import {
   OrderService,
   OrderNotFoundError,
   InvalidOrderTransitionError,
+  OrderStateUnknownError,
   InvalidPaymentInfoError,
   OrderNotServableError,
-  OrderAlreadyServedError,
   MissingUnitPriceError,
 } from './order.service.js';
 import { ProductService, InsufficientStockError } from './product.service.js';
@@ -225,12 +225,30 @@ describe('OrderService', () => {
       expect(eventRepo.events[0]).toMatchObject({ payload: { stayId: 'stay-1' } });
     });
 
-    it('rechaza confirmar una orden que no está en DRAFT', async () => {
+    /**
+     * CAMBIO DE CONTRATO (02/09/2026, O1). Antes esto lanzaba
+     * `InvalidOrderTransitionError` (409). Ahora las cuatro transiciones
+     * comparten la misma regla: repetir el estado DESTINO es 200 idempotente
+     * -- sin evento, sin auditoría y **sin repetir efectos**. Un estado que
+     * no admite la transición sigue siendo 409 (ver el test que sigue).
+     */
+    it('ORD4-03: reconfirmar una orden CONFIRMED es idempotente, sin segundo evento', async () => {
+      const id = await createDraftOrderWithItem(100);
+      const primera = await service.confirmOrder(id, ACTOR);
+
+      const segunda = await service.confirmOrder(id, ACTOR);
+
+      expect(segunda.status).toBe('CONFIRMED');
+      expect(segunda.confirmedAt).toEqual(primera.confirmedAt);
+      expect(eventRepo.events).toHaveLength(1); // no se emite un segundo evento
+    });
+
+    it('ORD4-04: confirmar una orden COMPLETED es 409 -- no es el estado destino', async () => {
       const id = await createDraftOrderWithItem(100);
       await service.confirmOrder(id, ACTOR);
+      await service.completeOrder(id, ACTOR);
 
       await expect(service.confirmOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
-      expect(eventRepo.events).toHaveLength(1); // no se emite un segundo evento
     });
 
     it('lanza OrderNotFoundError si la orden no existe', async () => {
@@ -339,6 +357,18 @@ describe('OrderService', () => {
       expect(eventRepo.events.filter((e) => e.eventType === 'order.completed')).toHaveLength(1);
     });
 
+    it('ORD3-10: el doble submit no reescribe completed_at ni agrega auditoría', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const primera = await service.completeOrder(id, ACTOR);
+      const auditoriasTrasPrimera = (await auditLogRepo.findByEntity('orders', id)).length;
+
+      const segunda = await service.completeOrder(id, ACTOR);
+
+      expect(segunda.completedAt).toEqual(primera.completedAt);
+      expect(await auditLogRepo.findByEntity('orders', id)).toHaveLength(auditoriasTrasPrimera);
+    });
+
     it('ORD3-04: un estado fuera del dominio conocido rechaza fail-closed, sin evento', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
@@ -346,7 +376,10 @@ describe('OrderService', () => {
       (order as { status: string }).status = 'ESTADO_DESCONOCIDO';
       const eventsBeforeComplete = eventRepo.events.length;
 
-      await expect(service.completeOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+      // O1: el estado desconocido dejó de salir por INVALID_TRANSITION. Un
+      // status fuera del enum no es "una transición inválida más": es una
+      // fila que no debería existir, y sale por ORDER_STATE_UNKNOWN.
+      await expect(service.completeOrder(id, ACTOR)).rejects.toThrow(OrderStateUnknownError);
       expect(eventRepo.events).toHaveLength(eventsBeforeComplete);
     });
 
@@ -463,6 +496,19 @@ describe('OrderService', () => {
       expect(entries).toHaveLength(2);
     });
 
+    it('ORD-10: el doble submit no reescribe cancelled_at ni agrega auditoría', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const primera = await service.cancelOrder(id, ACTOR);
+      const auditoriasTrasPrimera = (await auditLogRepo.findByEntity('orders', id)).length;
+
+      const segunda = await service.cancelOrder(id, ACTOR);
+
+      // El sello es del momento de la transición real, no del último intento.
+      expect(segunda.cancelledAt).toEqual(primera.cancelledAt);
+      expect(await auditLogRepo.findByEntity('orders', id)).toHaveLength(auditoriasTrasPrimera);
+    });
+
     it('ORD-02: cancelar una orden COMPLETED rechaza sin evento ni anulación financiera', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
@@ -486,7 +532,19 @@ describe('OrderService', () => {
       // a medio camino, corrupción).
       (order as { status: string }).status = 'ESTADO_DESCONOCIDO';
 
-      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(OrderStateUnknownError);
+      expect(eventRepo.events).toHaveLength(0);
+    });
+
+    it('ORD-09: el estado desconocido también frena confirmar y servir', async () => {
+      const id = await createDraftOrderWithItem(50);
+      const order = await orderRepo.getById(id);
+      (order as { status: string }).status = 'ESTADO_DESCONOCIDO';
+
+      // Las cuatro transiciones pasan por la misma primitiva: si una fila
+      // tiene un estado que el sistema no conoce, ninguna la toca.
+      await expect(service.confirmOrder(id, ACTOR)).rejects.toThrow(OrderStateUnknownError);
+      await expect(service.markServed(id)).rejects.toThrow(OrderStateUnknownError);
       expect(eventRepo.events).toHaveLength(0);
     });
   });
@@ -673,12 +731,72 @@ describe('OrderService', () => {
       await expect(service.markServed(id)).rejects.toThrow(OrderNotServableError);
     });
 
-    it('rechaza marcar como servida una orden ya servida', async () => {
+    /**
+     * CAMBIO DE CONTRATO (02/09/2026, O1). Antes lanzaba
+     * `OrderAlreadyServedError` (409 ORDER_ALREADY_SERVED). Ahora las cuatro
+     * transiciones comparten la misma regla: repetir el destino es 200
+     * idempotente, sin evento y sin efectos. El error dejó de existir.
+     */
+    it('ORD8-01: marcar como servida una orden ya servida es idempotente, no un conflicto', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
-      await service.markServed(id);
+      const primera = await service.markServed(id);
 
-      await expect(service.markServed(id)).rejects.toThrow(OrderAlreadyServedError);
+      const segunda = await service.markServed(id);
+
+      expect(segunda.servedAt).toEqual(primera.servedAt);
+      expect(eventRepo.events).toHaveLength(1); // sigue habiendo un solo order.confirmed
+    });
+
+    it('ORD8-02: no marca como servida una orden cancelada — y no responde 200 en falso', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.cancelOrder(id, ACTOR);
+
+      // Antes esto devolvía 200 con la orden releída sin haber escrito nada:
+      // el UPDATE condicional afectaba 0 filas y el resultado se descartaba.
+      await expect(service.markServed(id)).rejects.toThrow(OrderNotServableError);
+      const orden = await service.getOrder(id);
+      expect(orden?.servedAt).toBeNull();
+    });
+  });
+
+  describe('ORDER-04 — la orden cancelada no resucita', () => {
+    it('ORD4-01: confirmar una orden CANCELLED es 409, sin reservar stock ni publicar evento', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.cancelOrder(id, ACTOR);
+      const eventosAntes = eventRepo.events.length;
+
+      await expect(service.confirmOrder(id, ACTOR)).rejects.toThrow(InvalidOrderTransitionError);
+
+      const orden = await service.getOrder(id);
+      expect(orden?.status).toBe('CANCELLED');
+      expect(eventRepo.events).toHaveLength(eventosAntes);
+    });
+
+    it('ORD4-02: la rama de conflicto no vuelve a reservar stock ni republica el evento', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const clave = { productId: 'prod-1', productVariantId: null, locationId: 'loc-default' };
+      const reservadoTrasPrimera = (await inventoryLevelRepo.get(clave))?.reservedQuantity;
+
+      // ORDER-05: los efectos cuelgan de CAMBIO, no del comando. Con el doble
+      // en memoria esto no prueba concurrencia real -- eso es O3, contra
+      // PostgreSQL -- pero sí que un segundo confirmOrder, que ahora responde
+      // 200 idempotente, NO vuelve a reservar. Antes la reserva colgaba del
+      // comando y corría antes de mirar el estado.
+      await service.confirmOrder(id, ACTOR);
+
+      expect((await inventoryLevelRepo.get(clave))?.reservedQuantity).toBe(reservadoTrasPrimera);
+      expect(eventRepo.events.filter((e) => e.eventType === 'order.confirmed')).toHaveLength(1);
+    });
+
+    it('ORD14-01: confirmar sella confirmedAt — antes quedaba null para siempre', async () => {
+      const id = await createDraftOrderWithItem(50);
+
+      const confirmada = await service.confirmOrder(id, ACTOR);
+
+      expect(confirmada.confirmedAt).not.toBeNull();
     });
   });
 

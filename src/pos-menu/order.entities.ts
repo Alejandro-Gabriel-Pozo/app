@@ -34,11 +34,22 @@ export type OrderItemId = string;
  * - COMPLETED: orden finalizada (cobrada / check-out realizado).
  * - CANCELLED: orden anulada (no genera movimiento de stock).
  */
-export type OrderStatus =
-  | 'DRAFT'
-  | 'CONFIRMED'
-  | 'COMPLETED'
-  | 'CANCELLED';
+export const ORDER_STATUSES = ['DRAFT', 'CONFIRMED', 'COMPLETED', 'CANCELLED'] as const;
+
+/**
+ * ORDER-04 (02/09/2026) -- el tipo se DERIVA de la tupla, no se declara
+ * aparte. Antes eran dos listas (el union de acá y el CHECK de schema.sql)
+ * y no había forma de chequear en runtime si un `status` leído de la base
+ * pertenecía al enum: cualquier valor inesperado se trataba como si fuera
+ * uno válido. `ORDER_STATUSES` es esa lista en runtime, y es la que usa
+ * `transitionWithClient` para el fail-closed de estado desconocido.
+ */
+export type OrderStatus = typeof ORDER_STATUSES[number];
+
+/** True sólo para los cuatro estados del enum. Todo lo demás es desconocido. */
+export function isOrderStatus(value: unknown): value is OrderStatus {
+  return typeof value === 'string' && (ORDER_STATUSES as readonly string[]).includes(value);
+}
 
 // ---------------------------------------------------------------------------
 // OrderItemType — sincronizado con order_items.item_type CHECK en schema.sql
@@ -196,7 +207,23 @@ export interface CreateOrderInput {
   items:       CreateOrderItemInput[];
 }
 
+/**
+ * ORDER-04 (02/09/2026) -- `status` se QUITÓ de acá a propósito.
+ *
+ * Era la única vía genérica de escritura de estado además de las cuatro
+ * transiciones dedicadas, y `confirmOrder()` la usaba: `updateWithClient()`
+ * ejecutaba `UPDATE orders SET status = $1 WHERE id = $N` **sin ninguna
+ * condición sobre el estado previo**. Con una cancelación concurrente
+ * commiteando en la ventana, eso sobrescribía `CANCELLED` con `CONFIRMED`,
+ * reservaba stock y publicaba `order.confirmed` -- que crea un CHARGE nuevo.
+ * Verificado contra PostgreSQL real (E5-a/E5-b del 02/09): la fila quedaba
+ * `CONFIRMED` con `cancelled_at` puesto.
+ *
+ * Sacarlo del tipo no es cosmético: es lo que impide que un llamador futuro
+ * reintroduzca el mismo problema sin darse cuenta. Toda escritura de
+ * `status` pasa ahora por `transitionWithClient()`, que exige allowlist
+ * positiva de estado de origen e inspecciona el `rowCount`.
+ */
 export interface UpdateOrderInput {
-  status?: OrderStatus;
   notes?:  string | null;
 }

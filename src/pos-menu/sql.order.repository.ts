@@ -23,7 +23,14 @@ import { randomUUID } from 'crypto';
 import pg from 'pg';
 import type { Pool } from 'pg';
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { ListOrdersFilter, SalesByProductRow, TicketSummaryReport } from './order.repository.js';
+import type {
+  ListOrdersFilter,
+  SalesByProductRow,
+  TicketSummaryReport,
+  OrderTransitionSpec,
+  OrderTransitionOutcome,
+} from './order.repository.js';
+import { ORDER_STAMP_COLUMNS } from './order.repository.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 import type { IOrderRepositoryWithClient } from './order.service.js';
 import type {
@@ -34,6 +41,7 @@ import type {
   CreateOrderInput,
   UpdateOrderInput,
 } from './order.entities.js';
+import { isOrderStatus } from './order.entities.js';
 
 // ---------------------------------------------------------------------------
 // Helpers de mapeo DB → dominio
@@ -247,32 +255,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // cancel
   // -------------------------------------------------------------------------
 
-  async cancel(id: string): Promise<Order | undefined> {
-    return (await this.cancelWithClient(this.db, id)).order;
-  }
 
-  /** ORDER-01/02 -- ver docblock de IOrderRepositoryWithClient.cancelWithClient. */
-  async cancelWithClient(
-    client: SqlClient,
-    id: string,
-  ): Promise<{ order: Order | undefined; changed: boolean }> {
-    const result = await client.query(
-      `UPDATE orders
-       SET status = 'CANCELLED', cancelled_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND status NOT IN ('CANCELLED', 'COMPLETED')`,
-      [id],
-    );
-    // `rowCount` es OPCIONAL en SqlClient (repositories/sql.client.ts). Si el
-    // driver no lo informa NO se puede saber si la fila cambió: fail-closed,
-    // se propaga como indeterminado y el caller NO publica evento.
-    if (result.rowCount === undefined) {
-      throw new Error(
-        `cancelWithClient: el driver no informó rowCount para la orden "${id}" -- ` +
-        `no se puede determinar si la transición ocurrió.`,
-      );
-    }
-    return { order: await this.getByIdWithClient(client, id), changed: result.rowCount === 1 };
-  }
 
   /** ORDER-01/02 -- igual que getByIdWithClient pero con SELECT ... FOR UPDATE. */
   async getByIdForUpdate(client: SqlClient, id: string): Promise<Order | undefined> {
@@ -288,46 +271,98 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   // complete
   // -------------------------------------------------------------------------
 
-  async complete(id: string): Promise<Order | undefined> {
-    return (await this.completeWithClient(this.db, id)).order;
-  }
+  // -------------------------------------------------------------------------
+  // transitionWithClient — la ÚNICA escritura de estado de una orden
+  // -------------------------------------------------------------------------
 
-  /** ORDER-03 -- ver docblock de IOrderRepositoryWithClient.completeWithClient. */
-  async completeWithClient(
+  /**
+   * ORDER-04/05/08/14 (02/09/2026). Ver `OrderTransitionSpec` y
+   * `OrderTransitionOutcome` en `order.repository.ts` para el contrato.
+   *
+   * Cinco cosas que antes estaban repartidas y una de ellas no estaba en
+   * ningún lado:
+   *
+   * 1. Lectura CON LOCK dentro de la transacción del caller.
+   * 2. Fail-closed ANTES que cualquier rama de negocio si el `status` está
+   *    fuera del enum -- si no, un valor inesperado sería indistinguible de
+   *    "no elegible" y saldría por 409 genérico.
+   * 3. Idempotencia evaluada ANTES que elegibilidad: repetir el destino no
+   *    es un conflicto.
+   * 4. `UPDATE` condicionado por la allowlist de la spec. La sentencia
+   *    repite la condición aunque el lock ya esté tomado: tiene que ser
+   *    correcta por sí sola, no por su contexto.
+   * 5. `rowCount` inspeccionado. `undefined` no es cero: si el driver no
+   *    informa, no hay forma de saber si la fila cambió y se propaga como
+   *    indeterminado. Cero filas CON el lock tomado y la elegibilidad ya
+   *    evaluada es un invariante roto, no una carrera.
+   */
+  async transitionWithClient(
     client: SqlClient,
     id: string,
-  ): Promise<{ order: Order | undefined; changed: boolean }> {
+    spec: OrderTransitionSpec,
+  ): Promise<OrderTransitionOutcome> {
+    // `sella` se interpola en el SQL. Hoy sólo puede venir de las cuatro
+    // constantes de order.repository.ts, pero la allowlist se valida igual:
+    // la garantía no debe depender de que todos los call sites sean buenos.
+    if (!(ORDER_STAMP_COLUMNS as readonly string[]).includes(spec.sella)) {
+      throw new Error(`transitionWithClient: columna de sello no permitida ("${spec.sella}").`);
+    }
+
+    const previa = await this.getByIdForUpdate(client, id);
+    if (!previa) return { resultado: 'NO_EXISTE' };
+
+    if (!isOrderStatus(previa.status)) {
+      return { resultado: 'ESTADO_DESCONOCIDO', order: previa };
+    }
+
+    // Para markServed el destino no es un `status`: es que `served_at` ya
+    // esté puesto (schema.sql BLOQUE 14).
+    const yaEstaba = spec.hacia !== null
+      ? previa.status === spec.hacia
+      : previa.servedAt !== null;
+    if (yaEstaba) return { resultado: 'YA_ESTABA', order: previa };
+
+    if (!spec.desde.includes(previa.status)) {
+      return { resultado: 'NO_ELEGIBLE', order: previa };
+    }
+
+    const sets: string[] = [`${spec.sella} = NOW()`, 'updated_at = NOW()'];
+    const params: unknown[] = [id, [...spec.desde]];
+    if (spec.hacia !== null) {
+      sets.unshift('status = $3');
+      params.push(spec.hacia);
+    }
+
     const result = await client.query(
       `UPDATE orders
-       SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND status = 'CONFIRMED'`,
-      [id],
+          SET ${sets.join(', ')}
+        WHERE id = $1
+          AND status = ANY($2::text[])${spec.ademas ? `
+          AND ${spec.ademas}` : ''}`,
+      params,
     );
-    // `rowCount` es OPCIONAL en SqlClient (repositories/sql.client.ts). Si el
-    // driver no lo informa NO se puede saber si la fila cambió: fail-closed,
-    // se propaga como indeterminado y el caller NO publica evento.
+
     if (result.rowCount === undefined) {
       throw new Error(
-        `completeWithClient: el driver no informó rowCount para la orden "${id}" -- ` +
+        `transitionWithClient: el driver no informó rowCount para la orden "${id}" -- ` +
         `no se puede determinar si la transición ocurrió.`,
       );
     }
-    return { order: await this.getByIdWithClient(client, id), changed: result.rowCount === 1 };
+    if (result.rowCount !== 1) {
+      throw new Error(
+        `transitionWithClient: la orden "${id}" no cambió pese al lock ` +
+        `(estado leído: ${previa.status}, destino: ${spec.hacia ?? spec.sella}).`,
+      );
+    }
+
+    return { resultado: 'CAMBIO', previa, order: (await this.getByIdWithClient(client, id))! };
   }
 
   // -------------------------------------------------------------------------
   // markServed
   // -------------------------------------------------------------------------
 
-  async markServed(id: string): Promise<Order | undefined> {
-    await this.db.query(
-      `UPDATE orders
-       SET served_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND status = 'CONFIRMED' AND served_at IS NULL`,
-      [id],
-    );
-    return this.getByIdWithClient(this.db, id);
-  }
+
 
   // -------------------------------------------------------------------------
   // updateWithClient — variante transaccional de update()
@@ -342,7 +377,9 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     const params: unknown[] = [];
     let idx = 1;
 
-    if (input.status !== undefined) { fields.push(`status = $${idx++}`); params.push(input.status); }
+    // ORDER-04: `status` ya no existe en UpdateOrderInput. Esta era la
+    // escritura incondicional que permitía resucitar una orden cancelada.
+    // Toda transición pasa por transitionWithClient().
     if (input.notes  !== undefined) { fields.push(`notes = $${idx++}`);  params.push(input.notes); }
 
     if (fields.length === 0) return this.getByIdWithClient(client, id);
