@@ -20,7 +20,7 @@ no final; `[H]` hipótesis sin verificar.
 | Evento | Qué |
 |---|---|
 | Reconciliación del handoff | `Handoff_para_agente_nuevo___Order_Lifecycle_Integrity_v1.md` (documento externo, no versionado) describía el árbol hasta `843a9ad`. **Quedó superado por `origin/main = e794fd3`** — ver abajo |
-| Estado de Git `[V]` | `HEAD = 843a9ad`, `origin/main = e794fd3` (confirmado con `git ls-remote`), **10 commits por detrás, 0 por delante**. `git merge-base --is-ancestor` confirma que el `pull` sería **fast-forward puro**, sin merge |
+| Estado de Git `[V]` | El handoff (documento externo, no versionado) describe un **estado histórico** del árbol, hasta `843a9ad` — no el estado actual. **Al redactar esta fila (previo al fast-forward):** `HEAD = 843a9ad`, **10 commits por detrás de `origin/main = e794fd3`, 0 por delante**; el `pull` sería **fast-forward puro**. **Estado actual `[V]`:** fast-forward ejecutado; `HEAD` local = `e8c550b` (este documento) **+** `1002e04` (ORDER-16 — auditoría del sello `served_at`), **2 commits por delante de `origin/main = e794fd3`, 0 por detrás, sin push**. Cadena propia, sin merges ajenos. |
 | Preservación de evidencia | El untracked `src/tests/integration/outbox-worker.integration.test.ts` (el archivo del handoff) se **copió** fuera del repositorio, sin borrarlo, sin mezclarlo y sin reemplazarlo. Manifiesto con hashes y comparación de cobertura en el scratchpad de la sesión |
 | Hallazgo de higiene `[V]` | Ese archivo es el **único** de los siete untracked que colisiona con el fast-forward. Los otros seis no |
 
@@ -218,18 +218,21 @@ como auditada de nuevo.
 
 ---
 
-## Higiene pendiente, no ejecutada — requiere autorización
+## Higiene pendiente — estado
 
-1. **El fast-forward a `e794fd3`.** `[V]` Es fast-forward puro. El **único**
-   untracked que lo bloquea es
-   `src/tests/integration/outbox-worker.integration.test.ts`; ya está preservado
-   fuera del repositorio, con hashes y comparación de cobertura. Falta la
-   decisión del dueño sobre qué hacer con el original.
-2. **Este archivo, commiteado después del fast-forward, no antes.** `HEAD` está
-   10 commits atrás: commitear acá primero convertiría un fast-forward limpio en
-   un merge innecesario.
+**Actualizado 03/09/2026:** los puntos 1 y 2 ya se ejecutaron. El fast-forward
+a `e794fd3` se hizo; este archivo se commiteó **después**, en `e8c550b`; y
+`1002e04` (ORDER-16) se apoya encima. El punto 3 sigue abierto.
+
+1. ✅ **El fast-forward a `e794fd3`.** `[V]` Fue fast-forward puro. El único
+   untracked que lo bloqueaba —`src/tests/integration/outbox-worker.integration.test.ts`—
+   se preservó fuera del repositorio (hashes y comparación de cobertura) y en
+   `origin/main` ya vive una versión propia (PR #44). Resuelto.
+2. ✅ **Este archivo, commiteado después del fast-forward, no antes** (`e8c550b`).
+   Commitear antes habría convertido un fast-forward limpio en un merge
+   innecesario. Hecho en ese orden.
 3. **Portar `O4-03` y `O4-11`** al archivo de `origin/main` — bloque de código de
-   test, con su propia autorización.
+   test, con su propia autorización. **Sigue abierto.**
 
 ---
 
