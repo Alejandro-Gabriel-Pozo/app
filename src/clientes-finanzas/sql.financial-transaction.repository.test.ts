@@ -279,45 +279,253 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     });
   });
 
-  describe('settleByOrderId — payment_method / shift_id (Gap Tango #2)', () => {
-    it('persiste paymentMethod y vincula el turno OPEN cuando es CASH', async () => {
-      await repo.settleByOrderId('order-1', { paymentMethod: 'CASH' });
+  /**
+   * O2 (03/09/2026) — fila de diagnóstico neutra: todo en cero. Los tests la
+   * ajustan campo por campo para forzar cada desenlace.
+   *
+   * Reemplaza a ORD3B-01/ORD3B-07, que asertaban sobre la sentencia vieja
+   * (`o.status      = 'COMPLETED'`, con los espacios exactos) y sobre el
+   * `rowCount ?? 0` que O2 elimina. Las dos aserciones se conservan con otra
+   * forma: la de la guarda en O2R-02, la del cero sin excepción en O2R-05.
+   */
+  function diagnostico(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      aplicadas: 0, candidatos: 0,
+      orden_inexistente: 0, orden_ajena: 0, orden_no_elegible: 0,
+      estado_desconocido: 0, ya_settled: 0, anulados: 0, tipo_no_liquidable: 0,
+      orden_total: null, orden_status: null,
+      ...over,
+    };
+  }
+  const conDiagnostico = (over: Record<string, unknown> = {}) =>
+    vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [diagnostico(over)] });
 
-      const mockQuery = vi.mocked(mockSqlClient.query);
-      const [sql, params] = mockQuery.mock.calls[0]!;
-      expect(sql).toContain("SET status = 'SETTLED'");
+  describe('settleChargesByOrderId — la sentencia (Gap Tango #2/#3 + O2)', () => {
+    it('O2R-01: persiste paymentMethod, vincula el turno OPEN si es CASH, y pasa el businessId', async () => {
+      conDiagnostico({ aplicadas: 1, candidatos: 1 });
+      await repo.settleChargesByOrderId('order-1', 'biz-1', { paymentMethod: 'CASH' });
+
+      const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toContain("SET status         = 'SETTLED'");
       expect(sql).toContain('payment_method');
       expect(sql).toContain('cash_register_shifts');
-      expect(params).toEqual(['order-1', 'CASH', null, null]);
+      expect(sql).toContain('ELSE ft.shift_id END');
+      expect(params).toEqual(['order-1', 'CASH', null, null, 'biz-1']);
     });
 
-    it('no toca shift_id cuando paymentMethod no es CASH', async () => {
-      await repo.settleByOrderId('order-1', { paymentMethod: 'CARD' });
+    it('O2R-02: las TRES allowlists positivas viven dentro del UPDATE', async () => {
+      conDiagnostico();
+      await repo.settleChargesByOrderId('order-1', 'biz-1', { paymentMethod: 'CASH' });
 
-      const mockQuery = vi.mocked(mockSqlClient.query);
-      const [sql, params] = mockQuery.mock.calls[0]!;
-      expect(sql).toContain('ELSE shift_id END');
-      expect(params).toEqual(['order-1', 'CARD', null, null]);
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      // Tipo: sólo CHARGE (ORDER-09). Un PAYMENT de la misma orden no se
+      // liquida ni cuenta como éxito.
+      expect(sql).toContain("ft.type   IN ('CHARGE')");
+      // Estado del cargo.
+      expect(sql).toContain("ft.status IN ('PENDING')");
+      // Estado de la orden: ORDER-03-b, subsumido acá.
+      expect(sql).toContain("o.status IN ('COMPLETED')");
+      expect(sql).toContain('o.business_id = ft.business_id');
+      // Y el conteo NO sale de rowCount: sale como columna de la fila.
+      expect(sql).toContain('AS aplicadas');
     });
 
-    it('sigue funcionando sin paymentInfo (compatibilidad con callers viejos)', async () => {
-      await repo.settleByOrderId('order-1');
+    it('O2R-03: persiste cuotas y recargo cuando es CARD (Gap Tango #3)', async () => {
+      conDiagnostico({ aplicadas: 1, candidatos: 1 });
+      await repo.settleChargesByOrderId('order-1', 'biz-1',
+        { paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 });
 
-      const mockQuery = vi.mocked(mockSqlClient.query);
-      const [, params] = mockQuery.mock.calls[0]!;
-      expect(params).toEqual(['order-1', null, null, null]);
+      const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toContain('card_installments');
+      expect(sql).toContain('card_surcharge_amount');
+      expect(params).toEqual(['order-1', 'CARD', 6, 150, 'biz-1']);
+    });
+
+    it('O2R-04: sigue funcionando sin paymentInfo', async () => {
+      conDiagnostico();
+      await repo.settleChargesByOrderId('order-1', 'biz-1');
+
+      const [, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(params).toEqual(['order-1', null, null, null, 'biz-1']);
     });
   });
 
-  describe('settleByOrderId — card_installments / card_surcharge_amount (Gap Tango #3)', () => {
-    it('persiste cardInstallments y cardSurchargeAmount cuando es CARD', async () => {
-      await repo.settleByOrderId('order-1', { paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 });
+  describe('settleChargesByOrderId — los desenlaces, sin ningún cero mudo', () => {
+    it('O2R-05: APLICADO cuando la sentencia escribió', async () => {
+      conDiagnostico({ aplicadas: 1, candidatos: 1 });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: [] });
+    });
 
-      const mockQuery = vi.mocked(mockSqlClient.query);
-      const [sql, params] = mockQuery.mock.calls[0]!;
-      expect(sql).toContain('card_installments');
-      expect(sql).toContain('card_surcharge_amount');
-      expect(params).toEqual(['order-1', 'CARD', 6, 150]);
+    it('O2R-06: APLICADO con rechazos parciales — liquidó el cargo y dejó afuera un PAYMENT', async () => {
+      conDiagnostico({ aplicadas: 1, candidatos: 2, tipo_no_liquidable: 1 });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      // Un PAYMENT de la misma orden NO se convierte en éxito silencioso.
+      expect(d).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: ['TIPO_NO_LIQUIDABLE'] });
+    });
+
+    it('O2R-07: RECHAZADO por estado de la orden — ORDER-03-b, con motivo', async () => {
+      conDiagnostico({ candidatos: 1, orden_no_elegible: 1 });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] });
+    });
+
+    it('O2R-08: RECHAZADO por tenant — se distingue de "la orden no existe"', async () => {
+      conDiagnostico({ candidatos: 1, orden_ajena: 1 });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_DE_OTRO_NEGOCIO'] });
+    });
+
+    it('O2R-09: RECHAZADO por estado desconocido — fail-closed', async () => {
+      conDiagnostico({ candidatos: 1, estado_desconocido: 1 });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ESTADO_DESCONOCIDO'] });
+    });
+
+    it('O2R-10: RECHAZADO benigno cuando el cargo ya estaba liquidado', async () => {
+      conDiagnostico({ candidatos: 1, ya_settled: 1 });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_YA_SETTLED'] });
+    });
+
+    it('O2R-11: NADA_QUE_HACER — orden COMPLETED sin ítems con precio', async () => {
+      conDiagnostico({ orden_status: 'COMPLETED', orden_total: '0' });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      // No es rechazo: es éxito. Una orden sin precio nunca generó cargo.
+      expect(d).toEqual({ tipo: 'NADA_QUE_HACER' });
+    });
+
+    it('O2R-12: DEPENDENCIA_PENDIENTE — el CHARGE todavía no existe (T-01/ORDER-13)', async () => {
+      conDiagnostico({ orden_status: 'COMPLETED', orden_total: '300' });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      // Ni rechazo definitivo ni éxito: order.completed se adelantó al
+      // order.confirmed que crea el cargo.
+      expect(d).toEqual({ tipo: 'DEPENDENCIA_PENDIENTE' });
+    });
+
+    it('O2R-13: sin candidatos y sin orden es RECHAZADO, no dependencia pendiente', async () => {
+      conDiagnostico({ orden_status: null });
+      const d = await repo.settleChargesByOrderId('order-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_INEXISTENTE'] });
+    });
+  });
+
+  describe('settleChargesByOrderId — ausencia de resultado NO es cero', () => {
+    it('O2R-14: lanza si la consulta no devolvió ninguna fila de diagnóstico', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [] });
+      await expect(repo.settleChargesByOrderId('order-1', 'biz-1'))
+        .rejects.toThrow(/no devolvió ninguna fila/);
+    });
+
+    it('O2R-15: lanza si un contador no vino como entero', async () => {
+      vi.mocked(mockSqlClient.query)
+        .mockResolvedValueOnce({ rows: [diagnostico({ aplicadas: 'no-es-un-numero' })] });
+      await expect(repo.settleChargesByOrderId('order-1', 'biz-1'))
+        .rejects.toThrow(/no vino como entero/);
+    });
+  });
+
+  describe('createOrderChargeIfConfirmed — identidad del acto', () => {
+    const entrada = {
+      id: 'ft-1', businessId: 'biz-1', customerId: 'cust-1', orderId: 'order-1',
+      stayId: null, amount: 300, currency: 'ARS',
+    };
+    const ordenFila = (over: Record<string, unknown> = {}) => ({
+      id: 'order-1', business_id: 'biz-1', status: 'CONFIRMED',
+      confirmed_at: new Date().toISOString(), ...over,
+    });
+
+    it('O2R-16: la PRIMERA sentencia es el lock, con el MISMO client que el INSERT', async () => {
+      vi.mocked(mockSqlClient.query)
+        .mockResolvedValueOnce({ rows: [ordenFila()] })
+        .mockResolvedValueOnce({ rows: [{ id: 'ft-1' }] });
+
+      await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+
+      const calls = vi.mocked(mockSqlClient.query).mock.calls;
+      expect(calls[0]![0]).toContain('FOR UPDATE');
+      expect(calls[0]![0]).toContain('FROM orders');
+      // El NOT EXISTS solo no es a prueba de carreras: sin el lock, dos
+      // handlers concurrentes podrían pasarlo los dos.
+      expect(calls[1]![0]).toContain('NOT EXISTS');
+      // Las dos sentencias salen del mismo objeto `client`: es el parámetro,
+      // no una convención.
+      expect(calls).toHaveLength(2);
+    });
+
+    it('O2R-17: la clave de idempotencia es del ACTO, no del evento', async () => {
+      vi.mocked(mockSqlClient.query)
+        .mockResolvedValueOnce({ rows: [ordenFila()] })
+        .mockResolvedValueOnce({ rows: [{ id: 'ft-1' }] });
+
+      await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+
+      const [, params] = vi.mocked(mockSqlClient.query).mock.calls[1]!;
+      expect(params).toContain('order:order-1:CHARGE');
+    });
+
+    it('O2R-18: RECHAZADO si la orden no existe, sin intentar el INSERT', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_INEXISTENTE'] });
+      expect(vi.mocked(mockSqlClient.query).mock.calls).toHaveLength(1);
+    });
+
+    it('O2R-19: RECHAZADO si la orden es de otro negocio, sin INSERT', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [ordenFila({ business_id: 'biz-ajeno' })] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_DE_OTRO_NEGOCIO'] });
+      expect(vi.mocked(mockSqlClient.query).mock.calls).toHaveLength(1);
+    });
+
+    it('O2R-20: RECHAZADO si la orden está en DRAFT o CANCELLED — allowlist positiva', async () => {
+      for (const estado of ['DRAFT', 'CANCELLED']) {
+        vi.mocked(mockSqlClient.query).mockReset();
+        vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [ordenFila({ status: estado })] });
+        const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+        expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] });
+      }
+    });
+
+    it('O2R-21: RECHAZADO si el estado está fuera del enum — fail-closed', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [ordenFila({ status: 'ARCHIVADA' })] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ESTADO_DESCONOCIDO'] });
+    });
+
+    it('O2R-22: COMPLETED SIN confirmed_at no autoriza una creación financiera', async () => {
+      vi.mocked(mockSqlClient.query)
+        .mockResolvedValueOnce({ rows: [ordenFila({ status: 'COMPLETED', confirmed_at: null })] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+      // El estado aislado no alcanza: tiene que haber habido un acto de
+      // confirmación, y ese acto es confirmed_at.
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['ORDEN_SIN_CONFIRMAR'] });
+      expect(vi.mocked(mockSqlClient.query).mock.calls).toHaveLength(1);
+    });
+
+    it('O2R-23: COMPLETED CON confirmed_at sí crea — order.completed pudo adelantarse', async () => {
+      vi.mocked(mockSqlClient.query)
+        .mockResolvedValueOnce({ rows: [ordenFila({ status: 'COMPLETED' })] })
+        .mockResolvedValueOnce({ rows: [{ id: 'ft-1' }] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+      // Sin esto, ORDER-13 traba la familia: uno espera un cargo que el otro
+      // se niega a crear.
+      expect(d).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: [] });
+    });
+
+    it('O2R-24: RECHAZADO CARGO_YA_EXISTE cuando el INSERT no afecta filas', async () => {
+      vi.mocked(mockSqlClient.query)
+        .mockResolvedValueOnce({ rows: [ordenFila()] })
+        .mockResolvedValueOnce({ rows: [] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, entrada);
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_YA_EXISTE'] });
+    });
+
+    it('O2R-25: NADA_QUE_HACER si el monto no es positivo, sin INSERT', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [ordenFila()] });
+      const d = await repo.createOrderChargeIfConfirmed(mockSqlClient, { ...entrada, amount: 0 });
+      expect(d).toEqual({ tipo: 'NADA_QUE_HACER' });
+      expect(vi.mocked(mockSqlClient.query).mock.calls).toHaveLength(1);
     });
   });
 
@@ -523,15 +731,28 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     });
   });
 
-  describe('voidByOrderId', () => {
-    it('solo anula CHARGE/ADJUSTMENT, nunca PAYMENT/REFUND', async () => {
-      await repo.voidByOrderId('order-1');
+  describe('voidByOrderId — O2 / ORDER-06', () => {
+    it('O2R-26: exige que la orden esté CANCELLED, dentro de la sentencia', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          aplicadas: 1, candidatos: 1, orden_inexistente: 0, orden_ajena: 0,
+          orden_no_elegible: 0, estado_desconocido: 0, ya_settled: 0,
+          anulados: 0, tipo_no_liquidable: 0,
+        }],
+      });
 
-      const mockQuery = vi.mocked(mockSqlClient.query);
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const d = await repo.voidByOrderId('order-1', 'biz-1');
+
+      const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
       expect(sql).toContain("SET status = 'VOIDED'");
-      expect(sql).toContain("type IN ('CHARGE', 'ADJUSTMENT')");
-      expect(params).toEqual(['order-1']);
+      // ORDER-06: antes anulaba PENDING y SETTLED sin mirar el estado de la
+      // orden. Del lado *anular* eso revierte un cobro ya realizado.
+      expect(sql).toContain("o.status IN ('CANCELLED')");
+      // ORDER-15, declarada y NO resuelta: el filtro de tipo sigue siendo más
+      // amplio que el de la liquidación, que quedó en ('CHARGE').
+      expect(sql).toContain("ft.type   IN ('CHARGE','ADJUSTMENT')");
+      expect(params).toEqual(['order-1', 'biz-1']);
+      expect(d).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: [] });
     });
   });
 });

@@ -32,8 +32,10 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
-  async settleByOrderId() { return 0; }
-  async voidByOrderId() { return 0; }
+  // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
+  async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async voidByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
   async getSettledPaymentTotalForReservation() { return 0; }

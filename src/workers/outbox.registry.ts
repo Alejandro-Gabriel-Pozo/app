@@ -79,7 +79,11 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   // por olvido. pollIntervalMs/maxRetries van explícitos porque TypeScript no
   // deja saltear posicionales; son los mismos defaults de la clase.
   const worker = new OutboxWorker(domainEventRepo, 5_000, 60, processedEventRepo);
-  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo);
+  // O2: el handler financiero necesita transacción propia -- el lock de la
+  // fila de la orden y el INSERT del CHARGE tienen que compartir conexión.
+  // Es el MISMO PgTransactionManager sobre el pool crudo del tenant que ya
+  // usa el handler de inventario (DEFENSIVE_DEVELOPING §3).
+  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo, transactionManager);
   registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
   registerEmailHandlers(worker, emailSender, businessProfileRepo);
   worker.start();

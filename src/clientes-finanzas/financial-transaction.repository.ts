@@ -115,6 +115,58 @@ export interface PaymentInfo {
   cardSurchargeAmount?: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// O2 (03/09/2026) — desenlaces de los efectos financieros de una orden
+// ---------------------------------------------------------------------------
+
+/**
+ * Por qué un efecto NO se aplicó. Ninguno es reintentable: reintentar no
+ * cambia el estado de la orden, ni el tipo del cargo, ni el negocio al que
+ * pertenece. La única causa transitoria vive aparte (`DEPENDENCIA_PENDIENTE`).
+ */
+export type EfectoRechazo =
+  | 'ORDEN_INEXISTENTE'         // no hay fila en orders para ese order_id
+  | 'ORDEN_DE_OTRO_NEGOCIO'     // existe, con otro business_id — aislamiento
+  | 'ORDEN_ESTADO_NO_ELEGIBLE'  // estado conocido que no habilita este efecto
+  | 'ORDEN_SIN_CONFIRMAR'       // COMPLETED sin confirmed_at: no hubo acto
+  | 'ESTADO_DESCONOCIDO'        // status fuera del CHECK — fail-closed
+  | 'CARGO_YA_EXISTE'           // la orden ya tiene su CHARGE (identidad del acto)
+  | 'CARGO_YA_SETTLED'          // reintento benigno del at-least-once
+  | 'CARGO_ANULADO'             // VOIDED o FAILED
+  | 'TIPO_NO_LIQUIDABLE';       // PAYMENT/REFUND/ADJUSTMENT bajo ese order_id
+
+/**
+ * Los cuatro desenlaces de negocio, deliberadamente distinguibles.
+ *
+ * - `APLICADO`: se escribieron `filas` filas. Puede traer rechazos igual:
+ *   liquidó el CHARGE y rechazó un PAYMENT de la misma orden.
+ * - `RECHAZADO`: no se escribió nada, y `rechazos` dice por qué. **No
+ *   reintentable**: el handler retorna, no lanza.
+ * - `NADA_QUE_HACER`: no había nada que aplicar y eso es correcto (una orden
+ *   sin ítems con precio nunca generó cargo). Es éxito, no rechazo.
+ * - `DEPENDENCIA_PENDIENTE`: el efecto depende de algo que todavía no pasó
+ *   (T-01: el CHARGE aún no existe porque `order.confirmed` no se procesó).
+ *   Es lo ÚNICO transitorio, y lo único que justifica reintentar.
+ *
+ * Un fallo TÉCNICO nunca es un desenlace: se lanza.
+ */
+export type EfectoDesenlace =
+  | { tipo: 'APLICADO';              filas: number; rechazos: EfectoRechazo[] }
+  | { tipo: 'RECHAZADO';             rechazos: EfectoRechazo[] }
+  | { tipo: 'NADA_QUE_HACER' }
+  | { tipo: 'DEPENDENCIA_PENDIENTE' };
+
+/** Lo que hace falta para crear el CHARGE de una orden confirmada. */
+export interface OrderChargeInput {
+  id:         string;
+  businessId: string;
+  customerId: string;
+  orderId:    string;
+  stayId:     string | null;
+  amount:     number;
+  currency:   string;
+}
+
 export interface FinancialTransactionRepository {
   /**
    * Crea una transacción nueva.
@@ -189,29 +241,76 @@ export interface FinancialTransactionRepository {
   voidByReservationId(reservationId: string): Promise<number>;
 
   /**
-   * Pasa a SETTLED todas las transacciones PENDING de una orden.
-   * Idempotente: si ya están SETTLED, no hace nada.
+   * O2 (03/09/2026) -- liquida el CHARGE de una orden COMPLETED.
+   *
+   * Reemplaza a `settleByOrderId(): Promise<number>`. El `number` colapsaba
+   * nueve situaciones distintas en un cero mudo: no se podía distinguir un
+   * reintento benigno de un cruce de tenant. Y `?? 0` confundía "el driver no
+   * informó" con "cero filas".
+   *
+   * Tres allowlists POSITIVAS, todas dentro de la misma sentencia:
+   * estado de la orden (`COMPLETED`), estado del cargo (`PENDING`) y **tipo
+   * del cargo (`CHARGE` y nada más)**. Un `PAYMENT`, un `REFUND` o un
+   * `ADJUSTMENT` bajo ese `order_id` **no se liquidan y no cuentan como
+   * éxito**: salen por `TIPO_NO_LIQUIDABLE`.
+   *
+   * ORDER-03-b queda subsumido acá: su guarda es una de las tres allowlists.
    *
    * Si se pasa `paymentInfo.paymentMethod`, se persiste en las filas
-   * actualizadas. Si además es `'CASH'` y hay un turno OPEN para el negocio
-   * de la orden, esas filas se vinculan a ese turno (`shiftId`) en la misma
-   * UPDATE. Si es `'CARD'`, `cardInstallments`/`cardSurchargeAmount`
-   * también se persisten — ver `SqlFinancialTransactionRepository.settleByOrderId`.
+   * actualizadas. Si además es `'CASH'` y hay un turno OPEN para el negocio,
+   * esas filas se vinculan a ese turno en la misma UPDATE.
    *
-   * Retorna la cantidad de filas actualizadas.
+   * **Nunca devuelve un cero sin motivo.** Un fallo técnico lanza.
    */
-  settleByOrderId(orderId: string, paymentInfo?: PaymentInfo): Promise<number>;
+  settleChargesByOrderId(
+    orderId: string,
+    businessId: string,
+    paymentInfo?: PaymentInfo,
+  ): Promise<EfectoDesenlace>;
+
+  /**
+   * O2 -- crea el CHARGE de una orden confirmada, si corresponde.
+   *
+   * **La identidad del acto económico es `order_id`, no `event.id`.** Una
+   * orden se confirma como máximo una vez (`TRANSICION_CONFIRMAR` sólo acepta
+   * `DRAFT` y ninguna transición vuelve ahí), así que el acto y la orden son
+   * la misma cosa. `event.id` identifica el mensaje, no el hecho: por eso dos
+   * mensajes del mismo hecho creaban dos cargos.
+   *
+   * Toma el lock de la fila de `orders` **con el mismo `client`** antes del
+   * INSERT: el `NOT EXISTS` por sí solo no es a prueba de carreras, dos
+   * handlers concurrentes podrían pasarlo los dos.
+   *
+   * Exige que la orden esté en `CONFIRMED`/`COMPLETED` **y** tenga
+   * `confirmed_at`: el estado `COMPLETED` aislado no autoriza una creación
+   * financiera. `COMPLETED` sólo se acepta porque `order.completed` puede
+   * adelantarse al `order.confirmed` que crea el cargo (ORDER-13); sin eso,
+   * la familia quedaría trabada.
+   */
+  createOrderChargeIfConfirmed(
+    client: SqlClient,
+    input: OrderChargeInput,
+  ): Promise<EfectoDesenlace>;
 
   /** Obtiene todas las transacciones de un turno de caja. */
   getByShiftId(shiftId: string): Promise<FinancialTransaction[]>;
 
   /**
-   * Pasa a VOIDED las transacciones CHARGE/ADJUSTMENT PENDING/SETTLED de
-   * una orden. Usado cuando se cancela una orden confirmada. Mismo motivo
-   * que `voidByReservationId` — no toca PAYMENT/REFUND.
-   * Retorna la cantidad de filas actualizadas.
+   * O2 -- anula los movimientos de una orden CANCELLED.
+   *
+   * ORDER-06: antes anulaba `PENDING` **y `SETTLED`** sin mirar el estado de
+   * la orden. Es el mismo defecto que ORDER-03-b cerró del lado *liquidar*,
+   * y del lado *anular* es más caro: revierte un cobro ya realizado. Ahora
+   * exige `o.status IN ('CANCELLED')` dentro de la sentencia.
+   *
+   * **ORDER-15, declarada y NO resuelta acá:** conserva
+   * `type IN ('CHARGE','ADJUSTMENT')` mientras que la liquidación quedó en
+   * `('CHARGE')`. Un `ADJUSTMENT` con `order_id` -- que hoy no existe, el
+   * único creador siempre usa `reservationId` -- podría anularse y nunca
+   * liquidarse. Alinear las dos allowlists exige decidir antes si los ajustes
+   * sobre órdenes son un concepto de negocio: es su propio bloque.
    */
-  voidByOrderId(orderId: string): Promise<number>;
+  voidByOrderId(orderId: string, businessId: string): Promise<EfectoDesenlace>;
 
   /**
    * Balance neto de un cliente: suma(CHARGE + ADJUSTMENT + REFUND) -

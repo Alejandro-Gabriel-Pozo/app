@@ -1,6 +1,11 @@
 import { randomUUID } from 'crypto';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type {
+  EfectoDesenlace,
+  EfectoRechazo,
+  OrderChargeInput,
+} from './financial-transaction.repository.js';
+import type {
   FinancialTransaction,
   FinancialTransactionRepository,
   PaymentInfo,
@@ -312,43 +317,269 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
-  async settleByOrderId(orderId: string, paymentInfo?: PaymentInfo): Promise<number> {
+  // -------------------------------------------------------------------------
+  // O2 (03/09/2026) — efectos financieros de una orden, gobernados por estado
+  // -------------------------------------------------------------------------
+
+  /**
+   * Lee un contador de la fila de diagnóstico. **La ausencia de resultado no
+   * es cero.** Si la consulta no devolvió fila, o un contador no vino como
+   * entero, eso es una anomalía del driver o del adaptador -- no un hecho de
+   * negocio. Se lanza, y el worker reintenta.
+   *
+   * Reemplaza al viejo `result.rowCount ?? 0`, que confundía "el driver no
+   * informó" con "cero filas". El conteo ahora vuelve como columna de la fila,
+   * no como metadato del driver.
+   */
+  private static entero(fila: Record<string, unknown> | undefined, campo: string): number {
+    if (!fila) {
+      throw new Error('efecto financiero: la consulta no devolvió ninguna fila de diagnóstico.');
+    }
+    const valor = Number(fila[campo]);
+    if (!Number.isInteger(valor)) {
+      throw new Error(
+        `efecto financiero: el contador "${campo}" no vino como entero (${String(fila[campo])}).`,
+      );
+    }
+    return valor;
+  }
+
+  /** Arma la lista de rechazos a partir de los contadores del diagnóstico. */
+  private static rechazosDe(f: Record<string, unknown>): EfectoRechazo[] {
+    const r: EfectoRechazo[] = [];
+    const n = (c: string) => SqlFinancialTransactionRepository.entero(f, c);
+    if (n('orden_inexistente')  > 0) r.push('ORDEN_INEXISTENTE');
+    if (n('orden_ajena')        > 0) r.push('ORDEN_DE_OTRO_NEGOCIO');
+    if (n('orden_no_elegible')  > 0) r.push('ORDEN_ESTADO_NO_ELEGIBLE');
+    if (n('estado_desconocido') > 0) r.push('ESTADO_DESCONOCIDO');
+    if (n('ya_settled')         > 0) r.push('CARGO_YA_SETTLED');
+    if (n('anulados')           > 0) r.push('CARGO_ANULADO');
+    if (n('tipo_no_liquidable') > 0) r.push('TIPO_NO_LIQUIDABLE');
+    return r;
+  }
+
+  async settleChargesByOrderId(
+    orderId: string,
+    businessId: string,
+    paymentInfo?: PaymentInfo,
+  ): Promise<EfectoDesenlace> {
     const method = paymentInfo?.paymentMethod ?? null;
     const cardInstallments = paymentInfo?.cardInstallments ?? null;
     const cardSurchargeAmount = paymentInfo?.cardSurchargeAmount ?? null;
-    // shift_id: mismo criterio que insert() — solo se vincula si el medio de
-    // pago es 'CASH' y hay un turno OPEN para el negocio de esta fila
-    // (business_id ya está en la fila, no hace falta que el caller lo pase).
-    // card_installments/card_surcharge_amount: se persisten tal cual vienen
-    // (Gap Tango #3) — el CHECK de BD exige payment_method = 'CARD' cuando
-    // no son NULL.
-    const result = await this.sqlClient.query(
-      `UPDATE financial_transactions
-       SET status = 'SETTLED',
-           payment_method = COALESCE($2, payment_method),
-           shift_id = CASE WHEN $2 = 'CASH'
-             THEN (SELECT id FROM cash_register_shifts WHERE business_id = financial_transactions.business_id AND status = 'OPEN')
-             ELSE shift_id END,
-           card_installments = COALESCE($3, card_installments),
-           card_surcharge_amount = COALESCE($4, card_surcharge_amount)
-       WHERE order_id = $1
-         AND status = 'PENDING'`,
-      [orderId, method, cardInstallments, cardSurchargeAmount],
+
+    // Una sola sentencia: el UPDATE y la clasificación leen el MISMO snapshot.
+    // Un SELECT de diagnóstico posterior leería otro y podría informar "orden
+    // cancelada" sobre una orden que se canceló DESPUÉS -- una mentira.
+    //
+    // Tres allowlists positivas dentro del UPDATE: tipo del cargo (CHARGE y
+    // nada más, ORDER-09), estado del cargo (PENDING) y estado de la orden
+    // (COMPLETED, que es ORDER-03-b subsumido acá).
+    const { rows } = await this.sqlClient.query<Record<string, unknown>>(
+      `WITH candidatos AS (
+         SELECT ft.id, ft.status AS ft_status, ft.type AS ft_type,
+                (o_any.id IS NOT NULL) AS orden_existe,
+                (o_mio.id IS NOT NULL) AS orden_del_negocio,
+                o_mio.status           AS o_status
+           FROM financial_transactions ft
+           LEFT JOIN orders o_any ON o_any.id = ft.order_id
+           LEFT JOIN orders o_mio ON o_mio.id = ft.order_id
+                                 AND o_mio.business_id = ft.business_id
+          WHERE ft.order_id = $1 AND ft.business_id = $5
+       ),
+       liquidadas AS (
+         UPDATE financial_transactions ft
+            SET status         = 'SETTLED',
+                payment_method = COALESCE($2, ft.payment_method),
+                shift_id       = CASE WHEN $2 = 'CASH'
+                  THEN (SELECT s.id FROM cash_register_shifts s
+                         WHERE s.business_id = ft.business_id AND s.status = 'OPEN')
+                  ELSE ft.shift_id END,
+                card_installments     = COALESCE($3, ft.card_installments),
+                card_surcharge_amount = COALESCE($4, ft.card_surcharge_amount)
+          WHERE ft.order_id    = $1
+            AND ft.business_id = $5
+            AND ft.type   IN ('CHARGE')
+            AND ft.status IN ('PENDING')
+            AND EXISTS (SELECT 1 FROM orders o
+                         WHERE o.id          = ft.order_id
+                           AND o.business_id = ft.business_id
+                           AND o.status IN ('COMPLETED'))
+         RETURNING ft.id
+       )
+       SELECT
+         (SELECT count(*) FROM liquidadas)::int                                  AS aplicadas,
+         (SELECT count(*) FROM candidatos)::int                                  AS candidatos,
+         (SELECT count(*) FROM candidatos WHERE NOT orden_existe)::int           AS orden_inexistente,
+         (SELECT count(*) FROM candidatos WHERE orden_existe
+                                            AND NOT orden_del_negocio)::int      AS orden_ajena,
+         (SELECT count(*) FROM candidatos WHERE orden_del_negocio
+              AND o_status IN ('DRAFT','CONFIRMED','CANCELLED'))::int            AS orden_no_elegible,
+         (SELECT count(*) FROM candidatos WHERE
+              (orden_del_negocio AND o_status NOT IN
+                 ('DRAFT','CONFIRMED','CANCELLED','COMPLETED'))
+           OR  ft_status NOT IN ('PENDING','SETTLED','FAILED','VOIDED'))::int    AS estado_desconocido,
+         (SELECT count(*) FROM candidatos WHERE ft_status = 'SETTLED')::int      AS ya_settled,
+         (SELECT count(*) FROM candidatos
+              WHERE ft_status IN ('VOIDED','FAILED'))::int                       AS anulados,
+         (SELECT count(*) FROM candidatos
+              WHERE ft_type NOT IN ('CHARGE'))::int                              AS tipo_no_liquidable,
+         (SELECT o.total_amount FROM orders o
+           WHERE o.id = $1 AND o.business_id = $5)::numeric                      AS orden_total,
+         (SELECT o.status FROM orders o
+           WHERE o.id = $1 AND o.business_id = $5)                               AS orden_status`,
+      [orderId, method, cardInstallments, cardSurchargeAmount, businessId],
     );
-    return result.rowCount ?? 0;
+
+    const f = rows[0];
+    const aplicadas  = SqlFinancialTransactionRepository.entero(f, 'aplicadas');
+    const candidatos = SqlFinancialTransactionRepository.entero(f, 'candidatos');
+    const rechazos   = SqlFinancialTransactionRepository.rechazosDe(f!);
+
+    if (aplicadas > 0) return { tipo: 'APLICADO', filas: aplicadas, rechazos };
+
+    // Sin ningún movimiento para esa orden hay que separar "no había nada que
+    // cobrar" de "el CHARGE todavía no existe" (ORDER-13). Confundirlos deja
+    // el cargo PENDING para siempre, que es lo que pasaba antes en silencio.
+    if (candidatos === 0) {
+      const estado = f!['orden_status'] as string | null;
+      const total  = f!['orden_total'] == null ? null : Number(f!['orden_total']);
+      if (estado === null)         return { tipo: 'RECHAZADO', rechazos: ['ORDEN_INEXISTENTE'] };
+      if (estado !== 'COMPLETED')  return { tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] };
+      if (total !== null && total > 0) return { tipo: 'DEPENDENCIA_PENDIENTE' };
+      return { tipo: 'NADA_QUE_HACER' };
+    }
+
+    return { tipo: 'RECHAZADO', rechazos };
   }
 
-  /** Mismo fix y mismo motivo que `voidByReservationId` — ver su docblock. */
-  async voidByOrderId(orderId: string): Promise<number> {
-    const result = await this.sqlClient.query(
-      `UPDATE financial_transactions
-       SET status = 'VOIDED'
-       WHERE order_id = $1
-         AND status IN ('PENDING', 'SETTLED')
-         AND type IN ('CHARGE', 'ADJUSTMENT')`,
-      [orderId],
+  async createOrderChargeIfConfirmed(
+    client: SqlClient,
+    input: OrderChargeInput,
+  ): Promise<EfectoDesenlace> {
+    // 1 · Lock de la fila de la orden, con el MISMO client que hará el INSERT.
+    //     El NOT EXISTS de abajo no es a prueba de carreras por sí solo: dos
+    //     handlers concurrentes podrían pasarlo los dos antes de que ninguno
+    //     inserte. El lock los serializa. Que lock e INSERT compartan conexión
+    //     no es una convención sino el parámetro `client`: el mismo objeto en
+    //     las dos sentencias, dentro de la transacción del caller.
+    const { rows: lock } = await client.query<Record<string, unknown>>(
+      'SELECT id, business_id, status, confirmed_at FROM orders WHERE id = $1 FOR UPDATE',
+      [input.orderId],
     );
-    return result.rowCount ?? 0;
+    const orden = lock[0];
+    if (!orden) return { tipo: 'RECHAZADO', rechazos: ['ORDEN_INEXISTENTE'] };
+    if (orden['business_id'] !== input.businessId) {
+      return { tipo: 'RECHAZADO', rechazos: ['ORDEN_DE_OTRO_NEGOCIO'] };
+    }
+
+    const estado = orden['status'] as string;
+    if (!['DRAFT', 'CONFIRMED', 'CANCELLED', 'COMPLETED'].includes(estado)) {
+      return { tipo: 'RECHAZADO', rechazos: ['ESTADO_DESCONOCIDO'] };
+    }
+    // Allowlist positiva. COMPLETED entra SÓLO porque order.completed puede
+    // adelantarse al order.confirmed que crea el cargo (ORDER-13): sin eso la
+    // familia se traba, uno esperando un cargo que el otro se niega a crear.
+    if (!['CONFIRMED', 'COMPLETED'].includes(estado)) {
+      return { tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] };
+    }
+    // El estado COMPLETED aislado NO autoriza una creación financiera: tiene
+    // que haber existido un acto de confirmación, y ese acto es confirmed_at.
+    if (orden['confirmed_at'] == null) {
+      return { tipo: 'RECHAZADO', rechazos: ['ORDEN_SIN_CONFIRMAR'] };
+    }
+
+    if (input.amount <= 0) return { tipo: 'NADA_QUE_HACER' };
+
+    // 2 · INSERT condicional, mismo client. La identidad del acto es el
+    //     order_id: NOT EXISTS por (order_id, type='CHARGE'). La clave
+    //     'order:<id>:CHARGE' es la segunda defensa, y el NOT EXISTS cubre
+    //     además la migración: un cargo viejo creado con la clave de evento
+    //     bloquea igual al de clave nueva.
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO financial_transactions
+         (id, business_id, customer_id, order_id, stay_id, idempotency_key,
+          type, amount, currency, status)
+       SELECT $1, $2, $3, $4, $5, $6, 'CHARGE', $7, $8, 'PENDING'
+        WHERE NOT EXISTS (SELECT 1 FROM financial_transactions ft
+                           WHERE ft.order_id    = $4::VARCHAR(255)
+                             AND ft.business_id = $2::VARCHAR(255)
+                             AND ft.type = 'CHARGE')
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [
+        input.id, input.businessId, input.customerId, input.orderId,
+        input.stayId, `order:${input.orderId}:CHARGE`,
+        input.amount, input.currency,
+      ],
+    );
+
+    if (rows.length === 0) return { tipo: 'RECHAZADO', rechazos: ['CARGO_YA_EXISTE'] };
+    return { tipo: 'APLICADO', filas: rows.length, rechazos: [] };
+  }
+
+  /**
+   * O2 / ORDER-06 -- ver el docblock del contrato. La guarda de estado de la
+   * orden va DENTRO de la sentencia, igual que en la liquidación.
+   *
+   * ORDER-15: el filtro de tipo sigue siendo ('CHARGE','ADJUSTMENT'), a
+   * diferencia de la liquidación, que quedó en ('CHARGE'). La asimetría queda
+   * declarada, no resuelta: cerrarla exige decidir antes si los ajustes sobre
+   * órdenes son un concepto de negocio.
+   */
+  async voidByOrderId(orderId: string, businessId: string): Promise<EfectoDesenlace> {
+    const { rows } = await this.sqlClient.query<Record<string, unknown>>(
+      `WITH candidatos AS (
+         SELECT ft.id, ft.status AS ft_status, ft.type AS ft_type,
+                (o_any.id IS NOT NULL) AS orden_existe,
+                (o_mio.id IS NOT NULL) AS orden_del_negocio,
+                o_mio.status           AS o_status
+           FROM financial_transactions ft
+           LEFT JOIN orders o_any ON o_any.id = ft.order_id
+           LEFT JOIN orders o_mio ON o_mio.id = ft.order_id
+                                 AND o_mio.business_id = ft.business_id
+          WHERE ft.order_id = $1 AND ft.business_id = $2
+       ),
+       anuladas AS (
+         UPDATE financial_transactions ft
+            SET status = 'VOIDED'
+          WHERE ft.order_id    = $1
+            AND ft.business_id = $2
+            AND ft.type   IN ('CHARGE','ADJUSTMENT')
+            AND ft.status IN ('PENDING','SETTLED')
+            AND EXISTS (SELECT 1 FROM orders o
+                         WHERE o.id          = ft.order_id
+                           AND o.business_id = ft.business_id
+                           AND o.status IN ('CANCELLED'))
+         RETURNING ft.id
+       )
+       SELECT
+         (SELECT count(*) FROM anuladas)::int                                    AS aplicadas,
+         (SELECT count(*) FROM candidatos)::int                                  AS candidatos,
+         (SELECT count(*) FROM candidatos WHERE NOT orden_existe)::int           AS orden_inexistente,
+         (SELECT count(*) FROM candidatos WHERE orden_existe
+                                            AND NOT orden_del_negocio)::int      AS orden_ajena,
+         (SELECT count(*) FROM candidatos WHERE orden_del_negocio
+              AND o_status IN ('DRAFT','CONFIRMED','COMPLETED'))::int            AS orden_no_elegible,
+         (SELECT count(*) FROM candidatos WHERE
+              (orden_del_negocio AND o_status NOT IN
+                 ('DRAFT','CONFIRMED','CANCELLED','COMPLETED'))
+           OR  ft_status NOT IN ('PENDING','SETTLED','FAILED','VOIDED'))::int    AS estado_desconocido,
+         0::int                                                                  AS ya_settled,
+         (SELECT count(*) FROM candidatos
+              WHERE ft_status IN ('VOIDED','FAILED'))::int                       AS anulados,
+         (SELECT count(*) FROM candidatos
+              WHERE ft_type NOT IN ('CHARGE','ADJUSTMENT'))::int                 AS tipo_no_liquidable`,
+      [orderId, businessId],
+    );
+
+    const f = rows[0];
+    const aplicadas  = SqlFinancialTransactionRepository.entero(f, 'aplicadas');
+    const candidatos = SqlFinancialTransactionRepository.entero(f, 'candidatos');
+    const rechazos   = SqlFinancialTransactionRepository.rechazosDe(f!);
+
+    if (aplicadas > 0) return { tipo: 'APLICADO', filas: aplicadas, rechazos };
+    if (candidatos === 0) return { tipo: 'NADA_QUE_HACER' };
+    return { tipo: 'RECHAZADO', rechazos };
   }
 
   /**

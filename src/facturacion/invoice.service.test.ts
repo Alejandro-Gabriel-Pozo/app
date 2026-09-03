@@ -4,7 +4,7 @@ import { InvoiceService, hashIds } from './invoice.service.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
-import type { FinancialTransactionRepository, FinancialTransaction, PaymentInfo } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { FinancialTransactionRepository, FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { AccountsReceivableRepository, AccountReceivable } from '../clientes-finanzas/accounts-receivable.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
@@ -111,8 +111,10 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
-  async settleByOrderId(_orderId: string, _paymentInfo?: PaymentInfo) { return 0; }
-  async voidByOrderId() { return 0; }
+  // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
+  async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async voidByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
   async getSettledPaymentTotalForReservation() { return 0; }
@@ -1021,8 +1023,10 @@ class FakeMultiFinancialTransactionRepository implements FinancialTransactionRep
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
-  async settleByOrderId(_orderId: string, _paymentInfo?: PaymentInfo) { return 0; }
-  async voidByOrderId() { return 0; }
+  // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
+  async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async voidByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
   async getSettledPaymentTotalForReservation() { return 0; }

@@ -104,8 +104,10 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByStayId(): Promise<FinancialTransaction[]> { return []; }
   async settleByReservationId(): Promise<number> { return 0; }
   async voidByReservationId(): Promise<number> { return 0; }
-  async settleByOrderId(): Promise<number> { return 0; }
-  async voidByOrderId(): Promise<number> { return 0; }
+  // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
+  async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }
+  async voidByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async getNetBalanceByCustomerId(): Promise<number> { return 0; }
   async getNetBalanceByStayId(): Promise<number> { return this.netBalanceByStay; }
   async getSettledPaymentTotalForReservation(): Promise<number> { return 0; }

@@ -11,7 +11,11 @@ import type {
   FinancialTransaction,
   FinancialTransactionRepository,
   PaymentInfo,
+  EfectoDesenlace,
+  OrderChargeInput,
 } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import { ChargeNotYetCreatedError, ChargeNeverCreatedError } from './outbox.worker.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
@@ -39,12 +43,34 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
   };
 }
 
+/** TransactionManager en memoria: corre el callback con un client de juguete. */
+class InMemoryTransactionManager implements TransactionManager {
+  public corridas = 0;
+  async run<T>(fn: (client: SqlClient) => Promise<T>): Promise<T> {
+    this.corridas += 1;
+    return fn({ query: async () => ({ rows: [] }) } as unknown as SqlClient);
+  }
+}
+
 /** Fake mínimo — solo lo que estos handlers usan. */
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
   public created: Omit<FinancialTransaction, 'createdAt'>[] = [];
-  public settledOrderIds: string[] = [];
-  public settledOrderPaymentInfos: (PaymentInfo | undefined)[] = [];
-  public voidedOrderIds: string[] = [];
+
+  /**
+   * O2 (03/09/2026) — los tres efectos de orden pasan a devolver desenlaces
+   * discriminados, así que el doble registra qué se le pidió y devuelve lo
+   * que el test configure. Reemplaza a `settleByOrderIdReturns`/`Throws` de
+   * ORD3B-08/09: el cero mudo ya no existe.
+   */
+  public chargesCreados: OrderChargeInput[] = [];
+  public settleLlamadas: [string, string, PaymentInfo | undefined][] = [];
+  public voidLlamadas: [string, string][] = [];
+
+  public crearDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
+  public settleDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
+  public voidDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
+  public crearLanza: Error | null = null;
+  public settleLanza: Error | null = null;
 
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) {
     this.created.push(tx);
@@ -62,12 +88,22 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
   async voidByReservationId() { return 0; }
-  async settleByOrderId(orderId: string, paymentInfo?: PaymentInfo) {
-    this.settledOrderIds.push(orderId);
-    this.settledOrderPaymentInfos.push(paymentInfo);
-    return 1;
+
+  async createOrderChargeIfConfirmed(_client: SqlClient, input: OrderChargeInput) {
+    if (this.crearLanza) throw this.crearLanza;
+    this.chargesCreados.push(input);
+    return this.crearDesenlace;
   }
-  async voidByOrderId(orderId: string) { this.voidedOrderIds.push(orderId); return 1; }
+  async settleChargesByOrderId(orderId: string, businessId: string, paymentInfo?: PaymentInfo) {
+    if (this.settleLanza) throw this.settleLanza;
+    this.settleLlamadas.push([orderId, businessId, paymentInfo]);
+    return this.settleDesenlace;
+  }
+  async voidByOrderId(orderId: string, businessId: string) {
+    this.voidLlamadas.push([orderId, businessId]);
+    return this.voidDesenlace;
+  }
+
   async getNetBalanceByCustomerId() { return 0; }
   async getNetBalanceByStayId() { return 0; }
   async getSettledPaymentTotalForReservation() { return 0; }
@@ -86,113 +122,158 @@ function fakeEvent(payload: Record<string, unknown>): DomainEvent {
   };
 }
 
-describe('outbox.handlers — Order', () => {
+describe('outbox.handlers — Order (O2)', () => {
   let financialRepo: FakeFinancialTransactionRepository;
-  let businessProfileRepo: FakeBusinessProfileRepository;
+  let profileRepo: FakeBusinessProfileRepository;
+  let txManager: InMemoryTransactionManager;
 
   beforeEach(() => {
     financialRepo = new FakeFinancialTransactionRepository();
-    businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
+    profileRepo = new FakeBusinessProfileRepository(makeProfile());
+    txManager = new InMemoryTransactionManager();
   });
 
-  describe('handleOrderConfirmed', () => {
-    it('crea un CHARGE PENDING con orderId e idempotencyKey por evento', async () => {
-      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
+  const confirmado = () => handleOrderConfirmed(financialRepo, profileRepo, txManager);
 
-      await handleOrderConfirmed(financialRepo, businessProfileRepo)(event);
+  describe('handleOrderConfirmed — identidad del acto', () => {
+    it('O2H-01: crea el CHARGE con los datos del payload, dentro de una transacción', async () => {
+      await confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 250 }));
 
-      expect(financialRepo.created).toHaveLength(1);
-      expect(financialRepo.created[0]).toMatchObject({
-        businessId:     'biz-test',
-        customerId:     'cust-1',
-        orderId:        'order-1',
-        type:           'CHARGE',
-        amount:         300,
-        status:         'PENDING',
-        idempotencyKey: '42:CHARGE',
-      });
+      expect(financialRepo.chargesCreados).toHaveLength(1);
+      const input = financialRepo.chargesCreados[0]!;
+      expect(input.orderId).toBe('order-1');
+      expect(input.customerId).toBe('cust-1');
+      expect(input.amount).toBe(250);
+      expect(input.businessId).toBe('biz-test');
+      // El lock de la orden y el INSERT tienen que compartir conexión: por eso
+      // el handler abre transacción en vez de usar el client de la instancia.
+      expect(txManager.corridas).toBe(1);
     });
 
-    it('hereda stayId del payload — "cargo a la habitación" (A1, paso 4)', async () => {
-      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300, stayId: 'stay-1' });
-
-      await handleOrderConfirmed(financialRepo, businessProfileRepo)(event);
-
-      expect(financialRepo.created[0]).toMatchObject({ stayId: 'stay-1' });
+    it('O2H-02: hereda stayId del payload — "cargo a la habitación" (A1, paso 4)', async () => {
+      await confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 250, stayId: 'stay-9' }));
+      expect(financialRepo.chargesCreados[0]!.stayId).toBe('stay-9');
     });
 
-    it('stayId queda null si la orden no se asoció a una estadía', async () => {
-      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
-
-      await handleOrderConfirmed(financialRepo, businessProfileRepo)(event);
-
-      expect(financialRepo.created[0]).toMatchObject({ stayId: null });
+    it('O2H-03: stayId queda null si la orden no se asoció a una estadía', async () => {
+      await confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 250 }));
+      expect(financialRepo.chargesCreados[0]!.stayId).toBeNull();
     });
 
-    it('no crea nada si totalAmount es 0 o null', async () => {
-      await handleOrderConfirmed(financialRepo, businessProfileRepo)(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 0 }));
-      await handleOrderConfirmed(financialRepo, businessProfileRepo)(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: undefined }));
-
-      expect(financialRepo.created).toHaveLength(0);
+    it('O2H-04: no crea nada si totalAmount es 0 o null, y no abre transacción', async () => {
+      await confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 0 }));
+      await confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: null }));
+      expect(financialRepo.chargesCreados).toHaveLength(0);
+      expect(txManager.corridas).toBe(0);
     });
 
-    it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
-      const usdProfileRepo = new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' }));
-      const event = fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 300 });
+    it('O2H-05: usa la moneda del business_profile, no un valor fijo', async () => {
+      profileRepo = new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' }));
+      await confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 250 }));
+      expect(financialRepo.chargesCreados[0]!.currency).toBe('USD');
+    });
 
-      await handleOrderConfirmed(financialRepo, usdProfileRepo)(event);
+    it('O2H-06: un rechazo del repositorio NO lanza — no es un fallo técnico', async () => {
+      financialRepo.crearDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_YA_EXISTE'] };
+      // Dos eventos distintos para la misma orden: el segundo no duplica, y el
+      // handler no reintenta algo que nunca va a cambiar.
+      await expect(confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 250 })))
+        .resolves.toBeUndefined();
+    });
 
-      expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
+    it('O2H-07: un fallo TÉCNICO sí se propaga — el worker debe reintentar', async () => {
+      financialRepo.crearLanza = new Error('conexión perdida');
+      await expect(confirmado()(fakeEvent({ orderId: 'order-1', customerId: 'cust-1', totalAmount: 250 })))
+        .rejects.toThrow('conexión perdida');
     });
   });
 
-  describe('handleOrderCompleted', () => {
-    it('settea el CHARGE de la orden a SETTLED', async () => {
-      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' }));
-      expect(financialRepo.settledOrderIds).toEqual(['order-1']);
-    });
-
-    it('propaga paymentMethod del payload a settleByOrderId (Gap Tango #2)', async () => {
-      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1', paymentMethod: 'CASH' }));
-      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({ paymentMethod: 'CASH' });
-    });
-
-    it('paymentMethod queda null si no viene en el payload', async () => {
-      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' }));
-      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({ paymentMethod: null });
-    });
-
-    it('propaga cardInstallments/cardSurchargeAmount del payload (Gap Tango #3)', async () => {
+  describe('handleOrderCompleted — liquidación y T-01', () => {
+    it('O2H-08: liquida pasando orderId, businessId y el medio de pago', async () => {
       await handleOrderCompleted(financialRepo)(
-        fakeEvent({ orderId: 'order-1', paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150 }),
-      );
-      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({
-        paymentMethod: 'CARD',
-        cardInstallments: 6,
-        cardSurchargeAmount: 150,
+        fakeEvent({ orderId: 'order-1', paymentMethod: 'CASH' }));
+
+      expect(financialRepo.settleLlamadas).toHaveLength(1);
+      const [orderId, businessId, info] = financialRepo.settleLlamadas[0]!;
+      expect(orderId).toBe('order-1');
+      expect(businessId).toBe('biz-test');
+      expect(info).toEqual({ paymentMethod: 'CASH', cardInstallments: null, cardSurchargeAmount: null });
+    });
+
+    it('O2H-09: propaga cuotas y recargo del payload (Gap Tango #3)', async () => {
+      await handleOrderCompleted(financialRepo)(fakeEvent({
+        orderId: 'order-1', paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150,
+      }));
+      expect(financialRepo.settleLlamadas[0]![2]).toEqual({
+        paymentMethod: 'CARD', cardInstallments: 6, cardSurchargeAmount: 150,
       });
     });
 
-    it('cardInstallments/cardSurchargeAmount quedan null si no vienen en el payload', async () => {
-      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1', paymentMethod: 'CASH' }));
-      expect(financialRepo.settledOrderPaymentInfos[0]).toMatchObject({
-        cardInstallments: null,
-        cardSurchargeAmount: null,
+    it('O2H-10: los null quedan null si no vienen en el payload', async () => {
+      await handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' }));
+      expect(financialRepo.settleLlamadas[0]![2]).toEqual({
+        paymentMethod: null, cardInstallments: null, cardSurchargeAmount: null,
       });
+    });
+
+    it('O2H-11: un RECHAZADO de negocio NO lanza — reintentarlo es ruido', async () => {
+      // Reemplaza a ORD3B-08: el cero mudo pasa a ser un motivo.
+      financialRepo.settleDesenlace = { tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] };
+      await expect(handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' })))
+        .resolves.toBeUndefined();
+    });
+
+    it('O2H-12: NADA_QUE_HACER tampoco lanza — es éxito, no rechazo', async () => {
+      financialRepo.settleDesenlace = { tipo: 'NADA_QUE_HACER' };
+      await expect(handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' })))
+        .resolves.toBeUndefined();
+    });
+
+    it('O2H-13: un fallo TÉCNICO sí se propaga (ORD3B-09, conservado)', async () => {
+      financialRepo.settleLanza = new Error('conexión perdida');
+      await expect(handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' })))
+        .rejects.toThrow('conexión perdida');
+    });
+
+    it('O2H-14: T-01 por debajo del techo lanza ChargeNotYetCreatedError — reintenta', async () => {
+      financialRepo.settleDesenlace = { tipo: 'DEPENDENCIA_PENDIENTE' };
+      // El CHARGE todavía no existe porque order.confirmed no se procesó.
+      // Ni rechazo definitivo ni éxito: dependencia pendiente.
+      await expect(handleOrderCompleted(financialRepo)(
+        { ...fakeEvent({ orderId: 'order-1' }), retryCount: 3 }))
+        .rejects.toThrow(ChargeNotYetCreatedError);
+    });
+
+    it('O2H-15: T-01 pasado el techo lanza ChargeNeverCreatedError — dead-letter, sin loop', async () => {
+      financialRepo.settleDesenlace = { tipo: 'DEPENDENCIA_PENDIENTE' };
+      // El worker mapea este error a maxRetries=1: el evento sale de la cola
+      // y queda con failed_at. No es una falsa resolución -- pero tampoco es
+      // resolución operativa: eso sigue siendo O5.
+      await expect(handleOrderCompleted(financialRepo)(
+        { ...fakeEvent({ orderId: 'order-1' }), retryCount: 12 }))
+        .rejects.toThrow(ChargeNeverCreatedError);
+    });
+
+    it('O2H-16: sin retryCount en el sobre, el primer intento es 0 y reintenta', async () => {
+      financialRepo.settleDesenlace = { tipo: 'DEPENDENCIA_PENDIENTE' };
+      await expect(handleOrderCompleted(financialRepo)(fakeEvent({ orderId: 'order-1' })))
+        .rejects.toThrow(ChargeNotYetCreatedError);
     });
   });
 
-  describe('handleOrderCancelled', () => {
-    it('anula el CHARGE de la orden', async () => {
+  describe('handleOrderCancelled — anulación gobernada por estado', () => {
+    it('O2H-17: anula pasando orderId y businessId', async () => {
       await handleOrderCancelled(financialRepo)(fakeEvent({ orderId: 'order-1' }));
-      expect(financialRepo.voidedOrderIds).toEqual(['order-1']);
+      expect(financialRepo.voidLlamadas).toEqual([['order-1', 'biz-test']]);
+    });
+
+    it('O2H-18: un RECHAZADO por estado de la orden no lanza (ORDER-06)', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] };
+      await expect(handleOrderCancelled(financialRepo)(fakeEvent({ orderId: 'order-1' })))
+        .resolves.toBeUndefined();
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Reservation — ajuste de precio (19/08/2026, pendientes-2026-08-18.md punto I)
-// ---------------------------------------------------------------------------
 
 function fakeReservationEvent(payload: Record<string, unknown>): DomainEvent {
   return {

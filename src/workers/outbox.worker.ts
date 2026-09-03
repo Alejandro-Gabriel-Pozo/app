@@ -46,6 +46,36 @@ export class UnsupportedEventVersionError extends Error {
 }
 
 /**
+ * O2 (03/09/2026) — T-01: el CHARGE de la orden todavía no existe porque
+ * `financial:order.confirmed` no se procesó. Es dependencia pendiente, no un
+ * rechazo: reintentar SÍ la resuelve. Vive acá y no en los handlers porque la
+ * política de reintento es responsabilidad del worker.
+ */
+export class ChargeNotYetCreatedError extends Error {
+  constructor(public readonly detalle: Record<string, unknown>) {
+    super(`El CHARGE de la orden ${String(detalle['orden'])} todavía no existe (intento ${String(detalle['intento'])}/${String(detalle['umbral'])}).`);
+    this.name = 'ChargeNotYetCreatedError';
+  }
+}
+
+/**
+ * O2 — T-01 agotado. Pasado el techo ya no es una carrera de despacho sino una
+ * inconsistencia real. El worker lo manda a dead-letter EN EL PRIMER INTENTO,
+ * igual que `UnsupportedEventVersionError`: el evento sale de `getPending`
+ * (sin loop) y queda con `failed_at`/`last_error` (sin falsa resolución).
+ *
+ * **Esto no reemplaza a O5.** El dead-letter dice "este evento falló" y la
+ * única acción que ofrece el panel es reintentarlo, que para un cargo que
+ * nunca se va a crear no resuelve nada.
+ */
+export class ChargeNeverCreatedError extends Error {
+  constructor(public readonly detalle: Record<string, unknown>) {
+    super(`El CHARGE de la orden ${String(detalle['orden'])} no se creó tras ${String(detalle['intento'])} intentos.`);
+    this.name = 'ChargeNeverCreatedError';
+  }
+}
+
+/**
  * Worker de outbox transaccional.
  *
  * ## Responsabilidades
@@ -309,7 +339,11 @@ export class OutboxWorker {
       // (5 min) solo retrasa que alguien la vea. maxRetries=1 la manda a
       // dead-letter en el primer fallo, reusando la MISMA UPDATE atómica que
       // el resto — no un segundo camino de escritura (R14).
-      const maxRetries = err instanceof UnsupportedEventVersionError ? 1 : this.maxRetries;
+      // O2: `ChargeNeverCreatedError` reusa el mismo camino que la versión sin
+      // handler -- dead-letter en el primer intento, con la MISMA UPDATE
+      // atómica, no un segundo camino de escritura (R14).
+      const maxRetries = (err instanceof UnsupportedEventVersionError
+                       || err instanceof ChargeNeverCreatedError) ? 1 : this.maxRetries;
 
       const deadLettered = await this.eventRepository.recordFailure(
         event.id!,
