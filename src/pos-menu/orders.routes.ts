@@ -206,7 +206,7 @@ export function createOrdersRouter(container: AppContainer): Router {
   // físicamente" que cancelOrder() usa para decidir si restaurar stock.
   router.post('/:id/serve', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const order = await buildOrderService(req, container).markServed(param(req, 'id'));
+      const order = await buildOrderService(req, container).markServed(param(req, 'id'), req.user!.id);
       res.json(order);
     } catch (err) {
       if (err instanceof OrderNotFoundError)          res.status(404).json({ code: 'ORDER_NOT_FOUND',      message: (err as Error).message });

@@ -241,7 +241,9 @@ describe('orders.routes', () => {
 
     let res = fakeRes();
     await handler(req, res, () => { throw new Error('no next'); });
-    expect(markServed).toHaveBeenCalledWith('ord-1');
+    // ORDER-16 (03/09/2026): la ruta pasa el actor real (req.user.id) para
+    // que el sello de served_at deje una fila de audit_log con quién lo hizo.
+    expect(markServed).toHaveBeenCalledWith('ord-1', 'identity-1');
     expect(res.json).toHaveBeenCalled();
 
     markServed.mockRejectedValueOnce(new OrderNotServableError('ord-1', 'DRAFT'));

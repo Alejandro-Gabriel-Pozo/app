@@ -6,7 +6,7 @@ import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.j
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 
-import { OrderService } from '../../pos-menu/order.service.js';
+import { OrderService, OrderNotServableError } from '../../pos-menu/order.service.js';
 import { SqlOrderRepository } from '../../pos-menu/sql.order.repository.js';
 import { ProductService } from '../../pos-menu/product.service.js';
 import { SqlProductRepository, SqlProductVariantRepository } from '../../pos-menu/sql.product.repository.js';
@@ -16,6 +16,7 @@ import { SqlRecipeItemRepository } from '../../repositories/sql.recipe-item.repo
 import { SqlInventoryLevelRepository } from '../../repositories/sql.inventory-level.repository.js';
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
+import type { AuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
@@ -342,22 +343,22 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
    * ese piso. En producción la columna no existía y el UPDATE respondía 42703
    * -> 500 (ver schema v46 en schema.sql, BLOQUE 4).
    *
-   * Verifica las tres cosas que el contrato promete: que `served_at` se
-   * SELLA, que `status` NO cambia (servedAt es independiente del estado,
-   * schema.sql BLOQUE 14) y que no aparece ningún otro efecto -- el `{}` de
-   * `paso()` exige delta cero en reservas, cargos, eventos, auditorías y
-   * dead-letter.
+   * Verifica que `served_at` se SELLA, que `status` NO cambia (servedAt es
+   * independiente del estado, schema.sql BLOQUE 14), y que el único efecto
+   * es UNA fila de auditoría (ORDER-16, 03/09/2026): el `paso()` con delta
+   * `{ auditorias: +1 }` exige delta cero en reservas, cargos, eventos y
+   * dead-letter, y exactamente una auditoría más.
    */
-  it('O3-04 / T-SERVIR-01: servir sella served_at, no cambia status y no deja ningún otro efecto', async () => {
+  it('O3-04 / T-SERVIR-01 / E-I1: servir sella served_at, no cambia status y deja exactamente su fila de auditoría', async () => {
     const { resultado: orden } = await paso(
       'crear', await foto(), { ordenes: +1, items: +1 }, crear);
     await paso('confirmar', await foto(), { reservado: +3, eventos: +1, auditorias: +1 },
       () => service.confirmOrder(orden.id, ACTOR));
 
-    // Servir: ni un contador se mueve. No emite domain event (nada reacciona
-    // a esto todavía) y no toca stock ni finanzas.
+    // Servir: solo suma su fila de auditoría (ORDER-16). No emite domain
+    // event (D1) y no toca stock ni finanzas.
     const { resultado: servida } = await paso(
-      'servir', await foto(), {}, () => service.markServed(orden.id));
+      'servir', await foto(), { auditorias: +1 }, () => service.markServed(orden.id, ACTOR));
 
     expect(servida.status).toBe('CONFIRMED');       // NO pasa a un estado nuevo
     expect(servida.servedAt).not.toBeNull();        // el sello ocurrió
@@ -371,10 +372,147 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
     expect(rows[0]!.status).toBe('CONFIRMED');
     expect(rows[0]!.served_at).not.toBeNull();
 
+    // La fila de auditoría del sello: field='served_at', actor real,
+    // old_value NULL, new_value = el served_at en ISO (ms de precisión).
+    const { rows: aud } = await db.query<{ field: string; old_value: string | null; new_value: string | null; changed_by: string }>(
+      `SELECT field, old_value, new_value, changed_by FROM audit_log
+        WHERE entity='orders' AND entity_id=$1 AND field='served_at'`, [orden.id]);
+    expect(aud).toHaveLength(1);
+    expect(aud[0]!.old_value).toBeNull();
+    expect(aud[0]!.changed_by).toBe(ACTOR);
+    expect(new Date(aud[0]!.new_value!).getTime())
+      .toBe(new Date(servida.servedAt!).getTime());
+
     // Servir de nuevo: 200 idempotente, mismo sello, cero efectos nuevos
-    // (CAMBIO DE CONTRATO del 02/09 -- ORDER_ALREADY_SERVED ya no existe).
+    // -- NI una segunda fila de auditoría (D5).
     const { resultado: repetida } = await paso(
-      'servir otra vez', await foto(), {}, () => service.markServed(orden.id));
+      'servir otra vez', await foto(), {}, () => service.markServed(orden.id, ACTOR));
     expect(repetida.servedAt).toEqual(servida.servedAt);
+    const { rows: aud2 } = await db.query<{ n: string }>(
+      `SELECT count(*)::int AS n FROM audit_log WHERE entity='orders' AND entity_id=$1 AND field='served_at'`, [orden.id]);
+    expect(Number(aud2[0]!.n)).toBe(1);
+  });
+
+  // ── ORDER-16: D9 (solo CONFIRMED) y atomicidad de la auditoría ───────────
+
+  /** Rebuild de OrderService con un AuditLogRepository inyectable, para los
+   *  casos que necesitan forzar un fallo del INSERT de auditoría. Reusa el
+   *  `db` y el `txManager` reales de la suite. */
+  function buildServiceWithAudit(auditRepo: AuditLogRepository): OrderService {
+    const ps = new ProductService(
+      new SqlProductRepository(db), new SqlProductVariantRepository(db),
+      new SqlAuditLogRepository(db), new SqlInventoryLevelRepository(db), txManager,
+    );
+    return new OrderService(
+      new SqlOrderRepository(db), txManager, new SqlDomainEventRepository(db), ps,
+      new RecipeService(new SqlRecipeItemRepository(db), new SqlProductRepository(db), new SqlProductVariantRepository(db)),
+      new OrderPricingService(ps, new SqlCustomerRateRepository(db)),
+      auditRepo,
+    );
+  }
+
+  const servedAudits = (orderId: string) =>
+    db.query<{ n: string }>(
+      `SELECT count(*)::int AS n FROM audit_log WHERE entity='orders' AND entity_id=$1 AND field='served_at'`,
+      [orderId],
+    ).then((r) => Number(r.rows[0]!.n));
+
+  const servedAtOf = (orderId: string) =>
+    db.query<{ served_at: string | null }>(`SELECT served_at FROM orders WHERE id=$1`, [orderId])
+      .then((r) => r.rows[0]!.served_at);
+
+  it('E-I2: servir una orden COMPLETED es 409 ORDER_NOT_SERVABLE, sin sello ni fila (D9)', async () => {
+    const orden = await crear();
+    await service.confirmOrder(orden.id, ACTOR);
+    await service.completeOrder(orden.id, ACTOR, { paymentMethod: 'CASH', cardInstallments: null, cardSurchargeAmount: null });
+    const antes = await foto();
+
+    await expect(service.markServed(orden.id, ACTOR)).rejects.toThrow(OrderNotServableError);
+
+    expect(await servedAtOf(orden.id)).toBeNull();
+    expect(await servedAudits(orden.id)).toBe(0);
+    expect(await foto()).toEqual(antes); // TRANSICION_SERVIR intacta: cero efectos
+  });
+
+  it('E-I3: servir una orden CANCELLED es 409 ORDER_NOT_SERVABLE, sin sello ni fila (D9)', async () => {
+    const orden = await crear();
+    await service.confirmOrder(orden.id, ACTOR);
+    await service.cancelOrder(orden.id, ACTOR);
+    const antes = await foto();
+
+    await expect(service.markServed(orden.id, ACTOR)).rejects.toThrow(OrderNotServableError);
+
+    expect(await servedAtOf(orden.id)).toBeNull();
+    expect(await servedAudits(orden.id)).toBe(0);
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('E-I4: dos markServed concurrentes -- las DOS terminan bien (CAMBIO + YA_ESTABA), un sello, UNA fila', async () => {
+    const orden = await crear();
+    await service.confirmOrder(orden.id, ACTOR);
+
+    const resultados = await Promise.allSettled([
+      service.markServed(orden.id, ACTOR),
+      service.markServed(orden.id, ACTOR),
+    ]);
+
+    // Las DOS terminan válidamente. El SELECT ... FOR UPDATE de
+    // transitionWithClient serializa las transacciones: una toma el lock,
+    // sella y commitea (rama CAMBIO); la otra, al liberarse el lock, re-lee
+    // served_at IS NOT NULL y devuelve el resultado idempotente (rama
+    // YA_ESTABA). Ninguna rechaza.
+    expect(resultados.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    const valores = resultados.map((r) => {
+      if (r.status !== 'fulfilled') throw new Error('markServed concurrente no debería rechazar');
+      return r.value;
+    });
+
+    // Las dos respuestas traen el MISMO sello, no nulo -- la que fue CAMBIO
+    // lo escribió, la que fue YA_ESTABA lo releyó.
+    expect(valores[0]!.servedAt).not.toBeNull();
+    expect(valores[1]!.servedAt).not.toBeNull();
+    expect(valores[0]!.servedAt).toEqual(valores[1]!.servedAt);
+
+    // Persistido: un solo sello, y coincide con lo que devolvieron.
+    const persistido = await servedAtOf(orden.id);
+    expect(persistido).not.toBeNull();
+    expect(new Date(persistido!).getTime()).toBe(new Date(valores[0]!.servedAt!).getTime());
+
+    // Exactamente UNA fila field='served_at': solo la rama CAMBIO audita (D5)
+    // y solo una de las dos llamadas fue CAMBIO.
+    expect(await servedAudits(orden.id)).toBe(1);
+  });
+
+  it('E-I5: si el INSERT de auditoría falla, el rollback deshace served_at (D4)', async () => {
+    const orden = await crear();
+    await service.confirmOrder(orden.id, ACTOR);
+    const antes = await foto();
+
+    const svc = buildServiceWithAudit({
+      record:          async () => {},
+      recordWithClient: async () => { throw new Error('audit boom (E-I5)'); },
+      findByEntity:    async () => [],
+    });
+
+    await expect(svc.markServed(orden.id, ACTOR)).rejects.toThrow(/audit boom/);
+
+    // La única prueba real de D4: el UPDATE del sello se revirtió con el INSERT.
+    expect(await servedAtOf(orden.id)).toBeNull();
+    expect(await servedAudits(orden.id)).toBe(0);
+    expect(await foto()).toEqual(antes);
+  });
+
+  it('E-I6: actor ausente viola changed_by NOT NULL y el rollback deshace served_at', async () => {
+    const orden = await crear();
+    await service.confirmOrder(orden.id, ACTOR);
+    const antes = await foto();
+
+    // Simula una ruta que no pasó req.user!.id. El NOT NULL de
+    // audit_log.changed_by (schema.sql BLOQUE 10) rechaza el INSERT.
+    await expect(service.markServed(orden.id, undefined as unknown as string)).rejects.toThrow();
+
+    expect(await servedAtOf(orden.id)).toBeNull();
+    expect(await servedAudits(orden.id)).toBe(0);
+    expect(await foto()).toEqual(antes);
   });
 });

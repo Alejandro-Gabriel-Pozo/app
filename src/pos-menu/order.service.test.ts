@@ -447,7 +447,7 @@ describe('OrderService', () => {
     it('payload lleva wasServed=true al cancelar una orden ya servida (no debe restaurar stock)', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
-      await service.markServed(id);
+      await service.markServed(id, ACTOR);
 
       await service.cancelOrder(id, ACTOR);
 
@@ -544,7 +544,7 @@ describe('OrderService', () => {
       // Las cuatro transiciones pasan por la misma primitiva: si una fila
       // tiene un estado que el sistema no conoce, ninguna la toca.
       await expect(service.confirmOrder(id, ACTOR)).rejects.toThrow(OrderStateUnknownError);
-      await expect(service.markServed(id)).rejects.toThrow(OrderStateUnknownError);
+      await expect(service.markServed(id, ACTOR)).rejects.toThrow(OrderStateUnknownError);
       expect(eventRepo.events).toHaveLength(0);
     });
   });
@@ -714,21 +714,65 @@ describe('OrderService', () => {
   });
 
   describe('markServed', () => {
+    /** Filas de audit_log del sello de servedAt para una orden. */
+    const servedRows = (id: string) =>
+      auditLogRepo.findByEntity('orders', id).then((rows) => rows.filter((r) => r.field === 'served_at'));
+
     it('marca servedAt sin cambiar status ni emitir un domain event', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
 
-      const served = await service.markServed(id);
+      const served = await service.markServed(id, ACTOR);
 
       expect(served.status).toBe('CONFIRMED');
       expect(served.servedAt).not.toBeNull();
       expect(eventRepo.events).toHaveLength(1); // solo order.confirmed, markServed no emite nada
     });
 
-    it('rechaza marcar como servida una orden que no está CONFIRMED', async () => {
+    // ─────────────────────────────────────────────────────────────────────
+    // ORDER-16 (03/09/2026) — Servir deja rastro de QUIÉN lo hizo (A6.5).
+    //
+    // Nota de alcance (condición C1/C2 del architecture-governor): estos
+    // casos NO cubren "una falla de auditoría deja served_at sin sellar".
+    // El doble in-memory (InMemoryAuditLogRepository) no valida `changedBy`
+    // y el InMemoryTransactionManager de este archivo no hace rollback, así
+    // que "actor ausente / error del repo → served_at NULL" solo es
+    // demostrable contra Postgres real. Vive en
+    // src/tests/integration/order-flow.integration.test.ts (E-I5, E-I6).
+    // ─────────────────────────────────────────────────────────────────────
+
+    it('E-U1: servir válido deja exactamente una fila audit_log field=served_at con el actor real', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+
+      const served = await service.markServed(id, ACTOR);
+
+      const rows = await servedRows(id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        entity: 'orders', entityId: id, field: 'served_at',
+        oldValue: null, changedBy: ACTOR,
+      });
+      expect(rows[0]!.newValue).toBe(served.servedAt!.toISOString());
+      expect(eventRepo.events).toHaveLength(1); // D1: markServed no emite domain event
+    });
+
+    it('rechaza marcar como servida una orden que no está CONFIRMED (DRAFT) y no deja fila', async () => {
       const id = await createDraftOrderWithItem(50); // sigue en DRAFT
 
-      await expect(service.markServed(id)).rejects.toThrow(OrderNotServableError);
+      await expect(service.markServed(id, ACTOR)).rejects.toThrow(OrderNotServableError);
+      expect(await servedRows(id)).toHaveLength(0);
+    });
+
+    it('E-U2: servir sobre una orden COMPLETED es 409 ORDER_NOT_SERVABLE y no deja fila (D9)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      await service.completeOrder(id, ACTOR);
+
+      await expect(service.markServed(id, ACTOR)).rejects.toThrow(OrderNotServableError);
+      const orden = await service.getOrder(id);
+      expect(orden?.servedAt).toBeNull();
+      expect(await servedRows(id)).toHaveLength(0);
     });
 
     /**
@@ -736,28 +780,48 @@ describe('OrderService', () => {
      * `OrderAlreadyServedError` (409 ORDER_ALREADY_SERVED). Ahora las cuatro
      * transiciones comparten la misma regla: repetir el destino es 200
      * idempotente, sin evento y sin efectos. El error dejó de existir.
+     * ORDER-16 (D5): la rama idempotente tampoco escribe una segunda fila.
      */
-    it('ORD8-01: marcar como servida una orden ya servida es idempotente, no un conflicto', async () => {
+    it('ORD8-01 / E-U4: servir una orden ya servida es idempotente y NO escribe una segunda fila', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
-      const primera = await service.markServed(id);
+      const primera = await service.markServed(id, ACTOR);
 
-      const segunda = await service.markServed(id);
+      const segunda = await service.markServed(id, ACTOR);
 
       expect(segunda.servedAt).toEqual(primera.servedAt);
       expect(eventRepo.events).toHaveLength(1); // sigue habiendo un solo order.confirmed
+      expect(await servedRows(id)).toHaveLength(1); // D5: una sola fila pese a los dos serve
     });
 
-    it('ORD8-02: no marca como servida una orden cancelada — y no responde 200 en falso', async () => {
+    it('ORD8-02 / E-U3: no marca como servida una orden cancelada, no responde 200 en falso y no deja fila', async () => {
       const id = await createDraftOrderWithItem(50);
       await service.confirmOrder(id, ACTOR);
       await service.cancelOrder(id, ACTOR);
 
       // Antes esto devolvía 200 con la orden releída sin haber escrito nada:
       // el UPDATE condicional afectaba 0 filas y el resultado se descartaba.
-      await expect(service.markServed(id)).rejects.toThrow(OrderNotServableError);
+      await expect(service.markServed(id, ACTOR)).rejects.toThrow(OrderNotServableError);
       const orden = await service.getOrder(id);
       expect(orden?.servedAt).toBeNull();
+      expect(await servedRows(id)).toHaveLength(0);
+    });
+
+    it('E-U5: sin AuditLogRepository inyectado, servir falla RUIDOSAMENTE (no sella en silencio)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+
+      const bare = new OrderService(
+        orderRepo, txManager, eventRepo, productService,
+        new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository()),
+        new OrderPricingService(productService, customerRateRepo),
+        // sin auditLogRepo a propósito
+      );
+
+      await expect(bare.markServed(id, ACTOR)).rejects.toThrow(/AuditLogRepository/);
+      // "y served_at queda NULL" NO se puede assertar acá (C2): el
+      // InMemoryTransactionManager de este archivo no revierte. Esa parte
+      // la prueba E-I5 contra Postgres real.
     });
   });
 

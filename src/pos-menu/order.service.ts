@@ -417,6 +417,35 @@ export class OrderService {
   }
 
   /**
+   * ORDER-16 (03/09/2026) -- graba en audit_log el sello de `served_at`,
+   * dentro de la transacción `client`. Mismo idiom fail-loud que
+   * recordStatusTransition: sin auditLogRepo con recordWithClient la
+   * transición NO ocurre (rollback), preferible a un sello sin rastro (A6.5).
+   *
+   * Helper separado de recordStatusTransition a propósito, no reutilización:
+   * aquel está tipado a `OrderStatus` y hardcodea `field: 'status'` -- reusarlo
+   * exigiría aflojar esos tipos a `string` y se perdería la garantía de que
+   * toda fila `field='status'` lleva un estado real del enum.
+   *
+   * `field='served_at'` y no un status sintético (D2): `orders.status` no
+   * cambió y escribir que sí falsearía la tabla. `oldValue=null` es exacto:
+   * TRANSICION_SERVIR lleva `ademas: 'served_at IS NULL'`, así que un
+   * resultado CAMBIO garantiza que antes no había sello. `newValue` en ISO
+   * (ms de precisión, JS Date); el valor canónico persiste en `orders.served_at`.
+   */
+  private async recordServedStamp(
+    client: SqlClient, orderId: string, servedAt: Date, changedBy: string,
+  ): Promise<void> {
+    if (!this.auditLogRepo?.recordWithClient) {
+      throw new Error('OrderService requiere un AuditLogRepository con recordWithClient para auditar el sello de servedAt.');
+    }
+    await this.auditLogRepo.recordWithClient(client, [{
+      entity: 'orders', entityId: orderId, field: 'served_at',
+      oldValue: null, newValue: servedAt.toISOString(), changedBy,
+    }]);
+  }
+
+  /**
    * D9-Parte 2 -- reemplaza al viejo `buildOrderItemInput()` (function
    * suelta, jscpd la había marcado duplicada entre createOrder()/addItem(),
    * docs/analysis/duplication/ C3): ahora necesita `this.orderPricingService`,
@@ -740,11 +769,16 @@ export class OrderService {
   /**
    * CONFIRMED -> (sin cambio de status) marca servedAt=NOW(). Señal de "el
    * bien se consumió físicamente" que cancelOrder() usa para decidir si
-   * restaurar stock (ver comentario ahí y schema.sql BLOQUE 14). No emite
-   * domain event: hoy nada más reacciona a esto, es solo el dato que
-   * cancelOrder() lee más tarde.
+   * restaurar stock (ver comentario ahí y schema.sql BLOQUE 14).
+   *
+   * ORDER-16 (03/09/2026, D1): NO emite domain event -- Servir no tiene efecto
+   * asíncrono, nada reacciona a esto. Sí deja UNA fila en audit_log
+   * (`field='served_at'`, actor real) en la MISMA transacción que el sello:
+   * si el INSERT falla, el rollback se lleva también `served_at` -- nunca un
+   * sello sin rastro ni un rastro sin sello (A6.5). Solo en la rama CAMBIO:
+   * `YA_ESTABA` (servir dos veces) es 200 idempotente y NO audita (D5).
    */
-  async markServed(id: string): Promise<OrderWithTransitions> {
+  async markServed(id: string, changedBy: string): Promise<OrderWithTransitions> {
     return this.transactionManager.run(async (client: SqlClient) => {
       // ORDER-08 (02/09/2026) -- antes esto validaba FUERA de transacción y
       // descartaba el resultado del UPDATE condicional: con una cancelación
@@ -760,6 +794,13 @@ export class OrderService {
       // ORDER_ALREADY_SERVED deja de existir.
       const outcome = await this.orderRepo.transitionWithClient(client, id, TRANSICION_SERVIR);
       if (outcome.resultado !== 'CAMBIO') return this.resolverNoCambio(outcome, id, 'SERVIDA');
+
+      // ORDER-16: solo la rama CAMBIO. El early return de arriba es la única
+      // salida no-CAMBIO -- YA_ESTABA nunca llega acá, así que servir dos
+      // veces no escribe una segunda fila (D5). El INSERT comparte `client`
+      // con el UPDATE del sello: un fallo revierte `served_at` (D4).
+      await this.recordServedStamp(client, outcome.order.id, outcome.order.servedAt!, changedBy);
+
       return withAllowedTransitions(outcome.order);
     });
   }
