@@ -28,7 +28,7 @@ import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import { CustomerNotFoundError, InvoiceNotFoundError, ValidationError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
-import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient, acquireIdempotencyLock } from './payment-application.js';
+import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient, acquireIdempotencyLock, canonicalInvoiceLockOrder } from './payment-application.js';
 
 export interface CustomerStatement {
   customerId: string;
@@ -175,17 +175,20 @@ export class CustomerAccountService {
     // validar: el cliente puede mandar la misma factura dos veces en la
     // misma request (ej. el modal arma el array a mano), y procesarlas por
     // separado abriría dos locks distintos sobre la misma fila dentro de
-    // la misma transacción. Orden estable por id -- mismo criterio que
-    // `ResourceRepository.lockByIds()` -- para que dos pagos concurrentes
-    // que tocan las mismas facturas las bloqueen siempre en el mismo orden
-    // y ninguno espere en deadlock.
+    // la misma transacción. Orden CANÓNICO compartido (LOCK-ORDER-001,
+    // 05/09/2026, `canonicalInvoiceLockOrder()`) -- mismo comparador que
+    // usa `CancellationRefundService.confirmRefund()` para lockear
+    // `invoices`: los dos únicos sitios que sostienen más de un lock de
+    // esa tabla a la vez tienen que ordenar igual, o dos transacciones
+    // concurrentes que tocan las mismas facturas pueden ABBA-deadlockear.
     const consolidatedMap = new Map<string, number>();
     for (const a of allocations) {
       consolidatedMap.set(a.invoiceId, round2((consolidatedMap.get(a.invoiceId) ?? 0) + a.amount));
     }
-    const consolidatedAllocations = [...consolidatedMap.entries()]
-      .map(([invoiceId, amount]) => ({ invoiceId, amount }))
-      .sort((a, b) => a.invoiceId.localeCompare(b.invoiceId));
+    const consolidatedAllocations = canonicalInvoiceLockOrder(
+      [...consolidatedMap.entries()].map(([invoiceId, amount]) => ({ invoiceId, amount })),
+      (a) => a.invoiceId,
+    );
 
     const allocatedTotal = round2(consolidatedAllocations.reduce((sum, a) => sum + a.amount, 0));
     if (allocatedTotal > params.amount) {

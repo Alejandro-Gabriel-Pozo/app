@@ -32,7 +32,7 @@ import { ReservationStatus } from '../types/enums.js';
 import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import { CBTE_TIPO_FACTURA_B } from '../facturacion/afip-catalog.constants.js';
-import { acquireIdempotencyLock, applyCappedRefundToInvoice, createIdempotentPaymentWithClient } from '../clientes-finanzas/payment-application.js';
+import { acquireIdempotencyLock, applyCappedRefundToInvoice, createIdempotentPaymentWithClient, canonicalInvoiceLockOrder } from '../clientes-finanzas/payment-application.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -197,18 +197,17 @@ export class CancellationRefundService {
       // Lockear las N facturas candidatas en orden CANÓNICO (por id) antes
       // de aplicar ninguna lógica de negocio en orden LIFO -- desacopla
       // "en qué orden tomamos los locks" de "en qué orden repartimos la
-      // plata". `recordPayment()` (customer-account.service.ts:182-188,
-      // desde `a2aaf40`, O2-F1) ya ordena `consolidatedAllocations` con el
-      // MISMO comparador (`localeCompare` ascendente sobre `invoices.id`)
-      // antes de su propio loop de lock -- los dos únicos sitios que
-      // sostienen más de un lock de `invoices` a la vez usan el mismo
-      // orden total, así que no hay ABBA entre ellos (verificado
-      // 05/09/2026, architecture-governor -- corrige una afirmación previa
-      // de este mismo comentario, que daba ese cierre por pendiente sin
-      // haber releído `customer-account.service.ts` actualizado). Costo
-      // real: un lock ya sostenido por esta misma transacción es
-      // instantáneo -- no es una segunda espera.
-      const canonicalOrder = [...issuedInvoices].sort((a, b) => a.id.localeCompare(b.id));
+      // plata". LOCK-ORDER-001 (05/09/2026) -- `canonicalInvoiceLockOrder()`
+      // compartida con `recordPayment()` (customer-account.service.ts,
+      // desde `a2aaf40`, O2-F1): los dos únicos sitios que sostienen más de
+      // un lock de `invoices` a la vez usan el mismo comparador, así que no
+      // hay ABBA entre ellos -- antes eran dos `.sort()` ad-hoc coincidiendo
+      // por casualidad mantenida a mano (verificado 05/09/2026,
+      // architecture-governor); `src/tests/architecture/lock-order.test.ts`
+      // es la cerca eléctrica que lo protege de ahora en más. Costo real:
+      // un lock ya sostenido por esta misma transacción es instantáneo --
+      // no es una segunda espera.
+      const canonicalOrder = canonicalInvoiceLockOrder(issuedInvoices, (inv) => inv.id);
       for (const invoice of canonicalOrder) {
         await this.invoiceRepo.getRefundableForUpdate(client, invoice.id);
       }

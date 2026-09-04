@@ -49,6 +49,25 @@ export async function acquireIdempotencyLock(client: SqlClient, idempotencyKey: 
   await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [idempotencyKey]);
 }
 
+/**
+ * LOCK-ORDER-001 (05/09/2026, docs/conocimiento/playbook-idempotencia-bajo-lock.md)
+ * -- orden canónico compartido para tomar `FOR UPDATE` sobre más de una fila
+ * de `invoices` en la misma transacción. `CustomerAccountService.recordPayment()`
+ * y `CancellationRefundService.confirmRefund()` son los dos únicos sitios que
+ * lo hacen hoy -- si alguno ordenara distinto, dos transacciones concurrentes
+ * que tocan las mismas facturas podrían esperarse en ciclo (Postgres 40P01).
+ * Antes del 05/09/2026 esto eran dos `.sort()` ad-hoc en archivos distintos,
+ * coincidiendo por casualidad mantenida a mano -- `src/tests/architecture/lock-order.test.ts`
+ * es la cerca eléctrica que fuerza a que un tercer sitio nuevo pase por acá.
+ *
+ * Ascendente por `localeCompare` -- sensible a locale/ICU, da igual mientras
+ * los dos sitios corran en el mismo proceso Node y los ids sean UUID (ver
+ * el playbook para el caso en que eso deje de ser cierto).
+ */
+export function canonicalInvoiceLockOrder<T>(items: readonly T[], getInvoiceId: (item: T) => string): T[] {
+  return [...items].sort((a, b) => getInvoiceId(a).localeCompare(getInvoiceId(b)));
+}
+
 export interface CappedPaymentApplication {
   invoiceId: string;
   requestedAmount: number;
