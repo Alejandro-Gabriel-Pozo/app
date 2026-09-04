@@ -25,8 +25,10 @@ import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { CustomerRepository } from './customer.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import { DomainError, CustomerNotFoundError } from '../domain/errors.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
+import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient } from './payment-application.js';
 
 export class CompanyCustomerRequiredError extends DomainError {
   constructor(customerId: string) {
@@ -82,6 +84,13 @@ export class AccountsReceivableService {
     private readonly customerRepo: CustomerRepository,
     private readonly transactionManager: TransactionManager,
     private readonly businessProfileRepo: BusinessProfileRepository,
+    /**
+     * O2-F2 (03/09/2026) -- resolver a qué factura corresponde el
+     * `financial_transaction_id` de una fila AR, y capar/lockear el pago
+     * contra ella en `markCollected()`. Solo los dos métodos de lectura que
+     * necesita -- mismo criterio que `CustomerAccountService`.
+     */
+    private readonly invoiceRepo: Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'getInvoiceIdByFinancialTransactionId'>,
   ) {}
 
   async transferStayBalanceToReceivable(input: TransferStayBalanceInput): Promise<AccountReceivable> {
@@ -191,36 +200,143 @@ export class AccountsReceivableService {
    * empresa, no un cargo nuevo (mismo criterio que un PAYMENT sin
    * `allocations` en CustomerAccountService.recordPayment) -- no necesita
    * documento de origen (F1-Pieza 2 no lo exige para PAYMENT/REFUND).
+   *
+   * O2-F2 (03/09/2026, docs/diseno-o2-f2-cierre-completo-2026-09-03.md) --
+   * antes este PAYMENT no llevaba `settledInvoiceId`: la factura nunca se
+   * enteraba de que la empresa ya había pagado por este camino, y un cobro
+   * posterior por `CustomerAccountService.recordPayment()` la veía con
+   * saldo completo y aplicaba de nuevo -- doble cobro real, reproducido
+   * contra Postgres. Ahora:
+   *  1. Si `ar.financialTransactionId` resuelve a una factura ISSUED
+   *     (individual o consolidada, `invoiceRepo.getInvoiceIdByFinancialTransactionId`),
+   *     el PAYMENT se capa al saldo vigente de esa factura, con el MISMO
+   *     lock (`FOR UPDATE OF i`) que usa `recordPayment()` -- serializa los
+   *     dos caminos entre sí (A8.1/A8.2). El excedente (no debería haberlo
+   *     en el caso normal, pero puede si otro camino ya cobró parte) se
+   *     preserva como fila sin asignar, nunca se pierde.
+   *  2. Si no resuelve (fila legacy sin `financial_transaction_id`, o un
+   *     AR facturado antes de que `invoice_charges` existiera): fallback
+   *     legacy sin cambios -- PAYMENT sin vínculo, documentado como deuda
+   *     técnica aceptada (decisión del dueño, 03/09/2026: los tenants de
+   *     hoy son de prueba, no producción con plata real -- ver diseño).
+   *  3. Idempotente vía `idempotencyKey = ar-collect:${id}` -- repetir el
+   *     cobro (reintento de red, o una carrera real donde otra transacción
+   *     ya commiteó entre nuestra lectura y esta) no crea un segundo
+   *     PAYMENT ni relanza un 409: devuelve el resultado ya aplicado.
    */
   async markCollected(id: string): Promise<AccountReceivable> {
     const ar = await this.arRepo.getById(id);
     if (!ar) throw new AccountReceivableNotFoundError(id);
+    if (ar.status === 'COBRADO') {
+      // Idempotente -- ya se cobró (por esta misma llamada en un intento
+      // anterior, o por una carrera concurrente ya resuelta). No es un
+      // error de negocio: un reintento de red no debe verse como un 409.
+      return ar;
+    }
     if (ar.status !== 'FACTURADO') {
       throw new InvalidAccountsReceivableTransitionError(id, ar.status, 'COBRADO');
     }
 
+    const invoiceId = ar.financialTransactionId
+      ? await this.invoiceRepo.getInvoiceIdByFinancialTransactionId(ar.financialTransactionId)
+      : null;
+    const idempotencyKey = `ar-collect:${id}`;
+    const notes = `Cobro de cuenta por cobrar — estadía ${ar.stayId}`;
+
     return this.transactionManager.run(async (client) => {
-      await this.financialRepo.createWithClient(client, {
-        id:         randomUUID(),
-        businessId: ar.businessId,
-        customerId: ar.companyCustomerId,
-        type:       'PAYMENT',
-        amount:     ar.amount,
-        currency:   ar.currency,
-        status:     'SETTLED',
-        notes:      `Cobro de cuenta por cobrar — estadía ${ar.stayId}`,
-      });
+      // O2F2-A (erp-audit-orchestrator, 03/09/2026, reproducido 2/6
+      // corridas) -- el chequeo de idempotencia del fix anterior (H1)
+      // corría ANTES de tomar cualquier lock: dos markCollected() GENUINAMENTE
+      // concurrentes sobre la MISMA fila (dos pestañas, dos operadores, un
+      // reintento en vuelo) leen `ar.status = 'FACTURADO'` los dos antes de
+      // que ninguno commitee, así que ninguno ve la guarda de arriba
+      // (`status === 'COBRADO'`); el chequeo de `getByIdempotencyKey` de
+      // acá abajo, si corre ANTES de que el ganador de la carrera por el
+      // lock de la factura haya commiteado, tampoco lo encuentra -- los dos
+      // siguen adelante. El perdedor, tras esperar el lock de la factura,
+      // relee outstanding=0 (fresco, correcto gracias al fix de
+      // getOutstandingForUpdate) y recalcula excessAmount = ar.amount
+      // COMPLETO otra vez -- crédito fantasma, con una clave
+      // (`...:sin-asignar`) que el ganador nunca creó.
+      //
+      // Fix real: lockear la fila `accounts_receivable` PRIMERO -- es el
+      // recurso que de verdad compite en esta carrera (1:1 con el
+      // `idempotencyKey`, que se deriva de `id`), a diferencia del lock de
+      // la factura (que sólo sirve para serializar `markCollected()` contra
+      // `recordPayment()`, una carrera distinta, ya cubierta). Con la fila
+      // AR lockeada, el chequeo de idempotencia que sigue ya no puede correr
+      // en paralelo con el commit que lo volvería obsoleto: el perdedor
+      // espera ACÁ, no en el lock de la factura, y cuando lo obtiene el
+      // ganador ya commiteó de punta a punta.
+      await this.arRepo.lockForUpdate(client, id);
+
+      const existingPayment = await this.financialRepo.getByIdempotencyKey(idempotencyKey);
+      if (!existingPayment) {
+        if (invoiceId) {
+          const { appliedAmount, excessAmount } = await applyCappedPaymentToInvoice(
+            this.invoiceRepo, client, invoiceId, ar.amount,
+          );
+          await createIdempotentPaymentWithClient(this.financialRepo, client, {
+            id: randomUUID(),
+            businessId: ar.businessId,
+            customerId: ar.companyCustomerId,
+            type: 'PAYMENT',
+            amount: appliedAmount,
+            currency: ar.currency,
+            status: 'SETTLED',
+            idempotencyKey,
+            notes,
+            settledInvoiceId: invoiceId,
+          });
+          if (excessAmount > 0) {
+            await createIdempotentPaymentWithClient(this.financialRepo, client, {
+              id: randomUUID(),
+              businessId: ar.businessId,
+              customerId: ar.companyCustomerId,
+              type: 'PAYMENT',
+              amount: excessAmount,
+              currency: ar.currency,
+              status: 'SETTLED',
+              idempotencyKey: `${idempotencyKey}:sin-asignar`,
+              notes: `${notes} — excedente sobre saldo de factura`,
+              settledInvoiceId: null,
+            });
+          }
+        } else {
+          // Fallback legacy (§5.1 del diseño) -- sin vínculo resoluble,
+          // comportamiento sin cambios.
+          await createIdempotentPaymentWithClient(this.financialRepo, client, {
+            id: randomUUID(),
+            businessId: ar.businessId,
+            customerId: ar.companyCustomerId,
+            type: 'PAYMENT',
+            amount: ar.amount,
+            currency: ar.currency,
+            status: 'SETTLED',
+            idempotencyKey,
+            notes,
+            settledInvoiceId: null,
+          });
+        }
+      }
 
       const updated = await this.arRepo.markCollectedWithClient(client, id);
-      // No debería pasar -- ya se confirmó status === 'FACTURADO' arriba,
-      // en la misma transacción, sin ningún await entre medio que permita
-      // que otro request lo cambie. Un `throw` acá es un invariante roto,
-      // no un camino esperable (mismo criterio que el `throw new Error`
-      // "no debería pasar" de CustomerAccountService.recordPayment).
-      if (!updated) {
-        throw new Error(`markCollected: la fila "${id}" cambió de estado en medio de la transacción -- no debería pasar`);
-      }
-      return updated;
+      if (updated) return updated;
+
+      // La fila AR SÍ está lockeada desde el arranque de esta transacción
+      // (`:271`, `arRepo.lockForUpdate`) -- eso es lo que serializa a los
+      // concurrentes entre sí. Si aun así el UPDATE no afectó filas es
+      // porque otra transacción concurrente ya aplicó el MISMO PAYMENT
+      // idempotente y ya commiteó COBRADO antes de que esta llegara acá --
+      // no un invariante roto. El `getById` de abajo corre sobre el pool,
+      // no sobre `client`, a propósito: ya no compite por el lock de la
+      // fila (esta transacción está por terminar) y necesita ver el commit
+      // ajeno, que bajo READ COMMITTED sólo es visible en una lectura nueva.
+      const current = await this.arRepo.getById(id);
+      if (current?.status === 'COBRADO') return current;
+      throw new Error(
+        `markCollected: la fila "${id}" quedó en un estado inesperado (${current?.status ?? 'no encontrada'}) en medio de la transacción -- no debería pasar`,
+      );
     });
   }
 }

@@ -18,6 +18,7 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
+import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_STAY_ID = 'stay-1';
@@ -33,6 +34,12 @@ const TEST_GUEST_ID = 'cust-huesped';
 class FakeAccountsReceivableRepository implements AccountsReceivableRepository {
   public created: Omit<AccountReceivable, 'createdAt' | 'invoicedAt' | 'collectedAt'>[] = [];
   public rows = new Map<string, AccountReceivable>();
+  /** O2F2-A -- para poder aseverar que markCollected() lockea ANTES de leer nada. */
+  public lockedIds: string[] = [];
+
+  async lockForUpdate(_client: SqlClient, id: string): Promise<void> {
+    this.lockedIds.push(id);
+  }
 
   async createWithClient(
     _client: SqlClient,
@@ -147,6 +154,30 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
   async update(_input: UpdateBusinessProfileInput): Promise<BusinessProfile> { return this.profile; }
 }
 
+/**
+ * O2-F2 (03/09/2026) -- fake mínimo, solo los dos métodos que
+ * `AccountsReceivableService` consume. `outstandingByInvoiceId` simula el
+ * saldo real de la factura (default: `requestedAmount`, es decir "nada
+ * cobrado todavía") -- los tests que necesitan un saldo distinto lo setean
+ * antes de llamar a `markCollected()`.
+ */
+class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'getInvoiceIdByFinancialTransactionId'> {
+  public invoiceIdByFinancialTransactionId = new Map<string, string>();
+  public outstandingByInvoiceId = new Map<string, number>();
+
+  async getInvoiceIdByFinancialTransactionId(financialTransactionId: string): Promise<string | null> {
+    return this.invoiceIdByFinancialTransactionId.get(financialTransactionId) ?? null;
+  }
+
+  async getOutstandingForUpdate(_client: SqlClient, invoiceId: string): Promise<number> {
+    const outstanding = this.outstandingByInvoiceId.get(invoiceId);
+    if (outstanding === undefined) {
+      throw new Error(`FakeInvoiceRepository: outstanding no seteado para "${invoiceId}"`);
+    }
+    return outstanding;
+  }
+}
+
 function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile {
   const now = new Date();
   return {
@@ -166,6 +197,7 @@ function makeProfile(overrides: Partial<BusinessProfile> = {}): BusinessProfile 
 describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
   let arRepo: FakeAccountsReceivableRepository;
   let financialRepo: FakeFinancialTransactionRepository;
+  let invoiceRepo: FakeInvoiceRepository;
   let stay: Stay;
   let customers: Map<string, Customer>;
   let service: AccountsReceivableService;
@@ -173,6 +205,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
   beforeEach(() => {
     arRepo = new FakeAccountsReceivableRepository();
     financialRepo = new FakeFinancialTransactionRepository();
+    invoiceRepo = new FakeInvoiceRepository();
     stay = Stay.checkIn({
       businessId: TEST_BUSINESS_ID,
       reservationId: 'res-1',
@@ -192,6 +225,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile()),
+      invoiceRepo,
     );
   });
 
@@ -245,6 +279,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' })),
+      invoiceRepo,
     );
     financialRepo.netBalanceByStay = 500;
 
@@ -265,6 +300,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile()),
+      invoiceRepo,
     );
 
     await expect(service.transferStayBalanceToReceivable({
@@ -302,6 +338,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
 describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 23/08/2026)', () => {
   let arRepo: FakeAccountsReceivableRepository;
   let financialRepo: FakeFinancialTransactionRepository;
+  let invoiceRepo: FakeInvoiceRepository;
   let service: AccountsReceivableService;
 
   function seed(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
@@ -328,6 +365,7 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
   beforeEach(() => {
     arRepo = new FakeAccountsReceivableRepository();
     financialRepo = new FakeFinancialTransactionRepository();
+    invoiceRepo = new FakeInvoiceRepository();
     const customers = new Map([
       [TEST_COMPANY_ID, new Customer(TEST_COMPANY_ID, 'Empresa SA', [], 'COMPANY')],
     ]);
@@ -337,6 +375,7 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile()),
+      invoiceRepo,
     );
   });
 
@@ -369,7 +408,13 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
   });
 
   describe('markCollected — FACTURADO → COBRADO, crea el PAYMENT que cierra la deuda', () => {
-    it('crea un PAYMENT contra la empresa por el monto exacto', async () => {
+    it('O2F2-A -- lockea la fila AR como primera operación de la transacción', async () => {
+      seed({ status: 'FACTURADO' });
+      await service.markCollected('ar-1');
+      expect(arRepo.lockedIds).toEqual(['ar-1']);
+    });
+
+    it('sin financialTransactionId (fila legacy, §5.1 del diseño) -- fallback sin cambios: PAYMENT sin settledInvoiceId por el monto exacto', async () => {
       seed({ status: 'FACTURADO', invoiceRef: '0001-00001234' });
 
       const updated = await service.markCollected('ar-1');
@@ -383,6 +428,7 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
         amount: 15000,
         currency: 'ARS',
         status: 'SETTLED',
+        settledInvoiceId: null,
       });
     });
 
@@ -390,16 +436,47 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       await expect(service.markCollected('no-existe')).rejects.toThrow(AccountReceivableNotFoundError);
     });
 
-    it('rechaza si todavía está PENDIENTE_FACTURAR (no se puede saltear FACTURADO)', async () => {
+    it('rechaza si todavía está PENDIENTE_FACTURAR (no se puede saltear FACTURADO -- éste sigue siendo genuinamente inválido)', async () => {
       seed({ status: 'PENDIENTE_FACTURAR' });
       await expect(service.markCollected('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
       expect(financialRepo.created).toHaveLength(0);
     });
 
-    it('rechaza si ya está COBRADO (no se cobra dos veces)', async () => {
-      seed({ status: 'COBRADO' });
-      await expect(service.markCollected('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
+    it('O2-F2 (03/09/2026) -- idempotente si ya está COBRADO: devuelve la fila tal cual, sin crear un segundo PAYMENT ni lanzar 409', async () => {
+      const ar = seed({ status: 'COBRADO' });
+
+      const result = await service.markCollected('ar-1');
+
+      expect(result).toEqual(ar);
       expect(financialRepo.created).toHaveLength(0);
+    });
+
+    it('O2-F2 -- con financialTransactionId resoluble a una factura: el PAYMENT lleva settledInvoiceId y se capa al saldo vigente', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1', amount: 1000 });
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
+      invoiceRepo.outstandingByInvoiceId.set('inv-1', 1000); // nada cobrado todavía
+
+      const updated = await service.markCollected('ar-1');
+
+      expect(updated.status).toBe('COBRADO');
+      expect(financialRepo.created).toHaveLength(1);
+      expect(financialRepo.created[0]).toMatchObject({
+        amount: 1000,
+        settledInvoiceId: 'inv-1',
+        idempotencyKey: 'ar-collect:ar-1',
+      });
+    });
+
+    it('O2-F2 -- si el saldo real de la factura es menor al monto AR (otro camino ya cobró parte), capa y preserva el excedente como fila sin asignar', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1', amount: 1000 });
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
+      invoiceRepo.outstandingByInvoiceId.set('inv-1', 300); // ya se cobraron 700 por otro camino
+
+      await service.markCollected('ar-1');
+
+      expect(financialRepo.created).toHaveLength(2);
+      expect(financialRepo.created[0]).toMatchObject({ amount: 300, settledInvoiceId: 'inv-1' });
+      expect(financialRepo.created[1]).toMatchObject({ amount: 700, settledInvoiceId: null, idempotencyKey: 'ar-collect:ar-1:sin-asignar' });
     });
   });
 

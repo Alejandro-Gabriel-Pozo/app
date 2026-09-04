@@ -51,6 +51,30 @@ export interface InvoiceRepository {
    */
   getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>>;
   /**
+   * O2-F2 (03/09/2026, F2.2 -- visibilidad) — TODAS las facturas de un
+   * cliente, cualquier status, sin filtrar por saldo pendiente. A diferencia
+   * de `getOutstandingByCustomerId` (que alimenta el modal de conciliación
+   * de pagos) esta es la lectura genérica "qué facturas tiene este cliente"
+   * -- antes de esta sesión no existía ningún endpoint que la expusiera para
+   * facturas consolidadas (`financial_transaction_id IS NULL`), así que no
+   * había forma de listarlas por cliente en absoluto.
+   */
+  getByCustomerId(customerId: string): Promise<Invoice[]>;
+  /**
+   * O2-F2 (03/09/2026, F2.3 -- resolución del vínculo AR -> factura) —
+   * dado el `financial_transaction_id` de una fila `accounts_receivable`,
+   * encuentra la factura ISSUED que lo cubre. Prueba primero el camino
+   * individual (`invoices.financial_transaction_id` directo, ver
+   * `InvoiceService.finalizeIssued()`); si no matchea, el consolidado
+   * (`invoice_charges.financial_transaction_id`, único por cargo, ver
+   * `InvoiceService.requestConsolidatedInvoice()`). `null` si ninguno
+   * matchea -- no debería pasar para un AR que ya llegó a FACTURADO, pero no
+   * es un invariante roto: el caller decide qué hacer (`AccountsReceivableService.markCollected()`
+   * lo trata como "sin vínculo resoluble", mismo camino que una fila legacy
+   * sin `financial_transaction_id`).
+   */
+  getInvoiceIdByFinancialTransactionId(financialTransactionId: string): Promise<string | null>;
+  /**
    * O2-F1 (03/09/2026, decisión del dueño: opción B, aplicación parcial
    * controlada) — saldo pendiente de UNA factura puntual, calculado con
    * `SELECT ... FOR UPDATE` sobre la fila de `invoices` dentro de la

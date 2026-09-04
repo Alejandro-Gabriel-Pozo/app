@@ -116,6 +116,10 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
     return this.doMarkCollected(client, id);
   }
 
+  async lockForUpdate(client: SqlClient, id: string): Promise<void> {
+    await client.query(`SELECT 1 FROM accounts_receivable WHERE id = $1 FOR UPDATE`, [id]);
+  }
+
   private async doMarkCollected(client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
     const result = await client.query<AccountsReceivableRow>(
       `UPDATE accounts_receivable

@@ -110,6 +110,19 @@ export interface AccountsReceivableRepository {
   markCollectedWithClient(client: SqlClient, id: string): Promise<AccountReceivable | undefined>;
 
   /**
+   * O2F2-A (erp-audit-orchestrator/architecture-governor, 03/09/2026) --
+   * `SELECT ... FOR UPDATE` puro sobre la fila, sin cómputo -- el recurso
+   * que serializa dos `markCollected()` concurrentes sobre la MISMA AR
+   * (distinto del lock de `invoices`, que sirve para la carrera
+   * `markCollected()` × `recordPayment()`). Tiene que ser la PRIMERA
+   * operación dentro de la transacción del caller, antes de cualquier
+   * chequeo de idempotencia -- si corre después, dos llamadas
+   * genuinamente concurrentes pueden pasar el chequeo las dos antes de que
+   * ninguna commitee.
+   */
+  lockForUpdate(client: SqlClient, id: string): Promise<void>;
+
+  /**
    * Reporte agrupado por empresa para un período — base del cierre de mes.
    * Sin `businessId`: igual que `OccupancyRepository`, el aislamiento ya lo
    * da el pool del tenant (`req.db`), no un filtro de columna acá.

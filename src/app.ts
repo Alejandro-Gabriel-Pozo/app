@@ -115,6 +115,7 @@ import { SqlAccountsReceivableRepository }   from './clientes-finanzas/sql.accou
 import { SqlCustomerRepository }             from './clientes-finanzas/sql.customer.repository.js';
 import { AccountsReceivableService }         from './clientes-finanzas/accounts-receivable.service.js';
 import { SqlBusinessProfileRepository }      from './repositories/sql.business-profile.repository.js';
+import { SqlInvoiceRepository }              from './facturacion/sql.invoice.repository.js';
 import { SqlOrderRepository }                from './pos-menu/sql.order.repository.js';
 import { SqlStockMovementRepository }        from './repositories/sql.stock-movement.repository.js';
 import { buildTenantTransactionManager }     from './db/tenant-context.js';
@@ -480,6 +481,7 @@ export async function createApp(): Promise<{
         new SqlCustomerRepository(req.db),
         buildTenantTransactionManager(req),
         businessProfileRepo,
+        new SqlInvoiceRepository(req.db),
       );
 
       const router = createStaysRouter(stayService, arService);
@@ -498,6 +500,7 @@ export async function createApp(): Promise<{
         new SqlCustomerRepository(req.db),
         buildTenantTransactionManager(req),
         new SqlBusinessProfileRepository(req.db),
+        new SqlInvoiceRepository(req.db),
       );
       const router = createAccountsReceivableRouter(arService);
       router(req, _res, next);

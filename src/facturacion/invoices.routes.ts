@@ -10,6 +10,9 @@
  * POST /api/invoices          — FRONT_DESK (pedir el CAE de un cobro ya existente)
  * GET  /api/invoices/:id      — FRONT_DESK
  * GET  /api/invoices?financialTransactionId=... — FRONT_DESK
+ * GET  /api/invoices?customerId=...              — FRONT_DESK (O2-F2, F2.2 --
+ *      todas las facturas de un cliente, cualquier status; antes no existía
+ *      ningún endpoint que listara las consolidadas de un cliente)
  *
  * `requireModule(ModuleKey.FACTURACION)` gatea las MUTACIONES (POST /,
  * POST /consolidated) y el router de credenciales AFIP. Los GET de
@@ -151,19 +154,31 @@ export function createInvoicesRouter(container: AppContainer): Router {
     },
   );
 
-  // ── GET /api/invoices?financialTransactionId=... ───────────────────────────
+  // ── GET /api/invoices?financialTransactionId=...  |  ?customerId=... ───────
   router.get(
     '/',
     authorize(Roles.FRONT_DESK),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const financialTransactionId = req.query['financialTransactionId'];
-        if (typeof financialTransactionId !== 'string' || !financialTransactionId) {
-          res.status(400).json({ code: 'VALIDATION_ERROR', message: 'financialTransactionId es obligatorio' });
+        const customerId = req.query['customerId'];
+
+        if (typeof financialTransactionId === 'string' && financialTransactionId) {
+          const invoices = await new SqlInvoiceRepository(req.db!).getByFinancialTransactionId(financialTransactionId);
+          res.json(invoices);
           return;
         }
-        const invoices = await new SqlInvoiceRepository(req.db!).getByFinancialTransactionId(financialTransactionId);
-        res.json(invoices);
+
+        // O2-F2 (03/09/2026, F2.2) -- todas las facturas de un cliente,
+        // cualquier status. No verifica pertenencia de businessId acá porque
+        // el aislamiento ya es físico (una BD por negocio, req.db) -- A2.8.
+        if (typeof customerId === 'string' && customerId) {
+          const invoices = await new SqlInvoiceRepository(req.db!).getByCustomerId(customerId);
+          res.json(invoices);
+          return;
+        }
+
+        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'financialTransactionId o customerId es obligatorio' });
       } catch (err) { next(err); }
     },
   );

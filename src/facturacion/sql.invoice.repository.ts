@@ -148,6 +148,15 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>> {
+    // O2-F2 (03/09/2026, F2.1) -- el JOIN original exigía
+    // `ft.id = i.financial_transaction_id`, lo que excluía TODA factura
+    // consolidada (`i.financial_transaction_id IS NULL` a propósito, ver
+    // schema.sql:3139) del listado -- una factura consolidada cobrada quedaba
+    // invisible para este modal de conciliación aunque tuviera saldo real.
+    // Ahora: consolidada (financial_transaction_id IS NULL) siempre pasa --
+    // nunca se genera una consolidada para un REFUND, así que no hace falta
+    // verificar `type` en ese caso -- o individual con `ft.type = 'CHARGE'`,
+    // mismo filtro que antes.
     const { rows } = await this.db.query<InvoiceRow & { outstanding: string }>(
       `SELECT * FROM (
          SELECT i.*,
@@ -158,14 +167,46 @@ export class SqlInvoiceRepository implements InvoiceRepository {
                          WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
            ) AS outstanding
          FROM invoices i
-         JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
-         WHERE i.customer_id = $1 AND i.status = 'ISSUED' AND ft.type = 'CHARGE'
+         LEFT JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
+         WHERE i.customer_id = $1 AND i.status = 'ISSUED'
+           AND (i.financial_transaction_id IS NULL OR ft.type = 'CHARGE')
        ) sub
        WHERE outstanding > 0
        ORDER BY issued_at ASC NULLS LAST`,
       [customerId],
     );
     return rows.map((row) => ({ ...rowToEntity(row), outstanding: parseFloat(row.outstanding) }));
+  }
+
+  async getByCustomerId(customerId: string): Promise<Invoice[]> {
+    const { rows } = await this.db.query<InvoiceRow>(
+      `SELECT * FROM invoices WHERE customer_id = $1 ORDER BY created_at DESC`,
+      [customerId],
+    );
+    return rows.map(rowToEntity);
+  }
+
+  async getInvoiceIdByFinancialTransactionId(financialTransactionId: string): Promise<string | null> {
+    // H2 (architecture-governor, 03/09/2026) -- la rama consolidada
+    // (invoice_charges) también exige status='ISSUED', igual que la
+    // individual y que el propio docblock de la interfaz declara. Sin este
+    // filtro: invoice_charges se inserta al CREAR la factura (status
+    // PENDING todavía, antes de llamar a AFIP) y ninguna fila se borra si
+    // AFIP rechaza (REJECTED/FAILED_UNCERTAIN) -- markCollected() podría
+    // capar contra el saldo de un comprobante nunca emitido y dejar
+    // settled_invoice_id apuntando a una factura que getOutstandingByCustomerId
+    // (que sí filtra ISSUED) nunca va a mostrar en conciliación. Sin esta
+    // fila, el caller cae al fallback legacy ya sancionado por el dueño.
+    const { rows } = await this.db.query<{ invoice_id: string | null }>(
+      `SELECT COALESCE(
+         (SELECT id FROM invoices WHERE financial_transaction_id = $1 AND status = 'ISSUED'),
+         (SELECT ic.invoice_id FROM invoice_charges ic
+          JOIN invoices i ON i.id = ic.invoice_id
+          WHERE ic.financial_transaction_id = $1 AND i.status = 'ISSUED')
+       ) AS invoice_id`,
+      [financialTransactionId],
+    );
+    return rows[0]?.invoice_id ?? null;
   }
 
   async getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>> {

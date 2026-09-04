@@ -87,6 +87,20 @@ describe('SqlAccountsReceivableRepository', () => {
     expect(params).toEqual(['ar-1']);
   });
 
+  it('lockForUpdate corre FOR UPDATE sobre el client recibido, no sobre this.sqlClient (O2F2-A, 03/09/2026)', async () => {
+    const otherClient: SqlClient = {
+      query: vi.fn(async () => ({ rows: [] })) as unknown as SqlClient['query'],
+    };
+
+    await repo.lockForUpdate(otherClient, 'ar-1');
+
+    expect(otherClient.query).toHaveBeenCalledOnce();
+    expect(mockSqlClient.query).not.toHaveBeenCalled();
+    const [sql, params] = vi.mocked(otherClient.query).mock.calls[0]!;
+    expect(sql).toContain('FOR UPDATE');
+    expect(params).toEqual(['ar-1']);
+  });
+
   it('getReportByPeriod agrupa por empresa con FILTER por status (A1, paso 5)', async () => {
     const from = new Date('2026-08-01');
     const to = new Date('2026-08-31');
