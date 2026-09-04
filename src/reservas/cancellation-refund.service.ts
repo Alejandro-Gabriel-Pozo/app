@@ -218,11 +218,22 @@ export class CancellationRefundService {
       // `financial_transactions` con `settled_invoice_id`/
       // `reversed_invoice_id` apuntando a una de ellas necesita `FOR KEY
       // SHARE` sobre la fila padre, que conflictúa con nuestro `FOR
-      // UPDATE` y por lo tanto espera hasta nuestro commit (semántica de
-      // Postgres, no verificada empíricamente en este bloque -- mismo tipo
-      // de suposición que ya falló una vez en este repo, ver §7.1 en
-      // `sql.invoice.repository.ts`; si se demuestra falsa, este comentario
-      // hay que corregirlo). Esto protege la porción de `collected` ligada
+      // UPDATE` y por lo tanto espera hasta nuestro commit. FOR-KEY-SHARE-001
+      // (05/09/2026) -- VERIFICADO empíricamente para `settled_invoice_id`
+      // (no es inferencia ya para ESE lado): `src/tests/integration/for-key-share-lock-semantics.integration.test.ts`
+      // sostiene el lock desde una conexión separada e intenta el INSERT
+      // desde otra, con un brazo de control (una segunda factura SIN
+      // lockear, que sí resuelve en la misma ventana) para descartar que
+      // el bloqueo observado sea por otra causa; el INSERT contra la
+      // factura lockeada queda esperando y recién completa después del
+      // commit. `reversed_invoice_id` NO se midió por separado -- se
+      // asume el mismo comportamiento por tener la misma forma de FK sobre
+      // la misma tabla (`src/db/schema.sql`), inferencia de forma, no una
+      // segunda medición. Además: este test es de integración, corre solo
+      // con `TEST_DATABASE_URL` puesta a mano -- no forma parte de ningún
+      // pipeline de CI, así que "verificado" quiere decir "verificado una
+      // vez, localmente", no "vigilado en cada cambio". Esto protege la
+      // porción de `collected` ligada
       // a facturas lockeadas -- NO protege una transacción de la reserva
       // sin ningún `settled_invoice_id`/`reversed_invoice_id` (ej. un
       // PAYMENT genérico contra la cuenta del cliente): esa puede seguir
