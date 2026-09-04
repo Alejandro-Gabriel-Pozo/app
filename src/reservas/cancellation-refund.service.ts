@@ -31,6 +31,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import { ReservationStatus } from '../types/enums.js';
 import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
+import { CBTE_TIPO_FACTURA_B } from '../facturacion/afip-catalog.constants.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -92,9 +93,22 @@ export class CancellationRefundService {
 
     if (refundAmount <= 0) throw new NothingToRefundError(reservationId);
 
+    // F-A (05/09/2026, architecture-governor) -- getByReservationId() trae
+    // CUALQUIER factura de la reserva, incluidas las Notas de Crédito ya
+    // emitidas (una NC se persiste en la MISMA tabla `invoices`, con
+    // financial_transaction_id = la tx REFUND que la originó, que también
+    // lleva reservationId). Sin este filtro, un segundo confirmRefund()
+    // repartiría LIFO empezando por la NC más reciente -- issuedAt de la NC
+    // es más nuevo que el de la factura que revierte -- y
+    // buildCreditNote() emitiría una NC apuntando a OTRA NC, no a la
+    // factura original. Solo Factura B es reversible por este camino.
     const issuedInvoices = (await this.invoiceRepo.getByReservationId(reservationId))
-      .filter((inv) => inv.status === 'ISSUED')
-      .sort((a, b) => (b.issuedAt?.getTime() ?? 0) - (a.issuedAt?.getTime() ?? 0));
+      .filter((inv) => inv.status === 'ISSUED' && inv.cbteTipo === CBTE_TIPO_FACTURA_B)
+      // Desempate explícito por id -- documenta el invariante de que el
+      // orden LIFO tiene que ser determinístico incluso si dos facturas
+      // comparten el mismo issuedAt (no cambia el resultado de ningún test
+      // existente, ninguno tiene ese empate).
+      .sort((a, b) => (b.issuedAt?.getTime() ?? 0) - (a.issuedAt?.getTime() ?? 0) || a.id.localeCompare(b.id));
 
     const chunks: Array<{ amount: number; reversedInvoiceId: string | null }> = [];
     let remaining = refundAmount;

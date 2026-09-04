@@ -213,6 +213,23 @@ describe('CancellationRefundService.confirmRefund', () => {
     expect(created[2]?.amount).toBe(200);
   });
 
+  it('F-A (05/09/2026) -- ignora Notas de Crédito ya emitidas en el reparto, aunque estén ISSUED y sean las más nuevas', async () => {
+    const { service } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      invoices: [
+        makeInvoice({ id: 'inv-original', cbteTipo: 6, impTotal: 500, issuedAt: daysFromNow(-10) }),
+        // NC de un reembolso anterior -- misma tabla, ISSUED, y más nueva
+        // que la factura original. Con el bug viejo, el LIFO la habría
+        // elegido primero.
+        makeInvoice({ id: 'nc-anterior', cbteTipo: 8, impTotal: 300, issuedAt: daysFromNow(-1) }),
+      ],
+    });
+    const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    expect(created).toHaveLength(1);
+    expect(created[0]?.reversedInvoiceId).toBe('inv-original');
+  });
+
   it('ignora facturas no ISSUED (PENDING/REJECTED) en el reparto', async () => {
     const { service } = buildService({
       collected: 1000,

@@ -776,6 +776,19 @@ describe('InvoiceService', () => {
         .rejects.toThrow(InvoiceNotReversibleError);
     });
 
+    it('F-A (05/09/2026) -- rechaza un REFUND cuyo reversedInvoiceId apunta a OTRA Nota de Crédito, no a una Factura B', async () => {
+      seedOriginalInvoice({ id: 'nc-anterior', cbteTipo: CBTE_TIPO_NOTA_CREDITO_B, cbteNro: 7 });
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: 'nc-anterior' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(InvoiceNotReversibleError);
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
     it('reembolso total: arma una NC (CbteTipo 8) con CbtesAsoc apuntando a la factura original', async () => {
       seedOriginalInvoice();
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));

@@ -590,6 +590,17 @@ export class InvoiceService {
     if (!original || original.status !== 'ISSUED' || !original.cbteNro) {
       throw new InvoiceNotReversibleError(tx.id);
     }
+    // F-A (05/09/2026, architecture-governor) -- defensa en profundidad,
+    // segunda capa además del filtro de CancellationRefundService.confirmRefund().
+    // `original` puede ser CUALQUIER factura ISSUED, incluida otra Nota de
+    // Crédito (se persisten en esta misma tabla) -- sin este chequeo, una
+    // NC apuntando a `reversedInvoiceId` de OTRA NC pasaría igual: el
+    // `CbtesAsoc` resultante quedaría con `Tipo: CBTE_TIPO_NOTA_CREDITO_B`
+    // en vez de `Tipo: CBTE_TIPO_FACTURA_B`, un comprobante fiscal
+    // malformado. Solo Factura B es reversible.
+    if (original.cbteTipo !== CBTE_TIPO_FACTURA_B) {
+      throw new InvoiceNotReversibleError(tx.id);
+    }
 
     const factor = original.impTotal > 0 ? tx.amount / original.impTotal : 0;
     const originalIva = (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? [];
