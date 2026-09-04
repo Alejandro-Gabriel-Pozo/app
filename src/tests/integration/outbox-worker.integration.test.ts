@@ -55,6 +55,7 @@ import {
   OutboxWorker,
   ChargeNotYetCreatedError,
   ChargeNeverCreatedError,
+  UnsupportedEventVersionError,
 } from '../../workers/outbox.worker.js';
 import type { DomainEvent } from '../../repositories/domain-event.repository.js';
 
@@ -240,6 +241,24 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       expect((await fila(id)).dispatched_at).not.toBeNull();
     });
 
+    // O4-03 (03/09/2026, portado 05/09/2026 -- pendientes-2026-09-05.md,
+    // higiene "Portar O4-03 y O4-11") -- única cobertura de integración de
+    // esta rama de dispatch(); antes solo probada con el repo fake en
+    // memoria (outbox.worker.test.ts).
+    it('O4-03: un evento sin ningún handler registrado se marca despachado igual, para no bloquear la cola', async () => {
+      const id = await sembrar('t.sin-handler', 'agg-sin-handler');
+      const worker = new OutboxWorker(eventRepo, 5_000, 60, processedRepo);
+      // A propósito: ningún worker.on('t.sin-handler', ...) registrado.
+
+      await triggerPoll(worker);
+
+      expect((await fila(id)).dispatched_at).not.toBeNull();
+      // Nadie reclamó ningún casillero -- no hubo handler que corriera.
+      const { rows } = await db.query(
+        `SELECT 1 FROM processed_events WHERE domain_event_id = $1`, [id]);
+      expect(rows).toHaveLength(0);
+    });
+
     it('retry: el handler falla dos veces y tiene éxito la tercera -- retry_count sube en la fila real cada vez', async () => {
       const id = await sembrar('t.retry', 'agg-retry');
       const worker = new OutboxWorker(eventRepo, 5_000, 60, processedRepo);
@@ -332,6 +351,29 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       const row = await fila(id);
       expect(row.failed_at).toBeNull(); // NO dead-letter -- sigue reintentando
       expect(row.retry_count).toBe(1);
+    });
+
+    // O4-11 (03/09/2026, portado 05/09/2026 -- pendientes-2026-09-05.md,
+    // higiene "Portar O4-03 y O4-11") -- A10.4: versión sin handler nunca
+    // converge reintentando, así que sale de la cola en el primer intento
+    // en vez de gastar los 60 reintentos normales. Única cobertura de
+    // integración; antes solo probada con el repo fake en memoria.
+    it('O4-11: una versión sin handler va a dead-letter EN EL PRIMER intento (A10.4)', async () => {
+      const { rows } = await db.query<{ id: string }>(
+        `INSERT INTO domain_events (business_id, aggregate_type, aggregate_id, event_type, payload, version)
+         VALUES ($1, 'TEST', 'agg-version-vieja', 't.version-vieja', '{}', 7) RETURNING id`,
+        [BIZ]);
+      const id = Number(rows[0]!.id);
+      const worker = new OutboxWorker(eventRepo, 5_000, 60, processedRepo);
+      // Solo hay handler para v1 -- el evento pide v7.
+      worker.on('t.version-vieja', async () => { /* v1 */ }, { name: 'h-v1', version: 1 });
+
+      await triggerPoll(worker);
+
+      const row = await fila(id);
+      expect(row.failed_at).not.toBeNull(); // dead-letter YA en el primer poll
+      expect(row.retry_count).toBe(1); // no gastó los 60 reintentos normales
+      expect(row.last_error).toBe(UnsupportedEventVersionError.name);
     });
 
     // ── claim/release a través del worker real ─────────────────────────────
