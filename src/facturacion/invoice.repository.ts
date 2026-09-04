@@ -114,6 +114,29 @@ export interface InvoiceRepository {
    * invariante roto, no un 404 de negocio.
    */
   getOutstandingForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
+  /**
+   * BRECHA-REFUND-01 Fase 3 (05/09/2026, architecture-governor) — cuánto
+   * de UNA factura puntual todavía se puede reembolsar, con `SELECT ...
+   * FOR UPDATE` dentro de la transacción del caller (mismo patrón de dos
+   * sentencias que `getOutstandingForUpdate` §7.1 -- lock primero, sin
+   * subconsultas; cómputo después, sentencia nueva, foto fresca).
+   *
+   * NO es el espejo de `getOutstandingForUpdate()` con el signo dado
+   * vuelta -- un reembolso no capa contra "cuánto falta cobrar"
+   * (`outstanding`, que ya resta los REFUND -- capar un reembolso contra
+   * eso daría siempre 0, porque son las mismas facturas que un reembolso
+   * ataca). Capa contra el mínimo de dos invariantes:
+   *  (A) cuánto entró realmente por esta factura y todavía no se devolvió
+   *      (pagado − ya reembolsado) -- nunca reembolsar más plata de la
+   *      que efectivamente entró;
+   *  (B) cuánto vale el comprobante y todavía no se acreditó (impTotal −
+   *      ya reembolsado) -- invariante fiscal frente a ARCA, nunca
+   *      acreditar una NC por más que el valor facial.
+   * En la práctica (A) ≤ (B) siempre (el pagado ya está capado contra
+   * impTotal desde el lado del cobro) -- pedir las dos es gratis y deja
+   * los dos invariantes escritos, no solo el que domina hoy.
+   */
+  getRefundableForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

@@ -52,19 +52,44 @@ class FakePolicyRepository implements Pick<CancellationPolicyRepository, 'findAp
 }
 
 class FakeFinancialTransactionRepository implements
-  Pick<FinancialTransactionRepository, 'getCollectedPaymentTotalForReservation' | 'createWithClient'> {
+  Pick<FinancialTransactionRepository, 'getCollectedPaymentTotalForReservation' | 'createWithClient' | 'getByIdempotencyKey' | 'getByReservationId'> {
   public created: Array<Omit<FinancialTransaction, 'createdAt'>> = [];
+  private readonly byIdempotencyKey = new Map<string, FinancialTransaction>();
   constructor(private readonly collected: number) {}
   async getCollectedPaymentTotalForReservation(): Promise<number> { return this.collected; }
+  async getByIdempotencyKey(idempotencyKey: string): Promise<FinancialTransaction | undefined> {
+    return this.byIdempotencyKey.get(idempotencyKey);
+  }
+  /** BRECHA-REFUND-01 Fase 3 -- solo lo que confirmRefund() necesita del
+   * pre-chequeo de reintento serie: las filas ya creadas por esta fake. */
+  async getByReservationId(): Promise<FinancialTransaction[]> {
+    return [...this.byIdempotencyKey.values()];
+  }
   async createWithClient(_client: SqlClient, tx: Omit<FinancialTransaction, 'createdAt'>): Promise<FinancialTransaction> {
     this.created.push(tx);
-    return { ...tx, createdAt: new Date() };
+    const created: FinancialTransaction = { ...tx, createdAt: new Date() };
+    if (tx.idempotencyKey) this.byIdempotencyKey.set(tx.idempotencyKey, created);
+    return created;
   }
 }
 
-class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getByReservationId'> {
+class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getByReservationId' | 'getRefundableForUpdate'> {
+  /** BRECHA-REFUND-01 Fase 3 -- por defecto, "refundable" = impTotal (como
+   * si estuviera íntegramente cobrada y nada reembolsado todavía) -- misma
+   * capa que el comportamiento viejo (Math.min(remaining, impTotal)), para
+   * que los tests existentes de reparto no cambien de resultado. Los
+   * tests de Fase 3 que necesiten simular "ya se reembolsó parte" usan
+   * `refundableOverride`.
+   */
+  public refundableOverride = new Map<string, number>();
+  public lockedInvoiceIds: string[] = [];
   constructor(private readonly invoices: Invoice[]) {}
   async getByReservationId(): Promise<Invoice[]> { return this.invoices; }
+  async getRefundableForUpdate(_client: SqlClient, invoiceId: string): Promise<number> {
+    this.lockedInvoiceIds.push(invoiceId);
+    if (this.refundableOverride.has(invoiceId)) return this.refundableOverride.get(invoiceId)!;
+    return this.invoices.find((inv) => inv.id === invoiceId)?.impTotal ?? 0;
+  }
 }
 
 class FakeBusinessProfileRepository implements Pick<BusinessProfileRepository, 'get'> {
@@ -85,9 +110,19 @@ class FakeBusinessProfileRepository implements Pick<BusinessProfileRepository, '
 }
 
 class InMemoryTransactionManager implements TransactionManager {
+  /** BRECHA-REFUND-01 Fase 3 -- queries crudas emitidas sobre `client` (el
+   * advisory lock de acquireIdempotencyLock), para poder aseverar que se
+   * pidió sin depender de un mock que lo trague en silencio (mismo
+   * criterio que FakeTransactionManager en accounts-receivable.service.test.ts). */
+  public rawQueries: { sql: string; params: unknown[] | undefined }[] = [];
   async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
-    const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
-    return work(noopClient);
+    const client: SqlClient = {
+      query: async (sql: string, params?: unknown[]) => {
+        this.rawQueries.push({ sql, params });
+        return { rows: [], rowCount: 0 };
+      },
+    };
+    return work(client);
   }
 }
 
@@ -115,15 +150,17 @@ function buildService(opts: {
   invoices?: Invoice[];
 }) {
   const financialRepo = new FakeFinancialTransactionRepository(opts.collected ?? 0);
+  const invoiceRepo = new FakeInvoiceRepository(opts.invoices ?? []);
+  const transactionManager = new InMemoryTransactionManager();
   const service = new CancellationRefundService(
     new FakeReservationRepository('reservation' in opts ? opts.reservation : makeReservation()),
     new FakePolicyRepository(opts.tier ?? null),
     financialRepo,
-    new FakeInvoiceRepository(opts.invoices ?? []),
+    invoiceRepo,
     new FakeBusinessProfileRepository(),
-    new InMemoryTransactionManager(),
+    transactionManager,
   );
-  return { service, financialRepo };
+  return { service, financialRepo, invoiceRepo, transactionManager };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,5 +279,145 @@ describe('CancellationRefundService.confirmRefund', () => {
     const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
     expect(created).toHaveLength(1);
     expect(created[0]?.reversedInvoiceId).toBe('inv-issued');
+  });
+
+  it('BRECHA-REFUND-01 Fase 3 -- pide el advisory lock como primera operación de la transacción', async () => {
+    const { service, transactionManager } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      invoices: [],
+    });
+    await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    expect(transactionManager.rawQueries[0]?.sql).toContain('pg_advisory_xact_lock');
+  });
+
+  it('BRECHA-REFUND-01 Fase 3 -- lockea las facturas candidatas en orden CANÓNICO (por id), no en el orden LIFO de negocio', async () => {
+    const { service, invoiceRepo } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      invoices: [
+        // LIFO por issuedAt elegiría inv-b (más nueva) antes que inv-a --
+        // el orden canónico (por id) es el opuesto.
+        makeInvoice({ id: 'inv-a', impTotal: 300, issuedAt: daysFromNow(-10) }),
+        makeInvoice({ id: 'inv-b', impTotal: 500, issuedAt: daysFromNow(-1) }),
+      ],
+    });
+    await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    // Los primeros 2 locks (fase de pre-lock canónico) van en orden por id,
+    // ANTES de que arranque el reparto LIFO (que relockea, ya sostenido,
+    // en su propio orden -- inv-b primero).
+    expect(invoiceRepo.lockedInvoiceIds.slice(0, 2)).toEqual(['inv-a', 'inv-b']);
+  });
+
+  it('BRECHA-REFUND-01 Fase 3 -- reintento sobre la MISMA reserva (misma clave de idempotencia) devuelve las filas ya creadas, no duplica', async () => {
+    const { service, financialRepo } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      invoices: [makeInvoice({ id: 'inv-1', impTotal: 500, issuedAt: daysFromNow(-1) })],
+    });
+
+    const first = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    const second = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+
+    expect(first.map((tx) => tx.id)).toEqual(second.map((tx) => tx.id));
+    // Un solo INSERT real por chunk -- el reintento devolvió lo existente
+    // vía getByIdempotencyKey, no volvió a crear.
+    expect(financialRepo.created).toHaveLength(first.length);
+  });
+
+  it('BRECHA-REFUND-01 Fase 3 -- reintento EN SERIE después de un reembolso 100% ya comprometido no revienta con NothingToRefundError', async () => {
+    // La fake genérica de arriba usa un `collected` fijo -- no reproduce el
+    // caso real: `getCollectedPaymentTotalForReservation()` recalcula desde
+    // el ledger, y ya sale neto del REFUND que el primer llamado dejó
+    // asentado. Esta fake recalcula de verdad (paid - Σ REFUND creado) para
+    // ejercitar el mismo camino que el test de integración contra Postgres.
+    class DynamicCollectedFinancialTransactionRepository extends FakeFinancialTransactionRepository {
+      constructor(private readonly paid: number) { super(0); }
+      override async getCollectedPaymentTotalForReservation(): Promise<number> {
+        const refunded = this.created.filter((tx) => tx.type === 'REFUND').reduce((sum, tx) => sum + tx.amount, 0);
+        return this.paid - refunded;
+      }
+    }
+    const financialRepo = new DynamicCollectedFinancialTransactionRepository(1000);
+    const service = new CancellationRefundService(
+      new FakeReservationRepository(makeReservation()),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true }),
+      financialRepo,
+      new FakeInvoiceRepository([]),
+      new FakeBusinessProfileRepository(),
+      new InMemoryTransactionManager(),
+    );
+
+    const first = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    // Sin el pre-chequeo de reintento, este segundo llamado vería
+    // collected = 1000 - 1000 = 0 y lanzaría NothingToRefundError en vez de
+    // devolver lo ya creado -- exactamente lo que rompía la promesa de
+    // idempotencia del docblock de confirmRefund().
+    const second = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+
+    expect(second.map((tx) => tx.id)).toEqual(first.map((tx) => tx.id));
+    expect(financialRepo.created).toHaveLength(first.length);
+  });
+
+  it('architecture-governor (05/09/2026) -- el re-chequeo BAJO el lock corta antes de tocar ninguna factura, aunque el camino rápido (fuera del lock) no haya visto nada todavía', async () => {
+    // Simula el lado perdedor de una carrera genuina: el chequeo de fuera
+    // del lock (primera llamada a getByReservationId) no ve nada todavía
+    // -- como si el ganador no hubiese hecho commit aún --, pero para
+    // cuando este llamado adquiere el lock, el ganador ya comprometió. El
+    // fake devuelve vacío la primera vez y la fila ya creada de ahí en
+    // adelante, sin depender de un contador de invocaciones fijo (el
+    // pre-chequeo rápido y el re-chequeo bajo el lock son dos llamadas
+    // reales a getByReservationId()).
+    let callCount = 0;
+    const winnerRow: FinancialTransaction = {
+      id: 'refund-del-ganador', businessId: 'biz-1', customerId: 'cust-1', reservationId: 'res-1',
+      type: 'REFUND', amount: 500, currency: 'ARS', status: 'SETTLED',
+      idempotencyKey: 'refund:cancellation:res-1:sin-asignar', reversedInvoiceId: null,
+      createdAt: new Date(),
+    };
+    class RaceLoserFinancialTransactionRepository extends FakeFinancialTransactionRepository {
+      override async getByReservationId(): Promise<FinancialTransaction[]> {
+        callCount += 1;
+        return callCount === 1 ? [] : [winnerRow];
+      }
+    }
+    const financialRepo = new RaceLoserFinancialTransactionRepository(1000);
+    const invoiceRepo = new FakeInvoiceRepository([]);
+    const service = new CancellationRefundService(
+      new FakeReservationRepository(makeReservation()),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true }),
+      financialRepo,
+      invoiceRepo,
+      new FakeBusinessProfileRepository(),
+      new InMemoryTransactionManager(),
+    );
+
+    const result = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+
+    expect(result).toEqual([winnerRow]);
+    // Ni una factura lockeada, ni un INSERT real -- el re-chequeo bajo el
+    // lock cortó ANTES de la fase de pre-lockeo canónico y del reparto.
+    expect(invoiceRepo.lockedInvoiceIds).toHaveLength(0);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('BRECHA-REFUND-01 Fase 3 -- capa contra getRefundableForUpdate(), no contra impTotal a secas (Q-A: nunca más de lo cobrado)', async () => {
+    const { service, invoiceRepo } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      invoices: [makeInvoice({ id: 'inv-1', impTotal: 1000, issuedAt: daysFromNow(-1) })],
+    });
+    // Simula que ya se reembolsaron 700 de esta factura por otro camino --
+    // solo quedan 300 reembolsables, aunque impTotal siga siendo 1000.
+    invoiceRepo.refundableOverride.set('inv-1', 300);
+
+    const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+
+    expect(created).toHaveLength(2);
+    expect(created[0]?.reversedInvoiceId).toBe('inv-1');
+    expect(created[0]?.amount).toBe(300);
+    // El resto (1000 - 300 = 700) sin factura que lo cubra -- ledger-only.
+    expect(created[1]?.reversedInvoiceId).toBeNull();
+    expect(created[1]?.amount).toBe(700);
   });
 });

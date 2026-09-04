@@ -76,6 +76,39 @@ export async function applyCappedPaymentToInvoice(
   return { invoiceId, requestedAmount, appliedAmount, excessAmount };
 }
 
+export interface CappedRefundApplication {
+  invoiceId: string;
+  requestedAmount: number;
+  appliedAmount: number;
+  unallocatedAmount: number;
+}
+
+/**
+ * BRECHA-REFUND-01 Fase 3 (05/09/2026, architecture-governor) --
+ * NO es `applyCappedPaymentToInvoice()` con el signo dado vuelta. Un
+ * reembolso no capa contra `outstanding` (que ya resta los REFUND -- daría
+ * siempre 0 contra las facturas que un reembolso ataca). Capa contra
+ * `getRefundableForUpdate()` -- ver su docblock en `invoice.repository.ts`
+ * para los dos invariantes (plata que entró, valor del comprobante).
+ * `unallocatedAmount` es el resto sin factura que cubrir -- espejo de
+ * `excessAmount`, mismo criterio: nunca se pierde, queda como chunk
+ * ledger-only (decisión del dueño, confirmada para reembolsos: Q-A, nunca
+ * más de lo cobrado -- por eso acá "lo que sobra" es remanente del reparto
+ * entre varias facturas, no un monto que exceda lo cobrado en total, ya
+ * capado antes de entrar a este reparto).
+ */
+export async function applyCappedRefundToInvoice(
+  invoiceRepo: Pick<InvoiceRepository, 'getRefundableForUpdate'>,
+  client: SqlClient,
+  invoiceId: string,
+  requestedAmount: number,
+): Promise<CappedRefundApplication> {
+  const refundable = await invoiceRepo.getRefundableForUpdate(client, invoiceId);
+  const appliedAmount = round2(Math.min(requestedAmount, Math.max(refundable, 0)));
+  const unallocatedAmount = round2(requestedAmount - appliedAmount);
+  return { invoiceId, requestedAmount, appliedAmount, unallocatedAmount };
+}
+
 /**
  * Crea una fila `PAYMENT` (u otro tipo) dentro de la transacción del
  * caller, o devuelve la fila ya existente si el mismo `idempotencyKey` ya

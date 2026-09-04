@@ -27,6 +27,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByReservationId() { return []; }
   async getOutstandingByCustomerId() { return []; }
   async getOutstandingForUpdate() { return 0; }
+  async getRefundableForUpdate() { return 0; }
   async getByCustomerId() { return []; } // O2-F2 (03/09/2026)
   async resolveInvoiceLinkage() { return { kind: 'NONE' as const }; }
   async create(_input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }

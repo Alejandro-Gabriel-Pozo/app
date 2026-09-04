@@ -147,6 +147,34 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return parseFloat(rows[0]!.outstanding);
   }
 
+  async getRefundableForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
+    // BRECHA-REFUND-01 Fase 3 -- mismo patrón de dos sentencias que
+    // getOutstandingForUpdate (§7.1): lock puro primero, sin subconsultas;
+    // cómputo después, sentencia nueva, foto fresca.
+    await client.query(`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
+
+    const { rows } = await client.query<{ refundable: string }>(
+      `SELECT LEAST(
+         -- (A) pagado − ya reembolsado
+         COALESCE((SELECT SUM(p.amount) FROM financial_transactions p
+                    WHERE p.settled_invoice_id = i.id AND p.status = 'SETTLED'), 0)
+           - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+                       WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0),
+         -- (B) valor del comprobante − ya reembolsado
+         i.imp_total
+           - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+                       WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
+       ) AS refundable
+       FROM invoices i
+       WHERE i.id = $1`,
+      [invoiceId],
+    );
+    if (rows.length === 0) {
+      throw new Error(`getRefundableForUpdate: factura "${invoiceId}" no existe -- invariante roto, se validó su existencia antes de entrar a la transacción`);
+    }
+    return parseFloat(rows[0]!.refundable);
+  }
+
   async getOutstandingByCustomerId(customerId: string): Promise<Array<Invoice & { outstanding: number }>> {
     // O2-F2 (03/09/2026, F2.1) -- el JOIN original exigía
     // `ft.id = i.financial_transaction_id`, lo que excluía TODA factura

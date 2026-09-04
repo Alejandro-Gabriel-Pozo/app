@@ -48,6 +48,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByReservationId(): Promise<Invoice[]> { return []; }
   async getOutstandingByCustomerId(): Promise<Array<Invoice & { outstanding: number }>> { return []; }
   async getOutstandingForUpdate(): Promise<number> { return 0; }
+  async getRefundableForUpdate(): Promise<number> { return 0; }
   // O2-F2 (03/09/2026)
   async getByCustomerId(customerId: string): Promise<Invoice[]> {
     return [...this.invoices.values()].filter((i) => i.customerId === customerId);
