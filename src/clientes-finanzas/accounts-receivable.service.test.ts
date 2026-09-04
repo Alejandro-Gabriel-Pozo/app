@@ -467,16 +467,49 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       });
     });
 
-    it('O2-F2 -- si el saldo real de la factura es menor al monto AR (otro camino ya cobró parte), capa y preserva el excedente como fila sin asignar', async () => {
+    it('O2-F2 -- si el saldo real de la factura es menor al monto AR (otro camino ya cobró parte), capa contra el saldo real y NO crea PAYMENT por el excedente', async () => {
       seed({ status: 'FACTURADO', financialTransactionId: 'ft-1', amount: 1000 });
       invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
       invoiceRepo.outstandingByInvoiceId.set('inv-1', 300); // ya se cobraron 700 por otro camino
 
       await service.markCollected('ar-1');
 
-      expect(financialRepo.created).toHaveLength(2);
+      expect(financialRepo.created).toHaveLength(1);
       expect(financialRepo.created[0]).toMatchObject({ amount: 300, settledInvoiceId: 'inv-1' });
-      expect(financialRepo.created[1]).toMatchObject({ amount: 700, settledInvoiceId: null, idempotencyKey: 'ar-collect:ar-1:sin-asignar' });
+    });
+
+    it('H-A (05/09/2026) -- colisión total (otro camino ya cubrió el 100%): cero PAYMENT nuevos, AR pasa a COBRADO, respuesta expone la colisión', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1', amount: 1000 });
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
+      invoiceRepo.outstandingByInvoiceId.set('inv-1', 0); // ya se cobró el 100% por otro camino
+
+      const result = await service.markCollected('ar-1');
+
+      expect(financialRepo.created).toHaveLength(0);
+      expect(result.status).toBe('COBRADO');
+      expect(result.collection).toEqual({ invoiceId: 'inv-1', appliedAmount: 0, excessAmount: 1000 });
+    });
+
+    it('H-A -- reintento tras colisión total sigue siendo idempotente (guarda de status, no la clave de idempotencia -- nunca se consumió)', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1', amount: 1000 });
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
+      invoiceRepo.outstandingByInvoiceId.set('inv-1', 0);
+
+      await service.markCollected('ar-1');
+      const second = await service.markCollected('ar-1');
+
+      expect(financialRepo.created).toHaveLength(0);
+      expect(second.status).toBe('COBRADO');
+    });
+
+    it('O2-F2 -- con excedente parcial (no total), la respuesta también expone la colisión', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1', amount: 1000 });
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
+      invoiceRepo.outstandingByInvoiceId.set('inv-1', 300);
+
+      const result = await service.markCollected('ar-1');
+
+      expect(result.collection).toEqual({ invoiceId: 'inv-1', appliedAmount: 300, excessAmount: 700 });
     });
   });
 

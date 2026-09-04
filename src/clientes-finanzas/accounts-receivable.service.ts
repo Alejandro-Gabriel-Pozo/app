@@ -29,6 +29,7 @@ import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import { DomainError, CustomerNotFoundError } from '../domain/errors.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient } from './payment-application.js';
+import { logger } from '../logger.js';
 
 export class CompanyCustomerRequiredError extends DomainError {
   constructor(customerId: string) {
@@ -65,6 +66,24 @@ export class InvalidAccountsReceivableTransitionError extends DomainError {
       'INVALID_TRANSITION',
     );
   }
+}
+
+/**
+ * H-A (05/09/2026) -- resultado de `markCollected()`, aditivo sobre
+ * `AccountReceivable`. `collection` NO es una columna persistida -- solo
+ * viaja en la respuesta HTTP cuando esta llamada detectó que la factura
+ * vinculada ya estaba cubierta parcial o totalmente por el otro camino de
+ * cobro (`recordPayment`). El cliente ignora campos desconocidos
+ * (`appfrontend-main/src/lib/finanzas/api.ts` tipa la respuesta como
+ * `AccountReceivable`), así que agregar este campo es compatible sin
+ * cambios del lado del frontend.
+ */
+export interface AccountReceivableMarkCollectedResult extends AccountReceivable {
+  collection?: {
+    invoiceId: string;
+    appliedAmount: number;
+    excessAmount: number;
+  };
 }
 
 export interface TransferStayBalanceInput {
@@ -212,20 +231,33 @@ export class AccountsReceivableService {
    *     el PAYMENT se capa al saldo vigente de esa factura, con el MISMO
    *     lock (`SELECT ... FOR UPDATE`, sin `OF i` desde §7.1) que usa
    *     `recordPayment()` -- serializa los
-   *     dos caminos entre sí (A8.1/A8.2). El excedente (no debería haberlo
-   *     en el caso normal, pero puede si otro camino ya cobró parte) se
-   *     preserva como fila sin asignar, nunca se pierde.
-   *  2. Si no resuelve (fila legacy sin `financial_transaction_id`, o un
-   *     AR facturado antes de que `invoice_charges` existiera): fallback
-   *     legacy sin cambios -- PAYMENT sin vínculo, documentado como deuda
-   *     técnica aceptada (decisión del dueño, 03/09/2026: los tenants de
-   *     hoy son de prueba, no producción con plata real -- ver diseño).
+   *     dos caminos entre sí (A8.1/A8.2).
+   *  2. Si no resuelve (fila legacy sin `financial_transaction_id`, o
+   *     facturación manual permanente sin documento real -- ver
+   *     §5.1 del diseño): fallback legacy sin cambios -- PAYMENT sin
+   *     vínculo por el monto completo de `ar.amount`.
    *  3. Idempotente vía `idempotencyKey = ar-collect:${id}` -- repetir el
    *     cobro (reintento de red, o una carrera real donde otra transacción
    *     ya commiteó entre nuestra lectura y esta) no crea un segundo
    *     PAYMENT ni relanza un 409: devuelve el resultado ya aplicado.
+   *
+   * H-A (05/09/2026, erp-audit-orchestrator + auditor-circuitos-erp,
+   * architecture-governor "Paquete B'") -- CUANDO invoiceId resuelve Y el
+   * otro camino (recordPayment) ya cubrió parte o todo el saldo de esa
+   * factura, el excedente NO se acredita como PAYMENT sin asignar. Antes
+   * (hasta el commit 5856306) sí se acreditaba -- eso inventaba un crédito
+   * a favor de la empresa sin ningún ingreso real detrás: `ar.amount` es
+   * un monto CONGELADO del momento de `transferStayBalanceToReceivable`,
+   * no una declaración de caja de ESTA llamada (a diferencia del
+   * excedente de `recordPayment()`, que sí es plata real que el operador
+   * tipeó -- A3.9 de criterios-negocio.md, la contrapartida ahí no
+   * existe). La AR pasa a COBRADO igual -- el hecho de negocio (la
+   * empresa pagó, por el otro camino) ya ocurrió. La colisión se expone
+   * en la respuesta (`collection`, aditivo, no persistido) y se deja un
+   * log estructurado -- no `domain/audit.ts`: `audit_log.changed_by` es
+   * `NOT NULL` y esta operación no recibe actor todavía (H-E, abierto).
    */
-  async markCollected(id: string): Promise<AccountReceivable> {
+  async markCollected(id: string): Promise<AccountReceivableMarkCollectedResult> {
     const ar = await this.arRepo.getById(id);
     if (!ar) throw new AccountReceivableNotFoundError(id);
     if (ar.status === 'COBRADO') {
@@ -243,8 +275,9 @@ export class AccountsReceivableService {
       : null;
     const idempotencyKey = `ar-collect:${id}`;
     const notes = `Cobro de cuenta por cobrar — estadía ${ar.stayId}`;
+    let collection: AccountReceivableMarkCollectedResult['collection'];
 
-    return this.transactionManager.run(async (client) => {
+    const updatedAr = await this.transactionManager.run(async (client) => {
       // O2F2-A (erp-audit-orchestrator, 03/09/2026, reproducido 2/6
       // corridas) -- el chequeo de idempotencia del fix anterior (H1)
       // corría ANTES de tomar cualquier lock: dos markCollected() GENUINAMENTE
@@ -289,19 +322,15 @@ export class AccountsReceivableService {
             notes,
             settledInvoiceId: invoiceId,
           });
+          // H-A: NO se crea un PAYMENT por `excessAmount` -- ver docblock
+          // del método. Solo se expone en la respuesta y se deja rastro
+          // en el log; la fila AR pasa a COBRADO más abajo igual.
           if (excessAmount > 0) {
-            await createIdempotentPaymentWithClient(this.financialRepo, client, {
-              id: randomUUID(),
-              businessId: ar.businessId,
-              customerId: ar.companyCustomerId,
-              type: 'PAYMENT',
-              amount: excessAmount,
-              currency: ar.currency,
-              status: 'SETTLED',
-              idempotencyKey: `${idempotencyKey}:sin-asignar`,
-              notes: `${notes} — excedente sobre saldo de factura`,
-              settledInvoiceId: null,
-            });
+            collection = { invoiceId, appliedAmount, excessAmount };
+            logger.warn(
+              { accountsReceivableId: id, businessId: ar.businessId, invoiceId, appliedAmount, excessAmount },
+              '[AccountsReceivableService] markCollected() encontró la factura vinculada ya cubierta parcial o totalmente por otro camino de cobro (recordPayment) -- no se acreditó excedente, ver H-A',
+            );
           }
         } else {
           // Fallback legacy (§5.1 del diseño) -- sin vínculo resoluble,
@@ -339,5 +368,6 @@ export class AccountsReceivableService {
         `markCollected: la fila "${id}" quedó en un estado inesperado (${current?.status ?? 'no encontrada'}) en medio de la transacción -- no debería pasar`,
       );
     });
+    return collection ? { ...updatedAr, collection } : updatedAr;
   }
 }

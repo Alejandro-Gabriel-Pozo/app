@@ -297,4 +297,43 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
     const all = await invoiceRepo.getByCustomerId(company.id);
     expect(all.map((inv) => inv.id)).toContain(invoiceId);
   });
+
+  it('H-A (05/09/2026) -- escenario real del dueño: recordPayment() concilia la factura primero, markCollected() la encuentra ya cubierta -- NO acredita crédito fantasma, el saldo del cliente no se infla', async () => {
+    const { invoiceId, ar, company } = await seedFacturadoScenario(1000, { consolidated: true });
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+
+    // Conciliación bancaria diferida (recordPayment): la empresa ya pagó
+    // por este camino, cubre la factura entera.
+    await makeCustomerAccountService().recordPayment({
+      customerId: company.id, businessId: BUSINESS_ID, amount: 1000,
+      allocations: [{ invoiceId, amount: 1000 }],
+    });
+    expect(await outstandingOf(invoiceId)).toBe(0);
+
+    const balanceAntesDeMarkCollected = await financialRepo.getNetBalanceByCustomerId(company.id);
+
+    // El administrativo, sin saber que ya se concilió, marca cobrada la
+    // cuenta corporativa vinculada a la MISMA factura.
+    const collected = await makeArService().markCollected(ar.id);
+
+    expect(collected.status).toBe('COBRADO');
+    expect(collected.collection).toEqual({ invoiceId, appliedAmount: 0, excessAmount: 1000 });
+
+    // Antes del fix: acá se creaba un PAYMENT extra de 1000 sin
+    // settled_invoice_id -- el saldo del cliente bajaba 1000 de más
+    // (crédito que nadie pagó). Con el fix: el saldo no cambia.
+    const balanceDespuesDeMarkCollected = await financialRepo.getNetBalanceByCustomerId(company.id);
+    expect(balanceDespuesDeMarkCollected).toBe(balanceAntesDeMarkCollected);
+
+    const { rows } = await db.query<{ count: string; null_settled: string }>(
+      `SELECT COUNT(*) AS count,
+              COUNT(*) FILTER (WHERE settled_invoice_id IS NULL) AS null_settled
+       FROM financial_transactions WHERE customer_id = $1 AND type = 'PAYMENT'`,
+      [company.id],
+    );
+    // Un solo PAYMENT en total (el de recordPayment) -- markCollected() no
+    // agregó ninguno.
+    expect(Number(rows[0]!.count)).toBe(1);
+    expect(Number(rows[0]!.null_settled)).toBe(0);
+  });
 });
