@@ -568,6 +568,53 @@ O2-F2; es una costura preexistente que cualquier trabajo futuro sobre
 C1-Fase C (generación real de factura, `docs/roadmap-pms-multirubro.md`)
 tiene que resolver. Referencia, no duplicar detalle acá.
 
+**`AR-FACT-NO-ISSUED-01` (05/09/2026, `architecture-governor`, paquete
+post-H-A, punto 6 -- hipótesis confirmada por lectura de código, REPRODUCIDA
+contra Postgres real en `251b4f1`) -- severidad S1, mismo perfil que el
+defecto que O2-F2 cerró:**
+
+`AccountsReceivableService::markInvoiced()` no consulta `invoices` en
+absoluto -- transiciona el estado sin verificar si la factura interna
+vinculada (vía `ar.financialTransactionId`) llegó a `ISSUED`. Camino:
+
+1. `markInvoiced()` (manual, `POST /:id/mark-invoiced`, `authorize(Roles.MANAGEMENT)`,
+   llamado por el frontend) -- sin guard.
+2. `InvoiceRepository::getInvoiceIdByFinancialTransactionId()` filtra
+   `status = 'ISSUED'` en las dos ramas del `COALESCE` -- devuelve `null`
+   para `PENDING`/`REJECTED`/`FAILED_UNCERTAIN`.
+3. `AccountsReceivableService::markCollected()` cae al fallback legacy ->
+   PAYMENT por `ar.amount` completo, `settledInvoiceId: null`.
+4. `InvoiceService::retryExisting()` reintenta facturas `PENDING`/`REJECTED`
+   (no solo `FAILED_UNCERTAIN` con `afipContacted`) y puede llegar a
+   `ISSUED` más tarde, MISMO `financial_transaction_id`.
+5. Con la factura ya `ISSUED`, su `outstanding` queda en `imp_total`
+   entero -- el PAYMENT legacy sin vínculo no cuenta -- y `getOutstandingByCustomerId`
+   la expone en el modal de conciliación.
+6. `recordPayment()` aplica de nuevo. **Doble cobro real.**
+
+**Contraste que confirma que es brecha, no decisión:** el camino
+automático (`InvoiceService::requestConsolidatedInvoice()`) SÍ envuelve el
+marcado a FACTURADO en `if (issued.status === 'ISSUED')`. El camino manual
+es el único sin ese guard.
+
+**No confundir con §5.1(b)** (facturación manual permanente, sancionada):
+ahí no hay NINGUNA fila `invoices` -- acá SÍ hay una fila `invoices`, pero
+en un estado no terminal. `getInvoiceIdByFinancialTransactionId()` hoy
+devuelve `null` en los dos casos sin distinguir "no existe" de "existe pero
+no está lista" -- ese es el hueco real.
+
+**Reproducido, no solo razonado:** `src/tests/integration/accounts-receivable-invoice-linkage.integration.test.ts`,
+test `AR-FACT-NO-ISSUED-01` -- documenta el comportamiento ACTUAL (PAYMENT
+sin vínculo), no corrige nada.
+
+**Decisión de producto pendiente, consultada al dueño (05/09/2026) --
+respuesta: pedir diseño completo al `architecture-governor` antes de
+elegir, no decidir a ciegas.** Dos preguntas sin resolver: (i) ¿qué debe
+pasar si el operador marca cobrado sobre una factura rechazada/pendiente
+-- rechazar (fail-closed) o permitir con vínculo diferido?; (ii) ¿el guard
+va en `markInvoiced()` (espejando el camino automático) o en
+`markCollected()`? **No implementar sin ese diseño.**
+
 **Trampa de verificación registrada por la 5ª pasada:** correr la suite de
 integración SIN `TEST_DATABASE_URL` en el shell no falla — reporta
 `14 skipped`, `115 skipped`, exit 0, en ~4 segundos. Un "verde" de esa
