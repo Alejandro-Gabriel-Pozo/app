@@ -65,6 +65,29 @@ const interferingBusinessProfileRepo: Pick<BusinessProfileRepository, 'get'> = {
 
 ## Tareas futuras
 
-- Extraer el comparador de orden canónico de lock (`(a, b) => a.id.localeCompare(b.id)`) a un helper compartido, o cubrirlo con un test/regla de lint — hoy son dos `.sort()` ad-hoc en archivos distintos (`customer-account.service.ts`, `cancellation-refund.service.ts`) sin nada que avise si un tercer sitio que lockee `invoices` usa un orden distinto. Nota: `reservas/reservation-availability.service.ts:308` ya usa `[...ids].sort()` con comparador **default** (no `localeCompare`) sobre OTRA tabla (`resources`) — dos convenciones de comparador conviven en el repo; copiar la equivocada al añadir un tercer sitio es un error de una línea.
-- Escribir el test de bloqueo dedicado que demuestre (o desmienta) la semántica de `FOR KEY SHARE` vs `FOR UPDATE` sobre `invoices` que este playbook asume — hoy es inferencia, no hecho verificado (ver §7.1 en `sql.invoice.repository.ts`, donde una suposición parecida sobre subconsultas correlacionadas ya resultó falsa una vez).
+- ✅ **RESUELTO (LOCK-ORDER-001, 05/09/2026).** El comparador de orden
+  canónico de lock quedó extraído a `canonicalInvoiceLockOrder()`
+  (`payment-application.ts`), usado por los dos sitios reales
+  (`customer-account.service.ts`, `cancellation-refund.service.ts`), y
+  protegido por la cerca eléctrica `src/tests/architecture/lock-order.test.ts`
+  — cuenta qué archivos invocan las primitivas de lock, exige que la lista
+  sea exactamente la conocida (clasificada en `MULTI_INVOICE_CALLERS` vs
+  `SINGLE_INVOICE_CALLERS`, con el porqué de cada uno), y que los
+  multi-invoice usen el helper. Verificado que la cerca detecta una
+  regresión real (revertir `cancellation-refund.service.ts` a su `.sort()`
+  ad-hoc anterior la hace fallar) — y en el camino se encontró y corrigió
+  un bug propio de la cerca: sin `stripComments()`, un comentario que
+  MENCIONA `canonicalInvoiceLockOrder()` bastaba para pasar el chequeo sin
+  que el código la llamara de verdad. Nota que sigue vigente sin resolver:
+  `reservas/reservation-availability.service.ts:308` sigue usando
+  `[...ids].sort()` con comparador **default** (no `localeCompare`) sobre
+  OTRA tabla (`resources`) — dos convenciones conviven en el repo, la cerca
+  de acá no las unifica, solo protege el dominio `invoices`.
+- ✅ **RESUELTO (FOR-KEY-SHARE-001, 05/09/2026).** El test de bloqueo dedicado
+  (`src/tests/integration/for-key-share-lock-semantics.integration.test.ts`)
+  confirmó contra Postgres real que un `INSERT` en `financial_transactions`
+  con `settled_invoice_id` hacia una factura que otra transacción sostiene
+  con `FOR UPDATE` queda esperando y completa recién después del commit —
+  la inferencia era correcta. El comentario en `cancellation-refund.service.ts`
+  ya no dice "no verificado", dice "verificado" y enlaza el test.
 - Cerrar el caso no protegido de "escritura sobre la reserva sin FK a ninguna fila lockeada" (Escenario B de BRECHA-REFUND-01, hoy estrechado, no eliminado).

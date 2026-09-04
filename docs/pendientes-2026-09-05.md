@@ -84,6 +84,60 @@ condición "no construir sin resolver primero" encima.
 
 ---
 
+## ✅ Cerrado — mismo día, segunda vuelta (05/09/2026)
+
+### LOCK-ORDER-001 — el orden canónico de lock sobre `invoices` no estaba protegido por nada · ✅ RESUELTO
+
+Comparador extraído a `canonicalInvoiceLockOrder()`
+(`clientes-finanzas/payment-application.ts`), usado por los dos sitios
+reales (`customer-account.service.ts`, `cancellation-refund.service.ts`).
+Cerca eléctrica nueva: `src/tests/architecture/lock-order.test.ts` — cuenta
+qué archivos invocan las primitivas de lock de `invoices`, exige que la
+lista sea exactamente la conocida (clasificados `MULTI_INVOICE_CALLERS` vs
+`SINGLE_INVOICE_CALLERS`, con el porqué de cada uno) y que los
+multi-invoice usen el helper. `[V]` Verificado que la cerca detecta una
+regresión real (se revirtió `cancellation-refund.service.ts` a mano y el
+test falló); en el camino se encontró y corrigió un bug propio de la cerca
+(sin `stripComments()`, un comentario que menciona la función bastaba para
+pasar sin que el código la llamara). Detalle en
+[conocimiento/playbook-idempotencia-bajo-lock.md](conocimiento/playbook-idempotencia-bajo-lock.md).
+
+### FOR-KEY-SHARE-001 — la semántica de bloqueo del residual #2 no estaba verificada empíricamente · ✅ RESUELTO
+
+`src/tests/integration/for-key-share-lock-semantics.integration.test.ts`
+(nuevo) confirma contra Postgres real: un `INSERT` en
+`financial_transactions` con `settled_invoice_id` hacia una factura que
+otra transacción sostiene con `FOR UPDATE` queda esperando y completa
+recién después del commit. `[V]` La inferencia del comentario en
+`cancellation-refund.service.ts` era correcta — el comentario ya no dice
+"no verificado", enlaza el test. Con brazo de control (una segunda factura
+sin lockear, que sí resuelve dentro de la misma ventana de 600ms) — sin
+eso, un Postgres remoto lento podía dar un falso positivo indistinguible
+de un bloqueo real. **Alcance declarado, no ampliar sin releer:** solo se
+midió `settled_invoice_id`; `reversed_invoice_id` se asume igual por tener
+la misma forma de FK, no por una segunda medición. El test es de
+integración manual — no corre en ningún pipeline de CI.
+
+### Residuales declarados al cerrar LOCK-ORDER-001 / FOR-KEY-SHARE-001 — no reabren lo cerrado, quedan registrados
+
+- **Comparador `localeCompare` vs. `ORDER BY id` en SQL.** `canonicalInvoiceLockOrder()`
+  ordena en JS (`localeCompare`, sensible a locale/ICU); `sql.resource.repository.ts:167`
+  ya ordena locks de OTRO dominio (`resources`) en SQL (`ORDER BY id`, bajo
+  collation de Postgres). Hoy no chocan (dominios distintos, un solo
+  proceso Node) — pero un futuro camino que lockee `invoices` ordenando en
+  SQL no sería necesariamente consistente con este helper. No se tocó el
+  comparador en este bloque a propósito (la extracción tenía que ser cero
+  cambio de comportamiento) — decisión de diseño diferida, no bug.
+- **3 falsos negativos declarados de la cerca `lock-order.test.ts`**
+  (documentados en su propio header): exige el nombre literal `client` como
+  argumento; un método `...ForUpdate` nuevo agregado dentro de
+  `sql.invoice.repository.ts` es invisible (archivo excluido a propósito);
+  y el chequeo de `canonicalInvoiceLockOrder()` solo prueba que la función
+  aparece en el archivo, no que envuelve el array que de verdad alimenta el
+  loop de lock.
+
+---
+
 ## 🔴 Abierto — registrado por primera vez (05/09/2026)
 
 ### BRECHA-REFUND-01-B — un `PAYMENT` sin factura, concurrente con `confirmRefund()`, todavía puede sub-reembolsar
@@ -101,33 +155,6 @@ Cerrarlo del todo exige releer `collected` DESPUÉS de adquirir algún lock que
 también cubra la reserva en sí (no solo sus facturas) — hoy no existe ese
 lock. Bloque de diseño aparte, con `architecture-governor` antes de tocar
 código — no autorizado en esta sesión.
-
-### FOR-KEY-SHARE-001 — la semántica de bloqueo que sostiene el fix de Residual #2 no está verificada empíricamente
-
-El comentario en `cancellation-refund.service.ts` (sección "residual #2 --
-`collected` releído DESPUÉS del pre-lockeo") documenta como **inferencia** que
-un INSERT con `settled_invoice_id`/`reversed_invoice_id` apuntando a una fila
-`FOR UPDATE` espera hasta el commit (`FOR KEY SHARE` conflictuando con `FOR
-UPDATE`). Es comportamiento documentado de Postgres, pero este repo ya se
-comió una vez el costo de asumir semántica de locking sin medirla (§7.1 en
-`sql.invoice.repository.ts` — las subconsultas correlacionadas quedaban con
-la foto vieja). Falta el test de bloqueo dedicado (técnica descrita en
-[conocimiento/playbook-idempotencia-bajo-lock.md](conocimiento/playbook-idempotencia-bajo-lock.md),
-sección "Tareas futuras") que confirme o desmienta la inferencia contra
-Postgres real.
-
-### LOCK-ORDER-001 — el orden canónico de lock sobre `invoices` no está protegido por nada
-
-`customer-account.service.ts` y `cancellation-refund.service.ts` coinciden
-HOY en usar `localeCompare` ascendente sobre `invoices.id` antes de lockear
-más de una fila — pero es coincidencia mantenida a mano, dos `.sort()`
-ad-hoc en archivos distintos, sin helper compartido, sin test, sin regla de
-lint que avise si un tercer sitio nuevo ordena distinto (o no ordena). Ya
-existe un precedente de comparador DISTINTO en el repo:
-`reservation-availability.service.ts:308` usa `[...ids].sort()` sin
-`localeCompare`, sobre otra tabla (`resources`) — no choca hoy porque son
-dominios distintos, pero es la clase de inconsistencia que un copy-paste
-futuro propaga sin que nada la detecte. Detalle en el playbook citado arriba.
 
 ---
 
