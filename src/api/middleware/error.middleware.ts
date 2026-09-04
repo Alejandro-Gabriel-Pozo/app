@@ -208,6 +208,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'DEPOSIT_NOT_PAID':
     case 'AFIP_REQUEST_UNCERTAIN':
     case 'INVOICE_NOT_ISSUED':
+    case 'AR_INVOICE_NOT_ISSUED':
+    case 'AFIP_RECONCILIATION_PENDING':
     case 'RATE_CATALOG_ENTRY_CONFLICT':
     case 'RESERVATION_NOT_CANCELLED':
     case 'NOTHING_TO_REFUND':

@@ -32,6 +32,7 @@ import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
+import { ReceivableInvoiceNotIssuedError } from '../../domain/errors.js';
 
 let db: SqlClient;
 let pool: pg.Pool;
@@ -445,7 +446,7 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
     expect(await outstandingOf(invoiceId)).toBe(0);
   });
 
-  it('AR-FACT-NO-ISSUED-01 (governor, 05/09/2026, HIPÓTESIS CONFIRMADA, NO corregido -- documenta el comportamiento ACTUAL, no un fix) -- financialTransactionId apunta a una factura interna PENDING (no ISSUED): markCollected() cae al fallback legacy y crea un PAYMENT sin vínculo', async () => {
+  it('AR-FACT-NO-ISSUED-01 (governor, Fase 1, Opción A fail-closed) -- financialTransactionId apunta a una factura interna PENDING (no ISSUED): markCollected() rechaza en vez de caer al fallback legacy', async () => {
     const category = await seedCategory(db);
     const resource = await seedResource(db, category.id);
     const guest = await seedCustomer(db);
@@ -485,25 +486,69 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
       amount: 1000, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
       transferredBy: 'ident-test', notes: null, financialTransactionId: charge!.id,
     });
-    // Camino manual (POST /:id/mark-invoiced) -- sin guard, a diferencia del
-    // camino automático (invoice.service.ts, envuelve en `if (status === 'ISSUED')`).
+    // Estado armado directo contra el repositorio (bypassea el guard de
+    // markInvoiced() del SERVICIO a propósito, para simular una fila que
+    // ya llegó a FACTURADO -- ej. si el guard se agregó después de que
+    // filas así ya existieran en producción; el punto de este test es que
+    // markCollected() las agarra igual, sea cual sea su origen).
     const facturado = await arRepo.markInvoiced(ar.id, '0001-99999999');
 
-    const collected = await makeArService().markCollected(facturado!.id);
+    // Antes del guard: caía al fallback, PAYMENT sin settledInvoiceId por
+    // el monto completo -- si la factura después pasaba a ISSUED, su
+    // outstanding quedaba en 1000 (el PAYMENT sin vínculo no cuenta) y
+    // recordPayment() podía aplicar de nuevo. Con el guard: rechaza.
+    await expect(makeArService().markCollected(facturado!.id)).rejects.toThrow(ReceivableInvoiceNotIssuedError);
 
-    // Comportamiento actual: cae al fallback, PAYMENT sin settledInvoiceId
-    // por el monto completo. NO es el comportamiento deseado -- es la
-    // evidencia reproducible de AR-FACT-NO-ISSUED-01 (governor, S1): si la
-    // factura después pasa a ISSUED, su outstanding queda en 1000 (el
-    // PAYMENT sin vínculo no cuenta) y recordPayment() puede aplicar de
-    // nuevo -- el mismo doble cobro que O2-F2 cerró, reabierto por acá.
-    expect(collected.status).toBe('COBRADO');
-    const { rows } = await db.query<{ settled_invoice_id: string | null; amount: string }>(
-      `SELECT settled_invoice_id, amount FROM financial_transactions WHERE type = 'PAYMENT' AND customer_id = $1`,
+    const { rows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM financial_transactions WHERE type = 'PAYMENT' AND customer_id = $1`,
       [company.id],
     );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.settled_invoice_id).toBeNull();
-    expect(Number(rows[0]!.amount)).toBe(1000);
+    expect(Number(rows[0]!.count)).toBe(0);
+    const stillFacturado = await arRepo.getById(facturado!.id);
+    expect(stillFacturado?.status).toBe('FACTURADO');
+  });
+
+  it('AR-FACT-NO-ISSUED-01 -- markInvoiced() por el camino manual también rechaza si la factura interna vinculada no está ISSUED (antes solo el camino automático tenía este guard)', async () => {
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const guest = await seedCustomer(db);
+    const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: 1000 });
+    const company = await seedCustomer(db);
+    await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+    const stayId = randomUUID();
+    await db.query(
+      `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+       VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+      [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+    );
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const charge = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservation.id, type: 'CHARGE', amount: 1000,
+      currency: 'ARS', status: 'SETTLED',
+    });
+    const invoiceId = randomUUID();
+    const cbteNro = cbteNroCounter++;
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'REJECTED')`,
+      [invoiceId, BUSINESS_ID, charge!.id, company.id, `idem-${invoiceId}`, cbteNro],
+    );
+    const arRepo = new SqlAccountsReceivableRepository(db);
+    const ar = await arRepo.createWithClient(db, {
+      id: randomUUID(), businessId: BUSINESS_ID, stayId, companyCustomerId: company.id,
+      amount: 1000, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
+      transferredBy: 'ident-test', notes: null, financialTransactionId: charge!.id,
+    });
+
+    await expect(makeArService().markInvoiced(ar.id, '0001-99999999')).rejects.toThrow(ReceivableInvoiceNotIssuedError);
+
+    const stillPending = await arRepo.getById(ar.id);
+    expect(stillPending?.status).toBe('PENDIENTE_FACTURAR');
   });
 });

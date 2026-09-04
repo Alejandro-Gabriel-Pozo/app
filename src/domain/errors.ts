@@ -525,6 +525,45 @@ export class InvoiceNotIssuedError extends DomainError {
 }
 
 /**
+ * AR-FACT-NO-ISSUED-01 (05/09/2026, architecture-governor, Opción A
+ * fail-closed) -- la factura interna vinculada a esta cuenta por cobrar
+ * existe pero está en PENDING/REJECTED, o en FAILED_UNCERTAIN sin que AFIP
+ * haya sido contactada (afipContacted=false -- se sabe con certeza que no
+ * se emitió nada). Código DISTINTO de INVOICE_NOT_ISSUED (que ya existe,
+ * para el PDF) a propósito: son dos negativas de negocio distintas --
+ * "no se puede imprimir" vs. "no se puede cobrar" -- y colapsarlas le
+ * quita al cliente la posibilidad de distinguirlas.
+ */
+export class ReceivableInvoiceNotIssuedError extends DomainError {
+  constructor(accountsReceivableId: string, invoiceId: string, invoiceStatus: string) {
+    super(
+      `La cuenta por cobrar "${accountsReceivableId}" está vinculada a la factura "${invoiceId}", que todavía no fue emitida (estado: ${invoiceStatus}) -- reintentá la emisión antes de cobrar o facturar.`,
+      'AR_INVOICE_NOT_ISSUED',
+    );
+  }
+}
+
+/**
+ * AR-FACT-NO-ISSUED-01 -- la factura interna vinculada quedó en
+ * FAILED_UNCERTAIN con afipContacted=true: AFIP fue contactada pero la
+ * respuesta no confirma ni descarta que se haya emitido un comprobante
+ * real. A diferencia de ReceivableInvoiceNotIssuedError, acá NO alcanza
+ * con reintentar -- reintentar sin reconciliar antes puede duplicar un
+ * comprobante fiscal que sí llegó a existir en AFIP. Bloqueado hasta que
+ * el caso se resuelva (Fase 2+, `invoice_reconciliations`, todavía sin
+ * construir en este commit -- por ahora el bloqueo no tiene salida
+ * automática, solo queda registrado).
+ */
+export class ReceivableInvoiceReconciliationPendingError extends DomainError {
+  constructor(accountsReceivableId: string, invoiceId: string) {
+    super(
+      `La cuenta por cobrar "${accountsReceivableId}" está vinculada a la factura "${invoiceId}", cuya respuesta de AFIP quedó indeterminada -- no se puede cobrar ni facturar hasta reconciliarla. No reintentes la emisión: el comprobante puede existir ya en AFIP.`,
+      'AFIP_RECONCILIATION_PENDING',
+    );
+  }
+}
+
+/**
  * D3 (pendientes-2026-08-19.md) -- una vez que el negocio ya cargó su CUIT
  * (perfil fiscal "confirmado", ver business-profile.service.ts), cambiar
  * razón social/CUIT/domicilio fiscal deja de estar disponible para

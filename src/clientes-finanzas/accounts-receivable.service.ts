@@ -26,7 +26,7 @@ import type { CustomerRepository } from './customer.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
-import { DomainError, CustomerNotFoundError } from '../domain/errors.js';
+import { DomainError, CustomerNotFoundError, ReceivableInvoiceNotIssuedError, ReceivableInvoiceReconciliationPendingError } from '../domain/errors.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient } from './payment-application.js';
 import { logger } from '../logger.js';
@@ -204,6 +204,21 @@ export class AccountsReceivableService {
     const ar = await this.arRepo.getById(id);
     if (!ar) throw new AccountReceivableNotFoundError(id);
 
+    // AR-FACT-NO-ISSUED-01 (05/09/2026) -- mismo guard que markCollected(),
+    // en el punto de entrada anterior: espeja el `if (issued.status === 'ISSUED')`
+    // que el camino automático (InvoiceService.requestConsolidatedInvoice())
+    // ya tiene, y que el camino manual era el único sin él. NONE (sin
+    // factura interna en absoluto -- §5.1(b) permanente) sigue pasando.
+    const linkage = ar.financialTransactionId
+      ? await this.invoiceRepo.resolveInvoiceLinkage(ar.financialTransactionId)
+      : ({ kind: 'NONE' } as const);
+    if (linkage.kind === 'NOT_ISSUED') {
+      if (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted) {
+        throw new ReceivableInvoiceReconciliationPendingError(id, linkage.invoiceId);
+      }
+      throw new ReceivableInvoiceNotIssuedError(id, linkage.invoiceId, linkage.status);
+    }
+
     const updated = await this.arRepo.markInvoiced(id, invoiceRef);
     if (!updated) throw new InvalidAccountsReceivableTransitionError(id, ar.status, 'FACTURADO');
     return updated;
@@ -276,14 +291,27 @@ export class AccountsReceivableService {
       throw new InvalidAccountsReceivableTransitionError(id, ar.status, 'COBRADO');
     }
 
-    // AR-FACT-NO-ISSUED-01 (05/09/2026) -- P0, refactor puro sin cambio de
-    // comportamiento todavía: NONE y NOT_ISSUED caen los dos al fallback
-    // legacy, igual que antes cuando el método viejo devolvía `null` para
-    // los dos casos sin distinguirlos. El guard fail-closed sobre
-    // NOT_ISSUED se agrega en un commit aparte.
     const linkage = ar.financialTransactionId
       ? await this.invoiceRepo.resolveInvoiceLinkage(ar.financialTransactionId)
       : ({ kind: 'NONE' } as const);
+    // AR-FACT-NO-ISSUED-01 (05/09/2026, architecture-governor, Opción A
+    // fail-closed) -- NONE sigue cayendo al fallback legacy sin cambios
+    // (§5.1(b), facturación manual permanente sancionada -- ahí NO hay
+    // ninguna fila `invoices`, no hay nada que bloquear). NOT_ISSUED sí
+    // bloquea: hay una factura interna real que todavía no llegó a
+    // ISSUED, y dejar que markCollected() capée contra el fallback legacy
+    // es exactamente el vector que reabre el doble cobro que O2-F2 cerró
+    // (la factura puede llegar a ISSUED después, con outstanding entero).
+    // Dos códigos de error distintos a propósito -- ver docblock de cada
+    // clase en domain/errors.ts: PENDING/REJECTED/FAILED_UNCERTAIN-sin-
+    // contactar son reintentables sin riesgo; FAILED_UNCERTAIN CON AFIP
+    // contactada no, porque el comprobante puede existir ya en AFIP.
+    if (linkage.kind === 'NOT_ISSUED') {
+      if (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted) {
+        throw new ReceivableInvoiceReconciliationPendingError(id, linkage.invoiceId);
+      }
+      throw new ReceivableInvoiceNotIssuedError(id, linkage.invoiceId, linkage.status);
+    }
     const invoiceId = linkage.kind === 'ISSUED' ? linkage.invoiceId : null;
     const idempotencyKey = `ar-collect:${id}`;
     const notes = `Cobro de cuenta por cobrar — estadía ${ar.stayId}`;

@@ -7,7 +7,7 @@ import {
   InvalidAccountsReceivableTransitionError,
 } from './accounts-receivable.service.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
-import { CustomerNotFoundError } from '../domain/errors.js';
+import { CustomerNotFoundError, ReceivableInvoiceNotIssuedError, ReceivableInvoiceReconciliationPendingError } from '../domain/errors.js';
 import { Customer } from './customer.entities.js';
 import { Stay } from '../pms-estadias/stay.js';
 import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivableReportRow } from './accounts-receivable.repository.js';
@@ -412,6 +412,33 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       await expect(service.markInvoiced('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
     });
 
+    it('sin financialTransactionId (§5.1(b), facturación manual permanente) -- pasa sin bloquear, no hay ninguna factura interna que verificar', async () => {
+      seed();
+      const updated = await service.markInvoiced('ar-1', '0001-00001234');
+      expect(updated.status).toBe('FACTURADO');
+    });
+
+    it('AR-FACT-NO-ISSUED-01 -- factura interna PENDING (no ISSUED): rechaza con ReceivableInvoiceNotIssuedError, espeja el guard del camino automático', async () => {
+      seed({ financialTransactionId: 'ft-1' });
+      invoiceRepo.notIssuedByFinancialTransactionId.set('ft-1', { invoiceId: 'inv-1', status: 'PENDING', afipContacted: false });
+
+      await expect(service.markInvoiced('ar-1')).rejects.toThrow(ReceivableInvoiceNotIssuedError);
+    });
+
+    it('AR-FACT-NO-ISSUED-01 -- FAILED_UNCERTAIN con AFIP contactada: rechaza con ReceivableInvoiceReconciliationPendingError', async () => {
+      seed({ financialTransactionId: 'ft-1' });
+      invoiceRepo.notIssuedByFinancialTransactionId.set('ft-1', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+      await expect(service.markInvoiced('ar-1')).rejects.toThrow(ReceivableInvoiceReconciliationPendingError);
+    });
+
+    it('con factura interna ISSUED: pasa sin bloquear', async () => {
+      seed({ financialTransactionId: 'ft-1' });
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-1', 'inv-1');
+
+      const updated = await service.markInvoiced('ar-1');
+      expect(updated.status).toBe('FACTURADO');
+    });
   });
 
   describe('markCollected — FACTURADO → COBRADO, crea el PAYMENT que cierra la deuda', () => {
@@ -437,6 +464,29 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
         status: 'SETTLED',
         settledInvoiceId: null,
       });
+    });
+
+    it('AR-FACT-NO-ISSUED-01 -- factura interna PENDING (no ISSUED): rechaza con ReceivableInvoiceNotIssuedError, no cae al fallback', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1' });
+      invoiceRepo.notIssuedByFinancialTransactionId.set('ft-1', { invoiceId: 'inv-1', status: 'PENDING', afipContacted: false });
+
+      await expect(service.markCollected('ar-1')).rejects.toThrow(ReceivableInvoiceNotIssuedError);
+      expect(financialRepo.created).toHaveLength(0);
+    });
+
+    it('AR-FACT-NO-ISSUED-01 -- FAILED_UNCERTAIN con AFIP contactada: rechaza con ReceivableInvoiceReconciliationPendingError (código distinto, no reintentable a ciegas)', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1' });
+      invoiceRepo.notIssuedByFinancialTransactionId.set('ft-1', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+      await expect(service.markCollected('ar-1')).rejects.toThrow(ReceivableInvoiceReconciliationPendingError);
+      expect(financialRepo.created).toHaveLength(0);
+    });
+
+    it('AR-FACT-NO-ISSUED-01 -- FAILED_UNCERTAIN SIN contactar AFIP: se sabe con certeza que no se emitió nada, rechaza con el código reintentable (no el de reconciliación)', async () => {
+      seed({ status: 'FACTURADO', financialTransactionId: 'ft-1' });
+      invoiceRepo.notIssuedByFinancialTransactionId.set('ft-1', { invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: false });
+
+      await expect(service.markCollected('ar-1')).rejects.toThrow(ReceivableInvoiceNotIssuedError);
     });
 
     it('rechaza si el id no existe', async () => {
