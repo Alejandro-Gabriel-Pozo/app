@@ -132,31 +132,20 @@ export class CancellationRefundService {
       .filter((tx) => this.matchesRefundIdempotencyKey(tx, baseIdempotencyKey));
     if (existing.length > 0) return existing;
 
-    const collected = await this.financialTransactionRepo.getCollectedPaymentTotalForReservation(reservationId);
+    // BRECHA-REFUND-01 residual #2 (architecture-governor, 05/09/2026) --
+    // solo lo que NO depende de ningún lock queda afuera de la transacción:
+    // catálogo (`findApplicableTier`) y config (`businessProfileRepo.get()`),
+    // ninguno de los dos participa de la carrera. Meterlos adentro sumaría
+    // dos round-trips de red mientras la transacción sostiene `FOR UPDATE`
+    // sobre N facturas -- alarga la ventana en la que `recordPayment()` u
+    // otro `confirmRefund()` esperan esas mismas filas, sin arreglar nada.
+    // `collected` e `issuedInvoices`, en cambio, SÍ se releen adentro (ver
+    // abajo): son los que determinan cuánto y contra qué factura se
+    // reparte, y una foto vieja de esos dos es lo que producía el crédito
+    // fantasma en ":sin-asignar".
     const daysBeforeCheckin = Math.floor((reservation.startTime.getTime() - Date.now()) / MS_PER_DAY);
     const tier = await this.policyRepo.findApplicableTier(businessId, daysBeforeCheckin);
     const refundPercentage = tier?.refundPercentage ?? 0;
-    const refundAmount = round2(collected * refundPercentage / 100);
-
-    if (refundAmount <= 0) throw new NothingToRefundError(reservationId);
-
-    // F-A (05/09/2026, architecture-governor) -- getByReservationId() trae
-    // CUALQUIER factura de la reserva, incluidas las Notas de Crédito ya
-    // emitidas (una NC se persiste en la MISMA tabla `invoices`, con
-    // financial_transaction_id = la tx REFUND que la originó, que también
-    // lleva reservationId). Sin este filtro, un segundo confirmRefund()
-    // repartiría LIFO empezando por la NC más reciente -- issuedAt de la NC
-    // es más nuevo que el de la factura que revierte -- y
-    // buildCreditNote() emitiría una NC apuntando a OTRA NC, no a la
-    // factura original. Solo Factura B es reversible por este camino.
-    const issuedInvoices = (await this.invoiceRepo.getByReservationId(reservationId))
-      .filter((inv) => inv.status === 'ISSUED' && inv.cbteTipo === CBTE_TIPO_FACTURA_B)
-      // Desempate explícito por id -- documenta el invariante de que el
-      // orden LIFO tiene que ser determinístico incluso si dos facturas
-      // comparten el mismo issuedAt (no cambia el resultado de ningún test
-      // existente, ninguno tiene ese empate).
-      .sort((a, b) => (b.issuedAt?.getTime() ?? 0) - (a.issuedAt?.getTime() ?? 0) || a.id.localeCompare(b.id));
-
     const { currency } = await this.businessProfileRepo.get();
 
     const created: FinancialTransaction[] = [];
@@ -188,19 +177,64 @@ export class CancellationRefundService {
         return;
       }
 
+      // BRECHA-REFUND-01 residual #2 (architecture-governor, 05/09/2026) --
+      // re-leída DENTRO de la transacción, no antes: una factura que llega
+      // a ISSUED justo después de la foto de afuera (emisión AFIP corre
+      // por outbox/worker, async, sin coordinación con este flujo) haría
+      // que el reembolso entero cayera a ":sin-asignar" ledger-only en vez
+      // de atarse a la factura real y emitir su Nota de Crédito --
+      // descuadre fiscal, no solo de plata. F-A (05/09/2026) sigue
+      // aplicando: filtra Notas de Crédito ya emitidas (misma tabla
+      // `invoices`) para que el reparto no les pegue.
+      const issuedInvoices = (await this.invoiceRepo.getByReservationId(reservationId))
+        .filter((inv) => inv.status === 'ISSUED' && inv.cbteTipo === CBTE_TIPO_FACTURA_B)
+        // Desempate explícito por id -- documenta el invariante de que el
+        // orden LIFO tiene que ser determinístico incluso si dos facturas
+        // comparten el mismo issuedAt (no cambia el resultado de ningún
+        // test existente, ninguno tiene ese empate).
+        .sort((a, b) => (b.issuedAt?.getTime() ?? 0) - (a.issuedAt?.getTime() ?? 0) || a.id.localeCompare(b.id));
+
       // Lockear las N facturas candidatas en orden CANÓNICO (por id) antes
       // de aplicar ninguna lógica de negocio en orden LIFO -- desacopla
       // "en qué orden tomamos los locks" de "en qué orden repartimos la
-      // plata", para no depender de que el orden de negocio sea también
-      // libre de ABBA contra otros callers (ej. recordPayment(), que
-      // lockea en el orden que le manda el caller, no canónico -- cerrar
-      // eso del todo es un bloque aparte, registrado, no de acá). Costo
+      // plata". `recordPayment()` (customer-account.service.ts:182-188,
+      // desde `a2aaf40`, O2-F1) ya ordena `consolidatedAllocations` con el
+      // MISMO comparador (`localeCompare` ascendente sobre `invoices.id`)
+      // antes de su propio loop de lock -- los dos únicos sitios que
+      // sostienen más de un lock de `invoices` a la vez usan el mismo
+      // orden total, así que no hay ABBA entre ellos (verificado
+      // 05/09/2026, architecture-governor -- corrige una afirmación previa
+      // de este mismo comentario, que daba ese cierre por pendiente sin
+      // haber releído `customer-account.service.ts` actualizado). Costo
       // real: un lock ya sostenido por esta misma transacción es
       // instantáneo -- no es una segunda espera.
       const canonicalOrder = [...issuedInvoices].sort((a, b) => a.id.localeCompare(b.id));
       for (const invoice of canonicalOrder) {
         await this.invoiceRepo.getRefundableForUpdate(client, invoice.id);
       }
+
+      // BRECHA-REFUND-01 residual #2 -- `collected` releído DESPUÉS del
+      // pre-lockeo de arriba, no antes: mientras esta transacción sostiene
+      // `FOR UPDATE` sobre esas facturas, cualquier INSERT concurrente en
+      // `financial_transactions` con `settled_invoice_id`/
+      // `reversed_invoice_id` apuntando a una de ellas necesita `FOR KEY
+      // SHARE` sobre la fila padre, que conflictúa con nuestro `FOR
+      // UPDATE` y por lo tanto espera hasta nuestro commit (semántica de
+      // Postgres, no verificada empíricamente en este bloque -- mismo tipo
+      // de suposición que ya falló una vez en este repo, ver §7.1 en
+      // `sql.invoice.repository.ts`; si se demuestra falsa, este comentario
+      // hay que corregirlo). Esto protege la porción de `collected` ligada
+      // a facturas lockeadas -- NO protege una transacción de la reserva
+      // sin ningún `settled_invoice_id`/`reversed_invoice_id` (ej. un
+      // PAYMENT genérico contra la cuenta del cliente): esa puede seguir
+      // commiteando en la ventana entre acá y el COMMIT final. Sigue
+      // siendo estrictamente mejor que la foto de afuera de la
+      // transacción (Fase 3 original) y cierra el caso más severo
+      // (factura recién emitida), pero no es una garantía total -- no lo
+      // presentes como tal en ningún doc de cierre.
+      const collected = await this.financialTransactionRepo.getCollectedPaymentTotalForReservation(reservationId);
+      const refundAmount = round2(collected * refundPercentage / 100);
+      if (refundAmount <= 0) throw new NothingToRefundError(reservationId);
 
       const chunks: Array<{ amount: number; reversedInvoiceId: string | null; idempotencyKey: string }> = [];
       let remaining = refundAmount;

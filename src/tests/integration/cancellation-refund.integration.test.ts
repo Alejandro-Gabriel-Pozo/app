@@ -25,6 +25,7 @@ import { SqlCancellationPolicyRepository } from '../../reservas/sql.cancellation
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
+import type { BusinessProfileRepository } from '../../repositories/business-profile.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 
 let db: SqlClient;
@@ -112,6 +113,59 @@ async function seedCancelledReservationWithPayment(opts: {
     reservationId: reservation.id, type: 'PAYMENT', amount: opts.paid,
     currency: 'ARS', status: 'SETTLED',
     settledInvoiceId: invoiceId ?? null,
+  });
+
+  return { reservation, guest, invoiceId };
+}
+
+/**
+ * architecture-governor (05/09/2026, residual #2, Escenario A) -- misma
+ * base que `seedCancelledReservationWithPayment({ withInvoice: true })`,
+ * pero la factura queda PENDING (sin CAE, `cbte_nro`/`issued_at` NULL): el
+ * PAYMENT ya está vinculado vía `settledInvoiceId` desde antes de que AFIP
+ * responda -- así funciona el flujo real (la plata se cobra, la emisión es
+ * asíncrona por outbox/worker).
+ */
+async function seedCancelledReservationWithPendingInvoice(opts: { totalPrice: number; paid: number }) {
+  const category = await seedCategory(db);
+  const resource = await seedResource(db, category.id);
+  const guest = await seedCustomer(db);
+  const reservation = await seedReservation(db, resource.id, guest.id, {
+    totalPrice: opts.totalPrice,
+    status: 'CANCELLED',
+    startTime: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+  });
+
+  await db.query(
+    `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage)
+     VALUES ($1, $2, 0, 100)
+     ON CONFLICT (business_id, min_days_before_checkin) WHERE active = TRUE
+     DO UPDATE SET refund_percentage = EXCLUDED.refund_percentage`,
+    [randomUUID(), BUSINESS_ID],
+  );
+
+  const financialRepo = new SqlFinancialTransactionRepository(db);
+  const charge = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+    reservationId: reservation.id, type: 'CHARGE', amount: opts.totalPrice,
+    currency: 'ARS', status: 'SETTLED',
+  });
+  const invoiceId = randomUUID();
+  await db.query(
+    `INSERT INTO invoices
+       (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+        environment, pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro,
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total, status)
+     VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, 1, 96, '0',
+             5, 'PES', $6, 0, $6, 'PENDING')`,
+    [invoiceId, BUSINESS_ID, charge!.id, guest.id, `idem-${invoiceId}`, opts.totalPrice],
+  );
+
+  await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+    reservationId: reservation.id, type: 'PAYMENT', amount: opts.paid,
+    currency: 'ARS', status: 'SETTLED',
+    settledInvoiceId: invoiceId,
   });
 
   return { reservation, guest, invoiceId };
@@ -257,6 +311,15 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
   // `reservationId`, así que `getByReservationId()` ni siquiera lo trae de
   // vuelta -- pasa igual con cualquiera de los dos filtros. Este test sí
   // fija `reservationId`, para que la distinción quede probada de verdad.
+  //
+  // Rotulado como guarda de REGRESIÓN (architecture-governor, residual #2,
+  // "Escenario C"), no como reproducción de un defecto alcanzable hoy:
+  // `confirmRefund()` es el ÚNICO lugar del código que crea filas
+  // `type: 'REFUND'` -- este REFUND manual solo puede existir hoy por una
+  // corrección operativa directa a mano (práctica real en este stack, ver
+  // `CLAUDE.md` del servidor) o por un escritor futuro que todavía no
+  // existe. Protege contra esos casos, no contra una carrera de este
+  // código consigo mismo.
   it('un REFUND manual con reservationId pero SIN la clave de este flujo no bloquea un reembolso real nuevo (filtro por prefijo, no por type a secas)', async () => {
     const { reservation } = await seedCancelledReservationWithPayment({ totalPrice: 1000, paid: 1000 });
 
@@ -277,5 +340,98 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
     expect(created).toHaveLength(1);
     expect(created[0]?.amount).toBe(800);
     expect(created[0]?.idempotencyKey).toBe(`refund:cancellation:${reservation.id}:sin-asignar`);
+  });
+
+  // architecture-governor (05/09/2026, residual #2 -- "Escenario A", el de
+  // mayor severidad contable). El hook de abajo intercepta
+  // `businessProfileRepo.get()`: es el ÚLTIMO colaborador que
+  // `confirmRefund()` llama ANTES de entrar a `transactionManager.run()`,
+  // en las dos versiones del código (antes y después de este residual) --
+  // en la versión vieja, `issuedInvoices` ya se había leído (stale) ANTES
+  // de este punto; en la versión con el fix, `issuedInvoices` se lee
+  // DESPUÉS (recién dentro de la transacción). Disparar la escritura
+  // interferente acá, una sola vez, reproduce sin sleeps ni Promise.all
+  // exactamente la ventana que separa las dos versiones: la emisión AFIP
+  // "termina" en el instante justo entre la lectura vieja (ya pasó) y la
+  // lectura nueva (todavía no pasó).
+  it('architecture-governor (residual #2, Escenario A) -- una factura que pasa a ISSUED en vuelo se ata al reembolso, no cae a :sin-asignar', async () => {
+    const { reservation, invoiceId } = await seedCancelledReservationWithPendingInvoice({ totalPrice: 1000, paid: 1000 });
+
+    const realBusinessProfileRepo = new SqlBusinessProfileRepository(db);
+    let fired = false;
+    const interferingBusinessProfileRepo: Pick<BusinessProfileRepository, 'get'> = {
+      async get() {
+        if (!fired) {
+          fired = true;
+          await new SqlInvoiceRepository(db).markIssued(invoiceId, {
+            cbteNro: 999, cae: 'CAE-RACE', caeVto: '2030-01-01', afipResponse: {},
+          });
+        }
+        return realBusinessProfileRepo.get();
+      },
+    };
+
+    const service = new CancellationRefundService(
+      new SqlReservationRepository(db, new SqlResourceRepository(db)),
+      new SqlCancellationPolicyRepository(db),
+      new SqlFinancialTransactionRepository(db),
+      new SqlInvoiceRepository(db),
+      interferingBusinessProfileRepo,
+      new PgTransactionManager(pool),
+    );
+
+    const created = await service.confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+
+    const linked = created.find((tx) => tx.reversedInvoiceId === invoiceId);
+    expect(linked?.amount).toBe(1000);
+    expect(created.some((tx) => tx.reversedInvoiceId === null)).toBe(false);
+  });
+
+  // architecture-governor (05/09/2026, residual #2 -- "Escenario B",
+  // reachable por `recordPayment()` o cualquier cobro de checkout/POS con
+  // `reservation_id`). Mismo hook, mismo mecanismo -- acá la escritura
+  // interferente es un PAYMENT genérico contra la reserva (sin factura),
+  // que `getCollectedPaymentTotalForReservation()` suma sin importar si
+  // hay `settledInvoiceId`. Sin el fix, este pago "en vuelo" queda afuera
+  // del `collected` que ya se había leído -- Q-C hace que `confirmRefund`
+  // sea de un solo tiro por reserva, así que ese faltante nunca se
+  // completa después: es un sub-reembolso silencioso y permanente, no un
+  // error visible.
+  it('architecture-governor (residual #2, Escenario B) -- un PAYMENT concurrente sobre la misma reserva se refleja en el reembolso, no queda un sub-reembolso silencioso', async () => {
+    const { reservation, guest } = await seedCancelledReservationWithPayment({ totalPrice: 1000, paid: 700 });
+
+    const realBusinessProfileRepo = new SqlBusinessProfileRepository(db);
+    let fired = false;
+    const interferingBusinessProfileRepo: Pick<BusinessProfileRepository, 'get'> = {
+      async get() {
+        if (!fired) {
+          fired = true;
+          const financialRepo = new SqlFinancialTransactionRepository(db);
+          await financialRepo.create({
+            id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+            reservationId: reservation.id, type: 'PAYMENT', amount: 300,
+            currency: 'ARS', status: 'SETTLED',
+          });
+        }
+        return realBusinessProfileRepo.get();
+      },
+    };
+
+    const service = new CancellationRefundService(
+      new SqlReservationRepository(db, new SqlResourceRepository(db)),
+      new SqlCancellationPolicyRepository(db),
+      new SqlFinancialTransactionRepository(db),
+      new SqlInvoiceRepository(db),
+      interferingBusinessProfileRepo,
+      new PgTransactionManager(pool),
+    );
+
+    const created = await service.confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+
+    // 700 (pago inicial) + 300 (pago en vuelo) = 1000, al 100% -- el
+    // reembolso tiene que reflejar el pago que llegó en vuelo, no solo los
+    // 700 que existían cuando arrancó la llamada.
+    const total = created.reduce((sum, tx) => sum + tx.amount, 0);
+    expect(total).toBe(1000);
   });
 });
