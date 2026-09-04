@@ -615,6 +615,19 @@ pasar si el operador marca cobrado sobre una factura rechazada/pendiente
 va en `markInvoiced()` (espejando el camino automático) o en
 `markCollected()`? **No implementar sin ese diseño.**
 
+**✅ Fase 1 RESUELTA (05/09/2026, commits `4029b96` + `4d2d694`, locales,
+sin push):** `markInvoiced()` y `markCollected()` ahora rechazan
+(fail-closed, Opción A) cuando la factura interna vinculada existe pero no
+está `ISSUED`, con dos códigos de error distintos (`AR_INVOICE_NOT_ISSUED`
+reintentable, `AFIP_RECONCILIATION_PENDING` no reintentable a ciegas).
+Verificado contra las 2 bases de tenant reales antes de commitear: cero
+filas ya afectadas. Suite completa verde (1807 unitarios, 120 integración
+Postgres real). **Sigue abierto y sin implementar:** el resto del diseño
+de reconciliación (Fases 2-8: tabla `invoice_reconciliations`, worker,
+endpoints manuales, rol fiscal `FISCAL_RECONCILIATION` -- decisiones D1
+tabla-aparte/D2 rol-nuevo/D3 reservar-valor-externo ya confirmadas por el
+dueño, diseño final pendiente de una última pasada del governor).
+
 **Trampa de verificación registrada por la 5ª pasada:** correr la suite de
 integración SIN `TEST_DATABASE_URL` en el shell no falla — reporta
 `14 skipped`, `115 skipped`, exit 0, en ~4 segundos. Un "verde" de esa
