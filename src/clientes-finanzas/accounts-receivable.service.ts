@@ -210,7 +210,8 @@ export class AccountsReceivableService {
    *  1. Si `ar.financialTransactionId` resuelve a una factura ISSUED
    *     (individual o consolidada, `invoiceRepo.getInvoiceIdByFinancialTransactionId`),
    *     el PAYMENT se capa al saldo vigente de esa factura, con el MISMO
-   *     lock (`FOR UPDATE OF i`) que usa `recordPayment()` -- serializa los
+   *     lock (`SELECT ... FOR UPDATE`, sin `OF i` desde §7.1) que usa
+   *     `recordPayment()` -- serializa los
    *     dos caminos entre sí (A8.1/A8.2). El excedente (no debería haberlo
    *     en el caso normal, pero puede si otro camino ya cobró parte) se
    *     preserva como fila sin asignar, nunca se pierde.

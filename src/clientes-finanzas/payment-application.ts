@@ -57,7 +57,7 @@ export interface CappedPaymentApplication {
 }
 
 /**
- * Relee el saldo de la factura CON `FOR UPDATE OF i` dentro de la
+ * Relee el saldo de la factura CON `FOR UPDATE` (sin `OF i` desde §7.1) dentro de la
  * transacción del caller (A8.1/A8.2 -- serializa dos aplicaciones
  * concurrentes contra la misma factura, el segundo espera al primero y lee
  * el saldo YA descontado) y capa `requestedAmount` a ese saldo. El

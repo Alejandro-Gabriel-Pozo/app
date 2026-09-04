@@ -479,19 +479,86 @@ repositorios. Encontró dos cosas nuevas:
   `accounts-receivable.service.ts:326-327` tenía un comentario que decía
   "no lockeamos la fila AR en sí" — falso, la línea 271 sí la lockea
   (residuo previo al fix de O2F2-A). Corregido para reflejar el código real.
-- **H4 (registrado, NO corregido — no bloquea este cierre):** en
+- **H4 (registrado, NO corregido — no bloquea este cierre; ancla corregida
+  05/09/2026 por `architecture-governor`, 5ª+ pasadas):** en
   `markCollected()` (`accounts-receivable.service.ts:273`) y en
   `payment-application.ts:94`, `financialRepo.getByIdempotencyKey()` corre
   sobre el pool (`this.db`), no sobre el `client` transaccional, mientras la
-  transacción ya sostiene el lock de la fila AR y/o de la factura. El pool
-  tiene `max: 10` y `connectionTimeoutMillis: 5000`
-  (`src/db/pg.client.ts:94-96`). **Consecuencia concreta:** con 10 o más
-  cobros/pagos simultáneos sobre el mismo tenant, cada transacción abierta
+  transacción ya sostiene el lock de la fila AR y/o de la factura. **El pool
+  citado originalmente estaba mal** — `src/db/pg.client.ts:94-96` (`max: 10`)
+  es el pool LEGADO de plataforma, no el que corre en producción. El pool
+  real es `src/platform/tenant.middleware.ts:104-110` — **`max: 5`**,
+  compartido por TODO el tráfico transaccional del tenant (reservas, POS,
+  facturación), no solo cobros — vía `buildTenantTransactionManager(req)` →
+  `getTenantRawPool(businessId)` (`src/db/tenant-context.ts:83-84`).
+  **Consecuencia concreta, con el umbral real:** con 5 o más
+  cobros/pagos simultáneos sobre el mismo tenant (compartiendo el pool con
+  cualquier otra operación transaccional en curso), cada transacción abierta
   sostiene una conexión y pide una segunda — las que exceden el pool
   esperan 5s y fallan por timeout (degrada a error controlado con
   rollback, no a corrupción ni a cuelgue). Patrón preexistente de O2-F1, ya
   en `main`; O2F2-A y O2F2-B alargan la ventana en que se sostienen locks,
-  así que la exposición se ensancha un poco. Sin dueño ni fecha asignada.
+  así que la exposición se ensancha un poco. **La justificación del
+  comentario en `accounts-receivable.service.ts:331-334` (que el `getById`
+  necesita el pool para ver el commit ajeno bajo READ COMMITTED) no se
+  sostiene** — `pg.transaction-manager.ts:25` hace `BEGIN` pelado (READ
+  COMMITTED default), y bajo ese nivel de aislamiento una sentencia nueva
+  sobre el MISMO `client` también toma foto fresca. Usar el pool ahí no es
+  necesario para la visibilidad — solo cuesta una conexión de más mientras
+  la transacción sostiene locks. Mover ese `getById` al `client` reduciría
+  la exposición de H4 a la mitad. Es código, no doc — no se toca en este
+  bloque, queda registrado con ancla para un commit aparte. Sin dueño ni
+  fecha asignada para H4 en sí.
+
+**H-C (registrado 05/09/2026, `erp-audit-orchestrator` + corregido por
+`architecture-governor`) — asimetría de guardas entre los dos caminos de
+cobro, defensa en profundidad, NO agujero de autorización:**
+`recordPayment()` recibe `invoiceId` **del cliente HTTP**
+(`customer-account.service.ts:199-201` valida pertenencia al cliente antes
+de aplicar, porque un operador podría mandar cualquier id). `markCollected()`
+no tiene esa validación explícita, pero es porque no la necesita de la misma
+forma: su `invoiceId` es **derivado** por el propio sistema
+(`ar.financialTransactionId` → `getInvoiceIdByFinancialTransactionId()`),
+escrito en la misma transacción que creó la fila AR — no lo elige el
+operador. No describir esto como "le falta la guarda que el otro tiene": es
+una superficie de ataque distinta, ya cerrada por construcción. Sin acción
+pendiente; registrado por completitud.
+
+**H-D (registrado 05/09/2026, `erp-audit-orchestrator`) — endpoint sin
+consumidor:** `GET /api/invoices?customerId=` (F2.2,
+`invoices.routes.ts`) no tiene ningún caller en `appfrontend-main`
+(verificado por grep). Ya declarado como tal en el commit `5856306`
+("capacidad de API, no pantalla nueva — no se pidió"). Amplía la superficie
+de lectura de `FRONT_DESK` (antes hacía falta un `financialTransactionId`
+puntual, ahora un `customerId` devuelve el historial fiscal completo del
+cliente) — coherente con el criterio de exhibición de comprobantes ya usado
+en el resto del módulo, pero es superficie nueva sin uso real todavía. Sin
+acción pendiente.
+
+**H-E (registrado 05/09/2026, `erp-audit-orchestrator`) — sin actor en el
+cobro ni en el marcado de facturado, preexistente, NO introducido por
+O2-F2:** `accounts_receivable` tiene `transferred_by` pero no `collected_by`
+ni `invoiced_by` (`schema.sql:2304-2322`); `markCollected(id)` no recibe
+actor (la ruta no lo pasa, `accounts-receivable.routes.ts:73`); no hay
+`audit_log` ni `recordFieldChanges()` en el camino (grep sin resultados en
+servicio y rutas); el PAYMENT tampoco lleva `confirmed_by`. Instante sí
+(`collected_at`), motivo sí (`notes`), origen sí (`idempotencyKey`). Actor
+no. Toca directamente el criterio de cierre de auditoría (A9.x de
+`criterios-negocio.md`). Sin dueño ni fecha asignada — bloquea que el
+punto 4 de H-A (ver más abajo) pueda usar `domain/audit.ts` en vez de un log
+estructurado.
+
+**Costura `markInvoiced()` best-effort — registrada contra C1-Fase C
+(05/09/2026, `erp-audit-orchestrator`):**
+`invoice.service.ts:491-503` (`requestConsolidatedInvoice`) y `:729-742`
+(`finalizeIssued`) envuelven la llamada a `accountsReceivableRepo.markInvoiced()`
+en `try/catch` con `logger.error`, sin reintento, sin outbox, sin alerta. Si
+falla, la factura sale emitida con CAE real y la fila AR queda
+`PENDIENTE_FACTURAR` para siempre, en silencio para el usuario — `markCollected()`
+respondería 409 hasta que alguien lo destrabe a mano. No es un hallazgo de
+O2-F2; es una costura preexistente que cualquier trabajo futuro sobre
+C1-Fase C (generación real de factura, `docs/roadmap-pms-multirubro.md`)
+tiene que resolver. Referencia, no duplicar detalle acá.
 
 **Trampa de verificación registrada por la 5ª pasada:** correr la suite de
 integración SIN `TEST_DATABASE_URL` en el shell no falla — reporta
@@ -541,9 +608,47 @@ como auditada de nuevo.
 - **Documentales:** AUDIT-DOC-001, DA-CONT-001, DOC-ANCLA-001, CONTRACT-001,
   "RBAC mecanismos 1 y 2" (sigue sin referente, esperando al dueño).
 - **Backlog de producto:** Gap C1-C, FISCAL-CBTE-001, FACT-BORRADOR-001,
-  C1-Fase A, C2, C3, D7, frontend visual (SEM-001, SEM-002, TOAST-003, A11Y-001,
-  overlays de Superadmin), heredados (Redis rate-limit, BullMQ, etapas 2-3 de
-  downgrade, datos demo en la base real).
+  C1-Fase A, **C2 (🔴 BLOQUEADO — ver nota abajo)**, C3, D7, frontend visual
+  (SEM-001, SEM-002, TOAST-003, A11Y-001, overlays de Superadmin), heredados
+  (Redis rate-limit, BullMQ, etapas 2-3 de downgrade, datos demo en la base real).
+
+**C2 bloqueado por `BRECHA-REFUND-01` (04/09/2026) — no construir la UI sin
+resolver primero.** `BRECHA-REFUND-01` ya estaba registrada
+(`docs/continuidad-da-orden-estados-2026-09-02.md:332`, S1, "confirmRefund no
+idempotente, puede duplicar Nota de Crédito con CAE propio") pero no estaba
+cruzada con C2 ("Cancelar reserva" no usa el preview/confirm de reembolso,
+`docs/pendientes-2026-08-31.md:262`) ni con `A2-M01-001`
+(`docs/erp-auditoria-v2/fichas/M01-reservas.md`). Son el mismo riesgo: C2 es
+"conectar la pantalla que llama a `confirmRefund()`"; `BRECHA-REFUND-01` es
+"`confirmRefund()` no es seguro de invocar dos veces". Construir C2 antes de
+cerrar `BRECHA-REFUND-01` convierte un endpoint hoy inalcanzable (ninguna
+pantalla lo llama, verificado por grep en `appfrontend-main`) en un
+doble-click = reembolso duplicado con CAE real de ARCA.
+
+**Investigación de hoy (`erp-audit-orchestrator`), verificada contra código y
+Postgres real, no solo hipótesis:** `confirmRefund()`
+(`src/reservas/cancellation-refund.service.ts:78-133`) no tiene lock, no
+tiene `idempotencyKey`, y calcula el saldo previo con `SUM(PAYMENT)` sin
+restar `REFUND` ya emitidos (`sql.financial-transaction.repository.ts:654-662`)
+-- la repetición **no requiere concurrencia**, dos llamadas separadas por
+minutos duplican. Reproducido contra Postgres real: dos `REFUND` legítimos y
+secuenciales sobre la misma factura dejan `outstanding = -2000` sobre una
+factura de 1000, sin que ningún constraint de la base lo impida. Severidad
+S1, comparable a O2F2-A/B pero peor en consecuencia (Nota de Crédito con CAE
+real es irreversible por software) y en silencio (sin auditoría, sin evento,
+invisible para el arqueo de caja si el reembolso fue en efectivo).
+
+**Verificado hoy contra las bases reales (04/09/2026, consulta de solo
+lectura, sin escritura):** los 2 únicos negocios con BD asignada (`Hotel los
+Alamos`, `Demo`) — **cero filas REFUND duplicadas, cero facturas con
+outstanding negativo.** No hay daño ya hecho.
+
+**Siguiente acción:** `BRECHA-REFUND-01` necesita su propio paquete de
+diseño con `architecture-governor` antes de tocar código -- hay una decisión
+de negocio sin dueño (qué significa el saldo de una factura totalmente
+devuelta: al menos 3 modelos contables posibles, ninguno elegido). No
+confundir con el paquete de O2-F2/H-A, que no lo toca y puede avanzar en
+paralelo.
 - **A7.6 — política de retención escrita:** `[V]` **re-verificado hoy**, sigue
   abierto. No hay purga ni política para `audit_log` ni `domain_events` en ningún
   punto del repositorio (grep completo sobre `src/`). Es la dependencia de D7 de

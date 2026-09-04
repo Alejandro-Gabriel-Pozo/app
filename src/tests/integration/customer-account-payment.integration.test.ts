@@ -5,7 +5,7 @@
  * `CustomerAccountService.recordPayment()` con `allocations`.
  *
  * El fix central es a nivel fila: `getOutstandingForUpdate()` relee el
- * saldo de la factura CON `FOR UPDATE OF i` dentro de la misma
+ * saldo de la factura CON `FOR UPDATE` (sin `OF i` desde §7.1) dentro de la misma
  * transacción de `recordPayment()`, así que dos pagos concurrentes contra
  * la misma factura se serializan a nivel Postgres (A8.1/A8.2) -- un mock
  * de repositorio no puede ejercitar eso, solo Postgres real puede
