@@ -95,13 +95,34 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async getOutstandingForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
-    // `FOR UPDATE` sobre la fila de `invoices` -- no sobre las de
-    // `financial_transactions` que se suman en las subconsultas. Es el
-    // recurso escaso que hay que serializar (A8.1): dos `recordPayment()`
-    // concurrentes contra la misma factura toman esta misma fila, uno
-    // espera al otro, y el segundo lee el saldo YA descontado por el
-    // primero -- nunca los dos calculan sobre el mismo saldo viejo.
+    // O2-F2 (03/09/2026) -- DOS sentencias separadas, a propósito. Antes
+    // era una sola `SELECT ... FOR UPDATE OF i` con el cómputo de saldo
+    // (subconsultas correlacionadas contra financial_transactions) en el
+    // mismo SELECT que toma el lock. Bajo Postgres real, si esta sentencia
+    // tiene que ESPERAR el lock (otra transacción lo tenía tomado) y esa
+    // otra transacción no modificó la fila de `invoices` en sí (solo
+    // insertó en `financial_transactions`, una tabla DISTINTA -- exactamente
+    // el caso de `markCollected()`/`recordPayment()`), Postgres NO
+    // re-evalúa las subconsultas correlacionadas con una foto nueva al
+    // desbloquear: quedan con la foto de ANTES de esperar, así que "ganan"
+    // el lock pero leen un saldo viejo -- sobre-aplicación real bajo
+    // concurrencia genuina, no solo hipotética.
     //
+    // Reproducido y confirmado contra Postgres real (Neon) el 03/09/2026:
+    // dentro de la MISMA transacción, inmediatamente después de esta
+    // sentencia, un SELECT plano SÍ ve la fila recién commiteada por la
+    // otra transacción -- la sentencia FOR UPDATE bloqueada es la única que
+    // queda con la foto vieja. Por eso el fix separa "tomar el lock" (sin
+    // subconsultas, nada que pueda quedar stale) de "leer el saldo"
+    // (sentencia nueva, ejecuta DESPUÉS de que el lock ya se obtuvo, con
+    // una foto tomada en ese momento -- ya no puede quedar vieja).
+    //
+    // Afecta también al camino de O2-F1 (recordPayment): esa suite pasaba
+    // porque su timing no disparaba la espera real por el lock, no porque
+    // el mecanismo fuera correcto bajo cualquier orden de llegada -- ver
+    // docs/diseno-o2-f2-cierre-completo-2026-09-03.md.
+    await client.query(`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
+
     // Sin el JOIN a `financial_transactions ft ON ft.id = i.financial_transaction_id`
     // que usa `getOutstandingByCustomerId`: acá se busca por `i.id`
     // directo, y ese JOIN excluiría toda factura CONSOLIDADA
@@ -117,8 +138,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
                        WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
          ) AS outstanding
        FROM invoices i
-       WHERE i.id = $1
-       FOR UPDATE OF i`,
+       WHERE i.id = $1`,
       [invoiceId],
     );
     if (rows.length === 0) {
