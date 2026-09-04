@@ -41,7 +41,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | **Visión de producto multirubro**, con la tabla que concilia el plan contra lo implementado | [plan-multirubro-maestro-2026-08-29.md](plan-multirubro-maestro-2026-08-29.md) | Dirección (no orden de implementación) |
 | Plan ejecutado de separación de dominios + las 7 decisiones cerradas + contrato de `BusinessContext` (§5.4 payload, §5.5 consumo) | [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md) | Diseño ejecutado |
 | Deploy, respaldos, rollback y las trampas que ya costaron un incidente | [conocimiento/runbook-deploy-render.md](conocimiento/runbook-deploy-render.md) | Runbook |
-| Log de sesión (más reciente) | [pendientes-2026-09-01.md](pendientes-2026-09-01.md) | Historial, no catálogo. Siempre el de **fecha más alta** en `docs/`; si esta fila quedó vieja, gana el archivo |
+| Log de sesión (más reciente) | [pendientes-2026-09-05.md](pendientes-2026-09-05.md) | Historial, no catálogo. Siempre el de **fecha más alta** en `docs/`; si esta fila quedó vieja, gana el archivo |
 | Backlog de producto por rubro | [roadmap-pms-multirubro.md](roadmap-pms-multirubro.md) | Roadmap (no pendientes) |
 | **Referencia externa de inventario** — `C:\Users\Usuario\Downloads\proyecto script` (NQNTUR, ERP-lite sobre Apps Script). Es el espejo de este repo: su `REVIEW-ERP-LITE.md` lista como gaps propios lo que acá ya está (AFIP, hospedaje, caja, cuentas corrientes), y su fuerte es el inventario que acá falta. Ya se adoptaron su mapa `TRANSICIONES` y `DESTINOS_CONSUMO` (consumo≠merma); conteo físico (3 acciones: AJUSTAR/FALTA_MOVIMIENTO/DESCARTAR) y lotes/FEFO siguen sin adoptar (ver pendientes 27/08) | Fuera del repo | Referencia externa |
 
@@ -122,6 +122,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 |---|---|
 | Fecha calendario (`YYYY-MM-DD`) vs UTC en JS / Zod | [conocimiento/playbook-fechas-timezone.md](conocimiento/playbook-fechas-timezone.md) |
 | `SELECT FOR UPDATE` sobre 0 filas; recurso exclusivo vs cupo | [conocimiento/playbook-locks-exclusividad.md](conocimiento/playbook-locks-exclusividad.md) |
+| Idempotencia bajo lock financiero: chequeo antes del lock no ve al ganador de la carrera; orden canónico de lock cruzado entre servicios; cómo probar una carrera real sin sleeps | [conocimiento/playbook-idempotencia-bajo-lock.md](conocimiento/playbook-idempotencia-bajo-lock.md) |
 | Wiring tenant: `req.db` vs pool de plataforma; `Pick<Repo>` en servicios | [DEFENSIVE_DEVELOPING.md](DEFENSIVE_DEVELOPING.md) §3 + `app.ts` |
 | 404 de detalle: `isApiError` + `err.code`, nunca `err.status` | `appfrontend-main/src/lib/apiErrors.ts`; caso Órdenes 25/08 |
 | Cambiar `authorize(Roles.X)`: matriz RBAC + `EXPECTED_AUTHORIZE_CALL_SITES` + `PUBLIC_ROUTES` (si la ruta es pública) | `app-main/CLAUDE.md` sección RBAC |
