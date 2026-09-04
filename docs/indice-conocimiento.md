@@ -135,6 +135,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | Mapa | Dónde |
 |---|---|
 | Módulos y acoplamiento | [arquitectura-monolito-modular.md](arquitectura-monolito-modular.md), [auditoria-modularidad.md](auditoria-modularidad.md) |
+| **Completitud empresarial del ERP** (21 módulos, 158 hallazgos, 431 anclas verificadas, corrida 02/09/2026) — entrar por [erp-auditoria-v2/README.md](erp-auditoria-v2/README.md), resultado en `10-matriz-maestra.md`, priorización en `datos/hallazgos.csv`. Reemplaza a [programa-auditoria-completitud-erp-2026-09-01.md](programa-auditoria-completitud-erp-2026-09-01.md) (v1.0, borrador — se conserva como historial, no como referencia vigente) | [erp-auditoria-v2/](erp-auditoria-v2/) |
 | Recursos / categorías / reservas | [logica-recursos-categorias-reservas.md](logica-recursos-categorias-reservas.md) |
 | Motor de reservas + observabilidad | [auditoria-tecnica-infra-reservas.md](auditoria-tecnica-infra-reservas.md) |
 | Multi-cliente | [roadmap-multi-cliente-arquitectura.md](roadmap-multi-cliente-arquitectura.md) |

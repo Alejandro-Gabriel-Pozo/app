@@ -191,11 +191,22 @@ cerró, no porque se haya vuelto a comprobar.
 1. **Portar `O4-03` y `O4-11`** al archivo de `origin/main` — bloque de
    código de test, con su propia autorización. **Sigue abierto**, arrastrado
    desde `pendientes-2026-09-03.md`.
-2. **6 artefactos untracked sin triage**, señalados por `architecture-governor`
-   antes de autorizar el push de esta sesión: `.claude/skills/neon/`,
-   `.claude/skills/neon-postgres/`, `.reviews/`, `docs/erp-auditoria-v2/`,
-   `docs/programa-auditoria-completitud-erp-2026-09-01.md`, `skills-lock.json`.
-   Ninguno se commiteó (staging explícito, sin `-A`, en los 4 commits de esta
-   sesión) — pero tampoco se decidió qué hacer con ellos: ¿van al repo,
-   a `.gitignore`, o se borran? Decisión pendiente del dueño, uno por uno, en
-   un commit de higiene aparte.
+2. **6 artefactos untracked, triage cerrado (05/09/2026) · ✅ RESUELTO.**
+   Decisión del dueño, uno por uno:
+   - `.claude/skills/neon/`, `.claude/skills/neon-postgres/`, `skills-lock.json`
+     — **afuera del repo**, agregados a `.gitignore`. Dan acceso directo a la
+     base (crear/borrar branches, correr SQL, migraciones — varias
+     `destructiveHint: true`); quedan locales a cada máquina, no disponibles
+     automáticamente para cualquiera que clone el repo.
+   - `.reviews/` — **borrado**, y agregado a `.gitignore` para que no
+     reaparezca solo. Eran reportes de preflight de un protocolo puntual de
+     una sesión pasada (31/08/2026), ya habían cumplido su función.
+   - `docs/erp-auditoria-v2/` — **versionado**. Auditoría de completitud
+     real y completa (21 fichas, 158 hallazgos, 431 anclas verificadas,
+     corrida 02/09/2026) — mismo criterio que otras auditorías ya
+     commiteadas del repo (`auditoria-tecnica-infra-reservas.md`,
+     `auditoria-modularidad.md`).
+   - `docs/programa-auditoria-completitud-erp-2026-09-01.md` (v1.0,
+     borrador, reemplazado por `erp-auditoria-v2/00-programa-v2.md`) —
+     **versionado igual, como historial** — mismo criterio de "no borrar el
+     rastro de decisiones/versiones anteriores" que el resto del repo.

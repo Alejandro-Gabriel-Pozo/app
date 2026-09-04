@@ -1,0 +1,159 @@
+id;modulo;severidad;titulo;evidencia;cruce
+A2-M04-001;M04;S0;Un pago mal cargado no se puede revertir por ningún camino del producto. `VOIDED` existe y es inalcanzable para un `PAYMENT`.;"`src/db/schema.sql:2085`; `src/clientes-finanzas/financial-transaction.repository.ts:178`; ninguna ruta de reversión en `datos/cobertura.csv`";nuevo (v1 lo señalaba sin ancla)
+A2-M04-002;M04;S0;El cobro no registra quién cobró: `recordPayment()` no setea `confirmed_by` y el servicio no audita.;"`src/clientes-finanzas/customer-account.service.ts:133`; `grep -c` = 0";⊃ `A2-T03-001`
+A2-M10-001;M10;S0;`cbteTipo` fijo en Factura B en los dos caminos de emisión y en el request a ARCA.;`src/facturacion/invoice.service.ts:368`, `:466`, `:540`;"↔ `FISCAL-CBTE-001` (no se re-describe; el detalle está en el documento de diseño)"
+A2-T03-001;T03;S0;Ocho servicios que mueven plata y operación no escriben una sola fila de auditoría.;los ocho `grep -c` en `0`, §11;nuevo
+A2-M01-001;M01;S1;Cancelar desde el panel no usa el preview/confirm de reembolso: los endpoints existen y el frontend no los llama.;"`src/reservas/reservations.routes.ts:453`, `:472`; `grep` sin resultados en el frontend";↔ `C2`
+A2-M01-002;M01;S1;El servicio central del producto no audita ninguna transición.;`grep -c` = 0 sobre 963 líneas;⊃ `A2-T03-001`
+A2-M02-001;M02;S1;No hay fusión de clientes duplicados: dos fichas del mismo cliente, dos saldos.;"`src/clientes-finanzas/customer.repository.ts:115`; ausencia de endpoint";nuevo
+A2-M04-003;M04;S1;Sin recibo: el cobro no le deja nada al cliente.;ausencia de endpoint;↔ `A2-T04-001`
+A2-M04-004;M04;S1;"`idempotencyKey` opcional en el endpoint de cobro; doble click = dos pagos irreversibles.";`src/api/schemas/request.schemas.ts:370`;nuevo
+A2-M04-005;M04;S1;Dos convenciones de signo en dos archivos, sin nada que las mantenga coherentes.;`sql.financial-transaction.repository.ts:368` vs `sql.cash-register-shift.repository.ts:69`;nuevo
+A2-M04-006;M04;S1;`accounts_receivable` sin marcha atrás: `COBRADO` es terminal y no hay reversión.;"`src/db/schema.sql:2200`; `accounts-receivable.routes.ts:6`";nuevo
+A2-M04-007;M04;S1;Saldo del cliente subdeclarado y reembolso sin nota de crédito.;—;"↔ `Gap C1-C` (sin re-describir; ver `pendientes-2026-09-01.md`)"
+A2-M05-001;M05;S1;Los cinco endpoints de caja no tienen pantalla: ningún turno se abre nunca.;"`datos/cobertura.csv`; `grep` sin resultados en el frontend";nuevo
+A2-M05-002;M05;S1;Sin turno abierto, todo pago en efectivo queda con `shift_id NULL` y no es recuperable para un arqueo futuro.;"`src/clientes-finanzas/sql.financial-transaction.repository.ts:116`; `src/db/schema.sql:2336`";nuevo
+A2-M05-003;M05;S1;No hay egresos de caja: retiro, gasto, adelanto, cambio de fondo.;ausencia en `datos/endpoints.csv`;nuevo
+A2-M06-001;M06;S1;Una orden `COMPLETED` mal cobrada no se puede anular.;"`src/db/schema.sql:1389`; ninguna ruta de anulación post-cobro";⊃ `A2-M04-001`
+A2-M06-002;M06;S1;Sin ticket ni comanda.;ausencia de endpoint;↔ `A2-T04-006`
+A2-M07-001;M07;S1;No existe compras/proveedores: el stock entra sin documento, sin costo y sin cuenta corriente de proveedor.;ausencia de tabla en `src/db/schema.sql`;nuevo (tampoco está en el roadmap como fila propia)
+A2-M07-002;M07;S1;Sin inventario físico: no hay recuento ni ajuste por diferencia.;ausencia de endpoint;nuevo
+A2-M10-002;M10;S1;"El comprobante congela sólo `emisorCuit`; el PDF lee el resto en vivo.";`src/facturacion/invoice-pdf.service.ts:79`;↔ `A2-T04-002` / `FISCAL-CBTE-001`
+A2-M10-003;M10;S1;Un comprobante en `FAILED_UNCERTAIN` o `REJECTED` no se ve desde ninguna pantalla.;`datos/cobertura.csv` (`/api/invoices/status` sin consumidor);nuevo
+A2-M10-004;M10;S1;Sin libro de IVA ventas ni exportación para el contador.;ausencia en `datos/endpoints.csv`;nuevo
+A2-M11-001;M11;S1;`DELETE /occupancy/purge` borra histórico con el mismo permiso que leer, sin motivo y sin auditoría.;`src/api/routes/reports.routes.ts:232`;nuevo
+A2-M11-002;M11;S1;Sin ningún reporte de reconciliación: nada cruza ledger, facturas y caja.;`datos/cobertura.csv` (11 endpoints, ninguno cruza);nuevo
+A2-M12-001;M12;S1;Cambiar `currency` o `timezone` reinterpreta el histórico, sin vigencia ni advertencia ni reversión.;"`business_profile` sin `valid_from`; `src/clientes-finanzas/customer-account.service.ts:127`";nuevo
+A2-M12-002;M12;S1;La consulta de saldo suma sin filtrar por moneda.;`src/clientes-finanzas/sql.financial-transaction.repository.ts:377`;nuevo `[H]`
+A2-M13-001;M13;S1;Ownership por `requireCustomerId` dentro del handler, sin cerca ni test negativo: una ruta nueva que se lo olvide no rompe nada.;"`src/api/routes/customer.routes.ts:303`; `src/tests/security/rbac-route-coverage.test.ts:20`";↔ `RBAC-OWN-001`
+A2-M13-002;M13;S1;El reintento con backoff no tiene clave de idempotencia: puede duplicar una reserva.;`appfrontend-main/src/lib/customerApi.ts:23`;nuevo
+A2-M14-001;M14;S1;Activar un negocio depende de un paso manual con una herramienta declarada de uso único.;`src/platform/admin.routes.ts:11`, `:6`;nuevo
+A2-M14-002;M14;S1;Un negocio `CANCELLED` conserva su base entera: sin exportación ni baja de datos.;"`src/types/enums.ts:66`; ausencia de endpoint";nuevo
+A2-M14-003;M14;S1;Sin facturación de la plataforma: el plan se cambia a mano y no genera cobro.;`src/platform/platform.routes.ts:263`;nuevo
+A2-M15-001;M15;S1;El folio no se entrega ni se congela: es una consulta sin pantalla.;"`datos/cobertura.csv`; `src/pms-estadias/stays.routes.ts:181`";↔ `A2-T04-003`
+A2-M15-002;M15;S1;No se registra quién hizo el check-out ni quién marcó `NO_SHOW`.;"`src/db/schema.sql:1821`; `grep -c` = 0";⊃ `A2-T03-001`
+A2-M16-001;M16;S1;Los 4 endpoints de `rate-catalog` no tienen pantalla: el catálogo de descuentos se carga por API.;`datos/cobertura.csv`;nuevo
+A2-M16-002;M16;S1;Los 5 endpoints de `cancellation-policies` no tienen pantalla.;`datos/cobertura.csv`;nuevo
+A2-M16-003;M16;S1;Sin vigencia temporal en ninguna tabla de precio: no hay tarifa futura ni precio histórico.;`src/db/schema.sql:677`, `:727` (sin `valid_from`/`valid_to`);nuevo
+A2-M16-004;M16;S1;`deposit_policies` sin backend de CRUD.;—;↔ `C1-Fase A`
+A2-T01-001;T01;S1;No se puede buscar por `RES-000123` / `CLI-000045`. El número es decorativo.;"`src/api/routes/audit-log.routes.ts:36`; `appfrontend-main/src/lib/reservas/api.ts:14`";nuevo
+A2-T01-002;T01;S1;"Nueve entidades operativas sin identidad humana; el `CHECK` de `number_sequences` sólo admite dos.";`src/db/schema.sql:2711`;⊃ `D6-FRONTEND-001` (que resolvía la presentación de las dos que sí tienen)
+A2-T02-001;T02;S1;Alta, baja, reactivación y cambio de rol de usuarios sin auditoría.;"`src/usuarios-roles/users.routes.ts:426`; `grep -c` = 0";⊃ `A2-T03-001`
+A2-T02-002;T02;S1;Sin segregación de funciones en ningún flujo de dinero: el mismo grupo registra, aprueba y consulta.;"`src/clientes-finanzas/accounts-receivable.routes.ts:68`; reparto de guards §7";nuevo
+A2-T03-002;T03;S1;`audit_log` no puede representar una acción: no tiene `action`, ni `reason`, ni `origin`, ni `correlation_id`. Es un diff de campos, no un log de hechos.;`src/db/schema.sql:2267` (8 columnas);nuevo
+A2-T03-003;T03;S1;La única lectura exige `entity` + `entityId`. No hay consulta por actor, por fecha ni por tipo de acción.;`src/api/routes/audit-log.routes.ts:36`;nuevo
+A2-T04-001;T04;S1;No existe recibo de cobro ni comprobante de reembolso.;ausencia de endpoint en `datos/endpoints.csv`;"⊃ `Gap C1-C` (que ya señala ""reembolso sin nota de crédito"")"
+A2-T04-002;T04;S1;El PDF de un comprobante viejo se reimprime con los datos de emisor/receptor de hoy.;`src/facturacion/invoice-pdf.service.ts:79`;↔ `FISCAL-CBTE-001` (hallazgo relacionado del mismo documento)
+A2-T05-001;T05;S1;Dead-letter sin pantalla y sin alerta: un `CHARGE` que no se creó no se entera nadie.;"`datos/cobertura.csv`; `src/api/routes/system.routes.ts:26`";nuevo
+A2-M01-003;M01;S2;Una reserva confirmada cuyo evento cae en dead-letter queda sin deuda, y nadie se entera.;`src/clientes-finanzas/sql.financial-transaction.repository.ts:105` + `A2-T05-001`;⊃ `A2-T05-001`
+A2-M01-004;M01;S2;`price-preview` existe y la pantalla no lo usa.;`datos/cobertura.csv`;nuevo
+A2-M01-005;M01;S2;Sin comprobante de reserva.;ausencia de endpoint;↔ `A2-T04-006`
+A2-M02-002;M02;S2;No se audita el alta ni la baja del cliente, sólo el `PATCH`.;`src/clientes-finanzas/customers.routes.ts:306`;⊃ `A2-T03-001`
+A2-M02-003;M02;S2;`tax_condition` es texto libre sin mapeo a ARCA.;`src/db/schema.sql:2661`;↔ `FISCAL-CBTE-001`
+A2-M02-004;M02;S2;Los dos reportes de CRM no tienen panel.;`datos/cobertura.csv`;↔ `D7`
+A2-M03-001;M03;S2;Sin `NO_SHOW`: un turno al que no vinieron se registra igual que uno cancelado con aviso.;`src/db/schema.sql:434` vs `:1819`;nuevo
+A2-M03-002;M03;S2;"No hay modelo de profesional con agenda propia; el recurso es físico.";`src/reservas/resource.entities.ts` (`PhysicalResource`);nuevo
+A2-M03-003;M03;S2;La atención no deja registro: `CONFIRMED → COMPLETED` sin actor ni horario real.;`src/db/schema.sql:434`;⊃ `A2-M01-002`
+A2-M04-008;M04;S2;Sin conciliación de transferencias ni de tarjeta.;`payment_method` admite `TRANSFER`/`CARD`, sin destino;"⊃ ausencia ""Tesorería y bancos"""
+A2-M04-009;M04;S2;`CHARGE` con `payment_method='CASH'` inflaría el efectivo esperado del turno.;"`sql.cash-register-shift.repository.ts:69`; `sql.financial-transaction.repository.ts:116`";nuevo `[H]` — requiere consulta a datos reales
+A2-M05-004;M05;S2;La diferencia de arqueo se guarda sin motivo.;`src/db/schema.sql:2319` (`variance` sin columna de motivo);nuevo
+A2-M05-005;M05;S2;Un solo turno abierto por negocio: no hay caja por punto de venta ni por cajero.;`src/db/schema.sql:2325`;nuevo
+A2-M05-006;M05;S2;Tarjeta y transferencia no tienen ningún cierre ni conciliación.;`src/db/schema.sql:2336`;"⊃ ausencia ""Tesorería y bancos"""
+A2-M06-003;M06;S2;Sin número de orden.;`src/db/schema.sql:1386`;⊃ `A2-T01-002`
+A2-M06-004;M06;S2;Los tres reportes de POS no tienen panel.;`datos/cobertura.csv`;↔ `D7`
+A2-M06-005;M06;S2;No hay mesas: el diseño existe, la tabla no.;`docs/diseno-pos-menu-mesas-2026-08-18.md` vs `src/db/schema.sql`;nuevo
+A2-M07-003;M07;S2;Transferencia entre ubicaciones sin pantalla.;`datos/cobertura.csv`;nuevo
+A2-M07-004;M07;S2;Sin costeo: no se puede valuar el inventario.;ausencia de columna de costo en `inventory_levels`;nuevo `[H]`
+A2-M07-005;M07;S2;Sin lotes ni vencimientos.;ausencia de tabla;nuevo
+A2-M07-006;M07;S2;Sin punto de reposición ni alerta de stock mínimo.;ausencia de columna;nuevo
+A2-M08-001;M08;S2;Política de borrado inconsistente: `CASCADE` en `housekeeping_tasks`, `RESTRICT` en `stays`, sobre el mismo `resource_id`.;`src/db/schema.sql:1870` vs `:1810`;nuevo
+A2-M09-001;M09;S2;No se registra quién ejecutó la tarea, sólo a quién se asignó.;"`src/db/schema.sql:1871`; sin `started_by`/`completed_by`";⊃ `A2-T03-001`
+A2-M09-002;M09;S2;`late-checkouts` no tiene consumidor: el badge que la ruta documenta no existe.;"`datos/cobertura.csv`; `src/pms-estadias/housekeeping.routes.ts:10`";nuevo
+A2-M10-005;M10;S2;La nota de crédito hereda el tipo fijo.;`src/facturacion/invoice.service.ts:612`;⊃ `FISCAL-CBTE-001`
+A2-M10-006;M10;S2;Sin segregación: quien emite puede anular.;`src/facturacion/invoices.routes.ts:5`;⊃ `A2-T02-002`
+A2-M10-007;M10;S2;Líneas de factura sin backend ni pantalla de detalle.;—;↔ `C3`
+A2-M11-003;M11;S2;Sin exportación en ningún formato.;`grep` sin resultados sobre `reports.routes.ts` y `report.service.ts`;nuevo
+A2-M11-004;M11;S2;5 de 11 endpoints sin panel (3 POS, 2 CRM).;`datos/cobertura.csv`;↔ `D7`
+A2-M11-005;M11;S2;Sin reportes de ingresos ni de cierre diario.;`datos/cobertura.csv`;nuevo
+A2-M12-003;M12;S2;Encender o apagar un módulo no deja auditoría en el tenant.;`src/platform/business-modules.routes.ts:21`;nuevo
+A2-M12-004;M12;S2;`business_profile` acumula 25 columnas agregadas: config, fiscal y credenciales en la misma fila.;"`grep -c ""ALTER TABLE business_profile ADD COLUMN""` = 25";nuevo
+A2-M13-003;M13;S2;El cliente no puede ver su saldo ni sus comprobantes.;`src/clientes-finanzas/customers.routes.ts:818` (es `FRONT_DESK`);nuevo
+A2-M13-004;M13;S2;Ninguna acción del portal se audita, incluida la baja de cuenta.;`grep -c` = 0 en `customer.routes.ts`;⊃ `A2-T03-001`
+A2-M13-005;M13;S2;No se puede pagar desde el portal.;`datos/cobertura.csv`;↔ `C1-Fase B`
+A2-M14-004;M14;S2;`reason` se acepta en el body del cambio de estado y no tiene dónde guardarse.;"`src/platform/platform.routes.ts:40`; `src/db/platform.schema.sql:950`";⊃ `A2-T03-002`
+A2-M14-005;M14;S2;`GET /platform/stats` sin consumidor.;`datos/cobertura.csv`;nuevo
+A2-M14-006;M14;S2;Sin reportes de uso contra `plan_limits`.;ausencia de endpoint;nuevo
+A2-M14-007;M14;S2;`DB_ENCRYPTION_KEY` sin procedimiento de rotación.;—;↔ `SEC-ROT-001`
+A2-M15-003;M15;S2;Sin extensión de estadía ni cambio de habitación.;ausencia de endpoint;nuevo
+A2-M15-004;M15;S2;Sin registro de huéspedes acompañantes ni planilla de pasajeros.;ausencia de tabla;nuevo `[H]` (obligación legal a confirmar)
+A2-M16-005;M16;S2;`applied-rates` sin panel: no se puede medir el descuento otorgado.;`datos/cobertura.csv`;↔ `D7`
+A2-M16-006;M16;S2;Sin segregación: quien crea el descuento lo aplica.;`src/clientes-finanzas/rate-catalog.routes.ts:10`;⊃ `A2-T02-002`
+A2-M16-007;M16;S2;Sin moneda por tarifa.;`src/db/schema.sql:733`;nuevo `[H]`
+A2-T01-003;T01;S2;La serie es por tenant, no por sucursal ni por punto de venta.;`src/db/schema.sql:2762`;nuevo
+A2-T02-003;T02;S2;"`MANAGEMENT` cubre 123 de 245 endpoints; no hay grado intermedio.";`datos/endpoints.csv`;nuevo
+A2-T02-004;T02;S2;Nada verifica la §4 de la matriz RBAC contra `PUBLIC_ROUTES`.;`CLAUDE.md` de `app-main`, sección RBAC;↔ `RBAC-SYNC-001`
+A2-T02-005;T02;S2;Ownership dentro del tenant sin guard estructural ni test negativo.;`docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`;↔ `RBAC-OWN-001`
+A2-T03-004;T03;S2;Ninguna pantalla muestra el log.;cero apariciones de `audit-log` en `appfrontend-main/src`;nuevo
+A2-T03-005;T03;S2;Sin segregación: `MANAGEMENT` escribe y lee su propio rastro.;`src/api/routes/audit-log.routes.ts:33`;↔ `RBAC-OWN-001` (mismo hueco de control interno, otra superficie)
+A2-T04-003;T04;S2;El folio es una consulta, no un documento: no se puede reimprimir el de ayer.;`src/pms-estadias/stays.routes.ts:177`;nuevo
+A2-T04-004;T04;S2;Nadie registra quién descargó un comprobante.;`src/facturacion/invoices.routes.ts:14` (hay autorización, no registro);nuevo
+A2-T04-005;T04;S2;"El PDF asume Consumidor Final; el dueño confirmó que va a facturar a Responsables Inscriptos.";`src/facturacion/invoice-pdf.service.ts:13`;↔ `FISCAL-CBTE-001`
+A2-T05-002;T05;S2;"Ningún hecho financiero emite evento; nada puede suscribirse a ""se cobró"".";"`grep -rn ""eventType:""` → 8 tipos, ninguno de dinero";nuevo
+A2-T05-003;T05;S2;El reintento manual no deja auditoría.;`src/api/routes/system.routes.ts:60` (declarado en el código);⊃ `A2-T03-002`
+A2-T05-004;T05;S2;Sin correlación evento ↔ efectos producidos.;`domain_events` sin ids de efecto;⊃ `A2-T03-002`
+A2-T05-005;T05;S2;El correo se reenvía si el evento se reintenta.;`src/email/email.sender.ts:27`;nuevo (declarado en código, no en `pendientes`)
+A2-M01-006;M01;S3;Sin overbooking, lista de espera ni bloqueo comercial.;ausencia de tabla;nuevo
+A2-M01-007;M01;S3;No verificado si editar una reserva confirmada recalcula la deuda.;—;nuevo `[H]`
+A2-M02-005;M02;S3;`customers.email` y `customer_contact_methods` guardan el mismo dato, sin regla escrita de cuál manda.;`src/db/schema.sql:322` vs `src/clientes-finanzas/customers.routes.ts:9`;nuevo
+A2-M02-006;M02;S3;Sin vista de historial comercial unificado del cliente.;ausencia de endpoint;nuevo
+A2-M02-007;M02;S3;Sin consentimiento ni baja de comunicaciones, con PII cargada.;ausencia de columna en `customers`;nuevo `[H]`
+A2-M03-004;M03;S3;Sin recordatorio al cliente.;`src/email/email.sender.ts:3`;nuevo
+A2-M03-005;M03;S3;Turnos y alojamiento comparten serie de numeración.;`src/db/schema.sql:2725`;nuevo `[H]`
+A2-M03-006;M03;S3;Sin sobreturno ni lista de espera.;ausencia de tabla;nuevo
+A2-M04-010;M04;S3;Sin identidad operativa del movimiento.;`src/db/schema.sql:2075`;⊃ `A2-T01-002`
+A2-M05-007;M05;S3;Sin comprobante de cierre.;ausencia de endpoint;↔ `A2-T04-006`
+A2-M06-006;M06;S3;No se audita quién agregó, quitó o repreció un ítem.;`src/pos-menu/order.service.ts:320` (sólo `status`);nuevo
+A2-M06-007;M06;S3;Sin propinas ni descuentos de línea.;`order_items` sin columnas;nuevo
+A2-M07-007;M07;S3;El decremento de stock puede no ser idempotente.;`src/db/schema.sql:1576` (sin clave de idempotencia);nuevo `[H]`
+A2-M07-008;M07;S3;`movement_type` definido en dos lugares con distinto alcance.;`src/db/schema.sql:1582` vs `:1800`;nuevo
+A2-M07-009;M07;S3;`waste` se reporta y no tiene panel.;`datos/cobertura.csv`;↔ `D7`
+A2-M08-002;M08;S3;La guarda del `DELETE` mira `resource_locks`, no reservas ni estadías.;`src/reservas/resources.routes.ts:25`;nuevo
+A2-M08-003;M08;S3;Sin historial consultable de disponibilidad del recurso.;ausencia de endpoint;nuevo
+A2-M09-003;M09;S3;`OUT_OF_SERVICE` sigue en el `CHECK` sin camino desde el producto.;"`src/db/schema.sql:1873`; `src/pms-estadias/housekeeping.routes.ts:21`";nuevo
+A2-M09-004;M09;S3;Limpiar no descuenta insumos, aunque el tipo de movimiento existe.;`src/db/schema.sql:1800`;nuevo
+A2-M09-005;M09;S3;Sin reportes de productividad, con los datos ya cargados.;`datos/cobertura.csv`;nuevo
+A2-M09-006;M09;S3;`ON DELETE CASCADE` borra el historial de limpieza al borrar el recurso.;`src/db/schema.sql:1870`;nuevo
+A2-M10-008;M10;S3;No se verificó cómo se resuelve un `FAILED_UNCERTAIN`.;—;nuevo `[H]`
+A2-M11-006;M11;S3;`occupancy_records` sin política de retención escrita, con `purge` manual.;`src/api/routes/reports.routes.ts:230`;nuevo
+A2-M11-007;M11;S3;Ninguna consulta de reporte deja rastro.;ausencia de auditoría;⊃ `A2-T03-001`
+A2-M12-005;M12;S3;Sin configuración por sucursal.;`src/db/schema.sql:2762`;⊃ `A2-T01-003`
+A2-M12-006;M12;S3;Sin reversión de configuración.;ausencia de endpoint;nuevo
+A2-M13-006;M13;S3;No verificado si el portal muestra el número operativo del cliente.;—;nuevo `[H]`
+A2-M13-007;M13;S3;No verificado si el cliente del portal puede recuperar su contraseña.;`src/app.ts:306`;nuevo `[H]`
+A2-M14-008;M14;S3;No verificado el manejo de fallo parcial del aprovisionamiento.;—;nuevo `[H]`
+A2-M14-009;M14;S3;No verificado si el aprovisionamiento queda auditado.;—;nuevo `[H]`
+A2-M15-005;M15;S3;`late-checkouts` se reporta y no genera cargo.;`src/pms-estadias/housekeeping.routes.ts:93`;nuevo
+A2-M15-006;M15;S3;Sin identidad operativa de la estadía.;`src/db/schema.sql:1807`;⊃ `A2-T01-002`
+A2-M16-008;M16;S3;No verificado si la propagación del `%` afecta el precio de una reserva ya confirmada.;`src/clientes-finanzas/rate-catalog.routes.ts:15` vs `src/db/schema.sql:439`;nuevo `[H]`
+A2-M16-009;M16;S3;Sin reglas por temporada, anticipación o estadía mínima.;ausencia de columna;nuevo
+A2-T01-004;T01;S3;"`pendientes-2026-09-01.md` declara `D6-FRONTEND-001` ""sin empezar""; está implementado y commiteado.";5 commits en `appfrontend-main` (`35c693e`, `472d5f2`, `7d551d8`, `d7ff13c`, `e36d24f`);↔ `D6-FRONTEND-001`
+A2-T03-006;T03;S3;`req.id` existe como correlación en los logs de `pino` y no se persiste en ningún lado.;`src/app.ts:143`;nuevo
+A2-T04-006;T04;S3;Sin ticket/comanda de orden ni comprobante de arqueo.;ausencia de endpoint;nuevo
+A2-T05-006;T05;S3;Sin credenciales de correo el flujo aparenta éxito y no se manda nada.;`src/email/email.sender.ts:16`;nuevo
+A2-M01-008;M01;S4;`rate_plans` con `service_id NOT NULL`: no reutilizables entre servicios.;—;"↔ ítem ""deuda activa"" de `pendientes-2026-09-01.md`"
+A2-M02-008;M02;S4;`GET /api/customers` sin consumidor: el panel usa `POST /search`.;`datos/cobertura.csv`;nuevo
+A2-M03-007;M03;S4;No verificado si los reportes de ocupación separan turnos de alojamiento.;—;nuevo `[H]`
+A2-M05-008;M05;S4;Carrera cobro/cierre no verificada.;ausencia de test;nuevo `[H]`
+A2-M06-008;M06;S4;`unitPrice` de ítems `RESERVATION` sigue viniendo del caller.;`src/pos-menu/order.service.ts:337` (declarado);nuevo
+A2-M07-010;M07;S4;No verificado si `inventory_levels` puede divergir de `stock_movements`.;—;nuevo `[H]`
+A2-M08-004;M08;S4;`resource_locks` sin categoría.;—;"↔ ítem ""deuda activa"" de `pendientes-2026-09-01.md`"
+A2-M08-005;M08;S4;La auditoría vive en la capa de rutas, no en el servicio, en dos módulos.;`src/reservas/resources.routes.ts:46`;nuevo
+A2-M08-006;M08;S4;"Dos endpoints figuran sin consumidor; probable falso positivo del cruce.";`datos/cobertura.csv`;nuevo `[H]`
+A2-M09-007;M09;S4;Sin checklist por tipo de habitación.;ausencia de tabla;nuevo
+A2-M09-008;M09;S4;No verificado si dos empleados pueden iniciar la misma tarea.;ausencia de índice único;nuevo `[H]`
+A2-M11-008;M11;S4;Sin envío programado.;ausencia de worker;nuevo
+A2-M15-007;M15;S4;Carrera check-out / consumo de POS no verificada.;ausencia de test;nuevo `[H]`
+A2-M16-010;M16;S4;`rate_plans` con `service_id NOT NULL`.;—;"↔ ítem ""deuda activa"" de `pendientes-2026-09-01.md`"
+A2-T02-006;T02;S4;No se verificó caducidad ni reuso del token de invitación.;ausencia de test en `src/tests/security/`;nuevo `[H]`
+A2-T05-007;T05;S4;No hay webhooks salientes ni API de integración para terceros.;ausencia total en `datos/endpoints.csv`;nuevo
+A2-T05-008;T05;S4;E2E del outbox sin correr.;—;"↔ ítem ""prueba E2E del Outbox"""

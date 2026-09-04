@@ -12,3 +12,17 @@ src/package
 
 # Material de prueba de skills (revision-pr-pms-erp y futuras) -- no es parte del repo
 *-workspace/
+
+# Skills de acceso directo a Neon (crear/borrar branches, correr SQL, migraciones --
+# varias destructivas) -- decisión del dueño (05/09/2026): quedan locales a cada
+# máquina, no se versionan para que no queden disponibles automáticamente para
+# cualquiera que clone el repo. Quien las quiera, las instala en la suya.
+.claude/skills/neon/
+.claude/skills/neon-postgres/
+skills-lock.json
+
+# Reportes de preflight generados por script (protocolo operativo de una
+# colaboración puntual, no convención del repo -- ver el propio archivo de
+# cabecera de cada reporte). Ya cumplieron su función al aprobar los commits
+# de su momento; decisión del dueño (05/09/2026): no se versionan.
+.reviews/
