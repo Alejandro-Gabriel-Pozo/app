@@ -194,6 +194,31 @@ otro registro.
 > romper el deploy. Los 4 sitios de creación reales ya seteaban origen
 > siempre; el guard es para que un caller nuevo no lo rompa en silencio.
 
+> **Corolario, excepción sancionada a propósito (05/09/2026, O2-F2,
+> `docs/diseno-o2-f2-cierre-completo-2026-09-03.md` §5.1b):** A3.9 exige que
+> todo importe se explique por otro registro **dentro de este sistema** —
+> pero `accounts_receivable` tiene un camino de facturación manual
+> (`markInvoiced()`, campo `invoice_ref` de texto libre, sin fila `invoices`
+> real) para negocios que emiten su comprobante fiscal por OTRO sistema
+> (Tango, Contabilium, AFIP directo) y usan este ERP solo para la cuenta
+> corriente. Ahí la contrapartida existe, pero vive **fuera de este
+> sistema** — es una excepción real a A3.9, no un descuadre. **Decisión
+> del dueño, permanente para los rubros que eligen esa convivencia** (no un
+> parche transitorio: confirmado explícitamente el 04/09/2026, dos
+> preguntas dirigidas, después de que la primera redacción de esta decisión
+> la había framed como deuda técnica a revisar "cuando haya producción
+> real" — eso era un error de documentación, corregido).
+> **Alternativa descartada:** inferir en runtime si una fila tiene factura
+> interna real o no (mirando si el lookup resuelve) — mezclaba este caso
+> con el de filas legacy realmente accidentales y con facturas internas no
+> emitidas todavía, sin poder distinguirlos después. Se reemplaza por la
+> columna explícita `accounts_receivable.invoice_source`
+> (`INTERNO`/`EXTERNO`, nullable, sin backfill retroactivo — `NULL`
+> significa "no consta", mismo criterio que `orders.served_at` en v46).
+> **Gatillo de revisión:** al diseñar C1-Fase C (generación real de
+> factura) — ahí se decide si la convivencia con sistemas externos sigue
+> siendo una opción permanente o se acota. No antes.
+
 **A3.10 — Cobros idempotentes.** *Ya resuelto con `idempotencyKey` del
 cliente.*
 

@@ -6,24 +6,67 @@
 
 ## 1. Decisiones de negocio (§5 del checkpoint) — resueltas
 
-### §5.1 — Filas AR legacy sin `financial_transaction_id`
+### §5.1 — El camino "fallback legacy" de `markCollected()` cubre DOS casos distintos, no uno
 
-**Decisión del dueño (03/09/2026):** los tenants actuales son de prueba/demostración
-(usados para encontrar errores, no producción con plata real de clientes) — así
-que el fallback legacy (`markCollected()` crea un `PAYMENT` sin `settledInvoiceId`
-cuando `accounts_receivable.financial_transaction_id IS NULL`) se **mantiene sin
-cambios**, documentado como deuda técnica aceptada. No se bloquea el cobro de esas
-filas ni se migran datos.
+**Corrección 05/09/2026 (`architecture-governor` + `auditor-circuitos-erp`, tras
+verificar contra el código):** la redacción original de esta sección
+solo describía el caso (a) de abajo y lo trataba como el único motivo por el
+que `invoiceId` no resuelve en `markCollected()`. En el código real, la misma
+rama (`accounts-receivable.service.ts:305-320`, cuando
+`getInvoiceIdByFinancialTransactionId()` devuelve `null`) se alcanza por DOS
+caminos con naturaleza completamente distinta. Tratarlos como una sola
+"deuda técnica" fue un error de documentación — uno es deuda, el otro es una
+decisión de producto permanente.
 
-Esto coincide con el propio comentario ya existente en `schema.sql:3121`
-("el tenant de prueba de hoy... queda sin backfill posible"), escrito el
-23/08/2026 — no es una decisión nueva desconectada del código, es la misma
-lectura que ya tenía el schema.
+**(a) Filas AR realmente legacy — accidente histórico, deuda técnica, revisar
+cuando haya producción real.** Filas creadas antes de que existiera el
+vínculo `financial_transaction_id` en `accounts_receivable`. **Decisión del
+dueño (03/09/2026), sin cambios:** mientras los tenants actuales sean de
+prueba/demostración (no producción con plata real de clientes), el fallback
+se mantiene sin cambios, sin backfill ni migración de datos. Coincide con el
+comentario ya existente en `schema.sql:3121` (23/08/2026). **El día que haya
+producción real con clientes reales, esta decisión debe revisarse — no es
+válida indefinidamente.**
 
-**Alcance de la decisión:** aplica solo a filas donde
-`financial_transaction_id IS NULL`. El día que haya producción real con
-clientes reales, esta decisión debe revisarse — no es válida indefinidamente,
-es válida mientras los tenants sean de prueba.
+**(b) Facturación manual sin documento fiscal real — decisión de producto
+PERMANENTE, no ligada al estado del tenant.** Confirmado explícitamente por
+el dueño (04/09/2026, dos preguntas dirigidas): `markInvoiced()` manual
+(`invoice_ref` tipeado a mano, sin `invoices` real detrás — ver
+`schema.sql:2332-2341`) existe a propósito para que un negocio pueda seguir
+emitiendo su comprobante fiscal por OTRO sistema (Tango, Contabilium, AFIP
+directo, etc.) y usar este ERP solo para llevar la cuenta corriente y el
+seguimiento de cobros. **Es permanente para los rubros/negocios que eligen
+esa convivencia — para siempre, no como parche hasta que exista generación
+automática — y transitorio solo para los negocios que en algún momento
+migren a la generación real (C1-Fase C, todavía sin diseñar).** Ambas
+poblaciones conviven; no hay una fecha ni condición que vuelva obsoleto el
+camino manual como tal.
+
+Patrón reconocido en la industria hotelera ("city ledger": el PMS lleva la
+cuenta operativa, la facturación fiscal real puede quedar en el sistema de
+finanzas del negocio) — verificado por `auditor-circuitos-erp` contra
+literatura de referencia, aunque la forma madura de implementarlo suele ser
+una integración contable real, no un campo de texto libre. La versión de
+este repo es una variante simplificada del mismo patrón, no una rareza ni un
+error de diseño.
+
+**Alternativa descartada:** seguir infiriendo en runtime si una fila tiene
+factura real o no (mirando si `getInvoiceIdByFinancialTransactionId()`
+resuelve), sin campo explícito. Se descarta a favor de una columna
+`invoice_source` (`INTERNO` | `EXTERNO`, ver Paquete C del paquete
+post-cierre, 05/09/2026) — la inferencia implícita mezclaba (a), (b) y el
+caso de una factura interna que existe pero no está `ISSUED` en una sola
+categoría, sin poder distinguirlos después.
+
+**Gatillo de revisión de (b):** al diseñar C1-Fase C (generación real de
+factura) — ahí se decide si la coexistencia con sistemas externos sigue
+ofreciéndose como opción permanente o se limita a un subconjunto de rubros.
+No antes.
+
+**No confundir (a) con (b) al leer este documento en el futuro:** una fila
+legacy sin `financial_transaction_id` (a) es un accidente que ojalá no
+existiera; una fila con facturación manual permanente (b) es una fila
+correcta, funcionando como se diseñó.
 
 ### §5.2 — Alcance del cierre
 
