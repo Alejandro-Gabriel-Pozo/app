@@ -156,4 +156,36 @@ describe.skipIf(skipIfNoDb)('SqlFinancialTransactionRepository — regresión ba
     expect(chargeRow?.status).toBe('VOIDED');
     expect(paymentRow?.status).toBe('SETTLED'); // <-- con el bug viejo esto daba VOIDED
   });
+
+  it('BRECHA-REFUND-01 (05/09/2026) -- getCollectedPaymentTotalForReservation resta los REFUND ya emitidos, no repite el bruto', async () => {
+    const { customer, reservation, repo } = await setupFixture();
+
+    await repo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+      reservationId: reservation.id, type: 'PAYMENT', amount: 1000,
+      currency: 'ARS', status: 'SETTLED',
+    });
+
+    // Antes de cualquier REFUND: neto = bruto.
+    expect(await repo.getCollectedPaymentTotalForReservation(reservation.id)).toBe(1000);
+
+    await repo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+      reservationId: reservation.id, type: 'REFUND', amount: 500,
+      currency: 'ARS', status: 'SETTLED', reversedInvoiceId: null,
+    });
+
+    // Con el bug viejo esto seguía dando 1000 -- un segundo confirmRefund()
+    // recalculaba el mismo monto que el primero en vez de verlo descontado.
+    expect(await repo.getCollectedPaymentTotalForReservation(reservation.id)).toBe(500);
+
+    // Un REFUND VOIDED (anulado, la plata NO salió) no debe restar --
+    // asimetría deliberada con PAYMENT VOIDED (ver docblock de la interfaz).
+    await repo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
+      reservationId: reservation.id, type: 'REFUND', amount: 200,
+      currency: 'ARS', status: 'VOIDED', reversedInvoiceId: null,
+    });
+    expect(await repo.getCollectedPaymentTotalForReservation(reservation.id)).toBe(500);
+  });
 });

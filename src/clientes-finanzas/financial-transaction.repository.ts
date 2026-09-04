@@ -333,21 +333,32 @@ export interface FinancialTransactionRepository {
   getSettledPaymentTotalForReservation(reservationId: string): Promise<number>;
 
   /**
-   * Suma de `PAYMENT` de una reserva en estado `SETTLED` o `VOIDED` (C2,
+   * Neto COBRADO menos YA REEMBOLSADO de una reserva (C2,
    * docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md) — a diferencia
    * de `getSettledPaymentTotalForReservation` (que exige `SETTLED`, usada
    * por el gate de seña de `confirmReservation()`), esta cuenta lo cobrado
-   * de verdad. `CancellationRefundService.previewRefund()`/`confirmRefund()`
-   * necesitan "cuánto se cobró", no "cuánto sigue contando en el balance".
+   * de verdad, neto de reembolsos. `CancellationRefundService.previewRefund()`/
+   * `confirmRefund()` necesitan "cuánto queda disponible para reembolsar
+   * hoy", no "cuánto se cobró en algún momento" -- **el nombre del método
+   * quedó del fix anterior (solo pagos); BRECHA-REFUND-01 (05/09/2026)
+   * agregó la resta de REFUND sin renombrarlo todavía** (rename mecánico
+   * pendiente, ver `docs/pendientes-2026-09-03.md`).
    *
-   * El `OR status = 'VOIDED'` es DEFENSIVO desde el fix de
-   * `voidByReservationId` (23/08/2026): antes, un PAYMENT de la reserva
-   * quedaba VOIDED al cancelar, así que hacía falta incluirlo acá para no
-   * perder de vista "cuánto se cobró realmente". Ahora `voidByReservationId`
-   * ya no toca PAYMENT (solo CHARGE/ADJUSTMENT), así que en teoría esta
-   * cláusula nunca debería activarse desde acá en adelante -- se deja
-   * igual por las dudas de que exista alguna fila VOIDED de antes del fix,
-   * o algún otro camino que la anule.
+   * El `OR status = 'VOIDED'` (solo del lado PAYMENT) es DEFENSIVO desde el
+   * fix de `voidByReservationId` (23/08/2026): antes, un PAYMENT de la
+   * reserva quedaba VOIDED al cancelar, así que hacía falta incluirlo acá
+   * para no perder de vista "cuánto se cobró realmente". Ahora
+   * `voidByReservationId` ya no toca PAYMENT (solo CHARGE/ADJUSTMENT), así
+   * que en teoría esta cláusula nunca debería activarse desde acá en
+   * adelante -- se deja igual por las dudas de que exista alguna fila
+   * VOIDED de antes del fix, o algún otro camino que la anule.
+   *
+   * **Asimetría deliberada de estados entre PAYMENT y REFUND** (BRECHA-REFUND-01):
+   * un REFUND `VOIDED` es plata que NO salió -- nunca debe restar, así que
+   * el lado REFUND exige `SETTLED` estricto, sin el `OR VOIDED` defensivo
+   * del lado PAYMENT (esos dos casos no son simétricos: "un pago que se
+   * anuló" y "un reembolso que se anuló" significan cosas opuestas para
+   * este cálculo).
    */
   getCollectedPaymentTotalForReservation(reservationId: string): Promise<number>;
 

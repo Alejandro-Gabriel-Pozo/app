@@ -712,9 +712,18 @@ real es irreversible por software) y en silencio (sin auditoría, sin evento,
 invisible para el arqueo de caja si el reembolso fue en efectivo).
 
 **Verificado hoy contra las bases reales (04/09/2026, consulta de solo
-lectura, sin escritura):** los 2 únicos negocios con BD asignada (`Hotel los
-Alamos`, `Demo`) — **cero filas REFUND duplicadas, cero facturas con
-outstanding negativo.** No hay daño ya hecho.
+lectura, sin escritura).** **Corrección (05/09/2026, `architecture-governor`):**
+la primera verificación citaba "cero facturas con outstanding negativo"
+como prueba de que no hubo duplicados — **eso no prueba lo que dice**. La
+fórmula real de `getOutstandingForUpdate()` resta los REFUND del saldo, así
+que un solo reembolso legítimo y único ya deja `outstanding` negativo por
+diseño (factura 1000, cobrada 1000, reembolso 500 → `outstanding = -500`).
+"Outstanding no negativo" es evidencia de que **nunca se emitió ningún
+REFUND**, no de que no hubo duplicados. Re-verificado con la consulta
+correcta (`SELECT COUNT(*) FROM financial_transactions WHERE type='REFUND'`
+por tenant): **los 2 únicos negocios con BD asignada (`Hotel los Alamos`,
+`Demo`) tienen CERO filas REFUND en total** — no solo sin duplicados, sin
+ningún reembolso emitido todavía. No hay daño hecho.
 
 **Siguiente acción:** `BRECHA-REFUND-01` necesita su propio paquete de
 diseño con `architecture-governor` antes de tocar código -- hay una decisión

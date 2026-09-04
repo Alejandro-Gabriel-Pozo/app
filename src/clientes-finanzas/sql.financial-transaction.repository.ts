@@ -652,10 +652,28 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
   }
 
   async getCollectedPaymentTotalForReservation(reservationId: string): Promise<number> {
+    // BRECHA-REFUND-01 (05/09/2026, architecture-governor) -- ahora resta
+    // los REFUND ya emitidos. Antes del fix, dos confirmRefund() sobre la
+    // MISMA reserva (sin necesitar concurrencia real -- alcanza con dos
+    // llamadas separadas por minutos) calculaban el mismo "collected" cada
+    // vez, así que el segundo reembolso repetía el cálculo del primero en
+    // vez de verlo ya descontado -- doble reembolso real. Ver el docblock
+    // de la interfaz (financial-transaction.repository.ts) para la
+    // asimetría deliberada de estados entre PAYMENT y REFUND.
+    //
+    // Sin GREATEST(...,0): si el neto diera negativo (no debería, salvo un
+    // REFUND que ya exceda lo cobrado -- caso que este mismo cambio cierra
+    // hacia adelante), NothingToRefundError ya lo corta más arriba
+    // (confirmRefund() lanza si refundAmount <= 0) -- un clamp acá
+    // escondería la anomalía en vez de dejarla visible.
     const result = await this.sqlClient.query<{ total: string }>(
-      `SELECT COALESCE(SUM(amount), 0) AS total
+      `SELECT COALESCE(SUM(CASE WHEN type = 'PAYMENT' THEN amount ELSE -amount END), 0) AS total
        FROM financial_transactions
-       WHERE reservation_id = $1 AND type = 'PAYMENT' AND status IN ('SETTLED', 'VOIDED')`,
+       WHERE reservation_id = $1
+         AND (
+               (type = 'PAYMENT' AND status IN ('SETTLED', 'VOIDED'))
+            OR (type = 'REFUND'  AND status = 'SETTLED')
+             )`,
       [reservationId],
     );
     return parseFloat(result.rows[0]?.total ?? '0');
