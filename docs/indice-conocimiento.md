@@ -167,6 +167,7 @@ Nuevo el 27/08: tarifa de temporada que cruza el rango de la estadía (se valida
 | [criterios-datos.md](criterios-datos.md) Parte 1: facturas AFIP / NC “aún no existen” | Existen tabla `invoices`, rutas `/api/invoices`, diseño C2 | Corregido en esa fila (25/08/2026) |
 | Auditoría infra §1.2: “falta pegar `SENTRY_DSN` en Render” vs pendientes: dueño confirmó que la pegó | **Pendiente de confirmar** cuál es el estado actual en el dashboard de Render | No asumir; verificar en el panel |
 | `PhysicalResource.capacity` en UI 200/201 vs persistencia | Hasta el 25/08 `SqlResourceRepository` no persistía `capacity` (filas reales en default 1) | Fix aplicado; datos históricos no se backfillearon a otro valor |
+| `pendientes-2026-09-03.md`/`-09-05.md`: "Familia ORDER-\* — ORDER-05, ORDER-06, ORDER-07, ORDER-09, ORDER-03-b... siguen abiertos" | Los cinco ya estaban resueltos desde el circuito O2 (02-03/09/2026) — nadie re-chequeó el ancla al arrastrarlos. Revalidado dos veces el 05/09/2026 (manual + segunda vuelta independiente con `erp-audit-orchestrator`) corriendo `order-effects.integration.test.ts` + `charge-uniqueness.integration.test.ts` contra Postgres real con `TEST_DATABASE_URL` exportada: `Test Files 2 passed`, `Tests 22 passed (22)`, 121s | Corregido en `pendientes-2026-09-05.md`; ORDER-15 (que sí seguía abierta) se había caído de la lista en el mismo arrastre y se repuso; ORDER-10/ORDER-13 quedan sin re-verificar; hallazgo nuevo registrado (`addItem`/`removeItem` sin lock de estado) |
 
 ---
 
