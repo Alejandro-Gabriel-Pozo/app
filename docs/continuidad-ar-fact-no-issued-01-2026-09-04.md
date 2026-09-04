@@ -138,48 +138,103 @@ bloquea `markInvoiced()`/`markCollected()`, no `requestConsolidatedInvoice()`)
 y es la razón por la que Fase 2 tiene que incluir el guard de cargos
 bloqueados ahí también, no solo la tabla.
 
-### 2.2 — La decisión de rol, cerrada por el dueño (04/09/2026)
+### 2.2 — La decisión de permisos, RE-CORREGIDA contra el código real (04/09/2026) — reemplaza las dos versiones anteriores de este documento
 
-**Textual, para que quien retome esto no la reinterprete:** `Roles.FISCAL_RECONCILIATION`
-será asignable **explícitamente** por `MANAGEMENT` y `OWNER`, con
-**mínimo privilegio**, **por tenant**, y **nunca como preset automático**
-(descarta la opción C — backfill vía `CROSS JOIN role_presets` a todos los
-negocios — que `architecture-governor` había marcado como no recomendada
-por escritura platform-wide difícil de deshacer). El rol necesita **su
-propio permiso dedicado** para resolver reconciliaciones inciertas — **no
-se reutiliza `markCollected()` ni ningún otro permiso genérico** (esto
-descarta también depender solo de `Roles.MANAGEMENT`, que era la
-recomendación original del governor antes de esta decisión). **La
-asignación del rol y toda resolución de un caso tienen que quedar
-auditadas.**
+**Historial de esta sección, para que quede explícito y nadie repita la
+vuelta:** la 1ª versión diseñaba `Roles.FISCAL_RECONCILIATION` como rol
+nuevo hardcodeado. El dueño la corrigió pidiendo una capa de "acción con
+permiso propio, mapeada a un grupo hoy, a un rol en el futuro" y citando
+un pendiente ya existente con ese modelo. **Se buscó ese pendiente a
+fondo** (`pendientes-2026-08-30.md`, `pendientes-2026-09-03.md`,
+`diseno-rbac-modelo-y-alcance-2026-08-30.md`,
+`diseno-factura-borrador-2026-08-31.md`, `indice-conocimiento.md`, y el
+nombre literal `FACTURACION_RECONCILIACION_RESOLVER` en todo el repo) y
+**no se encontró** — lo más cercano es un ADR ya aceptado
+(`diseno-rbac-modelo-y-alcance-2026-08-30.md`, 30/08/2026) que evaluó un
+modelo deny-by-default de acciones **y lo rechazó explícitamente**, por
+alto costo de migrar los ~204 call-sites existentes sin un incidente que
+lo justifique. El dueño, al ver la discrepancia, aclaró que su recuerdo
+era otra cosa: quería poder decidir **por acción** (GET/POST/PUT/DELETE)
+quién puede ver/crear/editar/borrar cada cosa.
 
-**Lo que falta resolver en Fase 6 (rol), no cerrado todavía:**
-- Nombre exacto de la clave del grupo nuevo en `src/security/roles.ts`
-  (`FISCAL_RECONCILIATION` fue la propuesta del governor, no confirmada
-  explícitamente por el dueño con ese nombre literal — revisarlo).
-- Cómo se audita la **asignación** del rol — `RoleService`/`role.service.ts`
-  ya audita cambios de rol en general (verificar el mecanismo exacto
-  contra el código real, no asumir).
+**Verificado contra el código real (no supuesto): esa granularidad YA
+EXISTE hoy, endpoint por endpoint.** Ejemplo real, `invoices.routes.ts`:
+
+| Acción | Grupo requerido |
+|---|---|
+| `GET /api/invoices/:id` (ver) | `Roles.FRONT_DESK` |
+| `POST /api/invoices` (crear) | `Roles.FRONT_DESK` |
+| `POST /api/invoices/consolidated` (emitir consolidada) | `Roles.MANAGEMENT` |
+| `PUT /api/invoices/:id` (editar) | `Roles.MANAGEMENT` |
+| `DELETE /api/invoices/:id` (borrar) | `Roles.MANAGEMENT` |
+
+Cada `router.get/post/put/delete(...)` lleva su propio
+`authorize(Roles.X)`, elegido independientemente del resto — el sistema
+ya permite "el mostrador puede ver y crear, pero solo gestión puede
+editar o borrar" sin ninguna pieza nueva. **Y los roles nombrados por
+negocio (ej. "Recepcionista") tampoco son un modelo futuro — ya existen
+hoy** (`role_permission_groups`, configurable por el dueño sin tocar
+código, sección 3 de `docs/rbac-matriz-endpoints.md`).
+
+**Lo único que no existe sin tocar código:** el catálogo de "qué se
+puede proteger" son 8 valores fijos en `src/security/roles.ts`
+(`MANAGEMENT`, `FRONT_DESK`, `STAFF`, `HOUSEKEEPING_AND_MANAGEMENT`,
+`ORDERS`, `CUSTOMER_ONLY`, `BOOKING`, `OWNER_ONLY`) — agregar una
+capacidad que no encaja en ninguna de esas 8 exige un valor nuevo en ese
+archivo, que es código, no configuración. **Reconciliar AFIP es
+exactamente ese caso: nadie tiene hoy un permiso que signifique eso.**
+
+**Conclusión, confirmada por el dueño (04/09/2026): "lo otro no
+interfiere hoy por hoy"** — no hace falta ninguna capa de abstracción
+acción→grupo→rol nueva. El mecanismo que ya existe (grupo nuevo en
+`roles.ts` + `authorize()` en las rutas + asignación por rol nombrado,
+sin código, por negocio) alcanza. Se descarta también la 2ª versión de
+esta sección (la capa de "acción" separada del grupo) — no hay
+infraestructura nueva que construir, solo usar la que ya está.
+
+**Tabla de decisión final:**
+
+| Aspecto | Decisión |
+|---|---|
+| Granularidad por acción (ver/crear/editar/borrar) | **Ya existe hoy**, un `authorize()` independiente por endpoint — verificado contra código real |
+| Roles nombrados por negocio | **Ya existen hoy** (`role_permission_groups`) — no es un modelo futuro |
+| Grupo nuevo en `roles.ts` | **Necesario** — reconciliar AFIP es una capacidad que hoy no tiene ningún grupo |
+| Nombre del grupo | Sin decidir en este checkpoint — confirmar contra el vocabulario de `roles.ts` en Fase 6, no asumir `FACTURACION_RECONCILIACION_RESOLVER` literal |
+| Asignación del grupo nuevo a un rol nombrado | **Explícita, mínimo privilegio, por tenant, nunca preset automático** (decisión original, sin cambios) |
+| Capa de abstracción acción→grupo→rol | **Descartada** — no hace falta, ya existe la granularidad que buscaba |
+| Migración grupos → roles | **No aplica** — los roles ya existen, no hay nada que migrar |
+
+**Lo que sigue vigente de la decisión original, sin cambios:** asignación
+**explícita** (nunca preset automático), **mínimo privilegio**, **por
+tenant**, permiso **dedicado** (no reusar `markCollected()` ni otro
+genérico), y **toda resolución de un caso queda auditada**.
+
+**Lo que falta resolver en Fase 6 (permisos), no cerrado todavía:**
+- Nombre exacto del grupo nuevo en `src/security/roles.ts` — confirmar
+  contra el vocabulario ya usado (los 8 existentes son sustantivos de
+  área/función, no verbos de acción — `FACTURACION_RECONCILIACION_RESOLVER`
+  puede no encajar con ese estilo; revisar antes de asumirlo).
+- Cómo se audita la **asignación** del grupo a un rol nombrado —
+  verificar el mecanismo real de `RoleService`/`role.service.ts`, no
+  asumir que ya audita esto.
 - Cómo se audita **cada resolución** — la tabla `invoice_reconciliations`
-  ya tiene `resolved_by`/`resolved_at`, pero el dueño pidió "auditada"
-  explícitamente: decidir si alcanza con esas dos columnas o si hace
-  falta además una fila en `audit_log` (bloqueado hoy por H-E — `audit_log.changed_by`
-  es `NOT NULL` y no todo caller tiene actor plumbeado; para el flujo de
-  reconciliación SÍ hay actor real, `resolved_by`, así que acá `audit_log`
-  podría no tener el mismo obstáculo que tuvo H-A — **verificar, no
-  asumir**).
+  ya tiene `resolved_by`/`resolved_at`; decidir si alcanza con esas dos
+  columnas o hace falta además una fila en `audit_log` (revisar si el
+  bloqueo de H-E -- `audit_log.changed_by NOT NULL` sin actor plumbeado
+  -- aplica acá; para reconciliación SÍ hay actor real, así que podría no
+  tener el mismo obstáculo que tuvo H-A -- **verificar, no asumir**).
 - El hallazgo de `GET /api/invoices/:id` (`Roles.FRONT_DESK`, no
-  `MANAGEMENT`): un rol fiscal que **solo** tenga `FISCAL_RECONCILIATION`
-  recibiría 403 ahí. Recomendación pendiente de confirmar: que
-  `GET /api/invoice-reconciliations` devuelva embebidos los campos del
-  comprobante (`ptoVta`, `cbteTipo`, `cbteNro`, `impTotal`, `status`,
-  `errorMessage`, `afipContacted`, `issuedAt`, cliente) en vez de abrir
-  un cuarto `authorize()` sobre una ruta compartida.
+  `MANAGEMENT`) sigue vigente: un rol nombrado que **solo** tenga el
+  grupo nuevo de reconciliación recibiría 403 ahí. Recomendación
+  pendiente de confirmar: que `GET /api/invoice-reconciliations`
+  devuelva embebidos los campos del comprobante (`ptoVta`, `cbteTipo`,
+  `cbteNro`, `impTotal`, `status`, `errorMessage`, `afipContacted`,
+  `issuedAt`, cliente) en vez de abrir un `authorize()` más sobre una
+  ruta compartida.
 - Sincronizar en el mismo commit: `docs/rbac-matriz-endpoints.md` §1 y
   §2, `EXPECTED_AUTHORIZE_CALL_SITES` en
-  `src/tests/security/rbac-matrix-sync.test.ts` (204→207, 37→38 si son 3
-  rutas nuevas), y **no** tocar `PUBLIC_ROUTES` (las 3 rutas nuevas
-  llevan `authorize()`).
+  `src/tests/security/rbac-matrix-sync.test.ts`, y **no** tocar
+  `PUBLIC_ROUTES` (las rutas nuevas llevan `authorize()`).
 - **Trampa de montaje ya identificada, no repetirla:** montar las rutas
   en `/api/invoice-reconciliations` **top-level**, nunca
   `/api/invoices/reconciliations` — ese prefijo colisiona con el
@@ -194,8 +249,8 @@ auditadas.**
 | **1** | ✅ **CERRADA** — guard fail-closed | no | — |
 | **2** | Tabla `invoice_reconciliations`, los 5 estados, los 2 `CHECK` cruzados, índice parcial de bandeja, **guard de cargos bloqueados en `requestConsolidatedInvoice()`**, `CURRENT_SCHEMA_VERSION` 46→47. Sin escritores ni lectores todavía | **sí** | respaldo durable + `migrate:tenants` + verificación por tenant, **antes** de cualquier deploy |
 | **3-5** | Apertura del caso desde `invoice.service.ts` (misma transacción que `markFailed()`), `afip_last_voucher_before` persistido, algoritmo de reconsulta (`getVoucherInfo` extendido con `ImpTotal`/`DocTipo`/`DocNro`/`CbteFch`, hoy el puerto no los expone), lectura de bandeja | no | unit + integración por fase |
-| **6a** | Grupo `FISCAL_RECONCILIATION` en `roles.ts` — **sin preset**, según la decisión del dueño. Cero `authorize()` nuevos todavía — no-op de comportamiento | no | trivial, nada lo usa aún |
-| **6b** | Las 3 rutas + `authorize(Roles.FISCAL_RECONCILIATION)` + servicio + matriz RBAC + cerca de conteo | no | RBAC matriz + cerca en el mismo commit |
+| **6a** | Grupo nuevo en `roles.ts` (nombre a confirmar contra el vocabulario existente — ver §2.2) — **sin preset**, asignable por rol nombrado, según la decisión del dueño. Cero `authorize()` nuevos todavía — no-op de comportamiento | no | trivial, nada lo usa aún |
+| **6b** | Las 3 rutas + `authorize(Roles.<nombre confirmado>)` + servicio + matriz RBAC + cerca de conteo | no | RBAC matriz + cerca en el mismo commit |
 | **7** | Worker de reconsulta automática (backoff 5min→15→60→240→1440, 5 intentos, después `ESCALADA`) + botón manual (`POST /:id/reconcile`) — **el manual es obligatorio, no opcional**: los workers de este repo arrancan perezosamente por tenant desde `tenantMiddleware`, un negocio sin tráfico HTTP nunca correría el suyo | no | su modo de falla es silencioso — último en implementarse |
 | **8** | Bandeja en `appfrontend-main` | no | repo aparte, gate aparte |
 
