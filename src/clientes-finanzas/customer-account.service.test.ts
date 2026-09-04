@@ -74,8 +74,19 @@ class FakeInvoiceRepository {
 
 /** Corre el callback directo, sin BEGIN/COMMIT real -- alcanza para testear la orquestación. */
 class FakeTransactionManager implements TransactionManager {
+  /** O2F2-B -- queries crudas emitidas sobre `client` (ej. el advisory lock de
+   * `acquireIdempotencyLock`), para poder aseverar que se pidió sin depender
+   * de un mock que lo trague en silencio (architecture-governor, 03/09/2026). */
+  public rawQueries: { sql: string; params: unknown[] | undefined }[] = [];
+
   async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
-    return work({} as SqlClient);
+    const client: SqlClient = {
+      query: async (sql: string, params?: unknown[]) => {
+        this.rawQueries.push({ sql, params });
+        return { rows: [], rowCount: 0 };
+      },
+    };
+    return work(client);
   }
 }
 
@@ -285,6 +296,7 @@ describe('CustomerAccountService.recordPayment — truncamiento controlado (O2-F
   let financialRepo: InMemoryFinancialTransactionRepository;
   let invoices: Map<string, Invoice>;
   let invoiceRepo: FakeInvoiceRepository;
+  let transactionManager: FakeTransactionManager;
   let service: CustomerAccountService;
 
   function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
@@ -305,13 +317,31 @@ describe('CustomerAccountService.recordPayment — truncamiento controlado (O2-F
     invoices = new Map([['inv-1', makeInvoice()], ['inv-2', makeInvoice({ id: 'inv-2' })]]);
     invoiceRepo = new FakeInvoiceRepository(invoices);
     const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
+    transactionManager = new FakeTransactionManager();
     service = new CustomerAccountService(
       financialRepo,
       new FakeCustomerRepository(customers) as unknown as CustomerRepository,
       new FakeBusinessProfileRepository(makeProfile()),
       invoiceRepo as unknown as InvoiceRepository,
-      new FakeTransactionManager(),
+      transactionManager,
     );
+  });
+
+  it('O2F2-B -- con idempotencyKey, pide el advisory lock antes de aplicar; sin ella, no pide ningún lock', async () => {
+    invoiceRepo.setOutstanding('inv-1', 250);
+
+    await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 250, idempotencyKey: 'pay-1',
+      allocations: [{ invoiceId: 'inv-1', amount: 250 }],
+    });
+    expect(transactionManager.rawQueries.some((q) => q.sql.includes('pg_advisory_xact_lock'))).toBe(true);
+
+    transactionManager.rawQueries = [];
+    await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 250,
+      allocations: [{ invoiceId: 'inv-2', amount: 250 }],
+    });
+    expect(transactionManager.rawQueries.some((q) => q.sql.includes('pg_advisory_xact_lock'))).toBe(false);
   });
 
   it('ejemplo del dueño: factura con saldo 250, allocation de 400 -- aplica 250, 150 queda sin asignar', async () => {

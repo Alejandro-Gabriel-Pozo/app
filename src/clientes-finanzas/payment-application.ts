@@ -20,6 +20,35 @@ import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from './financial-transaction.repository.js';
 import { round2 } from '../domain/money.js';
 
+/**
+ * O2F2-B (erp-audit-orchestrator/architecture-governor, 03/09/2026) --
+ * advisory lock de Postgres sobre el hash de una clave de idempotencia.
+ * Serializa TODAS las llamadas concurrentes que comparten la misma clave
+ * (un reintento de transporte con la request original todavía en vuelo),
+ * sin necesitar una fila física que representar "esta operación" --
+ * a diferencia de `AccountsReceivableService.markCollected()`
+ * (`AccountsReceivableRepository.lockForUpdate()`), acá la clave la provee
+ * el caller y puede cubrir N escrituras (N allocations de
+ * `CustomerAccountService.recordPayment()`), así que no hay una sola fila
+ * 1:1 para lockear.
+ *
+ * Tiene que ser la PRIMERA operación dentro de la transacción del caller,
+ * antes de cualquier chequeo de idempotencia -- si corre después, dos
+ * llamadas genuinamente concurrentes pueden pasar el chequeo las dos antes
+ * de que ninguna commitee.
+ *
+ * `_xact`: el lock se libera solo al COMMIT/ROLLBACK, nunca hace falta un
+ * unlock explícito. `hashtext()` devuelve un entero de 32 bits -- dos
+ * claves distintas pueden colisionar y compartir el mismo lock; el único
+ * efecto es serialización de más entre operaciones no relacionadas, nunca
+ * una incorrección. Alcance del advisory lock: por base de datos -- como
+ * este repo usa una BD por negocio (`req.db`), el espacio de claves ya
+ * queda aislado por tenant sin ningún trabajo extra acá.
+ */
+export async function acquireIdempotencyLock(client: SqlClient, idempotencyKey: string): Promise<void> {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [idempotencyKey]);
+}
+
 export interface CappedPaymentApplication {
   invoiceId: string;
   requestedAmount: number;

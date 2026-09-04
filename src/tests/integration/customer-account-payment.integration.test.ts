@@ -194,6 +194,56 @@ describe.skipIf(skipIfNoDb)('CustomerAccountService.recordPayment — truncamien
     expect(Number(rows[0]!.count)).toBe(1);
   });
 
+  it('O2F2-B (erp-audit-orchestrator, 03/09/2026) -- dos recordPayment() GENUINAMENTE simultáneos con la MISMA idempotencyKey no acreditan un crédito fantasma sin asignar', async () => {
+    const customer = await seedCustomer(db);
+    const invoiceId = await seedIssuedInvoice(1000, customer.id);
+    const idempotencyKey = `pay-${randomUUID()}`;
+
+    // A diferencia del test de arriba (reintento SECUENCIAL, después de un
+    // commit ya terminado), acá las dos llamadas están en vuelo A LA VEZ --
+    // el escenario real de un reintento de transporte (timeout de red)
+    // mientras la request original todavía se está procesando. Sin el
+    // advisory lock: las dos pasan el chequeo `existingAlloc` antes de que
+    // ninguna commitee; la que gana el lock de la factura aplica 1000
+    // (excedente 0); la que pierde relee outstanding=0 (fresco, correcto) y
+    // acredita 1000 como "sin asignar" -- crédito que el cliente no pagó.
+    const [a, b] = await Promise.all([
+      makeService().recordPayment({
+        customerId: customer.id, businessId: BUSINESS_ID, amount: 1000, idempotencyKey,
+        allocations: [{ invoiceId, amount: 1000 }],
+      }),
+      makeService().recordPayment({
+        customerId: customer.id, businessId: BUSINESS_ID, amount: 1000, idempotencyKey,
+        allocations: [{ invoiceId, amount: 1000 }],
+      }),
+    ]);
+
+    // Las dos llamadas devuelven el mismo resultado -- son la MISMA
+    // operación lógica, no dos pagos distintos.
+    expect(a.map((tx) => tx.id).sort()).toEqual(b.map((tx) => tx.id).sort());
+
+    // A propósito SIN filtrar por settled_invoice_id -- el crédito fantasma
+    // tiene ese campo en NULL, invisible para un assert que sólo mire
+    // `WHERE settled_invoice_id = $1`.
+    const { rows } = await db.query<{ count: string; total: string; null_settled: string }>(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total,
+              COUNT(*) FILTER (WHERE settled_invoice_id IS NULL) AS null_settled
+       FROM financial_transactions WHERE customer_id = $1 AND type = 'PAYMENT'`,
+      [customer.id],
+    );
+    expect(Number(rows[0]!.count)).toBe(1);
+    expect(Number(rows[0]!.total)).toBe(1000);
+    expect(Number(rows[0]!.null_settled)).toBe(0);
+
+    const { rows: invRows } = await db.query<{ outstanding: string }>(
+      `SELECT (imp_total - COALESCE((SELECT SUM(amount) FROM financial_transactions
+                                       WHERE settled_invoice_id = $1 AND status = 'SETTLED'), 0)) AS outstanding
+       FROM invoices WHERE id = $1`,
+      [invoiceId],
+    );
+    expect(parseFloat(invRows[0]!.outstanding)).toBe(0);
+  });
+
   it('consolida allocations duplicadas a la misma factura en una sola fila, contra Postgres real', async () => {
     const customer = await seedCustomer(db);
     const invoiceId = await seedIssuedInvoice(1000, customer.id);

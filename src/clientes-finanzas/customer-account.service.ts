@@ -28,7 +28,7 @@ import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import { CustomerNotFoundError, InvoiceNotFoundError, ValidationError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
-import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient } from './payment-application.js';
+import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient, acquireIdempotencyLock } from './payment-application.js';
 
 export interface CustomerStatement {
   customerId: string;
@@ -212,6 +212,20 @@ export class CustomerAccountService {
 
     const created: FinancialTransaction[] = [];
     await this.transactionManager.run(async (client) => {
+      // O2F2-B (erp-audit-orchestrator/architecture-governor, 03/09/2026) --
+      // sin esto, dos recordPayment() concurrentes con la MISMA
+      // idempotencyKey (reintento de red con la request original todavía
+      // en vuelo) pasan el chequeo `existingAlloc` de más abajo los dos
+      // antes de que ninguno commitee, y el perdedor de la carrera por el
+      // lock de la factura termina acreditando un crédito sin asignar que
+      // el cliente no pagó de más. Detalle completo del mecanismo:
+      // payment-application.ts::acquireIdempotencyLock(). Sin
+      // idempotencyKey no hay nada que correlacionar entre dos llamadas
+      // (son pagos genuinamente distintos) -- no se serializan a propósito.
+      if (params.idempotencyKey) {
+        await acquireIdempotencyLock(client, params.idempotencyKey);
+      }
+
       let unassigned = preRemainder;
       let first = true;
 
