@@ -376,7 +376,8 @@ export class AccountsReceivableService {
       if (updated) return updated;
 
       // La fila AR SÍ está lockeada desde el arranque de esta transacción
-      // (`:271`, `arRepo.lockForUpdate`) -- eso es lo que serializa a los
+      // (más arriba en este mismo método, `await this.arRepo.lockForUpdate(client, id)`)
+      // -- eso es lo que serializa a los
       // concurrentes entre sí. Si aun así el UPDATE no afectó filas es
       // porque otra transacción concurrente ya aplicó el MISMO PAYMENT
       // idempotente y ya commiteó COBRADO antes de que esta llegara acá --

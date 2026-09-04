@@ -277,10 +277,10 @@ el resumen — no dupliques el detalle, andá al checkpoint.
 
 | Dimensión | |
 |---|---|
-| **Definición** | Dos causas relacionadas pero distintas: (1) `getOutstandingByCustomerId()` excluye facturas consolidadas del listado por el `JOIN` (visibilidad); (2) `AccountsReceivableService.markCollected()` (`accounts-receivable.service.ts:195-225`) crea un `PAYMENT` sin `settledInvoiceId` — el saldo de la factura nunca refleja un cobro hecho por el camino de `accounts_receivable` |
+| **Definición** | **Histórico — describe el código en `1f72f41` (antes de `5856306`), ya CORREGIDO, no re-anclar a líneas actuales (05/09/2026, `architecture-governor`).** Dos causas relacionadas pero distintas: (1) `getOutstandingByCustomerId()` excluía facturas consolidadas del listado por el `JOIN` (visibilidad); (2) `AccountsReceivableService.markCollected()` creaba un `PAYMENT` sin `settledInvoiceId` — el saldo de la factura nunca reflejaba un cobro hecho por el camino de `accounts_receivable` |
 | **Consecuencia** | **Elevada de S2 a severidad alta/crítica** tras reproducción: una factura consolidada cobrada vía `markCollected()` sigue viéndose con saldo completo, y si alguien la concilia también por `recordPayment(allocations)` (camino ya corregido por O2-F1), el sistema acepta un segundo cobro real — confirmado con Postgres real: factura de 1000, total cobrado 2000 |
 | **Severidad** | S1 para el subhallazgo de aplicación (O2-F2.3) — riesgo de doble cobro real en cualquier tenant con City Ledger corporativo activo. S2 para visibilidad pura (O2-F2.1/.2) |
-| **Evidencia** | `[V]` Reproducción real en `src/tests/integration/scratch-o2-f2-ar-invoice-gap.integration.test.ts` (2 tests, Postgres real, commiteado en `docs/o2-f2-checkpoint-2026-09-03`). Código: `accounts-receivable.service.ts:203-212` (PAYMENT sin settledInvoiceId), `accounts-receivable.repository.ts:36` (`invoiceRef` es string de display, no FK), `sql.invoice.repository.ts:97-128` (`getOutstandingForUpdate` calcula por id directo, sin saber del cobro de AR) |
+| **Evidencia** | `[V]` Reproducción real en `src/tests/integration/scratch-o2-f2-ar-invoice-gap.integration.test.ts` (2 tests, Postgres real, commiteado en `docs/o2-f2-checkpoint-2026-09-03` -- archivo borrado en `5856306`, la reproducción sobrevive en el historial de git). Código, referencia histórica a `1f72f41`: `accounts-receivable.repository.ts:36` (`invoiceRef` es string de display, no FK, sigue vigente), `sql.invoice.repository.ts:97-128` (`getOutstandingForUpdate` calcula por id directo -- fórmula ya cambiada por §7.1, ver `af41b78`) |
 | **Dependencia** | Ninguna bloqueante de O2-F1 (cerrada, sin reabrir). Cruza con C1-Fase C (consolidadas) y con el cierre de `accounts_receivable` |
 | **Criterio de cierre** | Ver §9 del checkpoint — resolución de `invoiceId` desde AR (individual y consolidada), lock compartido con `recordPayment()`, idempotencia, tests de concurrencia real |
 | **Siguiente acción** | Decisión de negocio pendiente (§5 del checkpoint: filas AR legacy sin `financial_transaction_id`, alcance del cierre) antes de crear la rama de implementación `fix/o2-f2-accounts-receivable-invoice-linkage` |
@@ -475,14 +475,21 @@ y confirmó por lectura propia del código, no de la narración, que el ABBA
 sigue siendo falso positivo y que el SQL de los locks quedó movido a
 repositorios. Encontró dos cosas nuevas:
 
-- **H3 (corregido en el mismo bloque de esta pasada):**
-  `accounts-receivable.service.ts:326-327` tenía un comentario que decía
-  "no lockeamos la fila AR en sí" — falso, la línea 271 sí la lockea
-  (residuo previo al fix de O2F2-A). Corregido para reflejar el código real.
+- **H3 (corregido en el mismo bloque de esta pasada -- histórico, ancla del
+  código en `5856306`, no re-anclar a líneas actuales):**
+  `accounts-receivable.service.ts::markCollected()` tenía un comentario que
+  decía "no lockeamos la fila AR en sí" — falso, `arRepo.lockForUpdate()`
+  sí la lockea (residuo previo al fix de O2F2-A). Corregido en `07da324`
+  para reflejar el código real.
 - **H4 (registrado, NO corregido — no bloquea este cierre; ancla corregida
-  05/09/2026 por `architecture-governor`, 5ª+ pasadas):** en
-  `markCollected()` (`accounts-receivable.service.ts:273`) y en
-  `payment-application.ts:94`, `financialRepo.getByIdempotencyKey()` corre
+  05/09/2026 por `architecture-governor`, 5ª+ pasadas; re-anclada por
+  símbolo en `251b4f1` tras confirmar que las líneas se corrían entre
+  commits):** en `markCollected()` (`accounts-receivable.service.ts`, la
+  llamada a `this.financialRepo.getByIdempotencyKey(idempotencyKey)`
+  inmediatamente después de `arRepo.lockForUpdate()`) y en
+  `payment-application.ts::createIdempotentPaymentWithClient()` (la llamada
+  a `financialRepo.getByIdempotencyKey()` dentro del `if (tx.idempotencyKey)`),
+  `financialRepo.getByIdempotencyKey()` corre
   sobre el pool (`this.db`), no sobre el `client` transaccional, mientras la
   transacción ya sostiene el lock de la fila AR y/o de la factura. **El pool
   citado originalmente estaba mal** — `src/db/pg.client.ts:94-96` (`max: 10`)
@@ -499,7 +506,8 @@ repositorios. Encontró dos cosas nuevas:
   rollback, no a corrupción ni a cuelgue). Patrón preexistente de O2-F1, ya
   en `main`; O2F2-A y O2F2-B alargan la ventana en que se sostienen locks,
   así que la exposición se ensancha un poco. **La justificación del
-  comentario en `accounts-receivable.service.ts:331-334` (que el `getById`
+  comentario en `accounts-receivable.service.ts::markCollected()` (el
+  `getById(id)` posterior a `markCollectedWithClient` -- que el `getById`
   necesita el pool para ver el commit ajeno bajo READ COMMITTED) no se
   sostiene** — `pg.transaction-manager.ts:25` hace `BEGIN` pelado (READ
   COMMITTED default), y bajo ese nivel de aislamiento una sentencia nueva
@@ -617,8 +625,13 @@ resolver primero.** `BRECHA-REFUND-01` ya estaba registrada
 (`docs/continuidad-da-orden-estados-2026-09-02.md:332`, S1, "confirmRefund no
 idempotente, puede duplicar Nota de Crédito con CAE propio") pero no estaba
 cruzada con C2 ("Cancelar reserva" no usa el preview/confirm de reembolso,
-`docs/pendientes-2026-08-31.md:262`) ni con `A2-M01-001`
-(`docs/erp-auditoria-v2/fichas/M01-reservas.md`). Son el mismo riesgo: C2 es
+`docs/pendientes-2026-08-31.md:262`) ni con `A2-M01-001` (referenciado en
+`docs/erp-auditoria-v2/fichas/M01-reservas.md` -- **esa carpeta vive en
+material de auditoría todavía sin versionar, no se cita acá como ruta
+navegable**, mismo criterio que `docs/vision-identidad-operativa-auditabilidad-2026-09-01.md:80`;
+la deuda de versionarla ya está registrada como `AUDIT-DOC-001`,
+`docs/continuidad-da-orden-estados-2026-09-02.md:334` -- decisión de
+versionarla o no reservada al dueño, 05/09/2026). Son el mismo riesgo: C2 es
 "conectar la pantalla que llama a `confirmRefund()`"; `BRECHA-REFUND-01` es
 "`confirmRefund()` no es seguro de invocar dos veces". Construir C2 antes de
 cerrar `BRECHA-REFUND-01` convierte un endpoint hoy inalcanzable (ninguna

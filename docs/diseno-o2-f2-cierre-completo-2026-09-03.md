@@ -12,8 +12,11 @@
 verificar contra el código):** la redacción original de esta sección
 solo describía el caso (a) de abajo y lo trataba como el único motivo por el
 que `invoiceId` no resuelve en `markCollected()`. En el código real, la misma
-rama (`accounts-receivable.service.ts:305-320`, cuando
-`getInvoiceIdByFinancialTransactionId()` devuelve `null`) se alcanza por DOS
+rama (`accounts-receivable.service.ts::markCollected()`, el `else` de
+`if (invoiceId)` -- fallback legacy, cuando
+`getInvoiceIdByFinancialTransactionId()` devuelve `null`; **ancla por
+símbolo, no por línea**, ver `docs/pendientes-2026-09-03.md`
+"Anclaje por símbolo" sobre por qué) se alcanza por DOS
 caminos con naturaleza completamente distinta. Tratarlos como una sola
 "deuda técnica" fue un error de documentación — uno es deuda, el otro es una
 decisión de producto permanente.
