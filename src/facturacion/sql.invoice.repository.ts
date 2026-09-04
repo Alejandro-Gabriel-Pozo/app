@@ -1,6 +1,6 @@
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import { randomUUID } from 'node:crypto';
 
@@ -186,27 +186,32 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map(rowToEntity);
   }
 
-  async getInvoiceIdByFinancialTransactionId(financialTransactionId: string): Promise<string | null> {
-    // H2 (architecture-governor, 03/09/2026) -- la rama consolidada
-    // (invoice_charges) también exige status='ISSUED', igual que la
-    // individual y que el propio docblock de la interfaz declara. Sin este
-    // filtro: invoice_charges se inserta al CREAR la factura (status
-    // PENDING todavía, antes de llamar a AFIP) y ninguna fila se borra si
-    // AFIP rechaza (REJECTED/FAILED_UNCERTAIN) -- markCollected() podría
-    // capar contra el saldo de un comprobante nunca emitido y dejar
-    // settled_invoice_id apuntando a una factura que getOutstandingByCustomerId
-    // (que sí filtra ISSUED) nunca va a mostrar en conciliación. Sin esta
-    // fila, el caller cae al fallback legacy ya sancionado por el dueño.
-    const { rows } = await this.db.query<{ invoice_id: string | null }>(
-      `SELECT COALESCE(
-         (SELECT id FROM invoices WHERE financial_transaction_id = $1 AND status = 'ISSUED'),
-         (SELECT ic.invoice_id FROM invoice_charges ic
-          JOIN invoices i ON i.id = ic.invoice_id
-          WHERE ic.financial_transaction_id = $1 AND i.status = 'ISSUED')
-       ) AS invoice_id`,
+  async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
+    // AR-FACT-NO-ISSUED-01 (05/09/2026) -- reemplaza a
+    // getInvoiceIdByFinancialTransactionId(). H2 (architecture-governor,
+    // 03/09/2026) sigue aplicando en espíritu (la rama consolidada
+    // necesita el mismo tratamiento que la individual), pero SIN filtro de
+    // status -- acá se quiere saber el estado real, no solo si es ISSUED.
+    // UNION ALL de los dos caminos (individual: invoices.financial_transaction_id
+    // directo; consolidado: invoice_charges), sin deduplicar por diseño --
+    // el ORDER BY prioriza ISSUED si por algún motivo hubiera más de una
+    // fila (no debería, ver el docblock de la interfaz).
+    const { rows } = await this.db.query<{ id: string; status: InvoiceStatus; afip_contacted: boolean }>(
+      `SELECT id, status, afip_contacted FROM (
+         SELECT id, status, afip_contacted FROM invoices WHERE financial_transaction_id = $1
+         UNION ALL
+         SELECT i.id, i.status, i.afip_contacted FROM invoice_charges ic
+         JOIN invoices i ON i.id = ic.invoice_id
+         WHERE ic.financial_transaction_id = $1
+       ) linked
+       ORDER BY (status = 'ISSUED') DESC, id
+       LIMIT 1`,
       [financialTransactionId],
     );
-    return rows[0]?.invoice_id ?? null;
+    const row = rows[0];
+    if (!row) return { kind: 'NONE' };
+    if (row.status === 'ISSUED') return { kind: 'ISSUED', invoiceId: row.id };
+    return { kind: 'NOT_ISSUED', invoiceId: row.id, status: row.status, afipContacted: row.afip_contacted };
   }
 
   async getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>> {

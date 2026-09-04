@@ -17,6 +17,17 @@ export interface MarkFailedInput {
   afipContacted: boolean;
 }
 
+/**
+ * AR-FACT-NO-ISSUED-01 (05/09/2026) -- resultado de resolver qué factura
+ * interna cubre un `financial_transaction_id`, distinguiendo los TRES
+ * estados que antes colapsaban en `string | null`. Ver
+ * `InvoiceRepository.resolveInvoiceLinkage()`.
+ */
+export type InvoiceLinkage =
+  | { kind: 'NONE' }
+  | { kind: 'NOT_ISSUED'; invoiceId: string; status: 'PENDING' | 'REJECTED' | 'FAILED_UNCERTAIN'; afipContacted: boolean }
+  | { kind: 'ISSUED'; invoiceId: string };
+
 export interface InvoiceRepository {
   getById(id: string): Promise<Invoice | null>;
   getByIdempotencyKey(idempotencyKey: string): Promise<Invoice | null>;
@@ -61,19 +72,30 @@ export interface InvoiceRepository {
    */
   getByCustomerId(customerId: string): Promise<Invoice[]>;
   /**
-   * O2-F2 (03/09/2026, F2.3 -- resolución del vínculo AR -> factura) —
-   * dado el `financial_transaction_id` de una fila `accounts_receivable`,
-   * encuentra la factura ISSUED que lo cubre. Prueba primero el camino
-   * individual (`invoices.financial_transaction_id` directo, ver
-   * `InvoiceService.finalizeIssued()`); si no matchea, el consolidado
-   * (`invoice_charges.financial_transaction_id`, único por cargo, ver
-   * `InvoiceService.requestConsolidatedInvoice()`). `null` si ninguno
-   * matchea -- no debería pasar para un AR que ya llegó a FACTURADO, pero no
-   * es un invariante roto: el caller decide qué hacer (`AccountsReceivableService.markCollected()`
-   * lo trata como "sin vínculo resoluble", mismo camino que una fila legacy
-   * sin `financial_transaction_id`).
+   * O2-F2 (03/09/2026, F2.3) / AR-FACT-NO-ISSUED-01 (05/09/2026,
+   * architecture-governor, paquete post-H-A, "P0") -- dado el
+   * `financial_transaction_id` de una fila `accounts_receivable`, resuelve
+   * qué factura interna lo cubre y en qué estado está. Reemplaza a
+   * `getInvoiceIdByFinancialTransactionId(): Promise<string | null>`
+   * (removido en este mismo cambio, un solo caller productivo,
+   * `AccountsReceivableService.markCollected()`) porque ese método
+   * colapsaba DOS situaciones bajo el mismo `null`: "no hay ninguna
+   * factura interna" (legítimo -- fila legacy o facturación externa
+   * permanente, §5.1(b) de `docs/diseno-o2-f2-cierre-completo-2026-09-03.md`)
+   * y "hay una factura interna pero no está ISSUED todavía" (el bug real:
+   * `markCollected()` caía al fallback legacy sobre una factura que
+   * podía llegar a ISSUED después, habilitando doble cobro).
+   *
+   * Prueba primero el camino individual (`invoices.financial_transaction_id`
+   * directo), si no matchea el consolidado (`invoice_charges.financial_transaction_id`).
+   * Sin filtro de `status` -- a diferencia del método que reemplaza, trae
+   * la fila exista en el estado que exista, ordenada
+   * `(status = 'ISSUED') DESC, created_at DESC` (si por algún motivo
+   * hubiera más de una, cosa que el índice único `idx_invoice_charges_ft`
+   * y la clave de idempotencia determinística no deberían permitir, prioriza
+   * la emitida).
    */
-  getInvoiceIdByFinancialTransactionId(financialTransactionId: string): Promise<string | null>;
+  resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage>;
   /**
    * O2-F1 (03/09/2026, decisión del dueño: opción B, aplicación parcial
    * controlada) — saldo pendiente de UNA factura puntual, calculado con

@@ -109,7 +109,7 @@ export class AccountsReceivableService {
      * contra ella en `markCollected()`. Solo los dos métodos de lectura que
      * necesita -- mismo criterio que `CustomerAccountService`.
      */
-    private readonly invoiceRepo: Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'getInvoiceIdByFinancialTransactionId'>,
+    private readonly invoiceRepo: Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'resolveInvoiceLinkage'>,
   ) {}
 
   async transferStayBalanceToReceivable(input: TransferStayBalanceInput): Promise<AccountReceivable> {
@@ -227,7 +227,7 @@ export class AccountsReceivableService {
    * saldo completo y aplicaba de nuevo -- doble cobro real, reproducido
    * contra Postgres. Ahora:
    *  1. Si `ar.financialTransactionId` resuelve a una factura ISSUED
-   *     (individual o consolidada, `invoiceRepo.getInvoiceIdByFinancialTransactionId`),
+   *     (individual o consolidada, `invoiceRepo.resolveInvoiceLinkage`),
    *     el PAYMENT se capa al saldo vigente de esa factura, con el MISMO
    *     lock (`SELECT ... FOR UPDATE`, sin `OF i` desde §7.1) que usa
    *     `recordPayment()` -- serializa los
@@ -276,9 +276,15 @@ export class AccountsReceivableService {
       throw new InvalidAccountsReceivableTransitionError(id, ar.status, 'COBRADO');
     }
 
-    const invoiceId = ar.financialTransactionId
-      ? await this.invoiceRepo.getInvoiceIdByFinancialTransactionId(ar.financialTransactionId)
-      : null;
+    // AR-FACT-NO-ISSUED-01 (05/09/2026) -- P0, refactor puro sin cambio de
+    // comportamiento todavía: NONE y NOT_ISSUED caen los dos al fallback
+    // legacy, igual que antes cuando el método viejo devolvía `null` para
+    // los dos casos sin distinguirlos. El guard fail-closed sobre
+    // NOT_ISSUED se agrega en un commit aparte.
+    const linkage = ar.financialTransactionId
+      ? await this.invoiceRepo.resolveInvoiceLinkage(ar.financialTransactionId)
+      : ({ kind: 'NONE' } as const);
+    const invoiceId = linkage.kind === 'ISSUED' ? linkage.invoiceId : null;
     const idempotencyKey = `ar-collect:${id}`;
     const notes = `Cobro de cuenta por cobrar — estadía ${ar.stayId}`;
     let collection: AccountReceivableMarkCollectedResult['collection'];

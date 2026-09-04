@@ -18,7 +18,7 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
-import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
+import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_STAY_ID = 'stay-1';
@@ -161,12 +161,18 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
  * cobrado todavía") -- los tests que necesitan un saldo distinto lo setean
  * antes de llamar a `markCollected()`.
  */
-class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'getInvoiceIdByFinancialTransactionId'> {
+class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'resolveInvoiceLinkage'> {
   public invoiceIdByFinancialTransactionId = new Map<string, string>();
   public outstandingByInvoiceId = new Map<string, number>();
+  /** AR-FACT-NO-ISSUED-01 -- configura el caso NOT_ISSUED por ftId. */
+  public notIssuedByFinancialTransactionId = new Map<string, { invoiceId: string; status: 'PENDING' | 'REJECTED' | 'FAILED_UNCERTAIN'; afipContacted: boolean }>();
 
-  async getInvoiceIdByFinancialTransactionId(financialTransactionId: string): Promise<string | null> {
-    return this.invoiceIdByFinancialTransactionId.get(financialTransactionId) ?? null;
+  async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
+    const issuedId = this.invoiceIdByFinancialTransactionId.get(financialTransactionId);
+    if (issuedId) return { kind: 'ISSUED', invoiceId: issuedId };
+    const notIssued = this.notIssuedByFinancialTransactionId.get(financialTransactionId);
+    if (notIssued) return { kind: 'NOT_ISSUED', ...notIssued };
+    return { kind: 'NONE' };
   }
 
   async getOutstandingForUpdate(_client: SqlClient, invoiceId: string): Promise<number> {
@@ -405,6 +411,7 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       seed({ status: 'FACTURADO' });
       await expect(service.markInvoiced('ar-1')).rejects.toThrow(InvalidAccountsReceivableTransitionError);
     });
+
   });
 
   describe('markCollected — FACTURADO → COBRADO, crea el PAYMENT que cierra la deuda', () => {

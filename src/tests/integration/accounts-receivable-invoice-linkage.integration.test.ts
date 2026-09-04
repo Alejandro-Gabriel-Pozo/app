@@ -70,7 +70,7 @@ function makeCustomerAccountService(): CustomerAccountService {
  * consolidado, C1-Fase C); `consolidated=false` la arma con
  * `financial_transaction_id` directo al CHARGE (camino individual,
  * per-reservation) -- los dos caminos que
- * `getInvoiceIdByFinancialTransactionId` tiene que resolver (ver diseño §2).
+ * `resolveInvoiceLinkage` tiene que resolver (ver diseño §2).
  */
 async function seedFacturadoScenario(impTotal: number, opts: { consolidated: boolean }) {
   const category = await seedCategory(db);

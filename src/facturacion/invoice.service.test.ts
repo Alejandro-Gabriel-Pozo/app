@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Arca } from '@arcasdk/core';
 import { InvoiceService, hashIds } from './invoice.service.js';
-import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput } from './invoice.repository.js';
+import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
 import type { FinancialTransactionRepository, FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
@@ -52,10 +52,15 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByCustomerId(customerId: string): Promise<Invoice[]> {
     return [...this.invoices.values()].filter((i) => i.customerId === customerId);
   }
-  async getInvoiceIdByFinancialTransactionId(ftId: string): Promise<string | null> {
-    const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId && i.status === 'ISSUED');
-    if (individual) return individual.id;
-    return this.charges.get(ftId) ?? null;
+  async resolveInvoiceLinkage(ftId: string): Promise<InvoiceLinkage> {
+    const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);
+    const invoice = individual ?? (() => {
+      const invoiceId = this.charges.get(ftId);
+      return invoiceId ? this.invoices.get(invoiceId) : undefined;
+    })();
+    if (!invoice) return { kind: 'NONE' };
+    if (invoice.status === 'ISSUED') return { kind: 'ISSUED', invoiceId: invoice.id };
+    return { kind: 'NOT_ISSUED', invoiceId: invoice.id, status: invoice.status, afipContacted: invoice.afipContacted };
   }
   async create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice> {
     return this.createWithClient({} as SqlClient, input, afipRequest, items);
