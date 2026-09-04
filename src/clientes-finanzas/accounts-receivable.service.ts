@@ -243,19 +243,25 @@ export class AccountsReceivableService {
    *
    * H-A (05/09/2026, erp-audit-orchestrator + auditor-circuitos-erp,
    * architecture-governor "Paquete B'") -- CUANDO invoiceId resuelve Y el
-   * otro camino (recordPayment) ya cubrió parte o todo el saldo de esa
-   * factura, el excedente NO se acredita como PAYMENT sin asignar. Antes
-   * (hasta el commit 5856306) sí se acreditaba -- eso inventaba un crédito
-   * a favor de la empresa sin ningún ingreso real detrás: `ar.amount` es
-   * un monto CONGELADO del momento de `transferStayBalanceToReceivable`,
-   * no una declaración de caja de ESTA llamada (a diferencia del
-   * excedente de `recordPayment()`, que sí es plata real que el operador
-   * tipeó -- A3.9 de criterios-negocio.md, la contrapartida ahí no
-   * existe). La AR pasa a COBRADO igual -- el hecho de negocio (la
-   * empresa pagó, por el otro camino) ya ocurrió. La colisión se expone
-   * en la respuesta (`collection`, aditivo, no persistido) y se deja un
-   * log estructurado -- no `domain/audit.ts`: `audit_log.changed_by` es
-   * `NOT NULL` y esta operación no recibe actor todavía (H-E, abierto).
+   * saldo real de esa factura es menor a `ar.amount`, el excedente NO se
+   * acredita como PAYMENT sin asignar. Antes (hasta el commit 5856306) sí
+   * se acreditaba -- eso inventaba un crédito a favor de la empresa sin
+   * ningún ingreso real detrás: `ar.amount` es un monto CONGELADO del
+   * momento de `transferStayBalanceToReceivable`, no una declaración de
+   * caja de ESTA llamada (a diferencia del excedente de `recordPayment()`,
+   * que sí es plata real que el operador tipeó -- A3.9 de
+   * criterios-negocio.md, la contrapartida ahí no existe). NO se afirma
+   * por qué el saldo es menor -- `getOutstandingForUpdate()` resta tanto
+   * PAYMENT como REFUND (`sql.invoice.repository.ts`), así que la causa
+   * puede ser `recordPayment()`, un REFUND/nota de crédito, o un desfase
+   * entre `ar.amount` y la porción de una factura consolidada (ver el log
+   * de más abajo, que enumera las tres). La AR pasa a COBRADO igual -- el
+   * hecho de negocio (la deuda ya no está pendiente) ya ocurrió. La
+   * colisión se expone en la respuesta (`collection`, aditivo, no
+   * persistido -- solo viaja en la llamada que la detecta, un reintento
+   * no la repite) y se deja un log estructurado -- no `domain/audit.ts`:
+   * `audit_log.changed_by` es `NOT NULL` y esta operación no recibe actor
+   * todavía (H-E, abierto).
    */
   async markCollected(id: string): Promise<AccountReceivableMarkCollectedResult> {
     const ar = await this.arRepo.getById(id);
@@ -327,9 +333,25 @@ export class AccountsReceivableService {
           // en el log; la fila AR pasa a COBRADO más abajo igual.
           if (excessAmount > 0) {
             collection = { invoiceId, appliedAmount, excessAmount };
+            // No se afirma la causa -- getOutstandingForUpdate() resta
+            // PAYMENT y REFUND del saldo, así que el excedente puede venir
+            // de recordPayment(), de un REFUND/nota de crédito aplicado a
+            // la misma factura, o de un desfase entre ar.amount (congelado
+            // en transferStayBalanceToReceivable) y la porción que esta AR
+            // representa dentro de una factura consolidada.
             logger.warn(
-              { accountsReceivableId: id, businessId: ar.businessId, invoiceId, appliedAmount, excessAmount },
-              '[AccountsReceivableService] markCollected() encontró la factura vinculada ya cubierta parcial o totalmente por otro camino de cobro (recordPayment) -- no se acreditó excedente, ver H-A',
+              {
+                evento: 'cobro_ar_factura_ya_cubierta',
+                accountsReceivableId: id,
+                businessId: ar.businessId,
+                companyCustomerId: ar.companyCustomerId,
+                invoiceId,
+                arAmount: ar.amount,
+                appliedAmount,
+                excessAmount,
+                currency: ar.currency,
+              },
+              '[AccountsReceivableService] markCollected(): la factura vinculada ya estaba cubierta -- no se acreditó el excedente. La causa no se determinó en este punto: puede ser un cobro previo por recordPayment(), un REFUND/nota de crédito aplicado a la misma factura, o un desfase entre ar.amount y la porción que esta AR representa en la factura.',
             );
           }
         } else {

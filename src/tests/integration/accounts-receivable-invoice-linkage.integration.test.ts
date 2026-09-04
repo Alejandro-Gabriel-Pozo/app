@@ -127,11 +127,14 @@ async function seedFacturadoScenario(impTotal: number, opts: { consolidated: boo
   return { company, invoiceId, ar: facturado!, chargeId: charge!.id };
 }
 
+/** Misma fórmula que `getOutstandingForUpdate()` -- resta PAYMENT Y REFUND. */
 async function outstandingOf(invoiceId: string): Promise<number> {
   const { rows } = await db.query<{ outstanding: string }>(
     `SELECT (imp_total
               - COALESCE((SELECT SUM(amount) FROM financial_transactions
-                          WHERE settled_invoice_id = $1 AND status = 'SETTLED'), 0)) AS outstanding
+                          WHERE settled_invoice_id = $1 AND status = 'SETTLED'), 0)
+              - COALESCE((SELECT SUM(amount) FROM financial_transactions
+                          WHERE reversed_invoice_id = $1 AND status = 'SETTLED'), 0)) AS outstanding
      FROM invoices WHERE id = $1`,
     [invoiceId],
   );
@@ -335,5 +338,172 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
     // agregó ninguno.
     expect(Number(rows[0]!.count)).toBe(1);
     expect(Number(rows[0]!.null_settled)).toBe(0);
+  });
+
+  it('H-A -- consolidada con 3 filas AR: recordPayment() aplica parcial, markCollected() sobre las tres reparte el resto sin sobre-aplicar (paquete post-H-A, punto 7.2)', async () => {
+    // Factura consolidada de 3000 = 3 cargos de 1000 (3 AR distintas).
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const company = await seedCustomer(db);
+    await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const arRepo = new SqlAccountsReceivableRepository(db);
+
+    const invoiceId = randomUUID();
+    const cbteNro = cbteNroCounter++;
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status, issued_at)
+       VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
+               5, 'PES', 3000, 0, 3000, '123', '2030-01-01', 'ISSUED', NOW())`,
+      [invoiceId, BUSINESS_ID, company.id, `idem-${invoiceId}`, cbteNro],
+    );
+
+    const ars = [];
+    for (let i = 0; i < 3; i++) {
+      const guest = await seedCustomer(db);
+      const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: 1000 });
+      const stayId = randomUUID();
+      await db.query(
+        `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+        [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+      );
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+        reservationId: reservation.id, type: 'CHARGE', amount: 1000,
+        currency: 'ARS', status: 'SETTLED',
+      });
+      await db.query(
+        `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+         VALUES ($1, $2, $3, $4)`,
+        [randomUUID(), invoiceId, charge!.id, 1000],
+      );
+      const ar = await arRepo.createWithClient(db, {
+        id: randomUUID(), businessId: BUSINESS_ID, stayId, companyCustomerId: company.id,
+        amount: 1000, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
+        transferredBy: 'ident-test', notes: null, financialTransactionId: charge!.id,
+      });
+      ars.push((await arRepo.markInvoiced(ar.id, `0001-${String(cbteNro).padStart(8, '0')}`))!);
+    }
+
+    // recordPayment aplica 500 -- deja 2500 pendientes de los 3000.
+    await makeCustomerAccountService().recordPayment({
+      customerId: company.id, businessId: BUSINESS_ID, amount: 500,
+      allocations: [{ invoiceId, amount: 500 }],
+    });
+    expect(await outstandingOf(invoiceId)).toBe(2500);
+
+    const arService = makeArService();
+    const r1 = await arService.markCollected(ars[0]!.id);
+    const r2 = await arService.markCollected(ars[1]!.id);
+    const r3 = await arService.markCollected(ars[2]!.id);
+
+    expect(r1.status).toBe('COBRADO');
+    expect(r2.status).toBe('COBRADO');
+    expect(r3.status).toBe('COBRADO');
+    // Las dos primeras (1000 c/u) caben enteras en los 2500/1500 restantes --
+    // ninguna colisión. La tercera choca contra los 500 que quedan.
+    expect(r1.collection).toBeUndefined();
+    expect(r2.collection).toBeUndefined();
+    expect(r3.collection).toEqual({ invoiceId, appliedAmount: 500, excessAmount: 500 });
+
+    expect(await outstandingOf(invoiceId)).toBe(0);
+    const { rows } = await db.query<{ total: string }>(
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM financial_transactions
+       WHERE settled_invoice_id = $1 AND status = 'SETTLED'`,
+      [invoiceId],
+    );
+    // 500 (recordPayment) + 1000 + 1000 + 500 = 3000, exacto -- nunca de más.
+    expect(Number(rows[0]!.total)).toBe(3000);
+  });
+
+  it('H-A -- el excedente puede venir de un REFUND, no solo de recordPayment() (paquete post-H-A, punto 7.3)', async () => {
+    const { invoiceId, ar, company } = await seedFacturadoScenario(1000, { consolidated: true });
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+
+    // Nota de crédito de 400 contra la factura -- nadie pasó por
+    // recordPayment(), pero el saldo real baja igual (getOutstandingForUpdate
+    // resta REFUND tanto como PAYMENT).
+    await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      type: 'REFUND', amount: 400, currency: 'ARS', status: 'SETTLED',
+      reversedInvoiceId: invoiceId,
+    });
+    expect(await outstandingOf(invoiceId)).toBe(600);
+
+    const collected = await makeArService().markCollected(ar.id);
+
+    expect(collected.status).toBe('COBRADO');
+    // La causa del excedente acá es el REFUND, no recordPayment() -- el
+    // resultado (applied/excess) es el mismo campo neutro en los dos casos,
+    // que es exactamente lo que permite no tener que afirmar la causa.
+    expect(collected.collection).toEqual({ invoiceId, appliedAmount: 600, excessAmount: 400 });
+    expect(await outstandingOf(invoiceId)).toBe(0);
+  });
+
+  it('AR-FACT-NO-ISSUED-01 (governor, 05/09/2026, HIPÓTESIS CONFIRMADA, NO corregido -- documenta el comportamiento ACTUAL, no un fix) -- financialTransactionId apunta a una factura interna PENDING (no ISSUED): markCollected() cae al fallback legacy y crea un PAYMENT sin vínculo', async () => {
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const guest = await seedCustomer(db);
+    const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: 1000 });
+    const company = await seedCustomer(db);
+    await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+    const stayId = randomUUID();
+    await db.query(
+      `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+       VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+      [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+    );
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const charge = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservation.id, type: 'CHARGE', amount: 1000,
+      currency: 'ARS', status: 'SETTLED',
+    });
+
+    // Factura interna real, pero PENDING -- todavía no la aceptó AFIP.
+    const invoiceId = randomUUID();
+    const cbteNro = cbteNroCounter++;
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING')`,
+      [invoiceId, BUSINESS_ID, charge!.id, company.id, `idem-${invoiceId}`, cbteNro],
+    );
+
+    const arRepo = new SqlAccountsReceivableRepository(db);
+    const ar = await arRepo.createWithClient(db, {
+      id: randomUUID(), businessId: BUSINESS_ID, stayId, companyCustomerId: company.id,
+      amount: 1000, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
+      transferredBy: 'ident-test', notes: null, financialTransactionId: charge!.id,
+    });
+    // Camino manual (POST /:id/mark-invoiced) -- sin guard, a diferencia del
+    // camino automático (invoice.service.ts, envuelve en `if (status === 'ISSUED')`).
+    const facturado = await arRepo.markInvoiced(ar.id, '0001-99999999');
+
+    const collected = await makeArService().markCollected(facturado!.id);
+
+    // Comportamiento actual: cae al fallback, PAYMENT sin settledInvoiceId
+    // por el monto completo. NO es el comportamiento deseado -- es la
+    // evidencia reproducible de AR-FACT-NO-ISSUED-01 (governor, S1): si la
+    // factura después pasa a ISSUED, su outstanding queda en 1000 (el
+    // PAYMENT sin vínculo no cuenta) y recordPayment() puede aplicar de
+    // nuevo -- el mismo doble cobro que O2-F2 cerró, reabierto por acá.
+    expect(collected.status).toBe('COBRADO');
+    const { rows } = await db.query<{ settled_invoice_id: string | null; amount: string }>(
+      `SELECT settled_invoice_id, amount FROM financial_transactions WHERE type = 'PAYMENT' AND customer_id = $1`,
+      [company.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.settled_invoice_id).toBeNull();
+    expect(Number(rows[0]!.amount)).toBe(1000);
   });
 });
