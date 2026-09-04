@@ -26,9 +26,9 @@ import type {
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
-import type { SqlClient } from '../repositories/sql.client.js';
 import { CustomerNotFoundError, InvoiceNotFoundError, ValidationError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
+import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient } from './payment-application.js';
 
 export interface CustomerStatement {
   customerId: string;
@@ -234,19 +234,22 @@ export class CustomerAccountService {
         // aplicar (A8.1/A8.2): si dos pagos concurrentes llegan acá para
         // la misma factura, el segundo espera a que el primero commitee y
         // lee el saldo YA descontado -- nunca los dos aplican contra el
-        // mismo saldo viejo y sobre-aplican los dos.
-        const outstanding = await this.invoiceRepo.getOutstandingForUpdate(client, alloc.invoiceId);
-        const applied = round2(Math.min(alloc.amount, Math.max(outstanding, 0)));
-        const excess = round2(alloc.amount - applied);
-        unassigned = round2(unassigned + excess);
+        // mismo saldo viejo y sobre-aplican los dos. O2-F2 (03/09/2026) --
+        // extraído a payment-application.ts, compartido con
+        // AccountsReceivableService.markCollected() (decisión #7 del
+        // checkpoint), sin cambiar el comportamiento de acá.
+        const { appliedAmount, excessAmount } = await applyCappedPaymentToInvoice(
+          this.invoiceRepo, client, alloc.invoiceId, alloc.amount,
+        );
+        unassigned = round2(unassigned + excessAmount);
 
-        const tx = await this.createPaymentChunkWithClient(client, {
+        const tx = await createIdempotentPaymentWithClient(this.financialRepo, client, {
           id: randomUUID(),
           businessId: params.businessId,
           customerId: params.customerId,
           reservationId: params.reservationId ?? null,
           type: 'PAYMENT',
-          amount: applied,
+          amount: appliedAmount,
           currency,
           status: 'SETTLED',
           idempotencyKey: allocKey,
@@ -268,7 +271,7 @@ export class CustomerAccountService {
       // total recibido y queda trazable como crédito del cliente, nunca
       // se pierde ni se descarta (regla del dueño, O2-F1).
       const unassignedKey = params.idempotencyKey ? `${params.idempotencyKey}:sin-asignar` : null;
-      const unassignedTx = await this.createPaymentChunkWithClient(client, {
+      const unassignedTx = await createIdempotentPaymentWithClient(this.financialRepo, client, {
         id: randomUUID(),
         businessId: params.businessId,
         customerId: params.customerId,
@@ -287,34 +290,5 @@ export class CustomerAccountService {
       if (unassignedTx) created.push(unassignedTx);
     });
     return created;
-  }
-
-  /**
-   * O2-F1 (03/09/2026) -- crea una fila PAYMENT dentro de la transacción de
-   * `recordPayment()`, o devuelve la fila ya existente si el mismo
-   * `idempotencyKey` ya se usó en un intento anterior que sí llegó a
-   * commitear (reintento de red tras un éxito). `amount <= 0` sin fila
-   * previa no crea nada -- una fila en cero no documenta ningún movimiento
-   * real, y sin `idempotencyKey` no hay forma de saber si "ya existe".
-   */
-  private async createPaymentChunkWithClient(
-    client: SqlClient,
-    tx: Omit<FinancialTransaction, 'createdAt'>,
-  ): Promise<FinancialTransaction | null> {
-    if (tx.idempotencyKey) {
-      const existing = await this.financialRepo.getByIdempotencyKey(tx.idempotencyKey);
-      if (existing) return existing;
-    }
-    if (tx.amount <= 0) return null;
-    const createdTx = await this.financialRepo.createWithClient(client, tx);
-    if (createdTx) return createdTx;
-    // ON CONFLICT DO NOTHING -- otro intento concurrente con el mismo
-    // idempotencyKey ganó la carrera entre el chequeo de arriba y este
-    // insert; la fila real es la suya.
-    const existing = tx.idempotencyKey ? await this.financialRepo.getByIdempotencyKey(tx.idempotencyKey) : undefined;
-    if (!existing) {
-      throw new Error('createPaymentChunkWithClient: createWithClient() devolvió null sin idempotencyKey -- no debería pasar');
-    }
-    return existing;
   }
 }
