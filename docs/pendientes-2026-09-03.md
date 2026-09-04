@@ -285,15 +285,239 @@ el resumen — no dupliques el detalle, andá al checkpoint.
 | **Criterio de cierre** | Ver §9 del checkpoint — resolución de `invoiceId` desde AR (individual y consolidada), lock compartido con `recordPayment()`, idempotencia, tests de concurrencia real |
 | **Siguiente acción** | Decisión de negocio pendiente (§5 del checkpoint: filas AR legacy sin `financial_transaction_id`, alcance del cierre) antes de crear la rama de implementación `fix/o2-f2-accounts-receivable-invoice-linkage` |
 
-### Estado formal de O2 (03/09/2026, actualizado)
+### Estado formal de O2 (03/09/2026, actualizado — APROBADO CON CONDICIONES por architecture-governor, condiciones cumplidas, más un fix adicional pedido por el dueño)
 
 | Ítem | Estado |
 |---|---|
-| O2-F1 | **CERRADA** — backend, datos e integración (Postgres real, incl. concurrencia). No mergeada a `main` todavía |
-| O2-F2 Discovery/Due Diligence | **CERRADA** — ver checkpoint dedicado |
-| O2-F2 Implementación | **PENDIENTE** — bloqueada por dos decisiones de negocio (§5 del checkpoint) |
-| Frontend O2 | **NO VERIFICABLE** en esta sesión — repositorio de frontend no disponible |
-| O2 completo | **ABIERTO** |
+| O2-F1 | **CERRADA** — backend, datos e integración (Postgres real, incl. concurrencia). Mergeada a `main` (`e85dc07`, PR #47). Su primitiva de lock compartida recibió DOS fixes de concurrencia esta sesión (§7.1 y O2F2-B) — ver más abajo, ninguno reabre la decisión de negocio |
+| O2-F2 Discovery/Due Diligence | **CERRADA** — checkpoint `docs/continuidad-o2-f2-facturas-consolidadas-2026-09-03.md` |
+| O2-F2 Implementación | **✅ CERRADA (03/09/2026).** H1/O2F2-A y H2 corregidos y aprobados por `architecture-governor` (tercera pasada). **O2F2-B** — la misma forma del defecto en `recordPayment()` (ya en `main`) — `architecture-governor` recomendó registrarlo aparte; **el dueño pidió explícitamente corregirlo en este mismo bloque**, y se hizo (advisory lock, mismo estándar de verificación rojo-verde: 3/6 sin fix, 8/8 con fix). Diseño: `docs/diseno-o2-f2-cierre-completo-2026-09-03.md` |
+| Frontend O2 | **Verificado por lectura de código, NO ejecutado contra el backend cambiado** — `architecture-governor` señaló que "✅ VERIFICADO" sobredeclaraba esto; corregido acá |
+| O2 completo | **Listo para pedir autorización de commit al dueño** — sin commit, sin push todavía |
+
+### O2-F2 — implementación en revisión (03/09/2026)
+
+Decisiones de negocio (§5 del checkpoint, tomadas por el dueño esta sesión):
+**§5.1** filas AR legacy sin `financial_transaction_id` → fallback sin
+cambios, deuda técnica aceptada (tenants actuales son de prueba, no
+producción con plata real). **§5.2** → cierre completo, no subentrega
+parcial: entraron F2.1, F2.2, F2.3, F2.4 y F2.5.
+
+| Sub-ítem | Qué se hizo |
+|---|---|
+| F2.1 (visibilidad, JOIN excluía consolidadas) | `getOutstandingByCustomerId()` corregido — `LEFT JOIN` + `financial_transaction_id IS NULL OR ft.type='CHARGE'`. Efecto colateral bueno: el modal de conciliación de "Registrar pago" (`cuentas-corrientes`) empieza a mostrar consolidadas sin tocar el frontend |
+| F2.2 (sin endpoint de listado) | `GET /api/invoices?customerId=...` nuevo + `InvoiceRepository.getByCustomerId()`. **Sin consumidor en el frontend** (capacidad de API, no pantalla nueva — no se pidió) **y sin test de ruta** (`invoices.routes.test.ts` no ejercita `?customerId=` — señalado por `architecture-governor`, sólo hay cobertura de repositorio) |
+| F2.3 (doble cobro) | `AccountsReceivableService.markCollected()` resuelve `invoiceId` desde `ar.financialTransactionId` (`InvoiceRepository.getInvoiceIdByFinancialTransactionId()`, individual y consolidada — **ahora exige `status='ISSUED'` en las dos ramas, H2**) y capa el `PAYMENT` al saldo vigente con el MISMO lock que `recordPayment()` (primitiva compartida nueva, `payment-application.ts`, decisión #7 del checkpoint) |
+| F2.4 (idempotencia) | Repetir `markCollected()` sobre una fila ya `COBRADO` devuelve la fila tal cual (200), no más 409. Bajo concurrencia real, la garantía la da un lock sobre la fila `accounts_receivable` — ver O2F2-A abajo, dos vueltas de fix |
+| F2.5 (frontend) | `reportes/page.tsx` ("Marcar cobrado") y `cuentas-corrientes/page.tsx` (conciliación) ya consumen los endpoints corregidos con el mismo contrato, verificado leyendo el código — **no se corrió el frontend real contra el backend cambiado** |
+
+**Hallazgo bloqueante O2F2-A — crédito fantasma bajo `markCollected()`
+concurrente. Dos vueltas de fix, la segunda confirmada con experimento
+rojo-verde controlado:**
+
+`markCollected()` deduplicaba el `PAYMENT` principal por `idempotencyKey`,
+pero recalculaba el excedente (`excessAmount = ar.amount - appliedAmount`)
+en cada llamada. Dos llamadas concurrentes que leen `FACTURADO` antes de
+que ninguna commitee no disparan la guarda de `COBRADO` de arriba; la que
+gana el lock de la factura aplica el monto completo (excedente 0), la que
+espera relee `outstanding=0`, capea a 0, y recalculaba el excedente como
+`ar.amount` **completo otra vez** — un segundo `PAYMENT` `SETTLED` sin
+`settled_invoice_id`, un crédito que la empresa nunca pagó.
+
+**Primer intento (H1, `architecture-governor`) — insuficiente:** chequeo de
+`getByIdempotencyKey(idempotencyKey)` antes de calcular el excedente, pero
+todavía ANTES de tomar cualquier lock. Cerraba el caso "reintento
+secuencial después de un commit ya terminado", no el caso "dos llamadas
+genuinamente simultáneas" — el chequeo de la segunda podía correr mientras
+la primera todavía no había commiteado, así que las dos lo pasaban igual.
+`erp-audit-orchestrator`, auditando en paralelo, lo reprodujo 2 de 6
+corridas del propio test nuevo. `architecture-governor`, revisando el
+mismo fix por lectura de código en una segunda pasada, llegó a la misma
+conclusión de forma independiente y pidió un experimento decisivo.
+
+**Experimento rojo-verde, hecho:** reordenar temporalmente al chequeo
+antes del lock (el fix insuficiente) y correr el test 6 veces → **3 de 6
+fallaron** (`expected 2 to be 1`), confirmando que la ventana es real y que
+el test la ejercita de verdad — el "4/4 verde" reportado antes había sido
+timing favorable, no evidencia de corrección. Restaurado el fix real y
+corrido 16 veces en total (dos tandas de 8) → **16/16 verde**.
+
+**Fix real:** `SELECT 1 FROM accounts_receivable WHERE id = $1 FOR UPDATE`
+como PRIMERA operación dentro de la transacción, ANTES del chequeo de
+idempotencia — no el lock de la factura (que sirve para una carrera
+distinta, `markCollected` × `recordPayment`, ya cubierta), sino el de la
+fila `accounts_receivable` misma: es el recurso que realmente compite
+cuando dos `markCollected()` apuntan al mismo `id`. El perdedor espera ahí,
+y cuando obtiene el lock el ganador ya commiteó de punta a punta — el
+chequeo de idempotencia que sigue ya no puede quedar obsoleto.
+
+Test nuevo (`O2F2-A` en `accounts-receivable-invoice-linkage.integration.test.ts`):
+dos `markCollected()` concurrentes sobre la misma fila, aserción sobre
+`COUNT`/`SUM(amount) WHERE customer_id = ...` **sin** filtrar por
+`settled_invoice_id`, más un chequeo explícito de `COUNT(*) FILTER (WHERE
+settled_invoice_id IS NULL) = 0` — para que el crédito fantasma no quede
+invisible de nuevo bajo ninguna forma de la aserción.
+
+`erp-audit-orchestrator` encontró la MISMA forma del defecto en
+`CustomerAccountService.recordPayment()`
+(`customer-account.service.ts:226-231`, el chequeo de `existingAlloc`
+también corría antes de cualquier lock) — código de O2-F1, **ya mergeado a
+`main`** (`e85dc07`). No es un defecto nuevo: estaba enmascarado por el
+propio bug de `getOutstandingForUpdate()` (§7.1) hasta que ese fix lo
+corrigió — antes, el perdedor de la carrera leía una foto vieja y
+calculaba excedente 0 por accidente; con la foto fresca, el mismo camino
+que en `markCollected()` quedó expuesto.
+
+**Veredicto de `architecture-governor` (tercera pasada) — recomendó
+registrarlo aparte, no incluirlo en este bloque**, por tocar una feature
+ya cerrada con un fix de diseño distinto. **El dueño, consultado
+explícitamente, pidió lo contrario: corregirlo en este mismo bloque antes
+de commitear.** Se siguió esa instrucción.
+
+### O2F2-B — `recordPayment()` podía generar un crédito sin asignar que el cliente nunca pagó · ✅ CORREGIDO (03/09/2026)
+
+| Dimensión | |
+|---|---|
+| **Definición** | Dos `recordPayment()` concurrentes con el MISMO `idempotencyKey` (reintento de red de la misma request, en vuelo) pasaban los dos el pre-chequeo de idempotencia por allocation (`existingAlloc`) antes de que ninguno commitee — corría antes de tomar el lock de la factura, igual que tenía O2F2-A antes de su fix real |
+| **Consecuencia** | El perdedor de la carrera por el lock releía el saldo (ya fresco, gracias al fix de `getOutstandingForUpdate`, §7.1), veía la factura ya saldada por el ganador, y acumulaba el monto completo de su propia allocation como "sin asignar" — una fila `PAYMENT` de crédito sin factura asociada que el cliente nunca pagó de más. Antes del fix de §7.1 el mismo interleaving producía sobre-aplicación contra la factura (peor: el libro de la factura quedaba mal); con la foto fresca el libro de la factura queda bien y el error se traslada íntegro a la cuenta corriente del cliente — **no fue una regresión de esta sesión, fue un defecto preexistente cuya forma cambió** |
+| **Severidad** | Era **S2-alto**. Plata duplicada real, aunque menos alcanzable que O2F2-A: requiere el mismo `idempotencyKey` en dos requests genuinamente en vuelo (el frontend, `cuentas-corrientes/page.tsx:177`, genera un UUID nuevo por click — hace falta un reintento de transporte de la misma request, no un doble click) |
+| **Evidencia** | `[V]` Reproducido y cerrado contra Postgres real, mismo estándar que O2F2-A. **Experimento rojo-verde:** con el advisory lock deshabilitado temporalmente, dos `recordPayment()` concurrentes con la misma `idempotencyKey` (`customer-account-payment.integration.test.ts`, test `O2F2-B`) → **3 de 6 corridas fallaron** (resultados asimétricos entre las dos llamadas, un crédito de más). Con el fix restaurado: **8/8 verde**. Suite de integración completa re-corrida después: 14 archivos, **115 tests**, verde |
+| **Dependencia** | Ninguna — cerrado en este mismo bloque, por decisión explícita del dueño (contra la recomendación inicial de `architecture-governor` de separarlo) |
+| **Criterio de cierre** | `SELECT pg_advisory_xact_lock(hashtext($1))` sobre el `idempotencyKey`, como primera operación dentro de la transacción de `recordPayment()`, sólo cuando el caller manda una clave — serializa toda llamada concurrente que comparta esa clave (reintento en vuelo), sin necesidad de una fila única que lockear (a diferencia de O2F2-A, acá no hay una sola fila 1:1 con la clave: la cubre N allocations) |
+| **Siguiente acción** | Ninguna. Cerrado |
+
+**Cuarta pasada de `architecture-governor` sobre el fix de O2F2-B —
+APROBADO CON CONDICIONES, cumplidas:** confirmó que el advisory lock es la
+primitiva correcta (más fuerte que la alternativa del flag
+`creado`/`encontrado`: `recordPayment()` acumula el excedente a lo largo
+de N allocations en una sola fila combinada al final — un flag por INSERT
+no puede hacer consistente ese agregado, sólo el lock hace atómica la
+operación completa respecto de la clave) y que no hay riesgo de deadlock
+entre el advisory lock y los locks de fila existentes (único
+`pg_advisory_xact_lock` en todo `src/`, alcance por base de datos —
+aislado por tenant sin trabajo extra, dado que este repo usa una BD por
+negocio). Encontró dos cosas más, resueltas:
+
+1. **Los dos locks nuevos escribían SQL directo en la capa de servicio**,
+   contra la convención del repo y contra el docblock de
+   `pg.transaction-manager.ts`. Movidos a métodos de repositorio:
+   `AccountsReceivableRepository.lockForUpdate()` (nuevo, en
+   `sql.accounts-receivable.repository.ts`) y
+   `payment-application.ts::acquireIdempotencyLock()` (nuevo, junto a las
+   otras dos primitivas compartidas). Sumado: tests unitarios que aseveran
+   explícitamente que el lock se pide (`accounts-receivable.service.test.ts`
+   vía `arRepo.lockedIds`, `customer-account.service.test.ts` vía
+   `transactionManager.rawQueries`, `sql.accounts-receivable.repository.test.ts`
+   para el SQL exacto) — antes el fake de test se tragaba cualquier SQL en
+   silencio, así que un lock roto mañana no lo iba a notar ningún test
+   unitario.
+2. **Un riesgo de interbloqueo (ABBA) que el governor creyó encontrar en
+   `recordPayment()`** (dos pagos concurrentes del mismo cliente, mismas
+   dos facturas, orden distinto) — **verificado como falso positivo**:
+   `customer-account.service.ts:186-188` ya ordena `consolidatedAllocations`
+   alfabéticamente por `invoiceId` antes de aplicar, con un comentario
+   explícito desde O2-F1 original ("para que dos pagos concurrentes que
+   tocan las mismas facturas las bloqueen siempre en el mismo orden y
+   ninguno espere en deadlock") — mitigación ya existente, sin tocar.
+
+Suite completa re-corrida después de mover el SQL a los repositorios:
+`tsc`/lint/lint:arch limpios, **1797 tests unitarios** (dos más — las
+aserciones nuevas sobre los locks), **115 tests de integración** contra
+Postgres real, todo verde.
+
+**Hallazgo menor H2 (architecture-governor) — corregido:**
+`getInvoiceIdByFinancialTransactionId()` filtraba `status='ISSUED'` en la
+rama individual pero no en la consolidada (`invoice_charges`), pese a que
+el propio docblock de la interfaz dice "factura ISSUED". Alcanzable: las
+filas de `invoice_charges` se insertan al crear la factura (`PENDING`,
+antes de llamar a AFIP) y nada las borra si AFIP rechaza. Corregido con un
+`JOIN` a `invoices` + `AND i.status = 'ISSUED'` en esa rama.
+
+**Hallazgo previo, ya corregido antes de la primera revisión del
+governor (no reabierto por H1/H2):** el primer test de concurrencia real
+(`markCollected()` + `recordPayment()` simultáneos) falló
+determinísticamente (2000 aplicado sobre una factura de 1000) por un
+defecto real de Postgres en `getOutstandingForUpdate()` — la primitiva de
+lock que **O2-F1 ya usaba y daba por cerrada con verificación de
+concurrencia real**. Una sentencia `SELECT (subconsultas correlacionadas)
+... FOR UPDATE OF i` que tiene que ESPERAR el lock, cuando la otra
+transacción sólo insertó en OTRA tabla (nunca hizo `UPDATE` sobre
+`invoices`), no vuelve a tomar una foto fresca para las subconsultas al
+desbloquear — gana el lock pero lee con la foto vieja. El test de
+concurrencia de O2-F1 (factura 1000, dos pagos de 600) nunca lo disparó por
+timing, no porque el mecanismo fuera correcto. **Fix, ya aplicado y
+verificado por `architecture-governor` como "corrección genuina, no
+workaround":** partir la sentencia en dos (lock primero, sin subconsultas;
+lectura después, sentencia nueva). Detalle completo, con timestamps de la
+reproducción: `docs/diseno-o2-f2-cierre-completo-2026-09-03.md` §7.1.
+
+**Evidencia técnica — re-corrida completa después de los fixes de O2F2-A Y
+O2F2-B:** `tsc --noEmit`, `lint`, `lint:arch` limpios. Suite unitaria
+completa: 142 archivos, **1797 tests** (corregido — este archivo decía 1794
+antes de la 5ª pasada de `architecture-governor`; el conteo real, re-verificado
+por el governor corriendo la suite él mismo, coincide con el de la línea 424),
+verde (incluye un fixture de test
+corregido — `FakeTransactionManager` en `customer-account.service.test.ts`
+necesitó un `client.query()` real, no `{}`, porque `recordPayment()` ahora
+llama a `client.query` directo para el advisory lock). Suite de
+integración COMPLETA contra Postgres real (14 archivos, **115 tests** —
+dos más que el estado original, los tests de O2F2-A y O2F2-B —
+`--no-file-parallelism`, Neon): verde. Dos experimentos de control
+independientes, mismo estándar los dos: O2F2-A 16/16 verde con el fix
+real, 3/6 en rojo sin él; O2F2-B 8/8 verde con el fix real, 3/6 en rojo
+sin él.
+
+**Quinta pasada de `architecture-governor` — APROBADO CON CONDICIONES
+(documentales, cero lógica), condiciones cumplidas:** re-corrió todo por su
+cuenta (no confió en este documento ni en el checkpoint) — 1797 unitarios,
+115 de integración contra Postgres real, `tsc`/`lint`/`lint:arch` limpios —
+y confirmó por lectura propia del código, no de la narración, que el ABBA
+sigue siendo falso positivo y que el SQL de los locks quedó movido a
+repositorios. Encontró dos cosas nuevas:
+
+- **H3 (corregido en el mismo bloque de esta pasada):**
+  `accounts-receivable.service.ts:326-327` tenía un comentario que decía
+  "no lockeamos la fila AR en sí" — falso, la línea 271 sí la lockea
+  (residuo previo al fix de O2F2-A). Corregido para reflejar el código real.
+- **H4 (registrado, NO corregido — no bloquea este cierre):** en
+  `markCollected()` (`accounts-receivable.service.ts:273`) y en
+  `payment-application.ts:94`, `financialRepo.getByIdempotencyKey()` corre
+  sobre el pool (`this.db`), no sobre el `client` transaccional, mientras la
+  transacción ya sostiene el lock de la fila AR y/o de la factura. El pool
+  tiene `max: 10` y `connectionTimeoutMillis: 5000`
+  (`src/db/pg.client.ts:94-96`). **Consecuencia concreta:** con 10 o más
+  cobros/pagos simultáneos sobre el mismo tenant, cada transacción abierta
+  sostiene una conexión y pide una segunda — las que exceden el pool
+  esperan 5s y fallan por timeout (degrada a error controlado con
+  rollback, no a corrupción ni a cuelgue). Patrón preexistente de O2-F1, ya
+  en `main`; O2F2-A y O2F2-B alargan la ventana en que se sostienen locks,
+  así que la exposición se ensancha un poco. Sin dueño ni fecha asignada.
+
+**Trampa de verificación registrada por la 5ª pasada:** correr la suite de
+integración SIN `TEST_DATABASE_URL` en el shell no falla — reporta
+`14 skipped`, `115 skipped`, exit 0, en ~4 segundos. Un "verde" de esa
+suite es indistinguible de un no-op si nadie mira la palabra `skipped`. No
+es un defecto de O2-F2; es una trampa de esta suite en general, vale
+tenerla presente al pedir evidencia de integración en cualquier cierre
+futuro.
+
+**Split de commits para el cierre — el que decía "4 commits, ya acordado
+con el governor" en el checkpoint no tenía ancla real** (grepeado por la
+5ª pasada, sin resultado en ningún documento de O2-F2). El split real,
+propuesto por el governor contra el diff vivo, es de **5 commits** — ver
+`docs/continuidad-o2-f2-cierre-implementacion-2026-09-03.md` §9 para el
+detalle de cada uno.
+
+**Artefactos sin rastrear, ajenos a O2-F2, señalados por
+`architecture-governor`:** `.claude/skills/neon/`, `.claude/skills/neon-postgres/`,
+`.reviews/`, `docs/erp-auditoria-v2/`,
+`docs/programa-auditoria-completitud-erp-2026-09-01.md`, `skills-lock.json`
+— ninguno en `.gitignore`. No forman parte de este trabajo; deben quedar
+explícitamente fuera de cualquier `git add`, decisión aparte del dueño.
+
+**Siguiente acción:** presentarle este estado al dueño y pedir autorización
+explícita de commit (local, sin push) — **nada commiteado ni pusheado
+todavía**.
 
 ---
 
