@@ -158,7 +158,30 @@ código — no autorizado en esta sesión.
 
 ---
 
-### F2 — la suite de integración (`src/tests/integration/**`) nunca corre en CI
+### F2 — la suite de integración (`src/tests/integration/**`) nunca corre en CI · ✅ RESUELTO (05/09/2026, commit `3073f36`)
+
+**Cerrado en la cuarta vuelta.** Job `integration` nuevo en `ci.yml`
+(postgres:16-alpine, `npm run test:integration`, `timeout-minutes: 20`);
+sacados del job `test` el contenedor de Postgres y el `TEST_DATABASE_URL`
+muertos; y `skipIfNoDb` pasó a `!TEST_DATABASE_URL && !CI`, así que en CI la
+falta de la variable da ROJO en vez del verde silencioso. `[V]` Suite
+completa contra Postgres real: **148/148, exit 0, 125 s, 0 unhandled
+rejections**. `[V]` Fail-loud medido en las dos direcciones: sin `CI` y sin
+BD → 19 skipped; con `CI=true` y sin BD → 19 archivos rojos, exit 1, 42
+mensajes explícitos, 0 `ECONNREFUSED`.
+
+**Lo que NO está probado todavía, y es la distinción que este mismo ítem
+registra:** la suite nunca corrió contra `postgres:16-alpine`. Los 148/148
+son contra Neon. Diferencias plausibles: collation por default (cruza con el
+residual abierto de `localeCompare` vs `ORDER BY`) y contención de
+conexiones. **F2 está implementado, no probado en el entorno donde va a
+vivir** — hace falta la primera corrida verde del job en Actions. Si flakea,
+mirar antes que nada `hookTimeout` (sin setear, default 10 s, y
+`createTestDatabase()` corre en `beforeAll`) y `max_connections=100` de la
+imagen, no `timeout-minutes`.
+
+El texto original queda abajo, sin tocar, como registro de lo que se
+encontró.
 
 Hallazgo de `architecture-governor` al revisar `FACT-CONSOL-TOCTOU-01`
 (05/09/2026) -- preexistente, no causado por ese commit, pero cambia qué
@@ -170,7 +193,9 @@ este archivo (ORDER-10, RESERVA-10, FACT-CONSOL-TOCTOU-01, y cualquier
 **siempre**, sin importar los argumentos de la CLI (el propio docblock del
 archivo lo dice). Ningún job de `ci.yml` corre `npm run test:integration`
 (el que sí apunta a `vitest.integration.config.ts`). `TEST_DATABASE_URL` y
-el contenedor de Postgres de `ci.yml:44` son configuración muerta para
+el contenedor de Postgres del job `test` en `ci.yml` (ancla original
+`ci.yml:44`, **línea eliminada por el commit `3073f36`** — no buscarla) son
+configuración muerta para
 esa suite.
 
 **Consecuencia concreta:** cada prueba determinística de lock (ORDER-10,
@@ -181,7 +206,8 @@ ausencia de `TEST_DATABASE_URL` sea **verde silencioso**, no rojo -- si
 algún día CI corriera esa suite sin la variable configurada, reportaría
 "todo bien" en vez de "no se corrió nada".
 
-**No arreglado acá** -- toca `.github/workflows/ci.yml`, bloque propio con
+~~**No arreglado acá**~~ (**arreglado el mismo día**, commit `3073f36` — ver
+el encabezado ✅ de este ítem) -- toca `.github/workflows/ci.yml`, bloque propio con
 su propio diseño (¿un job nuevo con Postgres real, con qué costo de
 tiempo de CI? ¿mantener `skipIf` o exigir la variable en CI?). Registrado
 para que no le pase lo que a `requestConsolidatedInvoice()` (H3): un hueco
@@ -553,8 +579,20 @@ a B2 o a la salud general del repo):**
    test) -- su ventana es de 4s fijos. Corrida sola pasa 3/3; en una
    corrida combinada puede fallar por latencia acumulada. Degrada en
    ROJO, nunca aprueba un guard roto en falso -- pero no es "siempre
-   verde en CI". Pendiente: ventana adaptativa o marcarla para correr
-   aislada.
+   verde en CI". ~~Pendiente: ventana adaptativa o marcarla para correr
+   aislada.~~ **✅ RESUELTO (05/09/2026, commit `f95c9c5`) — ventana
+   adaptativa.** El diagnóstico original se quedaba corto: medido con
+   mutation testing, el brazo de CONTROL resuelve en **3978 ms contra una
+   ventana de 4000 ms**. No era "no estable en corrida combinada", era un
+   test apoyado exactamente sobre el borde. Ahora la referencia temporal es
+   el propio control (se espera a que el brazo sin lock termine, techo duro
+   30 s, y recién ahí se pregunta si el bloqueado sigue pendiente, margen
+   1,5 s); el invariante afirmado pasa a ser "el bloqueado sobrevive al de
+   control" y no depende de la latencia absoluta. `[V]` 3/3 y suite completa
+   148/148 contra Postgres real. Residual del residual, declarado: la
+   mutación se hizo sobre el archivo de test, no sobre el guard de
+   `invoice.service.ts:384` — el clasificador de permisos bloqueó editar
+   producción y no se forzó.
 
 ### `voidByReservationId()` — mismo defecto que ORDER-10, lado reservas · ✅ RESUELTO (05/09/2026, commit `179b4ad`) — etiqueta "RESERVA-10"
 
