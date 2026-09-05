@@ -519,16 +519,71 @@ a B2 o a la salud general del repo):**
    verde en CI". Pendiente: ventana adaptativa o marcarla para correr
    aislada.
 
-### `voidByReservationId()` — mismo defecto que ORDER-10, lado reservas (registrado 05/09/2026, NO arreglado en este bloque)
+### `voidByReservationId()` — mismo defecto que ORDER-10, lado reservas · ✅ RESUELTO (05/09/2026, commit `179b4ad`) — etiqueta "RESERVA-10"
 
-`sql.financial-transaction.repository.ts:308-316` anula `CHARGE`/
+**Definición de la etiqueta (única, para que no le pase lo mismo que a
+"RBAC — mecanismos 1 y 2"):** "RESERVA-10" nombra este bloque -- puerta
+fail-closed en `cancelReservation()` + backstop en `voidByReservationId()`
++ guard TOCTOU simétrico en `InvoiceService.requestInvoice()` para
+`tx.reservationId`. El `10` está **prestado** del número de ORDER-10 (es
+el mismo bug, portado al circuito de reservas) -- no abre una serie
+`RESERVA-01..09` propia ni numera nada más.
+
+~~`sql.financial-transaction.repository.ts:308-316` anula `CHARGE`/
 `ADJUSTMENT` de una reserva sin mirar facturas — mismo mecanismo exacto
 que ORDER-10, y encima devuelve `number` en vez de `EfectoDesenlace` (ni
 siquiera tiene el vehículo de rechazo tipado que `voidByOrderId()` ya
 tiene). Si se cierra ORDER-10 solo del lado órdenes, este queda con la
 forma idéntica del bug y un lector futuro va a suponerlo cubierto porque
 "ya se arregló eso". Ítem propio, no se toca hasta que haya diseño
-dedicado.
+dedicado.~~
+
+**Resuelto:** decisión del dueño del producto (AskUserQuestion) -- mismo
+alcance completo que ORDER-10 Bloque 1, sin escape administrativo
+todavía (la Nota de Crédito para reservas no existe, igual que B2 del
+lado órdenes). Verificado read-only contra las dos tenant DB antes de
+implementar: 0 filas afectadas -- riesgo latente, no descuadre ya
+ocurrido. Evidencia: 16 tests unitarios nuevos, 3 archivos de integración
+contra Postgres real (incluido uno nuevo con la prueba determinística de
+bloqueo de lock, mismo patrón que ORDER-10), mutation testing manual
+sobre el guard TOCTOU y sobre el `NOT EXISTS` del backstop -- las dos
+verificadas fallando con el guard desactivado y volviendo a pasar
+restaurado.
+
+**Ítems nuevos, encontrados al implementar/revisar RESERVA-10 (ninguno
+bloqueante, `architecture-governor`, 05/09/2026):**
+
+1. **`reservation-hold-expiry.worker.ts` -- el `voidByReservationId()`
+   del worker de holds vencidos quedó como no-op estructural.** Una
+   reserva que vence llega a `EXPIRED` (`Reservation.ts`), nunca
+   `CANCELLED` -- el `EXISTS` nuevo del CTE exige `CANCELLED`, así que
+   esa llamada ahora resuelve siempre `RECHAZADO`
+   (`RESERVA_ESTADO_NO_ELEGIBLE`). Sin impacto de datos hoy (ningún
+   `CHARGE` existe todavía para una reserva que nunca se confirmó), pero
+   el comentario original del archivo afirmaba una garantía ("cubre el
+   `CHARGE` si el modelo cambia más adelante") que dejó de sostenerse --
+   corregido en el mismo commit (docblock + log del desenlace en vez de
+   descartarlo en silencio). Ampliar el CTE a `('CANCELLED','EXPIRED')`
+   es una decisión de negocio nueva (¿el cargo de un hold vencido se
+   anula igual que uno cancelado?), no tomada -- fuera de alcance.
+2. **`reserva_no_elegible` usa test negativo, `voidByOrderId()` usa
+   whitelist positiva.** Declarado con un comentario en la sentencia SQL
+   -- `reservations` no tiene un conjunto cerrado de "estados no
+   elegibles" que valga enumerar (solo `CANCELLED` es elegible). Un
+   estado desconocido futuro cuenta en dos columnas del lado reserva
+   (`reserva_no_elegible` y `estado_desconocido`) contra una sola del
+   lado orden. Más ruidoso a propósito, no menos correcto.
+3. **`requestConsolidatedInvoice()` no tiene NINGÚN guard TOCTOU** -- ni
+   de orden cancelada ni de reserva cancelada. El hueco es unidireccional
+   (la puerta de cancelación SÍ cubre facturas consolidadas, porque
+   `resolveInvoiceLinkage()` unifica `invoice_charges`), pero existe: se
+   puede consolidar-facturar el cargo de una orden o reserva que se
+   acaba de cancelar, en una ventana que ningún lock cubre hoy.
+   **Este hueco existe desde ORDER-10 (05/09/2026) y nunca se había
+   registrado en ningún `pendientes-*.md` hasta ahora** -- exactamente
+   el patrón "hallazgo fuera de toda categoría que alguien relee" que
+   este mismo archivo advierte más arriba. Bloque propio, cubre órdenes
+   y reservas juntas, con su propio diseño -- no se toca acá.
 
 ### Discrepancia de estado git encontrada (no resuelta, fuera de alcance del auditor)
 
@@ -662,6 +717,11 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
 - **ORDER-17** (`addItem`/`removeItem` sin lock de estado) — ✅ RESUELTO,
   commit `caf24e1` (05/09/2026, sin pushear todavía). 4 residuales
   registrados, ninguno bloqueante — ver corrección arriba.
+- **RESERVA-10** (`voidByReservationId()`, mismo defecto que ORDER-10 lado
+  reservas) — ✅ RESUELTO, commit `179b4ad` (05/09/2026, sin pushear
+  todavía). 3 hallazgos nuevos registrados (H1 hold-expiry worker, H2
+  divergencia de test negativo, H3 `requestConsolidatedInvoice()` sin
+  guard TOCTOU en NINGÚN lado, órdenes incluido) — ver ítem propio arriba.
 - **INV-ORF-01** — reservas de stock huérfanas: la causa de doble-reserva
   (ORDER-05) está cerrada, pero las filas históricas y la otra causa
   (compensación de dead-letter, `inventory.handlers.ts:70-80`) siguen
