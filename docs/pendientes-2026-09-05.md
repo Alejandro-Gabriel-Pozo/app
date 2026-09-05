@@ -539,34 +539,104 @@ entonces, con push intermedio). Mismo linaje que el arrastre stale que
 veníamos corrigiendo: un documento afirmando un estado que nadie
 revalidó. Se resuelve con un `git fetch` + comparación, no hecho todavía.
 
-### Hallazgo NUEVO, no registrado antes — `addItem`/`removeItem` validan el estado de la orden FUERA del lock (mismo linaje que ORDER-04)
+### ORDER-17 — `addItem`/`removeItem` validan el estado de la orden FUERA del lock (mismo linaje que ORDER-04) · ✅ RESUELTO (05/09/2026, commit `caf24e1`)
 
-Encontrado por `erp-audit-orchestrator` en la segunda vuelta. **No se
-arregla en este bloque** — se registra, el fix es un cambio de dominio que
-necesita su propia revisión.
+Encontrado por `erp-audit-orchestrator` en la segunda vuelta, verificado y
+corregido en tercera ronda con `architecture-governor` (dos vueltas de
+revisión). **Corrección al mecanismo descripto originalmente acá abajo**
+(dejado tachado, no borrado, por la regla de este repo de no reescribir
+historial): la descripción original decía que `sql.order.repository.ts`
+"SÍ toma `FOR UPDATE` sobre la fila de `orders` dentro de su propia
+transacción (`addItem()`, líneas 411-418)". **Eso era falso.** Esa rama
+chequeaba `(this.db as unknown as {_pool?})._pool` para decidir si abría
+ese `BEGIN`/`FOR UPDATE`/`COMMIT` a mano — pero ningún `SqlClient` real
+(el que arma `tenant.middleware.ts` para `req.db`) expone `_pool`, así que
+esa rama NUNCA corrió en producción. El camino real caía siempre a
+`addItemWithClient()`, que insertaba el ítem pero **nunca actualizaba
+`orders.total_amount`** — no era una carrera de concurrencia, pasaba
+SIEMPRE que se agregaba un ítem después de crear la orden (vía
+`POST /:id/items`, activo en el frontend desde el fix de ORDER-11).
 
-**Consecuencia:** agregar o quitar un ítem mientras se confirma la misma
+~~**Consecuencia:** agregar o quitar un ítem mientras se confirma la misma
 orden puede dejar el importe cobrado (`CHARGE`) distinto del importe final
 de la orden (`total_amount`), y stock sin reservar para un ítem que sí
 quedó en `order_items` — de forma permanente, porque
-`uq_ft_un_charge_por_orden` (correctamente) impide recrear el cargo.
+`uq_ft_un_charge_por_orden` (correctamente) impide recrear el cargo.~~
+**Consecuencia real (verificada al implementar):** todo ítem agregado
+después de crear la orden se servía y descontaba stock, pero
+`orders.total_amount` nunca se movía de su valor original — el `CHARGE`
+que emite `order.confirmed` se quedaba corto (o en cero, si la orden se
+creó vacía), sin necesitar ninguna concurrencia. Aparte, `removeItem()`
+(`sql.order.repository.ts`, antes de este fix) hacía
+`DELETE FROM order_items WHERE id = $1` **sin `AND order_id`**, pese a
+recibir `orderId` como parámetro — con el `itemId` de otra orden borraba
+la línea ajena.
 
-**Mecanismo:** `addItem()` (`order.service.ts:535-542`) y `removeItem()`
-(`order.service.ts:544-549`) leen el estado de la orden con un `getById()`
-NO transaccional y validan `status !== 'DRAFT'` ANTES de abrir cualquier
-transacción. `sql.order.repository.ts` sí toma `FOR UPDATE` sobre la fila
-de `orders` dentro de su propia transacción (`addItem()`, líneas 411-418),
-pero nunca RE-LEE `status` bajo ese lock — y `removeItem()`
-(`sql.order.repository.ts:508-524`) ni siquiera tiene lock, corre en
-autocommit. Con un `POST /:id/items` y un `POST /:id/confirm` concurrentes:
-T1 lee `DRAFT` y pasa la guarda; T2 toma el lock, reserva stock, emite
-`order.confirmed` con el `totalAmount` viejo y commitea; T1 recién ahí
-obtiene el lock, inserta el ítem y recalcula `total_amount` — la orden
-queda `CONFIRMED` con un total que el `CHARGE` ya emitido no cubre.
+**Verificación contra las dos tenant DB reales (ambas de datos ficticios
+de prueba), 05/09/2026, antes de implementar el fix:** 0 filas con
+`total_amount` desincronizado de `SUM(order_items.subtotal)` en
+`Hotel los Alamos` y en `Demo` — el bug no había producido daño real
+todavía en ninguna de las dos, era riesgo latente verificado en código,
+no un descuadre ya ocurrido.
 
-**Anclas:** `order.service.ts:535-549` (guard fuera de transacción) +
-`sql.order.repository.ts:411-418` (`addItem`, lock sin re-lectura) +
-`sql.order.repository.ts:508-524` (`removeItem`, sin lock alguno).
+**Fix:** mismo criterio ya aplicado por ORDER-04/05/08/14 y ORDER-10 —
+`addItem()`/`removeItem()` (autocommit) ELIMINADOS de `IOrderRepository`
+en vez de quedar como código muerto. `OrderService.addItem()`/
+`removeItem()` corren ahora dentro de `transactionManager.run()`, con
+`getByIdForUpdate()` (el lock que ya existe, agregado para ORDER-10) como
+primera operación — cierra la ventana entre chequear `status === 'DRAFT'`
+y escribir. `removeItemWithClient()` (nuevo, reemplaza a `removeItem()`)
+lleva `AND order_id = $2` en el `DELETE`. El total se recalcula con
+`UPDATE orders SET total_amount = COALESCE((SELECT SUM(subtotal)...),0)`
+dentro de la misma transacción, no sumando en JS (`getByIdForUpdate()`
+devuelve una foto en SQL pero la MISMA referencia ya mutada en memoria en
+el fake de tests — el `SUM` contra la fuente de verdad es lo único
+correcto contra las dos implementaciones).
+
+Evidencia: `tsc`/`lint`/`lint:arch` limpios; 1835 tests unitarios; suite
+de integración completa (17 archivos, 140 tests) contra Postgres real sin
+regresiones, incluidos 3 tests nuevos en `order-flow.integration.test.ts`
+que ejercitan el SQL real (el fake en memoria nunca tuvo ninguno de los
+dos bugs, así que solo un test contra Postgres real podía detectarlos).
+Mutation testing manual sobre el `DELETE` de `removeItemWithClient()`
+(sacarle el scoping por `order_id`): el test de integración
+correspondiente falla como se espera; restaurado, vuelve a pasar.
+
+**Anclas (estado ANTERIOR al fix, para quien busque el commit que lo
+introdujo):** `order.service.ts:535-549` (guard fuera de transacción) +
+`sql.order.repository.ts:411-418` (`addItem`, lock muerto) +
+`sql.order.repository.ts:508-524` (`removeItem`, sin lock ni scoping).
+
+**Residuales abiertos, encontrados al implementar/revisar (ninguno
+bloqueante para este fix):**
+
+1. **`addItem()` sostiene el `FOR UPDATE` sobre `orders` mientras
+   `resolveOrderItemInput()` consulta producto/tarifa por una SEGUNDA
+   conexión del mismo pool de tenant** (`getTenantRawPool(businessId)`,
+   `max: 5` — `tenant.middleware.ts`). Con 5 `addItem()` concurrentes del
+   mismo tenant, las 5 conexiones quedan tomadas esperando una sexta.
+   Acotado por `connectionTimeoutMillis: 5000` (degrada a error, no a
+   cuelgue permanente) y es patrón preexistente (`createOrder()` hace lo
+   mismo). Ancla: `order.service.ts` (método `addItem()`) +
+   `tenant.middleware.ts:105`.
+2. **Decisión de producto sin tomar:** `removeItem()` con un `itemId` que
+   no pertenece a la orden del path ahora devuelve 204 "silencioso" (antes
+   borraba la fila equivocada; ahora no borra nada, pero tampoco avisa).
+   Si conviene 404 en vez de 204 para ese caso es una decisión de
+   producto, no técnica.
+3. **ORDER-17-b (mejora estructural, no bug):** `recalculateTotalWithClient()`
+   vive hoy como SQL crudo dentro de `OrderService` (el único
+   `*.service.ts` del repo con `client.query` directo). Movería mejor a
+   `IOrderRepositoryWithClient` (SQL = `UPDATE...SUM`, in-memory =
+   `reduce`), lo que además haría que los tests unitarios SÍ puedan
+   detectar una regresión si alguien borra la llamada (hoy no pueden, ver
+   docblock del describe en `order.service.test.ts`), y permitiría reusar
+   el helper en `createOrder()` (`order.service.ts`), que hoy repite el
+   mismo `UPDATE` a mano.
+4. **`SqlOrderRepository.create()` (legacy, documentado como tal en su
+   propio docblock)** sigue sumando el total en JS y solo lo escribe
+   `if (total > 0)` — misma familia de defecto, fuera de alcance de este
+   bloque.
 
 ---
 
@@ -589,8 +659,9 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
   (05/09/2026, sin pushear). ABIERTO igual: B2 (escape administrativo con
   Nota de Crédito), B3 (visibilidad de NC) y B4 (cierre de período
   contable) siguen sin implementar — ver corrección arriba.
-- **`addItem`/`removeItem` sin lock de estado** (hallazgo nuevo, ver arriba)
-  — mismo linaje que ORDER-04, sin fix en este bloque.
+- **ORDER-17** (`addItem`/`removeItem` sin lock de estado) — ✅ RESUELTO,
+  commit `caf24e1` (05/09/2026, sin pushear todavía). 4 residuales
+  registrados, ninguno bloqueante — ver corrección arriba.
 - **INV-ORF-01** — reservas de stock huérfanas: la causa de doble-reserva
   (ORDER-05) está cerrada, pero las filas históricas y la otra causa
   (compensación de dead-letter, `inventory.handlers.ts:70-80`) siguen
