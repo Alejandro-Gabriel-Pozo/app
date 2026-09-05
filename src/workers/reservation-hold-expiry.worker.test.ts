@@ -29,13 +29,15 @@ class InMemoryTransactionManager implements TransactionManager {
 class FakePaymentLedger {
   private paid = new Map<string, number>();
   public voidedIds: string[] = [];
+  public voidLlamadas: [string, string][] = [];
   setPaid(reservationId: string, amount: number): void { this.paid.set(reservationId, amount); }
   async getSettledPaymentTotalForReservation(reservationId: string): Promise<number> {
     return this.paid.get(reservationId) ?? 0;
   }
-  async voidByReservationId(reservationId: string): Promise<number> {
+  async voidByReservationId(reservationId: string, businessId: string) {
     this.voidedIds.push(reservationId);
-    return 1;
+    this.voidLlamadas.push([reservationId, businessId]);
+    return { tipo: 'APLICADO' as const, filas: 1, rechazos: [] };
   }
 }
 

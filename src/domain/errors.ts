@@ -607,6 +607,41 @@ export class OrderCancelledCannotInvoiceError extends DomainError {
 }
 
 /**
+ * RESERVA-10 (05/09/2026, architecture-governor) -- mismo defecto que
+ * `OrderChargeInvoicedError` tenía antes de ORDER-10, ahora del lado
+ * reservas: `voidByReservationId()` anulaba un `CHARGE` sin mirar si ya
+ * tenía una Factura B con CAE real vinculada. Doctrina del dueño del
+ * producto: mismo alcance completo que ORDER-10 Bloque 1 (puerta
+ * fail-closed + backstop), aplicado acá porque ninguno de los ERPs de
+ * referencia (ERPNext, Odoo 19) distingue "reserva" de un documento de
+ * venta genérico en este guard -- vive en la capa de factura, agnóstica
+ * del documento de origen.
+ */
+export class ReservationChargeInvoicedError extends DomainError {
+  constructor(reservationId: string, invoiceId: string, invoiceStatus: string) {
+    super(
+      `La reserva "${reservationId}" tiene un cargo vinculado a la factura "${invoiceId}" (estado: ${invoiceStatus}) -- no se puede cancelar directamente. Hace falta emitir una Nota de Crédito antes.`,
+      'RESERVATION_CHARGE_INVOICED',
+    );
+  }
+}
+
+/**
+ * RESERVA-10 -- mismo criterio que `OrderCancelledCannotInvoiceError`, del
+ * lado reservas: cierra la ventana TOCTOU entre `cancelReservation()` y
+ * `requestInvoice()` (las dos toman lock sobre la MISMA fila de
+ * `reservations` antes de decidir).
+ */
+export class ReservationCancelledCannotInvoiceError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" fue cancelada -- no se puede facturar un cargo de una reserva cancelada.`,
+      'RESERVATION_CANCELLED_CANNOT_INVOICE',
+    );
+  }
+}
+
+/**
  * D3 (pendientes-2026-08-19.md) -- una vez que el negocio ya cargó su CUIT
  * (perfil fiscal "confirmado", ver business-profile.service.ts), cambiar
  * razón social/CUIT/domicilio fiscal deja de estar disponible para

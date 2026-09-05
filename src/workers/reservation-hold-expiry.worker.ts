@@ -11,10 +11,27 @@
  *
  * Cada reserva vencida se procesa en su PROPIA transacción — si una falla
  * (ej. conflicto de lock), no bloquea a las demás del mismo ciclo.
- * `voidByReservationId` (sql.financial-transaction.repository.ts) ya
- * acepta voidear filas `SETTLED` además de `PENDING` — cubre la
+ * `voidByReservationId` (sql.financial-transaction.repository.ts) acepta
+ * voidear filas `SETTLED` además de `PENDING` — cubre la
  * `CHARGE(depósito)` `SETTLED` sin cambios en ese método (ver diseño,
  * sección 6).
+ *
+ * **RESERVA-10 (05/09/2026, architecture-governor) — declarado, no
+ * arreglado acá.** Desde RESERVA-10, `voidByReservationId()` exige
+ * `EXISTS` una reserva con `status = 'CANCELLED'`. Esta reserva llega a
+ * `expire()` → `EXPIRED` (`Reservation.ts`), nunca `CANCELLED` — así que
+ * la llamada de más abajo, para TODA reserva que vence, ahora resuelve
+ * siempre `RECHAZADO` (`RESERVA_ESTADO_NO_ELEGIBLE`), nunca anula nada.
+ * Sin impacto de datos hoy (ningún `CHARGE` existe todavía para una
+ * reserva que nunca se confirmó — ver el comentario inline antes de la
+ * llamada), pero es una garantía que dejó de sostenerse donde el
+ * comentario original decía que se sostenía ("por si el modelo de
+ * creación del CHARGE cambia más adelante"). Extender el `CTE` a
+ * `('CANCELLED','EXPIRED')` es una decisión de negocio nueva (¿el cargo
+ * de un hold vencido se anula igual que uno cancelado?) que el dueño del
+ * producto no tomó -- RESERVA-10 solo cubrió el alcance de ORDER-10
+ * (CANCELLED). El desenlace se loguea (ver `expireOne()`) para que esto
+ * no vuelva a pasar en silencio si el modelo cambia.
  */
 
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
@@ -124,10 +141,16 @@ export class ReservationHoldExpiryWorker {
     // handleReservationCancelled, outbox.handlers.ts, que tampoco lo corre
     // dentro de la transacción que graba el evento). Sin efecto práctico
     // hoy (el CHARGE de depósito recién se crea en confirmReservation(),
-    // que nunca llegó a correr para una reserva que expira) -- se deja
-    // igual por si el modelo de creación del CHARGE cambia más adelante,
-    // mismo criterio defensivo que voidByReservationId ya tiene al aceptar
-    // PENDING o SETTLED sin asumir cuál de los dos va a encontrar.
-    await this.financialRepository.voidByReservationId(reservationId);
+    // que nunca llegó a correr para una reserva que expira) -- pero desde
+    // RESERVA-10 (05/09/2026) esta llamada devuelve SIEMPRE RECHAZADO
+    // (`RESERVA_ESTADO_NO_ELEGIBLE`) para una reserva EXPIRED, ver el
+    // docblock del archivo. Se loguea el desenlace en vez de descartarlo
+    // en silencio -- si el modelo de creación del CHARGE cambia más
+    // adelante y esto empieza a importar de verdad, tiene que verse acá,
+    // no descubrirse por un dato desincronizado en producción.
+    const desenlace = await this.financialRepository.voidByReservationId(reservationId, this.businessId);
+    if (desenlace.tipo === 'RECHAZADO' || (desenlace.tipo === 'APLICADO' && desenlace.rechazos.length > 0)) {
+      logger.debug({ reservationId, desenlace }, '[ReservationHoldExpiryWorker] voidByReservationId no anuló nada (esperado hoy: reserva EXPIRED, no CANCELLED)');
+    }
   }
 }

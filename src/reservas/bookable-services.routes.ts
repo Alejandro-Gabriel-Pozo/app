@@ -55,6 +55,7 @@ import { SqlAuditLogRepository }        from '../repositories/audit-log.reposito
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { SqlDepositPolicyRepository } from './sql.deposit-policy.repository.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository } from '../facturacion/sql.invoice.repository.js';
 import { SqlNumberSequenceRepository } from '../repositories/sql.number-sequence.repository.js';
 import { ReservationService }           from './reservation.service.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
@@ -104,6 +105,7 @@ function buildReservationService(req: Request): ReservationService {
     new SqlDepositPolicyRepository(db),
     new SqlBusinessProfileRepository(db),
     new SqlFinancialTransactionRepository(db),
+    new SqlInvoiceRepository(db),
     new SqlNumberSequenceRepository(db),
   );
 }

@@ -720,15 +720,64 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
   // C1-Fase A) quedaba VOIDED junto con el CHARGE al cancelar. Un pago es
   // un hecho histórico de dinero que ya cambió de manos -- nunca se anula
   // en silencio, solo se revierte con un REFUND explícito.
-  describe('voidByReservationId', () => {
-    it('solo anula CHARGE/ADJUSTMENT, nunca PAYMENT/REFUND', async () => {
-      await repo.voidByReservationId('res-1');
+  //
+  // RESERVA-10 (05/09/2026) -- reescrito con el mismo criterio que
+  // voidByOrderId() post-ORDER-10: EfectoDesenlace, no un número mudo;
+  // exige EXISTS una reserva CANCELLED (antes no chequeaba el estado de
+  // la reserva en absoluto); NOT EXISTS un comprobante vivo.
+  describe('voidByReservationId — RESERVA-10', () => {
+    function diagReserva(over: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        aplicadas: 0, candidatos: 0,
+        reserva_inexistente: 0, reserva_no_elegible: 0, estado_desconocido: 0,
+        anulados: 0, tipo_no_liquidable: 0, con_comprobante_vivo: 0,
+        ...over,
+      };
+    }
 
-      const mockQuery = vi.mocked(mockSqlClient.query);
-      const [sql, params] = mockQuery.mock.calls[0]!;
+    it('solo anula CHARGE/ADJUSTMENT, nunca PAYMENT/REFUND, y exige la reserva CANCELLED', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [diagReserva({ aplicadas: 1, candidatos: 1 })],
+      });
+
+      const d = await repo.voidByReservationId('res-1', 'biz-1');
+
+      const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
       expect(sql).toContain("SET status = 'VOIDED'");
-      expect(sql).toContain("type IN ('CHARGE', 'ADJUSTMENT')");
-      expect(params).toEqual(['res-1']);
+      expect(sql).toContain("ft.type   IN ('CHARGE','ADJUSTMENT')");
+      // RESERVA-10: antes no chequeaba el estado de la reserva en absoluto.
+      expect(sql).toContain("r.status = 'CANCELLED'");
+      expect(params).toEqual(['res-1', 'biz-1']);
+      expect(d).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: [] });
+    });
+
+    it('RESERVA-10: excluye del UPDATE los cargos con comprobante vivo, contra invoices/invoice_charges', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [diagReserva({ candidatos: 1, con_comprobante_vivo: 1 })],
+      });
+
+      const d = await repo.voidByReservationId('res-1', 'biz-1');
+
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toContain('AND NOT EXISTS (');
+      expect(sql).toContain('FROM invoices');
+      expect(sql).toContain('FROM invoice_charges ic');
+      expect(sql).toContain("linked.status = 'ISSUED'");
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] });
+    });
+
+    it('reserva inexistente: candidatos=0 es NADA_QUE_HACER', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({ rows: [diagReserva()] });
+      const d = await repo.voidByReservationId('res-inexistente', 'biz-1');
+      expect(d).toEqual({ tipo: 'NADA_QUE_HACER' });
+    });
+
+    it('reserva NO CANCELLED: rechaza con RESERVA_ESTADO_NO_ELEGIBLE', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [diagReserva({ candidatos: 1, reserva_no_elegible: 1 })],
+      });
+      const d = await repo.voidByReservationId('res-1', 'biz-1');
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['RESERVA_ESTADO_NO_ELEGIBLE'] });
     });
   });
 

@@ -288,6 +288,23 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
+  /** Arma la lista de rechazos de `voidByReservationId()` a partir de sus propios contadores.
+   *  Helper SEPARADO de `rechazosDe()` (usado por voidByOrderId()/settleChargesByOrderId()) a
+   *  propósito -- `reservations` no tiene `business_id` propio, así que su fila de diagnóstico no
+   *  tiene columnas equivalentes a `orden_ajena`, y forzar ese acople metería columnas dummy
+   *  irrelevantes en las funciones de orden. */
+  private static rechazosDeReserva(f: Record<string, unknown>): EfectoRechazo[] {
+    const r: EfectoRechazo[] = [];
+    const n = (c: string) => SqlFinancialTransactionRepository.entero(f, c);
+    if (n('reserva_inexistente')   > 0) r.push('RESERVA_INEXISTENTE');
+    if (n('reserva_no_elegible')   > 0) r.push('RESERVA_ESTADO_NO_ELEGIBLE');
+    if (n('estado_desconocido')    > 0) r.push('ESTADO_DESCONOCIDO');
+    if (n('anulados')              > 0) r.push('CARGO_ANULADO');
+    if (n('tipo_no_liquidable')    > 0) r.push('TIPO_NO_LIQUIDABLE');
+    if (n('con_comprobante_vivo')  > 0) r.push('CARGO_CON_COMPROBANTE_VIVO');
+    return r;
+  }
+
   /**
    * Bug real en producción, 23/08/2026 (mismo hallazgo que el fix de
    * signo en getNetBalanceByCustomerId/getNetBalanceByStayId, ver ahí) —
@@ -304,17 +321,111 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
    * PAYMENT SÍ quedaba VOIDED acá -- se deja esa cláusula igual, ahora es
    * defensiva/no debería activarse nunca desde este método, pero no hay
    * necesidad de tocarla para este fix.
+   *
+   * **RESERVA-10 (05/09/2026, architecture-governor) -- excepción
+   * cross-dominio SANCIONADA, misma que `voidByOrderId()`.** Esta función
+   * es de `clientes-finanzas` y consulta acá, en SQL crudo, las tablas
+   * `invoices`/`invoice_charges` (`facturación`) -- `lint:arch`
+   * (dependency-cruiser) sólo inspecciona imports de TypeScript, no joins
+   * SQL, así que este acoplamiento es invisible para esa cerca. Motivo:
+   * anular en silencio un `CHARGE` que ya tiene una Factura B con CAE
+   * real de AFIP (o una todavía `PENDING`/`FAILED_UNCERTAIN` con AFIP ya
+   * contactado) deja un comprobante fiscal real sin contrapartida -- el
+   * guard de la puerta de entrada (`ReservationService.cancelReservation()`,
+   * `ReservationChargeInvoicedError`) cubre el camino normal, esta
+   * función es el cierre estructural para cualquier otro caller
+   * (`reservation-hold-expiry.worker.ts`, por ejemplo). Además, ahora
+   * exige `EXISTS` una reserva `CANCELLED` -- antes no chequeaba el
+   * estado de la reserva EN ABSOLUTO.
    */
-  async voidByReservationId(reservationId: string): Promise<number> {
-    const result = await this.sqlClient.query(
-      `UPDATE financial_transactions
-       SET status = 'VOIDED'
-       WHERE reservation_id = $1
-         AND status IN ('PENDING', 'SETTLED')
-         AND type IN ('CHARGE', 'ADJUSTMENT')`,
-      [reservationId],
+  async voidByReservationId(reservationId: string, businessId: string): Promise<EfectoDesenlace> {
+    const { rows } = await this.sqlClient.query<Record<string, unknown>>(
+      `WITH candidatos AS (
+         SELECT ft.id, ft.status AS ft_status, ft.type AS ft_type,
+                (r.id IS NOT NULL) AS reserva_existe,
+                r.status           AS r_status,
+                EXISTS (
+                  SELECT 1 FROM (
+                    SELECT status, afip_contacted FROM invoices
+                     WHERE financial_transaction_id = ft.id
+                    UNION ALL
+                    SELECT i.status, i.afip_contacted FROM invoice_charges ic
+                      JOIN invoices i ON i.id = ic.invoice_id
+                     WHERE ic.financial_transaction_id = ft.id
+                  ) linked
+                  WHERE linked.status = 'ISSUED'
+                     OR linked.status = 'PENDING'
+                     OR (linked.status = 'FAILED_UNCERTAIN' AND linked.afip_contacted)
+                ) AS con_comprobante_vivo
+           FROM financial_transactions ft
+           LEFT JOIN reservations r ON r.id = ft.reservation_id
+          WHERE ft.reservation_id = $1 AND ft.business_id = $2
+       ),
+       anuladas AS (
+         UPDATE financial_transactions ft
+            SET status = 'VOIDED'
+          WHERE ft.reservation_id = $1
+            AND ft.business_id    = $2
+            AND ft.type   IN ('CHARGE','ADJUSTMENT')
+            AND ft.status IN ('PENDING','SETTLED')
+            AND EXISTS (SELECT 1 FROM reservations r
+                         WHERE r.id = ft.reservation_id
+                           AND r.status = 'CANCELLED')
+            AND NOT EXISTS (
+                  SELECT 1 FROM (
+                    SELECT status, afip_contacted FROM invoices
+                     WHERE financial_transaction_id = ft.id
+                    UNION ALL
+                    SELECT i.status, i.afip_contacted FROM invoice_charges ic
+                      JOIN invoices i ON i.id = ic.invoice_id
+                     WHERE ic.financial_transaction_id = ft.id
+                  ) linked
+                  WHERE linked.status = 'ISSUED'
+                     OR linked.status = 'PENDING'
+                     OR (linked.status = 'FAILED_UNCERTAIN' AND linked.afip_contacted)
+                )
+         RETURNING ft.id
+       )
+       SELECT
+         (SELECT count(*) FROM anuladas)::int                                    AS aplicadas,
+         (SELECT count(*) FROM candidatos)::int                                  AS candidatos,
+         (SELECT count(*) FROM candidatos WHERE NOT reserva_existe)::int         AS reserva_inexistente,
+         -- RESERVA-10 (05/09/2026, architecture-governor): test NEGATIVO
+         -- (IS DISTINCT FROM 'CANCELLED'), a diferencia de la whitelist
+         -- POSITIVA que usa voidByOrderId() (o_status IN (...)) para
+         -- su orden_no_elegible. A propósito, no descuido: reservations
+         -- no tiene un conjunto cerrado de "estados no elegibles para
+         -- anular" que valga la pena enumerar (CANCELLED es el único
+         -- elegible, todo lo demás -- PENDING/CONFIRMED/COMPLETED/EXPIRED,
+         -- e incluso un futuro estado desconocido -- cae acá). Consecuencia
+         -- declarada: un estado desconocido futuro cuenta EN LAS DOS
+         -- columnas (acá y en estado_desconocido más abajo), a diferencia
+         -- del lado orden donde cuenta solo en estado_desconocido. Más
+         -- ruidoso, no menos correcto -- estado_desconocido ya escala a
+         -- grave en registrarDesenlace().
+         (SELECT count(*) FROM candidatos WHERE reserva_existe
+              AND r_status IS DISTINCT FROM 'CANCELLED')::int                    AS reserva_no_elegible,
+         (SELECT count(*) FROM candidatos WHERE
+              (reserva_existe AND r_status NOT IN
+                 ('PENDING','CONFIRMED','CANCELLED','COMPLETED','EXPIRED'))
+           OR  ft_status NOT IN ('PENDING','SETTLED','FAILED','VOIDED'))::int     AS estado_desconocido,
+         (SELECT count(*) FROM candidatos
+              WHERE ft_status IN ('VOIDED','FAILED'))::int                       AS anulados,
+         (SELECT count(*) FROM candidatos
+              WHERE ft_type NOT IN ('CHARGE','ADJUSTMENT'))::int                 AS tipo_no_liquidable,
+         (SELECT count(*) FROM candidatos
+              WHERE con_comprobante_vivo)::int                                   AS con_comprobante_vivo`,
+      [reservationId, businessId],
     );
-    return result.rowCount ?? 0;
+
+    const f = rows[0];
+    const aplicadas  = SqlFinancialTransactionRepository.entero(f, 'aplicadas');
+    const candidatos = SqlFinancialTransactionRepository.entero(f, 'candidatos');
+    const rechazos   = SqlFinancialTransactionRepository.rechazosDeReserva(f!);
+
+    if (aplicadas > 0) return { tipo: 'APLICADO', filas: aplicadas, rechazos };
+    if (candidatos === 0) return { tipo: 'NADA_QUE_HACER' };
+    return { tipo: 'RECHAZADO', rechazos };
   }
 
   // -------------------------------------------------------------------------
@@ -344,7 +455,19 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return valor;
   }
 
-  /** Arma la lista de rechazos a partir de los contadores del diagnóstico. */
+  /**
+   * Arma la lista de rechazos a partir de los contadores del diagnóstico
+   * de las funciones de ORDEN (`voidByOrderId()`/`settleChargesByOrderId()`).
+   *
+   * RESERVA-10 (05/09/2026, architecture-governor): `voidByReservationId()`
+   * tiene su PROPIO helper, `rechazosDeReserva()` (más abajo), en vez de
+   * compartir este -- `reservations` no tiene `business_id` propio, así
+   * que no existe ningún contador equivalente a `orden_ajena` para llenar
+   * acá. Forzar el acople metería una columna dummy nombrando un concepto
+   * que no puede existir del lado reserva (distinto del dummy legítimo
+   * `con_comprobante_vivo` de `settleChargesByOrderId()`, donde el
+   * concepto SÍ existe y el chequeo está solamente diferido).
+   */
   private static rechazosDe(f: Record<string, unknown>): EfectoRechazo[] {
     const r: EfectoRechazo[] = [];
     const n = (c: string) => SqlFinancialTransactionRepository.entero(f, c);

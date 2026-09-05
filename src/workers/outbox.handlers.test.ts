@@ -5,6 +5,7 @@ import {
   handleOrderCancelled,
   handleReservationConfirmed,
   handleReservationPriceAdjusted,
+  handleReservationCancelled,
 } from './outbox.handlers.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type {
@@ -65,10 +66,12 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   public chargesCreados: OrderChargeInput[] = [];
   public settleLlamadas: [string, string, PaymentInfo | undefined][] = [];
   public voidLlamadas: [string, string][] = [];
+  public voidReservaLlamadas: [string, string][] = [];
 
   public crearDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
   public settleDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
   public voidDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
+  public voidReservaDesenlace: EfectoDesenlace = { tipo: 'APLICADO', filas: 1, rechazos: [] };
   public crearLanza: Error | null = null;
   public settleLanza: Error | null = null;
 
@@ -87,7 +90,10 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByShiftId() { return []; }
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
-  async voidByReservationId() { return 0; }
+  async voidByReservationId(reservationId: string, businessId: string) {
+    this.voidReservaLlamadas.push([reservationId, businessId]);
+    return this.voidReservaDesenlace;
+  }
 
   async createOrderChargeIfConfirmed(_client: SqlClient, input: OrderChargeInput) {
     if (this.crearLanza) throw this.crearLanza;
@@ -405,5 +411,30 @@ describe('outbox.handlers — handleReservationPriceAdjusted', () => {
     await handleReservationPriceAdjusted(financialRepo, usdProfileRepo)(event);
 
     expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
+  });
+});
+
+describe('outbox.handlers — handleReservationCancelled (RESERVA-10, 05/09/2026)', () => {
+  let financialRepo: FakeFinancialTransactionRepository;
+
+  beforeEach(() => {
+    financialRepo = new FakeFinancialTransactionRepository();
+  });
+
+  it('anula pasando reservationId y businessId', async () => {
+    await handleReservationCancelled(financialRepo)(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(financialRepo.voidReservaLlamadas).toEqual([['res-1', 'biz-test']]);
+  });
+
+  it('un RECHAZADO por estado de la reserva no lanza', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['RESERVA_ESTADO_NO_ELEGIBLE'] };
+    await expect(handleReservationCancelled(financialRepo)(fakeReservationEvent({ reservationId: 'res-1' })))
+      .resolves.toBeUndefined();
+  });
+
+  it('CARGO_CON_COMPROBANTE_VIVO no lanza -- pero queda logueado grave (evidencia de que algo bypaseó la puerta)', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
+    await expect(handleReservationCancelled(financialRepo)(fakeReservationEvent({ reservationId: 'res-1' })))
+      .resolves.toBeUndefined();
   });
 });

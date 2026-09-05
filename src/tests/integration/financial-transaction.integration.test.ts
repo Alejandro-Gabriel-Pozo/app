@@ -55,7 +55,13 @@ async function setupFixture() {
   const category = await seedCategory(db);
   const resource = await seedResource(db, category.id);
   const customer = await seedCustomer(db);
-  const reservation = await seedReservation(db, resource.id, customer.id, { totalPrice: 1000 });
+  // RESERVA-10 (05/09/2026): voidByReservationId() ahora exige EXISTS una
+  // reserva CANCELLED (antes no chequeaba el estado en absoluto) -- estos
+  // tests simulan justamente "se cancela la reserva", así que la reserva
+  // nace CANCELLED directamente, no PENDING (el default de seedReservation).
+  const reservation = await seedReservation(db, resource.id, customer.id, {
+    totalPrice: 1000, status: 'CANCELLED',
+  });
   const repo = new SqlFinancialTransactionRepository(db);
   return { customer, reservation, repo };
 }
@@ -91,7 +97,7 @@ describe.skipIf(skipIfNoDb)('SqlFinancialTransactionRepository — regresión ba
 
     // Se cancela la reserva -- voidByReservationId debe anular el CHARGE
     // (PENDING) pero NUNCA el PAYMENT (SETTLED).
-    await repo.voidByReservationId(reservation.id);
+    await repo.voidByReservationId(reservation.id, BUSINESS_ID);
 
     const collected = await repo.getCollectedPaymentTotalForReservation(reservation.id);
     expect(collected).toBe(1000); // el PAYMENT sigue SETTLED, se contó bien
@@ -119,7 +125,7 @@ describe.skipIf(skipIfNoDb)('SqlFinancialTransactionRepository — regresión ba
       reservationId: reservation.id, type: 'PAYMENT', amount: 1000,
       currency: 'ARS', status: 'SETTLED',
     });
-    await repo.voidByReservationId(reservation.id);
+    await repo.voidByReservationId(reservation.id, BUSINESS_ID);
 
     await repo.create({
       id: randomUUID(), businessId: BUSINESS_ID, customerId: customer.id,
@@ -148,7 +154,7 @@ describe.skipIf(skipIfNoDb)('SqlFinancialTransactionRepository — regresión ba
       currency: 'ARS', status: 'SETTLED',
     });
 
-    await repo.voidByReservationId(reservation.id);
+    await repo.voidByReservationId(reservation.id, BUSINESS_ID);
 
     const rows = await repo.getByReservationId(reservation.id);
     const chargeRow = rows.find(r => r.id === charge!.id);
@@ -187,5 +193,56 @@ describe.skipIf(skipIfNoDb)('SqlFinancialTransactionRepository — regresión ba
       currency: 'ARS', status: 'VOIDED', reversedInvoiceId: null,
     });
     expect(await repo.getCollectedPaymentTotalForReservation(reservation.id)).toBe(500);
+  });
+
+  // RESERVA-10 (05/09/2026) -- backstop de voidByReservationId() contra un
+  // comprobante fiscal vivo. Mismo patrón que O2I-13 (order-effects.
+  // integration.test.ts, ORDER-10): un mock que stubea la fila de
+  // diagnóstico no prueba nada del NOT EXISTS correlacionado real -- esto
+  // corre el SQL contra Postgres de verdad, con una Factura B ISSUED real.
+  it('RESERVA-10: voidByReservationId() NO anula un cargo con Factura B ISSUED vinculada, y sí anula el resto en la misma corrida', async () => {
+    let cbteNro = 1;
+    async function vincularFacturaIssued(financialTransactionId: string, customerId: string): Promise<void> {
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+            cae, cae_vto, status, issued_at)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+                 5, 'PES', 100, 0, 100, '123', '2030-01-01', 'ISSUED', NOW())`,
+        [invoiceId, BUSINESS_ID, financialTransactionId, customerId, `idem-${invoiceId}`, cbteNro++],
+      );
+    }
+
+    // setupFixture() ya crea la reserva CANCELLED (RESERVA-10) -- una
+    // reserva con cargo YA facturado, otra de control sin factura.
+    const { customer: customerA, reservation: reservationA, repo } = await setupFixture();
+    const { customer: customerB, reservation: reservationB } = await setupFixture();
+
+    const chargeConFactura = await repo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: customerA.id,
+      reservationId: reservationA.id, type: 'CHARGE', amount: 100,
+      currency: 'ARS', status: 'SETTLED',
+    });
+    await vincularFacturaIssued(chargeConFactura!.id, customerA.id);
+
+    const chargeSinFactura = await repo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: customerB.id,
+      reservationId: reservationB.id, type: 'CHARGE', amount: 100,
+      currency: 'ARS', status: 'SETTLED',
+    });
+
+    const desenlaceConFactura = await repo.voidByReservationId(reservationA.id, BUSINESS_ID);
+    const desenlaceSinFactura = await repo.voidByReservationId(reservationB.id, BUSINESS_ID);
+
+    expect(desenlaceConFactura).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] });
+    const rowsA = await repo.getByReservationId(reservationA.id);
+    expect(rowsA.find((r) => r.id === chargeConFactura!.id)?.status).not.toBe('VOIDED');
+
+    expect(desenlaceSinFactura.tipo).toBe('APLICADO');
+    const rowsB = await repo.getByReservationId(reservationB.id);
+    expect(rowsB.find((r) => r.id === chargeSinFactura!.id)?.status).toBe('VOIDED');
   });
 });

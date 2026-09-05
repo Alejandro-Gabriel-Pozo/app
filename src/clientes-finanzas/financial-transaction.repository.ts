@@ -134,7 +134,9 @@ export type EfectoRechazo =
   | 'CARGO_YA_SETTLED'          // reintento benigno del at-least-once
   | 'CARGO_ANULADO'             // VOIDED o FAILED
   | 'TIPO_NO_LIQUIDABLE'        // PAYMENT/REFUND/ADJUSTMENT bajo ese order_id
-  | 'CARGO_CON_COMPROBANTE_VIVO'; // ORDER-10 (05/09/2026) -- tiene una factura ISSUED/PENDING/FAILED_UNCERTAIN(afipContacted) vinculada; anularlo dejaría un comprobante fiscal real sin contrapartida. Ver voidByOrderId().
+  | 'CARGO_CON_COMPROBANTE_VIVO'  // ORDER-10 (05/09/2026) -- tiene una factura ISSUED/PENDING/FAILED_UNCERTAIN(afipContacted) vinculada; anularlo dejaría un comprobante fiscal real sin contrapartida. Ver voidByOrderId()/voidByReservationId() (RESERVA-10).
+  | 'RESERVA_INEXISTENTE'         // RESERVA-10 -- no hay fila en reservations para ese reservation_id. Ver voidByReservationId()/rechazosDeReserva().
+  | 'RESERVA_ESTADO_NO_ELEGIBLE'; // RESERVA-10 -- existe pero no está CANCELLED.
 
 /**
  * Los cuatro desenlaces de negocio, deliberadamente distinguibles.
@@ -229,7 +231,7 @@ export interface FinancialTransactionRepository {
 
   /**
    * Pasa a VOIDED las transacciones CHARGE/ADJUSTMENT PENDING/SETTLED de
-   * una reserva. Usado cuando se cancela una reserva confirmada.
+   * una reserva. Usado cuando se cancela una reserva.
    *
    * NO toca PAYMENT/REFUND (fix 23/08/2026, bug real en producción) — un
    * pago ya cobrado es un hecho histórico de dinero que cambió de manos,
@@ -237,9 +239,28 @@ export interface FinancialTransactionRepository {
    * eso se modela con un REFUND explícito (ver `CancellationRefundService`,
    * C2), no anulando el PAYMENT original.
    *
-   * Retorna la cantidad de filas actualizadas.
+   * **RESERVA-10 (05/09/2026, architecture-governor) -- reescrito con el
+   * mismo criterio que `voidByOrderId()` post-ORDER-10.** Antes: `number`
+   * (`rowCount ?? 0`, sin distinguir "0 filas por reintento benigno" de "0
+   * filas por cruce de tenant"), sin exigir que la reserva esté `CANCELLED`,
+   * y sin ningún chequeo de comprobante fiscal vivo -- el mismo defecto que
+   * tenía `voidByOrderId()` antes de ORDER-10, del lado reservas. Ahora:
+   * - Exige `EXISTS` una reserva con `status = 'CANCELLED'` (antes no
+   *   chequeaba el estado de la reserva EN ABSOLUTO).
+   * - Excluye (`NOT EXISTS`, misma excepción cross-dominio SANCIONADA que
+   *   `voidByOrderId()`) cualquier cargo con una factura
+   *   `ISSUED`/`PENDING`/`FAILED_UNCERTAIN`+`afip_contacted` vinculada --
+   *   rechazo `CARGO_CON_COMPROBANTE_VIVO`.
+   * - Recibe `businessId`: `reservations` no tiene columna `business_id`
+   *   propia (una reserva pertenece al recurso/tenant, no a un
+   *   "negocio" dentro del tenant como sí ocurre con `orders`) -- el
+   *   filtro es sobre `financial_transactions.business_id`, igual de
+   *   real como defensa aunque no haya un `EXISTS` equivalente al
+   *   "orden de otro negocio" de `voidByOrderId()` (no hay análogo
+   *   posible sin esa columna).
+   * - Devuelve `EfectoDesenlace`, no un `number` mudo.
    */
-  voidByReservationId(reservationId: string): Promise<number>;
+  voidByReservationId(reservationId: string, businessId: string): Promise<EfectoDesenlace>;
 
   /**
    * O2 (03/09/2026) -- liquida el CHARGE de una orden COMPLETED.

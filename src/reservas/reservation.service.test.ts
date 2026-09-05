@@ -15,11 +15,13 @@ import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operatin
 import { InMemoryMaintenanceWindowRepository } from '../pms-estadias/in-memory.maintenance-window.repository.js';
 import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.number-sequence.repository.js';
 import { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
-import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError } from '../domain/errors.js';
+import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { InvoiceLinkage } from '../facturacion/invoice.repository.js';
 
 // ---------------------------------------------------------------------------
 // Mocks mínimos para dependencias de infraestructura
@@ -94,6 +96,7 @@ describe('ReservationService', () => {
   let maintenanceWindowRepo: InMemoryMaintenanceWindowRepository;
   let depositPolicyRepo: InMemoryDepositPolicyRepository;
   let financialTransactionRepo: FakePaymentLedger;
+  let invoiceRepo: FakeInvoiceRepositoryForReservations;
   let numberSequenceRepo: InMemoryNumberSequenceRepository;
   let service: ReservationService;
 
@@ -125,9 +128,36 @@ describe('ReservationService', () => {
    */
   class FakePaymentLedger {
     private paid = new Map<string, number>();
+    // RESERVA-10 (05/09/2026) -- charges por reserva, para
+    // findBlockingInvoiceLinkage(). Vacío por default: no bloquea ninguna
+    // cancelación existente salvo que un test explícito llame a seed().
+    private charges = new Map<string, FinancialTransaction[]>();
     setPaid(reservationId: string, amount: number): void { this.paid.set(reservationId, amount); }
     async getSettledPaymentTotalForReservation(reservationId: string): Promise<number> {
       return this.paid.get(reservationId) ?? 0;
+    }
+    seedCharge(reservationId: string, tx: FinancialTransaction): void {
+      const existing = this.charges.get(reservationId) ?? [];
+      this.charges.set(reservationId, [...existing, tx]);
+    }
+    async getByReservationId(reservationId: string): Promise<FinancialTransaction[]> {
+      return this.charges.get(reservationId) ?? [];
+    }
+  }
+
+  /**
+   * RESERVA-10 (05/09/2026) -- fake mínimo, solo `resolveInvoiceLinkage()`.
+   * Por default cualquier `financialTransactionId` resuelve a
+   * `{ kind: 'NONE' }` (sin factura) para no bloquear ninguna cancelación
+   * existente; `seed()` carga un linkage puntual para los tests del guard.
+   */
+  class FakeInvoiceRepositoryForReservations {
+    private readonly byChargeId = new Map<string, InvoiceLinkage>();
+    seed(financialTransactionId: string, linkage: InvoiceLinkage): void {
+      this.byChargeId.set(financialTransactionId, linkage);
+    }
+    async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
+      return this.byChargeId.get(financialTransactionId) ?? { kind: 'NONE' };
     }
   }
 
@@ -160,6 +190,7 @@ describe('ReservationService', () => {
     maintenanceWindowRepo = new InMemoryMaintenanceWindowRepository();
     depositPolicyRepo     = new InMemoryDepositPolicyRepository();
     financialTransactionRepo = new FakePaymentLedger();
+    invoiceRepo           = new FakeInvoiceRepositoryForReservations();
     numberSequenceRepo    = new InMemoryNumberSequenceRepository();
 
     service = new ReservationService(
@@ -177,6 +208,7 @@ describe('ReservationService', () => {
       depositPolicyRepo,
       businessProfileRepo,
       financialTransactionRepo,
+      invoiceRepo,
       numberSequenceRepo,
       FROZEN_TEST_NOW,
     );
@@ -655,7 +687,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -680,6 +712,101 @@ describe('ReservationService', () => {
 
       const event = eventRepo.events[0] as { payload: { isLodging: boolean } };
       expect(event.payload.isLodging).toBe(true);
+    });
+  });
+
+  describe('cancelReservation — RESERVA-10 (05/09/2026) -- guard fail-closed contra factura vinculada', () => {
+    function makeCharge(reservationId: string, chargeId: string): FinancialTransaction {
+      return {
+        id: chargeId, businessId: TEST_BUSINESS_ID, customerId: customer.id,
+        reservationId, type: 'CHARGE', amount: 100, currency: 'ARS', status: 'SETTLED',
+        createdAt: new Date(),
+      };
+    }
+
+    async function crearYConfirmar(id = 'res-1'): Promise<void> {
+      await service.createReservation({
+        id, resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      await service.confirmReservation(id, TEST_BUSINESS_ID);
+    }
+
+    it('rechaza cancelar si el cargo tiene una factura ISSUED (CAE real de AFIP)', async () => {
+      await crearYConfirmar('res-1');
+      const chargeId = 'charge-res-1';
+      financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
+      invoiceRepo.seed(chargeId, { kind: 'ISSUED', invoiceId: 'inv-1' });
+
+      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID))
+        .rejects.toThrow(ReservationChargeInvoicedError);
+
+      // La reserva sigue como estaba -- ningún evento de cancelación salió.
+      expect(eventRepo.events.some((e) => (e as { eventType: string }).eventType === 'reservation.cancelled')).toBe(false);
+    });
+
+    it('rechaza cancelar si el cargo tiene una factura NOT_ISSUED en PENDING', async () => {
+      await crearYConfirmar('res-1');
+      const chargeId = 'charge-res-1';
+      financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'PENDING', afipContacted: false });
+
+      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID))
+        .rejects.toThrow(ReservationChargeInvoicedError);
+    });
+
+    it('rechaza cancelar si la factura quedó FAILED_UNCERTAIN habiendo contactado a AFIP (A8.6)', async () => {
+      await crearYConfirmar('res-1');
+      const chargeId = 'charge-res-1';
+      financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID))
+        .rejects.toThrow(ReservationChargeInvoicedError);
+    });
+
+    it('permite cancelar si la factura fue REJECTED por AFIP (no hay comprobante real)', async () => {
+      await crearYConfirmar('res-1');
+      const chargeId = 'charge-res-1';
+      financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'REJECTED', afipContacted: true });
+
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
+    });
+
+    it('permite cancelar si la factura quedó FAILED_UNCERTAIN SIN contactar a AFIP', async () => {
+      await crearYConfirmar('res-1');
+      const chargeId = 'charge-res-1';
+      financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: false });
+
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
+    });
+
+    it('permite cancelar si el cargo no tiene ninguna factura vinculada (caso normal)', async () => {
+      await crearYConfirmar('res-1');
+      financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', 'charge-res-1'));
+      // sin invoiceRepo.seed(): resuelve a { kind: 'NONE' } por default.
+
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
+    });
+
+    it('ignora un PAYMENT de la misma reserva -- sólo mira los CHARGE', async () => {
+      await crearYConfirmar('res-1');
+      financialTransactionRepo.seedCharge('res-1', {
+        id: 'pay-res-1', businessId: TEST_BUSINESS_ID, customerId: customer.id,
+        reservationId: 'res-1', type: 'PAYMENT', amount: 100, currency: 'ARS', status: 'SETTLED',
+        createdAt: new Date(),
+      });
+      // Un PAYMENT con una factura ISSUED vinculada NO debería bloquear --
+      // el guard filtra por type === 'CHARGE' antes de resolver linkage.
+      invoiceRepo.seed('pay-res-1', { kind: 'ISSUED', invoiceId: 'inv-1' });
+
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
     });
   });
 
@@ -716,7 +843,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -736,7 +863,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -761,7 +888,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -778,7 +905,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1659,7 +1786,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, numberSequenceRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo,
         FROZEN_TEST_NOW,
       );
       // 27/08/2026 — decisión del dueño, docs/diseno-precio-servicio-vs-

@@ -126,7 +126,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByShiftId() { return []; }
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
-  async voidByReservationId() { return 0; }
+  async voidByReservationId() { return { tipo: 'NADA_QUE_HACER' as const }; }
   // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
   async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }
@@ -396,6 +396,30 @@ describe('InvoiceService', () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
       const service = buildService({
         tx: makeTx({ amount: 121, orderId: null }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(invoice.status).toBe('ISSUED');
+    });
+  });
+
+  describe('RESERVA-10 (05/09/2026) -- guard TOCTOU: no facturar un cargo de una reserva ya CANCELLED', () => {
+    it('rechaza si la reserva del cargo ya está CANCELLED', async () => {
+      const service = buildService({
+        tx: makeTx({ amount: 121, reservationId: 'res-1' }),
+        reservation: { id: 'res-1', status: 'CANCELLED', resource: { name: 'Mesa 1' } } as unknown as Reservation,
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(/no se puede facturar un cargo de una reserva cancelada/);
+    });
+
+    it('permite facturar si la reserva está CONFIRMED (camino normal)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, reservationId: 'res-1' }),
+        reservation: { id: 'res-1', status: 'CONFIRMED', resource: { name: 'Mesa 1' } } as unknown as Reservation,
         client: fakeArcaClient({ createNextVoucher }),
       });
 
@@ -1101,7 +1125,7 @@ class FakeMultiFinancialTransactionRepository implements FinancialTransactionRep
   async getByShiftId() { return []; }
   async getByIdempotencyKey() { return undefined; }
   async settleByReservationId() { return 0; }
-  async voidByReservationId() { return 0; }
+  async voidByReservationId() { return { tipo: 'NADA_QUE_HACER' as const }; }
   // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
   async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }

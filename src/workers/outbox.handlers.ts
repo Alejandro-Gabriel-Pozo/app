@@ -157,7 +157,8 @@ export function handleReservationCancelled(
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId } = event.payload as { reservationId: string };
-    await financialRepo.voidByReservationId(reservationId);
+    const desenlace = await financialRepo.voidByReservationId(reservationId, event.businessId);
+    registrarDesenlace(event, 'financial:reservation.cancelled', reservationId, desenlace);
   };
 }
 
@@ -236,12 +237,14 @@ const UMBRAL_T01 = 12;
 function registrarDesenlace(
   event: DomainEvent,
   proceso: string,
-  orderId: string,
+  // RESERVA-10 (05/09/2026) -- reusado también por handleReservationCancelled();
+  // renombrado de `orderId` a `aggregateId` porque ya no es siempre una orden.
+  aggregateId: string,
   desenlace: EfectoDesenlace,
 ): void {
   const base = {
     tenant:        event.businessId,
-    orden:         orderId,
+    aggregateId,
     proceso,
     timestamp:     new Date().toISOString(),
     correlationId: event.correlationId ?? event.eventId ?? String(event.id ?? ''),
@@ -272,9 +275,12 @@ function registrarDesenlace(
   // (`OrderService.cancelOrder()`) debería haberlo frenado ANTES; verlo acá
   // es evidencia de que algún otro camino llegó a CANCELLED sin pasar por
   // esa puerta.
+  // RESERVA_INEXISTENTE (RESERVA-10) -- mismo criterio que ORDEN_INEXISTENTE:
+  // un cargo referenciando una reserva que no existe es anomalía de
+  // integridad, no una decisión de negocio normal.
   const grave = desenlace.rechazos.some((r) =>
     r === 'ORDEN_DE_OTRO_NEGOCIO' || r === 'ESTADO_DESCONOCIDO' || r === 'ORDEN_INEXISTENTE'
-      || r === 'CARGO_CON_COMPROBANTE_VIVO');
+      || r === 'CARGO_CON_COMPROBANTE_VIVO' || r === 'RESERVA_INEXISTENTE');
 
   const cuerpo = { ...base, evento: 'efecto_rechazado', causa: desenlace.rechazos, reintentable: false };
   if (soloBenigno)  logger.info(cuerpo,  '[outbox] efecto ya aplicado, nada que hacer');

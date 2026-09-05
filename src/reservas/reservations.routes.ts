@@ -124,6 +124,7 @@ function buildReservationService(req: Request): ReservationService {
   const depositPolicyRepo     = new SqlDepositPolicyRepository(db);
   const businessProfileRepo   = new SqlBusinessProfileRepository(db);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
+  const invoiceRepo           = new SqlInvoiceRepository(db);
   const numberSequenceRepo    = new SqlNumberSequenceRepository(db);
   return new ReservationService(
     reservationRepo,
@@ -140,6 +141,7 @@ function buildReservationService(req: Request): ReservationService {
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,
+    invoiceRepo,
     numberSequenceRepo,
   );
 }

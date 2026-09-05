@@ -216,6 +216,8 @@ function domainErrorStatus(error: DomainError): number {
     case 'INVOICE_NOT_REVERSIBLE':
     case 'ORDER_CHARGE_INVOICED':
     case 'ORDER_CANCELLED_CANNOT_INVOICE':
+    case 'RESERVATION_CHARGE_INVOICED':
+    case 'RESERVATION_CANCELLED_CANNOT_INVOICE':
       return 409;
 
     // --- 503 Service Unavailable ---

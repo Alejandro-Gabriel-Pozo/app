@@ -37,7 +37,7 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
     return this.created.find((c) => c.idempotencyKey === key);
   }
   async settleByReservationId() { return 0; }
-  async voidByReservationId() { return 0; }
+  async voidByReservationId() { return { tipo: 'NADA_QUE_HACER' as const }; }
   // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
   async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }

@@ -57,7 +57,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByCustomerId(): Promise<FinancialTransaction[]> { return []; }
   async getByStayId(): Promise<FinancialTransaction[]> { return []; }
   async settleByReservationId(): Promise<number> { return 0; }
-  async voidByReservationId(): Promise<number> { return 0; }
+  async voidByReservationId() { return { tipo: 'NADA_QUE_HACER' as const }; }
   // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
   async settleChargesByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }

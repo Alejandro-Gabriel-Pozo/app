@@ -60,6 +60,7 @@ import { SqlMaintenanceWindowRepository }     from '../../pms-estadias/sql.maint
 import { SqlDepositPolicyRepository }         from '../../reservas/sql.deposit-policy.repository.js';
 import { SqlBusinessProfileRepository }       from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository }  from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlNumberSequenceRepository }        from '../../repositories/sql.number-sequence.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../reservas/reservation.service.js';
@@ -68,6 +69,7 @@ import {
   InvalidReservationError,
   ResourceNotFoundError,
   ReservationNotFoundError,
+  ReservationChargeInvoicedError,
 } from '../../domain/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ async function buildService() {
   const depositPolicyRepo = new SqlDepositPolicyRepository(db);
   const businessProfileRepo = new SqlBusinessProfileRepository(db);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
+  const invoiceRepo = new SqlInvoiceRepository(db);
   const numberSequenceRepo = new SqlNumberSequenceRepository(db);
 
   return new ReservationService(
@@ -116,6 +119,7 @@ async function buildService() {
     depositPolicyRepo,
     businessProfileRepo,
     financialTransactionRepo,
+    invoiceRepo,
     numberSequenceRepo,
   );
 }
@@ -414,6 +418,45 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
 
       const cancelled = await service.cancelReservation(seeded.id, BUSINESS_ID);
       expect(cancelled.status).toBe('CANCELLED');
+    });
+
+    // RESERVA-10 (05/09/2026) -- puerta fail-closed contra factura viva.
+    it('RESERVA-10: rechaza cancelar si el cargo de la reserva ya tiene una Factura B ISSUED, y la reserva NO queda CANCELLED', async () => {
+      const { resource, customer, service } = await setupFixture();
+      const seeded = await seedReservation(db, resource.id, customer.id, {
+        startTime: new Date('2030-08-03T10:00:00Z'),
+        endTime:   new Date('2030-08-03T12:00:00Z'),
+        status:    'CONFIRMED',
+      });
+
+      const chargeId = randomUUID();
+      await db.query(
+        `INSERT INTO financial_transactions
+           (id, business_id, customer_id, reservation_id, type, amount, currency, status)
+         VALUES ($1,$2,$3,$4,'CHARGE',100,'ARS','SETTLED')`,
+        [chargeId, BUSINESS_ID, customer.id, seeded.id],
+      );
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+            cae, cae_vto, status, issued_at)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, 1, 1, 96, '0',
+                 5, 'PES', 100, 0, 100, '123', '2030-01-01', 'ISSUED', NOW())`,
+        [invoiceId, BUSINESS_ID, chargeId, customer.id, `idem-${invoiceId}`],
+      );
+
+      await expect(service.cancelReservation(seeded.id, BUSINESS_ID))
+        .rejects.toThrow(ReservationChargeInvoicedError);
+
+      // El rollback deshizo TODA la transacción -- la reserva sigue como
+      // estaba, no CANCELLED a medias con la factura viva sin contrapartida.
+      const row = await db.query<{ status: string }>(
+        `SELECT status FROM reservations WHERE id = $1`, [seeded.id],
+      );
+      expect(row.rows[0]!.status).toBe('CONFIRMED');
     });
   });
 

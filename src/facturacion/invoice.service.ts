@@ -29,6 +29,7 @@ import type { IOrderRepository } from '../pos-menu/order.repository.js';
 import type { OrderItem } from '../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../pos-menu/product.repository.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
+import { ReservationStatus } from '../types/enums.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { buildDefaultAfipBillingPort } from './arca-sdk-billing.adapter.js';
@@ -50,6 +51,7 @@ import {
   NothingToInvoiceError,
   AccountsReceivableAlreadyInvoicedError,
   OrderCancelledCannotInvoiceError,
+  ReservationCancelledCannotInvoiceError,
 } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
@@ -132,8 +134,15 @@ export class InvoiceService {
     /** D8-Nivel B — nombre/unidad/código ARCA de cada línea PRODUCT. */
     private readonly productRepo: Pick<IProductRepository, 'getById'>,
     private readonly productVariantRepo: Pick<IProductVariantRepository, 'getById'>,
-    /** D8-Nivel B — nombre del recurso/servicio para la línea de una reserva. */
-    private readonly reservationRepo: Pick<ReservationRepository, 'getById'>,
+    /**
+     * D8-Nivel B — nombre del recurso/servicio para la línea de una reserva.
+     * RESERVA-10 (05/09/2026, architecture-governor) -- `getByIdWithLock`
+     * (opcional en la interfaz, mismo criterio que `getByIdForUpdate` de
+     * `IOrderRepository`) cierra la ventana TOCTOU entre
+     * `cancelReservation()` y `requestInvoice()`: ver el guard en la
+     * transacción de `requestInvoice()`.
+     */
+    private readonly reservationRepo: Pick<ReservationRepository, 'getById' | 'getByIdWithLock'>,
     /** D8-Nivel B — el comprobante y sus líneas se crean en la misma transacción (A8.2/A8.3). */
     private readonly transactionManager: TransactionManager,
     /**
@@ -375,6 +384,22 @@ export class InvoiceService {
         const order = await this.orderRepo.getByIdForUpdate(client, tx.orderId);
         if (order && order.status === 'CANCELLED') {
           throw new OrderCancelledCannotInvoiceError(tx.orderId);
+        }
+      }
+
+      // RESERVA-10 (05/09/2026, architecture-governor) -- mismo cierre de
+      // ventana TOCTOU que el bloque de arriba, ahora con
+      // `cancelReservation()`. `getByIdWithLock` es opcional en la
+      // interfaz (mismo criterio que `requireReservationWithLock` de
+      // `ReservationService`): si la implementación no lo tiene (el fake
+      // en memoria de los tests), cae a `getById()` sin lock -- no hay
+      // transacción real que proteger ahí de todos modos.
+      if (tx.reservationId != null) {
+        const reservation = this.reservationRepo.getByIdWithLock
+          ? await this.reservationRepo.getByIdWithLock(client, tx.reservationId)
+          : await this.reservationRepo.getById(tx.reservationId);
+        if (reservation && reservation.status === ReservationStatus.CANCELLED) {
+          throw new ReservationCancelledCannotInvoiceError(tx.reservationId);
         }
       }
 

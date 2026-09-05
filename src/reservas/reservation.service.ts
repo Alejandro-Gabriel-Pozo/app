@@ -62,7 +62,9 @@ import {
   NoPriceAdjustmentPendingError,
   DepositNotPaidError,
   LodgingRequiresServiceError,
+  ReservationChargeInvoicedError,
 } from '../domain/errors.js';
+import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
 import { BookableServiceNotFoundError } from './bookable-service.service.js';
 import type { ReservationLine } from './reservation.types.js';
 import { validateDetailsAgainstFields } from './category.service.js';
@@ -124,8 +126,23 @@ export class ReservationService {
     depositPolicyRepository: IDepositPolicyRepository,
     /** C1-Fase A — `default_deposit_percentage`/`deposit_hold_hours` (política general del negocio, A2.9). */
     private readonly businessProfileRepository: Pick<BusinessProfileRepository, 'get'>,
-    /** C1-Fase A — gate de `confirmReservation()` (`getSettledPaymentTotalForReservation`). Solo lectura, no crea movimientos financieros (eso sigue siendo trabajo exclusivo del outbox worker, A10). */
-    private readonly financialTransactionRepository: Pick<FinancialTransactionRepository, 'getSettledPaymentTotalForReservation'>,
+    /**
+     * C1-Fase A — gate de `confirmReservation()` (`getSettledPaymentTotalForReservation`).
+     * RESERVA-10 (05/09/2026) — también `getByReservationId()`, para
+     * `findBlockingInvoiceLinkage()` en `cancelReservation()`. Solo
+     * lectura, no crea movimientos financieros (eso sigue siendo trabajo
+     * exclusivo del outbox worker, A10).
+     */
+    private readonly financialTransactionRepository: Pick<FinancialTransactionRepository, 'getSettledPaymentTotalForReservation' | 'getByReservationId'>,
+    /**
+     * RESERVA-10 (05/09/2026, architecture-governor) — mismo criterio que
+     * `OrderService` del lado pos-menu: depende de la INTERFAZ
+     * `InvoiceRepository` de `facturacion`, nunca del repositorio concreto
+     * ni de `InvoiceService` (bounded contexts, `app-main/CLAUDE.md`).
+     * `resolveInvoiceLinkage()` ya distingue `NONE`/`NOT_ISSUED`/`ISSUED`
+     * y cubre facturas individuales y consolidadas.
+     */
+    private readonly invoiceRepo: Pick<InvoiceRepository, 'resolveInvoiceLinkage'>,
     /** D6 (22/08/2026) — número operativo, resuelto una sola vez en createReservation(). */
     private readonly numberSequenceRepository: NumberSequenceRepository,
     /**
@@ -832,6 +849,31 @@ export class ReservationService {
     return reservation;
   }
 
+  /**
+   * RESERVA-10 (05/09/2026, architecture-governor) -- mismo método que
+   * `OrderService.findBlockingInvoiceLinkage()` (pos-menu), portado acá.
+   * Recorre los `CHARGE` de la reserva y bloquea si alguno ya tiene una
+   * factura `ISSUED`, o `NOT_ISSUED` en `PENDING`/`FAILED_UNCERTAIN`+
+   * `afipContacted` -- nunca `REJECTED` (AFIP ya dijo que no, no hay
+   * comprobante real). Se llama DESPUÉS de `requireReservationWithLock()`
+   * -- el lock de `reservations` ya está tomado, así que esta lectura
+   * queda serializada contra cualquier `requestInvoice()` concurrente que
+   * compita por el mismo lock (ver `ReservationCancelledCannotInvoiceError`
+   * del otro lado, en `InvoiceService.requestInvoice()`).
+   */
+  private async findBlockingInvoiceLinkage(reservationId: string): Promise<InvoiceLinkage & { kind: 'ISSUED' | 'NOT_ISSUED' } | null> {
+    const charges = (await this.financialTransactionRepository.getByReservationId(reservationId))
+      .filter((tx) => tx.type === 'CHARGE');
+    for (const charge of charges) {
+      const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
+      if (linkage.kind === 'ISSUED') return linkage;
+      if (linkage.kind === 'NOT_ISSUED' && (linkage.status === 'PENDING' || (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted))) {
+        return linkage;
+      }
+    }
+    return null;
+  }
+
   async cancelReservation(id: string, businessId: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en cancelReservation');
 
@@ -843,6 +885,21 @@ export class ReservationService {
     await this.transactionManager.run(async (client: SqlClient) => {
       reservation = await this.requireReservationWithLock(client, id);
       reservation.cancel();
+
+      // RESERVA-10 (05/09/2026, architecture-governor) -- puerta
+      // fail-closed: si el cargo de la reserva ya tiene un comprobante
+      // fiscal vivo, la cancelación se rechaza ACÁ, DENTRO de la
+      // transacción -- el rollback deshace también la transición que
+      // `reservation.cancel()` ya aplicó en memoria (todavía no
+      // persistida). Mismo alcance que ORDER-10 Bloque 1: sin escape
+      // administrativo todavía (Nota de Crédito), doctrina del dueño del
+      // producto.
+      const blocking = await this.findBlockingInvoiceLinkage(reservation.id);
+      if (blocking) {
+        throw new ReservationChargeInvoicedError(
+          reservation.id, blocking.invoiceId, blocking.kind === 'ISSUED' ? 'ISSUED' : blocking.status,
+        );
+      }
 
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {
