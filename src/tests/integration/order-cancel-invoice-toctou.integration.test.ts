@@ -84,12 +84,71 @@ import type { Reservation } from '../../reservas/Reservation.js';
 /** Mismo helper que `for-key-share-lock-semantics.integration.test.ts` --
  *  ver ese archivo para el razonamiento completo de por qué chequea los DOS
  *  brazos (fulfilled y rejected) y por qué no usa `Promise.race`. */
-async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ settled: boolean }> {
+/**
+ * Adjunta el tracker de asentamiento **en el instante en que se llama** y
+ * devuelve un lector sincrónico.
+ *
+ * Que el `.then(ok, err)` se adjunte YA no es un detalle de estilo: es lo
+ * único que marca el rechazo como manejado. La versión anterior de este test
+ * lo adjuntaba dentro de `settledWithin`, que se llamaba para los DOS brazos
+ * sincrónicamente (`Promise.all`), así que daba igual. Con la ventana
+ * adaptativa el brazo bloqueado se consulta hasta CONTROL_CAP_MS después —
+ * y en esa ventana un rechazo temprano (timeout del pool, conexión cortada,
+ * datos mal sembrados) saldría como `unhandledRejection` de Node en vez de
+ * como la aserción de más abajo, posiblemente atribuido a otro archivo que
+ * esté corriendo en paralelo. Misma patología que el `ECONNREFUSED` de libpq
+ * que se arregló en el commit de F2: un rojo que no explica por qué.
+ * Levantado por `architecture-governor` (condición C2) al revisar este
+ * cambio, antes de commitear.
+ */
+function trackSettled<T>(promise: Promise<T>): () => boolean {
   let settled = false;
   void promise.then(() => { settled = true; }, () => { settled = true; });
-  await new Promise((resolve) => setTimeout(resolve, ms));
-  return { settled };
+  return () => settled;
 }
+
+/**
+ * Sondea `isSettled` hasta `capMs`. Devuelve si llegó a asentarse y cuánto
+ * tardó. Recibe el lector —no la promesa— justamente para que el handler ya
+ * esté adjuntado desde antes (ver `trackSettled`).
+ *
+ * Existe por el residual #4 de ORDER-10 (05/09/2026): la versión anterior de
+ * este test le daba una ventana FIJA de 4s a los dos brazos, y contra un
+ * TEST_DATABASE_URL remoto (Neon, latencia real) el brazo de CONTROL no
+ * alcanzaba a resolver dentro de esa ventana. Resultado: el test caía en rojo
+ * por latencia del entorno **sin haber probado ni refutado el guard**.
+ * Verificado en una corrida completa de la suite el 05/09/2026 (147/148, el
+ * único fallo era éste, y el mensaje era el del brazo de control).
+ *
+ * La ventana ahora la define el propio control en vez de un número fijo — ver
+ * el uso más abajo.
+ */
+async function waitUntilSettled(
+  isSettled: () => boolean,
+  capMs: number,
+): Promise<{ settled: boolean; elapsedMs: number }> {
+  const start = Date.now();
+  while (!isSettled() && Date.now() - start < capMs) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return { settled: isSettled(), elapsedMs: Date.now() - start };
+}
+
+/**
+ * Techo duro de espera del brazo de control. No es la ventana del test — es
+ * el punto en el que se declara que el entorno no sirve para medir esto.
+ */
+const CONTROL_CAP_MS = 30_000;
+
+/**
+ * Margen que se le da al brazo BLOQUEADO **después** de que el de control ya
+ * terminó. Los dos hacen exactamente el mismo trabajo previo al lock y salen
+ * en paralelo: si el bloqueado no estuviera esperando un lock, resolvería a
+ * pocos milisegundos del control. 1,5s es holgado para esa diferencia y sigue
+ * siendo un orden de magnitud menos que la latencia que rompía la versión
+ * anterior.
+ */
+const BLOCKED_GRACE_MS = 1_500;
 
 const BIZ = 'biz-order10-toctou';
 const LOC = 'loc-order10-toctou';
@@ -347,6 +406,10 @@ describe.skipIf(skipIfNoDb)('ORDER-10 -- TOCTOU entre cancelOrder() y requestInv
       blockedInvoice = invoiceService.requestInvoice({
         businessId: BIZ, financialTransactionId: lockedChargeId, changedBy: ACTOR,
       });
+      // Handler adjuntado en el mismo tick en que nace la promesa -- ver el
+      // docblock de trackSettled(). Este brazo no se consulta hasta después
+      // de que el control resuelva (hasta CONTROL_CAP_MS más tarde).
+      const blockedSettled = trackSettled(blockedInvoice);
       // Brazo de control -- mismo camino, MISMA cantidad de trabajo previo
       // al lock (idempotencia, tx, perfil, ítems), pero sobre una orden SIN
       // ningún lock sostenido. Si esta tampoco resolviera dentro de la
@@ -356,23 +419,34 @@ describe.skipIf(skipIfNoDb)('ORDER-10 -- TOCTOU entre cancelOrder() y requestInv
       controlInvoice = invoiceService.requestInvoice({
         businessId: BIZ, financialTransactionId: controlChargeId, changedBy: ACTOR,
       });
+      const controlSettled = trackSettled(controlInvoice);
 
-      const [blocked, control] = await Promise.all([
-        settledWithin(blockedInvoice, 4_000),
-        settledWithin(controlInvoice, 4_000),
-      ]);
+      // Ventana ADAPTATIVA (residual #4 de ORDER-10, 05/09/2026). Antes: 4s
+      // fijos para los dos brazos, en paralelo. Contra Neon eso hacía fallar
+      // el brazo de control por latencia pura. Ahora la referencia temporal
+      // es el propio control: se espera a que el brazo SIN lock termine, y
+      // recién entonces se pregunta si el bloqueado sigue pendiente. El
+      // invariante afirmado es el real -- "el brazo bloqueado sobrevive al de
+      // control" -- y no depende de la latencia absoluta del entorno.
+      const control = await waitUntilSettled(controlSettled, CONTROL_CAP_MS);
 
       expect(
         control.settled,
-        'El brazo de CONTROL (orden SIN ningún lock sostenido) no resolvió dentro de la ventana -- algo más está ' +
+        `El brazo de CONTROL (orden SIN ningún lock sostenido) no resolvió en ${CONTROL_CAP_MS} ms -- algo más está ` +
         'frenando la conexión (latencia hacia TEST_DATABASE_URL, pool saturado), no específicamente el lock de ' +
         'orders(). El resultado del brazo bloqueado no es confiable mientras este control esté fallando.',
       ).toBe(true);
+
+      // El control ya terminó. El bloqueado hizo el mismo trabajo previo y
+      // salió en paralelo: si no estuviera esperando el lock de orders(), ya
+      // tendría que haber resuelto también.
+      await new Promise((resolve) => setTimeout(resolve, BLOCKED_GRACE_MS));
       expect(
-        blocked.settled,
-        'requestInvoice() resolvió ANTES de que la transacción que sostiene CANCELLED sobre orders() hiciera ' +
-        'commit -- el guard TOCTOU (getByIdForUpdate() como primera operación de la transacción) no está tomando ' +
-        'el lock, o no lo está tomando ANTES de decidir. Ver InvoiceService.requestInvoice().',
+        blockedSettled(),
+        `requestInvoice() resolvió ANTES de que la transacción que sostiene CANCELLED sobre orders() hiciera ` +
+        `commit -- el guard TOCTOU (getByIdForUpdate() como primera operación de la transacción) no está tomando ` +
+        `el lock, o no lo está tomando ANTES de decidir. Ver InvoiceService.requestInvoice(). ` +
+        `(El brazo de control resolvió en ${control.elapsedMs} ms; al bloqueado se le dieron ${BLOCKED_GRACE_MS} ms más.)`,
       ).toBe(false);
     } finally {
       // Mismo orden que FOR-KEY-SHARE-001: terminar la transacción que
@@ -398,5 +472,10 @@ describe.skipIf(skipIfNoDb)('ORDER-10 -- TOCTOU entre cancelOrder() y requestInv
     // El brazo de control, sin ningún lock en el medio, factura normal.
     const controlValue = await controlInvoice as { status: string };
     expect(controlValue.status).toBe('ISSUED');
-  }, 20_000);
+    // 60s (antes 20s): la ventana adaptativa puede esperar hasta
+    // CONTROL_CAP_MS por el control, más el sembrado de las dos órdenes y el
+    // drenaje final. Contra Neon la corrida real de este test rondaba los 16s
+    // con la ventana fija; el techo tiene que quedar por encima del peor caso
+    // del control, no del caso feliz.
+  }, 60_000);
 });
