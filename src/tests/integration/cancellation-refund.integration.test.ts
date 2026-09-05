@@ -484,14 +484,20 @@ async function seedCollectedConsolidatedThenCancelled(opts: { totalPrice: number
   return { reservation, guest, company, invoiceId };
 }
 
-describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock + idempotencia (BRECHA-REFUND-01 Fase 3, real Postgres)', () => {
-  beforeAll(async () => {
-    ({ db, pool, dbName } = await createTestDatabase());
-  }, 30_000);
+// A nivel de ARCHIVO, no de describe -- compartido por los dos describe de
+// este archivo (el de confirmRefund() y el de N2/getRefundableForUpdate()
+// más abajo). Ninguno de los dos trunca tablas entre tests (cada uno crea
+// entidades con randomUUID()), así que una sola BD para todo el archivo es
+// consistente con lo que ya hacía el describe original.
+beforeAll(async () => {
+  ({ db, pool, dbName } = await createTestDatabase());
+}, 30_000);
 
-  afterAll(async () => {
-    await dropTestDatabase(dbName, pool);
-  });
+afterAll(async () => {
+  await dropTestDatabase(dbName, pool);
+});
+
+describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock + idempotencia (BRECHA-REFUND-01 Fase 3, real Postgres)', () => {
 
   it('reembolso simple sin factura -- crea un único REFUND ledger-only con idempotencyKey', async () => {
     const { reservation } = await seedCancelledReservationWithPayment({ totalPrice: 1000, paid: 1000 });
@@ -906,5 +912,133 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
     const financialRepo = new SqlFinancialTransactionRepository(db);
     const collected = await financialRepo.getCollectedPaymentTotalForReservation(reservation.id);
     expect(collected, 'el PAYMENT de markCollected() es invisible para esta query -- por diseño de esa función, no por bug de la query').toBe(0);
+  });
+});
+
+/**
+ * =========================================================================
+ * N2 (05/09/2026, architecture-governor) -- CARACTERIZACIÓN a nivel de
+ * REPOSITORIO, no end-to-end.
+ *
+ * Por qué no vía confirmRefund(): la query que arma el pool
+ * (`getByReservationId()`) hoy NI SIQUIERA devuelve una factura consolidada
+ * (hallazgo #1) -- así que un segundo `confirmRefund()` real nunca llega a
+ * tocar `getRefundableForUpdate()` con más de una reserva de por medio. La
+ * contaminación pedida por el dueño vive en una función pública del
+ * repositorio y hay que probarla ahí, directo.
+ *
+ * El caso, con los números del propio ejemplo del dueño (dos reservas más
+ * una tercera "en el medio"): consolidada de $1000 con 3 cargos --
+ * A=$500, B=$300, C=$200. La empresa paga el total. Ya se reembolsó
+ * PARCIALMENTE contra A ($400 de sus $500 -- quedan $100 propios de A sin
+ * reclamar) y contra B ($100 de sus $300 -- quedan $200 propios de B). C
+ * todavía no recibió nada.
+ *
+ * `getRefundableForUpdate(I)` resta el reembolsado GLOBAL ($500) del total
+ * ($1000) y devuelve $500 -- el remanente de TODA la factura. Si mañana se
+ * cancela C (cuyo cargo es de solo $200, sin nada reembolsado todavía), el
+ * tope correcto para SU cancelación es $200 -- no $500. Usar el global
+ * autorizaría refundar $300 de más contra la cancelación de C: plata que,
+ * en términos de lo que cada reserva puede reclamar, es de A y de B (sus
+ * remanentes propios, $100 y $200), no de C.
+ * =========================================================================
+ */
+describe.skipIf(skipIfNoDb)('SqlInvoiceRepository.getRefundableForUpdate() -- CARACTERIZACIÓN de contaminación entre reservas de una misma consolidada (N2, 05/09/2026)', () => {
+  it('CARACTERIZACIÓN -- el tope global de la factura NO es el tope correcto para cancelar UNA sola reserva del lote', async () => {
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const guestA = await seedCustomer(db);
+    const guestB = await seedCustomer(db);
+    const guestC = await seedCustomer(db);
+    const company = await seedCustomer(db, { fullName: 'Empresa SA' });
+
+    const reservationA = await seedReservation(db, resource.id, guestA.id, { totalPrice: 500, status: 'CONFIRMED' });
+    const reservationB = await seedReservation(db, resource.id, guestB.id, { totalPrice: 300, status: 'CONFIRMED' });
+    // La que se está por cancelar -- todavía sin ningún REFUND aplicado.
+    const reservationC = await seedReservation(db, resource.id, guestC.id, { totalPrice: 200, status: 'CANCELLED' });
+
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const chargeA = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservationA.id, type: 'CHARGE', amount: 500, currency: 'ARS', status: 'SETTLED',
+    });
+    const chargeB = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservationB.id, type: 'CHARGE', amount: 300, currency: 'ARS', status: 'SETTLED',
+    });
+    const chargeC = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservationC.id, type: 'CHARGE', amount: 200, currency: 'ARS', status: 'SETTLED',
+    });
+
+    const invoiceId = await insertConsolidatedInvoice(company.id, [
+      { id: chargeA!.id, amount: 500 },
+      { id: chargeB!.id, amount: 300 },
+      { id: chargeC!.id, amount: 200 },
+    ]);
+
+    // La empresa pagó el total -- rama (A) del LEAST también queda en
+    // 1000 antes de descontar reembolsos, igual que la rama (B) (imp_total).
+    await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      type: 'PAYMENT', amount: 1000, currency: 'ARS', status: 'SETTLED',
+      settledInvoiceId: invoiceId,
+    });
+
+    // Dos REFUND SETTLED previos, PARCIALES, cada uno atado a su propia
+    // reserva vía reservation_id -- la dimensión que ya existe hoy sin
+    // cambio de esquema (confirmado por architecture-governor).
+    await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: guestA.id,
+      reservationId: reservationA.id, type: 'REFUND', amount: 400, currency: 'ARS',
+      status: 'SETTLED', reversedInvoiceId: invoiceId,
+    });
+    await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: guestB.id,
+      reservationId: reservationB.id, type: 'REFUND', amount: 100, currency: 'ARS',
+      status: 'SETTLED', reversedInvoiceId: invoiceId,
+    });
+
+    const invoiceRepo = new SqlInvoiceRepository(db);
+    const refundableGlobal = await invoiceRepo.getRefundableForUpdate(db, invoiceId);
+
+    // Defecto: 1000 (pagado y valor de factura) - 500 (reembolsado GLOBAL:
+    // 400 de A + 100 de B) = 500. Este número no distingue de quién es la
+    // porción que queda.
+    expect(refundableGlobal).toBe(500);
+
+    // Fórmula correcta para la cancelación de C, calculada A MANO (no
+    // existe hoy ningún método de repositorio que la implemente -- por
+    // eso este test es de repositorio, no end-to-end): el tope de C es
+    // SU porción de invoice_charges menos lo YA reembolsado contra (I, C)
+    // específicamente -- reservation_id ya viaja en el REFUND, así que es
+    // la misma dimensión que el global, filtrada.
+    const { rows: shareRows } = await db.query<{ share: string }>(
+      `SELECT COALESCE(SUM(ic.amount), 0) AS share
+       FROM invoice_charges ic
+       JOIN financial_transactions ft ON ft.id = ic.financial_transaction_id
+       WHERE ic.invoice_id = $1 AND ft.reservation_id = $2`,
+      [invoiceId, reservationC.id],
+    );
+    const { rows: refundedForCRows } = await db.query<{ refunded: string }>(
+      `SELECT COALESCE(SUM(amount), 0) AS refunded
+       FROM financial_transactions
+       WHERE reversed_invoice_id = $1 AND reservation_id = $2 AND status = 'SETTLED'`,
+      [invoiceId, reservationC.id],
+    );
+    const shareC = parseFloat(shareRows[0]!.share);
+    const refundedC = parseFloat(refundedForCRows[0]!.refunded);
+    const correctCapForC = shareC - refundedC;
+
+    expect(shareC, 'la porción de C en la consolidada').toBe(200);
+    expect(refundedC, 'a C todavía no se le reembolsó nada').toBe(0);
+    expect(correctCapForC, 'el tope correcto para cancelar SOLO C').toBe(200);
+
+    // La demostración: el global (500) autorizaría refundar $300 MÁS que
+    // el tope correcto de C ($200) -- esos $300 son el remanente propio de
+    // A ($100, sobre sus $500 - $400 ya reembolsados) y de B ($200, sobre
+    // sus $300 - $100 ya reembolsados), no de C.
+    expect(refundableGlobal - correctCapForC).toBe(300);
+    expect(refundableGlobal).not.toBe(correctCapForC);
   });
 });
