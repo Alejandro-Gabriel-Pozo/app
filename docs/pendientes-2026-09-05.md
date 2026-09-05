@@ -1188,3 +1188,129 @@ Reagrupación por *mismo problema*, no por etiqueta. **Propuesta, no decidida.**
 - Ninguno de los dos agentes implementó, commiteó ni tocó código. Las únicas
   corridas fueron de lectura y 3 archivos de cerca (`vitest run`, 4 tests
   verdes, 467 ms).
+
+---
+
+## 🔎 Continuación — `confirmRefund()` vs. facturas consolidadas: decisión del dueño, arbitraje del tope, N0-N3 completos (05/09/2026)
+
+Continuación directa del hallazgo #1 de la cuarta vuelta (más arriba). Todo
+lo de acá abajo pasó por `architecture-governor` en dos rondas antes de
+escribir una línea de test; nada de código de producción se tocó todavía.
+
+### Decisión del dueño (Q1, verbatim)
+
+Sobre si corresponde emitir una NC contra una factura que también cubre
+otras reservas:
+
+> "Sí a la NC parcial, es un hecho fiscal, no una decisión — lo que decido
+> es que su emisión pasa por el mismo mecanismo administrativo ya
+> establecido para ORDER-10/RESERVA-10, no automático."
+
+O sea: **fail-closed automático + escape administrativo (`Roles.MANAGEMENT`)
+que sí emite la NC parcial** — misma forma que ORDER-10 B1/B2, no un simple
+bloqueo permanente. El dinero vuelve a la **empresa**, que es quien pagó (no
+al huésped, que es lo que el código hace hoy por accidente — ver W2).
+
+**Tarea de seguimiento que el dueño define, y que NO es "implementar A o
+B":** conseguir la respuesta del contador sobre si la Factura B a la
+empresa ampara la **consolidada como paquete** o la **reserva individual**.
+Bloqueante para N4, no para N0-N3. `architecture-governor` afinó la
+pregunta real a hacerle: la Factura B no ampara "la reserva" sino **el
+saldo neto de la estadía transferido en un momento dado**
+(`getNetBalanceByStayId()`, incluye consumo POS y descuenta pagos previos
+del huésped) — no es necesariamente el mismo número que el precio de la
+reserva.
+
+### El tope: el dueño encontró un defecto más profundo que el `ic.amount` crudo
+
+Análisis del dueño (verbatim, resumido): un tope calculado con el
+"reembolsado GLOBAL" de la factura contamina el cálculo de una reserva con
+reembolsos que le corresponden a OTRA reserva del mismo lote —
+`architecture-governor` lo verificó y lo encontró **peor de lo reportado**:
+`getRefundableForUpdate()` (`sql.invoice.repository.ts:150-175`) tiene las
+DOS ramas del `LEAST` contaminadas a nivel de cabecera, no solo la resta
+(`reembolsado`) sino también el minuendo (`SUM(p.amount) settled_invoice_id
+= i.id` es lo pagado de TODA la factura).
+
+**Confirmado sin cambio de esquema.** El REFUND que crea `confirmRefund()`
+ya lleva `reservationId` Y `reversedInvoiceId` a la vez
+(`cancellation-refund.service.ts:270-280`) — "reembolsado de esta reserva
+contra esta factura" es derivable HOY como
+`SUM(amount) WHERE reversed_invoice_id = I AND reservation_id = R`, sin
+tabla nueva ni columna nueva. El dueño ya había rechazado una tabla nueva en
+ORDER-10 por duplicar campos existentes; acá aplica el mismo criterio.
+
+**Arbitraje del matiz `ic.amount` crudo vs. proporcional:** el dueño tenía
+razón en el principio (capar por reserva en los dos lados), pero
+`architecture-governor` corrigió el término exacto — `invoice_charges.amount`
+crudo **sub-capa** cuando `pricesIncludeIva = false` (`splitAmount`,
+`invoice.service.ts:207-220`, hace `impTotal = amount + impIva`). El
+segundo término tiene que ser la porción PROPORCIONAL de `imp_total`
+(`imp_total * share_R / SUM(todos los ic.amount)`), misma aritmética que
+`buildCreditNote()` ya usa (`invoice.service.ts:702`). No es un desacuerdo
+de fondo, es la fórmula exacta.
+
+**Cuatro huecos encontrados por `architecture-governor` al verificar, para
+tener en cuenta antes de N4:**
+- **H-a (activo).** El chunk `:sin-asignar` histórico ya tiene
+  `reservationId` pero `reversedInvoiceId: null` — un tope filtrado por
+  `reversed_invoice_id = I` no ve esa población. Pregunta de backfill, no
+  de fórmula. **Dimensionado en N3, ver abajo.**
+- **H-b (dormido).** `financial_transactions.reservation_id` es
+  `ON DELETE SET NULL`. `SqlReservationRepository.delete()` existe pero
+  sin ningún caller de producción — dormido, no cerrado.
+- **H-c (real, a favor del argumento del dueño).** Una misma reserva SÍ
+  puede aparecer en dos consolidadas distintas (`idx_stays_reservation_active`
+  solo impide dos estadías `CHECKED_IN` simultáneas). Es la razón de fondo
+  por la que el tope tiene que ser por PAR `(factura, reserva)`.
+- **H-d.** `resolveInvoiceLinkage()` no sirve tal cual para el pool LIFO de
+  N facturas (toma un `financialTransactionId`, devuelve `LIMIT 1`). Hace
+  falta un método nuevo por `reservationId`.
+
+### Plan de bloques, todos chicos y reversibles, uno por commit
+
+| # | Bloque | Estado |
+|---|---|---|
+| **N0** | Tests de caracterización W1/W2/W3 (hallazgo #1: cae a `:sin-asignar`, sin NC) | ✅ commits `def9b51` (test) sobre `fd0d810` |
+| **N1** | Caracterización del camino AR PURO real (`transferStayBalanceToReceivable` → `requestConsolidatedInvoice` → `markCollected()` de verdad) → `NothingToRefundError`, no `:sin-asignar` — segundo síntoma del mismo agujero | ✅ commit `fe53acd` |
+| **N2** | Caracterización de `getRefundableForUpdate()` con 3 cargos y 2 reembolsos previos — el caso de contaminación que pidió el dueño, a nivel de repositorio (no end-to-end: la query hoy ni siquiera ve la consolidada) | ✅ commit `5fcc10e` |
+| **N3** | Consulta read-only en las dos tenant DB reales para dimensionar el backfill de H-a | ✅ ver resultado abajo — sin commit de código, solo este registro |
+| **N4** | ADR del fix completo (fail-closed + escape MANAGEMENT + fórmula proporcional por par) | 🔴 bloqueado — esperando al contador |
+
+### N3 — resultado de la consulta (05/09/2026, solo lectura, `mcp__plugin_neon_neon__run_sql`)
+
+Mapeo de tenants verificado contra la BD de plataforma (`businesses`):
+`Demo` (`biz-demo-01`) = proyecto `ancient-king-17098519`, branch
+`production`; `Hotel los Alamos` (`cd6cd508-...`) = mismo proyecto, branch
+`tenant-hotel-los-alamos`.
+
+Query (`REFUND` con `reservation_id` seteado, `reversed_invoice_id IS NULL`,
+`status='SETTLED'`, cuya reserva tenga un cargo en una consolidada
+`ISSUED`): **0 filas en las dos.**
+
+**Pero el cero no es "sin riesgo" — es "sin datos".** Verificado con un
+segundo query de contexto: ninguna de las dos tenant DB tiene una sola fila
+en `accounts_receivable`, `invoice_charges`, ni una factura consolidada
+(`financial_transaction_id IS NULL`). El circuito de facturación por
+empresa **nunca se ejecutó** en ninguna de las dos:
+
+| | Demo | Hotel los Alamos |
+|---|---|---|
+| Reservas | 41 | 0 |
+| Facturas (`ISSUED`) | 11 | 0 |
+| Clientes `kind='COMPANY'` | **0** | 0 |
+| `accounts_receivable` | 0 | 0 |
+
+`Demo` tiene actividad real (41 reservas, 11 facturas emitidas) pero **cero
+clientes tipo empresa** — y `transferStayBalanceToReceivable()` exige
+`company.kind === 'COMPANY'` (`accounts-receivable.service.ts:121`): es
+estructuralmente imposible que el bug haya ocurrido ahí, no porque nadie lo
+haya disparado por buena suerte. `Hotel los Alamos` es una cáscara vacía.
+
+**Conclusión de N3: no hace falta backfill de H-a hoy, en ninguna de las dos
+bases de práctica** — pero por ausencia total de uso del circuito, no
+porque el circuito sea seguro. La pregunta de backfill vuelve a ser
+relevante en cuanto exista el primer cliente `COMPANY` real con una
+consolidada emitida.
+
+
