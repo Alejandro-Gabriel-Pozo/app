@@ -355,6 +355,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     if (n('ya_settled')         > 0) r.push('CARGO_YA_SETTLED');
     if (n('anulados')           > 0) r.push('CARGO_ANULADO');
     if (n('tipo_no_liquidable') > 0) r.push('TIPO_NO_LIQUIDABLE');
+    if (n('con_comprobante_vivo') > 0) r.push('CARGO_CON_COMPROBANTE_VIVO');
     return r;
   }
 
@@ -423,6 +424,12 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
               WHERE ft_status IN ('VOIDED','FAILED'))::int                       AS anulados,
          (SELECT count(*) FROM candidatos
               WHERE ft_type NOT IN ('CHARGE'))::int                              AS tipo_no_liquidable,
+         -- ORDER-10 (05/09/2026): dummy, no un chequeo real. La liquidación
+         -- nunca mira comprobantes vivos -- esta columna existe sólo para
+         -- que rechazosDe() (compartida con voidByOrderId()) no explote por
+         -- una columna faltante. Si algún día settleChargesByOrderId()
+         -- necesita el chequeo real, esto deja de ser 0::int.
+         0::int                                                                  AS con_comprobante_vivo,
          (SELECT o.total_amount FROM orders o
            WHERE o.id = $1 AND o.business_id = $5)::numeric                      AS orden_total,
          (SELECT o.status FROM orders o
@@ -553,6 +560,22 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
    * diferencia de la liquidación, que quedó en ('CHARGE'). La asimetría queda
    * declarada, no resuelta: cerrarla exige decidir antes si los ajustes sobre
    * órdenes son un concepto de negocio.
+   *
+   * **ORDER-10 (05/09/2026, architecture-governor) -- excepción cross-dominio
+   * SANCIONADA.** Esta función es de `clientes-finanzas` y consulta acá,
+   * en SQL crudo, las tablas `invoices`/`invoice_charges` de `facturación` --
+   * `lint:arch` (dependency-cruiser) sólo inspecta imports de TypeScript, no
+   * joins SQL cross-tabla, así que este acoplamiento es invisible para esa
+   * cerca y hay que declararlo a mano acá. Motivo: anular en silencio un
+   * CHARGE que ya tiene una Factura B con CAE real de AFIP (o una todavía
+   * `PENDING`/`FAILED_UNCERTAIN` con AFIP ya contactado) deja un comprobante
+   * fiscal real sin contrapartida -- el guard de la puerta de entrada
+   * (`OrderService.cancelOrder()`, `OrderChargeInvoicedError`) cubre el
+   * camino normal, pero esta función es el cierre estructural para
+   * cualquier otro caller. Misma semántica de estados que
+   * `InvoiceRepository.resolveInvoiceLinkage()` (facturación): bloquea
+   * `ISSUED`, `PENDING` y `FAILED_UNCERTAIN` con `afip_contacted`; NO
+   * bloquea `REJECTED` (AFIP ya dijo que no, no hay comprobante real).
    */
   async voidByOrderId(orderId: string, businessId: string): Promise<EfectoDesenlace> {
     const { rows } = await this.sqlClient.query<Record<string, unknown>>(
@@ -560,7 +583,20 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
          SELECT ft.id, ft.status AS ft_status, ft.type AS ft_type,
                 (o_any.id IS NOT NULL) AS orden_existe,
                 (o_mio.id IS NOT NULL) AS orden_del_negocio,
-                o_mio.status           AS o_status
+                o_mio.status           AS o_status,
+                EXISTS (
+                  SELECT 1 FROM (
+                    SELECT status, afip_contacted FROM invoices
+                     WHERE financial_transaction_id = ft.id
+                    UNION ALL
+                    SELECT i.status, i.afip_contacted FROM invoice_charges ic
+                      JOIN invoices i ON i.id = ic.invoice_id
+                     WHERE ic.financial_transaction_id = ft.id
+                  ) linked
+                  WHERE linked.status = 'ISSUED'
+                     OR linked.status = 'PENDING'
+                     OR (linked.status = 'FAILED_UNCERTAIN' AND linked.afip_contacted)
+                ) AS con_comprobante_vivo
            FROM financial_transactions ft
            LEFT JOIN orders o_any ON o_any.id = ft.order_id
            LEFT JOIN orders o_mio ON o_mio.id = ft.order_id
@@ -578,6 +614,19 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
                          WHERE o.id          = ft.order_id
                            AND o.business_id = ft.business_id
                            AND o.status IN ('CANCELLED'))
+            AND NOT EXISTS (
+                  SELECT 1 FROM (
+                    SELECT status, afip_contacted FROM invoices
+                     WHERE financial_transaction_id = ft.id
+                    UNION ALL
+                    SELECT i.status, i.afip_contacted FROM invoice_charges ic
+                      JOIN invoices i ON i.id = ic.invoice_id
+                     WHERE ic.financial_transaction_id = ft.id
+                  ) linked
+                  WHERE linked.status = 'ISSUED'
+                     OR linked.status = 'PENDING'
+                     OR (linked.status = 'FAILED_UNCERTAIN' AND linked.afip_contacted)
+                )
          RETURNING ft.id
        )
        SELECT
@@ -596,7 +645,9 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
          (SELECT count(*) FROM candidatos
               WHERE ft_status IN ('VOIDED','FAILED'))::int                       AS anulados,
          (SELECT count(*) FROM candidatos
-              WHERE ft_type NOT IN ('CHARGE','ADJUSTMENT'))::int                 AS tipo_no_liquidable`,
+              WHERE ft_type NOT IN ('CHARGE','ADJUSTMENT'))::int                 AS tipo_no_liquidable,
+         (SELECT count(*) FROM candidatos
+              WHERE con_comprobante_vivo)::int                                   AS con_comprobante_vivo`,
       [orderId, businessId],
     );
 

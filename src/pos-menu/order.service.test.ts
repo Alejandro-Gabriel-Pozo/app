@@ -21,6 +21,8 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { IProductRepository, IProductVariantRepository, ListProductsFilter, ListVariantsFilter, CompanySyncStatePatch } from './product.repository.js';
 import type { Product, ProductVariant, CreateProductInput, UpdateProductInput, CreateProductVariantInput, UpdateProductVariantInput } from './product.entities.js';
+import type { FinancialTransactionRepository, FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
 
 /**
  * Fake mínimo de IProductRepository — solo lo que ProductService.checkStock()
@@ -107,6 +109,37 @@ class InMemoryTransactionManager implements TransactionManager {
   }
 }
 
+/**
+ * ORDER-10 (05/09/2026) -- fake mínimo, solo `getByOrderId()` (Pick angosto
+ * que usa OrderService). `seed()` carga los CHARGE de una orden puntual;
+ * por default no hay ninguno, así que `findBlockingInvoiceLinkage()` nunca
+ * encuentra nada que chequear y el guard es transparente para el resto de
+ * la suite.
+ */
+class FakeFinancialTransactionRepositoryForOrders implements Pick<FinancialTransactionRepository, 'getByOrderId'> {
+  private readonly byOrder = new Map<string, FinancialTransaction[]>();
+  seed(orderId: string, txs: FinancialTransaction[]): void { this.byOrder.set(orderId, txs); }
+  async getByOrderId(orderId: string): Promise<FinancialTransaction[]> {
+    return this.byOrder.get(orderId) ?? [];
+  }
+}
+
+/**
+ * ORDER-10 (05/09/2026) -- fake mínimo, solo `resolveInvoiceLinkage()`. Por
+ * default cualquier `financialTransactionId` resuelve a `{ kind: 'NONE' }`
+ * (sin factura) para no bloquear ninguna cancelación existente; `seed()`
+ * carga un linkage puntual para los tests del guard.
+ */
+class FakeInvoiceRepositoryForOrders implements Pick<InvoiceRepository, 'resolveInvoiceLinkage'> {
+  private readonly byChargeId = new Map<string, InvoiceLinkage>();
+  seed(financialTransactionId: string, linkage: InvoiceLinkage): void {
+    this.byChargeId.set(financialTransactionId, linkage);
+  }
+  async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
+    return this.byChargeId.get(financialTransactionId) ?? { kind: 'NONE' };
+  }
+}
+
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_CUSTOMER_ID = 'cust-test';
 
@@ -120,6 +153,8 @@ describe('OrderService', () => {
   let productService: ProductService;
   let customerRateRepo: InMemoryCustomerRateRepository;
   let auditLogRepo: InMemoryAuditLogRepository;
+  let financialTransactionRepo: FakeFinancialTransactionRepositoryForOrders;
+  let invoiceRepo: FakeInvoiceRepositoryForOrders;
   let service: OrderService;
 
   // Bug #4 (27/08/2026) — actor de las transiciones auditadas.
@@ -137,7 +172,12 @@ describe('OrderService', () => {
     customerRateRepo     = new InMemoryCustomerRateRepository();
     const orderPricingService = new OrderPricingService(productService, customerRateRepo);
     auditLogRepo        = new InMemoryAuditLogRepository();
-    service             = new OrderService(orderRepo, txManager, eventRepo, productService, recipeService, orderPricingService, auditLogRepo);
+    financialTransactionRepo = new FakeFinancialTransactionRepositoryForOrders();
+    invoiceRepo               = new FakeInvoiceRepositoryForOrders();
+    service             = new OrderService(
+      orderRepo, txManager, eventRepo, productService, recipeService, orderPricingService,
+      financialTransactionRepo, invoiceRepo, auditLogRepo,
+    );
 
     seedProduct1(10);
     inventoryLevelRepo.seed({
@@ -549,6 +589,102 @@ describe('OrderService', () => {
     });
   });
 
+  describe('ORDER-10 (05/09/2026) — guard fail-closed en cancelOrder() contra factura vinculada', () => {
+    function seedCharge(orderId: string, chargeId = `charge-${orderId}`): void {
+      financialTransactionRepo.seed(orderId, [{
+        id: chargeId, businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        orderId, type: 'CHARGE', amount: 100, currency: 'ARS', status: 'SETTLED',
+        createdAt: new Date(),
+      }]);
+    }
+
+    it('rechaza cancelar si el cargo tiene una factura ISSUED (CAE real de AFIP)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const chargeId = `charge-${id}`;
+      seedCharge(id, chargeId);
+      invoiceRepo.seed(chargeId, { kind: 'ISSUED', invoiceId: 'inv-1' });
+
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(/no se puede cancelar directamente/);
+
+      // El guard corre DESPUÉS de transitionWithClient pero ANTES de emitir
+      // el evento: sin importar qué haga el rollback (eso es de la
+      // transacción real de Postgres -- InMemoryTransactionManager no
+      // simula rollback, se verifica en integración), acá lo verificable
+      // es que ningún order.cancelled salió a auditar/disparar efectos
+      // financieros sobre una orden con comprobante vivo.
+      expect(eventRepo.events.some((e) => e.eventType === 'order.cancelled')).toBe(false);
+    });
+
+    it('rechaza cancelar si el cargo tiene una factura NOT_ISSUED en PENDING (pedido de CAE en curso)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const chargeId = `charge-${id}`;
+      seedCharge(id, chargeId);
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'PENDING', afipContacted: false });
+
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(/no se puede cancelar directamente/);
+    });
+
+    it('rechaza cancelar si la factura quedó FAILED_UNCERTAIN habiendo contactado a AFIP (A8.6 -- no se sabe si AFIP ya la procesó)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const chargeId = `charge-${id}`;
+      seedCharge(id, chargeId);
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+      await expect(service.cancelOrder(id, ACTOR)).rejects.toThrow(/no se puede cancelar directamente/);
+    });
+
+    it('permite cancelar si la factura fue REJECTED por AFIP (no hay comprobante real)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const chargeId = `charge-${id}`;
+      seedCharge(id, chargeId);
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'REJECTED', afipContacted: true });
+
+      const cancelled = await service.cancelOrder(id, ACTOR);
+      expect(cancelled.status).toBe('CANCELLED');
+    });
+
+    it('permite cancelar si la factura quedó FAILED_UNCERTAIN SIN haber contactado a AFIP (nunca salió el request)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      const chargeId = `charge-${id}`;
+      seedCharge(id, chargeId);
+      invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: false });
+
+      const cancelled = await service.cancelOrder(id, ACTOR);
+      expect(cancelled.status).toBe('CANCELLED');
+    });
+
+    it('permite cancelar si el cargo no tiene ninguna factura vinculada (caso normal, sin facturar)', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      seedCharge(id);
+      // sin invoiceRepo.seed(): resuelve a { kind: 'NONE' } por default.
+
+      const cancelled = await service.cancelOrder(id, ACTOR);
+      expect(cancelled.status).toBe('CANCELLED');
+    });
+
+    it('ignora un PAYMENT/REFUND de la misma orden -- sólo mira los CHARGE', async () => {
+      const id = await createDraftOrderWithItem(50);
+      await service.confirmOrder(id, ACTOR);
+      financialTransactionRepo.seed(id, [{
+        id: `pay-${id}`, businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID,
+        orderId: id, type: 'PAYMENT', amount: 100, currency: 'ARS', status: 'SETTLED',
+        createdAt: new Date(),
+      }]);
+      // Un PAYMENT con una factura ISSUED vinculada NO debería bloquear --
+      // el guard filtra por type === 'CHARGE' antes de resolver linkage.
+      invoiceRepo.seed(`pay-${id}`, { kind: 'ISSUED', invoiceId: 'inv-1' });
+
+      const cancelled = await service.cancelOrder(id, ACTOR);
+      expect(cancelled.status).toBe('CANCELLED');
+    });
+  });
+
   describe('auditoría de transiciones (Bug #4, 27/08/2026)', () => {
     it('confirmOrder deja una fila de audit_log status DRAFT→CONFIRMED con el actor', async () => {
       const id = await createDraftOrderWithItem(50);
@@ -591,6 +727,7 @@ describe('OrderService', () => {
         orderRepo, txManager, eventRepo, productService,
         new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository()),
         new OrderPricingService(productService, customerRateRepo),
+        financialTransactionRepo, invoiceRepo,
         // sin auditLogRepo a propósito
       );
       await expect(bare.confirmOrder(id, ACTOR)).rejects.toThrow(/AuditLogRepository/);
@@ -815,6 +952,7 @@ describe('OrderService', () => {
         orderRepo, txManager, eventRepo, productService,
         new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository()),
         new OrderPricingService(productService, customerRateRepo),
+        financialTransactionRepo, invoiceRepo,
         // sin auditLogRepo a propósito
       );
 

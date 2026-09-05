@@ -293,6 +293,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       aplicadas: 0, candidatos: 0,
       orden_inexistente: 0, orden_ajena: 0, orden_no_elegible: 0,
       estado_desconocido: 0, ya_settled: 0, anulados: 0, tipo_no_liquidable: 0,
+      con_comprobante_vivo: 0,
       orden_total: null, orden_status: null,
       ...over,
     };
@@ -737,7 +738,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
         rows: [{
           aplicadas: 1, candidatos: 1, orden_inexistente: 0, orden_ajena: 0,
           orden_no_elegible: 0, estado_desconocido: 0, ya_settled: 0,
-          anulados: 0, tipo_no_liquidable: 0,
+          anulados: 0, tipo_no_liquidable: 0, con_comprobante_vivo: 0,
         }],
       });
 
@@ -753,6 +754,31 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       expect(sql).toContain("ft.type   IN ('CHARGE','ADJUSTMENT')");
       expect(params).toEqual(['order-1', 'biz-1']);
       expect(d).toEqual({ tipo: 'APLICADO', filas: 1, rechazos: [] });
+    });
+
+    it('ORDER-10 (05/09/2026): la sentencia excluye del UPDATE los cargos con comprobante vivo, contra invoices/invoice_charges', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          aplicadas: 0, candidatos: 1, orden_inexistente: 0, orden_ajena: 0,
+          orden_no_elegible: 0, estado_desconocido: 0, ya_settled: 0,
+          anulados: 0, tipo_no_liquidable: 0, con_comprobante_vivo: 1,
+        }],
+      });
+
+      const d = await repo.voidByOrderId('order-1', 'biz-1');
+
+      const [sql] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      // La exclusión cross-dominio SANCIONADA (ver docblock de voidByOrderId):
+      // NOT EXISTS contra invoices/invoice_charges, DENTRO del UPDATE.
+      expect(sql).toContain('AND NOT EXISTS (');
+      expect(sql).toContain('FROM invoices');
+      expect(sql).toContain('FROM invoice_charges ic');
+      expect(sql).toContain("linked.status = 'ISSUED'");
+      expect(sql).toContain("linked.status = 'PENDING'");
+      expect(sql).toContain("linked.status = 'FAILED_UNCERTAIN' AND linked.afip_contacted");
+      // No aplicó nada (el único candidato lo bloqueó el comprobante vivo) y
+      // el rechazo declara la causa real -- no un "nada que hacer" mudo.
+      expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] });
     });
   });
 });

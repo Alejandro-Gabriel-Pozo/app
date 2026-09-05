@@ -20,6 +20,7 @@ import type { AuditLogRepository } from '../../repositories/audit-log.repository
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import {
   handleOrderConfirmed,
   handleOrderCompleted,
@@ -98,6 +99,7 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
       new SqlOrderRepository(db), txManager, new SqlDomainEventRepository(db), productService,
       new RecipeService(new SqlRecipeItemRepository(db), new SqlProductRepository(db), new SqlProductVariantRepository(db)),
       new OrderPricingService(productService, new SqlCustomerRateRepository(db)),
+      financialRepo, new SqlInvoiceRepository(db),
       new SqlAuditLogRepository(db),
     );
   }, 60_000);
@@ -407,6 +409,7 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
       new SqlOrderRepository(db), txManager, new SqlDomainEventRepository(db), ps,
       new RecipeService(new SqlRecipeItemRepository(db), new SqlProductRepository(db), new SqlProductVariantRepository(db)),
       new OrderPricingService(ps, new SqlCustomerRateRepository(db)),
+      financialRepo, new SqlInvoiceRepository(db),
       auditRepo,
     );
   }

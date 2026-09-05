@@ -1,0 +1,402 @@
+/**
+ * @file order-cancel-invoice-toctou.integration.test.ts
+ * @description ORDER-10 (05/09/2026, docs/diseno-cancelacion-orden-nota-credito-2026-09-05.md)
+ * -- verifica, contra Postgres real y con conexiones separadas de verdad
+ * (no un solo `await` tras otro), que `OrderService.cancelOrder()` y
+ * `InvoiceService.requestInvoice()` no pueden entrelazarse para dejar una
+ * Factura B real (CAE de AFIP) emitida sobre una orden CANCELLED sin
+ * contrapartida.
+ *
+ * Antes de este bloque, el guard de `cancelOrder()`
+ * (`findBlockingInvoiceLinkage()`, ver `OrderChargeInvoicedError`) sólo
+ * miraba SI YA HABÍA una factura al momento de cancelar -- pero
+ * `requestInvoice()` nunca miraba el estado de la orden. Dos llamadas
+ * concurrentes sobre la MISMA orden (una cancelando, otra facturando el
+ * mismo cargo) podían entrelazarse: cancelOrder() ve "sin factura todavía"
+ * y cancela: `requestInvoice()`, un instante después, nunca se entera de
+ * que la orden ya es CANCELLED y emite igual.
+ *
+ * El fix (`InvoiceService.requestInvoice()`, guard TOCTOU) hace que las dos
+ * rutas tomen el MISMO lock (`SELECT id FROM orders ... FOR UPDATE`) antes
+ * de decidir -- la primera que lo consigue gana la carrera; la otra ve el
+ * estado YA resuelto por la primera, nunca una foto vieja.
+ *
+ * **Nota de método (mutation testing real, 05/09/2026):** el primer intento
+ * de este archivo tenía UN solo test de "carrera" (`Promise.allSettled` de
+ * las dos llamadas sin ningún control de orden). Al desactivar a mano el
+ * guard de `requestInvoice()` para confirmar que el test lo detectaba (la
+ * misma disciplina de "revertir y probar" de
+ * `docs/conocimiento/playbook-idempotencia-bajo-lock.md`), el test SIGUIÓ
+ * pasando -- porque en esa corrida `requestInvoice()` ganó la carrera
+ * primero, y el guard YA EXISTENTE del lado `cancelOrder()`
+ * (`findBlockingInvoiceLinkage()`) atajó el caso igual, por la otra punta.
+ * Un test que depende de qué lado gana una carrera no reproducible no es
+ * evidencia de que ESTE guard puntual funcione. Por eso el test crítico de
+ * abajo (`bloquea mientras...`) NO deja la carrera al azar: sostiene el
+ * lock de `orders` a mano en una conexión real (mismo patrón de
+ * `for-key-share-lock-semantics.integration.test.ts`, con su mismo brazo de
+ * control) y prueba que `requestInvoice()` se queda esperando ese lock
+ * específico, indefinidamente, hasta que se libera -- eso sí distingue "el
+ * guard de requestInvoice() existe" de "algún guard, cualquiera, atajó
+ * esta vez". El test de la carrera libre se conserva aparte, como chequeo
+ * de sistema completo (nunca los dos guards a la vez dejan pasar el bug),
+ * no como la prueba de ESTE guard.
+ *
+ * ## Requisito de entorno
+ * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
+ * Si no está definida, la suite completa se saltea.
+ */
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import type pg from 'pg';
+import type { Arca } from '@arcasdk/core';
+
+import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
+import type { SqlClient } from '../../repositories/sql.client.js';
+import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
+
+import { OrderService } from '../../pos-menu/order.service.js';
+import { SqlOrderRepository } from '../../pos-menu/sql.order.repository.js';
+import { ProductService } from '../../pos-menu/product.service.js';
+import { SqlProductRepository, SqlProductVariantRepository } from '../../pos-menu/sql.product.repository.js';
+import { RecipeService } from '../../pos-menu/recipe.service.js';
+import { OrderPricingService } from '../../pos-menu/order-pricing.service.js';
+import { SqlRecipeItemRepository } from '../../repositories/sql.recipe-item.repository.js';
+import { SqlInventoryLevelRepository } from '../../repositories/sql.inventory-level.repository.js';
+import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
+import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
+import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
+import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
+import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
+
+import { InvoiceService } from '../../facturacion/invoice.service.js';
+import { OrderCancelledCannotInvoiceError } from '../../domain/errors.js';
+import { OrderChargeInvoicedError } from '../../domain/errors.js';
+import { CBTE_TIPO_FACTURA_B } from '../../facturacion/afip-catalog.constants.js';
+import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
+import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
+import type { AccountsReceivableRepository, AccountReceivable } from '../../clientes-finanzas/accounts-receivable.repository.js';
+import type { ReservationRepository } from '../../reservas/reservation.repository.js';
+import type { Reservation } from '../../reservas/Reservation.js';
+
+/** Mismo helper que `for-key-share-lock-semantics.integration.test.ts` --
+ *  ver ese archivo para el razonamiento completo de por qué chequea los DOS
+ *  brazos (fulfilled y rejected) y por qué no usa `Promise.race`. */
+async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ settled: boolean }> {
+  let settled = false;
+  void promise.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return { settled };
+}
+
+const BIZ = 'biz-order10-toctou';
+const LOC = 'loc-order10-toctou';
+const CUS = 'cus-order10-toctou';
+const PROD = 'prod-order10-toctou';
+const ACTOR = 'user-order10-toctou';
+
+/** Sin certificado real: `requestInvoice()` nunca debería tocar la red -- `clientFactory` la reemplaza más abajo. */
+class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
+  async getStatus(): Promise<AfipCredentialsStatus> { return { configured: true, environment: 'homologacion' }; }
+  async getDecrypted(): Promise<AfipCredentials | null> { return { cert: 'CERT', key: 'KEY', environment: 'homologacion' }; }
+  async save(): Promise<void> {}
+  async clear(): Promise<void> {}
+  async getTicket(): Promise<AfipTicketCache | null> { return null; }
+  async saveTicket(): Promise<void> {}
+  async clearTicket(): Promise<void> {}
+}
+
+/** Ninguna de las dos órdenes de este archivo tiene cliente empresa -- nada que buscar/marcar. */
+class FakeAccountsReceivableRepo implements Pick<
+  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId'
+> {
+  async getByFinancialTransactionId(): Promise<AccountReceivable | undefined> { return undefined; }
+  async getPendingByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
+  async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
+}
+
+/** Los ítems de este archivo son PRODUCT -- `resolveOrderItemLine` nunca llama a esto. */
+class FakeReservationRepository implements Pick<ReservationRepository, 'getById'> {
+  async getById(): Promise<Reservation | undefined> { return undefined; }
+}
+
+/** Mismo patrón que invoice.service.test.ts -- AFIP siempre aprueba, sin pegarle a la red real. */
+function fakeArcaClient(): Arca {
+  return {
+    electronicBillingService: {
+      getLastVoucher: async () => ({ cbteNro: 10, cbteTipo: CBTE_TIPO_FACTURA_B, ptoVta: 3 }),
+      createNextVoucher: async () => ({
+        response: {
+          FeCabResp: { Resultado: 'A', CbteTipo: CBTE_TIPO_FACTURA_B },
+          FeDetResp: { FECAEDetResponse: [{ Resultado: 'A', CbteDesde: 11 }] },
+        },
+        cae: 'CAE-ORDER10-TOCTOU',
+        caeFchVto: '20301231',
+      }),
+      getVoucherInfo: async () => ({}),
+    },
+  } as unknown as Arca;
+}
+
+describe.skipIf(skipIfNoDb)('ORDER-10 -- TOCTOU entre cancelOrder() y requestInvoice() sobre la misma orden', () => {
+  let db: SqlClient;
+  let pool: pg.Pool;
+  let dbName: string;
+
+  let orderService: OrderService;
+  let invoiceService: InvoiceService;
+  let financialRepo: SqlFinancialTransactionRepository;
+
+  beforeAll(async () => {
+    ({ db, pool, dbName } = await createTestDatabase());
+
+    await db.query(`INSERT INTO locations (id, name) VALUES ($1,'ORDER-10')`, [LOC]);
+    await db.query(
+      `INSERT INTO customers (id, full_name, display_name, customer_number)
+       VALUES ($1,'Cliente ORDER-10','Cliente ORDER-10',1)`, [CUS]);
+    await db.query(
+      `INSERT INTO products (id, business_id, name, base_price, product_type, sku)
+       VALUES ($1,$2,'Producto ORDER-10',100,'RETAIL','SKU-ORDER10')`, [PROD, BIZ]);
+    // El guard de AfipNotConfiguredError exige CUIT y punto de venta cargados
+    // -- `clientFactory` reemplaza el cliente real, así que nunca hace falta
+    // un certificado de verdad.
+    await db.query(`UPDATE business_profile SET tax_id = '20111111112', afip_sales_point = 3`);
+
+    const pgTxManager = new PgTransactionManager(pool);
+    const orderRepo = new SqlOrderRepository(db);
+    financialRepo = new SqlFinancialTransactionRepository(db);
+    const invoiceRepo = new SqlInvoiceRepository(db);
+    const productRepo = new SqlProductRepository(db);
+    const productVariantRepo = new SqlProductVariantRepository(db);
+
+    const productService = new ProductService(
+      productRepo, productVariantRepo, new SqlAuditLogRepository(db), new SqlInventoryLevelRepository(db), pgTxManager,
+    );
+    orderService = new OrderService(
+      orderRepo, pgTxManager, new SqlDomainEventRepository(db), productService,
+      new RecipeService(new SqlRecipeItemRepository(db), productRepo, productVariantRepo),
+      new OrderPricingService(productService, new SqlCustomerRateRepository(db)),
+      financialRepo, invoiceRepo,
+      new SqlAuditLogRepository(db),
+    );
+
+    invoiceService = new InvoiceService(
+      invoiceRepo,
+      financialRepo,
+      new SqlBusinessProfileRepository(db),
+      new FakeAfipCredentialsRepository(),
+      orderRepo,
+      productRepo,
+      productVariantRepo,
+      new FakeReservationRepository(),
+      pgTxManager,
+      new FakeAccountsReceivableRepo(),
+      new SqlAuditLogRepository(db),
+      () => buildArcaBillingAdapter(fakeArcaClient()),
+    );
+  }, 60_000);
+
+  afterAll(async () => { await dropTestDatabase(dbName, pool); });
+
+  beforeEach(async () => {
+    await db.query('DELETE FROM audit_log');
+    await db.query('DELETE FROM invoice_items');
+    await db.query('DELETE FROM invoice_charges');
+    await db.query('DELETE FROM invoices');
+    await db.query('DELETE FROM financial_transactions');
+    await db.query('DELETE FROM domain_events');
+    await db.query('DELETE FROM order_items');
+    await db.query('DELETE FROM orders');
+    await db.query('DELETE FROM inventory_levels');
+    await db.query(
+      `INSERT INTO inventory_levels (id, business_id, product_id, location_id, stock_quantity, reserved_quantity)
+       VALUES ($1,$2,$3,$4,100,0)`, [randomUUID(), BIZ, PROD, LOC]);
+  });
+
+  async function seedConfirmedOrderWithCharge(): Promise<{ orderId: string; chargeId: string }> {
+    const order = await orderService.createOrder({
+      businessId: BIZ, customerId: CUS, locationId: LOC,
+      items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
+    });
+    await orderService.confirmOrder(order.id, ACTOR);
+
+    // El CHARGE normalmente lo crea el handler del outbox (order.confirmed);
+    // acá se inserta directo -- lo único que importa para este test es que
+    // exista un CHARGE de la orden, no cómo llegó a existir.
+    const charge = await financialRepo.create({
+      id: randomUUID(), businessId: BIZ, customerId: CUS, orderId: order.id,
+      type: 'CHARGE', amount: 100, currency: 'ARS', status: 'SETTLED',
+    });
+
+    return { orderId: order.id, chargeId: charge!.id };
+  }
+
+  // -------------------------------------------------------------------------
+  // Caso secuencial -- rápido, 100% determinístico. No es la evidencia que
+  // pidió el governor (esa es la carrera de abajo), pero es el criterio de
+  // aceptación más básico del ADR: una vez cancelada la orden, facturar su
+  // cargo SIEMPRE rechaza, sin importar la concurrencia.
+  // -------------------------------------------------------------------------
+  it('secuencial: cancelada la orden primero, requestInvoice() del cargo rechaza con OrderCancelledCannotInvoiceError', async () => {
+    const { orderId, chargeId } = await seedConfirmedOrderWithCharge();
+
+    await orderService.cancelOrder(orderId, ACTOR);
+
+    await expect(
+      invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: chargeId, changedBy: ACTOR }),
+    ).rejects.toThrow(OrderCancelledCannotInvoiceError);
+
+    const { rows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM invoices WHERE financial_transaction_id = $1`, [chargeId],
+    );
+    expect(Number(rows[0]!.count)).toBe(0);
+  }, 15_000);
+
+  // -------------------------------------------------------------------------
+  // La carrera real -- DOS conexiones de Postgres genuinas (cada `run()` de
+  // PgTransactionManager hace su propio `pool.connect()`), disparadas con
+  // Promise.all para que compitan de verdad por el `FOR UPDATE` de `orders`.
+  //
+  // No hace falta forzar quién gana: cualquiera de los dos desenlaces es
+  // válido, lo que NUNCA puede pasar es que los dos tengan éxito a la vez
+  // (orden CANCELLED + factura ISSUED del mismo cargo). Eso es exactamente
+  // lo que el bug real de producción hacía en silencio.
+  // -------------------------------------------------------------------------
+  it('concurrente: cancelOrder() y requestInvoice() sobre la misma orden nunca terminan las dos OK', async () => {
+    const { orderId, chargeId } = await seedConfirmedOrderWithCharge();
+
+    const [cancelResult, invoiceResult] = await Promise.allSettled([
+      orderService.cancelOrder(orderId, ACTOR),
+      invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: chargeId, changedBy: ACTOR }),
+    ]);
+
+    // Nunca las dos: o se canceló la orden y no hay factura, o se facturó
+    // y la orden sigue como estaba. Ambas a la vez es exactamente el bug.
+    const ambasOk = cancelResult.status === 'fulfilled' && invoiceResult.status === 'fulfilled';
+    expect(
+      ambasOk,
+      'cancelOrder() y requestInvoice() resolvieron las DOS con éxito -- el guard TOCTOU no está cerrando la ' +
+      'ventana de carrera. Ver InvoiceService.requestInvoice() (getByIdForUpdate antes de crear la factura).',
+    ).toBe(false);
+
+    const { rows: orderRows } = await db.query<{ status: string }>(
+      `SELECT status FROM orders WHERE id = $1`, [orderId],
+    );
+    const { rows: invoiceRows } = await db.query<{ status: string }>(
+      `SELECT status FROM invoices WHERE financial_transaction_id = $1`, [chargeId],
+    );
+
+    if (cancelResult.status === 'fulfilled') {
+      // Ganó la cancelación: la orden quedó CANCELLED y nunca se llegó a
+      // crear ninguna fila de `invoices` para este cargo (el guard de
+      // requestInvoice() tira ANTES del INSERT).
+      expect(cancelResult.value.status).toBe('CANCELLED');
+      expect(orderRows[0]!.status).toBe('CANCELLED');
+      expect(invoiceRows).toHaveLength(0);
+      expect(invoiceResult.status).toBe('rejected');
+      if (invoiceResult.status === 'rejected') {
+        expect(invoiceResult.reason).toBeInstanceOf(OrderCancelledCannotInvoiceError);
+      }
+    } else {
+      // Ganó la facturación: el comprobante quedó ISSUED (CAE real de la
+      // AFIP fake) y la orden NUNCA llegó a CANCELLED -- el guard de
+      // cancelOrder() (OrderChargeInvoicedError) frenó la transición.
+      expect(invoiceResult.status).toBe('fulfilled');
+      if (invoiceResult.status === 'fulfilled') {
+        expect(invoiceResult.value.status).toBe('ISSUED');
+      }
+      expect(invoiceRows[0]?.status).toBe('ISSUED');
+      expect(orderRows[0]!.status).toBe('CONFIRMED');
+      expect(cancelResult.status).toBe('rejected');
+      if (cancelResult.status === 'rejected') {
+        expect(cancelResult.reason).toBeInstanceOf(OrderChargeInvoicedError);
+      }
+    }
+  }, 15_000);
+
+  // -------------------------------------------------------------------------
+  // La evidencia crítica que pidió architecture-governor: NO deja el orden de
+  // llegada al azar. Sostiene a mano, en una conexión real, el MISMO efecto
+  // que `cancelOrder()` aplica bajo lock (orders.status = 'CANCELLED', sin
+  // commitear) y prueba que `requestInvoice()` se queda esperando ESE lock
+  // puntual -- no que "algún guard, cualquiera" haya interceptado la orden
+  // de llegada de esta corrida en particular. Con brazo de control, mismo
+  // criterio que `for-key-share-lock-semantics.integration.test.ts`.
+  // -------------------------------------------------------------------------
+  it('requestInvoice() se queda esperando el lock de orders() mientras una cancelación está en vuelo, y una vez liberado ve la orden ya CANCELLED (no una foto vieja)', async () => {
+    const { orderId: lockedOrderId, chargeId: lockedChargeId } = await seedConfirmedOrderWithCharge();
+    const { chargeId: controlChargeId } = await seedConfirmedOrderWithCharge();
+
+    const connA = await pool.connect();
+    let blockedInvoice: Promise<unknown> | undefined;
+    let controlInvoice: Promise<unknown> | undefined;
+
+    try {
+      // Mismo efecto que la transición que `cancelOrder()` aplica DENTRO de
+      // su transacción (transitionWithClient: UPDATE de orders bajo lock),
+      // sostenido sin commitear -- simula el instante exacto en el que
+      // cancelOrder() ya decidió cancelar pero todavía no terminó.
+      await connA.query('BEGIN');
+      await connA.query(
+        `UPDATE orders SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = $1 AND status = 'CONFIRMED'`,
+        [lockedOrderId],
+      );
+
+      blockedInvoice = invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: lockedChargeId, changedBy: ACTOR,
+      });
+      // Brazo de control -- mismo camino, MISMA cantidad de trabajo previo
+      // al lock (idempotencia, tx, perfil, ítems), pero sobre una orden SIN
+      // ningún lock sostenido. Si esta tampoco resolviera dentro de la
+      // ventana, el resultado del brazo bloqueado no probaría nada: algo
+      // más (latencia de red hacia Neon, pool saturado) estaría frenando
+      // ambas por igual.
+      controlInvoice = invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: controlChargeId, changedBy: ACTOR,
+      });
+
+      const [blocked, control] = await Promise.all([
+        settledWithin(blockedInvoice, 4_000),
+        settledWithin(controlInvoice, 4_000),
+      ]);
+
+      expect(
+        control.settled,
+        'El brazo de CONTROL (orden SIN ningún lock sostenido) no resolvió dentro de la ventana -- algo más está ' +
+        'frenando la conexión (latencia hacia TEST_DATABASE_URL, pool saturado), no específicamente el lock de ' +
+        'orders(). El resultado del brazo bloqueado no es confiable mientras este control esté fallando.',
+      ).toBe(true);
+      expect(
+        blocked.settled,
+        'requestInvoice() resolvió ANTES de que la transacción que sostiene CANCELLED sobre orders() hiciera ' +
+        'commit -- el guard TOCTOU (getByIdForUpdate() como primera operación de la transacción) no está tomando ' +
+        'el lock, o no lo está tomando ANTES de decidir. Ver InvoiceService.requestInvoice().',
+      ).toBe(false);
+    } finally {
+      // Mismo orden que FOR-KEY-SHARE-001: terminar la transacción que
+      // sostiene el lock PRIMERO -- libera cualquier `requestInvoice()` que
+      // haya quedado esperando. Recién después, drenar las dos promesas
+      // (ignorando acá su resultado -- ya se evaluó arriba, o el test ya
+      // está fallando por otra razón) y liberar la conexión.
+      await connA.query('COMMIT').catch(() => {});
+      if (blockedInvoice) await blockedInvoice.catch(() => {});
+      if (controlInvoice) await controlInvoice.catch(() => {});
+      connA.release();
+    }
+
+    // Liberado el lock, requestInvoice() ve la orden YA CANCELLED -- por el
+    // commit de arriba, no por una foto vieja tomada antes de bloquear.
+    await expect(blockedInvoice).rejects.toThrow(OrderCancelledCannotInvoiceError);
+
+    const { rows: invoiceRows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM invoices WHERE financial_transaction_id = $1`, [lockedChargeId],
+    );
+    expect(Number(invoiceRows[0]!.count)).toBe(0);
+
+    // El brazo de control, sin ningún lock en el medio, factura normal.
+    const controlValue = await controlInvoice as { status: string };
+    expect(controlValue.status).toBe('ISSUED');
+  }, 20_000);
+});

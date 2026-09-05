@@ -53,6 +53,8 @@ import { RecipeService }                 from './recipe.service.js';
 import { SqlRecipeItemRepository }       from '../repositories/sql.recipe-item.repository.js';
 import { OrderPricingService }           from './order-pricing.service.js';
 import { SqlCustomerRateRepository }     from '../clientes-finanzas/sql.customer-rate.repository.js';
+import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -88,6 +90,10 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
     ),
     // D9-Parte 2 -- resuelve unitPrice server-side para PRODUCT/PRODUCT_VARIANT.
     new OrderPricingService(productService, new SqlCustomerRateRepository(req.db!)),
+    // ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- guard
+    // fail-closed de cancelOrder() contra una factura ya vinculada.
+    new SqlFinancialTransactionRepository(req.db!),
+    new SqlInvoiceRepository(req.db!),
     // Bug #4 (27/08/2026) -- audita las transiciones de estado de la orden.
     // Mismo pool de tenant (req.db!) que el resto, así comparte la transacción.
     new SqlAuditLogRepository(req.db!),

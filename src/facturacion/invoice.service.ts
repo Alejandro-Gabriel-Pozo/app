@@ -49,6 +49,7 @@ import {
   InvoiceNotReversibleError,
   NothingToInvoiceError,
   AccountsReceivableAlreadyInvoicedError,
+  OrderCancelledCannotInvoiceError,
 } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
@@ -122,7 +123,12 @@ export class InvoiceService {
      * D8-Nivel B (23/08/2026) — también arma las líneas reales del
      * comprobante (`invoice_items`), ver `resolveInvoiceItems()`.
      */
-    private readonly orderRepo: Pick<IOrderRepository, 'getById'>,
+    /**
+     * ORDER-10 (05/09/2026, architecture-governor) -- `getByIdForUpdate`
+     * cierra la ventana TOCTOU entre `cancelOrder()` y `requestInvoice()`:
+     * ver el guard al principio de la transacción de `requestInvoice()`.
+     */
+    private readonly orderRepo: Pick<IOrderRepository, 'getById' | 'getByIdForUpdate'>,
     /** D8-Nivel B — nombre/unidad/código ARCA de cada línea PRODUCT. */
     private readonly productRepo: Pick<IProductRepository, 'getById'>,
     private readonly productVariantRepo: Pick<IProductVariantRepository, 'getById'>,
@@ -355,6 +361,23 @@ export class InvoiceService {
     // falla a mitad de camino.
     let invoice!: Invoice;
     await this.transactionManager.run(async (client: SqlClient) => {
+      // ORDER-10 (05/09/2026, architecture-governor) -- cierre de la
+      // ventana TOCTOU con `OrderService.cancelOrder()`. Ambas rutas
+      // toman el MISMO lock (`orders`, `FOR UPDATE`) antes de decidir:
+      // sin esto, un `cancelOrder()` y un `requestInvoice()` concurrentes
+      // sobre la misma orden podían entrelazarse -- la cancelación lee
+      // "sin factura todavía" mientras la facturación, un instante
+      // después, todavía no vio la orden CANCELLED -- y las dos avanzan.
+      // Primera operación de la transacción a propósito: si la orden ya
+      // está CANCELLED, no tiene sentido llegar a crear la fila de
+      // `invoices` para después descartarla con el rollback.
+      if (tx.orderId != null) {
+        const order = await this.orderRepo.getByIdForUpdate(client, tx.orderId);
+        if (order && order.status === 'CANCELLED') {
+          throw new OrderCancelledCannotInvoiceError(tx.orderId);
+        }
+      }
+
       invoice = await this.invoiceRepo.createWithClient(
         client,
         {

@@ -144,10 +144,17 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
   async update(_input: UpdateBusinessProfileInput) { return this.profile; }
 }
 
-/** D8 (22/08/2026) -- `getById()` es lo único que InvoiceService usa. */
-class FakeOrderRepository implements Pick<IOrderRepository, 'getById'> {
+/**
+ * D8 (22/08/2026) -- `getById()`. ORDER-10 (05/09/2026) -- `getByIdForUpdate()`
+ * también, para el guard TOCTOU de `requestInvoice()`; el fake ignora el
+ * `client` (no hay lock real fuera de Postgres) y devuelve la misma orden.
+ */
+class FakeOrderRepository implements Pick<IOrderRepository, 'getById' | 'getByIdForUpdate'> {
   constructor(private readonly order: Order | null = null) {}
   async getById(id: string): Promise<Order | undefined> {
+    return this.order && this.order.id === id ? this.order : undefined;
+  }
+  async getByIdForUpdate(_client: SqlClient, id: string): Promise<Order | undefined> {
     return this.order && this.order.id === id ? this.order : undefined;
   }
 }
@@ -351,6 +358,49 @@ describe('InvoiceService', () => {
       const service = buildService({ credentials: null });
       await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
         .rejects.toThrow(AfipNotConfiguredError);
+    });
+  });
+
+  describe('ORDER-10 (05/09/2026) -- guard TOCTOU: no facturar un cargo de una orden ya CANCELLED', () => {
+    it('rechaza si la orden del cargo ya está CANCELLED', async () => {
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CANCELLED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: new Date(),
+          completedAt: null, servedAt: null, items: [],
+        } as unknown as Order,
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(/no se puede facturar un cargo de una orden cancelada/);
+    });
+
+    it('permite facturar si la orden está CONFIRMED (camino normal)', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null, items: [],
+        } as unknown as Order,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(invoice.status).toBe('ISSUED');
+    });
+
+    it('sin tx.orderId (factura directa de una reserva, sin orden) no consulta ninguna orden y no bloquea', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: null }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(invoice.status).toBe('ISSUED');
     });
   });
 

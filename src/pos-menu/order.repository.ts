@@ -10,6 +10,7 @@ import type {
   UpdateOrderInput,
 } from './order.entities.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 
 // ---------------------------------------------------------------------------
 // Primitiva única de transición de estado (ORDER-04/05/08/14, 02/09/2026)
@@ -174,4 +175,18 @@ export interface IOrderRepository {
   getTicketSummary(from: Date, to: Date): Promise<TicketSummaryReport>;
   /** D7 — tarifas especiales aplicadas en order_items de órdenes CONFIRMED/COMPLETED en [from, to]. */
   getAppliedRatesReport(from: Date, to: Date): Promise<AppliedRateReportRow[]>;
+  /**
+   * ORDER-01/02 (02/09/2026) -- lectura del agregado raíz CON LOCK, dentro
+   * de la transacción del caller (`SELECT id FROM orders WHERE id = $1 FOR
+   * UPDATE`, después relee la fila completa). Vivía solo en
+   * `IOrderRepositoryWithClient` (uso interno de `OrderService`); subida acá
+   * (05/09/2026, ORDER-10, architecture-governor) para que `InvoiceService`
+   * -- que ya depende de `Pick<IOrderRepository, 'getById'>` -- pueda
+   * releer el status de la orden BAJO EL MISMO LOCK que `cancelOrder()`
+   * antes de facturar, y cerrar así la ventana de carrera entre las dos
+   * (ver `OrderCancelledCannotInvoiceError`). Nunca exponer un equivalente
+   * en autocommit -- ver el comentario de arriba sobre por qué se borraron
+   * `cancel()`/`complete()`.
+   */
+  getByIdForUpdate(client: SqlClient, id: string): Promise<Order | undefined>;
 }

@@ -265,8 +265,16 @@ function registrarDesenlace(
   // Un reintento benigno del at-least-once no abre incidente: si cada
   // redelivery normal generara uno, la bandeja se vuelve inútil.
   const soloBenigno = desenlace.rechazos.length === 1 && desenlace.rechazos[0] === 'CARGO_YA_SETTLED';
+  // CARGO_CON_COMPROBANTE_VIVO (ORDER-10, 05/09/2026) es grave acá: si este
+  // handler la ve, significa que `voidByOrderId()` frenó una anulación con
+  // una Factura B viva -- pero la orden ya llegó a CANCELLED (este evento
+  // sólo se dispara post-transición). El guard de la puerta de entrada
+  // (`OrderService.cancelOrder()`) debería haberlo frenado ANTES; verlo acá
+  // es evidencia de que algún otro camino llegó a CANCELLED sin pasar por
+  // esa puerta.
   const grave = desenlace.rechazos.some((r) =>
-    r === 'ORDEN_DE_OTRO_NEGOCIO' || r === 'ESTADO_DESCONOCIDO' || r === 'ORDEN_INEXISTENTE');
+    r === 'ORDEN_DE_OTRO_NEGOCIO' || r === 'ESTADO_DESCONOCIDO' || r === 'ORDEN_INEXISTENTE'
+      || r === 'CARGO_CON_COMPROBANTE_VIVO');
 
   const cuerpo = { ...base, evento: 'efecto_rechazado', causa: desenlace.rechazos, reintentable: false };
   if (soloBenigno)  logger.info(cuerpo,  '[outbox] efecto ya aplicado, nada que hacer');

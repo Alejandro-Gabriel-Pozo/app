@@ -19,6 +19,7 @@ import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.j
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import {
   handleOrderConfirmed,
   handleOrderCompleted,
@@ -86,6 +87,7 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
     service = new OrderService(
       new SqlOrderRepository(db), txManager, eventRepo, productService, recipeService,
       new OrderPricingService(productService, new SqlCustomerRateRepository(db)),
+      financialRepo, new SqlInvoiceRepository(db),
       new SqlAuditLogRepository(db),
     );
   }, 60_000);
@@ -93,6 +95,9 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
   afterAll(async () => { await dropTestDatabase(dbName, pool); });
 
   beforeEach(async () => {
+    await db.query('DELETE FROM invoice_items');
+    await db.query('DELETE FROM invoice_charges');
+    await db.query('DELETE FROM invoices');
     await db.query('DELETE FROM financial_transactions');
     await db.query('DELETE FROM domain_events');
     await db.query('DELETE FROM order_items');
@@ -149,6 +154,27 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
 
   const correrConfirmado = (e: DomainEvent) =>
     handleOrderConfirmed(financialRepo, profileRepo, txManager)(e);
+
+  /**
+   * ORDER-10 (05/09/2026) -- vincula una Factura B ISSUED real a un cargo,
+   * para ejercitar el backstop de `voidByOrderId()` contra Postgres real
+   * (no un mock que stubea la fila de diagnóstico). Mismo patrón de INSERT
+   * que `for-key-share-lock-semantics.integration.test.ts`.
+   */
+  let cbteNroCounter = 1;
+  async function vincularFacturaIssued(financialTransactionId: string): Promise<void> {
+    const invoiceId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status, issued_at)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', 300, 0, 300, '123', '2030-01-01', 'ISSUED', NOW())`,
+      [invoiceId, BIZ, financialTransactionId, CUS, `idem-${invoiceId}`, cbteNroCounter++],
+    );
+  }
 
   // ── 1 · dos confirmaciones concurrentes de la misma orden ──────────────────
 
@@ -339,5 +365,46 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
 
     expect(await cargos(id)).toHaveLength(1);
     expect(await reservado()).toBe(3);
+  });
+
+  // ── 9 · ORDER-10 -- backstop de voidByOrderId() contra un comprobante vivo ──
+
+  it('O2I-13 (ORDER-10, 05/09/2026): voidByOrderId() NO anula un cargo con Factura B ISSUED vinculada, y sí anula el resto en la misma corrida', async () => {
+    await sembrarStock(100);
+
+    // Orden A: llega a CANCELLED con su cargo YA facturado (ISSUED, CAE real)
+    // -- el escenario que este backstop existe para cubrir: algún camino
+    // llegó a CANCELLED sin pasar por la puerta de `cancelOrder()`
+    // (`OrderChargeInvoicedError`), y `voidByOrderId()` es el último punto
+    // que puede evitar anular en silencio un cargo con comprobante fiscal
+    // real. Se cancela por SQL directo, a propósito: `cancelOrder()` real
+    // ya rechazaría este caso en la puerta, así que simularlo por afuera es
+    // la única forma de ejercitar el backstop en sí mismo.
+    const idConFactura = await ordenDraft(3);
+    await service.confirmOrder(idConFactura, ACTOR);
+    await correrConfirmado(await eventoReal(idConFactura, 'order.confirmed'));
+    const [chargeConFactura] = await cargos(idConFactura);
+    await vincularFacturaIssued(chargeConFactura!.id);
+
+    // Orden B: control -- mismo tipo de cargo, sin ninguna factura vinculada.
+    // Tiene que seguir anulándose en la MISMA corrida: el backstop no puede
+    // volverse un fail-open que deje de anular cargos legítimos.
+    const idSinFactura = await ordenDraft(3);
+    await service.confirmOrder(idSinFactura, ACTOR);
+    await correrConfirmado(await eventoReal(idSinFactura, 'order.confirmed'));
+
+    await db.query(
+      `UPDATE orders SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = ANY($1::VARCHAR[])`,
+      [[idConFactura, idSinFactura]],
+    );
+
+    const desenlaceConFactura = await financialRepo.voidByOrderId(idConFactura, BIZ);
+    const desenlaceSinFactura = await financialRepo.voidByOrderId(idSinFactura, BIZ);
+
+    expect(desenlaceConFactura).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] });
+    expect((await cargos(idConFactura))[0]!.status).not.toBe('VOIDED');
+
+    expect(desenlaceSinFactura.tipo).toBe('APLICADO');
+    expect((await cargos(idSinFactura))[0]!.status).toBe('VOIDED');
   });
 });

@@ -564,6 +564,49 @@ export class ReceivableInvoiceReconciliationPendingError extends DomainError {
 }
 
 /**
+ * ORDER-10 (05/09/2026, architecture-governor, bloque 1 -- guard fail-closed)
+ * -- el cargo de esta orden ya tiene una factura vinculada que no se sabe
+ * con certeza que NO llegue a existir ante AFIP (`ISSUED`, `PENDING` con
+ * CAE en vuelo, o `FAILED_UNCERTAIN` con `afipContacted=true`). Cancelar la
+ * orden directamente dejaría un comprobante fiscal real apuntando a un
+ * cargo anulado, sin Nota de Crédito. `REJECTED` (AFIP rechazó explícito) y
+ * `FAILED_UNCERTAIN` sin contactar NO disparan este error -- ahí se sabe
+ * con certeza que no quedó nada emitido.
+ *
+ * Doctrina de negocio del dueño (docs/diseno-cancelacion-orden-nota-credito-2026-09-05.md):
+ * la cancelación se rechaza en la puerta; existe una acción administrativa
+ * separada (bloque 2, todavía sin construir) que emite la Nota de Crédito
+ * real y recién con eso habilita cancelar.
+ */
+export class OrderChargeInvoicedError extends DomainError {
+  constructor(orderId: string, invoiceId: string, invoiceStatus: string) {
+    super(
+      `La orden "${orderId}" tiene un cargo vinculado a la factura "${invoiceId}" (estado: ${invoiceStatus}) -- no se puede cancelar directamente. Hace falta emitir una Nota de Crédito antes.`,
+      'ORDER_CHARGE_INVOICED',
+    );
+  }
+}
+
+/**
+ * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- cierre de la
+ * ventana de carrera (TOCTOU) entre `cancelOrder()` y `requestInvoice()`:
+ * las dos toman `FOR UPDATE` sobre la MISMA fila de `orders` antes de mutar
+ * nada, así que quien pierde la carrera relee el estado ya comprometido del
+ * ganador. Si `requestInvoice()` pierde (la orden ya quedó `CANCELLED`),
+ * no se factura -- facturar un cargo de una orden cancelada es exactamente
+ * el escenario que `OrderChargeInvoicedError` existe para prevenir del
+ * otro lado.
+ */
+export class OrderCancelledCannotInvoiceError extends DomainError {
+  constructor(orderId: string) {
+    super(
+      `La orden "${orderId}" fue cancelada -- no se puede facturar un cargo de una orden cancelada.`,
+      'ORDER_CANCELLED_CANNOT_INVOICE',
+    );
+  }
+}
+
+/**
  * D3 (pendientes-2026-08-19.md) -- una vez que el negocio ya cargó su CUIT
  * (perfil fiscal "confirmado", ver business-profile.service.ts), cambiar
  * razón social/CUIT/domicilio fiscal deja de estar disponible para

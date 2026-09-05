@@ -44,8 +44,9 @@ import type { TransactionManager }      from '../db/transaction-manager.js';
 import type { SqlClient }               from '../repositories/sql.client.js';
 import type { DomainEventRepository }   from '../repositories/domain-event.repository.js';
 import type { AuditLogRepository }      from '../repositories/audit-log.repository.js';
-import type { PaymentInfo }             from '../clientes-finanzas/financial-transaction.repository.js';
-import { DomainError }                  from '../domain/errors.js';
+import type { PaymentInfo, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
+import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
+import { DomainError, OrderChargeInvoicedError } from '../domain/errors.js';
 import type { ProductService }          from './product.service.js';
 import type { RecipeService }           from './recipe.service.js';
 import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';
@@ -187,13 +188,10 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
     spec: OrderTransitionSpec,
   ): Promise<OrderTransitionOutcome>;
 
-  /**
-   * ORDER-01/02 -- lectura del agregado raíz CON LOCK, dentro de la
-   * transacción. `previousStatus`/`wasServed` viajan al evento de outbox y
-   * `wasServed` decide si se restaura stock: leerlos fuera de la transacción
-   * los deja expuestos a un markServed concurrente.
-   */
-  getByIdForUpdate(client: SqlClient, id: string): Promise<Order | undefined>;
+  // `getByIdForUpdate` se heredó a `IOrderRepository` (05/09/2026, ORDER-10)
+  // -- ver su docblock en order.repository.ts. `previousStatus`/`wasServed`
+  // de cancelOrder() siguen viniendo de acá; el motivo original de por qué
+  // hace falta el lock no cambió, solo la interfaz que lo declara.
 
   /**
    * Persiste el snapshot de componentes exploded (Fase 3, 17/08/2026) para
@@ -348,6 +346,27 @@ export class OrderService {
      */
     private readonly orderPricingService: OrderPricingService,
     /**
+     * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- resuelve el
+     * `CHARGE` de la orden para chequear si ya tiene factura vinculada
+     * antes de dejar cancelar (`findBlockingInvoiceLinkage()`). Solo
+     * lectura; nunca escribe.
+     */
+    private readonly financialTransactionRepo: Pick<FinancialTransactionRepository, 'getByOrderId'>,
+    /**
+     * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- mismo
+     * criterio que `CancellationRefundService` del lado reservas: `pos-menu`
+     * depende de la INTERFAZ `InvoiceRepository` de `facturacion`, nunca del
+     * repositorio concreto (`sql.invoice.repository.ts`) ni de
+     * `InvoiceService` -- sin ciclo real, sin importar la clase rica de otro
+     * contexto (`app-main/CLAUDE.md`, "Bounded contexts").
+     * `resolveInvoiceLinkage()` ya distingue `NONE`/`NOT_ISSUED`/`ISSUED` y
+     * cubre facturas individuales Y consolidadas (UNION ALL) -- una factura
+     * consolidada también bloquea acá: este bloque no tiene forma de
+     * resolverla (Nota de Crédito parcial por varios cargos a la vez), así
+     * que fail-closed es lo correcto, no silencio.
+     */
+    private readonly invoiceRepo: Pick<InvoiceRepository, 'resolveInvoiceLinkage'>,
+    /**
      * Bug #4 (27/08/2026, pendientes-2026-08-27.md) — audita las transiciones
      * de estado de la orden (A6.5: toda transición de una TRANSACCIÓN deja
      * rastro de QUIÉN la hizo). Antes OrderService no recibía auditLogRepo y
@@ -359,6 +378,35 @@ export class OrderService {
      */
     private readonly auditLogRepo?: AuditLogRepository,
   ) {}
+
+  /**
+   * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- resuelve si
+   * algún `CHARGE` de esta orden ya tiene una factura vinculada que
+   * bloquea la cancelación directa: `ISSUED`, `PENDING` (CAE en vuelo) o
+   * `FAILED_UNCERTAIN` con `afipContacted=true` (puede existir ya en
+   * AFIP). `REJECTED` y `FAILED_UNCERTAIN` sin contactar NO bloquean --
+   * ahí se sabe con certeza que no quedó nada emitido, y sobre-bloquear
+   * congelaría cargos legítimos para siempre (mismo criterio que
+   * AR-FACT-NO-ISSUED-01).
+   *
+   * Llamar SIEMPRE después de tomar el lock de `orders` (`transitionWithClient`/
+   * `getByIdForUpdate` ya lo hacen) -- es lo que serializa esta lectura
+   * contra `InvoiceService.requestInvoice()`, que toma el MISMO lock antes
+   * de facturar (`OrderCancelledCannotInvoiceError`). Sin ese orden, la
+   * ventana de carrera entre las dos queda abierta (TOCTOU).
+   */
+  private async findBlockingInvoiceLinkage(orderId: string): Promise<InvoiceLinkage & { kind: 'ISSUED' | 'NOT_ISSUED' } | null> {
+    const charges = (await this.financialTransactionRepo.getByOrderId(orderId))
+      .filter((tx) => tx.type === 'CHARGE');
+    for (const charge of charges) {
+      const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
+      if (linkage.kind === 'ISSUED') return linkage;
+      if (linkage.kind === 'NOT_ISSUED' && (linkage.status === 'PENDING' || (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted))) {
+        return linkage;
+      }
+    }
+    return null;
+  }
 
   /**
    * Traduce los cuatro desenlaces que NO son `CAMBIO` a la respuesta que
@@ -742,6 +790,22 @@ export class OrderService {
       if (outcome.resultado !== 'CAMBIO') return this.resolverNoCambio(outcome, id, 'CANCELLED');
 
       const { previa, order: updated } = outcome;
+
+      // ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- chequeo
+      // DESPUÉS de transitionWithClient a propósito: esa llamada ya tomó
+      // el lock de `orders` (UPDATE ... WHERE id=$1 AND status = ANY(desde)),
+      // así que esta lectura queda serializada contra cualquier
+      // requestInvoice() concurrente que compita por el mismo lock. Si hay
+      // factura viva, tirar acá aborta TODA la transacción -- incluida la
+      // transición que `transitionWithClient` ya aplicó -- y la orden
+      // vuelve a quedar exactamente como estaba (CONFIRMED), no a medias.
+      const blocking = await this.findBlockingInvoiceLinkage(updated.id);
+      if (blocking) {
+        throw new OrderChargeInvoicedError(
+          updated.id, blocking.invoiceId, blocking.kind === 'ISSUED' ? 'ISSUED' : blocking.status,
+        );
+      }
+
       // `previa` es la lectura BAJO LOCK anterior al UPDATE: de ahí salen
       // `previousStatus` y `wasServed`, que viajan al evento y deciden si el
       // handler de inventario restaura stock.

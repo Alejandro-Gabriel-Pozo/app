@@ -133,7 +133,8 @@ export type EfectoRechazo =
   | 'CARGO_YA_EXISTE'           // la orden ya tiene su CHARGE (identidad del acto)
   | 'CARGO_YA_SETTLED'          // reintento benigno del at-least-once
   | 'CARGO_ANULADO'             // VOIDED o FAILED
-  | 'TIPO_NO_LIQUIDABLE';       // PAYMENT/REFUND/ADJUSTMENT bajo ese order_id
+  | 'TIPO_NO_LIQUIDABLE'        // PAYMENT/REFUND/ADJUSTMENT bajo ese order_id
+  | 'CARGO_CON_COMPROBANTE_VIVO'; // ORDER-10 (05/09/2026) -- tiene una factura ISSUED/PENDING/FAILED_UNCERTAIN(afipContacted) vinculada; anularlo dejaría un comprobante fiscal real sin contrapartida. Ver voidByOrderId().
 
 /**
  * Los cuatro desenlaces de negocio, deliberadamente distinguibles.
@@ -309,6 +310,17 @@ export interface FinancialTransactionRepository {
    * único creador siempre usa `reservationId` -- podría anularse y nunca
    * liquidarse. Alinear las dos allowlists exige decidir antes si los ajustes
    * sobre órdenes son un concepto de negocio: es su propio bloque.
+   *
+   * **ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- cerrado
+   * acá del lado "no anular en silencio":** además de exigir la orden
+   * `CANCELLED`, ahora también saltea (no anula, `CARGO_CON_COMPROBANTE_VIVO`)
+   * cualquier movimiento con una factura `ISSUED`/`PENDING`/`FAILED_UNCERTAIN`+
+   * `afipContacted` vinculada -- vía `EXISTS` contra `invoices`/
+   * `invoice_charges` (excepción cross-dominio SANCIONADA, ver comentario en
+   * la implementación SQL). El guard de la puerta de entrada
+   * (`OrderService.cancelOrder()`, `OrderChargeInvoicedError`) cubre el
+   * camino normal; este es el cierre estructural para cualquier otro
+   * caller que llegue acá sin pasar por esa puerta.
    */
   voidByOrderId(orderId: string, businessId: string): Promise<EfectoDesenlace>;
 
