@@ -476,9 +476,48 @@ en `Hotel los Alamos` y en `Demo` — ORDER-10 sigue siendo riesgo latente,
 no un descuadre ya ocurrido, y no hay datos preexistentes que rompan el
 discriminador nuevo de `requestInvoice()`.
 
-**Todavía NO autorizado:** ningún código. Próximo bloque (B1) y la lista
-completa de tests exigidos antes del primer commit están en el ADR
-enlazado arriba.
+**B1 -- ✅ RESUELTO (commit `22f0559`, 05/09/2026).** Guard fail-closed
+completo: `cancelOrder()` rechaza contra factura vinculada,
+`voidByOrderId()` tiene su backstop (`CARGO_CON_COMPROBANTE_VIVO`), y
+`requestInvoice()` cierra la ventana TOCTOU tomando el mismo lock de
+`orders`. Autorizado por `architecture-governor` en dos vueltas, con
+correcciones al mensaje de commit. 1827 tests unitarios + 25 de
+integración contra Postgres real (incluida una prueba determinística de
+bloqueo de lock y el backstop con una Factura B `ISSUED` real, ambas
+verificadas por mutation testing manual). Detalle completo:
+[diseno-cancelacion-orden-nota-credito-2026-09-05.md](diseno-cancelacion-orden-nota-credito-2026-09-05.md).
+**Commiteado en `main`, NO pusheado todavía** (`git push` es autorización
+aparte del usuario).
+
+**ORDER-10 sigue ABIERTO** -- B2 (escape administrativo con Nota de
+Crédito), B3 (visibilidad de NC pendientes) y B4 (cierre de período
+contable) no están implementados. No confundir "B1 resuelto" con "ORDER-10
+cerrado".
+
+**Ítems nuevos, encontrados al implementar/revisar B1 (no bloquean B1, sí
+a B2 o a la salud general del repo):**
+1. Sin cerca automática que garantice el orden de locks `orders`-antes-que-
+   `invoices` hacia adelante -- verificado por inspección manual que hoy
+   no existe el camino inverso, pero nada lo impide estructuralmente.
+   `src/tests/architecture/lock-order.test.ts` fenza otra cosa (orden
+   multi-fila DENTRO de `invoices`), no esto.
+2. `CARGO_CON_COMPROBANTE_VIVO` se degrada a `INFO` (no `grave`) si algún
+   día existiera un `ADJUSTMENT` con `order_id` -- hoy inalcanzable
+   (ningún creador real de `ADJUSTMENT` usa `orderId`), declarado no
+   cerrado.
+3. Ese mismo log se va a volver un falso positivo ruidoso en cuanto exista
+   B2: una cancelación legítima vía NC también deja la Factura B original
+   `ISSUED` y pasa por el mismo camino de rechazo. B2 tiene que
+   reconciliar esto antes de salir a producción.
+4. La prueba de bloqueo de lock
+   (`order-cancel-invoice-toctou.integration.test.ts`) no es estable en
+   pass/fail cuando corre junto a otras suites de integración contra el
+   Postgres remoto de `TEST_DATABASE_URL` (Neon, latencia real ~8-15s por
+   test) -- su ventana es de 4s fijos. Corrida sola pasa 3/3; en una
+   corrida combinada puede fallar por latencia acumulada. Degrada en
+   ROJO, nunca aprueba un guard roto en falso -- pero no es "siempre
+   verde en CI". Pendiente: ventana adaptativa o marcarla para correr
+   aislada.
 
 ### `voidByReservationId()` — mismo defecto que ORDER-10, lado reservas (registrado 05/09/2026, NO arreglado en este bloque)
 
@@ -546,9 +585,10 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
   cerrado, queda abierto solo el residual acotado (retry_count reseteado,
   mensaje no de negocio, sin conciliación `COMPLETED` sin `CHARGE`) — no
   depende de O5 para ese último punto.
-- **ORDER-10** — ABIERTO, reachable desde la UI real de producción (ver
-  corrección arriba) — el más severo de lo que quedaba de la familia, no
-  solo "sin implementación".
+- **ORDER-10** — B1 (guard fail-closed) ✅ RESUELTO, commit `22f0559`
+  (05/09/2026, sin pushear). ABIERTO igual: B2 (escape administrativo con
+  Nota de Crédito), B3 (visibilidad de NC) y B4 (cierre de período
+  contable) siguen sin implementar — ver corrección arriba.
 - **`addItem`/`removeItem` sin lock de estado** (hallazgo nuevo, ver arriba)
   — mismo linaje que ORDER-04, sin fix en este bloque.
 - **INV-ORF-01** — reservas de stock huérfanas: la causa de doble-reserva

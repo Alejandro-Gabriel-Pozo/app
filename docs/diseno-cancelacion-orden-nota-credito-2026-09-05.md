@@ -1,7 +1,7 @@
 # ADR — Cancelación de orden con factura ya emitida (ORDER-10)
 
 - **Fecha:** 05/09/2026
-- **Estado:** decidido (doctrina de negocio + modelo de datos), **implementación no autorizada todavía**
+- **Estado:** decidido (doctrina de negocio + modelo de datos). **Bloque 1 implementado y commiteado** (commit `22f0559`, 05/09/2026, `architecture-governor` autorizó con dos correcciones al mensaje de commit -- ver sección "Próximos bloques"). B2/B3/B4 siguen sin implementar.
 - **Autoría de la decisión:** dueño del proyecto (doctrina de negocio) + `architecture-governor` (encaje en el modelo existente, dos vueltas), con investigación de `auditor-circuitos-erp` contra ERPNext, Odoo 19 genérico y módulos argentinos de AFIP como base comparativa (ver `docs/pendientes-2026-09-05.md`, sección ORDER-10, para el detalle completo de esas tres consultas).
 
 ## Contexto
@@ -61,11 +61,13 @@ Se evaluaron y descartaron dos alternativas antes de esta:
 El recurso a lockear es la **fila de `orders`**, no la `financial_transaction` (el `VOID` del cargo llega asíncrono por outbox, así que el status del cargo no es señal confiable en la ventana de la carrera):
 
 - `cancelOrder()`/`cancelOrderWithCreditNote()`: ya toman `FOR UPDATE` sobre `orders` vía `transitionWithClient`.
-- `requestInvoice()`: necesita tomar el MISMO `FOR UPDATE` sobre `orders` (cuando `tx.orderId != null`) dentro de su propia transacción, releer el status, y rechazar si ya está `CANCELLED`. Requiere un método nuevo, explícito y transaccional en el repositorio de órdenes (`lockForUpdateWithClient`) — nunca uno en autocommit.
+- `requestInvoice()`: necesita tomar el MISMO `FOR UPDATE` sobre `orders` (cuando `tx.orderId != null`) dentro de su propia transacción, releer el status, y rechazar si ya está `CANCELLED`.
 
 Mismo mecanismo, mismo tipo de lección, que el residual #2 de BRECHA-REFUND-01 (commit `1807ca8`) ya cerró para `confirmRefund()`.
 
-**Riesgo no medido, condición para mergear:** confirmar que ningún flujo existente toma `invoices` antes que `orders` (orden canónico de locks entre dominios) — si no se confirma, hay riesgo de deadlock cruzado.
+**Implementado (B1, commit `22f0559`) con una desviación deliberada de este párrafo:** este ADR pedía "un método nuevo, explícito y transaccional en el repositorio de órdenes (`lockForUpdateWithClient`)". En la implementación se promovió el `getByIdForUpdate` YA EXISTENTE de `IOrderRepositoryWithClient` a la interfaz base `IOrderRepository`, en vez de crear un método nuevo. `architecture-governor` revisó la desviación y la calificó de mejora sobre lo pedido acá: las dos rutas (`cancelOrder()` y `requestInvoice()`) comparten la MISMA primitiva de lock, así que no pueden divergir en qué bloquean -- un método nuevo separado sí podría haber divergido con el tiempo.
+
+**Riesgo no medido, condición para mergear -- sigue abierto tras B1, no bloqueante:** confirmar que ningún flujo existente toma `invoices` antes que `orders` (orden canónico de locks entre dominios) — si no se confirma, hay riesgo de deadlock cruzado. Verificado por INSPECCIÓN MANUAL al mergear B1 (no existe hoy ningún camino `invoices → orders`: los únicos `FOR UPDATE` sobre `invoices` son `getOutstandingForUpdate`/`getRefundableForUpdate`, que nunca lockean `orders`), pero **sin ninguna cerca automática que lo garantice hacia adelante** -- `src/tests/architecture/lock-order.test.ts` fenza el ordenamiento MULTI-FILA dentro de `invoices`, no el orden `orders`-vs-`invoices` entre dominios. Un futuro cambio podría reintroducir el ciclo sin que ningún test lo detecte. Ítem abierto, registrado en `pendientes-2026-09-05.md`.
 
 ## Alcance del primer bloque de implementación (fail-closed en todo lo demás)
 
@@ -105,9 +107,16 @@ ORDER-10 sigue siendo riesgo latente, no un descuadre ya ocurrido. El discrimina
 
 ## Próximos bloques (cada uno su propio commit y gate)
 
-- **B1** — guard fail-closed: `cancelOrder()` rechaza en `ISSUED`/`PENDING`/`FAILED_UNCERTAIN`+`afipContacted` (nunca `REJECTED`), `voidByOrderId()` saltea con rechazo nombrado, `FOR UPDATE` sobre `orders` en `requestInvoice()`. Cierra ORDER-10 en la dirección "rechazar".
-- **B2** — escape administrativo: `cancelOrderWithCreditNote()`, ruta `MANAGEMENT`, `ADJUSTMENT` compensatorio, extensiones a `buildCreditNote()` (discriminador, `Math.abs` del monto, líneas copiadas de la factura original para no violar `chk_invoice_item_origin`).
-- **B3** — visibilidad de NC pendientes (consulta/endpoint, sin bloqueo).
-- **B4** — diseño de "período contable del tenant" + regla de bloqueo de cierre — bloque propio, con su propia decisión del dueño.
+- **B1 — ✅ IMPLEMENTADO (commit `22f0559`, 05/09/2026).** Guard fail-closed: `cancelOrder()` rechaza en `ISSUED`/`PENDING`/`FAILED_UNCERTAIN`+`afipContacted` (nunca `REJECTED`), `voidByOrderId()` saltea con rechazo nombrado (`CARGO_CON_COMPROBANTE_VIVO`), `FOR UPDATE` sobre `orders` en `requestInvoice()` (vía `getByIdForUpdate`, ver desviación del ADR arriba). Cierra ORDER-10 en la dirección "rechazar". Autorizado por `architecture-governor` en dos vueltas de revisión, con dos correcciones al mensaje de commit (ver el commit mismo para el texto final). Evidencia: 1827 tests unitarios, `tsc`/`lint`/`lint:arch` limpios, 25 tests de integración contra Postgres real -- incluida una prueba determinística de bloqueo de lock (dos conexiones reales, brazo de control) y el backstop de `voidByOrderId()` con una Factura B `ISSUED` real, las dos verificadas por mutation testing manual.
+- **B2** — escape administrativo: `cancelOrderWithCreditNote()`, ruta `MANAGEMENT`, `ADJUSTMENT` compensatorio, extensiones a `buildCreditNote()` (discriminador, `Math.abs` del monto, líneas copiadas de la factura original para no violar `chk_invoice_item_origin`). **Sin implementar.**
+- **B3** — visibilidad de NC pendientes (consulta/endpoint, sin bloqueo). **Sin implementar.**
+- **B4** — diseño de "período contable del tenant" + regla de bloqueo de cierre — bloque propio, con su propia decisión del dueño. **Sin implementar.**
 
-No autorizado todavía: ningún código de estos bloques. Ver `docs/pendientes-2026-09-05.md`, sección ORDER-10, para la lista completa de tests exigidos (incluido el test de carrera de dos conexiones reales) antes de que `architecture-governor` autorice el primer commit de código.
+### Ítems abiertos, encontrados al implementar/revisar B1 (no bloquean B1, sí a B2 o a la salud general)
+
+1. **Sin cerca automática para el orden de locks `orders`-antes-que-`invoices`** (ver sección TOCTOU arriba) -- hoy no existe el camino inverso, verificado por inspección manual, pero nada impide que aparezca sin aviso.
+2. **`CARGO_CON_COMPROBANTE_VIVO` se degrada a `INFO` si algún día existe un `ADJUSTMENT` con `order_id`.** `registrarDesenlace()` (`outbox.handlers.ts`) solo lo clasifica `grave` (logger.error) en la rama `RECHAZADO`; si el desenlace fuera `APLICADO` con rechazos parciales, cae en `efecto_parcial` (logger.info). Hoy es inalcanzable (ningún `ADJUSTMENT` real lleva `order_id` -- el único creador, `handleReservationRequoted`, usa `reservationId`), pero queda declarado, no cerrado.
+3. **El mismo log (`CARGO_CON_COMPROBANTE_VIVO` = `grave`) se va a volver un falso positivo ruidoso con B2.** Una cancelación legítima vía Nota de Crédito también deja la Factura B original `ISSUED` y pasa por este mismo camino de rechazo. B2 tiene que reconciliar esto (distinguir "cancelación bloqueada de verdad" de "cancelación que ya pasó por el camino de NC") antes de salir a producción, o cada NC generará una alerta de integridad falsa.
+4. **La prueba de bloqueo de lock (`order-cancel-invoice-toctou.integration.test.ts`) no es estable en pass/fail cuando corre junto a otras suites de integración contra un Postgres remoto (Neon).** Ventana fija de 4s; en una corrida combinada con `order-effects`/`order-flow` puede fallar por latencia acumulada -- degrada en ROJO (nunca aprueba un guard roto en falso), pero no es "siempre verde". Corrida sola, pasa. Pendiente: ventana adaptativa o marcarla para correr aislada en CI.
+
+No autorizado todavía: ningún código de B2/B3/B4. Ver `docs/pendientes-2026-09-05.md`, sección ORDER-10, para el estado completo.
