@@ -517,8 +517,14 @@ integración contra Postgres real (incluida una prueba determinística de
 bloqueo de lock y el backstop con una Factura B `ISSUED` real, ambas
 verificadas por mutation testing manual). Detalle completo:
 [diseno-cancelacion-orden-nota-credito-2026-09-05.md](diseno-cancelacion-orden-nota-credito-2026-09-05.md).
-**Commiteado en `main`, NO pusheado todavía** (`git push` es autorización
-aparte del usuario).
+~~**Commiteado en `main`, NO pusheado todavía** (`git push` es autorización
+aparte del usuario).~~ **CORREGIDO en la cuarta vuelta (05/09/2026):
+`22f0559` YA está en `origin/main`** — verificado con `git ls-remote` y
+`git merge-base --is-ancestor 22f0559 origin/main` → true. O sea que **B1
+está en producción**, y con él la puerta de cancelación cerrada sin la
+ventana de B2 abierta (ver bloque 2 de la cuarta vuelta). Los 6 commits
+que sí siguen sin pushear son `caf24e1`, `32125d3`, `179b4ad`, `f68db51`,
+`1f3af80`, `2f9f23f`.
 
 **ORDER-10 sigue ABIERTO** -- B2 (escape administrativo con Nota de
 Crédito), B3 (visibilidad de NC pendientes) y B4 (cierre de período
@@ -824,10 +830,20 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
 - **O1-b** — los reportes no distinguen "no consta" de "cero".
 - **Seguridad / aislamiento:** FACT-INV-BIZID-001, SEC-ROT-001, RBAC-OWN-001,
   RBAC-SYNC-001, RBAC-MOUNT-001, FAILOPEN-001.
-- **Documentales:** AUDIT-DOC-001, DA-CONT-001, DOC-ANCLA-001, CONTRACT-001,
-  "RBAC mecanismos 1 y 2" (sigue sin referente).
-- **Backlog de producto:** Gap C1-C, FISCAL-CBTE-001, FACT-BORRADOR-001,
-  C1-Fase A, **C2 (ya no bloqueada, ver arriba — sigue sin construir)**, C3,
+- **Documentales:** ~~AUDIT-DOC-001~~ (**✅ RESUELTO**, commit `e1476f5`, 38
+  archivos versionados — estaba arrastrado stale y **este mismo archivo lo
+  documenta cerrado 50 líneas más abajo**, en la sección de higiene),
+  DA-CONT-001 (parcial), DOC-ANCLA-001, CONTRACT-001,
+  ~~"RBAC mecanismos 1 y 2"~~ (**ETIQUETA RETIRADA** en la cuarta vuelta —
+  origen localizado en `pendientes-2026-08-25.md:1379-1380`, nunca definida
+  en ninguno de los dos repos, viajó idéntica por 8 archivos; regla 1 del
+  `CLAUDE.md` de `app-main`).
+- **Backlog de producto:** Gap C1-C (**mitad cerrada sin registrarse** — ver
+  cuarta vuelta), FISCAL-CBTE-001, FACT-BORRADOR-001,
+  C1-Fase A, **C1-Fase B (REPUESTA en la cuarta vuelta: se cayó de la lista
+  entre el 02/09 y el 03/09 sin que nadie la cerrara — "bloqueada hasta que el
+  negocio elija proveedor")**,
+  **C2 (ya no bloqueada, ver arriba — sigue sin construir)**, C3,
   D7, frontend visual (SEM-001, SEM-002, TOAST-003, A11Y-001, overlays de
   Superadmin), heredados (Redis rate-limit, BullMQ, etapas 2-3 de downgrade,
   datos demo en la base real).
@@ -879,3 +895,258 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
      borrador, reemplazado por `erp-auditoria-v2/00-programa-v2.md`) —
      **versionado igual, como historial** — mismo criterio de "no borrar el
      rastro de decisiones/versiones anteriores" que el resto del repo.
+
+---
+
+## 🔎 Cuarta vuelta — revalidación completa de la lista abierta (05/09/2026)
+
+**Encargo:** revalidar contra el árbol real **todos** los ítems abiertos de este
+archivo (no solo la familia ORDER), y buscar en paralelo precedente de diseño en
+dos ERP maduros. Dos agentes en paralelo, ninguno implementó ni commiteó:
+
+- `erp-audit-orchestrator` — ~45 ítems revalidados con ancla verificada en el día.
+- `auditor-circuitos-erp` — 7 fichas contra el código real de ERPNext
+  (`erpnext-develop`) y Odoo 19.0, con anclas `archivo:línea` de esos árboles.
+
+**Por qué se corrió:** la lista arrastrada ya había fallado en las dos
+direcciones el 05/09 (ORDER-05/06/07/09/03-b estaban resueltos y se
+arrastraban como abiertos). Esta vuelta asume que cualquier fila puede estar
+stale hasta verificarla.
+
+### A. Estado git real (verificado, no citado)
+
+`app-main`: `main` = `2f9f23f`, working tree limpio, **6 commits sin pushear**
+(`origin/main` = `5a3a588`, confirmado con `git ls-remote`, no con el ref
+cacheado). `appfrontend-main`: `main` = `613c206`, sincronizado.
+
+Dos afirmaciones de estado git que había que corregir:
+
+| Afirmación | Realidad |
+|---|---|
+| ORDER-10 B1 (`22f0559`) "NO pusheado todavía" | **Ya está en `origin/main`.** Corregido in-place arriba |
+| `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` y `:300-302`: "`HEAD = b088cbc`, 14 commits por delante de `origin/main = 1f72f41`, sin push" | **Stale.** Los 3 commits de Fase 1 (`4029b96`, `4d2d694`, `b088cbc`) **están pusheados**; `b088cbc` es ancestro de `origin/main`. La instrucción "No pushear" de su §4 quedó sin objeto y engaña a quien lo abra como checkpoint vivo. **Pendiente: corregir ese doc** |
+
+### B. Cambios de veredicto sobre filas existentes
+
+- **AUDIT-DOC-001 — ✅ RESUELTO** (`e1476f5`). Marcado in-place arriba.
+- **"RBAC — mecanismos 1 y 2" — ETIQUETA RETIRADA.** Origen en
+  `pendientes-2026-08-25.md:1379-1380`, nunca definida. Retirada in-place.
+- **FACT-INV-BIZID-001 — baja de severidad.** `[V]` El único origen del campo
+  es `invoices.routes.ts:82` y `:107`, ambos `req.user!.businessId!`: el
+  cliente **no puede inyectar** un `businessId` arbitrario. La hipótesis de
+  exposición cross-tenant queda **refutada por el wiring**, no solo sin
+  confirmar. Sigue abierto como invariante sin verificar (defensa en
+  profundidad), no como riesgo vivo.
+- **RBAC-OWN-001 — la fila estaba subdescrita.** Decía "sin guard central ni
+  test negativo" y omitía que **los guards de pertenencia por ruta sí existen**
+  (`customer.routes.ts:703`, `:763`, más `requireCustomerId()` en `:305-315`).
+  Lo que falta es (a) el guard central y (b) la prueba negativa.
+- **RBAC-SYNC-001 — parcial.** La mitad §2 se cerró (204 call-sites / 37
+  archivos coinciden entre `rbac-matriz-endpoints.md:53` y
+  `rbac-matrix-sync.test.ts:44,49`). La §4 ↔ `PUBLIC_ROUTES` sigue "a ojo",
+  como el propio doc declara. Las dos cercas corren verdes (4 tests, 467 ms).
+- **RBAC-MOUNT-001 y FAILOPEN-001 — confirmados como cercas faltantes, no
+  agujeros.** El primero: `app.ts:317` monta `authenticate()` antes de los
+  routers protegidos, verificado en producción el 31/08, pero **nada lo
+  mantiene así** (`src/tests/architecture/` tiene un solo archivo y fenza otra
+  cosa). El segundo: el fail-open de `provider.tsx:84` es **de navegación**;
+  `managementOnly` depende de `isManagement` por separado y el backend igual
+  exige `authorize()`. **Sugerencia: bajar FAILOPEN-001 de prioridad** — está
+  en el mismo bloque por patología, no por tamaño.
+- **Gap C1-C — la mitad se cerró y nadie lo registró.**
+  `getOutstandingByCustomerId` ya es `LEFT JOIN` desde O2-F2 (`5856306`,
+  03/09). `getByReservationId` **sigue con `INNER JOIN`** — ver hallazgo #1.
+- **C1-Fase B — REPUESTA en la lista.** Estaba en `pendientes-2026-09-01.md:207`
+  y `-09-02.md:346` ("bloqueada hasta que el negocio elija proveedor"); ausente
+  en `-09-03.md` y en este archivo, **sin que nadie la cerrara**. Tercer caso
+  del mismo modo de falla.
+- **13 anclas stale corregidas.** ORDER-15 (`sql.financial-transaction.repository.ts:682-685`
+  y `:734` / `:525`, no `financial-transaction.repository.ts:306-311`),
+  ORDER-13 #3 (`:635`, no `:505`), O1-b (por **tercera** vez:
+  `sql.order.repository.ts:484,513,545` + `sql.customer.repository.ts:394`),
+  Gap C1-C (`:198` LEFT / `:260` INNER), FACT-INV-BIZID-001 (las 5),
+  RBAC-MOUNT-001 (`app.ts:317`, se movió 50 líneas), FISCAL-CBTE-001,
+  FACT-CONSOL R1 (`invoice.service.ts:540`, corrido 1 línea), ORDER-12.
+  **La causa no es el paso del tiempo:** `caf24e1`, `179b4ad`, `1f3af80` y
+  `22f0559` tocaron los 4 archivos que concentran casi todas las anclas. El
+  único ancla intacta de todo el informe (`FacturarButton.tsx:74`, SEM-002) es
+  del repo que nadie tocó.
+
+### C. Hallazgos nuevos — no estaban en ninguna lista
+
+#### 1. `confirmRefund()` es ciego a las facturas consolidadas · 🔴 el más grave
+
+`[V]` en código, `[H]` en alcanzabilidad end-to-end. La cadena:
+
+1. `transferStayBalanceToReceivable()` (`accounts-receivable.service.ts:168-175`)
+   crea el `CHARGE` con `reservationId`.
+2. Se factura por `requestConsolidatedInvoice()`, que inserta la factura con
+   **`financial_transaction_id = NULL`** (`invoice.service.ts:558`) y la vincula
+   por `invoice_charges`.
+3. `confirmRefund()` busca qué revertir con `getByReservationId()`
+   (`cancellation-refund.service.ts:189`).
+4. Esa query hace **`INNER JOIN financial_transactions ft ON ft.id = i.financial_transaction_id`**
+   (`sql.invoice.repository.ts:257-263`) → la factura consolidada **no aparece**.
+5. Con `issuedInvoices` vacío, todo el reembolso cae a `:sin-asignar` con
+   `reversedInvoiceId: null` (`:263-265`): **asiento en el ledger sin Nota de
+   Crédito, contra una Factura B con CAE real de AFIP.**
+
+**Es exactamente el Escenario A que el residual #2 de BRECHA-REFUND-01 dio por
+cerrado.** El fix releyó `issuedInvoices` dentro de la transacción **sin tocar
+la query**: cerró la carrera, no la ceguera. El repo ya tiene la primitiva
+correcta (`resolveInvoiceLinkage()`, `sql.invoice.repository.ts:217-243`);
+`confirmRefund()` no la usa.
+
+**No verificado:** qué devuelve `getCollectedPaymentTotalForReservation()` en
+ese escenario (el pago del huésped va contra `stayId`, el cargo de la empresa
+contra `reservationId`). Si diera 0, el síntoma sería `NothingToRefundError` en
+vez de NC faltante — sigue mal, con otra cara. **Requiere prueba dedicada
+contra Postgres real, no más lectura de código.**
+
+Por qué nadie lo vio: Gap C1-C vive en "Backlog de producto" desde el 27/08 con
+la redacción "2 queries con JOIN" que el propio repo ya identificó como
+subdimensionada (regla 3 del `CLAUDE.md`), y se reescribió el 01/09 **sin
+reconectarlo con el circuito de refund**.
+
+#### 2. Las anclas se mueven más rápido de lo que se revalidan
+
+Ver B. La regla 2 del `CLAUDE.md` ("al arrastrar se re-chequea el ancla") está
+bien escrita pero **mide lo que no se mueve**.
+
+#### 3. Cinco endpoints de reportes con cero consumidores
+
+`reports.routes.ts:141-220` expone `/pos/sales-by-product`, `/pos/waste`,
+`/pos/ticket-summary`, `/crm/new-vs-recurring`, `/crm/applied-rates`. `grep` en
+todo `appfrontend-main/src` → **ninguna llamada** desde el 22/08. Está
+registrado como D7 pero **descripto como deuda de UI**, no como "5 superficies
+de API sin consumidor" — que es lo que hace que se puedan romper sin que nadie
+se entere. Sumado a O1-b: cuando se construya la pantalla, devolverá cero para
+todo el histórico previo a `d7bb254`.
+
+#### 4. `C1-Fase B` desapareció de la lista sin decisión
+
+Ver B. Tercer caso del mismo modo de falla (ORDER-15 el 03/09→05/09; las filas
+❌ del roadmap el 25/08).
+
+#### 5. `AUDIT-DOC-001` se contradecía dentro de este mismo archivo
+
+Documentado cerrado en la sección de higiene y listado abierto 50 líneas antes.
+**No hace falta un archivo viejo para arrastrar algo stale.**
+
+#### 6. `getInvoicedFinancialTransactionIds()` — hueco de doble comprobante metido en una fila de infraestructura
+
+`sql.invoice.repository.ts:245-255` filtra `i.status = 'ISSUED'`. El checkpoint
+de AR-FACT lo llama *"el hallazgo más grave de toda esta investigación, todavía
+sin cerrar"* (`continuidad-ar-fact-no-issued-01-2026-09-04.md:130-139`), pero
+acá está subsumido en "AR-FACT-NO-ISSUED-01 Fases 2-8, diferidas" — la misma
+bolsa que la tabla, la máquina de estados y los permisos. **Es un hueco de
+doble comprobante fiscal (S1) leyéndose como trabajo de infra.** Regla 3, otra
+vez. Merece fila propia.
+
+#### 7. `reservation.expired` no tiene consumidor, pero sí tiene costo
+
+EVT-ORF-01 está como línea suelta. Lo que no dice: el evento **se persiste en
+`domain_events`, el `OutboxWorker` lo poll-ea cada 5s por tenant, no encuentra
+handler y lo descarta** (`outbox.worker.ts:302-310`). Con A7.6 abierto (sin
+purga), es una tabla que crece con filas que nunca van a producir efecto. Los
+dos ítems estaban en la lista; **la intersección no**.
+
+### D. Precedente de diseño — ERPNext y Odoo 19
+
+Anclas verificadas en los checkouts locales de ERPNext y Odoo 19.0.
+**Límite declarado:** ningún módulo AFIP con lógica real de webservice está en
+disco, así que la semántica específica de CAE no tiene precedente verificable —
+el diseño de `invoice.service.ts:12-17` es propio, ni confirmado ni contradicho.
+
+**Dónde `app-main` ya está adelante de los dos** (no gastar esfuerzo ahí):
+
+- **Locking de reembolso.** Es el único de los tres con lock pesimista explícito
+  sobre el recurso disputado, con la trampa de la foto stale medida
+  empíricamente y con orden canónico fenceado por test. Odoo no tiene **un solo
+  `FOR UPDATE` en todo `addons/account`**: su protección contra dos reembolsos
+  simultáneos es efecto colateral del row lock implícito del UPDATE.
+- **Modelo de estado del comprobante.** `InvoiceStatus` de 4 valores +
+  `afipContacted` distingue cuatro situaciones que Odoo colapsa en dos
+  (`sending_data` Json sí/no, `account_move.py:722`). Odoo **abandona borrando
+  el marcador** (`account_move_send.py:850-855`): no puede responder "qué se
+  abandonó". Para AFIP eso sería un bug. ERPNext core directamente no modela
+  "existe en base pero el fisco no lo aceptó" (negativo confirmado).
+
+**Lo accionable, por ítem abierto:**
+
+| Ítem | Precedente | Qué implica |
+|---|---|---|
+| **BRECHA-REFUND-01-B** | ERPNext `payment_entry.py:421` `validate_allocated_amount_with_latest_data()`, aborta en `:470-476` si el saldo fresco difiere del asumido | **Deja de exigir un lock nuevo.** Releer `getCollectedPaymentTotalForReservation()` antes del COMMIT y tirar si cambió respecto de `cancellation-refund.service.ts:245`. Convierte un sub-reembolso silencioso y permanente en error visible y reintentable. Un `SELECT`, cero schema. **No arregla el hallazgo #1 — son dos defectos distintos en la misma función** |
+| **ORDER-10 B2** | Odoo `_need_cancel_request()` (`account_move.py:1892`) apaga `button_draft` (`:6278`) y enciende `button_request_cancel` (`:6384`) | La decisión de qué botón se ofrece debe ser **predicado calculado en backend y expuesto al frontend**, no inferido por el cliente. `resolveInvoiceLinkage()` ya devuelve `{status, afipContacted}` |
+| **ORDER-10 residual #3** (falso positivo de `CARGO_CON_COMPROBANTE_VIVO`, declarado bloqueante de B2) | Odoo no discrimina por estado del cargo sino por **existencia de la reversa** (`reversed_entry_id`) | El `NOT EXISTS` de `voidByOrderId` (`sql.financial-transaction.repository.ts:740-752`) debe dejar pasar la anulación cuando exista un `ADJUSTMENT` con `reversed_invoice_id` hacia esa misma factura. **Mismo predicado, sin excepción ad-hoc ni columna nueva** |
+| **ORDER-10 B3** | Odoo: el dominio del cron es también el filtro de la pantalla (`account_move.py:6506-6509`) | B3 = agregar `?status=` a `GET /api/invoices` (hoy exige `financialTransactionId` o `customerId`, 400 sin uno: `invoices.routes.ts:181`). El predicado ya está escrito **3 veces** en el repo. **Dos bandejas, no una**: `FAILED_UNCERTAIN && afipContacted` = intervención humana; el resto = reintento (el discriminante ya está en `retryExisting()`, `:803-804`). Cero schema |
+| **ORDER-10 B4** | Odoo: 5 fechas de corte en `res.company` (`company.py:76-102`), cero filas de período; `hard_lock_date` irreversible separado de los negociables; excepción como registro auditable (`account.lock_exception`) y no como rol | **La forma es N fechas en `business_profile`, no tabla de períodos.** Y **B4 depende de B2, no al revés**: cerrar el período bloquea también la reversa (`general_ledger.py:642`, `_can_be_unlinked`), así que si B2 sale primero sin considerarlo, la NC podrá emitirse con fecha dentro de un período que después se cierre |
+| **ORDER-13 punto 3** | Odoo separa por forma del hueco: previene donde la contrapartida está en el mismo registro (contabilidad), **concilia donde el hecho llega asíncrono** (POS: `pos_order.py:34` `_get_valid_session()`, sesión de rescate como entidad con contador visible en `pos_config.py:133`) | `app-main` está en el caso POS (el `CHARGE` llega por outbox). **Descarta la opción (a)** de la sección de ORDER-13; apunta a (b) o (c). Y la conciliación necesita **artefacto visible, no un log** |
+| **O5** | ERPNext `Repost Item Valuation`: el incidente vive **como campos del registro que falló** (`status` + `error_log`), no en bitácora aparte | **No hace falta tabla de incidentes.** `domain_events` ya tiene `retry_count`, `failed_at`, `last_error` e índice. Falta (a) clasificar el error y (b) notificar a un rol. **O5 es más chico de lo que parece** |
+| **ORDER-13 punto 1** (retry manual resetea `retry_count`) | ERPNext `repost_item_valuation.py:577-580`: clasifica **por tipo de excepción**, no por substring del traceback — con el comentario que documenta que la versión anterior se perdía los deadlocks de Postgres (`"deadlock detected"` vs `"Deadlock found"` de MariaDB) | Un error recuperable no gasta intentos; uno no recuperable no reintenta 12 veces. `app-main` ya tiene vocabulario (`EfectoRechazo`, `financial-transaction.repository.ts:137`). **La advertencia sobre el substring aplica literal** |
+| **Ficha 7 — decisión a dejar escrita** | Odoo expone `FOR UPDATE` vs `FOR NO KEY UPDATE` como parámetro (`allow_referencing`, `odoo/orm/models.py:5589-5592`) | `getRefundableForUpdate` (`sql.invoice.repository.ts:154`) usa `FOR UPDATE` **precisamente para** bloquear los INSERT hijos que necesitan `FOR KEY SHARE`. Es el caso donde la recomendación de Odoo **no** aplica y alguien podría "optimizarlo" y romper la protección. **Merece comentario, no cambio** |
+
+**Corrección al ADR:** `diseno-cancelacion-orden-nota-credito-2026-09-05.md:80`
+declara `voidByReservationId()` "fuera de este bloque… ítem propio". El código
+ya lo tiene resuelto (`sql.financial-transaction.repository.ts:374-386`,
+RESERVA-10). **Esa línea del ADR está stale.**
+
+### E. Bloques de trabajo propuestos
+
+Reagrupación por *mismo problema*, no por etiqueta. **Propuesta, no decidida.**
+
+1. **"Verificado a mano una vez, sin gate automático"** — F2 (raíz) + ORDER-10
+   residual #1 + los 3 falsos negativos de `lock-order.test.ts` + RBAC-MOUNT-001
+   + RBAC-SYNC-001 (§4) + FACT-CONSOL R2 y R4 + ORDER-10 residual #4 +
+   CONTRACT-001. **F2 va primero**: mientras la suite de integración no corra en
+   CI, cualquier cerca nueva escrita como test de integración nace con el mismo
+   defecto. FAILOPEN-001 pertenece por patología pero **no por tamaño**.
+2. **"La puerta se cerró sin abrir la ventana"** — ORDER-10 B2 + RESERVA-10 H1.
+   **No es backlog: es el saldo pendiente de commits ya desplegados.** B1 está
+   en producción y deja una orden con factura viva **sin ningún camino de
+   cancelación** (verificado enumerando las 10 rutas de `orders.routes.ts:137-304`
+   y las 8 de `invoices.routes.ts:74-224`: ninguna de NC).
+3. **"`confirmRefund()`, plata y AFIP"** — hallazgo #1 (ceguera del INNER JOIN,
+   usar `resolveInvoiceLinkage()`) + BRECHA-REFUND-01-B (chequeo optimista
+   estilo ERPNext). Dos defectos distintos en la misma función, los dos sin
+   schema, los dos con la primitiva ya en el repo. **Antes de tocar código:
+   la prueba contra Postgres real que el hallazgo #1 pide.**
+4. **"El `INNER JOIN` de las consolidadas"** — Gap C1-C (mitad viva) +
+   AR-FACT-NO-ISSUED-01 Fase 2 (hallazgo #6) + FACT-CONSOL R3. Mismo defecto de
+   modelo: *hay dos formas de vincular factura y cargo, y parte del código
+   conoce una sola*. El trabajo es censar quién no usa `resolveInvoiceLinkage()`.
+5. **"El efectivo del POS no existe para la caja"** — ORDER-12 + CAJA-ORD-01 +
+   AUDIT-ORD-01. Siguiente circuito por dependencia de negocio.
+6. **"Reportes que mienten por silencio"** — O1-b + D7 + C3.
+7. **Higiene de la lista** — hecho en esta vuelta: AUDIT-DOC-001 cerrado, "RBAC
+   mecanismos 1 y 2" retirada, C1-Fase B repuesta, 13 anclas corregidas.
+   **Queda:** "etapas 2-3 de downgrade" (sin referente, candidata a la misma
+   cirugía), DOC-ANCLA-001, DA-CONT-001, y corregir el estado git del checkpoint
+   de AR-FACT.
+
+### F. Pendiente de decisión del dueño
+
+- ORDER-13: las 3 opciones ya registradas **más una cuarta pregunta que ninguna
+  cubre** — si la conciliación solo *reporta* o además *repara* (crea el `CHARGE`
+  faltante). Odoo repara, ERPNext repara vía cola manual.
+- B4: posponer vs. rechazar. Odoo pospone compras y rechaza ventas
+  (`_compute_date`, `:869`). Para AFIP el lado ventas está forzado (numeración
+  correlativa, fecha en el CAE); el de cargos internos podría ir a cualquiera.
+- B4: si la excepción al cierre es registro auditable con vencimiento y usuario
+  (Odoo) o rol exento permanente (ERPNext). El primero **sí justifica una tabla
+  chica nueva** — es configuración, no duplica `invoices`/`financial_transactions`.
+- `inalterable_hash` (encadenamiento criptográfico de asientos, Odoo `:6378`):
+  requisito de ciertos fiscos europeos. **Verificar si AFIP lo exige** antes de
+  considerarlo — no asumido.
+- Los 6 commits sin pushear.
+
+### G. Fuera de alcance de esta vuelta
+
+- **Datos demo en la base real** — INDETERMINADO, requiere query read-only
+  contra `Hotel los Alamos` y `Demo`. No corrida.
+- **INV-ORF-01** — el mecanismo está confirmado (`inventory.handlers.ts:57`,
+  `:144`), pero **el volumen de filas huérfanas existentes requiere query** a
+  las dos tenant DB. `[H]`.
+- Ninguno de los dos agentes implementó, commiteó ni tocó código. Las únicas
+  corridas fueron de lectura y 3 archivos de cerca (`vitest run`, 4 tests
+  verdes, 467 ms).
