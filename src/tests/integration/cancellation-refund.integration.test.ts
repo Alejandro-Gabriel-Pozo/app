@@ -171,6 +171,225 @@ async function seedCancelledReservationWithPendingInvoice(opts: { totalPrice: nu
   return { reservation, guest, invoiceId };
 }
 
+/**
+ * Hallazgo #1 de la cuarta vuelta (05/09/2026) -- reserva CANCELLED cuyo
+ * cargo fue facturado por una factura CONSOLIDADA, no individual.
+ *
+ * La diferencia con `seedCancelledReservationWithPayment({ withInvoice: true })`
+ * es una sola y es la que importa: acá `invoices.financial_transaction_id`
+ * queda **NULL** y el vínculo cargo<->factura vive en `invoice_charges` --
+ * que es exactamente lo que hace `requestConsolidatedInvoice()`
+ * (`invoice.service.ts:558`). El `CREATE TABLE` de `invoices` declara esa
+ * columna `NOT NULL`, pero `schema.sql:3139` la afloja con
+ * `ALTER COLUMN ... DROP NOT NULL` justamente para permitir este caso.
+ *
+ * Forma tomada del flujo real (`transferStayBalanceToReceivable()`,
+ * `accounts-receivable.service.ts:163-174`): el CHARGE de la empresa lleva
+ * `reservationId` y NO `stayId` (deliberado -- con `stayId` reabriría el
+ * saldo del folio del huésped).
+ */
+async function seedCancelledReservationWithConsolidatedInvoice(opts: {
+  totalPrice: number;
+  paid: number;
+}) {
+  const category = await seedCategory(db);
+  const resource = await seedResource(db, category.id);
+  const guest = await seedCustomer(db);
+  const company = await seedCustomer(db, { fullName: 'Empresa SA' });
+  const reservation = await seedReservation(db, resource.id, guest.id, {
+    totalPrice: opts.totalPrice,
+    status: 'CANCELLED',
+    startTime: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+  });
+
+  await db.query(
+    `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage)
+     VALUES ($1, $2, 0, 100)
+     ON CONFLICT (business_id, min_days_before_checkin) WHERE active = TRUE
+     DO UPDATE SET refund_percentage = EXCLUDED.refund_percentage`,
+    [randomUUID(), BUSINESS_ID],
+  );
+
+  const financialRepo = new SqlFinancialTransactionRepository(db);
+
+  // CHARGE de la empresa, atado a la reserva. Mismo shape que
+  // transferStayBalanceToReceivable().
+  const charge = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservation.id, type: 'CHARGE', amount: opts.totalPrice,
+    currency: 'ARS', status: 'SETTLED',
+  });
+
+  // Factura CONSOLIDADA: financial_transaction_id NULL, vínculo por
+  // invoice_charges. Factura B ISSUED con CAE real.
+  const invoiceId = randomUUID();
+  const cbteNro = cbteNroCounter++;
+  await db.query(
+    `INSERT INTO invoices
+       (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+        environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+        cae, cae_vto, status, issued_at)
+     VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
+             5, 'PES', $6, 0, $6, '123', '2030-01-01', 'ISSUED', NOW())`,
+    [invoiceId, BUSINESS_ID, company.id, `idem-${invoiceId}`, cbteNro, opts.totalPrice],
+  );
+  await db.query(
+    `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+     VALUES ($1, $2, $3, $4)`,
+    [randomUUID(), invoiceId, charge!.id, opts.totalPrice],
+  );
+
+  // PAYMENT contra la reserva, saldando la factura consolidada.
+  await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservation.id, type: 'PAYMENT', amount: opts.paid,
+    currency: 'ARS', status: 'SETTLED',
+    settledInvoiceId: invoiceId,
+  });
+
+  return { reservation, guest, company, invoiceId, chargeId: charge!.id };
+}
+
+/** Inserta/reusa la política 100% del BUSINESS_ID compartido por este archivo. */
+async function seedRefundPolicy100(): Promise<void> {
+  await db.query(
+    `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage)
+     VALUES ($1, $2, 0, 100)
+     ON CONFLICT (business_id, min_days_before_checkin) WHERE active = TRUE
+     DO UPDATE SET refund_percentage = EXCLUDED.refund_percentage`,
+    [randomUUID(), BUSINESS_ID],
+  );
+}
+
+/** Factura CONSOLIDADA ISSUED (financial_transaction_id NULL) sobre N cargos. */
+async function insertConsolidatedInvoice(companyId: string, chargeIds: Array<{ id: string; amount: number }>): Promise<string> {
+  const impTotal = chargeIds.reduce((sum, c) => sum + c.amount, 0);
+  const invoiceId = randomUUID();
+  const cbteNro = cbteNroCounter++;
+  await db.query(
+    `INSERT INTO invoices
+       (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+        environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+        cae, cae_vto, status, issued_at)
+     VALUES ($1, $2, NULL, $3, $4, 'homologacion', 1, 6, $5, 1, 96, '0',
+             5, 'PES', $6, 0, $6, '123', '2030-01-01', 'ISSUED', NOW())`,
+    [invoiceId, BUSINESS_ID, companyId, `idem-${invoiceId}`, cbteNro, impTotal],
+  );
+  for (const charge of chargeIds) {
+    await db.query(
+      `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+       VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), invoiceId, charge.id, charge.amount],
+    );
+  }
+  return invoiceId;
+}
+
+/**
+ * W1 -- una consolidada que cubre DOS reservas: A (cancelada, porción chica)
+ * y B (VIVA, porción grande). El pago entero de la empresa se registra con
+ * `reservationId: A`, que es lo que `POST /customers/:id/payments` permite
+ * hoy (`customers.routes.ts:841-867` acepta `reservationId` y `allocations`
+ * juntos sin validar que la factura tenga que ver con esa reserva).
+ */
+async function seedConsolidatedInvoiceOverTwoReservations(opts: {
+  shareA: number; shareB: number; paid: number;
+}) {
+  const category = await seedCategory(db);
+  const resource = await seedResource(db, category.id);
+  const guestA = await seedCustomer(db);
+  const guestB = await seedCustomer(db);
+  const company = await seedCustomer(db, { fullName: 'Empresa SA' });
+  const reservationA = await seedReservation(db, resource.id, guestA.id, {
+    totalPrice: opts.shareA, status: 'CANCELLED',
+    startTime: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+  });
+  const reservationB = await seedReservation(db, resource.id, guestB.id, {
+    totalPrice: opts.shareB, status: 'CONFIRMED',
+    startTime: new Date(Date.now() + 20 * 24 * 60 * 60 * 1000),
+  });
+  await seedRefundPolicy100();
+
+  const financialRepo = new SqlFinancialTransactionRepository(db);
+  const chargeA = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservationA.id, type: 'CHARGE', amount: opts.shareA,
+    currency: 'ARS', status: 'SETTLED',
+  });
+  const chargeB = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservationB.id, type: 'CHARGE', amount: opts.shareB,
+    currency: 'ARS', status: 'SETTLED',
+  });
+  const invoiceId = await insertConsolidatedInvoice(company.id, [
+    { id: chargeA!.id, amount: opts.shareA },
+    { id: chargeB!.id, amount: opts.shareB },
+  ]);
+
+  // El pago ENTERO de la empresa, atribuido a la reserva A.
+  await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservationA.id, type: 'PAYMENT', amount: opts.paid,
+    currency: 'ARS', status: 'SETTLED', settledInvoiceId: invoiceId,
+  });
+
+  return { reservationA, reservationB, company, invoiceId, financialRepo };
+}
+
+/** W3 -- una misma reserva con factura DIRECTA (del huésped) y porción en una CONSOLIDADA (de la empresa). */
+async function seedReservationWithDirectAndConsolidatedInvoices(opts: {
+  direct: number; consolidated: number; paid: number;
+}) {
+  const category = await seedCategory(db);
+  const resource = await seedResource(db, category.id);
+  const guest = await seedCustomer(db);
+  const company = await seedCustomer(db, { fullName: 'Empresa SA' });
+  const reservation = await seedReservation(db, resource.id, guest.id, {
+    totalPrice: opts.direct + opts.consolidated, status: 'CANCELLED',
+    startTime: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+  });
+  await seedRefundPolicy100();
+
+  const financialRepo = new SqlFinancialTransactionRepository(db);
+
+  // Factura DIRECTA del huésped (depósito): financial_transaction_id poblado.
+  const directCharge = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+    reservationId: reservation.id, type: 'CHARGE', amount: opts.direct,
+    currency: 'ARS', status: 'SETTLED',
+  });
+  const directInvoiceId = randomUUID();
+  await db.query(
+    `INSERT INTO invoices
+       (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+        environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+        condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+        cae, cae_vto, status, issued_at)
+     VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+             5, 'PES', $7, 0, $7, '123', '2030-01-01', 'ISSUED', NOW())`,
+    [directInvoiceId, BUSINESS_ID, directCharge!.id, guest.id, `idem-${directInvoiceId}`, cbteNroCounter++, opts.direct],
+  );
+  await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+    reservationId: reservation.id, type: 'PAYMENT', amount: opts.paid,
+    currency: 'ARS', status: 'SETTLED', settledInvoiceId: directInvoiceId,
+  });
+
+  // Y una porción en una CONSOLIDADA de la empresa, misma reserva.
+  const companyCharge = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservation.id, type: 'CHARGE', amount: opts.consolidated,
+    currency: 'ARS', status: 'SETTLED',
+  });
+  const consolidatedInvoiceId = await insertConsolidatedInvoice(company.id, [
+    { id: companyCharge!.id, amount: opts.consolidated },
+  ]);
+
+  return { reservation, guest, company, directInvoiceId, consolidatedInvoiceId };
+}
+
 describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock + idempotencia (BRECHA-REFUND-01 Fase 3, real Postgres)', () => {
   beforeAll(async () => {
     ({ db, pool, dbName } = await createTestDatabase());
@@ -433,5 +652,131 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
     // 700 que existían cuando arrancó la llamada.
     const total = created.reduce((sum, tx) => sum + tx.amount, 0);
     expect(total).toBe(1000);
+  });
+
+  // =====================================================================
+  // CARACTERIZACIÓN -- hallazgo #1 de la cuarta vuelta (05/09/2026)
+  //
+  // ATENCIÓN, LEER ANTES DE "ARREGLAR" NINGUNO DE ESTOS TESTS: los cuatro
+  // de abajo afirman el comportamiento ACTUAL, que es DEFECTUOSO. No son
+  // la especificación. Están en verde a propósito -- documentan el defecto
+  // con precisión para que (a) quede rojo-en-registro antes de que alguien
+  // toque la query y (b) se vea exactamente qué cambia cuando se
+  // implemente la decisión del dueño.
+  //
+  // Decisión del dueño (05/09/2026): opción **C, fail-closed provisional**
+  // -- `confirmRefund()` sobre una reserva que ya entró en una factura
+  // consolidada de una empresa tiene que RECHAZAR con un error explícito,
+  // no reembolsar. Cuando eso se implemente, estos cuatro tests cambian de
+  // "documentan el defecto" a "esperan el rechazo".
+  //
+  // La razón de NO arreglar la query sin más (architecture-governor,
+  // 05/09/2026): el fix ingenuo es PEOR que el bug -- ver W1.
+  //
+  // ALCANCE -- lo que estos cuatro NO cubren (architecture-governor,
+  // segunda revisión, 05/09/2026): los seeds de acá abajo son INSERT
+  // directos que reproducen el camino de `POST /customers/:id/payments`
+  // con `reservationId` + `allocations` en el mismo body
+  // (`customers.routes.ts:841-867`, que valida que la reserva exista pero
+  // NUNCA que tenga relación con las facturas de `allocations`) -- por eso
+  // el PAYMENT de la empresa queda con `reservation_id` seteado.
+  //
+  // El camino AR PURO -- `transferStayBalanceToReceivable()` ->
+  // `requestConsolidatedInvoice()` -> `markCollected()`
+  // (`accounts-receivable.service.ts`) -- NO está cubierto acá y tiene OTRO
+  // SÍNTOMA: verificado que ningún PAYMENT de ese camino lleva
+  // `reservation_id` (ni el que salda el folio del huésped vía `stayId`, ni
+  // el `markCollected()` de la empresa, que es "un cobro genérico contra
+  // la cuenta de la empresa", deliberado). Con `reservation_id` ausente,
+  // `getCollectedPaymentTotalForReservation()` da 0 y `confirmRefund()`
+  // tira `NothingToRefundError` ANTES de llegar siquiera a mirar
+  // `issuedInvoices` -- el reembolso ni arranca, no es que caiga a
+  // ":sin-asignar". Dos síntomas distintos del mismo agujero, y ninguno
+  // cubre al otro. Test de caracterización propio, pendiente (W4).
+  // =====================================================================
+
+  it('CARACTERIZACIÓN hallazgo #1 -- con factura CONSOLIDADA el reembolso cae a :sin-asignar y NO emite Nota de Crédito', async () => {
+    const { reservation } = await seedCancelledReservationWithConsolidatedInvoice({
+      totalPrice: 1000, paid: 1000,
+    });
+
+    const created = await makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+
+    // Defecto: `getByReservationId()` hace INNER JOIN sobre
+    // `invoices.financial_transaction_id`, que en una consolidada es NULL
+    // (el vínculo vive en `invoice_charges`), así que la factura no entra
+    // en `issuedInvoices`. Queda un asiento en el ledger contra una
+    // Factura B con CAE real de AFIP, sin su NC.
+    expect(created.map((tx) => tx.reversedInvoiceId)).toEqual([null]);
+    expect(created.reduce((sum, tx) => sum + tx.amount, 0)).toBe(1000);
+  });
+
+  it('CARACTERIZACIÓN W1 -- collected() cuenta el pago ENTERO de una consolidada aunque la reserva valga una fracción', async () => {
+    // Escenario del governor: consolidada de 2000 que cubre R1 (300) y R2
+    // (1700). El operador registra los 2000 de la empresa con
+    // `reservationId: R1` -- `POST /customers/:id/payments`
+    // (`customers.routes.ts:841-867`) acepta `reservationId` y
+    // `allocations` juntos SIN validar que la factura tenga que ver con esa
+    // reserva, y desde O2-F2 `getOutstandingByCustomerId()` lista las
+    // consolidadas, así que la modal de conciliación las ofrece.
+    const { reservationA, financialRepo } = await seedConsolidatedInvoiceOverTwoReservations({
+      shareA: 300, shareB: 1700, paid: 2000,
+    });
+
+    const collected = await financialRepo.getCollectedPaymentTotalForReservation(reservationA.id);
+    // 2000 para una reserva que vale 300: `getCollectedPaymentTotalForReservation`
+    // suma por `reservation_id` a secas -- ignora `settled_invoice_id` y
+    // `invoice_charges`.
+    expect(collected).toBe(2000);
+
+    const created = await makeService().confirmRefund(reservationA.id, BUSINESS_ID, 'user-1');
+
+    // HOY: sobre-reembolso de 2000 en el ledger, sin documento fiscal.
+    // CON EL FIX INGENUO (unir la query sin capar por porción): estos 2000
+    // llevarían `reversedInvoiceId` = la consolidada, y `buildCreditNote()`
+    // emitiría una NC de 2000 contra la Factura B con CAE --  revirtiendo
+    // fiscalmente los 1700 de R2, que es una estadía VIVA, sin cancelar.
+    // Por eso el fix de la query no puede ir solo.
+    expect(created.reduce((sum, tx) => sum + tx.amount, 0)).toBe(2000);
+    expect(created.map((tx) => tx.reversedInvoiceId)).toEqual([null]);
+  });
+
+  it('CARACTERIZACIÓN W2 -- el dueño de la consolidada (empresa) y el destinatario del REFUND (huésped) son personas distintas', async () => {
+    const { reservation, guest, company, invoiceId } = await seedCancelledReservationWithConsolidatedInvoice({
+      totalPrice: 1000, paid: 1000,
+    });
+
+    const { rows } = await db.query<{ customer_id: string }>(
+      `SELECT customer_id FROM invoices WHERE id = $1`, [invoiceId],
+    );
+    expect(rows[0]!.customer_id, 'la consolidada es de la EMPRESA').toBe(company.id);
+
+    const created = await makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+
+    // `confirmRefund()` asienta el REFUND con `reservation.customer.id`
+    // (cancellation-refund.service.ts:271) = el HUÉSPED. Hoy esto es
+    // inocuo sólo porque el INNER JOIN impide que se emita la NC: si se
+    // uniera la query sin tocar esto, el crédito de plata caería en la
+    // cuenta del huésped y la reversión fiscal en la Factura B de la
+    // empresa -- dos cuentas distintas, sin contrapartida.
+    // Decisión del dueño (05/09/2026): la plata vuelve a la EMPRESA, que
+    // es quien pagó. O sea que esta línea documenta lo que hay que cambiar.
+    expect(created.every((tx) => tx.customerId === guest.id)).toBe(true);
+    expect(guest.id).not.toBe(company.id);
+  });
+
+  it('CARACTERIZACIÓN W3 -- con factura directa Y consolidada, hoy sólo se ve la directa (el pool LIFO no se mezcla todavía)', async () => {
+    const { reservation, directInvoiceId, consolidatedInvoiceId } =
+      await seedReservationWithDirectAndConsolidatedInvoices({ direct: 400, consolidated: 600, paid: 400 });
+
+    const invoiceRepo = new SqlInvoiceRepository(db);
+    const visto = (await invoiceRepo.getByReservationId(reservation.id)).map((i) => i.id);
+
+    // Hoy: sólo la directa. Si se uniera la query sin más, las dos caerían
+    // en el MISMO pool LIFO ordenado por issuedAt
+    // (cancellation-refund.service.ts:195) y el reembolso del depósito del
+    // huésped podría aplicarse contra la factura de la empresa.
+    expect(visto).toEqual([directInvoiceId]);
+    expect(visto).not.toContain(consolidatedInvoiceId);
   });
 });
