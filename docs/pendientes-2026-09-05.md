@@ -449,6 +449,37 @@ existentes) — **salvo** que se elija un estado intermedio tipo "pendiente
 de nota de crédito", que sí sería schema (bloque aparte, con backup
 durable previo).
 
+### ORDER-10 — decisión de negocio del dueño + segunda revisión de diseño, `architecture-governor` (05/09/2026)
+
+El dueño respondió **(A) con puerta de escape administrativa**: la
+cancelación se rechaza en la puerta si el cargo ya tiene factura con CAE;
+existe una acción separada (`Roles.MANAGEMENT`) que emite una Nota de
+Crédito real y recién con eso habilita cancelar. Propuso una tabla
+`credit_note` nueva y dedicada para esa NC.
+
+`architecture-governor` **rechazó la tabla nueva, con motivo** (no la
+doctrina de negocio, que quedó intacta): campo por campo, todo lo que
+pedía la tabla ya existe en `invoices`/`financial_transactions` — y el
+ciclo de vida de dos estados que proponía (`PENDIENTE_EMISION`/`EMITIDA`)
+es más pobre que el que ya hay (`PENDING`/`ISSUED`/`REJECTED`/
+`FAILED_UNCERTAIN`+`afipContacted`): le faltan justo los dos estados
+donde vive el riesgo de duplicar un comprobante ante AFIP. Decisión final,
+diseño completo y consecuencias (sin schema nuevo, `ADJUSTMENT`
+compensatorio en vez de status nuevo, cierre de la ventana de carrera vía
+lock en `orders`, alcance de bloque 1 fail-closed en todo lo demás):
+[diseno-cancelacion-orden-nota-credito-2026-09-05.md](diseno-cancelacion-orden-nota-credito-2026-09-05.md).
+
+**Verificado contra las dos bases reales (ambas de datos ficticios de
+prueba, confirmado por el dueño 05/09/2026), de solo lectura, 05/09/2026:**
+las 3 consultas que quedaron pendientes arriba dieron **0 filas / 0 / 0**
+en `Hotel los Alamos` y en `Demo` — ORDER-10 sigue siendo riesgo latente,
+no un descuadre ya ocurrido, y no hay datos preexistentes que rompan el
+discriminador nuevo de `requestInvoice()`.
+
+**Todavía NO autorizado:** ningún código. Próximo bloque (B1) y la lista
+completa de tests exigidos antes del primer commit están en el ADR
+enlazado arriba.
+
 ### `voidByReservationId()` — mismo defecto que ORDER-10, lado reservas (registrado 05/09/2026, NO arreglado en este bloque)
 
 `sql.financial-transaction.repository.ts:308-316` anula `CHARGE`/
