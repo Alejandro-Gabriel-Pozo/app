@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
-import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
+import { createTestDatabase, dropTestDatabase, skipIfNoDb, requireTestDatabaseUrl } from './helpers/db.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { PgSqlClient } from '../../repositories/sql.client.js';
 
@@ -92,7 +92,7 @@ describe.skipIf(skipIfNoDb)('schema v46 — columnas de sello de orders (integra
     afterAll(async () => {
       if (!pool) return;
       await pool.end();
-      const adminPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL! });
+      const adminPool = new Pool({ connectionString: requireTestDatabaseUrl() });
       try {
         await adminPool.query(
           `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
@@ -105,7 +105,7 @@ describe.skipIf(skipIfNoDb)('schema v46 — columnas de sello de orders (integra
     });
 
     it('el re-deploy agrega served_at a una tabla que ya existía, deja la fila intacta y no hace backfill', async () => {
-      const baseUrl   = process.env.TEST_DATABASE_URL!;
+      const baseUrl   = requireTestDatabaseUrl();
       const schemaSql = readFileSync(resolve(__dirname, '../../db/schema.sql'), 'utf-8');
 
       dbName = `test_v46_${randomUUID().replace(/-/g, '')}`;

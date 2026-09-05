@@ -67,12 +67,53 @@ const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * true cuando TEST_DATABASE_URL no está definida.
+ * true cuando TEST_DATABASE_URL no está definida **y no estamos en CI**.
+ *
  * Usarlo con describe.skipIf(skipIfNoDb) para saltear suites de integración
  * en entornos locales sin PostgreSQL, en lugar de fallar con ENOENT o
  * "TEST_DATABASE_URL no está definida".
+ *
+ * ## Por qué la mitad `&& !process.env.CI` (F2, 05/09/2026)
+ * Saltear sin BD es lo correcto en una máquina de desarrollo — no todo el
+ * mundo tiene un Postgres levantado. En CI es exactamente lo contrario: si
+ * la variable faltara, `describe.skipIf` reportaría VERDE habiendo corrido
+ * CERO tests. Ese verde silencioso es la mitad del hallazgo F2 registrado en
+ * `docs/pendientes-2026-09-05.md` (la otra mitad era que ningún job corría
+ * esta suite). Con esta condición, en CI nunca se saltea: sin la variable,
+ * `createTestDatabase()` tira el error explícito de más abajo y el job queda
+ * ROJO, que es la señal correcta.
+ *
+ * `CI=true` lo exporta GitHub Actions por defecto (y prácticamente cualquier
+ * otro runner). Mismo criterio de fail-loud que `docs/DEFENSIVE_DEVELOPING.md`
+ * y la skill `honest-degradation`: una ruta degradada tiene que fallar
+ * visible, no devolver algo plausible y mal.
  */
-export const skipIfNoDb = !process.env.TEST_DATABASE_URL;
+export const skipIfNoDb = !process.env.TEST_DATABASE_URL && !process.env.CI;
+
+/**
+ * Devuelve TEST_DATABASE_URL o tira con el mensaje explícito.
+ *
+ * Existe (F2, 05/09/2026) para las suites que arman su propio `pg.Pool` en
+ * vez de usar `createTestDatabase()`: hasta ahora escribían
+ * `process.env.TEST_DATABASE_URL!` y, sin la variable, el non-null assertion
+ * dejaba pasar `undefined` a `new Pool({ connectionString: undefined })`, que
+ * cae a los defaults de libpq (localhost:5432, usuario del SO) y falla con un
+ * `ECONNREFUSED` que no dice nada del problema real. Verificado corriendo la
+ * suite con CI=true y sin la variable: 18 de 19 archivos daban el mensaje de
+ * abajo y 1 daba ECONNREFUSED.
+ *
+ * Rojo lo era en los dos casos — esto es sobre que el rojo explique por qué.
+ */
+export function requireTestDatabaseUrl(): string {
+  const baseUrl = process.env.TEST_DATABASE_URL;
+  if (!baseUrl) {
+    throw new Error(
+      'TEST_DATABASE_URL no está definida. ' +
+      'Ejemplo: TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres',
+    );
+  }
+  return baseUrl;
+}
 
 /**
  * Crea una BD temporal `test_<uuid_sin_guiones>`, aplica schema.sql
@@ -84,13 +125,7 @@ export const skipIfNoDb = !process.env.TEST_DATABASE_URL;
  * está definida.
  */
 export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: string; pool: pg.Pool }> {
-  const baseUrl = process.env.TEST_DATABASE_URL;
-  if (!baseUrl) {
-    throw new Error(
-      'TEST_DATABASE_URL no está definida. ' +
-      'Ejemplo: TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres',
-    );
-  }
+  const baseUrl = requireTestDatabaseUrl();
 
   // Leer el schema LAZY aquí (no en el top-level del módulo).
   // src/tests/integration/helpers/ → ../../../db/schema.sql = src/db/schema.sql
@@ -141,7 +176,7 @@ export async function dropTestDatabase(
 ): Promise<void> {
   await pool.end();
 
-  const baseUrl = process.env.TEST_DATABASE_URL!;
+  const baseUrl = requireTestDatabaseUrl();
   const adminPool = new Pool({ connectionString: baseUrl });
   try {
     // Forzar desconexión de sesiones activas antes de DROP

@@ -13,21 +13,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >
-          --health-cmd "pg_isready -U testuser"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
+    # Sin `services: postgres` a propósito (F2, 05/09/2026). Este job corre
+    # `test:coverage` → `vitest.config.ts`, que excluye `src/tests/integration/**`
+    # SIEMPRE (ver el docblock de ese archivo: el exclude gana incluso pasando
+    # el path por CLI). El contenedor de Postgres y el TEST_DATABASE_URL que
+    # vivían acá eran configuración muerta: ningún test de este job los tocaba
+    # —los 3 hits de TEST_DATABASE_URL fuera de integration/ son comentarios—,
+    # pero leídos desde afuera daban la impresión de que la suite de
+    # integración corría en CI. No corría en ningún job. Ahora corre, en el
+    # job `integration` de más abajo.
     steps:
       - uses: actions/checkout@v4
 
@@ -40,8 +34,6 @@ jobs:
 
       - name: Run tests with coverage
         run: npm run test:coverage
-        env:
-          TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/postgres
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -157,3 +149,67 @@ jobs:
           fi
 
           echo "schema.sql cambió y CURRENT_SCHEMA_VERSION pasó de $OLD_VERSION a $NEW_VERSION — OK."
+
+  # ------------------------------------------------------------
+  # Job 5 — Tests de integración contra Postgres real (F2, 05/09/2026)
+  #
+  # Por qué existe: hasta el 05/09/2026 NINGÚN job corría
+  # `npm run test:integration`. El job `test` corre `test:coverage` →
+  # `vitest.config.ts`, que excluye `src/tests/integration/**` siempre. O sea
+  # que cada prueba determinística de lock (ORDER-10, RESERVA-10,
+  # FACT-CONSOL-TOCTOU-01, FOR-KEY-SHARE-001…) era un hecho real pero LOCAL y
+  # de una sola sesión: nada la volvía a correr en el commit siguiente. Eso
+  # degradaba toda la evidencia [V] de integración citada en los
+  # docs/pendientes-*.md. Ver F2 en docs/pendientes-2026-09-05.md.
+  #
+  # Va como job aparte y no dentro de `test` a propósito: usa otra config
+  # (`vitest.integration.config.ts`, testTimeout 30s), necesita el contenedor
+  # de Postgres, y tarda bastante más. Mezclarlos haría que un fallo de
+  # integración se lea como un fallo de unitarios y viceversa.
+  #
+  # Sobre el verde silencioso —la otra mitad de F2—: `skipIfNoDb`
+  # (src/tests/integration/helpers/db.ts) ya NO saltea cuando CI=true. Si este
+  # job perdiera el TEST_DATABASE_URL, falla en ROJO en vez de reportar "todo
+  # bien" habiendo corrido cero tests.
+  # ------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+
+    # Techo explícito: 19 suites, cada una con CREATE DATABASE + schema.sql
+    # completo. Si algo se cuelga (un lock que no se libera, un pool que no
+    # cierra), que corte acá y no a los 360 minutos del default.
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >
+          --health-cmd "pg_isready -U testuser"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'   # alineado a engines.node (>=22.12.0 <23.0.0) y a render.yaml
+
+      - name: Install dependencies
+        run: npm install
+
+      # El helper crea una BD temporal por suite (CREATE DATABASE + aplicar
+      # src/db/schema.sql entero) y la dropea al terminar, así que el usuario
+      # necesita permisos de CREATE/DROP DATABASE — el superusuario del
+      # contenedor los tiene. Ver src/tests/integration/helpers/db.ts.
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/postgres

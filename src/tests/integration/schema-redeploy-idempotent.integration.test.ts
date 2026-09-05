@@ -36,7 +36,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
-import { skipIfNoDb } from './helpers/db.js';
+import { skipIfNoDb, requireTestDatabaseUrl } from './helpers/db.js';
 import { PgSqlClient } from '../../repositories/sql.client.js';
 
 const { Pool } = pg;
@@ -49,7 +49,7 @@ describe.skipIf(skipIfNoDb)('schema.sql -- redeploy con datos reales ya cargados
   afterAll(async () => {
     if (!pool) return;
     await pool.end();
-    const baseUrl = process.env.TEST_DATABASE_URL!;
+    const baseUrl = requireTestDatabaseUrl();
     const adminPool = new Pool({ connectionString: baseUrl });
     try {
       await adminPool.query(
@@ -63,7 +63,7 @@ describe.skipIf(skipIfNoDb)('schema.sql -- redeploy con datos reales ya cargados
   });
 
   it('reaplicar schema.sql con una fila CONSUMPTION real ya cargada NO revienta (antes rompía todo el deploy)', async () => {
-    const baseUrl = process.env.TEST_DATABASE_URL!;
+    const baseUrl = requireTestDatabaseUrl();
     const schemaSql = readFileSync(resolve(__dirname, '../../db/schema.sql'), 'utf-8');
 
     dbName = `test_redeploy_${randomUUID().replace(/-/g, '')}`;
