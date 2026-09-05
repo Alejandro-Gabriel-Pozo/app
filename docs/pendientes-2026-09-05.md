@@ -254,12 +254,220 @@ pasar hoy: `settleChargesByOrderId` lo clasifica `TIPO_NO_LIQUIDABLE` →
 como `warn` no reintentable — no se pierde en silencio absoluto, pero queda
 `PENDING` para siempre sin que nadie abra incidente.
 
-**No re-verificado en esta pasada:** ORDER-13 (tiene tratamiento explícito
-vía `DEPENDENCIA_PENDIENTE`/`ChargeNeverCreatedError`, pero su propio
-comentario delega la resolución operativa durable a O5 — no declarar
-cerrado sin decidir esa parte) y **ORDER-10** (cero referencias en `src/`
-— es, de los cuatro originalmente listados junto a ORDER-13, el único sin
-ninguna señal de estar resuelto).
+### ORDER-13 · RESUELTO PARCIALMENTE — tercera vuelta, `erp-audit-orchestrator` (05/09/2026)
+
+`[V]` Corrida real: `O2I-09`/`O2I-10` + los tests de `ChargeNeverCreatedError`/
+`ChargeNotYetCreatedError` de `outbox-worker.integration.test.ts`, contra
+Postgres real (31/31 tests entre ese archivo y `order-effects.integration.test.ts`,
+100.29s).
+
+**Mecanismo: cerrado.** `settleChargesByOrderId` distingue "nada que cobrar"
+de "el CHARGE todavía no existe" dentro de la MISMA sentencia
+(`sql.financial-transaction.repository.ts:443-449`); por debajo de
+`UMBRAL_T01=12` reintentos (~1 min) es `DEPENDENCIA_PENDIENTE`, agotado el
+techo es `ChargeNeverCreatedError` → dead-letter inmediato
+(`outbox.handlers.ts:225,342-364`). El casillero de `processed_events` se
+libera correctamente en el catch (`outbox.worker.ts:393-399`) — sin eso
+todo lo anterior sería inútil. La creación tardía converge
+(`createOrderChargeIfConfirmed` acepta `COMPLETED` solo con `confirmed_at`
+no nulo).
+
+**Precisión sobre la descripción original:** "el `catch` de `dispatch()`
+no relanza" sigue siendo literalmente cierto (`outbox.worker.ts:331-361`) —
+lo que cambió no es el mecanismo citado, es que el consumidor de aguas
+abajo ya no confunde ese comportamiento con éxito.
+
+**Corrección real al residual "sin que nadie se entere":** YA NO ES CIERTO
+tal como está escrito. Existe `GET /api/system/outbox/dead-letter` +
+`POST /api/system/outbox/:id/retry` (rol `MANAGEMENT`,
+`system.routes.ts:24-70`) y el frontend lo consume con un banner rojo en
+cualquier página del panel para OWNER/ADMIN (`OutboxAlertBanner`,
+`appfrontend-main/src/app/dashboard/layout.tsx:78-120,438`) con botón de
+reintento por evento. El operador SÍ ve `eventType`, `aggregateId`,
+`lastError`.
+
+**Lo que queda realmente abierto** (más chico y más preciso que "delegado
+a O5"):
+1. El reintento manual resetea `retry_count = 0`
+   (`sql.domain-event.repository.ts:159`) — cada reintento arranca de
+   nuevo los ~12 ciclos (~1 min) antes de volver a caer en dead-letter, sin
+   que el operador entienda por qué se repite.
+2. El mensaje (`ChargeNeverCreatedError`) no es de negocio — no le dice a
+   alguien sin perfil técnico "la orden X se completó pero no tiene cargo,
+   el cliente no debe nada".
+3. **No existe ninguna conciliación "órdenes `COMPLETED` sin `CHARGE`"** —
+   el único `NOT EXISTS` que cruza `orders`/`financial_transactions` en
+   todo `src/` es el propio de `createOrderChargeIfConfirmed`
+   (`sql.financial-transaction.repository.ts:505`). Si el evento se
+   perdiera fuera del carril del outbox, nada lo detecta. **Este punto es
+   acotado y NO depende del diseño de O5** — se puede resolver aparte.
+
+**O5** (gestión operativa durable de incidentes) — confirmado **ABIERTO,
+sin diseño ni diff**: `docs/continuidad-order-lifecycle-integrity-v1-2026-09-03.md:198-203`
+lo declara explícito, y en código no existe ninguna tabla de incidentes
+(`grep -in "incident" src/db/*.sql` no devuelve ninguna `CREATE TABLE`,
+solo comentarios narrativos) ni ningún `onDeadLetter` registrado para
+eventos financieros (`grep -rn "onDeadLetter" src/` → solo
+`inventory.handlers.ts:144`).
+
+**No decidido — 3 opciones, no elegidas:** (a) cerrar ORDER-13 del todo y
+dejar el residual solo bajo O5; (b) mantenerlo parcial hasta que exista la
+conciliación del punto 3; (c) cerrar ORDER-13 y abrir un ítem chico
+separado solo por los puntos 1+3, dejando O5 para la tabla de incidentes
+en sí.
+
+### ORDER-10 · ABIERTO — más grave de lo que decía la fila original, tercera vuelta (05/09/2026)
+
+`[V]` Ancla verificada BYTE A BYTE contra el commit que la registró
+(`3f2097c`) — `invoice.service.ts:304-316` es idéntico, no está stale.
+
+**No es solo "sin implementación" — es reachable desde la UI real de
+producción, por una decisión de producto ya tomada y documentada:**
+
+1. Se confirma una orden → `CHARGE` `PENDING` con `order_id`
+   (`outbox.handlers.ts:289-321`).
+2. Aparece en Cuentas Corrientes del cliente con botón de facturar activo
+   — a propósito: *"Facturar es independiente de haber cobrado (PENDING es
+   válido)"* (`appfrontend-main/.../cuentas-corrientes/page.tsx:298-306`,
+   comentario explícito, decisión tomada, no descuido).
+3. `requestInvoice()` no mira `tx.status` en ningún punto
+   (`invoice.service.ts`, cero referencias a `tx.status` en todo el
+   archivo) — se emite Factura B con CAE real contra un cargo `PENDING`.
+4. Se cancela la orden (`CONFIRMED → CANCELLED` permitido,
+   `order.service.ts:226`). `cancelOrder()` no consulta facturas en NINGÚN
+   momento — cero referencias a `invoice` en todo `src/pos-menu/`.
+5. `voidByOrderId` (`sql.financial-transaction.repository.ts:557-611`)
+   anula el `CHARGE` sin ningún JOIN/EXISTS contra `invoices`.
+6. **Es silencioso**: el desenlace es `APLICADO` sin rechazos,
+   `registrarDesenlace()` no loguea ese caso.
+
+**Resultado:** una factura `ISSUED` con CAE real de AFIP apuntando a un
+`CHARGE` `VOIDED`. Sin Nota de Crédito, sin señal, sin registro — el
+comprobante fiscal existe frente a AFIP, el hecho económico que lo respalda
+fue borrado del saldo del cliente.
+
+**Sin ninguna implementación parcial:** cero referencias a "ORDER-10" en
+todo `src/`; `InvoiceRepository` tiene `getByReservationId()` pero **no**
+`getByOrderId()` — ni siquiera existe la consulta para encontrar las
+facturas de una orden. Las 108 pruebas unitarias de `invoice.service` +
+`order.service` pasan porque el caso no tiene ninguna aserción, no porque
+esté cubierto.
+
+**Contraste con reservas, con matices honestos:** `CancellationRefundService.confirmRefund()`
+resuelve el caso análogo para reservas (LIFO, tope por factura, NC real) —
+pero es acción MANUAL separada de `/cancel` (no dispara sola al cancelar),
+y reparte sobre lo COBRADO. Un port literal no serviría acá: el caso típico
+de ORDER-10 tiene `CHARGE` `PENDING` (nada cobrado todavía) — con
+`collected = 0`, `confirmRefund` lanzaría `NothingToRefundError` y la
+factura seguiría igual de huérfana. Lo que hace falta es una NC por
+anulación de comprobante, no un refund.
+
+**4 opciones de resolución, NINGUNA elegida** (decisión del dueño):
+(a) fail-closed en el cancel — rechazar cancelar una orden con `CHARGE`
+facturado `ISSUED`, exigir pasar por un flujo de NC antes (menor diff,
+mismo precedente que AR-FACT-NO-ISSUED-01 Fase 1); (b) compensar
+automático — emitir la NC al cancelar (más correcto, mucho más caro,
+hereda la complejidad de reparto de `confirmRefund`); (c) fail-closed
+aguas arriba — no facturar un `CHARGE` `PENDING` de orden (**contradice
+una decisión de producto ya tomada y documentada**, no es neutral
+proponerlo); (d) barrera estructural — trigger/constraint que impida
+`VOIDED` sobre una `financial_transaction` con factura `ISSUED` (invariante
+más fuerte, pero rompe con error de base sin mensaje de negocio).
+
+**Evidencia que falta y requiere autorización aparte:** no se verificó si
+el caso ya ocurrió en las tenant DB reales (`Hotel los Alamos`, `Demo`).
+Consulta de solo lectura preparada, no corrida:
+```sql
+SELECT i.id, i.cbte_nro, i.status, ft.id, ft.status, ft.order_id
+FROM invoices i JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
+WHERE i.status='ISSUED' AND ft.status='VOIDED' AND ft.order_id IS NOT NULL;
+```
+Si esa consulta devuelve filas, esto deja de ser riesgo latente y pasa a
+ser un descuadre fiscal que ya existe — cambia la prioridad por completo.
+
+### ORDER-10 — revisión de diseño con `architecture-governor` (05/09/2026), APROBADA CON CONDICIONES
+
+Antes de escribir código se mandó la síntesis de las 3 consultas ERP
+(ERPNext, Odoo 19 genérico, módulos argentinos de `odoarg` — estos
+últimos NEGATIVO CONFIRMADO, sin lógica de cancelación con CAE, solo
+presentación) a revisión de diseño. El gobernador encontró 3 agujeros
+reales en la propuesta original ("un `NOT EXISTS` en `voidByOrderId()`"),
+no solo estilo:
+
+1. **El predicado ingenuo es fail-open para facturas consolidadas** —
+   `invoices.financial_transaction_id` es NULLABLE (C1-Fase C); una
+   factura consolidada vincula por `invoice_charges`, no por esa columna.
+   El guard tiene que espejar el mismo `UNION ALL` que ya usa
+   `resolveInvoiceLinkage()` (`sql.invoice.repository.ts:227-238`), no
+   solo el lado individual.
+2. **Bloquear solo en `status='ISSUED'` es más débil que el precedente
+   que invoca** (AR-FACT-NO-ISSUED-01): también hay que bloquear en
+   `PENDING` (CAE en vuelo) y en `FAILED_UNCERTAIN` con
+   `afip_contacted=TRUE` (puede existir ya en AFIP) — pero NO en
+   `REJECTED` (AFIP rechazó explícito, sobre-bloquear ahí congela cargos
+   legítimos para siempre).
+3. **El guard dentro de `voidByOrderId()` solo, NO cierra la ventana de
+   carrera que dice cerrar** — es el hallazgo más importante. No hay lock
+   compartido entre `voidByOrderId()` (autocommit, sin transacción) y
+   `requestInvoice()` (`getById()` pre-transaccional, nunca lockea la
+   fila del `CHARGE`). Es write-skew clásico: las dos operaciones pueden
+   commitear sin verse. La reparación real necesita que `requestInvoice()`
+   releea la `financial_transaction` con `FOR UPDATE` DENTRO de su propia
+   transacción y rechace si ya está `VOIDED` — mismo patrón, mismo
+   archivo de lección, que el residual #2 de BRECHA-REFUND-01 (`1807ca8`)
+   cerró para `confirmRefund()`.
+
+Además: (4) sería el primer SQL de `clientes-finanzas` contra tablas de
+`facturacion` — `lint:arch` no lo va a ver (chequea imports, no SQL cross-
+dominio) — hay que elegir y documentar explícitamente si se acepta el
+acoplamiento o se mueve el chequeo al handler (esto último reabre la
+carrera salvo que el `FOR UPDATE` del punto 3 ya esté puesto); y (5)
+`voidByReservationId()` (lado reservas) tiene el defecto idéntico — no se
+arregla en este bloque, ver ítem propio abajo.
+
+**Pregunta de negocio reformulada, no resuelta por el gobernador a
+propósito** (hay una decisión real con dos respuestas válidas, y una
+tercera opción -- "que la orden vuelva a `CONFIRMED`" -- **no es
+técnicamente viable**: no existe transición de des-cancelar, el stock ya
+se restauró para cuando el guard rechazaría, y `handleOrderCancelled` no
+tiene ni repo de órdenes ni transaction manager para revertir nada):
+
+- **(A) Rechazar la cancelación en la puerta** — la orden sigue
+  `CONFIRMED`, el stock no se restaura, pero queda trabada hasta que
+  exista un flujo de Nota de Crédito (que hoy no está construido).
+- **(B) Aceptar la cancelación, dejar el cargo vivo** — la orden pasa a
+  `CANCELLED`, el stock se restaura, pero el `CHARGE` no se anula: el
+  cliente sigue debiendo esa plata hasta que alguien emita la NC a mano.
+
+La respuesta determina si el guard en `cancelOrder()` es el mecanismo
+PRIMARIO (rama A) o si NO debe construirse porque bloquearía la
+operación que el dueño quiere permitir (rama B) — no es "opcional de UX"
+en ninguna de las dos ramas.
+
+**Sin schema nuevo** para el guard en sí (predicado sobre tablas/columnas
+existentes) — **salvo** que se elija un estado intermedio tipo "pendiente
+de nota de crédito", que sí sería schema (bloque aparte, con backup
+durable previo).
+
+### `voidByReservationId()` — mismo defecto que ORDER-10, lado reservas (registrado 05/09/2026, NO arreglado en este bloque)
+
+`sql.financial-transaction.repository.ts:308-316` anula `CHARGE`/
+`ADJUSTMENT` de una reserva sin mirar facturas — mismo mecanismo exacto
+que ORDER-10, y encima devuelve `number` en vez de `EfectoDesenlace` (ni
+siquiera tiene el vehículo de rechazo tipado que `voidByOrderId()` ya
+tiene). Si se cierra ORDER-10 solo del lado órdenes, este queda con la
+forma idéntica del bug y un lector futuro va a suponerlo cubierto porque
+"ya se arregló eso". Ítem propio, no se toca hasta que haya diseño
+dedicado.
+
+### Discrepancia de estado git encontrada (no resuelta, fuera de alcance del auditor)
+
+`docs/continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` afirma
+`HEAD = b088cbc`, 14 commits por delante de `origin/main = 1f72f41`, sin
+push — no coincide con el árbol de hoy (`main` avanzó mucho desde
+entonces, con push intermedio). Mismo linaje que el arrastre stale que
+veníamos corrigiendo: un documento afirmando un estado que nadie
+revalidó. Se resuelve con un `git fetch` + comparación, no hecho todavía.
 
 ### Hallazgo NUEVO, no registrado antes — `addItem`/`removeItem` validan el estado de la orden FUERA del lock (mismo linaje que ORDER-04)
 
@@ -303,12 +511,13 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
   usa `reservationId`) podría anularse y nunca liquidarse. Declarada en
   `financial-transaction.repository.ts:306-311`. Repuesta en la lista
   (ver corrección arriba — se había caído).
-- **ORDER-13** — tratamiento explícito (`DEPENDENCIA_PENDIENTE`/`ChargeNeverCreatedError`),
-  pero la resolución operativa durable queda delegada a **O5** — no cerrar
-  sin decidir esa parte.
-- **ORDER-10** — sin ninguna referencia en `src/` (grep completo). Sin
-  señal de estar resuelto — probablemente el único genuinamente abierto de
-  lo que quedaba de la familia.
+- **ORDER-13** — RESUELTO PARCIALMENTE (ver corrección arriba): mecanismo
+  cerrado, queda abierto solo el residual acotado (retry_count reseteado,
+  mensaje no de negocio, sin conciliación `COMPLETED` sin `CHARGE`) — no
+  depende de O5 para ese último punto.
+- **ORDER-10** — ABIERTO, reachable desde la UI real de producción (ver
+  corrección arriba) — el más severo de lo que quedaba de la familia, no
+  solo "sin implementación".
 - **`addItem`/`removeItem` sin lock de estado** (hallazgo nuevo, ver arriba)
   — mismo linaje que ORDER-04, sin fix en este bloque.
 - **INV-ORF-01** — reservas de stock huérfanas: la causa de doble-reserva
