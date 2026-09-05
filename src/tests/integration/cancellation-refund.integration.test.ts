@@ -27,6 +27,12 @@ import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.j
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import type { BusinessProfileRepository } from '../../repositories/business-profile.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
+// N1 (05/09/2026) -- camino AR puro real, no INSERT directos.
+import { AccountsReceivableService } from '../../clientes-finanzas/accounts-receivable.service.js';
+import { SqlAccountsReceivableRepository } from '../../clientes-finanzas/sql.accounts-receivable.repository.js';
+import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
+import { SqlCustomerRepository } from '../../clientes-finanzas/sql.customer.repository.js';
+import { NothingToRefundError } from '../../domain/errors.js';
 
 let db: SqlClient;
 let pool: pg.Pool;
@@ -388,6 +394,94 @@ async function seedReservationWithDirectAndConsolidatedInvoices(opts: {
   ]);
 
   return { reservation, guest, company, directInvoiceId, consolidatedInvoiceId };
+}
+
+function makeArService(): AccountsReceivableService {
+  return new AccountsReceivableService(
+    new SqlAccountsReceivableRepository(db),
+    new SqlFinancialTransactionRepository(db),
+    new SqlStayRepository(db),
+    new SqlCustomerRepository(db),
+    new PgTransactionManager(pool),
+    new SqlBusinessProfileRepository(db),
+    new SqlInvoiceRepository(db),
+  );
+}
+
+/**
+ * W4 (05/09/2026) -- camino AR PURO real, hasta `markCollected()` inclusive.
+ * A diferencia de `seedCancelledReservationWithConsolidatedInvoice()` y las
+ * de W1/W3 (INSERT directo simulando `POST /customers/:id/payments`), acá
+ * el PAYMENT de la empresa lo crea `AccountsReceivableService.markCollected()`
+ * de verdad -- confirmado que sus dos ramas (`sql.invoice.repository.ts`
+ * aparte, ver `accounts-receivable.service.ts:353` y `:394`) construyen el
+ * PAYMENT con `customerId: ar.companyCustomerId` y **sin `reservationId`
+ * ni `stayId`** -- es "un cobro genérico contra la cuenta de la empresa",
+ * deliberado.
+ *
+ * La reserva se factura, se cobra por este camino, y RECIÉN DESPUÉS se
+ * cancela -- mismo orden que el circuito real (no se cancela una reserva
+ * antes de que exista su cargo).
+ */
+async function seedCollectedConsolidatedThenCancelled(opts: { totalPrice: number }) {
+  const category = await seedCategory(db);
+  const resource = await seedResource(db, category.id);
+  const guest = await seedCustomer(db);
+  const company = await seedCustomer(db, { fullName: 'Empresa SA' });
+  await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+
+  // CONFIRMED durante todo el circuito AR -- recién CANCELLED al final,
+  // igual que en la vida real.
+  const reservation = await seedReservation(db, resource.id, guest.id, {
+    totalPrice: opts.totalPrice, status: 'CONFIRMED',
+    startTime: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+  });
+  await seedRefundPolicy100();
+
+  const stayId = randomUUID();
+  await db.query(
+    `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+     VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+    [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+  );
+
+  const financialRepo = new SqlFinancialTransactionRepository(db);
+  // Lo que transferStayBalanceToReceivable() deja armado: CHARGE contra la
+  // empresa con reservationId (nunca stayId -- ver docblock del método
+  // real), fila accounts_receivable PENDIENTE_FACTURAR.
+  const charge = await financialRepo.create({
+    id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+    reservationId: reservation.id, type: 'CHARGE', amount: opts.totalPrice,
+    currency: 'ARS', status: 'SETTLED',
+  });
+  const arRepo = new SqlAccountsReceivableRepository(db);
+  const ar = await arRepo.createWithClient(db, {
+    id: randomUUID(), businessId: BUSINESS_ID, stayId, companyCustomerId: company.id,
+    amount: opts.totalPrice, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
+    transferredBy: 'ident-test', notes: null, financialTransactionId: charge!.id,
+  });
+
+  // requestConsolidatedInvoice() real necesita AFIP -- acá no hace falta
+  // ejercitar ESE camino (ya cubierto por consolidated-invoice-toctou.
+  // integration.test.ts), así que la factura se arma directo, como en los
+  // seeds de W1/W2/W3, y se avanza el AR a FACTURADO con el mismo
+  // repositorio real que requestConsolidatedInvoice() usa.
+  const invoiceId = await insertConsolidatedInvoice(company.id, [{ id: charge!.id, amount: opts.totalPrice }]);
+  const cbteNro = cbteNroCounter - 1;
+  const invoiceRef = `0001-${String(cbteNro).padStart(8, '0')}`;
+  await arRepo.markInvoiced(ar.id, invoiceRef);
+
+  // markCollected() REAL -- es el que crea el PAYMENT sin reservationId.
+  const arService = makeArService();
+  await arService.markCollected(ar.id);
+
+  // Recién ahora se cancela -- confirmRefund() exige CANCELLED.
+  const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+  const toCancel = await reservationRepo.getById(reservation.id);
+  toCancel!.cancel();
+  await reservationRepo.save(toCancel!);
+
+  return { reservation, guest, company, invoiceId };
 }
 
 describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock + idempotencia (BRECHA-REFUND-01 Fase 3, real Postgres)', () => {
@@ -778,5 +872,39 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
     // huésped podría aplicarse contra la factura de la empresa.
     expect(visto).toEqual([directInvoiceId]);
     expect(visto).not.toContain(consolidatedInvoiceId);
+  });
+
+  // =====================================================================
+  // CARACTERIZACIÓN W4 (05/09/2026, architecture-governor, segunda
+  // revisión) -- el CAMINO AR PURO, el que declaraba "no verificado" el
+  // propio `pendientes-2026-09-05.md`. Ídem aviso de arriba: afirma el
+  // defecto ACTUAL, no la especificación deseada.
+  //
+  // `transferStayBalanceToReceivable()` -> `requestConsolidatedInvoice()`
+  // -> `markCollected()` -- ningún PAYMENT de este camino lleva
+  // `reservation_id` (verificado leyendo las dos ramas de
+  // `markCollected()`, `accounts-receivable.service.ts:353` y `:394`: las
+  // dos usan `customerId: ar.companyCustomerId`, sin `reservationId` ni
+  // `stayId`). Por eso `getCollectedPaymentTotalForReservation()` da 0 y
+  // el síntoma NO es "cae a :sin-asignar" (W1/hallazgo #1) sino
+  // `NothingToRefundError` ANTES de llegar a mirar ninguna factura.
+  //
+  // Dos síntomas distintos del mismo agujero -- cuál te toca depende
+  // pura y simplemente de qué UI usó el operador para cobrar.
+  // =====================================================================
+
+  it('CARACTERIZACIÓN W4 -- camino AR puro real (transferencia -> consolidada -> markCollected): NothingToRefundError, no ":sin-asignar"', async () => {
+    const { reservation } = await seedCollectedConsolidatedThenCancelled({ totalPrice: 1000 });
+
+    // A diferencia de W1 (cae a :sin-asignar con monto completo), acá el
+    // reembolso NI ARRANCA -- collected() da 0 porque el PAYMENT real de
+    // markCollected() no tiene reservation_id.
+    await expect(
+      makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1'),
+    ).rejects.toThrow(NothingToRefundError);
+
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const collected = await financialRepo.getCollectedPaymentTotalForReservation(reservation.id);
+    expect(collected, 'el PAYMENT de markCollected() es invisible para esta query -- por diseño de esa función, no por bug de la query').toBe(0);
   });
 });
