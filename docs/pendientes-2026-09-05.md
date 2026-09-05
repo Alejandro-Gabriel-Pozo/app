@@ -158,6 +158,37 @@ código — no autorizado en esta sesión.
 
 ---
 
+### F2 — la suite de integración (`src/tests/integration/**`) nunca corre en CI
+
+Hallazgo de `architecture-governor` al revisar `FACT-CONSOL-TOCTOU-01`
+(05/09/2026) -- preexistente, no causado por ese commit, pero cambia qué
+significa "verificado" para TODA la evidencia de integración citada en
+este archivo (ORDER-10, RESERVA-10, FACT-CONSOL-TOCTOU-01, y cualquier
+`*.integration.test.ts` anterior). `.github/workflows/ci.yml` corre
+`npm run test:coverage` → `vitest run --coverage`, que usa
+`vitest.config.ts` -- ese config tiene `exclude: ['src/tests/integration/**']`
+**siempre**, sin importar los argumentos de la CLI (el propio docblock del
+archivo lo dice). Ningún job de `ci.yml` corre `npm run test:integration`
+(el que sí apunta a `vitest.integration.config.ts`). `TEST_DATABASE_URL` y
+el contenedor de Postgres de `ci.yml:44` son configuración muerta para
+esa suite.
+
+**Consecuencia concreta:** cada prueba determinística de lock (ORDER-10,
+RESERVA-10, FACT-CONSOL-TOCTOU-01) es un hecho real pero **local y de una
+sola sesión** -- no hay gate automático que la vuelva a correr en el
+próximo PR/commit. Peor: `describe.skipIf(skipIfNoDb)` hace que la
+ausencia de `TEST_DATABASE_URL` sea **verde silencioso**, no rojo -- si
+algún día CI corriera esa suite sin la variable configurada, reportaría
+"todo bien" en vez de "no se corrió nada".
+
+**No arreglado acá** -- toca `.github/workflows/ci.yml`, bloque propio con
+su propio diseño (¿un job nuevo con Postgres real, con qué costo de
+tiempo de CI? ¿mantener `skipIf` o exigir la variable en CI?). Registrado
+para que no le pase lo que a `requestConsolidatedInvoice()` (H3): un hueco
+real, sin categoría propia, que nadie vuelve a mirar.
+
+---
+
 ## ✅ Corrección de arrastre — ORDER-05, ORDER-06, ORDER-07, ORDER-09, ORDER-03-b estaban RESUELTOS, no abiertos (05/09/2026)
 
 `pendientes-2026-09-03.md` y la primera versión de este archivo arrastraban
@@ -573,7 +604,7 @@ bloqueante, `architecture-governor`, 05/09/2026):**
    estado desconocido futuro cuenta en dos columnas del lado reserva
    (`reserva_no_elegible` y `estado_desconocido`) contra una sola del
    lado orden. Más ruidoso a propósito, no menos correcto.
-3. **`requestConsolidatedInvoice()` no tiene NINGÚN guard TOCTOU** -- ni
+3. ~~**`requestConsolidatedInvoice()` no tiene NINGÚN guard TOCTOU** -- ni
    de orden cancelada ni de reserva cancelada. El hueco es unidireccional
    (la puerta de cancelación SÍ cubre facturas consolidadas, porque
    `resolveInvoiceLinkage()` unifica `invoice_charges`), pero existe: se
@@ -583,7 +614,62 @@ bloqueante, `architecture-governor`, 05/09/2026):**
    registrado en ningún `pendientes-*.md` hasta ahora** -- exactamente
    el patrón "hallazgo fuera de toda categoría que alguien relee" que
    este mismo archivo advierte más arriba. Bloque propio, cubre órdenes
-   y reservas juntas, con su propio diseño -- no se toca acá.
+   y reservas juntas, con su propio diseño -- no se toca acá.~~
+   **H3 · ✅ RESUELTO (05/09/2026, commit `1f3af80`) -- etiqueta
+   "FACT-CONSOL-TOCTOU-01"** (nombre único, definido acá una sola vez: no
+   es un `ORDER-N` ni un `RESERVA-N`, es la etiqueta propia de este
+   hallazgo, para que no le pase lo que a "RBAC — mecanismos 1 y 2").
+   Ancla: `src/facturacion/invoice.service.ts:449-466` (docblock) y
+   `:522-552` (el guard en sí, dentro de `transactionManager.run()`).
+   Generaliza el mismo mecanismo de ORDER-10/RESERVA-10 a los N
+   `orderId`/`reservationId` distintos de un lote consolidado, lockeados
+   en orden ASCENDENTE de id (A8.1/A8.2) y deduplicados. Decisión del
+   dueño del producto (AskUserQuestion, 05/09/2026): si CUALQUIERA de las
+   N resulta CANCELLED, se rechaza el LOTE ENTERO -- misma política que
+   el guard de double-billing ya existente en la misma función, mecanismo
+   distinto (ese corre antes de abrir la transacción, sin lock; este
+   corre dentro, con `FOR UPDATE` real). Investigación previa confirmó
+   que el único creador real de `accounts_receivable`
+   (`transferStayBalanceToReceivable()`) siempre setea `reservationId`,
+   nunca `orderId` -- el lado órdenes del guard no tiene hoy ningún
+   llamador de producción, existe por paridad con `requestInvoice()`.
+   Evidencia: 5 tests unitarios nuevos + 3 de integración contra Postgres
+   real (`consolidated-invoice-toctou.integration.test.ts`, incluida la
+   prueba determinística de bloqueo de lock), mutation testing manual de
+   los dos guards contra fakes Y contra Postgres real, más un tercer
+   mutation test sobre el invariante de orden ascendente de lock (ver
+   residual 1 abajo).
+
+   **Residuales encontrados en la revisión de este commit
+   (`architecture-governor`, ninguno bloqueante):**
+   - **R1 -- fail-open si la orden/reserva no existe.**
+     `invoice.service.ts:539` (`if (order && order.status === 'CANCELLED')`)
+     y `:548` (misma forma del lado reserva): si la fila no existe,
+     factura igual. Simétrico con el guard ya existente de
+     `requestInvoice()` (`:385`, `:401`), consistente pero fail-open, sin
+     documentar hasta ahora.
+   - **R2 -- `getByIdWithLock` es opcional en la interfaz**
+     (`src/reservas/reservation.repository.ts:48`). Un repositorio que no
+     lo implemente degrada en silencio a una lectura sin lock -- la
+     seguridad hoy es una propiedad del *wiring* (`invoices.routes.ts` sí
+     inyecta `SqlReservationRepository`, que lo implementa), no del
+     sistema de tipos: nada fallaría de compilar si ese wiring cambiara.
+     El arreglo real (hacerlo obligatorio en la interfaz) toca
+     `reservation-hold-expiry.worker.ts` y `reservation.service.ts` --
+     bloque propio, no se toca en este commit.
+   - **R3 -- este commit NO cierra el gap de `markInvoiced()` post-commit.**
+     Después de `issue()`, `requestConsolidatedInvoice()` marca cada
+     `accounts_receivable` como FACTURADO en un loop best-effort, FUERA de
+     la transacción y del lock (`invoice.service.ts` ~588-600). Un CAE
+     real puede existir con esas filas todavía `PENDIENTE_FACTURAR` si ese
+     paso falla. Ya trackeado como AR-FACT-NO-ISSUED-01 (Fases 2-8
+     diferidas) -- este commit cierra la carrera de facturar-algo-ya-
+     cancelado, no ese gap distinto.
+   - **R4 -- el lado órdenes del guard no tiene cobertura de integración.**
+     Cubierto solo por unit tests con fakes (ningún creador real de
+     `accounts_receivable` setea `orderId` hoy) -- para que un lector
+     futuro no confunda "tiene tests" con "verificado contra Postgres
+     real", que es cierto solo del lado reservas.
 
 ### Discrepancia de estado git encontrada (no resuelta, fuera de alcance del auditor)
 
@@ -722,6 +808,14 @@ se conserva porque nadie lo cerró, no porque se haya vuelto a comprobar.
   todavía). 3 hallazgos nuevos registrados (H1 hold-expiry worker, H2
   divergencia de test negativo, H3 `requestConsolidatedInvoice()` sin
   guard TOCTOU en NINGÚN lado, órdenes incluido) — ver ítem propio arriba.
+- **FACT-CONSOL-TOCTOU-01** (H3 de RESERVA-10, `requestConsolidatedInvoice()`
+  sin guard TOCTOU) — ✅ RESUELTO, commit `1f3af80` (05/09/2026, sin
+  pushear todavía). 4 residuales registrados (R1 fail-open sin fila, R2
+  `getByIdWithLock` opcional en la interfaz, R3 `markInvoiced()`
+  post-commit sin cerrar -- AR-FACT-NO-ISSUED-01 sigue abierto, R4 lado
+  órdenes sin cobertura de integración) — ver ítem propio arriba. También
+  salió de esta revisión **F2** (suite de integración nunca corre en CI) —
+  ítem propio, sección "Abierto — registrado por primera vez".
 - **INV-ORF-01** — reservas de stock huérfanas: la causa de doble-reserva
   (ORDER-05) está cerrada, pero las filas históricas y la otra causa
   (compensación de dead-letter, `inventory.handlers.ts:70-80`) siguen
