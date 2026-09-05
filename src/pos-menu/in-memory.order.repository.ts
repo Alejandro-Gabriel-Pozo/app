@@ -67,13 +67,6 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
     return order;
   }
 
-  async addItem(
-    orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
-  ): Promise<OrderItem> {
-    return this.addItemWithClient({} as SqlClient, orderId, item);
-  }
-
   async addItemWithClient(
     _client: SqlClient,
     orderId: string,
@@ -110,7 +103,7 @@ export class InMemoryOrderRepository implements IOrderRepositoryWithClient {
     }
   }
 
-  async removeItem(orderItemId: string, orderId: string): Promise<boolean> {
+  async removeItemWithClient(_client: SqlClient, orderItemId: string, orderId: string): Promise<boolean> {
     const order = this.orders.get(orderId);
     if (!order) return false;
     const before = order.items.length;

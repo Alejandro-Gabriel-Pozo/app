@@ -3,25 +3,19 @@
 // Usa SqlClient.query(sql, params) — compatible con pg (node-postgres).
 // NO usa tagged templates ni APIs de postgres.js.
 //
-// ## Cambios respecto a versión anterior (PR #28)
-//   - createWithClient(): crea la fila en `orders` usando un client
-//     externo (transaccional). No inserta ítems.
-//   - addItemWithClient(): inserta un order_item usando un client externo.
-//   - removeItem(): recibe orderId y recalcula total_amount con SUM post-DELETE.
-//
-// ## Cambios en esta iteración (PR #29)
-//   - addItem(): ahora corre dentro de transactionManager-like pattern usando
-//     un SqlClient wrapping BEGIN/COMMIT/ROLLBACK manual, adquiriendo
-//     SELECT ... FOR UPDATE sobre la fila de `orders` antes de insertar
-//     el ítem y recalcular total_amount. Esto serializa las escrituras
-//     concurrentes a la misma orden.
-//   - addItemWithClient(): sin cambios — sigue siendo el método primitivo
-//     que el servicio usa dentro de createOrder (ya envuelto en transacción).
+// ## ORDER-17 (05/09/2026) -- addItem()/removeItem() eliminados
+// `addItem()` abría su propio BEGIN/FOR UPDATE/COMMIT a mano detectando un
+// `_pool` que ningún `SqlClient` real expone -- esa rama nunca corría, y el
+// camino real (`addItemWithClient` sin transacción ni recálculo de total)
+// dejaba `orders.total_amount` desincronizado siempre, no solo bajo carrera.
+// `removeItem()` borraba por `id` sin `AND order_id`, pese a recibir el
+// parámetro. Los dos se reemplazan por `addItemWithClient()`/
+// `removeItemWithClient()`, usados por `OrderService` dentro de
+// `transactionManager.run()` con `getByIdForUpdate()` -- ver el docblock
+// completo en `order.repository.ts` (interfaz) y `order.service.ts` (uso).
 // =============================================================================
 
 import { randomUUID } from 'crypto';
-import pg from 'pg';
-import type { Pool } from 'pg';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type {
   ListOrdersFilter,
@@ -395,67 +389,6 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // addItem  ← SELECT FOR UPDATE + SUM recalc
-  // -------------------------------------------------------------------------
-
-  async addItem(
-    orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
-  ): Promise<OrderItem> {
-    const pool = (this.db as unknown as { _pool?: InstanceType<typeof Pool> })._pool;
-
-    if (!pool) {
-      return this.addItemWithClient(this.db, orderId, item);
-    }
-
-    const pgClient = await pool.connect();
-    try {
-      await pgClient.query('BEGIN');
-
-      await pgClient.query(
-        'SELECT id FROM orders WHERE id = $1 FOR UPDATE',
-        [orderId],
-      );
-
-      const itemId = randomUUID();
-      const { rows: itemRows } = await pgClient.query<Record<string, unknown>>(
-        `INSERT INTO order_items
-           (id, order_id, item_type, product_id, product_variant_id, reservation_id,
-            quantity, unit_price, subtotal, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         RETURNING *`,
-        [
-          itemId, orderId, item.itemType,
-          item.productId        ?? null,
-          item.productVariantId ?? null,
-          item.reservationId    ?? null,
-          item.quantity, item.unitPrice, item.subtotal,
-          item.notes ?? null,
-        ],
-      );
-
-      await pgClient.query(
-        `UPDATE orders
-         SET total_amount = COALESCE(
-           (SELECT SUM(subtotal) FROM order_items WHERE order_id = $1),
-           0
-         ),
-         updated_at = NOW()
-         WHERE id = $1`,
-        [orderId],
-      );
-
-      await pgClient.query('COMMIT');
-      return rowToOrderItem(itemRows[0]!);
-    } catch (err) {
-      await pgClient.query('ROLLBACK');
-      throw err;
-    } finally {
-      pgClient.release();
-    }
-  }
-
-  // -------------------------------------------------------------------------
   // addItemWithClient
   // -------------------------------------------------------------------------
 
@@ -501,28 +434,22 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
   }
 
   // -------------------------------------------------------------------------
-  // removeItem
+  // removeItemWithClient
   // -------------------------------------------------------------------------
 
-  async removeItem(orderItemId: string, orderId: string): Promise<boolean> {
-    const { rows } = await this.db.query<Record<string, unknown>>(
-      'DELETE FROM order_items WHERE id = $1 RETURNING id',
-      [orderItemId],
+  /**
+   * ORDER-17 (05/09/2026) -- el `DELETE` va scopeado por `order_id`
+   * (`AND order_id = $2`). Antes faltaba ese predicado pese a recibir
+   * `orderId` como parámetro: borraba cualquier ítem con ese id sin
+   * importar de qué orden fuera. No recalcula `total_amount` -- eso lo
+   * hace el caller (`OrderService.removeItem()`), con los ítems que ya
+   * leyó bajo el mismo lock, igual que `addItemWithClient()`.
+   */
+  async removeItemWithClient(client: SqlClient, orderItemId: string, orderId: string): Promise<boolean> {
+    const { rows } = await client.query<Record<string, unknown>>(
+      'DELETE FROM order_items WHERE id = $1 AND order_id = $2 RETURNING id',
+      [orderItemId, orderId],
     );
-
-    if (rows.length > 0) {
-      await this.db.query(
-        `UPDATE orders
-         SET total_amount = COALESCE(
-           (SELECT SUM(subtotal) FROM order_items WHERE order_id = $1),
-           0
-         ),
-         updated_at = NOW()
-         WHERE id = $1`,
-        [orderId],
-      );
-    }
-
     return rows.length > 0;
   }
 
@@ -630,6 +557,3 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     }));
   }
 }
-
-// Needed only to access pool.connect() in addItem — imported as type above
-void pg;

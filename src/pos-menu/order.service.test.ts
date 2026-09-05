@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   OrderService,
   OrderNotFoundError,
+  OrderNotEditableError,
   InvalidOrderTransitionError,
   OrderStateUnknownError,
   InvalidPaymentInfoError,
@@ -1136,6 +1137,134 @@ describe('OrderService', () => {
         businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
         items: [{ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1 }],
       })).rejects.toThrow(MissingUnitPriceError);
+    });
+  });
+
+  /**
+   * ORDER-17 (05/09/2026) -- LIMITACIÓN DECLARADA (architecture-governor):
+   * `InMemoryTransactionManager` (arriba en este archivo) le pasa a
+   * `recalculateTotalWithClient()` un `client.query()` que es un no-op
+   * (`return { rows: [], rowCount: 0 }`, sin tocar nada). Los totales que
+   * los tests de abajo observan los produce el `reduce` interno de
+   * `InMemoryOrderRepository.addItemWithClient()`/`removeItemWithClient()`,
+   * NO el `UPDATE ... SUM(subtotal)` que corre `recalculateTotalWithClient()`.
+   * Si se borrara esa llamada de `OrderService.addItem()`/`removeItem()`,
+   * estos 9 tests seguirían en verde -- exactamente el mismo modo de falla
+   * que dejó vivir el bug real (el fake hace bien lo que el SQL hacía mal).
+   * La cobertura real de `recalculateTotalWithClient()` contra Postgres
+   * vive SOLO en `src/tests/integration/order-flow.integration.test.ts`
+   * (describe `ORDER-17`, 3 tests, incluida la regresión del `DELETE` sin
+   * `order_id`). Estos tests unitarios documentan el contrato a nivel de
+   * servicio (guardas, forma del resultado) -- no reemplazan esa evidencia.
+   */
+  describe('ORDER-17 (05/09/2026) — addItem()/removeItem() recalculan total_amount bajo lock', () => {
+    it('addItem() sobre una orden creada vacía deja totalAmount igual al ítem agregado', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default', items: [],
+      });
+      expect(order.totalAmount).toBe(0);
+
+      await service.addItem(order.id, { itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 });
+
+      const reloaded = await orderRepo.getById(order.id);
+      // 2 * basePrice de prod-1 (seedProduct1(10) en beforeEach) = 20.
+      expect(reloaded!.totalAmount).toBe(20);
+    });
+
+    it('dos addItem() sucesivos sobre la misma orden acumulan el total, no lo pisan', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default', items: [],
+      });
+
+      await service.addItem(order.id, { itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 });
+      await service.addItem(order.id, { itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 });
+
+      const reloaded = await orderRepo.getById(order.id);
+      expect(reloaded!.items).toHaveLength(2);
+      expect(reloaded!.totalAmount).toBe(30); // (1 + 2) * 10
+    });
+
+    it('removeItem() recalcula totalAmount a lo que queda, no a cero', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 3 }],
+      });
+      const second = await service.addItem(order.id, { itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 });
+      expect((await orderRepo.getById(order.id))!.totalAmount).toBe(40); // (3+1)*10
+
+      await service.removeItem(order.id, second.id);
+
+      const reloaded = await orderRepo.getById(order.id);
+      expect(reloaded!.items).toHaveLength(1);
+      expect(reloaded!.totalAmount).toBe(30); // solo el ítem original (3*10)
+    });
+
+    it('removeItem() del único ítem deja totalAmount en 0, no en el valor viejo', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 }],
+      });
+      const itemId = order.items[0]!.id;
+
+      await service.removeItem(order.id, itemId);
+
+      const reloaded = await orderRepo.getById(order.id);
+      expect(reloaded!.items).toHaveLength(0);
+      expect(reloaded!.totalAmount).toBe(0);
+    });
+
+    it('addItem() rechaza sobre una orden CONFIRMED, sin tocar total_amount', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      await service.confirmOrder(order.id, ACTOR);
+
+      await expect(
+        service.addItem(order.id, { itemType: 'PRODUCT', productId: 'prod-1', quantity: 5 }),
+      ).rejects.toThrow(OrderNotEditableError);
+
+      expect((await orderRepo.getById(order.id))!.totalAmount).toBe(10);
+    });
+
+    it('removeItem() rechaza sobre una orden CONFIRMED, sin borrar el ítem', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      const itemId = order.items[0]!.id;
+      await service.confirmOrder(order.id, ACTOR);
+
+      await expect(service.removeItem(order.id, itemId)).rejects.toThrow(OrderNotEditableError);
+
+      expect((await orderRepo.getById(order.id))!.items).toHaveLength(1);
+    });
+
+    it('addItem()/removeItem() sobre una orden inexistente lanzan OrderNotFoundError', async () => {
+      await expect(
+        service.addItem('no-existe', { itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }),
+      ).rejects.toThrow(OrderNotFoundError);
+      await expect(service.removeItem('no-existe', 'item-x')).rejects.toThrow(OrderNotFoundError);
+    });
+
+    it('removeItem() con un itemId de OTRA orden no borra nada ni cambia el total de ninguna de las dos', async () => {
+      const orderA = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 1 }],
+      });
+      const orderB = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'PRODUCT', productId: 'prod-1', quantity: 2 }],
+      });
+      const itemFromB = orderB.items[0]!.id;
+
+      // Pide borrar, contra la orden A, un itemId que en realidad es de B.
+      await service.removeItem(orderA.id, itemFromB);
+
+      expect((await orderRepo.getById(orderA.id))!.items).toHaveLength(1);
+      expect((await orderRepo.getById(orderA.id))!.totalAmount).toBe(10);
+      expect((await orderRepo.getById(orderB.id))!.items).toHaveLength(1);
+      expect((await orderRepo.getById(orderB.id))!.totalAmount).toBe(20);
     });
   });
 

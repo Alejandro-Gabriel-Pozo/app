@@ -155,6 +155,20 @@ export interface IOrderRepositoryWithClient extends IOrderRepository {
   ): Promise<OrderItem>;
 
   /**
+   * ORDER-17 (05/09/2026) -- reemplaza a `removeItem()` (eliminado de
+   * `IOrderRepository`, ver su docblock). El `DELETE` va scopeado por
+   * `orderId` (`AND order_id = $2`) -- el bug real era que no lo estaba,
+   * pese a recibir el parámetro. `OrderService.removeItem()` la llama
+   * dentro de `transactionManager.run()`, con el lock de `orders` ya
+   * tomado vía `getByIdForUpdate()`.
+   */
+  removeItemWithClient(
+    client: SqlClient,
+    orderItemId: string,
+    orderId: string,
+  ): Promise<boolean>;
+
+  /**
    * Variantes transaccionales de update/complete/cancel — necesarias para
    * que confirmOrder/completeOrder/cancelOrder puedan emitir su domain
    * event (order.confirmed/completed/cancelled) atómicamente junto con la
@@ -580,20 +594,61 @@ export class OrderService {
     });
   }
 
-  async addItem(orderId: string, item: CreateOrderItemInput): Promise<OrderItem> {
-    const order = await this.orderRepo.getById(orderId);
-    if (!order) throw new OrderNotFoundError(orderId);
-    if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
+  /**
+   * Recalcula `total_amount` desde `order_items` DENTRO de la transacción
+   * del caller, después del INSERT/DELETE. A propósito NO se calcula en JS
+   * desde un `Order.items` leído antes (ej. `[...order.items, newItem]`):
+   * `SqlOrderRepository.getByIdForUpdate()` devuelve una foto (nuevo
+   * objeto por SELECT), pero `InMemoryOrderRepository.getByIdForUpdate()`
+   * devuelve la MISMA referencia vía la que `addItemWithClient()` ya hizo
+   * `push()` -- sumar `newItem` aparte sobre esa referencia lo contaría
+   * dos veces en memoria. El `SUM` recalculado siempre contra la fuente de
+   * verdad evita que la corrección dependa de qué tan "viva" sea la
+   * referencia que devolvió cada implementación.
+   */
+  private async recalculateTotalWithClient(client: SqlClient, orderId: string): Promise<void> {
+    await client.query(
+      `UPDATE orders
+         SET total_amount = COALESCE((SELECT SUM(subtotal) FROM order_items WHERE order_id = $1), 0),
+             updated_at = NOW()
+       WHERE id = $1`,
+      [orderId],
+    );
+  }
 
-    const resolvedItem = await this.resolveOrderItemInput(item, order.customerId, order.locationId);
-    return this.orderRepo.addItem(orderId, resolvedItem);
+  /**
+   * ORDER-17 (05/09/2026) -- ver el docblock de `addItem()`/`removeItem()`
+   * eliminados de `IOrderRepository` (`order.repository.ts`) para el
+   * defecto completo que esto reemplaza. Mismo patrón que
+   * `confirmOrder()`/`cancelOrder()`: todo (lock, releer estado, mutar)
+   * dentro de la MISMA transacción -- el lock de `getByIdForUpdate()` es lo
+   * que cierra la ventana entre chequear `status === 'DRAFT'` y escribir,
+   * contra un `confirmOrder()`/`cancelOrder()` concurrente que tome el
+   * lock primero.
+   */
+  async addItem(orderId: string, item: CreateOrderItemInput): Promise<OrderItem> {
+    return this.transactionManager.run(async (client: SqlClient) => {
+      const order = await this.orderRepo.getByIdForUpdate(client, orderId);
+      if (!order) throw new OrderNotFoundError(orderId);
+      if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
+
+      const resolvedItem = await this.resolveOrderItemInput(item, order.customerId, order.locationId);
+      const newItem = await this.orderRepo.addItemWithClient(client, orderId, resolvedItem);
+      await this.recalculateTotalWithClient(client, orderId);
+
+      return newItem;
+    });
   }
 
   async removeItem(orderId: string, itemId: string): Promise<void> {
-    const order = await this.orderRepo.getById(orderId);
-    if (!order) throw new OrderNotFoundError(orderId);
-    if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
-    await this.orderRepo.removeItem(itemId, orderId);
+    await this.transactionManager.run(async (client: SqlClient) => {
+      const order = await this.orderRepo.getByIdForUpdate(client, orderId);
+      if (!order) throw new OrderNotFoundError(orderId);
+      if (order.status !== 'DRAFT') throw new OrderNotEditableError(orderId, order.status);
+
+      await this.orderRepo.removeItemWithClient(client, itemId, orderId);
+      await this.recalculateTotalWithClient(client, orderId);
+    });
   }
 
   /**

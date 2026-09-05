@@ -4,7 +4,6 @@
 
 import type {
   Order,
-  OrderItem,
   OrderStatus,
   CreateOrderInput,
   UpdateOrderInput,
@@ -155,19 +154,38 @@ export interface IOrderRepository {
    * reintroducir un atajo en autocommit.
    */
   /**
-   * Agrega una línea a una orden existente en estado DRAFT.
-   * La implementación debe usar SELECT FOR UPDATE sobre la fila de `orders`
-   * para evitar race conditions en total_amount con concurrencia.
+   * ORDER-17 (05/09/2026) -- `addItem()`/`removeItem()` (autocommit) se
+   * ELIMINARON de este contrato, mismo criterio que ORDER-04/08 de arriba.
+   *
+   * `addItem()` chequeaba `(this.db as unknown as {_pool?})._pool` para
+   * decidir si abría su propio `BEGIN`/`FOR UPDATE`/`COMMIT` a mano -- pero
+   * ningún `SqlClient` real (el que arma `tenant.middleware.ts` para
+   * `req.db`) expone `_pool`, así que esa rama nunca corría en producción.
+   * El único camino real caía siempre a `addItemWithClient()` SIN
+   * transacción propia ni recálculo de `total_amount` -- cada ítem
+   * agregado después de crear la orden se servía y descontaba stock, pero
+   * `orders.total_amount` nunca se movía de su valor original, así que el
+   * `CHARGE` que emite `order.confirmed` se queda corto (o en cero, si la
+   * orden se creó vacía). No es una carrera: pasaba SIEMPRE, sin
+   * necesitar concurrencia.
+   *
+   * `removeItem()` hacía `DELETE FROM order_items WHERE id = $1` -- SIN
+   * `AND order_id = $2` -- pese a recibir `orderId` como parámetro. El
+   * servicio valida que la orden del path esté `DRAFT`, pero el `DELETE`
+   * borraba cualquier ítem con ese id sin importar de qué orden fuera:
+   * pasando el id de una orden `DRAFT` propia y el `itemId` de una orden
+   * `CONFIRMED`/ya facturada del mismo tenant, se borraba una línea de la
+   * orden equivocada. Las dos sentencias (`DELETE` + `UPDATE` del total)
+   * corrían además sueltas, en autocommit, sin ninguna transacción entre
+   * sí.
+   *
+   * Reemplazadas por `addItemWithClient()`/`removeItemWithClient()` (ver
+   * `IOrderRepositoryWithClient`), usadas por `OrderService.addItem()`/
+   * `removeItem()` dentro de `transactionManager.run()` con
+   * `getByIdForUpdate()` -- mismo patrón que `confirmOrder()`/
+   * `cancelOrder()` ya usan: lock real, releído bajo lock, ninguna mutación
+   * fuera de la transacción.
    */
-  addItem(
-    orderId: string,
-    item: Omit<OrderItem, 'id' | 'orderId' | 'createdAt' | 'updatedAt' | 'stockSnapshot'>,
-  ): Promise<OrderItem>;
-  /**
-   * Elimina una línea de la orden y recalcula total_amount.
-   * orderId es necesario para el UPDATE de total_amount post-DELETE.
-   */
-  removeItem(orderItemId: string, orderId: string): Promise<boolean>;
 
   /** D7 — ventas por producto/variante, órdenes CONFIRMED/COMPLETED en [from, to] (por confirmed_at). */
   getSalesByProduct(from: Date, to: Date): Promise<SalesByProductRow[]>;

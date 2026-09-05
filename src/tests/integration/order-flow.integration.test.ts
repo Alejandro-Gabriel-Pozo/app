@@ -518,4 +518,63 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
     expect(await servedAudits(orden.id)).toBe(0);
     expect(await foto()).toEqual(antes);
   });
+
+  // ── ORDER-17 (05/09/2026) — addItem()/removeItem() contra Postgres real ──
+  //
+  // El defecto real vivía en el SQL, no en la lógica de negocio: el fake en
+  // memoria (order.service.test.ts) siempre scopeó removeItem() por
+  // orderId correctamente, así que nunca pudo detectar que
+  // SqlOrderRepository.removeItem() borraba por `id` SIN `AND order_id`.
+  // Esta suite es la única que ejercita el SQL real.
+
+  describe('ORDER-17 — total_amount y borrado scopeado, contra SQL real', () => {
+    it('addItem() sobre una orden con ítems ya creados recalcula total_amount vía SUM real, no lo pisa', async () => {
+      const orden = await crear(); // 3 * 100 = 300 (PROD a 100, ver beforeAll)
+
+      await service.addItem(orden.id, { itemType: 'PRODUCT', productId: PROD, quantity: 2 });
+
+      const { rows } = await db.query<{ total_amount: string }>(
+        `SELECT total_amount FROM orders WHERE id = $1`, [orden.id],
+      );
+      expect(Number(rows[0]!.total_amount)).toBe(500); // (3 + 2) * 100
+    });
+
+    it('removeItem() con un itemId de OTRA orden no borra la fila ajena (el bug real: DELETE sin AND order_id)', async () => {
+      const ordenA = await crear();
+      const ordenB = await crear();
+      const itemDeB = ordenB.items[0]!.id;
+
+      // Pide borrar, contra la orden A, un order_item que en la base
+      // pertenece a la orden B -- exactamente el caso que el DELETE sin
+      // `order_id` dejaba pasar.
+      await service.removeItem(ordenA.id, itemDeB);
+
+      const { rows: itemsDeB } = await db.query<{ id: string }>(
+        `SELECT id FROM order_items WHERE order_id = $1`, [ordenB.id],
+      );
+      expect(itemsDeB).toHaveLength(1);
+      expect(itemsDeB[0]!.id).toBe(itemDeB);
+
+      const { rows: totales } = await db.query<{ id: string; total_amount: string }>(
+        `SELECT id, total_amount FROM orders WHERE id = ANY($1::VARCHAR[])`, [[ordenA.id, ordenB.id]],
+      );
+      for (const row of totales) expect(Number(row.total_amount)).toBe(300); // ninguna de las dos cambió
+    });
+
+    it('removeItem() del ítem correcto sí lo borra y recalcula total_amount', async () => {
+      const orden = await crear();
+      const segundo = await service.addItem(orden.id, { itemType: 'PRODUCT', productId: PROD, quantity: 1 });
+
+      await service.removeItem(orden.id, segundo.id);
+
+      const { rows: items } = await db.query<{ id: string }>(
+        `SELECT id FROM order_items WHERE order_id = $1`, [orden.id],
+      );
+      expect(items).toHaveLength(1);
+      const { rows } = await db.query<{ total_amount: string }>(
+        `SELECT total_amount FROM orders WHERE id = $1`, [orden.id],
+      );
+      expect(Number(rows[0]!.total_amount)).toBe(300); // vuelve al original
+    });
+  });
 });
