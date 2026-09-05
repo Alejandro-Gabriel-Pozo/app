@@ -445,6 +445,25 @@ export class InvoiceService {
    * `FinancialTransaction` involucrada y concatena las líneas -- mismo
    * cómputo que el camino per-reservation (R14), solo que agrupa IVA sobre
    * el conjunto completo en vez de una sola transacción.
+   *
+   * FACT-CONSOL-TOCTOU-01 (05/09/2026, architecture-governor -- H3 de la revisión de
+   * RESERVA-10) -- hasta acá, este método no tenía NINGÚN guard TOCTOU: a
+   * diferencia de `requestInvoice()` (ORDER-10/RESERVA-10), facturaba los N
+   * cargos pendientes sin volver a mirar si la orden o la reserva de origen
+   * de alguno de ellos se acababa de cancelar. El guard de abajo, dentro de
+   * la transacción, generaliza el mismo mecanismo a los N `orderId`/
+   * `reservationId` distintos que puede traer el lote -- reusa
+   * `OrderCancelledCannotInvoiceError`/`ReservationCancelledCannotInvoiceError`,
+   * no inventa un vehículo de rechazo nuevo (R14). Decisión del dueño del
+   * producto (AskUserQuestion, 05/09/2026): si CUALQUIERA de las N está
+   * CANCELLED, se rechaza el LOTE ENTERO -- misma POLÍTICA de rechazo que ya
+   * rige el guard de double-billing de acá abajo ("se rechaza toda la
+   * operación, no se arma una factura parcial en silencio"), pero NO el
+   * mismo mecanismo: el de double-billing corre ANTES de abrir la
+   * transacción (una lectura, sin lock -- cierra una inconsistencia ya
+   * ocurrida, no una carrera en curso); este corre DENTRO, con `FOR UPDATE`
+   * sobre cada orden/reserva, porque es el que tiene que ganarle a una
+   * carrera real con `cancelOrder()`/`cancelReservation()`.
    */
   async requestConsolidatedInvoice(input: RequestConsolidatedInvoiceInput): Promise<Invoice> {
     const pending = await this.accountsReceivableRepo.getPendingByCompanyCustomerId(input.companyCustomerId);
@@ -490,17 +509,47 @@ export class InvoiceService {
     const concepto = input.concepto ?? CONCEPTO_SERVICIOS;
 
     const allItems: CreateInvoiceItemInput[] = [];
+    const txs: FinancialTransaction[] = [];
     for (const financialTransactionId of financialTransactionIds) {
       const tx = await this.financialTransactionRepo.getById(financialTransactionId);
       if (!tx) throw new FinancialTransactionNotFoundError(financialTransactionId);
+      txs.push(tx);
       allItems.push(...(await this.resolveInvoiceItems(tx, profile, concepto)));
     }
 
     const { impNeto, impIva, impTotal, afipRequest } = this.buildIvaBreakdown(allItems, profile, buyer, concepto);
 
+    // FACT-CONSOL-TOCTOU-01 -- órdenes/reservas distintas involucradas en el lote,
+    // deduplicadas y en orden ASCENDENTE de id (A8.1/A8.2, mismo criterio
+    // que `ReservationAvailabilityService.assertAllResourcesAvailable()`):
+    // dos consolidadas concurrentes que comparten una orden o una reserva
+    // lockean siempre en el mismo orden entre sí y nunca se deadlockean.
+    const orderIds = [...new Set(txs.map((tx) => tx.orderId).filter((id): id is string => id != null))].sort();
+    const reservationIds = [...new Set(txs.map((tx) => tx.reservationId).filter((id): id is string => id != null))].sort();
+
     const invoiceId = randomUUID();
     let invoice!: Invoice;
     await this.transactionManager.run(async (client: SqlClient) => {
+      // FACT-CONSOL-TOCTOU-01 -- primera operación de la transacción a propósito, mismo
+      // criterio que el guard de `requestInvoice()`: si alguna ya está
+      // CANCELLED no tiene sentido llegar a crear la fila de `invoices`
+      // para después descartarla con el rollback. Rechaza el LOTE ENTERO
+      // ante la primera que falle -- ver docblock del método.
+      for (const orderId of orderIds) {
+        const order = await this.orderRepo.getByIdForUpdate(client, orderId);
+        if (order && order.status === 'CANCELLED') {
+          throw new OrderCancelledCannotInvoiceError(orderId);
+        }
+      }
+      for (const reservationId of reservationIds) {
+        const reservation = this.reservationRepo.getByIdWithLock
+          ? await this.reservationRepo.getByIdWithLock(client, reservationId)
+          : await this.reservationRepo.getById(reservationId);
+        if (reservation && reservation.status === ReservationStatus.CANCELLED) {
+          throw new ReservationCancelledCannotInvoiceError(reservationId);
+        }
+      }
+
       invoice = await this.invoiceRepo.createWithClient(
         client,
         {

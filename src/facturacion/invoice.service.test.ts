@@ -16,7 +16,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -1137,6 +1137,38 @@ class FakeMultiFinancialTransactionRepository implements FinancialTransactionRep
   async linkStayToReservationCharges() { return 0; }
 }
 
+/**
+ * FACT-CONSOL-TOCTOU-01 (05/09/2026) -- a diferencia de FakeReservationRepository (una
+ * sola reserva fija), el guard TOCTOU de requestConsolidatedInvoice()
+ * lockea N reservas distintas por id -- acá hacen falta N reservas
+ * simultáneas en el mismo fake, mismo criterio que
+ * FakeMultiFinancialTransactionRepository de arriba. El `client` se
+ * ignora (no hay lock real fuera de Postgres, ver el .integration.test.ts
+ * para el lock real).
+ */
+class FakeMultiReservationRepository implements Pick<ReservationRepository, 'getById' | 'getByIdWithLock'> {
+  /** ids consultados vía getByIdWithLock, en orden -- para verificar deduplicación del guard. */
+  public lockCalls: string[] = [];
+  constructor(private readonly reservations: Map<string, Reservation>) {}
+  async getById(id: string): Promise<Reservation | undefined> { return this.reservations.get(id); }
+  async getByIdWithLock(_client: SqlClient, id: string): Promise<Reservation | undefined> {
+    this.lockCalls.push(id);
+    return this.reservations.get(id);
+  }
+}
+
+/** FACT-CONSOL-TOCTOU-01 -- mismo criterio que FakeMultiReservationRepository, para el lado órdenes del guard. */
+class FakeMultiOrderRepository implements Pick<IOrderRepository, 'getById' | 'getByIdForUpdate'> {
+  /** ids consultados vía getByIdForUpdate, en orden -- para verificar deduplicación del guard. */
+  public lockCalls: string[] = [];
+  constructor(private readonly orders: Map<string, Order>) {}
+  async getById(id: string): Promise<Order | undefined> { return this.orders.get(id); }
+  async getByIdForUpdate(_client: SqlClient, id: string): Promise<Order | undefined> {
+    this.lockCalls.push(id);
+    return this.orders.get(id);
+  }
+}
+
 describe('InvoiceService — C1-Fase C', () => {
   const PROFILE = {
     id: 'default', displayName: null, contactEmail: null,
@@ -1217,27 +1249,32 @@ describe('InvoiceService — C1-Fase C', () => {
       pending: AccountReceivable[];
       txs: Map<string, FinancialTransaction>;
       createNextVoucher?: ReturnType<typeof vi.fn>;
+      /** FACT-CONSOL-TOCTOU-01 -- solo hace falta cuando algún tx.orderId/reservationId de `txs` participa del guard TOCTOU. */
+      orders?: Map<string, Order>;
+      reservations?: Map<string, Reservation>;
     }) {
       const invoiceRepo = new FakeInvoiceRepository();
       const arRepo = new FakeAccountsReceivableRepo();
       const auditLogRepo = new InMemoryAuditLogRepository();
       for (const ar of opts.pending) arRepo.rows.set(ar.id, ar);
       const createNextVoucher = opts.createNextVoucher ?? vi.fn().mockResolvedValue(afipApprovedResponse(99));
+      const orderRepo = new FakeMultiOrderRepository(opts.orders ?? new Map());
+      const reservationRepo = new FakeMultiReservationRepository(opts.reservations ?? new Map());
       const service = new InvoiceService(
         invoiceRepo,
         new FakeMultiFinancialTransactionRepository(opts.txs),
         new FakeBusinessProfileRepository(PROFILE),
         new FakeAfipCredentialsRepository(makeCredentials()),
-        new FakeOrderRepository(),
+        orderRepo,
         new FakeProductRepository(),
         new FakeProductVariantRepository(),
-        new FakeReservationRepository(),
+        reservationRepo,
         new FakeTransactionManager(),
         arRepo,
         auditLogRepo,
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
-      return { service, invoiceRepo, arRepo, auditLogRepo, createNextVoucher };
+      return { service, invoiceRepo, arRepo, auditLogRepo, createNextVoucher, orderRepo, reservationRepo };
     }
 
     it('rechaza si la empresa no tiene nada PENDIENTE_FACTURAR', async () => {
@@ -1343,6 +1380,106 @@ describe('InvoiceService — C1-Fase C', () => {
 
       await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
         .rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
+    });
+
+    describe('FACT-CONSOL-TOCTOU-01 (05/09/2026) -- guard TOCTOU generalizado a N cargos: rechaza el lote entero si CUALQUIERA de las órdenes/reservas de origen ya está CANCELLED', () => {
+      it('rechaza TODO el lote si la reserva de uno solo de los N cargos ya está CANCELLED -- no emite ningún CAE, no marca ninguna AR', async () => {
+        const pending = [
+          makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 }),
+          makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 50 }),
+        ];
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100, reservationId: 'res-1' })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 50, reservationId: 'res-2' })],
+        ]);
+        const reservations = new Map([
+          ['res-1', { id: 'res-1', status: 'CONFIRMED', resource: { name: 'Hab 1' } } as unknown as Reservation],
+          ['res-2', { id: 'res-2', status: 'CANCELLED', resource: { name: 'Hab 2' } } as unknown as Reservation],
+        ]);
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+        const { service, arRepo } = buildConsolidatedService({ pending, txs, reservations, createNextVoucher });
+
+        await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
+          .rejects.toThrow(ReservationCancelledCannotInvoiceError);
+
+        // Rechazo del LOTE ENTERO (decisión del dueño, AskUserQuestion
+        // 05/09/2026) -- ni siquiera ar-1 (cuya reserva sigue CONFIRMED) se
+        // factura: no se pide CAE, ninguna de las dos filas AR se marca.
+        expect(createNextVoucher).not.toHaveBeenCalled();
+        expect(arRepo.rows.get('ar-1')!.status).toBe('PENDIENTE_FACTURAR');
+        expect(arRepo.rows.get('ar-2')!.status).toBe('PENDIENTE_FACTURAR');
+      });
+
+      it('rechaza TODO el lote si la orden de uno de los N cargos ya está CANCELLED -- hoy ningún camino real de accounts_receivable setea orderId, pero el guard es simétrico al de requestInvoice() (paridad, no duplica lógica nueva)', async () => {
+        const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 })];
+        const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100, orderId: 'ord-1' })]]);
+        const orders = new Map([
+          ['ord-1', { id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CANCELLED', totalAmount: 100, notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: new Date(), completedAt: null, servedAt: null, items: [] } as unknown as Order],
+        ]);
+        const { service } = buildConsolidatedService({ pending, txs, orders });
+
+        await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
+          .rejects.toThrow(OrderCancelledCannotInvoiceError);
+      });
+
+      it('permite facturar si todas las reservas involucradas siguen CONFIRMED, y lockea en orden ASCENDENTE de id sin importar el orden de llegada (fake -- el lock real está en consolidated-invoice-toctou.integration.test.ts)', async () => {
+        const pending = [
+          makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 }),
+          makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 50 }),
+        ];
+        // res-b llega ANTES que res-a (orden de pending/txs) -- si el guard
+        // no ordenara de verdad (A8.1/A8.2) y solo reflejara el orden de
+        // llegada, lockCalls saldría ['res-b', 'res-a']. La aserción de abajo
+        // NO usa .sort() sobre el resultado a propósito: es lo que pinea que
+        // el `.sort()` de producción (requestConsolidatedInvoice()) es real,
+        // no un artefacto del orden en que este test sembró los datos.
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100, reservationId: 'res-b' })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 50, reservationId: 'res-a' })],
+        ]);
+        const reservations = new Map([
+          ['res-b', { id: 'res-b', status: 'CONFIRMED', resource: { name: 'Hab 1' } } as unknown as Reservation],
+          ['res-a', { id: 'res-a', status: 'CONFIRMED', resource: { name: 'Hab 2' } } as unknown as Reservation],
+        ]);
+        const { service, reservationRepo } = buildConsolidatedService({ pending, txs, reservations });
+
+        const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        expect(reservationRepo.lockCalls).toEqual(['res-a', 'res-b']);
+      });
+
+      it('deduplica: dos cargos de la MISMA reserva lockean esa reserva una sola vez', async () => {
+        const pending = [
+          makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 60 }),
+          makeAr({ id: 'ar-2', financialTransactionId: 'ft-2', amount: 40 }),
+        ];
+        const txs = new Map([
+          ['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 60, reservationId: 'res-1' })],
+          ['ft-2', makeTx({ id: 'ft-2', customerId: 'cust-empresa', amount: 40, reservationId: 'res-1' })],
+        ]);
+        const reservations = new Map([
+          ['res-1', { id: 'res-1', status: 'CONFIRMED', resource: { name: 'Hab 1' } } as unknown as Reservation],
+        ]);
+        const { service, reservationRepo } = buildConsolidatedService({ pending, txs, reservations });
+
+        const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        expect(reservationRepo.lockCalls).toEqual(['res-1']);
+      });
+
+      it('sin ningún tx.orderId/reservationId en el lote, no consulta ninguna orden ni reserva y no bloquea', async () => {
+        const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 })];
+        const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })]]);
+        const { service, orderRepo, reservationRepo } = buildConsolidatedService({ pending, txs });
+
+        const invoice = await service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        expect(orderRepo.lockCalls).toEqual([]);
+        expect(reservationRepo.lockCalls).toEqual([]);
+      });
     });
   });
 });
