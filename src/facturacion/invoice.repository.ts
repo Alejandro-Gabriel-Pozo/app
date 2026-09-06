@@ -137,6 +137,34 @@ export interface InvoiceRepository {
    * los dos invariantes escritos, no solo el que domina hoy.
    */
   getRefundableForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
+  /**
+   * ADR común cancelar-con-NC (06/09/2026, N1 / predicado **F4**) — suma el
+   * `imp_total` de las Notas de Crédito **`ISSUED`** que compensan la
+   * factura `invoiceId`. Mitad SQL de F4; la mitad de doctrina es
+   * `isInvoiceFullyCompensatedByIssuedCreditNotes()` en
+   * `cancel-with-credit-note.ts`.
+   *
+   * "Compensan" = existe una transacción revertidora `r`
+   * (`financial_transactions.reversed_invoice_id = invoiceId`, `type` en
+   * `REFUND`/`ADJUSTMENT` — la whitelist de N1.b, fail-closed ante un tipo
+   * futuro con `reversed_invoice_id` que el schema no impide) cuya PROPIA
+   * factura de NC está `ISSUED`. El vínculo transacción→NC se resuelve con
+   * el MISMO `UNION ALL` que `resolveInvoiceLinkage()`: individual
+   * (`invoices.financial_transaction_id`) o consolidada (`invoice_charges`).
+   *
+   * Anclado al comprobante emitido, NUNCA al ledger (Defecto B del
+   * re-gate): un `REFUND`/`ADJUSTMENT` `SETTLED` sin NC `ISSUED` suma 0. NO
+   * filtra por `r.status` a propósito — si la NC llegó a AFIP, el crédito
+   * existe con independencia del estado local de la fila revertidora.
+   *
+   * `0` si no hay ninguna NC `ISSUED`. Suma en la moneda de las NC (N4
+   * exige misma moneda NC↔factura — no se mezclan). SIN caller todavía: F4
+   * se cablea en `findBlockingInvoiceLinkage()` en un sub-bloque posterior.
+   * Recibe `client` (NO toma lock — el lock es sobre la fila del ORIGEN,
+   * N10, responsabilidad del caller) para poder leer dentro de la
+   * transacción del caller.
+   */
+  getIssuedCreditNoteCompensationTotal(client: SqlClient, invoiceId: string): Promise<number>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

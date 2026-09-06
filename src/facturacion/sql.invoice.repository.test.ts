@@ -166,3 +166,47 @@ describe('SqlInvoiceRepository — getOutstandingByCustomerId()', () => {
     expect(typeof result[0]!.outstanding).toBe('number');
   });
 });
+
+// ADR común cancelar-con-NC (06/09/2026, N1 / predicado F4) -- mitad SQL.
+// La cobertura de comportamiento (una NC ISSUED individual/consolidada suma,
+// una PENDING no, una parcial suma su parcial) va contra Postgres real en
+// src/tests/integration/credit-note-compensation.integration.test.ts -- acá
+// solo la forma de la query y el parseo del NUMERIC, mismo criterio que
+// getOutstandingByCustomerId arriba (los fakes son ciegos al SQL).
+describe('SqlInvoiceRepository — getIssuedCreditNoteCompensationTotal()', () => {
+  it('arma la query: reversed_invoice_id + whitelist de tipo + NC ISSUED + UNION ALL individual/consolidada', async () => {
+    const mockSqlClient = mockClient([{ compensated: '0' }]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    await repo.getIssuedCreditNoteCompensationTotal(mockSqlClient, 'inv-1');
+
+    const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+    expect(sql).toContain('reversed_invoice_id = $1');
+    expect(sql).toContain("r.type IN ('REFUND', 'ADJUSTMENT')");
+    expect(sql).toContain("nc.status = 'ISSUED'");
+    expect(sql).toContain('UNION ALL');
+    expect(sql).toContain('invoice_charges');
+    expect(sql).toContain('SELECT DISTINCT');
+    expect(sql).toContain('SUM(dedup.imp_total)');
+    // NO filtra r.status -- anclado a la NC, no al ledger (Defecto B).
+    expect(sql).not.toContain("r.status =");
+    expect(params).toEqual(['inv-1']);
+  });
+
+  it('convierte la suma (string de pg) a number', async () => {
+    const mockSqlClient = mockClient([{ compensated: '1210.00' }]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    const total = await repo.getIssuedCreditNoteCompensationTotal(mockSqlClient, 'inv-1');
+
+    expect(total).toBe(1210);
+    expect(typeof total).toBe('number');
+  });
+
+  it('devuelve 0 cuando no hay ninguna NC ISSUED (COALESCE)', async () => {
+    const mockSqlClient = mockClient([{ compensated: '0' }]);
+    const repo = new SqlInvoiceRepository(mockSqlClient);
+
+    expect(await repo.getIssuedCreditNoteCompensationTotal(mockSqlClient, 'inv-1')).toBe(0);
+  });
+});

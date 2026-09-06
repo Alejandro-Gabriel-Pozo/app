@@ -271,6 +271,72 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return { kind: 'NOT_ISSUED', invoiceId: row.id, status: row.status, afipContacted: row.afip_contacted };
   }
 
+  async getIssuedCreditNoteCompensationTotal(client: SqlClient, invoiceId: string): Promise<number> {
+    // ADR común cancelar-con-NC (06/09/2026) -- mitad SQL del predicado F4.
+    // Ver el docblock de la interfaz para la doctrina completa.
+    //
+    // El sub-SELECT `nc` es el ESPEJO EXACTO del UNION ALL de
+    // resolveInvoiceLinkage() (arriba): una NC cubre su transacción
+    // revertidora de forma individual (invoices.financial_transaction_id) o
+    // consolidada (invoice_charges). Mantenerlos alineados es MANUAL -- no
+    // hay typecheck que ate las dos queries; si resolveInvoiceLinkage()
+    // suma un tercer camino, este también.
+    //
+    // `r.type IN ('REFUND','ADJUSTMENT')`: whitelist de N1.b. El schema no
+    // impide una fila con reversed_invoice_id de otro `type` (sin CHECK,
+    // schema.sql:2989-2990); si apareciera, NO cuenta como compensación
+    // (fail-closed: la cancelación queda bloqueada). La cerca de convención
+    // (condición 3 del re-gate) afirma que hoy no existe ninguna.
+    //
+    // NO se filtra `r.status`: F4 se ancla a la NC `ISSUED`, no al ledger
+    // (Defecto B). Si la NC llegó a AFIP el crédito existe aunque la fila
+    // revertidora local no esté SETTLED.
+    //
+    // `SELECT DISTINCT (nc_invoice_id, imp_total)` antes del SUM -- NO es
+    // cosmético, cierra un doble conteo fail-open real (re-gate governor,
+    // 06/09/2026):
+    //  (motivo principal) `invoice_charges` es N:1 hacia la factura. Una NC
+    //  CONSOLIDADA con N filas `invoice_charges` apuntando a N transacciones
+    //  revertidoras que comparten `reversed_invoice_id = $1` produce N filas
+    //  del join, y sin dedup `SUM(imp_total)` suma el imp_total de ESA NC N
+    //  veces -> F4 da "compensada" con compensación parcial -> se destraba
+    //  la cancelación. El ADR (N1.a, "Multi-línea") declara ese caso
+    //  alcanzable en B-reservas.
+    //  (motivo secundario) `idx_invoices_financial_transaction` NO es único,
+    //  así que en teoría una misma NC individual podría aparecer dos veces
+    //  (la clave de idempotencia determinística lo evita en la práctica --
+    //  mismo supuesto que el `ORDER BY ... LIMIT 1` de resolveInvoiceLinkage()).
+    // Dedup por `(id, imp_total)`, NO `SUM(DISTINCT imp_total)`: dos NC
+    // distintas con el mismo importe SÍ suman las dos.
+    //
+    // HUECO que el DISTINCT NO cierra (registrado como bloqueante de
+    // B-reservas): una NC consolidada que cubre revertidoras de facturas
+    // ORIGINALES distintas -- para `invoiceId = A` queda una fila con el
+    // imp_total COMPLETO de la NC, incluida la porción que compensa a B ->
+    // sobre-conteo. Territorio "pool mixto", §6.3 del ADR.
+    const { rows } = await client.query<{ compensated: string }>(
+      `SELECT COALESCE(SUM(dedup.imp_total), 0) AS compensated
+         FROM (
+           SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
+             FROM financial_transactions r
+             JOIN (
+               SELECT id AS nc_invoice_id, financial_transaction_id AS reverting_ft_id, imp_total, status
+                 FROM invoices
+                 WHERE financial_transaction_id IS NOT NULL
+               UNION ALL
+               SELECT i.id AS nc_invoice_id, ic.financial_transaction_id AS reverting_ft_id, i.imp_total, i.status
+                 FROM invoice_charges ic
+                 JOIN invoices i ON i.id = ic.invoice_id
+             ) nc ON nc.reverting_ft_id = r.id
+            WHERE r.reversed_invoice_id = $1
+              AND r.type IN ('REFUND', 'ADJUSTMENT')
+              AND nc.status = 'ISSUED'
+         ) dedup`,
+      [invoiceId],
+    );
+    return parseFloat(rows[0]!.compensated);
+  }
+
   async getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>> {
     if (financialTransactionIds.length === 0) return new Set();
     const { rows } = await this.db.query<{ financial_transaction_id: string }>(
