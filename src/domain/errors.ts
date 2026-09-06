@@ -176,6 +176,25 @@ export class InvoiceNotReversibleError extends DomainError {
   }
 }
 
+/**
+ * BRECHA-REFUND-01-B (06/09/2026) — `confirmRefund()` detectó que el total
+ * cobrado de la reserva cambió entre el cálculo del reembolso y el INSERT
+ * de las filas `REFUND`: un `PAYMENT`/`REFUND` concurrente contra la misma
+ * reserva, por un camino sin `settled_invoice_id`/`reversed_invoice_id`
+ * que el `FOR UPDATE` sobre `invoices` no cubre. 409 reintentable — el
+ * caller vuelve a pedir con la base fresca. No se reintenta solo (A8.6).
+ * Mitiga, no cierra, BRECHA-REFUND-01-B: ver el guard en
+ * `cancellation-refund.service.ts` (residual B-1).
+ */
+export class RefundBaseChangedError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La base de cobros de la reserva "${reservationId}" cambió durante el cálculo del reembolso -- reintentá la operación.`,
+      'REFUND_BASE_CHANGED',
+    );
+  }
+}
+
 export class InvalidCustomerError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_CUSTOMER');

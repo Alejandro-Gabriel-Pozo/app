@@ -13,7 +13,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { BusinessProfile } from '../domain/business-profile.entities.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError } from '../domain/errors.js';
+import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError, RefundBaseChangedError } from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -329,13 +329,27 @@ describe('CancellationRefundService.confirmRefund', () => {
     // La fake genérica de arriba usa un `collected` fijo -- no reproduce el
     // caso real: `getCollectedPaymentTotalForReservation()` recalcula desde
     // el ledger, y ya sale neto del REFUND que el primer llamado dejó
-    // asentado. Esta fake recalcula de verdad (paid - Σ REFUND creado) para
-    // ejercitar el mismo camino que el test de integración contra Postgres.
+    // asentado. Esta fake recalcula de verdad (paid - Σ REFUND commiteado)
+    // para ejercitar el mismo camino que el test de integración contra
+    // Postgres.
+    //
+    // Modela el CORTE DE COMMIT: el método real lee por el POOL, no por el
+    // `client` transaccional, así que NO ve los REFUND que una transacción
+    // en vuelo todavía no commiteó. La fake genérica los ve en `this.created`
+    // apenas se insertan -- sin este corte, el guard de BRECHA-REFUND-01-B
+    // (relectura de `collected` antes del COMMIT) dispararía contra la
+    // inserción de su propia transacción. `commit()` lo llama el test para
+    // marcar que una transacción anterior ya cerró.
     class DynamicCollectedFinancialTransactionRepository extends FakeFinancialTransactionRepository {
+      private committedRefunded = 0;
       constructor(private readonly paid: number) { super(0); }
+      commit(): void {
+        this.committedRefunded = this.created
+          .filter((tx) => tx.type === 'REFUND')
+          .reduce((sum, tx) => sum + tx.amount, 0);
+      }
       override async getCollectedPaymentTotalForReservation(): Promise<number> {
-        const refunded = this.created.filter((tx) => tx.type === 'REFUND').reduce((sum, tx) => sum + tx.amount, 0);
-        return this.paid - refunded;
+        return this.paid - this.committedRefunded;
       }
     }
     const financialRepo = new DynamicCollectedFinancialTransactionRepository(1000);
@@ -349,6 +363,8 @@ describe('CancellationRefundService.confirmRefund', () => {
     );
 
     const first = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    // La primera transacción cerró -- recién ahora el "pool" ve su REFUND.
+    financialRepo.commit();
     // Sin el pre-chequeo de reintento, este segundo llamado vería
     // collected = 1000 - 1000 = 0 y lanzaría NothingToRefundError en vez de
     // devolver lo ya creado -- exactamente lo que rompía la promesa de
@@ -419,5 +435,55 @@ describe('CancellationRefundService.confirmRefund', () => {
     // El resto (1000 - 300 = 700) sin factura que lo cubra -- ledger-only.
     expect(created[1]?.reversedInvoiceId).toBeNull();
     expect(created[1]?.amount).toBe(700);
+  });
+});
+
+describe('CancellationRefundService.confirmRefund -- BRECHA-REFUND-01-B (guard optimista)', () => {
+  // `getCollectedPaymentTotalForReservation()` se llama dos veces dentro de
+  // `confirmRefund()`: una para calcular `refundAmount` y otra en el guard,
+  // justo antes del COMMIT. Esta fake devuelve un valor distinto por
+  // llamada para simular un PAYMENT/REFUND concurrente que commiteó en el
+  // medio, por un camino que el `FOR UPDATE` sobre `invoices` no cubre.
+  class ShiftingCollectedRepository extends FakeFinancialTransactionRepository {
+    private calls = 0;
+    constructor(private readonly values: number[]) { super(0); }
+    override async getCollectedPaymentTotalForReservation(): Promise<number> {
+      const v = this.values[Math.min(this.calls, this.values.length - 1)]!;
+      this.calls += 1;
+      return v;
+    }
+  }
+
+  function buildWithShiftingCollected(values: number[]) {
+    const financialRepo = new ShiftingCollectedRepository(values);
+    const service = new CancellationRefundService(
+      new FakeReservationRepository(makeReservation()),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true }),
+      financialRepo,
+      new FakeInvoiceRepository([]),
+      new FakeBusinessProfileRepository(),
+      new InMemoryTransactionManager(),
+    );
+    return { service, financialRepo };
+  }
+
+  it('aborta con RefundBaseChangedError si `collected` SUBIÓ entre el cálculo y el INSERT (PAYMENT concurrente)', async () => {
+    const { service } = buildWithShiftingCollected([1000, 1300]);
+    await expect(service.confirmRefund('res-1', 'biz-1', 'user-1'))
+      .rejects.toMatchObject({ code: 'REFUND_BASE_CHANGED' });
+  });
+
+  it('aborta también si `collected` BAJÓ entre el cálculo y el INSERT (REFUND concurrente de otro flujo) -- `!==`, no `>`', async () => {
+    const { service } = buildWithShiftingCollected([1000, 700]);
+    await expect(service.confirmRefund('res-1', 'biz-1', 'user-1'))
+      .rejects.toThrow(RefundBaseChangedError);
+  });
+
+  it('no dispara el guard cuando `collected` no cambió -- el camino feliz sigue creando el reembolso', async () => {
+    const { service, financialRepo } = buildWithShiftingCollected([1000, 1000]);
+    const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    expect(created).toHaveLength(1);
+    expect(created[0]?.amount).toBe(1000);
+    expect(financialRepo.created).toHaveLength(1);
   });
 });

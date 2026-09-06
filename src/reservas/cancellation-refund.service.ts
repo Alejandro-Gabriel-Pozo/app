@@ -29,7 +29,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { ReservationStatus } from '../types/enums.js';
-import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError } from '../domain/errors.js';
+import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError, RefundBaseChangedError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import { CBTE_TIPO_FACTURA_B } from '../facturacion/afip-catalog.constants.js';
 import { acquireIdempotencyLock, applyCappedRefundToInvoice, createIdempotentPaymentWithClient, canonicalInvoiceLockOrder } from '../clientes-finanzas/payment-application.js';
@@ -279,6 +279,44 @@ export class CancellationRefundService {
           idempotencyKey: chunk.idempotencyKey,
         });
         if (tx) created.push(tx);
+      }
+
+      // BRECHA-REFUND-01-B (06/09/2026, architecture-governor) -- chequeo
+      // optimista estilo ERPNext (payment_entry.validate_allocated_amount_with_latest_data):
+      // el `FOR UPDATE` sobre las facturas NO cubre un PAYMENT/REFUND contra
+      // la reserva SIN `settled_invoice_id`/`reversed_invoice_id` (ej.
+      // `recordPayment()`, cobro de checkout/POS). Ese puede commitear entre
+      // la lectura de `collected` (arriba) y este COMMIT y dejar un
+      // sub-reembolso silencioso y permanente (`confirmRefund()` es de un
+      // solo tiro por reserva, Q-C). Se relee y, si cambió, se aborta con
+      // 409 reintentable (RefundBaseChangedError) en vez de persistir el
+      // reparto viejo.
+      //
+      // (a) La relectura va por el MISMO camino que la de `collected`:
+      //     `getCollectedPaymentTotalForReservation()` lee por el POOL, no
+      //     por `client` -- por eso NO ve los REFUND que este mismo bloque
+      //     acaba de insertar, y `collectedRecheck` refleja solo commits de
+      //     OTRAS transacciones. Si alguien le agrega un `client` opcional a
+      //     ese método (refactor plausible en la línea de FOR-KEY-SHARE), la
+      //     relectura pasaría a ver los INSERT propios, daría
+      //     `collected - refundAmount` y este guard tiraría en TODOS los
+      //     reembolsos -- y los tests unitarios seguirían verdes porque las
+      //     fakes ignoran el `client`. No lo cambies sin tocar este guard.
+      // (b) Se compara contra `collected` CRUDO, no contra
+      //     `collected - refundAmount`: por (a), "sin cambios concurrentes"
+      //     significa `collectedRecheck === collected`, no la resta. `!==`
+      //     (no `<`/`>`): `collected` puede moverse en las dos direcciones
+      //     (un PAYMENT que pasa a FAILED sale de la suma; un REFUND SETTLED
+      //     de otro flujo la baja).
+      // (c) NO cierra la brecha: solo ve lo commiteado ANTES de este SELECT.
+      //     Bajo READ COMMITTED, una transacción concurrente que ya escribió
+      //     y no commiteó es invisible, y la ventana `guard -> COMMIT` queda
+      //     descubierta. Estrechamiento, no garantía -- cerrarla exige un
+      //     lock que cubra la reserva en sí, que hoy no existe (residual
+      //     B-1, docs/pendientes-2026-09-06.md).
+      const collectedRecheck = await this.financialTransactionRepo.getCollectedPaymentTotalForReservation(reservationId);
+      if (round2(collectedRecheck) !== round2(collected)) {
+        throw new RefundBaseChangedError(reservationId);
       }
     });
 

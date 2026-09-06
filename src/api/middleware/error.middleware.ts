@@ -61,6 +61,17 @@ export function errorHandler(
 
   if (err instanceof DomainError) {
     const status = domainErrorStatus(err);
+    // BRECHA-REFUND-01-B (06/09/2026) -- este es el ÚNICO DomainError que se
+    // loguea acá: es una carrera detectada (un PAYMENT/REFUND concurrente
+    // contra la reserva) que `confirmRefund()` aborta y pide reintentar.
+    // Sin esta traza no hay forma de saber si el guard se dispara en
+    // producción -- que es el insumo para decidir si vale la pena el lock a
+    // nivel reserva (residual B-1). Introduce el precedente de logging
+    // por-code en este middleware; el resto de los DomainError siguen sin
+    // loguearse (hallazgo más ancho, registrado aparte en pendientes).
+    if (err.code === 'REFUND_BASE_CHANGED') {
+      logger.warn({ code: err.code }, '[errorHandler] reembolso abortado por cambio de base concurrente');
+    }
     res.status(status).json({
       code:    err.code,
       message: err.message,
@@ -213,6 +224,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RATE_CATALOG_ENTRY_CONFLICT':
     case 'RESERVATION_NOT_CANCELLED':
     case 'NOTHING_TO_REFUND':
+    case 'REFUND_BASE_CHANGED':
     case 'INVOICE_NOT_REVERSIBLE':
     case 'ORDER_CHARGE_INVOICED':
     case 'ORDER_CANCELLED_CANNOT_INVOICE':
