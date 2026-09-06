@@ -393,10 +393,22 @@ Hotel los Alamos → no-op sobre datos existentes. Condición 1: 32/32 integraci
 contra Postgres real, camino `REFUND` no regresionado.
 
 **Falta de B-núcleo+órdenes (~6 sub-bloques), en orden sugerido:**
-1. Módulo del núcleo en `src/facturacion/` — predicado F4 "hay factura viva
-   sin NC `ISSUED` que la compense en su totalidad" como función compartida
-   (join a la NC `ISSUED` vía el `UNION ALL` de `resolveInvoiceLinkage()`) +
-   token de autz tipado. Sin callers todavía.
+1. ✅ HECHO (`854143b`, sesión 07/09/2026, `architecture-governor` re-gate
+   APROBADO CON CONDICIONES — 6 aplicadas). Módulo del núcleo
+   `src/facturacion/cancel-with-credit-note.ts`:
+   `isInvoiceFullyCompensatedByIssuedCreditNotes()` (doctrina F4 — todo-o-nada,
+   `round2(impTotal - compensado) <= 0.01`, anclado a NC `ISSUED`) +
+   `CreditNoteCancellationAuthorization` / `authorizeCreditNoteCancellation()`
+   (token tipado, marca fantasma no exportada, fail-closed si `confirmedBy`/
+   `reason` vacíos). Mitad SQL: `InvoiceRepository.getIssuedCreditNoteCompensationTotal(client, invoiceId)`
+   — `UNION ALL` espejo de `resolveInvoiceLinkage()`, whitelist
+   `type IN ('REFUND','ADJUSTMENT')`, NO filtra `r.status` (Defecto B),
+   `SELECT DISTINCT (nc_invoice_id, imp_total)` antes del `SUM` (fan-out N:1 de
+   `invoice_charges`). Sin callers. **Integración NO corrida (sin
+   `TEST_DATABASE_URL`)** — `src/tests/integration/credit-note-compensation.integration.test.ts`
+   (7 tests) queda para correr contra Neon **antes** del sub-bloque 5 (cableo
+   de F4). Condiciones 1/6/7 del re-gate siguen abiertas (la mitad SQL nunca
+   tocó Postgres real).
 2. Grupo de permiso nuevo — `security/roles.ts` (definición) +
    `platform.schema.sql` (sumarlo al preset `RECEPTIONIST` y a los que ya
    tienen `MANAGEMENT`) + `docs/rbac-matriz-endpoints.md` §2 bajo
@@ -434,9 +446,31 @@ NC no destraba, cerca de convención).
 + 5 caracterizaciones a actualizar + subcasos directa/consolidada + pool mixto
 + `EXPIRED-FACT-01`).
 
-**Estado git al cerrar:** `app-main` HEAD `ad4d236`, `origin/main` `5a3a588`,
-**25 commits sin pushear**, working tree limpio. `appfrontend-main` `613c206`.
-Sin push ni deploy autorizados.
+### F4-CONSOL-XFACT-01 · 🔴 abierto — bloqueante de B-reservas
+
+`getIssuedCreditNoteCompensationTotal()` (`sql.invoice.repository.ts`, agregada
+en `854143b`) tiene un `SELECT DISTINCT (nc_invoice_id, imp_total)` que cierra
+el doble conteo por fan-out N:1 de `invoice_charges` sobre **una misma** NC
+consolidada. **No** cierra el caso cruzado: una NC consolidada que revierte
+transacciones de facturas ORIGINALES distintas — para `invoiceId = A` el
+`DISTINCT` deja una fila con el `imp_total` **completo** de la NC, incluida la
+porción que compensa a `B` → sobre-conteo fail-open (F4 daría "compensada" con
+compensación parcial). Territorio "pool mixto" (ADR común §6.3). Ningún test lo
+cubre. Anclado por condición del `architecture-governor` (re-gate del sub-bloque
+1, 07/09/2026) — resolver antes de cablear F4 del lado reservas. El test de
+integración de B-reservas debe agregar: (a) NC consolidada con 2 `invoice_charges`
+sobre revertidoras de la MISMA factura → suma su `imp_total` una vez (prueba del
+`DISTINCT`); (b) el caso cruzado, aunque sea como test que documenta el
+fail-open conocido.
+
+**Estado git al cerrar la sesión del 06/09:** `app-main` HEAD `ad4d236`,
+`origin/main` `5a3a588`, **26 commits sin pushear** (el "25" original estaba
+mal — `git rev-list --count origin/main..HEAD` daba 26), working tree limpio.
+`appfrontend-main` `613c206`. Sin push ni deploy autorizados.
+
+**Avance sesión 07/09/2026:** `854143b` (sub-bloque 1 de la lista de arriba) +
+este commit de docs. `app-main` HEAD `854143b` antes del commit de docs,
+`origin/main` sigue `5a3a588`, **27 commits sin pushear**. Sin push ni deploy.
 
 **Para arrancar la sesión siguiente:** leer este archivo + el ADR común
 completo + el ADR de ORDER-10 (`diseno-cancelacion-orden-nota-credito-2026-09-05.md`,
