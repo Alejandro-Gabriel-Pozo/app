@@ -446,31 +446,59 @@ NC no destraba, cerca de convención).
 + 5 caracterizaciones a actualizar + subcasos directa/consolidada + pool mixto
 + `EXPIRED-FACT-01`).
 
-### F4-CONSOL-XFACT-01 · 🔴 abierto — bloqueante de B-reservas
+### F4-CONSOL-XFACT-01 · ✅ RESUELTO (doctrina, 07/09/2026) — implementación del guard en B-reservas / el escape
 
-`getIssuedCreditNoteCompensationTotal()` (`sql.invoice.repository.ts`, agregada
-en `854143b`) tiene un `SELECT DISTINCT (nc_invoice_id, imp_total)` que cierra
-el doble conteo por fan-out N:1 de `invoice_charges` sobre **una misma** NC
-consolidada. **No** cierra el caso cruzado: una NC consolidada que revierte
+**El hueco:** `getIssuedCreditNoteCompensationTotal()` (`sql.invoice.repository.ts`,
+`854143b`) tiene un `SELECT DISTINCT (nc_invoice_id, imp_total)` que cierra el
+doble conteo por fan-out N:1 de `invoice_charges` sobre **una misma** NC
+consolidada, pero no el caso cruzado: una NC consolidada que revierte
 transacciones de facturas ORIGINALES distintas — para `invoiceId = A` el
-`DISTINCT` deja una fila con el `imp_total` **completo** de la NC, incluida la
-porción que compensa a `B` → sobre-conteo fail-open (F4 daría "compensada" con
-compensación parcial). Territorio "pool mixto" (ADR común §6.3). Ningún test lo
-cubre. Anclado por condición del `architecture-governor` (re-gate del sub-bloque
-1, 07/09/2026) — resolver antes de cablear F4 del lado reservas. El test de
-integración de B-reservas debe agregar: (a) NC consolidada con 2 `invoice_charges`
-sobre revertidoras de la MISMA factura → suma su `imp_total` una vez (prueba del
-`DISTINCT`); (b) el caso cruzado, aunque sea como test que documenta el
-fail-open conocido.
+`DISTINCT` deja el `imp_total` **completo** de la NC, incluida la porción que
+compensa a `B` → sobre-conteo fail-open.
+
+**Resolución (revisión `auditor-circuitos-erp`, 07/09/2026 — ADR común N2.a):**
+las tres referencias (ERPNext `return_against` Link único; Odoo
+`reversed_entry_id` Many2one + `UserError` de `l10n_latam` que prohíbe revertir
+>1 documento legal a la vez; QloApps `OrderSlip.id_order` único) modelan
+NC↔factura como **estrictamente 1:1**. No es N:1 en ninguna. → el cierre es un
+**guard + cerca**, no atribución por `invoice_charges.amount` en la SQL:
+- **Guard** en el armado de la NC (`buildCreditNote()` extendido / el
+  orquestador `cancel<X>WithCreditNote()`, nunca en los services por F5):
+  rechazar una NC / `credit_note_request` cuyo conjunto de
+  `reversed_invoice_id` de sus transacciones revertidoras tenga cardinalidad
+  > 1. Con eso, el `SELECT DISTINCT` queda correcto **por construcción**.
+- **Cerca de datos** (patrón `lock-order.test.ts`, falsos negativos
+  declarados; misma forma que la condición 3 del re-gate): test que falla si
+  en un tenant existe una NC cuyas revertidoras abarcan > 1 `reversed_invoice_id`.
+- **Hoy no hay exposición:** `buildCreditNote()` nunca pasa `charges` a
+  `createWithClient()` (`invoice.service.ts:753`) → ningún camino crea una NC
+  consolidada. La rama consolidada del `UNION ALL` de F4 es defensiva.
+
+**Implementación pendiente** (no es un hueco abierto, es trabajo ya en el plan):
+el guard entra con el **primer builder que pueda crear una NC consolidada** —
+B-reservas subcaso 2 (§6.3.2) o el escape. Tests a agregar en B-reservas: (a)
+NC consolidada con 2 `invoice_charges` sobre revertidoras de la MISMA factura →
+suma `imp_total` una vez (prueba del `DISTINCT`); (b) intento de NC con
+revertidoras de 2 facturas → el guard lanza.
+
+**Consecuencia para "pool mixto" (ADR §10 fila 2):** queda **acotado** — pool
+mixto se resuelve con N NC (una por factura), la opción "una única NC
+multi-factura" está descartada por N2.a. Al dueño solo le queda decidir
+fan-out automático vs. resolución manual factura por factura.
 
 **Estado git al cerrar la sesión del 06/09:** `app-main` HEAD `ad4d236`,
 `origin/main` `5a3a588`, **26 commits sin pushear** (el "25" original estaba
 mal — `git rev-list --count origin/main..HEAD` daba 26), working tree limpio.
 `appfrontend-main` `613c206`. Sin push ni deploy autorizados.
 
-**Avance sesión 07/09/2026:** `854143b` (sub-bloque 1 de la lista de arriba) +
-este commit de docs. `app-main` HEAD `854143b` antes del commit de docs,
-`origin/main` sigue `5a3a588`, **27 commits sin pushear**. Sin push ni deploy.
+**Avance sesión 07/09/2026:** (1) `854143b` — sub-bloque 1 de la lista de
+arriba (F4 mitad SQL + doctrina + token). (2) `2441822` — docs: sub-bloque 1
+HECHO + F4-CONSOL-XFACT-01 registrado + conteo corregido. (3) revisión
+`auditor-circuitos-erp` sobre F4-CONSOL-XFACT-01 → **RESUELTO como doctrina**
+(ADR común N2.a: NC↔factura es 1:1 en ERPNext/Odoo/QloApps; cierre = guard +
+cerca, no atribución en la SQL) + acota §10 fila 2 (pool mixto). Commit de
+docs del ADR + este archivo pendiente. `origin/main` sigue `5a3a588`. Sin push
+ni deploy.
 
 **Para arrancar la sesión siguiente:** leer este archivo + el ADR común
 completo + el ADR de ORDER-10 (`diseno-cancelacion-orden-nota-credito-2026-09-05.md`,

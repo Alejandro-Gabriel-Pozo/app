@@ -1,11 +1,13 @@
 # ADR común — Cancelar un documento con factura fiscal viva, emitiendo Nota de Crédito (órdenes + reservas)
 
 - **Fecha:** 06/09/2026
-- **Estado:** APROBADO CON CONDICIONES por `architecture-governor` — gate inicial (9 correcciones) + **re-gate de F1** (06/09/2026, 3 defectos de secuencia/forma + tercer sitio, todos aplicados). Decisiones del dueño: RBAC (grupo nuevo) ✓, A2 (portal no ofrece) ✓, F1 → Modelo 2a secuenciado ✓. **Nada implementado.** B-núcleo+órdenes autorizado a arrancar tras este commit de docs, con el reporte de 10 puntos + 7 condiciones nuevas del re-gate (§10). Orden de bloques sin cambios (D3).
+- **Estado:** APROBADO CON CONDICIONES por `architecture-governor` — gate inicial (9 correcciones) + **re-gate de F1** (06/09/2026, 3 defectos de secuencia/forma + tercer sitio, todos aplicados). Decisiones del dueño: RBAC (grupo nuevo) ✓, A2 (portal no ofrece) ✓, F1 → Modelo 2a secuenciado ✓. Orden de bloques sin cambios (D3).
+- **Implementación (B-núcleo+órdenes):** sub-bloque 1/7 = `ad4d236` (aritmética de signo, N1.b); sub-bloque 2 = `854143b` (predicado F4 mitad SQL + doctrina + token de autz tipado, re-gate del governor APROBADO CON CONDICIONES 07/09/2026). Faltan los sub-bloques 2-6 de la lista del handoff (grupo de permiso, `buildCreditNote()`, orquestador + ruta, cableado de F4, cerca de arquitectura) + el gate final.
+- **N2.a (07/09/2026):** agregada tras revisión `auditor-circuitos-erp` — una NC apunta a exactamente una factura (1:1), cierra `F4-CONSOL-XFACT-01` y acota §10 fila 2.
 - **Reemplaza en la práctica a:** `diseno-confirmrefund-consolidadas-n4b-2026-09-06.md` (borrador N4-b, queda como registro del análisis previo).
 - **Extiende / unifica:** `diseno-cancelacion-orden-nota-credito-2026-09-05.md` (ORDER-10, sección órdenes) y `diseno-cancelacion-notas-credito-c2-2026-08-23.md` (C2, sección reservas).
 - **Autoría de las decisiones de negocio:** dueño del proyecto (encuadre 06/09/2026, tres respuestas `AskUserQuestion`). El encaje en el modelo lo propone este ADR; lo valida `architecture-governor`.
-- **Base de investigación:** 4 revisiones de subagentes (2 `erp-audit-orchestrator` sobre el árbol real, 2 `auditor-circuitos-erp` sobre ERPNext, Odoo 19.0 y QloApps). Anclas `archivo:línea` de esas referencias al pie.
+- **Base de investigación:** 5 revisiones de subagentes (2 `erp-audit-orchestrator` sobre el árbol real, 3 `auditor-circuitos-erp` sobre ERPNext, Odoo 19.0 y QloApps — la 3ª el 07/09/2026 para N2.a / `F4-CONSOL-XFACT-01`). Anclas `archivo:línea` de esas referencias al pie.
 
 ---
 
@@ -244,6 +246,46 @@ alcanzable por órdenes (un `CHARGE` de orden cobrado está `SETTLED` ⟹ orden
 
 `reversed_invoice_id` → fila de `invoices`. Precedente: ERPNext `return_against = <factura>` (`:473`), Odoo `reversed_entry_id = move.id` (`account_move.py:5522`).
 
+**N2.a — Una NC apunta a EXACTAMENTE UNA factura original (cardinalidad 1:1).
+Invariante del núcleo, no configurable** (revisión `auditor-circuitos-erp`,
+07/09/2026 — cierra `F4-CONSOL-XFACT-01`).
+
+Las tres referencias modelan NC↔factura como estrictamente 1:1, y las tres lo
+garantizan por estructura del modelo:
+- **ERPNext:** `return_against` es un `Link` único a un solo `Sales Invoice`
+  (`sales_invoice.json:447-456`); `make_return_doc()` se arma de un único
+  source (`sales_and_purchase_return.py:473`); el return **manual** sobre una
+  consolidada está bloqueado con `frappe.throw` (`:462-466`).
+- **Odoo 19:** `reversed_entry_id` es `Many2one` (`account_move.py:629-636`);
+  `_reverse_moves()` es un loop 1-a-1, cada original produce SU propia NC
+  (`:5519-5529`); el wizard multi-select **no fusiona**, itera `zip()` → N NC
+  (`account_move_reversal.py:126-139`). **Y para el régimen exacto de app-main:
+  `l10n_latam_invoice_document` prohíbe con `UserError` revertir más de un
+  documento legal a la vez** (`l10n_latam_invoice_document/wizards/account_move_reversal.py:48-56`).
+- **QloApps:** `OrderSlip.id_order` y `OrderReturn.id_order` son únicos y
+  requeridos (`OrderSlip.php:86-90`, `OrderReturn.php:78`).
+
+La atribución fina que sí tienen las tres es **por línea** (back-ref a la
+línea de la factura original), nunca por cabecera de la NC — coherente con N3.
+Ninguna produce una NC multi-factura, así que ninguna necesita atribuir el
+`imp_total` de cabecera entre varias facturas.
+
+**Consecuencia de implementación:** el armado de la NC (el `buildCreditNote()`
+extendido / el orquestador `cancel<X>WithCreditNote()`, nunca los services de
+cancelación por F5) **rechaza** una NC / `credit_note_request` cuyo conjunto
+`{ r.reversed_invoice_id : r ∈ transacciones revertidoras de esta NC }` tenga
+cardinalidad > 1. Con ese guard, el `SELECT DISTINCT (nc_invoice_id, imp_total)`
+de `getIssuedCreditNoteCompensationTotal()` queda **correcto por
+construcción** — el fan-out cruzado que no puede deduplicar no puede existir.
+Más una **cerca de datos** (patrón `lock-order.test.ts`, falsos negativos
+declarados; misma forma que la condición 3 del re-gate): test que falla si en
+un tenant existe una NC cuyas transacciones revertidoras abarcan > 1
+`reversed_invoice_id`. Hoy **no hay exposición**: `buildCreditNote()` nunca
+pasa `charges` a `createWithClient()` (`invoice.service.ts:753`), así que
+ningún camino crea una NC consolidada — la rama consolidada del `UNION ALL` de
+F4 es defensiva hacia adelante. El guard entra con el primer builder que sí
+pueda crear una (B-reservas subcaso 2, o el escape).
+
 ### N3 — La NC COPIA sus líneas DESDE LA FACTURA, negando importes/impuestos línea por línea
 
 Precedente: ERPNext `update_item` con back-ref `sales_invoice_item` (`:633-654`); Odoo wizard `_reverse_moves` → `move.copy()` (`:5525-5529`). QloApps copia desde la reserva **porque su credit slip no tiene contraparte fiscal declarada** — `app-main` sí la tiene, debe copiar de `invoices` / `invoice_charges`. Coherente con la decisión ya cerrada: prorrateo de impuestos **por grupo de alícuota**, nunca un factor de cabecera único.
@@ -401,7 +443,22 @@ La contraparte de la reversión es el titular del **documento revertido** (la **
 
 1. **Factura B directa (1 reserva → 1 factura):** igual que órdenes. `reversed_invoice_id` directo, tope contra el total de esa factura.
 2. **Factura B consolidada vía `invoice_charges` (N reservas → 1 factura):** la NC apunta a la consolidada, resuelve las líneas de `invoice_charges` de la reserva cancelada (análogo ERPNext `get_sales_invoice_item_from_consolidated_invoice`, `sales_and_purchase_return.py:1339-1359`), tope por **monto de esa reserva dentro de la consolidada** (`resolveRefundableForPair()`, N4-a — reparto por grupo de alícuota), no por el total de la factura. ERPNext bloquea el return **manual** sobre consolidada pero su flujo **automático** sí lo hace (`pos_invoice.py:314-344`) — `app-main` implementa el automático.
-3. **Pool mixto (reserva con parte facturada directa + parte consolidada):** **sin precedente en ninguna de las 3 referencias.** → **decisión de negocio pendiente:** ¿una sola operación de cancelación dispara N NC (una por factura afectada, cada una topada contra su porción), o se obliga a resolver factura por factura? El `ADJUSTMENT` compensatorio tendría que saber distribuir el monto negativo entre los distintos `reversed_invoice_id`.
+3. **Pool mixto (reserva con parte facturada directa + parte consolidada):**
+   **sin precedente de "una acción → una única NC multi-factura" en ninguna de
+   las 3 referencias** — al contrario: N2.a establece que una NC apunta a
+   exactamente una factura. → **lo que queda pendiente del dueño se reduce**
+   (revisión `auditor-circuitos-erp`, 07/09/2026): pool mixto se resuelve
+   necesariamente con **N notas de crédito, una por factura afectada**, cada
+   una con su `reversed_invoice_id` y su propio tope (N5 /
+   `resolveRefundableForPair()`) — el `ADJUSTMENT` compensatorio se parte por
+   factura, no distribuye un monto entre varios `reversed_invoice_id` dentro
+   de una NC. La opción "una única NC que cubra la Factura B directa + la
+   porción consolidada" **está descartada por N2.a**, no por decisión de
+   producto. Lo único que decide el dueño (§10 fila 2): si una cancelación en
+   la UI hace fan-out automático a N NC, o el operador resuelve factura por
+   factura. Odoo tiene el patrón "una acción → N documentos de reversión" de
+   primera clase (`account_move_reversal.py:110-174`) pero lo apaga para
+   documentos legales AR; ERPNext y QloApps van siempre factura por factura.
 
 ### 6.4 `EXPIRED` — camino no cubierto por ningún guard
 
@@ -466,7 +523,7 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 | # | Tema | Quién decide | Estado |
 |---|---|---|---|
 | 1 | Fila `credit_note_request` sí/no (§6.5) | **Governor, en el gate de B3** | **NO entra en B-núcleo+órdenes.** El triple de N11 + `invoice:<adjustmentId>` resuelve reanudación sin schema. Se decide en el gate de B3 con `criterios-datos` Parte 5 completo. |
-| 2 | **Pool mixto** (§6.3.3): una cancelación → N NC, o factura por factura | **Dueño — negocio real** | Sin precedente en las 3 referencias. Dos productos distintos. **No bloquea B-núcleo+órdenes.** |
+| 2 | **Pool mixto** (§6.3.3): fan-out automático a N NC, o el operador resuelve factura por factura | **Dueño — negocio real** | **Acotado (07/09/2026, `auditor-circuitos-erp`):** N2.a descarta la opción "una única NC multi-factura" — pool mixto = N NC, una por `reversed_invoice_id`. Al dueño solo le queda fan-out vs. manual. **No bloquea B-núcleo+órdenes.** |
 | 3 | **`EXPIRED` con factura viva** (§6.4) | **Dueño**, con acotación técnica: fuera de alcance de B-reservas | Se registra en `pendientes-<fecha>.md` con ancla. **No bloquea B-núcleo+órdenes.** |
 | 4 | **Set de `reason`** | **Dueño** | N7 ya lo resuelve: texto libre en `notes` (default). Solo pasa a enum si el dueño quiere reportabilidad; el set es suyo. **No bloquea B-núcleo+órdenes.** |
 | 5 | ¿Evento de dominio al emitir la NC? | **Governor** | **No** en B-núcleo+órdenes (sin consumidor; arrastra versionado de handlers sin beneficio). Diferir. |
