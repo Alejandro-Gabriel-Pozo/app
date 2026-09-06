@@ -194,6 +194,196 @@ proyecto. Aplica a N4-b y ORDER-10 B2. Puntos que fijan diseño:
 
 ---
 
+## 🔎 Pivote — de N4-b al ADR común "cancelar con Nota de Crédito" (órdenes + reservas) (06/09/2026)
+
+Dos revisiones de `erp-audit-orchestrator` + dos de `auditor-circuitos-erp`
+(ERPNext, Odoo 19.0 y QloApps) sobre el ADR N4-b borrador
+(`diseno-confirmrefund-consolidadas-n4b-2026-09-06.md`) concluyeron:
+
+1. **N4-b como "bug vivo" no lo es:** RESERVA-10 (`reservation.service.ts:894-898`)
+   + FACT-CONSOL-TOCTOU-01 combinadas hacen **inalcanzable** por caminos de
+   la app el estado "reserva CANCELLED con consolidada ISSUED". El escape
+   administrativo es lo que lo volvería alcanzable, de forma controlada.
+2. **N4-b es en realidad el "escape administrativo" que le falta a RESERVA-10**
+   — el análogo de ORDER-10 B2 para reservas. Los dos son hermanos (mismo
+   mecanismo NC-first). Decisión del dueño (06/09): **un solo ADR común**,
+   núcleo + sección órdenes + sección reservas (directa / consolidada / pool
+   mixto).
+
+### Decisiones del dueño (AskUserQuestion, 06/09/2026)
+
+- **Q2 — orden cancel/CAE: (c)** la entidad se cancela SOLO si la NC llegó a
+  `ISSUED`. El CAE se pide fuera de toda transacción y todo lock (verificado:
+  `invoice.service.ts:435` commit → `:438` issue; ningún camino pide CAE
+  dentro de una TX). Si AFIP no responde concluyente (`FAILED_UNCERTAIN` +
+  `afipContacted`), la entidad queda incancelable **pero visible en B3**,
+  hasta que un humano resuelva contra `FECompUltimoAutorizado`/`getVoucherInfo`.
+  → **B3 es precondición operativa de B2, no follow-up.**
+- **Alcance plata: el escape SOLO emite la NC + destraba la cancelación.** No
+  devuelve plata. `confirmRefund()` y `getCollectedPaymentTotalForReservation()`
+  no se tocan. El circuito "devolver plata a la empresa contra una consolidada"
+  queda registrado como circuito propio — **hoy no existe en ninguna forma**
+  (`[NE]`, ningún método reembolsa contra una consolidada al titular empresa).
+  El ladder de `cancellation_policies`/`findApplicableTier()` (C2) pertenece a
+  ese circuito diferido, no al escape.
+- **Orden de bloques:** un ADR común, tres bloques con gates separados —
+  **núcleo+órdenes (sin schema) → B3 → reservas (schema + backup durable)**.
+
+### Núcleo común del ADR (doctrina, respaldo convergente en las 3 referencias)
+
+1. El escape **agrega un documento, nunca desactiva un guard.** La
+   cancelación se destraba porque el `ADJUSTMENT` + la NC hacen falso el
+   predicado "hay comprobante vivo sin contrapartida" — no porque alguien lo
+   saltee. → **el guard pasa de "¿hay factura viva?" a "¿hay factura viva
+   sin NC que la compense?"** (esto reconcilia el residual #3 de ORDER-10,
+   ver A3 abajo — se resuelven juntos).
+2. La NC se emite **contra la factura**, nunca contra el origen
+   (`reversed_invoice_id` → fila de `invoices`). ERPNext `return_against`,
+   Odoo `reversed_entry_id`.
+3. La NC **copia sus líneas desde la factura**, negando importes/impuestos
+   línea por línea. QloApps copia desde la reserva porque su credit slip no
+   tiene contraparte fiscal — app-main sí la tiene, debe copiar de `invoices`/
+   `invoice_charges`.
+4. Precondiciones de coherencia NC↔factura (ERPNext `validate_return_against`):
+   misma parte/condición IVA, `fecha_NC >= fecha_factura`, misma moneda/TC,
+   importe de línea NC ≤ importe de línea factura.
+5. **Tope acumulado sobre lo ya acreditado**, no sobre la factura bruta, y
+   **se LANZA al excederse** (ERPNext `StockOverReturnError`), nunca clamp
+   silencioso (anti-patrón de QloApps `OrderSlip::addPartialSlipDetail`).
+6. Total vs parcial se **deriva**, no se persiste.
+7. Motivo = **texto libre** (no enum de causa fiscal — contradiría "la app no
+   califica"). QloApps y los dos ERP usan libre.
+8. La NC **no reabre** el documento origen — post-NC queda terminal
+   `CANCELLED`, no vuelve a un estado facturable.
+9. **NC-documento y devolución-de-plata son hechos separados** (AFIP SDK §2,
+   QloApps `payment_mode` declarado por el admin). El ADR cubre solo la
+   emisión + el `ADJUSTMENT` que neutraliza el saldo en cuenta corriente.
+10. Ventana TOCTOU: lock sobre la fila del origen durante toda la TX de la NC.
+11. **El escape es una entidad "solicitud" persistida con state machine
+    propia**, no un flag en la orden/reserva ni en la factura. Precedente:
+    `OrderReturn` + `OrderReturnState` de QloApps (3 estados; el flag
+    `refunded` del estado es la única compuerta para emitir el documento y
+    recién entonces transicionar el origen). `cancel<X>WithCreditNote()` son
+    orquestadores que crean esa fila-solicitud, no un branch de `cancel<X>()`.
+12. El vínculo solicitud → NC emitida se persiste **después** de que AFIP la
+    aprobó (`OrderReturn.id_return_type`/`return_type` en QloApps).
+
+### Contención para que el núcleo no se filtre al guard fail-closed (Q6)
+
+Cuatro capas, de menor a mayor fuerza:
+(i) rutas y métodos separados, `MANAGEMENT` vs `FRONT_DESK`/`ORDERS`;
+(ii) **prohibición explícita en el ADR** de todo parámetro de bypass en
+`cancelOrder()`/`cancelReservation()` y de todo `if (esEscape)` dentro de
+`findBlockingInvoiceLinkage()`;
+(iii) **token de autorización tipado** como argumento obligatorio del módulo
+del núcleo — solo la ruta `MANAGEMENT` puede construir el valor
+(`confirmedBy` + `reason` + `scope`); los servicios de cancelación normal
+físicamente no pueden invocarlo → error de compilación;
+(iv) **cerca de arquitectura** (patrón `lock-order.test.ts` /
+`EXPECTED_AUTHORIZE_CALL_SITES`): test que falla si `order.service.ts` o
+`reservation.service.ts` importan el módulo del núcleo.
+El backstop último e insalteable sigue siendo el `NOT EXISTS` en SQL de
+`voidByOrderId`/`voidByReservationId` — el ADR **no debe debilitarlo** (nada
+de excepciones por `type`; la vía correcta es que la NC exista y esté viva).
+
+### Sección órdenes (recorte con fundamento estructural, no arbitrario)
+
+- Cargo único por orden (índice único v45 + `NOT EXISTS(order_id, type='CHARGE')`).
+- Sin política de cancelación: todo o nada; B1 ya lo formaliza (`impTotal == charge.amount`).
+- **Consolidada FUERA de alcance por razón estructural:** el CHARGE de orden
+  nace `PENDING`, la consolidación exige `SETTLED` = `COMPLETED` =
+  incancelable (`TRANSICION_CANCELAR.desde = ['DRAFT','CONFIRMED']`).
+- Restauración de stock: solo órdenes, y **NO si `wasServed`** — una orden
+  con Factura B casi siempre está servida, así que el caso típico del escape
+  **no restaura stock**. Hay que decirlo.
+- Líneas de NC con `order_item_id` (`chk_invoice_item_origin`). `buildCreditNote()`
+  hoy hardcodea la forma reserva (`invoice.service.ts:739-749`) → un
+  `ADJUSTMENT` con `order_id` y sin `reservation_id` deja los dos `null` y
+  **viola el CHECK**. El ADR de órdenes ya lo anticipa ("líneas copiadas").
+- `ADJUSTMENT` con `order_id` hoy no existe ninguno → el ítem abierto #2 del
+  ADR de órdenes (`CARGO_CON_COMPROBANTE_VIVO` degrada a INFO) se vuelve
+  alcanzable con B2.
+- **Sin schema** (verificado A5: `schema.sql:2187-2190` ya permite `amount < 0`
+  para `type='ADJUSTMENT'`).
+
+### Sección reservas (la divergencia real — patrón `subscription`)
+
+- Pool de N facturas, N cargos; el loop de `findBlockingInvoiceLinkage()` solo
+  es real de este lado.
+- **W3 — unificar el predicado:** `getByReservationId()` (`sql.invoice.repository.ts:257-265`,
+  INNER JOIN por `financial_transaction_id`, ciego a consolidadas) debe usar
+  el MISMO `UNION` que `resolveInvoiceLinkage()` (`:217-243`). Precedente:
+  `getOutstandingByCustomerId()` ya se corrigió así en O2-F2 (`:178-205`).
+  **Este es el bloque chico prerequisito** (defensa en profundidad + necesario
+  para el escape). Sin schema, un solo caller de producción.
+- **W2 — regla de contraparte:** la contraparte de la reversión es el titular
+  del **documento revertido** (empresa en la consolidada), no el de la
+  operación de origen (huésped). Cambiar el `customerId` del asiento mueve
+  saldo entre dos cuentas corrientes (`getNetBalanceByCustomerId`) —
+  consecuencia contable, no ajuste de campo.
+- Subcasos: (1) Factura B directa = 1:1 como órdenes; (2) consolidada vía
+  `invoice_charges` — la NC apunta a la consolidada, resuelve las líneas de
+  la reserva cancelada (análogo ERPNext `get_sales_invoice_item_from_consolidated_invoice`),
+  tope por monto de esa reserva dentro de la consolidada; (3) **pool mixto**
+  (parte directa + parte consolidada) — **sin precedente en ninguna
+  referencia** → decisión de negocio (una cancelación dispara N NC, o se
+  obliga factura por factura).
+- Estado: patrón `subscription` — `cancelReservation` marca `CANCELLED` y
+  **no toca** las facturas emitidas; la/las NC son el paso explícito
+  posterior. "Totalmente acreditada" se deriva sumando NC por `reversed_invoice_id`.
+- `EXPIRED` (`Reservation.ts:81-85`) es terminal separado y **no pasa por
+  ningún guard de facturación** — el ADR debe decir qué pasa si una reserva
+  con factura viva expira.
+- Atribución por par: `resolveRefundableForPair()` (N4-a) sigue siendo el
+  cálculo por grupo de alícuota para la consolidada. Ya NO necesita las 2
+  columnas de "evidencia" que planteaba N4-b — el orchestrator y el review de
+  ERP coincidieron en que `scope` se deriva y `reason` va libre. **Schema de
+  reservas a definir en el ADR** (posiblemente solo un índice
+  `(reversed_invoice_id, reservation_id, type, status)` + la fila-solicitud).
+
+### Hallazgos de anexo del orchestrator (A1–A5) · 🔴 abiertos
+
+- **A1 — mensajes de error que instruyen una acción inexistente.** `errors.ts:603`
+  y `:642` (`RESERVATION_CHARGE_INVOICED` / `ORDER_CHARGE_INVOICED`) dicen
+  *"Hace falta emitir una Nota de Crédito antes"* — sin ruta, sin método, sin
+  UI. Un operador lee hoy una instrucción imposible de ejecutar. Se cierra
+  cuando exista B2 + su pantalla.
+- **A2 — el guard alcanza al cliente final.** `customer.routes.ts:743-790`
+  (`POST /api/customer/me/reservations/:id/cancel`) llama a `cancelReservation()`.
+  Un huésped cancelando desde el portal recibe el 409 con el texto de A1.
+  `[V]` el camino; `[H]` la alcanzabilidad (depende de facturar antes de
+  cancelar).
+- **A3 — el residual #3 de ORDER-10 también aplica a reservas y no estaba
+  registrado ahí.** `registrarDesenlace()` (`outbox.handlers.ts:160-161` y
+  `:389-390`) es una sola función compartida; clasifica
+  `CARGO_CON_COMPROBANTE_VIVO` como `grave` → `logger.error` "anomalía de
+  integridad". Cada NC legítima, de CUALQUIER lado, generará esa alerta
+  falsa. Se resuelve con el punto 1 del núcleo ("factura viva sin NC").
+- **A4 — `POST /reservations/:id/cancellation-refund/preview|confirm` no tiene
+  consumidor en el panel.** `[V]` grep en `appfrontend-main/src`: cero. Backend
+  + RBAC + tests de integración + dos commits de esta semana, sin frontend.
+  El escape administrativo, si se diseña igual, corre el mismo riesgo.
+- **A5 — el `CREATE TABLE` de `financial_transactions` (`schema.sql:2132`)
+  dice `CHECK (amount >= 0)`, pero `:2187-2190` lo dropea y reemplaza por
+  `CHECK (amount >= 0 OR type = 'ADJUSTMENT')`.** Leer solo el `CREATE TABLE`
+  lleva a concluir que el escape de órdenes necesita migración cuando no la
+  necesita. Anotado porque el ADR de reservas toca esa misma tabla.
+
+### Próximos pasos (secuencia acordada)
+
+1. **Bloque chico de reservas** — `getByReservationId()` → `UNION` + `confirmRefund()`
+   individual fail-closed ante consolidada (mensaje apuntando a que el escape
+   `MANAGEMENT` no existe todavía). Sin schema. → `criterios-negocio` +
+   `architecture-governor` → commit.
+2. **ADR común** — `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`:
+   núcleo (12 puntos + las 4 capas de contención) + sección órdenes + sección
+   reservas. Reemplaza en la práctica al borrador N4-b (que queda como
+   registro). → `architecture-governor`.
+3. **Implementación:** núcleo+órdenes (sin schema) → B3 (bandeja) → reservas
+   (schema definido por el ADR + backup durable). Gate por bloque.
+
+---
+
 ## 🔴 Arrastrado de `pendientes-2026-09-05.md` — sin re-verificar salvo donde se indica
 
 Su estado se conserva porque nadie lo cerró, no porque se haya vuelto a
