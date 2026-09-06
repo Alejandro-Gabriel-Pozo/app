@@ -1,7 +1,7 @@
 # ADR común — Cancelar un documento con factura fiscal viva, emitiendo Nota de Crédito (órdenes + reservas)
 
 - **Fecha:** 06/09/2026
-- **Estado:** REVISADO por `architecture-governor` (06/09/2026, APROBADO CON CONDICIONES — 9 correcciones aplicadas). Decisiones del dueño: RBAC (grupo nuevo) ✓, A2 (portal no ofrece) ✓, **F1 RESUELTO — Modelo 2a** (`auditor-circuitos-erp`, §N1.a/N1.b). Nada implementado. **Vuelve a `architecture-governor` para re-gate**: F1 sumó dos cambios a B-núcleo+órdenes (settle dirigido del `CHARGE`, reescritura de aritmética de signo de `getOutstanding/getRefundable`) que el gate anterior no vio.
+- **Estado:** APROBADO CON CONDICIONES por `architecture-governor` — gate inicial (9 correcciones) + **re-gate de F1** (06/09/2026, 3 defectos de secuencia/forma + tercer sitio, todos aplicados). Decisiones del dueño: RBAC (grupo nuevo) ✓, A2 (portal no ofrece) ✓, F1 → Modelo 2a secuenciado ✓. **Nada implementado.** B-núcleo+órdenes autorizado a arrancar tras este commit de docs, con el reporte de 10 puntos + 7 condiciones nuevas del re-gate (§10). Orden de bloques sin cambios (D3).
 - **Reemplaza en la práctica a:** `diseno-confirmrefund-consolidadas-n4b-2026-09-06.md` (borrador N4-b, queda como registro del análisis previo).
 - **Extiende / unifica:** `diseno-cancelacion-orden-nota-credito-2026-09-05.md` (ORDER-10, sección órdenes) y `diseno-cancelacion-notas-credito-c2-2026-08-23.md` (C2, sección reservas).
 - **Autoría de las decisiones de negocio:** dueño del proyecto (encuadre 06/09/2026, tres respuestas `AskUserQuestion`). El encaje en el modelo lo propone este ADR; lo valida `architecture-governor`.
@@ -84,15 +84,30 @@ Un ADR común, tres bloques de implementación con gate separado.
 
 La cancelación se destraba porque el `ADJUSTMENT` + la NC hacen **falso** el predicado *"hay comprobante fiscal vivo sin contrapartida"* — no porque alguien saltee el guard.
 
-**Consecuencia obligatoria:** el guard fail-closed pasa de *"¿hay factura viva?"* a *"¿hay factura viva **sin compensación TOTAL**?"*.
+**Consecuencia obligatoria:** el guard fail-closed pasa de *"¿hay factura viva?"* a *"¿hay factura viva **sin una NOTA DE CRÉDITO EMITIDA que la compense en su totalidad**?"*.
 
-**"Compensación total" — definición exacta (F4, no negociable).** Una NC parcial
-NO destraba: dejaría abierta la cancelación sobre una factura viva parcialmente
-revertida (fail-open). El predicado usa la primitiva que el repo ya tiene —
-`imp_total − COALESCE(SUM(r.amount) WHERE r.reversed_invoice_id = i.id AND
-r.status = 'SETTLED'), 0)` (`sql.invoice.repository.ts:136-138`, `:160-166`):
-la factura está compensada solo si ese remanente es `<= 0` (tolerancia de
-centavos). Cualquier valor `> 0` = sigue viva = cancelación bloqueada.
+**"Compensación total" — definición exacta (F4, re-gate 06/09/2026, Defecto B — salida 1).**
+El predicado se ancla a la **NC efectivamente emitida** (comprobante `ISSUED`),
+**no al ledger** — porque "compensación fiscal" es un hecho de comprobante, no
+de asiento (§0, N9). Esto importa: `CancellationRefundService.confirmRefund()`
+crea filas `REFUND` `SETTLED` con `reversedInvoiceId` **antes** de emitir la NC
+(la emisión es un paso posterior, `requestInvoice()`); si F4 sumara el ledger a
+secas, un `REFUND` que cubra el total haría "compensada" una factura **sin
+ninguna NC** → fail-open de la cancelación normal.
+
+Forma del predicado: para cada factura viva `i`, sumar el `imp_total` de las
+**Notas de Crédito `ISSUED`** que la referencian — es decir, transacciones
+revertidoras (`r.reversed_invoice_id = i.id` **o** vía `invoice_charges`, el
+mismo `UNION ALL` que `resolveInvoiceLinkage()`, `sql.invoice.repository.ts:227-238`)
+**cuya propia factura de NC esté `ISSUED`**. La factura `i` está compensada solo
+si ese total `>= i.imp_total` (tolerancia de centavos). Una NC parcial, o un
+`REFUND`/`ADJUSTMENT` sin NC emitida, **no** compensan → cancelación bloqueada.
+
+**Consecuencia deseada para el escape (D1):** el `ADJUSTMENT` compensatorio y su
+NC existen antes de la llamada a AFIP, pero la NC recién pasa a `ISSUED` en la
+transacción post-AFIP → hasta ese momento F4 sigue bloqueando la cancelación
+normal. Ese es exactamente el orden que pide D1 ("la entidad se cancela SOLO si
+la NC llegó a `ISSUED`").
 
 **Qué cambia N1 y qué NO (F3, aritméticamente crítico):**
 - **SÍ cambia:** (a) `findBlockingInvoiceLinkage()` en los dos services
@@ -118,49 +133,112 @@ la misma función compartida, no por separado. Aplica a órdenes Y reservas
 
 Precedente: Odoo `button_draft` mantiene el bloqueo (`account_move.py:6275-6290`); el escape es `account.move.reversal`, un modelo aparte que **crea** un `out_refund` y jamás toca `button_draft`/`button_cancel` de la factura viva. ERPNext: `SalesInvoice.on_cancel` conserva sus checks; la NC es `make_return_doc` (`sales_and_purchase_return.py:450-758`), función separada que no llama a `on_cancel` de nada.
 
-**N1.a — F1 RESUELTO (auditor-circuitos-erp + dueño, 06/09/2026): Modelo 2a.**
+**N1.a — F1 RESUELTO (auditor-circuitos-erp + dueño + re-gate governor, 06/09/2026): Modelo 2a, secuenciado.**
 
-El `ADJUSTMENT` compensatorio **nace `SETTLED`** (única forma de que cuente en
-el predicado; `PENDING` no destraba — `getOutstandingForUpdate`/
-`getRefundableForUpdate` exigen `SETTLED`, `sql.invoice.repository.ts:136`,
-`:160`). **Y** el escape, **en la misma transacción**, promueve el/los `CHARGE`
-que la NC revierte de `PENDING` a `SETTLED` con un `UPDATE` **dirigido por id de
-transacción** — NO `settleByReservationId` / `settleChargesByOrderId` masivos
-(no tienen guard de factura y arrastrarían cargos no revertidos), NO cambia el
-estado del documento de negocio (la orden/reserva no pasa a `COMPLETED`), NO
-toca el `NOT EXISTS` de `voidBy*` (F3).
+**Secuencia (Defecto A del re-gate — corrige el orden, no el modelo):**
+1. **Transacción 1 (pre-AFIP):** el escape inserta el `ADJUSTMENT` compensatorio
+   `PENDING`, con `reversed_invoice_id` cargado (obligatorio: `buildCreditNote()`
+   lo exige al entrar, `invoice.service.ts:685`), y crea la fila de NC en
+   `invoices` `PENDING`. **`PENDING` acá es deliberado:** F4 se ancla a la NC
+   `ISSUED` (ver N1), así que en esta ventana la cancelación normal sigue
+   bloqueada — correcto (D1).
+2. **Llamada a AFIP** (fuera de toda transacción, N10).
+3. **Transacción 2 (post-AFIP), solo si la NC llegó a `ISSUED` (D1):** en la
+   MISMA tx — (a) NC → `ISSUED`; (b) `ADJUSTMENT` `PENDING → SETTLED`; (c)
+   `UPDATE` dirigido del/los `CHARGE` que la NC revierte, `PENDING → SETTLED`;
+   (d) el documento (orden/reserva) → `CANCELLED`.
 
-Resultado: el ledger lee `CHARGE(+monto) SETTLED + ADJUSTMENT(−monto) SETTLED`
-= `0` (o `= −señaPagada`, que es la posición real y correcta: un reintegro
-pendiente al cliente, flujo financiero separado — D2, N9). Sin ventana de
-`−monto` (ni transitoria ni permanente), sin el doble conteo del governor (que
-solo aparece si se VOIDea el `CHARGE` dejando el `ADJUSTMENT` `−monto` vivo).
+**El `UPDATE` dirigido del `CHARGE` — seguro solo si cumple las 3 restricciones
+(re-gate):**
+- **(i) Solo `status`.** No tocar `payment_method` ni `shift_id`.
+  `getCashMovementsTotal()` (`sql.cash-register-shift.repository.ts:64-84`) suma
+  `WHERE shift_id = $1 AND payment_method = 'CASH' AND status = 'SETTLED'` y el
+  `CHARGE` suma positivo — copiar el patrón de `settleChargesByOrderId`
+  (`:515-522`, que asigna `shift_id` al turno `OPEN`) inyectaría un movimiento
+  de caja fantasma por una cancelación que no movió un peso.
+- **(ii) `AND status = 'PENDING'` en el `WHERE`.** Idempotencia ante reintento
+  (N11), y necesario del lado reservas donde el `CHARGE:DEPOSIT` ya nace
+  `SETTLED` (`outbox.handlers.ts:116-127`) y el `CHARGE:BALANCE` nace `PENDING`
+  (`:130-141`).
+- **(iii) El conjunto de ids se deriva de la FACTURA revertida, nunca del
+  documento.** Regla exacta: `{ invoices.financial_transaction_id de la factura
+  revertida } ∪ { invoice_charges.financial_transaction_id de la factura
+  revertida }` — el inverso de `resolveInvoiceLinkage()` (`:227-238`). Nunca
+  "todos los `CHARGE` de la orden/reserva" — eso es `settleByReservationId`
+  (`:280-289`), que del lado reservas **no tiene guard de tipo ni de estado**
+  (su seguridad hoy es pura disciplina de caller, único llamador
+  `reservation.completed`) y arrastraría el propio `ADJUSTMENT` compensatorio y
+  cualquier cargo no revertido.
 
-**Por qué NO el Modelo 1 ("`CHARGE` queda `PENDING`"):** el auditor verificó
-que **no hay ningún camino** que resuelva un `CHARGE` `PENDING` sobre un
-agregado `CANCELLED` con Factura B `ISSUED` (`settleBy*` solo corre en
-`*.completed`, que no dispara para cancelados; `voidBy*` no lo anula con la
-factura viva; F3 prohíbe tocar ese `NOT EXISTS`). El "−monto" del Modelo 1 es
-**permanente, no transitorio**. Y ERPNext/Odoo **exigen el asiento/comprobante
-origen totalmente asentado** (`docstatus=1` / `state='posted'`) antes de
-revertirlo — dejar el `CHARGE` `PENDING` equivale a revertir un borrador, cosa
-que ninguno permite (`account_move_reversal.py:74-77`; `sales_and_purchase_return.py:54-58`).
+**Multi-línea:** NO alcanzable en B-núcleo+órdenes (una orden tiene exactamente
+un `CHARGE`, índice único v45; B1 restringe a factura individual → el `CHARGE`
+es literalmente `factura.financial_transaction_id`). SÍ real en B-reservas
+(DEPOSIT `SETTLED` + BALANCE `PENDING`; consolidada con N filas en
+`invoice_charges`). Como F4 exige compensación TOTAL, una NC parcial promueve
+`status` de **nada**.
 
-**N1.b — Hallazgo 2: reescribir la aritmética de signo de `getOutstandingForUpdate` /
-`getRefundableForUpdate` — cambio OBLIGATORIO de B-núcleo+órdenes.**
-Esas dos funciones (`sql.invoice.repository.ts:132-143`, `:156-170`) hacen
-`imp_total − COALESCE(SUM(r.amount) WHERE r.reversed_invoice_id = i.id AND
-r.status='SETTLED'), 0)`. Esa resta **asume `r.amount > 0`** — hoy funciona
-solo porque `REFUND` (monto positivo) es lo único que apunta a
-`reversed_invoice_id`. Un `ADJUSTMENT` compensatorio de `−monto` haría
-`imp_total − (−monto) = imp_total + monto` → el predicado F4 de "compensación
-total" **nunca daría `≤ 0`** y el guard no se destrabaría. B-núcleo tiene que
-cambiar esa suma a algo como
-`− SUM(CASE WHEN r.type = 'REFUND' THEN r.amount ELSE -r.amount END)` (o
-`SUM(ABS(r.amount))`), en el mismo bloque, con test dedicado. `getNetBalanceByStayId` /
-`getNetBalanceByCustomerId` (`:875-883`) NO se tocan — ahí el `ADJUSTMENT` `−monto`
-sin `ABS` ya netea correcto (convención de `handleReservationPriceAdjusted`,
-`outbox.handlers.ts:169-176`).
+Resultado contable: `CHARGE(+monto) SETTLED + ADJUSTMENT(−monto) SETTLED` = `0`
+(o `−señaPagada` = posición real: reintegro pendiente al cliente, flujo
+financiero separado — D2, N9). Sin ventana de `−monto`, sin el doble conteo del
+governor (que solo aparece al VOIDear el `CHARGE`).
+
+**Invariante que Modelo 2a ROMPE — declarado, no oculto:** deja de valer
+`CHARGE SETTLED ⟹ documento COMPLETED`. Verificado que NO habilita la entrada a
+una consolidada: los candidatos de `requestConsolidatedInvoice()` salen de
+filas `accounts_receivable` `PENDIENTE_FACTURAR` (`invoice.service.ts:469-473`),
+que solo se crean por transferencia explícita de saldo de estadía a empresa,
+con un `CHARGE` **nuevo** (`accounts-receivable.service.ts:163-187`). Ver §5
+(la viñeta de "consolidada fuera de alcance" se reescribe con este motivo real,
+no con el viejo "`SETTLED` = `COMPLETED`").
+
+**Por qué NO el Modelo 1 ("`CHARGE` queda `PENDING`"):** el "−monto" es
+**permanente, no transitorio** — no hay ningún camino que resuelva un `CHARGE`
+`PENDING` sobre un agregado `CANCELLED` con Factura B `ISSUED` (`settleBy*` solo
+en `*.completed`, que no dispara para cancelados; `voidBy*` no lo anula con la
+factura viva; F3 prohíbe tocar ese `NOT EXISTS`). Del lado **órdenes** la
+imposibilidad es estructural (`settleChargesByOrderId` exige
+`EXISTS(o.status IN ('COMPLETED'))`, `:513-531`); del lado **reservas** es solo
+por disciplina de caller. ERPNext/Odoo exigen el asiento origen totalmente
+asentado antes de revertir — dejar el `CHARGE` `PENDING` = revertir un borrador,
+que ninguno permite.
+
+**N1.b — Hallazgo 2 + tercer sitio: reescribir la aritmética de signo — cambio OBLIGATORIO de B-núcleo+órdenes.**
+`getOutstandingForUpdate` (`sql.invoice.repository.ts:132-143`),
+`getRefundableForUpdate` (`:156-170`) **y `getOutstandingByCustomerId`
+(`:188-203`, tercer sitio que el re-gate encontró — misma resta, `:194-195`, y
+filtra `WHERE outstanding > 0`: con un `ADJUSTMENT` de `−monto` la factura
+compensada aparecería con `imp_total + monto` en el panel de cuenta corriente)**
+restan `SUM(r.amount) WHERE r.reversed_invoice_id = i.id AND r.status='SETTLED'`,
+asumiendo `r.amount > 0` (hoy solo `REFUND`).
+
+**Forma correcta (re-gate — Defecto C): whitelist explícita por tipo, sin `ELSE`
+genérico:**
+`SUM(CASE WHEN r.type = 'REFUND' THEN r.amount WHEN r.type = 'ADJUSTMENT' THEN -r.amount ELSE 0 END)`.
+`SUM(ABS(r.amount))` está **descartado**: trataría un `ADJUSTMENT` **positivo**
+(un recargo — `handleReservationPriceAdjusted` los permite) como crédito contra
+la factura. `ELSE -r.amount` genérico está descartado: aplicaría el flip a
+cualquier `type` futuro con `reversed_invoice_id`, algo que el schema **no
+impide** (no hay `CHECK`, `schema.sql:2989-2990`). Hace falta una **cerca** que
+afirme que no existen filas con `reversed_invoice_id IS NOT NULL AND type NOT IN
+('REFUND','ADJUSTMENT')`.
+
+`getNetBalanceByStayId` / `getNetBalanceByCustomerId` (`:875-883`) **NO se
+tocan** — ahí el `ADJUSTMENT` `−monto` sin `ABS` ya netea correcto (convención
+de `handleReservationPriceAdjusted`, `outbox.handlers.ts:169-176`).
+
+**No-regresión:** el único creador actual de filas con `reversed_invoice_id` es
+`confirmRefund()` (`REFUND`, positivo) — con el `CASE`, la rama `REFUND`
+devuelve `r.amount`, idéntico byte a byte al comportamiento actual. Igual va
+con test de integración contra Postgres real (los unitarios usan fakes y son
+ciegos al SQL) + la query de datos read-only por tenant (ver §10, condiciones
+nuevas del re-gate).
+
+**Consecuencia fuera del alcance de órdenes, declarada:** tras el escape,
+`getRefundableForUpdate` sobre la factura compensada da `0` → un `confirmRefund()`
+posterior mandaría el monto al chunk `:sin-asignar` en vez de rechazarlo.
+Coherente con D2/N9 (la NC ya se emitió; devolver la plata es otro hecho). No
+alcanzable por órdenes (un `CHARGE` de orden cobrado está `SETTLED` ⟹ orden
+`COMPLETED` ⟹ incancelable). Se cierra en B-reservas.
 
 ### N2 — La NC se emite CONTRA LA FACTURA, nunca contra el origen
 
@@ -243,7 +321,20 @@ Recorte con **fundamento estructural**, no arbitrario.
 
 - **Cargo único por orden:** índice único v45 + `NOT EXISTS (order_id, type='CHARGE')` (`sql.financial-transaction.repository.ts:630-637`). No hay pool de facturas. B1 ya restringe a "exactamente una factura viva, individual, B, `impTotal == charge.amount`".
 - **Sin política de cancelación:** órdenes es todo o nada; el monto de la NC y el monto adeudado coinciden por construcción.
-- **Consolidada FUERA de alcance, estructuralmente:** el `CHARGE` de orden nace `PENDING` (`:632-633`); `getNetBalanceByStayId()` suma solo `SETTLED` (`:882`); el settle ocurre en `order.completed`; `TRANSICION_CANCELAR.desde = ['DRAFT','CONFIRMED']` (`order.repository.ts:87-89`). Para que un cargo de POS entre en una consolidada tiene que estar `SETTLED` = `COMPLETED` = **incancelable**. Nunca puede haber una orden cancelable con cargo en consolidada.
+- **Consolidada FUERA de alcance (motivo corregido en el re-gate — Modelo 2a rompió el argumento viejo).**
+  El razonamiento anterior era "`CHARGE SETTLED` = `COMPLETED` = incancelable" —
+  **ya no vale**: N1.a promueve el `CHARGE` a `SETTLED` sin llevar el documento a
+  `COMPLETED`. El motivo real, verificado: los candidatos de
+  `requestConsolidatedInvoice()` salen de filas `accounts_receivable`
+  `PENDIENTE_FACTURAR` (`invoice.service.ts:469-473`), que **solo** se crean por
+  `transferStayBalanceToReceivable()` — transferencia explícita de saldo de
+  estadía a una empresa, que inserta un `CHARGE` **nuevo** con
+  `companyCustomerId` (`accounts-receivable.service.ts:163-187`). El `UPDATE`
+  dirigido de settle de N1.a no crea ninguna de esas filas. Una orden POS que se
+  cancela nunca tuvo un `accounts_receivable` — su cargo va directo a la factura
+  individual. La conclusión ("consolidada fuera de la sección órdenes")
+  sobrevive; el argumento es "no existe el camino que meta un cargo de orden
+  cancelable en una consolidada", no "el estado del cargo lo impide".
 - **Restauración de stock:** `handleOrderCancelledStock` (`inventory.handlers.ts:143`, `:251-287`), y **NO restaura si `wasServed`** (`:287`). Una orden con Factura B casi siempre está servida → **el caso típico del escape NO restaura stock.** Hay que decirlo en la doc del método y en el mensaje al operador, no dejarlo emerger.
 - **El discriminador de `requestInvoice()` — cambio OBLIGATORIO de B-núcleo+órdenes (F2).**
   `invoice.service.ts:349` branchea `if (tx.type === 'REFUND')` para armar una NC
@@ -335,7 +426,7 @@ La contraparte de la reversión es el titular del **documento revertido** (la **
 
 | Bloque | Contenido | Schema | Gate |
 |---|---|---|---|
-| **B-núcleo+órdenes** | Módulo del núcleo en `src/facturacion/` (predicado compartido "factura viva sin **compensación total**", token de autz tipado, capas i-iv); grupo de permiso nuevo (`roles.ts` + presets + matriz RBAC + sync tests) + ruta `POST /api/orders/:id/cancel-with-credit-note`; `cancelOrderWithCreditNote()` (en el núcleo, NO en `order.service.ts`); discriminador `invoice.service.ts:349` ampliado a `ADJUSTMENT` (F2); `buildCreditNote()` extendido (`Math.abs` por `CHECK imp_* >= 0`, líneas copiadas con `order_item_id`); **`ADJUSTMENT` compensatorio `SETTLED` + `UPDATE` dirigido del `CHARGE` revertido a `SETTLED` en la misma tx (N1.a / Modelo 2a)**; **reescritura de la aritmética de signo de `getOutstandingForUpdate`/`getRefundableForUpdate` para un `ADJUSTMENT` negativo con `reversed_invoice_id` (N1.b)**; reconciliación del residual #3 en los DOS handlers (N1/A3); texto de `OrderChargeInvoicedError` (A1). | No (schema) — sí toca `platform.schema.sql` presets de rol | criterios-negocio + **architecture-governor (re-gate por F1/N1.b)** |
+| **B-núcleo+órdenes** | Módulo del núcleo en `src/facturacion/` (predicado F4 anclado a **NC `ISSUED`** — no al ledger, Defecto B salida 1; token de autz tipado; capas i-iv); grupo de permiso nuevo (`roles.ts` + presets `platform.schema.sql` + matriz RBAC + sync tests) + ruta `POST /api/orders/:id/cancel-with-credit-note`; `cancelOrderWithCreditNote()` (en el núcleo, NO en `order.service.ts`); discriminador `invoice.service.ts:349` ampliado a `ADJUSTMENT` (F2); `buildCreditNote()` extendido (`Math.abs` por `CHECK imp_* >= 0`, líneas copiadas con `order_item_id`); **secuencia de N1.a**: `ADJUSTMENT` nace `PENDING`, y en la tx post-AFIP (solo si NC `ISSUED`) → NC `ISSUED` + `ADJUSTMENT` `SETTLED` + `UPDATE` dirigido del `CHARGE` revertido a `SETTLED` (3 restricciones: solo `status`, `WHERE status='PENDING'`, ids desde la factura no el documento) + documento → `CANCELLED`; **reescritura de la aritmética de signo en `getOutstandingForUpdate` + `getRefundableForUpdate` + `getOutstandingByCustomerId`** (whitelist por tipo, sin `ABS`, N1.b) + cerca de convención; reconciliación del residual #3 en los DOS handlers (N1/A3); texto de `OrderChargeInvoicedError` (A1). Si se elige que el predicado F4 se cablee también en `reservation.service.ts` en este bloque → hay que anclarlo a NC `ISSUED` (salida 1), no dejarlo fail-open. | No (schema SQL) — sí toca `platform.schema.sql` presets de rol | criterios-negocio + **architecture-governor re-gate ✓ (06/09/2026, APROBADO CON CONDICIONES — ver §10)** |
 | **B3** | Fila-solicitud `credit_note_request` (o la consulta del estado intermedio) + endpoint/bandeja de casos pendientes + `?status=` en `GET /api/invoices`. **Precede a la parte reservas** (D1). | Sí (si fila-solicitud) — migración + backup | criterios-negocio + architecture-governor |
 | **B-reservas** | 6.1 (`getByReservationId()` UNION + fail-closed en `confirmRefund()` + 5 tests de caracterización actualizados); `cancelReservationWithCreditNote()`; subcasos 1 y 2; W2 (contraparte); índice nuevo. Pool mixto (6.3.3) y `EXPIRED` (6.4) → sub-bloques o diferidos según decisión del dueño. | Sí (índice; fila-solicitud ya en B3) — migración + backup durable | criterios-negocio + architecture-governor |
 
@@ -385,18 +476,18 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 ### Decisiones del dueño (06/09/2026)
 
 - **RBAC (q7): grupo nuevo, no `MANAGEMENT`** — ver fila 7 arriba.
-- **F1 (§N1.a): RESUELTO (06/09/2026) — Modelo 2a.** `auditor-circuitos-erp`
-  encontró que el "−monto" del Modelo 1 es **permanente** (ningún camino
-  resuelve un `CHARGE` `PENDING` sobre un agregado `CANCELLED` con factura
-  viva) y que con signo `−monto` el escape **ni destraba el guard** (Hallazgo
-  2, aritmética de `getOutstanding/getRefundable`). Decisión: `ADJUSTMENT`
-  `SETTLED` + `UPDATE` dirigido del/los `CHARGE` revertidos a `SETTLED` en la
-  misma tx (ver §N1.a y §N1.b). Respaldado por ERPNext/Odoo (exigen el asiento
-  origen asentado antes de revertir). **Suma dos cambios obligatorios a
-  B-núcleo+órdenes:** el `UPDATE` dirigido de settle, y la reescritura de la
-  aritmética de signo de `getOutstandingForUpdate`/`getRefundableForUpdate`
-  (N1.b). Por eso el ADR vuelve a `architecture-governor` para re-gate del
-  alcance de B-núcleo antes de arrancar.
+- **F1 (§N1.a/N1.b): RESUELTO — Modelo 2a secuenciado, re-gate del governor OK (06/09/2026).**
+  `auditor-circuitos-erp`: el "−monto" del Modelo 1 es **permanente**; con signo
+  `−monto` el escape ni destraba el guard (Hallazgo 2). El re-gate confirmó los
+  dos hallazgos y agregó 3 defectos de secuencia/forma a corregir (aplicados):
+  **A** — el `ADJUSTMENT` nace `PENDING`, no `SETTLED`, porque `SETTLED` con
+  `reversed_invoice_id` haría verdadero F4 **antes de que exista la NC** y
+  abriría la cancelación normal; **B** — F4 se ancla a la **NC `ISSUED`**, no al
+  ledger (salida 1), porque `confirmRefund()` crea `REFUND SETTLED` con
+  `reversedInvoiceId` antes de emitir la NC; **C** — la aritmética usa whitelist
+  por tipo (`CASE WHEN 'REFUND' ... WHEN 'ADJUSTMENT' ...`), no `ABS` (que
+  contaría un recargo como crédito). **Tercer sitio:** `getOutstandingByCustomerId`
+  entra al alcance (misma resta + `WHERE outstanding > 0`).
 - **A2: DECIDIDO — el portal NO ofrece cancelar si la reserva tiene factura
   viva.** Razonamiento del dueño: una factura viva es la validación real de la
   reserva — solo se emite si entró dinero. El frontend del portal
@@ -420,9 +511,20 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
   que el operador con el grupo nuevo resuelve — el cliente como creador de la
   solicitud, no solo el operador. Encaja con N11.
 
-### Correcciones al ADR ya aplicadas (06/09/2026, tras el gate — no cambian la doctrina)
+### Correcciones al ADR ya aplicadas (06/09/2026 — no cambian la doctrina)
 
-F1 (§N1.a, `status` del `ADJUSTMENT` = `SETTLED`), F2 (§5, discriminador `invoice.service.ts:349` obligatorio), F3 (§N1, qué cambia y qué NO — el `NOT EXISTS` de `anuladas` no se toca), F4 (§N1, "compensación total" con fórmula `imp_total − SUM(...SETTLED)`), F5 (§4, el núcleo vive en `src/facturacion/`, la función de escape no en los services de cancelación), F6 (§6.1, espejo = `resolveInvoiceLinkage()`, no `getOutstandingByCustomerId()`), redacción de capa (iii), limitación aceptada de arrancar antes de B3 (§7), `Math.abs` justificado por `CHECK (imp_* >= 0)`.
+**Del primer gate:** F1..F6, redacción de capa (iii), limitación aceptada de arrancar antes de B3 (§7), `Math.abs` justificado por `CHECK (imp_* >= 0)`.
+**Del re-gate de F1:** Defecto A (secuencia — `ADJUSTMENT` nace `PENDING`, promoción y `UPDATE` del `CHARGE` en la tx post-AFIP), Defecto B (F4 anclado a NC `ISSUED`, no al ledger), Defecto C (whitelist por tipo, no `ABS`), tercer sitio `getOutstandingByCustomerId` en N1.b, precisión del Hallazgo 1 (imposibilidad estructural solo del lado órdenes), viñeta de "consolidada fuera de alcance" de §5 reescrita con el motivo real.
+
+### Condiciones NUEVAS para B-núcleo+órdenes (re-gate, además del reporte de 10 puntos del primer gate)
+
+1. **Test de no-regresión del camino `REFUND`, de INTEGRACIÓN contra Postgres real** (`npm run test:integration`), fijando `getOutstandingForUpdate`/`getRefundableForUpdate`/`getOutstandingByCustomerId` antes y después con un `REFUND` positivo. Un unitario con fake **no cuenta** — declararlo en el reporte.
+2. **Query read-only en cada tenant:** `SELECT type, count(*) FROM financial_transactions WHERE reversed_invoice_id IS NOT NULL GROUP BY type`. Solo `REFUND` ⟹ la reescritura es no-op sobre datos existentes. Cualquier otra cosa ⟹ vuelve a gate antes de implementar.
+3. **Cerca de la convención:** test que falle si existe una fila con `reversed_invoice_id IS NOT NULL AND type NOT IN ('REFUND','ADJUSTMENT')`, con falsos negativos declarados en el docblock (patrón `lock-order.test.ts`).
+4. **Test del arqueo:** tras el escape, el turno `OPEN` no cambia — `getCashMovementsTotal()` idéntico antes y después (prueba que el `UPDATE` no tocó `shift_id`/`payment_method`).
+5. **Test de la ventana del Defecto A:** entre la creación del `ADJUSTMENT` (`PENDING`) y la NC `ISSUED`, `findBlockingInvoiceLinkage()` **sigue bloqueando** la cancelación normal.
+6. **Test de `getOutstandingByCustomerId`** tras compensación total: la factura **sale** del listado (no aparece con `imp_total + monto`). Contra Postgres real.
+7. **Test de que un `REFUND` `SETTLED` sin NC `ISSUED` NO destraba el guard** (Defecto B salida 1 — F4 anclado a NC, no a ledger).
 
 ---
 
