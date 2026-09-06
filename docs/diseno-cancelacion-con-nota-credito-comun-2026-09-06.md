@@ -1,7 +1,7 @@
 # ADR común — Cancelar un documento con factura fiscal viva, emitiendo Nota de Crédito (órdenes + reservas)
 
 - **Fecha:** 06/09/2026
-- **Estado:** REVISADO por `architecture-governor` (06/09/2026) — **APROBADO CON CONDICIONES**, las 9 correcciones aplicadas (ver §10). Nada implementado. Falta: 3 decisiones del dueño antes de B-núcleo+órdenes (§10) + salida de `criterios-datos` Parte 5 por bloque.
+- **Estado:** REVISADO por `architecture-governor` (06/09/2026, APROBADO CON CONDICIONES — 9 correcciones aplicadas). Decisiones del dueño: RBAC (grupo nuevo) ✓, A2 (portal no ofrece) ✓, **F1 RESUELTO — Modelo 2a** (`auditor-circuitos-erp`, §N1.a/N1.b). Nada implementado. **Vuelve a `architecture-governor` para re-gate**: F1 sumó dos cambios a B-núcleo+órdenes (settle dirigido del `CHARGE`, reescritura de aritmética de signo de `getOutstanding/getRefundable`) que el gate anterior no vio.
 - **Reemplaza en la práctica a:** `diseno-confirmrefund-consolidadas-n4b-2026-09-06.md` (borrador N4-b, queda como registro del análisis previo).
 - **Extiende / unifica:** `diseno-cancelacion-orden-nota-credito-2026-09-05.md` (ORDER-10, sección órdenes) y `diseno-cancelacion-notas-credito-c2-2026-08-23.md` (C2, sección reservas).
 - **Autoría de las decisiones de negocio:** dueño del proyecto (encuadre 06/09/2026, tres respuestas `AskUserQuestion`). El encaje en el modelo lo propone este ADR; lo valida `architecture-governor`.
@@ -118,22 +118,49 @@ la misma función compartida, no por separado. Aplica a órdenes Y reservas
 
 Precedente: Odoo `button_draft` mantiene el bloqueo (`account_move.py:6275-6290`); el escape es `account.move.reversal`, un modelo aparte que **crea** un `out_refund` y jamás toca `button_draft`/`button_cancel` de la factura viva. ERPNext: `SalesInvoice.on_cancel` conserva sus checks; la NC es `make_return_doc` (`sales_and_purchase_return.py:450-758`), función separada que no llama a `on_cancel` de nada.
 
-**N1.a — el `status` del `ADJUSTMENT` compensatorio: `SETTLED` (F1, prerrequisito de que el predicado funcione).**
-Si el `ADJUSTMENT` naciera `PENDING` (que es lo que hace hoy el único creador,
-`handleReservationPriceAdjusted`, `outbox.handlers.ts:178-200`) **no contaría** en
-`getOutstandingForUpdate`/`getRefundableForUpdate` (exigen `status = 'SETTLED'`,
-`sql.invoice.repository.ts:136`, `:160`): la factura seguiría viéndose
-íntegramente viva, el predicado de N1 nunca se haría falso, **el escape no
-destrabaría nada**. Nace `SETTLED`.
+**N1.a — F1 RESUELTO (auditor-circuitos-erp + dueño, 06/09/2026): Modelo 2a.**
 
-**Consecuencia contable declarada, que necesita confirmación del dueño:** un
-`ADJUSTMENT` `SETTLED` entra en `getNetBalanceByStayId` (`:875-883`, filtra
-`SETTLED`). Si la reserva se cancela **antes de completarse**, su `CHARGE` puede
-seguir `PENDING` — entonces el saldo de estadía queda transitoriamente en
-**−monto del `ADJUSTMENT`** hasta que el `CHARGE` se resuelva o se anule por el
-mismo flujo. Es visible en la cuenta de la estadía. No hay una elección de
-`status` que lo evite y a la vez haga funcionar el predicado — es un efecto del
-diseño, no un bug, y el dueño tiene que confirmarlo (ver §10).
+El `ADJUSTMENT` compensatorio **nace `SETTLED`** (única forma de que cuente en
+el predicado; `PENDING` no destraba — `getOutstandingForUpdate`/
+`getRefundableForUpdate` exigen `SETTLED`, `sql.invoice.repository.ts:136`,
+`:160`). **Y** el escape, **en la misma transacción**, promueve el/los `CHARGE`
+que la NC revierte de `PENDING` a `SETTLED` con un `UPDATE` **dirigido por id de
+transacción** — NO `settleByReservationId` / `settleChargesByOrderId` masivos
+(no tienen guard de factura y arrastrarían cargos no revertidos), NO cambia el
+estado del documento de negocio (la orden/reserva no pasa a `COMPLETED`), NO
+toca el `NOT EXISTS` de `voidBy*` (F3).
+
+Resultado: el ledger lee `CHARGE(+monto) SETTLED + ADJUSTMENT(−monto) SETTLED`
+= `0` (o `= −señaPagada`, que es la posición real y correcta: un reintegro
+pendiente al cliente, flujo financiero separado — D2, N9). Sin ventana de
+`−monto` (ni transitoria ni permanente), sin el doble conteo del governor (que
+solo aparece si se VOIDea el `CHARGE` dejando el `ADJUSTMENT` `−monto` vivo).
+
+**Por qué NO el Modelo 1 ("`CHARGE` queda `PENDING`"):** el auditor verificó
+que **no hay ningún camino** que resuelva un `CHARGE` `PENDING` sobre un
+agregado `CANCELLED` con Factura B `ISSUED` (`settleBy*` solo corre en
+`*.completed`, que no dispara para cancelados; `voidBy*` no lo anula con la
+factura viva; F3 prohíbe tocar ese `NOT EXISTS`). El "−monto" del Modelo 1 es
+**permanente, no transitorio**. Y ERPNext/Odoo **exigen el asiento/comprobante
+origen totalmente asentado** (`docstatus=1` / `state='posted'`) antes de
+revertirlo — dejar el `CHARGE` `PENDING` equivale a revertir un borrador, cosa
+que ninguno permite (`account_move_reversal.py:74-77`; `sales_and_purchase_return.py:54-58`).
+
+**N1.b — Hallazgo 2: reescribir la aritmética de signo de `getOutstandingForUpdate` /
+`getRefundableForUpdate` — cambio OBLIGATORIO de B-núcleo+órdenes.**
+Esas dos funciones (`sql.invoice.repository.ts:132-143`, `:156-170`) hacen
+`imp_total − COALESCE(SUM(r.amount) WHERE r.reversed_invoice_id = i.id AND
+r.status='SETTLED'), 0)`. Esa resta **asume `r.amount > 0`** — hoy funciona
+solo porque `REFUND` (monto positivo) es lo único que apunta a
+`reversed_invoice_id`. Un `ADJUSTMENT` compensatorio de `−monto` haría
+`imp_total − (−monto) = imp_total + monto` → el predicado F4 de "compensación
+total" **nunca daría `≤ 0`** y el guard no se destrabaría. B-núcleo tiene que
+cambiar esa suma a algo como
+`− SUM(CASE WHEN r.type = 'REFUND' THEN r.amount ELSE -r.amount END)` (o
+`SUM(ABS(r.amount))`), en el mismo bloque, con test dedicado. `getNetBalanceByStayId` /
+`getNetBalanceByCustomerId` (`:875-883`) NO se tocan — ahí el `ADJUSTMENT` `−monto`
+sin `ABS` ya netea correcto (convención de `handleReservationPriceAdjusted`,
+`outbox.handlers.ts:169-176`).
 
 ### N2 — La NC se emite CONTRA LA FACTURA, nunca contra el origen
 
@@ -308,7 +335,7 @@ La contraparte de la reversión es el titular del **documento revertido** (la **
 
 | Bloque | Contenido | Schema | Gate |
 |---|---|---|---|
-| **B-núcleo+órdenes** | Módulo del núcleo (predicado compartido "factura viva sin NC", token de autz tipado, capas i-iv); `cancelOrderWithCreditNote()` + ruta `MANAGEMENT`; `buildCreditNote()` extendido (discriminador, `Math.abs`, líneas copiadas con `order_item_id`); reconciliación del residual #3 en los DOS handlers (N1/A3). | No | criterios-negocio + architecture-governor |
+| **B-núcleo+órdenes** | Módulo del núcleo en `src/facturacion/` (predicado compartido "factura viva sin **compensación total**", token de autz tipado, capas i-iv); grupo de permiso nuevo (`roles.ts` + presets + matriz RBAC + sync tests) + ruta `POST /api/orders/:id/cancel-with-credit-note`; `cancelOrderWithCreditNote()` (en el núcleo, NO en `order.service.ts`); discriminador `invoice.service.ts:349` ampliado a `ADJUSTMENT` (F2); `buildCreditNote()` extendido (`Math.abs` por `CHECK imp_* >= 0`, líneas copiadas con `order_item_id`); **`ADJUSTMENT` compensatorio `SETTLED` + `UPDATE` dirigido del `CHARGE` revertido a `SETTLED` en la misma tx (N1.a / Modelo 2a)**; **reescritura de la aritmética de signo de `getOutstandingForUpdate`/`getRefundableForUpdate` para un `ADJUSTMENT` negativo con `reversed_invoice_id` (N1.b)**; reconciliación del residual #3 en los DOS handlers (N1/A3); texto de `OrderChargeInvoicedError` (A1). | No (schema) — sí toca `platform.schema.sql` presets de rol | criterios-negocio + **architecture-governor (re-gate por F1/N1.b)** |
 | **B3** | Fila-solicitud `credit_note_request` (o la consulta del estado intermedio) + endpoint/bandeja de casos pendientes + `?status=` en `GET /api/invoices`. **Precede a la parte reservas** (D1). | Sí (si fila-solicitud) — migración + backup | criterios-negocio + architecture-governor |
 | **B-reservas** | 6.1 (`getByReservationId()` UNION + fail-closed en `confirmRefund()` + 5 tests de caracterización actualizados); `cancelReservationWithCreditNote()`; subcasos 1 y 2; W2 (contraparte); índice nuevo. Pool mixto (6.3.3) y `EXPIRED` (6.4) → sub-bloques o diferidos según decisión del dueño. | Sí (índice; fila-solicitud ya en B3) — migración + backup durable | criterios-negocio + architecture-governor |
 
@@ -358,13 +385,18 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 ### Decisiones del dueño (06/09/2026)
 
 - **RBAC (q7): grupo nuevo, no `MANAGEMENT`** — ver fila 7 arriba.
-- **F1 (§N1.a): NO decidido — en análisis.** El dueño pidió llevarlo al
-  `auditor-circuitos-erp` con **modelos de consecuencias posibles + ejemplos
-  reales** (cómo ERPNext / Odoo 19 / QloApps manejan el caso análogo de un
-  asiento compensatorio activo mientras la contrapartida original todavía no
-  está resuelta). **B-núcleo+órdenes queda bloqueado en F1 hasta esa
-  respuesta.** El `status` del `ADJUSTMENT` (SETTLED vs otra opción) y el
-  tratamiento del `CHARGE` `PENDING` se fijan con ese input.
+- **F1 (§N1.a): RESUELTO (06/09/2026) — Modelo 2a.** `auditor-circuitos-erp`
+  encontró que el "−monto" del Modelo 1 es **permanente** (ningún camino
+  resuelve un `CHARGE` `PENDING` sobre un agregado `CANCELLED` con factura
+  viva) y que con signo `−monto` el escape **ni destraba el guard** (Hallazgo
+  2, aritmética de `getOutstanding/getRefundable`). Decisión: `ADJUSTMENT`
+  `SETTLED` + `UPDATE` dirigido del/los `CHARGE` revertidos a `SETTLED` en la
+  misma tx (ver §N1.a y §N1.b). Respaldado por ERPNext/Odoo (exigen el asiento
+  origen asentado antes de revertir). **Suma dos cambios obligatorios a
+  B-núcleo+órdenes:** el `UPDATE` dirigido de settle, y la reescritura de la
+  aritmética de signo de `getOutstandingForUpdate`/`getRefundableForUpdate`
+  (N1.b). Por eso el ADR vuelve a `architecture-governor` para re-gate del
+  alcance de B-núcleo antes de arrancar.
 - **A2: DECIDIDO — el portal NO ofrece cancelar si la reserva tiene factura
   viva.** Razonamiento del dueño: una factura viva es la validación real de la
   reserva — solo se emite si entró dinero. El frontend del portal
