@@ -140,7 +140,17 @@ integración manual — no corre en ningún pipeline de CI.
 
 ## 🔴 Abierto — registrado por primera vez (05/09/2026)
 
-### BRECHA-REFUND-01-B — un `PAYMENT` sin factura, concurrente con `confirmRefund()`, todavía puede sub-reembolsar
+### BRECHA-REFUND-01-B — un `PAYMENT` sin factura, concurrente con `confirmRefund()`, todavía puede sub-reembolsar · ⚠️ MITIGADO (06/09/2026, commit `6dcb047`, local sin push)
+
+**Mitigado, NO cerrado.** Guard optimista estilo ERPNext en `confirmRefund()`:
+relee `getCollectedPaymentTotalForReservation()` (por el pool, después del
+loop de INSERT y antes del COMMIT) y aborta con 409 `REFUND_BASE_CHANGED`
+si cambió — convierte el sub-reembolso silencioso y permanente en error
+visible y reintentable. `architecture-governor` APROBÓ CON CONDICIONES (todas
+aplicadas). **Residual B-1 abierto** (ver `pendientes-2026-09-06.md`): el
+guard solo ve lo commiteado antes de su `SELECT`; la ventana `guard → COMMIT`
+sigue descubierta. Cerrarla exige un lock que cubra la reserva en sí — no
+existe. Texto original abajo, sin tocar.
 
 **No es lo mismo que la fila de arriba ya cerrada.** El fix de Residual #2
 protege lo que está atado por FK a una factura lockeada. Un `PAYMENT`
