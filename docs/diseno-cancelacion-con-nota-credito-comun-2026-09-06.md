@@ -374,6 +374,19 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
   contactá al establecimiento"* (sin instruir "emití una NC"). El texto se
   ajusta en B-núcleo+órdenes (`errors.ts` `ReservationChargeInvoicedError`);
   el ocultamiento del botón, en la pasada de frontend del portal.
+  **Precedente QloApps (`OrderDetailController.php`):** coincide en el
+  resultado — el cliente **nunca auto-cancela una reserva paga**, se convierte
+  en una **solicitud** (`OrderReturn`, motivo obligatorio) que resuelve el
+  establecimiento. El gate de QloApps es `getTotalPaid() > 0`; el de app-main
+  es "factura viva" — equivalente (la factura solo se emite si entró dinero).
+  Además QloApps gatea la aparición del botón por un flag de config
+  global + por sucursal (`WK_ORDER_REFUND_ALLOWED` / `active_refund`) y
+  deshabilita por habitación ya con check-in.
+  **Refinamiento posible (no en esta tanda):** en vez de "contactá al
+  establecimiento" seco, el portal podría dejar al cliente **crear la
+  fila-solicitud `credit_note_request` en estado `PENDIENTE`** (con motivo),
+  que el operador con el grupo nuevo resuelve — el cliente como creador de la
+  solicitud, no solo el operador. Encaja con N11.
 
 ### Correcciones al ADR ya aplicadas (06/09/2026, tras el gate — no cambian la doctrina)
 
