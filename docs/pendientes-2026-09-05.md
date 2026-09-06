@@ -1314,3 +1314,121 @@ relevante en cuanto exista el primer cliente `COMPANY` real con una
 consolidada emitida.
 
 
+
+---
+
+## 🔎 N4 — directiva del dueño sobre facturación configurable, reconciliación con FACT-BORRADOR-001, y N4-a cerrado (05/09/2026)
+
+Continuación directa de la sección anterior ("Continuación — `confirmRefund()` vs.
+facturas consolidadas"). Dos rondas más de `architecture-governor`, más una
+directiva nueva del dueño sobre el módulo de facturación en general.
+
+### La directiva del dueño (verbatim)
+
+> "El módulo de facturación debe permitir al emisor crear y emitir líneas
+> configurables, incluyendo conceptos no originados en otros módulos, sin
+> imponer una lista cerrada de operaciones. Debe conservar la propuesta del
+> ERP, la versión final emitida y toda modificación manual relevante. Las
+> Notas de Crédito deben operar sobre el comprobante efectivamente emitido,
+> con límites de monto, trazabilidad y control de duplicados."
+
+**Reconciliada contra `docs/diseno-factura-borrador-2026-08-31.md`
+(FACT-BORRADOR-001, v2.8, leído completo por `architecture-governor` —
+2049/2049 líneas). Veredicto por cláusula:**
+
+1. **"Líneas configurables, sin lista cerrada"** — ya diseñado en §24
+   (`source_kind` con rama `MANUAL` declarada). Matiz aclarado con el dueño:
+   lo abierto es el **concepto** (texto libre), no el **origen** (cerrado a
+   4 tipos a propósito) — confirmado, ver decisión abajo.
+2. **"Conservar la propuesta del ERP + versión final + modificación manual"**
+   — parcialmente cubierto; escondía una decisión de negocio real (¿snapshot
+   inmutable o reconstrucción por `audit_log`?) — resuelta, ver abajo.
+3. **"NC contra el comprobante efectivamente emitido, límites, trazabilidad,
+   duplicados"** — **ya construido**, verificado contra el código vivo:
+   `invoice.service.ts:685-700` exige `reversedInvoiceId` + `status='ISSUED'`
+   + `cbteNro` no nulo + `cbteTipo === FACTURA_B` (guard `F-A`, agregado el
+   mismo 05/09); `getRefundableForUpdate()` topea monto; `reversed_invoice_id`
+   trazabilidad; `idempotencyKey = 'invoice:' + financialTransactionId`
+   control de duplicados. **No va a FACT-BORRADOR-001** — su lugar correcto
+   es `diseno-cancelacion-notas-credito-c2-2026-08-23.md` + este bloque N.
+
+**Estado real de FACT-BORRADOR-001, verificado (no asumido):** un solo
+commit en su historia (`ef3ba6a`, 31/08 23:55, v2.8), sin cambios desde
+entonces. Sigue *"diseño, no implementado, NO aprobado como diseño final"*,
+con 4 correcciones pendientes sobre sí mismo (§26.1) y 5 decisiones del
+dueño sin cerrar (§26.3) — de esas 5, esta sesión cerró 2 (ver abajo).
+
+**Hallazgo documental nuevo — `C-5` (no registrado en §26.1 del propio
+diseño):** entre §8 y §24 del documento, la rama de origen `RECEIVABLE`
+(la que corresponde a facturas consolidadas) **desapareció sin que ninguna
+sección lo dijera**. §13 sigue citándola como si existiera. Es territorio
+directo de N4 — cuando se retome FACT-BORRADOR-001, hay que decidir dónde
+queda el origen de una línea consolidada.
+
+**Hallazgo documental nuevo — ficha stale:** `docs/erp-auditoria-v2/fichas/M10-facturacion.md:133`
+dice *"6 decisiones del dueño abiertas"*; en realidad las 6 (D1-D6) están
+**cerradas** en §4 del diseño. Mismo patrón de arrastre que este archivo
+viene corrigiendo en otros lados.
+
+**¿Reemplaza o depende de N4?** Ninguna de las dos — son **ortogonales**.
+FACT-BORRADOR-001 gobierna la emisión (armar líneas, pedir CAE); N4 gobierna
+la reversión (cuánto se puede acreditar). El propio diseño lo declara en
+§22: *"El borrador cubre el antes; no compiten."* Confirmado que N4-a no
+necesita nada del diseño grande — `invoice_items.subtotal`/`iva_rate`/
+`reservation_id`, ya congelados hoy, alcanzan.
+
+### Las cuatro preguntas del dueño, respondidas
+
+| Pregunta | Respuesta del dueño | Efecto |
+|---|---|---|
+| ¿Cómo se conserva la propuesta ORIGINAL del ERP? | **Snapshot inmutable al crear** (no reconstrucción por `audit_log`) | Va a FACT-BORRADOR-001 cuando se retome — requiere una fila/tabla adicional por borrador, sigue en HOLD |
+| "Sin lista cerrada": ¿aplica también a los orígenes? | **Solo al concepto/descripción** | §24 queda confirmado tal cual, sin reabrir los 4 tipos de origen |
+| Residuo de redondeo al repartir IVA de un grupo entre reservas | **Lo absorbe la reserva de mayor monto** | Implementado en `resolveRefundableForPair()`, commit `eda4a2f`, con test de empate exacto |
+| ¿`notes` + `confirmed_by` alcanzan como evidencia reconstruible? | **No — hace falta algo estructurado** | Pasa a requisito de N4-b (columna/campo nuevo, schema, sigue en HOLD hasta esa etapa) |
+
+### Corrección de fórmula (el dueño encontró algo que `architecture-governor` había arbitrado mal)
+
+La fórmula propuesta en la ronda anterior (`imp_total * share_R / SUM(ic.amount)`)
+prorrateaba la **cabecera** de la factura completa. El dueño la corrigió:
+la base de una NC parcial es *"la composición fiscal ORIGINAL de la
+operación revertida, no un prorrateo ciego del total"*.
+
+Verificado contra el código real que esa composición **ya está congelada**,
+por grupo de tasa, en `invoices.afip_request.Iva[]` (`BaseImp`/`Importe`
+tal como salieron al emitir) — `buildCreditNote()` ya la usa
+(`invoice.service.ts:702-708`) y nunca re-deriva desde
+`business_profile.pricesIncludeIva` actual. La corrección de la fórmula usa
+la misma ancla, con el reparto proporcional **por reserva dentro de cada
+grupo de tasa** (no una sola cabecera) — respeta comprobantes con tasas
+mixtas y **no requiere congelar `pricesIncludeIva` por ítem**, como se había
+llegado a plantear como posible necesidad y se descartó por innecesaria.
+
+### N4-a — ✅ RESUELTO (05/09/2026, commit `eda4a2f`)
+
+`resolveRefundableForPair(invoiceId, reservationId)`, función pura, cero
+schema, cero caller de producción, sin tocar `getRefundableForUpdate()`,
+`confirmRefund()` ni `buildCreditNote()`. `[V]` 9 tests nuevos + 1864/1864
+unitarios totales verdes, `tsc`/`lint`/`lint:arch` limpios.
+
+Cubre: equivalencia con el fixture de N2 (3 reservas $500/$300/$200, refunds
+previos $400/$100 — el tope global contaminado daba $500 para cualquier
+reserva del lote, esta función da $200 para C, su propio remanente);
+tasa única; tasas mixtas; redondeo con empate exacto (reserva de mayor
+monto, orden estable de `Map` documentado); anomalía visible sin
+`GREATEST(...,0)` (mismo criterio que `getRefundableForUpdate()`); y tres
+motivos de `BLOCKED` fail-closed: `NO_ITEMS` (facturas Nivel A — confirmado
+9 de 11 en la tenant `Demo` sin `invoice_items`), `RESERVATION_NOT_IN_INVOICE`,
+`MISSING_FROZEN_IVA_ENTRY`.
+
+**Lo que sigue sin resolver — N4-b, todavía en HOLD:**
+- Cablear la función a `getByReservationId()`/`confirmRefund()` (hoy siguen
+  intactos, el hallazgo #1 sigue reproducido).
+- Campo estructurado de evidencia de NC (decisión del dueño de hoy: hace
+  falta, `notes` no alcanza) — schema nuevo.
+- Las dos fechas del plazo de 15 días (`reservations.cancelled_at` +
+  "conocimiento formal del emisor", ninguna de las dos existe hoy) — schema
+  nuevo.
+- La única pregunta que sigue siendo genuinamente fiscal, no de diseño
+  interno: qué nivel de desagregación acepta el contador (Q1 refinada de la
+  sección anterior) — bloqueante para decidir la forma final del cableado.
+
