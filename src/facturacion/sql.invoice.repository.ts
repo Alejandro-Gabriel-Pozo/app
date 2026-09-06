@@ -129,12 +129,28 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // (`financial_transaction_id IS NULL` a propósito, ver schema.sql:3139) --
     // exactamente el tipo de factura contra la que este método también
     // tiene que poder calcular saldo.
+    // ADR común cancelar-con-NC (06/09/2026, N1.b) -- la contribución de una
+    // transacción revertidora al "ya revertido" de la factura se toma POR TIPO,
+    // no como `SUM(r.amount)` a secas: un `REFUND` lleva `amount` positivo (ese
+    // es el monto revertido); el `ADJUSTMENT` compensatorio de una Nota de
+    // Crédito lleva `amount` NEGATIVO (convención de `handleReservationPriceAdjusted`,
+    // outbox.handlers.ts:169-176), así que su monto revertido es `-r.amount`.
+    // Sin este CASE, un `ADJUSTMENT` negativo haría `imp_total - (-monto) =
+    // imp_total + monto` y la factura nunca se vería compensada. `ELSE 0`
+    // explícito (no `-r.amount` genérico): el schema no impide un tercer
+    // `type` con `reversed_invoice_id` (no hay CHECK, schema.sql:2989-2990) --
+    // ver la cerca de convención en los tests. Verificado 06/09/2026: 0 filas
+    // con `reversed_invoice_id IS NOT NULL` en las dos tenant, así que esto es
+    // no-op sobre datos existentes.
     const { rows } = await client.query<{ outstanding: string }>(
       `SELECT
          (i.imp_total
            - COALESCE((SELECT SUM(p.amount) FROM financial_transactions p
                        WHERE p.settled_invoice_id = i.id AND p.status = 'SETTLED'), 0)
-           - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+           - COALESCE((SELECT SUM(CASE WHEN r.type = 'REFUND' THEN r.amount
+                                       WHEN r.type = 'ADJUSTMENT' THEN -r.amount
+                                       ELSE 0 END)
+                       FROM financial_transactions r
                        WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
          ) AS outstanding
        FROM invoices i
@@ -153,16 +169,25 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // cómputo después, sentencia nueva, foto fresca.
     await client.query(`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
 
+    // "ya reembolsado" por TIPO -- ver el comentario de N1.b en
+    // getOutstandingForUpdate arriba (REFUND: +amount; ADJUSTMENT de NC:
+    // -amount; ELSE 0).
     const { rows } = await client.query<{ refundable: string }>(
       `SELECT LEAST(
          -- (A) pagado − ya reembolsado
          COALESCE((SELECT SUM(p.amount) FROM financial_transactions p
                     WHERE p.settled_invoice_id = i.id AND p.status = 'SETTLED'), 0)
-           - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+           - COALESCE((SELECT SUM(CASE WHEN r.type = 'REFUND' THEN r.amount
+                                       WHEN r.type = 'ADJUSTMENT' THEN -r.amount
+                                       ELSE 0 END)
+                       FROM financial_transactions r
                        WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0),
          -- (B) valor del comprobante − ya reembolsado
          i.imp_total
-           - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+           - COALESCE((SELECT SUM(CASE WHEN r.type = 'REFUND' THEN r.amount
+                                       WHEN r.type = 'ADJUSTMENT' THEN -r.amount
+                                       ELSE 0 END)
+                       FROM financial_transactions r
                        WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
        ) AS refundable
        FROM invoices i
@@ -191,7 +216,11 @@ export class SqlInvoiceRepository implements InvoiceRepository {
            (i.imp_total
              - COALESCE((SELECT SUM(p.amount) FROM financial_transactions p
                          WHERE p.settled_invoice_id = i.id AND p.status = 'SETTLED'), 0)
-             - COALESCE((SELECT SUM(r.amount) FROM financial_transactions r
+             -- "ya revertido" por TIPO -- ver N1.b en getOutstandingForUpdate.
+             - COALESCE((SELECT SUM(CASE WHEN r.type = 'REFUND' THEN r.amount
+                                         WHEN r.type = 'ADJUSTMENT' THEN -r.amount
+                                         ELSE 0 END)
+                         FROM financial_transactions r
                          WHERE r.reversed_invoice_id = i.id AND r.status = 'SETTLED'), 0)
            ) AS outstanding
          FROM invoices i
