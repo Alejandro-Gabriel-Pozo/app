@@ -382,6 +382,37 @@ de excepciones por `type`; la vía correcta es que la NC exista y esté viva).
 3. **Implementación:** núcleo+órdenes (sin schema) → B3 (bandeja) → reservas
    (schema definido por el ADR + backup durable). Gate por bloque.
 
+### Gate del ADR común — `architecture-governor` (06/09/2026): APROBADO CON CONDICIONES
+
+Doctrina del núcleo (N1-N12), 4 capas de contención y orden de bloques: se
+sostienen. 9 correcciones al ADR (aplicadas, ninguna toca la doctrina) —
+F1 `status` del `ADJUSTMENT` = `SETTLED`; F2 discriminador `invoice.service.ts:349`
+obligatorio para que un `ADJUSTMENT` emita NC y no Factura B; F3 N1 NO toca el
+`NOT EXISTS` del `UPDATE anuladas` (si lo tocara: `CHARGE` VOIDED + `ADJUSTMENT`
+negativo vivo ⇒ saldo `−monto`); F4 "compensada" = compensación TOTAL con
+`imp_total − SUM(reversed_invoice_id, SETTLED)`; F5 el núcleo vive en
+`src/facturacion/`, la función de escape NO en `order.service.ts`/`reservation.service.ts`
+(`.dependency-cruiser.cjs:94-101`); F6 espejo del `UNION` = `resolveInvoiceLinkage()`,
+no `getOutstandingByCustomerId()`.
+
+**3 decisiones del dueño antes de B-núcleo+órdenes:** (a) RBAC — el escape es
+`MANAGEMENT` y `RECEPTIONIST` no lo tiene (`platform.schema.sql:300-311`),
+¿403 o grupo que lo alcance? (b) F1 — confirmar el saldo de estadía
+transitoriamente `−monto`. (c) A2 — qué ve el cliente final del portal.
+
+### EXPIRED-FACT-01 · 🔴 abierto — reserva con factura viva que EXPIRA
+
+`Reservation.ts:81` — `PENDING → EXPIRED` es transición válida, `EXPIRED`
+terminal; `reservation-hold-expiry.worker.ts:122` llama `expire()` **sin pasar
+por ningún guard de facturación** (RESERVA-10 solo cubre
+`cancelReservation()`). El worker saltea si la seña está paga (`:117-119`) —
+camino angosto, pero existe: una reserva con seña cobrada Y factura B emitida
+que llega a `EXPIRED` deja la Factura B viva sin NC, sin que RESERVA-10 lo vea.
+Fuera de alcance del ADR común (que cubre `cancel*`, no `expire`). Registrado
+acá con ancla por condición del `architecture-governor` — no dejarlo solo en el
+ADR (incidente del 25/08, `CLAUDE.md` raíz: lo que queda fuera de un doc que se
+relee cada sesión desaparece del radar).
+
 ---
 
 ## 🔴 Arrastrado de `pendientes-2026-09-05.md` — sin re-verificar salvo donde se indica
