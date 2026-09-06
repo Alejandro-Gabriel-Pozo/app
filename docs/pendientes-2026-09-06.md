@@ -369,36 +369,78 @@ de excepciones por `type`; la vía correcta es que la NC exista y esté viva).
   lleva a concluir que el escape de órdenes necesita migración cuando no la
   necesita. Anotado porque el ADR de reservas toca esa misma tabla.
 
-### Próximos pasos (secuencia acordada)
+### Estado al cerrar la sesión del 06/09/2026 — HANDOFF a la sesión siguiente
 
-1. **Bloque chico de reservas** — `getByReservationId()` → `UNION` + `confirmRefund()`
-   individual fail-closed ante consolidada (mensaje apuntando a que el escape
-   `MANAGEMENT` no existe todavía). Sin schema. → `criterios-negocio` +
-   `architecture-governor` → commit.
-2. **ADR común** — `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`:
-   núcleo (12 puntos + las 4 capas de contención) + sección órdenes + sección
-   reservas. Reemplaza en la práctica al borrador N4-b (que queda como
-   registro). → `architecture-governor`.
-3. **Implementación:** núcleo+órdenes (sin schema) → B3 (bandeja) → reservas
-   (schema definido por el ADR + backup durable). Gate por bloque.
+**Fase de diseño CERRADA.** ADR común
+`diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` (commits `5fc42fb`,
+`5d20f89`, `ba9753c`, `f09d997`, `83468f3`):
+- `architecture-governor` gate (9 correcciones) + **re-gate de F1** (3 defectos
+  de secuencia/forma + tercer sitio) — todo aplicado.
+- Decisiones del dueño: **RBAC** = grupo de permiso NUEVO que alcance a
+  recepción (no `MANAGEMENT`); **A2** = el portal no ofrece cancelar con
+  factura viva (precedente QloApps); **F1** = **Modelo 2a secuenciado** — el
+  `ADJUSTMENT` nace `PENDING`, y en la tx post-AFIP (solo si NC `ISSUED`) →
+  NC `ISSUED` + `ADJUSTMENT` `SETTLED` + `UPDATE` dirigido del `CHARGE`
+  revertido a `SETTLED` + documento → `CANCELLED`. El predicado F4 se ancla
+  a la **NC `ISSUED`**, no al ledger (Defecto B).
 
-### Gate del ADR común — `architecture-governor` (06/09/2026): APROBADO CON CONDICIONES
+**Implementación — B-núcleo+órdenes, sub-bloque 1/7 HECHO** (`ad4d236`):
+reescritura de aritmética de "ya revertido" por tipo en
+`getOutstandingForUpdate` + `getRefundableForUpdate` + `getOutstandingByCustomerId`
+(`SUM(CASE WHEN 'REFUND' THEN amount WHEN 'ADJUSTMENT' THEN -amount ELSE 0 END)`).
+Condición 2 (query por tenant): **0 filas** con `reversed_invoice_id` en Demo y
+Hotel los Alamos → no-op sobre datos existentes. Condición 1: 32/32 integración
+contra Postgres real, camino `REFUND` no regresionado.
 
-Doctrina del núcleo (N1-N12), 4 capas de contención y orden de bloques: se
-sostienen. 9 correcciones al ADR (aplicadas, ninguna toca la doctrina) —
-F1 `status` del `ADJUSTMENT` = `SETTLED`; F2 discriminador `invoice.service.ts:349`
-obligatorio para que un `ADJUSTMENT` emita NC y no Factura B; F3 N1 NO toca el
-`NOT EXISTS` del `UPDATE anuladas` (si lo tocara: `CHARGE` VOIDED + `ADJUSTMENT`
-negativo vivo ⇒ saldo `−monto`); F4 "compensada" = compensación TOTAL con
-`imp_total − SUM(reversed_invoice_id, SETTLED)`; F5 el núcleo vive en
-`src/facturacion/`, la función de escape NO en `order.service.ts`/`reservation.service.ts`
-(`.dependency-cruiser.cjs:94-101`); F6 espejo del `UNION` = `resolveInvoiceLinkage()`,
-no `getOutstandingByCustomerId()`.
+**Falta de B-núcleo+órdenes (~6 sub-bloques), en orden sugerido:**
+1. Módulo del núcleo en `src/facturacion/` — predicado F4 "hay factura viva
+   sin NC `ISSUED` que la compense en su totalidad" como función compartida
+   (join a la NC `ISSUED` vía el `UNION ALL` de `resolveInvoiceLinkage()`) +
+   token de autz tipado. Sin callers todavía.
+2. Grupo de permiso nuevo — `security/roles.ts` (definición) +
+   `platform.schema.sql` (sumarlo al preset `RECEPTIONIST` y a los que ya
+   tienen `MANAGEMENT`) + `docs/rbac-matriz-endpoints.md` §2 bajo
+   `### src/pos-menu/` + contador del encabezado + `EXPECTED_AUTHORIZE_CALL_SITES`
+   204 → 205. Pasa por `criterios-negocio` (cambio RBAC).
+3. `buildCreditNote()` (`invoice.service.ts:676+`) — discriminador `:349`
+   ampliado a `tx.type === 'ADJUSTMENT'` (F2), `Math.abs()` del monto (por
+   `CHECK imp_* >= 0`, `schema.sql:2713-2715`), líneas copiadas de la factura
+   original con `order_item_id` (viola `chk_invoice_item_origin` si quedan los
+   dos `null`).
+4. `cancelOrderWithCreditNote()` en el módulo del núcleo (NO en
+   `order.service.ts`, `.dependency-cruiser.cjs:94-101` + F5) + ruta
+   `POST /api/orders/:id/cancel-with-credit-note` + la secuencia N1.a de dos
+   transacciones (el `UPDATE` dirigido del `CHARGE` con las 3 restricciones:
+   solo `status`, `WHERE status='PENDING'`, ids desde la factura no el
+   documento).
+5. Predicado N1 cableado en `findBlockingInvoiceLinkage()` del lado órdenes +
+   reconciliación del residual #3 en `registrarDesenlace()` (`outbox.handlers.ts:237`,
+   invocado desde `:161`/`:334`/`:380`/`:390`) + texto de `OrderChargeInvoicedError`
+   (`errors.ts:602`, A1) + **cerca de convención** (condición 3: ninguna fila
+   con `reversed_invoice_id IS NOT NULL AND type NOT IN ('REFUND','ADJUSTMENT')`,
+   patrón `lock-order.test.ts` con falsos negativos declarados).
+6. Cerca de arquitectura (capa iv) — test que falla si `order.service.ts`
+   importa el módulo del núcleo.
 
-**3 decisiones del dueño antes de B-núcleo+órdenes:** (a) RBAC — el escape es
-`MANAGEMENT` y `RECEPTIONIST` no lo tiene (`platform.schema.sql:300-311`),
-¿403 o grupo que lo alcance? (b) F1 — confirmar el saldo de estadía
-transitoriamente `−monto`. (c) A2 — qué ve el cliente final del portal.
+**Gate final de B-núcleo+órdenes:** `architecture-governor`, con el reporte de
+10 puntos del primer gate + las 7 condiciones nuevas del re-gate (§10 del ADR).
+Condiciones 1 y 2 ya cubiertas por `ad4d236`; faltan 3-7 (arqueo, ventana del
+Defecto A, `getOutstandingByCustomerId` post-compensación, `REFUND SETTLED` sin
+NC no destraba, cerca de convención).
+
+**Después:** B3 (fila-solicitud `credit_note_request` + bandeja, con
+`criterios-datos` Parte 5 — índice único parcial, campo de monto congelado,
+`resolved_at`) → B-reservas (incluye `getByReservationId()` UNION + fail-closed
++ 5 caracterizaciones a actualizar + subcasos directa/consolidada + pool mixto
++ `EXPIRED-FACT-01`).
+
+**Estado git al cerrar:** `app-main` HEAD `ad4d236`, `origin/main` `5a3a588`,
+**25 commits sin pushear**, working tree limpio. `appfrontend-main` `613c206`.
+Sin push ni deploy autorizados.
+
+**Para arrancar la sesión siguiente:** leer este archivo + el ADR común
+completo + el ADR de ORDER-10 (`diseno-cancelacion-orden-nota-credito-2026-09-05.md`,
+sección órdenes) antes de tocar código.
 
 ### EXPIRED-FACT-01 · 🔴 abierto — reserva con factura viva que EXPIRA
 
