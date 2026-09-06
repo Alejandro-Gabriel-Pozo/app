@@ -353,13 +353,27 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 | 4 | **Set de `reason`** | **Dueño** | N7 ya lo resuelve: texto libre en `notes` (default). Solo pasa a enum si el dueño quiere reportabilidad; el set es suyo. **No bloquea B-núcleo+órdenes.** |
 | 5 | ¿Evento de dominio al emitir la NC? | **Governor** | **No** en B-núcleo+órdenes (sin consumidor; arrastra versionado de handlers sin beneficio). Diferir. |
 | 6 | Nombres | **Governor** | `cancelOrderWithCreditNote()` / `POST /api/orders/:id/cancel-with-credit-note`. Sin objeción (A5.5, evita "partial"). |
-| 7 | RBAC | **Dividida** | *Mecánica (governor):* fila nueva en `rbac-matriz-endpoints.md` **§2** bajo `### src/pos-menu/` (que es todo `requireModule(POS_RESTAURANTE)`, aplicado en `app.ts` — la ruta nueva lo hereda), contador del encabezado ("204 call-sites, 37 archivos") y `EXPECTED_AUTHORIZE_CALL_SITES` **204 → 205** en el mismo commit, `PUBLIC_ROUTES` sin tocar. *Quién puede (dueño):* `platform.schema.sql:300-311` — **`RECEPTIONIST` tiene solo `STAFF`/`FRONT_DESK`/`BOOKING`, NO `MANAGEMENT`** (solo OWNER/ADMIN). Con `MANAGEMENT`, la recepcionista recibe **403** en el escape (modo de falla D6 exacto que el `CLAUDE.md` de `app-main` documenta). Decisión del dueño, no default técnico. |
+| 7 | RBAC | **DECIDIDO por el dueño (06/09/2026): grupo de permiso NUEVO que alcance a recepción** | *Decisión:* el escape NO va bajo `MANAGEMENT`. Se crea un grupo dedicado (nombre a fijar en B-núcleo+órdenes, ej. `CREDIT_NOTE_ISSUER` / `EMISOR_NOTA_CREDITO`) y se lo suma al preset `RECEPTIONIST` (y a los que ya tienen `MANAGEMENT`) en `platform.schema.sql`. Motivo del dueño: recepción tiene que poder emitir la NC de cancelación sin escalar a OWNER/ADMIN. *Consecuencia de alcance:* B-núcleo+órdenes no es "solo agregar `authorize(Roles.X)` a una ruta" — toca `security/roles.ts` (definición del grupo), `platform.schema.sql` (presets), `docs/rbac-matriz-endpoints.md` §2 bajo `### src/pos-menu/` (que hereda `requireModule(POS_RESTAURANTE)` de `app.ts`), el contador del encabezado, `EXPECTED_AUTHORIZE_CALL_SITES` **204 → 205**, y `rbac-route-coverage.test.ts` (la ruta nueva la cubre automáticamente, `PUBLIC_ROUTES` no se toca). Todo en el mismo commit. Pasa por `criterios-negocio` como cambio de RBAC. |
 
-### Decisiones que el dueño tiene que tomar ANTES de que arranque B-núcleo+órdenes
+### Decisiones del dueño (06/09/2026)
 
-- **RBAC (q7):** ¿el escape es `MANAGEMENT` (⇒ `RECEPTIONIST` recibe 403), o hace falta un grupo que lo alcance?
-- **F1 (§N1.a):** confirmar el efecto contable del `ADJUSTMENT` `SETTLED` sobre `getNetBalanceByStayId` — un `CHARGE` de orden/reserva cancelada antes de completarse queda `PENDING` mientras el `ADJUSTMENT` compensatorio ya está `SETTLED` → saldo de estadía transitoriamente en `−monto`.
-- **A2:** qué ve el cliente final del portal (`customer.routes.ts:791`, `cancelReservation()` sin `authorize(Roles.X)`) — hoy recibe un 409 con un mensaje que le pide emitir una NC, acción `MANAGEMENT`-only que no puede hacer.
+- **RBAC (q7): grupo nuevo, no `MANAGEMENT`** — ver fila 7 arriba.
+- **F1 (§N1.a): NO decidido — en análisis.** El dueño pidió llevarlo al
+  `auditor-circuitos-erp` con **modelos de consecuencias posibles + ejemplos
+  reales** (cómo ERPNext / Odoo 19 / QloApps manejan el caso análogo de un
+  asiento compensatorio activo mientras la contrapartida original todavía no
+  está resuelta). **B-núcleo+órdenes queda bloqueado en F1 hasta esa
+  respuesta.** El `status` del `ADJUSTMENT` (SETTLED vs otra opción) y el
+  tratamiento del `CHARGE` `PENDING` se fijan con ese input.
+- **A2: DECIDIDO — el portal NO ofrece cancelar si la reserva tiene factura
+  viva.** Razonamiento del dueño: una factura viva es la validación real de la
+  reserva — solo se emite si entró dinero. El frontend del portal
+  oculta/deshabilita el botón de cancelar en ese caso (trabajo de UI, pasada
+  posterior); el mensaje, si igual se llega al 409, pasa a *"No podés cancelar
+  esta reserva online porque ya tiene un comprobante fiscal emitido —
+  contactá al establecimiento"* (sin instruir "emití una NC"). El texto se
+  ajusta en B-núcleo+órdenes (`errors.ts` `ReservationChargeInvoicedError`);
+  el ocultamiento del botón, en la pasada de frontend del portal.
 
 ### Correcciones al ADR ya aplicadas (06/09/2026, tras el gate — no cambian la doctrina)
 
