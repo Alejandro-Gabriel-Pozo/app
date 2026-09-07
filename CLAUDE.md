@@ -82,15 +82,23 @@ router protegido de `/api` — todo mount `/api/...` anterior al gate tiene que
 estar en su allowlist `PRE_AUTH_API_MOUNTS` con motivo. Cubre solo el gate de
 tenant (no `tenantMiddleware` ni el `authenticate()` interno del portal).
 
-Consecuencia práctica: ahora son **cuatro** artefactos a mantener en sync a
+Desde el 08/09/2026 hay una **cuarta cerca**:
+`src/tests/architecture/customer-portal-ownership-guard.test.ts` (RBAC-OWN-001,
+clase) valida que toda ruta de `customer.routes.ts` con un `:param` de recurso
+(cualquiera menos `:businessSlug`) llama a un guard de pertenencia
+(`requireOwnReservation`, hoy) o figura en su allowlist `OWNERSHIP_EXEMPT` con
+motivo.
+
+Consecuencia práctica: ahora son **cinco** artefactos a mantener en sync a
 mano — la sección 4 de la matriz, el `PUBLIC_ROUTES` de `rbac-route-coverage`,
-el `PRE_AUTH_API_MOUNTS` de `api-auth-gate-order` y los `authorize()` reales.
-El test de `rbac-route-coverage` cubre el cruce `PUBLIC_ROUTES` contra el
-código en las dos direcciones (ruta sin autz que falta en el allowlist, y
-entrada del allowlist que ya no matchea); `api-auth-gate-order` cubre solo la
-dirección "entrada stale" de `PRE_AUTH_API_MOUNTS`; **nada verifica sección 4
-de la matriz contra `PUBLIC_ROUTES`** — es a ojo
-(RBAC-SYNC-001). Si agregás una ruta pública, tocá los dos.
+el `PRE_AUTH_API_MOUNTS` de `api-auth-gate-order`, el `OWNERSHIP_EXEMPT` de
+`customer-portal-ownership-guard` y los `authorize()` reales. El test de
+`rbac-route-coverage` cubre el cruce `PUBLIC_ROUTES` contra el código en las
+dos direcciones (ruta sin autz que falta en el allowlist, y entrada del
+allowlist que ya no matchea); `api-auth-gate-order` y
+`customer-portal-ownership-guard` cubren solo la dirección "entrada stale" de
+su allowlist; **nada verifica sección 4 de la matriz contra `PUBLIC_ROUTES`**
+— es a ojo (RBAC-SYNC-001). Si agregás una ruta pública, tocá los dos.
 
 ## Pendientes — revalidar antes de arrastrar
 
@@ -193,11 +201,12 @@ skill técnica o no.
   `docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`: (1) ownership dentro de un
   tenant en el portal de cliente (`api/routes/customer.routes.ts`, rutas
   `Roles.CUSTOMER_ONLY` — **no** `me.routes.ts`, que es el `/api/auth/me` de
-  staff sin `:id`) — parcialmente cerrado el 07/09/2026 con
-  `requireOwnReservation()` + prueba negativa de integración; falta la cerca
-  sobre las rutas `:id` del portal; (2) ruta nueva sin `authorize()` en un
-  `*.routes.ts` existente — invisible para la cerca de conteo
-  `src/tests/security/rbac-matrix-sync.test.ts`.
+  staff sin `:id`) — **cerrado**: instancia el 07/09/2026
+  (`requireOwnReservation()` + prueba negativa de integración), clase el
+  08/09/2026 (cerca `customer-portal-ownership-guard.test.ts`, ver arriba);
+  (2) ruta nueva sin `authorize()` en un `*.routes.ts` existente — invisible
+  para la cerca de conteo `src/tests/security/rbac-matrix-sync.test.ts`
+  (mitigado por `rbac-route-coverage.test.ts`).
   Complementa —no reemplaza— `authorize(Roles.X)` + `docs/rbac-matriz-endpoints.md`.
 - **`irreversible-action-gate`** — clasificar por reversibilidad y radio antes
   de ejecutar algo destructivo, masivo o hacia afuera. Casos: `migrate:tenants`

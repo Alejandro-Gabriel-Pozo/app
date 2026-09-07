@@ -100,15 +100,17 @@ bajo `/api/customer`, `authorize(Roles.CUSTOMER_ONLY)`), **no** en
 solo leen `req.user`, sin `:id` ni superficie de ownership. La confusión
 venía del prefijo de path `/me/...`.
 
-> **Parcialmente resuelto (07/09/2026, commit `8d379ab`).** Guard central
-> `requireOwnReservation()` en `customer.routes.ts` + prueba negativa de
-> integración (`customer-portal-ownership.integration.test.ts`: capturar
-> como dueño → repetir como otro cliente → 403; id inexistente → 404).
-> **Alcance:** las 2 únicas rutas del portal con `:id` arbitrario
-> (`PATCH /me/reservations/:id`, `POST /me/reservations/:id/cancel`). Lo
-> que NO cierra: una ruta `:id` futura que se olvide el guard — misma
-> clase que RBAC-MOUNT-001, se cierra con una cerca (pendiente, ver
-> `pendientes-2026-09-06.md`).
+> **RESUELTO — instancia (07/09/2026, `8d379ab`) + clase (08/09/2026).**
+> Instancia: guard central `requireOwnReservation()` en `customer.routes.ts`
+> + prueba negativa de integración (`customer-portal-ownership.integration.test.ts`:
+> capturar como dueño → repetir como otro cliente → 403; id inexistente → 404),
+> aplicado a las 2 rutas del portal con `:id` arbitrario
+> (`PATCH /me/reservations/:id`, `POST /me/reservations/:id/cancel`).
+> Clase: cerca `src/tests/architecture/customer-portal-ownership-guard.test.ts`
+> — toda ruta de `customer.routes.ts` con `:param` de recurso (cualquiera
+> menos `:businessSlug`) tiene que llamar a un guard de pertenencia o figurar
+> en `OWNERSHIP_EXEMPT` con motivo; mutación verificada (ruta `:id` nueva sin
+> guard → falla). 5º artefacto RBAC a mano (ver `CLAUDE.md`).
 
 **Hueco 2 (mitigado el 30/08/2026) — Ruta nueva sin `authorize()` en un
 archivo `*.routes.ts` existente.** La cerca de conteo no la ve (no suma un `authorize(Roles.X)`)
@@ -129,9 +131,9 @@ no tiene `authenticate` / `authorize` en su cadena.
 > valida el orden de montaje, del que depende la seguridad de 7 de las 22
 > entradas del allowlist.
 >
-> **Hueco 1: parcialmente resuelto el 07/09/2026** (`8d379ab`) — ver el
-> recuadro en "Hueco 1" más arriba. Falta la cerca sobre las rutas `:id`
-> del portal para cerrar la clase, no solo la instancia.
+> **Hueco 1: RESUELTO** — instancia el 07/09/2026 (`8d379ab`), clase el
+> 08/09/2026 (cerca `customer-portal-ownership-guard.test.ts`). Ver el
+> recuadro en "Hueco 1" más arriba.
 
 ## Gatillo de revisión
 

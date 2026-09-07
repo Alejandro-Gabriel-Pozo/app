@@ -59,11 +59,12 @@ el índice:
 | Ítem | Estado | Commit |
 |---|---|---|
 | **RBAC-MOUNT-001** | ✅ cerca `src/tests/architecture/api-auth-gate-order.test.ts` — el `authenticate()` de tenant precede a todo router protegido de `/api`. Alcance: solo el gate de tenant (no `tenantMiddleware`, no el `authenticate()` interno del portal). | `d1335d8` |
-| **RBAC-OWN-001** | ✅ **instancia** — guard central `requireOwnReservation()` en `customer.routes.ts` + `customer-portal-ownership.integration.test.ts` (A pide reserva de B → 403). **Falta la clase:** cerca sobre toda ruta `:id` del portal → próximo bloque. | `8d379ab` |
+| **RBAC-OWN-001** | ✅ **instancia + clase** — guard central `requireOwnReservation()` en `customer.routes.ts` + `customer-portal-ownership.integration.test.ts` (A pide reserva de B → 403); **clase (08/09):** cerca `src/tests/architecture/customer-portal-ownership-guard.test.ts` — toda ruta `:param` de recurso del portal llama al guard o está en `OWNERSHIP_EXEMPT` con motivo (mutación verificada). 5º artefacto RBAC a mano (`CLAUDE.md`). | `8d379ab` + cerca 08/09 |
 | Limpieza | anclas de `rbac-route-coverage.test.ts` (`app.ts:267→317`), `CLAUDE.md` 3→4 artefactos RBAC, ADR Hueco 1 re-apuntado de `me.routes.ts` a `customer.routes.ts` | `8936161`·`dea635f` |
 | FACT-INV-BIZID-001 · FAILOPEN-001 | re-etiquetados (no son riesgo vivo), sin código | — |
 
-`SEC-ROT-001` y `RBAC-SYNC-001 §4` siguen abiertos (ver §4).
+`SEC-ROT-001` y `RBAC-SYNC-001 §4` siguen abiertos (ver §4). La cerca `:id`
+del portal (clase de RBAC-OWN-001) — hecha el 08/09.
 
 ---
 
@@ -85,8 +86,8 @@ después B3, B-reservas, A1-A5. Destraba ORDER-15, Bloque 2 confirmRefund,
 
 | Bloque | Qué | Nota |
 |---|---|---|
-| **Cerca `:id` del portal** | Todo `router.<método>` de `customer.routes.ts` con `:id` en el path llama a `requireOwnReservation()` o está en un allowlist con motivo. Mismo patrón que `api-auth-gate-order.test.ts` (con evidencia de mutación). Cierra la **clase** de RBAC-OWN-001, no solo la instancia. | Será el **5º** artefacto RBAC a mano — anotarlo en `CLAUDE.md` al hacerlo. El governor lo puso primero. |
-| **SEC-ROT-001** | Runbook de rotación de `DB_ENCRYPTION_KEY` (doc, barato). El camino de 2 claves + IV 16→12 = decisión de prioridad del dueño. | `src/platform/tenant-db.setup.ts` |
+| ~~**Cerca `:id` del portal**~~ ✅ | **Hecha el 08/09** — `src/tests/architecture/customer-portal-ownership-guard.test.ts`. Cierra la clase de RBAC-OWN-001. 5º artefacto RBAC (`CLAUDE.md`). | — |
+| **SEC-ROT-001** | Runbook de rotación de `DB_ENCRYPTION_KEY` (doc, barato). El camino de 2 claves + IV 16→12 = decisión de prioridad del dueño. | `src/platform/tenant-db.setup.ts`. Ahora es lo primero de la cola. |
 | **RBAC-SYNC-001 §4** | Test que cruce sección 4 de `rbac-matriz-endpoints.md` ↔ `PUBLIC_ROUTES`. | Baja urgencia. |
 | **ADR común "cancelar con NC"** | sub-bloques 2-6 (ver §3). | Requiere `criterios-negocio` + `auditor-circuitos-erp`. |
 | Higiene | `.github/workflows/ci.yml` job `integration`: el comentario "Techo explícito: 19 suites" quedó viejo (hay 22-23). | — |
