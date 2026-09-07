@@ -530,13 +530,26 @@ mal — `git rev-list --count origin/main..HEAD` daba 26), working tree limpio.
 - **CONCIL-INCONSIST-01 / OUTBOX-*:** ítems nuevos, ver "registrado por primera
   vez 07/09".
 - `c41e74f` fix ORDER-13 (clasificación transitorio/permanente + `describeDeadLetter`
-  + D1-A) — gate del governor OK, **local sin pushear**. + este commit de docs.
-- **Próximo:** O5 Bloque 4 (email a `MANAGEMENT` en dead-letter, D2-C).
+  + D1-A) · `e413180` docs (reconciliación pt1 + ítems diferidos) · `2520df2`
+  **O5 Bloque 4** (aviso por email a los `MANAGEMENT` en dead-letter, opción B —
+  join RBAC) · `1c1b058` B1 (throttle 15 min entre avisos) + B2 (nombre del
+  negocio en el mail). Los 4 con gate del `architecture-governor`, **locales
+  sin pushear**.
+- **Próximo:** commit de push del stack ORDER-13/O5 (`c41e74f`..`1c1b058`) —
+  requiere autorización del dueño **+ corrida verde de `integration` en CI**
+  (el join real de `getManagementEmails` no tiene test de integración — es el
+  único hueco que ninguna verificación estática cierra).
+- **Nuevos ítems del gate de bloque 4:** `EMAIL-FROMNAME-RFC5322-01` (quoting
+  del `fromName`) y la fragilidad del cooldown de B1 ante `pool.on('error')` —
+  ver abajo.
 
-**Estado git al cerrar:** `app-main` HEAD ≈ `c41e74f` + commit de docs,
-`origin/main` `76ae24c`, **2 commits sin pushear** (`c41e74f` + docs), working
-tree limpio. `appfrontend-main` `613c206`. Push del bloque ORDER-13 pendiente de
-autorización + corrida verde de `integration` en CI.
+**Estado git al cerrar:** `app-main` HEAD = `1c1b058` + este commit de docs,
+`origin/main` `76ae24c`, **5 commits sin pushear** (`c41e74f` clasificación ·
+`e413180` docs · `2520df2` O5 bloque 4 · `1c1b058` B1/B2 · este commit de docs),
+working tree limpio. `appfrontend-main` `613c206`. **Push del stack
+ORDER-13/O5 pendiente de autorización del dueño + corrida verde de
+`integration` en CI** (el join de `getManagementEmails` no tiene test de
+integración).
 
 **Para arrancar la sesión siguiente:** leer este archivo + el ADR común
 completo + el ADR de ORDER-10 (`diseno-cancelacion-orden-nota-credito-2026-09-05.md`,
@@ -616,6 +629,30 @@ tiene `processed_events`). Hoy el único compensador es la liberación de stock 
 compensador reclame un casillero en `processed_events`, o que lo re-dispare el
 reintento manual. Ancla: `outbox.worker.ts:419-432`, `inventory.handlers.ts:56-68`.
 
+### OUTBOX-DL-THROTTLE-RESET-01 · 🟠 abierto — el cooldown del aviso de dead-letter se resetea con `pool.on('error')`
+
+El throttle de B1 (`1c1b058`, `makeDeadLetterEmailNotifier`, `lastActedAt` en el
+closure) es in-memory por instancia de worker. Se resetea en 3 casos: restart
+del proceso, `pool.on('error')` del tenant (`tenant.middleware.ts:114` →
+`stopTenantWorker`) y `evictTenantPool` / LRU (`tenant.middleware.ts:175`). El
+2º está **correlacionado con outages de la tenant DB** — o sea que el throttle
+es más débil justo en una de las clases de outage que motivó su existencia.
+Acotado: reconstruir el worker exige un request entrante (no basta el poll de
+5s), así que el techo real sigue << 720 mails/hora. Persistir el cooldown se
+descartó (metería escritura a la tenant DB en el camino de alerta). Fix real:
+mover el throttle a un store de proceso que sobreviva el ciclo de vida del
+worker, o aceptarlo declarado. Bajo, no bloqueante.
+
+### EMAIL-FROMNAME-RFC5322-01 · 🟠 abierto — `fromName` sin quotear en el header From
+
+`ResendEmailSender` arma `from: \`${fromName} <${fromEmail}>\`` (`email.sender.ts:72`)
+sin quotear el display name según RFC 5322. Un `business_profile.display_name`
+con `"` o `<` malforma el header. **Pre-existente** — `email.handlers.ts:75` ya
+manda `profile.displayName` por ese mismo camino en las confirmaciones de
+reserva al cliente; el bloque 4 de O5 (`1c1b058`) reusa la superficie, no la
+abre. Fix: quotear (`"` → `\"`, envolver en comillas si tiene chars especiales)
+en `ResendEmailSender`. Toca el camino de mail al cliente → gate propio.
+
 ---
 
 ## 🔴 Arrastrado de `pendientes-2026-09-05.md` — sin re-verificar salvo donde se indica
@@ -650,10 +687,13 @@ comprobar. Detalle completo en el archivo del 05/09; acá una línea por ítem.
   conciliación "orden `COMPLETED` sin `CHARGE`" (el titular de este bloque) +
   la visibilidad "reintentado N veces". Full ✅ cuando corra verde el job
   `integration` en CI con los 3 tests tocados. **Era Bloque 5.**
-- **O5** — clasificar el error de dead-letter (✅ hecho en `c41e74f`, compartido
-  con pt2) + notificar a un rol (email a `MANAGEMENT` en la transición, D2-C —
-  **Bloque 4, próximo**). Reusa `domain_events` + `OutboxAlertBanner`, sin tabla
-  nueva. **Era Bloque 6.**
+- **O5** — ✅ RESUELTO (código, local sin pushear). Clasificar el error
+  (`c41e74f`, compartido con pt2) + notificar a un rol: `2520df2` (email a
+  **todos** los `MANAGEMENT` en la transición, opción B — join RBAC
+  `PlatformRepository.getManagementEmails`) + `1c1b058` (throttle 15 min entre
+  avisos + nombre del negocio en el mail). Reusa `domain_events` +
+  `OutboxAlertBanner`, sin tabla nueva. Full ✅ cuando corra verde
+  `integration` en CI. **Era Bloque 6.**
 - **ORDER-15** — asimetría `voidByOrderId` (acepta `ADJUSTMENT`) vs
   `settleChargesByOrderId` (solo `CHARGE`); impacto hoy cero. **Se resuelve con
   B-núcleo+órdenes sub-bloque 4** (`cancelOrderWithCreditNote()` crea el primer
