@@ -434,16 +434,47 @@ contra Postgres real, camino `REFUND` no regresionado.
    (7 tests) queda para correr contra Neon **antes** del sub-bloque 5 (cableo
    de F4). Condiciones 1/6/7 del re-gate siguen abiertas (la mitad SQL nunca
    tocó Postgres real).
-2. Grupo de permiso nuevo — `security/roles.ts` (definición) +
-   `platform.schema.sql` (sumarlo al preset `RECEPTIONIST` y a los que ya
-   tienen `MANAGEMENT`) + `docs/rbac-matriz-endpoints.md` §2 bajo
-   `### src/pos-menu/` + contador del encabezado + `EXPECTED_AUTHORIZE_CALL_SITES`
-   204 → 205. Pasa por `criterios-negocio` (cambio RBAC).
-3. `buildCreditNote()` (`invoice.service.ts:676+`) — discriminador `:349`
-   ampliado a `tx.type === 'ADJUSTMENT'` (F2), `Math.abs()` del monto (por
-   `CHECK imp_* >= 0`, `schema.sql:2713-2715`), líneas copiadas de la factura
-   original con `order_item_id` (viola `chk_invoice_item_origin` si quedan los
-   dos `null`).
+2. ✅ HECHO (`6154edc`, 07/09/2026, deployado + verificado en la BD de
+   plataforma de prod — `OWNER`/`ADMIN`/`RECEPTIONIST` de Demo y Hotel los
+   Álamos tienen `EMISOR_NOTA_CREDITO`). Grupo `EMISOR_NOTA_CREDITO` (Opción
+   A del dueño: solo el grupo, la ruta va en el sub-bloque 4). Sin bump de
+   `EXPECTED_AUTHORIZE_CALL_SITES` (204, sin ruta todavía). Deuda que abrió:
+   ver "Grupo RBAC EMISOR_NOTA_CREDITO" más abajo.
+3. ✅ HECHO (07/09/2026, `architecture-governor` APROBADO CON CONDICIONES —
+   aplicadas). `buildCreditNote()` (`invoice.service.ts`) — discriminador
+   `:349` `REFUND || ADJUSTMENT` (F2), `Math.abs(tx.amount)`, **rama N3**
+   (reversión total + factura con `invoice_items`): copia las líneas 1-a-1
+   preservando `order_item_id`/`reservation_id`, `imp_*`/`Iva[]` = congelados
+   de la original tal cual (`creditNoteLinesFromInvoiceItems()`, función pura
+   compartida con el test de integración). Rama else (parcial, o total Nivel
+   A): factor de cabecera heredado; `ADJUSTMENT` sin líneas →
+   `OrderInvoiceHasNoLinesError`. `credit-note-lines.integration.test.ts`
+   nuevo (real Postgres, el `chk_invoice_item_origin` XOR). Radio: cambia la
+   NC del caso REFUND total contra factura Nivel B — 3 facturas de Demo,
+   totales AFIP idénticos.
+
+   **Deuda declarada del sub-bloque 3 (governor 07/09, no bloquea, cada una
+   su propio bloque):**
+   - **N5 (tope acumulado) NO implementado en `buildCreditNote`.** El ADR §3
+     N5 exige un tope sobre lo YA acreditado contra un `reversed_invoice_id`,
+     que LANZA (nunca clamp). La idempotencia es `invoice:<ftId>` (por
+     transacción, no por factura revertida) → N transacciones distintas
+     pueden cada una emitir una NC total contra la misma original.
+     Pre-existente para `REFUND`; F2 lo amplía al admitir `ADJUSTMENT`.
+   - **Guard de cardinalidad N2.a diferido al orquestador** (sub-bloque 4 /
+     B-reservas subcaso 2). `buildCreditNote` maneja 1 factura origen y nunca
+     pasa `charges` — sin exposición hoy (ADR §3 N2.a lo sanciona así).
+   - **Prorrateo por línea del PARCIAL diferido a N4-b / B-reservas.** La
+     rama else sigue con factor de cabecera. `resolveRefundableForPair()`
+     (`refund-attribution.ts`) ya existe, sin cablear.
+   - **Rama `Error` interno del `ADJUSTMENT` parcial sin test.** Imposible por
+     construcción (una orden se cancela todo-o-nada, ADR §5); guarda
+     defensiva sin cobertura, aceptada.
+   - **F2, divergencia intencional:** un `ADJUSTMENT` sin `reversedInvoiceId`
+     (ej. `handleReservationPriceAdjusted`) ya NO emite Factura B → tira
+     `InvoiceNotReversibleError`. Sin exposición (`POST /api/invoices` solo se
+     ofrece para `type === 'CHARGE'`; la ruta consolidada factura un CHARGE
+     nuevo). Test unitario agregado.
 4. `cancelOrderWithCreditNote()` en el módulo del núcleo (NO en
    `order.service.ts`, `.dependency-cruiser.cjs:94-101` + F5) + ruta
    `POST /api/orders/:id/cancel-with-credit-note` + la secuencia N1.a de dos

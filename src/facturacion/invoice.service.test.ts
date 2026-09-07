@@ -16,7 +16,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -822,10 +822,43 @@ describe('InvoiceService', () => {
       return original;
     }
 
+    /** Siembra las `invoice_items` de una factura ya seedeada (Nivel B). */
+    function seedOriginalItems(invoiceId: string, items: Array<Partial<InvoiceItem>>): void {
+      invoiceRepo.items.set(
+        invoiceId,
+        items.map((it, i) => ({
+          id: `ii-${invoiceId}-${i}`, invoiceId,
+          orderItemId: null, reservationId: null,
+          description: 'linea', quantity: 1, unitPrice: 0, subtotal: 0, ivaRate: 21,
+          unit: null, arcaUnitCode: null, createdAt: new Date(),
+          ...it,
+        })),
+      );
+    }
+
     it('rechaza un REFUND sin reversedInvoiceId (ledger-only, sin factura que corregir)', async () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
       const service = buildService({
         tx: makeTx({ type: 'REFUND', amount: 50, reversedInvoiceId: null }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(InvoiceNotReversibleError);
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('F2 (sub-bloque 3) -- un ADJUSTMENT sin reversedInvoiceId ya NO emite una Factura B: InvoiceNotReversibleError', async () => {
+      // Divergencia intencional. Antes de F2 un ADJUSTMENT (ej. el de
+      // handleReservationPriceAdjusted, que ajusta el precio de una reserva
+      // y NO lleva reversedInvoiceId) caía al camino de Factura B. Ahora el
+      // discriminador lo manda a buildCreditNote(), que exige la factura a
+      // revertir. En la práctica no hay exposición: `POST /api/invoices` se
+      // ofrece solo para tx `type === 'CHARGE'` (appfrontend cuentas-corrientes),
+      // y la ruta consolidada siempre factura un CHARGE nuevo, nunca un ADJUSTMENT.
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: 30, reservationId: 'res-1', reversedInvoiceId: null }),
         client: fakeArcaClient({ createNextVoucher }),
       });
 
@@ -866,8 +899,8 @@ describe('InvoiceService', () => {
       expect(createNextVoucher).not.toHaveBeenCalled();
     });
 
-    it('reembolso total: arma una NC (CbteTipo 8) con CbtesAsoc apuntando a la factura original', async () => {
-      seedOriginalInvoice();
+    it('reembolso total, factura Nivel A (sin invoice_items): línea sintética, CbtesAsoc a la original', async () => {
+      seedOriginalInvoice(); // sin seedOriginalItems -> getItemsByInvoiceId devuelve []
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
       const service = buildService({
         tx: makeTx({ type: 'REFUND', amount: 100, reservationId: 'res-1', reversedInvoiceId: 'inv-original' }),
@@ -885,12 +918,75 @@ describe('InvoiceService', () => {
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
-      expect(items[0]).toMatchObject({ unitPrice: 100, subtotal: 100, reservationId: 'res-1' });
+      expect(items[0]).toMatchObject({ unitPrice: 100, subtotal: 100, reservationId: 'res-1', orderItemId: null });
 
       // I9 -- la NC también se audita, con SU PROPIO id (no el de la factura original).
       const entries = await auditLogRepo.findByEntity('invoices', invoice.id);
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({ field: 'cbteTipo', newValue: String(CBTE_TIPO_NOTA_CREDITO_B), changedBy: 'identity-1' });
+    });
+
+    it('reembolso total, factura Nivel B (con invoice_items): la NC COPIA las líneas de la original 1-a-1 (N3)', async () => {
+      seedOriginalInvoice();
+      seedOriginalItems('inv-original', [
+        { reservationId: 'res-1', description: 'Noche 1', quantity: 1, unitPrice: 50, subtotal: 50, ivaRate: 21 },
+        { reservationId: 'res-1', description: 'Noche 2', quantity: 1, unitPrice: 50, subtotal: 50, ivaRate: 21 },
+      ]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 100, reservationId: 'res-1', reversedInvoiceId: 'inv-original' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      // totales congelados de la original, tal cual (factor = 1)
+      expect(invoice.impTotal).toBe(100);
+      expect(invoice.impNeto).toBe(82.64);
+      expect(invoice.impIva).toBe(17.36);
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(2);
+      expect(items[0]).toMatchObject({ description: 'Noche 1', unitPrice: 50, subtotal: 50, ivaRate: 21, reservationId: 'res-1', orderItemId: null });
+      expect(items[1]).toMatchObject({ description: 'Noche 2', unitPrice: 50, subtotal: 50, reservationId: 'res-1' });
+    });
+
+    it('ADJUSTMENT compensatorio de orden (amount negativo, reversión total): arma la NC copiando las líneas con order_item_id', async () => {
+      seedOriginalInvoice({ id: 'inv-orden', financialTransactionId: 'ft-charge-orden' });
+      seedOriginalItems('inv-orden', [
+        { orderItemId: 'oi-1', description: 'Café x2', quantity: 2, unitPrice: 30, subtotal: 60, ivaRate: 21 },
+        { orderItemId: 'oi-2', description: 'Medialuna', quantity: 1, unitPrice: 40, subtotal: 40, ivaRate: 21 },
+      ]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -100, orderId: 'ord-1', reversedInvoiceId: 'inv-orden' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.cbteTipo).toBe(CBTE_TIPO_NOTA_CREDITO_B);
+      expect(invoice.impTotal).toBe(100); // abs(-100), positivo -- el signo lo pone CbteTipo 8
+      const sentRequest = createNextVoucher.mock.calls[0]![0] as { CbtesAsoc: unknown[] };
+      expect(sentRequest.CbtesAsoc).toEqual([{ Tipo: CBTE_TIPO_FACTURA_B, PtoVta: 3, Nro: 42 }]);
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(2);
+      expect(items[0]).toMatchObject({ orderItemId: 'oi-1', reservationId: null, description: 'Café x2', quantity: 2, subtotal: 60 });
+      expect(items[1]).toMatchObject({ orderItemId: 'oi-2', reservationId: null, subtotal: 40 });
+    });
+
+    it('ADJUSTMENT de orden contra una factura sin invoice_items (Nivel A): OrderInvoiceHasNoLinesError', async () => {
+      seedOriginalInvoice({ id: 'inv-orden-nivel-a' }); // sin seedOriginalItems
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -100, orderId: 'ord-1', reversedInvoiceId: 'inv-orden-nivel-a' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(OrderInvoiceHasNoLinesError);
+      expect(createNextVoucher).not.toHaveBeenCalled();
     });
 
     it('reembolso parcial: escala proporcionalmente el neto/IVA de la factura original, no los recalcula desde la config actual', async () => {

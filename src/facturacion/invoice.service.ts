@@ -52,8 +52,10 @@ import {
   AccountsReceivableAlreadyInvoicedError,
   OrderCancelledCannotInvoiceError,
   ReservationCancelledCannotInvoiceError,
+  OrderInvoiceHasNoLinesError,
 } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
+import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems } from './cancel-with-credit-note.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { logger } from '../logger.js';
 
@@ -346,7 +348,13 @@ export class InvoiceService {
     // reconcileAfterFailure(), retryExisting()) para cualquier tipo de
     // transacción -- el branching vive solo acá, en cómo se arma el
     // afipRequest/los ítems.
-    if (tx.type === 'REFUND') {
+    //
+    // ADR cancelar-con-NC §5 (F2, sub-bloque 3, 07/09/2026) -- el ADJUSTMENT
+    // compensatorio del escape de cancelación de orden TAMBIÉN arma una NC,
+    // no una Factura B. Sin este `|| 'ADJUSTMENT'` caería al camino de
+    // Factura B de abajo y la clave de idempotencia (`invoice:<ftId>`, :325)
+    // reanudaría un reintento contra un comprobante del tipo equivocado.
+    if (tx.type === 'REFUND' || tx.type === 'ADJUSTMENT') {
       // RBAC paso 2 — la auditoría se graba ADENTRO de la transacción de
       // buildCreditNote (recibe changedBy), no acá afuera con la NC ya creada.
       const invoice = await this.buildCreditNote(tx, input, profile, authCuit, credentials, idempotencyKey, input.changedBy);
@@ -656,22 +664,41 @@ export class InvoiceService {
   }
 
   /**
-   * C2 -- arma (persiste, no emite) la Nota de Crédito B para una
-   * `FinancialTransaction` `REFUND`. `tx.reversedInvoiceId` (resuelto por
-   * `CancellationRefundService.confirmRefund()`, reparto LIFO) apunta a la
-   * factura ISSUED que corresponde corregir -- sin eso, o si esa factura
-   * ya no está ISSUED, no hay documento fiscal válido contra el cual
-   * emitir (`InvoiceNotReversibleError`).
+   * C2 + ADR cancelar-con-NC §3 -- arma (persiste, no emite) la Nota de
+   * Crédito B para una `FinancialTransaction` `REFUND` (reserva) o
+   * `ADJUSTMENT` (escape de cancelación de orden). `tx.reversedInvoiceId`
+   * apunta a la factura ISSUED que corresponde corregir -- sin eso, o si
+   * esa factura ya no está ISSUED, o si no es Factura B, no hay documento
+   * fiscal válido contra el cual emitir (`InvoiceNotReversibleError`).
+   * Maneja **exactamente una** factura origen (N2.a: la cardinalidad NC↔
+   * factura es 1:1; el fan-out multi-factura y su guard viven en el
+   * orquestador / B-reservas, nunca acá -- `createWithClient` no recibe
+   * `charges`).
    *
    * `DocTipo`/`DocNro`/`CondicionIvaReceptorId`/`Concepto` se toman de la
-   * factura ORIGINAL (R9 -- ya se congelaron ahí, no del `input.buyer` que
-   * llegue acá). `Iva[]`/`ImpNeto`/`ImpIva`/`ImpTotal`: se escala
-   * proporcionalmente el desglose por tasa YA CONGELADO de la factura
-   * original (`factor = tx.amount / original.impTotal`) -- nunca se
-   * re-deriva desde `profile.pricesIncludeIva` actual (mismo error que se
-   * autocorrigió en D8-Nivel B: la config pudo cambiar desde que se
-   * facturó). Con una factura directa de reserva (D8-Nivel B: siempre de
-   * una sola tasa) esto colapsa al caso simple de un solo grupo.
+   * factura ORIGINAL (R9 -- ya se congelaron ahí). El importe a revertir es
+   * `abs(tx.amount)` (un `ADJUSTMENT` compensatorio lleva `amount` negativo;
+   * el signo de la reversión lo pone `CbteTipo = 8`, los `imp_*` van
+   * positivos -- `CHECK (imp_total >= 0)`, mismo enfoque que Odoo
+   * `out_refund`).
+   *
+   * **Dos ramas según total vs. parcial:**
+   * - **Total** (`abs(tx.amount) == original.impTotal`, tol ±1 centavo) **y**
+   *   la factura tiene `invoice_items` → **N3**: la NC COPIA sus líneas desde
+   *   `invoice_items` de la original, preservando el back-ref
+   *   `order_item_id`/`reservation_id` por línea, y refleja los `imp_*` /
+   *   `Iva[]` congelados de la original tal cual (factor = 1). Es la doctrina
+   *   de ERPNext/Odoo (copia 1-a-1, impuestos desde las líneas, nunca factor
+   *   de cabecera).
+   * - **Parcial**, o total contra una factura "Nivel A" sin `invoice_items`
+   *   → rama proporcional heredada: escala el desglose por tasa YA CONGELADO
+   *   por `factor = abs(tx.amount) / original.impTotal`, una sola línea
+   *   sintética. **Deuda declarada:** el prorrateo por línea del parcial es
+   *   N4-b / B-reservas (`resolveRefundableForPair()`, ya existe sin cablear).
+   *   Un `ADJUSTMENT` NUNCA cae acá con `invoice_items` presentes (una orden
+   *   se cancela todo-o-nada por construcción, ADR §5); si llega sin líneas
+   *   se rechaza con `OrderInvoiceHasNoLinesError` (defensivo -- toda factura
+   *   de orden es post-v32).
    */
   private async buildCreditNote(
     tx: FinancialTransaction,
@@ -699,17 +726,97 @@ export class InvoiceService {
       throw new InvoiceNotReversibleError(tx.id);
     }
 
-    const factor = original.impTotal > 0 ? tx.amount / original.impTotal : 0;
-    const originalIva = (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? [];
-    const ivaEntries = originalIva.map((entry) => ({
-      Id: entry.Id,
-      BaseImp: round2(entry.BaseImp * factor),
-      Importe: round2(entry.Importe * factor),
-    }));
-    const impIva = round2(ivaEntries.reduce((sum, entry) => sum + entry.Importe, 0));
-    const impTotal = round2(tx.amount);
-    const impNeto = round2(impTotal - impIva);
-    const effectiveIvaRate = impNeto > 0 ? round2((impIva / impNeto) * 100) : 0;
+    // Un ADJUSTMENT lleva `amount` negativo; el importe de la NC es positivo.
+    const amountToReverse = round2(Math.abs(tx.amount));
+    const originalItems = await this.invoiceRepo.getItemsByInvoiceId(original.id);
+    const isFullReversal =
+      Math.abs(round2(amountToReverse - original.impTotal)) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
+
+    let items: CreateInvoiceItemInput[];
+    let ivaEntries: Array<{ Id: number; BaseImp: number; Importe: number }>;
+    let impNeto: number;
+    let impIva: number;
+    let impTotal: number;
+
+    if (isFullReversal && originalItems.length > 0) {
+      // --- N3: reversión total con detalle de líneas -> copiar 1-a-1 ---
+      // (función pura compartida con el test de integración -- no divergen).
+      items = creditNoteLinesFromInvoiceItems(originalItems);
+      // Reversión total -> el desglose congelado de la factura ES el de la NC.
+      ivaEntries = (
+        (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
+      ).map((e) => ({ Id: e.Id, BaseImp: e.BaseImp, Importe: e.Importe }));
+      impNeto = original.impNeto;
+      impIva = original.impIva;
+      impTotal = original.impTotal;
+      // Observabilidad (A9): la NC refleja tal cual la cabecera y las líneas
+      // YA CONGELADAS de la original -- son consistentes por definición salvo
+      // que la factura original ya estuviera descuadrada (líneas editadas
+      // aparte de su total, lo que R12 prohíbe). Dos chequeos, warn (no throw:
+      // la NC revierte EXACTAMENTE lo facturado; un throw dejaría la orden
+      // trabada sobre una corrupción preexistente de la original):
+      //  1. Según `pricesIncludeIva` de cuando se facturó, `Σ subtotal` cierra
+      //     con `impNeto` (precios netos) o con `impTotal` (precios con IVA);
+      //     si no cierra con NINGUNO, síntoma de descuadre en la origen.
+      //     (Puede dar falso positivo en facturas de muchas líneas por drift
+      //     acumulado de `round2` -- ver runbook.)
+      //  2. Si la original tiene `impIva > 0` pero `afipRequest.Iva` vacío/
+      //     ausente, la NC saldría a AFIP con `ImpIVA > 0` y sin `Iva[]` --
+      //     comprobante malformado.
+      const lineSum = round2(items.reduce((s, it) => s + it.subtotal, 0));
+      const closesWithNeto = Math.abs(round2(lineSum - impNeto)) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
+      const closesWithTotal = Math.abs(round2(lineSum - impTotal)) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
+      if (!closesWithNeto && !closesWithTotal) {
+        logger.warn(
+          { invoiceId: original.id, lineSum, impNeto, impTotal, financialTransactionId: tx.id },
+          '[buildCreditNote] las líneas de la factura origen no cierran con su neto ni con su total -- posible descuadre en la factura original, la NC lo refleja igual',
+        );
+      }
+      if (impIva !== 0 && ivaEntries.length === 0) {
+        logger.warn(
+          { invoiceId: original.id, impIva, financialTransactionId: tx.id },
+          '[buildCreditNote] la factura origen tiene impIva > 0 pero afipRequest.Iva vacío -- la NC podría salir a AFIP sin desglose de IVA',
+        );
+      }
+    } else {
+      // --- Rama proporcional heredada (parcial, o total Nivel A) ---
+      if (tx.type === 'ADJUSTMENT') {
+        // Una orden se cancela todo-o-nada (ADR §5). Si un ADJUSTMENT llega
+        // acá es porque la factura no tiene `invoice_items` (Nivel A) -- que
+        // no debería pasar para una orden (post-v32) -- o porque llegó
+        // parcial, que sería un bug del orquestador (N1.a).
+        if (originalItems.length === 0) {
+          throw new OrderInvoiceHasNoLinesError(original.id, tx.id);
+        }
+        throw new Error(
+          `[buildCreditNote] un ADJUSTMENT de orden debe revertir la factura completa (N1.a); ` +
+          `llegó abs(amount)=${amountToReverse} contra impTotal=${original.impTotal}`,
+        );
+      }
+      const factor = original.impTotal > 0 ? amountToReverse / original.impTotal : 0;
+      const originalIva =
+        (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? [];
+      ivaEntries = originalIva.map((entry) => ({
+        Id: entry.Id,
+        BaseImp: round2(entry.BaseImp * factor),
+        Importe: round2(entry.Importe * factor),
+      }));
+      impIva = round2(ivaEntries.reduce((sum, entry) => sum + entry.Importe, 0));
+      impTotal = round2(amountToReverse);
+      impNeto = round2(impTotal - impIva);
+      const effectiveIvaRate = impNeto > 0 ? round2((impIva / impNeto) * 100) : 0;
+      items = [{
+        orderItemId: null,
+        reservationId: tx.reservationId ?? null,
+        description: 'Nota de crédito -- cancelación de reserva',
+        quantity: 1,
+        unitPrice: amountToReverse,
+        subtotal: amountToReverse,
+        ivaRate: effectiveIvaRate,
+        unit: null,
+        arcaUnitCode: null,
+      }];
+    }
 
     const invoiceId = randomUUID();
     const cbteFch = toAfipDate(new Date());
@@ -735,18 +842,6 @@ export class InvoiceService {
       ...(original.concepto !== 1 && { FchServDesde: cbteFch, FchServHasta: cbteFch, FchVtoPago: cbteFch }),
       ...(ivaEntries.length > 0 && { Iva: ivaEntries }),
     };
-
-    const items: CreateInvoiceItemInput[] = [{
-      orderItemId: null,
-      reservationId: tx.reservationId ?? null,
-      description: 'Nota de crédito -- cancelación de reserva',
-      quantity: 1,
-      unitPrice: tx.amount,
-      subtotal: tx.amount,
-      ivaRate: effectiveIvaRate,
-      unit: null,
-      arcaUnitCode: null,
-    }];
 
     let invoice!: Invoice;
     await this.transactionManager.run(async (client: SqlClient) => {

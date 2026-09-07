@@ -30,6 +30,7 @@
  */
 
 import { round2 } from '../domain/money.js';
+import type { InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 
 // ---------------------------------------------------------------------------
 // F4 — "compensación total" (ADR común, N1 / Defecto B del re-gate)
@@ -182,4 +183,33 @@ export function authorizeCreditNoteCancellation(input: {
     reason,
     scope: input.scope,
   } as CreditNoteCancellationAuthorization;
+}
+
+/**
+ * N3 (ADR §3) — arma las líneas de una Nota de Crédito de **reversión total**
+ * COPIÁNDOLAS 1-a-1 desde las `invoice_items` de la factura original,
+ * preservando el back-ref de origen por línea (`orderItemId` / `reservationId`
+ * — el XOR de `chk_invoice_item_origin`). Los importes van tal cual
+ * (POSITIVOS): el signo de la reversión lo pone `CbteTipo = 8` (patrón Odoo
+ * `out_refund`, coherente con `CHECK (imp_total >= 0)`).
+ *
+ * Función pura y exportada a propósito: `InvoiceService.buildCreditNote()` la
+ * usa para armar la NC y `credit-note-lines.integration.test.ts` la usa para
+ * verificar contra Postgres real que la forma de fila resultante no viola
+ * `chk_invoice_item_origin` — así el test y el productor no pueden divergir.
+ */
+export function creditNoteLinesFromInvoiceItems(
+  originalItems: readonly InvoiceItem[],
+): CreateInvoiceItemInput[] {
+  return originalItems.map((oi) => ({
+    orderItemId: oi.orderItemId,
+    reservationId: oi.reservationId,
+    description: oi.description,
+    quantity: oi.quantity,
+    unitPrice: oi.unitPrice,
+    subtotal: oi.subtotal,
+    ivaRate: oi.ivaRate,
+    unit: oi.unit,
+    arcaUnitCode: oi.arcaUnitCode,
+  }));
 }

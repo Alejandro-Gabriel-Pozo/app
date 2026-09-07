@@ -607,6 +607,27 @@ export class OrderChargeInvoicedError extends DomainError {
 }
 
 /**
+ * ADR cancelar-con-NC §3 N3 (sub-bloque 3, 07/09/2026) -- la Nota de Crédito
+ * de una orden COPIA sus líneas desde `invoice_items` de la factura original,
+ * preservando `order_item_id` (`chk_invoice_item_origin` exige uno de
+ * `order_item_id`/`reservation_id` por línea). Si la factura original no tiene
+ * ninguna fila en `invoice_items` -- una factura "Nivel A" pre-v32 -- no hay
+ * de dónde copiar y una línea sintética dejaría los dos orígenes en `null`,
+ * violando el CHECK. No debería ocurrir para una orden: toda factura de orden
+ * es post-v32. Guarda defensiva. (Para una reserva Nivel A el camino
+ * proporcional -- rama `else` de `buildCreditNote` -- sigue funcionando con la
+ * línea sintética `reservation_id`, no lanza este error.)
+ */
+export class OrderInvoiceHasNoLinesError extends DomainError {
+  constructor(invoiceId: string, financialTransactionId: string) {
+    super(
+      `La factura "${invoiceId}" no tiene detalle de líneas (Nivel A) -- no se puede armar la Nota de Crédito de la orden (transacción "${financialTransactionId}").`,
+      'ORDER_INVOICE_HAS_NO_LINES',
+    );
+  }
+}
+
+/**
  * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- cierre de la
  * ventana de carrera (TOCTOU) entre `cancelOrder()` y `requestInvoice()`:
  * las dos toman `FOR UPDATE` sobre la MISMA fila de `orders` antes de mutar
