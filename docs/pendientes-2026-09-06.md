@@ -516,18 +516,32 @@ fan-out automático vs. resolución manual factura por factura.
 mal — `git rev-list --count origin/main..HEAD` daba 26), working tree limpio.
 `appfrontend-main` `613c206`. Sin push ni deploy autorizados.
 
-**Avance sesión 07/09/2026:** (1) `854143b` — sub-bloque 1 de la lista de
-arriba (F4 mitad SQL + doctrina + token). (2) `2441822` — docs: sub-bloque 1
-HECHO + F4-CONSOL-XFACT-01 registrado + conteo corregido. (3) revisión
-`auditor-circuitos-erp` sobre F4-CONSOL-XFACT-01 → **RESUELTO como doctrina**
-(ADR común N2.a: NC↔factura es 1:1 en ERPNext/Odoo/QloApps; cierre = guard +
-cerca, no atribución en la SQL) + acota §10 fila 2 (pool mixto). Commit de
-docs del ADR + este archivo pendiente. `origin/main` sigue `5a3a588`. Sin push
-ni deploy.
+**Avance sesión 07/09/2026 (la sesión cruzó la medianoche del 06→07):**
+- `854143b` F4 mitad SQL + doctrina + token · `2441822` docs sub-bloque 1 ·
+  `c402c30` docs ADR común N2.a (F4-CONSOL-XFACT-01 resuelto como doctrina,
+  revisión `auditor-circuitos-erp`).
+- `894cb73` fix TEST-DST-001 (A4.7 en `combineDateAndTime` — era bug latente,
+  no flakiness) · `76ae24c` bump de actions de CI (Node 20 deprecado).
+- **PUSH + DEPLOY:** los 31 commits de las 3 sesiones (05/09 + 06/09 + 07/09)
+  pusheados a `origin/main = 76ae24c` y **deployados a producción** (deploy
+  Render `dep-daf7t7pt…` live, `migrate:tenants` 2/2 OK, sin errores post-deploy,
+  0 warns `REFUND_BASE_CHANGED`). Auto-deploy de Render quedó en **OFF** a mano
+  — mantener así. Gate de push+deploy por `architecture-governor`.
+- **CONCIL-INCONSIST-01 / OUTBOX-*:** ítems nuevos, ver "registrado por primera
+  vez 07/09".
+- `c41e74f` fix ORDER-13 (clasificación transitorio/permanente + `describeDeadLetter`
+  + D1-A) — gate del governor OK, **local sin pushear**. + este commit de docs.
+- **Próximo:** O5 Bloque 4 (email a `MANAGEMENT` en dead-letter, D2-C).
+
+**Estado git al cerrar:** `app-main` HEAD ≈ `c41e74f` + commit de docs,
+`origin/main` `76ae24c`, **2 commits sin pushear** (`c41e74f` + docs), working
+tree limpio. `appfrontend-main` `613c206`. Push del bloque ORDER-13 pendiente de
+autorización + corrida verde de `integration` en CI.
 
 **Para arrancar la sesión siguiente:** leer este archivo + el ADR común
 completo + el ADR de ORDER-10 (`diseno-cancelacion-orden-nota-credito-2026-09-05.md`,
-sección órdenes) antes de tocar código.
+sección órdenes) + el ADR de dead-letter (`diseno-order13-o5-dead-letter-2026-09-07.md`)
+antes de tocar código.
 
 ### EXPIRED-FACT-01 · 🔴 abierto — reserva con factura viva que EXPIRA
 
@@ -541,6 +555,66 @@ Fuera de alcance del ADR común (que cubre `cancel*`, no `expire`). Registrado
 acá con ancla por condición del `architecture-governor` — no dejarlo solo en el
 ADR (incidente del 25/08, `CLAUDE.md` raíz: lo que queda fuera de un doc que se
 relee cada sesión desaparece del radar).
+
+---
+
+## 🔴 Abierto — registrado por primera vez (07/09/2026)
+
+Salen del cierre de ORDER-13/O5 (`c41e74f` +
+`docs/diseno-order13-o5-dead-letter-2026-09-07.md`). Diferidos por decisión del
+dueño (D3) y por condición del `architecture-governor` (07/09).
+
+### CONCIL-INCONSIST-01 · 🔴 abierto — conciliación "registros en estado inconsistente" (patrón único, solo reporta)
+
+Junta el **titular de ORDER-13 Bloque 5** ("orden `COMPLETED` sin `CHARGE`"
+visible y reparable a mano) con **INV-ORF-01** (drift de stock:
+`inventory_levels.reserved_quantity` vs. reservas vivas, por dead-letter de
+compensación `inventory.handlers.ts:70-80`). Un solo patrón: **solo reporta, no
+auto-repara** (confirmado por `auditor-circuitos-erp` — ni el ajuste de
+inventario de Odoo `stock_quant.py:105-114` ni la rescue session de POS
+`pos_config.py:133` auto-reparan). Forma recomendada: cron que **no emite
+nada** + query on-demand detrás de endpoint/pantalla + segundo contador al lado
+de `countDeadLettered()` en el `OutboxAlertBanner` (espejo de
+`number_of_rescue_session` de Odoo). "Crear el CHARGE faltante", si se
+construye, es un botón humano sobre ese reporte, nunca efecto de cron.
+Anclas: `outbox.handlers.ts:361-377` (T-01), `sql.financial-transaction.repository.ts:505`
+(único `NOT EXISTS` orders↔ft del repo), `inventory.handlers.ts:70-80`.
+**Dimensionamiento ya corrido (07/09):** 0 filas huérfanas de stock en las dos
+tenant; el mecanismo de ORDER-13 ya converge. Riesgo latente, no descuadre
+ocurrido. Diseño propio, su gate. `posible schema` (el contador).
+
+### OUTBOX-RETRY-HIST-01 · 🔴 abierto — "reintentado N veces" + audit del reintento manual
+
+El pt1 real de ORDER-13 (`pendientes-2026-09-05.md:358`): el reintento manual
+resetea `retry_count = 0`, el operador no entiende por qué el evento "vuelve".
+D1-A (`c41e74f`) NO lo resolvió — conserva el reset a propósito (sin él el
+reintento es un no-op), solo dejó de destruir `last_error`. La visibilidad
+"falla desde hace N / reintentado N veces" es el patrón `first_failure_date` de
+Odoo (`ir_cron.py:122`) → columna `first_failed_at TIMESTAMPTZ`, nunca la limpia
+un reintento manual, solo un éxito. El "quién/cuándo" del reintento (hoy solo
+`system.routes.ts:60-65` al log del servidor, **incumple A6.5**) necesita una
+fila de audit con identidad. Los dos = schema, diferidos. Era la opción D1-B(B),
+descartada por el dueño por "sin schema" — se reabre acá como ítem propio.
+Anclas: `sql.domain-event.repository.ts` `retryDeadLettered`, `system.routes.ts:60-65`.
+
+### OUTBOX-BACKOFF-01 · 🔴 abierto — backoff real entre reintentos
+
+Hoy poll plano de 5s → hasta 60 intentos en 5 min contra un downstream caído
+(AFIP, mail). El `ORDER BY retry_count ASC` de `c41e74f` mitiga (los que fallan
+se despriorizан) pero no es backoff. Backoff de verdad necesita `last_failed_at
+TIMESTAMPTZ` (el `occurred_at` actual es fecha de creación, no sirve). Todos los
+referentes throttlean (Odoo intervalo fijo `ir_cron.py:448-451`, OCA `queue_job`
+`retry_pattern`). Ancla: `sql.domain-event.repository.ts` `getPending`.
+
+### OUTBOX-DL-COMPENSATOR-01 · 🔴 abierto — idempotencia del compensador de `onDeadLetter`
+
+`onDeadLetter` corre "una vez" por transición (`outbox.worker.ts:419-432`); si
+el proceso muere entre que `recordFailure` devuelve `deadLettered=true` y el
+compensador termina, nunca corre y **nada lo reintenta** (el path principal sí
+tiene `processed_events`). Hoy el único compensador es la liberación de stock de
+`inventory.handlers.ts` — un stock que queda tomado sin límite. Fix: que el
+compensador reclame un casillero en `processed_events`, o que lo re-dispare el
+reintento manual. Ancla: `outbox.worker.ts:419-432`, `inventory.handlers.ts:56-68`.
 
 ---
 
@@ -563,19 +637,33 @@ comprobar. Detalle completo en el archivo del 05/09; acá una línea por ítem.
   legítima). **Bloque 3.** Sin schema (ADR `diseno-cancelacion-orden-nota-credito-2026-09-05.md`).
 - **ORDER-10 B3** — `?status=` en `GET /api/invoices` + bandeja de NC
   pendientes. **Bloque 4.** Sin schema.
-- **ORDER-13** — caso de conciliación "órdenes `COMPLETED` sin `CHARGE`"
-  visible y reparable a mano (idempotente, revalida estado, audita
-  actor/motivo/monto/resultado; **no** auto-repara — decisión del dueño) +
-  pt1 (clasificar retry de dead-letter por tipo de excepción, no por
-  substring) + pt2 (mensaje de negocio). **Bloque 5.**
-- **O5** — clasificar el error de dead-letter + notificar a un rol (reusa
-  `domain_events` + `OutboxAlertBanner`, no tabla de incidentes nueva).
-  **Bloque 6.**
+- **ORDER-13** — ⚠️ RESUELTO PARCIALMENTE (07/09/2026, código `c41e74f` +
+  ADR `diseno-order13-o5-dead-letter-2026-09-07.md`). **Cerrado por `c41e74f`:**
+  pt2 (mensaje de negocio, `describeDeadLetter`) + la clasificación
+  transitorio/permanente (bloque 1 del ADR). **Corrección a la línea vieja:**
+  pt1 NUNCA fue "clasificar por substring" — `categorizeError` (`outbox.worker.ts`)
+  ya clasificaba por tipo/código, nunca por texto (§0 del ADR). El pt1 real es
+  el de `pendientes-2026-09-05.md:358`: *el reintento manual resetea
+  `retry_count = 0`*. D1-A conserva ese reset a propósito (sin él el reintento
+  manual es un no-op) y **NO lo resuelve** — solo dejó de destruir `last_error`.
+  **Abierto, movido a `CONCIL-INCONSIST-01` y `OUTBOX-RETRY-HIST-01`:** la
+  conciliación "orden `COMPLETED` sin `CHARGE`" (el titular de este bloque) +
+  la visibilidad "reintentado N veces". Full ✅ cuando corra verde el job
+  `integration` en CI con los 3 tests tocados. **Era Bloque 5.**
+- **O5** — clasificar el error de dead-letter (✅ hecho en `c41e74f`, compartido
+  con pt2) + notificar a un rol (email a `MANAGEMENT` en la transición, D2-C —
+  **Bloque 4, próximo**). Reusa `domain_events` + `OutboxAlertBanner`, sin tabla
+  nueva. **Era Bloque 6.**
 - **ORDER-15** — asimetría `voidByOrderId` (acepta `ADJUSTMENT`) vs
-  `settleChargesByOrderId` (solo `CHARGE`); impacto hoy cero. **Bloque 7.**
-- **INV-ORF-01** — reservas de stock huérfanas. Query de dimensionamiento
-  contra `Demo` + `Hotel los Alamos` **autorizada por el dueño**
-  (06/09/2026, read-only). **Bloque 8.**
+  `settleChargesByOrderId` (solo `CHARGE`); impacto hoy cero. **Se resuelve con
+  B-núcleo+órdenes sub-bloque 4** (`cancelOrderWithCreditNote()` crea el primer
+  `ADJUSTMENT` con `order_id` → deja de ser latente; ADR común §5 ya lo dice).
+  No standalone. **Era Bloque 7.**
+- **INV-ORF-01** — reservas de stock huérfanas. **Query de dimensionamiento
+  corrida (07/09/2026):** 0 filas huérfanas en Demo y Hotel los Alamos → hueco
+  de mecanismo latente, **no backlog de limpieza**. Sin backfill. El mecanismo
+  (drift `reserved_quantity` por dead-letter de compensación,
+  `inventory.handlers.ts:70-80`) se pliega a `CONCIL-INCONSIST-01`. **Era Bloque 8.**
 
 ### Fuera de esta tanda (decisión del dueño)
 
@@ -592,11 +680,10 @@ comprobar. Detalle completo en el archivo del 05/09; acá una línea por ítem.
 - **FACT-CONSOL-TOCTOU-01** — ✅ RESUELTO (`1f3af80`); R1 (fail-open sin
   fila), R2 (`getByIdWithLock` opcional en la interfaz), R3 (`markInvoiced()`
   post-commit = AR-FACT Fase 2), R4 (lado órdenes sin integración).
-- **F2** — ✅ RESUELTO (`3073f36`); falta la primera corrida verde del job
-  `integration` en Actions (nunca corrió contra `postgres:16-alpine`, solo
-  Neon).
-- **INV-ORF-01** (reservas de stock huérfanas históricas + compensación de
-  dead-letter `inventory.handlers.ts:70-80`).
+- **F2** — ✅ RESUELTO (`3073f36`); el job `integration` **ya corrió verde** en
+  CI (`postgres:16-alpine`) en la sesión del 07/09.
+- **INV-ORF-01** — dimensionada (0 huérfanas, 07/09) y plegada a
+  `CONCIL-INCONSIST-01` (ver "registrado por primera vez 07/09").
 - **EVT-ORF-01** (`reservation.expired` sin consumidor, se persiste y el
   worker lo descarta cada 5s — cruza con A7.6), **ORDER-12**, **CAJA-ORD-01**,
   **AUDIT-ORD-01**, **O1-b** (reportes no distinguen "no consta" de "cero").
@@ -625,10 +712,14 @@ comprobar. Detalle completo en el archivo del 05/09; acá una línea por ítem.
 
 ---
 
-## Higiene pendiente
+## Higiene
 
-- Crear el commit de docs de este archivo (separado del código, mismo
-  criterio que los commits anteriores).
-- El texto de `pendientes-2026-09-05.md` quedó marcado in-place para
-  BRECHA-REFUND-01-B (⚠️ MITIGADO) — ese cambio va en el mismo commit de
-  docs que este archivo.
+- ✅ Commit de docs de este archivo — hecho por bloques a lo largo de la
+  sesión, separado del código (`b18ba1e`, `2441822`, `c402c30`, + el de
+  07/09 con el cierre de ORDER-13).
+- ✅ `pendientes-2026-09-05.md` marcado in-place para BRECHA-REFUND-01-B
+  (⚠️ MITIGADO, `:143`). Nota menor: ese texto todavía dice "local sin push"
+  — `6dcb047` ya está en `origin/main` (deployado 07/09).
+- Pendiente: el estado git stale de
+  `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (ver "Documentales"
+  en el arrastre).
