@@ -2310,13 +2310,42 @@ describe('ReservationService', () => {
       );
 
       // 23:00-23:45 ocurre DOS veces esa noche (GMT-3 primero, GMT-4
-      // después) — la política toma la ocurrencia más tardía (GMT-4,
-      // estándar): 23:00 GMT-4 = 2024-04-07T03:00:00Z, no 02:00:00Z
-      // (que sería la ocurrencia en horario de verano, GMT-3).
+      // después) — la política A4.7 toma la ocurrencia más tardía (GMT-4,
+      // estándar): 23:00 GMT-4 = 2024-04-07T03:00:00Z, no 02:00:00Z (que
+      // sería la ocurrencia en horario de verano, GMT-3).
+      //
+      // TEST-DST-001 (06/09/2026): estos golden values los FUERZA ahora
+      // `combineDateAndTime`, no el default de luxon — con el tzdata de ICU
+      // 78 luxon resuelve esa hora ambigua al offset de verano (02:00:00Z),
+      // que es lo que rompía este test antes del fix.
       expect(slots).toEqual([
         '2024-04-07T03:00:00.000Z',
         '2024-04-07T03:15:00.000Z',
         '2024-04-07T03:30:00.000Z',
+      ]);
+    });
+
+    it('hora ambigua en el hemisferio norte (America/New_York): también toma el offset estándar', async () => {
+      // Vuelta de otoño de EE.UU.: 2024-11-03 02:00 EDT -> 01:00 EST, así
+      // que 01:00-01:59 ocurre dos veces. Las reglas de DST de EE.UU. no
+      // cambian desde 2007 y están en todo tzdata -> golden values
+      // estables, a diferencia de Chile (TEST-DST-001). Prueba que la
+      // política A4.7 no es específica de Santiago.
+      // 2024-11-03 es domingo -> dayOfWeek = (0 + 6) % 7 = 6.
+      operatingHoursRepo.seedBusiness([
+        { id: 'bh-ambiguous-ny', dayOfWeek: 6, startTime: '01:00:00', endTime: '01:45:00' },
+      ]);
+
+      const slots = await service.getAvailableSlots(
+        'svc-dst-test', 't1', new Date('2024-11-03T00:00:00.000Z'), 'America/New_York',
+      );
+
+      // 01:00 EST (estándar, la ocurrencia más tardía) = 2024-11-03T06:00:00Z,
+      // no 05:00:00Z (que sería 01:00 EDT, verano).
+      expect(slots).toEqual([
+        '2024-11-03T06:00:00.000Z',
+        '2024-11-03T06:15:00.000Z',
+        '2024-11-03T06:30:00.000Z',
       ]);
     });
   });

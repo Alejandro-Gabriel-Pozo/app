@@ -43,10 +43,17 @@ import type { BookableService } from './bookable-service.types.js';
  * - **Hora ambigua** (ej. la vuelta de otoño: 23:00-23:59 del 6-abr-2024
  *   en Chile ocurre dos veces, una en horario de verano y otra en
  *   estándar): se toma el offset ESTÁNDAR (el de invierno, no el de
- *   verano) — también el default de luxon, que resuelve a la ocurrencia
- *   más tardía de las dos. Mismo criterio "cuando dudás, la hora que va a
- *   seguir valiendo el resto del año" que ya se usa para otras
- *   ambigüedades del sistema.
+ *   verano), que es la ocurrencia MÁS TARDÍA. Mismo criterio "cuando
+ *   dudás, la hora que va a seguir valiendo el resto del año" que ya se
+ *   usa para otras ambigüedades del sistema. **Esto se FUERZA acá abajo,
+ *   no se delega en luxon:** cuál de las dos ocurrencias elige luxon por
+ *   default depende del tzdata/ICU del runtime, no de la librería. Hasta la
+ *   última corrida verde de CI (05/09/2026) ese default coincidía con la
+ *   política; después el tzdata del runner cambió y con ICU 78 luxon
+ *   resuelve `America/Santiago` 2024-04-06 23:00 al offset de VERANO
+ *   (`02:00Z`), rompiendo el golden test que "pasaba" por coincidencia
+ *   (TEST-DST-001, 06/09/2026). Odoo hace lo mismo que esto:
+ *   `pytz.localize(..., is_dst=False)` (`account/.../ir_fields.py`).
  *
  * Ninguna de las dos ramas lanza ni deja `isValid: false` — confirmado
  * empíricamente contra luxon 3.7, no es una garantía documentada de la
@@ -73,6 +80,45 @@ export function combineDateAndTime(date: Date, time: string, timezone: string): 
     throw new InvalidReservationError(
       `No se pudo interpretar "${time}" en el huso horario "${timezone}": ${dt.invalidReason} (${dt.invalidExplanation}).`,
     );
+  }
+
+  // Política A4.7 -- HORA AMBIGUA (vuelta de otoño): la misma hora de pared
+  // ocurre dos veces. Luxon ya eligió una; cuál elige por default depende
+  // del tzdata del runtime (ver docblock). Forzamos la ocurrencia ESTÁNDAR
+  // (invierno = la más tardía), sin depender de ese default.
+  //
+  // Detección independiente del tzdata: se compara el offset de la zona 1h
+  // ANTES y 1h DESPUÉS de esta hora de pared. En una vuelta de otoño el
+  // reloj retrocede -> el offset baja (menos negativo -> más negativo),
+  // así que `offsetPre > offsetPost`. En el salto de primavera el offset
+  // sube, así que la condición es falsa y esta rama NUNCA toca una hora
+  // inexistente (esa la resuelve el default de luxon, ver docblock). Fuera
+  // de una transición, `offsetPre === offsetPost` y es no-op byte a byte.
+  //
+  // La sonda de 1h SOBRE-DETECTA en husos con salto sub-horario (Lord Howe,
+  // 30'): una hora de pared entre 30' y 60' antes de la transición NO es
+  // ambigua pero igual cae en `offsetPre > offsetPost && dt.offset !== offsetPost`.
+  // Por eso el corrimiento se aplica SOLO si preserva la hora de pared (guarda
+  // de A4.3 más abajo): si la cambiaría, la hora no era ambigua y se deja como
+  // está. Con salto de 60' (lo normal) la ventana de sobre-detección es vacía
+  // y la guarda es un no-op.
+  const offsetPre  = dt.minus({ hours: 1 }).offset;
+  const offsetPost = dt.plus({ hours: 1 }).offset;
+  if (offsetPre > offsetPost && dt.offset !== offsetPost) {
+    // Luxon eligió la ocurrencia de verano. La estándar es el MISMO
+    // instante de pared corrido a futuro por la diferencia de offset (la
+    // ocurrencia más tardía). `plus` con minutos suma tiempo absoluto y
+    // conserva la zona IANA -- no se persiste ningún offset numérico (A4.2).
+    const standard = dt.plus({ minutes: dt.offset - offsetPost });
+    // Guarda de ambigüedad real (A4.3): el corrimiento vale SOLO si la hora
+    // de pared no cambió. Si cambió, esta hora no ocurría dos veces.
+    if (
+      standard.year   === dt.year   && standard.month  === dt.month  &&
+      standard.day    === dt.day    && standard.hour   === dt.hour   &&
+      standard.minute === dt.minute && standard.second === dt.second
+    ) {
+      return standard.toJSDate();
+    }
   }
 
   return dt.toJSDate();

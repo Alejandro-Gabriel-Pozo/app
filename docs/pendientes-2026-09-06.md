@@ -83,16 +83,41 @@ todo exige un lock que cubra la **reserva en sí** (no solo sus facturas) —
 hoy no existe. Bloque de diseño propio, con `architecture-governor` antes
 de tocar código — no autorizado en esta tanda.
 
-### TEST-DST-001 — `reservation.service.test.ts:2316` falla en este entorno · `requiere entorno`
+### TEST-DST-001 — `reservation.service.test.ts` hora ambigua · ✅ RESUELTO (06/09/2026)
 
-`combineDateAndTime — DST (hora ambigua, vuelta de otoño)` espera
-`2024-04-07T03:00:00Z`, recibe `02:00:00Z`. Dependiente de ICU/tzdata
-(`America/Santiago`, DST 2024): Node `v24.14.1`, ICU `78.2`, TZ local
-`America/Buenos_Aires`. **Pre-existente**, sin relación con ningún bloque
-de esta tanda (`pendientes-2026-09-05.md:75-78` decía "todo verde" con 1815
-tests; hoy son 1868 y hay uno rojo). No mezclar con ningún commit de
-features — si se toca, commit aparte. `[H]` sobre si es regresión de
-tzdata del entorno o del código.
+`combineDateAndTime — DST (hora ambigua, vuelta de otoño)` esperaba
+`2024-04-07T03:00:00Z`, recibía `02:00:00Z`. El `[H]` original ("¿tzdata del
+entorno o regresión de código?") **se resolvió: era un bug latente de código,
+no flakiness del entorno.** `combineDateAndTime` no implementaba la política
+A4.7 ("hora ambigua → offset estándar/invierno") — delegaba en el default de
+luxon, que para una hora que ocurre dos veces elige una de las dos según el
+**tzdata/ICU del runtime**, no según la librería. El golden test "pasaba" por
+coincidencia entre ese default y la política hasta que el tzdata del runner
+`ubuntu-latest` de CI drifteó (verificado: rojo también en CI Node 22, no solo
+en el Node 24 local; luxon locked en 3.7.2, sin drift de librería posible). La
+misma elección la hace Odoo (`pytz.localize(..., is_dst=False)` en
+`odoo/addons/base/models/ir_fields.py:399`) y el default de pytz que usa
+Frappe/ERPNext; QloApps no computa esto (booking por noches, no grilla de
+turnos). Ver `docs/criterios-negocio.md` A4.7.
+
+**Fix** (`combineDateAndTime` en `reservation-time.utils.ts`): desambiguación
+explícita — detecta la vuelta de otoño (`offsetPre > offsetPost` sobre ±1h de
+la hora de pared, independiente del tzdata) y fuerza la ocurrencia estándar (la
+más tardía). Dos guardas: (1) el salto de primavera no se toca — `offsetPre >
+offsetPost` es estructuralmente falso ahí; (2) el corrimiento se aplica SOLO si
+preserva la hora de pared — la sonda de 1h SOBRE-detecta en husos con salto
+sub-horario (`Australia/Lord_Howe`, 30′: `01:00` no es ambigua pero cae en la
+condición), y sin la guarda la movería en silencio (defecto que encontró el
+`architecture-governor` en el re-gate, 06/09). Tests: `reservation-time.utils.test.ts`
+nuevo (unit directo: Chile, NY, Lord Howe ambigua y no-ambigua, no-op) +
+hemisferio norte en `reservation.service.test.ts` vía `getAvailableSlots`.
+Suite completa: 1885+ passed / 0 failed. `pendientes-2026-09-05.md:75-78` decía
+"todo verde" con 1815 tests; el rojo apareció por el drift de tzdata, ya no
+está.
+
+**Nota:** los commits `854143b` / `2441822` / `c402c30` (ya pusheados) llevan
+"sesión 07/09/2026" en el cuerpo — es un error de fecha, la sesión corrió el
+06/09 hasta tarde. No se reescribe historia pusheada.
 
 ### MID-LOG-001 — `error.middleware.ts` no loguea NINGÚN `DomainError`
 
