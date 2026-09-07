@@ -98,6 +98,9 @@ export function ensureTenantWorker(
   const onDeadLetterBatch = makeDeadLetterEmailNotifier({
     businessId,
     getManagementEmails: (id) => platformRepo.getManagementEmails(id),
+    // B2: identificar el negocio en el aviso -- reusa el businessProfileRepo
+    // que ya se construyó arriba (mismo patrón que email.handlers.ts:63,75).
+    getBusinessDisplayName: async () => (await businessProfileRepo.get()).displayName,
     emailSender,
     dashboardUrl: `${frontendBase}/dashboard`,
   });

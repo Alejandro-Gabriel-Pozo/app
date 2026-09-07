@@ -37,6 +37,9 @@
 
 import { logger } from '../logger.js';
 
+/** Nombre de remitente por defecto cuando el negocio no cargó `display_name`. */
+export const DEFAULT_SENDER_NAME = 'ZuluHub';
+
 export interface EmailMessage {
   to: string;
   /** Nombre para mostrar en el remitente — el del negocio, o un default de plataforma. */

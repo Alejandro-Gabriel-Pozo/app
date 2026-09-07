@@ -124,6 +124,8 @@ export function passwordResetEmail(
  * evento.
  */
 export interface DeadLetterAlertEmailParams {
+  /** Nombre del negocio — un manager puede tener membresías en varios (B2). */
+  businessName: string;
   /** URL del panel (base + /dashboard) — el banner de dead-letter vive en toda página del panel. */
   dashboardUrl: string;
   /** Un ítem por evento que transicionó a dead-letter en el ciclo. */
@@ -133,16 +135,16 @@ export interface DeadLetterAlertEmailParams {
 export function deadLetterAlertEmail(
   params: DeadLetterAlertEmailParams,
 ): { subject: string; html: string } {
-  const { dashboardUrl, items } = params;
+  const { businessName, dashboardUrl, items } = params;
   const n = items.length;
   const evento = n === 1 ? 'un evento' : `${n} eventos`;
 
   return {
-    subject: `Hay ${evento} sin procesar en el panel — requieren tu atención`,
+    subject: `${businessName} — hay ${evento} sin procesar en el panel`,
     html: `
       <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
         <h2 style="margin-bottom: 4px;">El sistema no pudo procesar ${evento}</h2>
-        <p>Se reintentaron automáticamente y no se resolvieron solos. Requieren una revisión desde el panel.</p>
+        <p>En el panel de <strong>${escapeHtml(businessName)}</strong>. Se reintentaron automáticamente y no se resolvieron solos — requieren una revisión.</p>
         <ul style="padding-left: 18px; margin: 16px 0;">
           ${items.map((it) => `<li style="margin: 6px 0;">${escapeHtml(it.summary)}</li>`).join('')}
         </ul>

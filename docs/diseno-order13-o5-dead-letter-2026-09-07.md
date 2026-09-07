@@ -259,10 +259,48 @@ Refinamientos ERP obligatorios (todos aplicados):
   `'MANAGEMENT'` va literal en `getManagementEmails`, con TODO en el docblock.
 - **Cuerpo:** `summary` de `describeDeadLetter()` + deep link a la pantalla de
   dead-letter (no el `last_error` crudo — A7.1).
+- **B1 — throttle entre ciclos (gate del governor, 07/09).** `maxRetries=1`
+  para errores permanentes (bloque 1) hace que un deploy roto dead-lettee un
+  evento NUEVO por ciclo de 5 s → sin cooldown, un mail cada 5 s por manager,
+  indefinidamente, sobre el `RESEND_API_KEY` **compartido con las
+  confirmaciones de reserva al cliente**. `makeDeadLetterEmailNotifier` lleva
+  un `lastActedAt` en el closure: a lo sumo un aviso por `cooldownMs` (default
+  15 min). El cooldown entra al DECIDIR actuar sobre un batch — aunque no haya
+  destinatarios o el envío falle (no reintentar-storm). El banner del panel
+  (pull) sigue mostrando todo, así que el cooldown espacia el push, no oculta
+  estado.
+  **Es in-memory, por instancia de worker** — se resetea en TRES casos, no
+  solo el restart del proceso: (a) restart; (b) `pool.on('error')` del tenant
+  (`tenant.middleware.ts:114` → `stopTenantWorker`); (c) `evictTenantPool` /
+  LRU por `MAX_TENANT_POOLS` (`tenant.middleware.ts:175`). El (b) está
+  **correlacionado con outages de la tenant DB** — o sea que el throttle es más
+  débil justo en una de las clases de outage que motivó su existencia. Acotado
+  igual: reconstruir el worker exige un **request entrante** (no basta el poll
+  de 5 s), así que el techo real sigue muy por debajo de 720/hora. Persistirlo
+  se descartó — metería una escritura a la tenant DB en el camino de alerta,
+  justo la dependencia que la protección de B2 saca.
+- **B2 — identificar el negocio (gate del governor, 07/09).** El mail lleva el
+  `business_profile.display_name` en el subject, el cuerpo y el `fromName` —
+  un manager con membresías en varios negocios tiene que saber cuál falló.
+  Reusa el `businessProfileRepo` que `outbox.registry.ts` ya construye (mismo
+  patrón que `email.handlers.ts:63,75`), `?? DEFAULT_SENDER_NAME`.
 
 Pasa por `criterios-negocio` (§9 observabilidad — qué se registra/notifica; A7.1
 — PII en el cuerpo del mail) y `architecture-governor` (toca el wiring del
 worker y el container — sección 3 de `DEFENSIVE_DEVELOPING`).
+
+**No resuelto (declarado):**
+- El join de `getManagementEmails` no tiene test de integración contra una
+  platform DB real (solo fake SQL-shape); el wiring
+  `ensureTenantWorker → worker → notificador` no tiene test end-to-end. **Es el
+  hueco que ninguna verificación estática cierra — debe preceder al push.**
+- `ResendEmailSender` arma `from: \`${fromName} <${fromEmail}>\`` sin quotear el
+  display name según RFC 5322 (`email.sender.ts:72`). Un `display_name` con `"`
+  o `<` puede malformar el header From. **Pre-existente** — `email.handlers.ts:75`
+  ya manda `profile.displayName` por ese mismo camino en las confirmaciones de
+  reserva; B2 reusa la superficie, no abre una nueva. Va a `pendientes` con su
+  propio gate (toca el camino de mail al cliente).
+- La fragilidad del cooldown ante `pool.on('error')` (ver B1) — a `pendientes`.
 
 ---
 

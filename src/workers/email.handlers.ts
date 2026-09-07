@@ -25,11 +25,10 @@
 
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type { EmailSender } from '../email/email.sender.js';
+import { DEFAULT_SENDER_NAME } from '../email/email.sender.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import { reservationConfirmedEmail } from '../email/templates.js';
 import type { OutboxWorker } from './outbox.worker.js';
-
-const DEFAULT_SENDER_NAME = 'ZuluHub';
 
 export function registerEmailHandlers(
   worker: OutboxWorker,
