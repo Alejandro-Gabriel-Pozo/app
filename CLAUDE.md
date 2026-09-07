@@ -191,10 +191,13 @@ skill técnica o no.
   `platform/tenant.middleware.ts` → `req.db`): ahí la skill no aporta. Se acota
   a los 2 huecos reales, registrados en
   `docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`: (1) ownership dentro de un
-  tenant en el portal de cliente (`api/routes/me.routes.ts`,
-  `Roles.BOOKING`/`CUSTOMER_ONLY`) — sin guard estructural ni tests negativos;
-  (2) ruta nueva sin `authorize()` en un `*.routes.ts` existente — invisible
-  para la cerca de conteo `src/tests/security/rbac-matrix-sync.test.ts`.
+  tenant en el portal de cliente (`api/routes/customer.routes.ts`, rutas
+  `Roles.CUSTOMER_ONLY` — **no** `me.routes.ts`, que es el `/api/auth/me` de
+  staff sin `:id`) — parcialmente cerrado el 07/09/2026 con
+  `requireOwnReservation()` + prueba negativa de integración; falta la cerca
+  sobre las rutas `:id` del portal; (2) ruta nueva sin `authorize()` en un
+  `*.routes.ts` existente — invisible para la cerca de conteo
+  `src/tests/security/rbac-matrix-sync.test.ts`.
   Complementa —no reemplaza— `authorize(Roles.X)` + `docs/rbac-matriz-endpoints.md`.
 - **`irreversible-action-gate`** — clasificar por reversibilidad y radio antes
   de ejecutar algo destructivo, masivo o hacia afuera. Casos: `migrate:tenants`

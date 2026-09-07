@@ -746,22 +746,37 @@ pudren porque nada los re-corre en cada sesión.
 |---|---|---|---|---|
 | **RBAC-MOUNT-001** | ✅ RESUELTO — alcance: gate de tenant únicamente; `tenantMiddleware` y el `authenticate()` interno del portal quedan fuera (límites 2 y 3 del test) | `app.ts:317` monta `authenticate()` antes de los routers protegidos (355+). `src/tests/architecture/` tenía solo `lock-order.test.ts`. `rbac-route-coverage.test.ts` L48-58 declara explícito que NO valida orden de montaje y que varias entradas de `PUBLIC_ROUTES` son seguras solo por el orden. | **Medio** — subir un `app.use('/api/...')` por encima de la 317 expone rutas y las 3 cercas siguen verdes. Silencioso. | Cerca `src/tests/architecture/api-auth-gate-order.test.ts` (07/09): parte `stripComments(app.ts)` por la línea del gate y exige que todo `app.use('/api/...')` anterior esté en `PRE_AUTH_API_MOUNTS` con motivo (5 hoy). Sin schema, sin runtime — `app.ts` intacto. |
 | **SEC-ROT-001** | Abierto — **confirmado** | `src/platform/tenant-db.setup.ts:88` lee una sola clave, sin camino de 2 claves, sin script de rotación. IV `randomBytes(16)` (:66) — GCM canónico 12. | **Medio si la clave se filtra** (recifrado manual de toda la flota con downtime). Cero hoy. | Escribir el runbook de rotación (doc, barato). Camino de 2 claves = decisión de prioridad del dueño. IV 16→12 solo si se toca el archivo. |
-| **RBAC-OWN-001** | **Parcialmente cubierto** | Guards por ruta SÍ existen: `requireCustomerId()` (`customer.routes.ts:306`), chequeo `existing.customer.id !== customerId → 403` en `:703` (PATCH) y `:763` (cancel). Listados por `getByCustomerId()` (scoped). No hay `GET /me/reservations/:id` → sin path de IDOR de lectura. | **Bajo** — sin hueco actual; riesgo = ruta futura del portal sin el check. | Helper central `requireOwnCustomerResource()` + 1 test negativo de integración (token del dueño vs. token de otro cliente del mismo negocio → 403). Bloque chico. |
+| **RBAC-OWN-001** | ✅ RESUELTO — guard central + prueba negativa; alcance: reservas del portal (las 2 rutas con `:id` arbitrario) | Guards por ruta ya existían (`requireCustomerId()` en `customer.routes.ts:306`, chequeo `customer.id !== customerId → 403` en PATCH y `/cancel`), pero copiados y sin prueba negativa. Listados por `getByCustomerId()` (scoped); no hay `GET /me/reservations/:id` → sin IDOR de lectura. | **Bajo** — sin hueco actual; el riesgo era una ruta futura del portal sin el check. | Helper `requireOwnReservation()` exportado de `customer.routes.ts` (consolida el 404/403 de PATCH y `/cancel`, mensajes intactos) + `src/tests/integration/customer-portal-ownership.integration.test.ts` contra Postgres real: reserva del cliente B pedida con el id de A → 403; con el de B → pasa; id inexistente → 404. Prueba el mapeo real `reservations.customer_id → reservation.customer.id`, que un mock no cubre. |
 | **RBAC-SYNC-001** | **Mitad cerrada** | §2 verde (204 call-sites / 37 archivos, `rbac-matrix-sync.test.ts:44,49`). §4 ↔ `PUBLIC_ROUTES` sigue "a ojo" (el `CLAUDE.md` lo admite). | **Bajo** — pública mal listada en §4 no abre hueco; `rbac-route-coverage` atrapa la ruta sin listar. Deuda de doc. | Test que cruce matriz §4 ↔ `PUBLIC_ROUTES`. Baja urgencia; bundlear con RBAC-MOUNT-001 (misma zona). |
 | **FAILOPEN-001** | **Bajo — confirmado** | `appfrontend-main/src/app/dashboard/NavList.tsx:182` el fail-open es solo visibilidad de módulos; `managementOnly` gatea con `useIsManagement()` que es fail-**closed** (`appfrontend-main/src/hooks/useAuthRole.ts:14` devuelve `false` sin user); el backend igual exige `authorize()`. | **Despreciable.** | Bajar de severidad. Sin código. |
 | **FACT-INV-BIZID-001** | **No es riesgo vivo** | Ambos orígenes son `req.user!.businessId!` — el cliente no puede inyectar. Ya bajado el 05/09; re-confirmado. | **Ninguno.** | Re-etiquetar como "invariante sin test" (defensa en profundidad). Sin código. |
 
 **Orden acordado:** (1) RBAC-MOUNT-001 test — ✅ hecho 07/09
-(`api-auth-gate-order.test.ts`); (2) RBAC-OWN-001 helper + test negativo;
-(3) SEC-ROT-001 runbook; (4) RBAC-SYNC-001 §4 test; (5) FACT-INV-BIZID-001 /
-FAILOPEN-001 solo re-etiquetar.
+(`api-auth-gate-order.test.ts`, `d1335d8`); (2) RBAC-OWN-001 helper + test
+negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-ownership.integration.test.ts`,
+`8d379ab`); (3) SEC-ROT-001 runbook; (4) RBAC-SYNC-001 §4 test;
+(5) FACT-INV-BIZID-001 / FAILOPEN-001 solo re-etiquetar.
 
-**Deuda que abre este bloque (governor 07/09):** `PRE_AUTH_API_MOUNTS` es un
-**cuarto** artefacto RBAC a mantener a mano — `app-main/CLAUDE.md` dice
-"tres". Y `rbac-route-coverage.test.ts:48-58` quedó con anclas stale
-(`app.ts:267` por 317; `L225`/`L220` por 275/270) y sigue anunciando
-RBAC-MOUNT-001 como no cubierto. Ambas cosas: un commit de docs/comentarios
-aparte, sin efecto de runtime.
+**Deuda que abren estos bloques (governor 07/09):**
+- `PRE_AUTH_API_MOUNTS` (RBAC-MOUNT-001) es un **cuarto** artefacto RBAC a
+  mano — corregido in-place en `CLAUDE.md` y `rbac-route-coverage.test.ts`
+  (`8936161`).
+- **RBAC-OWN-001 no cierra la clase, solo la instancia.** Falta la cerca
+  sobre `customer.routes.ts`: todo `router.<método>` con `:id` en el path
+  tiene que llamar a `requireOwnReservation()` o estar en un allowlist con
+  motivo (mismo patrón que `api-auth-gate-order.test.ts`). Sería el **quinto**
+  artefacto RBAC a mano — anotarlo en `CLAUDE.md` al hacerlo. Próximo bloque.
+- **CI: techo "19 suites" stale.** `.github/workflows/ci.yml` job `integration`
+  dice "Techo explícito: 19 suites" con `timeout-minutes: 20`; ya hay 22-23.
+  Nadie lo redimensionó.
+- **Flake `credit-note-compensation.integration.test.ts` (07/09):** en la 1ª
+  corrida de `npm run test:integration` contra Neon remoto tras `8d379ab`,
+  ese archivo (ajeno al cambio, últ. mod. `854143b`) falló; 7/7 verde en
+  aislamiento; 2ª corrida completa 22/22 verde. Hipótesis: contención de
+  `CREATE DATABASE` + `schema.sql` con latencia de red (el `db.ts` helper y
+  `vitest.integration.config.ts` ya documentan `testTimeout: 30_000` por
+  esto). CI corre `postgres:16-alpine` local, sin esa latencia — **si
+  reaparece contra Postgres local, deja de ser flake y es bug.**
 - **Documentales:** corregir el estado git stale de
   `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (afirma
   `HEAD=b088cbc` sin pushear; ya está en `origin/main`); DA-CONT-001

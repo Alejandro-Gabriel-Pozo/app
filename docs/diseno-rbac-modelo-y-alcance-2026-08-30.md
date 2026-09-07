@@ -93,10 +93,22 @@ La skill se activa para trabajar sobre estos dos, no sobre el eje tenant:
 
 **Hueco 1 — Ownership dentro de un tenant, portal de cliente.** "El
 cliente A no puede ver la reserva del cliente B del mismo negocio" depende
-de que `req.user.customerId` se enhebre en cada query del portal
-(`src/api/routes/me.routes.ts`, rutas `Roles.BOOKING` /
-`Roles.CUSTOMER_ONLY`). No hay guard estructural ni tests negativos
-(capturar como dueño → repetir como otro cliente → esperar 403/404).
+de que `req.user.customerId` se enhebre en cada query del portal. Las
+rutas del portal viven en `src/api/routes/customer.routes.ts` (montadas
+bajo `/api/customer`, `authorize(Roles.CUSTOMER_ONLY)`), **no** en
+`me.routes.ts` — ese archivo es el `/api/auth/me` de staff, 3 rutas que
+solo leen `req.user`, sin `:id` ni superficie de ownership. La confusión
+venía del prefijo de path `/me/...`.
+
+> **Parcialmente resuelto (07/09/2026, commit `8d379ab`).** Guard central
+> `requireOwnReservation()` en `customer.routes.ts` + prueba negativa de
+> integración (`customer-portal-ownership.integration.test.ts`: capturar
+> como dueño → repetir como otro cliente → 403; id inexistente → 404).
+> **Alcance:** las 2 únicas rutas del portal con `:id` arbitrario
+> (`PATCH /me/reservations/:id`, `POST /me/reservations/:id/cancel`). Lo
+> que NO cierra: una ruta `:id` futura que se olvide el guard — misma
+> clase que RBAC-MOUNT-001, se cierra con una cerca (pendiente, ver
+> `pendientes-2026-09-06.md`).
 
 **Hueco 2 (mitigado el 30/08/2026) — Ruta nueva sin `authorize()` en un
 archivo `*.routes.ts` existente.** La cerca de conteo no la ve (no suma un `authorize(Roles.X)`)
@@ -117,7 +129,9 @@ no tiene `authenticate` / `authorize` en su cadena.
 > valida el orden de montaje, del que depende la seguridad de 7 de las 22
 > entradas del allowlist.
 >
-> **Hueco 1 sigue abierto** — este trabajo no lo toca.
+> **Hueco 1: parcialmente resuelto el 07/09/2026** (`8d379ab`) — ver el
+> recuadro en "Hueco 1" más arriba. Falta la cerca sobre las rutas `:id`
+> del portal para cerrar la clase, no solo la instancia.
 
 ## Gatillo de revisión
 
