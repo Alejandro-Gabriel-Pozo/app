@@ -769,14 +769,28 @@ negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-owner
 - **CI: techo "19 suites" stale.** `.github/workflows/ci.yml` job `integration`
   dice "Techo explícito: 19 suites" con `timeout-minutes: 20`; ya hay 22-23.
   Nadie lo redimensionó.
-- **Flake `credit-note-compensation.integration.test.ts` (07/09):** en la 1ª
-  corrida de `npm run test:integration` contra Neon remoto tras `8d379ab`,
-  ese archivo (ajeno al cambio, últ. mod. `854143b`) falló; 7/7 verde en
-  aislamiento; 2ª corrida completa 22/22 verde. Hipótesis: contención de
-  `CREATE DATABASE` + `schema.sql` con latencia de red (el `db.ts` helper y
-  `vitest.integration.config.ts` ya documentan `testTimeout: 30_000` por
-  esto). CI corre `postgres:16-alpine` local, sin esa latencia — **si
-  reaparece contra Postgres local, deja de ser flake y es bug.**
+- **Flake `credit-note-compensation.integration.test.ts` (07/09):** `npm run
+  test:integration` completo contra Neon remoto falló en 2 de las 4 primeras
+  corridas de la sesión — **siempre solo ese archivo**, el resto verde
+  (162 passed / 7 skipped). Ambos fallos con el reporter default, temprano en
+  la sesión. Datos posteriores:
+    - 7/7 en aislamiento; PASS con 6 suites pesadas en paralelo (incl. la nueva).
+    - Control a **21 suites** (test nuevo fuera del glob), 4 corridas: **4/4 verde**.
+    - 22 suites con `--reporter=verbose`, 7 corridas seguidas: **7/7 verde**.
+    - **Nunca se capturó el texto del error** — las corridas con salida a archivo
+      no reprodujeron.
+  El archivo está **sin tocar** en los 6 commits (`38f847f..HEAD`); `854143b`
+  (últ. mod.) ya está en `origin/main`, donde CI (`postgres:16-alpine` local,
+  21 files) pasó verde. Hipótesis viva: cold-start del compute Neon (auto-suspend)
+  penaliza `CREATE DATABASE` + `schema.sql` en 22 suites paralelas y revienta el
+  `testTimeout: 30_000` que `vitest.integration.config.ts` ya subió por latencia
+  de red; una vez caliente (última hora de corridas repetidas) no vuelve a pasar.
+  No descartado del todo: que sumar la 22ª suite acerque el job al límite (el
+  control a 21 fue 4/4 pero también con Neon caliente — confounded). **CI local
+  no tiene suspend ni latencia; si reaparece ahí, deja de ser flake y es bug** —
+  y es código de facturación, con `concurrency-reasoning` como skill y un TOCTOU
+  de facturación ya documentado (`FACT-CONSOL-TOCTOU-01`): mirar el mensaje antes
+  de asumir "contención".
 - **Documentales:** corregir el estado git stale de
   `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (afirma
   `HEAD=b088cbc` sin pushear; ya está en `origin/main`); DA-CONT-001
