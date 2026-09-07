@@ -184,6 +184,17 @@ export class OutboxWorker {
      * cuando está presente `on()` exige nombre — ver ahí el porqué.
      */
     private readonly processedEventRepository?: ProcessedEventRepository,
+    /**
+     * O5 / D2-C (07/09/2026, docs/diseno-order13-o5-dead-letter-2026-09-07.md,
+     * bloque 4). Se llama UNA vez por ciclo de poll, con TODOS los eventos que
+     * transicionaron a dead-letter en ese ciclo — no uno por evento (Odoo
+     * agrupa por partner justo para no mandar N mails ante un outage,
+     * account_move_send.py:487). Opcional: en tests y en cualquier entorno sin
+     * mail configurado, el aviso vive solo en el banner del panel
+     * (`OutboxAlertBanner`). Un fallo acá NO frena el poll ni revierte la marca
+     * de dead-letter — se loguea y sigue.
+     */
+    private readonly onDeadLetterBatch?: (events: DomainEvent[]) => Promise<void>,
   ) {}
 
   /**
@@ -268,8 +279,25 @@ export class OutboxWorker {
 
       logger.debug({ count: pending.length }, '[OutboxWorker] Eventos pendientes');
 
+      // O5 / D2-C: se junta lo que pasó a dead-letter EN ESTE ciclo y se
+      // notifica una sola vez al final (no uno por evento).
+      const transitionedToDeadLetter: DomainEvent[] = [];
       for (const event of pending) {
-        await this.dispatch(event);
+        const deadLettered = await this.dispatch(event);
+        if (deadLettered) transitionedToDeadLetter.push(deadLettered);
+      }
+
+      if (transitionedToDeadLetter.length > 0 && this.onDeadLetterBatch) {
+        try {
+          await this.onDeadLetterBatch(transitionedToDeadLetter);
+        } catch (err) {
+          // El aviso es best-effort: los eventos ya están marcados y visibles
+          // en el panel. Un fallo del notificador no puede romper el poll.
+          logger.error(
+            { err, count: transitionedToDeadLetter.length },
+            '[OutboxWorker] Falló la notificación de dead-letter (los eventos igual quedaron marcados y visibles)',
+          );
+        }
       }
     } catch (err) {
       this.handlePollError(err);
@@ -307,7 +335,12 @@ export class OutboxWorker {
     logger.error({ err }, '[OutboxWorker] Error leyendo domain_events');
   }
 
-  private async dispatch(event: DomainEvent): Promise<void> {
+  /**
+   * @returns el evento SI este intento lo dejó en dead-letter en este ciclo
+   * (para que `poll()` lo agrupe en la notificación de O5); `undefined` en
+   * cualquier otro caso.
+   */
+  private async dispatch(event: DomainEvent): Promise<DomainEvent | undefined> {
     const handlers = this.handlers.get(event.eventType) ?? [];
 
     if (handlers.length === 0) {
@@ -317,7 +350,7 @@ export class OutboxWorker {
         '[OutboxWorker] Sin handler registrado. Marcando como despachado.',
       );
       await this.eventRepository.markDispatched(event.id!);
-      return;
+      return undefined;
     }
 
     // Eventos anteriores a schema v44 no tienen `version` en la fila; son v1
@@ -337,6 +370,7 @@ export class OutboxWorker {
 
       await Promise.all(matching.map((reg) => this.runHandler(event, reg)));
       await this.eventRepository.markDispatched(event.id!);
+      return undefined;
     } catch (err) {
       // No marcar dispatched → se reintenta al próximo ciclo, hasta maxRetries.
       logger.error(
@@ -367,7 +401,9 @@ export class OutboxWorker {
           '[OutboxWorker] Evento pasó a dead-letter. Requiere reintento manual (panel de negocio).',
         );
         await this.runDeadLetterHandlers(event);
+        return event; // O5: `poll()` lo agrupa en la notificación del ciclo.
       }
+      return undefined;
     }
   }
 

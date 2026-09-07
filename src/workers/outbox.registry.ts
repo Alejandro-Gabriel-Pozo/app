@@ -28,6 +28,8 @@ import { PgTransactionManager }                from '../db/pg.transaction-manage
 import { registerInventoryHandlers }           from './inventory.handlers.js';
 import { registerEmailHandlers }               from './email.handlers.js';
 import { createEmailSender }                   from '../email/email.sender.js';
+import { makeDeadLetterEmailNotifier }         from './dead-letter-notify.js';
+import type { PlatformRepository }             from '../platform/platform.repository.js';
 import { SqlBusinessProfileRepository }        from '../repositories/sql.business-profile.repository.js';
 import { ReservationHoldExpiryWorker }         from './reservation-hold-expiry.worker.js';
 import { SqlReservationRepository }            from '../reservas/sql.reservation.repository.js';
@@ -55,7 +57,19 @@ const emailSender = createEmailSender();
  * cerraría un ciclo de imports (dependency-cruiser no-circular). El
  * caller (tenant.middleware.ts) ya tiene el pool, se lo pasa directo.
  */
-export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: pg.Pool): void {
+export function ensureTenantWorker(
+  businessId: string,
+  db: SqlClient,
+  rawPool: pg.Pool,
+  /**
+   * O5 / D2-C (07/09/2026) — solo lectura, contra la PLATFORM DB
+   * (`getManagementEmails`). `tenant.middleware.ts` ya lo tiene y lo pasa;
+   * no se importa `getPlatformRawPool()` acá para no acoplar el registry al
+   * container (DEFENSIVE_DEVELOPING §3: el repo ya viene construido con la
+   * BD correcta).
+   */
+  platformRepo: Pick<PlatformRepository, 'getManagementEmails'>,
+): void {
   if (workers.has(businessId)) return;
 
   const domainEventRepo          = new SqlDomainEventRepository(db);
@@ -74,11 +88,25 @@ export function ensureTenantWorker(businessId: string, db: SqlClient, rawPool: p
   // no en la de plataforma (docs/DEFENSIVE_DEVELOPING.md §3).
   const processedEventRepo = new SqlProcessedEventRepository(db);
 
+  // O5 / D2-C: aviso por email a los MANAGEMENT del tenant cuando un evento
+  // pasa a dead-letter. `dashboardUrl` = misma base que el CORS del frontend
+  // (app.ts:181) + /dashboard, donde vive el OutboxAlertBanner. Sin
+  // CORS_ORIGIN (dev), cae al puerto default de Next.
+  const frontendBase = process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*'
+    ? process.env.CORS_ORIGIN
+    : 'http://localhost:3000';
+  const onDeadLetterBatch = makeDeadLetterEmailNotifier({
+    businessId,
+    getManagementEmails: (id) => platformRepo.getManagementEmails(id),
+    emailSender,
+    dashboardUrl: `${frontendBase}/dashboard`,
+  });
+
   // Con el 4º argumento presente, OutboxWorker.on() exige nombre en todo
   // handler — la cerca que evita que un handler nuevo quede sin idempotencia
   // por olvido. pollIntervalMs/maxRetries van explícitos porque TypeScript no
   // deja saltear posicionales; son los mismos defaults de la clase.
-  const worker = new OutboxWorker(domainEventRepo, 5_000, 60, processedEventRepo);
+  const worker = new OutboxWorker(domainEventRepo, 5_000, 60, processedEventRepo, onDeadLetterBatch);
   // O2: el handler financiero necesita transacción propia -- el lock de la
   // fila de la orden y el INSERT del CHARGE tienen que compartir conexión.
   // Es el MISMO PgTransactionManager sobre el pool crudo del tenant que ya

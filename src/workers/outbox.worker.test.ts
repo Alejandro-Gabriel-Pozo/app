@@ -282,6 +282,56 @@ describe('OutboxWorker', () => {
     expect(stored).not.toContain('email@cliente.com');
   });
 
+  describe('onDeadLetterBatch — aviso por ciclo (O5 / D2-C)', () => {
+    it('se llama UNA vez por ciclo, con TODOS los eventos que transicionaron a dead-letter', async () => {
+      const onBatch = vi.fn(async (_events: DomainEvent[]) => {});
+      const w = new OutboxWorker(repo, 5_000, 1, undefined, onBatch);
+      repo.insert(makeEvent('order.confirmed'));
+      repo.insert(makeEvent('order.completed'));
+      w.on('order.confirmed', async () => { throw new Error('x'); });
+      w.on('order.completed', async () => { throw new Error('y'); });
+
+      await triggerPoll(w);
+
+      expect(onBatch).toHaveBeenCalledTimes(1);
+      const events = onBatch.mock.calls[0]![0] as DomainEvent[];
+      expect(events.map((e) => e.eventType).sort()).toEqual(['order.completed', 'order.confirmed']);
+    });
+
+    it('NO se llama si en el ciclo no transicionó nada a dead-letter', async () => {
+      const onBatch = vi.fn(async (_events: DomainEvent[]) => {});
+      const w = new OutboxWorker(repo, 5_000, 3, undefined, onBatch); // maxRetries 3 -> el 1er fallo no dead-lettea
+      repo.insert(makeEvent('order.confirmed'));
+      w.on('order.confirmed', async () => { throw new Error('transitorio'); });
+
+      await triggerPoll(w);
+
+      expect(repo.getAll()[0]!.failedAt).toBeNull();
+      expect(onBatch).not.toHaveBeenCalled();
+    });
+
+    it('NO se llama con un evento que se despachó bien', async () => {
+      const onBatch = vi.fn(async (_events: DomainEvent[]) => {});
+      const w = new OutboxWorker(repo, 5_000, 1, undefined, onBatch);
+      repo.insert(makeEvent('order.confirmed'));
+      w.on('order.confirmed', async () => { /* ok */ });
+
+      await triggerPoll(w);
+
+      expect(onBatch).not.toHaveBeenCalled();
+    });
+
+    it('un onDeadLetterBatch que rechaza NO rompe el poll: el evento igual queda marcado', async () => {
+      const onBatch = vi.fn(async (_events: DomainEvent[]) => { throw new Error("notificador caido"); });
+      const w = new OutboxWorker(repo, 5_000, 1, undefined, onBatch);
+      repo.insert(makeEvent('order.confirmed'));
+      w.on('order.confirmed', async () => { throw new Error('x'); });
+
+      await expect(triggerPoll(w)).resolves.not.toThrow();
+      expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+    });
+  });
+
   describe('clasificación transitorio / permanente (ORDER-13 / O5)', () => {
     function throwing(err: unknown) {
       return async () => { throw err; };

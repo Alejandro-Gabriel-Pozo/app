@@ -1018,6 +1018,35 @@ export class PlatformRepository {
   }
 
   /**
+   * O5 / D2-C (07/09/2026, docs/diseno-order13-o5-dead-letter-2026-09-07.md,
+   * bloque 4) — emails de las identities con una membresía ACTIVA en
+   * `businessId` cuyo rol incluye el grupo `MANAGEMENT`. Para el aviso de
+   * eventos en dead-letter (`OutboxWorker.onDeadLetterBatch`).
+   *
+   * Mismo join que `getMembershipContext` (`memberships` →
+   * `role_permission_groups` por `role_id`), no por `roles.name`. `DISTINCT`:
+   * una identity con dos permission_groups no genera dos filas.
+   *
+   * "Broadcast a todos los MANAGEMENT" es lo que hace ERPNext
+   * (`get_users_with_role`, `repost_item_valuation.py:779`). "Qué grupo
+   * notificar" pasará a ser un campo de `business_profile` — TODO, no ahora.
+   */
+  async getManagementEmails(businessId: string): Promise<string[]> {
+    const result = await this.db.query<{ email: string }>(
+      `SELECT DISTINCT i.email
+       FROM memberships m
+       JOIN identities i ON i.id = m.identity_id
+       JOIN role_permission_groups rpg ON rpg.role_id = m.role_id
+       WHERE m.business_id = $1
+         AND m.active = TRUE
+         AND rpg.permission_group = 'MANAGEMENT'
+       ORDER BY i.email`,
+      [businessId],
+    );
+    return result.rows.map((r) => r.email);
+  }
+
+  /**
    * Lista las membresías (con email de la identity) de un negocio.
    * Solo para uso del ADMIN del negocio — no expone passwordHash.
    */

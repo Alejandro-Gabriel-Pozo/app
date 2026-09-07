@@ -317,6 +317,37 @@ const FILA_CANONICA = {
   ],
 };
 
+describe('PlatformRepository.getManagementEmails() (O5 / D2-C)', () => {
+  class RecordingClient implements SqlClient {
+    lastSql = '';
+    lastParams: unknown[] = [];
+    constructor(private readonly rows: Array<{ email: string }>) {}
+    async query<T = unknown>(sql: string, params: unknown[] = []): Promise<{ rows: T[]; rowCount?: number }> {
+      this.lastSql = sql;
+      this.lastParams = params;
+      return { rows: this.rows as T[], rowCount: this.rows.length };
+    }
+  }
+
+  it('parametriza por $1, filtra membresía activa + permission_group MANAGEMENT, y no interpola el id', async () => {
+    const db = new RecordingClient([{ email: 'b@x.com' }, { email: 'a@x.com' }]);
+    const out = await new PlatformRepository(db).getManagementEmails('biz-9');
+
+    expect(out).toEqual(['b@x.com', 'a@x.com']);
+    expect(db.lastParams).toEqual(['biz-9']);
+    expect(db.lastSql).toContain('m.business_id = $1');
+    expect(db.lastSql).toContain('m.active = TRUE');
+    expect(db.lastSql).toContain("rpg.permission_group = 'MANAGEMENT'");
+    expect(db.lastSql).toContain('SELECT DISTINCT');
+    expect(db.lastSql).not.toContain('biz-9');
+  });
+
+  it('sin managers -> array vacío', async () => {
+    const db = new RecordingClient([]);
+    expect(await new PlatformRepository(db).getManagementEmails('biz-solo')).toEqual([]);
+  });
+});
+
 describe('PlatformRepository.getContextInputs()', () => {
   it('mapea la fila (con json_agg ya parseado) a RawContextInputs', async () => {
     const db = new ContextInputsFakeClient([FILA_CANONICA]);

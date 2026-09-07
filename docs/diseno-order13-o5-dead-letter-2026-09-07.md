@@ -213,13 +213,34 @@ Va con el mismo commit de ORDER-13 (D4-c: cierra ORDER-13 junto con bloques 1+2)
 
 ---
 
-## 5. Bloque 4 — D2-C: email a `MANAGEMENT` en la transición
+## 5. Bloque 4 — D2-C: email a `MANAGEMENT` en la transición  · ✅ IMPLEMENTADO (07/09/2026)
 
-**Sin schema.** Necesita: el mail sender ya inyectado, un lookup de usuarios
-`MANAGEMENT` del tenant, y un `onDeadLetter` genérico (no por `eventType`) o un
-hook en el punto donde `recordFailure` devuelve `deadLettered = true`.
+**Sin schema.** Decisión del dueño (07/09): **opción B** — notificar a **todos**
+los `MANAGEMENT` del tenant vía un join de RBAC, no solo al `owner_email`.
 
-Refinamientos ERP obligatorios:
+Piezas:
+- **`OutboxWorker`** — 5º parámetro opcional `onDeadLetterBatch?: (events:
+  DomainEvent[]) => Promise<void>`. `dispatch()` pasa a devolver el evento **si
+  este intento lo dejó en dead-letter**; `poll()` los junta y llama a
+  `onDeadLetterBatch` **una vez por ciclo** con todos. Un fallo del callback se
+  loguea y NO frena el poll ni revierte la marca (best-effort — el banner ya
+  cubre la visibilidad).
+- **`PlatformRepository.getManagementEmails(businessId)`** (platform DB, solo
+  lectura) — `memberships` (activas) → `role_permission_groups` por `role_id`
+  (mismo join que `getMembershipContext`) → `identities.email`, `DISTINCT`,
+  filtrando `permission_group = 'MANAGEMENT'`.
+- **`makeDeadLetterEmailNotifier`** (`src/workers/dead-letter-notify.ts`) —
+  compone `getManagementEmails` + `emailSender` + `dashboardUrl`. Arma **un
+  cuerpo** con los `summary` de `describeDeadLetter()` de todos los eventos del
+  ciclo (`deadLetterAlertEmail` en `email/templates.ts`), lo manda por
+  `Promise.allSettled` a cada destinatario. 0 destinatarios o `NoopEmailSender`
+  → sigue el banner, se loguea `warn`.
+- **`outbox.registry.ts`** — `ensureTenantWorker` toma un 4º arg
+  `platformRepo: Pick<PlatformRepository, 'getManagementEmails'>` (lo pasa
+  `tenant.middleware.ts`, que ya lo tiene — no se importa `getPlatformRawPool()`
+  acá, DEFENSIVE_DEVELOPING §3). Compone el notificador y lo inyecta al worker.
+
+Refinamientos ERP obligatorios (todos aplicados):
 - **Solo en la transición.** `recordFailure` devuelve `true` exactamente cuando
   `failed_at` pasa a no-null (`:133`). El email se dispara ahí, nunca en polls
   siguientes. ERPNext: `repost_item_valuation.py:594` solo en la rama `Failed`.
@@ -231,11 +252,11 @@ Refinamientos ERP obligatorios:
   `RESEND_API_KEY`), el dead-letter igual levanta el banner (ya lo hace) y
   loguea `error`. ERPNext condiciona a `outgoing_email_account`
   (`repost_item_valuation.py:600`).
-- **Rol:** broadcast a todos los `MANAGEMENT` del tenant (como ERPNext
-  `get_users_with_role`). "Qué rol notificar" pasa a ser un campo de
-  `business_profile` **más adelante** (ERPNext lo tiene en
-  `Stock Reposting Settings.notify_reposting_error_to_role`) — no ahora,
-  hardcode `MANAGEMENT` con un TODO.
+- **Rol:** broadcast a todas las identities con `permission_group = 'MANAGEMENT'`
+  en el tenant (como ERPNext `get_users_with_role`). "Qué grupo notificar" pasa
+  a ser un campo de `business_profile` **más adelante** (ERPNext lo tiene en
+  `Stock Reposting Settings.notify_reposting_error_to_role`) — por ahora el
+  `'MANAGEMENT'` va literal en `getManagementEmails`, con TODO en el docblock.
 - **Cuerpo:** `summary` de `describeDeadLetter()` + deep link a la pantalla de
   dead-letter (no el `last_error` crudo — A7.1).
 
@@ -301,7 +322,7 @@ Diseño propio, su gate. Este commit de código NO lo registra todavía.
 | **1** | `classifyError` + `maxRetries` efectivo + `ORDER BY retry_count ASC` | No | criterios-negocio + architecture-governor |
 | **2** | `describeDeadLetter()` + endpoint enriquecido | No | (mismo gate que 1 — van juntos) |
 | **3** | D1-A: `retryDeadLettered` acumula `last_error` | No | (mismo commit que 1+2 = cierre de ORDER-13) |
-| **4** | D2-C: email a `MANAGEMENT` en la transición, 1 por ciclo | No | criterios-negocio (§9, A7.1) + architecture-governor |
+| **4** | ✅ D2-C: email a **todos** los `MANAGEMENT` (opción B, join RBAC) en la transición, 1 por ciclo (`c41e74f` cerró 1+2+3; bloque 4 es su propio commit) | No | criterios-negocio (§9, A7.1) + architecture-governor |
 | **diferido** | conciliación COMPLETED-sin-CHARGE + drift de stock | Posible (contador) | su propio ADR |
 
 Bloques 1+2+3 en un commit (cierre de ORDER-13). Bloque 4 en otro (O5). El

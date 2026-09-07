@@ -114,6 +114,47 @@ export function passwordResetEmail(
   };
 }
 
+/**
+ * O5 / D2-C (07/09/2026, docs/diseno-order13-o5-dead-letter-2026-09-07.md,
+ * bloque 4) — aviso a los usuarios con permisos de gestión de que hay eventos
+ * que el sistema no pudo procesar y requieren revisión desde el panel.
+ *
+ * `items[].summary` viene de `describeDeadLetter()` — frases fijas sin PII
+ * (A7.1). Este template NO recibe el `last_error` crudo ni el payload del
+ * evento.
+ */
+export interface DeadLetterAlertEmailParams {
+  /** URL del panel (base + /dashboard) — el banner de dead-letter vive en toda página del panel. */
+  dashboardUrl: string;
+  /** Un ítem por evento que transicionó a dead-letter en el ciclo. */
+  items: { summary: string }[];
+}
+
+export function deadLetterAlertEmail(
+  params: DeadLetterAlertEmailParams,
+): { subject: string; html: string } {
+  const { dashboardUrl, items } = params;
+  const n = items.length;
+  const evento = n === 1 ? 'un evento' : `${n} eventos`;
+
+  return {
+    subject: `Hay ${evento} sin procesar en el panel — requieren tu atención`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
+        <h2 style="margin-bottom: 4px;">El sistema no pudo procesar ${evento}</h2>
+        <p>Se reintentaron automáticamente y no se resolvieron solos. Requieren una revisión desde el panel.</p>
+        <ul style="padding-left: 18px; margin: 16px 0;">
+          ${items.map((it) => `<li style="margin: 6px 0;">${escapeHtml(it.summary)}</li>`).join('')}
+        </ul>
+        <p style="margin: 24px 0;">
+          <a href="${escapeHtml(dashboardUrl)}" style="background: #1a1a1a; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; display: inline-block;">Abrir el panel</a>
+        </p>
+        <p style="color: #666; font-size: 13px;">Este aviso se envía a los usuarios con permisos de gestión del negocio.</p>
+      </div>
+    `.trim(),
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
