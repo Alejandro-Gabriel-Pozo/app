@@ -120,6 +120,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | **Rollback de un deploy**: qué revertir y qué NO (casi nunca la base — las migraciones son aditivas); branches de respaldo Neon durables vs. PITR de 6 h; proyectos e ids reales de tenants y plataforma | [conocimiento/runbook-deploy-render.md](conocimiento/runbook-deploy-render.md) §Procedimiento 3 |
 | **Verificar un deploy contra la base, no contra el log**, y validación punta a punta del outbox (una fila por consumidor en `processed_events`, un solo mail, cero duplicados) | mismo runbook, §Verificación |
 | **Leer el resultado de CI sin equivocarse**: `set -o pipefail`, redirigir en vez de pipear (`$?` después de un pipe no es el del comando que importa), y confirmar con una segunda fuente (`gh run view` + `gh run list`) | mismo runbook, §Verificación |
+| **Rotar `DB_ENCRYPTION_KEY`**: las 3 familias de columnas que cifra (connection strings + certificado AFIP + tickets WSAA, plataforma y cada tenant), el modo dos claves y el barrido de re-cifrado — ambos sin construir todavía (SEC-ROT-001) | [conocimiento/runbook-rotacion-db-encryption-key.md](conocimiento/runbook-rotacion-db-encryption-key.md) |
 | Incidente inicial Neon/Render (PLATFORM vs TENANT URLs) | [INCIDENT_LOG_2026-08-08.md](INCIDENT_LOG_2026-08-08.md) |
 | I11 puppeteer / `@arcasdk/pdf` | [i11-arcasdk-pdf-puppeteer.md](i11-arcasdk-pdf-puppeteer.md) |
 | Test de concurrencia de reservas | `src/scripts/concurrency-test-reservations.ts` + auditoría infra §3 |

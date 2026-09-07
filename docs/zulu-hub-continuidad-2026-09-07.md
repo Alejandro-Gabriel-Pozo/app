@@ -63,8 +63,10 @@ el índice:
 | Limpieza | anclas de `rbac-route-coverage.test.ts` (`app.ts:267→317`), `CLAUDE.md` 3→4 artefactos RBAC, ADR Hueco 1 re-apuntado de `me.routes.ts` a `customer.routes.ts` | `8936161`·`dea635f` |
 | FACT-INV-BIZID-001 · FAILOPEN-001 | re-etiquetados (no son riesgo vivo), sin código | — |
 
-`SEC-ROT-001` y `RBAC-SYNC-001 §4` siguen abiertos (ver §4). La cerca `:id`
-del portal (clase de RBAC-OWN-001) — hecha el 08/09.
+La cerca `:id` del portal (clase de RBAC-OWN-001) y el runbook de
+`SEC-ROT-001` — hechos el 08/09. Sigue abierto (ver §4): el **código** de
+2 claves + barrido de `SEC-ROT-001` (decisión del dueño), `RBAC-SYNC-001 §4`,
+el comentario "19 suites" de `ci.yml`.
 
 ---
 
@@ -87,7 +89,7 @@ después B3, B-reservas, A1-A5. Destraba ORDER-15, Bloque 2 confirmRefund,
 | Bloque | Qué | Nota |
 |---|---|---|
 | ~~**Cerca `:id` del portal**~~ ✅ | **Hecha el 08/09** — `src/tests/architecture/customer-portal-ownership-guard.test.ts`. Cierra la clase de RBAC-OWN-001. 5º artefacto RBAC (`CLAUDE.md`). | — |
-| **SEC-ROT-001** | Runbook de rotación de `DB_ENCRYPTION_KEY` (doc, barato). El camino de 2 claves + IV 16→12 = decisión de prioridad del dueño. | `src/platform/tenant-db.setup.ts`. Ahora es lo primero de la cola. |
+| **SEC-ROT-001** | ⚠️ Runbook ✅ (08/09, `docs/conocimiento/runbook-rotacion-db-encryption-key.md`). Falta el **código**: modo 2 claves en `deriveEncryptionKey()` + `src/scripts/reencrypt-secrets.ts` (barrido). Decisión de prioridad del dueño — no hay incidente. Hallazgo: la clave cifra 3 familias (connection strings + cert/key AFIP + tickets WSAA), plataforma y cada tenant. | `src/platform/tenant-db.setup.ts` |
 | **RBAC-SYNC-001 §4** | Test que cruce sección 4 de `rbac-matriz-endpoints.md` ↔ `PUBLIC_ROUTES`. | Baja urgencia. |
 | **ADR común "cancelar con NC"** | sub-bloques 2-6 (ver §3). | Requiere `criterios-negocio` + `auditor-circuitos-erp`. |
 | Higiene | `.github/workflows/ci.yml` job `integration`: el comentario "Techo explícito: 19 suites" quedó viejo (hay 22-23). | — |
