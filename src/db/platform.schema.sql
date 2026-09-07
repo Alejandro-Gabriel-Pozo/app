@@ -298,13 +298,25 @@ INSERT INTO role_presets (name) VALUES
   ('OWNER'), ('ADMIN'), ('RECEPTIONIST'), ('HOUSEKEEPING'), ('WAITER')
 ON CONFLICT (name) DO NOTHING;
 
+-- EMISOR_NOTA_CREDITO (07/09/2026): escape de cancelación con Nota de Crédito
+-- (ADR docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md §10 q7).
+-- Grupo DEDICADO, no MANAGEMENT: se lo damos a RECEPTIONIST además de a los
+-- presets que ya tienen MANAGEMENT (OWNER, ADMIN). El backfill de más abajo
+-- lo propaga a los roles de sistema de los negocios existentes vía JOIN.
+-- NO se agrega a plan_limit_allowed_permission_groups (FREE/STARTER): un rol
+-- CUSTOM de esos planes no puede incluirlo -- a propósito, mismo criterio que
+-- OWNER_ONLY/MANAGEMENT (nada de armar autoridad fiscal a medida en planes
+-- bajos). La recepción lo recibe igual en todos los planes vía el PRESET
+-- RECEPTIONIST, que es lo que pide q7. FREE además tiene max_custom_roles=0.
 INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES
   ('OWNER', 'OWNER_ONLY'), ('OWNER', 'MANAGEMENT'), ('OWNER', 'STAFF'),
   ('OWNER', 'FRONT_DESK'), ('OWNER', 'HOUSEKEEPING_AND_MANAGEMENT'),
-  ('OWNER', 'ORDERS'), ('OWNER', 'BOOKING'),
+  ('OWNER', 'ORDERS'), ('OWNER', 'BOOKING'), ('OWNER', 'EMISOR_NOTA_CREDITO'),
   ('ADMIN', 'MANAGEMENT'), ('ADMIN', 'STAFF'), ('ADMIN', 'FRONT_DESK'),
   ('ADMIN', 'HOUSEKEEPING_AND_MANAGEMENT'), ('ADMIN', 'ORDERS'), ('ADMIN', 'BOOKING'),
+  ('ADMIN', 'EMISOR_NOTA_CREDITO'),
   ('RECEPTIONIST', 'STAFF'), ('RECEPTIONIST', 'FRONT_DESK'), ('RECEPTIONIST', 'BOOKING'),
+  ('RECEPTIONIST', 'EMISOR_NOTA_CREDITO'),
   ('HOUSEKEEPING', 'STAFF'), ('HOUSEKEEPING', 'HOUSEKEEPING_AND_MANAGEMENT'),
   ('WAITER', 'STAFF'), ('WAITER', 'ORDERS')
 ON CONFLICT (preset_name, permission_group) DO NOTHING;

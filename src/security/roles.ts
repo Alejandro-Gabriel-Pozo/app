@@ -42,6 +42,23 @@ export const Roles = {
   ORDERS: 'ORDERS',
 
   /**
+   * Emite la Nota de Crédito de cancelación (escape de la guarda fiscal
+   * fail-closed de `cancelOrder()` / `cancelReservation()`). Dedicado a
+   * propósito: recepción lo tiene sin ser `MANAGEMENT` — ADR
+   * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §10 q7.
+   * Precedente ERP: ERPNext/Odoo ponen la emisión de NC por debajo del
+   * tier gerencial.
+   *
+   * Nombre en español (no la convención inglesa del resto del catálogo):
+   * decisión explícita del dueño, elegido del menú de q7
+   * (`CREDIT_NOTE_ISSUER` / `EMISOR_NOTA_CREDITO`), alineado al término
+   * AFIP "Nota de Crédito". Es una clave técnica estable que queda en
+   * `role_permission_groups.permission_group` de cada tenant — cambiarla
+   * después es una migración de datos.
+   */
+  EMISOR_NOTA_CREDITO: 'EMISOR_NOTA_CREDITO',
+
+  /**
    * Solo clientes externos. Caso especial en `authorize()`: los clientes
    * no tienen `role_id` (no son staff, no tienen fila en `roles`) — este
    * grupo y BOOKING se resuelven en código, no contra la BD.

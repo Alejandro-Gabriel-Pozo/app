@@ -792,6 +792,39 @@ negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-owner
   y es código de facturación, con `concurrency-reasoning` como skill y un TOCTOU
   de facturación ya documentado (`FACT-CONSOL-TOCTOU-01`): mirar el mensaje antes
   de asumir "contención".
+- **Grupo RBAC `EMISOR_NOTA_CREDITO` (07/09, sub-bloque del ADR cancelar-con-NC)
+  — deuda que abre, registrada por el governor:**
+  - **Frontend, 3 catálogos hardcodeados en `appfrontend-main`** que dicen "8
+    grupos fijos": `src/app/dashboard/roles/page.tsx:15-26`,
+    `src/app/superadmin/roles-de-fabrica/page.tsx:7-12`,
+    `src/app/superadmin/planes/page.tsx:7-14`. Consecuencia (no "falta
+    actualizar una constante"): **nadie puede asignar `EMISOR_NOTA_CREDITO` a
+    un rol CUSTOM desde el panel, el superadmin no puede tocarlo en el preset,
+    y `dashboard/roles` muestra `RECEPTIONIST` como "4 grupos" sin decir
+    cuáles.** Sin regresión de seguridad (un grupo desconocido se **preserva**
+    al guardar, verificado por el governor). Commit aparte en `appfrontend-main`,
+    después de que el de backend esté en `origin/main`.
+  - **Grupo huérfano:** `Roles.EMISOR_NOTA_CREDITO` tiene **cero referencias**
+    hasta el sub-bloque del orquestador (la ruta `POST /api/orders/:id/cancel-with-credit-note`
+    con `authorize(Roles.EMISOR_NOTA_CREDITO)`). **Ninguna cerca detecta un
+    `Roles.X` sin call-site** — `rbac-matrix-sync` no avisaría si el orquestador
+    nunca llega. Cerrar con el orquestador o registrar el abandono.
+  - **`superadmin/roles-de-fabrica/page.tsx:60-62`** dice "Editar acá NO afecta
+    a los negocios que ya existen" — **es falso**: el backfill de
+    `platform.schema.sql` (`CROSS JOIN role_presets JOIN role_preset_permission_groups`)
+    propaga los cambios de preset a los negocios existentes en cada boot de
+    `server.ts`. Este commit **depende** de ese mecanismo. Además: un superadmin
+    que saque el grupo de un preset por el panel lo va a ver re-agregado en el
+    próximo deploy. Pre-existente, no lo arregla este commit.
+- **Higiene — desfase de fecha de un día (mío, 07/09):** varios artefactos de
+  esta sesión llevan `08/09/2026` cuando el día real es 07/09 (`git log` de
+  `55b0995`/`7b9db04` = `2026-09-07`): el docblock de
+  `customer-portal-ownership-guard.test.ts`, `CLAUDE.md` ("Desde el 08/09/2026
+  hay una **cuarta** cerca"), el ADR `diseno-rbac-modelo-y-alcance-2026-08-30.md`
+  ("clase el 08/09/2026"), `zulu-hub-continuidad-2026-09-07.md` §2/§4, el header
+  del `runbook-rotacion-db-encryption-key.md` ("Fecha: 2026-09-08"). El commit
+  de `EMISOR_NOTA_CREDITO` usa 07/09 correcto. Corregir los anteriores en un
+  commit de higiene aparte (o dejar declarado el drift).
 - **Documentales:** ✅ RESUELTO el estado git stale de
   `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (decía `HEAD=b088cbc`,
   14 commits sin push; corregido in-place el 07/09 — `4029b96`/`4d2d694`/`b088cbc`

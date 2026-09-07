@@ -6,7 +6,7 @@ Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
 `criterios-negocio.md`/`criterios-datos.md`, se actualiza en el mismo
 cambio que agrega o modifica una ruta, no después. El mecanismo que lo
-mantiene honesto está en `src/tests/governance/rbac-matrix-sync.test.ts`:
+mantiene honesto está en `src/tests/security/rbac-matrix-sync.test.ts`:
 cuenta los `authorize(Roles.X)` reales del código y compara contra un
 número fijo — si no coinciden, algo cambió sin actualizar este documento.
 
@@ -21,7 +21,7 @@ cambio.** Ver también `app-main/CLAUDE.md`.
 Fijo en código (`src/security/roles.ts`) — agregar un grupo nuevo siempre
 es un cambio de código, nunca configuración. Lo que SÍ es configurable
 por negocio es qué ROL nombrado (ej. "Recepcionista") tiene qué
-subconjunto de estos 8 grupos (sección 3).
+subconjunto de estos 9 grupos (sección 3).
 
 | Grupo | Qué significa |
 |---|---|
@@ -31,6 +31,7 @@ subconjunto de estos 8 grupos (sección 3).
 | `FRONT_DESK` | Personal de mostrador: gestiona reservas y clientes |
 | `HOUSEKEEPING_AND_MANAGEMENT` | Housekeeping + management: ven y actualizan estado de habitaciones |
 | `ORDERS` | Acceso a órdenes de consumo (POS) |
+| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`). Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Sin ruta todavía (la agrega el sub-bloque del orquestador). |
 | `CUSTOMER_ONLY` | Solo clientes externos — resuelto en código, no contra la BD (los clientes no tienen `role_id`) |
 | `BOOKING` | Clientes + recepción (reservas desde portal o mostrador) |
 
@@ -331,11 +332,19 @@ Cualquier cambio hoy requiere pegarle directo a la API.
 
 | Rol (preset) | Grupos asignados |
 |---|---|
-| `OWNER` | `OWNER_ONLY`, `MANAGEMENT`, `STAFF`, `FRONT_DESK`, `HOUSEKEEPING_AND_MANAGEMENT`, `ORDERS`, `BOOKING` |
-| `ADMIN` | `MANAGEMENT`, `STAFF`, `FRONT_DESK`, `HOUSEKEEPING_AND_MANAGEMENT`, `ORDERS`, `BOOKING` |
-| `RECEPTIONIST` | `STAFF`, `FRONT_DESK`, `BOOKING` |
+| `OWNER` | `OWNER_ONLY`, `MANAGEMENT`, `STAFF`, `FRONT_DESK`, `HOUSEKEEPING_AND_MANAGEMENT`, `ORDERS`, `BOOKING`, `EMISOR_NOTA_CREDITO` |
+| `ADMIN` | `MANAGEMENT`, `STAFF`, `FRONT_DESK`, `HOUSEKEEPING_AND_MANAGEMENT`, `ORDERS`, `BOOKING`, `EMISOR_NOTA_CREDITO` |
+| `RECEPTIONIST` | `STAFF`, `FRONT_DESK`, `BOOKING`, `EMISOR_NOTA_CREDITO` |
 | `HOUSEKEEPING` | `STAFF`, `HOUSEKEEPING_AND_MANAGEMENT` |
 | `WAITER` | `STAFF`, `ORDERS` |
+
+`EMISOR_NOTA_CREDITO` (07/09/2026): grupo dedicado al escape de cancelación
+con Nota de Crédito. Se suma a `RECEPTIONIST` además de a los presets que ya
+tienen `MANAGEMENT` (`OWNER`, `ADMIN`) — decisión del dueño (ADR §10 q7): la
+recepción tiene que poder emitir la NC sin escalar a OWNER/ADMIN. **No** entra
+en `plan_limit_allowed_permission_groups` (FREE/STARTER) — un rol CUSTOM de
+esos planes no puede incluirlo, mismo criterio que `OWNER_ONLY`/`MANAGEMENT`;
+la recepción lo recibe vía el preset en todos los planes.
 
 `OWNER` es el único rol que no se puede desactivar ni reasignar desde el
 panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).

@@ -442,7 +442,7 @@ export class RoleNotAvailableInPlanError extends DomainError {
 /**
  * L (23/08/2026) — "techo de permisos" para roles CUSTOM (no los 5 de
  * fábrica, que ya vienen con sus grupos fijos): un negocio puede armar un
- * rol propio combinando cualquiera de los 8 grupos de `security/roles.ts`,
+ * rol propio combinando cualquiera de los 9 grupos de `security/roles.ts`,
  * pero el PLAN limita cuáles (`plan_limit_allowed_permission_groups` —
  * FREE/STARTER no pueden incluir OWNER_ONLY/MANAGEMENT, evita armar un
  * "dueño"/"gerente" a medida sin pasar por los presets curados). Mismo
