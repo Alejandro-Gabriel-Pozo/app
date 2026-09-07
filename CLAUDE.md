@@ -75,12 +75,21 @@ la cerca de conteo NO ve: una ruta agregada a un archivo que YA existe, sin
 `authorize()` (Hueco 2 del ADR
 `docs/diseno-rbac-modelo-y-alcance-2026-08-30.md`).
 
-Consecuencia práctica: ahora son **tres** artefactos a mantener en sync a
-mano — la sección 4 de la matriz, el `PUBLIC_ROUTES` del test nuevo y los
-`authorize()` reales. El test cubre el cruce `PUBLIC_ROUTES` contra el código
-en las dos direcciones (ruta sin autz que falta en el allowlist, y entrada del
-allowlist que ya no matchea); **nada verifica sección 4 de la matriz contra
-`PUBLIC_ROUTES`** — es a ojo
+Desde el 07/09/2026 hay una **tercera cerca**:
+`src/tests/architecture/api-auth-gate-order.test.ts` (RBAC-MOUNT-001) valida
+que el `app.use('/api', authenticate(...))` de `src/app.ts` precede a todo
+router protegido de `/api` — todo mount `/api/...` anterior al gate tiene que
+estar en su allowlist `PRE_AUTH_API_MOUNTS` con motivo. Cubre solo el gate de
+tenant (no `tenantMiddleware` ni el `authenticate()` interno del portal).
+
+Consecuencia práctica: ahora son **cuatro** artefactos a mantener en sync a
+mano — la sección 4 de la matriz, el `PUBLIC_ROUTES` de `rbac-route-coverage`,
+el `PRE_AUTH_API_MOUNTS` de `api-auth-gate-order` y los `authorize()` reales.
+El test de `rbac-route-coverage` cubre el cruce `PUBLIC_ROUTES` contra el
+código en las dos direcciones (ruta sin autz que falta en el allowlist, y
+entrada del allowlist que ya no matchea); `api-auth-gate-order` cubre solo la
+dirección "entrada stale" de `PRE_AUTH_API_MOUNTS`; **nada verifica sección 4
+de la matriz contra `PUBLIC_ROUTES`** — es a ojo
 (RBAC-SYNC-001). Si agregás una ruta pública, tocá los dos.
 
 ## Pendientes — revalidar antes de arrastrar

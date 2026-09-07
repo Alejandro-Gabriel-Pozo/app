@@ -41,22 +41,26 @@ const SRC_DIR = join(__dirname, '../..');
  *    `Router()`. Hoy es inofensivo: los dos archivos con dos `Router()`
  *    (`facturacion/invoices.routes.ts`, `usuarios-roles/user-invitation.routes.ts`)
  *    no usan `router.use()`. Pero un segundo `Router()` agregado DEBAJO del
- *    `router.use()` de `customer.routes.ts` (L503), `admin.routes.ts` (L57) o
+ *    `router.use()` de `customer.routes.ts` (L506), `admin.routes.ts` (L57) o
  *    `platform.routes.ts` (L120) haría pasar todas sus rutas como cubiertas sin
  *    tener guard. Si agregás un `Router()` a uno de esos archivos, revisá acá.
  *
- * 2. NO valida el orden de montaje de `src/app.ts`. **7** de las 22 entradas
- *    de `PUBLIC_ROUTES` (`me.routes.ts` x3, `business-modules`,
- *    `business-plan-limits`, `categories` x2) son seguras solo porque su
+ * 2. NO valida el orden de montaje de `src/app.ts` — esa invariante la cubre
+ *    ahora, para el gate de tenant, `src/tests/architecture/api-auth-gate-order.test.ts`
+ *    (RBAC-MOUNT-001, 07/09/2026): parte `app.ts` por la línea del gate y
+ *    exige que todo `app.use('/api/...')` anterior esté declarado como
+ *    pre-auth a propósito. Lo que esa cerca protege es que **7** de las 22
+ *    entradas de `PUBLIC_ROUTES` (`me.routes.ts` x3, `business-modules`,
+ *    `business-plan-limits`, `categories` x2) — seguras solo porque su
  *    `app.use(...)` va DESPUÉS del `app.use('/api', authenticate(...))` de
- *    `src/app.ts:267`. Mover un mount por encima de esa línea las deja
- *    públicas y este test sigue en verde (RBAC-MOUNT-001).
+ *    `src/app.ts:317` — no suban por encima del gate. Lo que sigue sin
+ *    releerse solo es ESTA lista contra ese código.
  *
  *    Las otras 15 NO cuentan acá, y la distinción importa para que nadie
  *    "corrija" este 7 de vuelta a 11: son públicas a propósito y muchas se
- *    montan ANTES del `authenticate()` — `customer.routes.ts` en L225, el
- *    login en L220. Dependen del orden para FUNCIONAR, no para estar
- *    protegidas: moverlas debajo de L267 haría que el login pida token, o
+ *    montan ANTES del `authenticate()` — `customer.routes.ts` en L275, el
+ *    login en L270. Dependen del orden para FUNCIONAR, no para estar
+ *    protegidas: moverlas debajo de L317 haría que el login pida token, o
  *    sea que rompe la app de forma ruidosa, no que abra un agujero callado.
  *
  *    Tampoco escanea `src/app.ts`, que registra 4 rutas a mano con
