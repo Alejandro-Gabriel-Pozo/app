@@ -23,11 +23,13 @@
  * letter tras maxRetries, ver A9.5/outbox.worker.ts).
  *
  * ## Orden entre order.confirmed y order.cancelled del MISMO agregado
- * El OutboxWorker pide los eventos ordenados por id ASC, pero NO garantiza
- * que uno termine de procesarse antes de que el siguiente empiece a
- * intentarse — un order.confirmed trabado reintentando (o ya en
- * dead-letter) no bloquea que order.cancelled de la misma orden se
- * despache antes. Sin coordinación, eso podía dejar la reserva liberada
+ * El OutboxWorker NO garantiza orden estricto de procesamiento — ni siquiera
+ * dentro del mismo agregado. `getPending` ordena por `retry_count ASC, id ASC`
+ * (ORDER-13/O5, 07/09/2026): un order.confirmed trabado reintentando (o ya en
+ * dead-letter) no bloquea que order.cancelled de la misma orden se despache
+ * antes, y ahora además un order.confirmed que ya falló una vez se procesa
+ * DESPUÉS de un order.cancelled posterior aunque tenga id menor. Sin
+ * coordinación, eso podía dejar la reserva liberada
  * dos veces, o consolidada después de haber sido liberada. Se resuelve sin
  * tocar el worker: OUT (consolidación) y RESERVATION_RELEASED (liberación
  * sin consolidar) compiten por el MISMO casillero en stock_movements

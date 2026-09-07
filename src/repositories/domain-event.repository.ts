@@ -64,7 +64,12 @@ export interface DomainEventRepository {
     event: Omit<DomainEvent, 'id' | 'eventId' | 'occurredAt' | 'dispatchedAt'>,
   ): Promise<void>;
 
-  /** Lee eventos pendientes (dispatched_at IS NULL, failed_at IS NULL) ordenados por id ASC. */
+  /**
+   * Lee eventos pendientes (dispatched_at IS NULL, failed_at IS NULL) ordenados
+   * por `retry_count ASC, id ASC` — los que fallan se desprioritizan para que un
+   * poison message no frene la cabeza de la cola (ORDER-13/O5, 07/09/2026). El
+   * orden por `id` se conserva entre eventos con el mismo retry_count.
+   */
   getPending(limit: number): Promise<DomainEvent[]>;
 
   /** Marca el evento como procesado. Idempotente si ya tiene dispatched_at. */
@@ -85,6 +90,11 @@ export interface DomainEventRepository {
   /** Lista eventos en dead-letter, más recientes primero. */
   getDeadLettered(limit: number): Promise<DomainEvent[]>;
 
-  /** Reintento manual: vuelve el evento a PENDING (failed_at NULL, retry_count 0). */
+  /**
+   * Reintento manual: vuelve el evento a PENDING (failed_at NULL, retry_count 0).
+   * `last_error` se CONSERVA (D1-A, 07/09/2026) — el diagnóstico del último
+   * fallo no se destruye al reintentar; `recordFailure` lo sobrescribe recién si
+   * el evento vuelve a fallar.
+   */
   retryDeadLettered(id: number): Promise<void>;
 }

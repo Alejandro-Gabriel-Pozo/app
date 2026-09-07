@@ -16,6 +16,7 @@ import { Router } from 'express';
 import { authorize } from '../../security/auth.middleware.js';
 import { Roles } from '../../security/roles.js';
 import type { DomainEventRepository } from '../../repositories/domain-event.repository.js';
+import { describeDeadLetter } from '../../domain/dead-letter-describe.js';
 import { logger } from '../../logger.js';
 
 export function createSystemRouter(repo: DomainEventRepository): Router {
@@ -32,7 +33,17 @@ export function createSystemRouter(repo: DomainEventRepository): Router {
           repo.countDeadLettered(),
           repo.getDeadLettered(50),
         ]);
-        res.json({ count, events });
+        // ORDER-13 / O5 (07/09/2026) -- cada evento suma una descripción de
+        // negocio DERIVADA (no persistida, A7.1) de (eventType, lastError,
+        // retryCount). `kind` le dice al frontend si "Reintentar" tiene sentido.
+        const enriched = events.map((e) => ({
+          ...e,
+          description: describeDeadLetter({
+            eventType: e.eventType,
+            lastError: e.lastError ?? null,
+          }),
+        }));
+        res.json({ count, events: enriched });
       } catch (err) {
         next(err);
       }

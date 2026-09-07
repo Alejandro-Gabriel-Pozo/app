@@ -26,10 +26,13 @@ function getHandler(router: ReturnType<typeof createSystemRouter>, method: 'get'
 }
 
 describe('GET /api/system/outbox/dead-letter', () => {
-  it('devuelve el count y los eventos dead-lettered', async () => {
+  it('devuelve el count y los eventos dead-lettered, cada uno con una descripción de negocio derivada', async () => {
     const repo = {
       countDeadLettered: vi.fn(async () => 3),
-      getDeadLettered: vi.fn(async () => [{ id: 1 }, { id: 2 }]),
+      getDeadLettered: vi.fn(async () => [
+        { id: 1, eventType: 'order.completed', lastError: 'ChargeNeverCreatedError', retryCount: 1 },
+        { id: 2, eventType: 'reservation.confirmed', lastError: 'PG_40P01', retryCount: 12 },
+      ]),
     } as unknown as DomainEventRepository;
     const router = createSystemRouter(repo);
     const handler = getHandler(router, 'get', '/outbox/dead-letter');
@@ -39,7 +42,21 @@ describe('GET /api/system/outbox/dead-letter', () => {
     await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
     expect(repo.getDeadLettered).toHaveBeenCalledWith(50);
-    expect(res.json).toHaveBeenCalledWith({ count: 3, events: [{ id: 1 }, { id: 2 }] });
+    const body = vi.mocked(res.json).mock.calls[0]![0] as { count: number; events: Array<Record<string, unknown>> };
+    expect(body.count).toBe(3);
+    // ChargeNeverCreatedError -> acción manual (reintentar es no-op).
+    expect(body.events[0]!.description).toEqual({
+      summary: expect.stringContaining('no se le generó el cargo'),
+      kind: 'needs_manual_action',
+    });
+    // Deadlock de Postgres -> reintentable.
+    expect(body.events[1]!.description).toEqual({
+      summary: expect.stringContaining('Falla temporal de base de datos'),
+      kind: 'retryable',
+    });
+    // Los campos crudos del evento siguen intactos.
+    expect(body.events[0]!.id).toBe(1);
+    expect(body.events[0]!.lastError).toBe('ChargeNeverCreatedError');
   });
 
   it('propaga un error del repo a next()', async () => {

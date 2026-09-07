@@ -135,6 +135,17 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       expect(pending.map(numId)).toEqual([id3, id1, id2].sort((a, b) => a - b));
     });
 
+    it('getPending desprioritiza los que fallaron: retry_count ASC antes que id ASC (ORDER-13/O5, anti poison-message)', async () => {
+      const idPrimero = await sembrar('t.a', 'agg-poison'); // id más bajo
+      const idSegundo = await sembrar('t.a', 'agg-fresco');
+
+      // idPrimero falló una vez (sigue pendiente, no dead-letter): pasa al fondo.
+      await eventRepo.recordFailure(idPrimero, 'PG_40P01', 60);
+
+      const pending = await eventRepo.getPending(50);
+      expect(pending.map(numId)).toEqual([idSegundo, idPrimero]);
+    });
+
     it('recordFailure: dos llamadas CONCURRENTES sobre el MISMO evento no pierden un incremento (A8.2)', async () => {
       // Simula dos ciclos de poll solapados fallando sobre el mismo evento a
       // la vez -- el escenario exacto que el comentario de recordFailure()
@@ -201,9 +212,9 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       expect(dl.map(numId)).toEqual([idNuevo, idViejo]);
     });
 
-    it('retryDeadLettered resetea retry_count/failed_at/last_error y el evento vuelve a getPending', async () => {
+    it('retryDeadLettered resetea retry_count/failed_at pero CONSERVA last_error (D1-A) y el evento vuelve a getPending', async () => {
       const id = await sembrar('t.a', 'agg-retry-manual');
-      await eventRepo.recordFailure(id, 'ERR', 1);
+      await eventRepo.recordFailure(id, 'PG_23505', 1);
       expect((await fila(id)).failed_at).not.toBeNull();
 
       await eventRepo.retryDeadLettered(id);
@@ -211,7 +222,9 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       const row = await fila(id);
       expect(row.failed_at).toBeNull();
       expect(row.retry_count).toBe(0);
-      expect(row.last_error).toBeNull();
+      // D1-A (07/09/2026): el diagnóstico del último fallo NO se destruye al
+      // reintentar -- recordFailure lo sobrescribe recién si vuelve a fallar.
+      expect(row.last_error).toBe('PG_23505');
       expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
     });
 

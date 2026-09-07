@@ -93,11 +93,20 @@ export class SqlDomainEventRepository implements DomainEventRepository {
   }
 
   async getPending(limit = 50): Promise<DomainEvent[]> {
+    // ORDER-13 / O5 (07/09/2026) -- `retry_count ASC` primero, no solo `id ASC`:
+    // un evento transitorio que falla y falla (y todavía NO llegó a
+    // dead-letter) se sienta en la cabeza de la cola y se reintenta antes que
+    // los nuevos en cada poll (poison message). Con `retry_count ASC` los que
+    // fallan se van al fondo -- patrón `ORDER BY failure_count` de Odoo
+    // (ir_cron.py:365). Entre eventos con el mismo retry_count (el caso común:
+    // todos en 0) el orden por `id` se conserva. Los handlers NO dependen del
+    // orden estricto de procesamiento (inventory.handlers.ts:25-37 lo declara y
+    // lo maneja con el casillero compartido).
     const result = await this.sqlClient.query<DomainEventRow>(
       `SELECT ${EVENT_COLUMNS}
        FROM domain_events
        WHERE dispatched_at IS NULL AND failed_at IS NULL
-       ORDER BY id ASC
+       ORDER BY retry_count ASC, id ASC
        LIMIT $1`,
       [limit],
     );
@@ -154,9 +163,16 @@ export class SqlDomainEventRepository implements DomainEventRepository {
   }
 
   async retryDeadLettered(id: number): Promise<void> {
+    // ORDER-13 / O5 D1-A (07/09/2026): `failed_at` y `retry_count` SÍ se limpian
+    // -- si no, el evento re-dead-lettea en 1-2 polls porque el contador ya está
+    // en 60 y el reintento manual es un no-op. Pero `last_error` NO se nulea:
+    // destruir el único diagnóstico que el operador tenía al reintentar es el
+    // defecto que D1-A corrige. Si el evento vuelve a fallar, `recordFailure`
+    // lo sobrescribe con la categoría nueva. (La visibilidad "reintentado N
+    // veces" necesita una columna -- follow-up #3 del ADR, era D1-B(B).)
     await this.sqlClient.query(
       `UPDATE domain_events
-       SET failed_at = NULL, retry_count = 0, last_error = NULL
+       SET failed_at = NULL, retry_count = 0
        WHERE id = $1 AND failed_at IS NOT NULL`,
       [id],
     );

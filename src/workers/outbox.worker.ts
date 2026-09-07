@@ -1,5 +1,6 @@
 import type { DomainEvent, DomainEventRepository } from '../repositories/domain-event.repository.js';
 import type { ProcessedEventRepository } from '../repositories/processed-event.repository.js';
+import { classifyPgSqlState } from '../domain/outbox-error-class.js';
 import { logger } from '../logger.js';
 
 export type EventHandler = (event: DomainEvent) => Promise<void>;
@@ -88,7 +89,15 @@ export class ChargeNeverCreatedError extends Error {
  * - Entrega at-least-once: un evento puede procesarse más de una vez si el
  *   worker muere entre el handler y el markDispatched, o si OTRO handler del
  *   mismo evento falla y el evento entero se reintenta.
- * - No entrega out-of-order dentro del mismo aggregate: getPending ordena por id ASC.
+ * - **NO garantiza orden estricto de procesamiento, ni siquiera dentro del
+ *   mismo aggregate.** `getPending` ordena por `retry_count ASC, id ASC`
+ *   (ORDER-13/O5, 07/09/2026 — los eventos que fallan se desprioritizan para
+ *   que un poison message no frene la cola): un `order.confirmed` que ya falló
+ *   una vez se procesa DESPUÉS de un `order.completed` posterior del mismo
+ *   aggregate. Los handlers ya no dependen del orden — resuelven las
+ *   dependencias cruzadas con `DEPENDENCIA_PENDIENTE`/`ChargeNotYetCreatedError`
+ *   (`outbox.handlers.ts`) y con el casillero único de `processed_events` /
+ *   `stock_movements`, no con el orden de llegada.
  *
  * ## Idempotencia por handler (A10.3, 28/08/2026 — Fase 1 del plan de dominios)
  * Antes de esto, "los handlers deben ser idempotentes" era una instrucción en
@@ -339,11 +348,12 @@ export class OutboxWorker {
       // (5 min) solo retrasa que alguien la vea. maxRetries=1 la manda a
       // dead-letter en el primer fallo, reusando la MISMA UPDATE atómica que
       // el resto — no un segundo camino de escritura (R14).
-      // O2: `ChargeNeverCreatedError` reusa el mismo camino que la versión sin
-      // handler -- dead-letter en el primer intento, con la MISMA UPDATE
-      // atómica, no un segundo camino de escritura (R14).
-      const maxRetries = (err instanceof UnsupportedEventVersionError
-                       || err instanceof ChargeNeverCreatedError) ? 1 : this.maxRetries;
+      // ORDER-13 / O5 (07/09/2026, docs/diseno-order13-o5-dead-letter-2026-09-07.md):
+      // un error PERMANENTE va a dead-letter en el primer intento -- con la
+      // MISMA UPDATE atómica, no un segundo camino de escritura (R14). Esto
+      // generaliza la lista vieja: `UnsupportedEventVersionError` y
+      // `ChargeNeverCreatedError` caen ahora en 'permanent' vía classifyError().
+      const maxRetries = classifyError(err) === 'permanent' ? 1 : this.maxRetries;
 
       const deadLettered = await this.eventRepository.recordFailure(
         event.id!,
@@ -442,4 +452,39 @@ function categorizeError(err: unknown): string {
   if (pgCode) return `PG_${pgCode}`;
   if (err instanceof Error) return err.constructor.name;
   return 'UNKNOWN_ERROR';
+}
+
+/**
+ * ORDER-13 / O5 (07/09/2026, docs/diseno-order13-o5-dead-letter-2026-09-07.md).
+ * Segundo eje al lado de categorizeError(): ¿este fallo se puede reintentar
+ * (transitorio) o hay que sacarlo de la cola YA (permanente)? Gobierna el
+ * `maxRetries` efectivo (permanente → 1, dead-letter en el primer intento).
+ *
+ * La clasificación de SQLSTATE vive en `domain/outbox-error-class.ts` (una
+ * fuente de verdad, compartida con `describeDeadLetter`). Acá se resuelven
+ * además las clases de error de JS que no llegan como `err.code`.
+ *
+ * DEFAULT = transitorio: un `err.code` clase 'other' (42/22/XX…), o un error
+ * sin `code` y sin clase conocida, se reintenta `maxRetries` (60) veces — el
+ * comportamiento de hoy. Difiere a propósito del fail-safe "block" de Odoo
+ * (account_edi_document.py:11): en bajo volumen, dead-lettear un unknown
+ * recuperable en el primer intento (y exigir reintento manual) es peor que
+ * esperar 5 minutos. **Nota:** en este worker 'transient' y 'other' coinciden
+ * (ambos reintentan) — el set `TRANSIENT_PG_CODES` recién cambia comportamiento
+ * en `describeDeadLetter` (transitorio → "falla temporal"), o acá el día que el
+ * default se invierta.
+ */
+function classifyError(err: unknown): 'transient' | 'permanent' {
+  const pgCode = (err as NodeJS.ErrnoException)?.code;
+  if (typeof pgCode === 'string') {
+    return classifyPgSqlState(pgCode) === 'permanent' ? 'permanent' : 'transient';
+  }
+  if (err instanceof UnsupportedEventVersionError || err instanceof ChargeNeverCreatedError) {
+    return 'permanent';
+  }
+  // Error de programación — reintentarlo 60 veces solo retrasa que alguien lo vea.
+  if (err instanceof TypeError || err instanceof RangeError || err instanceof SyntaxError) {
+    return 'permanent';
+  }
+  return 'transient';
 }

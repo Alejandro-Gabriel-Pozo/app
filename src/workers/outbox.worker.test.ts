@@ -32,8 +32,10 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
   }
 
   async getPending(limit: number): Promise<DomainEvent[]> {
+    // Espeja el `ORDER BY retry_count ASC, id ASC` del repo real (ORDER-13/O5).
     return this.events
       .filter((e) => !e.dispatchedAt && !e.failedAt)
+      .sort((a, b) => (a.retryCount ?? 0) - (b.retryCount ?? 0) || (a.id ?? 0) - (b.id ?? 0))
       .slice(0, limit);
   }
 
@@ -64,7 +66,7 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
     if (!event) return;
     event.failedAt = null;
     event.retryCount = 0;
-    event.lastError = null;
+    // D1-A (07/09/2026): `lastError` se CONSERVA -- no se nulea al reintentar.
   }
 
   getAll(): DomainEvent[] { return this.events; }
@@ -278,6 +280,60 @@ describe('OutboxWorker', () => {
     const stored = repo.getAll()[0]!.lastError;
     expect(stored).toBe('Error');
     expect(stored).not.toContain('email@cliente.com');
+  });
+
+  describe('clasificación transitorio / permanente (ORDER-13 / O5)', () => {
+    function throwing(err: unknown) {
+      return async () => { throw err; };
+    }
+
+    it('un error PERMANENTE (violación de constraint PG_23xxx) va a dead-letter EN EL PRIMER INTENTO, aunque maxRetries sea 60', async () => {
+      const w = new OutboxWorker(repo, 5_000, 60);
+      repo.insert(makeEvent('order.completed'));
+      w.on('order.completed', throwing(Object.assign(new Error('dup'), { code: '23505' })));
+
+      await triggerPoll(w);
+
+      expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+      expect(repo.getAll()[0]!.retryCount).toBe(1);
+      expect(repo.getAll()[0]!.lastError).toBe('PG_23505');
+    });
+
+    it('un error de programación (TypeError) también va a dead-letter en el primer intento', async () => {
+      const w = new OutboxWorker(repo, 5_000, 60);
+      repo.insert(makeEvent('order.completed'));
+      w.on('order.completed', throwing(new TypeError("cannot read 'x' of undefined")));
+
+      await triggerPoll(w);
+
+      expect(repo.getAll()[0]!.failedAt).not.toBeNull();
+      expect(repo.getAll()[0]!.lastError).toBe('TypeError');
+    });
+
+    it('un error TRANSITORIO (deadlock PG_40P01) NO va a dead-letter en el primer intento — sigue reintentando', async () => {
+      const w = new OutboxWorker(repo, 5_000, 3);
+      repo.insert(makeEvent('order.completed'));
+      w.on('order.completed', throwing(Object.assign(new Error('deadlock'), { code: '40P01' })));
+
+      await triggerPoll(w);
+      expect(repo.getAll()[0]!.failedAt).toBeNull();
+      expect(repo.getAll()[0]!.retryCount).toBe(1);
+
+      await triggerPoll(w);
+      expect(repo.getAll()[0]!.failedAt).toBeNull();
+      expect(repo.getAll()[0]!.retryCount).toBe(2);
+    });
+
+    it('un error sin código y sin clase conocida se trata como transitorio (default)', async () => {
+      const w = new OutboxWorker(repo, 5_000, 3);
+      repo.insert(makeEvent('order.completed'));
+      w.on('order.completed', throwing(new Error('algo raro')));
+
+      await triggerPoll(w);
+
+      expect(repo.getAll()[0]!.failedAt).toBeNull();
+      expect(repo.getAll()[0]!.retryCount).toBe(1);
+    });
   });
 
   it('retryDeadLettered vuelve el evento a pendiente y lo despacha en el siguiente poll', async () => {
