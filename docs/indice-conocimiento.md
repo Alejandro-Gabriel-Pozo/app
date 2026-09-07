@@ -37,7 +37,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Dominios / CORS / hosting | [auditoria-dominios.md](auditoria-dominios.md) | Mapa + Runbook de auditoría |
 | Nombres de archivo `<entidad>.<capa>.ts` | [convenciones-nombres.md](convenciones-nombres.md) (propuesta; patrón backend ya aplicado) | Convención (parcial) |
 | Contexto de operación del negocio | [conocimiento-del-negocio.md](conocimiento-del-negocio.md) | Glosario de negocio |
-| **Dónde quedó el proyecto y cuál es el próximo bloque** — lo primero que conviene abrir en una sesión nueva | [zulu-hub-continuidad-2026-08-29.md](zulu-hub-continuidad-2026-08-29.md) | Estado + punto de entrada |
+| **Dónde quedó el proyecto y cuál es el próximo bloque** — lo primero que conviene abrir en una sesión nueva | [zulu-hub-continuidad-2026-09-07.md](zulu-hub-continuidad-2026-09-07.md) | Estado + punto de entrada. Reemplaza a `zulu-hub-continuidad-2026-08-29.md` (historia del arco Fase 4 / V3 visual) |
 | **Visión de producto multirubro**, con la tabla que concilia el plan contra lo implementado | [plan-multirubro-maestro-2026-08-29.md](plan-multirubro-maestro-2026-08-29.md) | Dirección (no orden de implementación) |
 | Plan ejecutado de separación de dominios + las 7 decisiones cerradas + contrato de `BusinessContext` (§5.4 payload, §5.5 consumo) | [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md) | Diseño ejecutado |
 | Deploy, respaldos, rollback y las trampas que ya costaron un incidente | [conocimiento/runbook-deploy-render.md](conocimiento/runbook-deploy-render.md) | Runbook |

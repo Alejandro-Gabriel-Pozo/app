@@ -791,13 +791,16 @@ negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-owner
   y es código de facturación, con `concurrency-reasoning` como skill y un TOCTOU
   de facturación ya documentado (`FACT-CONSOL-TOCTOU-01`): mirar el mensaje antes
   de asumir "contención".
-- **Documentales:** corregir el estado git stale de
-  `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (afirma
-  `HEAD=b088cbc` sin pushear; ya está en `origin/main`); DA-CONT-001
-  (parcial); DOC-ANCLA-001; CONTRACT-001; C-5 (rama de origen `RECEIVABLE`
-  desaparecida entre §8 y §24 de FACT-BORRADOR-001); ficha
-  `erp-auditoria-v2/fichas/M10-facturacion.md:133` stale ("6 decisiones
-  abiertas" cuando están cerradas).
+- **Documentales:** ✅ RESUELTO el estado git stale de
+  `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (decía `HEAD=b088cbc`,
+  14 commits sin push; corregido in-place el 07/09 — `4029b96`/`4d2d694`/`b088cbc`
+  están en `origin/main` y desplegados; `origin/main` = `9222e84`). Nota de
+  continuidad canónica **refrescada**: `zulu-hub-continuidad-2026-09-07.md`
+  reemplaza a la de `2026-08-29` (que quedó 9 días vieja). Sigue abierto:
+  DA-CONT-001 (resto — el corpus de continuidad no está indexado); DOC-ANCLA-001;
+  CONTRACT-001; C-5 (rama de origen `RECEIVABLE` desaparecida entre §8 y §24 de
+  FACT-BORRADOR-001); ficha `erp-auditoria-v2/fichas/M10-facturacion.md:133`
+  stale ("6 decisiones abiertas" cuando están cerradas).
 - **Backlog de producto:** Gap C1-C (mitad viva); AR-FACT-NO-ISSUED-01
   Fases 2-8 — incluido `getInvoicedFinancialTransactionIds()`
   (`sql.invoice.repository.ts:245-255` filtra solo `ISSUED` = hueco de
@@ -822,6 +825,6 @@ negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-owner
 - ✅ `pendientes-2026-09-05.md` marcado in-place para BRECHA-REFUND-01-B
   (⚠️ MITIGADO, `:143`). Nota menor: ese texto todavía dice "local sin push"
   — `6dcb047` ya está en `origin/main` (deployado 07/09).
-- Pendiente: el estado git stale de
-  `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11` (ver "Documentales"
-  en el arrastre).
+- ✅ Estado git stale de `continuidad-ar-fact-no-issued-01-2026-09-04.md:9-11`
+  corregido in-place el 07/09 (ver "Documentales" en el arrastre). Nota de
+  continuidad canónica refrescada a `zulu-hub-continuidad-2026-09-07.md`.

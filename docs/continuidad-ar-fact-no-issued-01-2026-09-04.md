@@ -5,9 +5,17 @@
 entradas de esta misma investigación quedaron fechadas "05/09/2026" por
 error de un commit al otro; el commit real es de hoy).
 
-**Rama:** ninguna — todo vive en el árbol de trabajo de `app-main`,
-`HEAD = b088cbc`, **14 commits por delante de `origin/main = 1f72f41`**,
-sin push. **Continúa directamente:**
+**Rama:** ninguna — `app-main` sobre `main`.
+
+> **Estado git — actualizado 07/09/2026 (cierra la línea git-state de
+> DA-CONT-001).** Cuando se escribió este checkpoint decía *"`HEAD = b088cbc`,
+> 14 commits por delante de `origin/main = 1f72f41`, sin push"*. **Ya no:**
+> `4029b96` · `4d2d694` · `b088cbc` (Fase 1) están en `origin/main` desde hace
+> tiempo y **desplegados** — `origin/main` está hoy en `9222e84` (deploy live,
+> ver `zulu-hub-continuidad-2026-09-07.md`). Lo único que sigue vigente de este
+> documento es el **diseño de Fases 2-8 + la decisión de rol**, sin implementar.
+
+**Continúa directamente:**
 `docs/continuidad-o2-f2-cierre-implementacion-2026-09-03.md` (el
 checkpoint de O2-F2/H-A que motivó esta investigación al auditar el diff
 post-cierre).

@@ -1,5 +1,18 @@
 # ZULU Hub — Continuidad operativa
 
+> **⚠️ SUPERSEDIDO el 07/09/2026 por
+> [`zulu-hub-continuidad-2026-09-07.md`](zulu-hub-continuidad-2026-09-07.md).**
+> Este documento es historia válida del arco Fase 4 read path + V3-a/V3-b
+> visual + cascada acotada; **dejó de ser el puntero de entrada**. No
+> confiar en su §1 "Estado de producción" — `origin/main` avanzó mucho
+> desde `898db8d` (hoy `9222e84`, desplegado).
+>
+> **Corrección git-state (cierra una línea DA-CONT-001):** el 4º bullet de
+> abajo dice *"**31/08:** … `a17fdd2` + `bb851e4`, `7c83928` — los 3 siguen
+> locales, sin pushear; producción no cambió"*. **Ya no:** los tres están en
+> `origin/main` y desplegados (verificado `git merge-base --is-ancestor` el
+> 07/09). El texto original se deja para no reescribir historia.
+
 - **Fecha de corte:** 2026-08-29, después del deploy de la Fase 3
 - **Actualizado:** 2026-08-30 — Fase 4 read path (4A+4B+4C), V3-a, V3-b (color de contexto por módulo) y retiro de `useBusinessModules()` (`productos/*` al `BusinessContext`, doble fuente cerrada) en producción, verificados dentro de sus límites. **Cableado acotado de la cascada** (`dbf9503`, precedido por `e384e3a`): `getBusinessModuleGates()` con escalones 1+3+`NOT_IMPLEMENTED`, `restrictedBy`/`origin` en el 402, GET de `/api/invoices` sin gate de módulo — **pusheado y verificado en el runtime desplegado el 30/08** (sesión de staff; §1). **31/08:** cerrado el Hueco 2 del RBAC con una segunda cerca (`a17fdd2`) + su documentación (`bb851e4`, `7c83928`) — **los 3 siguen locales, sin pushear**; producción no cambió
 - **Para qué:** que una sesión nueva sepa **dónde quedó el proyecto y qué sigue**, sin depender del historial conversacional

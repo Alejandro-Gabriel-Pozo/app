@@ -23,7 +23,7 @@ implementación** sigue siendo:
 |---|---|
 | Plan ejecutado de separación de dominios + las 7 decisiones cerradas | [plan-separacion-dominios-multirubro-2026-08-28.md](plan-separacion-dominios-multirubro-2026-08-28.md) |
 | Esquema real de la plataforma | [`src/db/platform.schema.sql`](../src/db/platform.schema.sql) |
-| Dónde quedó el proyecto y qué sigue | [zulu-hub-continuidad-2026-08-29.md](zulu-hub-continuidad-2026-08-29.md) |
+| Dónde quedó el proyecto y qué sigue | [zulu-hub-continuidad-2026-09-07.md](zulu-hub-continuidad-2026-09-07.md) |
 | Log del día | [pendientes-2026-08-29.md](pendientes-2026-08-29.md) |
 
 Cuando este documento y el código digan cosas distintas, **gana el código**,
