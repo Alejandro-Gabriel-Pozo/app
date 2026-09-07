@@ -529,27 +529,34 @@ mal — `git rev-list --count origin/main..HEAD` daba 26), working tree limpio.
   — mantener así. Gate de push+deploy por `architecture-governor`.
 - **CONCIL-INCONSIST-01 / OUTBOX-*:** ítems nuevos, ver "registrado por primera
   vez 07/09".
-- `c41e74f` fix ORDER-13 (clasificación transitorio/permanente + `describeDeadLetter`
-  + D1-A) · `e413180` docs (reconciliación pt1 + ítems diferidos) · `2520df2`
-  **O5 Bloque 4** (aviso por email a los `MANAGEMENT` en dead-letter, opción B —
-  join RBAC) · `1c1b058` B1 (throttle 15 min entre avisos) + B2 (nombre del
-  negocio en el mail). Los 4 con gate del `architecture-governor`, **locales
-  sin pushear**.
-- **Próximo:** commit de push del stack ORDER-13/O5 (`c41e74f`..`1c1b058`) —
-  requiere autorización del dueño **+ corrida verde de `integration` en CI**
-  (el join real de `getManagementEmails` no tiene test de integración — es el
-  único hueco que ninguna verificación estática cierra).
+- **ORDER-13 + O5 — ✅ RESUELTOS, pusheados y deployados.** `c41e74f` (ORDER-13:
+  clasificación transitorio/permanente + orden de cola anti poison-message +
+  `describeDeadLetter` + D1-A) · `e413180` + `1d5db2e` docs · `2520df2` (O5
+  bloque 4: email a los `MANAGEMENT` en dead-letter, opción B — join RBAC) ·
+  `1c1b058` (B1 throttle 15 min + B2 nombre del negocio, `getBusinessDisplayName`
+  protegido) · `38f847f` (test de integración del join RBAC). 6 gates del
+  `architecture-governor` + gate de push. CI verde (`integration` incluido:
+  `management-emails.integration.test.ts` 4/4 contra Postgres real). Deploy
+  `dep-daf9uhid…` = `38f847f` **live**, `migrate:tenants` 2/2 OK, sin errores
+  post-deploy, 0 warns `REFUND_BASE_CHANGED`.
+- **Auto-deploy de Render:** el dueño lo volvió a poner en **ON** (`autoDeploy:
+  yes`, trigger `commit`) tras este deploy → **de acá en más, push a `main` =
+  deploy a producción**, y Render NO espera a CI verde. Tenerlo en cuenta para
+  bloques con schema/riesgo en vuelo.
 - **Nuevos ítems del gate de bloque 4:** `EMAIL-FROMNAME-RFC5322-01` (quoting
-  del `fromName`) y la fragilidad del cooldown de B1 ante `pool.on('error')` —
-  ver abajo.
+  del `fromName`) y `OUTBOX-DL-THROTTLE-RESET-01` (cooldown de B1 in-memory,
+  `pool.on('error')` lo resetea) — ver "registrado por primera vez 07/09".
 
-**Estado git al cerrar:** `app-main` HEAD = `1c1b058` + este commit de docs,
-`origin/main` `76ae24c`, **5 commits sin pushear** (`c41e74f` clasificación ·
-`e413180` docs · `2520df2` O5 bloque 4 · `1c1b058` B1/B2 · este commit de docs),
-working tree limpio. `appfrontend-main` `613c206`. **Push del stack
-ORDER-13/O5 pendiente de autorización del dueño + corrida verde de
-`integration` en CI** (el join de `getManagementEmails` no tiene test de
-integración).
+**Estado git al cerrar:** `app-main` HEAD = `38f847f` + este commit de docs,
+`origin/main` = `38f847f` (todo pusheado y deployado; este commit de docs se
+pushea = auto-deploy no-op, sin schema). Working tree limpio.
+`appfrontend-main` `613c206` (pendiente: consumir `description`/`kind` del
+endpoint de dead-letter — pasada de frontend). **Nada bloqueante abierto en
+ORDER-13/O5** — los residuales viven en `CONCIL-INCONSIST-01` /
+`OUTBOX-RETRY-HIST-01` / `OUTBOX-BACKOFF-01` / `OUTBOX-DL-COMPENSATOR-01` /
+`OUTBOX-DL-THROTTLE-RESET-01` / `EMAIL-FROMNAME-RFC5322-01`. El
+`continuidad-order-lifecycle-integrity-v1-2026-09-03.md:215` (`autoDeploy: yes`)
+quedó accidentalmente vigente otra vez — no requiere corrección.
 
 **Para arrancar la sesión siguiente:** leer este archivo + el ADR común
 completo + el ADR de ORDER-10 (`diseno-cancelacion-orden-nota-credito-2026-09-05.md`,
@@ -674,26 +681,24 @@ comprobar. Detalle completo en el archivo del 05/09; acá una línea por ítem.
   legítima). **Bloque 3.** Sin schema (ADR `diseno-cancelacion-orden-nota-credito-2026-09-05.md`).
 - **ORDER-10 B3** — `?status=` en `GET /api/invoices` + bandeja de NC
   pendientes. **Bloque 4.** Sin schema.
-- **ORDER-13** — ⚠️ RESUELTO PARCIALMENTE (07/09/2026, código `c41e74f` +
-  ADR `diseno-order13-o5-dead-letter-2026-09-07.md`). **Cerrado por `c41e74f`:**
-  pt2 (mensaje de negocio, `describeDeadLetter`) + la clasificación
-  transitorio/permanente (bloque 1 del ADR). **Corrección a la línea vieja:**
-  pt1 NUNCA fue "clasificar por substring" — `categorizeError` (`outbox.worker.ts`)
-  ya clasificaba por tipo/código, nunca por texto (§0 del ADR). El pt1 real es
-  el de `pendientes-2026-09-05.md:358`: *el reintento manual resetea
-  `retry_count = 0`*. D1-A conserva ese reset a propósito (sin él el reintento
-  manual es un no-op) y **NO lo resuelve** — solo dejó de destruir `last_error`.
-  **Abierto, movido a `CONCIL-INCONSIST-01` y `OUTBOX-RETRY-HIST-01`:** la
-  conciliación "orden `COMPLETED` sin `CHARGE`" (el titular de este bloque) +
-  la visibilidad "reintentado N veces". Full ✅ cuando corra verde el job
-  `integration` en CI con los 3 tests tocados. **Era Bloque 5.**
-- **O5** — ✅ RESUELTO (código, local sin pushear). Clasificar el error
-  (`c41e74f`, compartido con pt2) + notificar a un rol: `2520df2` (email a
-  **todos** los `MANAGEMENT` en la transición, opción B — join RBAC
-  `PlatformRepository.getManagementEmails`) + `1c1b058` (throttle 15 min entre
-  avisos + nombre del negocio en el mail). Reusa `domain_events` +
-  `OutboxAlertBanner`, sin tabla nueva. Full ✅ cuando corra verde
-  `integration` en CI. **Era Bloque 6.**
+- **ORDER-13** — ✅ RESUELTO (07/09/2026, `c41e74f`, **pusheado + deployado** en
+  `dep-daf9uhid…`, `integration` verde en CI). Cerrado: pt2 (mensaje de negocio,
+  `describeDeadLetter`) + clasificación transitorio/permanente + orden de cola
+  anti poison-message + D1-A (`retryDeadLettered` deja de destruir `last_error`).
+  **Corrección a la línea vieja:** pt1 NUNCA fue "clasificar por substring"
+  (`categorizeError` ya clasificaba por tipo/código, §0 del ADR). El pt1 real
+  (`pendientes-2026-09-05.md:358`, *el reintento manual resetea `retry_count=0`*)
+  y el titular del bloque (conciliación "orden `COMPLETED` sin `CHARGE`") se
+  **movieron a `CONCIL-INCONSIST-01` + `OUTBOX-RETRY-HIST-01`** (D4-c opción c:
+  cerrar ORDER-13, abrir ítem chico separado). ADR `diseno-order13-o5-dead-letter-2026-09-07.md`.
+  **Era Bloque 5.**
+- **O5** — ✅ RESUELTO (07/09/2026, **pusheado + deployado**, `integration` verde).
+  Clasificar el error (`c41e74f`, compartido con pt2) + notificar a un rol:
+  `2520df2` (email a **todos** los `MANAGEMENT` en la transición, opción B —
+  join RBAC `PlatformRepository.getManagementEmails`, con test de integración
+  `management-emails.integration.test.ts` verde) + `1c1b058` (throttle 15 min +
+  nombre del negocio en el mail, `getBusinessDisplayName` protegido). Reusa
+  `domain_events` + `OutboxAlertBanner`, sin tabla nueva. **Era Bloque 6.**
 - **ORDER-15** — asimetría `voidByOrderId` (acepta `ADJUSTMENT`) vs
   `settleChargesByOrderId` (solo `CHARGE`); impacto hoy cero. **Se resuelve con
   B-núcleo+órdenes sub-bloque 4** (`cancelOrderWithCreditNote()` crea el primer
