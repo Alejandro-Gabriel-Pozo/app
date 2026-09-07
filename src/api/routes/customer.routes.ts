@@ -107,6 +107,7 @@ import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.f
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlNumberSequenceRepository } from '../../repositories/sql.number-sequence.repository.js';
 import { SqlReservationRepository }  from '../../reservas/sql.reservation.repository.js';
+import type { Reservation }          from '../../reservas/Reservation.js';
 import { SqlCustomerRepository }     from '../../clientes-finanzas/sql.customer.repository.js';
 import { SqlOccupancyRepository }    from '../../reservas/sql.occupancy.repository.js';
 import { SqlCategoryRepository }     from '../../reservas/sql.category.repository.js';
@@ -313,6 +314,39 @@ function requireCustomerId(req: Request, res: Response): string | null {
     return null;
   }
   return customerId;
+}
+
+/**
+ * RBAC-OWN-001 (docs/pendientes-2026-08-30.md; triage 07/09/2026) — guard de
+ * pertenencia del portal de cliente. El aislamiento ENTRE negocios ya es
+ * estructural (una BD por tenant); lo que NO lo es, y depende de que cada
+ * ruta lo enhebre a mano, es que dentro de un mismo negocio el cliente A no
+ * opere sobre la reserva del cliente B. Este helper centraliza el patrón
+ * "traer la reserva por :id → 404 si no existe → 403 si no es del cliente
+ * autenticado" que estaba copiado en `PATCH /me/reservations/:id` y en
+ * `/cancel`. Devuelve la reserva ya verificada, o `null` si ya respondió
+ * (el caller hace `return`). `accion` va en el texto del 403.
+ */
+export async function requireOwnReservation(
+  reservationId: string,
+  customerId: string,
+  reservationRepo: { getById(id: string): Promise<Reservation | undefined> },
+  res: Response,
+  accion: string,
+): Promise<Reservation | null> {
+  const reservation = await reservationRepo.getById(reservationId);
+  if (!reservation) {
+    res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
+    return null;
+  }
+  if (reservation.customer.id !== customerId) {
+    res.status(403).json({
+      code: 'FORBIDDEN',
+      message: `No tenés permiso para ${accion} esta reserva`,
+    });
+    return null;
+  }
+  return reservation;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,15 +729,8 @@ export function createCustomerRouter(
         if (!customerId) return;
 
         const { reservationService, reservationRepo } = buildService(req.db!, getTenantRawPool(req.user!.businessId!));
-        const existing = await reservationRepo.getById(reservationId);
-        if (!existing) {
-          res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
-          return;
-        }
-        if (existing.customer.id !== customerId) {
-          res.status(403).json({ code: 'FORBIDDEN', message: 'No tenés permiso para modificar esta reserva' });
-          return;
-        }
+        const existing = await requireOwnReservation(reservationId, customerId, reservationRepo, res, 'modificar');
+        if (!existing) return;
 
         if (existing.status !== ReservationStatus.PENDING) {
           res.status(409).json({
@@ -754,16 +781,8 @@ export function createCustomerRouter(
         const businessId = req.user!.businessId!;
 
         const { reservationService, reservationRepo } = buildService(req.db!, getTenantRawPool(businessId));
-        const reservation = await reservationRepo.getById(reservationId);
-        if (!reservation) {
-          res.status(404).json({ code: 'NOT_FOUND', message: 'Reserva no encontrada' });
-          return;
-        }
-
-        if (reservation.customer.id !== customerId) {
-          res.status(403).json({ code: 'FORBIDDEN', message: 'No tenés permiso para cancelar esta reserva' });
-          return;
-        }
+        const reservation = await requireOwnReservation(reservationId, customerId, reservationRepo, res, 'cancelar');
+        if (!reservation) return;
 
         if (!CANCELLABLE_STATUSES.includes(reservation.status)) {
           res.status(409).json({
