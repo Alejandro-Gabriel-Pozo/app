@@ -510,6 +510,26 @@ interferente que residual B-1 nombra (`pendientes-2026-09-06.md:79-88`) es
 **Estado: sigue abierto, redefinido como 3.2-b, sin fecha, no autorizado
 en esta sesión.**
 
+### #26 — Grounding `auditor-circuitos-erp` para 3.3 (subcasos 1-2), insumo del gate — NO diseño cerrado
+
+Detalle completo en `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+§6.3 (in-place, mismo commit). Subcaso 1 sin objeciones. Subcaso 2: cita de
+ERPNext corregida (el mecanismo real son 3 piezas — reversión siempre contra
+el origen atómico, nunca contra la consolidada directa; el espejo hacia la
+consolidada es automático; el lookup solo resuelve un FK ya grabado, sin
+prorrateo) y **dos huecos concretos sin bloque asignado**: (1) falta
+`getInFlightCreditNoteTotalForUpdate()`-hermana scoped a `(invoiceId,
+reservationId)` — la existente topea la factura entera, no evita que una
+reserva de la consolidada se lleve más de lo que le corresponde dentro del
+tope global; (2) `buildCreditNote()` (`invoice.service.ts:694-702`)
+calcularía mal el desglose de IVA si el orquestador le pasa el monto de
+N4-a sin más — doble prorrateo, denominadores distintos. Además: lock
+ordering reserva→factura nuevo (sin cerca que lo vigile, no explotable hoy),
+F4 sigue siendo predicado por factura completa (comportamiento correcto,
+a declarar explícito), `invoice_charges.UNIQUE(financial_transaction_id)`
+como invariante estructural gratis. **Todo esto va al gate de diseño de
+3.3, que sigue sin arrancar.**
+
 ---
 
 ## ✅ B-núcleo+órdenes — CERRADO (gate final `architecture-governor`, 08/09/2026)
