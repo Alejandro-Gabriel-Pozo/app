@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SqlInvoiceRepository } from './sql.invoice.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import { CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
 
 // Regresión: cae_vto es DATE en Postgres -- el driver `pg` lo devuelve como
 // objeto Date en runtime, no como string, pese a que el tipo de la fila lo
@@ -174,7 +175,7 @@ describe('SqlInvoiceRepository — getOutstandingByCustomerId()', () => {
 // solo la forma de la query y el parseo del NUMERIC, mismo criterio que
 // getOutstandingByCustomerId arriba (los fakes son ciegos al SQL).
 describe('SqlInvoiceRepository — getIssuedCreditNoteCompensationTotal()', () => {
-  it('arma la query: reversed_invoice_id + whitelist de tipo + NC ISSUED + UNION ALL individual/consolidada', async () => {
+  it('arma la query: reversed_invoice_id + whitelist de tipo + NC ISSUED + UNION ALL individual/consolidada + cbte_tipo (WHERE externo, las 2 ramas lo seleccionan)', async () => {
     const mockSqlClient = mockClient([{ compensated: '0' }]);
     const repo = new SqlInvoiceRepository(mockSqlClient);
 
@@ -190,7 +191,14 @@ describe('SqlInvoiceRepository — getIssuedCreditNoteCompensationTotal()', () =
     expect(sql).toContain('SUM(dedup.imp_total)');
     // NO filtra r.status -- anclado a la NC, no al ledger (Defecto B).
     expect(sql).not.toContain("r.status =");
-    expect(params).toEqual(['inv-1']);
+    // 3-ter (bloque 1.4): el filtro de cbte_tipo va UNA vez, en el WHERE
+    // externo (al lado de nc.status), y las DOS ramas del UNION ALL
+    // seleccionan la columna. Por la constante, nunca `= 8` literal.
+    expect((sql.match(/nc\.cbte_tipo = ANY\(\$2::int\[\]\)/g) ?? []).length).toBe(1);
+    const branchCbteTipo = (sql.match(/,\s*(?:i\.)?cbte_tipo\b/g) ?? []).length;
+    expect(branchCbteTipo).toBe(2); // seleccionada en rama 1 y rama 2
+    expect(sql).not.toContain('cbte_tipo = 8');
+    expect(params).toEqual(['inv-1', [CBTE_TIPO_NOTA_CREDITO_B]]);
   });
 
   it('convierte la suma (string de pg) a number', async () => {

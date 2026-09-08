@@ -17,7 +17,7 @@ import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError } from '../domain/errors.js';
-import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from './afip-catalog.constants.js';
+import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 
@@ -847,6 +847,32 @@ describe('InvoiceService', () => {
         })),
       );
     }
+
+    it('bloque 1.4 -- el routing (`:357`) de una FT REFUND/ADJUSTMENT produce un cbte_tipo que F4 reconoce como NC', async () => {
+      // F4 (`getIssuedCreditNoteCompensationTotal`) filtra `nc.cbte_tipo` por
+      // `CBTE_TIPOS_NOTA_CREDITO`. Ese filtro es correcto sólo mientras el
+      // routing de `requestInvoice()` emita una NC para toda FT revertidora.
+      // Si el `if (tx.type === 'REFUND' || tx.type === 'ADJUSTMENT')` de
+      // `:357` dejara de mandar a `buildCreditNote()`, o `buildCreditNote()`
+      // hardcodeara otro `CbteTipo`, F4 dejaría de contar esa compensación
+      // (fail-closed: la cancelación queda bloqueada de más). Este test ata
+      // las dos puntas.
+      seedOriginalInvoice();
+      const service = buildService({
+        tx: makeTx({ type: 'REFUND', amount: 100, reservationId: 'res-1', reversedInvoiceId: 'inv-original' }),
+        client: fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }),
+      });
+      const invoiceRefund = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(CBTE_TIPOS_NOTA_CREDITO).toContain(invoiceRefund.cbteTipo);
+
+      seedOriginalInvoice({ id: 'inv-orden-1_4', financialTransactionId: 'ft-charge-1_4' });
+      const serviceAdj = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -100, orderId: 'ord-1_4', reversedInvoiceId: 'inv-orden-1_4' }),
+        client: fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }),
+      });
+      const invoiceAdj = await serviceAdj.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(CBTE_TIPOS_NOTA_CREDITO).toContain(invoiceAdj.cbteTipo);
+    });
 
     it('rechaza un REFUND sin reversedInvoiceId (ledger-only, sin factura que corregir)', async () => {
       const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));

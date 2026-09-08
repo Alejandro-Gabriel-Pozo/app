@@ -3,7 +3,7 @@ import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, Invoi
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import { isInvoiceFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
-import { CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
+import { CBTE_TIPO_FACTURA_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { randomUUID } from 'node:crypto';
 
 interface InvoiceRow {
@@ -278,12 +278,16 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // ADR común cancelar-con-NC (06/09/2026) -- mitad SQL del predicado F4.
     // Ver el docblock de la interfaz para la doctrina completa.
     //
-    // El sub-SELECT `nc` es el ESPEJO EXACTO del UNION ALL de
-    // resolveInvoiceLinkage() (arriba): una NC cubre su transacción
+    // El sub-SELECT `nc` espeja los CAMINOS del UNION ALL de
+    // resolveInvoiceLinkage() (arriba): un comprobante llega a su transacción
     // revertidora de forma individual (invoices.financial_transaction_id) o
-    // consolidada (invoice_charges). Mantenerlos alineados es MANUAL -- no
-    // hay typecheck que ate las dos queries; si resolveInvoiceLinkage()
-    // suma un tercer camino, este también.
+    // consolidada (invoice_charges). Mantener esos dos caminos alineados es
+    // MANUAL -- no hay typecheck que ate las dos queries; si
+    // resolveInvoiceLinkage() suma un tercer camino, este también.
+    // Los PREDICADOS sí divergen a propósito desde el bloque 1.4:
+    // resolveInvoiceLinkage() quiere CUALQUIER comprobante ligado a la FT
+    // (para bloquear la cancelación); acá se filtra `nc.cbte_tipo` para contar
+    // SÓLO Notas de Crédito como compensación (ver más abajo).
     //
     // `r.type IN ('REFUND','ADJUSTMENT')`: whitelist de N1.b. Desde schema v47
     // el CHECK `chk_financial_transactions_reversed_invoice_type` impide una
@@ -292,6 +296,25 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // `reversed-invoice-id-convention.test.ts`). El filtro se mantiene igual:
     // si el CHECK y esta whitelist se desalinearan, fail-closed (la
     // compensación no cuenta -> la cancelación queda bloqueada).
+    //
+    // `nc.cbte_tipo = ANY($2)` en el WHERE EXTERNO (3-ter, bloque 1.4), al lado
+    // de `nc.status = 'ISSUED'` -- las dos ramas del UNION ALL seleccionan
+    // `cbte_tipo` como columna, el predicado se aplica una sola vez sobre el
+    // resultado unido. Se elige el WHERE externo, no un filtro por rama: una
+    // 3ª rama futura que omita la columna revienta con "each UNION query must
+    // have the same number of columns" (fail-loud en CI), mientras que una que
+    // omitiera un `AND cbte_tipo = ANY(...)` por rama compilaría y
+    // reintroduciría el fail-OPEN en silencio. Mismo nivel que `nc.status`,
+    // que es el predicado hermano.
+    // Sólo una Nota de Crédito compensa. Sin el filtro, una Factura B (u otro
+    // comprobante) cuyo `financial_transaction_id` -- o cuya fila
+    // `invoice_charges` -- apuntara por un bug a una FT revertidora sumaría su
+    // `imp_total` -> fail-OPEN (la cancelación se destraba sin NC real).
+    // `CBTE_TIPOS_NOTA_CREDITO`, no `= 8` literal: NC A/C entran ahí el día que
+    // se emita Factura A/C. Acoplado por invariante al routing de
+    // `InvoiceService.requestInvoice()` (una FT REFUND/ADJUSTMENT produce
+    // siempre una NC) -- ver el docblock de la constante y los tests de
+    // routing de `invoice.service.test.ts`.
     //
     // NO se filtra `r.status`: F4 se ancla a la NC `ISSUED`, no al ledger
     // (Defecto B). Si la NC llegó a AFIP el crédito existe aunque la fila
@@ -314,30 +337,47 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // Dedup por `(id, imp_total)`, NO `SUM(DISTINCT imp_total)`: dos NC
     // distintas con el mismo importe SÍ suman las dos.
     //
-    // HUECO que el DISTINCT NO cierra (registrado como bloqueante de
-    // B-reservas): una NC consolidada que cubre revertidoras de facturas
-    // ORIGINALES distintas -- para `invoiceId = A` queda una fila con el
-    // imp_total COMPLETO de la NC, incluida la porción que compensa a B ->
-    // sobre-conteo. Territorio "pool mixto", §6.3 del ADR.
+    // HUECO que ni el DISTINCT ni el filtro de `cbte_tipo` cierran: una NC
+    // consolidada que cubre revertidoras de facturas ORIGINALES distintas --
+    // para `invoiceId = A` queda una fila con el imp_total COMPLETO de la NC,
+    // incluida la porción que compensa a B -> sobre-conteo. Lo cierra la
+    // DOCTRINA N2.a del ADR (una NC apunta a exactamente UNA factura -- las 3
+    // referencias, ERPNext/Odoo/QloApps, modelan NC<->factura 1:1), no una
+    // atribución por `invoice_charges.amount` en esta SQL. El enforcement es un
+    // guard (rechazar una NC cuyas revertidoras abarquen >1
+    // `reversed_invoice_id`) + una cerca de datos, que van en `buildCreditNote()`
+    // extendido o en el orquestador `cancel<X>WithCreditNote()`, NUNCA en los
+    // services (F5), y entran con el PRIMER builder que pueda crear una NC
+    // consolidada (B-reservas subcaso 2 / el escape). HOY no hay exposición de
+    // ESTE hueco: `buildCreditNote()` nunca pasa `charges` a
+    // `createWithClient()` -> ningún camino crea una NC consolidada. (La rama 2
+    // del UNION ALL NO es "defensiva" a secas: `invoice_charges` sí tiene filas
+    // reales, por las Facturas B consolidadas de cuentas por cobrar
+    // -- `invoice.service.ts`, `financialTransactionId: null` + charges de
+    // `pending`; lo que hoy la salva de F4 es que esos charges apuntan a FTs
+    // `CHARGE`, no a revertidoras, y desde 1.4 además el filtro `cbte_tipo` las
+    // descarta. Lo defensivo es puntualmente el caso N2.a.) Ver
+    // `pendientes-2026-09-06.md` (F4-CONSOL-XFACT-01) y ADR §6.3 / §10.
     const { rows } = await client.query<{ compensated: string }>(
       `SELECT COALESCE(SUM(dedup.imp_total), 0) AS compensated
          FROM (
            SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
              FROM financial_transactions r
              JOIN (
-               SELECT id AS nc_invoice_id, financial_transaction_id AS reverting_ft_id, imp_total, status
+               SELECT id AS nc_invoice_id, financial_transaction_id AS reverting_ft_id, imp_total, status, cbte_tipo
                  FROM invoices
                  WHERE financial_transaction_id IS NOT NULL
                UNION ALL
-               SELECT i.id AS nc_invoice_id, ic.financial_transaction_id AS reverting_ft_id, i.imp_total, i.status
+               SELECT i.id AS nc_invoice_id, ic.financial_transaction_id AS reverting_ft_id, i.imp_total, i.status, i.cbte_tipo
                  FROM invoice_charges ic
                  JOIN invoices i ON i.id = ic.invoice_id
              ) nc ON nc.reverting_ft_id = r.id
             WHERE r.reversed_invoice_id = $1
               AND r.type IN ('REFUND', 'ADJUSTMENT')
               AND nc.status = 'ISSUED'
+              AND nc.cbte_tipo = ANY($2::int[])
          ) dedup`,
-      [invoiceId],
+      [invoiceId, [...CBTE_TIPOS_NOTA_CREDITO]],
     );
     return parseFloat(rows[0]!.compensated);
   }

@@ -32,6 +32,28 @@ export const CBTE_TIPO_FACTURA_C = 11;
  */
 export const CBTE_TIPO_NOTA_CREDITO_B = 8;
 
+/**
+ * Todos los `CbteTipo` que son una Nota de Crédito. Hoy solo NC B — la única
+ * asociable a Factura B (lo único que este sistema emite hoy). NC A (`3`) y
+ * NC C (`13`) entran acá **el día que se emita Factura A/C**, no antes.
+ *
+ * F4 (`SqlInvoiceRepository.getIssuedCreditNoteCompensationTotal()`) filtra las
+ * dos ramas de su `UNION ALL` por este conjunto: sólo una Nota de Crédito
+ * cuenta como compensación de una factura. Sin el filtro, una Factura B (u
+ * otro comprobante) que por un bug apunte a una `financial_transaction`
+ * revertidora inflaría el total compensado → fail-OPEN (la cancelación se
+ * destraba sin NC real). Usar la constante en el SQL, **nunca `= 8` literal**.
+ *
+ * Acoplado por invariante al routing de `InvoiceService.requestInvoice()`
+ * (`invoice.service.ts`, `if (tx.type === 'REFUND' || tx.type === 'ADJUSTMENT')`):
+ * ese branch produce siempre una NC (`buildCreditNote()` hardcodea
+ * `CbteTipo = CBTE_TIPO_NOTA_CREDITO_B`). Si el routing dejara de producir una
+ * NC para una FT revertidora, F4 dejaría de contarla (fail-closed). El test
+ * en `afip-catalog.constants.test.ts` + los de routing de
+ * `invoice.service.test.ts` fijan ese acople.
+ */
+export const CBTE_TIPOS_NOTA_CREDITO: readonly number[] = [CBTE_TIPO_NOTA_CREDITO_B];
+
 /** Concepto del comprobante — determina si van fechas de servicio (FchServDesde/Hasta). */
 export const CONCEPTO_PRODUCTOS = 1;
 export const CONCEPTO_SERVICIOS = 2;

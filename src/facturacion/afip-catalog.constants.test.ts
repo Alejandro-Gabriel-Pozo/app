@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveDocTipo, DOC_TIPO_CUIT, DOC_TIPO_DNI, DOC_TIPO_CONSUMIDOR_FINAL, paymentMethodLabel,
   resolveIvaAlicuotaId, ivaAlicuotaPercentFromId, ivaAlicuotaLabel,
+  CBTE_TIPOS_NOTA_CREDITO, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPO_FACTURA_B, CBTE_TIPO_FACTURA_A, CBTE_TIPO_FACTURA_C,
 } from './afip-catalog.constants.js';
 import { UnsupportedIvaRateError } from '../domain/errors.js';
 
@@ -68,5 +69,24 @@ describe('ivaAlicuotaPercentFromId / ivaAlicuotaLabel', () => {
   it('un Id desconocido no inventa un %, muestra el Id crudo', () => {
     expect(ivaAlicuotaPercentFromId(99)).toBeUndefined();
     expect(ivaAlicuotaLabel(99)).toBe('Id 99');
+  });
+});
+
+// Bloque 1.4 (3-ter) -- el conjunto de CbteTipo que F4
+// (getIssuedCreditNoteCompensationTotal) reconoce como compensación.
+describe('CBTE_TIPOS_NOTA_CREDITO', () => {
+  it('contiene la NC B y hoy es SÓLO eso (NC A/C entran cuando se emita Factura A/C)', () => {
+    expect(CBTE_TIPOS_NOTA_CREDITO).toContain(CBTE_TIPO_NOTA_CREDITO_B);
+    expect([...CBTE_TIPOS_NOTA_CREDITO]).toEqual([CBTE_TIPO_NOTA_CREDITO_B]);
+  });
+
+  it('NO contiene ningún tipo de FACTURA -- una factura que apunte a una FT revertidora no debe contar como NC en F4', () => {
+    expect(CBTE_TIPOS_NOTA_CREDITO).not.toContain(CBTE_TIPO_FACTURA_A);
+    expect(CBTE_TIPOS_NOTA_CREDITO).not.toContain(CBTE_TIPO_FACTURA_B);
+    expect(CBTE_TIPOS_NOTA_CREDITO).not.toContain(CBTE_TIPO_FACTURA_C);
+  });
+
+  it('no está vacío -- un conjunto vacío haría que F4 nunca cuente ninguna compensación (fail-closed total)', () => {
+    expect(CBTE_TIPOS_NOTA_CREDITO.length).toBeGreaterThan(0);
   });
 });
