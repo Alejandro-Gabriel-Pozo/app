@@ -98,7 +98,7 @@ capa iv), después B3, B-reservas, A1-A5. **Plan total:**
 | **SEC-ROT-001** | ⚠️ Runbook ✅ (08/09, `docs/conocimiento/runbook-rotacion-db-encryption-key.md`). Falta el **código**: modo 2 claves en `deriveEncryptionKey()` + `src/scripts/reencrypt-secrets.ts` (barrido). Decisión de prioridad del dueño — no hay incidente. Hallazgo: la clave cifra 3 familias (connection strings + cert/key AFIP + tickets WSAA), plataforma y cada tenant. | `src/platform/tenant-db.setup.ts` |
 | **RBAC-SYNC-001 §4** | Test que cruce sección 4 de `rbac-matriz-endpoints.md` ↔ `PUBLIC_ROUTES`. | Baja urgencia. |
 | **ADR común "cancelar con NC"** | sub-bloques 2-6 (ver §3). | Requiere `criterios-negocio` + `auditor-circuitos-erp`. |
-| Higiene | `.github/workflows/ci.yml` job `integration`: el comentario "Techo explícito: 19 suites" quedó viejo (hay 22-23). | — |
+| ~~Higiene: techo de suites de `ci.yml`~~ ✅ | **Hecho el 08/09** (bloque 0.1 del plan). Comentario del job `integration` actualizado 19→24, contando con el glob recursivo de `vitest.integration.config.ts:25`. Detalle en `docs/pendientes-2026-09-08.md`. | — |
 
 **Flake conocido (no bloqueante):** `credit-note-compensation.integration.test.ts`
 falló 2 de 4 corridas full de `npm run test:integration` **contra Neon

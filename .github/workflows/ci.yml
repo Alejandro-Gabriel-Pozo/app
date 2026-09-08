@@ -175,9 +175,18 @@ jobs:
   integration:
     runs-on: ubuntu-latest
 
-    # Techo explícito: 19 suites, cada una con CREATE DATABASE + schema.sql
-    # completo. Si algo se cuelga (un lock que no se libera, un pool que no
-    # cierra), que corte acá y no a los 360 minutos del default.
+    # Techo explícito: 24 suites al 08/09/2026 — decía 19 desde antes de la
+    # familia ORDER / el ADR cancelar-con-NC. Contar con el MISMO glob que
+    # corre CI (`vitest.integration.config.ts:25`,
+    # `src/tests/integration/**/*.test.ts` — recursivo):
+    #   find src/tests/integration -name '*.test.ts' | wc -l
+    # Número a MANO: lo desactualiza cualquier suite nueva bajo
+    # `src/tests/integration/` (incluidas subcarpetas — hoy solo hay
+    # `helpers/`, sin `.test.ts`). Cada suite hace CREATE DATABASE +
+    # schema.sql completo. Si algo se cuelga (un lock que no se libera, un
+    # pool que no cierra), que corte acá y no a los 360 minutos del default.
+    # 20' es ~10x margen: la única corrida medida contra postgres:16-alpine
+    # local fue 22 suites / 104 s (zulu-hub-continuidad-2026-09-07.md, 07/09).
     timeout-minutes: 20
 
     services:

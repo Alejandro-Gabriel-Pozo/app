@@ -114,9 +114,18 @@ precedente ERPNext `StockOverReturnError`).
 
 ## 🟠 Deuda menor detectada (08/09)
 
-- **CI: techo "19 suites" stale → son 24.** `.github/workflows/ci.yml:178`
-  ("Techo explícito: 19 suites"), `:181` `timeout-minutes: 20`. Con auto-deploy de
-  Render en ON, push = deploy y Render no espera CI verde. → bloque 0.1 del plan.
+- **CI: techo "19 suites" stale → son 24.** ✅ RESUELTO (bloque 0.1 del plan,
+  08/09): `.github/workflows/ci.yml` — comentario del job `integration`
+  actualizado 19→24, contando con el **mismo glob recursivo que corre CI**
+  (`vitest.integration.config.ts:25`,
+  `find src/tests/integration -name '*.test.ts' | wc -l`), declarado que el
+  número es a mano y qué lo desactualiza (suite nueva bajo
+  `src/tests/integration/`, subcarpetas incluidas). `timeout-minutes: 20` sin
+  cambio (~10x margen: única corrida medida = 22 suites / 104 s contra
+  `postgres:16-alpine` local, `zulu-hub-continuidad-2026-09-07.md`). Continuidad
+  09-07 reconciliada in-place. Pendiente opcional: cerca que cuente los archivos
+  con ese glob + `stripComments` y falle si el comentario diverge (patrón
+  `EXPECTED_AUTHORIZE_CALL_SITES`) — bloque aparte.
 - **Comentario stale en `src/facturacion/sql.invoice.repository.ts` ~`:314-318`:**
   dice que el hueco cruzado de F4 está *"registrado como bloqueante de B-reservas"*.
   El ADR N2.a lo resolvió como doctrina. Corregir junto con el bloque 1.4 (3-ter).
