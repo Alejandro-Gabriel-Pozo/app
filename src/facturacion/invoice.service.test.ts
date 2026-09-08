@@ -51,6 +51,12 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getRefundableForUpdate(): Promise<number> { return 0; }
   // ADR común cancelar-con-NC (06/09/2026, F4) -- sin caller todavía en InvoiceService.
   async getIssuedCreditNoteCompensationTotal(): Promise<number> { return 0; }
+  // Bloque 2.4 (tope N5, 08/09/2026) -- SÍ tiene caller real (buildCreditNote()).
+  // Default 0 ("nada en vuelo todavía") para no romper los tests de emisión
+  // de NC existentes que no ejercitan el tope; los tests DEDICADOS a N5
+  // sobreescriben esto o van a integración contra Postgres real (el fake no
+  // modela financial_transactions.reversed_invoice_id, C4 del gate).
+  async getInFlightCreditNoteTotalForUpdate(): Promise<number> { return 0; }
   // O2-F2 (03/09/2026)
   async getByCustomerId(customerId: string): Promise<Invoice[]> {
     return [...this.invoices.values()].filter((i) => i.customerId === customerId);

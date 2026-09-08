@@ -53,6 +53,7 @@ import {
   OrderCancelledCannotInvoiceError,
   ReservationCancelledCannotInvoiceError,
   OrderInvoiceHasNoLinesError,
+  CreditNoteCapExceededError,
 } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems } from './cancel-with-credit-note.js';
@@ -845,6 +846,19 @@ export class InvoiceService {
 
     let invoice!: Invoice;
     await this.transactionManager.run(async (client: SqlClient) => {
+      // Bloque 2.4 (tope N5, gate `architecture-governor` 08/09/2026) --
+      // lockea `original` (la factura que se está revirtiendo) ANTES de
+      // insertar la NC nueva, y suma lo que ya está en vuelo contra ella
+      // (ISSUED/PENDING/FAILED_UNCERTAIN, ver docblock del método del
+      // repositorio para el bypass declarado de `retryExisting()` -- C1 del
+      // gate -- y la nota C3 sobre un duplicado de idempotencia concurrente).
+      // Nunca clamp (N5): si excede, se LANZA, no se recorta el monto.
+      const inFlight = await this.invoiceRepo.getInFlightCreditNoteTotalForUpdate(client, original.id);
+      const projected = round2(inFlight + impTotal);
+      if (projected > round2(original.impTotal + CREDIT_NOTE_COMPENSATION_TOLERANCE)) {
+        throw new CreditNoteCapExceededError(original.id, tx.id, impTotal, inFlight, original.impTotal);
+      }
+
       invoice = await this.invoiceRepo.createWithClient(
         client,
         {

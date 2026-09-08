@@ -709,6 +709,25 @@ export class CreditNoteIssuedOrderNotCancellableError extends DomainError {
 }
 
 /**
+ * ADR común cancelar-con-NC, N5 (bloque 2.4, `docs/pendientes-2026-09-08.md`
+ * #21, gate `architecture-governor` 08/09/2026) -- tope acumulado sobre lo
+ * YA acreditado o en vuelo contra una factura revertida, excedido. Genérico
+ * (no order/reservation-específico, a diferencia de sus 3 hermanas de esta
+ * familia): `buildCreditNote()` es compartido entre el escape de órdenes y
+ * el de reservas. N5 exige forma dura -- NUNCA clamp silencioso (precedente
+ * ERPNext `StockOverReturnError`) -- así que este error se LANZA, no se
+ * recorta el monto.
+ */
+export class CreditNoteCapExceededError extends DomainError {
+  constructor(reversedInvoiceId: string, financialTransactionId: string, requestedAmount: number, alreadyInFlight: number, impTotal: number) {
+    super(
+      `La Nota de Crédito (transacción "${financialTransactionId}") por ${requestedAmount} contra la factura "${reversedInvoiceId}" excede el tope: ya hay ${alreadyInFlight} en vuelo (emitidas o pendientes de resolución con AFIP) sobre un total de ${impTotal}. No se emite -- el monto nunca se recorta (N5).`,
+      'CREDIT_NOTE_CAP_EXCEEDED',
+    );
+  }
+}
+
+/**
  * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- cierre de la
  * ventana de carrera (TOCTOU) entre `cancelOrder()` y `requestInvoice()`:
  * las dos toman `FOR UPDATE` sobre la MISMA fila de `orders` antes de mutar

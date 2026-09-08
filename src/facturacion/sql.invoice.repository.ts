@@ -72,6 +72,34 @@ function rowToEntity(row: InvoiceRow): Invoice {
   };
 }
 
+/**
+ * Fragmento compartido entre `getIssuedCreditNoteCompensationTotal()` (F4) y
+ * `getInFlightCreditNoteTotalForUpdate()` (N5, bloque 2.4) -- las dos cuentan
+ * "qué Notas de Crédito apuntan a la factura `reversed_invoice_id = $1`", y
+ * solo difieren en QUÉ `nc.status` cuenta como compensación. Extraído
+ * (08/09/2026, gate bloque 2.4, C5) para que dejen de ser dos copias a mano
+ * del mismo `UNION ALL` -- antes de esto, F4 llevaba un aviso de que
+ * mantenerlas alineadas era manual; ahora el SQL en sí las ata.
+ *
+ * **Sigue habiendo un TERCER camino que se mantiene alineado a mano, no por
+ * typecheck:** `resolveInvoiceLinkage()` (arriba en este archivo) tiene el
+ * mismo UNION de "individual vs. consolidada" pero con columnas y predicado
+ * DISTINTOS (`id, status, afip_contacted`, sin filtrar por `cbte_tipo` --
+ * quiere CUALQUIER comprobante ligado, no solo NC), así que no comparte este
+ * fragmento literal. Si `resolveInvoiceLinkage()` suma un tercer camino
+ * (además de individual/consolidada), este fragmento también necesita esa
+ * rama.
+ */
+const NC_LINKAGE_UNION = `
+  SELECT id AS nc_invoice_id, financial_transaction_id AS reverting_ft_id, imp_total, status, cbte_tipo
+    FROM invoices
+    WHERE financial_transaction_id IS NOT NULL
+  UNION ALL
+  SELECT i.id AS nc_invoice_id, ic.financial_transaction_id AS reverting_ft_id, i.imp_total, i.status, i.cbte_tipo
+    FROM invoice_charges ic
+    JOIN invoices i ON i.id = ic.invoice_id
+`;
+
 export class SqlInvoiceRepository implements InvoiceRepository {
   constructor(private readonly db: SqlClient) {}
 
@@ -371,15 +399,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
          FROM (
            SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
              FROM financial_transactions r
-             JOIN (
-               SELECT id AS nc_invoice_id, financial_transaction_id AS reverting_ft_id, imp_total, status, cbte_tipo
-                 FROM invoices
-                 WHERE financial_transaction_id IS NOT NULL
-               UNION ALL
-               SELECT i.id AS nc_invoice_id, ic.financial_transaction_id AS reverting_ft_id, i.imp_total, i.status, i.cbte_tipo
-                 FROM invoice_charges ic
-                 JOIN invoices i ON i.id = ic.invoice_id
-             ) nc ON nc.reverting_ft_id = r.id
+             JOIN (${NC_LINKAGE_UNION}) nc ON nc.reverting_ft_id = r.id
             WHERE r.reversed_invoice_id = $1
               AND r.type IN ('REFUND', 'ADJUSTMENT')
               AND nc.status = 'ISSUED'
@@ -388,6 +408,81 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       [invoiceId, [...CBTE_TIPOS_NOTA_CREDITO]],
     );
     return parseFloat(rows[0]!.compensated);
+  }
+
+  async getInFlightCreditNoteTotalForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
+    // Bloque 2.4 (tope N5, `docs/pendientes-2026-09-08.md` #21, gate
+    // `architecture-governor` 08/09/2026) -- a diferencia de
+    // `getIssuedCreditNoteCompensationTotal()` (F4, solo `ISSUED`, doctrina
+    // "el predicado se ancla al comprobante EMITIDO, nunca al ledger"), acá
+    // la pregunta es otra: F4 pregunta "¿puedo cancelar normalmente?"
+    // (fail-closed = exigir NC `ISSUED`); N5 pregunta "¿queda cupo para
+    // emitir OTRA NC?" (fail-closed = contar TODO lo en vuelo, incluso lo
+    // que todavía no se resolvió con AFIP). Por eso este método cuenta
+    // `ISSUED` + `PENDING` + `FAILED_UNCERTAIN` -- NO invierte la doctrina
+    // F4, son predicados de preguntas distintas sobre la misma tabla.
+    //
+    // `REJECTED` queda afuera a propósito: AFIP confirmó que el comprobante
+    // no existe, no consume cupo real.
+    // **Bypass declarado, NO cerrado en este bloque (condición C1 del gate
+    // 08/09/2026):** `retryExisting()` (`invoice.service.ts:897-915`) puede
+    // re-emitir una fila `REJECTED` SIN volver a pasar por
+    // `buildCreditNote()` -- así que sin este chequeo de cap. Hoy es
+    // INALCANZABLE (un solo escritor por factura, mismo argumento que cerró
+    // `pendientes-2026-09-08.md` #21 originalmente); se vuelve alcanzable
+    // con el bloque 3.1 (`getByReservationId()` UNION con consolidadas).
+    // Cerrarlo bien (¿el re-chequeo de `retryExisting()` excluye su propia
+    // fila, o hace falta otro mecanismo?) es una decisión de diseño aparte,
+    // registrada en `pendientes-2026-09-08.md`, gate propio -- NO alcance de
+    // este bloque.
+    //
+    // Consumidores PERMANENTES reales del cap (corrección C2 del gate --
+    // la redacción anterior de este comentario en el ADR/plan estaba mal:
+    // decía que una NC `PENDING` "rechazada por AFIP" consumía cupo para
+    // siempre, pero una NC rechazada PASA a `REJECTED` y este filtro la
+    // excluye -- no consume nada):
+    //  1. `FAILED_UNCERTAIN` con `afip_contacted = true` -- `retryExisting()`
+    //     la devuelve tal cual (`:899`), nunca se resuelve sola.
+    //  2. `PENDING` colgada por muerte del proceso entre el COMMIT de la fila
+    //     y la respuesta de AFIP.
+    // `FAILED_UNCERTAIN` con `afip_contacted = false` SÍ se reintenta
+    // automáticamente y termina resolviéndose -- no es un consumidor
+    // permanente. Mismo TTL/huérfanos ya registrado como deuda aceptada en
+    // `pendientes-2026-09-08.md` (gate bloque 2.2) -- este bloque no lo
+    // agrava ni lo resuelve, antes no había cap en absoluto.
+    //
+    // **Nota C3 (gate 08/09/2026):** `getByIdempotencyKey()` en
+    // `requestInvoice()` NO toma lock -- dos llamadas concurrentes con el
+    // MISMO `financialTransactionId` pueden llegar las dos hasta acá en una
+    // reversión total. La que pierde el lock ve `inFlight` ya incluyendo la
+    // NC que la ganadora insertó y este método hace que se lea como "tope
+    // excedido" -- cuando en realidad es un duplicado de idempotencia (choca
+    // aparte contra `idx_invoices_idempotency_key`, único). El mensaje del
+    // error nuevo puede describir mal ese caso puntual; no se corrige acá
+    // (mover el chequeo de idempotencia adentro de la transacción es otro
+    // bloque) -- ver test dedicado.
+    //
+    // Reusa `NC_LINKAGE_UNION` (mismo fragmento que F4, extraído en este
+    // bloque -- C5 del gate) y el mismo patrón de DOS sentencias que
+    // `getRefundableForUpdate()`/`getOutstandingForUpdate()`: lock puro
+    // primero (sin subconsultas, nada que quede con foto vieja al esperar),
+    // cómputo después en sentencia nueva.
+    await client.query(`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
+
+    const { rows } = await client.query<{ in_flight: string }>(
+      `SELECT COALESCE(SUM(dedup.imp_total), 0) AS in_flight
+         FROM (
+           SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
+             FROM financial_transactions r
+             JOIN (${NC_LINKAGE_UNION}) nc ON nc.reverting_ft_id = r.id
+            WHERE r.reversed_invoice_id = $1
+              AND r.type IN ('REFUND', 'ADJUSTMENT')
+              AND nc.status = ANY($2::text[])
+              AND nc.cbte_tipo = ANY($3::int[])
+         ) dedup`,
+      [invoiceId, ['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'], [...CBTE_TIPOS_NOTA_CREDITO]],
+    );
+    return parseFloat(rows[0]!.in_flight);
   }
 
   async classifyOrderLiveInvoice(

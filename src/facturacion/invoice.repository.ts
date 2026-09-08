@@ -182,6 +182,23 @@ export interface InvoiceRepository {
    */
   getIssuedCreditNoteCompensationTotal(client: SqlClient, invoiceId: string): Promise<number>;
   /**
+   * Bloque 2.4 (tope N5, `docs/pendientes-2026-09-08.md` #21) — lock +
+   * suma de NC EN VUELO (`ISSUED` + `PENDING` + `FAILED_UNCERTAIN`) contra
+   * `invoiceId`, para el tope fail-closed que `buildCreditNote()` chequea
+   * antes de armar una NC nueva. Pregunta distinta de F4
+   * (`getIssuedCreditNoteCompensationTotal`, solo `ISSUED`, "¿puedo cancelar
+   * normalmente?"): acá es "¿queda cupo para OTRA NC?" — no invierte la
+   * doctrina F4, F4 no se toca. Excluye `REJECTED` (AFIP confirmó que no
+   * existe) — ver docblock de la implementación para el bypass declarado de
+   * `retryExisting()` que esa exclusión abre (condición C1 del gate
+   * 08/09/2026, hoy inalcanzable, se vuelve alcanzable con el bloque 3.1).
+   * Toma el lock ANTES del cómputo, dos sentencias separadas (mismo patrón
+   * que `getRefundableForUpdate`/`getOutstandingForUpdate` — evita foto
+   * vieja de subconsultas correlacionadas al esperar el lock bajo Postgres
+   * real).
+   */
+  getInFlightCreditNoteTotalForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
+  /**
    * ADR común cancelar-con-NC (§3 N1.a(iii)) — devuelve los
    * `financial_transactions.id` de los CARGO(s) que la factura `invoiceId`
    * facturó: el camino individual (`invoices.financial_transaction_id`) más
