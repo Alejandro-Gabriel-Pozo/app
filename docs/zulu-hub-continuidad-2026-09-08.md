@@ -168,13 +168,16 @@ de arrancar:
 | **3.2-bis** — `REFUND-INT-GUARD-001` | Test-decorator que commitea un `PAYMENT` interferente en la ventana `:245 → guard` de `confirmRefund()`. Prueba 3 cosas hoy INFERIDAS, no medidas: el guard dispara, el rollback es real, el aislamiento pool-vs-`client` se sostiene. | Va **antes** de 3.2 — es lo que valida el mecanismo que 3.2 va a reusar. |
 | **3.2** — Lock de reserva (B-1 + N10), diseñados JUNTOS | Mismo lock sobre `reservations` cierra el residual B-1 (ver `pendientes-2026-09-06.md`) Y sirve de base para `cancelReservationWithCreditNote()`. `lock-order.test.ts` actualizado en el mismo commit. Criterio de cierre: 2 tx concurrentes reales, un ganador, un perdedor con error tipado reintentable, cero filas parciales. | **Riesgo alto** (dice el plan explícitamente) — pasar por gate de diseño ANTES de escribir código, mismo patrón que 2.2/2.4/3.1 de este arco. |
 | **3.3** — `cancelReservationWithCreditNote()`, subcasos 1-2 + W2 + F4 cableado | El orquestador real (análogo a `CancelOrderWithCreditNoteService`), en `src/facturacion/`. W2: la contraparte del REFUND es el titular del documento revertido, NO el huésped (`cancellation-refund.service.ts:271` hoy lo asienta contra el huésped — mueve saldo entre cuentas corrientes, decisión de negocio ya tomada, falta cablearla). Acá la condición 5 del re-gate de B-núcleo+órdenes deja de ser vacua. | **Schema v48→v49** (índice de §6.5) + **⛔ esperar `auditor-circuitos-erp`** para los subcasos. **Riesgo más alto de todo el plan.** |
-| **3.4** — `EXPIRED-FACT-01` | `reservation-hold-expiry.worker.ts:121-122` expira una reserva sin guard de facturación. 3 opciones (no expira / expira+bandeja / escape automático). | **⛔ decisión del dueño** (§10 fila 3 del ADR) — no hay grounding que falte, hay que preguntarle. |
-| **3.5** — Pool mixto (subcaso 3) | Reserva con parte facturada directa + parte en consolidada. | **⛔ decisión del dueño** (§10 fila 2) — fan-out automático vs. resolución manual factura por factura. |
+| **3.4** — `EXPIRED-FACT-01` | `reservation-hold-expiry.worker.ts:121-122` expira una reserva sin guard de facturación. **Decisión del dueño 08/09/2026: expira + queda registrada para revisión** (ADR §10 fila 3). | Decisión tomada — **falta el mecanismo** ("registrada para revisión" ¿es `?status=` del 2.1, o algo propio?), a definir en el gate de este bloque. |
+| **3.5** — Pool mixto (subcaso 3) | Reserva con parte facturada directa + parte en consolidada. **Decisión del dueño 08/09/2026: manual, factura por factura** (ADR §10 fila 2), no fan-out. | Decisión tomada — bloqueado solo por el orquestador de 3.3 (no existe todavía). |
 
 **Recomendación de arranque:** 3.2-pre. Es análisis puro (sin tocar código de
 producción), da el insumo real que 3.2 necesita, y no exige gate de diseño
 previo — se puede arrancar la sesión con eso sin esperar nada del dueño ni
-del auditor.
+del auditor. **3.4 y 3.5 ya no tienen decisión pendiente** (tomadas 08/09,
+ver ADR §10 filas 2/3) — quedan en su lugar en el orden porque cada uno
+sigue dependiendo de otra cosa (mecanismo / orquestador de 3.3), no porque
+falte preguntarle al dueño.
 
 Fuera de FASE 3: **arreglar
 `src/tests/domain/reservation.cancel-confirmed.test.ts`** (bordes de hora

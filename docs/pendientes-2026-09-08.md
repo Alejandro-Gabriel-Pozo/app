@@ -397,6 +397,25 @@ vacía en las 4 métricas (tenant sin actividad real).
 cambia comportamiento sobre ningún dato vivo hoy — cero reservas reales
 pasan de reembolsarse a rechazar. Push autorizado.
 
+### #23 — Dos decisiones del dueño para B-reservas (§10 filas 2/3 del ADR) · ✅ TOMADAS (08/09/2026), commit `444b9c7`
+
+Adelantadas fuera de orden a propósito — no bloquean trabajo técnico hoy
+(3.4/3.5 siguen esperando otra cosa), pero sacarlas del camino ahora evita
+que el próximo bloque de riesgo alto (3.2/3.3) tenga que parar a preguntar.
+
+1. **Pool mixto (§10 fila 2, bloque 3.5): manual, factura por factura.** No
+   fan-out automático. Mismo criterio que ERPNext/QloApps (Odoo tiene el
+   patrón pero lo tiene apagado para documentos fiscales). Registrado en el
+   ADR §10 fila 2 + nueva sección "Decisiones del dueño (08/09/2026)".
+2. **`EXPIRED-FACT-01` (§10 fila 3, bloque 3.4): expira + queda registrada
+   para revisión.** Ni "nunca expira" ni "el sistema resuelve solo"
+   (contradiría §0). **El mecanismo concreto sigue sin definir** — ¿reusa
+   `?status=` del bloque 2.1, o necesita algo propio? — eso es alcance del
+   gate del bloque 3.4, no de esta decisión.
+
+Ninguna de las dos habilita implementar 3.4/3.5 todavía: 3.4 falta el
+mecanismo, 3.5 falta que exista el orquestador de 3.3.
+
 ---
 
 ## ✅ B-núcleo+órdenes — CERRADO (gate final `architecture-governor`, 08/09/2026)

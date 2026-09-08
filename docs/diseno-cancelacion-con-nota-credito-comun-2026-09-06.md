@@ -558,8 +558,8 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
 | # | Tema | Quién decide | Estado |
 |---|---|---|---|
 | 1 | Fila `credit_note_request` sí/no (§6.5) | **DECIDIDO 08/09/2026 (`architecture-governor`, gate bloque 2.2): HOLD** | No se construye por ahora — ver §6.5 para el razonamiento completo y los 3 gatillos de reapertura (consumidor real de `resolved_by` / fan-out de pool mixto / solicitudes desde el portal). El tope N5 se implementa contra `invoices` directamente (bloque 2.4), sin tabla nueva. |
-| 2 | **Pool mixto** (§6.3.3): fan-out automático a N NC, o el operador resuelve factura por factura | **Dueño — negocio real** | **Acotado (07/09/2026, `auditor-circuitos-erp`):** N2.a descarta la opción "una única NC multi-factura" — pool mixto = N NC, una por `reversed_invoice_id`. Al dueño solo le queda fan-out vs. manual. **No bloquea B-núcleo+órdenes.** |
-| 3 | **`EXPIRED` con factura viva** (§6.4) | **Dueño**, con acotación técnica: fuera de alcance de B-reservas | Se registra en `pendientes-<fecha>.md` con ancla. **No bloquea B-núcleo+órdenes.** |
+| 2 | **Pool mixto** (§6.3.3): fan-out automático a N NC, o el operador resuelve factura por factura | **DECIDIDO 08/09/2026 (dueño): manual, factura por factura** | Acotado 07/09/2026 (`auditor-circuitos-erp`, N2.a descarta "una única NC multi-factura" — pool mixto = N NC, una por `reversed_invoice_id`). Decisión del dueño 08/09: **manual**, no fan-out — mismo criterio que ERPNext/QloApps (Odoo tiene fan-out pero lo tiene apagado para documentos fiscales), consistente con §0 ("la app ejecuta, no decide"). Bloque **3.5** del plan de cierre — sigue esperando que exista el orquestador (bloque 3.3) antes de poder implementarse, la decisión ya no es lo que lo bloquea. |
+| 3 | **`EXPIRED` con factura viva** (§6.4) | **DECIDIDO 08/09/2026 (dueño): expira + queda registrada para revisión** | La reserva expira (`PENDING`→`EXPIRED`) igual, pero queda anotada en algún listado operativo para que un humano la revise — ni "no expira nunca" ni "el sistema resuelve solo" (esto último hubiera contradicho §0). **Mecanismo de "registro para revisión" a definir en el bloque 3.4** — la bandeja completa (`credit_note_request`) está en HOLD (fila 1 de esta tabla); probable que reuse algo más chico, ej. el filtro `?status=` del bloque 2.1, a confirmar en el gate del bloque 3.4. |
 | 4 | **Set de `reason`** | **Dueño** | N7 ya lo resuelve: texto libre en `notes` (default). Solo pasa a enum si el dueño quiere reportabilidad; el set es suyo. **No bloquea B-núcleo+órdenes.** |
 | 5 | ¿Evento de dominio al emitir la NC? | **Governor** | **No** en B-núcleo+órdenes (sin consumidor; arrastra versionado de handlers sin beneficio). Diferir. |
 | 6 | Nombres | **Governor** | `cancelOrderWithCreditNote()` / `POST /api/orders/:id/cancel-with-credit-note`. Sin objeción (A5.5, evita "partial"). |
@@ -602,6 +602,19 @@ Frontend (pantallas `MANAGEMENT`, manejo de los 409, bandeja) en pasadas posteri
   fila-solicitud `credit_note_request` en estado `PENDIENTE`** (con motivo),
   que el operador con el grupo nuevo resuelve — el cliente como creador de la
   solicitud, no solo el operador. Encaja con N11.
+
+### Decisiones del dueño (08/09/2026)
+
+- **Pool mixto (§10 fila 2): manual, factura por factura.** No fan-out
+  automático. Mismo criterio que ERPNext/QloApps; Odoo tiene el patrón pero
+  lo tiene apagado para documentos legales AR. Bloque **3.5** — la decisión
+  ya no lo bloquea, pero sigue esperando al orquestador del bloque 3.3.
+- **`EXPIRED` con factura viva (§10 fila 3): expira + queda registrada para
+  revisión.** Ni "nunca expira" ni "el sistema resuelve solo" (esto último
+  hubiera contradicho §0 — la app no clasifica el hecho ni decide). Bloque
+  **3.4** — el mecanismo concreto de "registro para revisión" (¿reusa
+  `?status=` del bloque 2.1, o necesita algo propio?) queda para el gate de
+  ese bloque, no decidido acá.
 
 ### Correcciones al ADR ya aplicadas (06/09/2026 — no cambian la doctrina)
 
