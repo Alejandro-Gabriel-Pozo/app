@@ -715,12 +715,20 @@ contra Postgres real, camino `REFUND` no regresionado.
 6. Cerca de arquitectura (capa iv) — test que falla si `order.service.ts`
    importa el módulo del núcleo.
 
-**Gate final de B-núcleo+órdenes:** `architecture-governor`, con el reporte de
-10 puntos del primer gate + las 7 condiciones nuevas del re-gate (§10 del ADR).
-**Corregido 08/09** (auditoría `erp-audit-orchestrator`): condiciones 1 y 2 por
-`ad4d236`; **6 HECHA** (`cancel-order-with-credit-note.integration.test.ts:302-312`,
-comentario `re-gate condición 6`); **7 HECHA** (`credit-note-compensation.integration.test.ts:148`
-NC PENDING⟹0, `:157` REFUND SETTLED sin NC⟹0). **Faltan 3, 4, 5:**
+**Gate final de B-núcleo+órdenes:** ✅ **APROBADO 08/09/2026** — estado
+definitivo de las 7 condiciones (con 4 correcciones del governor, incl. la
+condición **7 pasa a mitad-repositorio + mitad-guard reasignada a B-reservas**,
+como la 5) en la sección **"B-núcleo+órdenes — CERRADO"** de
+`docs/pendientes-2026-09-08.md`. Lo de abajo quedó como estaba al 08/09 por la
+mañana; **3 y 4 ya están HECHAS** (`3bcf5ab`/bloque 1.1, `58edf91`/bloque 1.3) y
+el sub-bloque 6 también (`f62278f`/bloque 1.2).
+
+_(estado al 08/09 AM, ver arriba para el definitivo)_ `architecture-governor`,
+con el reporte de 10 puntos del primer gate + las 7 condiciones nuevas del
+re-gate (§10 del ADR). Condiciones 1 y 2 por `ad4d236`; **6 HECHA**
+(`cancel-order-with-credit-note.integration.test.ts:302-312`, comentario
+`re-gate condición 6`); **7** (`credit-note-compensation.integration.test.ts:148`
+NC PENDING⟹0, `:157` REFUND SETTLED sin NC⟹0 — mitad repositorio). **Faltaban 3, 4, 5:**
 - **3** = mitad de datos (el CHECK `reversed_invoice_id`, ítem #1 del plan
   `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`). La mitad de
   código está hecha (`0baf2b6`).

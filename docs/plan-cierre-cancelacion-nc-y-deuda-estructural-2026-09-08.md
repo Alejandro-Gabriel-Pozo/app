@@ -135,6 +135,23 @@ procedimiento completo antes del bump caro de B3.
 
 **Con 1.1 + 1.2 + 1.3 cerrados → pedir el gate final de B-núcleo+órdenes al `architecture-governor`.** No antes.
 
+> ✅ **GATE FINAL DE B-NÚCLEO+ÓRDENES — APROBADO CON CONDICIONES (08/09/2026).**
+> `HEAD` = `origin/main` = `2839beb`, CI 5/5 (verificado por el governor). La
+> identidad del deploy de producción (Render `dep-dag164e7bikc73epihq0`,
+> `2839beb`, live) la estableció el reporte de sesión, no el governor — ver la
+> aclaración en la sección "B-núcleo+órdenes — CERRADO". Detalle completo del
+> estado de las 7 condiciones del re-gate y
+> las 4 correcciones del governor en la sección **"B-núcleo+órdenes — CERRADO"**
+> de `docs/pendientes-2026-09-08.md`. Resumen: condiciones 1 (por corrida de
+> regresión, no test dedicado), 2, 3, 4, 6 y el sub-bloque 6 de §4 → HECHAS;
+> condiciones **5 y 7 (mitad guard)** → reasignadas a B-reservas (F4 sin
+> consumidor a nivel guard las vuelve vacuas del lado órdenes). Deuda que sale
+> del gate: comentario stale en `sql.invoice.repository.ts:317-318` (lo saca
+> 1.4), `EMISOR_NOTA_CREDITO` invisible en `appfrontend-main` (bloque 5.1),
+> `reservation.cancel-confirmed.test.ts` falla determinística en bordes exactos
+> (bloque propio). **Falta actualizar la nota de continuidad** (`0baf2b6` →
+> `2839beb`) — bloque propio, `zulu-hub-continuidad-2026-09-08.md` nuevo.
+
 ### FASE 2 — B3 + borde operativo (desbloquea B-reservas)
 | Bloque | Ítem | Schema | Notas |
 |---|---|---|---|

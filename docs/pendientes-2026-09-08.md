@@ -189,11 +189,67 @@ precedente ERPNext `StockOverReturnError`).
 
 ---
 
+## ✅ B-núcleo+órdenes — CERRADO (gate final `architecture-governor`, 08/09/2026)
+
+El escape para cancelar una **orden** con Factura B viva emitiendo una Nota de
+Crédito (ADR `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`). Gate
+final aprobado con `HEAD` = `origin/main` = **`2839beb`**, CI 5/5 sobre ese
+commit (incl. `integration` contra `postgres:16-alpine`) — esto último
+verificado por el `architecture-governor` con `git ls-remote` y `gh run view`.
+**La identidad del deploy de producción (Render `dep-dag164e7bikc73epihq0`,
+commit `2839beb`, live) la estableció el reporte de sesión, NO el governor**
+(no tuvo tooling de Render en el gate). `/health` es sólo liveness
+(`src/app.ts:215`, nunca 503 por BD) y el chequeo de versión de schema por
+tenant es fail-soft (`tenant.middleware.ts:83-97`, sólo `logger.warn`), así que
+un prod sano no prueba por sí solo que las tenants estén en v47 — eso lo
+sostiene el registro detallado del bloque 1.1 (ver bullet #1) + `render.yaml`
+terminando en `migrate:tenants` bajo R15 (un deploy live implica que la
+migración corrió).
+
+**Estado real de las 7 condiciones del re-gate (ADR §10, líneas 578-584) — el
+mapeo corregido en el gate final; el de `pendientes-2026-09-06.md:721-735` era
+el bueno, el bullet de más abajo de este archivo lo tenía mal):**
+
+| # | Sujeto (ADR §10) | Estado | Ancla |
+|---|---|---|---|
+| **1** | no-regresión del camino `REFUND`, fijando `getOutstandingForUpdate`/`getRefundableForUpdate`/`getOutstandingByCustomerId` antes/después con un `REFUND` positivo | **Satisfecha por corrida de regresión, NO por un test dedicado.** `ad4d236` declara 32/32 integración contra Postgres real. Las tres funciones quedan cubiertas de forma incidental y en archivos distintos — limitación a tener presente cuando 1.4 toque el `UNION ALL` vecino. | `ad4d236` (mensaje) |
+| **2** | query read-only por tenant (0 filas no conformes) | HECHA (`ad4d236`) y **superada** por la verificación de producción del bloque 1.1 (0 filas no conformes en las 2 tenants). | bullet **"#1 — CHECK `chk_financial_transactions_reversed_invoice_type`"** en la sección de deuda de este archivo (`3bcf5ab` + deploy `dep-daftmg15efls73b7jon0`) |
+| **3** | cerca de la convención `reversed_invoice_id` (mitad datos + mitad código) | **HECHA, las dos mitades.** Datos: CHECK `chk_financial_transactions_reversed_invoice_type` (`schema.sql:3023`, schema v47, bloque 1.1, verificado en prod). Código: `reversed-invoice-id-convention.test.ts` (docblock a v47, FN declarados). | `3bcf5ab`, `0baf2b6` |
+| **4** | test del arqueo | **HECHA.** Bloque 1.3, `58edf91`. `cancel-order-with-credit-note.integration.test.ts:344-390` — ancla no-vacua `expect(antes).toBe(500)`, aserciones (a) `getCashMovementsTotal` idéntico y (b) CHARGE `SETTLED` con `shift_id`/`payment_method` NULL. 2 mutaciones probadas, 2 FN declarados, verde en CI real. | `58edf91` |
+| **5** | ventana del Defecto A — el guard sigue bloqueando | **VACUA del lado órdenes → REASIGNADA a B-reservas.** `order.service.ts:416-427` (`findBlockingInvoiceLinkage`) **no cablea F4** (`af2b2b5`), así que "sigue bloqueando" es verdad por construcción. F4 sí se cablea en `reservation.service.ts` (B-reservas) — ahí la condición tiene contenido. | — |
+| **6** | test de `getOutstandingByCustomerId` tras compensación total | **HECHA.** `cancel-order-with-credit-note.integration.test.ts:308-318` (comentario `re-gate condición 6`), `expect(outstandingInvoices.find(i => i.id === invoiceId)).toBeUndefined()`. **NO confundir con el "sub-bloque 6" de §4** (la cerca de arquitectura capa iv) — son cosas distintas, las dos hechas. | `cancel-order-with-credit-note.integration.test.ts:308` |
+| **7** | un `REFUND SETTLED` sin NC no destraba el guard | **MITAD REPOSITORIO hecha; MITAD GUARD vacua → mismo estado que la 5.** Traza de callers: `getIssuedCreditNoteCompensationTotal` (F4) tiene **un solo** consumidor de producción (`sql.invoice.repository.ts:382`) y **ningún** `findBlockingInvoiceLinkage` lo llama — así que hoy ningún estado de ledger puede destrabar el guard, por construcción. Los tests `credit-note-compensation.integration.test.ts:148,157` prueban que **el predicado del repositorio** devuelve 0 (su propio docblock `:17-19` lo dice: "a nivel repositorio"). El cierre a nivel guard se reasigna a B-reservas. | `credit-note-compensation.integration.test.ts:148,157` |
+
+**Sub-bloque 6 de §4 (la cerca de arquitectura capa iv)** — HECHA: bloque 1.2,
+`f62278f`, `credit-note-escape-containment.test.ts` (`CN-ESCAPE-CONTAINMENT-001`),
+5 aserciones. Es un ítem DISTINTO de la condición 6 del re-gate (ver fila 6).
+
+**Los 10 puntos del primer gate**: consumidos como correcciones de ADR ya
+aplicadas (F1..F6, redacción de la capa (iii), la limitación aceptada de §7, la
+justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
+
+**Deuda que sale de este gate (bloques propios, no bloquean el cierre):**
+- **Contradicción de doctrina en el predicado que este gate certificó**:
+  `sql.invoice.repository.ts:317-318` todavía dice que el hueco cruzado está
+  "registrado como bloqueante de B-reservas" — el ADR N2.a lo resolvió como
+  doctrina (NC↔factura 1:1). Un comentario adentro del predicado de F4
+  contradice el ADR. → lo saca el bloque **1.4** (mismo predicado).
+- **`EMISOR_NOTA_CREDITO` invisible en el panel** — ver fila nueva abajo.
+- **`reservation.cancel-confirmed.test.ts`** — falla determinística en bordes
+  exactos, ver fila nueva abajo.
+
+---
+
 ## ✅ Correcciones de estado aplicadas a `pendientes-2026-09-06.md` (in-place, 08/09)
 
-- Gate final de B-núcleo+órdenes: **condiciones 6 y 7 marcadas HECHAS** con ancla
-  de test. **Faltan 3, 4, 5** (no "3-7"). Condición **5 reasignada a B-reservas**
-  (F4 sin cablear la vuelve vacua del lado órdenes).
+- Gate final de B-núcleo+órdenes: **ver la sección "B-núcleo+órdenes — CERRADO"
+  de arriba** para el estado corregido. Lo que este bullet decía antes —
+  "condiciones 6 y 7 marcadas HECHAS, faltan 3, 4, 5" — quedó **mal en dos
+  puntos**: (a) mezclaba la condición 6 del re-gate (test de
+  `getOutstandingByCustomerId`, sí hecha) con el sub-bloque 6 de §4 (cerca de
+  arquitectura); (b) la condición **7 es mitad-repositorio**, su mitad-guard es
+  vacua igual que la 5 y se reasigna a B-reservas. Con 1.1/1.2/1.3 cerrados,
+  **3 y 4 pasaron a HECHAS**; quedan reasignadas 5 y 7 (mitad guard).
 - Verificaciones que quedaron abiertas y ahora cerradas por lectura de código:
   (1) el residuo "crash entre AFIP-OK y tx2" **autosana** re-invocando el escape
   (fast-path exige `CANCELLED`, `cancel-order-with-credit-note.service.ts:156-157`
@@ -315,6 +371,36 @@ precedente ERPNext `StockOverReturnError`).
   `cancel-order-with-credit-note.service.ts`: la deuda (i) de `ef27e42` menciona
   `:269`; el mismo defecto está también en `:248`. Arreglar las dos o declarar por
   qué no. → bloque 1.5 del plan.
+- **`reservation.cancel-confirmed.test.ts` — falla determinística en bordes de
+  hora exactos (no es flakiness).** `src/tests/domain/reservation.cancel-confirmed.test.ts:77-81`
+  (caso 1h). **Mecanismo:** `msFromNow()` (`:33`) lee `Date.now()`, y después el
+  default `now = Date.now()` de `canCancelConfirmed` (`:25`) lo lee **de nuevo**;
+  para el caso 1h, `msUntilStart = 3600000 − delta` y
+  `Math.floor(3599999 / 3600000) = 0` → `expected +0 to be 1`. El archivo ya
+  documenta este hazard en `:46-51` y lo arregló para el borde 24h pasando un
+  `now` explícito (`:52-53`) — nunca se aplicó a los otros bordes exactos.
+  **Hermanos latentes:** `:57-61` (25h → puede leer 24), `:63-67` (48h → 47).
+  **Reproductor:** run de CI `34217329434` (commit `c519d98`, doc-only) — falló
+  el job `test` en esa línea; los runs de `f86dd66`/`7cf460e`/`2839beb`, sin
+  cambio a ese archivo, pasaron. **Consecuencia:** un CI rojo que no corresponde
+  a ningún cambio enseña al equipo a re-correr en vez de leer. Test-only, sin
+  código de producción, no es regresión de ningún bloque 1.x. **NO** es el caso
+  que la regla 10 de la sesión de plan advierte (esa nombra
+  `credit-note-compensation.integration.test.ts`, donde un flake taparía un
+  TOCTOU documentado — archivo y clase de riesgo distintos). → bloque propio.
+- **`EMISOR_NOTA_CREDITO` no existe en `appfrontend-main`** (HEAD `613c206`, 0
+  hits). En `app-main` está en `security/roles.ts:59` y en `platform.schema.sql:314,317,319`
+  (OWNER/ADMIN/RECEPTIONIST). Tres catálogos a mano del frontend listan 8 grupos
+  sin él: `dashboard/roles/page.tsx:18-26`, `superadmin/roles-de-fabrica/page.tsx`,
+  `superadmin/planes/page.tsx`. **NO se pierde en el save**: `roles/page.tsx:83`
+  siembra el form desde `[...r.permissionGroups]` y `:104` lo manda entero — un
+  rol que ya lo tenga lo conserva. **Consecuencia:** el privilegio de emitir una
+  Nota de Crédito fiscal **no se puede otorgar a un rol custom, no se puede
+  revocar y no se puede identificar** en el panel de administración. Fail-safe
+  (no fail-open) y los presets lo llevan, por eso no bloqueó el gate final —
+  pero es un hueco de governance vivo sobre una capacidad AFIP. → bloque **5.1**
+  del plan (frontend), sin dependencias. Interactúa con 2.1 (la bandeja de NC):
+  el panel no puede mostrar quién tiene el permiso.
 
 ---
 
