@@ -296,7 +296,7 @@ limpios, 1976 tests unitarios sin regresión.
   contra Postgres real de test), pero el gate lo pidió como evidencia
   explícita y no se lo doy por hecho.
 
-### #22 — Bloque 3.1: `getByReservationId()` UNION + fail-closed en `confirmRefund()` · ✅ código local (08/09/2026), 🔴 push bloqueado por C7
+### #22 — Bloque 3.1: `getByReservationId()` UNION + fail-closed en `confirmRefund()` · ✅ RESUELTO Y PUSHEADO (08/09/2026, `3525bde`)
 
 **Resuelto (código, sin push).** `getByReservationId()` (`sql.invoice.repository.ts`)
 pasó de INNER JOIN (ciego a facturas consolidadas) a `UNION` de los dos
@@ -689,8 +689,9 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 (~~`?status=` (#4a)~~ ✅ bloque 2.1, 08/09/2026 — `GET /api/invoices?status=`,
 `InvoiceRepository.getByStatus()`, mismo `authorize(FRONT_DESK)`; `credit_note_request`
 + bandeja completa (#4b) sigue abierto, bloqueado por el gate del bloque 2.2) · B-reservas
-(`getByReservationId` UNION, subcasos directa/consolidada/pool mixto,
-`EXPIRED-FACT-01`, F4 en reservas, 5 caracterizaciones) (#5) · Anexo A1/A2/A4 ·
+(~~`getByReservationId` UNION + fail-closed, 5 caracterizaciones~~ ✅ bloque 3.1,
+`3525bde` — ver #22; siguen abiertos: subcasos directa/consolidada/pool mixto,
+`EXPIRED-FACT-01`, F4 en reservas/subcaso 2) (#5) · Anexo A1/A2/A4 ·
 Frontend (3 catálogos sin `EMISOR_NOTA_CREDITO`, copy falsa `roles-de-fabrica`,
 consumir `description`/`kind` del dead-letter).
 
