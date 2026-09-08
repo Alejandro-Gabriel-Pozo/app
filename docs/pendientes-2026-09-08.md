@@ -363,15 +363,39 @@ Ambos (C1 y el escenario de N5) siguen dependiendo del **subcaso 2** (reparto
 real por-reserva de una consolidada), no de 3.1. Corregido en los 3 lugares,
 mismo commit que este ítem.
 
-**🔴 Push bloqueado — condición C7 del gate, NO cumplida.** El gate exigió
-una query read-only contra las dos tenants de producción, contando facturas
-consolidadas `ISSUED` alcanzables desde una reserva `CANCELLED` vía
-`invoice_charges → financial_transactions.reservation_id`, ANTES de
-pushear — si el resultado es > 0, hay filas reales que empiezan a recibir
-409 y el push vuelve al gate. **No se pudo correr**: requiere credenciales
-de Neon (OAuth o desencriptar `db_url_encrypted`) no configuradas en esta
-sesión — mismo bloqueo que la evidencia de producción de los bloques 2.2/2.4.
-El código queda commiteado local, sin push, hasta que esta query se corra.
+**✅ C7 cumplida (08/09/2026) — push desbloqueado.** Neon conectado vía MCP
+(`ancient-king-17098519` / DB-APP-PPMS, org `org-bold-unit-53932069`). Query
+read-only corrida contra las dos tenants:
+
+```sql
+SELECT COUNT(*) AS filas_alcanzables
+FROM invoice_charges ic
+JOIN invoices i ON i.id = ic.invoice_id
+JOIN financial_transactions ft ON ft.id = ic.financial_transaction_id
+JOIN reservations r ON r.id = ft.reservation_id
+WHERE i.status = 'ISSUED'
+  AND i.financial_transaction_id IS NULL
+  AND r.status = 'CANCELLED';
+```
+
+| Tenant | Branch | `filas_alcanzables` |
+|---|---|---|
+| Demo | `production` (`br-snowy-tree-ax5wmq70`) | **0** |
+| Hotel los Alamos | `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`) | **0** |
+
+**Anti-vacuidad** (para que el 0 no sea porque el JOIN no matchea nada, per
+la disciplina del `expect(antes).toBe(500)` del bloque 1.3): Demo tiene 28
+reservas `CANCELLED` reales y 15 `financial_transactions` con
+`reservation_id` — el lado "reserva cancelada" del JOIN tiene datos de
+verdad. Lo que da 0 es específicamente `invoices ISSUED` con
+`financial_transaction_id IS NULL` (`consolidadas_issued = 0`,
+`invoice_charges_total = 0`) — el circuito de facturación consolidada
+todavía no se usó en producción, en ninguna de las dos tenants. Alamos está
+vacía en las 4 métricas (tenant sin actividad real).
+
+**Conclusión:** el guard nuevo (`ReservationOnConsolidatedInvoiceError`) no
+cambia comportamiento sobre ningún dato vivo hoy — cero reservas reales
+pasan de reembolsarse a rechazar. Push autorizado.
 
 ---
 
