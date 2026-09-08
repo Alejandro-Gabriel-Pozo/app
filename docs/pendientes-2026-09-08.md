@@ -387,18 +387,20 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     divergencia de status declarada" reconciliaría las dos — bloque propio.
 - **Lectura por el pool del repo en vez de por `client`** en
   `cancel-order-with-credit-note.service.ts` — ✅ RESUELTO (bloque 1.5, `3608edf`
-  código + declaración en el commit de docs de cierre). **Son 5 sitios, no 2:**
+  código + declaración en `c4aac3c` + corrección de anclas en el commit
+  siguiente). **Son 6 sitios, no 2** (números al HEAD de `c4aac3c`+corrección):
+  `getByIdempotencyKey` en la rama `order.status === 'CANCELLED'` (`:192`),
   `getByOrderId` (`:200`), `resolveInvoiceLinkage` (`:210`),
-  `getChargeIdsForInvoice` (`:223`), `getByIdempotencyKey` (`:266`) y el
-  re-read del fallback post-ON-CONFLICT (`:298`) — todos por el pool del repo
+  `getChargeIdsForInvoice` (`:223`), `getByIdempotencyKey` (`:277`) y el
+  re-read del fallback post-ON-CONFLICT (`:309`) — todos por el pool del repo
   mientras `client` tiene la tx1. **Se declara, no se arregla:** entre el
-  `getByIdForUpdate` (`:186`) y el `return` de tx1 NO hay ningún write vía
-  `client`, así que no hay estado no-commiteado propio que perder; un
+  `getByIdForUpdate` (`:186`) y el `createWithClient` (`:283`) NO hay ningún
+  write vía `client`, así que no hay estado no-commiteado propio que perder; un
   concurrente commiteado se ve bajo READ COMMITTED; y el fallback siempre ve
   la fila por el orden del lock especulativo del índice único de
-  `idempotency_key`. Comentario in-place en `:266`. El `!` no-nulo que había
-  tras `createWithClient` null (era **uno**, en `:269`, no dos) → re-read
-  explícito + throw "invariante rota"; + `assertRevertsExpectedInvoice()`.
+  `idempotency_key`. Comentario in-place arriba de `:277`. El `!` no-nulo que
+  había tras `createWithClient` null (era **uno**, en el viejo `:269`, no dos)
+  → re-read explícito + throw "invariante rota"; + `assertRevertsExpectedInvoice()`.
   **Costo residual:** presión de pool (2 de 5 conexiones por escape en vuelo,
   `tenant.middleware.ts` `max: 5`) — es **POOL-STARV-001** (#10 / bloque
   3.2-pre); pasar `client` a las 5 lecturas va ahí, donde el presupuesto de
