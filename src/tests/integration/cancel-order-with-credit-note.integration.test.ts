@@ -48,6 +48,7 @@ import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.j
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlCashRegisterShiftRepository } from '../../clientes-finanzas/sql.cash-register-shift.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
@@ -187,6 +188,11 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
     await db.query('UPDATE invoices SET financial_transaction_id = NULL');
     await db.query('DELETE FROM invoices');
     await db.query('DELETE FROM financial_transactions');
+    // `uq_cash_shift_one_open_per_business` (índice único parcial
+    // `WHERE status='OPEN'`, schema.sql:2436) rechazaría un 2do turno OPEN
+    // para el mismo negocio en el test siguiente. Va DESPUÉS de
+    // `financial_transactions` por el orden de la FK `shift_id`.
+    await db.query('DELETE FROM cash_register_shifts');
     await db.query('DELETE FROM domain_events');
     await db.query('DELETE FROM order_items');
     await db.query('DELETE FROM orders');
@@ -333,6 +339,54 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       `SELECT COUNT(*) AS count FROM invoices WHERE cbte_tipo = $1`, [CBTE_TIPO_NOTA_CREDITO_B],
     );
     expect(Number(ncCount[0]!.count)).toBe(1);
+  }, 30_000);
+
+  it('el arqueo del turno OPEN no cambia tras el escape -- N1.a(i): settlear el CHARGE no le inyecta shift_id/payment_method', async () => {
+    const invoiceService = buildInvoiceService(fakeArcaClientOk);
+    const sut = buildSut(invoiceService);
+    const shiftRepo = new SqlCashRegisterShiftRepository(db);
+
+    // Turno de caja OPEN + un movimiento de efectivo REAL atribuido a él, para
+    // que `getCashMovementsTotal` NO sea 0 y "idéntico antes/después" tenga
+    // contenido: si el settle del escape atribuyera mal el CHARGE revertido al
+    // turno, el total saltaría de 500 a 600.
+    const shiftId = randomUUID();
+    await db.query(
+      `INSERT INTO cash_register_shifts (id, business_id, opened_by, opening_amount, status)
+       VALUES ($1, $2, $3, 0, 'OPEN')`,
+      [shiftId, BIZ, ACTOR],
+    );
+    const cashPayment = await financialRepo.create({
+      id: randomUUID(), businessId: BIZ, customerId: CUS,
+      type: 'PAYMENT', amount: 500, currency: 'ARS', status: 'SETTLED',
+      paymentMethod: 'CASH',
+    });
+    await db.query(
+      `UPDATE financial_transactions SET shift_id = $2 WHERE id = $1`,
+      [cashPayment!.id, shiftId],
+    );
+
+    const antes = await shiftRepo.getCashMovementsTotal(shiftId);
+    expect(antes).toBe(500); // ancla no-vacua
+
+    const { orderId, chargeId } = await seedInvoicedOrder(invoiceService);
+    const res = await sut.cancelOrderWithCreditNote(orderId, auth(orderId));
+    expect(res.order.status).toBe('CANCELLED');
+
+    // (a) el arqueo NO se movió: el CHARGE de $100 revertido no entró al turno.
+    const despues = await shiftRepo.getCashMovementsTotal(shiftId);
+    expect(despues).toBe(antes);
+
+    // (b) el CHARGE quedó SETTLED pero SIN atribución de caja: `shift_id` y
+    //     `payment_method` intactos en NULL -- `settleByIdsWithClient` sólo
+    //     toca `status` (a diferencia de `settleChargesByOrderId`).
+    const { rows } = await db.query<{ status: string; shift_id: string | null; payment_method: string | null }>(
+      `SELECT status, shift_id, payment_method FROM financial_transactions WHERE id = $1`,
+      [chargeId],
+    );
+    expect(rows[0]!.status).toBe('SETTLED');
+    expect(rows[0]!.shift_id).toBeNull();
+    expect(rows[0]!.payment_method).toBeNull();
   }, 30_000);
 
   it('D1 -- AFIP no confirma el CAE: CreditNoteCancellationPendingError, la orden NO se cancela y el ADJUSTMENT queda PENDING', async () => {
