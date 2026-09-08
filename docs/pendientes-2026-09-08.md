@@ -169,23 +169,67 @@ contra un service container `postgres:16-alpine`** (`.github/workflows/ci.yml:19
 `settleChargesByOrderId`); y el ADR cita `:515-522` para el `CASE` del
 `shift_id` de `settleChargesByOrderId`, que hoy está ~`:529-534`.
 
-### #21 — Tope N5 (acumulado por factura revertida) NO implementado · 🔴 abierto · **fail-open fiscal**
+### #21 — Tope N5 (acumulado por factura revertida): sin cap fiscal propio, hoy inalcanzable · 🟠 recaracterizado (08/09/2026, gate `architecture-governor`)
 
-`buildCreditNote()` (`src/facturacion/invoice.service.ts`, rama ~`:745-795`) no
-consulta `getIssuedCreditNoteCompensationTotal()` ni ningún tope antes de armar la
-NC. La idempotencia es `invoice:<financialTransactionId>` — **por transacción, no
-por factura revertida.** N transacciones revertidoras distintas contra el mismo
-`reversed_invoice_id` pueden cada una emitir su NC total sin tope contra `imp_total`.
-El ADR §3 N5 lo exige con forma dura (*"se LANZA al excederse... nunca clamp"*,
-precedente ERPNext `StockOverReturnError`).
-- **Órdenes: inalcanzable** — clave `cancel-order-with-cn:<orderId>`, 1:1 con la orden.
-- **Reservas: alcanzable** — `confirmRefund()` crea N filas `REFUND` con el mismo
-  `reversedInvoiceId` (reparto LIFO); cada una facturable por `POST /api/invoices`,
-  que **no filtra por `type` en la ruta** (`src/facturacion/invoices.routes.ts:82-98`).
-  Hoy lo contiene el frontend (`appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:304`,
-  gatea `tx.type === 'CHARGE'`), **no el dominio**.
-- **Con B-reservas pasa a ser el camino normal.** Debe cerrarse ANTES de B-reservas.
-→ bloque 2.4 del plan (bajo lock / con el monto congelado de `credit_note_request`).
+**Recaracterizado — ya no es "fail-open fiscal" activo.** `buildCreditNote()`
+(`src/facturacion/invoice.service.ts:703-878`) no consulta
+`getIssuedCreditNoteCompensationTotal()` ni ningún tope antes de armar la NC —
+eso sigue siendo cierto. Pero el gate verificó, código en mano, que **hoy no
+existe ningún camino en el repo que cree dos filas `financial_transactions`
+con el mismo `reversed_invoice_id`** — sin eso no hay dos NC contra la misma
+factura, porque cada NC lleva su propia clave `invoice:<financialTransactionId>`.
+
+**Lo contienen 4 propiedades, ninguna con cerca dedicada salvo la primera
+(cerrada hoy):**
+1. `confirmRefund()` empuja **a lo sumo un chunk por factura** por llamada —
+   `cancellation-refund.service.ts:251-262` (`for (const invoice of issuedInvoices)`).
+   **Cercado 08/09/2026:** `cancellation-refund.service.test.ts` — test
+   `CERCA #21`.
+2. `getByReservationId()` (`sql.invoice.repository.ts:473-482`) es un `INNER
+   JOIN financial_transactions ... WHERE reservation_id = $1` — nunca ve una
+   factura consolidada (`financial_transaction_id IS NULL` a propósito), así
+   que una factura alcanzable desde la reserva R no es alcanzable desde R'.
+   **No cercado** (requiere DB viva o refactor del repo para inyectar fake).
+3. Una segunda `confirmRefund()` de la misma reserva colisiona por
+   idempotencia (`refund:cancellation:<reservationId>:<invoiceId>`,
+   `:114,:259`, bajo `acquireIdempotencyLock`). **No cercado acá** — ya
+   cubierto indirectamente por los tests de reintento existentes en el mismo
+   archivo.
+4. Solo 2 escritores de `reversed_invoice_id` en todo `src/` (grep, no
+   parser): `cancel-order-with-credit-note.service.ts:297` (1:1 por
+   `cancel-order-with-cn:<orderId>`) y `cancellation-refund.service.ts:277`.
+
+**Lo que SÍ es un gap real, distinto de "fail-open fiscal":** el cap que
+existe hoy (`getRefundableForUpdate()`, `sql.invoice.repository.ts:169-203`)
+está anclado al **ledger** (`REFUND` `SETTLED`), no al **comprobante ISSUED**
+que exige la doctrina F4 (`invoice.repository.ts:180-184`, "anclado al
+comprobante emitido, NUNCA al ledger"). Hoy los dos predicados coinciden
+porque hay un escritor por factura (propiedad 1); pueden divergir — ej. una
+NC `ISSUED` cuya fila revertidora nunca llegó a `SETTLED` cuenta 0 en el cap
+de ledger. Sin escenario que lo explote hoy.
+
+**Se vuelve alcanzable con el bloque 3.1 del plan** (`getByReservationId()` →
+UNION con el camino consolidado): ahí dos reservas distintas pueden apuntar a
+la misma factura consolidada, `confirmRefund()` se llama una vez por reserva
+(claves de idempotencia distintas), y dos `REFUND` con el mismo
+`reversed_invoice_id` se vuelven alcanzables — recién ahí la propiedad 2 deja
+de contener. **El plan no dice hoy que 2.4 (tope N5) tiene que aterrizar ANTES
+que 3.1** — hay que forzarlo (ver plan, tabla de bloques).
+
+- **RBAC, hallazgo aparte del gate, no de N5:** `POST /api/invoices` emite NC
+  efectivamente (branch `tx.type === 'REFUND'|'ADJUSTMENT'`,
+  `invoice.service.ts:357`) bajo `authorize(Roles.FRONT_DESK)`
+  (`invoices.routes.ts:78-98`), mientras el escape dedicado de órdenes exige
+  `Roles.EMISOR_NOTA_CREDITO`. **No** es un filtro de `type` a agregar —
+  filtrar rompería el camino legítimo de facturar REFUND/ADJUSTMENT. Es una
+  asimetría de grupo de autz. Ítem propio, cruzado contra
+  `docs/rbac-matriz-endpoints.md`, gate propio.
+- **NO tocado en este cierre** (fuera del alcance autorizado por el gate):
+  bloque 2.3 (`credit_note_request`, v48) — bloqueado aguas arriba por el
+  bloque 2.2 (auditor + gate §10 fila 1); `buildCreditNote()`; el `authorize`
+  de `invoices.routes.ts`.
+→ el tope real (bloque 2.4) sigue pendiente, sin urgencia hoy — depende del
+2.2/2.3 y tiene que aterrizar antes del bloque 3.1.
 
 ---
 

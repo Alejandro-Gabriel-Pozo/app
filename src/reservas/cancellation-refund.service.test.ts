@@ -417,6 +417,32 @@ describe('CancellationRefundService.confirmRefund', () => {
     expect(financialRepo.created).toHaveLength(0);
   });
 
+  it('CERCA #21 (pendientes-2026-09-08.md) -- nunca emite dos chunks REFUND con el mismo reversedInvoiceId en la misma llamada', async () => {
+    // Invariante hoy trivial por construcción: el for de reparto itera una
+    // vez por factura de `issuedInvoices` (`getByReservationId()`, que solo
+    // ve facturas 1:1 con ESTA reserva) y empuja a lo sumo un chunk por
+    // vuelta. Se cerca EXPLÍCITAMENTE acá porque el bloque 3.1 del plan
+    // (`docs/plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`)
+    // va a mover `getByReservationId()` a un UNION que también trae
+    // facturas consolidadas -- compartibles entre reservas -- y es el punto
+    // donde el tope N5 (#21) se vuelve alcanzable. Si este test empieza a
+    // fallar al tocar 3.1, es la señal de que el chequeo per-llamada ya no
+    // alcanza y hace falta el tope real (bloque 2.4, bajo gate propio).
+    const { service } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      invoices: [
+        makeInvoice({ id: 'inv-a', impTotal: 200, issuedAt: daysFromNow(-10) }),
+        makeInvoice({ id: 'inv-b', impTotal: 300, issuedAt: daysFromNow(-5) }),
+        makeInvoice({ id: 'inv-c', impTotal: 500, issuedAt: daysFromNow(-1) }),
+      ],
+    });
+    const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    const invoiceIds = created.map((tx) => tx.reversedInvoiceId).filter((id): id is string => id !== null);
+    expect(invoiceIds).toHaveLength(new Set(invoiceIds).size);
+    expect(invoiceIds).toEqual(['inv-c', 'inv-b', 'inv-a']);
+  });
+
   it('BRECHA-REFUND-01 Fase 3 -- capa contra getRefundableForUpdate(), no contra impTotal a secas (Q-A: nunca más de lo cobrado)', async () => {
     const { service, invoiceRepo } = buildService({
       collected: 1000,

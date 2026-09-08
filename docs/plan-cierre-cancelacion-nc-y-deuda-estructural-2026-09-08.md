@@ -158,7 +158,30 @@ procedimiento completo antes del bump caro de B3.
 | **2.1** `?status=` en `GET /api/invoices` | #4 (a) | no | 80% del valor de B3 (localizar el caso trabado) con 0% del riesgo. Verificar accesibilidad del rol que usa la bandeja contra `platform.schema.sql` (regla 5 `CLAUDE.md`, incidente D6) |
 | **2.2** Decisión `credit_note_request` sí/no | #4 (b) | — | ⛔ esperar `auditor-circuitos-erp` (state machine) + gate governor §10 fila 1. Obligatorio: índice único parcial, campo de monto congelado (R9 — cruza con #21), `resolved_at TIMESTAMPTZ`, checklist `criterios-datos` Parte 5 completo. Declarar la excepción A3.8 (la transición de estado es UPDATE) |
 | **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | condicional al 2.2. Índice único parcial **probado con 2 INSERT concurrentes** en integración |
-| **2.4** Tope N5 | #21 | no | `buildCreditNote()` consulta `getIssuedCreditNoteCompensationTotal()` y **lanza** si excede. **Bajo lock / con el monto congelado del 2.3**, nunca `SELECT` suelto antes de `INSERT`. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
+| **2.4** Tope N5 | #21 | no | `buildCreditNote()` consulta `getIssuedCreditNoteCompensationTotal()` y **lanza** si excede. **Bajo lock / con el monto congelado**, nunca `SELECT` suelto antes de `INSERT`. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
+
+> **2.4 tiene que aterrizar ANTES que 3.1, no solo antes que 15** (gate
+> `architecture-governor`, 08/09/2026, revisión de #21). #21 es hoy
+> **inalcanzable** — ver `docs/pendientes-2026-09-08.md` #21 (4 propiedades
+> que lo contienen, 1 cercada). El bloque **3.1** (`getByReservationId()` →
+> UNION con consolidadas) es justo lo que rompe la propiedad 2 (una factura
+> deja de ser 1:1 con una sola reserva) y **vuelve alcanzable** el escenario
+> de N5 — así que si 3.1 aterriza antes que el tope real, hay una ventana
+> donde el tope N5 no existe y el escenario ya es alcanzable. Ítem 11 de la
+> tabla de orden ejecutable (§7) actualizado para reflejar esta dependencia.
+>
+> **"Monto congelado" tiene DOS portadores candidatos, sin decidir — insumo
+> para el gate del 2.2, no una decisión tomada acá:**
+> (a) la tabla `credit_note_request` del 2.3 (diseño original, ADR `:500`); o
+> (b) la fila `PENDING` de `invoices` misma — ya es un monto congelado (tiene
+> `imp_total`, se commitea antes de llamar a AFIP, única por
+> `idempotency_key`, alcanzable desde `reversed_invoice_id` por el mismo
+> `UNION ALL` que usa F4). La opción (b) evita la tabla nueva pero **invierte
+> la doctrina F4** (Defecto B: habría que contar NC `PENDING`/`FAILED_UNCERTAIN`,
+> no solo `ISSUED`) y convierte el fail-open de hoy en un leak fail-closed —
+> una NC `PENDING` rechazada por AFIP o `FAILED_UNCERTAIN` sin reconciliar
+> consume cupo para siempre, salvo que un humano lo libere. Decidir en el
+> gate del 2.2, con el auditor.
 
 ### FASE 3 — B-reservas (el bloque grande)
 | Bloque | Ítem | Schema | Notas |
@@ -261,7 +284,7 @@ Odoo `ir_cron.py:122`), #13 (grondeado Odoo `ir_cron.py:448-451`, OCA
 | 8 | `?status=` en `GET /api/invoices` | #4a | — | — |
 | 9 | `credit_note_request` | #4b | v48 | auditor + gate |
 | 10 | Tope N5 | #21 | — | 9 |
-| 11 | UNION + fail-closed | #5a | — | 9 |
+| 11 | UNION + fail-closed | #5a | — | 9, **10** |
 | 12 | POOL-STARV dimensionado | #10 | — | — |
 | 13 | REFUND-INT-GUARD-001 | #8b | — | — |
 | 14 | Lock de reserva (B-1 + N10) | #8a | — | 12, 13 |
