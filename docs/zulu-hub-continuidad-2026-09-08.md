@@ -93,9 +93,13 @@ cerrado; falta el resto del plan:
   subquery `nc` de F4 + sacar el comentario stale de
   `sql.invoice.repository.ts:317-318` que contradice el ADR N2.a), 1.5 (4 filas
   de deuda de `ef27e42`). Los dos sin schema.
-- **Fase 2:** B3 (fila-solicitud `credit_note_request` + bandeja, con
-  `criterios-datos` Parte 5) → tope N5 (#21, **fail-open fiscal**, "antes de
-  B-reservas", va bajo lock / con el monto congelado de B3 — no antes).
+- **Fase 2 (corregida 08/09/2026, gate `architecture-governor` bloque 2.2):**
+  `?status=` en `GET /api/invoices` (#4a) ✅ RESUELTO (`fc809dc`). Fila-solicitud
+  `credit_note_request` (#4b) — **HOLD**, no se construye (ver ADR §6.5/§10
+  fila 1, 3 gatillos de reapertura). Tope N5 (#21, recaracterizado — no es
+  "fail-open fiscal" activo, ver `pendientes-2026-09-08.md` #21) se
+  implementa contra la fila `invoices` existente, sin tabla nueva, y sigue
+  teniendo que aterrizar antes del bloque 3.1 (B-reservas).
 - **Fase 3:** B-reservas (`getByReservationId()` UNION + fail-closed + 5
   caracterizaciones + subcasos directa/consolidada + pool mixto +
   `EXPIRED-FACT-01`; acá F4 sí se cablea y las condiciones 5/7 del re-gate

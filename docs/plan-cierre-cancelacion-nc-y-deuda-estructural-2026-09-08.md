@@ -156,9 +156,9 @@ procedimiento completo antes del bump caro de B3.
 | Bloque | Ítem | Schema | Notas |
 |---|---|---|---|
 | **2.1** `?status=` en `GET /api/invoices` | #4 (a) | no | ✅ RESUELTO 08/09/2026. `InvoiceRepository.getByStatus()` + filtro en la ruta, mismo `authorize(FRONT_DESK)` — accesibilidad verificada: los 3 presets con `EMISOR_NOTA_CREDITO` (OWNER/ADMIN/RECEPTIONIST, `platform.schema.sql:307-315`) ya tienen `FRONT_DESK`, sin hueco nuevo (regla 5 `CLAUDE.md`, incidente D6). Tests: `invoices.routes.test.ts` (200 + 400 status inválido), fakes de `InvoiceRepository` actualizadas. tsc/lint:arch/1976 unit tests limpios |
-| **2.2** Decisión `credit_note_request` sí/no | #4 (b) | — | ⛔ esperar `auditor-circuitos-erp` (state machine) + gate governor §10 fila 1. Obligatorio: índice único parcial, campo de monto congelado (R9 — cruza con #21), `resolved_at TIMESTAMPTZ`, checklist `criterios-datos` Parte 5 completo. Declarar la excepción A3.8 (la transición de estado es UPDATE) |
-| **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | condicional al 2.2. Índice único parcial **probado con 2 INSERT concurrentes** en integración |
-| **2.4** Tope N5 | #21 | no | `buildCreditNote()` consulta `getIssuedCreditNoteCompensationTotal()` y **lanza** si excede. **Bajo lock / con el monto congelado**, nunca `SELECT` suelto antes de `INSERT`. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
+| **2.2** Decisión `credit_note_request` sí/no | #4 (b) | — | ✅ RESUELTO 08/09/2026 — **HOLD**. Grounding `auditor-circuitos-erp` + gate `architecture-governor` completos. Ver `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5 y §10 fila 1 para el razonamiento y los 3 gatillos de reapertura |
+| **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | **Diferido por el gate 2.2 (HOLD), no cancelado.** Reabre si: existe un consumidor real de `resolved_by` (reconciliación manual, hoy inexistente) / el dueño elige fan-out para pool mixto / el portal empieza a crear solicitudes |
+| **2.4** Tope N5 | #21 | no | `buildCreditNote()` toma `SELECT ... FOR UPDATE` sobre la fila `invoices` revertida y, **dentro del mismo lock**, suma NC `ISSUED` + `PENDING` + `FAILED_UNCERTAIN` que la referencian (fail-closed para el cap — F4 sigue anclado solo a `ISSUED`, sin tocarse) y **lanza** si excede `imp_total`. Sin tabla nueva, sin bump de schema. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
 
 > **2.4 tiene que aterrizar ANTES que 3.1, no solo antes que 15** (gate
 > `architecture-governor`, 08/09/2026, revisión de #21). #21 es hoy
@@ -170,18 +170,23 @@ procedimiento completo antes del bump caro de B3.
 > donde el tope N5 no existe y el escenario ya es alcanzable. Ítem 11 de la
 > tabla de orden ejecutable (§7) actualizado para reflejar esta dependencia.
 >
-> **"Monto congelado" tiene DOS portadores candidatos, sin decidir — insumo
-> para el gate del 2.2, no una decisión tomada acá:**
-> (a) la tabla `credit_note_request` del 2.3 (diseño original, ADR `:500`); o
-> (b) la fila `PENDING` de `invoices` misma — ya es un monto congelado (tiene
-> `imp_total`, se commitea antes de llamar a AFIP, única por
-> `idempotency_key`, alcanzable desde `reversed_invoice_id` por el mismo
-> `UNION ALL` que usa F4). La opción (b) evita la tabla nueva pero **invierte
-> la doctrina F4** (Defecto B: habría que contar NC `PENDING`/`FAILED_UNCERTAIN`,
-> no solo `ISSUED`) y convierte el fail-open de hoy en un leak fail-closed —
-> una NC `PENDING` rechazada por AFIP o `FAILED_UNCERTAIN` sin reconciliar
-> consume cupo para siempre, salvo que un humano lo libere. Decidir en el
-> gate del 2.2, con el auditor.
+> **"Monto congelado" — resuelto en el gate 2.2 (08/09/2026), portador (b),
+> ya no es insumo sin decidir.** Los dos candidatos eran (a) la tabla
+> `credit_note_request` del 2.3, hoy en HOLD, o (b) la fila `PENDING` de
+> `invoices` misma — ya es un monto congelado (tiene `imp_total`, se
+> commitea antes de llamar a AFIP, única por `idempotency_key`, alcanzable
+> desde `reversed_invoice_id` por el mismo `UNION ALL` que usa F4). **La
+> objeción anterior de este párrafo ("invierte la doctrina F4") no se
+> sostiene: F4 y N5 son predicados de preguntas distintas sobre la misma
+> tabla.** F4 pregunta "¿puedo cancelar normalmente?" (fail-closed = exigir
+> NC `ISSUED` — correcto como está, sin tocarse). N5 pregunta "¿queda cupo
+> para emitir otra NC?" (fail-closed = contar todo lo en vuelo, incluidas
+> `PENDING`/`FAILED_UNCERTAIN`). Contar `PENDING` en N5 no contradice anclar
+> F4 a `ISSUED`. La fuga real que sí es cierta (una NC `PENDING`/
+> `FAILED_UNCERTAIN` sin reconciliar consume cupo para siempre) **no la
+> evita la tabla `credit_note_request` tampoco** — la reubica, es el mismo
+> hueco de TTL que ni ERPNext ni Odoo ni QloApps cierran (ver `pendientes-2026-09-08.md`,
+> ítem de deuda aceptada TTL/huérfanos).
 
 ### FASE 3 — B-reservas (el bloque grande)
 | Bloque | Ítem | Schema | Notas |
@@ -219,11 +224,18 @@ procedimiento completo antes del bump caro de B3.
   ERPNext trae guard de sobre-acreditación acumulada en 2 capas
   (`get_already_returned_items` por línea + `outstanding_amount` por factura) que
   app-main debería replicar; Odoo sólo el techo de conciliación.
-- `credit_note_request` state machine → **CONSISTENTE con QloApps** (`OrderReturn` +
-  `order_return_state` + `AdminOrderRefundRequestsController`, monto congelado por
-  línea, `by_admin`, timestamp de resolución, conteo de pendientes). **SIN
-  PRECEDENTE en ERPNext/Odoo** (usan el borrador como pendiente, recalculan el
-  monto). El congelamiento R9 diverge a propósito.
+- `credit_note_request` state machine → **CONSISTENTE con QloApps** para los
+  ESTADOS (`OrderReturn` + `order_return_state` + `AdminOrderRefundRequestsController`,
+  `by_admin`, timestamp de resolución, conteo de pendientes). **Corrección
+  (2ª ronda de grounding, 08/09/2026, gate 2.2): el "monto congelado por
+  línea" de este bullet es impreciso.** QloApps llena `refunded_amount`
+  recién CUANDO la solicitud pasa a `refunded` (`AdminOrderRefundRequestsController.php:377`),
+  no al abrirla — ni QloApps freezea el monto al crear la solicitud. **Monto
+  congelado al momento de pedir: SIN PRECEDENTE en las 3 referencias**
+  (Odoo/ERPNext resuelven la concurrencia con locking transaccional, no con
+  una columna de snapshot). Decisión final del gate 2.2: **HOLD** sobre la
+  tabla — ver ADR §6.5/§10 fila 1. El congelamiento R9 sigue siendo diseño
+  propio de `app-main` si algún día se reabre, no un patrón a copiar.
 - Reserva que EXPIRA con factura viva → **SIN PRECEDENTE como patrón implementado**,
   pero el hueco (documento terminal + factura sin reversar, sin job de auditoría)
   está sin resolver en las 3 referencias → respalda agregar el guard, no omitirlo.
@@ -282,9 +294,9 @@ Odoo `ir_cron.py:122`), #13 (grondeado Odoo `ir_cron.py:448-451`, OCA
 | 7 | 4 filas de deuda | #3 | — | — |
 | — | → **gate final B-núcleo+órdenes** (tras 3,4,5) | — | — | — |
 | 8 | `?status=` en `GET /api/invoices` | #4a | — | ✅ RESUELTO 08/09/2026 |
-| 9 | `credit_note_request` | #4b | v48 | auditor + gate |
-| 10 | Tope N5 | #21 | — | 9 |
-| 11 | UNION + fail-closed | #5a | — | 9, **10** |
+| 9 | `credit_note_request` | #4b | v48 | **diferido por gate 2.2 (HOLD, 08/09/2026)** — ya no bloquea a 10 |
+| 10 | Tope N5 | #21 | — | — (contra `invoices` directo, gate 2.2 08/09/2026) |
+| 11 | UNION + fail-closed | #5a | — | ~~9~~ (diferido, ya no aplica) · **10** |
 | 12 | POOL-STARV dimensionado | #10 | — | — |
 | 13 | REFUND-INT-GUARD-001 | #8b | — | — |
 | 14 | Lock de reserva (B-1 + N10) | #8a | — | 12, 13 |

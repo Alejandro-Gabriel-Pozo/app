@@ -225,11 +225,15 @@ que 3.1** — hay que forzarlo (ver plan, tabla de bloques).
   asimetría de grupo de autz. Ítem propio, cruzado contra
   `docs/rbac-matriz-endpoints.md`, gate propio.
 - **NO tocado en este cierre** (fuera del alcance autorizado por el gate):
-  bloque 2.3 (`credit_note_request`, v48) — bloqueado aguas arriba por el
-  bloque 2.2 (auditor + gate §10 fila 1); `buildCreditNote()`; el `authorize`
-  de `invoices.routes.ts`.
-→ el tope real (bloque 2.4) sigue pendiente, sin urgencia hoy — depende del
-2.2/2.3 y tiene que aterrizar antes del bloque 3.1.
+  `buildCreditNote()`; el `authorize` de `invoices.routes.ts`.
+- **Actualización 08/09/2026 — gate del bloque 2.2 resuelto (HOLD sobre
+  `credit_note_request`):** ver `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+  §6.5/§10 fila 1. El tope N5 (bloque 2.4) **ya no depende de la tabla
+  nueva** — se implementa contra la fila `invoices` existente (`SELECT ...
+  FOR UPDATE` sobre la factura revertida + suma `ISSUED`+`PENDING`+`FAILED_UNCERTAIN`
+  dentro del lock, F4 sin tocarse). Sin schema, sin bump de versión.
+→ el tope real (bloque 2.4) sigue pendiente, sin urgencia hoy — depende solo
+de sí mismo y tiene que aterrizar antes del bloque 3.1.
 
 ---
 
@@ -486,6 +490,33 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
   pero es un hueco de governance vivo sobre una capacidad AFIP. → bloque **5.1**
   del plan (frontend), sin dependencias. Interactúa con 2.1 (la bandeja de NC):
   el panel no puede mostrar quién tiene el permiso.
+- **TTL de NC `PENDING`/`FAILED_UNCERTAIN` huérfana — deuda aceptada, no
+  bug.** (08/09/2026, gate `architecture-governor` bloque 2.2, grounding
+  `auditor-circuitos-erp`.) Una NC que queda `PENDING` (nunca se resolvió con
+  AFIP) o `FAILED_UNCERTAIN` (CAE incierto, requiere reconciliación manual)
+  no tiene expiración ni alerta — nadie la barre. Anclas:
+  `src/db/schema.sql:2718-2719` (el `CHECK` de `status`, sin columna de
+  vencimiento) + `src/facturacion/invoice.service.ts:1006-1018`
+  (`reconcileAfterFailure()`, la única reconciliación que existe, automática
+  — no hay ningún flujo de reconciliación MANUAL en el repo). **Verificado
+  contra ERPNext/Odoo 19/QloApps: ninguna de las 3 referencias tiene
+  TTL/expiración automática de una solicitud de corrección en curso** — es
+  un gap aceptado en la industria, se mitiga con reportería/alertas
+  operativas, no con lógica de dominio. Mitigación ya existente en este repo,
+  al mismo nivel que esas referencias: `GET /api/invoices?status=` (bloque
+  2.1, `fc809dc`) + `MID-LOG-001` (`df07bdf`, bloque 0.2). No bloquea nada —
+  registrado para que quede visible, no como omisión silenciosa.
+- **A6.6 sin resolver — quién puede cancelar/rechazar una solicitud de NC en
+  curso.** (08/09/2026, gate `architecture-governor` bloque 2.2.) Si algún
+  día se construye `credit_note_request` (hoy en HOLD, ver ADR §6.5/§10 fila
+  1), la transición `PENDIENTE_CAE → CANCELADO`/`RECHAZADO` necesita
+  `authorize(Roles.EMISOR_NOTA_CREDITO)`, no `FRONT_DESK` — mismo criterio
+  que el resto de la familia de cercas RBAC de este ADR (`app-main/CLAUDE.md`,
+  sección RBAC). Implica `EXPECTED_AUTHORIZE_CALL_SITES` +1, fila nueva en
+  `docs/rbac-matriz-endpoints.md`, posible fila nueva en `ESCAPE_ROUTES` de
+  `credit-note-escape-containment.test.ts`. **No aplica hoy** (no hay tabla,
+  no hay transición que gatear) — queda anotado para cuando se reabra 2.3,
+  no como bloqueo del bloque 2.4.
 
 ---
 
