@@ -147,8 +147,17 @@ precedente ERPNext `StockOverReturnError`).
     v47` (los dos "migrado", no "ya estaba al día"). Verificación de producción:
     `pg_get_constraintdef` = la def esperada en las 2 tenants; 0 filas no
     conformes en las 2; `schema_migrations MAX = 47` en las 2;
-    `businesses.schema_version = 47` (implícito por "migrado a v47" —
-    `updateSchemaVersion` corre antes de ese log). Sin filas `ensayo-v47-*` en
+    `businesses.schema_version = 47`: cerrado por construcción, no solo por el
+    log. `migrate-tenants.ts:65` corre
+    `platformRepo.updateSchemaVersion(business.id, 47)` con el `business.id` que
+    salió de `platformRepo.listAll()` sobre esa misma tabla en la misma corrida
+    (`:50,:56`), así que el `UPDATE businesses SET schema_version WHERE id = $2`
+    no puede matchear 0 filas. (El log `✅ migrado a v47` prueba "no tiró
+    excepción", que por sí solo no descarta un `UPDATE` de 0 filas —
+    `updateSchemaVersion` no chequea `rowCount`; lo que lo descarta es el
+    origen del id.) Corroboración empírica: si el puntero no se hubiera movido,
+    `tenant.middleware.ts:91` estaría logueando un warning por request en el log
+    de runtime de Render post-tráfico — no aparece. Sin filas `ensayo-v47-*` en
     producción (0 en Demo). Ningún ALTER a mano contra producción — lo hizo el
     deploy vía `migrate:tenants`.
   - **Ramas Neon (runbook — registrar propósito/origen/estado):**
@@ -161,8 +170,13 @@ precedente ERPNext `StockOverReturnError`).
     · Alamos: sin backup — 0 filas, 0 FT; un backup de tabla vacía no da punto de
       retorno útil. Declarado.
     · Se borró `ensayo-v46-served-at-2026-09-03` (`br-calm-mode-ax1ltup4`) para
-      liberar un slot (límite de 10 ramas del proyecto Neon) — era el ensayo de
-      un cambio en producción hace 5 días.
+      liberar un slot (límite de 10 ramas del proyecto Neon), **autorizado
+      explícitamente por el usuario para esa rama puntual**. Era el ensayo del
+      bump v45→v46 (columnas de sello de `orders`), en producción desde el
+      03/09. **Registro incompleto contra el runbook** (falta LSN/origen,
+      resultado del ensayo y estado final — los 4 que el runbook pide antes de
+      borrar); la rama ya no existe, no se recupera. Nota de proceso: la próxima
+      vez que un límite de slots fuerce un borrado, capturar los 4 antes.
   - **Rollback declarado en el commit** (`3bcf5ab`): no es "git revert y listo"
     — el revert deja el constraint vivo + `schema_version` en 47 → warning por
     request. Rollback real = re-landear, o dropear el constraint a mano en las 2
