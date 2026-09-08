@@ -1,5 +1,14 @@
 # ZULU Hub — Continuidad operativa
 
+> **⚠️ SUPERSEDIDO el 08/09/2026 por
+> [`zulu-hub-continuidad-2026-09-08.md`](zulu-hub-continuidad-2026-09-08.md).**
+> Este documento es historia válida del arco ORDER-13/O5 dead-letter +
+> sub-bloque 5 del ADR "cancelar con NC" + triage de seguridad 07/09, y su §2
+> es el único índice de los checkpoints por tema del arco 08-29→09-07; **dejó
+> de ser el puntero de entrada**. No confiar en su §1 "Estado de producción" —
+> `origin/main` avanzó de `0baf2b6` (schema v46) a `588c459` (schema **v47**),
+> desplegado. El cuerpo se deja intacto para no reescribir historia.
+
 - **Fecha de corte:** 2026-09-08, después del deploy de `0baf2b6` (ver §1;
   el corte original 07/09 era tras `9222e84`, actualizado in-place).
 - **Reemplaza a:** `docs/zulu-hub-continuidad-2026-08-29.md` (arco Fase 4 read
