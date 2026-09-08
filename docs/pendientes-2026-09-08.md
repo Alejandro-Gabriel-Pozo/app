@@ -113,7 +113,7 @@ de la ruta del escape — el índice de `CLAUDE.md` quedaba incompleto. Como
 `c519d98`; se hizo aparte en `f86dd66` con el visto explícito del usuario,
 con el contenido pre-especificado por el `architecture-governor`.
 
-### #20 — Test del arqueo (condición 4 del re-gate) · 🔴 abierto
+### #20 — Test del arqueo (condición 4 del re-gate) · ✅ RESUELTO
 
 Grep `shift_id|CashMovements|arqueo` en
 `src/tests/integration/cancel-order-with-credit-note.integration.test.ts`:
@@ -122,6 +122,52 @@ nunca `shift_id`/`payment_method` — un movimiento de caja fantasma") está
 implementada vía `settleByIdsWithClient` pero **sin cerca de test**. ADR §10
 condición nueva 4: *"tras el escape, el turno `OPEN` no cambia — `getCashMovementsTotal()`
 idéntico antes y después"*. → bloque 1.3 del plan.
+
+**✅ RESUELTO (08/09/2026, commit `58edf91`, bloque 1.3).** Un `it()` nuevo en
+`cancel-order-with-credit-note.integration.test.ts`: turno `cash_register_shifts`
+OPEN + un `PAYMENT` de $500 `CASH` `SETTLED` atribuido → ancla no-vacua
+(`expect(antes).toBe(500)`); corre el escape sobre una orden con `CHARGE`
+PENDING $100 + Factura B ISSUED; **(a)** `getCashMovementsTotal(shiftId)` sigue
+en 500 (el CHARGE revertido no entró al turno) y **(b)** el CHARGE queda
+`SETTLED` con `shift_id`/`payment_method` intactos en NULL. `beforeEach` suma
+`DELETE FROM cash_register_shifts` (el índice único parcial
+`uq_cash_shift_one_open_per_business` rechazaría un 2do OPEN en el test
+siguiente).
+
+**Motor de verificación:** local, sin Docker/Postgres → se corrió contra la
+rama Neon `test-integration-db` (`br-bold-cell-axuvmork`) vía
+`createTestDatabase()` (BD `test_<uuid>` efímera). **CI corre esta suite
+contra un service container `postgres:16-alpine`** (`.github/workflows/ci.yml:194`,
+`TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/postgres` en
+`:224`) — no contra Neon. El invariante probado (índice único parcial, FK
+`shift_id`, `UPDATE` simple) no depende de la versión de Postgres.
+
+- Baseline: 7/7 verde (6 previos + el nuevo), ~122 s.
+- Mutación 1: `settleByIdsWithClient` asigna `shift_id` **y** `payment_method`
+  → **(a)** falla `expected 600 to be 500`.
+- Mutación 2: asigna **sólo** `shift_id` → **(a)** pasa (el `WHERE` de
+  `getCashMovementsTotal` exige `payment_method='CASH'`) pero **(b)** falla
+  `expected '<uuid>' to be null`. Las dos mitades de la cerca son necesarias.
+- Ambas revertidas con `git checkout --`; `tsc`/`eslint` limpios.
+
+**Falsos negativos declarados:**
+1. El camino del outbox **no se ejercita** — la suite no levanta un worker,
+   los `domain_events` se persisten y se borran sin procesar. Que el
+   `order.cancelled` del escape vaya a `handleOrderCancelled` y no a
+   `handleOrderCompleted → settleChargesByOrderId` (`outbox.handlers.ts:397`,
+   el que sí asigna turno), y que el `EXISTS (... o.status IN ('COMPLETED'))`
+   de `settleChargesByOrderId` bloquee una orden ya `CANCELLED`, son **lectura
+   de código**, no cobertura de este test.
+2. La aserción **(a)** es conjuntiva (`getCashMovementsTotal` filtra
+   `shift_id = $1` **AND** `payment_method = 'CASH'` **AND** `status='SETTLED'`):
+   una mutación que inyecte sólo `shift_id` no rompe (a). Esa disyunción la
+   cubre **(b)** (aserción separada sobre `shift_id` NULL) — verificado con la
+   mutación 2.
+
+**Drift menor detectado de paso (no tocado — anotado para después):**
+`schema.sql:2450` cita `settleByOrderId()`, método que ya no existe (hoy
+`settleChargesByOrderId`); y el ADR cita `:515-522` para el `CASE` del
+`shift_id` de `settleChargesByOrderId`, que hoy está ~`:529-534`.
 
 ### #21 — Tope N5 (acumulado por factura revertida) NO implementado · 🔴 abierto · **fail-open fiscal**
 
