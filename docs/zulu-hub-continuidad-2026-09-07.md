@@ -1,6 +1,7 @@
 # ZULU Hub — Continuidad operativa
 
-- **Fecha de corte:** 2026-09-07, después del deploy de `9222e84`
+- **Fecha de corte:** 2026-09-08, después del deploy de `0baf2b6` (ver §1;
+  el corte original 07/09 era tras `9222e84`, actualizado in-place).
 - **Reemplaza a:** `docs/zulu-hub-continuidad-2026-08-29.md` (arco Fase 4 read
   path + V3-a/V3-b visual + cascada acotada). Ese documento sigue siendo
   historia válida de ese arco; **dejó de ser el puntero de entrada** — su
@@ -72,15 +73,20 @@ el comentario "19 suites" de `ci.yml`.
 
 ## 3. Pendientes activos
 
-Fuente de verdad: **`docs/pendientes-2026-09-06.md`** (log de sesión, se lee
-al empezar cada conversación). El roadmap de producto es
+Fuente de verdad: **`docs/pendientes-2026-09-08.md`** (log de sesión más
+reciente, se lee al empezar cada conversación; arrastra el detalle de
+`pendientes-2026-09-06.md`). El roadmap de producto es
 `docs/roadmap-pms-multirubro.md` (no se lee automáticamente).
 
-Bloque grande abierto: **ADR común "cancelar con NC"** — B-núcleo+órdenes
-sub-bloques 2-6 (grupo de permiso nuevo, `buildCreditNote()` + guard N2.a,
-`cancelOrderWithCreditNote()` + ruta, F4 cableado, cerca de arquitectura),
-después B3, B-reservas, A1-A5. Destraba ORDER-15, Bloque 2 confirmRefund,
-§10 fila 2.
+Bloque grande abierto: **ADR común "cancelar con NC".** Sub-bloques 1-5 de
+B-núcleo+órdenes **cerrados y en producción** (`ad4d236`, `854143b`, `6154edc`,
+`ef27e42`, `20366b1`, `0baf2b6`). **F4 en `findBlockingInvoiceLinkage()` se
+cerró SIN CABLEAR** (`af2b2b5`, camino 1 — divergía de ERPNext/Odoo + estado
+inalcanzable; condición de reapertura escrita). Falta: mitad de datos de la
+condición 3 (el CHECK), condición 4 (test del arqueo), sub-bloque 6 (cerca
+capa iv), después B3, B-reservas, A1-A5. **Plan total:**
+`docs/plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`
+(`erp-audit-orchestrator` + `auditor-circuitos-erp`, 08/09).
 
 ---
 

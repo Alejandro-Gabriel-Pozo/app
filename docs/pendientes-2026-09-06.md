@@ -717,9 +717,27 @@ contra Postgres real, camino `REFUND` no regresionado.
 
 **Gate final de B-núcleo+órdenes:** `architecture-governor`, con el reporte de
 10 puntos del primer gate + las 7 condiciones nuevas del re-gate (§10 del ADR).
-Condiciones 1 y 2 ya cubiertas por `ad4d236`; faltan 3-7 (arqueo, ventana del
-Defecto A, `getOutstandingByCustomerId` post-compensación, `REFUND SETTLED` sin
-NC no destraba, cerca de convención).
+**Corregido 08/09** (auditoría `erp-audit-orchestrator`): condiciones 1 y 2 por
+`ad4d236`; **6 HECHA** (`cancel-order-with-credit-note.integration.test.ts:302-312`,
+comentario `re-gate condición 6`); **7 HECHA** (`credit-note-compensation.integration.test.ts:148`
+NC PENDING⟹0, `:157` REFUND SETTLED sin NC⟹0). **Faltan 3, 4, 5:**
+- **3** = mitad de datos (el CHECK `reversed_invoice_id`, ítem #1 del plan
+  `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`). La mitad de
+  código está hecha (`0baf2b6`).
+- **4** = test del arqueo — **NO existe** (0 hits de `shift_id`/`arqueo` en el
+  suite de integración del escape). Ítem **#20** del plan.
+- **5** = ventana del Defecto A — **se volvió vacua del lado órdenes**:
+  `order.service.ts:416-427` no usa F4 (se cerró sin cablear, `af2b2b5`), así
+  que "sigue bloqueando" es verdad por construcción. **Reasignada a B-reservas**,
+  donde F4 sí se cablea (`reservation.service.ts`).
+- El **sub-bloque 6** (cerca de arquitectura capa iv, arriba) **tampoco existe**
+  — `src/tests/architecture/` no la contiene y `.dependency-cruiser.cjs:94-101`
+  no cubre `facturacion↔pos-menu`. Ítem **#19** del plan.
+
+**Plan total de cierre (ADR restante + deuda estructural):**
+`docs/plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md` (08/09,
+`erp-audit-orchestrator` + `auditor-circuitos-erp`). Ítems nuevos #19/#20/#21 en
+`docs/pendientes-2026-09-08.md`.
 
 **Después:** B3 (fila-solicitud `credit_note_request` + bandeja, con
 `criterios-datos` Parte 5 — índice único parcial, campo de monto congelado,

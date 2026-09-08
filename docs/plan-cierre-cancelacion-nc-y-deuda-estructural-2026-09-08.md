@@ -1,0 +1,263 @@
+# Plan total — cierre del ADR "cancelar con Nota de Crédito" + deuda estructural
+
+**Fecha:** 08/09/2026 · **Estado git al armarlo:** `app-main` = `origin/main` = `cf47763`.
+**Autores del análisis:** `erp-audit-orchestrator` (lifecycle + dependencias + secuencia)
+y `auditor-circuitos-erp` (grounding ERPNext / Odoo 19 / QloApps). Ninguno implementó.
+**Fuentes de verdad que este plan NO reemplaza:** ADR
+`docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`,
+`docs/pendientes-2026-09-08.md` (log de sesión), `docs/pendientes-2026-09-06.md`
+(detalle de los ítems arrastrados).
+
+Regla transversal: **auto-deploy de Render está en ON. Push a `main` = deploy, y
+Render NO espera CI verde.** Todo bloque con schema exige coordinar la ventana
+(`docs/conocimiento/runbook-deploy-render.md`) y pasar por `architecture-governor`.
+
+---
+
+## 0. Correcciones de estado (aplicar ANTES de tocar código)
+
+| # | Corrección | Evidencia |
+|---|---|---|
+| 0.1 | `pendientes-2026-09-06.md` dice del gate final "faltan 3-7". **Faltan 3, 4 y 5.** | Condición 6 HECHA: `cancel-order-with-credit-note.integration.test.ts:302-312` (comentario `re-gate condición 6`). Condición 7 HECHA: `credit-note-compensation.integration.test.ts:148` (NC PENDING ⟹ 0) y `:157` (REFUND SETTLED sin NC ⟹ 0). |
+| 0.2 | **Condición 5 se volvió vacua del lado órdenes.** `order.service.ts:416-427` no usa F4 (se cerró sin cablear en `af2b2b5`) → "sigue bloqueando en la ventana del Defecto A" es verdad por construcción. Reasignar a B-reservas, donde F4 sí se cablea. | — |
+| 0.3 | Techo de CI: **24 suites**, no 19. `ci.yml:178` ("Techo explícito: 19 suites"), `:181` `timeout-minutes: 20`. | `ls src/tests/integration/*.test.ts \| wc -l` = 24 |
+| 0.4 | Comentario stale en `sql.invoice.repository.ts` (~`:314-318`): dice que el hueco cruzado de F4 está "registrado como bloqueante de B-reservas". El ADR N2.a lo resolvió como doctrina. Corregir junto con el bloque 1.4. | — |
+| 0.5 | **Tres ítems del ADR nunca llegaron a la lista de trabajo** pese a estar en `pendientes`: #19 cerca capa (iv), #20 test del arqueo, #21 tope N5. Dos son condiciones formales del re-gate. Registrados en `pendientes-2026-09-08.md`. | ver §1 |
+| 0.6 | Verificaciones que quedaron abiertas y ahora están cerradas por lectura: (1) el residuo "crash entre AFIP-OK y tx2" **autosana** — fast-path exige `CANCELLED` (`cancel-order-with-credit-note.service.ts:156-157`) → con orden `CONFIRMED` cae a tx1 → reusa `existing` (`:248`) → `retryExisting()` devuelve la NC ya ISSUED sin re-emitir (`invoice.service.ts:897-899`). (2) el frontend gatea `POST /api/invoices` a `type === 'CHARGE'` (`appfrontend-main .../cuentas-corrientes/page.tsx:304`). | — |
+
+---
+
+## 1. Ítems nuevos (registrados 08/09, del análisis del orchestrator)
+
+### #19 — Cerca de arquitectura capa (iv) · 🔴 abierto · ADR §4
+`src/tests/architecture/` tiene 4 archivos y **ninguno** impide que `order.service.ts`
+o `reservation.service.ts` importen `src/facturacion/cancel-with-credit-note.ts` /
+`cancel-order-with-credit-note.service.ts`. **NO es una regla dep-cruiser
+`facturacion↔pos-menu`:** `tsPreCompilationDeps: true` ve los `import type` y hay
+~16 imports legítimos `pos-menu|reservas → facturacion`, incluido
+`src/pos-menu/order-cancel-for-credit-note.ts:47` (el adaptador de puerto del
+sub-bloque 4 — `implements OrderCancelPort`, debe quedar exento). La cerca correcta
+es la del bloque 1.2 (allowlist estrecha sobre `order.service.ts` /
+`reservation.service.ts`, patrón `lock-order.test.ts`). Es el sub-bloque 6 del ADR
+y una condición formal del re-gate. **Familia ADR, no deuda estructural.**
+
+### #20 — Test del arqueo (condición 4 del re-gate) · 🔴 abierto · ADR §10
+Grep `shift_id|CashMovements|arqueo` en
+`src/tests/integration/cancel-order-with-credit-note.integration.test.ts`: **0 hits.**
+La restricción (i) de N1.a ("el `UPDATE` dirigido sólo toca `status`, nunca
+`shift_id`/`payment_method`") está implementada (`settleByIdsWithClient`) pero sin
+cerca de test. Condición formal del re-gate.
+
+### #21 — Tope N5 (acumulado por factura revertida) NO implementado · 🔴 abierto · ADR §3 N5
+`buildCreditNote()` (`src/facturacion/invoice.service.ts`, rama ~`:745-795`) no
+consulta `getIssuedCreditNoteCompensationTotal()` ni ningún tope antes de armar la
+NC. Idempotencia = `invoice:<financialTransactionId>` — **por transacción, no por
+factura revertida.** N transacciones revertidoras distintas contra el mismo
+`reversed_invoice_id` pueden cada una emitir su NC total sin tope contra
+`imp_total`. Es un **fail-open sobre un comprobante fiscal**; el ADR N5 lo exige con
+forma dura (LANZA, nunca clamp — precedente ERPNext `StockOverReturnError`).
+- Órdenes: **inalcanzable** (clave `cancel-order-with-cn:<orderId>`, 1:1).
+- Reservas: **alcanzable** — `confirmRefund()` crea N `REFUND` con el mismo
+  `reversedInvoiceId`, cada uno facturable por `POST /api/invoices`, que **no filtra
+  por `type` en la ruta** (`invoices.routes.ts:82-98`). Lo contiene el frontend
+  (`.../cuentas-corrientes/page.tsx:304`), no el dominio.
+- **Con B-reservas pasa a ser el camino normal.** Debe cerrarse ANTES de B-reservas.
+
+---
+
+## 2. Lifecycle real
+
+### 2.1 Órdenes — dominio CERRADO, borde operativo ABIERTO
+Circuito funcional completo y probado contra Postgres real hasta el evento
+`order.cancelled`. Lo que falta **no es dominio**, es borde operativo:
+- Un escape que sale por **D1** (AFIP no concluyente) produce un 422 al operador,
+  un `ADJUSTMENT PENDING` en la base, **cero líneas de log** (`MID-LOG-001`:
+  `error.middleware.ts:62-79` sólo loguea `REFUND_BASE_CHANGED`), y **ninguna
+  pantalla** (B3). La "limitación aceptada" del ADR §7 está viva en producción
+  desde `ef27e42`, y sin log nadie sabe cuándo consultar.
+- Faltan: #1 (CHECK datos), #19 (cerca capa iv), #20 (test arqueo), #21 (tope N5),
+  #4 (bandeja), #9 (log D1), gate final.
+
+### 2.2 Reservas — no hay circuito, hay una puerta cerrada con llave
+Guarda RESERVA-10 fail-closed (`reservation.service.ts:865-877`, `:894-899`) + texto
+genérico de `ReservationChargeInvoicedError`. Todo lo demás abierto. El mecanismo
+compartido (F4, token, `buildCreditNote()` N3, aritmética de signo N1.b) ya existe y
+está probado; falta el orquestador, el predicado unificado (`getByReservationId()`
+UNION — hoy `sql.invoice.repository.ts:430-439` no tiene la rama `invoice_charges`)
+y el schema.
+
+---
+
+## 3. Grafo de dependencias (aristas duras)
+
+```
+#4 B3  ──(D1, ADR §7 "B3 precondición de B-reservas")──▶  #5 B-reservas
+#21 N5 ──(camino normal del lado reservas)──────────────▶  #5 B-reservas
+#5 B-reservas ──▶ #6-A1 (el texto deja de mentir) · condición 5 del re-gate (deja de ser vacua)
+#8 Residual B-1 ◀──▶ #5   (contienden por el lock de `reservations` — diseñar JUNTOS o mismo gate + lock-order.test.ts)
+#10 POOL-STARV ──▶ #8     (dimensionar el pool ANTES de alargar la ventana de lock)
+#9 MID-LOG-001 ──▶ evidencia de #8 y del D1 del escape
+#2 3-ter ──▶ #5 subcaso 2 (la rama consolidada de F4 se vuelve real)
+#14 OUTBOX-DL-COMPENSATOR ──▶ #11 CONCIL-INCONSIST-01 (el drift que #11 reporta es lo que #14 arregla)
+#11 + #12 + #13 + #18 ──▶ MISMO DDL sobre `domain_events` (unificar en un bloque)
+#17 CI ──▶ TODO (cada bloque agrega suites; techo stale; auto-deploy ON)
+```
+
+**Aristas de costo monótono (no bloquean, el orden importa):**
+`#1 CHECK` — hoy 0 filas con `reversed_invoice_id` en las 2 tenants ⟹ `ADD CONSTRAINT`
+instantáneo, sin backfill, sin decisión. Post B-reservas cada escape y cada
+`confirmRefund()` agrega filas ⟹ `NOT VALID` + `VALIDATE` en dos pasos y una
+decisión sobre filas no conformes. **Además** es el bump de schema más chico
+posible (una sentencia, patrón `schema.sql:2187-2190`) → ensayo ideal del
+procedimiento completo antes del bump caro de B3.
+
+**Decisiones del dueño que bloquean:** pool mixto fan-out auto vs. manual (§10 fila 2);
+`EXPIRED` con factura viva (§10 fila 3); set de `reason` (§10 fila 4); retención A7.6.
+
+---
+
+## 4. Secuencia — 5 fases + outbox en paralelo
+
+### FASE 0 — Higiene de verificación (sin riesgo, habilita todo)
+| Bloque | Ítem | Schema | Criterio de cierre |
+|---|---|---|---|
+| **0.1** CI: techo 19→24 + `timeout-minutes` | #17 | no | comentario coincide con `wc -l`; job verde; considerar cerca que cuente archivos (patrón `EXPECTED_AUTHORIZE_CALL_SITES`) |
+| **0.2** `MID-LOG-001` — logging de `DomainError` | #9 | no | test del middleware: `CreditNoteCancellationPendingError` produce línea de log con `code` + ids de negocio; verificar volumen en Render post-deploy. **Decisión no mecánica:** qué se loguea y en qué nivel (allowlist de códigos riesgo-plata vs. por rango de status). Códigos obligatorios: `CREDIT_NOTE_CANCELLATION_*`, `CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE`, `AFIP_REQUEST_*` |
+
+### FASE 1 — Cerrar mitad de datos + cercas del ADR (ventana barata)
+| Bloque | Ítem | Schema | Criterio de cierre |
+|---|---|---|---|
+| **1.1** CHECK `reversed_invoice_id` | #1 | **v46→v47** | `pg_constraint` con la def esperada en las 2 tenants; 0 filas no conformes; `schema-redeploy-idempotent` verde; `tenant-db.setup.test.ts` afirma 47; INSERT `type='CHARGE'` + `reversed_invoice_id` rechazado en rama descartable. Procedimiento completo: governor → backup durable (2 ramas Neon) → rama de ensayo → deploy → `migrate:tenants` 2/2 → verif prod |
+| **1.2** Cerca de arquitectura capa (iv) | #19 | no | 3 aserciones (no import del núcleo desde `order.service.ts`/`reservation.service.ts`; conteo de call-sites de `authorizeCreditNoteCancellation()`; ausencia de flag de bypass en `cancelOrder`/`cancelReservation`/`findBlockingInvoiceLinkage`). Prueba de mutación + falsos negativos declarados. **ANTES de B-reservas** (protege el código que aún no existe) |
+| **1.3** Test del arqueo | #20 | no | turno `OPEN` con movimiento; `getCashMovementsTotal` idéntico antes/después del escape; `shift_id`/`payment_method` del CHARGE sin cambio; mutación verificada |
+| **1.4** 3-ter `cbte_tipo` en subquery `nc` | #2 | no | filtrar las **dos** ramas del `UNION ALL` con `= ANY(CBTE_TIPOS_NOTA_CREDITO)` (constante nueva en `afip-catalog.constants.ts`, NO `= 8` literal) + test unitario que ate el routing de `invoice.service.ts:357` + corregir el comentario stale + test: una Factura B apuntando a una FT revertidora **no** cuenta como compensación |
+| **1.5** 4 filas de deuda de `ef27e42` | #3 | no | 1 commit por par: (i)+(ii) `cancel-order-with-credit-note.service.ts` (`!` no-nulo en `:269` **y** `:248` — está dos veces; + assert `reversedInvoiceId === originalInvoiceId`); (iii)+(iv) extraer `buildInvoiceService` a `src/facturacion/build-invoice-service.ts` + mover `OrderNotFoundError`/`InvalidOrderTransitionError` a `domain/errors.ts` con re-export |
+
+**Con 1.1 + 1.2 + 1.3 cerrados → pedir el gate final de B-núcleo+órdenes al `architecture-governor`.** No antes.
+
+### FASE 2 — B3 + borde operativo (desbloquea B-reservas)
+| Bloque | Ítem | Schema | Notas |
+|---|---|---|---|
+| **2.1** `?status=` en `GET /api/invoices` | #4 (a) | no | 80% del valor de B3 (localizar el caso trabado) con 0% del riesgo. Verificar accesibilidad del rol que usa la bandeja contra `platform.schema.sql` (regla 5 `CLAUDE.md`, incidente D6) |
+| **2.2** Decisión `credit_note_request` sí/no | #4 (b) | — | ⛔ esperar `auditor-circuitos-erp` (state machine) + gate governor §10 fila 1. Obligatorio: índice único parcial, campo de monto congelado (R9 — cruza con #21), `resolved_at TIMESTAMPTZ`, checklist `criterios-datos` Parte 5 completo. Declarar la excepción A3.8 (la transición de estado es UPDATE) |
+| **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | condicional al 2.2. Índice único parcial **probado con 2 INSERT concurrentes** en integración |
+| **2.4** Tope N5 | #21 | no | `buildCreditNote()` consulta `getIssuedCreditNoteCompensationTotal()` y **lanza** si excede. **Bajo lock / con el monto congelado del 2.3**, nunca `SELECT` suelto antes de `INSERT`. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
+
+### FASE 3 — B-reservas (el bloque grande)
+| Bloque | Ítem | Schema | Notas |
+|---|---|---|---|
+| **3.1** `getByReservationId()` UNION + fail-closed en `confirmRefund()` | #5 (a) | no | `UNION` con dedup (no `ALL`) espejo de `resolveInvoiceLinkage()`; **no** copiar `getOutstandingByCustomerId()`. Va CON el fail-closed en `cancellation-refund.service.ts:189` (`ReservationOnConsolidatedInvoiceError` 409). 5 caracterizaciones a actualizar. Comentar la fragilidad UNION-safe latente |
+| **3.2-pre** POOL-STARV-001 dimensionado | #10 | no | análisis, no código. Cuántas conexiones del pool `max:5` sostiene `confirmRefund()` (hoy 3-4) |
+| **3.2-bis** `REFUND-INT-GUARD-001` | #8 (b) | no | va ANTES de 3.2: decorator que commitea un `PAYMENT` interferente y cae en la ventana `:245 → guard`. Prueba las 3 cosas hoy inferidas (guard dispara / rollback real / aislamiento pool-vs-client) |
+| **3.2** Lock de reserva (B-1 + N10) diseñados JUNTOS | #8 (a) + #5 (b) | no | mismo lock sobre `reservations` para cerrar B-1 y para `cancelReservationWithCreditNote()`. `lock-order.test.ts` actualizado en el mismo commit. Criterio: 2 tx concurrentes reales, un ganador, un perdedor con error tipado reintentable, cero filas parciales. **Riesgo alto** |
+| **3.3** `cancelReservationWithCreditNote()` subcasos 1-2 + W2 + F4 cableado | #5 (c) | **v48→v49** (índice) | ⛔ esperar `auditor-circuitos-erp` (subcasos). Orquestador en `src/facturacion/`. W2: contraparte = titular del documento revertido, NO el huésped (`cancellation-refund.service.ts:271` — mueve saldo entre cuentas corrientes). Condición 5 del re-gate deja de ser vacua acá. **Riesgo más alto del plan** |
+| **3.4** `EXPIRED-FACT-01` | #5 (d) | ? | ⛔ decisión del dueño (§10 fila 3). `reservation-hold-expiry.worker.ts:121-122` sin guard de facturación. Opciones: (a) no expira, deja `PENDING`; (b) expira + registra en bandeja B3; (c) escape automático (contradice §0). El auditor confirmó: **ninguna referencia corre reversión en camino de caducidad** — el hueco está sin resolver en las 3, agregar el guard deja a app-main por delante, no en contra |
+| **3.5** Pool mixto (subcaso 3) | #5 (e) | — | ⛔ decisión del dueño (§10 fila 2). Evidencia ERP completa (Odoo tiene fan-out pero lo apaga para docs legales AR; ERPNext/QloApps van factura por factura). Falta la respuesta, no más grounding |
+
+### FASE 4 — Outbox + conciliación (paralelo a 1-3; 4.2 no solapa ventana de deploy con schema)
+| Bloque | Ítem | Schema | Notas |
+|---|---|---|---|
+| **4.1** `OUTBOX-DL-COMPENSATOR-01` | #14 | no | primero (bloquea #11). `outbox.worker.ts:288-302` corre `onDeadLetterBatch` best-effort sin casillero en `processed_events`. Opciones mecánicas: (a) reclamar casillero; (b) re-disparar por el reintento manual. Test: matar el proceso entre `recordFailure(deadLettered)` y el compensador; idempotencia probada |
+| **4.2** Observabilidad outbox unificada + A7.6 | #12+#13+#11(contador)+#18 | **+1** | **un solo DDL** sobre `domain_events`: `first_failed_at` (nunca la limpia un reintento, sólo un éxito — patrón Odoo `ir_cron.py:122`) + `last_failed_at` (el backoff lo necesita). Audit del reintento manual (`system.routes.ts:67-75` sólo `logger.info` hoy — A6.5). **Decidir A7.6 en este gate** (⛔ dueño: cuántos días por tabla) — contrapartida de agregar columnas a una tabla sin purga |
+| **4.3** `CONCIL-INCONSIST-01` | #11 | posible | ⚠️ ronda corta `auditor-circuitos-erp` (cómo repara un ERP un hecho financiero faltante a posteriori: ERPNext `repost_accounting_entries`, asiento manual Odoo). Forma: cron que NO emite + query on-demand + 2º contador junto a `countDeadLettered()`. "Crear el CHARGE faltante" = botón humano, nunca cron. 0 filas huérfanas medidas (07/09) → riesgo latente, va al final |
+| **4.4** throttle + fromName | #15, #16 | no | independientes, mecánicos. #15: cooldown in-memory se resetea con `pool.on('error')` (correlacionado con outages) — mover a store de proceso o aceptar declarado. #16: `email.sender.ts:72` `from` sin quotear, camino de mail al cliente → gate propio, test con `"`/`<`/`,`/`;` en `display_name` |
+
+### FASE 5 — Frontend (`appfrontend-main`, commits aparte)
+| Bloque | Ítem | Dep | Notas |
+|---|---|---|---|
+| **5.1** Catálogos de permisos + copy falsa | #7 (a) | **ninguna, se puede ya** | 3 catálogos sin `EMISOR_NOTA_CREDITO` (`roles/page.tsx:15-26`, `superadmin/roles-de-fabrica/page.tsx:9-12`, `superadmin/planes/page.tsx:11-14`); copy falsa `roles-de-fabrica/page.tsx:59-61` (el backfill SÍ afecta a negocios existentes). Nombrar la deuda: 3 catálogos a mano sin endpoint que los liste |
+| **5.2** `description`/`kind` del dead-letter | #7 (b) | **ninguna** | contrato desfasado: backend emite (`system.routes.ts:38-41`), `appfrontend-main .../lib/sistema/types.ts` no los declara. El operador ve `last_error` crudo y "Reintentar" que puede no aplicar |
+| **5.3** Pantallas del circuito NC + portal A2 | #7 (c) + #6-A2 | 2.1/2.3, 3.3 | botón "cancelar con NC" + mensaje "no se restaura stock si fue servida" (ADR §5); 4 errores diferenciados; bandeja; ocultar botón de cancelar en el portal con factura viva (A2) |
+| **5.4** UI de `cancellation-refund/preview\|confirm` | #6-A4 | ⛔ **dueño** | circuito C2 de plata, D2-diferido. Decisión de roadmap, NO follow-up del ADR |
+
+---
+
+## 5. Clasificación: qué necesita grounding ERP
+
+**Ya grondeado (ronda 08/09, `auditor-circuitos-erp`):**
+- NC parcial contra consolidada + pool mixto → **CONSISTENTE** con ERPNext/Odoo.
+  ERPNext trae guard de sobre-acreditación acumulada en 2 capas
+  (`get_already_returned_items` por línea + `outstanding_amount` por factura) que
+  app-main debería replicar; Odoo sólo el techo de conciliación.
+- `credit_note_request` state machine → **CONSISTENTE con QloApps** (`OrderReturn` +
+  `order_return_state` + `AdminOrderRefundRequestsController`, monto congelado por
+  línea, `by_admin`, timestamp de resolución, conteo de pendientes). **SIN
+  PRECEDENTE en ERPNext/Odoo** (usan el borrador como pendiente, recalculan el
+  monto). El congelamiento R9 diverge a propósito.
+- Reserva que EXPIRA con factura viva → **SIN PRECEDENTE como patrón implementado**,
+  pero el hueco (documento terminal + factura sin reversar, sin job de auditoría)
+  está sin resolver en las 3 referencias → respalda agregar el guard, no omitirlo.
+
+**Falta grondear (proponer 2ª ronda):**
+| Pregunta | Insumo de | Prioridad |
+|---|---|---|
+| ¿Qué serializa la aplicación de un pago/reembolso — lock optimista (ya visto: ERPNext `validate_allocated_amount_with_latest_data`) o pesimista? ¿Qué serializa Odoo en `account.payment.register`? | bloque 3.2 (lock de reserva) | **alta** |
+| ¿Cómo repara un ERP un hecho financiero faltante detectado a posteriori? (ERPNext `repost_accounting_entries`, asiento manual Odoo) | bloque 4.3 | media |
+| ¿Qué retienen ERPNext (`Log Settings`) y Odoo (autovacuum `mail.message`/`ir.logging`) para logs de evento/auditoría? | bloque 4.2 (A7.6) | baja |
+| ¿`get_already_returned_items` de ERPNext corre bajo lock o acepta la carrera? | bloque 2.4 (forma del tope N5) | media (se lee la fuente, no ronda completa) |
+
+**Puramente estructural — NO al auditor:** #1, #2, #3, #7, #9, #10, #12 (grondeado
+Odoo `ir_cron.py:122`), #13 (grondeado Odoo `ir_cron.py:448-451`, OCA
+`queue_job.retry_pattern`), #14, #15, #16, #17, #19, #20.
+
+---
+
+## 6. Qué NO hacer
+
+1. NO cablear F4 en `order.service.ts:findBlockingInvoiceLinkage()` — cerrado sin
+   cablear (`af2b2b5`, camino 1), con condición de reapertura escrita. El residuo
+   de crash autosana (§0.6), ni siquiera queda huérfano.
+2. NO tocar el `NOT EXISTS` de `voidByOrderId`/`voidByReservationId` (F3, backstop
+   insalteable — adoptar el predicado nuevo ahí contaría la reversión dos veces).
+3. NO abrir `confirmRefund()` para devolver plata (D2 — es otro ADR). Lo que sí se
+   toca es el fail-closed de 3.1 y el lock de 3.2.
+4. NO empezar 2.3 (B3-schema) ni 3.3 (B-reservas) con el `auditor-circuitos-erp` en
+   vuelo.
+5. NO empezar 3.4 / 3.5 — bloqueados por decisión del dueño.
+6. NO construir UI de `cancellation-refund/preview|confirm` (#6-A4) — circuito C2,
+   D2-diferido, decisión de roadmap.
+7. NO agrupar los 3 bumps de schema (1.1, 2.3, 3.3) en una ventana. Cada uno con su
+   backup durable, rama descartable y verificación de prod.
+8. NO corregir el texto de `ReservationChargeInvoicedError` (A1) antes de B-reservas
+   — apuntarlo a una acción inexistente es volver a la mentira que A1 denunciaba.
+9. NO dar por cerrado B-núcleo+órdenes hasta el gate final (faltan 3, 4, y el
+   sub-bloque 6 = bloques 1.1, 1.2, 1.3).
+10. NO declarar cerrado el flake de `credit-note-compensation.integration.test.ts`
+    por corridas verdes. Si reaparece en CI local (`postgres:16-alpine`, sin suspend
+    ni latencia) **deja de ser flake y es bug** — código de facturación con un TOCTOU
+    ya documentado en la vecindad.
+
+---
+
+## 7. Orden ejecutable
+
+| # | Bloque | Ítems | Schema | Bloqueado por |
+|---|---|---|---|---|
+| 1 | CI techo | #17 | — | — |
+| 2 | MID-LOG-001 | #9 | — | — |
+| 3 | CHECK `reversed_invoice_id` | #1 | v47 | — |
+| 4 | Cerca capa (iv) | #19 | — | — |
+| 5 | Test del arqueo | #20 | — | — |
+| 6 | 3-ter `cbte_tipo` | #2 | — | — |
+| 7 | 4 filas de deuda | #3 | — | — |
+| — | → **gate final B-núcleo+órdenes** (tras 3,4,5) | — | — | — |
+| 8 | `?status=` en `GET /api/invoices` | #4a | — | — |
+| 9 | `credit_note_request` | #4b | v48 | auditor + gate |
+| 10 | Tope N5 | #21 | — | 9 |
+| 11 | UNION + fail-closed | #5a | — | 9 |
+| 12 | POOL-STARV dimensionado | #10 | — | — |
+| 13 | REFUND-INT-GUARD-001 | #8b | — | — |
+| 14 | Lock de reserva (B-1 + N10) | #8a | — | 12, 13 |
+| 15 | B-reservas subcasos 1-2 + W2 + F4 | #5c | v49 | auditor, 9, 10, 11, 14 |
+| 16 | EXPIRED-FACT-01 | #5d | ? | dueño |
+| 17 | Pool mixto | #5e | — | dueño |
+| P | OUTBOX-DL-COMPENSATOR | #14 | — | — |
+| P | Outbox observabilidad unificada + A7.6 | #12+#13+#18 | +1 | dueño (retención) |
+| P | CONCIL-INCONSIST-01 | #11 | posible | auditor corto, DL-COMPENSATOR |
+| P | throttle + fromName | #15, #16 | — | — |
+| P | Frontend catálogos + copy | #7a | — | — |
+| P | Frontend `description`/`kind` | #7b | — | — |
+| D | Pantallas NC + portal A2 | #7c, #6-A2 | — | 9, 15 |
+| D | UI de C2 | #6-A4 | — | dueño |
+
+`P` = paralelizable ya · `D` = diferido por dependencia
