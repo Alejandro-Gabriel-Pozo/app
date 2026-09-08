@@ -70,6 +70,7 @@ import {
   AfipRequestRejectedError,
   AfipNotConfiguredError,
 } from '../domain/errors.js';
+import { logger }                        from '../logger.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -331,6 +332,17 @@ export function createOrdersRouter(container: AppContainer): Router {
         const result = await buildCancelOrderWithCreditNoteService(req).cancelOrderWithCreditNote(orderId, auth);
         res.json(result);
       } catch (err) {
+        // MID-LOG-001 (bloque 0.2) -- este handler resuelve el error inline
+        // con `res.status().json()` y NO pasa por `error.middleware.ts`, así
+        // que la política de logging de DomainError se aplica acá. Endpoint
+        // de bajo volumen (`EMISOR_NOTA_CREDITO`): se loguea todo fallo. Sin
+        // `err.message` -- trae ids/montos (A7.1); `orderId` ya lo tenemos.
+        if (err instanceof DomainError) {
+          logger.warn(
+            { code: err.code, orderId, businessId: req.user?.businessId ?? null },
+            '[orders] cancel-with-credit-note fallo',
+          );
+        }
         if (err instanceof OrderNotFoundError)                      res.status(404).json({ code: 'ORDER_NOT_FOUND',                 message: err.message });
         else if (err instanceof InvalidOrderTransitionError)        res.status(409).json({ code: 'INVALID_TRANSITION',              message: err.message });
         else if (err instanceof CreditNoteMultiInvoiceError)        res.status(409).json({ code: 'CREDIT_NOTE_MULTI_INVOICE',       message: err.message });

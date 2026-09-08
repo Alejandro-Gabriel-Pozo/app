@@ -129,11 +129,45 @@ precedente ERPNext `StockOverReturnError`).
 - **Comentario stale en `src/facturacion/sql.invoice.repository.ts` ~`:314-318`:**
   dice que el hueco cruzado de F4 está *"registrado como bloqueante de B-reservas"*.
   El ADR N2.a lo resolvió como doctrina. Corregir junto con el bloque 1.4 (3-ter).
-- **`MID-LOG-001` agrava la limitación aceptada del ADR §7:** el escape sale por D1
-  (`CreditNoteCancellationPendingError`) **sin ninguna línea de log**
-  (`src/api/middleware/error.middleware.ts:62-79` sólo loguea `REFUND_BASE_CHANGED`).
-  La "consulta manual acotada" del ADR §7 supone que alguien sabe que hay algo que
-  consultar. → bloque 0.2 del plan (sube de prioridad).
+- **`MID-LOG-001`** — ✅ RESUELTO (bloque 0.2 del plan, 08/09).
+  `src/api/middleware/error.middleware.ts`: política declarada — todo `DomainError`
+  que mapea a `>= 409` (carreras, reglas de negocio, dependencia externa, code sin
+  mapeo) se loguea `warn` con `{ code, status, method, url, businessId }`, **nunca
+  `err.message`** (trae ids/montos/razón social, A7.1). Los 4xx de cliente
+  rutinario (400/401/403/404) no. Reemplaza el special-case de
+  `REFUND_BASE_CHANGED`.
+  - `domainErrorStatus` gana los 5 codes del escape
+    (`CREDIT_NOTE_CANCELLATION_PENDING`/`_ISSUED_ORDER_NOT_CANCELLABLE` → 422;
+    `CREDIT_NOTE_CANCELLATION_REJECTED`/`CREDIT_NOTE_MULTI_INVOICE`/`ORDER_INVOICE_HAS_NO_LINES`
+    → 409, alineados con el ladder inline de la ruta). Antes caían al `default:`
+    → 500 + "sin mapeo".
+  - **El escape (`POST /api/orders/:id/cancel-with-credit-note`) resuelve el
+    error inline y NO pasa por el middleware** → `orders.routes.ts` gana un
+    `logger.warn({ code, orderId, businessId })` al tope del `catch` para
+    `DomainError` (endpoint de bajo volumen, se loguea todo fallo). Esto es lo
+    que hace visible la rama D1 del ADR §7.
+  - `url` = **path solo** (`req.originalUrl.split('?')[0]`) — A7.2: `GET
+    /api/customers` todavía recibe `email`/`name` por query string (deuda
+    pre-existente); el path solo lleva el id de recurso. Umbral `>= 409`:
+    403/402 excluidos **a propósito** (autz va a `audit_log`; 402 es upsell),
+    dicho en el comentario para que no se lea como accidente numérico.
+  - `ORDER_STATE_UNKNOWN` también agregado al 409 (misma familia — inline como
+    409 en 4 sitios de `orders.routes.ts`, antes caía al `default:` → 500).
+  - Test: `error.middleware.test.ts` nuevo (8) — 422/409 se loguean con la
+    forma exacta y sin `message`; 404/400 no; code sin mapeo → 500 +
+    `logger.error` una vez; sin `req.user` → `businessId: null`; **query
+    string nunca viaja al log**; `ORDER_STATE_UNKNOWN` → 409.
+  - **Divergencias ladder inline (`orders.routes.ts`) vs `domainErrorStatus`**
+    (pre-existentes del sub-bloque 4, NO se tocan acá — sólo se registran):
+    `AFIP_NOT_CONFIGURED` 422 ruta / 503 middleware; `AFIP_REQUEST_REJECTED`
+    409 ruta / 422 middleware. Reconciliarlas es cambio de contrato (chequeo
+    de frontend) — bloque propio.
+  - **Deuda que queda:** dos políticas de logging conviven — el escape loguea
+    **todo** `DomainError` (incl. 404, por bajo volumen), el middleware sólo
+    `>= 409`. Las rutas que resuelven inline sin `next(err)` (el escape, los
+    guards de reservas del portal) no pasan por el middleware. Una convención
+    "todo `*.routes.ts` delega los `DomainError` al middleware salvo
+    divergencia de status declarada" reconciliaría las dos — bloque propio.
 - **Doble lectura por el repo en vez de por `client`** en
   `cancel-order-with-credit-note.service.ts`: la deuda (i) de `ef27e42` menciona
   `:269`; el mismo defecto está también en `:248`. Arreglar las dos o declarar por

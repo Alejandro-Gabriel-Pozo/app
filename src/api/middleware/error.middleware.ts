@@ -27,7 +27,7 @@ import { logger } from '../../logger.js';
 
 export function errorHandler(
   err: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
@@ -61,16 +61,43 @@ export function errorHandler(
 
   if (err instanceof DomainError) {
     const status = domainErrorStatus(err);
-    // BRECHA-REFUND-01-B (06/09/2026) -- este es el ÚNICO DomainError que se
-    // loguea acá: es una carrera detectada (un PAYMENT/REFUND concurrente
-    // contra la reserva) que `confirmRefund()` aborta y pide reintentar.
-    // Sin esta traza no hay forma de saber si el guard se dispara en
-    // producción -- que es el insumo para decidir si vale la pena el lock a
-    // nivel reserva (residual B-1). Introduce el precedente de logging
-    // por-code en este middleware; el resto de los DomainError siguen sin
-    // loguearse (hallazgo más ancho, registrado aparte en pendientes).
-    if (err.code === 'REFUND_BASE_CHANGED') {
-      logger.warn({ code: err.code }, '[errorHandler] reembolso abortado por cambio de base concurrente');
+    // MID-LOG-001 (08/09/2026, plan-cierre-cancelacion-nc-y-deuda-estructural
+    // bloque 0.2) -- política declarada de logging de `DomainError`.
+    //
+    // Se loguea SÓLO lo que mapea a >= 409: carreras (409), violaciones de
+    // regla de negocio (422), dependencia externa caída (503), y un `code`
+    // sin mapeo (500, vía `default:` de abajo). Los 4xx de cliente rutinario
+    // (400 validación / 401 / 404 no-encontrado) NO se loguean -- son ruido
+    // de alto volumen que ahoga la señal.
+    //
+    // EXCLUSIONES DELIBERADAS, no accidentes del umbral numérico:
+    //  - 403 (`FORBIDDEN`, `FISCAL_PROFILE_LOCKED`): los eventos de autorización
+    //    van a `audit_log`, no a este canal.
+    //  - 402 (`PLAN_LIMIT_REACHED`, `ROLE_NOT_AVAILABLE_IN_PLAN`, ...): se
+    //    capturan localmente en los routers y son señal de upsell, no de bug.
+    //
+    // NUNCA `err.message`: los mensajes de dominio traen ids de cliente,
+    // montos y razones sociales (A7.1). Se loguea `code` + `status` + método
+    // + PATH (sin query string -- A7.2: `GET /api/customers` todavía recibe
+    // `email`/`name` por query, deuda pre-existente; el path solo lleva el id
+    // de recurso, que no es PII) + tenant. Mismo criterio que la línea
+    // anterior de `REFUND_BASE_CHANGED`, que logueaba sólo `{ code }`.
+    //
+    // LIMITACIÓN: las rutas que resuelven el error inline con
+    // `res.status().json()` sin `next(err)` (ej. el escape
+    // `POST /api/orders/:id/cancel-with-credit-note`) NO pasan por acá y
+    // loguean por su cuenta. Registrado en pendientes.
+    if (status >= 409) {
+      logger.warn(
+        {
+          code: err.code,
+          status,
+          method: req.method,
+          url: req.originalUrl.split('?')[0],
+          businessId: req.user?.businessId ?? null,
+        },
+        '[errorHandler] DomainError',
+      );
     }
     res.status(status).json({
       code:    err.code,
@@ -130,10 +157,21 @@ function domainErrorStatus(error: DomainError): number {
     // llevan. Lo que se viola es una regla de negocio: en una categoría de
     // ALOJAMIENTO el precio vive en el servicio, así que la reserva tiene
     // que declarar cuál. Mismo criterio que COMPANY_CUSTOMER_REQUIRED.
+    //
+    // ADR común cancelar-con-NC (sub-bloque 4) -- CREDIT_NOTE_CANCELLATION_PENDING
+    // y CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE: el escape los resuelve inline
+    // en `orders.routes.ts` y no llegan acá por el camino normal; se mapean
+    // igual (red de seguridad + para un futuro caller que haga `next(err)`,
+    // ej. una ruta de reservas). Mismo 422 que la ruta = "quedó pendiente / no
+    // cancelable, revisión manual" (D1). El comentario va acá arriba, no entre
+    // los case: un case con cuerpo solo-comentario deja de contar como vacío y
+    // eslint (no-fallthrough) pide un break (ver el bloque 402 más abajo).
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
     case 'UNSUPPORTED_IVA_RATE':
+    case 'CREDIT_NOTE_CANCELLATION_PENDING':
+    case 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE':
       return 422;
 
     // --- 401 Unauthorized ---
@@ -197,9 +235,21 @@ function domainErrorStatus(error: DomainError): number {
     // --- 409 Conflict ---
     // AFIP_REQUEST_UNCERTAIN: no es "no encontrado" ni "mal pedido" — es un
     // estado de conflicto real (no se sabe si AFIP ya lo procesó), A8.6.
+    // ORDER_STATE_UNKNOWN (order.service.ts, ORDER-04): `orders.status` fuera
+    // del enum; se resuelve inline como 409 en `orders.routes.ts` (4 sitios),
+    // acá caía al `default:` → 500. Red de seguridad para un `next(err)` futuro.
+    //
+    // ADR común cancelar-con-NC (sub-bloque 4) -- CREDIT_NOTE_CANCELLATION_REJECTED
+    // (AFIP rechazó), CREDIT_NOTE_MULTI_INVOICE (la NC abarcaría >1 factura),
+    // ORDER_INVOICE_HAS_NO_LINES (la factura origen no tiene líneas): el escape
+    // los resuelve inline en `orders.routes.ts` y no llegan acá por el camino
+    // normal; se mapean igual (red de seguridad + futuro caller con `next(err)`).
+    // Mismo 409 que la ruta. El comentario va acá arriba, no entre los case
+    // (no-fallthrough, ver bloque 402).
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
+    case 'ORDER_STATE_UNKNOWN':
     case 'SCHEDULE_CONFLICT':
     case 'RESERVATION_NOT_CONFIRMED':
     case 'RESOURCE_OCCUPIED':
@@ -230,6 +280,9 @@ function domainErrorStatus(error: DomainError): number {
     case 'ORDER_CANCELLED_CANNOT_INVOICE':
     case 'RESERVATION_CHARGE_INVOICED':
     case 'RESERVATION_CANCELLED_CANNOT_INVOICE':
+    case 'CREDIT_NOTE_CANCELLATION_REJECTED':
+    case 'CREDIT_NOTE_MULTI_INVOICE':
+    case 'ORDER_INVOICE_HAS_NO_LINES':
       return 409;
 
     // --- 503 Service Unavailable ---
