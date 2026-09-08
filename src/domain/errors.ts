@@ -592,15 +592,17 @@ export class ReceivableInvoiceReconciliationPendingError extends DomainError {
  * `FAILED_UNCERTAIN` sin contactar NO disparan este error -- ahí se sabe
  * con certeza que no quedó nada emitido.
  *
- * Doctrina de negocio del dueño (docs/diseno-cancelacion-orden-nota-credito-2026-09-05.md):
- * la cancelación se rechaza en la puerta; existe una acción administrativa
- * separada (bloque 2, todavía sin construir) que emite la Nota de Crédito
- * real y recién con eso habilita cancelar.
+ * Doctrina de negocio del dueño (docs/diseno-cancelacion-orden-nota-credito-2026-09-05.md
+ * + ADR común cancelar-con-NC): la cancelación directa se rechaza en la
+ * puerta; existe una acción administrativa separada
+ * (`POST /api/orders/:id/cancel-with-credit-note`, grupo `EMISOR_NOTA_CREDITO`)
+ * que emite la Nota de Crédito real y, solo si llega a `ISSUED`, cancela la
+ * orden.
  */
 export class OrderChargeInvoicedError extends DomainError {
   constructor(orderId: string, invoiceId: string, invoiceStatus: string) {
     super(
-      `La orden "${orderId}" tiene un cargo vinculado a la factura "${invoiceId}" (estado: ${invoiceStatus}) -- no se puede cancelar directamente. Hace falta emitir una Nota de Crédito antes.`,
+      `La orden "${orderId}" tiene un cargo vinculado a la factura "${invoiceId}" (estado: ${invoiceStatus}) -- no se puede cancelar directamente. Para anularla hay que emitir una Nota de Crédito desde la acción administrativa "cancelar con Nota de Crédito" (requiere el permiso de emisión de Notas de Crédito).`,
       'ORDER_CHARGE_INVOICED',
     );
   }
@@ -623,6 +625,85 @@ export class OrderInvoiceHasNoLinesError extends DomainError {
     super(
       `La factura "${invoiceId}" no tiene detalle de líneas (Nivel A) -- no se puede armar la Nota de Crédito de la orden (transacción "${financialTransactionId}").`,
       'ORDER_INVOICE_HAS_NO_LINES',
+    );
+  }
+}
+
+/**
+ * ADR común cancelar-con-NC §3 D1 (sub-bloque 4, 07/09/2026) -- el escape
+ * `cancelOrderWithCreditNote()` creó el `ADJUSTMENT` compensatorio y pidió el
+ * CAE de la Nota de Crédito, pero AFIP **no confirmó** que la NC quedó
+ * emitida: la llamada volvió incierta (`FAILED_UNCERTAIN` con `afipContacted`)
+ * o `retryExisting()` devolvió la NC en un estado que no es `ISSUED`.
+ *
+ * D1: la orden **NO** pasa a `CANCELLED` mientras la NC no llegue a `ISSUED`.
+ * El `ADJUSTMENT` queda `PENDING` con `reversed_invoice_id` seteado -- es el
+ * estado de "solicitud" (N11), reanudable con la misma clave de idempotencia
+ * (`cancel-order-with-cn:<orderId>`). El caso queda visible para revisión
+ * manual (hasta B3 no hay pantalla; limitación aceptada, ADR §7).
+ */
+export class CreditNoteCancellationPendingError extends DomainError {
+  constructor(orderId: string, financialTransactionId: string) {
+    super(
+      `La cancelación de la orden "${orderId}" quedó pendiente: la Nota de Crédito (transacción "${financialTransactionId}") no fue confirmada por AFIP todavía. La orden no se canceló -- reintentá la acción cuando AFIP responda; el caso queda registrado para revisión.`,
+      'CREDIT_NOTE_CANCELLATION_PENDING',
+    );
+  }
+}
+
+/**
+ * ADR común cancelar-con-NC §3 (sub-bloque 4) -- AFIP **rechazó explícito**
+ * la Nota de Crédito del escape (`AfipRequestRejectedError` en
+ * `requestInvoice()`). No hay comprobante emitido, así que no se compensa
+ * nada y la orden NO se cancela. El `ADJUSTMENT` queda `PENDING` (no se
+ * borra -- A3.8: una transacción no se edita ni se elimina; queda como
+ * rastro del intento fallido, reversible sólo por una acción explícita
+ * posterior).
+ */
+export class CreditNoteCancellationRejectedError extends DomainError {
+  constructor(orderId: string, financialTransactionId: string, motivo: string) {
+    super(
+      `AFIP rechazó la Nota de Crédito para cancelar la orden "${orderId}" (transacción "${financialTransactionId}"): ${motivo}. La orden no se canceló.`,
+      'CREDIT_NOTE_CANCELLATION_REJECTED',
+    );
+  }
+}
+
+/**
+ * ADR común cancelar-con-NC §3 N2.a (sub-bloque 4) -- guarda defensiva: el
+ * conjunto de CARGO(s) que la factura original facturó (derivado de la
+ * FACTURA, `InvoiceRepository.getChargeIdsForInvoice()`, no del documento --
+ * N1.a(iii)) tiene cardinalidad ≠ 1, o el único id no coincide con el CHARGE
+ * de la orden. Para una orden esto es **inalcanzable** (una orden = un CHARGE,
+ * índice único v45; una factura de orden nunca es consolidada) -- si salta,
+ * hay una inconsistencia de datos y el escape aborta sin tocar nada.
+ */
+export class CreditNoteMultiInvoiceError extends DomainError {
+  constructor(orderId: string, invoiceId: string, chargeIdCount: number) {
+    super(
+      `La factura "${invoiceId}" de la orden "${orderId}" abarca ${chargeIdCount} cargo(s) -- la cancelación con Nota de Crédito solo admite una factura con exactamente un cargo. Operación abortada.`,
+      'CREDIT_NOTE_MULTI_INVOICE',
+    );
+  }
+}
+
+/**
+ * ADR común cancelar-con-NC §3 (sub-bloque 4) -- caso de carrera entre tx1 y
+ * tx2 del escape: la Nota de Crédito **ya se emitió** (`ISSUED`, irreversible),
+ * pero al ir a cancelar la orden en tx2 ésta cambió de estado (ej. un
+ * `completeOrder()` concurrente la dejó `COMPLETED`, o quedó en un estado que
+ * la máquina no reconoce) y la transición `→ CANCELLED` no aplica.
+ *
+ * No es reintentable "cuando AFIP responda" (el CAE ya está) ni un rechazo de
+ * AFIP: es una inconsistencia que necesita intervención manual. El
+ * `ADJUSTMENT` queda PENDING con `reversed_invoice_id` (estado "solicitud",
+ * N11) y la NC ISSUED -- visible para revisión (hasta B3 no hay pantalla).
+ */
+export class CreditNoteIssuedOrderNotCancellableError extends DomainError {
+  constructor(orderId: string, creditNoteId: string, orderStatus: string) {
+    super(
+      `La Nota de Crédito "${creditNoteId}" se emitió, pero la orden "${orderId}" (estado: ${orderStatus}) ya no admite la cancelación -- cambió de estado mientras se emitía. El caso quedó registrado para revisión manual.`,
+      'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE',
     );
   }
 }
@@ -656,11 +737,18 @@ export class OrderCancelledCannotInvoiceError extends DomainError {
  * referencia (ERPNext, Odoo 19) distingue "reserva" de un documento de
  * venta genérico en este guard -- vive en la capa de factura, agnóstica
  * del documento de origen.
+ *
+ * Texto GENÉRICO a propósito (decisión del dueño, sub-bloque 4 del ADR común):
+ * del lado reservas todavía NO existe la acción administrativa que emite la
+ * Nota de Crédito (llega en B-reservas), así que el mensaje no instruye
+ * "emití una Nota de Crédito" -- una acción que el usuario de reservas aún no
+ * puede ejecutar. Cuando B-reservas construya esa ruta, este texto se
+ * actualiza para apuntarla (igual que `OrderChargeInvoicedError`).
  */
 export class ReservationChargeInvoicedError extends DomainError {
   constructor(reservationId: string, invoiceId: string, invoiceStatus: string) {
     super(
-      `La reserva "${reservationId}" tiene un cargo vinculado a la factura "${invoiceId}" (estado: ${invoiceStatus}) -- no se puede cancelar directamente. Hace falta emitir una Nota de Crédito antes.`,
+      `La reserva "${reservationId}" tiene un cargo vinculado a la factura "${invoiceId}" (estado: ${invoiceStatus}) -- no se puede cancelar directamente. Requiere un ajuste administrativo: contactá al establecimiento.`,
       'RESERVATION_CHARGE_INVOICED',
     );
   }

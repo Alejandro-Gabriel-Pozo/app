@@ -41,7 +41,11 @@ const SRC_DIR = join(__dirname, '../..');
 // business-context.routes.ts nuevo suma 1 authorize(Roles.STAFF) en
 // GET /api/business/context. La sync del maestro quedó pendiente en ese
 // commit; se cierra acá.
-const EXPECTED_AUTHORIZE_CALL_SITES = 204;
+// ADR común cancelar-con-NC sub-bloque 4 (07/09/2026) -- 205, no 204:
+// orders.routes.ts suma POST /:id/cancel-with-credit-note,
+// authorize(Roles.EMISOR_NOTA_CREDITO) -- el escape administrativo que
+// cancela una orden con Factura B viva emitiendo una Nota de Crédito.
+const EXPECTED_AUTHORIZE_CALL_SITES = 205;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:

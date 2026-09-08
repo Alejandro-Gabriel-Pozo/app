@@ -288,6 +288,22 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
+  async settleByIdsWithClient(client: SqlClient, ids: string[], businessId: string): Promise<number> {
+    if (ids.length === 0) return 0;
+    // Solo `status` -- ADR cancelar-con-NC §3 N1.a(i). `business_id` en el WHERE
+    // por A2.x (nunca liquidar una fila de otro tenant). `AND status='PENDING'`
+    // = idempotencia ante reintento (N11).
+    const result = await client.query(
+      `UPDATE financial_transactions
+       SET status = 'SETTLED'
+       WHERE id = ANY($1::text[])
+         AND business_id = $2
+         AND status = 'PENDING'`,
+      [ids, businessId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   /** Arma la lista de rechazos de `voidByReservationId()` a partir de sus propios contadores.
    *  Helper SEPARADO de `rechazosDe()` (usado por voidByOrderId()/settleChargesByOrderId()) a
    *  propósito -- `reservations` no tiene `business_id` propio, así que su fila de diagnóstico no

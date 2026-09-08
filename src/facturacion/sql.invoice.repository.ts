@@ -337,6 +337,22 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return parseFloat(rows[0]!.compensated);
   }
 
+  async getChargeIdsForInvoice(invoiceId: string): Promise<string[]> {
+    // ADR común cancelar-con-NC §3 N1.a(iii) -- inverso de resolveInvoiceLinkage().
+    // UNION (no ALL) de los dos caminos: individual (invoices.financial_transaction_id
+    // directo) y consolidado (invoice_charges). Dedup por si un mismo id apareciera
+    // en los dos (no debería). Ver el docblock de la interfaz.
+    const { rows } = await this.db.query<{ financial_transaction_id: string }>(
+      `SELECT financial_transaction_id FROM invoices
+        WHERE id = $1 AND financial_transaction_id IS NOT NULL
+       UNION
+       SELECT financial_transaction_id FROM invoice_charges
+        WHERE invoice_id = $1`,
+      [invoiceId],
+    );
+    return rows.map((r) => r.financial_transaction_id);
+  }
+
   async getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>> {
     if (financialTransactionIds.length === 0) return new Set();
     const { rows } = await this.db.query<{ financial_transaction_id: string }>(

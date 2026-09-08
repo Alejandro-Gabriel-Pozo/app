@@ -306,8 +306,12 @@ async function resolveConfirmStockItems(
  * persistido, expande exactamente esos componentes (lo que confirmOrder()
  * reservó de verdad, aunque la receta haya cambiado después). Para el
  * resto (la mayoría), mismo comportamiento que toStockItems() de siempre.
+ *
+ * Exportada (07/09/2026, ADR común cancelar-con-NC sub-bloque 4): la reusa
+ * `order-cancel-for-credit-note.ts` para armar el MISMO payload de
+ * `order.cancelled` desde el camino del escape administrativo.
  */
-function expandStockItemsFromSnapshot(items: OrderItem[]): StockItemSnapshot[] {
+export function expandStockItemsFromSnapshot(items: OrderItem[]): StockItemSnapshot[] {
   const result: StockItemSnapshot[] = [];
   for (const item of items) {
     if (item.itemType !== 'PRODUCT' && item.itemType !== 'PRODUCT_VARIANT') continue;

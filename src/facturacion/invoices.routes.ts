@@ -45,7 +45,15 @@ import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInv
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 
-function buildInvoiceService(req: Request): InvoiceService {
+/**
+ * Composition root del `InvoiceService` por request (desde `req.db` del
+ * tenant activo). Exportada (07/09/2026) para que `orders.routes.ts` la reuse
+ * al cablear el orquestador `CancelOrderWithCreditNoteService` (sub-bloque 4
+ * del ADR común cancelar-con-NC) — construir los ~11 `Sql*Repository` a mano
+ * en dos lugares es exactamente lo que rota. Ambos archivos son `*.routes.ts`
+ * (composition roots, exceptuados de `no-repo-concreto-de-otro-dominio`).
+ */
+export function buildInvoiceService(req: Request): InvoiceService {
   const db = req.db!;
   return new InvoiceService(
     new SqlInvoiceRepository(db),

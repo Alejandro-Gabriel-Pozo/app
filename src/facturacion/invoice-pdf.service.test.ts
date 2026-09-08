@@ -37,6 +37,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async markFailed(_id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async getStatus(): Promise<InvoiceStatus | null> { return this.invoice?.status ?? null; }
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> { return this.invoice?.id === invoiceId ? this.items : []; }
+  async getChargeIdsForInvoice() { return []; } // ADR común cancelar-con-NC (N1.a iii) -- sin caller en este test
 }
 
 class FakeBusinessProfileRepository implements BusinessProfileRepository {

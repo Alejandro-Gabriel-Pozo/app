@@ -94,6 +94,16 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> {
     return this.items.get(invoiceId) ?? [];
   }
+  // ADR común cancelar-con-NC §3 N1.a(iii) -- inverso de resolveInvoiceLinkage().
+  async getChargeIdsForInvoice(invoiceId: string): Promise<string[]> {
+    const ids = new Set<string>();
+    const individual = [...this.invoices.values()].find((i) => i.id === invoiceId);
+    if (individual?.financialTransactionId) ids.add(individual.financialTransactionId);
+    for (const [ftId, invId] of this.charges) {
+      if (invId === invoiceId) ids.add(ftId);
+    }
+    return [...ids];
+  }
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
     const updated: Invoice = {

@@ -230,6 +230,25 @@ export interface FinancialTransactionRepository {
   settleByReservationId(reservationId: string): Promise<number>;
 
   /**
+   * Pasa a SETTLED una LISTA EXPLÍCITA de transacciones, por id, dentro de una
+   * transacción ya abierta. Solo toca `status` (`PENDING → SETTLED`) — nunca
+   * `payment_method`/`shift_id` (a diferencia de `settleChargesByOrderId`, que
+   * asigna el turno de caja): la cancelación con Nota de Crédito no mueve un
+   * peso, inyectar un movimiento de caja sería un fantasma en
+   * `getCashMovementsTotal()`. ADR cancelar-con-NC §3 N1.a(i).
+   *
+   * El set de ids lo deriva el caller de la FACTURA revertida (el inverso de
+   * `resolveInvoiceLinkage()`), nunca "todos los cargos del documento"
+   * (N1.a(iii)). Idempotente: `AND status = 'PENDING'` en el WHERE — un
+   * reintento no vuelve a tocar lo ya SETTLED. Retorna filas actualizadas.
+   *
+   * Opcional en la interfaz (mismo criterio que `getByIdWithLock?` de
+   * `ReservationRepository`): los fakes en memoria de los tests que no lo
+   * necesitan no lo implementan; el caller hace `if (!repo.settleByIdsWithClient) throw`.
+   */
+  settleByIdsWithClient?(client: SqlClient, ids: string[], businessId: string): Promise<number>;
+
+  /**
    * Pasa a VOIDED las transacciones CHARGE/ADJUSTMENT PENDING/SETTLED de
    * una reserva. Usado cuando se cancela una reserva.
    *

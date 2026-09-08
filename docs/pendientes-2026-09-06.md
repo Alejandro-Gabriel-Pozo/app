@@ -475,18 +475,89 @@ contra Postgres real, camino `REFUND` no regresionado.
      `InvoiceNotReversibleError`. Sin exposición (`POST /api/invoices` solo se
      ofrece para `type === 'CHARGE'`; la ruta consolidada factura un CHARGE
      nuevo). Test unitario agregado.
-4. `cancelOrderWithCreditNote()` en el módulo del núcleo (NO en
-   `order.service.ts`, `.dependency-cruiser.cjs:94-101` + F5) + ruta
-   `POST /api/orders/:id/cancel-with-credit-note` + la secuencia N1.a de dos
-   transacciones (el `UPDATE` dirigido del `CHARGE` con las 3 restricciones:
-   solo `status`, `WHERE status='PENDING'`, ids desde la factura no el
-   documento).
+4. ✅ HECHO (07/09/2026, sub-bloque 4/7). Orquestador
+   `CancelOrderWithCreditNoteService` en `src/facturacion/cancel-order-with-credit-note.service.ts`
+   (NO en `order.service.ts` — `.dependency-cruiser.cjs` + F5 capa iv;
+   `lint:arch` limpio) + ruta `POST /api/orders/:id/cancel-with-credit-note`
+   con `authorize(Roles.EMISOR_NOTA_CREDITO)` (primer y único caller de
+   `authorizeCreditNoteCancellation()`; `EXPECTED_AUTHORIZE_CALL_SITES`
+   204→205; matriz §2 + encabezado). Secuencia N1.a:
+   - **tx1** (pre-AFIP): `getByIdForUpdate` lock (N10) → verificar elegibilidad
+     (DRAFT/CONFIRMED, exactamente 1 CHARGE, `resolveInvoiceLinkage` = ISSUED)
+     → assert N2.a (`getChargeIdsForInvoice()` — inverso de
+     `resolveInvoiceLinkage()`, cardinalidad 1 = `{charge.id}`; ≠1 →
+     `CreditNoteMultiInvoiceError`) → INSERT `ADJUSTMENT` PENDING
+     (`amount = round2(-charge.amount)` — NEGATIVO;
+     `chk_financial_transactions_amount` (`schema.sql:2189-2190`) =
+     `CHECK (amount >= 0 OR type = 'ADJUSTMENT')`, y el ledger lo RESTA:
+     N1.b en `sql.invoice.repository.ts` (`WHEN 'ADJUSTMENT' THEN -r.amount`)
+     y `getNetBalanceByX` (`amount` con signo). Mismo convenio que
+     `handleReservationPriceAdjusted` (`outbox.handlers.ts` — "negativo = nota
+     de crédito"). `reversed_invoice_id`, `confirmed_by`/`notes` del token,
+     clave `cancel-order-with-cn:<orderId>`).
+   - **AFIP** (sin tx, sin lock — N10): `InvoiceService.requestInvoice()` sobre
+     el `ADJUSTMENT` → `buildCreditNote()` (rama N3 del sub-bloque 3) + `issue()`.
+   - **tx2** (SOLO si NC `ISSUED` — D1): `OrderCancelPort.cancelForCreditNote()`
+     (impl `src/pos-menu/order-cancel-for-credit-note.ts` — transición
+     `TRANSICION_CANCELAR` + audit + evento `order.cancelled` con el MISMO
+     payload que `cancelOrder()`, sin el guard `findBlockingInvoiceLinkage`)
+     → `settleByIdsWithClient([adjustmentId])` → `settleByIdsWithClient(getChargeIdsForInvoice(originalInvoiceId))`.
+     Las 3 restricciones de N1.a: (i) solo `status` (`SET status='SETTLED'`),
+     (ii) `WHERE status='PENDING'` (idempotente), (iii) ids derivados de la
+     FACTURA, nunca del documento.
+   - **D1**: `AfipRequestUncertainError` / NC no-`ISSUED` →
+     `CreditNoteCancellationPendingError` (422), la orden NO se cancela, el
+     `ADJUSTMENT` queda PENDING (estado "solicitud", N11, reanudable con la
+     misma clave). `AfipRequestRejectedError` → `CreditNoteCancellationRejectedError` (409).
+     Carrera tx1↔tx2 (la orden cambió de estado mientras se emitía la NC) →
+     `CreditNoteIssuedOrderNotCancellableError` (422, revisión manual) — NO
+     `OrderChargeInvoicedError`, cuyo texto ("emití una NC") es el equivocado
+     para un estado donde la NC ya está `ISSUED`.
+   - 4 errores nuevos en `domain/errors.ts`:
+     `CreditNoteCancellationPendingError`, `CreditNoteCancellationRejectedError`,
+     `CreditNoteMultiInvoiceError`, `CreditNoteIssuedOrderNotCancellableError`.
+   - Fast-path idempotente: 2da llamada tras el éxito devuelve `emitted:false`
+     sin crear otro `ADJUSTMENT` ni re-emitir el evento.
+   - Textos de error (A1): `OrderChargeInvoicedError` ahora apunta a la ruta
+     real; `ReservationChargeInvoicedError` → texto GENÉRICO ("Requiere un
+     ajuste administrativo: contactá al establecimiento") — sin instruir "emití
+     una NC", acción que del lado reservas no existe hasta B-reservas
+     (decisión del dueño).
+   - 2 métodos de repo nuevos: `FinancialTransactionRepository.settleByIdsWithClient?`
+     (opcional, mismo criterio que `getByIdWithLock?`) + `InvoiceRepository.getChargeIdsForInvoice`.
+   - Tests: unit del orquestador (12, fakes — secuencia, D1 x2, rechazo, N2.a,
+     no-elegible, sin factura viva, idempotencia x2, YA_ESTABA del port), unit
+     del port (4), **integración contra Neon (3, verdes)** — happy path
+     (NC ISSUED + CbteTipo 8 + línea copiada + ADJUSTMENT SETTLED + CHARGE
+     SETTLED + orden CANCELLED + audit + evento), idempotencia, D1 (orden NO
+     cancelada, ADJUSTMENT PENDING, CHARGE intacto, sin evento).
+
+   **Deuda declarada del sub-bloque 4 (no bloquea, cada una su bloque):**
+   - **`registrarDesenlace()` escala `CARGO_CON_COMPROBANTE_VIVO` a `grave`
+     por cada escape** hasta que el sub-bloque 5 le enseñe a reconocer un
+     CARGO ya compensado por NC (residual #3). El evento `order.cancelled` se
+     emite igual (decisión del dueño + grounding ERPNext `on_cancel`
+     path-independiente): el costo es visible, no un dato nuevo.
+   - **El mecanismo de reintento del e-invoice y qué persiste si `issue()`
+     falla a mitad NO tiene grounding externo** (ni ERPNext ni Odoo tienen un
+     estado "e-invoice no confirmado" con reintento determinístico). Análogo
+     conceptual = Odoo `_need_cancel_request` / `_can_force_cancel()→False`.
+     Arquitectura propia de app-main, declarada así.
+   - **`orders.routes.ts` importa `buildInvoiceService` de `invoices.routes.ts`**
+     (routes→routes). Alternativa = duplicar ~11 `new Sql*Repository`. Los dos
+     son composition roots (exceptuados de `no-repo-concreto-de-otro-dominio`).
+   - **`cancel-order-with-credit-note.service.ts` (facturación) hace un value
+     import de `OrderNotFoundError`/`InvalidOrderTransitionError` de
+     `pos-menu/order.service.ts`** — no lo prohíbe ninguna regla de
+     `.dependency-cruiser.cjs`, pero es coupling nuevo facturación→pos-menu
+     más allá de los `import type` que ya había. Revisar en el gate.
 5. Predicado N1 cableado en `findBlockingInvoiceLinkage()` del lado órdenes +
    reconciliación del residual #3 en `registrarDesenlace()` (`outbox.handlers.ts:237`,
-   invocado desde `:161`/`:334`/`:380`/`:390`) + texto de `OrderChargeInvoicedError`
-   (`errors.ts:602`, A1) + **cerca de convención** (condición 3: ninguna fila
-   con `reversed_invoice_id IS NOT NULL AND type NOT IN ('REFUND','ADJUSTMENT')`,
-   patrón `lock-order.test.ts` con falsos negativos declarados).
+   invocado desde `:161`/`:334`/`:380`/`:390`) + **cerca de convención**
+   (condición 3: ninguna fila con `reversed_invoice_id IS NOT NULL AND type
+   NOT IN ('REFUND','ADJUSTMENT')`, patrón `lock-order.test.ts` con falsos
+   negativos declarados). (Texto de `OrderChargeInvoicedError` A1 — YA hecho
+   en el sub-bloque 4.)
 6. Cerca de arquitectura (capa iv) — test que falla si `order.service.ts`
    importa el módulo del núcleo.
 
@@ -730,11 +801,11 @@ comprobar. Detalle completo en el archivo del 05/09; acá una línea por ítem.
   `management-emails.integration.test.ts` verde) + `1c1b058` (throttle 15 min +
   nombre del negocio en el mail, `getBusinessDisplayName` protegido). Reusa
   `domain_events` + `OutboxAlertBanner`, sin tabla nueva. **Era Bloque 6.**
-- **ORDER-15** — asimetría `voidByOrderId` (acepta `ADJUSTMENT`) vs
-  `settleChargesByOrderId` (solo `CHARGE`); impacto hoy cero. **Se resuelve con
-  B-núcleo+órdenes sub-bloque 4** (`cancelOrderWithCreditNote()` crea el primer
-  `ADJUSTMENT` con `order_id` → deja de ser latente; ADR común §5 ya lo dice).
-  No standalone. **Era Bloque 7.**
+- **ORDER-15** — ✅ RESUELTO (07/09/2026, vía B-núcleo+órdenes sub-bloque 4).
+  Asimetría `voidByOrderId` (acepta `ADJUSTMENT`) vs `settleChargesByOrderId`
+  (solo `CHARGE`): `cancelOrderWithCreditNote()` ya crea el primer `ADJUSTMENT`
+  con `order_id` y lo settlea por id explícito (`settleByIdsWithClient`), no por
+  `settleChargesByOrderId` — la asimetría deja de ser latente. **Era Bloque 7.**
 - **INV-ORF-01** — reservas de stock huérfanas. **Query de dimensionamiento
   corrida (07/09/2026):** 0 filas huérfanas en Demo y Hotel los Alamos → hueco
   de mecanismo latente, **no backlog de limpieza**. Sin backfill. El mecanismo
@@ -778,7 +849,7 @@ pudren porque nada los re-corre en cada sesión.
 | **RBAC-MOUNT-001** | ✅ RESUELTO — alcance: gate de tenant únicamente; `tenantMiddleware` y el `authenticate()` interno del portal quedan fuera (límites 2 y 3 del test) | `app.ts:317` monta `authenticate()` antes de los routers protegidos (355+). `src/tests/architecture/` tenía solo `lock-order.test.ts`. `rbac-route-coverage.test.ts` L48-58 declara explícito que NO valida orden de montaje y que varias entradas de `PUBLIC_ROUTES` son seguras solo por el orden. | **Medio** — subir un `app.use('/api/...')` por encima de la 317 expone rutas y las 3 cercas siguen verdes. Silencioso. | Cerca `src/tests/architecture/api-auth-gate-order.test.ts` (07/09): parte `stripComments(app.ts)` por la línea del gate y exige que todo `app.use('/api/...')` anterior esté en `PRE_AUTH_API_MOUNTS` con motivo (5 hoy). Sin schema, sin runtime — `app.ts` intacto. |
 | **SEC-ROT-001** | ⚠️ Runbook ✅ (08/09) — **código de 2 claves + script de barrido siguen sin construir** | `src/platform/tenant-db.setup.ts:88` lee una sola clave, sin camino de 2 claves, sin script de rotación. IV `randomBytes(16)` (:66) — GCM canónico 12. **Hallazgo del runbook:** la clave cifra 3 familias de columnas, no solo `db_url_encrypted` — también `business_profile.afip_cert_encrypted`/`afip_key_encrypted` y `afip_tickets.ticket_encrypted`, en **cada** tenant DB. | **Medio si la clave se filtra** (recifrado de toda la flota + AFIP con downtime). Cero hoy. | ✅ `docs/conocimiento/runbook-rotacion-db-encryption-key.md` — familias de columnas, 3 fases (deploy 2-claves → barrido → retirar vieja), verificación, rollback. Pendiente §7: modo 2 claves en `deriveEncryptionKey()` + `src/scripts/reencrypt-secrets.ts` — **decisión de prioridad del dueño, no hay incidente**. IV 16→12 de paso si se toca el archivo. |
 | **RBAC-OWN-001** | ✅ RESUELTO — instancia + **clase** | Guards por ruta ya existían (`requireCustomerId()` en `customer.routes.ts:306`, chequeo `customer.id !== customerId → 403` en PATCH y `/cancel`), pero copiados y sin prueba negativa. Listados por `getByCustomerId()` (scoped); no hay `GET /me/reservations/:id` → sin IDOR de lectura. | **Bajo** — sin hueco actual; el riesgo era una ruta futura del portal sin el check → cerrado por la cerca. | **Instancia (`8d379ab`):** helper `requireOwnReservation()` exportado de `customer.routes.ts` (consolida el 404/403 de PATCH y `/cancel`, mensajes intactos) + `customer-portal-ownership.integration.test.ts` contra Postgres real (B pedida con id de A → 403; con id de B → pasa; inexistente → 404 — prueba el mapeo SQL `customer_id → customer.id`). **Clase (08/09):** cerca `src/tests/architecture/customer-portal-ownership-guard.test.ts` — toda ruta `:param` de recurso del portal llama al guard o está en `OWNERSHIP_EXEMPT` con motivo; mutación verificada. |
-| **RBAC-SYNC-001** | **Mitad cerrada** | §2 verde (204 call-sites / 37 archivos, `rbac-matrix-sync.test.ts:44,49`). §4 ↔ `PUBLIC_ROUTES` sigue "a ojo" (el `CLAUDE.md` lo admite). | **Bajo** — pública mal listada en §4 no abre hueco; `rbac-route-coverage` atrapa la ruta sin listar. Deuda de doc. | Test que cruce matriz §4 ↔ `PUBLIC_ROUTES`. Baja urgencia; bundlear con RBAC-MOUNT-001 (misma zona). |
+| **RBAC-SYNC-001** | **Mitad cerrada** | §2 verde (205 call-sites / 37 archivos, `rbac-matrix-sync.test.ts:44,49` — 205 desde el sub-bloque 4 del ADR cancelar-con-NC, `POST /:id/cancel-with-credit-note`). §4 ↔ `PUBLIC_ROUTES` sigue "a ojo" (el `CLAUDE.md` lo admite). | **Bajo** — pública mal listada en §4 no abre hueco; `rbac-route-coverage` atrapa la ruta sin listar. Deuda de doc. | Test que cruce matriz §4 ↔ `PUBLIC_ROUTES`. Baja urgencia; bundlear con RBAC-MOUNT-001 (misma zona). |
 | **FAILOPEN-001** | **Bajo — confirmado** | `appfrontend-main/src/app/dashboard/NavList.tsx:182` el fail-open es solo visibilidad de módulos; `managementOnly` gatea con `useIsManagement()` que es fail-**closed** (`appfrontend-main/src/hooks/useAuthRole.ts:14` devuelve `false` sin user); el backend igual exige `authorize()`. | **Despreciable.** | Bajar de severidad. Sin código. |
 | **FACT-INV-BIZID-001** | **No es riesgo vivo** | Ambos orígenes son `req.user!.businessId!` — el cliente no puede inyectar. Ya bajado el 05/09; re-confirmado. | **Ninguno.** | Re-etiquetar como "invariante sin test" (defensa en profundidad). Sin código. |
 
@@ -835,11 +906,12 @@ negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-owner
     cuáles.** Sin regresión de seguridad (un grupo desconocido se **preserva**
     al guardar, verificado por el governor). Commit aparte en `appfrontend-main`,
     después de que el de backend esté en `origin/main`.
-  - **Grupo huérfano:** `Roles.EMISOR_NOTA_CREDITO` tiene **cero referencias**
-    hasta el sub-bloque del orquestador (la ruta `POST /api/orders/:id/cancel-with-credit-note`
-    con `authorize(Roles.EMISOR_NOTA_CREDITO)`). **Ninguna cerca detecta un
-    `Roles.X` sin call-site** — `rbac-matrix-sync` no avisaría si el orquestador
-    nunca llega. Cerrar con el orquestador o registrar el abandono.
+  - **Grupo huérfano:** ✅ CERRADO (07/09, sub-bloque 4).
+    `Roles.EMISOR_NOTA_CREDITO` ya tiene su call-site:
+    `orders.routes.ts` → `POST /:id/cancel-with-credit-note` con
+    `authorize(Roles.EMISOR_NOTA_CREDITO)` (`EXPECTED_AUTHORIZE_CALL_SITES`
+    204→205). (Sigue en pie que **ninguna cerca detecta un `Roles.X` sin
+    call-site** en general — no era específico de este grupo.)
   - **`superadmin/roles-de-fabrica/page.tsx:60-62`** dice "Editar acá NO afecta
     a los negocios que ya existen" — **es falso**: el backfill de
     `platform.schema.sql` (`CROSS JOIN role_presets JOIN role_preset_permission_groups`)

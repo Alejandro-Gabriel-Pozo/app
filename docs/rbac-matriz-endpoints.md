@@ -31,7 +31,7 @@ subconjunto de estos 9 grupos (sección 3).
 | `FRONT_DESK` | Personal de mostrador: gestiona reservas y clientes |
 | `HOUSEKEEPING_AND_MANAGEMENT` | Housekeeping + management: ven y actualizan estado de habitaciones |
 | `ORDERS` | Acceso a órdenes de consumo (POS) |
-| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`). Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Sin ruta todavía (la agrega el sub-bloque del orquestador). |
+| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`). Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Ruta: `POST /api/orders/:id/cancel-with-credit-note` (sub-bloque 4, 07/09/2026); del lado reservas todavía sin ruta (B-reservas). |
 | `CUSTOMER_ONLY` | Solo clientes externos — resuelto en código, no contra la BD (los clientes no tienen `role_id`) |
 | `BOOKING` | Clientes + recepción (reservas desde portal o mostrador) |
 
@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (204 call-sites, 37 archivos)
+## 2. Matriz de endpoints por archivo (205 call-sites, 37 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts:44,49`
@@ -238,6 +238,7 @@ disponibilidad, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.m
 - POST `/:id/serve` — `ORDERS`
 - POST `/:id/complete` — `ORDERS`
 - POST `/:id/cancel` — `ORDERS`
+- POST `/:id/cancel-with-credit-note` — `EMISOR_NOTA_CREDITO` (ADR común cancelar-con-NC sub-bloque 4, 07/09/2026 — escape administrativo: cancela con Factura B viva emitiendo una Nota de Crédito)
 - PATCH `/:id/notes` — `ORDERS`
 - POST `/:id/items` — `BOOKING`
 - DELETE `/:id/items/:itemId` — `ORDERS`

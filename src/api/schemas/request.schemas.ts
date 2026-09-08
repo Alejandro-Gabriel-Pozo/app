@@ -405,6 +405,18 @@ export const CompleteOrderSchema = z.object({
   .refine((data) => (data.cardInstallments === undefined && data.cardSurchargeAmount === undefined) || data.paymentMethod === 'CARD', CARD_FIELDS_REQUIRE_CARD_METHOD);
 
 // ---------------------------------------------------------------------------
+// Cancelar una orden con Nota de Crédito — POST /api/orders/:id/cancel-with-credit-note
+// (ADR común cancelar-con-NC, sub-bloque 4). `reason` es OBLIGATORIO y no
+// vacío: el escape es un override administrativo y va a
+// `financial_transactions.notes` del ADJUSTMENT compensatorio (N7 — texto
+// libre, la app no califica la operación fiscal).
+// ---------------------------------------------------------------------------
+
+export const CancelWithCreditNoteSchema = z.object({
+  reason: z.string().trim().min(1, 'El motivo de la cancelación es obligatorio.'),
+});
+
+// ---------------------------------------------------------------------------
 // Horario de atención — POST /api/business-hours, POST /api/resources/:id/hours
 // ---------------------------------------------------------------------------
 

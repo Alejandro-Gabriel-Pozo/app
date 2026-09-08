@@ -165,6 +165,23 @@ export interface InvoiceRepository {
    * transacción del caller.
    */
   getIssuedCreditNoteCompensationTotal(client: SqlClient, invoiceId: string): Promise<number>;
+  /**
+   * ADR común cancelar-con-NC (§3 N1.a(iii)) — devuelve los
+   * `financial_transactions.id` de los CARGO(s) que la factura `invoiceId`
+   * facturó: el camino individual (`invoices.financial_transaction_id`) más
+   * el consolidado (`invoice_charges.financial_transaction_id`).
+   *
+   * Es el **inverso** de `resolveInvoiceLinkage()` y la razón de que exista
+   * es N1.a(iii): el `UPDATE` dirigido que sella el CARGO revertido tiene
+   * que derivar su conjunto de ids **de la FACTURA que se está revirtiendo**,
+   * nunca de "todos los cargos del documento". Para una orden el conjunto es
+   * siempre `{charge.id}` (una orden = un CHARGE, índice único v45); el
+   * orquestador igual lo pide para el assert defensivo de N2.a (si diera
+   * cardinalidad ≠ 1 la NC abarcaría >1 factura y hay que abortar).
+   *
+   * Orden y unicidad no garantizados — el caller compara como conjunto.
+   */
+  getChargeIdsForInvoice(invoiceId: string): Promise<string[]>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

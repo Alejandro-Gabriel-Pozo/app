@@ -55,6 +55,21 @@ import { OrderPricingService }           from './order-pricing.service.js';
 import { SqlCustomerRateRepository }     from '../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
+import { buildInvoiceService }           from '../facturacion/invoices.routes.js';
+import {
+  CancelOrderWithCreditNoteService,
+} from '../facturacion/cancel-order-with-credit-note.service.js';
+import { OrderCancelForCreditNote }      from './order-cancel-for-credit-note.js';
+import { authorizeCreditNoteCancellation } from '../facturacion/cancel-with-credit-note.js';
+import {
+  DomainError,
+  CreditNoteCancellationPendingError,
+  CreditNoteCancellationRejectedError,
+  CreditNoteMultiInvoiceError,
+  CreditNoteIssuedOrderNotCancellableError,
+  AfipRequestRejectedError,
+  AfipNotConfiguredError,
+} from '../domain/errors.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -65,6 +80,7 @@ import {
   CreateOrderSchema,
   CreateOrderItemSchema,
   CompleteOrderSchema,
+  CancelWithCreditNoteSchema,
   GetOrdersQuerySchema,
   type CreateOrderItemBody,
 } from '../api/schemas/request.schemas.js';
@@ -97,6 +113,30 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
     // Bug #4 (27/08/2026) -- audita las transiciones de estado de la orden.
     // Mismo pool de tenant (req.db!) que el resto, así comparte la transacción.
     new SqlAuditLogRepository(req.db!),
+  );
+}
+
+/**
+ * Composition root del orquestador del escape "cancelar con Nota de Crédito"
+ * (ADR común cancelar-con-NC, sub-bloque 4). Reusa `buildInvoiceService()` de
+ * `invoices.routes.ts` para el `InvoiceService` y cablea la impl pos-menu del
+ * `OrderCancelPort`. Todo desde `req.db!` (mismo pool de tenant → misma
+ * transacción). Ver `DEFENSIVE_DEVELOPING.md` §3: `req.db` en todos lados,
+ * un solo `buildTenantTransactionManager(req)`.
+ */
+function buildCancelOrderWithCreditNoteService(req: Request): CancelOrderWithCreditNoteService {
+  const db = req.db!;
+  return new CancelOrderWithCreditNoteService(
+    buildInvoiceService(req),
+    new SqlFinancialTransactionRepository(db),
+    new SqlInvoiceRepository(db),
+    new SqlOrderRepository(db),
+    new OrderCancelForCreditNote(
+      new SqlOrderRepository(db),
+      new SqlDomainEventRepository(db),
+      new SqlAuditLogRepository(db),
+    ),
+    buildTenantTransactionManager(req),
   );
 }
 
@@ -265,6 +305,45 @@ export function createOrdersRouter(container: AppContainer): Router {
       else next(err);
     }
   });
+
+  // ── POST /api/orders/:id/cancel-with-credit-note ─────────────────────────────
+  // ADR común cancelar-con-NC (sub-bloque 4). Escape administrativo: cancela
+  // una orden con Factura B viva EMITIENDO una Nota de Crédito. `authorize`
+  // con el grupo dedicado `EMISOR_NOTA_CREDITO` (no `ORDERS`). Primer y único
+  // caller de `authorizeCreditNoteCancellation()` (token branded, sub-bloque 2):
+  // `confirmedBy` sale del JWT verificado server-side, NUNCA del body (A2.2).
+  router.post(
+    '/:id/cancel-with-credit-note',
+    authorize(Roles.EMISOR_NOTA_CREDITO),
+    async (req: Request, res: Response, next: NextFunction) => {
+      const parsed = CancelWithCreditNoteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        validationError(res, parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })));
+        return;
+      }
+      const orderId = param(req, 'id');
+      try {
+        const auth = authorizeCreditNoteCancellation({
+          confirmedBy: req.user!.id,
+          reason: parsed.data.reason,
+          scope: { kind: 'ORDER', orderId },
+        });
+        const result = await buildCancelOrderWithCreditNoteService(req).cancelOrderWithCreditNote(orderId, auth);
+        res.json(result);
+      } catch (err) {
+        if (err instanceof OrderNotFoundError)                      res.status(404).json({ code: 'ORDER_NOT_FOUND',                 message: err.message });
+        else if (err instanceof InvalidOrderTransitionError)        res.status(409).json({ code: 'INVALID_TRANSITION',              message: err.message });
+        else if (err instanceof CreditNoteMultiInvoiceError)        res.status(409).json({ code: 'CREDIT_NOTE_MULTI_INVOICE',       message: err.message });
+        else if (err instanceof CreditNoteIssuedOrderNotCancellableError) res.status(422).json({ code: 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE', message: err.message });
+        else if (err instanceof CreditNoteCancellationPendingError) res.status(422).json({ code: 'CREDIT_NOTE_CANCELLATION_PENDING', message: err.message });
+        else if (err instanceof AfipRequestRejectedError)           res.status(409).json({ code: 'AFIP_REQUEST_REJECTED',           message: err.message });
+        else if (err instanceof CreditNoteCancellationRejectedError) res.status(409).json({ code: 'CREDIT_NOTE_CANCELLATION_REJECTED', message: err.message });
+        else if (err instanceof AfipNotConfiguredError)             res.status(422).json({ code: 'AFIP_NOT_CONFIGURED',             message: err.message });
+        else if (err instanceof DomainError)                        res.status(409).json({ code: err.code,                         message: err.message });
+        else next(err);
+      }
+    },
+  );
 
   // ── PATCH /api/orders/:id/notes ──────────────────────────────────────────────
   router.patch('/:id/notes', authorize(Roles.ORDERS), async (req: Request, res: Response, next: NextFunction) => {
