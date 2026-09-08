@@ -46,7 +46,17 @@ import type { DomainEventRepository }   from '../repositories/domain-event.repos
 import type { AuditLogRepository }      from '../repositories/audit-log.repository.js';
 import type { PaymentInfo, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
-import { DomainError, OrderChargeInvoicedError } from '../domain/errors.js';
+import {
+  DomainError,
+  OrderChargeInvoicedError,
+  // Movidos a domain/errors.ts (bloque 1.5 (iv)) para que
+  // facturacion/cancel-order-with-credit-note.service.ts no importe este
+  // service sólo por dos clases de error. Se re-exportan abajo: los
+  // importadores internos de pos-menu/ y sus tests no cambian.
+  OrderNotFoundError,
+  InvalidOrderTransitionError,
+} from '../domain/errors.js';
+export { OrderNotFoundError, InvalidOrderTransitionError };
 import type { ProductService }          from './product.service.js';
 import type { RecipeService }           from './recipe.service.js';
 import type { StockItemSnapshot }       from '../workers/inventory.handlers.js';
@@ -62,21 +72,12 @@ import type { OrderPricingService }     from './order-pricing.service.js';
 // porque el errorHandler nunca las reconocía como DomainError.
 // ---------------------------------------------------------------------------
 
-export class OrderNotFoundError extends DomainError {
-  constructor(id: string) {
-    super(`Orden no encontrada: ${id}`, 'ORDER_NOT_FOUND');
-  }
-}
+// OrderNotFoundError e InvalidOrderTransitionError: ver el re-export de
+// arriba -- viven en domain/errors.ts desde el bloque 1.5 (iv).
 
 export class OrderNotEditableError extends DomainError {
   constructor(id: string, status: OrderStatus) {
     super(`La orden ${id} no se puede editar en estado ${status}.`, 'ORDER_NOT_EDITABLE');
-  }
-}
-
-export class InvalidOrderTransitionError extends DomainError {
-  constructor(from: OrderStatus, to: OrderStatus) {
-    super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');
   }
 }
 

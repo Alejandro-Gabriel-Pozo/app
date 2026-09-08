@@ -856,3 +856,26 @@ export class InvalidStockMovementError extends DomainError {
     );
   }
 }
+
+/**
+ * Movidos desde `pos-menu/order.service.ts` (bloque 1.5 (iv), deuda de
+ * `ef27e42`): `facturacion/cancel-order-with-credit-note.service.ts` los
+ * necesita y no puede importar un *service* de `pos-menu` sólo por dos
+ * clases de error. `order.service.ts` los re-exporta, así que los
+ * importadores internos de `pos-menu/` no cambian.
+ *
+ * `from`/`to` van tipados `string`, no `OrderStatus`: un error de dominio
+ * genérico no conoce el enum de estados de `orders` (todos los call-sites
+ * pasan un `OrderStatus`, que ES un string — el widening es seguro).
+ */
+export class OrderNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Orden no encontrada: ${id}`, 'ORDER_NOT_FOUND');
+  }
+}
+
+export class InvalidOrderTransitionError extends DomainError {
+  constructor(from: string, to: string) {
+    super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');
+  }
+}

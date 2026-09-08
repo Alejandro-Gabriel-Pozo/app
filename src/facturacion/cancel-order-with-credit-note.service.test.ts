@@ -14,8 +14,9 @@ import {
   CreditNoteCancellationPendingError,
   CreditNoteCancellationRejectedError,
   CreditNoteMultiInvoiceError,
+  InvalidOrderTransitionError,
+  OrderNotFoundError,
 } from '../domain/errors.js';
-import { InvalidOrderTransitionError, OrderNotFoundError } from '../pos-menu/order.service.js';
 
 // ---------------------------------------------------------------------------
 // Fakes

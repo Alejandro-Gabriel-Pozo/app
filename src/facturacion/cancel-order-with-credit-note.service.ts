@@ -55,7 +55,7 @@ import {
   CreditNoteMultiInvoiceError,
   CreditNoteIssuedOrderNotCancellableError,
 } from '../domain/errors.js';
-import { OrderNotFoundError, InvalidOrderTransitionError } from '../pos-menu/order.service.js';
+import { OrderNotFoundError, InvalidOrderTransitionError } from '../domain/errors.js';
 
 // ---------------------------------------------------------------------------
 // Puerto: cancelar la ORDEN dentro de la tx del orquestador
