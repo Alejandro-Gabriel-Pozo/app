@@ -55,6 +55,10 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByCustomerId(customerId: string): Promise<Invoice[]> {
     return [...this.invoices.values()].filter((i) => i.customerId === customerId);
   }
+  // B3 bloque 2.1 (08/09/2026) -- sin caller todavía en InvoiceService.
+  async getByStatus(status: InvoiceStatus): Promise<Invoice[]> {
+    return [...this.invoices.values()].filter((i) => i.status === status);
+  }
   async resolveInvoiceLinkage(ftId: string): Promise<InvoiceLinkage> {
     const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);
     const invoice = individual ?? (() => {

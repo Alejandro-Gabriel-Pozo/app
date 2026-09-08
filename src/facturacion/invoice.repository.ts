@@ -72,6 +72,21 @@ export interface InvoiceRepository {
    */
   getByCustomerId(customerId: string): Promise<Invoice[]>;
   /**
+   * B3 bloque 2.1 (08/09/2026, `docs/pendientes-2026-09-08.md` #4a) —
+   * localizar un caso trabado (NC/factura `PENDING` o `FAILED_UNCERTAIN`
+   * que nadie resolvió) sin conocer de antemano su `financialTransactionId`
+   * ni `customerId` — hoy solo se puede por SQL directo contra la tenant
+   * (D1 del ADR común cancelar-con-NC, "una NC trabada no se puede
+   * localizar por API"). Deliberadamente sin filtro de `businessId`: el
+   * aislamiento ya es físico (una BD por negocio, A2.8), mismo criterio que
+   * `getByCustomerId`. Orden `created_at ASC` — el más viejo primero, que es
+   * el único motivo por el que la bandeja existe (distinguir "trabado hace 3
+   * minutos" de "trabado hace 3 días"). NO es la bandeja completa de B3 (esa
+   * necesita `credit_note_request`, bloque 2.3, todavía sin gate) — es la
+   * consulta mínima que da la mayor parte del valor sin schema nuevo.
+   */
+  getByStatus(status: InvoiceStatus): Promise<Invoice[]>;
+  /**
    * O2-F2 (03/09/2026, F2.3) / AR-FACT-NO-ISSUED-01 (05/09/2026,
    * architecture-governor, paquete post-H-A, "P0") -- dado el
    * `financial_transaction_id` de una fila `accounts_receivable`, resuelve

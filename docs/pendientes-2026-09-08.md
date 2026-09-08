@@ -493,7 +493,9 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 
 **ADR "cancelar con NC" — resto:** ~~CHECK `reversed_invoice_id` mitad de datos (#1)~~ ✅ `3bcf5ab` ·
 ~~3-ter filtro `cbte_tipo` (#2)~~ ✅ `94ac18e` · ~~4 filas de deuda de `ef27e42` (#3)~~ ✅ `3608edf`+`84efea9` (i/ii/iv; iii = no se hace, declarado) · B3
-(`credit_note_request` + bandeja + `?status=`) (#4) · B-reservas
+(~~`?status=` (#4a)~~ ✅ bloque 2.1, 08/09/2026 — `GET /api/invoices?status=`,
+`InvoiceRepository.getByStatus()`, mismo `authorize(FRONT_DESK)`; `credit_note_request`
++ bandeja completa (#4b) sigue abierto, bloqueado por el gate del bloque 2.2) · B-reservas
 (`getByReservationId` UNION, subcasos directa/consolidada/pool mixto,
 `EXPIRED-FACT-01`, F4 en reservas, 5 caracterizaciones) (#5) · Anexo A1/A2/A4 ·
 Frontend (3 catálogos sin `EMISOR_NOTA_CREDITO`, copy falsa `roles-de-fabrica`,

@@ -155,7 +155,7 @@ procedimiento completo antes del bump caro de B3.
 ### FASE 2 — B3 + borde operativo (desbloquea B-reservas)
 | Bloque | Ítem | Schema | Notas |
 |---|---|---|---|
-| **2.1** `?status=` en `GET /api/invoices` | #4 (a) | no | 80% del valor de B3 (localizar el caso trabado) con 0% del riesgo. Verificar accesibilidad del rol que usa la bandeja contra `platform.schema.sql` (regla 5 `CLAUDE.md`, incidente D6) |
+| **2.1** `?status=` en `GET /api/invoices` | #4 (a) | no | ✅ RESUELTO 08/09/2026. `InvoiceRepository.getByStatus()` + filtro en la ruta, mismo `authorize(FRONT_DESK)` — accesibilidad verificada: los 3 presets con `EMISOR_NOTA_CREDITO` (OWNER/ADMIN/RECEPTIONIST, `platform.schema.sql:307-315`) ya tienen `FRONT_DESK`, sin hueco nuevo (regla 5 `CLAUDE.md`, incidente D6). Tests: `invoices.routes.test.ts` (200 + 400 status inválido), fakes de `InvoiceRepository` actualizadas. tsc/lint:arch/1976 unit tests limpios |
 | **2.2** Decisión `credit_note_request` sí/no | #4 (b) | — | ⛔ esperar `auditor-circuitos-erp` (state machine) + gate governor §10 fila 1. Obligatorio: índice único parcial, campo de monto congelado (R9 — cruza con #21), `resolved_at TIMESTAMPTZ`, checklist `criterios-datos` Parte 5 completo. Declarar la excepción A3.8 (la transición de estado es UPDATE) |
 | **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | condicional al 2.2. Índice único parcial **probado con 2 INSERT concurrentes** en integración |
 | **2.4** Tope N5 | #21 | no | `buildCreditNote()` consulta `getIssuedCreditNoteCompensationTotal()` y **lanza** si excede. **Bajo lock / con el monto congelado**, nunca `SELECT` suelto antes de `INSERT`. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
@@ -281,7 +281,7 @@ Odoo `ir_cron.py:122`), #13 (grondeado Odoo `ir_cron.py:448-451`, OCA
 | 6 | 3-ter `cbte_tipo` | #2 | — | — |
 | 7 | 4 filas de deuda | #3 | — | — |
 | — | → **gate final B-núcleo+órdenes** (tras 3,4,5) | — | — | — |
-| 8 | `?status=` en `GET /api/invoices` | #4a | — | — |
+| 8 | `?status=` en `GET /api/invoices` | #4a | — | ✅ RESUELTO 08/09/2026 |
 | 9 | `credit_note_request` | #4b | v48 | auditor + gate |
 | 10 | Tope N5 | #21 | — | 9 |
 | 11 | UNION + fail-closed | #5a | — | 9, **10** |

@@ -246,6 +246,14 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return rows.map(rowToEntity);
   }
 
+  async getByStatus(status: InvoiceStatus): Promise<Invoice[]> {
+    const { rows } = await this.db.query<InvoiceRow>(
+      `SELECT * FROM invoices WHERE status = $1 ORDER BY created_at ASC`,
+      [status],
+    );
+    return rows.map(rowToEntity);
+  }
+
   async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
     // AR-FACT-NO-ISSUED-01 (05/09/2026) -- reemplaza a
     // getInvoiceIdByFinancialTransactionId(). H2 (architecture-governor,

@@ -13,6 +13,10 @@
  * GET  /api/invoices?customerId=...              — FRONT_DESK (O2-F2, F2.2 --
  *      todas las facturas de un cliente, cualquier status; antes no existía
  *      ningún endpoint que listara las consolidadas de un cliente)
+ * GET  /api/invoices?status=...                  — FRONT_DESK (B3 bloque 2.1,
+ *      08/09/2026 -- localizar un caso trabado sin conocer de antemano su
+ *      financialTransactionId/customerId; NO es la bandeja completa de B3,
+ *      ver docblock de InvoiceRepository.getByStatus())
  *
  * `requireModule(ModuleKey.FACTURACION)` gatea las MUTACIONES (POST /,
  * POST /consolidated) y el router de credenciales AFIP. Los GET de
@@ -44,6 +48,10 @@ import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
+import type { InvoiceStatus } from './invoice.entities.js';
+
+/** B3 bloque 2.1 -- únicos valores válidos de `invoices.status` (invoice.entities.ts). */
+const VALID_INVOICE_STATUSES: readonly InvoiceStatus[] = ['PENDING', 'ISSUED', 'REJECTED', 'FAILED_UNCERTAIN'];
 
 /**
  * Composition root del `InvoiceService` por request (desde `req.db` del
@@ -186,7 +194,22 @@ export function createInvoicesRouter(container: AppContainer): Router {
           return;
         }
 
-        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'financialTransactionId o customerId es obligatorio' });
+        // B3 bloque 2.1 (08/09/2026) -- localizar un caso trabado sin
+        // financialTransactionId/customerId de antemano (D1 del ADR común
+        // cancelar-con-NC). Mismo criterio de aislamiento que arriba: sin
+        // filtro de businessId, la tenant DB ya lo garantiza.
+        const status = req.query['status'];
+        if (typeof status === 'string' && status) {
+          if (!VALID_INVOICE_STATUSES.includes(status as InvoiceStatus)) {
+            res.status(400).json({ code: 'VALIDATION_ERROR', message: `status inválido: ${status}` });
+            return;
+          }
+          const invoices = await new SqlInvoiceRepository(req.db!).getByStatus(status as InvoiceStatus);
+          res.json(invoices);
+          return;
+        }
+
+        res.status(400).json({ code: 'VALIDATION_ERROR', message: 'financialTransactionId, customerId o status es obligatorio' });
       } catch (err) { next(err); }
     },
   );

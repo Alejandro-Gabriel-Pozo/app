@@ -125,7 +125,7 @@ describe('GET /api/invoices?financialTransactionId=...', () => {
     expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ id: 'inv-1' })]);
   });
 
-  it('400 si falta financialTransactionId', async () => {
+  it('400 si falta financialTransactionId, customerId y status', async () => {
     const router = createInvoicesRouter(FAKE_CONTAINER);
     const handler = getHandler(router, 'get', '/');
     const req = { query: {}, db: fakeDb(async () => ({ rows: [] })) } as unknown as Request;
@@ -134,6 +134,35 @@ describe('GET /api/invoices?financialTransactionId=...', () => {
     await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
     expect(res.status).toHaveBeenCalledWith(400);
+  });
+});
+
+describe('GET /api/invoices?status=... -- B3 bloque 2.1 (08/09/2026, #4a)', () => {
+  it('devuelve los comprobantes en ese status', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'get', '/');
+    const req = { query: { status: 'PENDING' }, db: fakeDb(async (sql: string, params?: unknown[]) => {
+      expect(sql).toContain('WHERE status = $1');
+      expect(params).toEqual(['PENDING']);
+      return { rows: [{ ...INVOICE_ROW, status: 'PENDING', cae: null, cae_vto: null, issued_at: null }] };
+    }) } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.json).toHaveBeenCalledWith([expect.objectContaining({ id: 'inv-1', status: 'PENDING' })]);
+  });
+
+  it('400 VALIDATION_ERROR si status no es un InvoiceStatus válido', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'get', '/');
+    const req = { query: { status: 'CANCELLED' }, db: { query: vi.fn(async () => { throw new Error('no debería tocar la DB'); }) } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 });
 
