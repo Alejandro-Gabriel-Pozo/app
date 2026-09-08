@@ -416,6 +416,100 @@ que el próximo bloque de riesgo alto (3.2/3.3) tenga que parar a preguntar.
 Ninguna de las dos habilita implementar 3.4/3.5 todavía: 3.4 falta el
 mecanismo, 3.5 falta que exista el orquestador de 3.3.
 
+### #24 — `REFUND-ISSUED-RACE-01` (encontrado buscando la carrera de 3.2, no cerrable por ningún lock de fila)
+
+`InvoiceService.finalizeIssued()` (`invoice.service.ts:945`) → `markIssued()`
+(`sql.invoice.repository.ts:718-728`, `UPDATE invoices SET status='ISSUED',
+issued_at=NOW() WHERE id=$1`) es el **único** escritor de
+`invoices.status='ISSUED'` en todo el repo (verificado por grep de
+`status\s*=\s*'ISSUED'`/`status:\s*'ISSUED'` en `src/**/*.ts` no-test — un
+solo hit de producción). Corre **por el pool (`this.db`), sin `client`,
+fuera de toda transacción**, después de la llamada de red a AFIP (mismo
+patrón temporal que N10 ya declaraba para el orquestador de órdenes: "la
+ventana [TX-A]→[TX-B] dura la llamada de red a AFIP").
+
+**Mecanismo:** `confirmRefund()` lee `issuedInvoices` dentro de su
+transacción (`cancellation-refund.service.ts:189`, filtro `status ===
+'ISSUED'`) y arma el reparto LIFO + el guard fail-closed de consolidadas
+(bloque 3.1) contra esa foto. Si una factura `PENDING` de la misma reserva
+pasa a `ISSUED` (AFIP responde) en la ventana entre esa lectura y el COMMIT
+de `confirmRefund()`, **no entra a ninguno de los dos**: el monto que le
+correspondía cae al chunk `:sin-asignar` (ledger-only, sin Nota de Crédito)
+en vez de atarse a la factura real, y si esa factura resulta ser
+consolidada, evade el fail-closed de 3.1 sin que nada avise.
+
+**Por qué no lo detecta nada que ya exista:** `RefundBaseChangedError`
+(BRECHA-REFUND-01-B) compara `collected` — `markIssued()` no toca
+`financial_transactions`, así que `collected` no se mueve y el guard no
+dispara.
+
+**Por qué NO es cerrable con un lock de fila:** no hay ninguna fila que
+lockear del lado de la escritura — `markIssued()` es un `UPDATE` suelto por
+el pool, no una transacción con la que otra pueda serializar vía `FOR
+UPDATE`. Cerrarlo de verdad exigiría mover `markIssued()` a una transacción
+propia con algún mecanismo de coordinación (lock avisorio por
+`financialTransactionId`/reserva, o releer el estado de la factura dentro
+del COMMIT final de `confirmRefund()` en vez de antes) — bloque de diseño
+propio, no autorizado en esta sesión.
+
+**Alcanzabilidad:** exige que `requestInvoice()` haya arrancado *antes* de
+la cancelación de la reserva (después, `invoice.service.ts:407-412`
+rechaza) con AFIP todavía en vuelo cuando `confirmRefund()` corre — segundos
+contra segundos, misma familia de ventana que RESERVA-10/`EXPIRED-FACT-01`.
+No medido en producción (requeriría instrumentar la latencia real de AFIP
+vs. la de cancelación+reembolso, no una query).
+
+**Gatillo de reapertura:** si aparece un segundo escritor de
+`status='ISSUED'` (hoy no hay ninguno, verificado), o si se prioriza antes
+de 3.3 por decisión del dueño.
+
+### #25 — Residual B-1: alcance final confirmado, `recordPayment()` es el lado que falta
+
+Corrección de dos gates `architecture-governor` (08/09/2026, intento de
+bloque 3.2, ver `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`
+fila 3.2 y `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §N10):
+**no se cierra agregando un lock del lado `confirmRefund()`** — ese lado ya
+lee `reservations` de forma consistente y `CANCELLED` es terminal; el
+interferente que residual B-1 nombra (`pendientes-2026-09-06.md:79-88`) es
+`CustomerAccountService.recordPayment()`, que:
+
+1. **No toma ningún lock sobre `reservations`** hoy (acepta `reservationId`
+   y lo estampa en la fila que crea, nunca la lee/lockea).
+2. **Su camino sin `allocations` es autocommit, sin transacción**
+   (`customer-account.service.ts:139`, `this.financialRepo.create({...})`
+   directo por el pool) — ni un row lock ni un advisory lock sirven ahí:
+   los dos se liberan al terminar la sentencia. Cerrar B-1 de verdad exige
+   **transaccionalizar ese camino primero**, no sólo agregarle un lock.
+3. **Interferente latente, no registrado hasta ahora en ningún doc**:
+   `settleByReservationId()` (`sql.financial-transaction.repository.ts:280-289`,
+   `outbox.handlers.ts`, `handleReservationCompleted`) hace `UPDATE ... SET
+   status='SETTLED' WHERE reservation_id=$1 AND status='PENDING'`, sin
+   filtro de `type`, corriendo en el worker de outbox por el pool, sin lock.
+   Hoy es inofensivo **sólo porque ningún camino del repo crea un `PAYMENT`
+   en `PENDING`** — el día que exista uno, este worker se vuelve un
+   interferente de B-1 que ningún lock del lado request puede frenar, y
+   nada avisa. Verificado: 14 sitios de creación de `financial_transactions`
+   en `src/` (sin tests); único escritor de `PAYMENT` con `reservation_id` es
+   `recordPayment()` (3 sitios: `:144`, `:268`, `:296`), alcanzable por una
+   sola ruta HTTP (`customers.routes.ts:852`).
+4. **Mecanismo elegido para cuando se encare (3.2-b, NO autorizado ahora)**:
+   primitiva nueva `lockById(client, id)` en el puerto `ReservationRepository`
+   — sólo `SELECT id FROM reservations WHERE id=$1 FOR UPDATE`, sin hidratar
+   el agregado completo (a diferencia de `getByIdWithLock`, que además paga
+   2 lecturas por el pool vía `resourceRepository.getById()`/`getLines()` —
+   costo innecesario si lo único que hace falta es el lock). Mismo espacio
+   de locks que ya usan `invoice.service.ts`/`reservation.service.ts`/el
+   worker de expiración — nunca un advisory lock nuevo para este recurso
+   (crearía dos mecanismos no interoperables sobre el mismo dato lógico,
+   el modo de falla que este ADR viene repitiendo).
+5. **Costo declarado**: transaccionalizar el camino sin `allocations` de
+   `recordPayment()` es tocar el cobro más frecuente de la app — bloque
+   propio, con su propia medición de presión sobre el pool `max: 5` (mismo
+   criterio que `POOL-STARV-001`), no un renglón dentro de otro bloque.
+
+**Estado: sigue abierto, redefinido como 3.2-b, sin fecha, no autorizado
+en esta sesión.**
+
 ---
 
 ## ✅ B-núcleo+órdenes — CERRADO (gate final `architecture-governor`, 08/09/2026)
@@ -714,10 +808,16 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 Frontend (3 catálogos sin `EMISOR_NOTA_CREDITO`, copy falsa `roles-de-fabrica`,
 consumir `description`/`kind` del dead-letter).
 
-**Deuda estructural:** Residual B-1 + `REFUND-INT-GUARD-001` · `MID-LOG-001` ·
-`POOL-STARV-001` · `CONCIL-INCONSIST-01` (absorbe INV-ORF-01 + pt1 ORDER-13) ·
-`OUTBOX-RETRY-HIST-01` · `OUTBOX-BACKOFF-01` · `OUTBOX-DL-COMPENSATOR-01` ·
-`OUTBOX-DL-THROTTLE-RESET-01` 🟠 · `EMAIL-FROMNAME-RFC5322-01` 🟠 · CI techo · A7.6.
+**Deuda estructural:** Residual B-1 (redefinido 08/09 como **3.2-b**, ver #25 —
+no cerrable sin transaccionalizar `recordPayment()`) · ~~`REFUND-INT-GUARD-001`~~
+✅ bloque 3.2-bis, 08/09 · ~~`MID-LOG-001`~~ ✅ bloque 0.2, 08/09 ·
+~~`POOL-STARV-001`~~ ✅ bloque 3.2-pre, 08/09 (medido: 2/5 conexiones, no 3-4) ·
+`REFUND-ISSUED-RACE-01` (nuevo, 08/09, ver #24 — `markIssued()` sin lock ni
+transacción, no cerrable por ningún lock de fila) · `CONCIL-INCONSIST-01`
+(absorbe INV-ORF-01 + pt1 ORDER-13) · `OUTBOX-RETRY-HIST-01` ·
+`OUTBOX-BACKOFF-01` · `OUTBOX-DL-COMPENSATOR-01` ·
+`OUTBOX-DL-THROTTLE-RESET-01` 🟠 · `EMAIL-FROMNAME-RFC5322-01` 🟠 ·
+~~CI techo~~ ✅ bloque 0.1, 08/09 · A7.6.
 
 **Seguridad:** `SEC-ROT-001` (runbook ✅, falta código 2-claves + `reencrypt-secrets.ts`
 + IV 16→12) · `RBAC-SYNC-001 §4` · `FACT-INV-BIZID-001`/`FAILOPEN-001` (re-etiquetar).
