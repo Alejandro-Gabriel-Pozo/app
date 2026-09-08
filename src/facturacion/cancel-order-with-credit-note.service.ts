@@ -263,6 +263,17 @@ export class CancelOrderWithCreditNoteService {
         }
       };
 
+      // Todas las lecturas de este bloque tx1 (`getByOrderId` :200,
+      // `resolveInvoiceLinkage` :210, `getChargeIdsForInvoice` :223, y estos
+      // `getByIdempotencyKey` acá y en el fallback de más abajo) van por el
+      // pool del repo, NO por `client`. Es sano: entre :186 y :272 NO hay
+      // ningún write vía `client`, así que no hay estado no-commiteado propio
+      // que perder; un concurrente commiteado se ve bajo READ COMMITTED; y el
+      // fallback post-ON-CONFLICT (:298) siempre ve la fila por el orden del
+      // lock especulativo del índice único. El costo residual es presión de
+      // pool (2 de 5 conexiones por escape en vuelo, `tenant.middleware.ts` max:5)
+      // -- POOL-STARV-001, #10 / bloque 3.2-pre; el tratamiento de todo el
+      // método (pasar `client` a las 5 lecturas) va ahí, no acá.
       const existing = prior ?? (await this.financialTransactionRepo.getByIdempotencyKey(key));
       let adjustment: FinancialTransaction;
       if (existing) {

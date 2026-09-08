@@ -385,10 +385,31 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     guards de reservas del portal) no pasan por el middleware. Una convención
     "todo `*.routes.ts` delega los `DomainError` al middleware salvo
     divergencia de status declarada" reconciliaría las dos — bloque propio.
-- **Doble lectura por el repo en vez de por `client`** en
-  `cancel-order-with-credit-note.service.ts`: la deuda (i) de `ef27e42` menciona
-  `:269`; el mismo defecto está también en `:248`. Arreglar las dos o declarar por
-  qué no. → bloque 1.5 del plan.
+- **Lectura por el pool del repo en vez de por `client`** en
+  `cancel-order-with-credit-note.service.ts` — ✅ RESUELTO (bloque 1.5, `3608edf`
+  código + declaración en el commit de docs de cierre). **Son 5 sitios, no 2:**
+  `getByOrderId` (`:200`), `resolveInvoiceLinkage` (`:210`),
+  `getChargeIdsForInvoice` (`:223`), `getByIdempotencyKey` (`:266`) y el
+  re-read del fallback post-ON-CONFLICT (`:298`) — todos por el pool del repo
+  mientras `client` tiene la tx1. **Se declara, no se arregla:** entre el
+  `getByIdForUpdate` (`:186`) y el `return` de tx1 NO hay ningún write vía
+  `client`, así que no hay estado no-commiteado propio que perder; un
+  concurrente commiteado se ve bajo READ COMMITTED; y el fallback siempre ve
+  la fila por el orden del lock especulativo del índice único de
+  `idempotency_key`. Comentario in-place en `:266`. El `!` no-nulo que había
+  tras `createWithClient` null (era **uno**, en `:269`, no dos) → re-read
+  explícito + throw "invariante rota"; + `assertRevertsExpectedInvoice()`.
+  **Costo residual:** presión de pool (2 de 5 conexiones por escape en vuelo,
+  `tenant.middleware.ts` `max: 5`) — es **POOL-STARV-001** (#10 / bloque
+  3.2-pre); pasar `client` a las 5 lecturas va ahí, donde el presupuesto de
+  pool se mide. **(iii) `buildInvoiceService` → NO se extrae:** ya está
+  extraído/reusado desde el 07/09 (`orders.routes.ts:58` ← `invoices.routes.ts:56`,
+  una sola def); y moverlo a un `.ts` no-`.routes.ts` viola
+  `no-repo-concreto-de-otro-dominio` de `.dependency-cruiser.cjs` (sólo
+  exceptúa `*.routes.ts`), y meterlo al `pathNot` cambia una cerca por
+  convención de nombre por un allowlist a mano (RBAC-SYNC-001). **(iv)**
+  `84efea9`: `OrderNotFoundError`/`InvalidOrderTransitionError` movidos a
+  `domain/errors.ts`.
 - **`reservation.cancel-confirmed.test.ts` — falla determinística en bordes de
   hora exactos (no es flakiness).** `src/tests/domain/reservation.cancel-confirmed.test.ts:77-81`
   (caso 1h). **Mecanismo:** `msFromNow()` (`:33`) lee `Date.now()`, y después el
@@ -425,7 +446,7 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 ## Arrastrado de `pendientes-2026-09-06.md` — abierto, detalle allá
 
 **ADR "cancelar con NC" — resto:** ~~CHECK `reversed_invoice_id` mitad de datos (#1)~~ ✅ `3bcf5ab` ·
-~~3-ter filtro `cbte_tipo` (#2)~~ ✅ `94ac18e` · 4 filas de deuda de `ef27e42` (#3) · B3
+~~3-ter filtro `cbte_tipo` (#2)~~ ✅ `94ac18e` · ~~4 filas de deuda de `ef27e42` (#3)~~ ✅ `3608edf`+`84efea9` (i/ii/iv; iii = no se hace, declarado) · B3
 (`credit_note_request` + bandeja + `?status=`) (#4) · B-reservas
 (`getByReservationId` UNION, subcasos directa/consolidada/pool mixto,
 `EXPIRED-FACT-01`, F4 en reservas, 5 caracterizaciones) (#5) · Anexo A1/A2/A4 ·
