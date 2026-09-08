@@ -2,6 +2,8 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
+import { isInvoiceFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
+import { CBTE_TIPO_FACTURA_B } from './afip-catalog.constants.js';
 import { randomUUID } from 'node:crypto';
 
 interface InvoiceRow {
@@ -335,6 +337,66 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       [invoiceId],
     );
     return parseFloat(rows[0]!.compensated);
+  }
+
+  async classifyOrderLiveInvoice(
+    client: SqlClient,
+    orderId: string,
+  ): Promise<'RECONCILED' | 'NOT_RECONCILED'> {
+    // Ver el docblock de la interfaz para la doctrina completa (ancla al
+    // comprobante, conjunción con el ledger, fail-closed, grounding ERP en
+    // af2b2b5). Este método consulta `financial_transactions` (tabla de
+    // clientes-finanzas) -- ya es práctica establecida en este archivo
+    // (getIssuedCreditNoteCompensationTotal, :148/:153/:178/:183/:190).
+
+    // Factura B (`cbte_tipo = 6`) ISSUED ligada a algún CHARGE de la orden,
+    // por el camino individual (`invoices.financial_transaction_id`) o el
+    // consolidado (`invoice_charges`). Mismo UNION conceptual que
+    // `resolveInvoiceLinkage()`.
+    const { rows: facturas } = await client.query<{ id: string; imp_total: string }>(
+      `SELECT DISTINCT i.id, i.imp_total
+         FROM invoices i
+         JOIN financial_transactions ft
+           ON ft.id = i.financial_transaction_id
+           OR ft.id IN (
+                SELECT ic.financial_transaction_id FROM invoice_charges ic
+                 WHERE ic.invoice_id = i.id
+              )
+        WHERE ft.order_id = $1
+          AND ft.type = 'CHARGE'
+          AND i.status = 'ISSUED'
+          AND i.cbte_tipo = $2`,
+      [orderId, CBTE_TIPO_FACTURA_B],
+    );
+    // Sin Factura B ISSUED no hay comprobante fiscal vivo que "reconciliar":
+    // que `voidByOrderId` haya dado `CARGO_CON_COMPROBANTE_VIVO` en ese caso
+    // apunta a un PENDING/FAILED_UNCERTAIN, no a una NC -> fail-closed.
+    if (facturas.length === 0) return 'NOT_RECONCILED';
+
+    for (const f of facturas) {
+      // (1) FISCAL -- F4, reusado verbatim (isInvoiceFullyCompensatedByIssuedCreditNotes
+      //     + getIssuedCreditNoteCompensationTotal, sin SQL de compensación nuevo).
+      const compensado = await this.getIssuedCreditNoteCompensationTotal(client, f.id);
+      if (!isInvoiceFullyCompensatedByIssuedCreditNotes(parseFloat(f.imp_total), compensado)) {
+        return 'NOT_RECONCILED';
+      }
+      // (2) LEDGER -- conjunción que sólo estrecha: >= 1 fila revertidora y
+      //     TODAS `SETTLED`. Un `ADJUSTMENT` `PENDING` (tx2 sin commitear) no
+      //     netea el saldo del cliente. `total === 0` cubre además la verdad
+      //     vacua del caso `imp_total = 0` (F4 daría `true` con cero NC).
+      const { rows: rev } = await client.query<{ total: string; settled: string }>(
+        `SELECT COUNT(*)                                  AS total,
+                COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
+           FROM financial_transactions
+          WHERE reversed_invoice_id = $1
+            AND type IN ('REFUND', 'ADJUSTMENT')`,
+        [f.id],
+      );
+      const total = Number(rev[0]!.total);
+      const settled = Number(rev[0]!.settled);
+      if (total === 0 || total !== settled) return 'NOT_RECONCILED';
+    }
+    return 'RECONCILED';
   }
 
   async getChargeIdsForInvoice(invoiceId: string): Promise<string[]> {

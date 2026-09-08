@@ -294,12 +294,12 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
     const canceladoEvt = await eventoReal(orden.id, 'order.cancelled');
     const { despues: f5 } = await paso(
       'anular', f, { cargosPendientes: -1, cargosAnulados: +1 },
-      () => handleOrderCancelled(financialRepo)(canceladoEvt));
+      () => handleOrderCancelled(financialRepo, new SqlInvoiceRepository(db), db)(canceladoEvt));
     f = f5;
 
     // Reintento: cero efectos.
     await paso('reintentar anulación', f, {},
-      () => handleOrderCancelled(financialRepo)(canceladoEvt));
+      () => handleOrderCancelled(financialRepo, new SqlInvoiceRepository(db), db)(canceladoEvt));
 
     const { rows } = await db.query<{ status: string }>(
       `SELECT status FROM financial_transactions WHERE order_id=$1`, [orden.id]);

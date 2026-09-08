@@ -18,10 +18,18 @@
  * Si no está definida, la suite completa se saltea.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import type { Arca } from '@arcasdk/core';
+
+// sub-bloque 5 (b) -- el bloque de abajo OBSERVA la severidad del log de
+// `registrarDesenlace` (info reconciliado vs error anomalía). Mismo patrón
+// que module.middleware.test.ts. No afecta a los tests del sub-bloque 4
+// (no asertan sobre `logger`).
+vi.mock('../../logger.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 
 import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
@@ -46,6 +54,9 @@ import { InvoiceService } from '../../facturacion/invoice.service.js';
 import { CancelOrderWithCreditNoteService } from '../../facturacion/cancel-order-with-credit-note.service.js';
 import { OrderCancelForCreditNote } from '../../pos-menu/order-cancel-for-credit-note.js';
 import { authorizeCreditNoteCancellation } from '../../facturacion/cancel-with-credit-note.js';
+import { handleOrderCancelled } from '../../workers/outbox.handlers.js';
+import { logger } from '../../logger.js';
+import type { DomainEvent } from '../../repositories/domain-event.repository.js';
 import { CreditNoteCancellationPendingError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
@@ -355,4 +366,79 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
     );
     expect(Number(eventRows[0]!.count)).toBe(0);
   }, 30_000);
+
+  // ─── sub-bloque 5 (b) -- handleOrderCancelled + classifyOrderLiveInvoice ───
+  // Contra Postgres real, ejercita el `classifyOrderLiveInvoice` REAL (SQL,
+  // no fake) y observa la severidad del log de `registrarDesenlace`.
+  describe('(b) reconciliación del residual #3', () => {
+    function orderCancelledEvent(orderId: string): DomainEvent {
+      return {
+        id: 1, businessId: BIZ, aggregateType: 'ORDER', aggregateId: orderId,
+        eventType: 'order.cancelled', payload: { orderId },
+      };
+    }
+
+    beforeEach(() => {
+      vi.mocked(logger.info).mockClear();
+      vi.mocked(logger.warn).mockClear();
+      vi.mocked(logger.error).mockClear();
+    });
+
+    it('escape completo -> classifyOrderLiveInvoice = RECONCILED -> logger.info reconciliado, NO error', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId } = await seedInvoicedOrder(invoiceService);
+      await buildSut(invoiceService).cancelOrderWithCreditNote(orderId, auth(orderId));
+
+      expect(await invoiceRepo.classifyOrderLiveInvoice(db, orderId)).toBe('RECONCILED');
+
+      await handleOrderCancelled(financialRepo, invoiceRepo, db)(orderCancelledEvent(orderId));
+
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+        expect.stringContaining('reconciliado por Nota de Crédito'),
+      );
+    }, 40_000);
+
+    it('escape + ADJUSTMENT forzado a PENDING (tx2 sin commitear) -> NOT_RECONCILED -> sigue grave', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId } = await seedInvoicedOrder(invoiceService);
+      await buildSut(invoiceService).cancelOrderWithCreditNote(orderId, auth(orderId));
+
+      // Simula tx2 a medias: NC ISSUED, Factura B compensada fiscalmente, pero
+      // la fila revertidora no llegó a SETTLED -> el saldo del cliente no netea.
+      await db.query(
+        `UPDATE financial_transactions SET status = 'PENDING' WHERE order_id = $1 AND type = 'ADJUSTMENT'`, [orderId],
+      );
+
+      expect(await invoiceRepo.classifyOrderLiveInvoice(db, orderId)).toBe('NOT_RECONCILED');
+
+      await handleOrderCancelled(financialRepo, invoiceRepo, db)(orderCancelledEvent(orderId));
+
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reconciliado: true }), expect.anything(),
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    }, 40_000);
+
+    it('NEGATIVO -- orden a CANCELLED con Factura B ISSUED SIN NC (3ra puerta) -> sigue grave', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { orderId } = await seedInvoicedOrder(invoiceService);
+      // Sin escape: forzamos CANCELLED por UPDATE directo (simula un camino
+      // desconocido que llega a CANCELLED sin emitir NC).
+      await db.query(`UPDATE orders SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = $1`, [orderId]);
+
+      expect(await invoiceRepo.classifyOrderLiveInvoice(db, orderId)).toBe('NOT_RECONCILED');
+
+      await handleOrderCancelled(financialRepo, invoiceRepo, db)(orderCancelledEvent(orderId));
+
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    }, 40_000);
+  });
 });

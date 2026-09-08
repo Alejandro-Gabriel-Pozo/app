@@ -17,6 +17,7 @@ import { OutboxWorker }                        from './outbox.worker.js';
 import { SqlDomainEventRepository }            from '../repositories/sql.domain-event.repository.js';
 import { SqlProcessedEventRepository }         from '../repositories/processed-event.repository.js';
 import { SqlFinancialTransactionRepository }   from '../clientes-finanzas/sql.financial-transaction.repository.js';
+import { SqlInvoiceRepository }                from '../facturacion/sql.invoice.repository.js';
 import { registerFinancialHandlers }           from './outbox.handlers.js';
 import { SqlStockMovementRepository }          from '../repositories/sql.stock-movement.repository.js';
 import { SqlInventoryLevelRepository }         from '../repositories/sql.inventory-level.repository.js';
@@ -74,6 +75,10 @@ export function ensureTenantWorker(
 
   const domainEventRepo          = new SqlDomainEventRepository(db);
   const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
+  // ADR común cancelar-con-NC sub-bloque 5 (b) -- `handleOrderCancelled` lo
+  // usa para clasificar `CARGO_CON_COMPROBANTE_VIVO` post-escape. Mismo `db`
+  // de tenant que el resto (DEFENSIVE_DEVELOPING §3).
+  const invoiceRepo              = new SqlInvoiceRepository(db);
   const stockMovementRepo        = new SqlStockMovementRepository();
   const productRepo              = new SqlProductRepository(db);
   const productVariantRepo       = new SqlProductVariantRepository(db);
@@ -114,7 +119,7 @@ export function ensureTenantWorker(
   // fila de la orden y el INSERT del CHARGE tienen que compartir conexión.
   // Es el MISMO PgTransactionManager sobre el pool crudo del tenant que ya
   // usa el handler de inventario (DEFENSIVE_DEVELOPING §3).
-  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo, transactionManager);
+  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo, transactionManager, invoiceRepo, db);
   registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
   registerEmailHandlers(worker, emailSender, businessProfileRepo);
   worker.start();

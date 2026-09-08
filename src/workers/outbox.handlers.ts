@@ -35,6 +35,8 @@ import type {
 import type { TransactionManager } from '../db/transaction-manager.js';
 import { ChargeNotYetCreatedError, ChargeNeverCreatedError } from './outbox.worker.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import { logger } from '../logger.js';
 import type { OutboxWorker } from './outbox.worker.js';
 
@@ -53,6 +55,11 @@ export function registerFinancialHandlers(
   financialRepo: FinancialTransactionRepository,
   businessProfileRepo: BusinessProfileRepository,
   transactionManager: TransactionManager,
+  // ADR común cancelar-con-NC sub-bloque 5 (b) -- `handleOrderCancelled` los
+  // usa para clasificar el `CARGO_CON_COMPROBANTE_VIVO` post-escape. `db` es
+  // el SqlClient del tenant (mismo que construye `invoiceRepo` en el registry).
+  invoiceRepo: Pick<InvoiceRepository, 'classifyOrderLiveInvoice'>,
+  db: SqlClient,
 ): void {
   // Los nombres (`financial:*`) son la clave del casillero en
   // `processed_events` (28/08/2026, A10.3). Renombrar uno equivale a declarar
@@ -66,7 +73,7 @@ export function registerFinancialHandlers(
     .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo), { name: 'financial:reservation.price_adjusted' })
     .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo, transactionManager), { name: 'financial:order.confirmed' })
     .on('order.completed',       handleOrderCompleted(financialRepo),                      { name: 'financial:order.completed' })
-    .on('order.cancelled',       handleOrderCancelled(financialRepo),                      { name: 'financial:order.cancelled' });
+    .on('order.cancelled',       handleOrderCancelled(financialRepo, invoiceRepo, db),     { name: 'financial:order.cancelled' });
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +248,15 @@ function registrarDesenlace(
   // renombrado de `orderId` a `aggregateId` porque ya no es siempre una orden.
   aggregateId: string,
   desenlace: EfectoDesenlace,
+  // ADR común cancelar-con-NC sub-bloque 5 (b) -- SOLO lo pasa
+  // `handleOrderCancelled`, tras clasificar con
+  // `InvoiceRepository.classifyOrderLiveInvoice()`. `true` = el
+  // `CARGO_CON_COMPROBANTE_VIVO` que `voidByOrderId()` concluyó
+  // (conclusión CORRECTA, queda intacta en `causa`) es el estado esperado
+  // de un escape reconciliado: NC `ISSUED` que compensa del todo la Factura B
+  // Y filas revertidoras `SETTLED`. Los otros 3 callers no lo pasan ->
+  // comportamiento idéntico al previo.
+  opts?: { comprobanteReconciliado?: boolean },
 ): void {
   const base = {
     tenant:        event.businessId,
@@ -265,6 +281,29 @@ function registrarDesenlace(
   }
   if (desenlace.tipo === 'DEPENDENCIA_PENDIENTE') return;  // lo maneja el caller
 
+  // ADR común cancelar-con-NC sub-bloque 5 (b) -- el ÚNICO rechazo es
+  // `CARGO_CON_COMPROBANTE_VIVO` y el caller ya verificó (via
+  // `classifyOrderLiveInvoice`) que la Factura B viva está TOTALMENTE
+  // compensada por NC `ISSUED` y las filas revertidoras están `SETTLED`.
+  // `voidByOrderId()` concluyó bien -- no anular el par CHARGE/ADJUSTMENT
+  // SETTLED es LO CORRECTO (doctrina grondeada contra ERPNext/Odoo,
+  // af2b2b5: los dos asientos quedan en pie neteados, la reversión de GL
+  // sólo ocurre al cancelar la factura misma). Lo único que cambia es la
+  // severidad: esto NO es una anomalía de integridad, es el estado esperado
+  // de un escape reconciliado. El hecho crudo queda en `causa`, con
+  // `reconciliado: true` al lado -- forense sin perder la conclusión real.
+  if (
+    opts?.comprobanteReconciliado
+    && desenlace.rechazos.length === 1
+    && desenlace.rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'
+  ) {
+    logger.info(
+      { ...base, evento: 'efecto_rechazado', causa: desenlace.rechazos, reintentable: false, reconciliado: true },
+      '[outbox] cargo con comprobante vivo, reconciliado por Nota de Crédito -- sin acción',
+    );
+    return;
+  }
+
   // Un reintento benigno del at-least-once no abre incidente: si cada
   // redelivery normal generara uno, la bandeja se vuelve inútil.
   const soloBenigno = desenlace.rechazos.length === 1 && desenlace.rechazos[0] === 'CARGO_YA_SETTLED';
@@ -274,7 +313,11 @@ function registrarDesenlace(
   // sólo se dispara post-transición). El guard de la puerta de entrada
   // (`OrderService.cancelOrder()`) debería haberlo frenado ANTES; verlo acá
   // es evidencia de que algún otro camino llegó a CANCELLED sin pasar por
-  // esa puerta.
+  // esa puerta -- SALVO el escape `cancelOrderWithCreditNote()` (sub-bloque 4),
+  // que bypassa ese guard a propósito y cuya reconciliación cubre la rama
+  // `opts.comprobanteReconciliado` de arriba. Una TERCERA puerta desconocida
+  // que llegue a CANCELLED sin emitir su NC completa NO pasa por esa rama
+  // (`classifyOrderLiveInvoice` da `NOT_RECONCILED`) -> sigue `grave`.
   // RESERVA_INEXISTENTE (RESERVA-10) -- mismo criterio que ORDEN_INEXISTENTE:
   // un cargo referenciando una reserva que no existe es anomalía de
   // integridad, no una decisión de negocio normal.
@@ -383,10 +426,43 @@ export function handleOrderCompleted(
 
 export function handleOrderCancelled(
   financialRepo: FinancialTransactionRepository,
+  // ADR común cancelar-con-NC sub-bloque 5 (b) -- para clasificar el
+  // `CARGO_CON_COMPROBANTE_VIVO` post-escape. `db` es el SqlClient del
+  // tenant (lo cablea outbox.registry.ts); lectura sin lock (ver el docblock
+  // de `classifyOrderLiveInvoice`).
+  invoiceRepo: Pick<InvoiceRepository, 'classifyOrderLiveInvoice'>,
+  db: SqlClient,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { orderId } = event.payload as { orderId: string };
     const desenlace = await financialRepo.voidByOrderId(orderId, event.businessId);
-    registrarDesenlace(event, 'financial:order.cancelled', orderId, desenlace);
+
+    // Rama ESTRECHA: sólo cuando el único rechazo es `CARGO_CON_COMPROBANTE_VIVO`.
+    // Con cualquier otro rechazo (`ORDEN_INEXISTENTE`, `ESTADO_DESCONOCIDO`,
+    // ...) no se consulta la clasificación y `registrarDesenlace` lo trata
+    // como siempre. Para el 99% de las cancelaciones (sin factura viva)
+    // `voidByOrderId` devuelve `APLICADO`/`NADA_QUE_HACER` y esto ni corre.
+    let comprobanteReconciliado = false;
+    if (
+      desenlace.tipo === 'RECHAZADO'
+      && desenlace.rechazos.length === 1
+      && desenlace.rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'
+    ) {
+      try {
+        comprobanteReconciliado =
+          (await invoiceRepo.classifyOrderLiveInvoice(db, orderId)) === 'RECONCILED';
+      } catch (err) {
+        // Fail-closed: si la clasificación falla (error técnico), NO se
+        // degrada -- queda `grave`. El ruido de log es más barato que una
+        // anomalía de integridad silenciada.
+        comprobanteReconciliado = false;
+        logger.warn(
+          { tenant: event.businessId, orderId, err: err instanceof Error ? err.message : String(err) },
+          '[outbox] classifyOrderLiveInvoice falló -- se mantiene grave',
+        );
+      }
+    }
+
+    registrarDesenlace(event, 'financial:order.cancelled', orderId, desenlace, { comprobanteReconciliado });
   };
 }

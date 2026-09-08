@@ -281,7 +281,7 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
 
     // Y anular sí funciona cuando la orden está CANCELLED.
     await service.getOrder(id);
-    await handleOrderCancelled(financialRepo)(await eventoReal(id, 'order.cancelled'));
+    await handleOrderCancelled(financialRepo, new SqlInvoiceRepository(db), db)(await eventoReal(id, 'order.cancelled'));
   });
 
   it('O2I-08: ORDER-06 — no se anula el cargo de una orden que NO está cancelada', async () => {
@@ -295,7 +295,7 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
 
     // Un order.cancelled viejo o duplicado sobre una orden COMPLETED y
     // cobrada: antes lo anulaba igual.
-    await handleOrderCancelled(financialRepo)({
+    await handleOrderCancelled(financialRepo, new SqlInvoiceRepository(db), db)({
       ...(await eventoReal(id, 'order.completed')), eventType: 'order.cancelled',
     });
 

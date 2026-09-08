@@ -182,6 +182,51 @@ export interface InvoiceRepository {
    * Orden y unicidad no garantizados — el caller compara como conjunto.
    */
   getChargeIdsForInvoice(invoiceId: string): Promise<string[]>;
+  /**
+   * ADR común cancelar-con-NC — sub-bloque 5 (b). Clasifica el estado
+   * "comprobante fiscal vivo" de una ORDEN ya `CANCELLED`, para que
+   * `handleOrderCancelled` decida si el rechazo `CARGO_CON_COMPROBANTE_VIVO`
+   * de `voidByOrderId()` es una **anomalía de integridad** (`grave`) o el
+   * **estado esperado** de un escape reconciliado (`info`).
+   *
+   * `'RECONCILED'` ⟺ **las DOS condiciones**:
+   *  1. (fiscal — el ancla, `cancel-with-credit-note.ts:63-70`) toda Factura B
+   *     (`cbte_tipo = 6`) `ISSUED` ligada a un CHARGE de la orden está
+   *     **totalmente compensada** por Notas de Crédito `ISSUED`
+   *     (`isInvoiceFullyCompensatedByIssuedCreditNotes()` +
+   *     `getIssuedCreditNoteCompensationTotal()` — F4, reusado verbatim, sin
+   *     SQL de compensación nuevo);
+   *  2. (ledger — conjunción que sólo ESTRECHA, nunca invierte la doctrina)
+   *     toda fila revertidora de esas facturas
+   *     (`financial_transactions.reversed_invoice_id IN (...)`,
+   *     `type IN ('REFUND','ADJUSTMENT')`) está en `status = 'SETTLED'`, y hay
+   *     al menos una — un `ADJUSTMENT` `PENDING` (tx2 sin commitear) NO netea
+   *     el saldo del cliente (`invoice.repository.ts:57-58`: outstanding cuenta
+   *     sólo `SETTLED`), así que "cubierto fiscalmente" no basta.
+   *
+   * `'NOT_RECONCILED'` en todo lo demás — **fail-closed**: Factura B sin
+   * compensar del todo, compensación parcial, comprobante `PENDING`/
+   * `FAILED_UNCERTAIN` con `afip_contacted` (CAE en vuelo, todavía sin NC),
+   * fila revertidora `PENDING`, cero filas revertidoras, o cero Factura B
+   * `ISSUED`. NO se pregunta "¿vino del escape?" — se pregunta si el
+   * comprobante vivo está cubierto por otro comprobante Y el ledger cerró;
+   * una tercera puerta futura que llegue a `CANCELLED` sin emitir su NC sigue
+   * dando `NOT_RECONCILED` → `grave`.
+   *
+   * Doctrina ya grondeada contra ERPNext + Odoo 19 (commit `af2b2b5`,
+   * `docs/pendientes-2026-09-06.md` ítem 5): ninguna referencia revierte el
+   * asiento de la factura original al cancelar el documento de venta — los dos
+   * asientos quedan en pie neteados; que `voidByOrderId()` se niegue a anular
+   * el par `CHARGE`/`ADJUSTMENT` `SETTLED` es LO CORRECTO, lo único mal
+   * clasificado es la severidad.
+   *
+   * Recibe `client` (mismo criterio que `getIssuedCreditNoteCompensationTotal`):
+   * `handleOrderCancelled` no abre transacción, le pasa el `SqlClient` crudo
+   * del tenant. **Lectura sin lock** — una emisión de NC concurrente podría
+   * dejar la clasificación vieja; para un nivel de log es tolerable y el
+   * próximo evento de esa orden la re-evalúa.
+   */
+  classifyOrderLiveInvoice(client: SqlClient, orderId: string): Promise<'RECONCILED' | 'NOT_RECONCILED'>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   handleOrderConfirmed,
   handleOrderCompleted,
@@ -7,7 +7,15 @@ import {
   handleReservationPriceAdjusted,
   handleReservationCancelled,
 } from './outbox.handlers.js';
+import { logger } from '../logger.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
+
+// sub-bloque 5 (b) -- el test negativo tiene que OBSERVAR la severidad del
+// log (info vs error), que es el cambio. Mismo patrón que
+// module.middleware.test.ts / email.sender.test.ts.
+vi.mock('../logger.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 import type {
   FinancialTransaction,
   FinancialTransactionRepository,
@@ -268,15 +276,81 @@ describe('outbox.handlers — Order (O2)', () => {
   });
 
   describe('handleOrderCancelled — anulación gobernada por estado', () => {
+    // sub-bloque 5 (b): `handleOrderCancelled` ahora recibe `invoiceRepo` + `db`.
+    // `classifyOrderLiveInvoice` configurable por test; NOT_RECONCILED por defecto
+    // (fail-closed).
+    let clasificacion: 'RECONCILED' | 'NOT_RECONCILED' | Error;
+    const fakeInvoiceRepo = {
+      classifyOrderLiveInvoice: vi.fn(async () => {
+        if (clasificacion instanceof Error) throw clasificacion;
+        return clasificacion;
+      }),
+    };
+    const fakeDb = {} as SqlClient;
+    const cancelar = () => handleOrderCancelled(financialRepo, fakeInvoiceRepo, fakeDb);
+
+    beforeEach(() => {
+      clasificacion = 'NOT_RECONCILED';
+      fakeInvoiceRepo.classifyOrderLiveInvoice.mockClear();
+      vi.mocked(logger.info).mockClear();
+      vi.mocked(logger.warn).mockClear();
+      vi.mocked(logger.error).mockClear();
+    });
+
     it('O2H-17: anula pasando orderId y businessId', async () => {
-      await handleOrderCancelled(financialRepo)(fakeEvent({ orderId: 'order-1' }));
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
       expect(financialRepo.voidLlamadas).toEqual([['order-1', 'biz-test']]);
     });
 
     it('O2H-18: un RECHAZADO por estado de la orden no lanza (ORDER-06)', async () => {
       financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['ORDEN_ESTADO_NO_ELEGIBLE'] };
-      await expect(handleOrderCancelled(financialRepo)(fakeEvent({ orderId: 'order-1' })))
+      await expect(cancelar()(fakeEvent({ orderId: 'order-1' })))
         .resolves.toBeUndefined();
+    });
+
+    // ─── sub-bloque 5 (b) ────────────────────────────────────────────────
+    it('(b) rechazo distinto de CARGO_CON_COMPROBANTE_VIVO -> NO consulta la clasificación', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['ESTADO_DESCONOCIDO'] };
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(fakeInvoiceRepo.classifyOrderLiveInvoice).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('(b) escape reconciliado (RECONCILED) -> logger.info reconciliado, NO error', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
+      clasificacion = 'RECONCILED';
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(fakeInvoiceRepo.classifyOrderLiveInvoice).toHaveBeenCalledWith(fakeDb, 'order-1');
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+        expect.stringContaining('reconciliado por Nota de Crédito'),
+      );
+    });
+
+    it('(b) NEGATIVO -- orden a CANCELLED con Factura B viva SIN NC (NOT_RECONCILED) -> sigue grave', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
+      clasificacion = 'NOT_RECONCILED';
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    });
+
+    it('(b) la clasificación tira -> fail-closed: logger.warn del fallo + sigue grave', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
+      clasificacion = new Error('conexión caída');
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: 'order-1' }),
+        expect.stringContaining('se mantiene grave'),
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('anomalía de integridad'),
+      );
     });
   });
 });

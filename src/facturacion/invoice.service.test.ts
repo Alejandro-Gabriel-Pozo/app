@@ -104,6 +104,8 @@ class FakeInvoiceRepository implements InvoiceRepository {
     }
     return [...ids];
   }
+  // ADR común cancelar-con-NC sub-bloque 5 (b) -- sin caller en InvoiceService.
+  async classifyOrderLiveInvoice(): Promise<'RECONCILED' | 'NOT_RECONCILED'> { return 'NOT_RECONCILED'; }
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
     const updated: Invoice = {
