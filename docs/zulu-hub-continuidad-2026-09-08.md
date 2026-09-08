@@ -1,6 +1,11 @@
 # ZULU Hub — Continuidad operativa
 
-- **Fecha de corte:** 2026-09-08, después del push de `588c459` (ver §1).
+- **Fecha de corte:** 2026-09-08, después del push de `9b651f2` (ver §1).
+  **Segundo corte del mismo día** — este documento ya existía con corte en
+  `588c459` (9 commits atrás); se actualiza IN-PLACE, no se crea uno nuevo
+  (misma fecha calendario). Si estás retomando desde acá: la sección "Próximo
+  bloque" (§4) más vieja recomendaba 1.4/2.1 — **los dos ya están cerrados**.
+  No los reabras. El próximo bloque real está en §4, reescrita.
 - **Reemplaza a:** `docs/zulu-hub-continuidad-2026-09-07.md` (arco ORDER-13/O5
   dead-letter + sub-bloque 5 del ADR "cancelar con NC" + triage de seguridad
   07/09). Ese documento sigue siendo **historia válida de ese arco** — y su §2
@@ -24,19 +29,25 @@
 
 | Repo | `origin/main` | En producción |
 |---|---|---|
-| `app-main` | **`588c459`** | **Desplegado y live.** Deploy Render `dep-dag1hbbbc2fs73dp7uq0` (08/09 14:17 UTC `status: live`, trigger `new_commit`). Servicio `srv-d8tdt41kh4rs73buo5ng` (slug `app-chny`, `app-chny.onrender.com`). **Schema de tenant: v47** — lo landeó el bloque 1.1 (`3bcf5ab`, deploy `dep-daftmg15efls73b7jon0` el 08/09): CHECK `chk_financial_transactions_reversed_invoice_type` (`schema.sql:3023-3025` — `:3023` es el `DROP … IF EXISTS`, el predicado `reversed_invoice_id IS NULL OR type IN ('REFUND','ADJUSTMENT')` en `:3024-3025`). **Verificado en producción el 08/09 al cerrar 1.1** (contra `dep-daftmg15efls73b7jon0`): `migrate:tenants` → "migrado a v47" en las 2 tenants (biz-demo-01 + Hotel los Alamos), `pg_get_constraintdef` = la def esperada, 0 filas no conformes, `schema_migrations MAX = 47`, `businesses.schema_version = 47`. **No re-verificado en este corte** — ninguna query nueva contra Neon. Segundo pie independiente: `render.yaml:33` encadena `… && npm run build && npm run migrate:tenants` y un `migrate:tenants` que falla tumba el build (R15), así que `dep-dag1hbbbc2fs73dp7uq0` `live` sobre `588c459` implica que `migrate:tenants` re-aplicó v47 sin error el 08/09 14:17 UTC (no prueba el valor por-tenant de `businesses.schema_version` hoy, pero sí que la migración corrió). Deploys posteriores a 1.1 son **doc-only**. |
-| `appfrontend-main` | `613c206` | Vercel `reservasapp` · `host.zuluhub.com.ar`. **No tocado en este arco** salvo lectura. Pendientes de frontend: (1) consumir `description`/`kind` de `GET /api/system/outbox/dead-letter` (ORDER-13/O5); (2) **`EMISOR_NOTA_CREDITO` no existe en ningún catálogo de roles del panel** (0 hits en `613c206`) — el permiso de emitir NC fiscal no se puede otorgar a un rol custom, revocar ni ver; fail-safe (los presets lo llevan, no se pierde en el save), pero hueco de governance vivo. Bloque 5.1 del plan. |
+| `app-main` | **`9b651f2`** | **Desplegado y live — verificado directo contra Render (MCP `list_deploys`, no inferido).** Deploy `dep-dag68sgae00c738gtt20`, `status: live`, `trigger: new_commit`, commit `9b651f2` (coincide exacto con `origin/main`). Servicio `srv-d8tdt41kh4rs73buo5ng` (slug `app-chny`, `app-chny.onrender.com`), workspace Render `tea-d8tdiu6q1p3s7399ped0`. **Schema de tenant: v47, sin cambio** desde el bloque 1.1 (nada de lo que aterrizó hoy — 2.1/2.2/2.4/3.1 — toca `CURRENT_SCHEMA_VERSION`, todos declarados "sin schema"). Los 9 commits entre `588c459` y `9b651f2` son bloques 2.1, gate 2.2 (HOLD), bloque 2.4 (tope N5), bloque 3.1 (UNION + fail-closed reservas) + sus commits de documentación — ver §2. |
+| `appfrontend-main` | `613c206` | Vercel `reservasapp` · `host.zuluhub.com.ar`. **No tocado en este arco** salvo lectura. Pendientes de frontend sin cambio: (1) consumir `description`/`kind` de `GET /api/system/outbox/dead-letter` (ORDER-13/O5); (2) **`EMISOR_NOTA_CREDITO` no existe en ningún catálogo de roles del panel** (0 hits en `613c206`) — el permiso de emitir NC fiscal no se puede otorgar a un rol custom, revocar ni ver; fail-safe (los presets lo llevan, no se pierde en el save), pero hueco de governance vivo. Bloque 5.1 del plan. |
 
-> Verificar siempre contra `git ls-remote origin refs/heads/main`, no contra
-> esta tabla. CI del push de `588c459` (run `34237181544`): **5/5 verde**
-> (lint · schema-version-check · test · integration · typecheck).
-> **Nota:** el job `test` carga el defecto determinístico de borde-de-hora
-> exacto de `src/tests/domain/reservation.cancel-confirmed.test.ts:77-81`
-> (`msFromNow()` y el default `now = Date.now()` de `canCancelConfirmed` leen el
-> reloj dos veces; `Math.floor(3599999/3600000) = 0` → `expected +0 to be 1`).
-> Sólo dispara cuando el reloj cruza el borde entre las dos lecturas; un rojo
-> ahí en un commit doc-only es ese defecto, no una regresión. Hermanos latentes
-> `:57-67`. Bloque propio (ver `pendientes-2026-09-08.md`).
+> Verificar siempre contra `git ls-remote origin refs/heads/main` y, para el
+> deploy, contra Render directo (`mcp__render__list_deploys`) — no contra esta
+> tabla ni contra `/health` (fail-soft, nunca 503 por versión de schema
+> desalineada, `tenant.middleware.ts:83-97`). **CI de los 9 commits de este
+> arco: no re-verificado corrida por corrida en este corte** — la última
+> corrida confirmada 5/5 fue la de `588c459` (run `34237181544`); todos los
+> commits posteriores pasaron por el mismo pipeline sin que el usuario
+> reportara fallas, pero eso es inferencia, no una consulta a GitHub Actions.
+> **Nota persistente:** el job `test` puede cargar el defecto determinístico
+> de borde-de-hora exacto de
+> `src/tests/domain/reservation.cancel-confirmed.test.ts:77-81` (`msFromNow()`
+> y el default `now = Date.now()` de `canCancelConfirmed` leen el reloj dos
+> veces; `Math.floor(3599999/3600000) = 0` → `expected +0 to be 1`). Sólo
+> dispara cuando el reloj cruza el borde entre las dos lecturas; un rojo ahí
+> en un commit que no tocó ese archivo es ese defecto, no una regresión.
+> Hermanos latentes `:57-67`. Sigue sin su propio bloque — ver §3.
 
 **Respaldo Neon** — branch `respaldo-pre-v47-demo-2026-09-08`
 (`br-steep-sunset-axxvv9il`, proyecto `ancient-king-17098519`), snapshot
@@ -50,6 +61,17 @@ Ramas de ensayo (`ensayo-v47-2026-09-08`, `br-morning-math-axljb1yc`) borrables
 al cerrar; `test-integration-db` (`br-bold-cell-axuvmork`) es la que usa una
 corrida local de `npm run test:integration` sin Docker (CI usa
 `postgres:16-alpine`, no Neon).
+
+**Neon vía MCP — conectado en este corte (08/09), IDs para no re-descubrir:**
+org `org-bold-unit-53932069`, proyecto tenants `ancient-king-17098519`
+(DB-APP-PPMS, contiene `production`=Demo `br-snowy-tree-ax5wmq70` y
+`tenant-hotel-los-alamos` `br-square-leaf-axzvu903`), proyecto plataforma
+`morning-unit-50056927` (pdb-ppms, sin explorar todavía — no se tocó en este
+arco). La sesión de OAuth es del cliente MCP, no queda un secreto en el repo
+— una sesión nueva probablemente necesita reautorizar (`neon` skill →
+autenticación) salvo que el token siga vivo del lado del cliente. Usado en
+este arco solo para SELECT read-only (evidencia C7 del bloque 3.1) — nunca
+para escribir contra producción.
 
 ---
 
@@ -67,7 +89,12 @@ en `docs/plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md` y en
 | **1.1** | CHECK `chk_financial_transactions_reversed_invoice_type` — **schema v46→v47** | `3bcf5ab` (+ docs `582f3b4`, `0a5be98`) | **en prod, verificado** |
 | **1.2** | Cerca de arquitectura capa (iv): `credit-note-escape-containment.test.ts` (`CN-ESCAPE-CONTAINMENT-001`) — 5 aserciones (deny-by-default de imports del núcleo; tabla de 2 chokepoints; firmas congeladas; lista negra de flags; `authorize` de cada ruta de escape). 7 FN, 6 mutaciones. `CLAUDE.md` → **quinta cerca RBAC** | `f62278f` + docs `c519d98`, `f86dd66`, `7cf460e` | en prod |
 | **1.3** | Test del arqueo: `getCashMovementsTotal` idéntico antes/después del escape; CHARGE `SETTLED` sin `shift_id`/`payment_method` (N1.a i). 2 mutaciones probadas | `58edf91` + docs `2839beb` | en prod |
-| **Gate final B-núcleo+órdenes** | `architecture-governor` APROBADO CON CONDICIONES. 4 correcciones al mapeo de las 7 condiciones del re-gate (ver `pendientes-2026-09-08.md` §"B-núcleo+órdenes — CERRADO") | `588c459` | **en prod** |
+| **Gate final B-núcleo+órdenes** | `architecture-governor` APROBADO CON CONDICIONES. 4 correcciones al mapeo de las 7 condiciones del re-gate (ver `pendientes-2026-09-08.md` §"B-núcleo+órdenes — CERRADO") | `588c459` | en prod |
+| **2.1** | `GET /api/invoices?status=` — 80% del valor de B3 (localizar caso trabado) sin schema. `InvoiceRepository.getByStatus()`, mismo `authorize(FRONT_DESK)` | `fc809dc` | en prod |
+| **Gate 2.2** | Decisión `credit_note_request` sí/no → **HOLD** (no se construye). Casi todo el set de campos es derivable de `invoices`; `resolved_by` sin consumidor real; índice único propuesto rompía pool mixto. 3 gatillos de reapertura declarados (ADR §6.5/§10 fila 1) | `746553c` | en prod (doc-only) |
+| **2.4** | Tope N5 — `getInFlightCreditNoteTotalForUpdate()` + guard en `buildCreditNote()`, `CreditNoteCapExceededError` (409). Sin tabla nueva (superó al gate 2.2). 17 tests de integración + 5 mutaciones. F4 sin tocar | `836afe5`+`8dde715` | en prod |
+| **3.1** | `getByReservationId()` UNION (ciega a consolidadas → ya no) + fail-closed en `confirmRefund()` (`ReservationOnConsolidatedInvoiceError`, 409, todo-o-nada). 5 caracterizaciones reescritas + 2 dedup + 3 unitarios + 4 mutaciones. C7 (query read-only de producción, 0 filas en las 2 tenants) verificada vía Neon MCP antes de pushear | `c32ad6d`+`d7d1cb8`+`3525bde` | en prod |
+| Higiene | 2 renglones stale post-push (header #22, línea de arrastre B-reservas) | `9b651f2` | en prod (doc-only) |
 
 **Estado definitivo de las 7 condiciones del re-gate (ADR §10):** 1 (por
 corrida de regresión `ad4d236`, no test dedicado), 2, 3 (las dos mitades:
@@ -87,26 +114,24 @@ reciente; se lee al empezar cada conversación; arrastra el detalle de
 (no se lee automáticamente).
 
 Bloque grande abierto: **ADR común "cancelar con NC"** — B-núcleo+órdenes
-cerrado; falta el resto del plan:
+cerrado; **Fase 1 y Fase 2 cerradas hoy**; Fase 3 (B-reservas) en curso:
 
-- **Fase 1 (resto):** 1.4 (`cbte_tipo` en las dos ramas del `UNION ALL` de la
-  subquery `nc` de F4 + sacar el comentario stale de
-  `sql.invoice.repository.ts:317-318` que contradice el ADR N2.a), 1.5 (4 filas
-  de deuda de `ef27e42`). Los dos sin schema.
-- **Fase 2 (corregida 08/09/2026, gate `architecture-governor` bloque 2.2):**
-  `?status=` en `GET /api/invoices` (#4a) ✅ RESUELTO (`fc809dc`). Fila-solicitud
-  `credit_note_request` (#4b) — **HOLD**, no se construye (ver ADR §6.5/§10
-  fila 1, 3 gatillos de reapertura). Tope N5 (#21, recaracterizado — no es
-  "fail-open fiscal" activo, ver `pendientes-2026-09-08.md` #21) se
-  implementa contra la fila `invoices` existente, sin tabla nueva, y sigue
-  teniendo que aterrizar antes del bloque 3.1 (B-reservas).
-- **Fase 3:** B-reservas (`getByReservationId()` UNION + fail-closed + 5
-  caracterizaciones + subcasos directa/consolidada + pool mixto +
-  `EXPIRED-FACT-01`; acá F4 sí se cablea y las condiciones 5/7 del re-gate
-  vuelven a tener contenido).
-- **Fase 4:** outbox (#11-16, #18).
+- ~~**Fase 1 (resto):** 1.4, 1.5~~ ✅ CERRADA — ya estaba hecha antes de este
+  corte (`94ac18e`, `3608edf`+`84efea9`).
+- ~~**Fase 2:**~~ ✅ CERRADA hoy. `?status=` (#4a, `fc809dc`). `credit_note_request`
+  (#4b) — **HOLD**, no se construye (ADR §6.5/§10 fila 1, 3 gatillos de
+  reapertura). Tope N5 (#21, `836afe5`+`8dde715`) contra `invoices` directo,
+  sin tabla nueva.
+- **Fase 3 — B-reservas, EN CURSO.** 3.1 (`getByReservationId()` UNION +
+  fail-closed) ✅ CERRADA hoy (`c32ad6d` — ver §2). **Siguen abiertos, en este
+  orden** (`docs/plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`
+  FASE 3): 3.2-pre (análisis, sin código) → 3.2-bis → 3.2 (riesgo alto) → 3.3
+  (schema v48→v49, orquestador, **riesgo más alto del plan**) → 3.4/3.5
+  (esperan decisión del dueño). Detalle completo en §4 — **no lo repitas de
+  memoria, esta tabla es la que hay que leer primero**.
+- **Fase 4:** outbox (#11-16, #18) — sin tocar.
 - **Fase 5:** frontend `appfrontend-main` (commits aparte) — incl. **5.1**
-  (`EMISOR_NOTA_CREDITO` invisible en el panel).
+  (`EMISOR_NOTA_CREDITO` invisible en el panel) — sin tocar.
 
 Otros abiertos (**no exhaustivo** — la lista completa está en
 `pendientes-2026-09-08.md`): SEC-ROT-001 código (modo 2 claves en
@@ -125,25 +150,37 @@ Detalle: `pendientes-2026-09-06.md:1055-1076`.
 
 ---
 
-## 4. Próximo bloque — decisiones separadas, ninguna autorizada
+## 4. Próximo bloque — el ÚNICO entry point válido, decisiones separadas, ninguna autorizada
 
-Primero **esta nota de continuidad** (bloque propio, ya hecho). Después **un**
-bloque de implementación, no los dos:
+**Todo lo que este documento recomendaba antes de este corte (1.4, 2.1) ya
+está cerrado.** No los reabras, no los re-derives, no vuelvas a pedirle a
+`auditor-circuitos-erp`/`architecture-governor` que los revise — son parte de
+`origin/main`, verificado en §2. Si algo de esta sección contradice
+`docs/plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md` FASE 3,
+**gana el plan** — esta tabla es un resumen, no la fuente.
 
-| Bloque | Qué | Precondición |
+El orden de FASE 3 (B-reservas) que sigue, con lo que cada uno precisa ANTES
+de arrancar:
+
+| Bloque | Qué | Precondición / riesgo |
 |---|---|---|
-| **1.4** — 3-ter `cbte_tipo` | Filtrar las **dos** ramas del `UNION ALL` de la subquery `nc` de `getIssuedCreditNoteCompensationTotal` con `= ANY(CBTE_TIPOS_NOTA_CREDITO)` (constante nueva en `afip-catalog.constants.ts`, **no** `= 8` literal) + test que ate el routing de `invoice.service.ts:357` + **sacar el comentario stale de `sql.invoice.repository.ts:317-318`** (dice "bloqueante de B-reservas"; el ADR N2.a lo resolvió como doctrina NC↔factura 1:1). Sin schema. | — |
-| **2.1** — `?status=` en `GET /api/invoices` | Cierra la mitad operativa de la ceguera D1 (`MID-LOG-001` ya shippeó la mitad de logging en `df07bdf`; falta "ninguna pantalla"). | **CLAUDE.md regla 5 / incidente D6:** verificar que el rol que opera la bandeja puede leer ese endpoint — chequear su `authorize(Roles.X)` contra los presets de `platform.schema.sql` **antes de tocar código**. Interactúa con 5.1 (el panel no puede mostrar quién tiene `EMISOR_NOTA_CREDITO`). |
+| **3.2-pre** — `POOL-STARV-001` dimensionado | Análisis, **sin código**: cuántas conexiones del pool `max:5` sostiene `confirmRefund()` hoy (el plan estima 3-4, sin medir). Es el punto de entrada más chico y más seguro — arrancar sesión con esto. | Ninguna. |
+| **3.2-bis** — `REFUND-INT-GUARD-001` | Test-decorator que commitea un `PAYMENT` interferente en la ventana `:245 → guard` de `confirmRefund()`. Prueba 3 cosas hoy INFERIDAS, no medidas: el guard dispara, el rollback es real, el aislamiento pool-vs-`client` se sostiene. | Va **antes** de 3.2 — es lo que valida el mecanismo que 3.2 va a reusar. |
+| **3.2** — Lock de reserva (B-1 + N10), diseñados JUNTOS | Mismo lock sobre `reservations` cierra el residual B-1 (ver `pendientes-2026-09-06.md`) Y sirve de base para `cancelReservationWithCreditNote()`. `lock-order.test.ts` actualizado en el mismo commit. Criterio de cierre: 2 tx concurrentes reales, un ganador, un perdedor con error tipado reintentable, cero filas parciales. | **Riesgo alto** (dice el plan explícitamente) — pasar por gate de diseño ANTES de escribir código, mismo patrón que 2.2/2.4/3.1 de este arco. |
+| **3.3** — `cancelReservationWithCreditNote()`, subcasos 1-2 + W2 + F4 cableado | El orquestador real (análogo a `CancelOrderWithCreditNoteService`), en `src/facturacion/`. W2: la contraparte del REFUND es el titular del documento revertido, NO el huésped (`cancellation-refund.service.ts:271` hoy lo asienta contra el huésped — mueve saldo entre cuentas corrientes, decisión de negocio ya tomada, falta cablearla). Acá la condición 5 del re-gate de B-núcleo+órdenes deja de ser vacua. | **Schema v48→v49** (índice de §6.5) + **⛔ esperar `auditor-circuitos-erp`** para los subcasos. **Riesgo más alto de todo el plan.** |
+| **3.4** — `EXPIRED-FACT-01` | `reservation-hold-expiry.worker.ts:121-122` expira una reserva sin guard de facturación. 3 opciones (no expira / expira+bandeja / escape automático). | **⛔ decisión del dueño** (§10 fila 3 del ADR) — no hay grounding que falte, hay que preguntarle. |
+| **3.5** — Pool mixto (subcaso 3) | Reserva con parte facturada directa + parte en consolidada. | **⛔ decisión del dueño** (§10 fila 2) — fan-out automático vs. resolución manual factura por factura. |
 
-`#21` (tope N5) **no** puede ir antes de B3-schema: el plan 2.4 lo exige bajo
-lock / con el monto congelado del 2.3; correrlo antes es un `SELECT`-luego-`INSERT`
-pelado que el 2.4 prohíbe.
+**Recomendación de arranque:** 3.2-pre. Es análisis puro (sin tocar código de
+producción), da el insumo real que 3.2 necesita, y no exige gate de diseño
+previo — se puede arrancar la sesión con eso sin esperar nada del dueño ni
+del auditor.
 
-Fuera de la elección 1.4/2.1: **arreglar
+Fuera de FASE 3: **arreglar
 `src/tests/domain/reservation.cancel-confirmed.test.ts`** (bordes de hora
-exactos, defecto determinístico — ver §1 y `pendientes-2026-09-08.md`) es su
-propio bloque chico, test-only; y la **nota de continuidad supersedida** ya
-está cerrada con este documento.
+exactos, defecto determinístico — ver §1 y `pendientes-2026-09-08.md`) sigue
+siendo su propio bloque chico, test-only, sin dependencias — se puede intercalar
+en cualquier momento.
 
 ---
 
