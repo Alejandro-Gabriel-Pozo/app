@@ -573,12 +573,59 @@ contra Postgres real, camino `REFUND` no regresionado.
      Moverlos a `src/domain/errors.ts` (donde vive el resto de los
      `DomainError`) y re-exportarlos desde `order.service.ts` para no romper
      los ~6 call-sites que ya los importan de ahí.
-5. Reconciliación del residual #3 en `registrarDesenlace()` (`outbox.handlers.ts:237`,
-   invocado desde `:161`/`:334`/`:380`/`:390`) + **cerca de convención**
-   (condición 3: ninguna fila con `reversed_invoice_id IS NOT NULL AND type
-   NOT IN ('REFUND','ADJUSTMENT')`, patrón `lock-order.test.ts` con falsos
-   negativos declarados). (Texto de `OrderChargeInvoicedError` A1 — YA hecho
-   en el sub-bloque 4.)
+5. **Reconciliación del residual #3 en `registrarDesenlace()` — ✅ RESUELTO
+   (`20366b1`, 07/09/2026, `architecture-governor` APROBADO).** Era la parte
+   (b). El handler `handleOrderCancelled` (worker — único punto que puede
+   cablear facturación + clientes-finanzas) clasifica el
+   `CARGO_CON_COMPROBANTE_VIVO` post-escape con
+   `InvoiceRepository.classifyOrderLiveInvoice(client, orderId)` (nuevo):
+   `'RECONCILED'` sólo si **(1)** toda Factura B `ISSUED` ligada a un CHARGE de
+   la orden está totalmente compensada por NC `ISSUED` (F4 reusado verbatim,
+   sin SQL de compensación nuevo — ancla al comprobante,
+   `cancel-with-credit-note.ts:63-70`) **Y (2)** ≥1 fila revertidora y TODAS
+   `SETTLED` (conjunción del ledger — un `ADJUSTMENT` `PENDING` no netea el
+   saldo del cliente). Todo lo demás → `'NOT_RECONCILED'` fail-closed (incluye
+   una 3ª puerta futura que llegue a `CANCELLED` sin emitir su NC completa →
+   sigue `grave`). `registrarDesenlace` gana un 5º parámetro opcional
+   `{ comprobanteReconciliado }` (sólo lo pasa `handleOrderCancelled`; los
+   otros 3 callers sin cambio); `grave` pasa a `grave && !opts?.…`; rama de
+   log propia `logger.info` con `causa: ['CARGO_CON_COMPROBANTE_VIVO'],
+   reconciliado: true`. `voidByOrderId` / `rechazosDe()` / `EfectoRechazo` /
+   `src/clientes-finanzas/` **no se tocaron**. Doctrina grondeada contra
+   ERPNext + Odoo (`af2b2b5`): los dos asientos quedan en pie neteados, que
+   `voidByOrderId` se niegue a anular el par SETTLED es correcto, lo único mal
+   clasificado era la severidad.
+   - **Límite declarado:** los 6 tests de integración
+     (`cancel-order-with-credit-note.integration.test.ts` 6/6 +
+     `credit-note-compensation.integration.test.ts` 7/7) corrieron **contra
+     Neon** (`ep-hidden-wave-axxsxf91`), NO contra Postgres local — no había
+     Postgres local en la sesión. El veredicto "sin flake" de
+     `credit-note-compensation` **sólo queda firme con el job `integration` de
+     CI** (`postgres:16-alpine`), que corre al pushear. Rollback si CI se pone
+     rojo: `git revert 20366b1` (sin schema, sin datos, sin migración).
+
+   **Falta de este ítem: la parte (c) — cerca de convención** (condición 3 del
+   re-gate: ninguna fila con `reversed_invoice_id IS NOT NULL AND type NOT IN
+   ('REFUND','ADJUSTMENT')`, patrón `lock-order.test.ts` con falsos negativos
+   declarados). Bloque propio, a gate con diseño. (Texto de
+   `OrderChargeInvoicedError` A1 — YA hecho en el sub-bloque 4.)
+
+   - **3-ter (deuda declarada, `architecture-governor` gate de (a), se cayó
+     entre gates y se registra acá):** la subquery `nc` de
+     `InvoiceRepository.getIssuedCreditNoteCompensationTotal()`
+     (`sql.invoice.repository.ts:318-329`) **no filtra por `cbte_tipo`** —
+     selecciona de `invoices` sin restricción de tipo de comprobante. Sólo es
+     correcta porque el routing de `invoice.service.ts:357`
+     (`tx.type === 'REFUND' || 'ADJUSTMENT' → buildCreditNote`) garantiza que
+     una FT revertidora no puede recibir otra cosa que una NC. **Acople entre
+     dos archivos sin ningún test que lo ate** (mismo riesgo que el comentario
+     de `:280-283` ya declara para el alineamiento con `resolveInvoiceLinkage`).
+     `20366b1` lo vuelve más visible: `classifyOrderLiveInvoice`
+     (`sql.invoice.repository.ts`, mismo archivo) **sí** filtra
+     `i.cbte_tipo = CBTE_TIPO_FACTURA_B` — dos queries adyacentes con filtrado
+     asimétrico. Arreglo: agregar `AND i.cbte_tipo = CBTE_TIPO_NOTA_CREDITO_B`
+     a la subquery `nc`, o un test que ate el invariante del routing. Bloque
+     propio, no bloquea.
 
    **F4 cableado en `findBlockingInvoiceLinkage()` del lado órdenes — ✅ CERRADO
    SIN CABLEAR (07/09/2026, `architecture-governor` APROBADO camino 1).** Era
