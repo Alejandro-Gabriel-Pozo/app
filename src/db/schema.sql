@@ -2989,6 +2989,41 @@ CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_i
 ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS reversed_invoice_id VARCHAR(255)
   REFERENCES invoices(id);
 
+-- schema v47 (08/09/2026, ADR común cancelar-con-NC — condición 3 del re-gate
+-- §10, "mitad de datos"; plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md
+-- bloque 1.1). `reversed_invoice_id` significa "esta fila revierte la factura X",
+-- y sólo `REFUND` (reembolso de reserva, CancellationRefundService) y
+-- `ADJUSTMENT` (escape de cancelación de orden, CancelOrderWithCreditNoteService)
+-- lo hacen. `CHARGE`/`PAYMENT` usan `settled_invoice_id` o nada. La whitelist
+-- `r.type IN ('REFUND','ADJUSTMENT')` de F4
+-- (InvoiceRepository.getIssuedCreditNoteCompensationTotal) y N1.b sólo es
+-- correcta si ninguna fila con `reversed_invoice_id` cae fuera de ese conjunto;
+-- hasta hoy sólo lo garantizaba una cerca estática
+-- (reversed-invoice-id-convention.test.ts — "mitad de código"). Este CHECK
+-- cierra la mitad de datos: un `UPDATE` en SQL crudo, una migración o un
+-- backfill ya no pueden crear la fila prohibida.
+--
+-- Verificado el 08/09/2026 contra las dos tenants de producción: 0 filas con
+-- `reversed_invoice_id IS NOT NULL` (Demo 20 FT / Hotel los Álamos 0) -> el
+-- `ADD CONSTRAINT` es instantáneo, sin validación de filas existentes, sin
+-- backfill. Ventana barata; el costo crece monótono con cada escape real.
+--
+-- Patrón `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` (mismo que
+-- chk_financial_transactions_amount arriba): un ALTER de un CHECK existente no
+-- es "agregar si falta", así que se dropea explícito para que reaplicar
+-- schema.sql sea idempotente.
+--
+-- COSTO RECURRENTE (no solo el backfill inicial): el par DROP+ADD corre en
+-- CADA deploy (schema.sql se reaplica entero), así que `financial_transactions`
+-- se re-valida bajo `ACCESS EXCLUSIVE` cada build, para siempre. Hoy son ~20
+-- filas. `chk_financial_transactions_amount` ya paga lo mismo -- esto duplica
+-- un costo existente, no lo introduce -- pero crece con la tabla que más crece
+-- del modelo. Si algún día pesa, mover a un `<NNN>_*.sql` numerado (que corre
+-- una vez) en vez de reaplicarse.
+ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS chk_financial_transactions_reversed_invoice_type;
+ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_reversed_invoice_type
+  CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND', 'ADJUSTMENT'));
+
 -- ---------------------------------------------------------------------------
 -- afip_tickets (23/08/2026, pendientes-2026-08-23.md -- bug real en
 -- producción confirmado por log de Render): un Ticket de Acceso de WSAA

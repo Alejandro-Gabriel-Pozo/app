@@ -146,9 +146,10 @@ export interface InvoiceRepository {
    *
    * "Compensan" = existe una transacción revertidora `r`
    * (`financial_transactions.reversed_invoice_id = invoiceId`, `type` en
-   * `REFUND`/`ADJUSTMENT` — la whitelist de N1.b, fail-closed ante un tipo
-   * futuro con `reversed_invoice_id` que el schema no impide) cuya PROPIA
-   * factura de NC está `ISSUED`. El vínculo transacción→NC se resuelve con
+   * `REFUND`/`ADJUSTMENT` — la whitelist de N1.b; desde schema v47 el CHECK
+   * `chk_financial_transactions_reversed_invoice_type` la respalda, el filtro
+   * queda como defensa en profundidad fail-closed) cuya PROPIA factura de NC
+   * está `ISSUED`. El vínculo transacción→NC se resuelve con
    * el MISMO `UNION ALL` que `resolveInvoiceLinkage()`: individual
    * (`invoices.financial_transaction_id`) o consolidada (`invoice_charges`).
    *

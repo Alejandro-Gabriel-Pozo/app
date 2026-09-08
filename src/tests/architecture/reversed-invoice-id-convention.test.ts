@@ -20,21 +20,31 @@ const SRC_DIR = join(__dirname, '../..');
  * `sql.invoice.repository.ts`, `AND r.type IN ('REFUND', 'ADJUSTMENT')`) y N1.b
  * usan esa whitelist. Es fail-closed: una fila revertidora con un `type` fuera
  * de la lista NO cuenta como compensación → F4 sub-declara → la cancelación
- * queda bloqueada de más. No es un fail-open, pero igual es incorrecto, y el
- * schema NO impone la convención (`schema.sql:2989-2990`, la columna es
- * `VARCHAR(255) REFERENCES invoices(id)` y nada más — sin CHECK).
+ * queda bloqueada de más. No es un fail-open, pero igual es incorrecto.
+ * Desde **schema v47** (08/09/2026) el CHECK
+ * `chk_financial_transactions_reversed_invoice_type` impone la convención a
+ * nivel base (ver "ALCANCE" abajo); esta cerca cubre la mitad de CÓDIGO.
  *
- * ## ALCANCE — esta cerca cubre la MITAD DE CÓDIGO, no la de datos
+ * ## ALCANCE — esta cerca cubre la MITAD DE CÓDIGO; la de datos la cierra el CHECK
  * La condición 3 del re-gate, textual, pide "ninguna FILA con
  * `reversed_invoice_id IS NOT NULL AND type NOT IN ('REFUND','ADJUSTMENT')`"
  * — una aserción sobre DATOS. Esta cerca es estática: verifica que ningún
  * write site en TypeScript setea `reversedInvoiceId` sobre una fila de
- * `financial_transactions` con un `type` fuera de la whitelist. La mitad de
- * DATOS (un `UPDATE` en SQL crudo, una migración, un backfill) queda ABIERTA
- * — ver FN #3 y FN #6. El cierre completo de la condición 3 es un CHECK de
- * schema (`CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND','ADJUSTMENT'))`),
- * registrado como deuda estructural en `docs/pendientes-2026-09-06.md` (barato
- * hoy: 3-bis midió 0 filas con `reversed_invoice_id` en las dos tenants).
+ * `financial_transactions` con un `type` fuera de la whitelist.
+ *
+ * **La mitad de DATOS la cierra `chk_financial_transactions_reversed_invoice_type`**
+ * (`CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND','ADJUSTMENT'))`,
+ * schema v47, 08/09/2026 — bloque 1.1 del
+ * `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`). Desde ese
+ * CHECK, un `UPDATE` en SQL crudo, una migración o un backfill que intenten
+ * crear la fila prohibida son **rechazados por Postgres** — o sea que el FN #3
+ * ("SQL crudo salta esta cerca") ya no deja pasar el hecho, sólo deja pasar
+ * este test en verde sin haberlo visto. Las dos mitades juntas cubren la
+ * condición 3.
+ *
+ * Esta cerca sigue teniendo valor propio: falla en el commit que introduce el
+ * write site equivocado (feedback en CI, antes del deploy), mientras que el
+ * CHECK sólo se entera cuando la fila intenta entrar en runtime.
  *
  * ## SI ESTO ROMPE
  *  - Un archivo NUEVO escribe `reversedInvoiceId` en una `financial_transactions`.
@@ -57,12 +67,10 @@ const SRC_DIR = join(__dirname, '../..');
  *  2. `type` seteado vía variable (`type: txType` con `txType = 'REFUND'` más
  *     arriba) no matchea el literal — invisible.
  *  3. Un `INSERT`/`UPDATE ... reversed_invoice_id` en SQL CRUDO fuera del
- *     repo, o una migración/backfill, es invisible: esta cerca sólo ve la
- *     capa de object-literal TS. `sql.financial-transaction.repository.ts`
- *     mapea `tx.reversedInvoiceId → columna` fielmente, así que lo que se
- *     ataja acá es un `type` equivocado a nivel ENTIDAD; un
- *     `UPDATE financial_transactions SET reversed_invoice_id = ...` a mano lo
- *     saltea. Esta es la "mitad de datos" que la cerca NO cubre.
+ *     repo, o una migración/backfill, es invisible PARA ESTA CERCA: sólo ve la
+ *     capa de object-literal TS. **Pero desde schema v47 lo ataja el CHECK
+ *     `chk_financial_transactions_reversed_invoice_type`** (ver "ALCANCE"): la
+ *     fila prohibida es rechazada por Postgres aunque esta cerca no la vea.
  *  4. La exclusión de decl de tipo es textual
  *     (`/reversedInvoiceId\??:\s*string\b/`) — un write a una var tipada
  *     `string` con esa forma de línea podría excluirse mal (improbable).
@@ -75,7 +83,8 @@ const SRC_DIR = join(__dirname, '../..');
  *     `reversedInvoiceId` es firma de interfaz y mapeo de columna). Pero
  *     `sql.financial-transaction.repository.ts` es JUSTAMENTE donde viven
  *     `create()`/`createWithClient()`: un write real de FT agregado DENTRO de
- *     ese archivo sería invisible para esta cerca.
+ *     ese archivo sería invisible para esta cerca — **lo ataja igual el CHECK
+ *     de schema v47** (una fila con `type` fuera de la whitelist no entra).
  */
 
 /** Los dos únicos archivos que escriben `reversedInvoiceId` en una fila de

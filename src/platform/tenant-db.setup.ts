@@ -329,7 +329,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // creó -- verificado contra los dos tenants el 03/09/2026. `markServed()`
 // respondía 42703 -> 500 y la lectura lo enmascaraba como `null`. Sin
 // backfill: el NULL de las órdenes viejas significa "no consta".
-export const CURRENT_SCHEMA_VERSION = 46;
+// v47 (08/09/2026): CHECK `chk_financial_transactions_reversed_invoice_type`
+// (`reversed_invoice_id IS NULL OR type IN ('REFUND','ADJUSTMENT')`). Cierra
+// la "mitad de datos" de la condición 3 del re-gate del ADR cancelar-con-NC:
+// la whitelist de F4/N1.b ya no depende sólo de la cerca estática. Verificado
+// 0 filas con `reversed_invoice_id` en las dos tenants -> ADD CONSTRAINT
+// instantáneo, sin backfill. Ver schema.sql, bloque "schema v47".
+export const CURRENT_SCHEMA_VERSION = 47;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

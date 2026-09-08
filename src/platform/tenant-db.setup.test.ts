@@ -93,7 +93,7 @@ describe('loadTenantSchema', () => {
 
 describe('applyTenantSchema', () => {
   const queryMock = vi.fn(async (sql: string): Promise<{ rows: Array<Record<string, unknown>> }> => {
-    if (sql.includes('SELECT MAX')) return { rows: [{ max: 46 }] };
+    if (sql.includes('SELECT MAX')) return { rows: [{ max: 47 }] };
     return { rows: [] };
   });
   const connectMock = vi.fn(async () => {});
@@ -130,12 +130,13 @@ describe('applyTenantSchema', () => {
     expect(calls.some((sql) => sql.includes('INSERT INTO schema_migrations'))).toBe(true);
     expect(calls.some((sql) => sql.includes('ON CONFLICT (version) DO NOTHING'))).toBe(true);
     // Cerca electrica: bumpear la version tiene que ser un acto consciente.
-    // 45 -> 46 el 03/09/2026, por las cuatro columnas de sello de `orders`
-    // (confirmed_at/cancelled_at/completed_at/served_at) que sólo estaban
-    // dentro del CREATE TABLE y nunca se agregaban a un tenant ya creado
-    // -- ver schema.sql, bloque "schema v46".
-    expect(version).toBe(46);
-    expect(CURRENT_SCHEMA_VERSION).toBe(46);
+    // 45 -> 46 el 03/09/2026 (cuatro columnas de sello de `orders`).
+    // 46 -> 47 el 08/09/2026: CHECK chk_financial_transactions_reversed_invoice_type
+    // (reversed_invoice_id sólo en filas REFUND/ADJUSTMENT) -- mitad de datos
+    // de la condición 3 del re-gate del ADR cancelar-con-NC. Ver schema.sql,
+    // bloque "schema v47".
+    expect(version).toBe(47);
+    expect(CURRENT_SCHEMA_VERSION).toBe(47);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

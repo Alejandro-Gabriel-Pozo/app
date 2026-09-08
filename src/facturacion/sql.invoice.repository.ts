@@ -139,11 +139,12 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // outbox.handlers.ts:169-176), así que su monto revertido es `-r.amount`.
     // Sin este CASE, un `ADJUSTMENT` negativo haría `imp_total - (-monto) =
     // imp_total + monto` y la factura nunca se vería compensada. `ELSE 0`
-    // explícito (no `-r.amount` genérico): el schema no impide un tercer
-    // `type` con `reversed_invoice_id` (no hay CHECK, schema.sql:2989-2990) --
-    // ver la cerca de convención en los tests. Verificado 06/09/2026: 0 filas
-    // con `reversed_invoice_id IS NOT NULL` en las dos tenant, así que esto es
-    // no-op sobre datos existentes.
+    // explícito (no `-r.amount` genérico): defensa en profundidad para un
+    // `type` inesperado con `reversed_invoice_id`. Desde schema v47 el CHECK
+    // `chk_financial_transactions_reversed_invoice_type` garantiza que sólo
+    // `REFUND`/`ADJUSTMENT` pueden tener `reversed_invoice_id`, así que el
+    // `ELSE 0` es hoy inalcanzable -- se mantiene por si la whitelist del
+    // CHECK y este CASE se desalinearan.
     const { rows } = await client.query<{ outstanding: string }>(
       `SELECT
          (i.imp_total
@@ -284,11 +285,13 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // hay typecheck que ate las dos queries; si resolveInvoiceLinkage()
     // suma un tercer camino, este también.
     //
-    // `r.type IN ('REFUND','ADJUSTMENT')`: whitelist de N1.b. El schema no
-    // impide una fila con reversed_invoice_id de otro `type` (sin CHECK,
-    // schema.sql:2989-2990); si apareciera, NO cuenta como compensación
-    // (fail-closed: la cancelación queda bloqueada). La cerca de convención
-    // (condición 3 del re-gate) afirma que hoy no existe ninguna.
+    // `r.type IN ('REFUND','ADJUSTMENT')`: whitelist de N1.b. Desde schema v47
+    // el CHECK `chk_financial_transactions_reversed_invoice_type` impide una
+    // fila con `reversed_invoice_id` y otro `type` (mitad de datos de la
+    // condición 3 del re-gate; la mitad de código es la cerca
+    // `reversed-invoice-id-convention.test.ts`). El filtro se mantiene igual:
+    // si el CHECK y esta whitelist se desalinearan, fail-closed (la
+    // compensación no cuenta -> la cancelación queda bloqueada).
     //
     // NO se filtra `r.status`: F4 se ancla a la NC `ISSUED`, no al ledger
     // (Defecto B). Si la NC llegó a AFIP el crédito existe aunque la fila
