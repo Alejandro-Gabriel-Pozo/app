@@ -10,6 +10,10 @@ por el dueño (AskUserQuestion): **B2 + B3, ORDER-13, O5, INV-ORF-01,
 ORDER-15**. Fuera: **B4** (cierre de período contable — sesión propia con el
 contador) y el circuito **POS-caja** (ORDER-12, CAJA-ORD-01, AUDIT-ORD-01 —
 vertical slice separado). Orden: backend/schema primero, frontend después.
+_(Corrección 08/09: B4 dejó de ser "sesión con el contador" — decisión del
+dueño: es un flag configurable por tenant + su chequeo en el orquestador; el
+lado fiscal ya lo cubre la NC con fecha actual. Ver ADR §0 "Frontera de
+responsabilidad", corolario B4, y `pendientes-2026-09-08.md`.)_
 Cada bloque pasa por `architecture-governor` antes de commitear; ningún
 bloque se declara terminado si solo existe logging.
 

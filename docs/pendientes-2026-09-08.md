@@ -469,8 +469,11 @@ CONTRACT-001 · ficha M10 stale.
 
 **Backlog de producto (sin fecha):** Gap C1-C · AR-FACT-NO-ISSUED-01 Fases 2-8 ·
 FACT-BORRADOR-001 (v2.8) · C1-B (bloqueada por proveedor) · C2/C3 · D7 (5 endpoints
-de reportes sin consumidor) · ORDER-10 B4 (período contable — sesión con el
-contador) · circuito POS-caja (ORDER-12 / CAJA-ORD-01 / AUDIT-ORD-01) · heredados
+de reportes sin consumidor) · **ORDER-10 B4** (período contable — **decisión del
+dueño 08/09: NO es "sesión con el contador"; es un flag configurable por tenant
++ su chequeo en el orquestador. El lado fiscal ya está cubierto por la NC con
+fecha actual. Ver ADR §0 "Frontera de responsabilidad", corolario B4**) ·
+circuito POS-caja (ORDER-12 / CAJA-ORD-01 / AUDIT-ORD-01) · heredados
 (Redis, BullMQ, downgrade, datos demo en prod).
 
 ---

@@ -11,19 +11,44 @@
 
 ---
 
-## 0. Alcance de responsabilidad (marco que gobierna toda la doctrina)
+## 0. Frontera de responsabilidad (marco que gobierna toda la doctrina — y toda la capa de facturación electrónica)
+
+> **Doctrina repo-wide.** Este §0 no es sólo el marco de este ADR: es la
+> frontera de responsabilidad de **toda la capa de facturación electrónica**
+> (indexado en `docs/indice-conocimiento.md`). Una futura ADR de Nota de
+> Débito, comprobante de Retención u otro tipo lo **hereda**, no lo re-deriva.
 
 El sistema es una **capa de facilitación de facturación electrónica**. Automatiza
-la generación y autorización de comprobantes ante AFIP/ARCA para evitar la carga
-manual, pero **no sustituye el criterio comercial, contable o fiscal del cliente**.
+la generación y autorización de comprobantes ante AFIP/ARCA —**cualquiera sea el
+tipo: Factura, Nota de Débito, Nota de Crédito, comprobante de Retención**— para
+evitar la carga manual, pero **no sustituye el criterio comercial, contable ni
+fiscal del cliente**.
 
-- El sistema **no clasifica** hechos como rescisión, devolución o cancelación, ni
-  decide qué comprobante corresponde. Esas decisiones las toma explícitamente el
-  emisor y sus autorizados, con el asesoramiento que corresponda.
-- La app **ejecuta técnicamente** la decisión indicada, valida consistencia y
-  trazabilidad, y **falla cerrado** ante datos incompletos o incompatibles.
-- La emisión de una NC **no implica** una devolución de dinero: el reembolso
-  pertenece a un flujo financiero separado.
+- El sistema **no clasifica el hecho económico** (rescisión, devolución,
+  bonificación, ajuste de precio, cancelación, retención practicada…) **ni
+  decide qué comprobante corresponde**. Esas decisiones las toma explícitamente
+  el emisor y sus autorizados, con el asesoramiento que corresponda. La consulta
+  a un contador define el **escenario fiscal que un emisor puede usar** — es de
+  cada emisor con su asesor, por tenant; **no bloquea diseñar ni implementar la
+  capacidad técnica** ni es un prerrequisito del diseño de la app.
+- La app **ejecuta técnicamente** la decisión indicada (el tipo de comprobante y
+  su motivo llegan como dato del autorizante, no se infieren), **valida
+  consistencia y trazabilidad** (autor identificado, motivo declarado, documento
+  asociado existente y del tipo esperado, importes que cierran), y **falla
+  cerrado** ante datos incompletos o incompatibles — nunca "completa" ni
+  "adivina".
+- La emisión de un comprobante **no implica un movimiento de dinero**. Una NC
+  netea la cuenta corriente; el reembolso —si corresponde— es un flujo
+  financiero separado y explícito (D2/N9). Lo mismo para una ND y su cobro.
+- **Período contable (corolario — ORDER-10 B4):** el sistema **permite** la
+  operación a nivel mecánico. Que un negocio bloquee cancelaciones / emisión de
+  comprobantes correctivos sobre un período cerrado es un **flag configurable
+  por tenant** (A2.9), no una regla fija ni una consulta contable de la que
+  dependa el diseño. El lado fiscal ya está cubierto por construcción: sobre un
+  comprobante de un período cerrado no se edita ni se reabre — se emite el
+  comprobante correctivo **con fecha actual** (`buildCreditNote()` nunca toca el
+  original). B4 se reduce a ese flag + su chequeo en el orquestador; deja de ser
+  "sesión con el contador".
 
 > **La app no le dice al cliente cómo trabajar; le permite formalizar
 > electrónicamente una decisión que el cliente ya tomó.**
