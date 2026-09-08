@@ -160,15 +160,22 @@ procedimiento completo antes del bump caro de B3.
 | **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | **Diferido por el gate 2.2 (HOLD), no cancelado.** Reabre si: existe un consumidor real de `resolved_by` (reconciliación manual, hoy inexistente) / el dueño elige fan-out para pool mixto / el portal empieza a crear solicitudes |
 | **2.4** Tope N5 | #21 | no | ✅ RESUELTO 08/09/2026. `getInFlightCreditNoteTotalForUpdate()` + guard en `buildCreditNote()`, lanza `CreditNoteCapExceededError`. 17 tests de integración (11 mitad-SQL + 6 servicio) + 5 mutaciones verificadas. F4 sin tocar. Condiciones C1 (bypass `retryExisting()`, declarado) y C3 (mensaje impreciso en duplicado concurrente, declarado) sin cerrar — ver `pendientes-2026-09-08.md` #21. Query read-only de producción (evidencia del gate) NO corrida |
 
-> **2.4 tiene que aterrizar ANTES que 3.1, no solo antes que 15** (gate
-> `architecture-governor`, 08/09/2026, revisión de #21). #21 es hoy
-> **inalcanzable** — ver `docs/pendientes-2026-09-08.md` #21 (4 propiedades
-> que lo contienen, 1 cercada). El bloque **3.1** (`getByReservationId()` →
-> UNION con consolidadas) es justo lo que rompe la propiedad 2 (una factura
-> deja de ser 1:1 con una sola reserva) y **vuelve alcanzable** el escenario
-> de N5 — así que si 3.1 aterriza antes que el tope real, hay una ventana
-> donde el tope N5 no existe y el escenario ya es alcanzable. Ítem 11 de la
-> tabla de orden ejecutable (§7) actualizado para reflejar esta dependencia.
+> **2.4 aterrizó ANTES que 3.1** (`836afe5`/`8dde715`, antes del commit de
+> 3.1) — el orden que este párrafo pedía se cumplió. **Corrección (08/09/2026,
+> gate del bloque 3.1): la premisa de este párrafo estaba incompleta.** El
+> bloque 3.1, tal como el ADR §6.1 lo exigía, no es "solo el UNION" —
+> es el UNION **junto con** el fail-closed
+> (`ReservationOnConsolidatedInvoiceError` en `cancellation-refund.service.ts`).
+> El UNION solo SÍ hubiera roto la propiedad 2 (una factura deja de ser 1:1
+> con una sola reserva) y vuelto alcanzable el escenario de N5 — pero el
+> guard que lo acompaña corta `confirmRefund()` ANTES de crear ningún
+> `REFUND` contra una consolidada, así que la propiedad 2 **sigue
+> conteniendo** después de 3.1. Se rompe recién con el **subcaso 2** (reparto
+> real por-reserva de una consolidada), bloque posterior — ahí sigue
+> aplicando la regla "el tope real tiene que existir antes". Ítem 11 de la
+> tabla de orden ejecutable (§7) ya no depende de 10 por esta razón (2.4 no
+> es prerrequisito estructural de 3.1), pero sí vuelve a serlo antes del
+> subcaso 2.
 >
 > **"Monto congelado" — resuelto en el gate 2.2 (08/09/2026), portador (b),
 > ya no es insumo sin decidir.** Los dos candidatos eran (a) la tabla
@@ -191,7 +198,7 @@ procedimiento completo antes del bump caro de B3.
 ### FASE 3 — B-reservas (el bloque grande)
 | Bloque | Ítem | Schema | Notas |
 |---|---|---|---|
-| **3.1** `getByReservationId()` UNION + fail-closed en `confirmRefund()` | #5 (a) | no | `UNION` con dedup (no `ALL`) espejo de `resolveInvoiceLinkage()`; **no** copiar `getOutstandingByCustomerId()`. Va CON el fail-closed en `cancellation-refund.service.ts:189` (`ReservationOnConsolidatedInvoiceError` 409). 5 caracterizaciones a actualizar. Comentar la fragilidad UNION-safe latente |
+| **3.1** `getByReservationId()` UNION + fail-closed en `confirmRefund()` | #5 (a) | no | ✅ RESUELTO 08/09/2026 (código local, sin push — bloqueado por C7, ver `pendientes-2026-09-08.md`). `UNION` con dedup, `ReservationOnConsolidatedInvoiceError` (409) todo-o-nada. 5 caracterizaciones reescritas (incluida W4, cambia de síntoma por corrección del gate) + 2 tests de dedup + 3 unitarios nuevos. 4 mutaciones verificadas. 2 huecos fail-open declarados (proxy `financialTransactionId===null`, solo-Factura-B) — ver pendientes |
 | **3.2-pre** POOL-STARV-001 dimensionado | #10 | no | análisis, no código. Cuántas conexiones del pool `max:5` sostiene `confirmRefund()` (hoy 3-4) |
 | **3.2-bis** `REFUND-INT-GUARD-001` | #8 (b) | no | va ANTES de 3.2: decorator que commitea un `PAYMENT` interferente y cae en la ventana `:245 → guard`. Prueba las 3 cosas hoy inferidas (guard dispara / rollback real / aislamiento pool-vs-client) |
 | **3.2** Lock de reserva (B-1 + N10) diseñados JUNTOS | #8 (a) + #5 (b) | no | mismo lock sobre `reservations` para cerrar B-1 y para `cancelReservationWithCreditNote()`. `lock-order.test.ts` actualizado en el mismo commit. Criterio: 2 tx concurrentes reales, un ganador, un perdedor con error tipado reintentable, cero filas parciales. **Riesgo alto** |

@@ -208,13 +208,24 @@ porque hay un escritor por factura (propiedad 1); pueden divergir — ej. una
 NC `ISSUED` cuya fila revertidora nunca llegó a `SETTLED` cuenta 0 en el cap
 de ledger. Sin escenario que lo explote hoy.
 
-**Se vuelve alcanzable con el bloque 3.1 del plan** (`getByReservationId()` →
-UNION con el camino consolidado): ahí dos reservas distintas pueden apuntar a
-la misma factura consolidada, `confirmRefund()` se llama una vez por reserva
-(claves de idempotencia distintas), y dos `REFUND` con el mismo
-`reversed_invoice_id` se vuelven alcanzables — recién ahí la propiedad 2 deja
-de contener. **El plan no dice hoy que 2.4 (tope N5) tiene que aterrizar ANTES
-que 3.1** — hay que forzarlo (ver plan, tabla de bloques).
+**Corrección (08/09/2026, gate del bloque 3.1): NO se vuelve alcanzable con
+3.1 solo.** El bloque 3.1 (`getByReservationId()` → UNION con el camino
+consolidado) por sí solo SÍ hubiera vuelto alcanzable el escenario descripto
+abajo — pero 3.1 se implementó CON el fail-closed que el ADR §6.1 exigía
+junto al UNION (`ReservationOnConsolidatedInvoiceError` en
+`cancellation-refund.service.ts`), no el UNION solo. Ese guard corta
+`confirmRefund()` ANTES de crear ningún `REFUND` contra una factura
+consolidada — así que la propiedad 2 (una factura 1:1 con una sola reserva
+para efectos de N5) **sigue conteniendo** después de 3.1. El escenario que
+sí la rompería — dos reservas distintas apuntando a la misma consolidada,
+`confirmRefund()` llamado una vez por reserva, dos `REFUND` con el mismo
+`reversed_invoice_id` — se vuelve alcanzable recién con el **subcaso 2**
+(reparto real por-reserva de una consolidada), bloque posterior de
+B-reservas, no con 3.1. **2.4 (tope N5) ya aterrizó ANTES que 3.1** (commits
+`836afe5`/`8dde715` antes que el bloque 3.1) — el forzado que este párrafo
+pedía ya se cumplió por orden de trabajo, y además ya no era estrictamente
+necesario para 3.1 en sí (sí lo sigue siendo para cuando aterrice el
+subcaso 2).
 
 - **RBAC, hallazgo aparte del gate, no de N5:** `POST /api/invoices` emite NC
   efectivamente (branch `tx.type === 'REFUND'|'ADJUSTMENT'`,
@@ -260,11 +271,16 @@ limpios, 1976 tests unitarios sin regresión.
   excluye del cap a propósito, pero `retryExisting()` (`invoice.service.ts:897-915`)
   puede re-emitir una fila `REJECTED` **sin volver a pasar por
   `buildCreditNote()`** — sin chequeo de cap en ese camino. **Hoy
-  inalcanzable** (mismas 4 propiedades que contenían a #21 originalmente);
-  **se vuelve alcanzable con el bloque 3.1.** Cerrarlo (¿el reintento excluye
-  su propia fila del re-chequeo, o hace falta otro mecanismo?) es una
-  decisión de diseño aparte — gate propio, ANTES de o junto con 3.1, no
-  implícito.
+  inalcanzable** (mismas 4 propiedades que contenían a #21 originalmente).
+  **Corrección (08/09/2026, gate del bloque 3.1): NO se vuelve alcanzable con
+  3.1** — el bloque se implementó con el fail-closed que el ADR exigía junto
+  al UNION (`ReservationOnConsolidatedInvoiceError`), que corta ANTES de
+  crear un segundo escritor de `reversed_invoice_id` por factura. Se vuelve
+  alcanzable con el **subcaso 2** (reparto real por-reserva de una
+  consolidada), bloque posterior de B-reservas. Cerrarlo (¿el reintento
+  excluye su propia fila del re-chequeo, o hace falta otro mecanismo?) sigue
+  siendo una decisión de diseño aparte — gate propio, ahora con el subcaso 2
+  como gatillo en vez de 3.1.
 - **C3 — mensaje impreciso en un duplicado de idempotencia concurrente:**
   `getByIdempotencyKey()` en `requestInvoice()` no toma lock; dos llamadas
   concurrentes con el MISMO `financialTransactionId` en una reversión total
@@ -279,6 +295,83 @@ limpios, 1976 tests unitarios sin regresión.
   cierre del ADR completo — no bloquea el uso del cap (probado exhaustivamente
   contra Postgres real de test), pero el gate lo pidió como evidencia
   explícita y no se lo doy por hecho.
+
+### #22 — Bloque 3.1: `getByReservationId()` UNION + fail-closed en `confirmRefund()` · ✅ código local (08/09/2026), 🔴 push bloqueado por C7
+
+**Resuelto (código, sin push).** `getByReservationId()` (`sql.invoice.repository.ts`)
+pasó de INNER JOIN (ciego a facturas consolidadas) a `UNION` de los dos
+caminos (individual + `invoice_charges`), espejo de `resolveInvoiceLinkage()`
+pero no literal (filtra por `reservation_id`, no por un `financial_transaction_id`
+puntual). `confirmRefund()` (`cancellation-refund.service.ts`) gana un guard
+fail-closed inmediatamente después de armar `issuedInvoices`: si CUALQUIERA
+es consolidada, rechaza TODO con `ReservationOnConsolidatedInvoiceError`
+(409) — todo-o-nada, aunque haya también una factura directa reembolsable
+(`confirmRefund()` es de un solo tiro por reserva, un reparto parcial
+quemaría la idempotencia para siempre).
+
+**5 tests de caracterización de `cancellation-refund.integration.test.ts`
+reescritos** (hallazgo #1, W1, W2, W3, W4 — eran 5, no 4 como yo había
+asumido inicialmente; el gate corrigió mi lectura de W4: el guard corre
+ANTES del chequeo `collected`/`NothingToRefundError`, así que W4 SÍ cambia
+de síntoma, de `NothingToRefundError` a `ReservationOnConsolidatedInvoiceError`).
++ 2 tests de dedup (`UNION` vs `UNION ALL`, condición C2 del gate — una
+reserva con 2 `CHARGE` distintos facturados en la misma consolidada debe
+devolver 1 fila, no 2) + 3 unitarios nuevos en `cancellation-refund.service.test.ts`
+(consolidada sola / directa+consolidada mezcladas / regresión negativa solo-directas).
+**4 mutaciones verificadas** (`UNION`→`UNION ALL`, sacar el guard, invertir
+`=== null`, mover el guard después de `NothingToRefundError`) — cada una
+rompió exactamente los tests esperados. tsc/eslint/lint:arch limpios, 1979
+tests unitarios + 17 de integración sin regresión (incluido el describe N2
+de contaminación, sin tocar).
+
+**Dos huecos fail-open del guard, declarados en el código (`cancellation-refund.service.ts`),
+no cerrados:**
+1. `financialTransactionId === null` es un **proxy** de "es consolidada", no
+   un invariante de base — no hay ningún CHECK que lo ate. Vale hoy porque
+   `requestConsolidatedInvoice()` siempre inserta `financialTransactionId: null`
+   (verificado, `invoice.service.ts:566`). **Gatillo de revisión:** si algún
+   día una consolidada naciera con FT no-nulo, entraría al pool LIFO y se
+   repartiría contra el tope GLOBAL de `getRefundableForUpdate()` (el
+   defecto N2, ya caracterizado aparte, sin camino de producción).
+2. El guard solo ve Factura B (`cbteTipo === CBTE_TIPO_FACTURA_B`, filtro
+   previo) — una consolidada de otro tipo sería invisible y volvería al
+   `:sin-asignar` de hallazgo #1. **Hoy inalcanzable** (el repo solo emite
+   cbte_tipo 6/8). **Gatillo de revisión:** el día que se emita Factura A o C.
+
+**TOCTOU residual, no cerrado:** `acquireIdempotencyLock` serializa contra
+otros `confirmRefund()` de la MISMA reserva, no contra
+`requestConsolidatedInvoice()` — una consolidada emitida justo después de la
+lectura de `issuedInvoices` sigue escapando al guard (FACT-CONSOL-TOCTOU-01,
+preexistente, no lo agrava ni lo cierra este bloque).
+
+**Asimetría preview/confirm — declarada, no tocada.** `previewRefund()`
+(`cancellation-refund.service.ts:70-82`) no consulta `invoiceRepo` en
+absoluto — sobre una reserva con factura consolidada, la pantalla de
+preview va a seguir mostrando un monto reembolsable normal y el confirm va a
+responder 409. Arreglarlo es una decisión de producto (¿el preview también
+debe fail-closed, con qué mensaje?), no alcance del ADR §6.1. Ítem propio,
+sin bloquear nada.
+
+**Corrección de 3 documentos que quedaban afirmando lo contrario (gate del
+bloque 3.1, 08/09/2026):** `sql.invoice.repository.ts` (docblock de
+`getInFlightCreditNoteTotalForUpdate()`), este archivo (arriba, #21 ítem C1
+y el bloque de "monto congelado") y `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`
+decían que el bloque 3.1 iba a volver alcanzable el bypass C1 del gate 2.4 /
+el escenario de N5 — **es al revés**: el fail-closed que 3.1 trae junto con
+el UNION reduce, no amplía, el conjunto de escrituras de `reversed_invoice_id`.
+Ambos (C1 y el escenario de N5) siguen dependiendo del **subcaso 2** (reparto
+real por-reserva de una consolidada), no de 3.1. Corregido en los 3 lugares,
+mismo commit que este ítem.
+
+**🔴 Push bloqueado — condición C7 del gate, NO cumplida.** El gate exigió
+una query read-only contra las dos tenants de producción, contando facturas
+consolidadas `ISSUED` alcanzables desde una reserva `CANCELLED` vía
+`invoice_charges → financial_transactions.reservation_id`, ANTES de
+pushear — si el resultado es > 0, hay filas reales que empiezan a recibir
+409 y el push vuelve al gate. **No se pudo correr**: requiere credenciales
+de Neon (OAuth o desencriptar `db_url_encrypted`) no configuradas en esta
+sesión — mismo bloqueo que la evidencia de producción de los bloques 2.2/2.4.
+El código queda commiteado local, sin push, hasta que esta query se corra.
 
 ---
 
