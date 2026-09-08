@@ -778,8 +778,13 @@ NC↔factura como **estrictamente 1:1**. No es N:1 en ninguna. → el cierre es 
   declarados; misma forma que la condición 3 del re-gate): test que falla si
   en un tenant existe una NC cuyas revertidoras abarcan > 1 `reversed_invoice_id`.
 - **Hoy no hay exposición:** `buildCreditNote()` nunca pasa `charges` a
-  `createWithClient()` (`invoice.service.ts:753`) → ningún camino crea una NC
-  consolidada. La rama consolidada del `UNION ALL` de F4 es defensiva.
+  `createWithClient()` (`invoice.service.ts:753` — al 08/09 la línea quedó stale:
+  `buildCreditNote()` arranca en `:703`, su `createWithClient` en ~`:848`; la
+  afirmación sigue siendo cierta) → ningún camino crea una NC consolidada. La
+  rama consolidada del `UNION ALL` de F4 **no es "defensiva" a secas**: matchea
+  Facturas B consolidadas reales de cuentas por cobrar; lo defensivo es el caso
+  cruzado N2.a puntual. Desde el bloque 1.4 (`94ac18e`) F4 además filtra
+  `nc.cbte_tipo` → sólo NC cuentan como compensación.
 
 **Implementación pendiente** (no es un hueco abierto, es trabajo ya en el plan):
 el guard entra con el **primer builder que pueda crear una NC consolidada** —

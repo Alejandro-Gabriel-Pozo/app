@@ -276,6 +276,24 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 - **Comentario stale en `src/facturacion/sql.invoice.repository.ts` ~`:314-318`:**
   dice que el hueco cruzado de F4 está *"registrado como bloqueante de B-reservas"*.
   El ADR N2.a lo resolvió como doctrina. Corregir junto con el bloque 1.4 (3-ter).
+  — ✅ RESUELTO con el bloque 1.4 (`94ac18e`, ítem 0.4 del plan): reescrito a
+  doctrina N2.a + guard **nunca en los services (F5)** + "hoy no hay exposición
+  de ESTE hueco"; también se corrigieron el "ESPEJO EXACTO" (espeja caminos, no
+  predicados) y "rama 2 defensiva".
+
+- **#2 — 3-ter: filtro `cbte_tipo` en la subquery `nc` de F4** — ✅ RESUELTO
+  (bloque 1.4 del plan, `94ac18e`, 08/09). `getIssuedCreditNoteCompensationTotal`
+  filtraba compensación desde CUALQUIER comprobante colgado de una FT revertidora;
+  una Factura B mal vinculada inflaba el total → fail-OPEN (cancelación sin NC
+  real). Ahora filtra `nc.cbte_tipo = ANY(CBTE_TIPOS_NOTA_CREDITO)` en el WHERE
+  externo (las 2 ramas del `UNION ALL` seleccionan la columna). Constante nueva
+  en `afip-catalog.constants.ts`, no `= 8` literal. Tests: invariante de la
+  constante + forma de query + routing de `invoice.service.ts:357` + 3 de
+  integración (Factura B rama 1 / rama 2 / mixta → F4 da 0/0/sólo-la-NC).
+  Mutación probada; **no-regresión OBSERVADA** (0 filas afectables en las 2
+  tenants de prod). **Preventivo, no correctivo.** Contexto de dependencia:
+  `#2 3-ter ──▶ #5 subcaso 2` (la rama consolidada de F4 se vuelve real en
+  B-reservas).
 
 - **#1 — CHECK `chk_financial_transactions_reversed_invoice_type` (schema v46→v47)**
   — ✅ RESUELTO (bloque 1.1 del plan, `3bcf5ab`, 08/09, pusheado + deployado +
@@ -407,7 +425,7 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 ## Arrastrado de `pendientes-2026-09-06.md` — abierto, detalle allá
 
 **ADR "cancelar con NC" — resto:** ~~CHECK `reversed_invoice_id` mitad de datos (#1)~~ ✅ `3bcf5ab` ·
-3-ter filtro `cbte_tipo` (#2) · 4 filas de deuda de `ef27e42` (#3) · B3
+~~3-ter filtro `cbte_tipo` (#2)~~ ✅ `94ac18e` · 4 filas de deuda de `ef27e42` (#3) · B3
 (`credit_note_request` + bandeja + `?status=`) (#4) · B-reservas
 (`getByReservationId` UNION, subcasos directa/consolidada/pool mixto,
 `EXPIRED-FACT-01`, F4 en reservas, 5 caracterizaciones) (#5) · Anexo A1/A2/A4 ·
