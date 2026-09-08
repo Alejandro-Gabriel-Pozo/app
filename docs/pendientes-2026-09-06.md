@@ -543,14 +543,36 @@ contra Postgres real, camino `REFUND` no regresionado.
      estado "e-invoice no confirmado" con reintento determinístico). Análogo
      conceptual = Odoo `_need_cancel_request` / `_can_force_cancel()→False`.
      Arquitectura propia de app-main, declarada así.
-   - **`orders.routes.ts` importa `buildInvoiceService` de `invoices.routes.ts`**
-     (routes→routes). Alternativa = duplicar ~11 `new Sql*Repository`. Los dos
-     son composition roots (exceptuados de `no-repo-concreto-de-otro-dominio`).
-   - **`cancel-order-with-credit-note.service.ts` (facturación) hace un value
-     import de `OrderNotFoundError`/`InvalidOrderTransitionError` de
-     `pos-menu/order.service.ts`** — no lo prohíbe ninguna regla de
-     `.dependency-cruiser.cjs`, pero es coupling nuevo facturación→pos-menu
-     más allá de los `import type` que ya había. Revisar en el gate.
+
+   **Deuda del sub-bloque 4 con ancla `archivo:línea` (governor `ef27e42`,
+   commit de doc aparte — no bloquea, cada una su bloque chico):**
+   - **`src/facturacion/cancel-order-with-credit-note.service.ts:269`** —
+     `adjustment = created ?? (await …getByIdempotencyKey(key))!` usa un `!`
+     no-nulo tras un `createWithClient` que devolvió `null` (carrera de
+     idempotencia). Hoy es seguro **solo porque el lock N10 de `tx1`
+     serializa** — si `getByIdempotencyKey` leyera por el cliente propio del
+     repo y no por `client`, y el lock cambiara, el `!` taparía un `undefined`.
+     Reemplazar por un `if (!row) throw` explícito con mensaje, y que la
+     lectura de fallback use `client`.
+   - **`src/facturacion/cancel-order-with-credit-note.service.ts:248-270`** —
+     al reanudar con un `existing`/`prior`, no se re-verifica
+     `existing.reversedInvoiceId === originalInvoiceId`. Inalcanzable hoy (la
+     clave `cancel-order-with-cn:<orderId>` es 1:1 con la orden y el
+     `originalInvoiceId` se deriva del mismo CHARGE), pero un assert defensivo
+     es barato.
+   - **`src/facturacion/invoices.routes.ts:56` → `src/pos-menu/orders.routes.ts:58`** —
+     `buildInvoiceService` se importa routes→routes. Extraerla a
+     `src/facturacion/build-invoice-service.ts` (composition helper propio) y
+     que las dos rutas la importen de ahí. El plan del sub-bloque 4 ya lo
+     proponía (§"Detalle de arquitectura").
+   - **`src/facturacion/cancel-order-with-credit-note.service.ts:58`** — value
+     import de `OrderNotFoundError`/`InvalidOrderTransitionError` desde
+     `pos-menu/order.service.ts` (no `import type`). Ninguna regla de
+     `.dependency-cruiser.cjs` lo prohíbe y `lint:arch` está limpio, pero es
+     coupling facturación→pos-menu más allá de los `import type` previos.
+     Moverlos a `src/domain/errors.ts` (donde vive el resto de los
+     `DomainError`) y re-exportarlos desde `order.service.ts` para no romper
+     los ~6 call-sites que ya los importan de ahí.
 5. Predicado N1 cableado en `findBlockingInvoiceLinkage()` del lado órdenes +
    reconciliación del residual #3 en `registrarDesenlace()` (`outbox.handlers.ts:237`,
    invocado desde `:161`/`:334`/`:380`/`:390`) + **cerca de convención**
