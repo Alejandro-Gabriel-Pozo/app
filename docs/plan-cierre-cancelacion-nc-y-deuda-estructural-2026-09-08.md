@@ -158,7 +158,7 @@ procedimiento completo antes del bump caro de B3.
 | **2.1** `?status=` en `GET /api/invoices` | #4 (a) | no | ✅ RESUELTO 08/09/2026. `InvoiceRepository.getByStatus()` + filtro en la ruta, mismo `authorize(FRONT_DESK)` — accesibilidad verificada: los 3 presets con `EMISOR_NOTA_CREDITO` (OWNER/ADMIN/RECEPTIONIST, `platform.schema.sql:307-315`) ya tienen `FRONT_DESK`, sin hueco nuevo (regla 5 `CLAUDE.md`, incidente D6). Tests: `invoices.routes.test.ts` (200 + 400 status inválido), fakes de `InvoiceRepository` actualizadas. tsc/lint:arch/1976 unit tests limpios |
 | **2.2** Decisión `credit_note_request` sí/no | #4 (b) | — | ✅ RESUELTO 08/09/2026 — **HOLD**. Grounding `auditor-circuitos-erp` + gate `architecture-governor` completos. Ver `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5 y §10 fila 1 para el razonamiento y los 3 gatillos de reapertura |
 | **2.3** `CREATE TABLE credit_note_request` + bandeja | #4 (b) | **v47→v48** | **Diferido por el gate 2.2 (HOLD), no cancelado.** Reabre si: existe un consumidor real de `resolved_by` (reconciliación manual, hoy inexistente) / el dueño elige fan-out para pool mixto / el portal empieza a crear solicitudes |
-| **2.4** Tope N5 | #21 | no | `buildCreditNote()` toma `SELECT ... FOR UPDATE` sobre la fila `invoices` revertida y, **dentro del mismo lock**, suma NC `ISSUED` + `PENDING` + `FAILED_UNCERTAIN` que la referencian (fail-closed para el cap — F4 sigue anclado solo a `ISSUED`, sin tocarse) y **lanza** si excede `imp_total`. Sin tabla nueva, sin bump de schema. Test: 2 tx concurrentes contra la misma factura → exactamente una tiene éxito; parcial+parcial que suman el total sí pasan; tercera no |
+| **2.4** Tope N5 | #21 | no | ✅ RESUELTO 08/09/2026. `getInFlightCreditNoteTotalForUpdate()` + guard en `buildCreditNote()`, lanza `CreditNoteCapExceededError`. 17 tests de integración (11 mitad-SQL + 6 servicio) + 5 mutaciones verificadas. F4 sin tocar. Condiciones C1 (bypass `retryExisting()`, declarado) y C3 (mensaje impreciso en duplicado concurrente, declarado) sin cerrar — ver `pendientes-2026-09-08.md` #21. Query read-only de producción (evidencia del gate) NO corrida |
 
 > **2.4 tiene que aterrizar ANTES que 3.1, no solo antes que 15** (gate
 > `architecture-governor`, 08/09/2026, revisión de #21). #21 es hoy
@@ -295,7 +295,7 @@ Odoo `ir_cron.py:122`), #13 (grondeado Odoo `ir_cron.py:448-451`, OCA
 | — | → **gate final B-núcleo+órdenes** (tras 3,4,5) | — | — | — |
 | 8 | `?status=` en `GET /api/invoices` | #4a | — | ✅ RESUELTO 08/09/2026 |
 | 9 | `credit_note_request` | #4b | v48 | **diferido por gate 2.2 (HOLD, 08/09/2026)** — ya no bloquea a 10 |
-| 10 | Tope N5 | #21 | — | — (contra `invoices` directo, gate 2.2 08/09/2026) |
+| 10 | Tope N5 | #21 | — | ✅ RESUELTO 08/09/2026 (contra `invoices` directo, gate 2.2+2.4) |
 | 11 | UNION + fail-closed | #5a | — | ~~9~~ (diferido, ya no aplica) · **10** |
 | 12 | POOL-STARV dimensionado | #10 | — | — |
 | 13 | REFUND-INT-GUARD-001 | #8b | — | — |

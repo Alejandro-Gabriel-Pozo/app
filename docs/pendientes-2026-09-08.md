@@ -169,7 +169,7 @@ contra un service container `postgres:16-alpine`** (`.github/workflows/ci.yml:19
 `settleChargesByOrderId`); y el ADR cita `:515-522` para el `CASE` del
 `shift_id` de `settleChargesByOrderId`, que hoy está ~`:529-534`.
 
-### #21 — Tope N5 (acumulado por factura revertida): sin cap fiscal propio, hoy inalcanzable · 🟠 recaracterizado (08/09/2026, gate `architecture-governor`)
+### #21 — Tope N5 (acumulado por factura revertida) · ✅ RESUELTO (08/09/2026, bloque 2.4)
 
 **Recaracterizado — ya no es "fail-open fiscal" activo.** `buildCreditNote()`
 (`src/facturacion/invoice.service.ts:703-878`) no consulta
@@ -225,15 +225,60 @@ que 3.1** — hay que forzarlo (ver plan, tabla de bloques).
   asimetría de grupo de autz. Ítem propio, cruzado contra
   `docs/rbac-matriz-endpoints.md`, gate propio.
 - **NO tocado en este cierre** (fuera del alcance autorizado por el gate):
-  `buildCreditNote()`; el `authorize` de `invoices.routes.ts`.
-- **Actualización 08/09/2026 — gate del bloque 2.2 resuelto (HOLD sobre
-  `credit_note_request`):** ver `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
-  §6.5/§10 fila 1. El tope N5 (bloque 2.4) **ya no depende de la tabla
-  nueva** — se implementa contra la fila `invoices` existente (`SELECT ...
-  FOR UPDATE` sobre la factura revertida + suma `ISSUED`+`PENDING`+`FAILED_UNCERTAIN`
-  dentro del lock, F4 sin tocarse). Sin schema, sin bump de versión.
-→ el tope real (bloque 2.4) sigue pendiente, sin urgencia hoy — depende solo
-de sí mismo y tiene que aterrizar antes del bloque 3.1.
+  el `authorize` de `invoices.routes.ts`.
+- **Gate del bloque 2.2 (HOLD sobre `credit_note_request`)** dejó el tope N5
+  sin depender de la tabla nueva — ver
+  `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5/§10 fila 1.
+
+**✅ RESUELTO (08/09/2026, bloque 2.4, gate `architecture-governor` — diseño
+aprobado con 5 condiciones, C1-C5).** `InvoiceRepository.getInFlightCreditNoteTotalForUpdate()`
+(`invoice.repository.ts`, `sql.invoice.repository.ts`) — mismo patrón de dos
+sentencias que `getRefundableForUpdate()`/`getOutstandingForUpdate()` (lock
+puro primero, cómputo después), reusa `NC_LINKAGE_UNION` (fragmento SQL
+extraído y compartido con F4 — condición C5). Cuenta NC `ISSUED`+`PENDING`+
+`FAILED_UNCERTAIN` (excluye `REJECTED`) contra la factura revertida —
+pregunta distinta de F4 ("¿queda cupo?" vs. "¿puedo cancelar?"), **F4 sin
+tocarse**. `buildCreditNote()` (`invoice.service.ts:846-861`) lockea la
+factura original al principio de su transacción, suma lo en vuelo, y
+**lanza** `CreditNoteCapExceededError` (nuevo, `domain/errors.ts`, 409 en
+`error.middleware.ts`) si excede `imp_total + CREDIT_NOTE_COMPENSATION_TOLERANCE`
+— nunca clamp (N5).
+
+**Tests:** `src/tests/integration/credit-note-cap.integration.test.ts` (11,
+mitad SQL: estados contados, rama consolidada, dedup, lock — contra Postgres
+real) + `credit-note-cap-service.integration.test.ts` (6, guard completo vía
+`requestInvoice()`: concurrencia real con `Promise.allSettled`, boundary de
+tolerancia, `REJECTED` no bloquea, reintento no re-evalúa el cap). **5
+mutaciones** verificadas a mano (revertir condición, sacar `PENDING`, incluir
+`REJECTED`, sacar el lock, sacar la tolerancia) — cada una puso rojo
+exactamente los tests esperados, ninguna quedó verde. tsc/lint:arch/eslint
+limpios, 1976 tests unitarios sin regresión.
+
+**Condiciones del gate, declaradas en el docblock del método
+(`sql.invoice.repository.ts`), NO cerradas en este bloque:**
+- **C1 — bypass fail-open de `retryExisting()`:** una NC `REJECTED` se
+  excluye del cap a propósito, pero `retryExisting()` (`invoice.service.ts:897-915`)
+  puede re-emitir una fila `REJECTED` **sin volver a pasar por
+  `buildCreditNote()`** — sin chequeo de cap en ese camino. **Hoy
+  inalcanzable** (mismas 4 propiedades que contenían a #21 originalmente);
+  **se vuelve alcanzable con el bloque 3.1.** Cerrarlo (¿el reintento excluye
+  su propia fila del re-chequeo, o hace falta otro mecanismo?) es una
+  decisión de diseño aparte — gate propio, ANTES de o junto con 3.1, no
+  implícito.
+- **C3 — mensaje impreciso en un duplicado de idempotencia concurrente:**
+  `getByIdempotencyKey()` en `requestInvoice()` no toma lock; dos llamadas
+  concurrentes con el MISMO `financialTransactionId` en una reversión total
+  pueden hacer que la perdedora vea `CreditNoteCapExceededError` cuando en
+  realidad es un duplicado (choca aparte contra `idx_invoices_idempotency_key`).
+  Declarado en el docblock, cubierto por un test que afirma el comportamiento
+  observado — no corregido (mover el chequeo de idempotencia adentro de la
+  transacción es otro bloque).
+- **Query read-only de producción (evidencia #4 del gate) — NO corrida.**
+  Requiere credenciales de Neon (OAuth o desencriptar `db_url_encrypted`) no
+  configuradas en esta sesión de trabajo. Pendiente antes del gate final de
+  cierre del ADR completo — no bloquea el uso del cap (probado exhaustivamente
+  contra Postgres real de test), pero el gate lo pidió como evidencia
+  explícita y no se lo doy por hecho.
 
 ---
 
