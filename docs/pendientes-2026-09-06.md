@@ -573,13 +573,71 @@ contra Postgres real, camino `REFUND` no regresionado.
      Moverlos a `src/domain/errors.ts` (donde vive el resto de los
      `DomainError`) y re-exportarlos desde `order.service.ts` para no romper
      los ~6 call-sites que ya los importan de ahí.
-5. Predicado N1 cableado en `findBlockingInvoiceLinkage()` del lado órdenes +
-   reconciliación del residual #3 en `registrarDesenlace()` (`outbox.handlers.ts:237`,
+5. Reconciliación del residual #3 en `registrarDesenlace()` (`outbox.handlers.ts:237`,
    invocado desde `:161`/`:334`/`:380`/`:390`) + **cerca de convención**
    (condición 3: ninguna fila con `reversed_invoice_id IS NOT NULL AND type
    NOT IN ('REFUND','ADJUSTMENT')`, patrón `lock-order.test.ts` con falsos
    negativos declarados). (Texto de `OrderChargeInvoicedError` A1 — YA hecho
    en el sub-bloque 4.)
+
+   **F4 cableado en `findBlockingInvoiceLinkage()` del lado órdenes — ✅ CERRADO
+   SIN CABLEAR (07/09/2026, `architecture-governor` APROBADO camino 1).** Era
+   la parte (a) de este ítem. El predicado F4
+   (`isInvoiceFullyCompensatedByIssuedCreditNotes()` +
+   `InvoiceRepository.getIssuedCreditNoteCompensationTotal()`,
+   `cancel-with-credit-note.ts:53-94`) **queda construido, probado (desde
+   `854143b`) y sin cablear del lado órdenes A PROPÓSITO.** Su consumidor
+   previsto es B-reservas. **No es un cabo suelto — no cablearlo en
+   `order.service.ts:findBlockingInvoiceLinkage()` sin releer esto.**
+   - **Veredicto `auditor-circuitos-erp` (07/09):** cablear F4 en el guard de
+     la cancelación NORMAL **DIVERGE de ERPNext** (`sales_order.py:478`
+     `on_cancel` + `:531` `check_nextdoc_docstatus`: una SI submitted bloquea
+     el `cancel` del SO esté total o parcialmente acreditada; el flujo
+     terminal alternativo es `Close`, `:490-491`) y es **SIN PRECEDENTE en
+     Odoo** (`sale_order.py:1332-1335` `_action_cancel` ignora las facturas
+     `posted`, no hay guard que F4 pudiera destrabar). El tratamiento del
+     LEDGER sí es consistente: ninguna referencia revierte el asiento de la
+     factura original al cancelar el documento de venta — los dos asientos
+     quedan en pie neteados (ERPNext `general_ledger.py:607`
+     `make_reverse_gl_entries` sólo en `docstatus==2`; Odoo `_reverse_moves`
+     concilia sin revertir). Que `voidByOrderId` se niegue a anular el par
+     `CHARGE`/`ADJUSTMENT` SETTLED es LO CORRECTO.
+   - **Análisis de alcanzabilidad (07/09):** la precondición útil de (a) se
+     reduce a **un** estado — *orden CONFIRMED + Factura B ISSUED + totalmente
+     compensada por NC ISSUED + orden sin cancelar*. (En `DRAFT` no hay CHARGE
+     → sin factura, `sql.financial-transaction.repository.ts:628`,`:633`;
+     `COMPLETED`/`CANCELLED` fuera de `TRANSICION_CANCELAR`,
+     `order.repository.ts:87-89`.) **Ningún camino feliz produce ese estado:**
+     el único emisor de NC contra la Factura B de una orden es el escape del
+     sub-bloque 4 (`invoice.service.ts:357` routing + único productor de
+     `ADJUSTMENT` con `reversedInvoiceId`+`orderId`), y su happy path cancela
+     la orden él mismo (tx2). El único residuo donde (a) podría actuar —
+     crash entre AFIP-OK y tx2, orden aún `CONFIRMED` — **autosana
+     re-invocando el escape** (fast-path `cancel-order-with-credit-note.service.ts:156-179`
+     no aplica → tx1 reusa el `existing` ADJUSTMENT `:248` → `retryExisting`
+     devuelve la NC ya `ISSUED` → tx2 corre). *Verificación pendiente: no se
+     tració `retryExisting` línea por línea; si NO autosana, el residuo queda
+     sin dueño — pero aun así el arreglo sería el camino de reanudación del
+     escape, no un botón de cancelar paralelo.*
+   - **Argumento RBAC (decisivo):** `orders.routes.ts:297` (`POST /:id/cancel`
+     → `authorize(Roles.ORDERS)`) vs `:316-317` (`POST /:id/cancel-with-credit-note`
+     → `authorize(Roles.EMISOR_NOTA_CREDITO)`, grupo creado a propósito en
+     `6154edc`, ADR q7). (a) abriría **una segunda puerta, con menos
+     privilegio, al mismo desenlace terminal** sobre una orden con documento
+     fiscal vivo. Erosión estrecha (deja *finalizar*, no *emitir* la NC — la
+     NC ya la emitió un `EMISOR_NOTA_CREDITO`), pero real, a cambio de **cero
+     casos de uso vivos**. Con beneficio cero, cualquier costo gana.
+   - **Verificación pendiente 2:** "el frontend ofrece `POST /api/invoices`
+     sólo para `type === 'CHARGE'`" se citó de un mensaje de commit, NO se
+     verificó contra `appfrontend-main`. La ruta (`invoices.routes.ts:82-98`)
+     no tiene ese filtro. No cambia la conclusión (el único productor de un
+     `ADJUSTMENT` reversor sigue siendo el escape) pero no está confirmado.
+   - **Condición de reapertura:** un caso operativo real que produzca el
+     estado *orden CONFIRMED + Factura B compensada + sin cancelar* y en el
+     que el operador deba poder finalizarla con el botón normal en vez de
+     reanudar el escape. Si eso existe, (a) se reabre con ese caso concreto
+     adelante y la pregunta va al dueño (habilitar (a) es divergencia
+     deliberada de ERPNext + Odoo).
 6. Cerca de arquitectura (capa iv) — test que falla si `order.service.ts`
    importa el módulo del núcleo.
 
