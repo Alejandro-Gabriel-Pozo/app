@@ -267,4 +267,26 @@ describe('CancelOrderWithCreditNoteService', () => {
     expect(res.emitted).toBe(true);
     expect(ft.settleCalls.length).toBe(2);
   });
+
+  // deuda (i)/(ii) de `ef27e42` -- el `!` viejo tras createWithClient null.
+  it('un ADJUSTMENT idempotente que revierte OTRA factura -- lanza diagnosticable, no lo adopta', async () => {
+    ft.rows.set('adj-viejo', {
+      id: 'adj-viejo', businessId: BIZ, customerId: 'cust-1', orderId: ORDER_ID,
+      type: 'ADJUSTMENT', amount: -121, currency: 'ARS', status: 'PENDING',
+      idempotencyKey: `cancel-order-with-cn:${ORDER_ID}`,
+      reversedInvoiceId: 'inv-OTRA',
+    } as FinancialTransaction);
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
+      .rejects.toThrow(/revierte la factura "inv-OTRA".*factura viva del cargo es "inv-1"/s);
+  });
+
+  it('createWithClient devuelve null y el re-read no encuentra nada -- lanza "invariante rota", no un undefined', async () => {
+    // Estado imposible bajo el índice único + A3.8, pero el `!` viejo lo
+    // habría propagado como `undefined.id`.
+    ft.createWithClient = async () => null;
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
+      .rejects.toThrow(/invariante rota \(un ADJUSTMENT no se borra\)/);
+  });
 });

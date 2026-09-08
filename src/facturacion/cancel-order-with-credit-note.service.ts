@@ -245,9 +245,28 @@ export class CancelOrderWithCreditNoteService {
       // `-charge.amount` es siempre negativo. `InvoiceService.buildCreditNote()`
       // ya normaliza con `Math.abs(tx.amount)` -- el comprobante es ciego al
       // signo. Solo INSERT (A3.8). Idempotente por `key`.
+      // Todo ADJUSTMENT idempotente que adoptemos por la clave
+      // `cancel-order-with-cn:<orderId>` tiene que revertir la MISMA factura
+      // que la que acabamos de resolver del cargo (`linkage.invoiceId`). Si
+      // difieren, la clave colisionó con otro documento -- imposible bajo R12
+      // (una factura emitida no cambia) + el índice único de un CHARGE por
+      // orden (v45). El `!` viejo de acá abajo daba `undefined` y reventaba
+      // con "Cannot read 'id' of undefined" varias líneas después; esto lo
+      // hace diagnosticable en el punto exacto (deuda (i)/(ii) de `ef27e42`).
+      const assertRevertsExpectedInvoice = (adj: FinancialTransaction): void => {
+        if (adj.reversedInvoiceId !== originalInvoiceId) {
+          throw new Error(
+            `cancelOrderWithCreditNote: el ADJUSTMENT idempotente de la orden "${orderId}" ` +
+              `(key "${key}", id "${adj.id}") revierte la factura "${adj.reversedInvoiceId}", ` +
+              `pero la factura viva del cargo es "${originalInvoiceId}".`,
+          );
+        }
+      };
+
       const existing = prior ?? (await this.financialTransactionRepo.getByIdempotencyKey(key));
       let adjustment: FinancialTransaction;
       if (existing) {
+        assertRevertsExpectedInvoice(existing);
         adjustment = existing;
       } else {
         const created = await this.financialTransactionRepo.createWithClient(client, {
@@ -266,7 +285,27 @@ export class CancelOrderWithCreditNoteService {
           confirmedBy: auth.confirmedBy,
           reversedInvoiceId: originalInvoiceId,
         });
-        adjustment = created ?? (await this.financialTransactionRepo.getByIdempotencyKey(key))!;
+        if (created) {
+          adjustment = created;
+        } else {
+          // `createWithClient` hizo ON CONFLICT DO NOTHING: la fila ya existía
+          // por otra transacción. Bajo el índice único de `idempotency_key`,
+          // ese INSERT vía `client` bloqueó hasta que la otra tx resolvió, así
+          // que para cuando llegamos acá esa fila está COMMITEADA y visible.
+          // Un ADJUSTMENT no se borra (A3.8: sólo INSERT + UPDATE de `status`),
+          // así que el re-read la encuentra sí o sí -- si no, la invariante
+          // está rota y hay que verlo, no propagar un `undefined`.
+          const reread = await this.financialTransactionRepo.getByIdempotencyKey(key);
+          if (!reread) {
+            throw new Error(
+              `cancelOrderWithCreditNote: createWithClient devolvió null (ON CONFLICT) para la key ` +
+                `"${key}" pero getByIdempotencyKey no encontró el ADJUSTMENT -- invariante rota ` +
+                `(un ADJUSTMENT no se borra).`,
+            );
+          }
+          assertRevertsExpectedInvoice(reread);
+          adjustment = reread;
+        }
       }
 
       return { adjustmentId: adjustment.id, originalInvoiceId, businessId: order.businessId };
