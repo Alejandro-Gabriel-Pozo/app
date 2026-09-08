@@ -17,12 +17,12 @@
 
 | Repo | `origin/main` | En producción |
 |---|---|---|
-| `app-main` | **`23ab073`** | **Desplegado y live.** Deploy Render `dep-daflgms9v7es73c82ibg` (08/09 00:36 UTC, status `live`, `autoDeploy: yes` / trigger `commit`). Build corrió `npm run migrate:tenants` → `Versión objetivo: v46 · 2/2 OK, 0 fallo(s)` (re-aplicación idempotente; **v46 es del 03/09**, ningún commit del rango tocó `.sql`). Servicio `srv-d8tdt41kh4rs73buo5ng` (slug `app-chny`, `app-chny.onrender.com`). Rango `9222e84..23ab073`: sub-bloque 3 (`1bd961b`), grupo `EMISOR_NOTA_CREDITO` (`6154edc`), sub-bloque 4 del ADR cancelar-con-NC (`ef27e42`) + su commit de deuda (`23ab073`). Deploy previo citado acá era `dep-dafd0s142hec73d4uub0` / `9222e84`. |
+| `app-main` | **`0baf2b6`** | **Desplegado y live.** Deploy Render `dep-dafmeuc9v7es73c8r6b0` (08/09 01:41 UTC, status `live`, trigger `new_commit`). Build corrió `npm run migrate:tenants` → `Versión objetivo: v46 · 2/2 OK, 0 fallo(s)` (re-aplicación idempotente; **v46 es del 03/09**, ningún commit del rango tocó `.sql`). Servicio `srv-d8tdt41kh4rs73buo5ng` (slug `app-chny`, `app-chny.onrender.com`). Rango `23ab073..0baf2b6` (sub-bloque 5 del ADR cancelar-con-NC): (a) cerrada sin cablear F4 (`af2b2b5`), puntero de prod (`10e73e4`), (b) `CARGO_CON_COMPROBANTE_VIVO` reconciliado no es `grave` (`20366b1`), (b) doc + deuda 3-ter (`eb429fd`), (c) cerca de convención `reversed_invoice_id` (`0baf2b6`). CI del push: **5/5 verde** — `integration` contra `postgres:16-alpine` local incluido (establece el no-flake de `credit-note-compensation.integration.test.ts`, la evidencia que faltaba de `20366b1`). Deploy previo: `dep-daflgms9v7es73c82ibg` / `23ab073`. |
 | `appfrontend-main` | `613c206` | Vercel `reservasapp` · `host.zuluhub.com.ar`. **No tocado en este arco** salvo lectura. Pendiente de frontend: consumir `description`/`kind` del endpoint `GET /api/system/outbox/dead-letter` (ORDER-13/O5). |
 
 > Verificar siempre contra `git ls-remote origin refs/heads/main`, no contra
-> esta tabla. `CI` del último push: 5/5 verde (typecheck 40s · lint 34s ·
-> test 105s · **integration 104s, 22 suites** · schema-version-check 4s).
+> esta tabla. `CI` del último push (`0baf2b6`, run `34177419452`): 5/5 verde
+> (lint · schema-version-check · test · **integration** · typecheck).
 
 **Respaldo Neon** — branch `respaldo-pre-push-2026-09-07`
 (`br-fancy-tree-ax52rqma`, proyecto `ancient-king-17098519`), `current_state:
