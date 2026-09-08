@@ -129,6 +129,44 @@ precedente ERPNext `StockOverReturnError`).
 - **Comentario stale en `src/facturacion/sql.invoice.repository.ts` ~`:314-318`:**
   dice que el hueco cruzado de F4 está *"registrado como bloqueante de B-reservas"*.
   El ADR N2.a lo resolvió como doctrina. Corregir junto con el bloque 1.4 (3-ter).
+
+- **#1 — CHECK `chk_financial_transactions_reversed_invoice_type` (schema v46→v47)**
+  — ✅ RESUELTO (bloque 1.1 del plan, `3bcf5ab`, 08/09, pusheado + deployado +
+  verificado). `CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND','ADJUSTMENT'))`
+  sobre `financial_transactions`. Cierra la **mitad de datos** de la condición 3
+  del re-gate (la mitad de código = `reversed-invoice-id-convention.test.ts`,
+  `0baf2b6`).
+  - **Ensayo** en rama descartable `ensayo-v47-2026-09-08` (`br-morning-math-axljb1yc`,
+    copia de producción Demo con 20 FT reales): CHECK aplicado + def correcta;
+    `INSERT type='CHARGE'` + `reversed_invoice_id` → **rechazado** (`23514`);
+    filas `REFUND`/`ADJUSTMENT` + `reversed_invoice_id` y `CHARGE`/`REFUND` + NULL
+    → OK; **`schema.sql` completo reaplicado con las filas revertidoras presentes
+    → sin error**, `convalidated: true`.
+  - **Deploy** `dep-daftmg15efls73b7jon0` (live). `[migrate-tenants] Versión
+    objetivo: v47` → `✅ biz-demo-01 — migrado a v47` + `✅ cd6cd508… — migrado a
+    v47` (los dos "migrado", no "ya estaba al día"). Verificación de producción:
+    `pg_get_constraintdef` = la def esperada en las 2 tenants; 0 filas no
+    conformes en las 2; `schema_migrations MAX = 47` en las 2;
+    `businesses.schema_version = 47` (implícito por "migrado a v47" —
+    `updateSchemaVersion` corre antes de ese log). Sin filas `ensayo-v47-*` en
+    producción (0 en Demo). Ningún ALTER a mano contra producción — lo hizo el
+    deploy vía `migrate:tenants`.
+  - **Ramas Neon (runbook — registrar propósito/origen/estado):**
+    · `respaldo-pre-v47-demo-2026-09-08` (`br-steep-sunset-axxvv9il`) — backup
+      durable, desde `production` (Demo) @ LSN `0/478E368` / 09:39 UTC 08/09,
+      `no_compute`. **Punto de retorno pristino, NO tocar.**
+    · `ensayo-v47-2026-09-08` (`br-morning-math-axljb1yc`) — rama de ensayo,
+      desde `production` @ mismo LSN, con compute. Ya cumplió su función; borrable
+      cuando se cierre el bloque.
+    · Alamos: sin backup — 0 filas, 0 FT; un backup de tabla vacía no da punto de
+      retorno útil. Declarado.
+    · Se borró `ensayo-v46-served-at-2026-09-03` (`br-calm-mode-ax1ltup4`) para
+      liberar un slot (límite de 10 ramas del proyecto Neon) — era el ensayo de
+      un cambio en producción hace 5 días.
+  - **Rollback declarado en el commit** (`3bcf5ab`): no es "git revert y listo"
+    — el revert deja el constraint vivo + `schema_version` en 47 → warning por
+    request. Rollback real = re-landear, o dropear el constraint a mano en las 2
+    tenants + bajar `schema_version`.
 - **`MID-LOG-001`** — ✅ RESUELTO (bloque 0.2 del plan, 08/09).
   `src/api/middleware/error.middleware.ts`: política declarada — todo `DomainError`
   que mapea a `>= 409` (carreras, reglas de negocio, dependencia externa, code sin
@@ -177,7 +215,7 @@ precedente ERPNext `StockOverReturnError`).
 
 ## Arrastrado de `pendientes-2026-09-06.md` — abierto, detalle allá
 
-**ADR "cancelar con NC" — resto:** CHECK `reversed_invoice_id` mitad de datos (#1) ·
+**ADR "cancelar con NC" — resto:** ~~CHECK `reversed_invoice_id` mitad de datos (#1)~~ ✅ `3bcf5ab` ·
 3-ter filtro `cbte_tipo` (#2) · 4 filas de deuda de `ef27e42` (#3) · B3
 (`credit_note_request` + bandeja + `?status=`) (#4) · B-reservas
 (`getByReservationId` UNION, subcasos directa/consolidada/pool mixto,
