@@ -39,7 +39,7 @@ trabajo**. Dos son condiciones formales del re-gate del `architecture-governor`.
 Modo de falla del incidente del 25/08 (`CLAUDE.md` raíz): lo que queda fuera de la
 categoría que alguien relee cada sesión, desaparece del radar.
 
-### #19 — Cerca de arquitectura capa (iv) del ADR · 🔴 abierto
+### #19 — Cerca de arquitectura capa (iv) del ADR · ✅ RESUELTO
 
 `src/tests/architecture/` tiene 4 archivos (`api-auth-gate-order.test.ts`,
 `customer-portal-ownership-guard.test.ts`, `lock-order.test.ts`,
@@ -67,6 +67,50 @@ prueba de mutación).
 Es el sub-bloque 6/7 de B-núcleo+órdenes (`pendientes-2026-09-06.md:715-716`) y
 una condición formal del re-gate (ADR §4: *"junto con (i) es lo que realmente
 impide el code path"*). **Familia ADR, no deuda estructural.** → bloque 1.2 del plan.
+
+**✅ RESUELTO (08/09/2026, commit `f62278f`, bloque 1.2 del
+`plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`).**
+`src/tests/architecture/credit-note-escape-containment.test.ts`
+(`CN-ESCAPE-CONTAINMENT-001`). Cerró con **5** aserciones, no 3 — el
+`architecture-governor` sumó dos condiciones sobre el diseño original:
+
+- **(A)** pasó de "los dos services por nombre" a **deny-by-default**: barrido
+  de `src/pos-menu/` + `src/reservas/` enteros, `NUCLEO_IMPORT_ALLOWLIST` con
+  motivo (2 entradas hoy: `pos-menu/orders.routes.ts` —la ruta dedicada,
+  capa i— y `pos-menu/order-cancel-for-credit-note.ts` —el adaptador de
+  puerto—), chequea las dos direcciones (offender no listado / entrada
+  stale). `order.service.ts` y `reservation.service.ts` no pueden entrar ni
+  al allowlist.
+- **(B)** pasó de contar sólo `authorizeCreditNoteCancellation()` a una
+  **tabla `ESCAPE_CHOKEPOINTS` de dos filas**: el mint **y**
+  `cancelOrderWithCreditNote()`, el ENTRYPOINT de la función de escape. El
+  ADR §4 (iv) pide "el conteo de call-sites de **la función de escape**", no
+  de la fábrica del token — y el propio ADR (capa iii) dice que el token se
+  fabrica con `as unknown as Token` sin pasar por el mint. Contar sólo el
+  mint dejaba ese agujero; contar el entrypoint lo tapa.
+- **(C.1)** firmas congeladas de `cancelOrder`/`cancelReservation` y los dos
+  `findBlockingInvoiceLinkage`. **(C.2)** lista negra de nombres de flag de
+  bypass en los dos services (profundidad ante `if (bandera)` en el cuerpo).
+- **(D)** NUEVA (no estaba en el diseño de #19): `ESCAPE_ROUTES` — cada ruta
+  de escape exige su grupo de autz (`EMISOR_NOTA_CREDITO` para órdenes). Es
+  la capa (i); degradarlo a `Roles.ORDERS` no lo ven `rbac-route-coverage`
+  ni `rbac-matrix-sync`. Es un array de una fila hoy; B-reservas suma la
+  suya.
+
+7 falsos negativos declarados en el docblock, 6 mutaciones probadas (import
+del núcleo → A roja; call-site del entrypoint agregado → B roja mientras el
+mint sigue en 1; `authorize` degradado → D roja; 3er parámetro en
+`cancelOrder` → C.1+C.2 rojas; `if (esEscape)` en el cuerpo → C.2 roja;
+allowlist stale → A roja). Cero cambios de código de producción.
+
+**Pendiente abierto que salió de acá:** `app-main/CLAUDE.md` enumera las
+cercas de la familia RBAC ("segunda / tercera / cuarta cerca") y qué tocar
+al cambiar un `authorize(Roles.X)`. La aserción (D) es una quinta cerca de
+esa familia y agrega una tercera cosa a sincronizar a mano — el índice de
+`CLAUDE.md` quedó incompleto. `CLAUDE.md` es configuración del proyecto: su
+edición necesita el visto explícito del usuario, no entró en el commit de
+cierre. → registrar en el `pendientes` de la próxima sesión si el usuario
+no lo resuelve antes.
 
 ### #20 — Test del arqueo (condición 4 del re-gate) · 🔴 abierto
 
