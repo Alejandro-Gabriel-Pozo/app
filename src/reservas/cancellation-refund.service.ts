@@ -29,7 +29,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { ReservationStatus } from '../types/enums.js';
-import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError, RefundBaseChangedError } from '../domain/errors.js';
+import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError, RefundBaseChangedError, ReservationOnConsolidatedInvoiceError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import { CBTE_TIPO_FACTURA_B } from '../facturacion/afip-catalog.constants.js';
 import { acquireIdempotencyLock, applyCappedRefundToInvoice, createIdempotentPaymentWithClient, canonicalInvoiceLockOrder } from '../clientes-finanzas/payment-application.js';
@@ -193,6 +193,56 @@ export class CancellationRefundService {
         // comparten el mismo issuedAt (no cambia el resultado de ningún
         // test existente, ninguno tiene ese empate).
         .sort((a, b) => (b.issuedAt?.getTime() ?? 0) - (a.issuedAt?.getTime() ?? 0) || a.id.localeCompare(b.id));
+
+      // Bloque 3.1 (08/09/2026, ADR común cancelar-con-NC §6.1, gate
+      // `architecture-governor`) -- fail-closed provisional (decisión del
+      // dueño, opción C): si CUALQUIERA de las facturas ISSUED de la reserva
+      // es consolidada, se rechaza TODO el reembolso, aunque haya también
+      // una factura DIRECTA reembolsable. No es una limitación de tiempo --
+      // es la única forma reversible: `confirmRefund()` es de un solo tiro
+      // por reserva (idempotencia server-derived, `baseIdempotencyKey`
+      // arriba); un reparto PARCIAL contra la directa quemaría esa clave
+      // para siempre y el remanente consolidado caería al mismo
+      // ":sin-asignar" que este bloque vino a cerrar (hallazgo #1) -- ese
+      // reparto no se puede "completar después" por este camino. El reparto
+      // real por-reserva de una consolidada es "subcaso 2", bloque posterior.
+      //
+      // Va ANTES del loop de locks: no toma N `FOR UPDATE` sobre facturas
+      // que vamos a rechazar (POOL-STARV-001, `max:5`), ANTES del cómputo de
+      // `collected`/`NothingToRefundError` de más abajo (verificado por
+      // mutación, gate 08/09/2026: moverlo después rompe el camino AR puro
+      // -- W4 -- que hoy da `collected=0` para una consolidada con plata
+      // real adentro; el guard tiene que nombrar la situación real antes de
+      // que ese síntoma se manifieste), y DESPUÉS del re-chequeo de
+      // reintento de arriba (`lockedExisting`) -- un reintento sobre una
+      // reserva que YA tiene sus REFUND creados tiene que devolverlos, no
+      // empezar a tirar 409 (rompería la idempotencia que promete el
+      // docblock de este método).
+      //
+      // Dos huecos fail-open del guard, declarados, no cerrados acá:
+      // (a) `financialTransactionId === null` es un PROXY de "es
+      // consolidada", no un invariante de base -- no hay ningún CHECK que lo
+      // ate. Vale hoy porque `requestConsolidatedInvoice()` siempre inserta
+      // `financialTransactionId: null` (`invoice.service.ts`) -- si algún
+      // día una consolidada naciera con FT no-nulo, entraría al pool LIFO y
+      // se repartiría contra el tope GLOBAL de `getRefundableForUpdate()`
+      // (el defecto N2, ver el describe de caracterización en
+      // `cancellation-refund.integration.test.ts`).
+      // (b) El guard sólo ve Factura B (`cbteTipo === CBTE_TIPO_FACTURA_B`,
+      // filtro de arriba) -- una consolidada de OTRO tipo sería invisible
+      // acá y volvería al `:sin-asignar` de hallazgo #1. Hoy inalcanzable
+      // (el repo solo emite cbte_tipo 6/8) -- gatillo de revisión: el día
+      // que se emita Factura A o C.
+      //
+      // TOCTOU residual, no cerrado por este bloque: `acquireIdempotencyLock`
+      // serializa contra otros `confirmRefund()` de la MISMA reserva, no
+      // contra `requestConsolidatedInvoice()` -- una consolidada emitida
+      // justo después de esta lectura sigue escapando al guard
+      // (FACT-CONSOL-TOCTOU-01, preexistente, no lo agrava ni lo cierra).
+      const consolidated = issuedInvoices.find((inv) => inv.financialTransactionId === null);
+      if (consolidated) {
+        throw new ReservationOnConsolidatedInvoiceError(reservationId, consolidated.id);
+      }
 
       // Lockear las N facturas candidatas en orden CANÓNICO (por id) antes
       // de aplicar ninguna lógica de negocio en orden LIFO -- desacopla

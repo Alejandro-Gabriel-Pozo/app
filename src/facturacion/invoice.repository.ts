@@ -34,10 +34,16 @@ export interface InvoiceRepository {
   getByFinancialTransactionId(financialTransactionId: string): Promise<Invoice[]>;
   /**
    * C2 (23/08/2026, docs/diseno-cancelacion-notas-credito-c2-2026-08-23.md)
-   * — todas las facturas (cualquier status) de una reserva, resolviendo vía
-   * `financial_transactions.reservation_id` (JOIN, no requiere columna
-   * nueva en `invoices`). `CancellationRefundService.confirmRefund()` las
-   * filtra a `ISSUED` y las ordena por `issuedAt` para el reparto LIFO.
+   * — todas las facturas (cualquier status) de una reserva. Bloque 3.1
+   * (08/09/2026, ADR común cancelar-con-NC §6.1) — resuelve por los DOS
+   * caminos: individual (`financial_transactions.reservation_id`) y
+   * consolidada (`invoice_charges.financial_transaction_id` →
+   * `financial_transactions.reservation_id`), `UNION` con dedup. Antes
+   * (C2 original) era ciego a las consolidadas — hallazgo #1 del ADR.
+   * Sin filtro de status (R2) — `CancellationRefundService.confirmRefund()`
+   * filtra a `ISSUED` + Factura B y ordena por `issuedAt` para el reparto
+   * LIFO, y desde 3.1 rechaza fail-closed (`ReservationOnConsolidatedInvoiceError`)
+   * si alguna de las `ISSUED` es consolidada — ver el guard en el service.
    */
   getByReservationId(reservationId: string): Promise<Invoice[]>;
   /**

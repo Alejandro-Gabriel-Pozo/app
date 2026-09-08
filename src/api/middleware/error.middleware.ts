@@ -284,6 +284,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_MULTI_INVOICE':
     case 'ORDER_INVOICE_HAS_NO_LINES':
     case 'CREDIT_NOTE_CAP_EXCEEDED':
+    case 'RESERVATION_ON_CONSOLIDATED_INVOICE':
       return 409;
 
     // --- 503 Service Unavailable ---

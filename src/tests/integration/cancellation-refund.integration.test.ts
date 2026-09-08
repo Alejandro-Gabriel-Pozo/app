@@ -32,7 +32,7 @@ import { AccountsReceivableService } from '../../clientes-finanzas/accounts-rece
 import { SqlAccountsReceivableRepository } from '../../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { SqlCustomerRepository } from '../../clientes-finanzas/sql.customer.repository.js';
-import { NothingToRefundError } from '../../domain/errors.js';
+import { ReservationOnConsolidatedInvoiceError } from '../../domain/errors.js';
 
 let db: SqlClient;
 let pool: pg.Pool;
@@ -795,23 +795,28 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
   // cubre al otro. Test de caracterización propio, pendiente (W4).
   // =====================================================================
 
-  it('CARACTERIZACIÓN hallazgo #1 -- con factura CONSOLIDADA el reembolso cae a :sin-asignar y NO emite Nota de Crédito', async () => {
+  it('bloque 3.1 (ex hallazgo #1) -- con factura CONSOLIDADA, confirmRefund() rechaza fail-closed, NO cae a :sin-asignar', async () => {
     const { reservation } = await seedCancelledReservationWithConsolidatedInvoice({
       totalPrice: 1000, paid: 1000,
     });
 
-    const created = await makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+    // Antes del fix (08/09/2026): `getByReservationId()` hacía INNER JOIN
+    // sobre `invoices.financial_transaction_id`, que en una consolidada es
+    // NULL -- la factura no entraba en `issuedInvoices`, y el reembolso
+    // caía silencioso a ":sin-asignar" sin su NC. Con el UNION + el guard
+    // de 3.1: la consolidada SÍ entra, y el guard fail-closed rechaza TODO
+    // antes de asentar nada.
+    await expect(makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toThrow(ReservationOnConsolidatedInvoiceError);
 
-    // Defecto: `getByReservationId()` hace INNER JOIN sobre
-    // `invoices.financial_transaction_id`, que en una consolidada es NULL
-    // (el vínculo vive en `invoice_charges`), así que la factura no entra
-    // en `issuedInvoices`. Queda un asiento en el ledger contra una
-    // Factura B con CAE real de AFIP, sin su NC.
-    expect(created.map((tx) => tx.reversedInvoiceId)).toEqual([null]);
-    expect(created.reduce((sum, tx) => sum + tx.amount, 0)).toBe(1000);
+    const { rows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM financial_transactions WHERE reservation_id = $1 AND type = 'REFUND'`,
+      [reservation.id],
+    );
+    expect(Number(rows[0]!.count), 'cero filas REFUND -- el guard corta antes de asentar nada, no cae a :sin-asignar').toBe(0);
   });
 
-  it('CARACTERIZACIÓN W1 -- collected() cuenta el pago ENTERO de una consolidada aunque la reserva valga una fracción', async () => {
+  it('bloque 3.1 (ex W1) -- consolidada compartida entre 2 reservas: confirmRefund() rechaza, NO sobre-reembolsa el pago ENTERO de la otra', async () => {
     // Escenario del governor: consolidada de 2000 que cubre R1 (300) y R2
     // (1700). El operador registra los 2000 de la empresa con
     // `reservationId: R1` -- `POST /customers/:id/payments`
@@ -826,22 +831,27 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
     const collected = await financialRepo.getCollectedPaymentTotalForReservation(reservationA.id);
     // 2000 para una reserva que vale 300: `getCollectedPaymentTotalForReservation`
     // suma por `reservation_id` a secas -- ignora `settled_invoice_id` y
-    // `invoice_charges`.
+    // `invoice_charges`. Este hecho SIGUE siendo cierto -- lo que cambia es
+    // que ya no llega a usarse: el guard de 3.1 corre ANTES.
     expect(collected).toBe(2000);
 
-    const created = await makeService().confirmRefund(reservationA.id, BUSINESS_ID, 'user-1');
+    // Antes del fix: sobre-reembolso de 2000 en el ledger, sin documento
+    // fiscal, y un fix ingenuo de la query (unir sin capar por porción)
+    // hubiera hecho que `buildCreditNote()` emitiera una NC de 2000 contra
+    // la Factura B con CAE -- revirtiendo fiscalmente los 1700 de R2, una
+    // estadía VIVA sin cancelar. Por eso el fix de la query no podía ir
+    // solo -- va con el guard fail-closed.
+    await expect(makeService().confirmRefund(reservationA.id, BUSINESS_ID, 'user-1'))
+      .rejects.toThrow(ReservationOnConsolidatedInvoiceError);
 
-    // HOY: sobre-reembolso de 2000 en el ledger, sin documento fiscal.
-    // CON EL FIX INGENUO (unir la query sin capar por porción): estos 2000
-    // llevarían `reversedInvoiceId` = la consolidada, y `buildCreditNote()`
-    // emitiría una NC de 2000 contra la Factura B con CAE --  revirtiendo
-    // fiscalmente los 1700 de R2, que es una estadía VIVA, sin cancelar.
-    // Por eso el fix de la query no puede ir solo.
-    expect(created.reduce((sum, tx) => sum + tx.amount, 0)).toBe(2000);
-    expect(created.map((tx) => tx.reversedInvoiceId)).toEqual([null]);
+    const { rows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM financial_transactions WHERE reservation_id = $1 AND type = 'REFUND'`,
+      [reservationA.id],
+    );
+    expect(Number(rows[0]!.count)).toBe(0);
   });
 
-  it('CARACTERIZACIÓN W2 -- el dueño de la consolidada (empresa) y el destinatario del REFUND (huésped) son personas distintas', async () => {
+  it('bloque 3.1 (ex W2) -- la asimetría dueño-consolidada (empresa) vs. destinatario-REFUND (huésped) queda inalcanzable: el guard rechaza antes de asentar', async () => {
     const { reservation, guest, company, invoiceId } = await seedCancelledReservationWithConsolidatedInvoice({
       totalPrice: 1000, paid: 1000,
     });
@@ -850,68 +860,86 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
       `SELECT customer_id FROM invoices WHERE id = $1`, [invoiceId],
     );
     expect(rows[0]!.customer_id, 'la consolidada es de la EMPRESA').toBe(company.id);
-
-    const created = await makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
-
-    // `confirmRefund()` asienta el REFUND con `reservation.customer.id`
-    // (cancellation-refund.service.ts:271) = el HUÉSPED. Hoy esto es
-    // inocuo sólo porque el INNER JOIN impide que se emita la NC: si se
-    // uniera la query sin tocar esto, el crédito de plata caería en la
-    // cuenta del huésped y la reversión fiscal en la Factura B de la
-    // empresa -- dos cuentas distintas, sin contrapartida.
-    // Decisión del dueño (05/09/2026): la plata vuelve a la EMPRESA, que
-    // es quien pagó. O sea que esta línea documenta lo que hay que cambiar.
-    expect(created.every((tx) => tx.customerId === guest.id)).toBe(true);
     expect(guest.id).not.toBe(company.id);
+
+    // Antes del fix: `confirmRefund()` asentaba el REFUND con
+    // `reservation.customer.id` (el HUÉSPED) contra una NC que reversaría
+    // fiscalmente la Factura B de la EMPRESA -- dos cuentas distintas, sin
+    // contrapartida (A3.9). Con el guard de 3.1 esto queda INALCANZABLE: el
+    // caso entero rechaza antes de asentar nada, así que ya no hay
+    // `created[].customerId` que pueda estar mal. La decisión de negocio de
+    // a quién vuelve la plata (§6.2 del ADR: la EMPRESA, no el huésped)
+    // sigue pendiente para el subcaso 2 (reparto real) -- no la resuelve
+    // este bloque.
+    await expect(makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toThrow(ReservationOnConsolidatedInvoiceError);
   });
 
-  it('CARACTERIZACIÓN W3 -- con factura directa Y consolidada, hoy sólo se ve la directa (el pool LIFO no se mezcla todavía)', async () => {
+  it('bloque 3.1 (ex W3) -- con factura directa Y consolidada, getByReservationId() ahora ve las DOS, y confirmRefund() rechaza TODO (todo-o-nada)', async () => {
     const { reservation, directInvoiceId, consolidatedInvoiceId } =
       await seedReservationWithDirectAndConsolidatedInvoices({ direct: 400, consolidated: 600, paid: 400 });
 
     const invoiceRepo = new SqlInvoiceRepository(db);
     const visto = (await invoiceRepo.getByReservationId(reservation.id)).map((i) => i.id);
 
-    // Hoy: sólo la directa. Si se uniera la query sin más, las dos caerían
-    // en el MISMO pool LIFO ordenado por issuedAt
-    // (cancellation-refund.service.ts:195) y el reembolso del depósito del
-    // huésped podría aplicarse contra la factura de la empresa.
-    expect(visto).toEqual([directInvoiceId]);
-    expect(visto).not.toContain(consolidatedInvoiceId);
+    // Antes del fix: sólo la directa (INNER JOIN ciego a la consolidada).
+    // Con el UNION de 3.1: las DOS.
+    expect(visto.sort()).toEqual([consolidatedInvoiceId, directInvoiceId].sort());
+
+    // El guard es TODO-O-NADA a propósito, no reparte contra la directa e
+    // ignora la consolidada: confirmRefund() es de un solo tiro por reserva
+    // (idempotencia server-derived) -- un reparto parcial quemaría la clave
+    // para siempre y el remanente consolidado caería al mismo ":sin-asignar"
+    // que este bloque vino a cerrar. Ver el comentario del guard en
+    // `cancellation-refund.service.ts` para el razonamiento completo.
+    await expect(makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toThrow(ReservationOnConsolidatedInvoiceError);
+
+    const { rows } = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM financial_transactions WHERE reservation_id = $1 AND type = 'REFUND'`,
+      [reservation.id],
+    );
+    expect(Number(rows[0]!.count), 'ni siquiera se repartió contra la directa').toBe(0);
   });
 
   // =====================================================================
-  // CARACTERIZACIÓN W4 (05/09/2026, architecture-governor, segunda
-  // revisión) -- el CAMINO AR PURO, el que declaraba "no verificado" el
-  // propio `pendientes-2026-09-05.md`. Ídem aviso de arriba: afirma el
-  // defecto ACTUAL, no la especificación deseada.
+  // W4 (05/09/2026, architecture-governor, segunda revisión; reescrito
+  // 08/09/2026 con el bloque 3.1) -- el CAMINO AR PURO. Antes del guard de
+  // 3.1, el síntoma era `NothingToRefundError` (ver historia abajo);
+  // DESDE 3.1 el síntoma cambia -- el guard corre ANTES que el chequeo de
+  // `collected`/`NothingToRefundError` (`cancellation-refund.service.ts`,
+  // orden real: `issuedInvoices` -> guard -> loop de locks -> `collected`),
+  // y el seed de este test SÍ deja un vínculo consolidado alcanzable por
+  // `reservation_id` (el `CHARGE` de la empresa se crea con
+  // `reservationId: reservation.id`, más `invoice_charges` apuntando a ese
+  // mismo `CHARGE`) -- así que el guard dispara primero.
   //
   // `transferStayBalanceToReceivable()` -> `requestConsolidatedInvoice()`
   // -> `markCollected()` -- ningún PAYMENT de este camino lleva
   // `reservation_id` (verificado leyendo las dos ramas de
   // `markCollected()`, `accounts-receivable.service.ts:353` y `:394`: las
   // dos usan `customerId: ar.companyCustomerId`, sin `reservationId` ni
-  // `stayId`). Por eso `getCollectedPaymentTotalForReservation()` da 0 y
-  // el síntoma NO es "cae a :sin-asignar" (W1/hallazgo #1) sino
-  // `NothingToRefundError` ANTES de llegar a mirar ninguna factura.
-  //
-  // Dos síntomas distintos del mismo agujero -- cuál te toca depende
-  // pura y simplemente de qué UI usó el operador para cobrar.
+  // `stayId`) -- ESE hecho sigue siendo cierto, `collected` sigue dando 0.
+  // Lo que cambió es que ya no es lo que determina el error: el guard corta
+  // antes de que ese síntoma viejo se manifieste. Y es lo correcto, no un
+  // daño colateral -- `NothingToRefundError` sobre una reserva cuya empresa
+  // pagó $1000 es una degradación deshonesta (informa "no hay nada que
+  // devolver" cuando la plata está en una consolidada que este circuito no
+  // sabe repartir); `RESERVATION_ON_CONSOLIDATED_INVOICE` nombra la
+  // situación real.
   // =====================================================================
 
-  it('CARACTERIZACIÓN W4 -- camino AR puro real (transferencia -> consolidada -> markCollected): NothingToRefundError, no ":sin-asignar"', async () => {
+  it('bloque 3.1 (ex W4) -- camino AR puro real (transferencia -> consolidada -> markCollected): el guard rechaza ANTES de que collected()=0 se manifieste', async () => {
     const { reservation } = await seedCollectedConsolidatedThenCancelled({ totalPrice: 1000 });
 
-    // A diferencia de W1 (cae a :sin-asignar con monto completo), acá el
-    // reembolso NI ARRANCA -- collected() da 0 porque el PAYMENT real de
-    // markCollected() no tiene reservation_id.
-    await expect(
-      makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1'),
-    ).rejects.toThrow(NothingToRefundError);
+    await expect(makeService().confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toThrow(ReservationOnConsolidatedInvoiceError);
 
+    // El hecho que sostenía W4 sigue siendo cierto -- sólo que ya no es la
+    // causa del rechazo (el guard corre antes de que este número se use).
     const financialRepo = new SqlFinancialTransactionRepository(db);
     const collected = await financialRepo.getCollectedPaymentTotalForReservation(reservation.id);
-    expect(collected, 'el PAYMENT de markCollected() es invisible para esta query -- por diseño de esa función, no por bug de la query').toBe(0);
+    expect(collected, 'el PAYMENT de markCollected() sigue siendo invisible para esta query -- por diseño de esa función, no por bug de la query').toBe(0);
   });
 });
 
@@ -943,6 +971,71 @@ describe.skipIf(skipIfNoDb)('CancellationRefundService.confirmRefund() -- lock +
  * remanentes propios, $100 y $200), no de C.
  * =========================================================================
  */
+describe.skipIf(skipIfNoDb)('SqlInvoiceRepository.getByReservationId() -- UNION con dedup (bloque 3.1, condición C2 del gate 08/09/2026)', () => {
+  it('una reserva con DOS CHARGE distintos facturados en la MISMA consolidada -> devuelve UNA sola fila, no dos', async () => {
+    // `idx_invoice_charges_ft` es único por `financial_transaction_id`, NO
+    // por `(invoice_id, financial_transaction_id)` -- una reserva con 2
+    // cargos (ej. seña + saldo) facturados en el mismo ciclo de
+    // consolidación produce 2 filas `invoice_charges` hacia la MISMA
+    // factura. Sin `UNION` (dedup) -- si fuera `UNION ALL` -- la rama
+    // consolidada del JOIN devolvería la factura DOS veces.
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const guest = await seedCustomer(db);
+    const company = await seedCustomer(db, { fullName: 'Empresa Dedup SA' });
+    const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: 1000, status: 'CANCELLED' });
+
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const chargeDeposito = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservation.id, type: 'CHARGE', amount: 300, currency: 'ARS', status: 'SETTLED',
+    });
+    const chargeSaldo = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: company.id,
+      reservationId: reservation.id, type: 'CHARGE', amount: 700, currency: 'ARS', status: 'SETTLED',
+    });
+
+    const invoiceId = await insertConsolidatedInvoice(company.id, [
+      { id: chargeDeposito!.id, amount: 300 },
+      { id: chargeSaldo!.id, amount: 700 },
+    ]);
+
+    const invoiceRepo = new SqlInvoiceRepository(db);
+    const result = await invoiceRepo.getByReservationId(reservation.id);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe(invoiceId);
+  });
+
+  it('sigue viendo la factura DIRECTA de siempre (regresión: el camino individual del UNION no se rompió)', async () => {
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const guest = await seedCustomer(db);
+    const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: 500, status: 'CANCELLED' });
+
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    const charge = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+      reservationId: reservation.id, type: 'CHARGE', amount: 500, currency: 'ARS', status: 'SETTLED',
+    });
+    const invoiceId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status, issued_at)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+               5, 'PES', $7, 0, $7, '123', '2030-01-01', 'ISSUED', NOW())`,
+      [invoiceId, BUSINESS_ID, charge!.id, guest.id, `idem-${invoiceId}`, cbteNroCounter++, 500],
+    );
+
+    const invoiceRepo = new SqlInvoiceRepository(db);
+    const result = await invoiceRepo.getByReservationId(reservation.id);
+    expect(result.map((i) => i.id)).toEqual([invoiceId]);
+  });
+});
+
 describe.skipIf(skipIfNoDb)('SqlInvoiceRepository.getRefundableForUpdate() -- CARACTERIZACIÓN de contaminación entre reservas de una misma consolidada (N2, 05/09/2026)', () => {
   it('CARACTERIZACIÓN -- el tope global de la factura NO es el tope correcto para cancelar UNA sola reserva del lote', async () => {
     const category = await seedCategory(db);

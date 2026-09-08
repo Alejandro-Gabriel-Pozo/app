@@ -728,6 +728,31 @@ export class CreditNoteCapExceededError extends DomainError {
 }
 
 /**
+ * ADR común cancelar-con-NC, bloque 3.1 (§6.1, `docs/pendientes-2026-09-08.md`
+ * #5a, gate `architecture-governor` 08/09/2026) -- `getByReservationId()`
+ * (tras el fix UNION) devolvió una factura consolidada `ISSUED` entre las
+ * facturas de la reserva. `confirmRefund()` NO reparte contra ella: el tope
+ * de `getRefundableForUpdate()` es GLOBAL de la factura, contaminado entre
+ * todas las reservas que comparten esa consolidada (N2) -- repartir sin más
+ * podría sobre-reembolsar o revertir fiscalmente la porción de OTRA reserva
+ * todavía viva. Fail-closed provisional (decisión del dueño, opción C,
+ * 05/09/2026): rechaza TODO el reembolso (aunque la reserva también tenga
+ * una factura directa reembolsable) -- `confirmRefund()` es de un solo tiro
+ * por reserva (idempotencia server-derived), así que un reparto parcial
+ * quemaría la clave para siempre y el remanente consolidado caería al mismo
+ * ":sin-asignar" que este bloque vino a cerrar. El reparto real por-reserva
+ * de una consolidada es "subcaso 2", bloque posterior de B-reservas.
+ */
+export class ReservationOnConsolidatedInvoiceError extends DomainError {
+  constructor(reservationId: string, invoiceId: string) {
+    super(
+      `La reserva "${reservationId}" está cubierta (total o parcialmente) por la factura consolidada "${invoiceId}" -- el reembolso individual todavía no reparte contra una consolidada compartida entre reservas. Requiere resolución manual.`,
+      'RESERVATION_ON_CONSOLIDATED_INVOICE',
+    );
+  }
+}
+
+/**
  * ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- cierre de la
  * ventana de carrera (TOCTOU) entre `cancelOrder()` y `requestInvoice()`:
  * las dos toman `FOR UPDATE` sobre la MISMA fila de `orders` antes de mutar

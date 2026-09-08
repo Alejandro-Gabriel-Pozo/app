@@ -267,6 +267,49 @@ describe('CancellationRefundService.confirmRefund', () => {
     expect(created[0]?.reversedInvoiceId).toBe('inv-original');
   });
 
+  it('bloque 3.1 (08/09/2026) -- rechaza con ReservationOnConsolidatedInvoiceError si la única factura ISSUED es consolidada (financialTransactionId null)', async () => {
+    const { service, financialRepo } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      invoices: [
+        makeInvoice({ id: 'inv-consolidada', financialTransactionId: null, impTotal: 1000, issuedAt: daysFromNow(-1) }),
+      ],
+    });
+    await expect(service.confirmRefund('res-1', 'biz-1', 'user-1'))
+      .rejects.toMatchObject({ code: 'RESERVATION_ON_CONSOLIDATED_INVOICE' });
+    // Cero filas creadas -- el guard corta ANTES del loop de locks/reparto.
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('bloque 3.1 -- rechaza TODO el reembolso aunque también haya una factura DIRECTA reembolsable (todo-o-nada, no reparte solo contra la directa)', async () => {
+    const { service, financialRepo, invoiceRepo } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      invoices: [
+        makeInvoice({ id: 'inv-directa', financialTransactionId: 'ft-directa', impTotal: 400, issuedAt: daysFromNow(-10) }),
+        makeInvoice({ id: 'inv-consolidada', financialTransactionId: null, impTotal: 600, issuedAt: daysFromNow(-1) }),
+      ],
+    });
+    await expect(service.confirmRefund('res-1', 'biz-1', 'user-1'))
+      .rejects.toMatchObject({ code: 'RESERVATION_ON_CONSOLIDATED_INVOICE' });
+    expect(financialRepo.created).toHaveLength(0);
+    // Ningún lock tomado -- el guard corre ANTES del loop canónico.
+    expect(invoiceRepo.lockedInvoiceIds).toHaveLength(0);
+  });
+
+  it('bloque 3.1 -- regresión negativa: con SOLO facturas directas, el guard no dispara y el reparto sigue funcionando', async () => {
+    const { service } = buildService({
+      collected: 1000,
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      invoices: [
+        makeInvoice({ id: 'inv-directa', financialTransactionId: 'ft-directa', impTotal: 1000, issuedAt: daysFromNow(-1) }),
+      ],
+    });
+    const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+    expect(created).toHaveLength(1);
+    expect(created[0]?.reversedInvoiceId).toBe('inv-directa');
+  });
+
   it('ignora facturas no ISSUED (PENDING/REJECTED) en el reparto', async () => {
     const { service } = buildService({
       collected: 1000,

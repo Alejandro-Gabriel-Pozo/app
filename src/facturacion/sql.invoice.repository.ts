@@ -429,12 +429,18 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // re-emitir una fila `REJECTED` SIN volver a pasar por
     // `buildCreditNote()` -- así que sin este chequeo de cap. Hoy es
     // INALCANZABLE (un solo escritor por factura, mismo argumento que cerró
-    // `pendientes-2026-09-08.md` #21 originalmente); se vuelve alcanzable
-    // con el bloque 3.1 (`getByReservationId()` UNION con consolidadas).
-    // Cerrarlo bien (¿el re-chequeo de `retryExisting()` excluye su propia
-    // fila, o hace falta otro mecanismo?) es una decisión de diseño aparte,
-    // registrada en `pendientes-2026-09-08.md`, gate propio -- NO alcance de
-    // este bloque.
+    // `pendientes-2026-09-08.md` #21 originalmente). **Corrección
+    // (08/09/2026, gate del bloque 3.1): el bloque 3.1 NO lo vuelve
+    // alcanzable** -- su fail-closed (`ReservationOnConsolidatedInvoiceError`
+    // en `cancellation-refund.service.ts`) reduce, no amplía, el conjunto de
+    // escrituras de `reversed_invoice_id`: corta ANTES de que se cree
+    // ningún `REFUND` contra una factura consolidada. Este C1 sigue
+    // dependiendo de que exista un segundo escritor real por factura, que
+    // recién entraría con el "subcaso 2" (reparto real por-reserva de una
+    // consolidada), bloque posterior de B-reservas -- no con 3.1. Cerrarlo
+    // bien (¿el re-chequeo de `retryExisting()` excluye su propia fila, o
+    // hace falta otro mecanismo?) es una decisión de diseño aparte,
+    // registrada en `pendientes-2026-09-08.md`, gate propio.
     //
     // Consumidores PERMANENTES reales del cap (corrección C2 del gate --
     // la redacción anterior de este comentario en el ADR/plan estaba mal:
@@ -574,11 +580,49 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async getByReservationId(reservationId: string): Promise<Invoice[]> {
+    // Bloque 3.1 (ADR común cancelar-con-NC §6.1, `docs/pendientes-2026-09-08.md`
+    // #5a, gate `architecture-governor` 08/09/2026) -- antes esto era un
+    // INNER JOIN ciego a las consolidadas (`financial_transaction_id IS NULL`
+    // a propósito, el vínculo vive en `invoice_charges`). Ahora UNION de los
+    // dos caminos, mismo espíritu que `resolveInvoiceLinkage()`/`NC_LINKAGE_UNION`
+    // pero NO literalmente el mismo fragmento -- acá se filtra por
+    // `reservation_id`, no por un `financial_transaction_id` puntual, así que
+    // la rama consolidada necesita el join extra a `financial_transactions`
+    // vía `invoice_charges.financial_transaction_id` para llegar a la reserva.
+    //
+    // `i.*` en las DOS ramas (no una lista de columnas a mano como
+    // `NC_LINKAGE_UNION`) -- ventaja estructural: una columna nueva en
+    // `invoices` entra en las dos ramas a la vez, no puede desalinearse el
+    // conteo entre ellas (el modo de falla que el bloque 1.4 sí tuvo que
+    // corregir a mano). Lo que SIGUE siendo frágil y hay que declarar: el
+    // día que `invoices` sume una columna sin operador de igualdad (`json` a
+    // secas, `point`), este UNION revienta en runtime ("could not identify
+    // an equality operator") sin que ningún typecheck avise -- verificado
+    // hoy contra schema.sql que todas las columnas actuales son UNION-safe
+    // (JSONB sí tiene operador de igualdad; `json` a secas NO).
+    //
+    // `UNION` (dedup), NUNCA `UNION ALL`: `idx_invoice_charges_ft`
+    // (schema.sql) es único por `financial_transaction_id`, NO por
+    // `(invoice_id, financial_transaction_id)` -- una reserva con N `CHARGE`
+    // distintos facturados en la MISMA consolidada (la forma normal de un
+    // ciclo de facturación, no un caso raro) produce N filas en la rama
+    // consolidada, todas para la MISMA factura. Sin dedup, `confirmRefund()`
+    // vería esa factura N veces en el pool LIFO. Cubierto por
+    // `credit-note-cap.integration.test.ts`-style test dedicado (C2 del
+    // gate) -- ver `getByReservationId() -- UNION` en el archivo de
+    // integración de reservas.
     const { rows } = await this.db.query<InvoiceRow>(
-      `SELECT i.* FROM invoices i
-       JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
-       WHERE ft.reservation_id = $1
-       ORDER BY i.created_at ASC`,
+      `SELECT * FROM (
+         SELECT i.* FROM invoices i
+         JOIN financial_transactions ft ON ft.id = i.financial_transaction_id
+         WHERE ft.reservation_id = $1
+         UNION
+         SELECT i.* FROM invoice_charges ic
+         JOIN invoices i ON i.id = ic.invoice_id
+         JOIN financial_transactions ft ON ft.id = ic.financial_transaction_id
+         WHERE ft.reservation_id = $1
+       ) linked
+       ORDER BY created_at ASC`,
       [reservationId],
     );
     return rows.map(rowToEntity);
