@@ -103,14 +103,15 @@ mint sigue en 1; `authorize` degradado → D roja; 3er parámetro en
 `cancelOrder` → C.1+C.2 rojas; `if (esEscape)` en el cuerpo → C.2 roja;
 allowlist stale → A roja). Cero cambios de código de producción.
 
-**Pendiente abierto que salió de acá:** `app-main/CLAUDE.md` enumera las
-cercas de la familia RBAC ("segunda / tercera / cuarta cerca") y qué tocar
-al cambiar un `authorize(Roles.X)`. La aserción (D) es una quinta cerca de
-esa familia y agrega una tercera cosa a sincronizar a mano — el índice de
-`CLAUDE.md` quedó incompleto. `CLAUDE.md` es configuración del proyecto: su
-edición necesita el visto explícito del usuario, no entró en el commit de
-cierre. → registrar en el `pendientes` de la próxima sesión si el usuario
-no lo resuelve antes.
+**Sub-ítem que salió de acá — ✅ RESUELTO (commit `f86dd66`):**
+`app-main/CLAUDE.md` enumera las cercas de la familia RBAC ("segunda /
+tercera / cuarta cerca") y qué tocar al cambiar un `authorize(Roles.X)`.
+La aserción (D) es una quinta cerca de esa familia y agrega un sexto
+artefacto acotado (`ESCAPE_ROUTES`) a sincronizar al tocar el `authorize`
+de la ruta del escape — el índice de `CLAUDE.md` quedaba incompleto. Como
+`CLAUDE.md` es configuración del proyecto, no entró en el commit de cierre
+`c519d98`; se hizo aparte en `f86dd66` con el visto explícito del usuario,
+con el contenido pre-especificado por el `architecture-governor`.
 
 ### #20 — Test del arqueo (condición 4 del re-gate) · 🔴 abierto
 
