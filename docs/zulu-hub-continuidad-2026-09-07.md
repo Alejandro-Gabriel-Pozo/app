@@ -17,7 +17,7 @@
 
 | Repo | `origin/main` | En producción |
 |---|---|---|
-| `app-main` | **`9222e84`** | **Desplegado y live.** Deploy Render `dep-dafd0s142hec73d4uub0` (07/09 14:57 UTC, `autoDeploy: yes` / trigger `commit`). Build corrió `npm run migrate:tenants` → `Versión objetivo: v46 · 2/2 OK, 0 fallo(s)` (re-aplicación idempotente; **v46 es del 03/09**, ningún commit del rango tocó `.sql`). Health `/health` OK. Servicio `srv-d8tdt41kh4rs73buo5ng` (slug `app-chny`, `app-chny.onrender.com`). |
+| `app-main` | **`23ab073`** | **Desplegado y live.** Deploy Render `dep-daflgms9v7es73c82ibg` (08/09 00:36 UTC, status `live`, `autoDeploy: yes` / trigger `commit`). Build corrió `npm run migrate:tenants` → `Versión objetivo: v46 · 2/2 OK, 0 fallo(s)` (re-aplicación idempotente; **v46 es del 03/09**, ningún commit del rango tocó `.sql`). Servicio `srv-d8tdt41kh4rs73buo5ng` (slug `app-chny`, `app-chny.onrender.com`). Rango `9222e84..23ab073`: sub-bloque 3 (`1bd961b`), grupo `EMISOR_NOTA_CREDITO` (`6154edc`), sub-bloque 4 del ADR cancelar-con-NC (`ef27e42`) + su commit de deuda (`23ab073`). Deploy previo citado acá era `dep-dafd0s142hec73d4uub0` / `9222e84`. |
 | `appfrontend-main` | `613c206` | Vercel `reservasapp` · `host.zuluhub.com.ar`. **No tocado en este arco** salvo lectura. Pendiente de frontend: consumir `description`/`kind` del endpoint `GET /api/system/outbox/dead-letter` (ORDER-13/O5). |
 
 > Verificar siempre contra `git ls-remote origin refs/heads/main`, no contra
