@@ -604,11 +604,38 @@ contra Postgres real, camino `REFUND` no regresionado.
      CI** (`postgres:16-alpine`), que corre al pushear. Rollback si CI se pone
      rojo: `git revert 20366b1` (sin schema, sin datos, sin migración).
 
-   **Falta de este ítem: la parte (c) — cerca de convención** (condición 3 del
-   re-gate: ninguna fila con `reversed_invoice_id IS NOT NULL AND type NOT IN
-   ('REFUND','ADJUSTMENT')`, patrón `lock-order.test.ts` con falsos negativos
-   declarados). Bloque propio, a gate con diseño. (Texto de
-   `OrderChargeInvoicedError` A1 — YA hecho en el sub-bloque 4.)
+   **Parte (c) — cerca de convención — ✅ RESUELTA LA MITAD DE CÓDIGO
+   (este commit, 07/09/2026, `architecture-governor` APROBADO CON CONDICIONES).**
+   `src/tests/architecture/reversed-invoice-id-convention.test.ts` (nuevo,
+   patrón `lock-order.test.ts` — `stripComments`, `SI ESTO ROMPE`, **6** falsos
+   negativos declarados, anti-vacuidad). Verifica que los write sites de
+   `reversedInvoiceId` sobre una fila de `financial_transactions` en TypeScript
+   son **exactamente** `{reservas/cancellation-refund.service.ts` (`type: 'REFUND'`),
+   `facturacion/cancel-order-with-credit-note.service.ts` (`type: 'ADJUSTMENT'`)`}`
+   y que cada uno setea `type` a `'REFUND'`/`'ADJUSTMENT'`. Prueba de mutación:
+   write site falso → rojo (`expected [(3)] to equal [(2)]`); `type: 'ADJUSTMENT'`
+   → `'CHARGE'` → rojo (`toMatch(TYPE_LITERAL_RE)`).
+   - **ALCANCE HONESTO:** la condición 3 del re-gate, textual, pide "ninguna
+     **FILA** con `reversed_invoice_id IS NOT NULL AND type NOT IN
+     ('REFUND','ADJUSTMENT')`" — aserción sobre DATOS. Esta cerca es estática:
+     cubre que **ningún write site TS** queda fuera de la whitelist. **La mitad
+     de DATOS queda ABIERTA** — un `UPDATE` en SQL crudo, una migración o un
+     backfill la saltean (FN #3 y FN #6). El cierre completo es el CHECK de
+     schema — fila nueva abajo.
+   - **CHECK de schema (deuda estructural — cierra la mitad de datos de la
+     condición 3):**
+     `CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND','ADJUSTMENT'))`
+     sobre `financial_transactions`. Bloque propio, gate propio: es schema →
+     bump de `CURRENT_SCHEMA_VERSION` → backup durable de cada tenant DB →
+     rama descartable → verificación de producción. **Barato AHORA:** 3-bis
+     midió **0 filas** con `reversed_invoice_id` en las dos tenants, así que
+     no hay filas que validar ni backfill que decidir. Ese costo **crece
+     monótonamente** en cuanto se acumulen escapes reales. La ventana barata
+     está abierta hoy.
+
+   (Texto de `OrderChargeInvoicedError` A1 — YA hecho en el sub-bloque 4.)
+   **El sub-bloque 5 queda cerrado** salvo la mitad de datos de la condición 3
+   (el CHECK, arriba).
 
    - **3-ter (deuda declarada, `architecture-governor` gate de (a), se cayó
      entre gates y se registra acá):** la subquery `nc` de
