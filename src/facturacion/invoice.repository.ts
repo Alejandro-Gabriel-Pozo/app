@@ -285,6 +285,55 @@ export interface InvoiceRepository {
    * próximo evento de esa orden la re-evalúa.
    */
   classifyOrderLiveInvoice(client: SqlClient, orderId: string): Promise<'RECONCILED' | 'NOT_RECONCILED'>;
+  /**
+   * Bloque 3.3-d (09/09/2026, gate `architecture-governor`) — espejo de
+   * `classifyOrderLiveInvoice()` de arriba, lado RESERVAS, para que
+   * `handleReservationCancelled` decida la severidad del rechazo
+   * `CARGO_CON_COMPROBANTE_VIVO` de `voidByReservationId()`. Mismas dos
+   * condiciones (F4 fiscal + ledger `SETTLED`), mismo fail-closed, MISMA
+   * doctrina — pero con TRES divergencias reales frente a órdenes que el
+   * gate exigió declarar acá (condición C3), no copiar el docblock verbatim:
+   *
+   * 1. **F4 pregunta por la factura ENTERA, no por la porción de esta
+   *    reserva.** Una orden liga exactamente una factura, nunca consolidada
+   *    (1:1, `invoices.financial_transaction_id`); una reserva puede compartir
+   *    una factura CONSOLIDADA con otras reservas. El escape de reservas
+   *    (`cancel-reservation-with-credit-note.service.ts`) para ese caso emite
+   *    una NC **PARCIAL** (solo la porción de esta reserva, `frozenChargeIds`) —
+   *    `getIssuedCreditNoteCompensationTotal()` no ve "compensación parcial",
+   *    ve "¿el `imp_total` completo de la factura está cubierto?". **Residual
+   *    conocido, no cerrado por este bloque:** una cancelación consolidada-parcial
+   *    en el camino feliz da `'NOT_RECONCILED'` acá (la factura entera sigue
+   *    sin compensar del todo) → sigue `grave` en `registrarDesenlace()`. Cerrarlo
+   *    exigiría un clasificador por PAR `(invoiceId, reservationId)` — mismo
+   *    primitivo que ya usa el tope por par de 3.3-a
+   *    (`getInFlightCreditNoteTotalForPairForUpdate`, filtro
+   *    `r.reservation_id = $2`) pero con un denominador propio a decidir
+   *    (¿neto de cargos, o `imp_total` con IVA de la porción?) — bloque de
+   *    diseño aparte, gate propio.
+   * 2. **La condición de ledger (`reversed_invoice_id = $1`) es de alcance
+   *    FACTURA, no de esta reserva** — en una consolidada, cuenta también las
+   *    filas revertidoras de OTRAS reservas contra la misma factura. Sigue
+   *    siendo fail-closed (sólo ESTRECHA: más filas por chequear, nunca
+   *    menos), pero significa que el ledger de una reserva puede depender de
+   *    que OTRA reserva haya settleado su propia porción.
+   * 3. **La guarda que la llama (`handleReservationCancelled`) es más frágil
+   *    que su par de órdenes.** `voidByReservationId()` no filtra
+   *    `candidatos` por `type` (a diferencia del guard de entrada de
+   *    `voidByOrderId()`) — una reserva con un `PAYMENT` propio
+   *    (`CustomerAccountService.recordPayment()`, alcanzable por
+   *    `POST /api/customers/.../payments`, algo que NO puede pasarle a una
+   *    orden) produce `rechazos = ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']`
+   *    — la rama ESTRECHA del handler (exactamente un rechazo) no dispara, y
+   *    este método ni se llama. **El pasivo de deploy que este bloque retira
+   *    queda acotado al subconjunto "factura directa, sin `PAYMENT` propio ni
+   *    filas anuladas previas en la reserva"** — ver la medición real en
+   *    `pendientes-2026-09-08.md` #27.
+   *
+   * Recibe `client` crudo del tenant, sin lock — mismo criterio que
+   * `classifyOrderLiveInvoice`.
+   */
+  classifyReservationLiveInvoice(client: SqlClient, reservationId: string): Promise<'RECONCILED' | 'NOT_RECONCILED'>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

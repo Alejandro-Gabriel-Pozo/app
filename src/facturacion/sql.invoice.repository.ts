@@ -588,6 +588,65 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return 'RECONCILED';
   }
 
+  async classifyReservationLiveInvoice(
+    client: SqlClient,
+    reservationId: string,
+  ): Promise<'RECONCILED' | 'NOT_RECONCILED'> {
+    // Bloque 3.3-d (09/09/2026, gate `architecture-governor`) -- espejo de
+    // classifyOrderLiveInvoice() de arriba. Ver el docblock de la interfaz
+    // para las 3 divergencias reales frente a órdenes (F4 por factura
+    // ENTERA no por porción, ledger de alcance factura, guarda más frágil
+    // del lado reservas) -- no reafirmar acá lo que ya dice ese docblock.
+
+    // Factura B (`cbte_tipo = 6`) ISSUED ligada a algún CHARGE de la
+    // reserva, por el camino individual (`invoices.financial_transaction_id`)
+    // o el consolidado (`invoice_charges`). Mismo UNION conceptual que
+    // `resolveInvoiceLinkage()`/`classifyOrderLiveInvoice()`, filtrado por
+    // `ft.reservation_id` en vez de `ft.order_id`.
+    const { rows: facturas } = await client.query<{ id: string; imp_total: string }>(
+      `SELECT DISTINCT i.id, i.imp_total
+         FROM invoices i
+         JOIN financial_transactions ft
+           ON ft.id = i.financial_transaction_id
+           OR ft.id IN (
+                SELECT ic.financial_transaction_id FROM invoice_charges ic
+                 WHERE ic.invoice_id = i.id
+              )
+        WHERE ft.reservation_id = $1
+          AND ft.type = 'CHARGE'
+          AND i.status = 'ISSUED'
+          AND i.cbte_tipo = $2`,
+      [reservationId, CBTE_TIPO_FACTURA_B],
+    );
+    // Sin Factura B ISSUED no hay comprobante fiscal vivo que "reconciliar":
+    // que `voidByReservationId` haya dado `CARGO_CON_COMPROBANTE_VIVO` en ese
+    // caso apunta a un PENDING/FAILED_UNCERTAIN, no a una NC -> fail-closed.
+    if (facturas.length === 0) return 'NOT_RECONCILED';
+
+    for (const f of facturas) {
+      // (1) FISCAL -- F4, reusado verbatim. Ver divergencia 1 del docblock
+      //     de la interfaz: pregunta por la factura ENTERA.
+      const compensado = await this.getIssuedCreditNoteCompensationTotal(client, f.id);
+      if (!isInvoiceFullyCompensatedByIssuedCreditNotes(parseFloat(f.imp_total), compensado)) {
+        return 'NOT_RECONCILED';
+      }
+      // (2) LEDGER -- ver divergencia 2 del docblock: alcance FACTURA, no
+      //     de esta reserva puntual.
+      const { rows: rev } = await client.query<{ total: string; settled: string }>(
+        `SELECT COUNT(*)                                  AS total,
+                COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
+           FROM financial_transactions
+          WHERE reversed_invoice_id = $1
+            AND type IN ('REFUND', 'ADJUSTMENT')`,
+        [f.id],
+      );
+      const total = Number(rev[0]!.total);
+      const settled = Number(rev[0]!.settled);
+      if (total === 0 || total !== settled) return 'NOT_RECONCILED';
+    }
+    return 'RECONCILED';
+  }
+
   async getChargeIdsForInvoice(invoiceId: string): Promise<string[]> {
     // ADR común cancelar-con-NC §3 N1.a(iii) -- inverso de resolveInvoiceLinkage().
     // UNION (no ALL) de los dos caminos: individual (invoices.financial_transaction_id

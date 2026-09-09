@@ -31,10 +31,17 @@
  * Si no está definida, la suite completa se saltea.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import type { Arca } from '@arcasdk/core';
+
+// Bloque 3.3-d -- el describe de reconciliación OBSERVA la severidad del log
+// de `registrarDesenlace` (info reconciliado vs error anomalía). Mismo
+// patrón que `cancel-order-with-credit-note.integration.test.ts`.
+vi.mock('../../logger.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
 
 import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
 import { seedCategory, seedResource, seedCustomer, seedReservation } from './helpers/seed.js';
@@ -53,6 +60,9 @@ import { InvoiceService } from '../../facturacion/invoice.service.js';
 import { CancelReservationWithCreditNoteService } from '../../facturacion/cancel-reservation-with-credit-note.service.js';
 import { ReservationCancelForCreditNote } from '../../reservas/reservation-cancel-for-credit-note.js';
 import { authorizeCreditNoteCancellation } from '../../facturacion/cancel-with-credit-note.js';
+import { handleReservationCancelled } from '../../workers/outbox.handlers.js';
+import { logger } from '../../logger.js';
+import type { DomainEvent } from '../../repositories/domain-event.repository.js';
 import {
   CreditNoteCancellationPendingError,
   CreditNoteAttributionMismatchError,
@@ -422,4 +432,187 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
     );
     expect(Number(eventRows[0]!.count)).toBe(0);
   }, 30_000);
+
+  // ─── Bloque 3.3-d -- handleReservationCancelled + classifyReservationLiveInvoice ───
+  // Contra Postgres real, ejercita el `classifyReservationLiveInvoice` REAL
+  // (SQL, no fake) y observa la severidad del log de `registrarDesenlace`.
+  // Espejo de `cancel-order-with-credit-note.integration.test.ts` describe
+  // '(b) reconciliación del residual #3', MÁS los 2 casos que el gate de
+  // 3.3-d exigió (condición C1): consolidado-parcial (residual conocido,
+  // NO se cierra acá) y reserva con un PAYMENT propio (divergencia 3 del
+  // docblock de `classifyReservationLiveInvoice` -- la guarda ni siquiera
+  // consulta la clasificación).
+  describe('(b) reconciliación del residual #3 -- bloque 3.3-d', () => {
+    function reservationCancelledEvent(reservationId: string): DomainEvent {
+      return {
+        id: 1, businessId: BIZ, aggregateType: 'RESERVATION', aggregateId: reservationId,
+        eventType: 'reservation.cancelled', payload: { reservationId },
+      };
+    }
+
+    beforeEach(() => {
+      vi.mocked(logger.info).mockClear();
+      vi.mocked(logger.warn).mockClear();
+      vi.mocked(logger.error).mockClear();
+    });
+
+    it('escape completo, factura DIRECTA -> classifyReservationLiveInvoice = RECONCILED -> logger.info reconciliado, NO error', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { reservationId, customerId } = await seedConfirmedReservation(100);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR });
+      await buildSut(invoiceService).cancelReservationWithCreditNote(reservationId, auth(reservationId));
+
+      expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('RECONCILED');
+
+      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+        expect.stringContaining('reconciliado por Nota de Crédito'),
+      );
+    }, 40_000);
+
+    it('escape + ADJUSTMENT forzado a PENDING (tx2 sin commitear) -> NOT_RECONCILED -> sigue grave', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { reservationId, customerId } = await seedConfirmedReservation(100);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR });
+      await buildSut(invoiceService).cancelReservationWithCreditNote(reservationId, auth(reservationId));
+
+      // Simula tx2 a medias: NC ISSUED, Factura B compensada fiscalmente,
+      // pero la fila revertidora no llegó a SETTLED -> el saldo del cliente
+      // no netea.
+      await db.query(
+        `UPDATE financial_transactions SET status = 'PENDING' WHERE reservation_id = $1 AND type = 'ADJUSTMENT'`, [reservationId],
+      );
+
+      expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('NOT_RECONCILED');
+
+      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reconciliado: true }), expect.anything(),
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    }, 40_000);
+
+    it('NEGATIVO -- reserva a CANCELLED con Factura B ISSUED SIN NC (3ra puerta) -> sigue grave', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { reservationId, customerId } = await seedConfirmedReservation(100);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR });
+      // Sin escape: forzamos CANCELLED por UPDATE directo (simula un camino
+      // desconocido que llega a CANCELLED sin emitir NC).
+      await db.query(`UPDATE reservations SET status = 'CANCELLED' WHERE id = $1`, [reservationId]);
+
+      expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('NOT_RECONCILED');
+
+      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    }, 40_000);
+
+    // ─── Condición C1 del gate (09/09/2026): 2 casos adicionales, medidos ───
+    it('C1(i) -- consolidada 2 reservas, escape PARCIAL: residual conocido, NO cerrado -- classifyReservationLiveInvoice da NOT_RECONCILED en el camino feliz (F4 mira la factura ENTERA, no la porción)', async () => {
+      const { reservationId: resA, customerId: custA } = await seedConfirmedReservation(60);
+      const { reservationId: resB, customerId: custB } = await seedConfirmedReservation(40);
+
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+            cae, cae_vto, status, issued_at)
+         VALUES ($1, $2, NULL, $3, $4, 'homologacion', 3, $5, $6, 1, 96, '0',
+                 5, 'PES', 100, 0, 100, '123', '2030-01-01', 'ISSUED', NOW())`,
+        [invoiceId, BIZ, custA, `idem-${invoiceId}`, CBTE_TIPO_FACTURA_B, cbteNroCounter++],
+      );
+      const chargeA = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: custA, reservationId: resA,
+        type: 'CHARGE', amount: 60, currency: 'ARS', status: 'SETTLED',
+      });
+      const chargeB = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: custB, reservationId: resB,
+        type: 'CHARGE', amount: 40, currency: 'ARS', status: 'SETTLED',
+      });
+      await db.query(`INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount) VALUES ($1,$2,$3,60)`, [randomUUID(), invoiceId, chargeA!.id]);
+      await db.query(`INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount) VALUES ($1,$2,$3,40)`, [randomUUID(), invoiceId, chargeB!.id]);
+      await db.query(
+        `INSERT INTO invoice_items (id, invoice_id, reservation_id, description, quantity, unit_price, subtotal, iva_rate)
+         VALUES ($1,$2,$3,'linea A',1,60,60,0)`, [randomUUID(), invoiceId, resA],
+      );
+      await db.query(
+        `INSERT INTO invoice_items (id, invoice_id, reservation_id, description, quantity, unit_price, subtotal, iva_rate)
+         VALUES ($1,$2,$3,'linea B',1,40,40,0)`, [randomUUID(), invoiceId, resB],
+      );
+
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      await buildSut(invoiceService).cancelReservationWithCreditNote(resA, auth(resA));
+
+      // MEDIDO, no asumido: el residual declarado en el docblock de la
+      // interfaz se confirma acá -- la NC parcial (impTotal=60 de 100) no
+      // cierra F4 de la factura ENTERA.
+      expect(await invoiceRepo.classifyReservationLiveInvoice(db, resA)).toBe('NOT_RECONCILED');
+
+      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(resA));
+
+      // Sigue grave -- residual conocido, PINEADO como comportamiento actual,
+      // no corregido en este bloque (ver docblock de la interfaz, divergencia 1).
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    }, 40_000);
+
+    it('C1(ii) -- reserva con un PAYMENT propio: voidByReservationId da 2 rechazos, la guarda ESTRECHA no dispara, ni se consulta la clasificación', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { reservationId, customerId } = await seedConfirmedReservation(100);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR });
+      await buildSut(invoiceService).cancelReservationWithCreditNote(reservationId, auth(reservationId));
+
+      // Divergencia 3 (docblock de la interfaz): un PAYMENT con
+      // `reservation_id` -- alcanzable en producción vía
+      // `CustomerAccountService.recordPayment()` -- que una orden nunca
+      // podría tener.
+      await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'PAYMENT', amount: 100, currency: 'ARS', status: 'SETTLED',
+      });
+
+      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+
+      // MEDIDO: 2 rechazos exactos, no 1 -- confirma que la rama estrecha del
+      // handler NO dispara con un PAYMENT presente (el pasivo de deploy que
+      // este bloque retira queda acotado a reservas SIN PAYMENT propio).
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+      expect(logger.info).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reconciliado: true }), expect.anything(),
+      );
+    }, 40_000);
+  });
 });

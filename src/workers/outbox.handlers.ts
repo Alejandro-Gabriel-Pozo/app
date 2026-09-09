@@ -58,7 +58,9 @@ export function registerFinancialHandlers(
   // ADR común cancelar-con-NC sub-bloque 5 (b) -- `handleOrderCancelled` los
   // usa para clasificar el `CARGO_CON_COMPROBANTE_VIVO` post-escape. `db` es
   // el SqlClient del tenant (mismo que construye `invoiceRepo` en el registry).
-  invoiceRepo: Pick<InvoiceRepository, 'classifyOrderLiveInvoice'>,
+  // Bloque 3.3-d (09/09/2026) -- `handleReservationCancelled` reusa el MISMO
+  // `invoiceRepo`/`db`, sólo necesita el método hermano.
+  invoiceRepo: Pick<InvoiceRepository, 'classifyOrderLiveInvoice' | 'classifyReservationLiveInvoice'>,
   db: SqlClient,
 ): void {
   // Los nombres (`financial:*`) son la clave del casillero en
@@ -69,7 +71,7 @@ export function registerFinancialHandlers(
   worker
     .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo), { name: 'financial:reservation.confirmed' })
     .on('reservation.completed',      handleReservationCompleted(financialRepo),                      { name: 'financial:reservation.completed' })
-    .on('reservation.cancelled',      handleReservationCancelled(financialRepo),                      { name: 'financial:reservation.cancelled' })
+    .on('reservation.cancelled',      handleReservationCancelled(financialRepo, invoiceRepo, db),      { name: 'financial:reservation.cancelled' })
     .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo), { name: 'financial:reservation.price_adjusted' })
     .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo, transactionManager), { name: 'financial:order.confirmed' })
     .on('order.completed',       handleOrderCompleted(financialRepo),                      { name: 'financial:order.completed' })
@@ -161,11 +163,50 @@ export function handleReservationCompleted(
 
 export function handleReservationCancelled(
   financialRepo: FinancialTransactionRepository,
+  // Bloque 3.3-d (09/09/2026, gate `architecture-governor`) -- espejo de
+  // `handleOrderCancelled` de más abajo, para clasificar el
+  // `CARGO_CON_COMPROBANTE_VIVO` post-escape de reservas
+  // (`cancelReservationWithCreditNote()`, 3.3-b1/b2). `db` es el `SqlClient`
+  // del tenant (lo cablea `outbox.registry.ts`); lectura sin lock (ver el
+  // docblock de `classifyReservationLiveInvoice`).
+  invoiceRepo: Pick<InvoiceRepository, 'classifyReservationLiveInvoice'>,
+  db: SqlClient,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId } = event.payload as { reservationId: string };
     const desenlace = await financialRepo.voidByReservationId(reservationId, event.businessId);
-    registrarDesenlace(event, 'financial:reservation.cancelled', reservationId, desenlace);
+
+    // Rama ESTRECHA: sólo cuando el único rechazo es `CARGO_CON_COMPROBANTE_VIVO`.
+    // Del lado reservas esta guarda es MÁS FRÁGIL que su par de órdenes
+    // (divergencia 3 del docblock de `classifyReservationLiveInvoice`):
+    // `voidByReservationId()` no filtra `candidatos` por `type`, así que una
+    // reserva con un `PAYMENT` propio (`recordPayment()`, algo que NO puede
+    // pasarle a una orden) produce `['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']`
+    // -- 2 rechazos, esta rama NO dispara, sigue `grave`. Declarado, no
+    // corregido acá (ensanchar la guarda es un bloque propio, cambia
+    // semántica compartida con `registrarDesenlace()`).
+    let comprobanteReconciliado = false;
+    if (
+      desenlace.tipo === 'RECHAZADO'
+      && desenlace.rechazos.length === 1
+      && desenlace.rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'
+    ) {
+      try {
+        comprobanteReconciliado =
+          (await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)) === 'RECONCILED';
+      } catch (err) {
+        // Fail-closed: si la clasificación falla (error técnico), NO se
+        // degrada -- queda `grave`. El ruido de log es más barato que una
+        // anomalía de integridad silenciada.
+        comprobanteReconciliado = false;
+        logger.warn(
+          { tenant: event.businessId, reservationId, err: err instanceof Error ? err.message : String(err) },
+          '[outbox] classifyReservationLiveInvoice falló -- se mantiene grave',
+        );
+      }
+    }
+
+    registrarDesenlace(event, 'financial:reservation.cancelled', reservationId, desenlace, { comprobanteReconciliado });
   };
 }
 

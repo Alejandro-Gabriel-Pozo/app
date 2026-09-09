@@ -488,27 +488,94 @@ describe('outbox.handlers — handleReservationPriceAdjusted', () => {
   });
 });
 
-describe('outbox.handlers — handleReservationCancelled (RESERVA-10, 05/09/2026)', () => {
+describe('outbox.handlers — handleReservationCancelled (RESERVA-10, 05/09/2026 / bloque 3.3-d, 09/09/2026)', () => {
   let financialRepo: FakeFinancialTransactionRepository;
+
+  // Bloque 3.3-d -- `handleReservationCancelled` ahora recibe `invoiceRepo` + `db`,
+  // espejo de `handleOrderCancelled`. `classifyReservationLiveInvoice`
+  // configurable por test; NOT_RECONCILED por defecto (fail-closed).
+  let clasificacion: 'RECONCILED' | 'NOT_RECONCILED' | Error;
+  const fakeInvoiceRepo = {
+    classifyReservationLiveInvoice: vi.fn(async () => {
+      if (clasificacion instanceof Error) throw clasificacion;
+      return clasificacion;
+    }),
+  };
+  const fakeDb = {} as SqlClient;
+  const cancelar = () => handleReservationCancelled(financialRepo, fakeInvoiceRepo, fakeDb);
 
   beforeEach(() => {
     financialRepo = new FakeFinancialTransactionRepository();
+    clasificacion = 'NOT_RECONCILED';
+    fakeInvoiceRepo.classifyReservationLiveInvoice.mockClear();
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
   });
 
   it('anula pasando reservationId y businessId', async () => {
-    await handleReservationCancelled(financialRepo)(fakeReservationEvent({ reservationId: 'res-1' }));
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
     expect(financialRepo.voidReservaLlamadas).toEqual([['res-1', 'biz-test']]);
   });
 
   it('un RECHAZADO por estado de la reserva no lanza', async () => {
     financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['RESERVA_ESTADO_NO_ELEGIBLE'] };
-    await expect(handleReservationCancelled(financialRepo)(fakeReservationEvent({ reservationId: 'res-1' })))
+    await expect(cancelar()(fakeReservationEvent({ reservationId: 'res-1' })))
       .resolves.toBeUndefined();
   });
 
-  it('CARGO_CON_COMPROBANTE_VIVO no lanza -- pero queda logueado grave (evidencia de que algo bypaseó la puerta)', async () => {
+  // ─── bloque 3.3-d ──────────────────────────────────────────────────────
+  it('rechazo distinto de CARGO_CON_COMPROBANTE_VIVO -> NO consulta la clasificación', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['RESERVA_ESTADO_NO_ELEGIBLE'] };
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('divergencia 3 (gate 09/09/2026) -- CARGO_CON_COMPROBANTE_VIVO junto con OTRO rechazo (ej. TIPO_NO_LIQUIDABLE de un PAYMENT propio) -> NO consulta la clasificación, sigue grave', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] };
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] }),
+      expect.stringContaining('anomalía de integridad'),
+    );
+  });
+
+  it('escape reconciliado (RECONCILED) -> logger.info reconciliado, NO error', async () => {
     financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
-    await expect(handleReservationCancelled(financialRepo)(fakeReservationEvent({ reservationId: 'res-1' })))
-      .resolves.toBeUndefined();
+    clasificacion = 'RECONCILED';
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).toHaveBeenCalledWith(fakeDb, 'res-1');
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+      expect.stringContaining('reconciliado por Nota de Crédito'),
+    );
+  });
+
+  it('NEGATIVO -- reserva a CANCELLED con Factura B viva SIN NC (NOT_RECONCILED) -> sigue grave', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
+    clasificacion = 'NOT_RECONCILED';
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
+      expect.stringContaining('anomalía de integridad'),
+    );
+  });
+
+  it('la clasificación tira -> fail-closed: logger.warn del fallo + sigue grave', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
+    clasificacion = new Error('conexión caída');
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reservationId: 'res-1' }),
+      expect.stringContaining('se mantiene grave'),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('anomalía de integridad'),
+    );
   });
 });
