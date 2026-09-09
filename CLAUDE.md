@@ -140,15 +140,23 @@ allowlist chico con motivo, no una excepción muda. Esta cerca no resuelve
 hasta acá, ni la cerca de conteo (`rbac-matrix-sync`) ni `rbac-route-coverage`
 cruzan el CONTENIDO fila-por-fila de la sección 2 de la matriz (`archivo →
 método+path`) contra el código real — solo que el TOTAL de `authorize()`
-coincida, o que cada ruta tenga ALGUNA capa de autz. Una fila podía decir
-`FRONT_DESK` cuando el código exigía `MANAGEMENT` y nada lo detectaba.
+coincida, o que cada ruta tenga ALGUNA capa de autz. El hueco real que
+esto cierra: una ruta agregada bajo un `router.use(...)` que YA instala
+el guard de autz no suma un `authorize()` call-site nuevo (el conteo no
+se mueve) y `rbac-route-coverage` la da por cubierta (hay guard previo)
+— así que la matriz podía quedarse sin esa fila para siempre sin que
+ninguna cerca se enterara.
 `src/tests/architecture/rbac-matrix-section2-sync.test.ts` cruza
-existencia (no el grupo, ver su propio header) usando
-`route-enumeration.fixture.ts` (extraído el mismo día de
-`rbac-route-coverage.test.ts`, para no reimplementar el enumerador dos
-veces) contra bullets `- MÉTODO \`path\`` de la sección 2 — join por
+EXISTENCIA usando `route-enumeration.fixture.ts` (extraído el mismo día
+de `rbac-route-coverage.test.ts`, para no reimplementar el enumerador
+dos veces) contra bullets `- MÉTODO \`path\`` de la sección 2 — join por
 CÓDIGO, no por `docs/inventario-rutas.md` (ese mapa archivo→prefijo no es
-función: 2 archivos montan 2 routers en 2 prefijos distintos).
+función: 2 archivos montan 2 routers en 2 prefijos distintos). **No
+valida el GRUPO que cada fila declara** — una fila puede seguir diciendo
+`FRONT_DESK` cuando el código exige `MANAGEMENT` sin que esta cerca (ni
+ninguna otra de las cuatro) lo detecte; `chain` en `RouteCall` ya trae la
+cadena de middlewares con el `authorize(Roles.X)` real, así que el bloque
+de grupo queda habilitado pero no implementado.
 
 `EXCLUDED_FILES` (**noveno** artefacto manual del repo, ver la nota de
 numeración en "Contratos" más abajo): 11 archivos donde la sección 2
@@ -160,18 +168,31 @@ bullet real diverge del código, `/?companyCustomerId=` vs `/`).
 Cuantificado a propósito (cada entrada lleva el conteo real, verificado
 contra el código): agregar una ruta a uno de estos 11 archivos sin
 normalizar la sección 2 pone la suite roja — la deuda queda medida
-adentro de la cerca, no invisible. Normalizar esos 11 archivos a bullets
-(y sacarlos de `EXCLUDED_FILES`) es un bloque de docs aparte, no decidido
-todavía.
+adentro de la cerca, no invisible. **Hueco declarado, todavía sin
+cerrar:** la aserción de `EXCLUDED_FILES` solo verifica "¿el conteo de
+rutas protegidas sigue coincidiendo?", no "¿el archivo sigue sin bullets
+parseables?" — si alguien normaliza `products.routes.ts` a sus 30
+bullets reales y se olvida de sacarlo de `EXCLUDED_FILES`, el conteo
+sigue dando 30 y la cerca queda verde ignorando los 30 bullets nuevos.
+Cerrar esa dirección (contar bullets parseables por archivo y compararlo
+contra 0, o contra lo que corresponda) es el próximo bloque, obligatorio
+antes de empezar a normalizar cualquiera de los 11 archivos. Normalizar
+esos 11 archivos a bullets (y sacarlos de `EXCLUDED_FILES`) es, además,
+un bloque de docs aparte, no decidido todavía.
 
 ## Contratos — spec OpenAPI vs rutas reales
 
 Distinto de RBAC: esto es sobre qué documenta `src/openapi/spec.ts`, no
 sobre quién puede pegarle a una ruta. La numeración de "artefacto manual"
-es una sola cuenta para todo el repo, no una por sección -- el octavo se
-nombra acá abajo (`CLOSURE_MOUNTS`); el noveno (`EXCLUDED_FILES`,
+es una cuenta corrida para todo el repo, no una por sección -- el octavo
+se nombra acá abajo (`CLOSURE_MOUNTS`); el noveno (`EXCLUDED_FILES`,
 RBAC-MATRIX-SECTION2-001) se nombra en la sección RBAC de arriba, donde
-corresponde temáticamente.
+corresponde temáticamente. **No es una cuenta exhaustiva:**
+`MOUNT_TO_ROUTES_FILE` y `EXCLUDED_PATHS` (los dos allowlists manuales de
+`CONTRACT-001`, unas líneas más abajo) son del mismo tipo -- allowlist
+chico con motivo, verificado en las dos direcciones -- y no tienen número
+asignado. El número sirve para citar un artefacto puntual en una
+conversación ("el séptimo"), no para saber cuántos hay en total.
 
 **`src/openapi/spec.ts`** es un OpenAPI 3.0.3 escrito a mano, NO generado
 desde las rutas reales. Hasta el 09/09/2026 nada lo cruzaba contra el

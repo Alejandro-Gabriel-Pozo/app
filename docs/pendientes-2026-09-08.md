@@ -1315,6 +1315,40 @@ ningún artefacto y puede confundir a quien asuma que el spec es
 parcialmente generado. No corregido hoy (borrar comentarios es limpieza,
 bloque aparte).
 
+**`RBAC-MATRIX-SECTION2-001` -- deuda de normalización, cuantificada,
+no cerrada (09/09/2026, gate `architecture-governor`).** La cerca nueva
+`src/tests/architecture/rbac-matrix-section2-sync.test.ts` cruza fila por
+fila la sección 2 de `docs/rbac-matriz-endpoints.md` contra el código
+real, pero **11 archivos** (`EXCLUDED_FILES` en ese mismo archivo,
+líneas 66-111) describen sus rutas protegidas en prosa en vez de bullets
+parseables, y quedan sin verificar fila por fila: `customer.routes.ts`
+(7 rutas), `invoices.routes.ts` (8), `admin.routes.ts` (2),
+`platform.routes.ts` (11), `waste-reasons.routes.ts` (5),
+`consumption-destinations.routes.ts` (5), `products.routes.ts` (30),
+`cancellation-policies.routes.ts` (5), `roles.routes.ts` (5),
+`user-invitation.routes.ts` (4), `accounts-receivable.routes.ts` (3 --
+este SÍ tiene bullets, pero uno diverge del código real,
+`GET \`/?companyCustomerId=\`` vs `GET \`/\``). **85 rutas protegidas en
+total**, verificado contra `route-enumeration.fixture.ts` +
+`PUBLIC_ROUTES` (comando: correr
+`npx vitest run src/tests/architecture/rbac-matrix-section2-sync.test.ts`
+-- la primera aserción reporta cualquier desvío entre `hiddenCount`
+declarado y el conteo real). Normalizar estos 11 archivos a bullets (y
+sacarlos de `EXCLUDED_FILES`) es un bloque de docs aparte, no decidido
+todavía -- `products.routes.ts` (30) va solo, por tamaño.
+
+**Hueco declarado en la misma cerca, obligatorio ANTES de normalizar
+cualquiera de los 11 (no antes del push de hoy):** `EXCLUDED_FILES` hoy
+solo verifica que el conteo de rutas protegidas siga coincidiendo, no
+que el archivo siga sin bullets parseables. Si alguien normaliza
+`products.routes.ts` a sus 30 bullets reales y se olvida de sacarlo del
+allowlist, el conteo sigue dando 30 y la cerca queda verde ignorando los
+30 bullets nuevos -- verificado en las dos direcciones para todos los
+demás allowlists del repo (`PUBLIC_ROUTES`, `EXCLUDED_ROWS`,
+`CLOSURE_MOUNTS`), todavía no para este. Cerrarlo (contar bullets
+parseables por archivo, compararlo contra 0 o contra lo que
+corresponda) es el próximo bloque de código de este ítem.
+
 **Backlog de producto (sin fecha):** Gap C1-C · AR-FACT-NO-ISSUED-01 Fases 2-8 ·
 FACT-BORRADOR-001 (v2.8) · C1-B (bloqueada por proveedor) · C2/C3 · D7 (5 endpoints
 de reportes sin consumidor) · **ORDER-10 B4** (período contable — **decisión del
