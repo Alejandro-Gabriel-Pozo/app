@@ -562,6 +562,50 @@ materializa.
    una query read-only de producción** (las 2 tenants) que mida esa
    divergencia. Bloque propio, sin fecha, no depende de 3.3.
 
+### #28 — Bloque 3.3-a: mecanismo de atribución por reserva + tope por par · ✅ RESUELTO (08/09/2026)
+
+`getInFlightCreditNoteTotalForPairForUpdate()` (`sql.invoice.repository.ts`)
++ tercera rama de `buildCreditNote()` (`invoice.service.ts`) + 3 errores
+tipados nuevos (`CreditNoteAttributionBlockedError`,
+`CreditNoteAttributionMismatchError`, `CreditNotePairCapExceededError`).
+Detalle del mecanismo en `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+§6.3, fila del plan actualizada. Gate `architecture-governor` con una
+corrección obligatoria aplicada antes de cerrar: el método del tope por par
+no tomaba su propio `FOR UPDATE` (dependía de que el caller ya hubiera
+lockeado la fila) — corregido para que sea autocontenido, coherente con su
+propio nombre.
+
+**Evidencia:** unit (`invoice.service.test.ts`, 6 tests nuevos, 1985/1985
+sin regresión) + integración real contra Neon `test-integration-db`
+(`credit-note-pair-cap.integration.test.ts` nuevo, 3 tests, + 57/57 en las 7
+suites hermanas de la misma familia) + 4 mutaciones verificadas y
+revertidas + query read-only de producción (las 2 tenants, `count=0`).
+
+**Declaraciones del gate, registradas:**
+1. **Anti-vacuidad sólo corrida en Demo**, no en Alamos (ahí sólo se corrió
+   el `count=0` simple). El motivo real del 0 en Demo es más fuerte de lo
+   que "el JOIN no matchea" sugeriría: la tenant **no tiene ningún
+   `ADJUSTMENT`** todavía (`adjustments_total=0`), no sólo ninguno con
+   `reservation_id`+`reversed_invoice_id` juntos.
+2. **Asimetría de observabilidad.** La rama N3 (reversión total) tiene un
+   `logger.warn` si `Σ subtotal` no cierra con `impNeto`/`impTotal` de la
+   factura original. La rama nueva (parcial por reserva) no tiene
+   equivalente — no es incorrecto (la invariante se sostiene por
+   construcción del reparto de `resolveRefundableForPair()`), pero es una
+   asimetría a tener presente si se audita esa rama más adelante.
+3. **`NO_ITEMS` de `resolveRefundableForPair()` es inalcanzable** desde este
+   call-site (el branch ya exige `originalItems.length > 0` antes de
+   llamarla) — sin test dedicado en `invoice.service.ts`, sólo cubierto en
+   `refund-attribution.test.ts` (unit puro de la función).
+4. **C1** (bypass de `retryExisting()` sobre una NC `REJECTED`, ver #21)
+   **sigue inalcanzable.** 3.3-a no introduce un segundo escritor por
+   factura — eso recién pasa con el orquestador de `3.3-b`, y aun ahí queda
+   un solo escritor por PAR, no por factura.
+5. Los tests de integración de este bloque no corren en CI —
+   `TEST_DATABASE_URL` a mano, "verificado una vez, localmente, hoy", mismo
+   criterio que el resto de esta familia (`FOR-KEY-SHARE-001`,
+   `REFUND-INT-GUARD-001`).
+
 ---
 
 ## ✅ B-núcleo+órdenes — CERRADO (gate final `architecture-governor`, 08/09/2026)
