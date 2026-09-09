@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = join(__dirname, '../..');
+const REPO_ROOT = join(SRC_DIR, '..');
+const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 
 /**
  * L (23/08/2026, docs/rbac-matriz-endpoints.md) — mantiene el maestro RBAC
@@ -95,5 +97,47 @@ describe('Maestro RBAC (docs/rbac-matriz-endpoints.md) sincronizado con el códi
       count += (code.match(/authorize\(Roles\.[A-Z_]+\)/g) ?? []).length;
     }
     expect(count).toBe(EXPECTED_AUTHORIZE_CALL_SITES);
+  });
+
+  /**
+   * RBAC-MATRIX-HEADER-STALE-001 (09/09/2026, gate `architecture-governor`).
+   * El encabezado de `docs/rbac-matriz-endpoints.md` sección 2 repite a mano
+   * los mismos dos números que las constantes de arriba -- y ya se
+   * desincronizó dos veces en el mismo lugar (198/204 el 01/09/2026, 205/206
+   * el 09/09/2026, ver la nota de esa sección). Los dos tests de arriba
+   * validan CÓDIGO contra CONSTANTE; ninguno mira esta prosa. Esta cerca
+   * cierra ese hueco puntual -- no es un parser de markdown genérico, es
+   * "un número que ya se pudrió dos veces en este archivo exacto, con una
+   * constante propia para comparar".
+   *
+   * LO QUE NO CUBRE: cualquier otro número de este documento (la fecha de
+   * "Última actualización" en la línea 3, las filas de la matriz, la
+   * sección 4 -- esa la cruza `rbac-matrix-public-routes-sync.test.ts` con
+   * un criterio distinto). Solo el encabezado exacto de la sección 2.
+   */
+  it('el encabezado de la sección 2 de docs/rbac-matriz-endpoints.md coincide con EXPECTED_*', () => {
+    const doc = readFileSync(DOC_PATH, 'utf-8');
+    const headerRe = /## 2\. Matriz de endpoints por archivo \((\d+) call-sites, (\d+) archivos\)/g;
+    const matches = [...doc.matchAll(headerRe)];
+
+    expect(
+      matches.length,
+      matches.length === 0
+        ? `no encontré el encabezado de la sección 2 en ${DOC_PATH} -- ¿cambió el texto? Actualizá este regex y EXPECTED_* en el mismo cambio.`
+        : `encontré ${matches.length} ocurrencias del texto del encabezado en ${DOC_PATH} (una de ellas probablemente dentro de una nota que lo cita textualmente) -- esta cerca no puede saber cuál es el header real. Hacé que el texto citado en la nota difiera del encabezado real (ej. una palabra de más), o ajustá el regex para que solo matchee el encabezado real de la sección 2.`,
+    ).toBe(1);
+
+    const match = matches[0]!;
+    const [, docCallSites, docRoutesFileCount] = match;
+
+    expect(
+      Number(docCallSites),
+      `docs/rbac-matriz-endpoints.md dice "${docCallSites} call-sites" pero EXPECTED_AUTHORIZE_CALL_SITES es ${EXPECTED_AUTHORIZE_CALL_SITES} -- actualizá el encabezado de la sección 2.`,
+    ).toBe(EXPECTED_AUTHORIZE_CALL_SITES);
+
+    expect(
+      Number(docRoutesFileCount),
+      `docs/rbac-matriz-endpoints.md dice "${docRoutesFileCount} archivos" pero EXPECTED_ROUTES_FILE_COUNT es ${EXPECTED_ROUTES_FILE_COUNT} -- actualizá el encabezado de la sección 2.`,
+    ).toBe(EXPECTED_ROUTES_FILE_COUNT);
   });
 });
