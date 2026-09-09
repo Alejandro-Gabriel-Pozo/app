@@ -45,7 +45,10 @@ const SRC_DIR = join(__dirname, '../..');
 // orders.routes.ts suma POST /:id/cancel-with-credit-note,
 // authorize(Roles.EMISOR_NOTA_CREDITO) -- el escape administrativo que
 // cancela una orden con Factura B viva emitiendo una Nota de Crédito.
-const EXPECTED_AUTHORIZE_CALL_SITES = 205;
+// Bloque 3.3-b2 (09/09/2026, gate `architecture-governor`) -- 206, no 205:
+// reservations.routes.ts suma POST /:id/cancel-with-credit-note, mismo
+// authorize(Roles.EMISOR_NOTA_CREDITO) -- el mismo escape, del lado reservas.
+const EXPECTED_AUTHORIZE_CALL_SITES = 206;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:

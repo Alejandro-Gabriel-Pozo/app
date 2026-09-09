@@ -1068,3 +1068,25 @@ export class CreditNoteReservationInvoiceSetChangedError extends DomainError {
     );
   }
 }
+
+/**
+ * Bloque 3.3-b2 (09/09/2026, gate `architecture-governor`, condición C1 --
+ * bloqueante, no separable de b2) -- espejo exacto de
+ * `CreditNoteIssuedOrderNotCancellableError` del lado reservas. Antes de
+ * este error, el caso post-AFIP de tx2 (la NC YA se emitió, irreversible,
+ * pero la reserva cambió a un estado terminal -- COMPLETED/EXPIRED -- entre
+ * tx1 y tx2 y ya no admite la transición) caía en `InvalidReservationError`,
+ * que el middleware mapea a 400 -- la peor señal posible para "plata movida
+ * sin el documento completo, no reintentes, necesita revisión manual". Con
+ * esta clase dedicada, la capa HTTP puede distinguirlo de las otras dos
+ * situaciones que sí usan `InvalidReservationError` en el orquestador
+ * (transición inválida / invariante rota, ambas PRE-AFIP, nada pasó).
+ */
+export class CreditNoteIssuedReservationNotCancellableError extends DomainError {
+  constructor(reservationId: string, creditNoteId: string, reservationStatus: string) {
+    super(
+      `La Nota de Crédito "${creditNoteId}" se emitió, pero la reserva "${reservationId}" (estado: ${reservationStatus}) ya no admite la cancelación -- cambió de estado mientras se emitía. El caso quedó registrado para revisión manual.`,
+      'CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE',
+    );
+  }
+}

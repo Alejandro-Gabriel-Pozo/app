@@ -163,15 +163,26 @@ function domainErrorStatus(error: DomainError): number {
     // en `orders.routes.ts` y no llegan acá por el camino normal; se mapean
     // igual (red de seguridad + para un futuro caller que haga `next(err)`,
     // ej. una ruta de reservas). Mismo 422 que la ruta = "quedó pendiente / no
-    // cancelable, revisión manual" (D1). El comentario va acá arriba, no entre
-    // los case: un case con cuerpo solo-comentario deja de contar como vacío y
-    // eslint (no-fallthrough) pide un break (ver el bloque 402 más abajo).
+    // cancelable, revisión manual" (D1).
+    //
+    // Bloque 3.3-b2 (09/09/2026, gate `architecture-governor`) -- los mismos
+    // dos casos, lado reservas. `CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED`:
+    // ventana tx1->tx2, la NC se emitió pero la reserva no se pudo cancelar
+    // porque el conjunto de facturas vivas cambió. `CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE`:
+    // la NC se emitió pero la reserva cambió a un estado terminal
+    // (COMPLETED/EXPIRED) antes de tx2. Las cuatro son "documento fiscal ya
+    // emitido o pendiente, acción no completó, no reintentar" -- 422, nunca
+    // 400/409. El comentario va acá arriba, no entre los case: un case con
+    // cuerpo solo-comentario deja de contar como vacío y eslint
+    // (no-fallthrough) pide un break (ver el bloque 402 más abajo).
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
     case 'UNSUPPORTED_IVA_RATE':
     case 'CREDIT_NOTE_CANCELLATION_PENDING':
     case 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE':
+    case 'CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED':
+    case 'CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE':
       return 422;
 
     // --- 401 Unauthorized ---
@@ -244,7 +255,17 @@ function domainErrorStatus(error: DomainError): number {
     // ORDER_INVOICE_HAS_NO_LINES (la factura origen no tiene líneas): el escape
     // los resuelve inline en `orders.routes.ts` y no llegan acá por el camino
     // normal; se mapean igual (red de seguridad + futuro caller con `next(err)`).
-    // Mismo 409 que la ruta. El comentario va acá arriba, no entre los case
+    // Mismo 409 que la ruta.
+    //
+    // Bloque 3.3-b2 (09/09/2026, gate `architecture-governor`) --
+    // CREDIT_NOTE_RESERVATION_NO_LIVE_INVOICE/_MULTI_INVOICE/MIXED_STAY/
+    // CONSOLIDATED_FULL_REVERSAL: escape de reservas, misma familia que
+    // CREDIT_NOTE_MULTI_INVOICE arriba -- el request está bien formado, pero
+    // el estado real de la reserva no admite ESTE escape puntual (sin
+    // factura viva -> usá la cancelación normal; >1 factura viva -> pool
+    // mixto sin pedirlo, fail-closed; stay_id mixto o borde de consolidada
+    // al 100% -> el ADJUSTMENT no se puede atribuir sin ambigüedad). Ninguno
+    // llamó a AFIP todavía. El comentario va acá arriba, no entre los case
     // (no-fallthrough, ver bloque 402).
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
@@ -288,6 +309,10 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_ATTRIBUTION_BLOCKED':
     case 'CREDIT_NOTE_ATTRIBUTION_MISMATCH':
     case 'RESERVATION_ON_CONSOLIDATED_INVOICE':
+    case 'CREDIT_NOTE_RESERVATION_NO_LIVE_INVOICE':
+    case 'CREDIT_NOTE_RESERVATION_MULTI_INVOICE':
+    case 'CREDIT_NOTE_MIXED_STAY':
+    case 'CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL':
       return 409;
 
     // --- 503 Service Unavailable ---

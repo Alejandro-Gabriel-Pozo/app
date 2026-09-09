@@ -15,6 +15,9 @@
  *      plata", ver comentario en la ruta)
  * POST /reservations/:id/confirm      — FRONT_DESK
  * POST /reservations/:id/cancel       — FRONT_DESK
+ * POST /reservations/:id/cancel-with-credit-note — EMISOR_NOTA_CREDITO
+ *      (bloque 3.3-b2, ADR común cancelar-con-NC §6.6 — escape
+ *      administrativo: cancela con Factura B viva emitiendo una NC)
  * GET  /reservations/:id/cancellation-refund/preview — FRONT_DESK (C2)
  * POST /reservations/:id/cancellation-refund/confirm — FRONT_DESK (C2,
  *      acción manual separada de /cancel -- ver CancellationRefundService)
@@ -103,10 +106,31 @@ import { SqlCancellationPolicyRepository } from './sql.cancellation-policy.repos
 import { CancellationRefundService }     from './cancellation-refund.service.js';
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
-import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema } from '../api/schemas/request.schemas.js';
+import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema } from '../api/schemas/request.schemas.js';
 import { ZodError } from 'zod';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
+import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
+import { buildInvoiceService }           from '../facturacion/invoices.routes.js';
+import { CancelReservationWithCreditNoteService } from '../facturacion/cancel-reservation-with-credit-note.service.js';
+import { ReservationCancelForCreditNote } from './reservation-cancel-for-credit-note.js';
+import { authorizeCreditNoteCancellation } from '../facturacion/cancel-with-credit-note.js';
+import {
+  DomainError,
+  ReservationNotFoundError,
+  InvalidReservationError,
+  CreditNoteReservationNoLiveInvoiceError,
+  CreditNoteReservationMultiInvoiceError,
+  CreditNoteMixedStayError,
+  CreditNoteConsolidatedFullReversalError,
+  CreditNoteReservationInvoiceSetChangedError,
+  CreditNoteIssuedReservationNotCancellableError,
+  CreditNoteCancellationPendingError,
+  CreditNoteCancellationRejectedError,
+  AfipRequestRejectedError,
+  AfipNotConfiguredError,
+} from '../domain/errors.js';
+import { logger } from '../logger.js';
 
 function buildReservationService(req: Request): ReservationService {
   const db                    = req.db;
@@ -159,6 +183,36 @@ function buildCancellationRefundService(req: Request): CancellationRefundService
     new SqlFinancialTransactionRepository(db),
     new SqlInvoiceRepository(db),
     new SqlBusinessProfileRepository(db),
+    buildTenantTransactionManager(req),
+  );
+}
+
+/**
+ * Composition root del orquestador del escape "cancelar con Nota de
+ * Crédito" del lado reservas (bloque 3.3-b2, ADR común cancelar-con-NC
+ * §6.6). Espejo de `buildCancelOrderWithCreditNoteService()`
+ * (`pos-menu/orders.routes.ts`): reusa `buildInvoiceService()` de
+ * `invoices.routes.ts` para el `InvoiceService` (gate `architecture-governor`
+ * 09/09/2026, condición (a): reuso seguro -- `InvoiceService` ya es
+ * reserva-consciente, y `facturacion/ -> pos-menu/` es la dirección
+ * sancionada por `.dependency-cruiser.cjs`, no un hueco) y cablea el
+ * adaptador de puerto `ReservationCancelForCreditNote`. Todo desde
+ * `req.db!` (mismo pool de tenant -> misma transacción, `DEFENSIVE_DEVELOPING.md`
+ * §3).
+ */
+function buildCancelReservationWithCreditNoteService(req: Request): CancelReservationWithCreditNoteService {
+  const db = req.db!;
+  const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+  return new CancelReservationWithCreditNoteService(
+    buildInvoiceService(req),
+    new SqlFinancialTransactionRepository(db),
+    new SqlInvoiceRepository(db),
+    reservationRepo,
+    new ReservationCancelForCreditNote(
+      reservationRepo,
+      new SqlDomainEventRepository(db),
+      new SqlAuditLogRepository(db),
+    ),
     buildTenantTransactionManager(req),
   );
 }
@@ -447,6 +501,93 @@ export function createReservationsRouter(container: AppContainer): Router {
         );
         res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
+    },
+  );
+
+  // ── POST /reservations/:id/cancel-with-credit-note ──────────────────────
+  // ADR común cancelar-con-NC (bloque 3.3-b2, §6.6). Escape administrativo:
+  // cancela una reserva con Factura B viva EMITIENDO una Nota de Crédito.
+  // `authorize` con el grupo dedicado `EMISOR_NOTA_CREDITO` (no `FRONT_DESK`
+  // -- capa i de la contención del ADR §4). 2do caller de
+  // `authorizeCreditNoteCancellation()` (el 1ro es el escape de órdenes):
+  // `confirmedBy` sale del JWT verificado server-side, NUNCA del body (A2.2).
+  //
+  // Validación con `safeParse` + `{path,message}[]`, NO `.parse()`/`ZodError`
+  // como el resto de este archivo -- desvío DELIBERADO: los dos escapes
+  // (órdenes y reservas) comparten `CancelWithCreditNoteSchema` y el mismo
+  // flujo de frontend, así que responden con la misma forma de error. Mismo
+  // criterio que `orders.routes.ts:316-358` (`buildCancelOrderWithCreditNoteService`).
+  //
+  // `res.json({ reservation: toReservationDto(...), ... })`, NUNCA
+  // `res.json(result)` a secas -- `Reservation.status`/`customer`/`resource`
+  // son getters (docblock de este archivo, líneas 62-73); serializar la
+  // instancia cruda perdería `status` (quedaría `_status`) igual que el bug
+  // que motivó `toReservationDto()` en primer lugar.
+  router.post(
+    '/:id/cancel-with-credit-note',
+    authorize(Roles.EMISOR_NOTA_CREDITO),
+    async (req: Request, res: Response, next) => {
+      const parsed = CancelWithCreditNoteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          errors: parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })),
+        });
+        return;
+      }
+      const reservationId = req.params['id']!;
+      try {
+        const auth = authorizeCreditNoteCancellation({
+          confirmedBy: req.user!.id,
+          reason: parsed.data.reason,
+          scope: { kind: 'RESERVATION', reservationId },
+        });
+        const result = await buildCancelReservationWithCreditNoteService(req).cancelReservationWithCreditNote(reservationId, auth);
+        res.json({
+          reservation: toReservationDto(result.reservation),
+          creditNote: result.creditNote,
+          adjustmentId: result.adjustmentId,
+          originalInvoiceId: result.originalInvoiceId,
+          emitted: result.emitted,
+        });
+      } catch (err) {
+        // MID-LOG-001 -- este handler resuelve el error inline con
+        // `res.status().json()` y NO pasa por `error.middleware.ts`, así que
+        // la política de logging de DomainError se aplica acá (mismo
+        // criterio que `orders.routes.ts`). Endpoint de bajo volumen
+        // (`EMISOR_NOTA_CREDITO`): se loguea todo fallo. Sin `err.message`
+        // (trae ids/montos, A7.1) -- `reservationId` ya lo tenemos.
+        if (err instanceof DomainError) {
+          logger.warn(
+            { code: err.code, reservationId, businessId: req.user?.businessId ?? null },
+            '[reservations] cancel-with-credit-note fallo',
+          );
+        }
+        if (err instanceof ReservationNotFoundError) res.status(404).json({ code: 'RESERVATION_NOT_FOUND', message: err.message });
+        // InvalidReservationError inline -> 409 (transición inválida /
+        // invariante rota, ambas PRE-AFIP -- nada pasó). Diverge del 400
+        // genérico de `error.middleware.ts` (`INVALID_RESERVATION`, "request
+        // mal armado") a propósito: acá el código es el mismo pero el
+        // contexto (estado de la reserva, no forma del body) pide 409,
+        // gate `architecture-governor` 09/09/2026.
+        else if (err instanceof InvalidReservationError) res.status(409).json({ code: 'INVALID_RESERVATION', message: err.message });
+        else if (err instanceof CreditNoteReservationNoLiveInvoiceError) res.status(409).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteReservationMultiInvoiceError) res.status(409).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteMixedStayError) res.status(409).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteConsolidatedFullReversalError) res.status(409).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteIssuedReservationNotCancellableError) res.status(422).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteReservationInvoiceSetChangedError) res.status(422).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteCancellationPendingError) res.status(422).json({ code: err.code, message: err.message });
+        else if (err instanceof AfipRequestRejectedError) res.status(409).json({ code: err.code, message: err.message });
+        else if (err instanceof CreditNoteCancellationRejectedError) res.status(409).json({ code: err.code, message: err.message });
+        // AFIP_NOT_CONFIGURED -- 422 acá, 503 en error.middleware.ts. Misma
+        // divergencia deliberada que orders.routes.ts (declarada, no
+        // corregida -- gate `architecture-governor` 09/09/2026): mantiene
+        // los dos escapes simétricos entre sí.
+        else if (err instanceof AfipNotConfiguredError) res.status(422).json({ code: err.code, message: err.message });
+        else if (err instanceof DomainError) res.status(409).json({ code: err.code, message: err.message });
+        else next(err);
+      }
     },
   );
 

@@ -120,4 +120,51 @@ describe('error.middleware -- MID-LOG-001 política de logging de DomainError', 
     expect(logger.error).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
   });
+
+  // Bloque 3.3-b2 (09/09/2026, gate `architecture-governor`) -- los 6 códigos
+  // nuevos del escape de reservas, como red de seguridad de
+  // `reservations.routes.ts` (que los resuelve inline igual que
+  // orders.routes.ts). Sin estos casos, un `next(err)` con cualquiera de los
+  // 6 caería al `default:` -> 500 "sin mapeo" sin que ningún test lo avise.
+  it('CREDIT_NOTE_RESERVATION_NO_LIVE_INVOICE mapea a 409', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_RESERVATION_NO_LIVE_INVOICE'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(409);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('CREDIT_NOTE_RESERVATION_MULTI_INVOICE mapea a 409', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_RESERVATION_MULTI_INVOICE'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(409);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('CREDIT_NOTE_MIXED_STAY mapea a 409', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_MIXED_STAY'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(409);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL mapea a 409', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(409);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED mapea a 422 -- documento fiscal ya emitido, no reintentar', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(422);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE mapea a 422, NUNCA a 400 (INVALID_RESERVATION) -- documento fiscal ya emitido', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(422);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
 });

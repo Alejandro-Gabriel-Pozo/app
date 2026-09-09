@@ -5,17 +5,20 @@
  * B-reservas del ADR común
  * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.6.
  *
- * ## Alcance de 3.3-b1 (gate `architecture-governor`, 09/09/2026) — SIN ruta, SIN authorize
+ * ## Alcance de 3.3-b1 (gate `architecture-governor`, 09/09/2026) — orquestador + puerto
  * Este archivo + `src/reservas/reservation-cancel-for-credit-note.ts` son
- * "orquestador + puerto" completos (interfaz Y adaptador concreto). Lo que
- * NO entra en b1: la ruta HTTP, `authorize(Roles.EMISOR_NOTA_CREDITO)`, el
- * mapeo de errores en `error.middleware.ts`, y las filas de
- * `ESCAPE_ROUTES`/`NUCLEO_IMPORT_ALLOWLIST` (2ª entrada) en
- * `credit-note-escape-containment.test.ts`. Sin ruta que lo llame, este
- * código es inalcanzable desde HTTP por construcción (mismo criterio que
- * 3.3-a) — verificable por grep de `cancelReservationWithCreditNote(` contra
- * `src/api/`, `src/container.ts` y todo `*.routes.ts` (0 resultados
- * esperados).
+ * "orquestador + puerto" completos (interfaz Y adaptador concreto).
+ *
+ * ## 3.3-b2 (gate `architecture-governor`, 09/09/2026) — ALCANZABLE DESDE HTTP
+ * `POST /api/reservations/:id/cancel-with-credit-note`
+ * (`reservas/reservations.routes.ts`), detrás de
+ * `authorize(Roles.EMISOR_NOTA_CREDITO)`. Los 6 errores tipados del escape
+ * de reservas están mapeados en `error.middleware.ts` como red de
+ * seguridad, y en `ESCAPE_ROUTES`/`NUCLEO_IMPORT_ALLOWLIST`/
+ * `ESCAPE_CHOKEPOINTS` de `credit-note-escape-containment.test.ts`. **La
+ * afirmación "inalcanzable desde HTTP por construcción" de b1 ya NO
+ * aplica** -- corregida acá para que no quede stale (regla 4 de
+ * `CLAUDE.md` raíz, "Pendientes — revalidar antes de arrastrar").
  *
  * ## Diferencias estructurales con el precedente de órdenes (`cancel-order-with-credit-note.service.ts`)
  * "Corrección de encuadre" del §6.6: `invoices.financial_transaction_id` es
@@ -96,6 +99,7 @@ import {
   CreditNoteMixedStayError,
   CreditNoteConsolidatedFullReversalError,
   CreditNoteReservationInvoiceSetChangedError,
+  CreditNoteIssuedReservationNotCancellableError,
   InvalidReservationError,
   ReservationNotFoundError,
 } from '../domain/errors.js';
@@ -524,11 +528,12 @@ export class CancelReservationWithCreditNoteService {
       if (outcome.resultado === 'NO_EXISTE') throw new ReservationNotFoundError(reservationId);
       // NO_ELEGIBLE -- la NC ya está emitida (irreversible), pero la
       // reserva cambió a un estado terminal (COMPLETED/EXPIRED) entre tx1 y
-      // tx2. Se aborta tx2, el caso queda visible (N11).
-      throw new InvalidReservationError(
-        `La Nota de Crédito "${creditNote.id}" se emitió, pero la reserva "${reservationId}" ` +
-          `(estado: ${outcome.reservation.status}) ya no admite la cancelación -- cambió de estado mientras se emitía.`,
-      );
+      // tx2. Se aborta tx2, el caso queda visible (N11). Clase DEDICADA
+      // (condición C1 del gate de 3.3-b2, 09/09/2026) -- no
+      // `InvalidReservationError`: ese código mapea a 400 en
+      // `error.middleware.ts` ("request mal armado"), la peor señal posible
+      // para "plata movida sin el documento completo, no reintentes".
+      throw new CreditNoteIssuedReservationNotCancellableError(reservationId, creditNote.id, outcome.reservation.status);
     });
 
     return {

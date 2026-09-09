@@ -22,6 +22,7 @@ import {
   CreditNoteMixedStayError,
   CreditNoteConsolidatedFullReversalError,
   CreditNoteReservationInvoiceSetChangedError,
+  CreditNoteIssuedReservationNotCancellableError,
   CreditNoteCapExceededError,
   InvalidReservationError,
   ReservationNotFoundError,
@@ -406,6 +407,18 @@ describe('CancelReservationWithCreditNoteService', () => {
     const result = await sut.cancelReservationWithCreditNote(RES_ID, auth());
     expect(result.emitted).toBe(true);
     expect(ft.settleCalls.length).toBe(2);
+  });
+
+  // 3.3-b2 (09/09/2026, gate architecture-governor, condición C1) -- el caso
+  // post-AFIP tiene que usar la clase DEDICADA, no InvalidReservationError
+  // (que el middleware mapea a 400 -- la peor señal para "se emitió una NC,
+  // no reintentes").
+  it('16b. NO_ELEGIBLE del puerto (la reserva pasó a estado terminal entre tx1 y tx2) -- CreditNoteIssuedReservationNotCancellableError, NUNCA InvalidReservationError', async () => {
+    port.outcome = 'NO_ELEGIBLE';
+    await expect(sut.cancelReservationWithCreditNote(RES_ID, auth()))
+      .rejects.toBeInstanceOf(CreditNoteIssuedReservationNotCancellableError);
+    // la NC quedó emitida (irreversible) -- no se revierte nada del lado facturación.
+    expect(ft.settleCalls).toEqual([]); // tx2 abortó antes de settlear
   });
 
   it('17. token con scope que no corresponde a la reserva -- error interno', async () => {

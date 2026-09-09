@@ -62,10 +62,12 @@ const SRC_DIR = join(__dirname, '../..');
  *       defensa estructural; por eso queda acotada a esos dos archivos (un
  *       barrido amplio daría ruido con `forceCancel` en otros contextos).
  *
- *   (D) Cada ruta de `ESCAPE_ROUTES` exige su grupo de autz. HOY es UNA:
- *       `POST /api/orders/:id/cancel-with-credit-note`
- *       (`pos-menu/orders.routes.ts`) → `Roles.EMISOR_NOTA_CREDITO`, NO
- *       `Roles.ORDERS` ni ningún otro grupo. Es la capa (i): si alguien
+ *   (D) Cada ruta de `ESCAPE_ROUTES` exige su grupo de autz. Desde el bloque
+ *       3.3-b2 (09/09/2026) son DOS: `POST /api/orders/:id/cancel-with-credit-note`
+ *       (`pos-menu/orders.routes.ts`) y `POST /api/reservations/:id/cancel-with-credit-note`
+ *       (`reservas/reservations.routes.ts`) → las dos exigen
+ *       `Roles.EMISOR_NOTA_CREDITO`, NO `Roles.ORDERS`/`Roles.FRONT_DESK` ni
+ *       ningún otro grupo. Es la capa (i): si alguien
  *       degrada ese `authorize(...)`, `rbac-route-coverage` sigue verde (hay
  *       *un* authorize), `rbac-matrix-sync` sigue verde (el conteo no cambia)
  *       y `docs/rbac-matriz-endpoints.md` queda stale en silencio — el
@@ -171,6 +173,8 @@ const NUCLEO_IMPORT_ALLOWLIST: Record<string, string> = {
     'Adaptador de puerto del sub-bloque 4: `class OrderCancelForCreditNote implements OrderCancelPort`. Importa el CONTRATO (`import type { OrderCancelPort }`) que define el orquestador, no su código — es la inversión que evita que el orquestador (en facturacion/) importe pos-menu. NO es order.service.ts.',
   'reservas/reservation-cancel-for-credit-note.ts':
     'Adaptador de puerto del bloque 3.3-b1 (09/09/2026, gate `architecture-governor`): `class ReservationCancelForCreditNote implements ReservationCancelPort`. Importa el CONTRATO (`import type { ReservationCancelPort, ReservationCancelOutcome }`) que define el orquestador, no su código — misma inversión que el adaptador de órdenes. NO es reservation.service.ts. Se crea EN b1 (no diferido a b2): el criterio de cierre de 3.3-b1 exige integración contra Postgres real con la reserva realmente CANCELLED, algo que un fake in-memory no puede probar.',
+  'reservas/reservations.routes.ts':
+    'La ruta dedicada (bloque 3.3-b2, 09/09/2026, gate `architecture-governor`): POST /api/reservations/:id/cancel-with-credit-note, detrás de authorize(Roles.EMISOR_NOTA_CREDITO). Es el ÚNICO punto donde el escape de reservas se cablea a HTTP — importa `CancelReservationWithCreditNoteService`/`buildCancelReservationWithCreditNoteService` y `authorizeCreditNoteCancellation` para componerlo, mismo patrón que `pos-menu/orders.routes.ts`. Que exista acá es el diseño; que exista en reservation.service.ts sería la fuga.',
 };
 
 /** Carpetas de dominio barridas por (A). */
@@ -188,19 +192,14 @@ const CANCEL_SERVICE_FILES = ['pos-menu/order.service.ts', 'reservas/reservation
 //    req.user!.id como confirmedBy).
 //  - cancelOrderWithCreditNote: 1 caller, la misma ruta
 //    (buildCancelOrderWithCreditNoteService(req).cancelOrderWithCreditNote(...)).
-// Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`) suma la 3ª fila
-// `cancelReservationWithCreditNote` CON `expectedSites: 0` -- el
-// orquestador de reservas existe pero SIN ruta que lo llame (b1 es
-// "orquestador + puerto, sin ruta, sin authorize", inalcanzable por
-// construcción). El valor sube a 1 recién en 3.3-b2, cuando la ruta lo
-// cablee -- si alguien cablea el escape de reservas ANTES de b2 (una ruta
-// de emergencia, un script, un caller nuevo), esta fila se pone roja EN
-// b1 en vez de esperar a que b2 se acuerde de subir el número. `authorizeCreditNoteCancellation.expectedSites`
-// se mantiene en 1 hasta b2 (su ruta todavía no emite el token de
-// reservas) -- el `+2` que citaba el plan original (`NUCLEO_IMPORT_ALLOWLIST`)
-// se reconcilió a `+1 en b1` (el adaptador, ver NUCLEO_IMPORT_ALLOWLIST
-// arriba) `+1 en b2` (la ruta) -- el gate del 09/09/2026 corrigió el
-// documento de planificación, no esta cerca.
+// Bloque 3.3-b1 (09/09/2026) sumó la 3ª fila `cancelReservationWithCreditNote`
+// CON `expectedSites: 0` -- el orquestador de reservas existía pero SIN
+// ruta que lo llamara. Bloque 3.3-b2 (09/09/2026, gate `architecture-governor`)
+// cablea la ruta (`reservas/reservations.routes.ts`) y sube esa fila a 1, y
+// `authorizeCreditNoteCancellation.expectedSites` de 1 a 2 (la misma ruta
+// emite el token del lado reservas). El `+2` que citaba el plan original
+// para `NUCLEO_IMPORT_ALLOWLIST` se reconcilió en b1 a `+1 en b1` (el
+// adaptador) `+1 en b2` (la ruta, ver NUCLEO_IMPORT_ALLOWLIST arriba).
 const ESCAPE_CHOKEPOINTS: Array<{
   symbol: string;
   regex: RegExp;
@@ -212,8 +211,8 @@ const ESCAPE_CHOKEPOINTS: Array<{
     symbol: 'authorizeCreditNoteCancellation',
     regex: /\bauthorizeCreditNoteCancellation\s*\(/g,
     definitionFile: 'facturacion/cancel-with-credit-note.ts',
-    expectedSites: 1,
-    expectedFiles: ['pos-menu/orders.routes.ts'],
+    expectedSites: 2,
+    expectedFiles: ['pos-menu/orders.routes.ts', 'reservas/reservations.routes.ts'],
   },
   {
     symbol: 'cancelOrderWithCreditNote',
@@ -226,8 +225,8 @@ const ESCAPE_CHOKEPOINTS: Array<{
     symbol: 'cancelReservationWithCreditNote',
     regex: /\bcancelReservationWithCreditNote\s*\(/g,
     definitionFile: 'facturacion/cancel-reservation-with-credit-note.service.ts',
-    expectedSites: 0,
-    expectedFiles: [],
+    expectedSites: 1,
+    expectedFiles: ['reservas/reservations.routes.ts'],
   },
 ];
 
@@ -258,17 +257,20 @@ const SIGNATURES: Array<{ file: string; signature: string }> = [
 const BYPASS_FLAG_RE =
   /\b(skipInvoiceGuard|skipGuard|skipInvoiceCheck|skipBlockingInvoice|skipBlocking|bypassInvoice|bypassCreditNote|bypassGuard|esEscape|isEscape|skipCreditNote|allowInvoiced|forceCancel|forceInvoiced)\b/i;
 
-/** (D) Las rutas del escape y el grupo que cada una tiene que exigir. HOY es
- *  UNA (órdenes). B-reservas suma la suya
- *  (`POST /api/reservations/:id/cancel-with-credit-note`) como 2ª fila acá —
- *  en el mismo cambio que la ruta. Es un array, no un objeto, justamente
- *  para que agregar la fila sea el recordatorio: si (D) quedara singular,
- *  la ruta de reservas nacería sin cerca de capa (i) y (B) —que sí se pone
- *  roja al agregar el call-site— no lo cubre (cuenta invocaciones, no
- *  verifica el `authorize` de cada ruta). */
+/** (D) Las rutas del escape y el grupo que cada una tiene que exigir. Desde
+ *  el bloque 3.3-b2 (09/09/2026) son DOS. Es un array, no un objeto,
+ *  justamente para que agregar una fila futura sea el recordatorio: si (D)
+ *  quedara singular, una ruta nueva nacería sin cerca de capa (i) y (B)
+ *  —que sí se pone roja al agregar el call-site— no lo cubre (cuenta
+ *  invocaciones, no verifica el `authorize` de cada ruta). */
 const ESCAPE_ROUTES: Array<{ file: string; pathLiteral: string; requiredAuthorize: string }> = [
   {
     file: 'pos-menu/orders.routes.ts',
+    pathLiteral: "'/:id/cancel-with-credit-note'",
+    requiredAuthorize: 'authorize(Roles.EMISOR_NOTA_CREDITO)',
+  },
+  {
+    file: 'reservas/reservations.routes.ts',
     pathLiteral: "'/:id/cancel-with-credit-note'",
     requiredAuthorize: 'authorize(Roles.EMISOR_NOTA_CREDITO)',
   },

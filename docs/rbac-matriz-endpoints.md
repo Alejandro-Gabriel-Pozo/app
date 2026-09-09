@@ -31,7 +31,7 @@ subconjunto de estos 9 grupos (sección 3).
 | `FRONT_DESK` | Personal de mostrador: gestiona reservas y clientes |
 | `HOUSEKEEPING_AND_MANAGEMENT` | Housekeeping + management: ven y actualizan estado de habitaciones |
 | `ORDERS` | Acceso a órdenes de consumo (POS) |
-| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`). Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Ruta: `POST /api/orders/:id/cancel-with-credit-note` (sub-bloque 4, 07/09/2026); del lado reservas todavía sin ruta (B-reservas). |
+| `EMISOR_NOTA_CREDITO` | Emite la Nota de Crédito de cancelación (escape de la guarda fiscal de `cancelOrder()`/`cancelReservation()`). Dedicado — recepción lo tiene sin ser `MANAGEMENT` (ADR cancelar-con-NC §10 q7). Rutas: `POST /api/orders/:id/cancel-with-credit-note` (sub-bloque 4, 07/09/2026) y `POST /api/reservations/:id/cancel-with-credit-note` (bloque 3.3-b2, 09/09/2026). |
 | `CUSTOMER_ONLY` | Solo clientes externos — resuelto en código, no contra la BD (los clientes no tienen `role_id`) |
 | `BOOKING` | Clientes + recepción (reservas desde portal o mostrador) |
 
@@ -267,6 +267,7 @@ GET `/`, POST `/`, GET `/company-catalog`, GET `/:id`, PUT `/:id`, DELETE `/:id`
 - POST `/:id/confirm-price-adjustment` — `MANAGEMENT` (a propósito distinto de PUT `/:id` — separa "quién edita fechas" de "quién autoriza la plata")
 - POST `/:id/confirm` — `FRONT_DESK`
 - POST `/:id/cancel` — `FRONT_DESK`
+- POST `/:id/cancel-with-credit-note` — `EMISOR_NOTA_CREDITO` (bloque 3.3-b2, 09/09/2026 — escape administrativo: cancela con Factura B viva emitiendo una Nota de Crédito, mismo criterio que el escape de órdenes)
 - GET `/:id/cancellation-refund/preview` — `FRONT_DESK`
 - POST `/:id/cancellation-refund/confirm` — `FRONT_DESK`
 - POST `/:id/complete` — `FRONT_DESK`

@@ -538,6 +538,21 @@ materializa.
    gap preexistente que `3.3-b` vuelve alcanzable por primera vez.
    Bloque **3.3-d**: `classifyReservationLiveInvoice()` + wiring, mismo
    patrón que el de órdenes.
+
+   **Actualización 09/09/2026 (bloque 3.3-b2, gate `architecture-governor`,
+   condición C7): esto DEJÓ DE SER HIPOTÉTICO.** 3.3-b1 (orquestador +
+   puerto) y 3.3-b2 (ruta `POST /api/reservations/:id/cancel-with-credit-note`
+   + `authorize(Roles.EMISOR_NOTA_CREDITO)` + RBAC completo) están
+   commiteados localmente (`5a64ae2`, `9b8209a`, y el commit de 3.3-b2).
+   Mientras nada de eso se pushee, el ruido sigue sin materializarse en
+   producción — pero **el gate recomienda explícitamente NO deployar 3.3-b2
+   antes de que exista 3.3-d**: desde el primer deploy, CADA escape de
+   reserva exitoso va a emitir un `logger.error('[outbox] efecto rechazado
+   por anomalía de integridad')` en el camino feliz (`outbox.handlers.ts:162-170`
+   vs. `:432-466` del lado órdenes) — el mismo mensaje que hoy es la señal
+   real de una "tercera puerta" desconocida del lado órdenes. Decisión de
+   despliegue del dueño: agendar 3.3-d antes del push, o pushear igual
+   asumiendo el ruido operativo declarado acá.
 2. **Punto ciego preexistente en `lock-order.test.ts`, declarado sin arreglar.**
    `LOCK_CALL_RE` (la cerca `LOCK-ORDER-001`) matchea `applyCapped*`,
    `getOutstandingForUpdate(client`, `getRefundableForUpdate(client` — **no**
