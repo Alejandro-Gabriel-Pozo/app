@@ -72,8 +72,9 @@ middleware compartido:**
 > `EXPECTED_AUTHORIZE_CALL_SITES` subió de 205 a 206 en
 > `rbac-matrix-sync.test.ts` — el encabezado de esta sección no se actualizó
 > en ese momento y quedó diciendo "205 call-sites" por el resto del día. Se
-> corrigió más tarde el mismo 09/09/2026 (`80805f2`), y un tercer `it()` en
-> `rbac-matrix-sync.test.ts` (`d39b8b7`) ahora cruza este encabezado contra
+> corrigió más tarde el mismo 09/09/2026 (`a8f9e67`; su nota inicial afirmó
+> en pasado una cerca que todavía no existía, corregido en `80805f2`), y un
+> tercer `it()` en `rbac-matrix-sync.test.ts` (`d39b8b7`) ahora cruza este encabezado contra
 > `EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT` directamente
 > — la misma enfermedad no debería poder pudrir este número una tercera vez
 > sin que la suite se ponga roja. Ítem cerrado en `pendientes-2026-09-08.md`.

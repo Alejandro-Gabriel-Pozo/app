@@ -111,7 +111,7 @@ describe('Maestro RBAC (docs/rbac-matriz-endpoints.md) sincronizado con el códi
    * constante propia para comparar".
    *
    * LO QUE NO CUBRE: cualquier otro número de este documento (la fecha de
-   * "Última actualización" en la línea 3, las filas de la matriz, la
+   * "Última actualización" del encabezado del doc, las filas de la matriz, la
    * sección 4 -- esa la cruza `rbac-matrix-public-routes-sync.test.ts` con
    * un criterio distinto). Solo el encabezado exacto de la sección 2.
    */
