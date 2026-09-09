@@ -606,6 +606,69 @@ revertidas + query read-only de producción (las 2 tenants, `count=0`).
    criterio que el resto de esta familia (`FOR-KEY-SHARE-001`,
    `REFUND-INT-GUARD-001`).
 
+### #29 — Gate de diseño de 3.3-b (orquestador de reservas) — 🔴 PRIMER PASO de la próxima sesión
+
+Gate `architecture-governor` sobre el diseño del orquestador
+`cancelReservationWithCreditNote()`. **APROBADO CON CONDICIONES, partido en
+3.3-b1/3.3-b2, y con una PRECONDICIÓN BLOQUEANTE que nadie corrió todavía**
+(este subagente no tiene acceso a Neon). Detalle completo del diseño en
+`diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.6; fila del plan
+partida (`plan-cierre-...md`, filas 3.3-b/3.3-b1/3.3-b2).
+
+**Lo primero que hay que hacer, antes de escribir una línea de 3.3-b1** — dos
+queries read-only vía Neon MCP, las 2 tenants:
+1. `SELECT prices_include_iva FROM business_profile;` — si alguna tenant da
+   `FALSE`, **PARAR y volver al gate**: `splitAmount()` con esa config da
+   `impTotal = amount*(1+tasa)`, así que `Σcargos` (neto) ≠ `impTotal`/
+   `attributedTotal` (bruto) y el escape de reservas quedaría inutilizable
+   ahí — y esto **también aplicaría al escape de ÓRDENES ya deployado**
+   (`cancel-order-with-credit-note.service.ts:291`+`:737`), que sería su
+   propio bloque, no se resuelve dentro de 3.3-b.
+2. Distribución de reservas por cantidad de facturas vivas `ISSUED` sobre
+   sus cargos, y por cantidad de cargos — CON anti-vacuidad explícita
+   (denominadores, no solo el resultado; mismo criterio que ya se aplicó en
+   3.1/3.3-a: si da 0, probar que es porque no hay actividad de ese tipo,
+   no porque el JOIN esté mal armado).
+
+**Recién con las dos respuestas conformes**, criterio de cierre de 3.3-b1
+(orquestador + puerto, SIN ruta, SIN `authorize`, inalcanzable en
+producción por construcción — mismo criterio que 3.3-a):
+- **12 casos unitarios**: directa→total; consolidada 2 reservas→parcial (el
+  cargo de la reserva AJENA queda `PENDING` — éste es *el* test del
+  bloque); 0 facturas vivas→error tipado; **>1 factura viva→error tipado
+  fail-closed SIN llamar a AFIP** (es pool mixto, 3.5); `AfipRequestUncertainError`
+  →reserva NO cancelada; rechazo AFIP→error tipado; NC no `ISSUED`→pending;
+  fast-path idempotente (`emitted:false`); camino `ON CONFLICT`+re-read;
+  assert "el ADJUSTMENT idempotente revierte la misma factura"; re-verificación
+  de tx2→error tipado si la ventana tx1→tx2 dejó una factura nueva sin
+  cubrir; subcaso directa con REFUND parcial previo→`CreditNoteCapExceededError`.
+- **1 integración** contra Postgres real: consolidada 2 reservas, AFIP
+  stubeado, aserciones SQL crudas (cargos ajenos `PENDING`, cargos propios
+  `SETTLED`, `ADJUSTMENT` `SETTLED`, `invoice_items`/`Iva[]` de la NC solo
+  de la reserva cancelada, y `voidByReservationId()` corrido DESPUÉS no
+  anula ninguna fila ya settleada).
+- **4 mutaciones obligatorias, cada una con su test rojo identificado**: (i)
+  sacar la intersección del settlement; (ii) calcular el monto desde
+  `attributedTotal` en vez del ledger congelado — **si esta mutación no
+  pone nada en rojo, el bloque NO cierra** (significa que el cross-check de
+  3.3-a quedó vacuo); (iii) sacar el `NonNullable` de `getByIdWithLock`;
+  (iv) sacar la re-verificación de tx2.
+- `tsc`, `lint:arch`, `credit-note-escape-containment.test.ts` (asegurando
+  que `NUCLEO_MODULES` incluya el archivo nuevo — si no, la cerca deny-by-default
+  queda ciega a este orquestador sin que ningún test se ponga rojo),
+  `lock-order.test.ts`, suite unitaria completa sin regresión (baseline:
+  1985).
+- Declaraciones con ancla a registrar: el `grave` operativo por
+  `CARGO_CON_COMPROBANTE_VIVO` hasta que exista `3.3-d`
+  (`outbox.handlers.ts:326-329`); la ventana tx1→tx2 y su guard; el
+  resultado de `prices_include_iva`; la decisión de `stay_id`; el borde de
+  la consolidada al 100%.
+
+**3.3-b2** (ruta + `authorize(Roles.EMISOR_NOTA_CREDITO)` + RBAC completo —
+`ESCAPE_ROUTES`+1, `ESCAPE_CHOKEPOINTS` fila nueva, `NUCLEO_IMPORT_ALLOWLIST`+2,
+`EXPECTED_AUTHORIZE_CALL_SITES` 205→206, `rbac-matriz-endpoints.md`) —
+**gate propio, no lo empieces hasta que 3.3-b1 esté cerrado y commiteado.**
+
 ---
 
 ## ✅ B-núcleo+órdenes — CERRADO (gate final `architecture-governor`, 08/09/2026)
