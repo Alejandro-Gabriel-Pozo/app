@@ -94,11 +94,13 @@ Desde el 08/09/2026 hay una **quinta cerca**:
 (`CN-ESCAPE-CONTAINMENT-001`, ADR común cancelar-con-NC §4 capa iv). A
 diferencia de las otras cuatro —que exigen que *alguna* autz exista— su
 aserción **(D)** congela el **grupo exacto** de las rutas del escape fiscal:
-falla si `POST /api/orders/:id/cancel-with-credit-note` deja de exigir
-`Roles.EMISOR_NOTA_CREDITO` (p. ej. degradado a `Roles.ORDERS`). Ni
+falla si `POST /api/orders/:id/cancel-with-credit-note` o
+`POST /api/reservations/:id/cancel-with-credit-note` dejan de exigir
+`Roles.EMISOR_NOTA_CREDITO` (p. ej. degradado a `Roles.ORDERS`/`Roles.FRONT_DESK`). Ni
 `rbac-route-coverage` ni `rbac-matrix-sync` lo ven —sigue habiendo *un*
 `authorize` y el conteo no cambia—. La lista de rutas vigiladas es
-`ESCAPE_ROUTES` (hoy una; B-reservas suma la suya). Las otras cuatro
+`ESCAPE_ROUTES` (dos desde el bloque 3.3-b2, 09/09/2026 — órdenes y
+reservas). Las otras cuatro
 aserciones de ese archivo (A/B/C.1/C.2) son contención de arquitectura, no
 RBAC.
 
@@ -108,8 +110,9 @@ el `PRE_AUTH_API_MOUNTS` de `api-auth-gate-order`, el `OWNERSHIP_EXEMPT` de
 `customer-portal-ownership-guard` y los `authorize()` reales. Para las rutas
 del escape con Nota de Crédito hay **un sexto**, acotado a ellas:
 `ESCAPE_ROUTES` de `credit-note-escape-containment.test.ts` — al tocar el
-`authorize` de `POST /api/orders/:id/cancel-with-credit-note` (o la ruta
-equivalente de reservas cuando exista) hay que actualizar la matriz,
+`authorize` de `POST /api/orders/:id/cancel-with-credit-note` o de
+`POST /api/reservations/:id/cancel-with-credit-note` (bloque 3.3-b2,
+09/09/2026) hay que actualizar la matriz,
 `EXPECTED_AUTHORIZE_CALL_SITES` **y** esa fila. El test de
 `rbac-route-coverage` cubre el cruce `PUBLIC_ROUTES` contra el código en las
 dos direcciones (ruta sin autz que falta en el allowlist, y entrada del

@@ -541,18 +541,30 @@ materializa.
 
    **Actualización 09/09/2026 (bloque 3.3-b2, gate `architecture-governor`,
    condición C7): esto DEJÓ DE SER HIPOTÉTICO.** 3.3-b1 (orquestador +
-   puerto) y 3.3-b2 (ruta `POST /api/reservations/:id/cancel-with-credit-note`
-   + `authorize(Roles.EMISOR_NOTA_CREDITO)` + RBAC completo) están
-   commiteados localmente (`5a64ae2`, `9b8209a`, y el commit de 3.3-b2).
-   Mientras nada de eso se pushee, el ruido sigue sin materializarse en
-   producción — pero **el gate recomienda explícitamente NO deployar 3.3-b2
-   antes de que exista 3.3-d**: desde el primer deploy, CADA escape de
-   reserva exitoso va a emitir un `logger.error('[outbox] efecto rechazado
-   por anomalía de integridad')` en el camino feliz (`outbox.handlers.ts:162-170`
-   vs. `:432-466` del lado órdenes) — el mismo mensaje que hoy es la señal
-   real de una "tercera puerta" desconocida del lado órdenes. Decisión de
-   despliegue del dueño: agendar 3.3-d antes del push, o pushear igual
-   asumiendo el ruido operativo declarado acá.
+   puerto, commit `5a64ae2`, docs de la precondición en `9b8209a`) y 3.3-b2
+   (ruta `POST /api/reservations/:id/cancel-with-credit-note`
+   + `authorize(Roles.EMISOR_NOTA_CREDITO)` + RBAC completo, commit `b0f9d93`)
+   están commiteados localmente. Mientras nada de eso se pushee, el ruido
+   sigue sin materializarse en producción — pero **el gate recomienda
+   explícitamente NO deployar 3.3-b2 antes de que exista 3.3-d**: desde el
+   primer deploy, CADA escape de reserva exitoso va a emitir un
+   `logger.error('[outbox] efecto rechazado por anomalía de integridad')` en
+   el camino feliz (`outbox.handlers.ts:162-170` vs. `:432-466` del lado
+   órdenes) — el mismo mensaje que hoy es la señal real de una "tercera
+   puerta" desconocida del lado órdenes; deployar sin 3.3-d le hace perder
+   esa señal. Decisión de despliegue del dueño: agendar 3.3-d antes del
+   push, o pushear igual asumiendo el ruido operativo declarado acá.
+
+   **Deuda declarada de paso (gate de cierre de 3.3-b2, no bloqueante):**
+   el catch inline de las dos rutas de escape (`orders.routes.ts` y
+   `reservations.routes.ts`) termina en `else if (err instanceof DomainError)
+   res.status(409)` — cualquier `DomainError` que el orquestador o
+   `InvoiceService` levanten y que `error.middleware.ts` mapearía a un
+   status DISTINTO de 409 (ej. `UNSUPPORTED_IVA_RATE`, 422 en el
+   middleware) llega al cliente como 409 igual en las dos rutas. Preexistente
+   en el escape de órdenes, heredado por el de reservas — ahora es una
+   divergencia de contrato en DOS rutas en vez de una. No es motivo para
+   reabrir 3.3-b2. Bloque propio si se decide reconciliar.
 2. **Punto ciego preexistente en `lock-order.test.ts`, declarado sin arreglar.**
    `LOCK_CALL_RE` (la cerca `LOCK-ORDER-001`) matchea `applyCapped*`,
    `getOutstandingForUpdate(client`, `getRefundableForUpdate(client` — **no**
@@ -709,6 +721,18 @@ queries read-only vía Neon MCP, las 2 tenants:
 
 Con esto **3.3-b1 queda desbloqueado para empezar** — ninguna de las 3
 respuestas fuerza volver al gate de diseño.
+
+**✅ #29 CERRADO (09/09/2026).** 3.3-b1 (commit `5a64ae2`: orquestador
+`CancelReservationWithCreditNoteService` + puerto `ReservationCancelForCreditNote`,
+21 unitarios + 4 integración contra Neon real + 4 mutaciones, suite
+2006/2006) y 3.3-b2 (commit `b0f9d93`: ruta `POST /api/reservations/:id/cancel-with-credit-note`
++ RBAC completo, 2 mutaciones, suite 2013/2013) los dos resueltos y
+commiteados localmente, cada uno con gate de diseño + gate de alcance +
+gate de cierre del `architecture-governor`. **Sin push, sin deploy** —
+`origin/main` sigue en `e1b70bb`. Bloque siguiente recomendado: `3.3-d`
+(ver fila en `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`),
+antes de deployar 3.3-b2 — el gate documentó por qué en el ítem 1 de #27,
+arriba.
 
 ---
 
