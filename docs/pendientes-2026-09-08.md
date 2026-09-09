@@ -606,7 +606,7 @@ revertidas + query read-only de producción (las 2 tenants, `count=0`).
    criterio que el resto de esta familia (`FOR-KEY-SHARE-001`,
    `REFUND-INT-GUARD-001`).
 
-### #29 — Gate de diseño de 3.3-b (orquestador de reservas) — 🔴 PRIMER PASO de la próxima sesión
+### #29 — Gate de diseño de 3.3-b (orquestador de reservas) — 🟢 PRECONDICIÓN RESUELTA (09/09/2026)
 
 Gate `architecture-governor` sobre el diseño del orquestador
 `cancelReservationWithCreditNote()`. **APROBADO CON CONDICIONES, partido en
@@ -626,9 +626,78 @@ queries read-only vía Neon MCP, las 2 tenants:
    propio bloque, no se resuelve dentro de 3.3-b.
 2. Distribución de reservas por cantidad de facturas vivas `ISSUED` sobre
    sus cargos, y por cantidad de cargos — CON anti-vacuidad explícita
+3. **Grounding `auditor-circuitos-erp` pendiente** (09/09/2026, pedido
+   explícito del dueño) — el gate de 3.3-b resolvió esto SOLO por
+   razonamiento contra el código de `app-main` y el precedente de órdenes,
+   sin cruzarlo contra ERPNext/Odoo/QloApps. Punto concreto a llevarle:
+   ¿qué hace cada referencia cuando el escape de cancelar-con-NC se topa
+   con **más de una factura viva** para la misma unidad, sin que el
+   operador haya pedido pool mixto? El gate de 3.3-b decidió "rechazar sin
+   llamar a AFIP" (fail-closed) — es distinto de la pregunta YA groundeada
+   ("cómo repartís entre varias facturas", resuelta en el gate de subcaso 3
+   con manual/factura-por-factura). **Hacer esto al ARRANCAR 3.3-b1**, antes
+   de las dos queries de arriba o en paralelo — decisión del dueño
+   (09/09/2026): parte de lo que se revisa en esa sesión, no ahora.
    (denominadores, no solo el resultado; mismo criterio que ya se aplicó en
    3.1/3.3-a: si da 0, probar que es porque no hay actividad de ese tipo,
    no porque el JOIN esté mal armado).
+
+**✅ PRECONDICIÓN CUMPLIDA (09/09/2026) — las 3 partes, evidencia real:**
+
+1. **`prices_include_iva`, las 2 tenants vía Neon MCP (proyecto `ancient-king-17098519`):**
+   Demo (`br-snowy-tree-ax5wmq70`) = **TRUE**; Hotel los Alamos
+   (`br-square-leaf-axzvu903`) = **TRUE**. Ninguna da `FALSE` → **no** se activó
+   el PARAR del gate; el problema de `splitAmount()` neto≠bruto que hubiera
+   invalidado también el escape de órdenes ya deployado no aplica hoy.
+2. **Distribución de reservas por facturas vivas ISSUED y por cargos, con
+   anti-vacuidad (mismo criterio que 3.1/3.3-a — denominadores, no solo el
+   resultado):**
+   - Demo: 42 reservas totales (28 `CANCELLED`), 15 con al menos un cargo
+     `CHARGE` (**las 15 con exactamente 1 cargo, ninguna con más**), 12 con al
+     menos una factura `ISSUED` vinculada (**las 12 con exactamente 1 factura
+     viva**, `reservations_with_multiple_live_invoices = 0`). Denominadores no
+     triviales (42/15/12) — el 0 de "múltiples facturas vivas" es real, no un
+     JOIN mal armado.
+   - Hotel los Alamos: las 4 métricas en 0 — tenant sin actividad real, mismo
+     patrón ya declarado en sesiones previas (no es hallazgo nuevo).
+   - **Conclusión:** hoy no existe en ninguna tenant una reserva con más de
+     una factura viva — el escenario "pool mixto" que el gate fail-closea es
+     inalcanzable en datos reales de producción, igual que en 3.1/3.3-a.
+3. **Grounding `auditor-circuitos-erp`** (pedido explícito del dueño,
+   09/09/2026) — pregunta: qué hace cada referencia cuando el escape de
+   cancelar-con-NC se topa con >1 factura viva sin pool mixto pedido.
+   - **ERPNext:** `make_return_doc()` (`sales_and_purchase_return.py:450`)
+     toma un `source_name` singular (`return_against` de un solo valor,
+     `:473`); no hay acción a nivel Sales Order sobre "todas las facturas
+     vivas". `sales_order.py::on_cancel` → `check_nextdoc_docstatus()` (`:494`)
+     **rechaza toda la cancelación** si CUALQUIER documento vinculado sigue
+     `docstatus=1` (vivo), sea uno o varios — sin elegir, sin heurística.
+     Validación 100% local, sin llamada fiscal externa antes del bloqueo.
+   - **Odoo 19.0:** `sale.order._action_cancel()` (`sale_order.py:1332`) solo
+     cancela facturas `draft`; una o varias facturas `posted` (vivas) quedan
+     **ignoradas en silencio** — no bloquea, tampoco genera NC ni pregunta. Es
+     el mismo hueco ya conocido como ORDER-10. El wizard `account.move.reversal`
+     sí acepta selección múltiple (`move_ids` Many2many) y hace fan-out en
+     batch — pero sólo si el usuario ya seleccionó explícitamente varias
+     facturas en la UI, nunca por heurística implícita del sistema.
+   - **QloApps:** mismo patrón manual que ERPNext (una factura concreta a la
+     vez desde la pestaña Invoices) — sin cita de código, no está en las
+     rutas locales de referencia.
+   - **Conclusión del grounding:** las 3 referencias coinciden en que "sobre
+     qué factura actuar" es siempre decisión explícita del operador, nunca
+     una heurística implícita — ninguna hace la llamada fiscal antes del
+     bloqueo/selección. La diferencia real es ERPNext (bloquea toda la
+     operación, ruidoso) vs. Odoo (ignora en silencio, el patrón que generó
+     ORDER-10). **El fail-closed del gate del 08/09 adopta el extremo
+     ERPNext** — el más maduro/estricto de las tres, no "más estricto que la
+     industria en general".
+
+Con esto **3.3-b1 queda desbloqueado para empezar** — ninguna de las 3
+respuestas fuerza volver al gate de diseño.
+
+---
+
+**Texto original de la precondición, dejado como referencia (ya cumplida):**
 
 **Recién con las dos respuestas conformes**, criterio de cierre de 3.3-b1
 (orquestador + puerto, SIN ruta, SIN `authorize`, inalcanzable en
