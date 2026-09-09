@@ -136,11 +136,42 @@ allowlist chico con motivo, no una excepción muda. Esta cerca no resuelve
 `app.ts` ni valida montaje — eso sigue siendo alcance de
 `api-auth-gate-order`/`rbac-route-coverage`.
 
+**RBAC-MATRIX-SECTION2-001 (09/09/2026, gate `architecture-governor`):**
+hasta acá, ni la cerca de conteo (`rbac-matrix-sync`) ni `rbac-route-coverage`
+cruzan el CONTENIDO fila-por-fila de la sección 2 de la matriz (`archivo →
+método+path`) contra el código real — solo que el TOTAL de `authorize()`
+coincida, o que cada ruta tenga ALGUNA capa de autz. Una fila podía decir
+`FRONT_DESK` cuando el código exigía `MANAGEMENT` y nada lo detectaba.
+`src/tests/architecture/rbac-matrix-section2-sync.test.ts` cruza
+existencia (no el grupo, ver su propio header) usando
+`route-enumeration.fixture.ts` (extraído el mismo día de
+`rbac-route-coverage.test.ts`, para no reimplementar el enumerador dos
+veces) contra bullets `- MÉTODO \`path\`` de la sección 2 — join por
+CÓDIGO, no por `docs/inventario-rutas.md` (ese mapa archivo→prefijo no es
+función: 2 archivos montan 2 routers en 2 prefijos distintos).
+
+`EXCLUDED_FILES` (**noveno** artefacto manual del repo, ver la nota de
+numeración en "Contratos" más abajo): 11 archivos donde la sección 2
+describe las rutas protegidas en prosa (comodines, corchetes opcionales,
+párrafos narrativos) en vez de bullets parseables — 85 rutas protegidas
+sin verificar fila por fila todavía (medido, no el ~83 de una estimación
+previa al gate: `accounts-receivable.routes.ts` tiene 3, no 1 — su único
+bullet real diverge del código, `/?companyCustomerId=` vs `/`).
+Cuantificado a propósito (cada entrada lleva el conteo real, verificado
+contra el código): agregar una ruta a uno de estos 11 archivos sin
+normalizar la sección 2 pone la suite roja — la deuda queda medida
+adentro de la cerca, no invisible. Normalizar esos 11 archivos a bullets
+(y sacarlos de `EXCLUDED_FILES`) es un bloque de docs aparte, no decidido
+todavía.
+
 ## Contratos — spec OpenAPI vs rutas reales
 
 Distinto de RBAC: esto es sobre qué documenta `src/openapi/spec.ts`, no
-sobre quién puede pegarle a una ruta. Artefactos propios, no se suman al
-conteo de la sección de RBAC de arriba.
+sobre quién puede pegarle a una ruta. La numeración de "artefacto manual"
+es una sola cuenta para todo el repo, no una por sección -- el octavo se
+nombra acá abajo (`CLOSURE_MOUNTS`); el noveno (`EXCLUDED_FILES`,
+RBAC-MATRIX-SECTION2-001) se nombra en la sección RBAC de arriba, donde
+corresponde temáticamente.
 
 **`src/openapi/spec.ts`** es un OpenAPI 3.0.3 escrito a mano, NO generado
 desde las rutas reales. Hasta el 09/09/2026 nada lo cruzaba contra el
