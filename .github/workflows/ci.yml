@@ -151,6 +151,47 @@ jobs:
           echo "schema.sql cambió y CURRENT_SCHEMA_VERSION pasó de $OLD_VERSION a $NEW_VERSION — OK."
 
   # ------------------------------------------------------------
+  # Job — Inventario de rutas generado, CONTRACT-COVERAGE-001 (09/09/2026)
+  #
+  # src/openapi/spec.ts documenta 18 de 251 endpoints reales, a mano. En vez
+  # de intentar completarlo a mano (mismo modo de falla que ya causó
+  # CONTRACT-001: la copia se desincroniza y nadie se entera), se genera un
+  # inventario de EXISTENCIA (no autz, no schemas) booteando la app real y
+  # caminando app._router.stack -- ver el header de
+  # src/scripts/generate-route-inventory.ts para el diseño completo (gate
+  # architecture-governor, 09/09/2026).
+  #
+  # Mismo molde que schema-version-check de arriba: el artefacto generado
+  # (docs/inventario-rutas.md) se versiona junto al código, y este job lo
+  # regenera y compara contra lo commiteado -- si alguien agrega una ruta y
+  # no corre `npm run docs:routes`, el build falla en vez de dejar el
+  # inventario mentir en silencio. `generate-route-inventory.ts` en sí ya
+  # falla ruidoso si encuentra un mount sin explicar (ver CLOSURE_MOUNTS en
+  # ese archivo), así que este job cubre la otra mitad: que lo generado y lo
+  # commiteado sean el mismo archivo.
+  # ------------------------------------------------------------
+  route-inventory-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Regenerar el inventario y comparar contra lo commiteado
+        run: |
+          npm run docs:routes
+          if ! git diff --exit-code -- docs/inventario-rutas.md; then
+            echo "::error::docs/inventario-rutas.md quedó desincronizado -- corré 'npm run docs:routes' y commiteá el resultado."
+            exit 1
+          fi
+          echo "docs/inventario-rutas.md está al día."
+
+  # ------------------------------------------------------------
   # Job 5 — Tests de integración contra Postgres real (F2, 05/09/2026)
   #
   # Por qué existe: hasta el 05/09/2026 NINGÚN job corría

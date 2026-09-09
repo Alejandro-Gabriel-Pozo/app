@@ -14,6 +14,7 @@
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "migrate:tenants": "tsx src/scripts/migrate-tenants.ts",
+    "docs:routes": "tsx src/scripts/generate-route-inventory.ts",
     "lint": "eslint src --ext .ts --max-warnings 0",
     "lint:fix": "eslint src --ext .ts --fix",
     "lint:arch": "depcruise src --config .dependency-cruiser.cjs --output-type err",
