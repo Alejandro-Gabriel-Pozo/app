@@ -42,6 +42,25 @@
  * (alguien refactorizó ese mount para que arme el router al boot), también
  * FALLA -- la entrada quedó obsoleta y hay que sacarla.
  *
+ * ## Dos falsos negativos conocidos del guard bidireccional (declarados, no
+ * ## corregidos -- gate architecture-governor, 09/09/2026, ronda 3)
+ * (a) El chequeo de "¿este prefijo tiene rutas vivas?" usa
+ * `p === prefix || p.startsWith(prefix + '/')`. Si un mount se volviera
+ * closure mientras un mount HERMANO más específico sigue vivo bajo el mismo
+ * prefijo (ej. `/api/users` pasa a closure pero `/api/users/invitations`
+ * sigue montado directo), el guard no lo detecta -- las rutas de
+ * `/api/users` desaparecerían del inventario en silencio, tapadas por las
+ * de `/api/users/invitations`. Mismo riesgo en `/api/business-profile` vs.
+ * `/api/business-profile/afip-credentials`, y en `/api/business/*`
+ * (modules, plan-limits, context). Hoy ninguno de estos es un closure --
+ * el riesgo es hipotético, no un bug actual -- pero si alguno lo fuera,
+ * revisar este comentario.
+ * (b) El guard solo mira mounts bajo `/api/`. Un router armado en closure
+ * en `/platform`, `/register` o un prefijo nuevo de primer nivel no está
+ * cubierto por `CLOSURE_MOUNTS` ni por el chequeo de mounts sin explicar
+ * -- aunque el inventario en sí sí lista esas rutas cuando se montan
+ * directo (que es como están montadas hoy).
+ *
  * ## Lo que este inventario NO dice
  * - **NO dice quién puede pegarle a cada ruta.** `authorize(Roles.X)` /
  *   `requireModule(...)` / `authorizePlatform(...)` capturan el permiso

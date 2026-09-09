@@ -17,8 +17,9 @@ const SRC_DIR = join(__dirname, '../..');
  * Esta cerca cierra esa falta de cruce, pero SOLO para lo que `spec.ts` YA
  * documenta: existencia de path+método en el `*.routes.ts` real
  * correspondiente. NO valida request/response schemas. NO exige que un
- * endpoint real esté documentado -- `spec.ts` cubre ~18 paths de +60 reales
- * (33 routers montados en `app.ts` sin ninguna entrada acá). Cerrar esa
+ * endpoint real esté documentado -- `spec.ts` cubre ~18 paths de **251**
+ * reales (33 routers montados en `app.ts` sin ninguna entrada acá; el 251
+ * es medido, no estimado -- ver `docs/inventario-rutas.md`). Cerrar esa
  * brecha es `CONTRACT-COVERAGE-001` (decisión de producto: mantener el spec
  * a mano vs. generarlo desde las rutas), no algo que esta cerca deba forzar.
  *

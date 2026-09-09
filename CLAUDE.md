@@ -171,8 +171,9 @@ validando contra el archivo viejo — re-verificar a mano al tocar esos
 mounts.
 
 **Lo que esta cerca a propósito NO hace:** exigir que un endpoint real
-esté documentado. `spec.ts` cubre ~18 paths de +60 endpoints reales (33
-routers montados en `app.ts` sin ninguna entrada acá). Cerrar esa brecha
+esté documentado. `spec.ts` cubre ~18 paths de **251** endpoints reales
+(33 routers montados en `app.ts` sin ninguna entrada acá) -- el 251 es
+medido, no estimado: ver `docs/inventario-rutas.md` más abajo. Cerrar esa brecha
 es `CONTRACT-COVERAGE-001` — decisión de producto (mantener el spec a
 mano vs. generarlo desde las rutas), no algo que un fence deba forzar. Ver
 `docs/pendientes-2026-09-08.md`, sección Higiene, para el detalle

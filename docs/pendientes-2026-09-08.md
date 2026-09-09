@@ -1278,9 +1278,11 @@ ya no "sin bloque propio":**
   router dentro de un closure por-request y por eso el árbol vivo no los
   ve (`/api/reports`, `/api/system`, `/api/housekeeping`,
   `/api/maintenance-windows`, `/api/stays`, `/api/accounts-receivable`,
-  confirmado por spike real, no inferido). El "33 routers sin
-  documentar" de más arriba queda respondido por este inventario --
-  ya no hace falta mantenerlo a mano ni volver a recontarlo.
+  confirmado por spike real, no inferido). El hallazgo original de 33
+  routers sin entrada en `spec.ts` (`git show 6beff80:docs/pendientes-2026-09-08.md`
+  para el texto tal como quedó antes de este reencuadre) queda respondido
+  por este inventario -- ya no hace falta mantenerlo a mano ni volver a
+  recontarlo.
 - **Sub-componente narrativa/responses -- sigue abierto.** El inventario
   dice QUÉ RUTAS EXISTEN, no la forma del request/response. `spec.ts`
   sigue siendo el único artefacto con eso, para 18 de 251 -- completar
