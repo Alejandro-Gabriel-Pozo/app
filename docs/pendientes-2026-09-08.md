@@ -510,25 +510,57 @@ interferente que residual B-1 nombra (`pendientes-2026-09-06.md:79-88`) es
 **Estado: sigue abierto, redefinido como 3.2-b, sin fecha, no autorizado
 en esta sesión.**
 
-### #26 — Grounding `auditor-circuitos-erp` para 3.3 (subcasos 1-2), insumo del gate — NO diseño cerrado
+### #26 — Grounding `auditor-circuitos-erp` para 3.3 (subcasos 1-2) · ✅ CONSUMIDO por el gate de diseño de 3.3 (08/09/2026)
 
 Detalle completo en `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
-§6.3 (in-place, mismo commit). Subcaso 1 sin objeciones. Subcaso 2: cita de
-ERPNext corregida (el mecanismo real son 3 piezas — reversión siempre contra
-el origen atómico, nunca contra la consolidada directa; el espejo hacia la
-consolidada es automático; el lookup solo resuelve un FK ya grabado, sin
-prorrateo) y **dos huecos concretos sin bloque asignado**: (1) falta
-`getInFlightCreditNoteTotalForUpdate()`-hermana scoped a `(invoiceId,
-reservationId)` — la existente topea la factura entera, no evita que una
-reserva de la consolidada se lleve más de lo que le corresponde dentro del
-tope global; (2) `buildCreditNote()` (`invoice.service.ts:694-702`)
-calcularía mal el desglose de IVA si el orquestador le pasa el monto de
-N4-a sin más — doble prorrateo, denominadores distintos. Además: lock
-ordering reserva→factura nuevo (sin cerca que lo vigile, no explotable hoy),
-F4 sigue siendo predicado por factura completa (comportamiento correcto,
-a declarar explícito), `invoice_charges.UNIQUE(financial_transaction_id)`
-como invariante estructural gratis. **Todo esto va al gate de diseño de
-3.3, que sigue sin arrancar.**
+§6.3. El gate de `architecture-governor` sobre el diseño de 3.3 tomó los dos
+huecos que este ítem señalaba y les dio mecanismo cerrado
+(`getInFlightCreditNoteTotalForPairForUpdate()` + tercera rama de
+`buildCreditNote()`) — ver plan, fila **3.3-a**. La corrección de lock
+ordering también quedó resuelta: bajo el diseño elegido (orquestador nuevo
+tipo N1.a) ninguna transacción sostiene lock de `reservations` y de
+`invoices` a la vez, así que el cruce que este ítem anticipaba no se
+materializa.
+
+### #27 — Tres hallazgos nuevos del gate de diseño de 3.3, sin bloque previo
+
+1. **`handleReservationCancelled` sin reconciliación — costo conocido de `3.3-b`.**
+   Órdenes recibió `classifyOrderLiveInvoice` (sub-bloque 5 del ADR,
+   `outbox.handlers.ts:61,433,453`) para el residual #3 (un cargo con
+   comprobante vivo que el `UPDATE` de anulación no toca). Reservas no tiene
+   el equivalente: `handleReservationCancelled(financialRepo)` llama
+   `voidByReservationId()` a secas (`outbox.handlers.ts:72,160-168`), y ese
+   `UPDATE` excluye filas con comprobante vivo
+   (`sql.financial-transaction.repository.ts:390-402`). **Consecuencia:**
+   una vez que exista el escape de reservas (`3.3-b`), CADA cancelación con
+   NC va a producir `CARGO_CON_COMPROBANTE_VIVO` → `grave` en
+   `registrarDesenlace()`, permanentemente — no es un bug de `3.3-b`, es un
+   gap preexistente que `3.3-b` vuelve alcanzable por primera vez.
+   Bloque **3.3-d**: `classifyReservationLiveInvoice()` + wiring, mismo
+   patrón que el de órdenes.
+2. **Punto ciego preexistente en `lock-order.test.ts`, declarado sin arreglar.**
+   `LOCK_CALL_RE` (la cerca `LOCK-ORDER-001`) matchea `applyCapped*`,
+   `getOutstandingForUpdate(client`, `getRefundableForUpdate(client` — **no**
+   matchea `getInFlightCreditNoteTotalForUpdate`/`ForPair`.
+   `invoice.service.ts` lockea una fila de `invoices` con ese método y la
+   cerca no lo ve. Hoy es lock de una sola factura (sin ABBA posible), así
+   que no es explotable — pero el inventario de la cerca queda incompleto.
+   No se toca en `3.3-a` (ninguna cerca se edita en ese bloque, es condición
+   de aceptación). Anotado para cuando alguien extienda `lock-order.test.ts`
+   por otro motivo.
+3. **W2 sobre `cancellation-refund.service.ts:271` — bloqueado por falta de
+   evidencia de producción, no por decisión pendiente.** El gate confirmó
+   que el orquestador de `3.3-b` nace W2-correcto (`ADJUSTMENT.customerId =
+   original.customerId`, `buildCreditNote()` ya propaga `tx.customerId` a
+   la NC) — lo que NO se toca es el código YA en producción de
+   `confirmRefund()`, que asienta el REFUND contra `reservation.customer.id`
+   (el huésped) en vez del titular de la factura. Cambiarlo mueve saldo
+   entre dos cuentas corrientes en un circuito vivo (C2/D2, plata real) y,
+   después del fail-closed de 3.1, `confirmRefund()` solo alcanza facturas
+   DIRECTAS — donde no está establecido si `invoice.customerId` diverge de
+   `reservation.customer.id` en datos reales. **Antes de decidir, hace falta
+   una query read-only de producción** (las 2 tenants) que mida esa
+   divergencia. Bloque propio, sin fecha, no depende de 3.3.
 
 ---
 
