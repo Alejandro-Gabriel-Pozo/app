@@ -30,6 +30,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getRefundableForUpdate() { return 0; }
   async getIssuedCreditNoteCompensationTotal() { return 0; } // ADR común cancelar-con-NC (F4)
   async getInFlightCreditNoteTotalForUpdate() { return 0; } // bloque 2.4 (tope N5) -- sin caller en este test
+  async getInFlightCreditNoteTotalForPairForUpdate() { return 0; } // bloque 3.3-a -- sin caller en este test
   async getByCustomerId() { return []; } // O2-F2 (03/09/2026)
   async getByStatus() { return []; } // B3 bloque 2.1 (08/09/2026) -- sin caller en este test
   async resolveInvoiceLinkage() { return { kind: 'NONE' as const }; }

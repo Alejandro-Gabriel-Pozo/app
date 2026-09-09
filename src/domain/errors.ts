@@ -918,6 +918,62 @@ export class OrderNotFoundError extends DomainError {
   }
 }
 
+/**
+ * Bloque 3.3-a (08/09/2026, gate `architecture-governor`) -- tope POR PAR
+ * `(invoiceId, reservationId)`, distinto y adicional al tope GLOBAL de
+ * `CreditNoteCapExceededError` (N5): una consolidada puede tener cupo
+ * global de sobra y aun así una reserva puntual llevarse más de lo que le
+ * corresponde. `getInFlightCreditNoteTotalForPairForUpdate()`
+ * (`sql.invoice.repository.ts`) sostiene el mismo lock ya tomado por el
+ * tope global -- no toma uno nuevo. Nunca clamp (misma doctrina N5).
+ */
+export class CreditNotePairCapExceededError extends DomainError {
+  constructor(reversedInvoiceId: string, reservationId: string, financialTransactionId: string, requestedAmount: number, alreadyInFlightForPair: number, attributedTotal: number) {
+    super(
+      `La Nota de Crédito (transacción "${financialTransactionId}") por ${requestedAmount} contra la factura "${reversedInvoiceId}" excede el tope de la reserva "${reservationId}" dentro de esa factura: ya hay ${alreadyInFlightForPair} en vuelo contra este par sobre un atribuible de ${attributedTotal}. No se emite -- el monto nunca se recorta (N5).`,
+      'CREDIT_NOTE_PAIR_CAP_EXCEEDED',
+    );
+  }
+}
+
+/**
+ * Bloque 3.3-a (08/09/2026) -- `resolveRefundableForPair()` (N4-a,
+ * `refund-attribution.ts`) devolvió `BLOCKED`: la composición fiscal
+ * original no se puede atribuir con certeza a esta reserva (factura Nivel
+ * A sin `invoice_items`, la reserva no aparece en ningún ítem de la
+ * factura, o un grupo de tasa sin entrada congelada correspondiente en
+ * `afip_request.Iva[]`). Fail-closed a propósito (decisión del dueño,
+ * `refund-attribution.ts`) -- nunca cae a la rama del factor global, que
+ * mezclaría el denominador equivocado.
+ */
+export class CreditNoteAttributionBlockedError extends DomainError {
+  constructor(invoiceId: string, reservationId: string, reason: string, detail: string) {
+    super(
+      `No se puede atribuir la porción de la reserva "${reservationId}" en la factura "${invoiceId}" (${reason}): ${detail}`,
+      'CREDIT_NOTE_ATTRIBUTION_BLOCKED',
+    );
+  }
+}
+
+/**
+ * Bloque 3.3-a (08/09/2026) -- mecanismo que evita el doble prorrateo
+ * (gate `architecture-governor`): el monto de la NC parcial por reserva se
+ * RE-DERIVA siempre desde `resolveRefundableForPair()` (N4-a, por grupo de
+ * alícuota); `abs(tx.amount)` del ledger solo se CRUZA contra ese resultado
+ * (±`CREDIT_NOTE_COMPENSATION_TOLERANCE`), nunca se usa como numerador de
+ * un segundo prorrateo. Si difieren, es una anomalía entre lo que el
+ * caller pidió y lo que la factura realmente atribuye a esta reserva --
+ * se lanza, no se concilia en silencio.
+ */
+export class CreditNoteAttributionMismatchError extends DomainError {
+  constructor(invoiceId: string, reservationId: string, requestedAmount: number, attributedTotal: number) {
+    super(
+      `El monto solicitado (${requestedAmount}) para la NC de la reserva "${reservationId}" en la factura "${invoiceId}" no coincide con lo atribuible según la composición fiscal original (${attributedTotal}).`,
+      'CREDIT_NOTE_ATTRIBUTION_MISMATCH',
+    );
+  }
+}
+
 export class InvalidOrderTransitionError extends DomainError {
   constructor(from: string, to: string) {
     super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');

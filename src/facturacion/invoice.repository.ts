@@ -205,6 +205,25 @@ export interface InvoiceRepository {
    */
   getInFlightCreditNoteTotalForUpdate(client: SqlClient, invoiceId: string): Promise<number>;
   /**
+   * Bloque 3.3-a (08/09/2026, gate `architecture-governor`) — mismo tope
+   * que `getInFlightCreditNoteTotalForUpdate()` (ISSUED + PENDING +
+   * FAILED_UNCERTAIN, excluye REJECTED) pero acotado a UNA reserva dentro
+   * de una factura consolidada (`AND r.reservation_id = $2`, la reserva de
+   * la transacción REVERTIDORA — no de la factura). Necesario porque el
+   * tope global topea la factura ENTERA: una consolidada con cupo global
+   * de sobra puede aun así dejar que una reserva puntual se lleve más de
+   * lo que le corresponde (`resolveRefundableForPair()`, N4-a). Los dos
+   * topes CONVIVEN, no se reemplazan — este es adicional, no un sustituto.
+   *
+   * Toma su PROPIO lock (`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`,
+   * corrección del gate 08/09/2026) — autocontenido, no depende de que el
+   * caller haya llamado antes a `getInFlightCreditNoteTotalForUpdate()` en
+   * la misma transacción. Sobre una fila que la misma transacción ya tiene
+   * lockeada (el caso real, `buildCreditNote()` llama a los dos seguidos)
+   * el lock es instantáneo — no hay costo por sostenerlo dos veces.
+   */
+  getInFlightCreditNoteTotalForPairForUpdate(client: SqlClient, invoiceId: string, reservationId: string): Promise<number>;
+  /**
    * ADR común cancelar-con-NC (§3 N1.a(iii)) — devuelve los
    * `financial_transactions.id` de los CARGO(s) que la factura `invoiceId`
    * facturó: el camino individual (`invoices.financial_transaction_id`) más

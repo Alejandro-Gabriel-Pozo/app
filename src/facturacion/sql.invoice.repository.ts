@@ -491,6 +491,43 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return parseFloat(rows[0]!.in_flight);
   }
 
+  async getInFlightCreditNoteTotalForPairForUpdate(client: SqlClient, invoiceId: string, reservationId: string): Promise<number> {
+    // Bloque 3.3-a (08/09/2026, gate `architecture-governor`) -- mismo
+    // predicado que getInFlightCreditNoteTotalForUpdate(), con
+    // `r.reservation_id = $2` sumado: `r` es la transacción REVERTIDORA
+    // (REFUND/ADJUSTMENT), no la factura -- filtra por qué reserva generó
+    // cada NC/porción en vuelo contra `invoiceId`, no por qué reserva
+    // aparece en las líneas de la factura.
+    //
+    // Corrección del gate (08/09/2026): el nombre `...ForUpdate` tiene que
+    // ser verdad por sí solo -- la versión anterior de este método confiaba
+    // en que `buildCreditNote()` ya hubiera tomado el lock vía
+    // `getInFlightCreditNoteTotalForUpdate()` antes de llamar acá, sin que
+    // nada en la firma lo exigiera. Un método público de `InvoiceRepository`
+    // cuyo nombre promete un `FOR UPDATE` que no ejecuta es exactamente el
+    // modo de falla que este ADR viene repitiendo (la contención depende de
+    // algo que nadie mantiene sincronizado). Tomar el lock acá también es
+    // prácticamente gratis: sobre una fila que la MISMA transacción ya tiene
+    // lockeada, Postgres no espera nada -- misma conexión, sin costo de pool.
+    await client.query(`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
+
+    const { rows } = await client.query<{ in_flight: string }>(
+      `SELECT COALESCE(SUM(dedup.imp_total), 0) AS in_flight
+         FROM (
+           SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
+             FROM financial_transactions r
+             JOIN (${NC_LINKAGE_UNION}) nc ON nc.reverting_ft_id = r.id
+            WHERE r.reversed_invoice_id = $1
+              AND r.reservation_id = $2
+              AND r.type IN ('REFUND', 'ADJUSTMENT')
+              AND nc.status = ANY($3::text[])
+              AND nc.cbte_tipo = ANY($4::int[])
+         ) dedup`,
+      [invoiceId, reservationId, ['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'], [...CBTE_TIPOS_NOTA_CREDITO]],
+    );
+    return parseFloat(rows[0]!.in_flight);
+  }
+
   async classifyOrderLiveInvoice(
     client: SqlClient,
     orderId: string,

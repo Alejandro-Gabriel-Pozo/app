@@ -54,7 +54,11 @@ import {
   ReservationCancelledCannotInvoiceError,
   OrderInvoiceHasNoLinesError,
   CreditNoteCapExceededError,
+  CreditNotePairCapExceededError,
+  CreditNoteAttributionBlockedError,
+  CreditNoteAttributionMismatchError,
 } from '../domain/errors.js';
+import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems } from './cancel-with-credit-note.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
@@ -738,6 +742,12 @@ export class InvoiceService {
     let impNeto: number;
     let impIva: number;
     let impTotal: number;
+    // Bloque 3.3-a (08/09/2026) -- distinto de null solo en la rama nueva de
+    // abajo (ADJUSTMENT parcial atribuido a UNA reserva de una consolidada).
+    // El tope global (N5) ya corre para TODAS las ramas; este es el tope
+    // ADICIONAL por par, que sólo tiene sentido cuando hubo una atribución
+    // por reserva que proteger.
+    let pairAttribution: { reservationId: string; attributedTotal: number } | null = null;
 
     if (isFullReversal && originalItems.length > 0) {
       // --- N3: reversión total con detalle de líneas -> copiar 1-a-1 ---
@@ -779,6 +789,46 @@ export class InvoiceService {
           '[buildCreditNote] la factura origen tiene impIva > 0 pero afipRequest.Iva vacío -- la NC podría salir a AFIP sin desglose de IVA',
         );
       }
+    } else if (tx.type === 'ADJUSTMENT' && tx.reservationId != null && originalItems.length > 0) {
+      // --- Bloque 3.3-a (08/09/2026, gate `architecture-governor`) ---
+      // Reversión PARCIAL de una factura consolidada, atribuida a UNA
+      // reserva puntual (subcaso 2 de B-reservas, `resolveRefundableForPair()`
+      // / N4-a). Predicado ESTRUCTURAL, no un flag del caller: llega acá
+      // solo un ADJUSTMENT con reserva, no total, con líneas -- un ADJUSTMENT
+      // de ORDEN (sin reservationId) sigue cayendo a la rama de abajo
+      // (todo-o-nada, ADR §5).
+      //
+      // El monto NUNCA sale de `tx.amount` hacia un cálculo propio -- se
+      // RE-DERIVA acá desde la composición fiscal congelada de la factura
+      // (`invoice_items` + `afip_request.Iva[]`, vía N4-a) y `abs(tx.amount)`
+      // solo se CRUZA contra ese resultado. Es lo que evita el doble
+      // prorrateo que tendría escalar `factor = tx.amount / original.impTotal`
+      // (la rama de abajo) sobre un monto que YA es la porción de una
+      // reserva: ese factor divide por el total de la FACTURA ENTERA, un
+      // segundo denominador distinto del que usó N4-a.
+      const reservationId = tx.reservationId;
+      const shareItems: FrozenInvoiceItemShare[] = originalItems.map((i) => ({
+        reservationId: i.reservationId, subtotal: i.subtotal, ivaRate: i.ivaRate,
+      }));
+      const frozenIva = (
+        (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
+      ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
+      const attribution = resolveRefundableForPair({
+        items: shareItems, frozenIva, alreadyRefunded: 0, reservationId,
+      });
+      if (attribution.kind === 'BLOCKED') {
+        throw new CreditNoteAttributionBlockedError(original.id, reservationId, attribution.reason, attribution.detail);
+      }
+      if (Math.abs(round2(amountToReverse - attribution.attributedTotal)) > CREDIT_NOTE_COMPENSATION_TOLERANCE) {
+        throw new CreditNoteAttributionMismatchError(original.id, reservationId, amountToReverse, attribution.attributedTotal);
+      }
+      // N3 aplicado a la PORCIÓN -- copia 1-a-1, no una línea sintética.
+      items = creditNoteLinesFromInvoiceItems(originalItems.filter((i) => i.reservationId === reservationId));
+      ivaEntries = attribution.ivaBreakdown.map((e) => ({ Id: e.id, BaseImp: e.baseImp, Importe: e.importe }));
+      impNeto = attribution.attributedNeto;
+      impIva = attribution.attributedIva;
+      impTotal = attribution.attributedTotal;
+      pairAttribution = { reservationId, attributedTotal: attribution.attributedTotal };
     } else {
       // --- Rama proporcional heredada (parcial, o total Nivel A) ---
       if (tx.type === 'ADJUSTMENT') {
@@ -857,6 +907,25 @@ export class InvoiceService {
       const projected = round2(inFlight + impTotal);
       if (projected > round2(original.impTotal + CREDIT_NOTE_COMPENSATION_TOLERANCE)) {
         throw new CreditNoteCapExceededError(original.id, tx.id, impTotal, inFlight, original.impTotal);
+      }
+
+      // Bloque 3.3-a (08/09/2026) -- tope ADICIONAL por par (invoiceId,
+      // reservationId), sólo cuando esta NC es la porción de una reserva
+      // dentro de una consolidada (rama nueva de arriba). Convive con el
+      // tope global de arriba, no lo reemplaza: una consolidada puede tener
+      // cupo global de sobra y aun así dejar que UNA reserva se lleve más
+      // de lo que le corresponde. Reusa el `FOR UPDATE` que ya tomó la
+      // sentencia de arriba sobre la MISMA fila -- no toma un lock nuevo.
+      if (pairAttribution) {
+        const pairInFlight = await this.invoiceRepo.getInFlightCreditNoteTotalForPairForUpdate(
+          client, original.id, pairAttribution.reservationId,
+        );
+        const pairProjected = round2(pairInFlight + impTotal);
+        if (pairProjected > round2(pairAttribution.attributedTotal + CREDIT_NOTE_COMPENSATION_TOLERANCE)) {
+          throw new CreditNotePairCapExceededError(
+            original.id, pairAttribution.reservationId, tx.id, impTotal, pairInFlight, pairAttribution.attributedTotal,
+          );
+        }
       }
 
       invoice = await this.invoiceRepo.createWithClient(

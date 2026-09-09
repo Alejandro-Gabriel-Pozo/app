@@ -57,6 +57,9 @@ class FakeInvoiceRepository implements InvoiceRepository {
   // sobreescriben esto o van a integración contra Postgres real (el fake no
   // modela financial_transactions.reversed_invoice_id, C4 del gate).
   async getInFlightCreditNoteTotalForUpdate(): Promise<number> { return 0; }
+  // Bloque 3.3-a (08/09/2026) -- mismo criterio que el de arriba: default 0,
+  // los tests dedicados al tope por par sobreescriben el método en la instancia.
+  async getInFlightCreditNoteTotalForPairForUpdate(): Promise<number> { return 0; }
   // O2-F2 (03/09/2026)
   async getByCustomerId(customerId: string): Promise<Invoice[]> {
     return [...this.invoices.values()].filter((i) => i.customerId === customerId);
@@ -1056,6 +1059,154 @@ describe('InvoiceService', () => {
       expect(invoice.impNeto).toBe(41.32);
       expect(invoice.impIva).toBe(8.68);
     });
+
+  describe('Bloque 3.3-a (08/09/2026, gate architecture-governor) -- ADJUSTMENT parcial atribuido a UNA reserva de una consolidada', () => {
+    function sum3(a: number, b: number, c: number): number {
+      return Math.round((a + b + c) * 100) / 100;
+    }
+
+    function seedConsolidadaTresReservasDosTasas() {
+      // 3 reservas, 2 grupos de tasa (21% y 10.5%) -- necesario para que el
+      // escenario ejercite de verdad el reparto por grupo, no solo un
+      // factor único (una consolidada de una sola tasa no distingue el
+      // mecanismo nuevo del viejo `factor` heredado).
+      seedOriginalInvoice({
+        id: 'inv-consolidada', financialTransactionId: null,
+        impNeto: 1100, impIva: 220.5, impTotal: 1320.5,
+        afipRequest: { Iva: [{ Id: 5, BaseImp: 1000, Importe: 210 }, { Id: 4, BaseImp: 100, Importe: 10.5 }] },
+      });
+      seedOriginalItems('inv-consolidada', [
+        { reservationId: 'res-A', description: 'Res A', subtotal: 800, unitPrice: 800, ivaRate: 21 },
+        { reservationId: 'res-B', description: 'Res B', subtotal: 200, unitPrice: 200, ivaRate: 21 },
+        { reservationId: 'res-C', description: 'Res C', subtotal: 100, unitPrice: 100, ivaRate: 10.5 },
+      ]);
+    }
+
+    it('reconstruye EXACTAMENTE el desglose congelado -- la suma de las 3 porciones cierra con la factura original, no un factor de cabecera', async () => {
+      seedConsolidadaTresReservasDosTasas();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+
+      async function emitFor(reservationId: string, amount: number, ftId: string) {
+        const service = buildService({
+          tx: makeTx({ id: ftId, type: 'ADJUSTMENT', amount: -amount, reservationId, reversedInvoiceId: 'inv-consolidada' }),
+          client: fakeArcaClient({ createNextVoucher }),
+        });
+        return service.requestInvoice({ businessId: 'biz-1', financialTransactionId: ftId, changedBy: 'identity-1' });
+      }
+
+      const invA = await emitFor('res-A', 968, 'ft-a');     // 800 neto + 168 iva (21%)
+      const invB = await emitFor('res-B', 242, 'ft-b');     // 200 neto + 42 iva (21%)
+      const invC = await emitFor('res-C', 110.5, 'ft-c');   // 100 neto + 10.5 iva (10.5%)
+
+      expect(invA).toMatchObject({ impNeto: 800, impIva: 168, impTotal: 968 });
+      expect(invB).toMatchObject({ impNeto: 200, impIva: 42, impTotal: 242 });
+      expect(invC).toMatchObject({ impNeto: 100, impIva: 10.5, impTotal: 110.5 });
+
+      // LA RECONSTRUCCIÓN -- esto es lo que un `factor = amount/impTotal`
+      // (rama heredada) NO puede garantizar si se aplicara acá: escalaría
+      // contra el impTotal de la FACTURA ENTERA (1320.5), no contra la
+      // participación real de cada reserva dentro de su grupo de tasa.
+      expect(sum3(invA.impNeto, invB.impNeto, invC.impNeto)).toBe(1100);
+      expect(sum3(invA.impIva, invB.impIva, invC.impIva)).toBe(220.5);
+      expect(sum3(invA.impTotal, invB.impTotal, invC.impTotal)).toBe(1320.5);
+
+      // Líneas copiadas 1-a-1 -- SOLO la de su propia reserva (N3 aplicado a la porción).
+      const itemsA = await invoiceRepo.getItemsByInvoiceId(invA.id);
+      expect(itemsA).toHaveLength(1);
+      expect(itemsA[0]).toMatchObject({ reservationId: 'res-A', subtotal: 800, ivaRate: 21 });
+
+      const itemsC = await invoiceRepo.getItemsByInvoiceId(invC.id);
+      expect(itemsC).toHaveLength(1);
+      expect(itemsC[0]).toMatchObject({ reservationId: 'res-C', subtotal: 100, ivaRate: 10.5 });
+
+      // El Iva[] de cada NC sólo lleva SU grupo de tasa -- A y B no arrastran
+      // el grupo 10.5% de C, ni viceversa.
+      const sentA = createNextVoucher.mock.calls[0]![0] as { Iva?: unknown[] };
+      const sentC = createNextVoucher.mock.calls[2]![0] as { Iva?: Array<{ Id: number }> };
+      expect(sentA.Iva).toEqual([{ Id: 5, BaseImp: 800, Importe: 168 }]);
+      expect(sentC.Iva).toEqual([{ Id: 4, BaseImp: 100, Importe: 10.5 }]);
+    });
+
+    it('BLOQUEA (RESERVATION_NOT_IN_INVOICE) -- la reserva del ADJUSTMENT no tiene ningún ítem en esta factura, nunca aproxima', async () => {
+      seedConsolidadaTresReservasDosTasas();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -500, reservationId: 'res-fantasma', reversedInvoiceId: 'inv-consolidada' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toMatchObject({ code: 'CREDIT_NOTE_ATTRIBUTION_BLOCKED' });
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('BLOQUEA (MISSING_FROZEN_IVA_ENTRY) -- la factura tiene el ítem pero afip_request.Iva[] no trae su grupo de tasa', async () => {
+      seedOriginalInvoice({ id: 'inv-sin-iva-d', financialTransactionId: null, impTotal: 1000, afipRequest: { Iva: [] } });
+      seedOriginalItems('inv-sin-iva-d', [{ reservationId: 'res-A', subtotal: 800, ivaRate: 21 }]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -800, reservationId: 'res-A', reversedInvoiceId: 'inv-sin-iva-d' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toMatchObject({ code: 'CREDIT_NOTE_ATTRIBUTION_BLOCKED' });
+    });
+
+    it('el monto del ledger no coincide con lo atribuible -- CreditNoteAttributionMismatchError, nunca se concilia en silencio', async () => {
+      seedConsolidadaTresReservasDosTasas();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      // res-A atribuye 968 (ver test de reconstrucción) -- se pide 500, que
+      // no coincide. Si el código escalara `factor` sobre esto en vez de
+      // re-derivar y cruzar, emitiría una NC de 500 mal prorrateada en vez
+      // de rechazar.
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -500, reservationId: 'res-A', reversedInvoiceId: 'inv-consolidada' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toMatchObject({ code: 'CREDIT_NOTE_ATTRIBUTION_MISMATCH' });
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('tope POR PAR: si ya hay NC en vuelo contra esta reserva dentro de la consolidada, rechaza aunque el tope GLOBAL tenga cupo de sobra', async () => {
+      seedConsolidadaTresReservasDosTasas();
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -968, reservationId: 'res-A', reversedInvoiceId: 'inv-consolidada' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+      // Simula que ya hay 500 en vuelo contra el PAR (inv-consolidada, res-A)
+      // -- el tope GLOBAL (mock por default en 0, sobra cupo contra 1320.5)
+      // no vería ningún problema; el tope POR PAR sí.
+      invoiceRepo.getInFlightCreditNoteTotalForPairForUpdate = async () => 500;
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toMatchObject({ code: 'CREDIT_NOTE_PAIR_CAP_EXCEEDED' });
+      expect(createNextVoucher).not.toHaveBeenCalled();
+    });
+
+    it('un ADJUSTMENT de ORDEN (sin reservationId) sigue sin tocarse -- no entra a esta rama nueva', async () => {
+      // No-regresión explícita (criterio 5 del gate): un ADJUSTMENT de orden
+      // total sigue cayendo a N3 (copia 1-a-1 con orderItemId), nunca a la
+      // rama de atribución por reserva -- el predicado es estructural
+      // (`tx.reservationId != null`), un ADJUSTMENT de orden nunca lo cumple.
+      seedOriginalInvoice({ id: 'inv-orden-3-3-a', financialTransactionId: 'ft-charge-3-3-a' });
+      seedOriginalItems('inv-orden-3-3-a', [
+        { orderItemId: 'oi-1', description: 'Café', quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 21 },
+      ]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -100, orderId: 'ord-1', reversedInvoiceId: 'inv-orden-3-3-a' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items[0]).toMatchObject({ orderItemId: 'oi-1', reservationId: null });
+    });
+  });
   });
 
   describe('idempotencia (A8.5/R13, clave determinística por financial_transaction_id)', () => {

@@ -87,6 +87,18 @@ export type ResolveRefundableForPairResult =
       attributedTotal: number;
       /** `attributedTotal - alreadyRefunded`. Deliberadamente SIN `GREATEST(...,0)` -- mismo criterio que `getRefundableForUpdate()` (sql.invoice.repository.ts): un negativo acá es una anomalía real (se reembolsó más de lo atribuible a esta reserva) y debe quedar visible para quien llama, no enmascarada. */
       refundable: number;
+      /**
+       * Bloque 3.3-a (08/09/2026) -- desglose por grupo de alícuota de la
+       * PORCIÓN atribuible a esta reserva, mismo formato que
+       * `invoices.afip_request.Iva[]` (`FrozenIvaEntry`, `Id`/`BaseImp`/
+       * `Importe`). Solo incluye grupos donde esta reserva participa y con
+       * tasa > 0 (mismo criterio que `buildIvaBreakdown()`: los grupos a
+       * tasa 0% se omiten de `Iva[]`). Existe para que
+       * `InvoiceService.buildCreditNote()` arme el `afipRequest.Iva[]` de
+       * la NC parcial sin reimplementar el reparto por grupo -- evita que
+       * el caller tenga que re-derivar lo que esta función ya calculó.
+       */
+      ivaBreakdown: FrozenIvaEntry[];
     }
   | {
       kind: 'BLOCKED';
@@ -172,6 +184,7 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
 
   let attributedNeto = 0;
   let attributedIva = 0;
+  const ivaBreakdown: FrozenIvaEntry[] = [];
 
   for (const [rate, itemsInGroup] of rateGroups) {
     const groupTotalSubtotal = round2(itemsInGroup.reduce((sum, i) => sum + i.subtotal, 0));
@@ -207,7 +220,11 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
 
     const netoByReservation = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, frozenEntry.baseImp);
     const ivaByReservation = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, frozenEntry.importe);
-    attributedNeto = round2(attributedNeto + (netoByReservation.get(reservationId) ?? 0));
+    const netoShare = netoByReservation.get(reservationId);
+    if (netoShare !== undefined) {
+      ivaBreakdown.push({ id: alicuotaId, baseImp: netoShare, importe: ivaByReservation.get(reservationId) ?? 0 });
+    }
+    attributedNeto = round2(attributedNeto + (netoShare ?? 0));
     attributedIva = round2(attributedIva + (ivaByReservation.get(reservationId) ?? 0));
   }
 
@@ -218,5 +235,6 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
     attributedIva,
     attributedTotal,
     refundable: round2(attributedTotal - alreadyRefunded),
+    ivaBreakdown,
   };
 }

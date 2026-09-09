@@ -284,6 +284,9 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_MULTI_INVOICE':
     case 'ORDER_INVOICE_HAS_NO_LINES':
     case 'CREDIT_NOTE_CAP_EXCEEDED':
+    case 'CREDIT_NOTE_PAIR_CAP_EXCEEDED':
+    case 'CREDIT_NOTE_ATTRIBUTION_BLOCKED':
+    case 'CREDIT_NOTE_ATTRIBUTION_MISMATCH':
     case 'RESERVATION_ON_CONSOLIDATED_INVOICE':
       return 409;
 
