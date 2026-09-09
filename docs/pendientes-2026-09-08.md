@@ -555,16 +555,32 @@ materializa.
    esa señal. Decisión de despliegue del dueño: agendar 3.3-d antes del
    push, o pushear igual asumiendo el ruido operativo declarado acá.
 
-   **Deuda declarada de paso (gate de cierre de 3.3-b2, no bloqueante):**
-   el catch inline de las dos rutas de escape (`orders.routes.ts` y
-   `reservations.routes.ts`) termina en `else if (err instanceof DomainError)
-   res.status(409)` — cualquier `DomainError` que el orquestador o
-   `InvoiceService` levanten y que `error.middleware.ts` mapearía a un
-   status DISTINTO de 409 (ej. `UNSUPPORTED_IVA_RATE`, 422 en el
-   middleware) llega al cliente como 409 igual en las dos rutas. Preexistente
-   en el escape de órdenes, heredado por el de reservas — ahora es una
-   divergencia de contrato en DOS rutas en vez de una. No es motivo para
-   reabrir 3.3-b2. Bloque propio si se decide reconciliar.
+   **Deuda declarada de paso (gate de cierre de 3.3-b2, no bloqueante) —
+   ✅ RESUELTO (09/09/2026, gate `architecture-governor`, "la primera"
+   recomendación transversal del día).** El catch inline de las dos rutas
+   de escape ya NO termina en `else if (err instanceof DomainError)
+   res.status(409)` — ambas rutas delegan TODO a `next(err)`/
+   `domainErrorStatus()` salvo una única excepción declarada
+   (`InvalidReservationError` → 409 en `reservations.routes.ts`, motivo en
+   el propio código). Reconcilia 6 códigos alcanzables, no solo los 2 que
+   se habían identificado al principio (el research encontró
+   `FINANCIAL_TRANSACTION_NOT_FOUND`/`INVOICE_NOT_FOUND` → 404,
+   `UNSUPPORTED_IVA_RATE` → 422, `AFIP_PADRON_UNAVAILABLE` → 503, además de
+   `AFIP_REQUEST_REJECTED` 409→422 y `AFIP_NOT_CONFIGURED` 422→503).
+   **`AFIP_NOT_CONFIGURED` revierte explícitamente la divergencia
+   "deliberada" que el gate de cierre de 3.3-b2 había declarado el mismo
+   día** — el motivo original ("mantiene los dos escapes simétricos entre
+   sí") sobrevive intacto, nunca fue un argumento semántico contra el 503.
+   **Reversión declarada de MID-LOG-001:** las dos rutas dejan de loguear
+   TODO `DomainError` (incluidos 404) — el middleware solo loguea `>=409`,
+   así que un `ORDER_NOT_FOUND`/`RESERVATION_NOT_FOUND` deja de generar
+   log. Aceptado (endpoint de bajo volumen, un 404 no es la señal que
+   importa perder). Sin consumidor de frontend para ninguno de los 2
+   códigos AFIP (0 referencias en `appfrontend-main`, verificado). Ninguna
+   otra ruta del repo tenía este patrón — el research sobre los 13
+   archivos `*.routes.ts` confirmó que está aislado a estas 2. **Sin
+   cobertura de test del mapeo HTTP** (ni antes ni después de este
+   commit) — declarado, no una omisión nueva.
 
    **✅ RESUELTO (09/09/2026, commit `6d55876`, gates de alcance + cierre
    `architecture-governor`).** `InvoiceRepository.classifyReservationLiveInvoice()`
@@ -1040,17 +1056,21 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     forma exacta y sin `message`; 404/400 no; code sin mapeo → 500 +
     `logger.error` una vez; sin `req.user` → `businessId: null`; **query
     string nunca viaja al log**; `ORDER_STATE_UNKNOWN` → 409.
-  - **Divergencias ladder inline (`orders.routes.ts`) vs `domainErrorStatus`**
-    (pre-existentes del sub-bloque 4, NO se tocan acá — sólo se registran):
-    `AFIP_NOT_CONFIGURED` 422 ruta / 503 middleware; `AFIP_REQUEST_REJECTED`
-    409 ruta / 422 middleware. Reconciliarlas es cambio de contrato (chequeo
-    de frontend) — bloque propio.
-  - **Deuda que queda:** dos políticas de logging conviven — el escape loguea
-    **todo** `DomainError` (incl. 404, por bajo volumen), el middleware sólo
-    `>= 409`. Las rutas que resuelven inline sin `next(err)` (el escape, los
-    guards de reservas del portal) no pasan por el middleware. Una convención
-    "todo `*.routes.ts` delega los `DomainError` al middleware salvo
-    divergencia de status declarada" reconciliaría las dos — bloque propio.
+  - **Divergencias ladder inline vs `domainErrorStatus`** (pre-existentes del
+    sub-bloque 4) — **✅ RECONCILIADAS (09/09/2026)**, ver el ítem
+    "Deuda declarada de paso" más arriba (búsquedalo por
+    "gate de cierre de 3.3-b2") para el detalle completo: las dos rutas de
+    escape (órdenes y reservas) ahora delegan a `error.middleware.ts`, con
+    una única excepción declarada del lado reservas.
+  - **Deuda que queda — ✅ RESUELTA (09/09/2026):** las dos políticas de
+    logging que convivían (el escape logueaba todo `DomainError` incl. 404,
+    el middleware solo `>= 409`) quedaron unificadas en la del middleware —
+    reversión declarada, no una equivalencia (los 404 de estas 2 rutas
+    dejan de loguearse). La convención "todo `*.routes.ts` delega los
+    `DomainError` al middleware salvo divergencia declarada" no se volvió
+    una cerca de arquitectura (el gate lo dejó fuera de este commit) — hoy
+    es cumplida de hecho por las 13 rutas del repo (las otras 11 ya
+    delegaban), no forzada por ningún test.
 - **Lectura por el pool del repo en vez de por `client`** en
   `cancel-order-with-credit-note.service.ts` — ✅ RESUELTO (bloque 1.5, `3608edf`
   código + declaración en `c4aac3c` + corrección de anclas en el commit

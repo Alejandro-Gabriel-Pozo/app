@@ -115,21 +115,7 @@ import { buildInvoiceService }           from '../facturacion/invoices.routes.js
 import { CancelReservationWithCreditNoteService } from '../facturacion/cancel-reservation-with-credit-note.service.js';
 import { ReservationCancelForCreditNote } from './reservation-cancel-for-credit-note.js';
 import { authorizeCreditNoteCancellation } from '../facturacion/cancel-with-credit-note.js';
-import {
-  DomainError,
-  ReservationNotFoundError,
-  InvalidReservationError,
-  CreditNoteReservationNoLiveInvoiceError,
-  CreditNoteReservationMultiInvoiceError,
-  CreditNoteMixedStayError,
-  CreditNoteConsolidatedFullReversalError,
-  CreditNoteReservationInvoiceSetChangedError,
-  CreditNoteIssuedReservationNotCancellableError,
-  CreditNoteCancellationPendingError,
-  CreditNoteCancellationRejectedError,
-  AfipRequestRejectedError,
-  AfipNotConfiguredError,
-} from '../domain/errors.js';
+import { InvalidReservationError } from '../domain/errors.js';
 import { logger } from '../logger.js';
 
 function buildReservationService(req: Request): ReservationService {
@@ -551,42 +537,45 @@ export function createReservationsRouter(container: AppContainer): Router {
           emitted: result.emitted,
         });
       } catch (err) {
-        // MID-LOG-001 -- este handler resuelve el error inline con
-        // `res.status().json()` y NO pasa por `error.middleware.ts`, así que
-        // la política de logging de DomainError se aplica acá (mismo
-        // criterio que `orders.routes.ts`). Endpoint de bajo volumen
-        // (`EMISOR_NOTA_CREDITO`): se loguea todo fallo. Sin `err.message`
-        // (trae ids/montos, A7.1) -- `reservationId` ya lo tenemos.
-        if (err instanceof DomainError) {
+        // Reconciliación con error.middleware.ts (09/09/2026, gate
+        // architecture-governor) -- este handler ya NO resuelve el error
+        // inline salvo UNA excepción declarada (abajo). Reemplaza el ladder
+        // de MID-LOG-001 (bloque 0.2, 08/09/2026): duplicaba acá el mapeo
+        // status que el middleware ya tenía como "red de seguridad".
+        //
+        // Cambios de contrato reales (verificado contra domainErrorStatus()):
+        // AFIP_REQUEST_REJECTED 409->422, AFIP_NOT_CONFIGURED 422->503 --
+        // ESTO REVIERTE la divergencia deliberada que el gate del cierre de
+        // 3.3-b2 (09/09/2026) había declarado ("mantiene los dos escapes
+        // simétricos entre sí") -- el motivo declarado sobrevive intacto:
+        // los dos escapes siguen cambiando juntos, nunca fue un argumento
+        // semántico contra el 503. Sin consumidor de frontend hoy (0
+        // referencias en appfrontend-main).
+        //
+        // REVERSIÓN DECLARADA de una decisión de MID-LOG-001: la ruta
+        // logueaba TODO DomainError (incluidos los 404). El middleware solo
+        // loguea status >= 409 -- un RESERVATION_NOT_FOUND deja de
+        // loguearse acá. Aceptado, mismo criterio que `orders.routes.ts`.
+        //
+        // ÚNICA excepción que sigue resolviéndose inline:
+        // `InvalidReservationError` -> 409 (transición inválida / invariante
+        // rota, ambas PRE-AFIP -- nada pasó). Diverge del 400 genérico de
+        // `error.middleware.ts` (`INVALID_RESERVATION`, "request mal
+        // armado") a propósito: acá el código es el mismo pero el contexto
+        // (estado de la reserva, no forma del body) pide 409 -- y ese
+        // código se usa en el resto del repo para "request mal armado" de
+        // verdad, así que no se puede reconciliar cambiando el mapeo GLOBAL
+        // del middleware sin romper esos otros call-sites. Necesita su
+        // PROPIO log -- no pasa por next(err), no pasa por el middleware.
+        if (err instanceof InvalidReservationError) {
           logger.warn(
-            { code: err.code, reservationId, businessId: req.user?.businessId ?? null },
+            { code: 'INVALID_RESERVATION', reservationId, businessId: req.user?.businessId ?? null },
             '[reservations] cancel-with-credit-note fallo',
           );
+          res.status(409).json({ code: 'INVALID_RESERVATION', message: err.message });
+          return;
         }
-        if (err instanceof ReservationNotFoundError) res.status(404).json({ code: 'RESERVATION_NOT_FOUND', message: err.message });
-        // InvalidReservationError inline -> 409 (transición inválida /
-        // invariante rota, ambas PRE-AFIP -- nada pasó). Diverge del 400
-        // genérico de `error.middleware.ts` (`INVALID_RESERVATION`, "request
-        // mal armado") a propósito: acá el código es el mismo pero el
-        // contexto (estado de la reserva, no forma del body) pide 409,
-        // gate `architecture-governor` 09/09/2026.
-        else if (err instanceof InvalidReservationError) res.status(409).json({ code: 'INVALID_RESERVATION', message: err.message });
-        else if (err instanceof CreditNoteReservationNoLiveInvoiceError) res.status(409).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteReservationMultiInvoiceError) res.status(409).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteMixedStayError) res.status(409).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteConsolidatedFullReversalError) res.status(409).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteIssuedReservationNotCancellableError) res.status(422).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteReservationInvoiceSetChangedError) res.status(422).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteCancellationPendingError) res.status(422).json({ code: err.code, message: err.message });
-        else if (err instanceof AfipRequestRejectedError) res.status(409).json({ code: err.code, message: err.message });
-        else if (err instanceof CreditNoteCancellationRejectedError) res.status(409).json({ code: err.code, message: err.message });
-        // AFIP_NOT_CONFIGURED -- 422 acá, 503 en error.middleware.ts. Misma
-        // divergencia deliberada que orders.routes.ts (declarada, no
-        // corregida -- gate `architecture-governor` 09/09/2026): mantiene
-        // los dos escapes simétricos entre sí.
-        else if (err instanceof AfipNotConfiguredError) res.status(422).json({ code: err.code, message: err.message });
-        else if (err instanceof DomainError) res.status(409).json({ code: err.code, message: err.message });
-        else next(err);
+        next(err);
       }
     },
   );

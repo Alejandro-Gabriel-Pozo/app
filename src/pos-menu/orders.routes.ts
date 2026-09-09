@@ -61,16 +61,6 @@ import {
 } from '../facturacion/cancel-order-with-credit-note.service.js';
 import { OrderCancelForCreditNote }      from './order-cancel-for-credit-note.js';
 import { authorizeCreditNoteCancellation } from '../facturacion/cancel-with-credit-note.js';
-import {
-  DomainError,
-  CreditNoteCancellationPendingError,
-  CreditNoteCancellationRejectedError,
-  CreditNoteMultiInvoiceError,
-  CreditNoteIssuedOrderNotCancellableError,
-  AfipRequestRejectedError,
-  AfipNotConfiguredError,
-} from '../domain/errors.js';
-import { logger }                        from '../logger.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -332,27 +322,33 @@ export function createOrdersRouter(container: AppContainer): Router {
         const result = await buildCancelOrderWithCreditNoteService(req).cancelOrderWithCreditNote(orderId, auth);
         res.json(result);
       } catch (err) {
-        // MID-LOG-001 (bloque 0.2) -- este handler resuelve el error inline
-        // con `res.status().json()` y NO pasa por `error.middleware.ts`, así
-        // que la política de logging de DomainError se aplica acá. Endpoint
-        // de bajo volumen (`EMISOR_NOTA_CREDITO`): se loguea todo fallo. Sin
-        // `err.message` -- trae ids/montos (A7.1); `orderId` ya lo tenemos.
-        if (err instanceof DomainError) {
-          logger.warn(
-            { code: err.code, orderId, businessId: req.user?.businessId ?? null },
-            '[orders] cancel-with-credit-note fallo',
-          );
-        }
-        if (err instanceof OrderNotFoundError)                      res.status(404).json({ code: 'ORDER_NOT_FOUND',                 message: err.message });
-        else if (err instanceof InvalidOrderTransitionError)        res.status(409).json({ code: 'INVALID_TRANSITION',              message: err.message });
-        else if (err instanceof CreditNoteMultiInvoiceError)        res.status(409).json({ code: 'CREDIT_NOTE_MULTI_INVOICE',       message: err.message });
-        else if (err instanceof CreditNoteIssuedOrderNotCancellableError) res.status(422).json({ code: 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE', message: err.message });
-        else if (err instanceof CreditNoteCancellationPendingError) res.status(422).json({ code: 'CREDIT_NOTE_CANCELLATION_PENDING', message: err.message });
-        else if (err instanceof AfipRequestRejectedError)           res.status(409).json({ code: 'AFIP_REQUEST_REJECTED',           message: err.message });
-        else if (err instanceof CreditNoteCancellationRejectedError) res.status(409).json({ code: 'CREDIT_NOTE_CANCELLATION_REJECTED', message: err.message });
-        else if (err instanceof AfipNotConfiguredError)             res.status(422).json({ code: 'AFIP_NOT_CONFIGURED',             message: err.message });
-        else if (err instanceof DomainError)                        res.status(409).json({ code: err.code,                         message: err.message });
-        else next(err);
+        // Reconciliación con error.middleware.ts (09/09/2026, gate
+        // architecture-governor) -- este handler ya NO resuelve el error
+        // inline, delega TODO a next(err)/domainErrorStatus(). Reemplaza el
+        // ladder de MID-LOG-001 (bloque 0.2, 08/09/2026), que duplicaba acá
+        // el mapeo status que el middleware ya tenía como "red de
+        // seguridad" (su propio comentario lo anticipaba: "para un futuro
+        // caller que haga next(err)").
+        //
+        // Dos cambios de contrato reales sobre los 6 códigos alcanzables
+        // desde este orquestador (verificado contra domainErrorStatus()):
+        // AFIP_REQUEST_REJECTED 409->422, AFIP_NOT_CONFIGURED 422->503 --
+        // los dos, semánticamente más correctos (rechazo AFIP es regla de
+        // negocio no conflicto/carrera; "sin configurar" es dependencia
+        // externa no disponible, no error del request) y sin consumidor de
+        // frontend hoy (0 referencias en appfrontend-main). Los otros 4 que
+        // el catch-all anterior colapsaba a 409 sin que nadie lo pidiera
+        // (FINANCIAL_TRANSACTION_NOT_FOUND/INVOICE_NOT_FOUND -> 404,
+        // UNSUPPORTED_IVA_RATE -> 422, AFIP_PADRON_UNAVAILABLE -> 503) ya
+        // estaban mal clasificados, esto los corrige de encontrada.
+        //
+        // REVERSIÓN DECLARADA de una decisión de MID-LOG-001: la ruta
+        // logueaba TODO DomainError (incluidos los 404, "endpoint de bajo
+        // volumen"). El middleware solo loguea status >= 409
+        // (error.middleware.ts, política MID-LOG-001) -- un
+        // ORDER_NOT_FOUND deja de loguearse acá. Aceptado: un 404 en un
+        // endpoint de bajo volumen no es la señal que importa perder.
+        next(err);
       }
     },
   );

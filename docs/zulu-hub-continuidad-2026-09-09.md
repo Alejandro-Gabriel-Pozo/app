@@ -57,11 +57,16 @@
 
 ## 3. Deuda declarada de hoy, ninguna bloqueante
 
-- **Catch inline 409 en las dos rutas de escape** (órdenes y reservas) —
-  colapsa a 409 cualquier `DomainError` que el middleware mapearía distinto
-  (ej. `UNSUPPORTED_IVA_RATE` → 422). Preexistente en órdenes, heredado.
-- **`AFIP_NOT_CONFIGURED`: 422 inline, 503 en el middleware** — divergencia
-  deliberada, declarada, mantiene los dos escapes simétricos.
+- ~~Catch inline 409 en las dos rutas de escape~~ **✅ RESUELTO (mismo día,
+  commit posterior a este corte)** — las dos rutas delegan a
+  `error.middleware.ts` salvo una excepción declarada
+  (`InvalidReservationError` en reservas). Ver `pendientes-2026-09-08.md`
+  #27, ítem "Deuda declarada de paso".
+- ~~`AFIP_NOT_CONFIGURED`: 422 inline, 503 en el middleware~~ **✅
+  RECONCILIADO al valor del middleware (503)** en el mismo commit —
+  reversión explícita de la divergencia "deliberada" que este mismo corte
+  había declarado horas antes; el motivo original (simetría entre los dos
+  escapes) sobrevive porque los dos cambian juntos.
 - **Texto "la orden ..." de `CreditNoteCancellationPendingError`/
   `...RejectedError`** reusado tal cual del lado reservas (mensaje
   incorrecto, `.code` correcto) — `domain/errors.ts` append-only en los 3

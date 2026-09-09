@@ -83,10 +83,15 @@ export function errorHandler(
     // de recurso, que no es PII) + tenant. Mismo criterio que la línea
     // anterior de `REFUND_BASE_CHANGED`, que logueaba sólo `{ code }`.
     //
-    // LIMITACIÓN: las rutas que resuelven el error inline con
-    // `res.status().json()` sin `next(err)` (ej. el escape
-    // `POST /api/orders/:id/cancel-with-credit-note`) NO pasan por acá y
-    // loguean por su cuenta. Registrado en pendientes.
+    // LIMITACIÓN (actualizada 09/09/2026 -- las dos rutas de escape con
+    // Nota de Crédito, órdenes y reservas, YA delegan acá vía `next(err)`):
+    // sigue habiendo rutas puntuales que resuelven un error inline con
+    // `res.status().json()` sin pasar por acá -- p. ej. la única excepción
+    // declarada de `reservations.routes.ts` (`InvalidReservationError` en
+    // el escape, que necesita un status distinto del mapeo global de este
+    // archivo y loguea por su cuenta). No hay una cerca que barra el repo
+    // buscando ese patrón; verificado a mano el 09/09/2026 que ningún otro
+    // `*.routes.ts` lo tiene.
     if (status >= 409) {
       logger.warn(
         {
