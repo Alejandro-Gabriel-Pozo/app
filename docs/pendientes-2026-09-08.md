@@ -1183,7 +1183,14 @@ transacción, no cerrable por ningún lock de fila) · `CONCIL-INCONSIST-01`
 ~~CI techo~~ ✅ bloque 0.1, 08/09 · A7.6.
 
 **Seguridad:** `SEC-ROT-001` (runbook ✅, falta código 2-claves + `reencrypt-secrets.ts`
-+ IV 16→12) · `RBAC-SYNC-001 §4` · `FACT-INV-BIZID-001`/`FAILOPEN-001` (re-etiquetar).
++ IV 16→12) · ~~`RBAC-SYNC-001 §4`~~ ✅ RESUELTO (09/09/2026, gate `architecture-governor`,
+recomendación transversal #2 del día -- `rbac-matrix-public-routes-sync.test.ts`
+nueva, 4 tests, cruza la sección 4 de `rbac-matriz-endpoints.md` contra
+`PUBLIC_ROUTES` en las dos direcciones, fail-loud. Corrió ROJO primero
+contra el doc sin arreglar -- atrapó las 3 celdas divergentes reales antes
+de tocarlas -- y VERDE después de normalizarlas. 6 mutaciones obligatorias
+verificadas y revertidas. Suite completa 2021/2022 sin regresión) ·
+`FACT-INV-BIZID-001`/`FAILOPEN-001` (re-etiquetar).
 
 **Higiene:** desfase de fecha "08/09"→"07/09" en ~5 docs (verificar si sigue
 aplicando tras esta sesión, que sí es del 08) · DA-CONT-001 · DOC-ANCLA-001 ·

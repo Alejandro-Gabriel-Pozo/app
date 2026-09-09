@@ -59,10 +59,17 @@ middleware compartido:**
 > por 6 call-sites y 2 archivos, sin que nada lo detectara: la cerca valida
 > el código contra sus constantes, **no** contra esta prosa.
 >
-> **No forma parte de D6.** Es la mitad visible de RBAC-SYNC-001 y se corrige
+> **No forma parte de D6.** Es la mitad visible de RBAC-SYNC-001 y se corrigió
 > en su propio commit, aparte, para no atribuirle a D6 una deuda ajena. La
-> otra mitad del ítem **sigue abierta**: nada verifica la sección 4 de este
-> documento contra el `PUBLIC_ROUTES` del test — ese cruce se mantiene a ojo.
+> otra mitad del ítem — ✅ **resuelta el 09/09/2026** — cruzaba a ojo la
+> sección 4 de este documento contra `PUBLIC_ROUTES`; ahora lo hace
+> `rbac-matrix-public-routes-sync.test.ts` (ver la nota en la sección 4).
+> **Nota de paso, sin cerrar acá:** el encabezado de esta sección sigue
+> diciendo "205 call-sites" — `EXPECTED_AUTHORIZE_CALL_SITES` subió a 206
+> el 09/09/2026 (bloque 3.3-b2, `reservations.routes.ts` sumó la ruta de
+> escape) y este número no se actualizó en ese momento. Es exactamente el
+> mismo modo de falla que el párrafo de arriba describe — deuda de doc,
+> no de RBAC-SYNC-001 §4, bloque aparte.
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién
@@ -367,7 +374,15 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
 > el test no escanea, y la de `platform.routes.ts (resto)` es historial de algo
 > ya resuelto.
 > Agregar una fila acá obliga a agregar la entrada allá, y al revés.
-> **Ese cruce no lo verifica nada automático: es a ojo** (RBAC-SYNC-001).
+> **✅ Cruce automatizado (09/09/2026, RBAC-SYNC-001 §4 resuelto, gate
+> `architecture-governor`):** `src/tests/architecture/rbac-matrix-public-routes-sync.test.ts`
+> parsea esta tabla y la cruza contra `PUBLIC_ROUTES` en las dos
+> direcciones — falla si una fila de acá no tiene contraparte en el
+> código, o al revés. Sigue siendo una cerca de texto (parsea la PRIMERA
+> celda de cada fila con backticks + palabra en mayúsculas = método,
+> fail-loud si no reconoce el formato), no valida montaje de `app.ts` —
+> eso sigue siendo `api-auth-gate-order.test.ts`/`rbac-route-coverage.test.ts`
+> (ver sus propios límites declarados).
 >
 > Verificado contra producción el 31/08/2026, sin token: `GET /api/auth/me`,
 > `/api/business/modules`, `/api/business/plan-limits` y `/api/categories`
@@ -381,9 +396,9 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
 
 | Ruta | Por qué |
 |---|---|
-| `business.routes.ts` POST `/register` | Pública — alta de negocio nuevo, nadie tiene JWT todavía |
+| `business.routes.ts` POST `/` (montado en `/register`) | Pública — alta de negocio nuevo, nadie tiene JWT todavía |
 | `auth.routes.ts` POST `/`, `/select-business`, `/google` | Pública — emite el JWT |
-| `customer.routes.ts` POST `/:businessSlug/register`, `/login`, `/login/google`, GET `/:businessSlug/availability`, POST `/logout` | Públicas — portal de clientes sin sesión todavía |
+| `customer.routes.ts` POST `/:businessSlug/register`, `/:businessSlug/login`, `/:businessSlug/login/google`, GET `/:businessSlug/availability`, POST `/logout` | Públicas — portal de clientes sin sesión todavía |
 | `user-invitation.routes.ts` (`createInvitationAcceptanceRouter`) POST `/lookup`, `/accept` | Pública, montada ANTES de `authenticate()` — quien acepta la invitación no tiene JWT |
 | `password-reset.routes.ts` (`createPasswordResetRouter`) POST `/request`, `/lookup`, `/accept` | Pública. `/request` (L, 23/08/2026) es el self-service "olvidé mi contraseña" — anti-enumeración, misma respuesta exista o no la cuenta (A7.1/A7.2). Todo el mount lleva `authLimiter` desde esta sesión (antes solo `globalLimiter`). |
 | `platform.routes.ts` POST `/login` | Pública — login de plataforma |

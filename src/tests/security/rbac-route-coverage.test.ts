@@ -70,8 +70,12 @@ const SRC_DIR = join(__dirname, '../..');
 
 /** Clave: "<ruta rel. a src>|<METHOD> <path>". Cada entrada es una ruta que NO
  *  lleva `authorize()` a propósito, con el porqué. Mantener en sync con
- *  `docs/rbac-matriz-endpoints.md`. */
-const PUBLIC_ROUTES: Record<string, string> = {
+ *  `docs/rbac-matriz-endpoints.md` sección 4 -- cruzado automáticamente por
+ *  `rbac-matrix-public-routes-sync.test.ts` (RBAC-SYNC-001 §4, 09/09/2026),
+ *  que IMPORTA este objeto (no lo duplica) para no crear una tercera copia
+ *  que también pudiera desalinearse. `export` agregado solo para eso -- sin
+ *  cambio de comportamiento en este archivo. */
+export const PUBLIC_ROUTES: Record<string, string> = {
   // --- Login / alta: montados antes del authenticate() global (app.ts). El
   //     login ES la credencial; no hay JWT todavía.
   'api/routes/auth.routes.ts|POST /':                'login de staff (/api/login)',

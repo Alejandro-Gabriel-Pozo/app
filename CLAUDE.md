@@ -118,8 +118,23 @@ del escape con Nota de Crédito hay **un sexto**, acotado a ellas:
 dos direcciones (ruta sin autz que falta en el allowlist, y entrada del
 allowlist que ya no matchea); `api-auth-gate-order` y
 `customer-portal-ownership-guard` cubren solo la dirección "entrada stale" de
-su allowlist; **nada verifica sección 4 de la matriz contra `PUBLIC_ROUTES`**
-— es a ojo (RBAC-SYNC-001). Si agregás una ruta pública, tocá los dos.
+su allowlist. Si agregás una ruta pública, tocá los dos.
+
+**✅ RBAC-SYNC-001 §4 resuelto (09/09/2026, gate `architecture-governor`,
+"camino 3"):** hasta acá, nada verificaba la sección 4 de la matriz contra
+`PUBLIC_ROUTES` — era a ojo. Ahora `src/tests/architecture/rbac-matrix-public-routes-sync.test.ts`
+parsea la sección 4 (formato: archivo entre backticks terminado en
+`.routes.ts`, MÉTODO en mayúsculas, cada path entre backticks empezando
+con `/`) y la cruza contra `PUBLIC_ROUTES` (importado del test original,
+no duplicado) en las dos direcciones — fail-loud si una fila no se puede
+parsear ni matchea una exclusión declarada. Esa exclusión
+(`EXCLUDED_ROWS`, 3 filas sin contraparte real -- `app.ts` x2 +
+`platform.routes.ts (resto)` histórico -- verificadas también en las dos
+direcciones) es el **séptimo** artefacto de la lista de arriba: mismo
+criterio que `PRE_AUTH_API_MOUNTS`/`OWNERSHIP_EXEMPT`/`ESCAPE_ROUTES`, un
+allowlist chico con motivo, no una excepción muda. Esta cerca no resuelve
+`app.ts` ni valida montaje — eso sigue siendo alcance de
+`api-auth-gate-order`/`rbac-route-coverage`.
 
 ## Pendientes — revalidar antes de arrastrar
 
