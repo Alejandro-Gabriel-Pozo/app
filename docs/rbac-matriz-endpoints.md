@@ -66,19 +66,17 @@ middleware compartido:**
 > sección 4 de este documento contra `PUBLIC_ROUTES`; ahora lo hace
 > `rbac-matrix-public-routes-sync.test.ts` (ver la nota en la sección 4).
 >
-> **Segunda recaída, `RBAC-MATRIX-HEADER-STALE-001` 🟡 (misma enfermedad que
-> la de arriba, mismo párrafo, sin cerrar del todo todavía).** El 09/09/2026
-> (bloque 3.3-b2, gate `architecture-governor`) `reservations.routes.ts`
-> sumó la ruta de escape con Nota de Crédito y
+> **Segunda recaída, `RBAC-MATRIX-HEADER-STALE-001` — ✅ resuelta el
+> 09/09/2026.** El 09/09/2026 (bloque 3.3-b2, gate `architecture-governor`)
+> `reservations.routes.ts` sumó la ruta de escape con Nota de Crédito y
 > `EXPECTED_AUTHORIZE_CALL_SITES` subió de 205 a 206 en
 > `rbac-matrix-sync.test.ts` — el encabezado de esta sección no se actualizó
 > en ese momento y quedó diciendo "205 call-sites" por el resto del día. Se
-> corrigió más tarde el mismo 09/09/2026 (el número de arriba ya está en
-> 206). **Todavía falta** un tercer `it()` en `rbac-matrix-sync.test.ts` que
-> cruce este encabezado contra
+> corrigió más tarde el mismo 09/09/2026 (`80805f2`), y un tercer `it()` en
+> `rbac-matrix-sync.test.ts` (`d39b8b7`) ahora cruza este encabezado contra
 > `EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT` directamente
-> — sin eso, la misma enfermedad puede pudrir este número una tercera vez.
-> Ítem 🟡 parcial en `pendientes-2026-09-08.md`, no cerrado.
+> — la misma enfermedad no debería poder pudrir este número una tercera vez
+> sin que la suite se ponga roja. Ítem cerrado en `pendientes-2026-09-08.md`.
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién

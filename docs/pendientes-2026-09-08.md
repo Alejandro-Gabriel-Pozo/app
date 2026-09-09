@@ -1203,29 +1203,32 @@ tests lo importan de ahí. Suite completa **2020/2021** sin regresión
 aplicando tras esta sesión, que sí es del 08) · DA-CONT-001 · DOC-ANCLA-001 ·
 ficha M10 stale
 
-~~`RBAC-MATRIX-HEADER-STALE-001`~~ **🟡 dato corregido, cerca pendiente
-(09/09/2026, gate `architecture-governor`, recomendación transversal #4 del
-día -- auditoría de "número derivado de código citado a mano en prosa" que
-salió de la sesión de CONTRACT-001).** Encontrado de paso cerrando
-RBAC-SYNC-001 §4, NO corregido a propósito en ese momento (mismo motivo por
-el que RBAC-SYNC-001 §4 existía: abrir y cerrar un hallazgo de
-doc-desactualizado en el mismo movimiento no deja rastro de que hubo un
-hallazgo). `docs/rbac-matriz-endpoints.md:54` decía "205 call-sites" cuando
+~~`RBAC-MATRIX-HEADER-STALE-001`~~ **✅ RESUELTO (09/09/2026, gate
+`architecture-governor`, recomendación transversal #4 del día -- auditoría
+de "número derivado de código citado a mano en prosa" que salió de la
+sesión de CONTRACT-001).** Encontrado de paso cerrando RBAC-SYNC-001 §4, NO
+corregido a propósito en ese momento (mismo motivo por el que
+RBAC-SYNC-001 §4 existía: abrir y cerrar un hallazgo de doc-desactualizado
+en el mismo movimiento no deja rastro de que hubo un hallazgo).
+`docs/rbac-matriz-endpoints.md`, sección 2, decía "205 call-sites" cuando
 `EXPECTED_AUTHORIZE_CALL_SITES` (`src/tests/security/rbac-matrix-sync.test.ts`
 -- ancla por nombre de constante, no por línea: ese archivo acumula 2-4
 líneas cada vez que el número cambia, así que un `:línea` citado acá queda
 stale en el mismo evento que lo motiva) exigía **206** desde el bloque
 3.3-b2 (09/09/2026, `reservations.routes.ts` sumó la ruta de escape) --
-nadie actualizó la prosa del encabezado en ese momento. Corregido acá
-(205→206). **Queda abierto** el segundo paso: un tercer `it()` en
-`rbac-matrix-sync.test.ts` que cruce el encabezado contra
-`EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT` automáticamente
--- este mismo número ya se pudrió dos veces en el mismo lugar (la primera,
-198/204, documentada en la nota "Corregido el 01/09/2026" de la sección 2
-de `docs/rbac-matriz-endpoints.md` -- ancla por título de nota, no por
-línea: ese bloque también acumula líneas cada vez que se actualiza), así
-que corregir el dato sin agregar la cerca dejaría abierta una tercera
-recaída.
+nadie actualizó la prosa del encabezado en ese momento. Corregido en
+`a8f9e67` (205→206); su nota inicial afirmó en pasado una cerca que
+todavía no existía, corregido en `80805f2` (segunda ronda del mismo gate
+-- "un doc que afirma que una cerca existe cuando no existe es peor que el
+número stale original"). Cerrado de fondo en `d39b8b7`: tercer `it()` en
+`rbac-matrix-sync.test.ts` que cruza el encabezado contra
+`EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT`
+automáticamente, con 4 mutaciones verificadas (header con el número viejo,
+header reformateado sin match, header duplicado en una cita con más de un
+match, segundo número divergente) -- este número ya se había pudrido dos
+veces en el mismo lugar (la primera, 198/204, con drift de semanas; la
+segunda, 205/206, con drift de cero commits) y ahora no puede volver a
+hacerlo sin que la suite se ponga roja.
 
 ~~`CONTRACT-001`~~ **🟡 PARCIAL (09/09/2026, gate `architecture-governor`,
 recomendación transversal #3 del día).** Origen del ítem completo:
