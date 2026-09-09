@@ -565,6 +565,78 @@ materializa.
    en el escape de órdenes, heredado por el de reservas — ahora es una
    divergencia de contrato en DOS rutas en vez de una. No es motivo para
    reabrir 3.3-b2. Bloque propio si se decide reconciliar.
+
+   **✅ RESUELTO (09/09/2026, commit `6d55876`, gates de alcance + cierre
+   `architecture-governor`).** `InvoiceRepository.classifyReservationLiveInvoice()`
+   (espejo de `classifyOrderLiveInvoice()`) + `handleReservationCancelled()`
+   ahora recibe `invoiceRepo`/`db` y reconcilia `CARGO_CON_COMPROBANTE_VIVO`
+   con el mismo criterio que `handleOrderCancelled()`. **El pasivo queda
+   retirado SOLO para el subconjunto "factura DIRECTA (no consolidada) +
+   reserva SIN `PAYMENT` propio ni filas anuladas/desconocidas previas en
+   `financial_transactions`"** — dos residuales medidos contra Postgres
+   real, no cerrados en este bloque:
+   1. **Consolidada-parcial** (F4 pregunta por la factura ENTERA, la NC del
+      escape es parcial por reserva) → `classifyReservationLiveInvoice` da
+      `NOT_RECONCILED` en el camino feliz, medido con test dedicado
+      (`C1(i)`, integración real). Cierre: clasificador por PAR
+      `(invoiceId, reservationId)`, mismo primitivo que el tope por par de
+      3.3-a — bloque de diseño aparte, denominador (neto vs. `imp_total`
+      con IVA) a decidir.
+   2. **Reserva con un `PAYMENT` propio** (la seña, alcanzable vía
+      `CustomerAccountService.recordPayment()` — algo que NO puede pasarle
+      a una orden) → `voidByReservationId()` da 2 rechazos
+      (`['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']`, orden fijo
+      verificado contra `rechazosDeReserva()`), la guarda ESTRECHA del
+      handler (`length === 1`) no dispara, medido con test dedicado
+      (`C1(ii)`). Cierre: ensanchar la guarda — bloque propio, cambia
+      semántica compartida con `registrarDesenlace()`.
+
+   **Firma de triage para el runbook** (`logger.error`, proceso
+   `financial:reservation.cancelled`): `causa: ['CARGO_CON_COMPROBANTE_VIVO']`
+   solo → falso positivo conocido (consolidada-parcial, residual 1);
+   `causa` incluye `'TIPO_NO_LIQUIDABLE'` → falso positivo conocido (`PAYMENT`
+   propio, residual 2); cualquier OTRA combinación con
+   `CARGO_CON_COMPROBANTE_VIVO` → señal real de una puerta desconocida,
+   igual que del lado órdenes.
+
+   **Mediciones read-only de producción, las 2 tenants (Neon, proyecto
+   `ancient-king-17098519`), condición C6 + paso 1 del gate de cierre:**
+
+   | Métrica | Demo (`production`) | Hotel los Alamos |
+   |---|---|---|
+   | Reservas `CANCELLED` con comprobante fiscal vivo hoy | **0** de 28 (anti-vacuidad real) | 0 de 0 (**vacuo** — tenant sin actividad, no confirma nada) |
+   | Reservas con `PAYMENT` propio (`reservation_id`) | **0** | 0 (vacuo) |
+   | Reservas con `CHARGE` en factura consolidada (`invoice_charges`) | **0** | 0 (vacuo) |
+   | Denominador — reservas con algún `CHARGE` | 15 | 0 (vacuo) |
+
+   **Lectura:** hoy, en datos reales, el subconjunto que queda FUERA del
+   pasivo retirado (seña propia o consolidada) está en **0 de 15** en la
+   única tenant con actividad — el flujo de seña vía `recordPayment()` con
+   `reservationId` existe en el código pero todavía no se usó en
+   producción, y tampoco hay facturación consolidada de reservas en curso.
+   El residual es real como MECANISMO (los dos tests lo prueban contra
+   código, no contra estos datos) pero su TAMAÑO en producción hoy es cero
+   — no hay evidencia de que vaya a disparar ruido significativo si se
+   deploya ahora. Verificado, no supuesto: si el uso de seña por reserva
+   crece, este número hay que remedirlo antes de asumir que el residual
+   sigue siendo marginal.
+
+   **Deuda de comentario introducida por 3.3-d, no bloqueante, bloque
+   aparte (comment-only, no mezclar con docs):** en `outbox.handlers.ts`,
+   el docblock del parámetro `opts` de `registrarDesenlace()` sigue
+   diciendo "SOLO lo pasa `handleOrderCancelled`" / "los otros 3 callers no
+   lo pasan" — desde `6d55876` son dos callers que lo pasan. El bloque de
+   comentario sobre el cálculo de `grave` también razona solo sobre
+   órdenes, sin mencionar los dos falsos positivos conocidos del lado
+   reservas.
+
+   **Hallazgo de harness, no del bloque:** `describe.skipIf(skipIfNoDb)`
+   saltea TODA la suite de integración en silencio si `TEST_DATABASE_URL`
+   no está en el entorno del proceso — `vitest.integration.config.ts` no
+   carga `.env`. Un pipeline sin esa variable reporta `exit 0` sin haber
+   ejecutado nada. No es un bug de 3.3-d, pero hay que tenerlo escrito en
+   el runbook antes de confiar en un "CI verde" como evidencia de que esta
+   suite corrió.
 2. **Punto ciego preexistente en `lock-order.test.ts`, declarado sin arreglar.**
    `LOCK_CALL_RE` (la cerca `LOCK-ORDER-001`) matchea `applyCapped*`,
    `getOutstandingForUpdate(client`, `getRefundableForUpdate(client` — **no**
@@ -728,11 +800,15 @@ respuestas fuerza volver al gate de diseño.
 2006/2006) y 3.3-b2 (commit `b0f9d93`: ruta `POST /api/reservations/:id/cancel-with-credit-note`
 + RBAC completo, 2 mutaciones, suite 2013/2013) los dos resueltos y
 commiteados localmente, cada uno con gate de diseño + gate de alcance +
-gate de cierre del `architecture-governor`. **Sin push, sin deploy** —
-`origin/main` sigue en `e1b70bb`. Bloque siguiente recomendado: `3.3-d`
-(ver fila en `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md`),
-antes de deployar 3.3-b2 — el gate documentó por qué en el ítem 1 de #27,
-arriba.
+gate de cierre del `architecture-governor`. **Actualización 09/09/2026:
+3.3-d también resuelto** (commit `6d55876` — ver #27 ítem 1, arriba, con
+las mediciones de producción). **Sin push, sin deploy** — `origin/main`
+sigue en `e1b70bb`, ahead 6 (`d6f35a9`/`5a64ae2`/`9b8209a`/`b0f9d93`/
+`766eb84`/`6d55876`). Decisión de push/deploy: del dueño, con la
+recomendación del gate de cierre de 3.3-d en el ítem 1 de #27 (el residual
+ya no es "desconocido", pero su tamaño en producción está medido en 0 —
+igual conviene tener escrita la firma de triage del runbook antes de
+pushear).
 
 ---
 

@@ -399,6 +399,31 @@ casillero.
 | Falta la fila de un handler y el evento figura despachado | Ese handler no corrió. Revisar que su `name` no haya cambiado (renombrarlo equivale a declarar que nunca corrió) |
 | Filas de más para un mismo `handler_name` | Imposible por la PK `(domain_event_id, handler_name)`. Si aparece, la tabla no es la que el worker está usando: verificar que el repo apunte a la BD del tenant, no a la de plataforma |
 
+### Triage de `logger.error('[outbox] efecto rechazado por anomalía de integridad')` tras un deploy con el escape de cancelar-con-NC (09/09/2026, bloque 3.3-d)
+
+Aplica desde que se deploye cualquiera de `cancelOrderWithCreditNote()` (en
+producción) o `cancelReservationWithCreditNote()` (3.3-b1/b2, todavía sin
+deployar al escribir esto). Este error en el log de `handleOrderCancelled`/
+`handleReservationCancelled` **no siempre es una anomalía real** — hay
+falsos positivos conocidos, y distinguirlos es mirar el campo `causa` del
+mismo log estructurado:
+
+| `causa` exacta | Significa | Acción |
+|---|---|---|
+| `['CARGO_CON_COMPROBANTE_VIVO']`, y la orden/reserva pasó por el escape con NC `ISSUED` | **Orden:** debería reconciliar (`classifyOrderLiveInvoice`) — si sigue viéndose `grave`, investigar. **Reserva, factura CONSOLIDADA:** falso positivo CONOCIDO (residual 1 de 3.3-d) — `classifyReservationLiveInvoice` pregunta por la factura ENTERA, la NC del escape es parcial por reserva. No es una anomalía, no abrir incidente | Ninguna si es el caso consolidada; si es el caso orden o reserva con factura DIRECTA, sí investigar — ahí SÍ debería haber reconciliado |
+| `['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']` (reserva) | Falso positivo CONOCIDO (residual 2 de 3.3-d) — la reserva tiene un `PAYMENT` propio (seña, `recordPayment()`), la guarda estrecha del handler no consulta la clasificación | Ninguna — comportamiento medido, no un bug |
+| Cualquier OTRA combinación que incluya `CARGO_CON_COMPROBANTE_VIVO` | Señal REAL de una puerta desconocida que llegó a `CANCELLED`/anulación sin pasar por el escape ni por la cancelación normal | Investigar — ver el docblock de `classifyOrderLiveInvoice()`/`classifyReservationLiveInvoice()` en `src/facturacion/invoice.repository.ts` |
+
+**Trampa del harness de integración (encontrada verificando 3.3-d):**
+`describe.skipIf(skipIfNoDb)` (`src/tests/integration/helpers/db.ts`) saltea
+TODA la suite de integración en silencio si `TEST_DATABASE_URL` no está en
+el entorno del proceso — `vitest.integration.config.ts` no carga `.env`.
+Un pipeline o una corrida local sin esa variable exportada da `exit 0`
+igual, sin haber ejecutado un solo test. **No tomar "CI verde" en el job
+`integration` como evidencia de que la suite de reconciliación corrió** sin
+confirmar antes que `TEST_DATABASE_URL` está seteada en ese job — mismo
+criterio que "verificar contra la base, no contra el log" de más arriba.
+
 ## Limitaciones
 
 - Este runbook no cubre el OOM de `npm start` del 19/08 (ver pendientes de esa fecha).
