@@ -1201,16 +1201,28 @@ tests lo importan de ahí. Suite completa **2020/2021** sin regresión
 
 **Higiene:** desfase de fecha "08/09"→"07/09" en ~5 docs (verificar si sigue
 aplicando tras esta sesión, que sí es del 08) · DA-CONT-001 · DOC-ANCLA-001 ·
-ficha M10 stale · `RBAC-MATRIX-HEADER-STALE-001` (nuevo,
-09/09/2026, encontrado de paso cerrando RBAC-SYNC-001 §4, gate
-`architecture-governor` — NO corregido a propósito en el mismo commit que
-lo encontró, mismo motivo por el que RBAC-SYNC-001 §4 existía: abrir y
-cerrar un hallazgo de doc-desactualizado en el mismo movimiento no deja
-rastro de que hubo un hallazgo. `docs/rbac-matriz-endpoints.md:54` dice
-"205 call-sites"; `src/tests/security/rbac-matrix-sync.test.ts:48` exige
-**206** desde el bloque 3.3-b2 (`b0f9d93`, `reservations.routes.ts` sumó
-la ruta de escape) — nadie actualizó la prosa del encabezado en ese
-commit. Fix de una línea, sin riesgo).
+ficha M10 stale ·
+
+~~`RBAC-MATRIX-HEADER-STALE-001`~~ **🟡 dato corregido, cerca pendiente
+(09/09/2026, gate `architecture-governor`, recomendación transversal #4 del
+día -- auditoría de "número derivado de código citado a mano en prosa" que
+salió de la sesión de CONTRACT-001).** Encontrado de paso cerrando
+RBAC-SYNC-001 §4, NO corregido a propósito en ese momento (mismo motivo por
+el que RBAC-SYNC-001 §4 existía: abrir y cerrar un hallazgo de
+doc-desactualizado en el mismo movimiento no deja rastro de que hubo un
+hallazgo). `docs/rbac-matriz-endpoints.md:54` decía "205 call-sites" cuando
+`EXPECTED_AUTHORIZE_CALL_SITES` (`src/tests/security/rbac-matrix-sync.test.ts`
+-- ancla por nombre de constante, no por línea: ese archivo acumula 2-4
+líneas cada vez que el número cambia, así que un `:línea` citado acá queda
+stale en el mismo evento que lo motiva) exigía **206** desde el bloque
+3.3-b2 (09/09/2026, `reservations.routes.ts` sumó la ruta de escape) --
+nadie actualizó la prosa del encabezado en ese momento. Corregido acá
+(205→206). **Queda abierto** el segundo paso: un tercer `it()` en
+`rbac-matrix-sync.test.ts` que cruce el encabezado contra
+`EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT` automáticamente
+-- este mismo número ya se pudrió dos veces en el mismo lugar (la primera,
+198/204, documentada en `docs/rbac-matriz-endpoints.md:56-60`), así que
+corregir el dato sin agregar la cerca dejaría abierta una tercera recaída.
 
 ~~`CONTRACT-001`~~ **🟡 PARCIAL (09/09/2026, gate `architecture-governor`,
 recomendación transversal #3 del día).** Origen del ítem completo:

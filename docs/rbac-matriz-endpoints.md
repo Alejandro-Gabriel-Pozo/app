@@ -51,31 +51,32 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (205 call-sites, 37 archivos)
+## 2. Matriz de endpoints por archivo (206 call-sites, 37 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
-> archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts:44,49`
-> exigía **204** y **37** — y la cerca pasaba. O sea que el documento mentía
-> por 6 call-sites y 2 archivos, sin que nada lo detectara: la cerca valida
-> el código contra sus constantes, **no** contra esta prosa.
+> archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
+> `EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT`) exigía **204**
+> y **37** — y la cerca pasaba. O sea que el documento mentía por 6 call-sites
+> y 2 archivos, sin que nada lo detectara: la cerca valida el código contra
+> sus constantes, **no** contra esta prosa.
 >
 > **No forma parte de D6.** Es la mitad visible de RBAC-SYNC-001 y se corrigió
 > en su propio commit, aparte, para no atribuirle a D6 una deuda ajena. La
 > otra mitad del ítem — ✅ **resuelta el 09/09/2026** — cruzaba a ojo la
 > sección 4 de este documento contra `PUBLIC_ROUTES`; ahora lo hace
 > `rbac-matrix-public-routes-sync.test.ts` (ver la nota en la sección 4).
-> **`RBAC-MATRIX-HEADER-STALE-001` (09/09/2026, gate `architecture-governor`,
-> sin cerrar acá a propósito — abrir el ítem y corregirlo en el mismo
-> commit hubiera sido el mismo modo de falla que este párrafo describe,
-> visto en el espejo).** El encabezado de esta sección sigue diciendo
-> "205 call-sites" — `EXPECTED_AUTHORIZE_CALL_SITES` subió a 206
-> el 09/09/2026 (bloque 3.3-b2, `reservations.routes.ts` sumó la ruta de
-> escape) y este número no se actualizó en ese momento. Anclas:
-> `docs/rbac-matriz-endpoints.md:54` (dice 205) vs.
-> `src/tests/security/rbac-matrix-sync.test.ts:48` (`EXPECTED_AUTHORIZE_CALL_SITES = 206`).
-> Ítem propio en `pendientes-2026-09-08.md`, distinto de RBAC-SYNC-001 §4
-> (ese cruza el DOC contra `PUBLIC_ROUTES`; esto es un número suelto en
-> prosa contra una constante) — bloque aparte, de una línea.
+>
+> **Segunda recaída, `RBAC-MATRIX-HEADER-STALE-001` (misma enfermedad que la
+> de arriba, mismo párrafo).** El 09/09/2026 (bloque 3.3-b2, gate
+> `architecture-governor`) `reservations.routes.ts` sumó la ruta de escape
+> con Nota de Crédito y `EXPECTED_AUTHORIZE_CALL_SITES` subió de 205 a 206 en
+> `rbac-matrix-sync.test.ts` — el encabezado de esta sección no se actualizó
+> en ese momento y quedó diciendo "205 call-sites" por el resto del día. Se
+> corrigió más tarde el mismo 09/09/2026, junto con un tercer `it()` en
+> `rbac-matrix-sync.test.ts` que cruza este encabezado contra
+> `EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT` directamente —
+> la misma enfermedad no debería poder pudrir este número una tercera vez sin
+> que la suite se ponga roja. Ítem cerrado en `pendientes-2026-09-08.md`.
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién
