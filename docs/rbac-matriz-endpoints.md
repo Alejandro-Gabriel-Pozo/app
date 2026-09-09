@@ -64,12 +64,18 @@ middleware compartido:**
 > otra mitad del ítem — ✅ **resuelta el 09/09/2026** — cruzaba a ojo la
 > sección 4 de este documento contra `PUBLIC_ROUTES`; ahora lo hace
 > `rbac-matrix-public-routes-sync.test.ts` (ver la nota en la sección 4).
-> **Nota de paso, sin cerrar acá:** el encabezado de esta sección sigue
-> diciendo "205 call-sites" — `EXPECTED_AUTHORIZE_CALL_SITES` subió a 206
+> **`RBAC-MATRIX-HEADER-STALE-001` (09/09/2026, gate `architecture-governor`,
+> sin cerrar acá a propósito — abrir el ítem y corregirlo en el mismo
+> commit hubiera sido el mismo modo de falla que este párrafo describe,
+> visto en el espejo).** El encabezado de esta sección sigue diciendo
+> "205 call-sites" — `EXPECTED_AUTHORIZE_CALL_SITES` subió a 206
 > el 09/09/2026 (bloque 3.3-b2, `reservations.routes.ts` sumó la ruta de
-> escape) y este número no se actualizó en ese momento. Es exactamente el
-> mismo modo de falla que el párrafo de arriba describe — deuda de doc,
-> no de RBAC-SYNC-001 §4, bloque aparte.
+> escape) y este número no se actualizó en ese momento. Anclas:
+> `docs/rbac-matriz-endpoints.md:54` (dice 205) vs.
+> `src/tests/security/rbac-matrix-sync.test.ts:48` (`EXPECTED_AUTHORIZE_CALL_SITES = 206`).
+> Ítem propio en `pendientes-2026-09-08.md`, distinto de RBAC-SYNC-001 §4
+> (ese cruza el DOC contra `PUBLIC_ROUTES`; esto es un número suelto en
+> prosa contra una constante) — bloque aparte, de una línea.
 
 Formato: `Método Path — GRUPO` (+ gate de módulo/plan si aplica, entre
 paréntesis — eso es "qué módulo/plan hay que tener contratado", no "quién

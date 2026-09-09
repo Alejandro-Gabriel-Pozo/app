@@ -1185,16 +1185,32 @@ transacción, no cerrable por ningún lock de fila) · `CONCIL-INCONSIST-01`
 **Seguridad:** `SEC-ROT-001` (runbook ✅, falta código 2-claves + `reencrypt-secrets.ts`
 + IV 16→12) · ~~`RBAC-SYNC-001 §4`~~ ✅ RESUELTO (09/09/2026, gate `architecture-governor`,
 recomendación transversal #2 del día -- `rbac-matrix-public-routes-sync.test.ts`
-nueva, 4 tests, cruza la sección 4 de `rbac-matriz-endpoints.md` contra
+nueva, 3 tests, cruza la sección 4 de `rbac-matriz-endpoints.md` contra
 `PUBLIC_ROUTES` en las dos direcciones, fail-loud. Corrió ROJO primero
 contra el doc sin arreglar -- atrapó las 3 celdas divergentes reales antes
 de tocarlas -- y VERDE después de normalizarlas. 6 mutaciones obligatorias
-verificadas y revertidas. Suite completa 2021/2022 sin regresión) ·
+verificadas y revertidas. **Corrección post-cierre (mismo día):** el gate
+encontró que importar `PUBLIC_ROUTES` desde `rbac-route-coverage.test.ts`
+(un `*.test.ts`) hacía que Vitest re-ejecutara su `describe()` de nivel
+superior -- `RBAC-ROUTE-001` corría 2 veces en la suite completa (40
+tests contados donde eran 39 reales). Extraído a
+`src/tests/security/public-routes.fixture.ts` (módulo no-test), los dos
+tests lo importan de ahí. Suite completa **2020/2021** sin regresión
+(2017 antes de este bloque + 3 tests reales nuevos, no 4) ·
 `FACT-INV-BIZID-001`/`FAILOPEN-001` (re-etiquetar).
 
 **Higiene:** desfase de fecha "08/09"→"07/09" en ~5 docs (verificar si sigue
 aplicando tras esta sesión, que sí es del 08) · DA-CONT-001 · DOC-ANCLA-001 ·
-CONTRACT-001 · ficha M10 stale.
+CONTRACT-001 · ficha M10 stale · `RBAC-MATRIX-HEADER-STALE-001` (nuevo,
+09/09/2026, encontrado de paso cerrando RBAC-SYNC-001 §4, gate
+`architecture-governor` — NO corregido a propósito en el mismo commit que
+lo encontró, mismo motivo por el que RBAC-SYNC-001 §4 existía: abrir y
+cerrar un hallazgo de doc-desactualizado en el mismo movimiento no deja
+rastro de que hubo un hallazgo. `docs/rbac-matriz-endpoints.md:54` dice
+"205 call-sites"; `src/tests/security/rbac-matrix-sync.test.ts:48` exige
+**206** desde el bloque 3.3-b2 (`b0f9d93`, `reservations.routes.ts` sumó
+la ruta de escape) — nadie actualizó la prosa del encabezado en ese
+commit. Fix de una línea, sin riesgo).
 
 **Backlog de producto (sin fecha):** Gap C1-C · AR-FACT-NO-ISSUED-01 Fases 2-8 ·
 FACT-BORRADOR-001 (v2.8) · C1-B (bloqueada por proveedor) · C2/C3 · D7 (5 endpoints

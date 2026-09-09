@@ -2,6 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// PUBLIC_ROUTES vive en public-routes.fixture.ts (09/09/2026, gate
+// architecture-governor) -- rbac-matrix-public-routes-sync.test.ts (RBAC-SYNC-001
+// §4) también lo necesita, e importar un *.test.ts como módulo hace que
+// Vitest re-ejecute sus describe() de nivel superior (RBAC-ROUTE-001 corría
+// dos veces en una corrida de la suite completa). Un fixture no-test es el
+// lugar correcto para algo que dos suites comparten.
+import { PUBLIC_ROUTES } from './public-routes.fixture.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = join(__dirname, '../..');
@@ -67,53 +74,6 @@ const SRC_DIR = join(__dirname, '../..');
  *    `app.get` (`/health`, `/health/db`, `/`, `/openapi.json`) más `/docs`
  *    por `app.use`.
  */
-
-/** Clave: "<ruta rel. a src>|<METHOD> <path>". Cada entrada es una ruta que NO
- *  lleva `authorize()` a propósito, con el porqué. Mantener en sync con
- *  `docs/rbac-matriz-endpoints.md` sección 4 -- cruzado automáticamente por
- *  `rbac-matrix-public-routes-sync.test.ts` (RBAC-SYNC-001 §4, 09/09/2026),
- *  que IMPORTA este objeto (no lo duplica) para no crear una tercera copia
- *  que también pudiera desalinearse. `export` agregado solo para eso -- sin
- *  cambio de comportamiento en este archivo. */
-export const PUBLIC_ROUTES: Record<string, string> = {
-  // --- Login / alta: montados antes del authenticate() global (app.ts). El
-  //     login ES la credencial; no hay JWT todavía.
-  'api/routes/auth.routes.ts|POST /':                'login de staff (/api/login)',
-  'api/routes/auth.routes.ts|POST /select-business': 'elección de negocio post-login; valida el token temporal en el handler',
-  'api/routes/auth.routes.ts|POST /google':          'login de staff con Google',
-  'platform/business.routes.ts|POST /':              'alta de negocio (/register), pública',
-  'platform/platform.routes.ts|POST /login':         'login de superadmin; va antes del router.use(authorizePlatform(...))',
-  'api/routes/customer.routes.ts|POST /:businessSlug/register':     'alta de cliente en el portal, pública',
-  'api/routes/customer.routes.ts|POST /:businessSlug/login':        'login de cliente en el portal',
-  'api/routes/customer.routes.ts|POST /:businessSlug/login/google': 'login de cliente con Google',
-  'api/routes/customer.routes.ts|GET /:businessSlug/availability':  'buscador de disponibilidad del portal, pre-login',
-  'api/routes/customer.routes.ts|POST /logout':      'borra la cookie del portal, sin efecto de datos',
-
-  // --- Self-scoped: solo leen/actúan sobre req.user; no hay objeto de otro dueño.
-  'api/routes/me.routes.ts|GET /me':       'perfil propio del usuario autenticado',
-  'api/routes/me.routes.ts|POST /logout':  'borra la cookie propia',
-  'api/routes/me.routes.ts|POST /refresh': 'refresca el token propio',
-
-  // --- Contexto del propio negocio: montados antes de tenantMiddleware, leen la
-  //     BD de plataforma. Cualquier miembro autenticado ve los módulos/límites
-  //     de SU negocio (gating visual del dashboard, L 23/08/2026).
-  'platform/business-modules.routes.ts|GET /':     'módulos contratados del propio negocio',
-  'platform/business-plan-limits.routes.ts|GET /': 'límites del plan del propio negocio',
-
-  // --- STAFF/CUSTOMER-open ya documentado en rbac-matriz-endpoints.md (L,
-  //     23/08/2026): el portal de clientes las necesita logueado para el filtro
-  //     de categoría del buscador de disponibilidad.
-  'reservas/categories.routes.ts|GET /':    'listado de categorías, cualquier identidad del tenant (portal incl.)',
-  'reservas/categories.routes.ts|GET /:id': 'detalle de categoría, ídem',
-
-  // --- Flujos por token: quien acepta todavía no tiene JWT; el token es la
-  //     credencial y lo valida el handler.
-  'usuarios-roles/password-reset.routes.ts|POST /request': 'pedir reseteo de contraseña (email en el body)',
-  'usuarios-roles/password-reset.routes.ts|POST /lookup':  'validar el token de reseteo',
-  'usuarios-roles/password-reset.routes.ts|POST /accept':  'fijar la contraseña nueva con el token',
-  'usuarios-roles/user-invitation.routes.ts|POST /lookup': 'validar el token de invitación',
-  'usuarios-roles/user-invitation.routes.ts|POST /accept': 'aceptar la invitación con el token',
-};
 
 const METHODS = 'get|post|put|patch|delete';
 const CALL_RE = new RegExp(String.raw`\brouter\.(${METHODS})\s*\(`, 'g');

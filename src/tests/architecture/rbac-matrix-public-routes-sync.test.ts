@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PUBLIC_ROUTES } from '../security/rbac-route-coverage.test.js';
+// Importa el fixture no-test, NUNCA el *.test.ts -- importar un *.test.ts
+// como módulo hace que Vitest re-ejecute sus describe() de nivel superior
+// (encontrado 09/09/2026, gate architecture-governor: RBAC-ROUTE-001 corría
+// dos veces en una corrida de la suite completa).
+import { PUBLIC_ROUTES } from '../security/public-routes.fixture.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = join(__dirname, '../..');
