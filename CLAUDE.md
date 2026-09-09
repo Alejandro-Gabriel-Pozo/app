@@ -136,6 +136,48 @@ allowlist chico con motivo, no una excepción muda. Esta cerca no resuelve
 `app.ts` ni valida montaje — eso sigue siendo alcance de
 `api-auth-gate-order`/`rbac-route-coverage`.
 
+## Contratos — spec OpenAPI vs rutas reales
+
+Distinto de RBAC: esto es sobre qué documenta `src/openapi/spec.ts`, no
+sobre quién puede pegarle a una ruta. Artefactos propios, no se suman al
+conteo de la sección de RBAC de arriba.
+
+**`src/openapi/spec.ts`** es un OpenAPI 3.0.3 escrito a mano, NO generado
+desde las rutas reales. Hasta el 09/09/2026 nada lo cruzaba contra el
+código: 3 de los 19 paths documentados daban 404 real (2 de `/api/reports`
+mal escritos, 1 fantasma en `/api/resources`), uno de ellos sin detectarse
+por ~2.5 meses. Corregido en `a96aa90`.
+
+Desde el 09/09/2026 hay una cerca: `src/tests/architecture/openapi-spec-route-sync.test.ts`
+(`CONTRACT-001`, `cf59908`) importa `openApiSpec` como módulo real (no
+regex sobre el texto de `spec.ts`) y verifica que cada path+método
+documentado exista como `router.<método>()` real en el `*.routes.ts`
+correspondiente — existencia solamente, no valida request/response
+schemas. Dos allowlists chicas con motivo, mismo criterio que las de
+RBAC: `MOUNT_TO_ROUTES_FILE` (prefijo de `app.ts` → archivo de rutas, solo
+para los 6 prefijos que `spec.ts` documenta hoy — manual porque al menos
+un mount real, `/api/reports`, arma el router dentro de un closure de
+middleware en vez de `app.use(prefix, routerFn(...))`, y un parser
+genérico de `app.ts` no lo ve) y `EXCLUDED_PATHS` (`/health`,
+`/health/db` — `app.get()` directos de `app.ts`, no viven en ningún
+`*.routes.ts`). Sin `EXPECTED_*` de conteo a propósito: documentar un
+endpoint nuevo no debe romper el build.
+
+**Lo que esta cerca NO garantiza** (declarado en su propio header): que
+`MOUNT_TO_ROUTES_FILE` siga apuntando al router que `app.ts` monta
+realmente en cada prefijo. El mapa es manual, verificado a mano el
+09/09/2026; si un prefijo se re-monta a otro router, la cerca sigue verde
+validando contra el archivo viejo — re-verificar a mano al tocar esos
+mounts.
+
+**Lo que esta cerca a propósito NO hace:** exigir que un endpoint real
+esté documentado. `spec.ts` cubre ~18 paths de +60 endpoints reales (33
+routers montados en `app.ts` sin ninguna entrada acá). Cerrar esa brecha
+es `CONTRACT-COVERAGE-001` — decisión de producto (mantener el spec a
+mano vs. generarlo desde las rutas), no algo que un fence deba forzar. Ver
+`docs/pendientes-2026-09-08.md`, sección Higiene, para el detalle
+completo y los dos ítems de backlog que bloquea.
+
 ## Pendientes — revalidar antes de arrastrar
 
 **Auditoría del 01/09/2026:** de 28 ítems abiertos de

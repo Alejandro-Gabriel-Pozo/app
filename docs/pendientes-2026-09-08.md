@@ -1201,7 +1201,7 @@ tests lo importan de ahí. Suite completa **2020/2021** sin regresión
 
 **Higiene:** desfase de fecha "08/09"→"07/09" en ~5 docs (verificar si sigue
 aplicando tras esta sesión, que sí es del 08) · DA-CONT-001 · DOC-ANCLA-001 ·
-CONTRACT-001 · ficha M10 stale · `RBAC-MATRIX-HEADER-STALE-001` (nuevo,
+ficha M10 stale · `RBAC-MATRIX-HEADER-STALE-001` (nuevo,
 09/09/2026, encontrado de paso cerrando RBAC-SYNC-001 §4, gate
 `architecture-governor` — NO corregido a propósito en el mismo commit que
 lo encontró, mismo motivo por el que RBAC-SYNC-001 §4 existía: abrir y
@@ -1211,6 +1211,79 @@ rastro de que hubo un hallazgo. `docs/rbac-matriz-endpoints.md:54` dice
 **206** desde el bloque 3.3-b2 (`b0f9d93`, `reservations.routes.ts` sumó
 la ruta de escape) — nadie actualizó la prosa del encabezado en ese
 commit. Fix de una línea, sin riesgo).
+
+~~`CONTRACT-001`~~ **🟡 PARCIAL (09/09/2026, gate `architecture-governor`,
+recomendación transversal #3 del día).** Origen del ítem completo:
+`docs/pendientes-2026-08-31.md:89` (3 componentes ahí: #1 documentación
+incompleta, #2 sin test de cruce, #3 deriva real ya detectada). Cerrados
+hoy #2 y #3:
+
+- **#3 (deriva):** `src/openapi/spec.ts` documentaba 3 de 19 paths (no "2
+  de 18" como decía el hallazgo original del 31/08 -- recontado leyendo el
+  objeto `paths` real) que daban 404 real: `/api/reports/summary` y
+  `/api/reports/underutilized` (reales: bajo `/occupancy/`, rotos desde
+  `ad856d4`, 23/06/2026, ~2.5 meses sin detectarse) y
+  `/api/resources/{id}/availability` (ruta fantasma, cero matches en
+  `resources.routes.ts`, sin equivalente real -- se borró en vez de
+  inventar un reemplazo, mismo criterio que `284f988` que ya había borrado
+  otro fantasma de este archivo). Corregido en `a96aa90`.
+- **#2 (sin cruce):** nueva cerca
+  `src/tests/architecture/openapi-spec-route-sync.test.ts` (`cf59908`, 6
+  tests) -- importa `openApiSpec` como módulo real (no regex sobre el
+  texto) y cruza cada path+método documentado contra el `*.routes.ts`
+  real, vía dos allowlists chicas con motivo (`MOUNT_TO_ROUTES_FILE`,
+  `EXCLUDED_PATHS` para `/health`+`/health/db`, que son `app.get()`
+  directos de `app.ts` sin `*.routes.ts`). Corrió ROJO contra
+  `git show e322dc7:src/openapi/spec.ts` -- exactamente las 3 violaciones
+  de arriba, ni una más -- y VERDE después. Mutaciones de fail-loud
+  (archivo mapeado roto) y de entrada obsoleta (prefijo sin uso)
+  verificadas y revertidas. Sin `EXPECTED_*` de conteo a propósito:
+  documentar un endpoint nuevo no debe romper el build. Limitación
+  declarada en el header del archivo: no verifica que
+  `MOUNT_TO_ROUTES_FILE` siga apuntando al router que `app.ts` monta
+  realmente en cada prefijo -- el mapa es manual, verificado a mano el
+  09/09/2026, y se re-verifica a mano si esos mounts cambian. Suite
+  completa **2020 → 2026** (+6, exactos los del archivo nuevo; sin riesgo
+  de la doble-ejecución de `e322dc7` porque importa `spec.ts`, no un
+  `*.test.ts`).
+
+**#1 (documentación incompleta) sigue abierto**, ahora como
+**`CONTRACT-COVERAGE-001`** (anclado en
+`src/tests/architecture/openapi-spec-route-sync.test.ts:22`): **33** routers
+montados en `app.ts` sin ninguna entrada en `spec.ts` (recontado 09/09/2026
+con `grep -nE "app\.use\('(/platform|/register|/api[^']*)'" src/app.ts`
+sobre los 39 mounts reales, menos los 6 que `spec.ts` sí documenta -- el
+"~24" de un borrador anterior de este mismo hallazgo estaba mal contado,
+corregido acá antes de que se arrastrara). Lista completa, no parcial:
+`platform`, `register`, `api/customer` (portal), `api/invitations`,
+`api/password-resets`, `api/companies`, `api/auth` (me), `api/business/modules`,
+`api/business/plan-limits`, `api/locations`, `api/cancellation-policies`,
+`api/customers`, `api/rate-catalog`, `api/users/invitations`, `api/users`,
+`api/roles`, `api/categories`, `api/products`, `api/orders`,
+`api/waste-reasons`, `api/consumption-destinations`, `api/business-hours`,
+`api/business-profile/afip-credentials`, `api/business-profile`,
+`api/business/context`, `api/invoices`, `api/audit-log`,
+`api/cash-register`, `api/system`, `api/housekeeping`,
+`api/maintenance-windows`, `api/stays`, `api/accounts-receivable`. Más
+~40 endpoints sin documentar dentro de los 6 routers que
+`spec.ts` sí referencia (ej. `cancel-with-credit-note`, `/search`, todo
+`rate-plans`/`resource-locks` de `bookable-services`). No es alcance de
+una cerca -- es una decisión de producto pendiente (mantener el spec
+OpenAPI a mano para 60+ endpoints, o generarlo desde las rutas) que le
+corresponde al dueño, no algo que se resuelva con más regex. Sigue
+bloqueando el paso 2 del pedido de UI (`pendientes-2026-08-31.md:89`) y el
+paso 3 de idempotencia de D+A
+(`docs/continuidad-da-orden-estados-2026-09-02.md:331`,
+`docs/pendientes-2026-09-02.md:306` -- reapuntados hoy a este ID).
+
+**Hallazgo nuevo sin bloque propio (09/09/2026, mismo gate):** 5 bloques
+`@swagger` en JSDoc (`src/api/routes/auth.routes.ts:154,248,293`,
+`src/platform/business.routes.ts:48,79`) que no generan nada --
+`swagger-jsdoc` no está en `package.json` ni en el lockfile. Un tercer
+"origen" aparente de documentación de API que en realidad no alimenta
+ningún artefacto y puede confundir a quien asuma que el spec es
+parcialmente generado. No corregido hoy (borrar comentarios es limpieza,
+bloque aparte).
 
 **Backlog de producto (sin fecha):** Gap C1-C · AR-FACT-NO-ISSUED-01 Fases 2-8 ·
 FACT-BORRADOR-001 (v2.8) · C1-B (bloqueada por proveedor) · C2/C3 · D7 (5 endpoints

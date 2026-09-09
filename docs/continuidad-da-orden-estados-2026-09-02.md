@@ -328,11 +328,27 @@ el diff exacto de ORDER-04.
 | **`BRECHA-ORDER-04`** (confirmOrder incondicional, resurrección) | **S1, prioridad máxima** | **Abierta.** Diseño listo, diff bloqueado por las 2 preguntas de §3 | — |
 | `FACT-INV-BIZID-001` (`requestInvoice` no compara `businessId` del movimiento) | S1 candidata, eleva a S0 si hay exposición cross-tenant | Abierta, registrada en `docs/pendientes-2026-09-02.md` | Precondición del Bloque 0 de D+A |
 | Gap C1-C (`JOIN` descarta facturas consolidadas) | S1 | Abierta, ya conocida antes de esta sesión | Bloquea D+A Bloque 1b específicamente |
-| `CONTRACT-001` (OpenAPI no verificado) | S2 | Abierta | Bloquea el paso 3 (rechazo duro) de la transición de idempotencia del cobro en D+A |
+| `CONTRACT-COVERAGE-001` (ex-`CONTRACT-001`, ver nota) | S2 | Abierta | Bloquea el paso 3 (rechazo duro) de la transición de idempotencia del cobro en D+A |
 | `BRECHA-REFUND-01` (`confirmRefund` no idempotente, puede duplicar Nota de Crédito con CAE propio) | S1 | Abierta | Bloquea E3b (ver §5) |
 | `BRECHA-AUDIT-01` (ningún intento fiscal rechazado deja rastro) | S2 | Abierta | Depende de extensión de `audit_log` |
 | `AUDIT-DOC-001` (`erp-auditoria-v2/` sin versionar) | — | Abierta, deuda documental | No es urgente pero está señalada |
 | `DA-CONT-001` (la especificación completa de D+A no existe en ningún documento, solo en conversación) | — | Abierta | Ver §6 |
+
+**Nota sobre `CONTRACT-COVERAGE-001` (09/09/2026, gate `architecture-governor`):**
+`CONTRACT-001` se partió en dos al cerrar sus componentes #2 (cerca que
+cruza `spec.ts` contra rutas reales) y #3 (los 3 paths rotos que dejaba
+pasar) — ver `docs/pendientes-2026-09-08.md`, sección Higiene, commits
+`a96aa90`+`cf59908`. El componente #1 (documentación incompleta — ~24
+routers y ~40 endpoints sin ninguna entrada en `spec.ts`) sigue abierto
+bajo `CONTRACT-COVERAGE-001` y **sigue bloqueando esta fila**: la cerca
+nueva verifica que lo documentado no mienta, no que lo no documentado
+llegue a documentarse. Evidencia parcial que NO cierra esta precondición:
+`/docs`/`openapi.json` no se sirven en producción desde `0170ee5`
+(01/09/2026) y el dueño confirmó ese día que nadie fuera del equipo usa
+`/docs` (`src/api/docs-exposure.ts:43`) — eso descarta "consumidor externo
+que lee el spec", pero no dice nada de un consumidor que pegue contra el
+endpoint de cobro sin haber leído el spec, que es lo que el paso 3
+necesita descartar.
 
 ---
 

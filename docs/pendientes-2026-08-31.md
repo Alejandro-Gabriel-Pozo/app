@@ -86,35 +86,52 @@ tres.
 
 ---
 
-### CONTRACT-001 — el OpenAPI no lo verifica nada, y hay 5 recursos sin documentar
+### CONTRACT-001 — el OpenAPI no lo verifica nada, y hay 5 recursos sin documentar · 🟡 PARCIAL (09/09/2026)
 
 **Dónde:** `src/openapi/spec.ts`, `docs/HTTP_CONTRACTS.md`, `src/tests/`.
 
-El spec cubre **18 rutas** (no 10, como decía la primera versión de este
-ítem); `HTTP_CONTRACTS.md` cubre 5 recursos y **solo códigos**, no formas de
+El spec cubre **19 rutas** (no 18 como decía este ítem, ni 10 como la
+primera versión — recontado 09/09 leyendo el objeto `paths` real, no a
+ojo); `HTTP_CONTRACTS.md` cubre 5 recursos y **solo códigos**, no formas de
 payload (lo dice su propia línea 3). Quedan sin
 documentar productos, clientes, facturas, perfil de negocio, los 5 reportes
 POS/CRM, `occupancy/by-category` y `accounts-receivable`.
 `reservationNumber` y `customerNumber` no figuran: el contrato que D6
 necesita no está escrito.
 
-Y **ningún test contrasta el spec contra las rutas reales** — `src/tests/`
-tiene `domain`, `integration`, `repositories` y `security`, ninguno lo toca.
-**Ya hay deriva real, no hipotética:** el spec documenta
+~~Y **ningún test contrasta el spec contra las rutas reales**~~ — **✅
+RESUELTO 09/09/2026**, `src/tests/architecture/openapi-spec-route-sync.test.ts`
+(`cf59908`), ver `docs/pendientes-2026-09-08.md` sección Higiene para el
+detalle y la evidencia de mutation testing.
+
+~~**Ya hay deriva real, no hipotética:** el spec documenta
 `/api/reports/summary` y `/api/reports/underutilized`, pero las rutas
 montadas son `/api/reports/occupancy/summary` y
-`/api/reports/occupancy/underutilized` — **2 de las 18 documentadas dan 404**
-(hallazgo del governor, 31/08).
+`/api/reports/occupancy/underutilized` — 2 de las 18 documentadas dan
+404~~ — **✅ RESUELTO 09/09/2026** (`a96aa90`), y la re-verificación del
+09/09 encontró una **tercera** ruta rota que este hallazgo original no
+vio: `/api/resources/{id}/availability` (`spec.ts:344`, fantasma — cero
+matches de `availability` en `resources.routes.ts`, no hay endpoint real
+equivalente). **Corrección: eran 3 de 19 documentadas dando 404, no 2 de
+18** — la primera roto desde `ad856d4` (23/06/2026), ~2.5 meses sin
+detectarse.
+
 Documentar los 5 recursos agrega un artefacto más mantenido a mano que nadie
 chequea: **misma enfermedad que RBAC-SYNC-001**, mismo modo de falla (el
-handler cambia, el spec miente en silencio, el frontend le cree).
+handler cambia, el spec miente en silencio, el frontend le cree). **Esta
+parte del ítem sigue abierta** — la cerca nueva verifica que lo YA
+documentado no mienta; no exige que lo no documentado se documente. Pasa a
+`CONTRACT-COVERAGE-001` (ver `docs/pendientes-2026-09-08.md`, Higiene) —
+decisión de producto (spec a mano vs. generado) que no le corresponde a un
+fence, no a este ítem.
 
 **Dónde va cada cosa (decidido, sin implementar):** la forma en el OpenAPI,
 la fila de códigos en `HTTP_CONTRACTS.md` — meter payloads en este último
 contradice el alcance que el propio documento declara.
 
 **Prioridad:** media. Bloquea el paso 2 del pedido de UI (documentar el
-contrato antes de escribir la pantalla) para los 4 ítems vivos.
+contrato antes de escribir la pantalla) para los 4 ítems vivos — **sigue
+bloqueado**, ver `CONTRACT-COVERAGE-001`.
 
 ---
 

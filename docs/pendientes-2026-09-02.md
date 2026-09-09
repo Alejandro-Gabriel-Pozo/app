@@ -312,6 +312,14 @@ idempotencia (paso 3 de la transición, ver contexto de sesión). Sin
 `CONTRACT-001` resuelto, ese paso no se puede autorizar — es la misma
 brecha, con un consumidor concreto nuevo.
 
+**Actualización 09/09/2026 (gate `architecture-governor`):** `CONTRACT-001`
+se partió al cerrar sus componentes #2/#3 (`docs/pendientes-2026-09-08.md`,
+Higiene, `a96aa90`+`cf59908`). Esta precondición sigue apuntando a lo que
+NO se cerró: el componente #1, ahora `CONTRACT-COVERAGE-001` (documentar
+lo que falta, incluido el endpoint de cobro si no está). Ver la nota de
+`docs/continuidad-da-orden-estados-2026-09-02.md:331` para la evidencia
+parcial encontrada (no alcanza para cerrar el paso 3).
+
 ---
 
 ## 🔴 Abierto — arrastrado del 01/09
