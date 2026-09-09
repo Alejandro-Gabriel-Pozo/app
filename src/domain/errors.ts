@@ -979,3 +979,92 @@ export class InvalidOrderTransitionError extends DomainError {
     super(`Transición inválida: ${from} → ${to}.`, 'INVALID_TRANSITION');
   }
 }
+
+/**
+ * Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`, ADR común
+ * cancelar-con-NC §6.6) -- el orquestador de reservas resolvió el conjunto
+ * de cargos de la reserva y NINGUNO tiene una factura `ISSUED` viva. No hay
+ * nada que revertir con Nota de Crédito: la cancelación normal
+ * (`ReservationService.cancelReservation()`) alcanza.
+ */
+export class CreditNoteReservationNoLiveInvoiceError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `La reserva "${reservationId}" no tiene ningún cargo con una factura ISSUED viva -- no hay nada que revertir con Nota de Crédito. Usá la cancelación normal.`,
+      'CREDIT_NOTE_RESERVATION_NO_LIVE_INVOICE',
+    );
+  }
+}
+
+/**
+ * Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`, ADR común
+ * cancelar-con-NC §6.6) -- la reserva tiene MÁS DE UNA factura `ISSUED`
+ * viva entre sus cargos, sin que se haya pedido explícitamente "pool
+ * mixto" (bloque 3.5, con un parámetro de factura destino). Fail-closed
+ * SIN llamar a AFIP y SIN crear ADJUSTMENT -- grounding
+ * `auditor-circuitos-erp` (09/09/2026): ERPNext bloquea toda la operación
+ * si hay cualquier documento vivo, Odoo la ignora en silencio (el patrón
+ * que generó ORDER-10); este escape adopta el extremo ERPNext.
+ */
+export class CreditNoteReservationMultiInvoiceError extends DomainError {
+  constructor(reservationId: string, invoiceIds: string[]) {
+    super(
+      `La reserva "${reservationId}" tiene ${invoiceIds.length} facturas ISSUED vivas (${invoiceIds.join(', ')}) -- este escape solo admite exactamente una factura viva sin pool mixto explícito. Operación abortada, sin contactar AFIP.`,
+      'CREDIT_NOTE_RESERVATION_MULTI_INVOICE',
+    );
+  }
+}
+
+/**
+ * Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`, ADR común
+ * cancelar-con-NC §6.6) -- los cargos congelados (factura∩reserva) no
+ * comparten un único `stay_id`. Heredar cualquiera de ellos, o `null`,
+ * sub-declararía el saldo de alguna estadía en `getNetBalanceByStayId()`
+ * (el ADJUSTMENT revertiría cargos fuera de la estadía a la que quedó
+ * atado). `null` cuenta como un valor distinto de cualquier `stay_id` real.
+ */
+export class CreditNoteMixedStayError extends DomainError {
+  constructor(reservationId: string, invoiceId: string, stayIds: Array<string | null>) {
+    super(
+      `Los cargos de la reserva "${reservationId}" que revierte la factura "${invoiceId}" no comparten un único stay_id (valores: ${stayIds.map((s) => s ?? 'null').join(', ')}) -- no se puede atribuir el ADJUSTMENT a una sola estadía. Operación abortada.`,
+      'CREDIT_NOTE_MIXED_STAY',
+    );
+  }
+}
+
+/**
+ * Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`, ADR común
+ * cancelar-con-NC §6.6) -- "borde de la consolidada al 100%": el conjunto
+ * de cargos congelado es un subconjunto PROPIO de los cargos de la
+ * factura (hay cargos de OTRA reserva en la misma consolidada) pero
+ * igual suma el 100% de su `impTotal` (la otra reserva aporta $0). Sin
+ * este guard, `buildCreditNote()` tomaría la rama de reversión TOTAL (N3)
+ * y copiaría TODAS las líneas -- incluida la de la reserva ajena -- sin
+ * correr el tope por par (bloque 3.3-a).
+ */
+export class CreditNoteConsolidatedFullReversalError extends DomainError {
+  constructor(reservationId: string, invoiceId: string, amount: number, impTotal: number) {
+    super(
+      `La reserva "${reservationId}" aporta ${amount} de los ${impTotal} de la factura consolidada "${invoiceId}" -- alcanza el 100% del importe pero NO es la única reserva facturada ahí. Revertirla como total copiaría líneas ajenas sin el tope por par. Operación abortada.`,
+      'CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL',
+    );
+  }
+}
+
+/**
+ * Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`, ADR común
+ * cancelar-con-NC §6.6) -- ventana tx1→tx2: entre el commit de tx1 (donde
+ * se congeló "la reserva tiene exactamente esta factura ISSUED viva") y
+ * tx2 (post-AFIP), `requestInvoice()` emitió una factura NUEVA para otro
+ * cargo de la misma reserva. tx2 se aborta ANTES de mutar nada -- la NC ya
+ * emitida (irreversible) y el ADJUSTMENT quedan visibles para revisión
+ * manual (mismo estado "solicitud", N11, que el resto de este ADR).
+ */
+export class CreditNoteReservationInvoiceSetChangedError extends DomainError {
+  constructor(reservationId: string, expectedInvoiceId: string) {
+    super(
+      `El conjunto de facturas vivas de la reserva "${reservationId}" cambió entre el armado del ADJUSTMENT y la emisión de la Nota de Crédito -- ya no es exactamente "${expectedInvoiceId}". La Nota de Crédito se emitió pero la reserva NO se canceló; el caso queda registrado para revisión manual.`,
+      'CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED',
+    );
+  }
+}

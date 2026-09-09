@@ -90,9 +90,13 @@ const SRC_DIR = join(__dirname, '../..');
 /** Los dos únicos archivos que escriben `reversedInvoiceId` en una fila de
  *  `financial_transactions`. Verificado a mano que el `type` del write es
  *  `REFUND` (`cancellation-refund.service.ts:273`) / `ADJUSTMENT`
- *  (`cancel-order-with-credit-note.service.ts:261`). */
+ *  (`cancel-order-with-credit-note.service.ts:261`,
+ *  `cancel-reservation-with-credit-note.service.ts` -- bloque 3.3-b1,
+ *  09/09/2026, mismo `type: 'ADJUSTMENT'`, ahora con `reservationId`
+ *  seteado en vez de `null`). */
 const WRITE_SITES = [
   'facturacion/cancel-order-with-credit-note.service.ts',
+  'facturacion/cancel-reservation-with-credit-note.service.ts',
   'reservas/cancellation-refund.service.ts',
 ].sort();
 
@@ -169,7 +173,7 @@ describe('REVERSED-INVOICE-ID-CONVENTION-001 -- reversed_invoice_id sólo en fil
     // Anti-vacuidad: si el regex de write deja de matchear el productor real,
     // `found` queda vacío, el toEqual de arriba falla, y este bloque nunca se
     // alcanza -- pero lo dejamos explícito por si WRITE_SITES se editara mal.
-    expect(WRITE_SITES.length).toBe(2);
+    expect(WRITE_SITES.length).toBe(3);
 
     for (const rel of WRITE_SITES) {
       const code = stripComments(readFileSync(join(SRC_DIR, rel), 'utf-8'));

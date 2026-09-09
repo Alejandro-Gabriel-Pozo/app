@@ -143,8 +143,18 @@ const SRC_DIR = join(__dirname, '../..');
  *     el suyo inline.
  */
 
-/** Los dos módulos del núcleo del escape. */
-const NUCLEO_MODULES = ['cancel-order-with-credit-note.service', 'cancel-with-credit-note'];
+/**
+ * Los módulos del núcleo del escape. Bloque 3.3-b1 (09/09/2026, gate
+ * `architecture-governor`) suma `cancel-reservation-with-credit-note.service`
+ * -- sin esto, el orquestador de reservas nace SIN la cerca deny-by-default
+ * (A) y su adaptador de puerto (`reservas/reservation-cancel-for-credit-note.ts`)
+ * quedaría invisible.
+ */
+const NUCLEO_MODULES = [
+  'cancel-order-with-credit-note.service',
+  'cancel-reservation-with-credit-note.service',
+  'cancel-with-credit-note',
+];
 const NUCLEO_IMPORT_RE = new RegExp(
   String.raw`\bfrom\s+['"][^'"]*\/(?:` +
     NUCLEO_MODULES.map((m) => m.replace(/\./g, '\\.')).join('|') +
@@ -159,6 +169,8 @@ const NUCLEO_IMPORT_ALLOWLIST: Record<string, string> = {
     'La ruta dedicada (capa i del ADR §4): POST /api/orders/:id/cancel-with-credit-note, detrás de authorize(Roles.EMISOR_NOTA_CREDITO). Es el ÚNICO punto donde el escape se cablea a HTTP — importa `buildCancelOrderWithCreditNoteService` y `authorizeCreditNoteCancellation` para componerlo. Que exista acá es el diseño; que exista en order.service.ts sería la fuga.',
   'pos-menu/order-cancel-for-credit-note.ts':
     'Adaptador de puerto del sub-bloque 4: `class OrderCancelForCreditNote implements OrderCancelPort`. Importa el CONTRATO (`import type { OrderCancelPort }`) que define el orquestador, no su código — es la inversión que evita que el orquestador (en facturacion/) importe pos-menu. NO es order.service.ts.',
+  'reservas/reservation-cancel-for-credit-note.ts':
+    'Adaptador de puerto del bloque 3.3-b1 (09/09/2026, gate `architecture-governor`): `class ReservationCancelForCreditNote implements ReservationCancelPort`. Importa el CONTRATO (`import type { ReservationCancelPort, ReservationCancelOutcome }`) que define el orquestador, no su código — misma inversión que el adaptador de órdenes. NO es reservation.service.ts. Se crea EN b1 (no diferido a b2): el criterio de cierre de 3.3-b1 exige integración contra Postgres real con la reserva realmente CANCELLED, algo que un fake in-memory no puede probar.',
 };
 
 /** Carpetas de dominio barridas por (A). */
@@ -176,9 +188,19 @@ const CANCEL_SERVICE_FILES = ['pos-menu/order.service.ts', 'reservas/reservation
 //    req.user!.id como confirmedBy).
 //  - cancelOrderWithCreditNote: 1 caller, la misma ruta
 //    (buildCancelOrderWithCreditNoteService(req).cancelOrderWithCreditNote(...)).
-// B-reservas va a sumar una 3ª fila `cancelReservationWithCreditNote` y a
-// subir `authorizeCreditNoteCancellation` a 2 (su ruta emite el token) —
-// ambas cosas en el mismo cambio que agregue esa ruta, con changelog.
+// Bloque 3.3-b1 (09/09/2026, gate `architecture-governor`) suma la 3ª fila
+// `cancelReservationWithCreditNote` CON `expectedSites: 0` -- el
+// orquestador de reservas existe pero SIN ruta que lo llame (b1 es
+// "orquestador + puerto, sin ruta, sin authorize", inalcanzable por
+// construcción). El valor sube a 1 recién en 3.3-b2, cuando la ruta lo
+// cablee -- si alguien cablea el escape de reservas ANTES de b2 (una ruta
+// de emergencia, un script, un caller nuevo), esta fila se pone roja EN
+// b1 en vez de esperar a que b2 se acuerde de subir el número. `authorizeCreditNoteCancellation.expectedSites`
+// se mantiene en 1 hasta b2 (su ruta todavía no emite el token de
+// reservas) -- el `+2` que citaba el plan original (`NUCLEO_IMPORT_ALLOWLIST`)
+// se reconcilió a `+1 en b1` (el adaptador, ver NUCLEO_IMPORT_ALLOWLIST
+// arriba) `+1 en b2` (la ruta) -- el gate del 09/09/2026 corrigió el
+// documento de planificación, no esta cerca.
 const ESCAPE_CHOKEPOINTS: Array<{
   symbol: string;
   regex: RegExp;
@@ -199,6 +221,13 @@ const ESCAPE_CHOKEPOINTS: Array<{
     definitionFile: 'facturacion/cancel-order-with-credit-note.service.ts',
     expectedSites: 1,
     expectedFiles: ['pos-menu/orders.routes.ts'],
+  },
+  {
+    symbol: 'cancelReservationWithCreditNote',
+    regex: /\bcancelReservationWithCreditNote\s*\(/g,
+    definitionFile: 'facturacion/cancel-reservation-with-credit-note.service.ts',
+    expectedSites: 0,
+    expectedFiles: [],
   },
 ];
 
@@ -325,6 +354,19 @@ describe('CN-ESCAPE-CONTAINMENT-001 -- el núcleo del escape con Nota de Crédit
     // call-site que esta cerca deba contar -- de ahí el filtro. Deliberado, no
     // accidente.
     const files = findTsFiles(SRC_DIR).filter((f) => !relOf(f).startsWith('tests/'));
+
+    // Anti-vacuidad (condición C5 del gate 09/09/2026): una fila con
+    // `expectedSites: 0` y un `definitionFile`/`symbol` mal escritos pasaría
+    // vacua para siempre -- confirmar que el archivo existe y define
+    // realmente el símbolo, no solo que el conteo de llamadas dio 0.
+    for (const cp of ESCAPE_CHOKEPOINTS) {
+      const defPath = join(SRC_DIR, cp.definitionFile);
+      const defCode = stripComments(readFileSync(defPath, 'utf-8'));
+      expect(
+        defCode.includes(cp.symbol),
+        `${cp.definitionFile} no contiene ninguna mención de "${cp.symbol}" -- ¿el definitionFile o el symbol están mal escritos?`,
+      ).toBe(true);
+    }
 
     for (const cp of ESCAPE_CHOKEPOINTS) {
       const callers: string[] = [];
