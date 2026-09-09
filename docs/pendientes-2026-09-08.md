@@ -1201,7 +1201,7 @@ tests lo importan de ahí. Suite completa **2020/2021** sin regresión
 
 **Higiene:** desfase de fecha "08/09"→"07/09" en ~5 docs (verificar si sigue
 aplicando tras esta sesión, que sí es del 08) · DA-CONT-001 · DOC-ANCLA-001 ·
-ficha M10 stale ·
+ficha M10 stale
 
 ~~`RBAC-MATRIX-HEADER-STALE-001`~~ **🟡 dato corregido, cerca pendiente
 (09/09/2026, gate `architecture-governor`, recomendación transversal #4 del
@@ -1221,8 +1221,11 @@ nadie actualizó la prosa del encabezado en ese momento. Corregido acá
 `rbac-matrix-sync.test.ts` que cruce el encabezado contra
 `EXPECTED_AUTHORIZE_CALL_SITES`/`EXPECTED_ROUTES_FILE_COUNT` automáticamente
 -- este mismo número ya se pudrió dos veces en el mismo lugar (la primera,
-198/204, documentada en `docs/rbac-matriz-endpoints.md:56-60`), así que
-corregir el dato sin agregar la cerca dejaría abierta una tercera recaída.
+198/204, documentada en la nota "Corregido el 01/09/2026" de la sección 2
+de `docs/rbac-matriz-endpoints.md` -- ancla por título de nota, no por
+línea: ese bloque también acumula líneas cada vez que se actualiza), así
+que corregir el dato sin agregar la cerca dejaría abierta una tercera
+recaída.
 
 ~~`CONTRACT-001`~~ **🟡 PARCIAL (09/09/2026, gate `architecture-governor`,
 recomendación transversal #3 del día).** Origen del ítem completo:
