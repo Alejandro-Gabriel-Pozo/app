@@ -35,6 +35,7 @@ No copiar filas del roadmap a pendientes. No copiar pendientes a este índice.
 | Códigos HTTP y `body.code` | [HTTP_CONTRACTS.md](HTTP_CONTRACTS.md) | Convención |
 | **Frontera de responsabilidad de la capa de facturación electrónica** — la app facilita/valida/ejecuta y falla cerrado; NO clasifica el hecho económico ni decide qué comprobante corresponde (Factura / ND / NC / Retención); la consulta al contador define el escenario que un emisor puede usar, no bloquea el diseño; comprobante ≠ movimiento de dinero; período contable = flag por tenant. Doctrina repo-wide: una ADR de ND/Retención la hereda | [diseno-cancelacion-con-nota-credito-comun-2026-09-06.md](diseno-cancelacion-con-nota-credito-comun-2026-09-06.md) §0 | Convención (doctrina) |
 | RBAC por endpoint + cerca eléctrica de tests | [rbac-matriz-endpoints.md](rbac-matriz-endpoints.md) | Mapa + Convención |
+| Inventario de rutas reales (qué existe, NO quién puede pegarle ni la forma del request/response) — generado, no editar a mano | [inventario-rutas.md](inventario-rutas.md) (`npm run docs:routes`, `src/scripts/generate-route-inventory.ts`) | Mapa (generado) |
 | Dominios / CORS / hosting | [auditoria-dominios.md](auditoria-dominios.md) | Mapa + Runbook de auditoría |
 | Nombres de archivo `<entidad>.<capa>.ts` | [convenciones-nombres.md](convenciones-nombres.md) (propuesta; patrón backend ya aplicado) | Convención (parcial) |
 | Contexto de operación del negocio | [conocimiento-del-negocio.md](conocimiento-del-negocio.md) | Glosario de negocio |

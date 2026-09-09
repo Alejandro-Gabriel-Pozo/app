@@ -178,6 +178,36 @@ mano vs. generarlo desde las rutas), no algo que un fence deba forzar. Ver
 `docs/pendientes-2026-09-08.md`, sección Higiene, para el detalle
 completo y los dos ítems de backlog que bloquea.
 
+**`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
+09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
+dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
+falla que ya causó `CONTRACT-001` — sino generando un inventario de
+EXISTENCIA (`docs/inventario-rutas.md`, `npm run docs:routes`)
+booteando la app real y caminando `app._router.stack`: el árbol vivo de
+Express resuelve automáticamente los prefijos de montaje normales, sin
+regex sobre texto. `src/tests/architecture/openapi-spec-route-sync.test.ts`
+sigue vigente — no se retira, este inventario no valida request/response.
+
+Seis mounts arman su router DENTRO de un middleware por-request (`req.db`,
+no al boot) y por eso el árbol vivo no los ve al caminar
+(`/api/reports`, `/api/system`, `/api/housekeeping`,
+`/api/maintenance-windows`, `/api/stays`, `/api/accounts-receivable` — 40
+endpoints, confirmado por spike real, no inferido). `CLOSURE_MOUNTS`
+(`src/scripts/generate-route-inventory.ts`) es el **octavo** artefacto
+manual del repo — mismo criterio que `MOUNT_TO_ROUTES_FILE`: allowlist
+chico, motivo por entrada, verificado en las dos direcciones (mount sin
+explicar → falla nombrándolo; entrada que ya no es un closure → falla
+nombrándola).
+
+**Lo que este inventario NO dice, a propósito:** quién puede pegarle a
+cada ruta (`authorize(Roles.X)`/`requireModule(...)`/`authorizePlatform(...)`
+capturan el permiso en un closure — nada legible desde `app._router.stack`;
+esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 7 cercas, y
+cruzarla contra este inventario es un bloque futuro, no decidido) ni la
+forma del request/response (`spec.ts` sigue siendo el único con eso, para
+18 de 251). Depende de `NODE_ENV` — generado con `development`, `/` y
+`/openapi.json` no existen en producción, marcado en el propio artefacto.
+
 ## Pendientes — revalidar antes de arrastrar
 
 **Auditoría del 01/09/2026:** de 28 ítems abiertos de

@@ -1265,34 +1265,44 @@ hoy #2 y #3:
   de la doble-ejecución de `e322dc7` porque importa `spec.ts`, no un
   `*.test.ts`).
 
-**#1 (documentación incompleta) sigue abierto**, ahora como
-**`CONTRACT-COVERAGE-001`** (anclado en
-`src/tests/architecture/openapi-spec-route-sync.test.ts:22`): **33** routers
-montados en `app.ts` sin ninguna entrada en `spec.ts` (recontado 09/09/2026
-con `grep -nE "app\.use\('(/platform|/register|/api[^']*)'" src/app.ts`
-sobre los 39 mounts reales, menos los 6 que `spec.ts` sí documenta -- el
-"~24" de un borrador anterior de este mismo hallazgo estaba mal contado,
-corregido acá antes de que se arrastrara). Lista completa, no parcial:
-`platform`, `register`, `api/customer` (portal), `api/invitations`,
-`api/password-resets`, `api/companies`, `api/auth` (me), `api/business/modules`,
-`api/business/plan-limits`, `api/locations`, `api/cancellation-policies`,
-`api/customers`, `api/rate-catalog`, `api/users/invitations`, `api/users`,
-`api/roles`, `api/categories`, `api/products`, `api/orders`,
-`api/waste-reasons`, `api/consumption-destinations`, `api/business-hours`,
-`api/business-profile/afip-credentials`, `api/business-profile`,
-`api/business/context`, `api/invoices`, `api/audit-log`,
-`api/cash-register`, `api/system`, `api/housekeeping`,
-`api/maintenance-windows`, `api/stays`, `api/accounts-receivable`. Más
-~40 endpoints sin documentar dentro de los 6 routers que
-`spec.ts` sí referencia (ej. `cancel-with-credit-note`, `/search`, todo
-`rate-plans`/`resource-locks` de `bookable-services`). No es alcance de
-una cerca -- es una decisión de producto pendiente (mantener el spec
-OpenAPI a mano para 60+ endpoints, o generarlo desde las rutas) que le
-corresponde al dueño, no algo que se resuelva con más regex. Sigue
-bloqueando el paso 2 del pedido de UI (`pendientes-2026-08-31.md:89`) y el
-paso 3 de idempotencia de D+A
+**#1 (documentación incompleta), reencuadrado 09/09/2026 -- 🟡 PARCIAL,
+ya no "sin bloque propio":**
+
+- **Sub-componente existencia -- ✅ RESUELTO (`2194849`, opción (A)
+  elegida por el dueño).** `docs/inventario-rutas.md`, generado por
+  `src/scripts/generate-route-inventory.ts` (`npm run docs:routes`,
+  verificado en CI, job `route-inventory-check`): **251** endpoints
+  reales -- 211 observados booteando la app real y caminando
+  `app._router.stack` (árbol vivo de Express, no regex sobre `app.ts`) +
+  40 declarados vía `CLOSURE_MOUNTS` para los 6 mounts que arman su
+  router dentro de un closure por-request y por eso el árbol vivo no los
+  ve (`/api/reports`, `/api/system`, `/api/housekeeping`,
+  `/api/maintenance-windows`, `/api/stays`, `/api/accounts-receivable`,
+  confirmado por spike real, no inferido). El "33 routers sin
+  documentar" de más arriba queda respondido por este inventario --
+  ya no hace falta mantenerlo a mano ni volver a recontarlo.
+- **Sub-componente narrativa/responses -- sigue abierto.** El inventario
+  dice QUÉ RUTAS EXISTEN, no la forma del request/response. `spec.ts`
+  sigue siendo el único artefacto con eso, para 18 de 251 -- completar
+  el resto (o decidir no hacerlo) sigue siendo la decisión de producto
+  pendiente que le corresponde al dueño.
+- **Sub-componente autz -- sigue abierto, y no es extraíble del árbol
+  vivo.** `authorize(Roles.X)`/`requireModule(...)`/`authorizePlatform(...)`
+  capturan el permiso en un closure (`src/security/auth.middleware.ts:367`,
+  arrow anónima) -- nada de eso es legible caminando
+  `app._router.stack`. Esa pregunta ya tiene dueño
+  (`docs/rbac-matriz-endpoints.md` + 7 cercas); cruzarla contra el
+  inventario nuevo es un bloque futuro, no decidido todavía.
+
+**Lo que esto SÍ y NO desbloquea:** el paso 2 del pedido de UI
+(`pendientes-2026-08-31.md:89`, "documentar el contrato antes de escribir
+la pantalla") y el paso 3 de idempotencia de D+A
 (`docs/continuidad-da-orden-estados-2026-09-02.md:331`,
-`docs/pendientes-2026-09-02.md:306` -- reapuntados hoy a este ID).
+`docs/pendientes-2026-09-02.md:306`) necesitan la FORMA del contrato y un
+análisis de consumidores respectivamente -- ninguno de los dos lo resuelve
+un inventario de existencia. **Siguen bloqueados**, sin cambio de estado
+por este commit -- que quede explícito para no repetir el error de
+CONTRACT-001 (marcar cerrado algo que solo resolvió una parte).
 
 **Hallazgo nuevo sin bloque propio (09/09/2026, mismo gate):** 5 bloques
 `@swagger` en JSDoc (`src/api/routes/auth.routes.ts:154,248,293`,
