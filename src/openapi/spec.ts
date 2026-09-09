@@ -341,24 +341,6 @@ export const openApiSpec = {
       },
     },
 
-    '/api/resources/{id}/availability': {
-      get: {
-        tags: ['Resources'],
-        summary: 'Comprobar disponibilidad',
-        security: [{ BearerAuth: [] }],
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'startTime', in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, example: '2026-07-25T21:00:00.000Z' },
-          { name: 'endTime',   in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, example: '2026-07-25T23:00:00.000Z' },
-        ],
-        responses: {
-          '200': { description: 'Resultado de disponibilidad' },
-          '401': { $ref: '#/components/responses/Unauthorized' },
-          '404': { $ref: '#/components/responses/NotFound' },
-        },
-      },
-    },
-
     // -------------------------------------------------------------------------
     // Reservas
     // -------------------------------------------------------------------------
@@ -481,7 +463,7 @@ export const openApiSpec = {
         },
       },
     },
-    '/api/reports/summary': {
+    '/api/reports/occupancy/summary': {
       get: {
         tags: ['Reports'],
         summary: 'Resumen ejecutivo de ocupación',
@@ -498,7 +480,7 @@ export const openApiSpec = {
         },
       },
     },
-    '/api/reports/underutilized': {
+    '/api/reports/occupancy/underutilized': {
       get: {
         tags: ['Reports'],
         summary: 'Recursos subutilizados',
