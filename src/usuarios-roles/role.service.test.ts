@@ -165,6 +165,84 @@ describe('RoleService', () => {
     });
   });
 
+  describe('renameRole (10/09/2026, guard isSystem, gate architecture-governor)', () => {
+    // M1 -- borrar el guard.
+    it('rechaza renombrar un rol "sistema"', async () => {
+      await expect(
+        service.renameRole('role-biz-1-receptionist', 'biz-1', 'Recepción', 'identity-1'),
+      ).rejects.toBeInstanceOf(CannotModifySystemRoleError);
+    });
+
+    // M2 -- negar la condición (`!before.isSystem`). Afirma el nombre
+    // PERSISTIDO, no solo "no tira" -- un mutante que invierte la
+    // condición podría seguir sin tirar por otra razón y este assert lo
+    // mataría igual.
+    it('renombra un rol custom y persiste el nombre nuevo', async () => {
+      const role = await service.createRole('biz-1', 'Custom', ['STAFF'], 'identity-1');
+
+      const renamed = await service.renameRole(role.id, 'biz-1', 'Custom Renombrado', 'identity-1');
+
+      expect(renamed.name).toBe('Custom Renombrado');
+      const found = await platformRepo.getRoleById(role.id, 'biz-1');
+      expect(found?.name).toBe('Custom Renombrado');
+    });
+
+    // M3 -- quitar la mitad `&& before.name !== name` de la condición.
+    // El mutante que distingue el diseño aprobado (antes.isSystem &&
+    // antes.name !== name) del guard incondicional que se descartó: un
+    // PUT con el MISMO nombre sobre un rol de sistema no tiene nada que
+    // objetar (preserva el PUT {name, permissionGroups} completo que ya
+    // manda el frontend).
+    it('un PUT con el MISMO nombre sobre un rol "sistema" no tira y no audita nada', async () => {
+      const renamed = await service.renameRole('role-biz-1-receptionist', 'biz-1', 'RECEPTIONIST', 'identity-1');
+
+      expect(renamed.name).toBe('RECEPTIONIST');
+      expect(auditRepo.all()).toHaveLength(0);
+    });
+
+    // M4 -- comparar case-insensitive. `uq_roles_business_name` es
+    // case-sensitive: un rename solo-de-mayúsculas rompe igual el
+    // backfill determinístico (`platform.schema.sql:408-412`).
+    it('rechaza un rename solo-de-mayúsculas sobre un rol "sistema" (case-sensitive)', async () => {
+      await expect(
+        service.renameRole('role-biz-1-receptionist', 'biz-1', 'receptionist', 'identity-1'),
+      ).rejects.toBeInstanceOf(CannotModifySystemRoleError);
+    });
+
+    // M5 -- mover el guard DESPUÉS de `platformRepo.renameRole(...)`. El
+    // fake muta su Map dentro de `renameRole()` -- observable solo si el
+    // test relee el estado tras el throw.
+    it('tras el throw, el nombre del rol "sistema" sigue siendo el original (el guard corta ANTES de escribir)', async () => {
+      await expect(
+        service.renameRole('role-biz-1-receptionist', 'biz-1', 'Recepción', 'identity-1'),
+      ).rejects.toBeInstanceOf(CannotModifySystemRoleError);
+
+      const found = await platformRepo.getRoleById('role-biz-1-receptionist', 'biz-1');
+      expect(found?.name).toBe('RECEPTIONIST');
+    });
+
+    // M6 -- guard DESPUÉS de la validación de duplicado. Fija qué error
+    // gana cuando las dos condiciones aplican a la vez: el guard corre
+    // primero, así que un rol "sistema" tira CannotModifySystemRoleError
+    // aunque el nombre destino ya esté ocupado por otro rol.
+    it('sobre un rol "sistema", el guard gana aunque el nombre destino ya esté ocupado por otro rol', async () => {
+      await service.createRole('biz-1', 'Ya Ocupado', ['STAFF'], 'identity-1');
+
+      await expect(
+        service.renameRole('role-biz-1-receptionist', 'biz-1', 'Ya Ocupado', 'identity-1'),
+      ).rejects.toBeInstanceOf(CannotModifySystemRoleError);
+    });
+
+    it('un rol custom SÍ rechaza con DuplicateRoleNameError si el nombre destino ya está ocupado', async () => {
+      const role = await service.createRole('biz-1', 'Custom', ['STAFF'], 'identity-1');
+      await service.createRole('biz-1', 'Ya Ocupado', ['STAFF'], 'identity-1');
+
+      await expect(
+        service.renameRole(role.id, 'biz-1', 'Ya Ocupado', 'identity-1'),
+      ).rejects.toBeInstanceOf(DuplicateRoleNameError);
+    });
+  });
+
   describe('deactivateRole', () => {
     it('rechaza desactivar un rol "sistema"', async () => {
       await expect(

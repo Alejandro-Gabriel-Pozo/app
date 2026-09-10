@@ -356,3 +356,48 @@ describe.skipIf(skipIfNoDb)('PRESET-REVOKE-001 — marca de seed de role_preset_
     expect(rows.length).toBe(1); // el seed de role_presets lo repuso -- sigue sin marca, a propósito
   });
 });
+
+/**
+ * Guard `isSystem` en `RoleService.renameRole()` (10/09/2026, gate
+ * `architecture-governor`, bloque previo a `PRESET-REVOKE-001`) --
+ * caracterización del modo de falla que el guard cierra hacia adelante.
+ * El guard mismo (unitario, `role.service.test.ts`) prueba que la API no
+ * deja crear la divergencia; ESTE archivo prueba que, si la divergencia
+ * ya existiera (por SQL directo, saltando el guard -- el único camino
+ * que queda), el PRÓXIMO arranque del proceso revienta reaplicando
+ * `platform.schema.sql`: el backfill de roles (`:408-412`) inserta con
+ * `id` determinístico (`role-<biz>-<nombre-preset-en-minúscula>`) bajo
+ * `ON CONFLICT (business_id, name)` -- un rename libera ese par y el
+ * INSERT choca contra `roles_pkey` en cambio, sin capturar
+ * (`server.ts:33-59`, `pool.query(sql)` -> `catch` -> `process.exit(1)`).
+ */
+describe.skipIf(skipIfNoDb)('renameRole guard isSystem -- modo de falla que cierra (roles_pkey en el backfill de arranque)', () => {
+  let db3: SqlClient;
+  let dbName3: string;
+  let pool3: pg.Pool;
+
+  beforeAll(async () => {
+    ({ db: db3, dbName: dbName3, pool: pool3 } = await createTestDatabase());
+    await db3.query(readPlatformSchema(), []);
+    await db3.query(
+      `INSERT INTO businesses (id, name, slug, owner_email) VALUES ($1, $2, $3, $4)`,
+      ['biz-rename-role-guard-001', 'Negocio de prueba', 'negocio-rename-role-guard-001', 'owner@test.local'],
+    );
+    await db3.query(readPlatformSchema(), []); // provisiona los 5 roles de sistema
+  }, 90_000);
+
+  afterAll(async () => {
+    if (dbName3) await dropTestDatabase(dbName3, pool3);
+  });
+
+  it('reaplicar el schema con un rol "sistema" renombrado por SQL directo revienta con roles_pkey', async () => {
+    // Estado PREVIO al guard: simula la única vía que queda de crear la
+    // divergencia (SQL directo contra la BD de plataforma) -- el guard
+    // real de RoleService no participa acá a propósito, es UPDATE crudo.
+    await db3.query(
+      `UPDATE roles SET name = 'Dueño' WHERE id = 'role-biz-rename-role-guard-001-owner'`,
+    );
+
+    await expect(db3.query(readPlatformSchema(), [])).rejects.toThrow(/roles_pkey/);
+  });
+});

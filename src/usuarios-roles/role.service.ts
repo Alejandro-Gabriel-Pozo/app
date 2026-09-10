@@ -42,8 +42,8 @@ export class InvalidPermissionGroupError extends DomainError {
 }
 
 export class CannotModifySystemRoleError extends DomainError {
-  constructor(id: string) {
-    super(`El rol '${id}' es un rol de sistema y no se puede desactivar.`, 'CANNOT_MODIFY_SYSTEM_ROLE');
+  constructor(id: string, action: string = 'desactivar') {
+    super(`El rol '${id}' es un rol de sistema y no se puede ${action}.`, 'CANNOT_MODIFY_SYSTEM_ROLE');
   }
 }
 
@@ -147,6 +147,39 @@ export class RoleService {
 
   async renameRole(id: string, businessId: string, name: string, changedBy: string): Promise<Role> {
     const before = await this.getRole(id, businessId);
+
+    // Guard isSystem (10/09/2026, gate `architecture-governor`, bloque
+    // previo a PRESET-REVOKE-001) -- dos razones, ninguna cosmética:
+    // (a) el backfill de arranque (`platform.schema.sql:408-412`) inserta
+    // con `id` determinístico (`role-<biz>-<nombre-preset-en-minúscula>`)
+    // bajo `ON CONFLICT (business_id, name)`. Un rename libera ese par
+    // `(business_id, name)` -- el próximo INSERT ya no matchea ese
+    // conflict target y choca contra `roles_pkey`, SIN capturar
+    // (`server.ts:33-59`, `process.exit(1)`): el próximo arranque del
+    // proceso revienta. (b) `roles.name` es de facto una clave técnica de
+    // autorización, no solo una etiqueta: `users.routes.ts:201,276` y
+    // `user-invitation.routes.ts:156` comparan `role.name === 'OWNER'`
+    // para bloquear asignar OWNER por esas rutas, y `users.routes.ts:213`
+    // resuelve el techo de plan (`allowedRoleNames`) por nombre -- un
+    // ADMIN (que ya tiene `Roles.MANAGEMENT`, suficiente para `PUT
+    // /api/roles/:id`) podría renombrar el OWNER del negocio y saltarse
+    // los dos guards por nombre.
+    //
+    // `before.name !== name` (no un guard incondicional): preserva el
+    // `PUT {name, permissionGroups}` completo que ya manda el frontend
+    // (`appfrontend-main/src/app/dashboard/roles/page.tsx:110`, siempre
+    // los dos campos) -- si el nombre no cambia, este método no tiene
+    // nada que objetar, y no pre-decide la pregunta todavía abierta de
+    // `PRESET-REVOKE-001` sobre si `updatePermissionGroups()` sigue
+    // permitido para roles de sistema. Comparación exacta (no
+    // case-insensitive): `uq_roles_business_name` es case-sensitive, así
+    // que un rename solo-de-mayúsculas (`OWNER` -> `owner`) rompe el
+    // mismo backfill igual.
+    //
+    // Medido en producción (10/09/2026, Neon `morning-unit-50056927`,
+    // branch `br-royal-mouse-aybe2ai3`): 0 roles de sistema renombrados
+    // hoy -- puramente preventivo hacia adelante, no hay outage latente.
+    if (before.isSystem && before.name !== name) throw new CannotModifySystemRoleError(id, 'renombrar');
 
     const existing = await this.platformRepo.listRolesByBusiness(businessId);
     if (existing.some((r) => r.id !== id && r.name.toLowerCase() === name.toLowerCase())) {
