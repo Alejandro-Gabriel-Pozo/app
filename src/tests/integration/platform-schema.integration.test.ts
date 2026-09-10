@@ -28,6 +28,7 @@ import type pg from 'pg';
 import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { PlatformAuditLogRepository } from '../../platform/platform-audit-log.repository.js';
+import { PlatformRepository } from '../../platform/platform.repository.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -173,5 +174,184 @@ describe.skipIf(skipIfNoDb)('platform.schema.sql contra Postgres real', () => {
       const entries = await repo.findByBusiness('biz-fantasma');
       expect(entries).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * =========================================================================
+ * PRESET-REVOKE-001 (09-10/09/2026, gate `architecture-governor`, 5 rondas
+ * de diseño) -- marca de seed para `role_preset_permission_groups`.
+ *
+ * `describe` de PRIMER NIVEL, BD propia (no comparte la del describe de
+ * arriba): los tests de acá abajo mutan el catálogo de presets a propósito
+ * (sacan/agregan pares), y contaminarían/serían contaminados por los tests
+ * de `platform_audit_log` si compartieran base.
+ *
+ * Qué prueba cada uno, y qué mutante lo distingue -- ver el docblock de
+ * `platform.schema.sql` (bloque `platform_seed_markers`) para el mecanismo
+ * completo antes de tocar cualquiera de estos tests.
+ * =========================================================================
+ */
+describe.skipIf(skipIfNoDb)('PRESET-REVOKE-001 — marca de seed de role_preset_permission_groups', () => {
+  let db2: SqlClient;
+  let dbName2: string;
+  let pool2: pg.Pool;
+
+  const ALL_23_PAIRS: Array<[string, string]> = [
+    ['OWNER', 'OWNER_ONLY'], ['OWNER', 'MANAGEMENT'], ['OWNER', 'STAFF'],
+    ['OWNER', 'FRONT_DESK'], ['OWNER', 'HOUSEKEEPING_AND_MANAGEMENT'],
+    ['OWNER', 'ORDERS'], ['OWNER', 'BOOKING'], ['OWNER', 'EMISOR_NOTA_CREDITO'],
+    ['ADMIN', 'MANAGEMENT'], ['ADMIN', 'STAFF'], ['ADMIN', 'FRONT_DESK'],
+    ['ADMIN', 'HOUSEKEEPING_AND_MANAGEMENT'], ['ADMIN', 'ORDERS'], ['ADMIN', 'BOOKING'],
+    ['ADMIN', 'EMISOR_NOTA_CREDITO'],
+    ['RECEPTIONIST', 'STAFF'], ['RECEPTIONIST', 'FRONT_DESK'], ['RECEPTIONIST', 'BOOKING'],
+    ['RECEPTIONIST', 'EMISOR_NOTA_CREDITO'],
+    ['HOUSEKEEPING', 'STAFF'], ['HOUSEKEEPING', 'HOUSEKEEPING_AND_MANAGEMENT'],
+    ['WAITER', 'STAFF'], ['WAITER', 'ORDERS'],
+  ];
+
+  async function countRolePresetPairs(): Promise<number> {
+    const { rows } = await db2.query<{ count: string }>(`SELECT COUNT(*) AS count FROM role_preset_permission_groups`);
+    return Number(rows[0]!.count);
+  }
+
+  async function hasPair(preset: string, group: string): Promise<boolean> {
+    const { rows } = await db2.query(
+      `SELECT 1 FROM role_preset_permission_groups WHERE preset_name = $1 AND permission_group = $2`,
+      [preset, group],
+    );
+    return rows.length > 0;
+  }
+
+  async function markerExists(): Promise<boolean> {
+    const { rows } = await db2.query(
+      `SELECT 1 FROM platform_seed_markers WHERE seed_key = 'role_preset_permission_groups'`,
+    );
+    return rows.length > 0;
+  }
+
+  beforeAll(async () => {
+    ({ db: db2, dbName: dbName2, pool: pool2 } = await createTestDatabase());
+    await db2.query(readPlatformSchema(), []);
+  }, 90_000);
+
+  afterAll(async () => {
+    if (dbName2) await dropTestDatabase(dbName2, pool2);
+  });
+
+  it('primer arranque histórico: los 23 pares completos y la marca existe', async () => {
+    expect(await countRolePresetPairs()).toBe(23);
+    expect(await markerExists()).toBe(true);
+  });
+
+  it('camino de upgrade real: reaplicar sin la marca no duplica nada y la vuelve a crear', async () => {
+    await db2.query(`DELETE FROM platform_seed_markers WHERE seed_key = 'role_preset_permission_groups'`);
+    expect(await markerExists()).toBe(false);
+
+    await db2.query(readPlatformSchema(), []);
+
+    expect(await countRolePresetPairs()).toBe(23); // ON CONFLICT DO NOTHING real, no duplicó nada
+    expect(await markerExists()).toBe(true);
+
+    // Fila por fila, no solo el conteo -- confirma que son EXACTAMENTE los
+    // 23 originales, no 23 filas cualquiera.
+    for (const [preset, group] of ALL_23_PAIRS) {
+      expect(await hasPair(preset, group), `falta ${preset}/${group}`).toBe(true);
+    }
+  });
+
+  it('primer arranque tras el deploy: revierte UNA vez una revocación pre-existente, y desde ahí revocar persiste (documenta la semántica de upgrade real)', async () => {
+    // Simula una instalación que YA tenía los 23 pares (deploy anterior a
+    // este bloque) y en la que un superadmin sacó ADMIN/BOOKING de forma
+    // legítima, ANTES de este deploy -- sin la marca, porque la marca
+    // todavía no existía en esa instalación.
+    await db2.query(`DELETE FROM platform_seed_markers WHERE seed_key = 'role_preset_permission_groups'`);
+    await db2.query(`DELETE FROM role_preset_permission_groups WHERE preset_name = 'ADMIN' AND permission_group = 'BOOKING'`);
+    expect(await hasPair('ADMIN', 'BOOKING')).toBe(false);
+
+    // El arranque QUE INSTALA la marca: la marca todavía no existe en el
+    // momento en que el seed se evalúa, así que corre una última vez.
+    await db2.query(readPlatformSchema(), []);
+    expect(await hasPair('ADMIN', 'BOOKING'), 'el primer arranque post-deploy repone la revocación pre-existente -- esperado, documentado en el runbook').toBe(true);
+    expect(await markerExists()).toBe(true);
+
+    // Desde ACÁ en adelante (marca ya instalada), revocar por el
+    // repositorio real persiste de verdad.
+    const repo = new PlatformRepository(db2);
+    const admin = (await repo.listRolePresets()).find((p) => p.name === 'ADMIN')!;
+    await repo.updateRolePresetPermissionGroups('ADMIN', admin.permissionGroups.filter((g) => g !== 'BOOKING'), db2);
+    await db2.query(readPlatformSchema(), []);
+    expect(await hasPair('ADMIN', 'BOOKING'), 'con la marca ya instalada, esta revocación SÍ persiste').toBe(false);
+  });
+
+  it('CARACTERIZACIÓN -- sacar un par seedeado por el repositorio real persiste tras reaplicar (rojo sin el fix, verde con él)', async () => {
+    const repo = new PlatformRepository(db2);
+    const before = await repo.listRolePresets();
+    const receptionist = before.find((p) => p.name === 'RECEPTIONIST')!;
+
+    // Mismo escritor que usa PUT /platform/role-presets/:name -- DELETE +
+    // INSERT del set completo, sacando BOOKING.
+    await repo.updateRolePresetPermissionGroups(
+      'RECEPTIONIST',
+      receptionist.permissionGroups.filter((g) => g !== 'BOOKING'),
+      db2,
+    );
+    expect(await hasPair('RECEPTIONIST', 'BOOKING')).toBe(false);
+
+    await db2.query(readPlatformSchema(), []);
+
+    // Retención positiva -- mata al mutante que invierte NOT EXISTS/EXISTS
+    // en la subconsulta (ese mutante borraría justo lo que coincide).
+    expect(await hasPair('RECEPTIONIST', 'STAFF')).toBe(true);
+    expect(await hasPair('RECEPTIONIST', 'FRONT_DESK')).toBe(true);
+    expect(await hasPair('RECEPTIONIST', 'EMISOR_NOTA_CREDITO')).toBe(true);
+    // Lo que importa: sigue sin estar -- el seed YA NO lo repuso.
+    expect(await hasPair('RECEPTIONIST', 'BOOKING')).toBe(false);
+  });
+
+  it('agregar un par nuevo por el repositorio real se sigue propagando a un negocio existente (backfill sin cambios)', async () => {
+    await db2.query(
+      `INSERT INTO businesses (id, name, slug, owner_email) VALUES ($1, $2, $3, $4)`,
+      ['biz-preset-revoke-001', 'Negocio de prueba', 'negocio-preset-revoke-001', 'owner@test.local'],
+    );
+    await db2.query(readPlatformSchema(), []); // provisiona sus 5 roles de sistema + backfillea
+
+    const repo = new PlatformRepository(db2);
+    const before = await repo.listRolePresets();
+    const waiter = before.find((p) => p.name === 'WAITER')!;
+    await repo.updateRolePresetPermissionGroups(
+      'WAITER',
+      [...waiter.permissionGroups, 'EMISOR_NOTA_CREDITO'],
+      db2,
+    );
+
+    await db2.query(readPlatformSchema(), []); // corre el backfill de nuevo
+
+    const { rows } = await db2.query<{ permission_group: string }>(
+      `SELECT rpg.permission_group
+       FROM roles r
+       JOIN role_permission_groups rpg ON rpg.role_id = r.id
+       WHERE r.business_id = $1 AND r.name = 'WAITER'`,
+      ['biz-preset-revoke-001'],
+    );
+    expect(rows.map((r) => r.permission_group)).toContain('EMISOR_NOTA_CREDITO');
+  });
+
+  it('idempotencia: una tercera reaplicación no cambia nada más', async () => {
+    const before = await countRolePresetPairs();
+    await db2.query(readPlatformSchema(), []);
+    expect(await countRolePresetPairs()).toBe(before);
+  });
+
+  it('role_presets (los 5 nombres) sigue sembrándose sin condición -- no está gateado por la marca', async () => {
+    // `role_preset_permission_groups.preset_name` tiene ON DELETE CASCADE
+    // hacia `role_presets(name)` -- este DELETE se lleva puestos también
+    // los pares de WAITER, y como el seed de pares SÍ está gateado por la
+    // marca (ya instalada), no vuelven. Es el último test del archivo a
+    // propósito, no deja el catálogo en un estado que otro test asuma.
+    await db2.query(`DELETE FROM role_presets WHERE name = 'WAITER'`);
+    await db2.query(readPlatformSchema(), []);
+    const { rows } = await db2.query(`SELECT 1 FROM role_presets WHERE name = 'WAITER'`);
+    expect(rows.length).toBe(1); // el seed de role_presets lo repuso -- sigue sin marca, a propósito
   });
 });

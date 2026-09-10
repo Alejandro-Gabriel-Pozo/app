@@ -74,11 +74,17 @@ const UpdateBusinessPlanSchema = z.object({
 // `CUSTOMER_ONLY`) a propósito -- decidir un subconjunto asignable desde
 // acá es una decisión de autorización aparte, no una corrección de typo.
 // Lo que esto NO cierra, a propósito: `permission_group` sigue siendo
-// `VARCHAR(50)` sin FK/CHECK en `platform.schema.sql` -- SQL a mano
-// contra la BD de plataforma (la única vía de revocación documentada,
-// ver el comentario de la ruta GET/PUT /role-presets más abajo) saltea
-// esta cerca por completo. Es una cerca sobre el camino del panel, no
-// sobre la columna.
+// `VARCHAR(50)` sin FK/CHECK en `platform.schema.sql`. Es una cerca sobre
+// el camino del panel, no sobre la columna -- SQL a mano contra la BD de
+// plataforma la saltea igual.
+//
+// Corrección (09-10/09/2026, PRESET-REVOKE-001): "SQL a mano es la única
+// vía de revocación" dejó de ser cierto A NIVEL CATÁLOGO -- desde la marca
+// de seed (`platform.schema.sql`, `platform_seed_markers`), sacar un
+// grupo de un preset por el panel persiste de verdad. Sigue siendo cierto
+// A NIVEL NEGOCIO: la revocación no se propaga a ningún negocio que ya
+// tuviera el grupo asignado (ver el comentario de la ruta GET/PUT
+// /role-presets más abajo para el mecanismo completo y esa asimetría).
 const PermissionGroupSchema = z.nativeEnum(Roles);
 
 const NullableNonNegativeInt = z.number().int().min(0).nullable();
@@ -441,22 +447,40 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
   // GET/PUT /platform/role-presets — L (23/08/2026). Catálogo global de
   // los 5 roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER).
-  // Corrección (09-10/09/2026, gate `architecture-governor`): "editar acá NO
-  // afecta negocios ya provisionados" era FALSO para agregar un grupo --
-  // solo era cierto para el camino TS de `provisionSystemRoles()` (que
-  // efectivamente solo lee esto al CREAR un negocio). El backfill SQL de
-  // `platform.schema.sql:350-355` corre en CADA ARRANQUE del proceso
-  // (`server.ts:33-53`, no solo en deploy), hace CROSS JOIN de todos los
-  // negocios contra los presets, y copia cada permission_group agregado a
-  // TODOS los negocios existentes -- `ON CONFLICT DO NOTHING`, así que
-  // agrega pero nunca borra. Sacar un par SEEDEADO (los 23 de
-  // `platform.schema.sql:320-331`) tampoco persiste: el seed lo
-  // re-inserta en el próximo arranque. No hay vía de revocación en ningún
-  // panel (`role.service.ts:182` bloquea editar roles `isSystem`) --
-  // sacarle un grupo a un negocio existente exige SQL a mano contra la BD
-  // de plataforma. No se pueden agregar/borrar presets (un rol de fábrica
-  // nuevo requiere tocar código en varios lugares que asumen estos 5
-  // nombres, no es solo una fila de config).
+  //
+  // Mecanismo, dos capas que NO se confunden (PRESET-REVOKE-001,
+  // 09-10/09/2026, gate `architecture-governor`, 3 rondas de diseño):
+  //
+  // 1. CATÁLOGO (`role_preset_permission_groups`) -- lo que este PUT
+  //    escribe. Hasta 09-10/09/2026 el seed de los 23 pares originales
+  //    (`platform.schema.sql:320-331`) corría SIN CONDICIÓN en cada
+  //    arranque y reponía cualquiera de esos 23 que el panel sacara --
+  //    "editar acá no persiste" para esos pares específicos. Corregido:
+  //    el seed ahora corre UNA SOLA VEZ POR INSTALACIÓN, gateado por
+  //    `platform_seed_markers` -- desde que esa marca existe, editar acá
+  //    persiste de verdad, se saque o se agregue lo que se saque o
+  //    agregue.
+  //
+  // 2. PROPAGACIÓN A NEGOCIOS EXISTENTES (`role_permission_groups`, por
+  //    negocio) -- el backfill de `platform.schema.sql:412-417`, que
+  //    corre en CADA ARRANQUE del proceso (`server.ts:33-53`, no solo en
+  //    deploy), hace CROSS JOIN de todos los negocios contra los presets
+  //    y copia cada `permission_group` del catálogo a TODOS los negocios
+  //    existentes -- `ON CONFLICT DO NOTHING`, así que AGREGA pero NUNCA
+  //    BORRA. Esta capa NO cambió en este bloque: agregar un grupo a un
+  //    preset SIGUE propagándose solo a todos los negocios existentes;
+  //    sacar un grupo SIGUE sin sacárselo a ningún negocio que ya lo
+  //    tuviera. Revocar a nivel negocio exige SQL a mano contra la BD de
+  //    plataforma -- declarado, no resuelto por este bloque
+  //    (`docs/pendientes-2026-09-10.md`, `PRESET-REVOKE-001`, condicionado
+  //    a una decisión de producto sobre si `RoleService.updatePermissionGroups()`
+  //    -- que SÍ permite personalizar roles de sistema por negocio, vía
+  //    `PUT /api/roles/:id`, soportado y auditado -- debe sobrevivir una
+  //    revocación automática o no).
+  //
+  // No se pueden agregar/borrar presets (un rol de fábrica nuevo requiere
+  // tocar código en varios lugares que asumen estos 5 nombres, no es solo
+  // una fila de config).
   router.get(
     '/role-presets',
     async (_req: Request, res: Response, next: NextFunction): Promise<void> => {

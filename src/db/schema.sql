@@ -669,10 +669,27 @@ END $$;
 -- descuento a quien ya la tenía asignada -- congela el último % leído
 -- (la fila del catálogo sigue existiendo, el JOIN la sigue encontrando);
 -- solo bloquea asignársela a alguien nuevo (R11, criterios-datos.md).
--- Distinto de `role_presets`/`role_preset_permission_groups`, que sí
--- siembran una vez y no vuelven a tocar lo ya creado -- no asumir que
--- todo "catálogo reutilizable" de este repo se comporta igual, cada uno
--- se confirma por separado.
+-- Distinto de `role_presets` (platform.schema.sql) -- los 5 nombres de
+-- rol de fábrica, sin panel que los cree/borre, así que su seed sin
+-- condición en cada arranque es inerte -- y distinto también de
+-- `role_preset_permission_groups` (el CATÁLOGO de grupos por preset,
+-- misma tabla), que desde 09-10/09/2026 siembra sus 23 pares UNA SOLA VEZ
+-- por instalación (gateado por `platform_seed_markers`) -- editarlo por
+-- panel ahora persiste de verdad, a diferencia de antes.
+--
+-- Pero el CONTRASTE real que esta nota viene a marcar --¿editar el
+-- catálogo afecta a lo ya asignado?-- sigue siendo la dirección OPUESTA
+-- a `rate_catalog`, y de forma ASIMÉTRICA, no "no": agregar un
+-- `permission_group` a un preset SÍ se copia a TODOS los negocios
+-- existentes en el próximo arranque (`platform.schema.sql:412-417`,
+-- backfill solo-agrega, sin cambios en el bloque de 09-10/09/2026);
+-- sacar uno NO se lo saca a NINGÚN negocio que ya lo tuviera. No es una
+-- referencia viva resuelta en cada lectura como `rate_catalog` (que
+-- reacciona igual a agregar y a sacar), y tampoco es "se confirma una
+-- vez y listo" -- el catálogo en sí es fijo por reinicio, pero la
+-- ASIGNACIÓN a cada negocio sigue recibiendo altas en cada arranque,
+-- nunca bajas. No asumir que todo "catálogo reutilizable" de este repo
+-- se comporta igual, cada uno se confirma por separado.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS rate_catalog (
   id                   VARCHAR(255)   PRIMARY KEY,

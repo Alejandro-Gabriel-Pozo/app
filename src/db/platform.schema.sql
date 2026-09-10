@@ -270,26 +270,59 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 --
 -- Mismo patrón que `modules` (ver más abajo en este archivo): tabla de
 -- catálogo de plataforma, con el seed de acá abajo aplicado con
--- ON CONFLICT DO NOTHING. "Seedeada una sola vez" (redacción original,
--- corregida 09-10/09/2026) es el modelo mental que produjo un punto ciego
--- real: el seed CORRE EN CADA ARRANQUE del proceso (no una sola vez), así
--- que un par que el panel de superadmin borre y que esté en el seed de
--- abajo vuelve solo en el próximo arranque -- la tabla ya NO es "solo
--- seed", desde que existe un panel que también le escribe encima (ver
--- platform.routes.ts, GET/PUT /platform/role-presets, para el mecanismo
--- completo). Antes, los 5 roles "sistema" (OWNER/ADMIN/RECEPTIONIST/
--- HOUSEKEEPING/WAITER) y sus permission_groups estaban escritos DOS veces
--- a mano: como array TS en PlatformRepository.provisionSystemRoles() y
--- como UNION ALL literal acá abajo — cualquier cambio a un preset
--- (agregar un grupo a ADMIN, por ejemplo) requería editar los dos lugares
--- sin ninguna garantía de que quedaran sincronizados. Ahora hay una sola
--- fuente de datos (esta tabla): el backfill de acá abajo la LEE via JOIN
--- en vez de repetirla, y provisionSystemRoles() (TS) hace lo mismo con una
--- query. Panel de superadmin para editar esto sin tocar código: existe
--- desde el 23/08/2026 (`GET/PUT /platform/role-presets`,
--- `appfrontend-main/src/app/superadmin/roles-de-fabrica`) -- ver el
--- comentario de arriba (corregido 09-10/09/2026) para el mecanismo real de
--- propagación, distinto del que se asumía cuando se escribió este párrafo.
+-- ON CONFLICT DO NOTHING.
+--
+-- `role_presets` (los 5 NOMBRES) sigue sembrándose sin condición, en CADA
+-- arranque -- inerte a propósito: no existe ningún panel que cree o borre
+-- presets (un rol de fábrica nuevo exige tocar código en varios lugares
+-- que asumen estos 5 nombres, ver platform.routes.ts), así que no hay
+-- forma de que el panel deje esta tabla en un estado que el seed pueda
+-- pisar.
+--
+-- `role_preset_permission_groups` (el CATÁLOGO de grupos por preset) es
+-- distinto, y tuvo un punto ciego real: "seedeada una sola vez" era el
+-- modelo mental original, pero el seed de más abajo corría SIN CONDICIÓN
+-- en cada arranque -- un par que el panel de superadmin sacara (GET/PUT
+-- /platform/role-presets) volvía solo en el próximo reinicio. Corregido
+-- (09-10/09/2026, PRESET-REVOKE-001, gate `architecture-governor`, 3
+-- rondas de diseño): el seed de los 23 pares de acá abajo ahora corre
+-- UNA SOLA VEZ POR INSTALACIÓN, gateado por `platform_seed_markers`
+-- (tabla nueva, ver el bloque de acá abajo) -- no por si la tabla está
+-- vacía (esa alternativa tiene un agujero: el panel PUEDE vaciarla,
+-- `UpdateRolePresetSchema` no exige un mínimo, y eso hubiera resucitado
+-- el seed). Desde que la marca existe, editar un preset por el panel
+-- persiste de verdad -- un reinicio ya no lo pisa.
+--
+-- Lo que esto NO resuelve, a propósito, alcance de un bloque futuro: la
+-- PROPAGACIÓN hacia negocios que YA EXISTEN sigue siendo asimétrica.
+-- Agregar un permission_group a un preset SÍ se copia a todos los
+-- negocios existentes, vía el backfill de acá abajo (`:412-417`,
+-- CROSS JOIN businesses, ON CONFLICT DO NOTHING, sin cambios en este
+-- bloque). Sacar un permission_group de un preset NO se lo saca a NINGÚN
+-- negocio que ya lo tuviera -- eso sigue exigiendo SQL a mano contra la
+-- BD de plataforma. La marca de acá abajo resuelve "¿el catálogo persiste
+-- lo que edito?", no "¿mi edición alcanza a los negocios existentes?" --
+-- son dos preguntas distintas, con dos respuestas distintas.
+--
+-- Antes de este mecanismo, los 5 roles "sistema" y sus permission_groups
+-- estaban escritos DOS veces a mano: como array TS en
+-- PlatformRepository.provisionSystemRoles() y como UNION ALL literal acá
+-- abajo. Ahora hay una sola fuente de datos (esta tabla): el backfill de
+-- acá abajo la LEE via JOIN en vez de repetirla, y provisionSystemRoles()
+-- (TS) hace lo mismo con una query. Panel de superadmin para editar esto
+-- sin tocar código: existe desde el 23/08/2026 (`GET/PUT
+-- /platform/role-presets`, `appfrontend-main/src/app/superadmin/roles-de-fabrica`).
+--
+-- Convención para agregar un permission_group nuevo a un preset por
+-- defecto, de acá en más: EDITAR POR EL PANEL, no el `VALUES` de abajo.
+-- Con la marca instalada, editar el `VALUES` deja de tener efecto en
+-- cualquier instalación que ya haya arrancado una vez con este bloque --
+-- la marca ya existe, el seed no vuelve a correr. El camino real es el
+-- panel: persiste en el catálogo Y se propaga a todos los negocios
+-- existentes vía el mismo backfill de siempre, sin tocar código (así se
+-- hizo `EMISOR_NOTA_CREDITO` el 07/09/2026, ANTES de que este mecanismo
+-- existiera -- esa fue la última vez que se edita el `VALUES` de abajo
+-- con efecto real en una instalación ya arrancada).
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS role_presets (
@@ -301,6 +334,22 @@ CREATE TABLE IF NOT EXISTS role_preset_permission_groups (
   preset_name       VARCHAR(50) NOT NULL REFERENCES role_presets(name) ON DELETE CASCADE,
   permission_group  VARCHAR(50) NOT NULL,
   PRIMARY KEY (preset_name, permission_group)
+);
+
+-- PRESET-REVOKE-001 (09-10/09/2026) -- marca de seeds de plataforma
+-- aplicados una sola vez. Alcance HOY: solo `role_preset_permission_groups`
+-- (seed_key = 'role_preset_permission_groups', sin sufijo de versión --
+-- nada en el diseño actual produce un ".v2" de esta clave; si algún día
+-- hace falta versionar de verdad, se decide en ese momento). Los seeds
+-- incondicionales de `plan_limit_allowed_roles`/
+-- `plan_limit_allowed_permission_groups`/`max_custom_roles` (más abajo en
+-- este archivo) tienen el MISMO defecto (PLAN-LIMITS-SEED-REVERT-001,
+-- docs/pendientes-2026-09-10.md) pero quedan deliberadamente FUERA de
+-- este bloque -- mismo mecanismo, cuando se encare, con su propia
+-- seed_key.
+CREATE TABLE IF NOT EXISTS platform_seed_markers (
+  seed_key    VARCHAR(100) PRIMARY KEY,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 INSERT INTO role_presets (name) VALUES
@@ -317,7 +366,13 @@ ON CONFLICT (name) DO NOTHING;
 -- OWNER_ONLY/MANAGEMENT (nada de armar autoridad fiscal a medida en planes
 -- bajos). La recepción lo recibe igual en todos los planes vía el PRESET
 -- RECEPTIONIST, que es lo que pide q7. FREE además tiene max_custom_roles=0.
-INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES
+--
+-- Gateado por platform_seed_markers desde 09-10/09/2026 (ver arriba): este
+-- VALUES corre una sola vez por instalación. Agregar un grupo default
+-- nuevo de acá en más se hace por el PANEL, no editando este VALUES (no
+-- tendría efecto en una instalación que ya arrancó con este bloque).
+INSERT INTO role_preset_permission_groups (preset_name, permission_group)
+SELECT * FROM (VALUES
   ('OWNER', 'OWNER_ONLY'), ('OWNER', 'MANAGEMENT'), ('OWNER', 'STAFF'),
   ('OWNER', 'FRONT_DESK'), ('OWNER', 'HOUSEKEEPING_AND_MANAGEMENT'),
   ('OWNER', 'ORDERS'), ('OWNER', 'BOOKING'), ('OWNER', 'EMISOR_NOTA_CREDITO'),
@@ -328,7 +383,14 @@ INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES
   ('RECEPTIONIST', 'EMISOR_NOTA_CREDITO'),
   ('HOUSEKEEPING', 'STAFF'), ('HOUSEKEEPING', 'HOUSEKEEPING_AND_MANAGEMENT'),
   ('WAITER', 'STAFF'), ('WAITER', 'ORDERS')
+) AS seed(preset_name, permission_group)
+WHERE NOT EXISTS (
+  SELECT 1 FROM platform_seed_markers WHERE seed_key = 'role_preset_permission_groups'
+)
 ON CONFLICT (preset_name, permission_group) DO NOTHING;
+
+INSERT INTO platform_seed_markers (seed_key) VALUES ('role_preset_permission_groups')
+ON CONFLICT (seed_key) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- Backfill: seedea los roles "sistema" (uno por cada fila de role_presets)
