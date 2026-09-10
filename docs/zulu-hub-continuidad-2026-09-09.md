@@ -211,16 +211,18 @@ chicos ya identificados:
   con 0 filas = sin restricción) -- ✅ cerrado, igual que
   `superadmin/planes/page.tsx` (lectura viva, sin propagación, reversible)
   -- ✅ cerrado. **`superadmin/roles-de-fabrica/page.tsx` -- copy falsa
-  corregida, todavía LOCAL/sin pushear ni deployar** (gate
+  corregida, pusheada y deployada en producción, verificada** (gate
   `architecture-governor`, 09-10/09/2026): edita PRESETS que SÍ se
   propagan por backfill a tenants existentes en cada boot; la copy vieja
   ("no afecta a negocios que ya existen") era falsa -- reemplazada por un
   bloque de advertencia con el mecanismo real. Cross-repo con
   `app-main/src/platform/platform.routes.ts:419-437` (misma afirmación
-  falsa, corregida en el mismo bloque). **Falta:** push + deploy +
-  verificación en producción de los 2 repos; el checkbox de
-  `EMISOR_NOTA_CREDITO` en este catálogo (bloque B) sigue sin agregar,
-  precondicionado a esa verificación. Detalle completo en
+  falsa, corregida en el mismo bloque). Verificado en producción: Render
+  `9d8ad1a` = `live` + `/health` con instancia nueva sirviendo; bundle
+  real de Vercel greppeado con el texto nuevo presente y el subtítulo
+  falso ausente. **El checkbox de `EMISOR_NOTA_CREDITO` en este catálogo
+  (bloque B) sigue sin agregar** -- su precondición (verificado en
+  producción) ya se cumple, falta su propio gate. Detalle completo en
   `pendientes-2026-09-08.md` y
   `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md:228`.
 - **Bloques de código heredados del primer arco, ninguno bloqueante:**

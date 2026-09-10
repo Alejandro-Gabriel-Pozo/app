@@ -1134,12 +1134,12 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     `plan_limit_allowed_permission_groups` se lee vivo en cada request
     (`assertPermissionGroupsAllowedInPlan`), no se propaga a tenants;
     agregar el checkbox ahí es reversible y simétrico.
-  - **✅ Copy falsa corregida, todavía LOCAL/sin pushear ni deployar
-    (`app-main` `f91d7ad`+`328b134`+`14c5166`, `appfrontend-main`
-    `5ba8b57`+`6a427c9`; gate `architecture-governor`, 09-10/09/2026).**
-    `superadmin/roles-de-fabrica/page.tsx` edita PRESETS, que SÍ se
-    propagan por backfill a TODOS los tenants existentes en cada boot
-    (`platform.schema.sql:350-355`, `ON CONFLICT DO NOTHING` -- un
+  - **✅ Copy falsa corregida, pusheada y deployada en producción,
+    verificada** (`app-main` `f91d7ad`+`328b134`+`14c5166`+`7cee110`+`9d8ad1a`,
+    `appfrontend-main` `5ba8b57`+`6a427c9`; gate `architecture-governor`,
+    09-10/09/2026). `superadmin/roles-de-fabrica/page.tsx` edita PRESETS,
+    que SÍ se propagan por backfill a TODOS los tenants existentes en cada
+    boot (`platform.schema.sql:350-355`, `ON CONFLICT DO NOTHING` -- un
     otorgamiento sobrevive el próximo deploy, una revocación no revoca
     nada). La copy vieja ("Editar acá NO afecta a los negocios que ya
     existen") era **FALSA** -- verificado leyendo
@@ -1148,11 +1148,18 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     bloque de advertencia visible con el mecanismo real
     (`roles-de-fabrica/page.tsx:57-79`). Misma afirmación falsa que estaba
     duplicada en el backend, corregida en el mismo bloque:
-    `src/platform/platform.routes.ts:419-437`. **El checkbox de
-    `EMISOR_NOTA_CREDITO` en este catálogo (bloque B) sigue sin agregar** --
-    su precondición declarada es que esta corrección esté verificada EN
-    PRODUCCIÓN, no solo commiteada; falta push + deploy + verificación de
-    los dos repos antes de tocarlo.
+    `src/platform/platform.routes.ts:419-437`. Verificado en producción:
+    Render `dep-dah75b3bc2fs73fi2trg` en `9d8ad1a` = `live`,
+    `/health` `uptimeSeconds` creciente (instancia nueva sirviendo, no la
+    vieja); bundle real de Vercel para `/superadmin/roles-de-fabrica`
+    descargado y greppeado -- el texto nuevo de advertencia está presente
+    verbatim, cero ocurrencias del subtítulo falso viejo, tokens
+    `var(--danger)`/`--danger-border`/`--danger-dim)` presentes. **El
+    checkbox de `EMISOR_NOTA_CREDITO` en este catálogo (bloque B) sigue
+    sin agregar** -- confirmado en el mismo bundle: `PERMISSION_GROUPS`
+    sigue en 8 entradas, sin `EMISOR_NOTA_CREDITO`. Su precondición
+    (corrección verificada en producción) ya se cumple; falta su propio
+    gate `architecture-governor` antes de implementarlo.
   - **También sigue abierto:** "no se puede identificar" -- `dashboard/roles/page.tsx:196`
     muestra `permissionGroups.length` (un número), nunca los nombres, y
     los roles `isSystem` (`OWNER`/`ADMIN`/`RECEPTIONIST`, los que

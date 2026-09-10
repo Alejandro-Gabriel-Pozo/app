@@ -1101,13 +1101,17 @@ negativo — ✅ hecho 07/09 (`requireOwnReservation()` + `customer-portal-owner
     `authorize(Roles.EMISOR_NOTA_CREDITO)` (`EXPECTED_AUTHORIZE_CALL_SITES`
     204→205). (Sigue en pie que **ninguna cerca detecta un `Roles.X` sin
     call-site** en general — no era específico de este grupo.)
-  - **`superadmin/roles-de-fabrica/page.tsx:60-62`** dice "Editar acá NO afecta
+  - ~~**`superadmin/roles-de-fabrica/page.tsx:60-62`** dice "Editar acá NO afecta
     a los negocios que ya existen" — **es falso**: el backfill de
     `platform.schema.sql` (`CROSS JOIN role_presets JOIN role_preset_permission_groups`)
     propaga los cambios de preset a los negocios existentes en cada boot de
     `server.ts`. Este commit **depende** de ese mecanismo. Además: un superadmin
     que saque el grupo de un preset por el panel lo va a ver re-agregado en el
-    próximo deploy. Pre-existente, no lo arregla este commit.
+    próximo deploy. Pre-existente, no lo arregla este commit.~~ **✅ RESUELTO
+    (09-10/09/2026, gate `architecture-governor`):** copy corregida y
+    verificada en producción, ver `pendientes-2026-09-10.md`. La ancla
+    `:60-62` ya no aplica -- el subtítulo se reemplazó por un bloque de
+    advertencia en `:57-79`.
 - **Higiene — desfase de fecha de un día (mío, 07/09):** varios artefactos de
   esta sesión llevan `08/09/2026` cuando el día real es 07/09 (`git log` de
   `55b0995`/`7b9db04` = `2026-09-07`): el docblock de
