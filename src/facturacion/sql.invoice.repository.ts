@@ -657,6 +657,17 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // Factura B ISSUED), pero DESDE la entidad (para poder filtrar por su
     // estado) en vez de desde la factura. B2 no necesita ese join -- la
     // entidad sale directo de financial_transactions.
+    //
+    // Falso negativo conocido, aceptado, no oculto (C1, gate 10/09/2026):
+    // las dos ramas B2 de abajo filtran `reservation_id IS NOT NULL` /
+    // `order_id IS NOT NULL` cada una. Una fila revertidora con
+    // `reversed_invoice_id` seteado pero AMBOS ids en NULL no entraría por
+    // ninguna rama y se descartaría en silencio -- justo lo que esta
+    // bandeja existe para no hacer. Hoy es inalcanzable: todo camino que
+    // crea una reversión (`cancellation-refund.service.ts:317-332`, los
+    // dos escapes con NC) siempre setea uno de los dos ids, y no hay CHECK
+    // de schema que lo impida estructuralmente -- ver docblock de
+    // `UnreconciledLiveInvoice` en `invoice.entities.ts`.
     const { rows: candidateRows } = await client.query<{ entity_type: 'ORDER' | 'RESERVATION'; entity_id: string }>(
       `SELECT DISTINCT 'ORDER'::text AS entity_type, o.id AS entity_id
          FROM orders o
@@ -705,7 +716,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       // haber entrado SOLO por B2 (ej. reserva CONFIRMED con una
       // reversión abierta, tx2 sin cancelar la entidad todavía). Sin este
       // chequeo, cualquier candidato con una factura B ISSUED emitiría un
-      // motivo `TERMINAL_SIN_REVERSION` aunque la entidad no sea terminal
+      // motivo `TERMINAL_CON_COMPROBANTE_VIVO` aunque la entidad no sea terminal
       // -- falso, y duplicado con la fila real de B2.
       const isTerminal = candidate.entity_type === 'ORDER'
         ? entityStatus === 'CANCELLED'
@@ -741,7 +752,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
           cbteNro: inv.cbte_nro === null ? null : Number(inv.cbte_nro),
           impTotal: parseFloat(inv.imp_total),
           issuedAt: inv.issued_at,
-          motivo: 'TERMINAL_SIN_REVERSION',
+          motivo: 'TERMINAL_CON_COMPROBANTE_VIVO',
           sinceAt: inv.issued_at ?? new Date(0),
           revertingTransactionId: null,
           revertingType: null,

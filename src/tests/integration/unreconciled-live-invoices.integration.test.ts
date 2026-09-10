@@ -132,7 +132,7 @@ describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- bandeja de factur
     return rows.filter((r) => r.entityId === reservationId);
   }
 
-  it('B1 -- reserva CANCELLED con Factura B ISSUED sin ninguna reversión: TERMINAL_SIN_REVERSION', async () => {
+  it('B1 -- reserva CANCELLED con Factura B ISSUED sin ninguna reversión: TERMINAL_CON_COMPROBANTE_VIVO', async () => {
     const { reservation, invoiceId } = await seedReservationWithIssuedInvoice('CANCELLED');
 
     const rows = findRowFor(await invoiceRepo.listUnreconciledLiveInvoices(db), reservation.id);
@@ -140,7 +140,7 @@ describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- bandeja de factur
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       entityType: 'RESERVATION', entityStatus: 'CANCELLED', invoiceId,
-      motivo: 'TERMINAL_SIN_REVERSION', revertingTransactionId: null, ncInvoiceId: null,
+      motivo: 'TERMINAL_CON_COMPROBANTE_VIVO', revertingTransactionId: null, ncInvoiceId: null,
     });
   });
 
@@ -150,7 +150,7 @@ describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- bandeja de factur
     const rows = findRowFor(await invoiceRepo.listUnreconciledLiveInvoices(db), reservation.id);
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ entityType: 'RESERVATION', entityStatus: 'EXPIRED', invoiceId, motivo: 'TERMINAL_SIN_REVERSION' });
+    expect(rows[0]).toMatchObject({ entityType: 'RESERVATION', entityStatus: 'EXPIRED', invoiceId, motivo: 'TERMINAL_CON_COMPROBANTE_VIVO' });
   });
 
   it('B2 -- ADJUSTMENT PENDING + NC ISSUED: el peor caso real del escape (tx2 abortó, entidad no cancelada)', async () => {
@@ -192,7 +192,7 @@ describe.skipIf(skipIfNoDb)('listUnreconciledLiveInvoices() -- bandeja de factur
     // (el REFUND no es RECONCILED según la doctrina: no hay NC que
     // compense fiscalmente la Factura B) -- 2 filas, una por motivo.
     expect(rows).toHaveLength(2);
-    const terminal = rows.find((r) => r.motivo === 'TERMINAL_SIN_REVERSION');
+    const terminal = rows.find((r) => r.motivo === 'TERMINAL_CON_COMPROBANTE_VIVO');
     const abierta = rows.find((r) => r.motivo === 'REVERSION_ABIERTA');
     expect(terminal).toBeDefined();
     expect(abierta).toMatchObject({ revertingTransactionId: revId, revertingType: 'REFUND', revertingStatus: 'SETTLED', ncInvoiceId: null, ncStatus: null });

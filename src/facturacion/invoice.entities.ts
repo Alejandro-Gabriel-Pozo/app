@@ -118,10 +118,17 @@ export interface CreateInvoiceInput {
  * `classifyReservationLiveInvoice` (`'NOT_RECONCILED'`), aplicado sobre
  * dos conjuntos de candidatos distintos, no uno solo:
  *
- * - `motivo: 'TERMINAL_SIN_REVERSION'` (B1) -- la entidad ya llegó a un
- *   estado terminal (orden `CANCELLED`, reserva `CANCELLED`/`EXPIRED`)
- *   con un comprobante fiscal vivo que nadie compensó. `sinceAt` =
- *   `invoices.issued_at`.
+ * - `motivo: 'TERMINAL_CON_COMPROBANTE_VIVO'` (B1, renombrado 10/09/2026
+ *   -- ver nota de gate abajo) -- la entidad ya llegó a un estado
+ *   terminal (orden `CANCELLED`, reserva `CANCELLED`/`EXPIRED`) con un
+ *   comprobante fiscal vivo que nadie compensó. `sinceAt` =
+ *   `invoices.issued_at`. El nombre describe SOLO el predicado B1
+ *   (entidad terminal + Factura B viva) -- no afirma ausencia de
+ *   reversión: cuando el mismo comprobante también matchea B2 (caso real,
+ *   ver `unreconciled-live-invoices.integration.test.ts`, "CANCELLED +
+ *   REFUND SETTLED sin NC"), la bandeja emite DOS filas sobre la misma
+ *   factura, una con cada `motivo` -- son dos hechos legítimos y
+ *   distintos, no un duplicado a deduplicar.
  * - `motivo: 'REVERSION_ABIERTA'` (B2) -- hay una fila `REFUND`/`ADJUSTMENT`
  *   con `reversed_invoice_id` que todavía no cerró (NC sin emitir, o
  *   ledger sin settlear) -- la entidad puede seguir viva, no
@@ -141,6 +148,18 @@ export interface CreateInvoiceInput {
  * factura ENTERA, una cancelación consolidada-parcial en el camino feliz
  * también da `NOT_RECONCILED`) aparece acá igual -- residual de 3.3-d,
  * bloque aparte.
+ *
+ * **Falso negativo conocido, aceptado, no oculto (C1, gate 10/09/2026)**:
+ * el candidato-enumeration de B2 (`sql.invoice.repository.ts`) filtra
+ * `reservation_id IS NOT NULL` / `order_id IS NOT NULL` por rama. Una
+ * fila `financial_transactions` revertidora con `reversed_invoice_id`
+ * seteado pero AMBOS ids en NULL no entraría por ninguna rama y se
+ * descartaría en silencio -- justo el silencio que esta bandeja existe
+ * para eliminar. Hoy es inalcanzable: todo camino que crea una reversión
+ * (`cancellation-refund.service.ts`, los dos escapes con NC) siempre
+ * setea uno de los dos ids, y no hay CHECK de schema que lo impida
+ * estructuralmente. Mismo criterio de declaración que
+ * `classifyOrderLiveInvoice`/`classifyReservationLiveInvoice`.
  */
 export interface UnreconciledLiveInvoice {
   entityType: 'ORDER' | 'RESERVATION';
@@ -151,7 +170,7 @@ export interface UnreconciledLiveInvoice {
   cbteNro: number | null;
   impTotal: number;
   issuedAt: Date | null;
-  motivo: 'TERMINAL_SIN_REVERSION' | 'REVERSION_ABIERTA';
+  motivo: 'TERMINAL_CON_COMPROBANTE_VIVO' | 'REVERSION_ABIERTA';
   sinceAt: Date;
   revertingTransactionId: string | null;
   revertingType: 'REFUND' | 'ADJUSTMENT' | null;
