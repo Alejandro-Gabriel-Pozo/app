@@ -154,7 +154,8 @@ futuros, cada uno con su propio alcance.
   **2 rondas de diseño, 2 `HOLD` del gate, cada una achicando el
   alcance real**:
   1. Diseño inicial (`DELETE` simétrico solo en el backfill) -- `HOLD`:
-     el seed de 23 pares (`platform.schema.sql:320-331`) corre
+     el seed de 23 pares (`platform.schema.sql:320-331` --
+     numeración PRE-`cd4dff6`, hoy `:376-392`, ver más abajo) corre
      INCONDICIONALMENTE en cada arranque y repone cualquier par
      revocado por panel -- el `DELETE` hubiera sido inerte para toda la
      matriz de fábrica (los 23 pares cubren el 100% del default).
@@ -180,7 +181,7 @@ futuros, cada uno con su propio alcance.
   arranque) sin tocar ninguna personalización de ningún negocio. **Lo
   que sigue sin resolver, a propósito**: sacar un grupo de un preset
   sigue sin revocárselo a los negocios que ya lo tenían asignado (el
-  backfill de `platform.schema.sql:412-417` sigue siendo solo-agrega,
+  backfill de `platform.schema.sql:414-419` sigue siendo solo-agrega,
   sin cambios) -- eso queda para un bloque futuro, condicionado a que
   el dueño elija entre destruir las personalizaciones de negocio
   (opción original "a": agregar guard `isSystem` a
@@ -221,9 +222,11 @@ futuros, cada uno con su propio alcance.
 - **`PLAN-LIMITS-SEED-REVERT-001`** (09-10/09/2026, gate
   `architecture-governor`, encontrado al aplicar §4.0 sobre el diseño de
   `PRESET-REVOKE-001` -- mismo defecto, mismo archivo, tercera vez que
-  aparece este par). `platform.schema.sql:774-776` (`max_custom_roles`),
-  `:779` (`plan_limit_allowed_roles`) y `:791`
-  (`plan_limit_allowed_permission_groups`) corren INCONDICIONALMENTE en
+  aparece este par). `platform.schema.sql:838-840` (`max_custom_roles`,
+  numeración corregida tras `cd4dff6`+`18a3c93` -- ancla original
+  `:774-776`), `:843` (`plan_limit_allowed_roles`, era `:779`) y `:855`
+  (`plan_limit_allowed_permission_groups`, era `:791`) corren
+  INCONDICIONALMENTE en
   cada arranque, igual que el seed de presets antes de este bloque -- y
   los 3 tienen escritor real por panel
   (`PUT /platform/plan-limits/:plan`, `platform.repository.ts:783-822`,

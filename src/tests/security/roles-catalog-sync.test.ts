@@ -71,8 +71,8 @@ import { Roles } from '../../security/roles.js';
  *    ESTE repo no cambió de forma inesperada".
  * 3. NO cubre las otras superficies same-repo que también hay que
  *    propagar a mano al agregar un grupo: `role_preset_permission_groups`
- *    (`src/db/platform.schema.sql:374-390`), `plan_limit_allowed_permission_groups`
- *    (`platform.schema.sql:853-857`), `CUSTOMER_PERMISSION_GROUPS`
+ *    (`src/db/platform.schema.sql:376-392`), `plan_limit_allowed_permission_groups`
+ *    (`platform.schema.sql:855-859`), `CUSTOMER_PERMISSION_GROUPS`
  *    (`roles.ts:74-84`, sincronizado a mano por su propio docblock),
  *    `docs/rbac-matriz-endpoints.md` (columna de grupo por fila), y la
  *    prosa de `platform.schema.sql:228-231` (a la fecha de este commit,

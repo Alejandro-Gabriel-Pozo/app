@@ -681,7 +681,7 @@ END $$;
 -- catálogo afecta a lo ya asignado?-- sigue siendo la dirección OPUESTA
 -- a `rate_catalog`, y de forma ASIMÉTRICA, no "no": agregar un
 -- `permission_group` a un preset SÍ se copia a TODOS los negocios
--- existentes en el próximo arranque (`platform.schema.sql:412-417`,
+-- existentes en el próximo arranque (`platform.schema.sql:414-419`,
 -- backfill solo-agrega, sin cambios en el bloque de 09-10/09/2026);
 -- sacar uno NO se lo saca a NINGÚN negocio que ya lo tuviera. No es una
 -- referencia viva resuelta en cada lectura como `rate_catalog` (que
