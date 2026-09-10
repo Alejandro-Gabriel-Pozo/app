@@ -1,4 +1,4 @@
-import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
+import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput, UnreconciledLiveInvoice } from './invoice.entities.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 
 export interface MarkIssuedInput {
@@ -334,6 +334,28 @@ export interface InvoiceRepository {
    * `classifyOrderLiveInvoice`.
    */
   classifyReservationLiveInvoice(client: SqlClient, reservationId: string): Promise<'RECONCILED' | 'NOT_RECONCILED'>;
+  /**
+   * Bandeja "factura viva no conciliada" (10/09/2026, gate
+   * `architecture-governor`) -- ver el docblock de `UnreconciledLiveInvoice`
+   * para la forma de la fila y qué es `motivo`. Mecanismo de DOS pasos,
+   * no una query sola con la doctrina de compensación reescrita en SQL
+   * (eso sería el cuarto vocabulario de estado que el gate rechazó):
+   * 1. Enumera candidatos -- `UNION` de B1 (entidad terminal con Factura
+   *    B `ISSUED` viva) y B2 (reversión abierta, `reversed_invoice_id`
+   *    sin cerrar).
+   * 2. Clasifica cada candidato con `classifyOrderLiveInvoice`/
+   *    `classifyReservationLiveInvoice` (arriba) y se queda solo con
+   *    `'NOT_RECONCILED'` -- cero SQL de compensación nuevo, una sola
+   *    fuente de verdad de "¿está conciliado?".
+   *
+   * N+1 declarado a propósito (1 + 2N queries por candidato, mismo costo
+   * que ya paga cada `classify*LiveInvoice` -- ver su docblock): con 0
+   * filas en producción hoy es gratis, y es el trade correcto (una sola
+   * fuente de verdad sobre velocidad) mientras el volumen lo permita.
+   * Sin techo (`LIMIT`) ni índice sobre `reversed_invoice_id` -- eso
+   * sigue siendo 3.3-e, bloque aparte con backup durable.
+   */
+  listUnreconciledLiveInvoices(client: SqlClient): Promise<UnreconciledLiveInvoice[]>;
   /** PENDING inicial — el CAE todavía no se pidió. `afipRequest` se persiste ANTES de llamar a AFIP (auditable incluso si la llamada nunca vuelve). */
   create(input: CreateInvoiceInput, afipRequest: unknown, items: CreateInvoiceItemInput[]): Promise<Invoice>;
   /**

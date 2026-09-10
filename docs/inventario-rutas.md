@@ -5,7 +5,7 @@ job `route-inventory-check` de CI falla el build si queda desincronizado.
 
 - Cuándo se regeneró por última vez: ver `git log -1 -- docs/inventario-rutas.md` (sin timestamp acá adentro a propósito -- un timestamp en el contenido rompería el chequeo de CI, que compara el archivo generado contra el commiteado byte a byte para detectar drift, no para saber cuándo corrió).
 - `NODE_ENV` usado para generarlo: `development`
-- Total: **251** endpoints (211 observados en el árbol vivo de Express + 40 declarados vía `CLOSURE_MOUNTS`, ver el header de `src/scripts/generate-route-inventory.ts`)
+- Total: **252** endpoints (212 observados en el árbol vivo de Express + 40 declarados vía `CLOSURE_MOUNTS`, ver el header de `src/scripts/generate-route-inventory.ts`)
 - Este inventario dice QUÉ RUTAS EXISTEN. NO dice quién puede pegarles (ver `docs/rbac-matriz-endpoints.md`) ni la forma del request/response (ver `src/openapi/spec.ts`, parcial).
 - `/` y `/openapi.json` (`src/app.ts:246-247`) solo existen cuando `NODE_ENV !== 'production'` (`shouldExposeApiDocs()`, `src/api/docs-exposure.ts`) -- este inventario se generó con `NODE_ENV=development` a propósito, así que las incluye. En producción, esas 2 rutas no existen.
 
@@ -122,6 +122,7 @@ job `route-inventory-check` de CI falla el build si queda desincronizado.
 | GET | `/api/invoices/:id` | árbol vivo |
 | GET | `/api/invoices/:id/pdf` | árbol vivo |
 | POST | `/api/invoices/consolidated` | árbol vivo |
+| GET | `/api/invoices/unreconciled` | árbol vivo |
 | GET | `/api/locations/` | árbol vivo |
 | POST | `/api/locations/` | árbol vivo |
 | POST | `/api/login/` | árbol vivo |

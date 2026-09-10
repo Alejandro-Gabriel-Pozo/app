@@ -69,7 +69,7 @@ const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string }> = 
     motivo: 'Párrafo narrativo (líneas 116-124 del doc): "7 rutas de /me/*" descritas en prosa, no como bullets.',
   },
   'facturacion/invoices.routes.ts': {
-    hiddenCount: 8,
+    hiddenCount: 9, // +1: GET /api/invoices/unreconciled (10/09/2026)
     motivo: 'Prosa por router (2 factories del mismo archivo, createInvoicesRouter + createAfipCredentialsRouter), rutas listadas inline separadas por ";", no como bullets.',
   },
   'platform/admin.routes.ts': {

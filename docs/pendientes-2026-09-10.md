@@ -598,9 +598,40 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   que falle si aparece una ancla NUEVA de línea a cualquiera de los dos
   schemas en `src/` -- baseline 0, allowlist vacío, sin el problema de
   ruido que hacía inviable la cerca cuando el baseline era 78% stale.
-- **`credit_note_request` + bandeja completa** (#4b, ADR "cancelar con
-  NC") — en HOLD, decisión del dueño (ADR §6.5/§10 fila 1). Ver
+- **`credit_note_request` la TABLA** — sigue en HOLD, decisión del dueño
+  sin cambios (ADR §6.5/§10 fila 1). Ver
   `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`.
+  **La bandeja SÍ se resolvió, sin tabla nueva** — ✅ **IMPLEMENTADO,
+  LOCAL/sin pushear** (10/09/2026, gate `architecture-governor`).
+  Grounding ERP (Odoo `TransientModel` + ERPNext `docstatus=0`, 2 de 3,
+  confirman que el HOLD de la tabla era correcto) → decisión del dueño:
+  nombrar mejor el estado intermedio que ya existe, sin tabla.
+  `InvoiceRepository.listUnreconciledLiveInvoices()` (mecanismo de dos
+  pasos: enumera candidatos B1∪B2, clasifica con
+  `classifyOrderLiveInvoice`/`classifyReservationLiveInvoice` -- ya
+  existentes, cero SQL de compensación nuevo, una sola fuente de verdad
+  de "¿está conciliado?") + `GET /api/invoices/unreconciled`
+  (`Roles.FRONT_DESK`, sin gate de módulo, registrada ANTES de `/:id`).
+  Tipo `UnreconciledLiveInvoice` (`invoice.entities.ts`). Bug real
+  encontrado por el propio test de integración antes de cerrar: la
+  primera versión emitía una fila `TERMINAL_SIN_REVERSION` falsa para
+  candidatos que habían entrado SOLO por B2 (reserva activa, no
+  terminal, con una reversión abierta) -- corregido con un segundo gate
+  `isTerminal` explícito en el paso 2/3, que resultó ser el guard de
+  corrección real (verificado por mutación: sacar el filtro de estado
+  del paso 1 -- la enumeración de candidatos -- queda VERDE, es solo una
+  optimización de performance ahora; forzar `isTerminal = true` sí
+  rompe 2 tests, ese es el mutante que importa). 8 tests de integración
+  contra Postgres real (Neon), lado RESERVAS -- lado ORDER sin cobertura
+  directa, declarado (mismo query shape, mismo classify() reusado,
+  riesgo bajo pero no cero). Artefactos RBAC actualizados:
+  `EXPECTED_AUTHORIZE_CALL_SITES` 206→207,
+  `EXCLUDED_FILES['facturacion/invoices.routes.ts'].hiddenCount` 8→9,
+  fila + contador de `docs/rbac-matriz-endpoints.md`,
+  `docs/inventario-rutas.md` regenerado (251→252). Hallazgo de paso,
+  registrado en "Menores": `generate-route-inventory.ts` conectó contra
+  la BD de plataforma real al regenerar el inventario (docblock dice
+  "dummy", `.env` local ganó) -- sin escritura real, verificado.
 - **UI de `cancellation-refund/preview\|confirm`** (#6-A4, circuito C2
   de plata) — D2-diferido, decisión de roadmap explícita, no
   follow-up automático del ADR.
@@ -729,6 +760,23 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   aplicando (puede que ya se haya corregido en una sesión posterior).
 - **`DA-CONT-001`**, **`DOC-ANCLA-001`**, ficha M10 desactualizada --
   sin detalle adicional en el archivo de origen, solo el nombre.
+- **`generate-route-inventory.ts` conecta contra la BD de plataforma
+  REAL cuando se corre local** (10/09/2026, hallazgo de paso al
+  regenerar `docs/inventario-rutas.md`) -- el docblock del script
+  afirma "una `PLATFORM_DATABASE_URL` dummy" (línea 21), pero
+  `process.env['PLATFORM_DATABASE_URL'] ??= '...dummy...'` (línea 98)
+  con `??=` no pisa un valor YA seteado -- y `.env` local sí trae la
+  URL real de producción. Efecto observado: bootea `createApp()` +
+  arranca `CompanyCatalogPropagationWorker` contra la BD real por unos
+  cientos de ms antes de pararlo. **Verificado sin escritura real**: el
+  worker usa `setInterval(POLL_INTERVAL_MS=10_000)`, nunca tiquea antes
+  de que el script llame `stopCompanySyncWorker()`; el diff del
+  inventario generado fue exactamente el esperado (solo la ruta nueva
+  agregada, sin ruido). No urgente -- pero el docblock miente sobre su
+  propio comportamiento en un entorno con `.env` real, y vale la pena
+  corregirlo (ej. no usar `??=`, exigir explícitamente que no haya
+  `PLATFORM_DATABASE_URL` real seteada, o aceptar el comportamiento y
+  corregir el comentario).
 
 ### 📋 Backlog de producto (sin fecha, roadmap -- no re-auditado)
 

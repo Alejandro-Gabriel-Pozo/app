@@ -1,5 +1,5 @@
 import type { SqlClient } from '../repositories/sql.client.js';
-import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
+import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput, UnreconciledLiveInvoice } from './invoice.entities.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import { isInvoiceFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
@@ -649,6 +649,163 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       if (total === 0 || total !== settled) return 'NOT_RECONCILED';
     }
     return 'RECONCILED';
+  }
+
+  async listUnreconciledLiveInvoices(client: SqlClient): Promise<UnreconciledLiveInvoice[]> {
+    // Paso 1 -- candidatos. Mismo JOIN que classifyOrderLiveInvoice()/
+    // classifyReservationLiveInvoice() (factura individual O consolidada,
+    // Factura B ISSUED), pero DESDE la entidad (para poder filtrar por su
+    // estado) en vez de desde la factura. B2 no necesita ese join -- la
+    // entidad sale directo de financial_transactions.
+    const { rows: candidateRows } = await client.query<{ entity_type: 'ORDER' | 'RESERVATION'; entity_id: string }>(
+      `SELECT DISTINCT 'ORDER'::text AS entity_type, o.id AS entity_id
+         FROM orders o
+         JOIN financial_transactions ft ON ft.order_id = o.id AND ft.type = 'CHARGE'
+         JOIN invoices i
+           ON i.financial_transaction_id = ft.id
+           OR i.id IN (SELECT ic.invoice_id FROM invoice_charges ic WHERE ic.financial_transaction_id = ft.id)
+        WHERE o.status = 'CANCELLED' AND i.status = 'ISSUED' AND i.cbte_tipo = $1
+       UNION
+       SELECT DISTINCT 'RESERVATION'::text, r.id
+         FROM reservations r
+         JOIN financial_transactions ft ON ft.reservation_id = r.id AND ft.type = 'CHARGE'
+         JOIN invoices i
+           ON i.financial_transaction_id = ft.id
+           OR i.id IN (SELECT ic.invoice_id FROM invoice_charges ic WHERE ic.financial_transaction_id = ft.id)
+        WHERE r.status IN ('CANCELLED', 'EXPIRED') AND i.status = 'ISSUED' AND i.cbte_tipo = $1
+       UNION
+       SELECT DISTINCT 'RESERVATION'::text, ft.reservation_id
+         FROM financial_transactions ft
+        WHERE ft.reversed_invoice_id IS NOT NULL AND ft.type IN ('REFUND', 'ADJUSTMENT') AND ft.reservation_id IS NOT NULL
+       UNION
+       SELECT DISTINCT 'ORDER'::text, ft.order_id
+         FROM financial_transactions ft
+        WHERE ft.reversed_invoice_id IS NOT NULL AND ft.type IN ('REFUND', 'ADJUSTMENT') AND ft.order_id IS NOT NULL`,
+      [CBTE_TIPO_FACTURA_B],
+    );
+
+    const results: UnreconciledLiveInvoice[] = [];
+
+    for (const candidate of candidateRows) {
+      // Paso 2 -- clasifica. Única fuente de verdad de "¿está conciliado?",
+      // reusada tal cual -- cero SQL de compensación nuevo acá.
+      const status = candidate.entity_type === 'ORDER'
+        ? await this.classifyOrderLiveInvoice(client, candidate.entity_id)
+        : await this.classifyReservationLiveInvoice(client, candidate.entity_id);
+      if (status !== 'NOT_RECONCILED') continue;
+
+      const { rows: entityRows } = await client.query<{ status: string }>(
+        candidate.entity_type === 'ORDER'
+          ? `SELECT status FROM orders WHERE id = $1`
+          : `SELECT status FROM reservations WHERE id = $1`,
+        [candidate.entity_id],
+      );
+      const entityStatus = entityRows[0]?.status ?? 'DESCONOCIDO';
+      // Espeja el filtro de estado del paso 1 (B1) -- un candidato puede
+      // haber entrado SOLO por B2 (ej. reserva CONFIRMED con una
+      // reversión abierta, tx2 sin cancelar la entidad todavía). Sin este
+      // chequeo, cualquier candidato con una factura B ISSUED emitiría un
+      // motivo `TERMINAL_SIN_REVERSION` aunque la entidad no sea terminal
+      // -- falso, y duplicado con la fila real de B2.
+      const isTerminal = candidate.entity_type === 'ORDER'
+        ? entityStatus === 'CANCELLED'
+        : entityStatus === 'CANCELLED' || entityStatus === 'EXPIRED';
+
+      // B1 -- facturas vivas de esta entidad (mismo join que el paso 1),
+      // solo si la entidad de verdad es terminal.
+      const liveInvoices = isTerminal ? (await client.query<{
+        id: string; pto_vta: number; cbte_nro: string | null; imp_total: string; issued_at: Date | null;
+      }>(
+        candidate.entity_type === 'ORDER'
+          ? `SELECT DISTINCT i.id, i.pto_vta, i.cbte_nro, i.imp_total, i.issued_at
+               FROM invoices i
+               JOIN financial_transactions ft
+                 ON ft.id = i.financial_transaction_id
+                 OR ft.id IN (SELECT ic.financial_transaction_id FROM invoice_charges ic WHERE ic.invoice_id = i.id)
+              WHERE ft.order_id = $1 AND ft.type = 'CHARGE' AND i.status = 'ISSUED' AND i.cbte_tipo = $2`
+          : `SELECT DISTINCT i.id, i.pto_vta, i.cbte_nro, i.imp_total, i.issued_at
+               FROM invoices i
+               JOIN financial_transactions ft
+                 ON ft.id = i.financial_transaction_id
+                 OR ft.id IN (SELECT ic.financial_transaction_id FROM invoice_charges ic WHERE ic.invoice_id = i.id)
+              WHERE ft.reservation_id = $1 AND ft.type = 'CHARGE' AND i.status = 'ISSUED' AND i.cbte_tipo = $2`,
+        [candidate.entity_id, CBTE_TIPO_FACTURA_B],
+      )).rows : [];
+      for (const inv of liveInvoices) {
+        results.push({
+          entityType: candidate.entity_type,
+          entityId: candidate.entity_id,
+          entityStatus,
+          invoiceId: inv.id,
+          ptoVta: inv.pto_vta,
+          cbteNro: inv.cbte_nro === null ? null : Number(inv.cbte_nro),
+          impTotal: parseFloat(inv.imp_total),
+          issuedAt: inv.issued_at,
+          motivo: 'TERMINAL_SIN_REVERSION',
+          sinceAt: inv.issued_at ?? new Date(0),
+          revertingTransactionId: null,
+          revertingType: null,
+          revertingStatus: null,
+          ncInvoiceId: null,
+          ncStatus: null,
+          ncAfipContacted: null,
+        });
+      }
+
+      // B2 -- reversiones abiertas de esta entidad, con su NC (si la tiene).
+      const { rows: reversals } = await client.query<{
+        id: string; type: 'REFUND' | 'ADJUSTMENT'; status: string; created_at: Date;
+        reversed_invoice_id: string;
+      }>(
+        candidate.entity_type === 'ORDER'
+          ? `SELECT id, type, status, created_at, reversed_invoice_id
+               FROM financial_transactions
+              WHERE order_id = $1 AND reversed_invoice_id IS NOT NULL AND type IN ('REFUND', 'ADJUSTMENT')`
+          : `SELECT id, type, status, created_at, reversed_invoice_id
+               FROM financial_transactions
+              WHERE reservation_id = $1 AND reversed_invoice_id IS NOT NULL AND type IN ('REFUND', 'ADJUSTMENT')`,
+        [candidate.entity_id],
+      );
+      for (const rev of reversals) {
+        const { rows: ncRows } = await client.query<{ id: string; pto_vta: number; cbte_nro: string | null; imp_total: string; status: InvoiceStatus; afip_contacted: boolean }>(
+          `SELECT id, pto_vta, cbte_nro, imp_total, status, afip_contacted FROM invoices WHERE financial_transaction_id = $1`,
+          [rev.id],
+        );
+        const nc = ncRows[0];
+        // La factura original revertida -- para pto_vta/cbte_nro/imp_total
+        // de la fila (el REFUND/ADJUSTMENT en sí no factura nada, revierte
+        // lo que ya facturó `reversed_invoice_id`).
+        const { rows: originalRows } = await client.query<{ id: string; pto_vta: number; cbte_nro: string | null; imp_total: string; issued_at: Date | null }>(
+          `SELECT id, pto_vta, cbte_nro, imp_total, issued_at FROM invoices WHERE id = $1`,
+          [rev.reversed_invoice_id],
+        );
+        const original = originalRows[0];
+        if (!original) continue; // defensivo -- reversed_invoice_id es FK, no debería faltar
+        results.push({
+          entityType: candidate.entity_type,
+          entityId: candidate.entity_id,
+          entityStatus,
+          invoiceId: original.id,
+          ptoVta: original.pto_vta,
+          cbteNro: original.cbte_nro === null ? null : Number(original.cbte_nro),
+          impTotal: parseFloat(original.imp_total),
+          issuedAt: original.issued_at,
+          motivo: 'REVERSION_ABIERTA',
+          sinceAt: rev.created_at,
+          revertingTransactionId: rev.id,
+          revertingType: rev.type,
+          revertingStatus: rev.status,
+          ncInvoiceId: nc?.id ?? null,
+          ncStatus: nc?.status ?? null,
+          ncAfipContacted: nc?.afip_contacted ?? null,
+        });
+      }
+    }
+
+    // Ordenado por antigüedad -- el más viejo primero, mismo criterio que
+    // getByStatus() (ordenamiento por antigüedad para una bandeja operativa).
+    results.sort((a, b) => a.sinceAt.getTime() - b.sinceAt.getTime());
+    return results;
   }
 
   async getChargeIdsForInvoice(invoiceId: string): Promise<string[]> {

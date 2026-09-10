@@ -69,13 +69,23 @@ const INVOICE_ROW = {
 };
 
 describe('gating de FACTURACION en el router', () => {
-  it('los 3 GET de /api/invoices NO llevan el gate: stack [authorize, handler]', () => {
+  it('los 4 GET de /api/invoices NO llevan el gate: stack [authorize, handler]', () => {
     const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
       stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: unknown[] } }>;
     };
     const gets = router.stack.filter((l) => l.route && l.route.methods['get']);
-    expect(gets.map((l) => l.route!.path).sort()).toEqual(['/', '/:id', '/:id/pdf']);
+    // /unreconciled (10/09/2026, bandeja) -- sin gate de módulo, mismo
+    // criterio que el resto de los GET de este router.
+    expect(gets.map((l) => l.route!.path).sort()).toEqual(['/', '/:id', '/:id/pdf', '/unreconciled']);
     for (const l of gets) expect(l.route!.stack.length).toBe(2);
+  });
+
+  it('/unreconciled está registrada ANTES de /:id -- si no, Express la sombrea y nunca se alcanza', () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER) as unknown as {
+      stack: Array<{ route?: { path: string; methods: Record<string, boolean> } }>;
+    };
+    const paths = router.stack.filter((l) => l.route).map((l) => l.route!.path);
+    expect(paths.indexOf('/unreconciled')).toBeLessThan(paths.indexOf('/:id'));
   });
 
   it('las mutaciones de /api/invoices SÍ llevan el gate: stack [gate, authorize, handler]', () => {

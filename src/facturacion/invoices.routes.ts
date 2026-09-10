@@ -8,6 +8,9 @@
  * DELETE /api/business-profile/afip-credentials      — MANAGEMENT
  *
  * POST /api/invoices          — FRONT_DESK (pedir el CAE de un cobro ya existente)
+ * GET  /api/invoices/unreconciled — FRONT_DESK (10/09/2026, bandeja "factura
+ *      viva no conciliada" -- ver InvoiceRepository.listUnreconciledLiveInvoices().
+ *      Registrada ANTES de /:id, no la muevas después)
  * GET  /api/invoices/:id      — FRONT_DESK
  * GET  /api/invoices?financialTransactionId=... — FRONT_DESK
  * GET  /api/invoices?customerId=...              — FRONT_DESK (O2-F2, F2.2 --
@@ -127,6 +130,26 @@ export function createInvoicesRouter(container: AppContainer): Router {
           ...(body.concepto !== undefined && { concepto: body.concepto }),
         });
         res.status(201).json(invoice);
+      } catch (err) { next(err); }
+    },
+  );
+
+  // ── GET /api/invoices/unreconciled ──────────────────────────────────────
+  // Bandeja "factura viva no conciliada" (10/09/2026, gate
+  // `architecture-governor`) -- NO es `credit_note_request` (esa tabla
+  // sigue en HOLD). Ver el docblock de `InvoiceRepository.listUnreconciledLiveInvoices()`
+  // y de `UnreconciledLiveInvoice` para el mecanismo completo. Registrada
+  // ANTES de `/:id` a propósito -- si fuera después, Express matchearía
+  // `unreconciled` como un `:id` y esta ruta quedaría inalcanzable, sin
+  // ningún error visible (`GET /api/invoices/unreconciled` devolvería
+  // 404 `INVOICE_NOT_FOUND`, no la lista).
+  router.get(
+    '/unreconciled',
+    authorize(Roles.FRONT_DESK),
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const list = await new SqlInvoiceRepository(req.db!).listUnreconciledLiveInvoices(req.db!);
+        res.json(list);
       } catch (err) { next(err); }
     },
   );

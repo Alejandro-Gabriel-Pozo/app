@@ -108,3 +108,55 @@ export interface CreateInvoiceInput {
   paymentMethod?: PaymentMethod | null;
   cardInstallments?: number | null;
 }
+
+/**
+ * "Factura viva no conciliada" (10/09/2026, gate `architecture-governor`,
+ * bandeja derivada -- NO es `credit_note_request`, esa tabla sigue en
+ * HOLD, ver `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+ * §6.5). Fila de `InvoiceRepository.listUnreconciledLiveInvoices()`:
+ * el complemento exacto de `classifyOrderLiveInvoice`/
+ * `classifyReservationLiveInvoice` (`'NOT_RECONCILED'`), aplicado sobre
+ * dos conjuntos de candidatos distintos, no uno solo:
+ *
+ * - `motivo: 'TERMINAL_SIN_REVERSION'` (B1) -- la entidad ya llegó a un
+ *   estado terminal (orden `CANCELLED`, reserva `CANCELLED`/`EXPIRED`)
+ *   con un comprobante fiscal vivo que nadie compensó. `sinceAt` =
+ *   `invoices.issued_at`.
+ * - `motivo: 'REVERSION_ABIERTA'` (B2) -- hay una fila `REFUND`/`ADJUSTMENT`
+ *   con `reversed_invoice_id` que todavía no cerró (NC sin emitir, o
+ *   ledger sin settlear) -- la entidad puede seguir viva, no
+ *   necesariamente terminal. `sinceAt` = `created_at` de esa fila
+ *   revertidora. Cubre el peor caso del escape: NC `ISSUED`,
+ *   `ADJUSTMENT` `PENDING`, entidad que nunca llegó a cancelarse porque
+ *   tx2 abortó (`cancel-order-with-credit-note.service.ts` y su gemelo
+ *   de reservas documentan este estado explícitamente).
+ *
+ * Los campos de reversión (`revertingTransactionId`/`revertingType`/
+ * `revertingStatus`/`ncInvoiceId`/`ncStatus`/`ncAfipContacted`) solo se
+ * completan para `motivo === 'REVERSION_ABIERTA'` -- un candidato B1
+ * puro no tiene, todavía, ninguna fila revertidora que describir.
+ *
+ * **Falso positivo heredado, aceptado, no oculto**: la divergencia 1 del
+ * docblock de `classifyReservationLiveInvoice` (F4 pregunta por la
+ * factura ENTERA, una cancelación consolidada-parcial en el camino feliz
+ * también da `NOT_RECONCILED`) aparece acá igual -- residual de 3.3-d,
+ * bloque aparte.
+ */
+export interface UnreconciledLiveInvoice {
+  entityType: 'ORDER' | 'RESERVATION';
+  entityId: string;
+  entityStatus: string;
+  invoiceId: string;
+  ptoVta: number;
+  cbteNro: number | null;
+  impTotal: number;
+  issuedAt: Date | null;
+  motivo: 'TERMINAL_SIN_REVERSION' | 'REVERSION_ABIERTA';
+  sinceAt: Date;
+  revertingTransactionId: string | null;
+  revertingType: 'REFUND' | 'ADJUSTMENT' | null;
+  revertingStatus: string | null;
+  ncInvoiceId: string | null;
+  ncStatus: InvoiceStatus | null;
+  ncAfipContacted: boolean | null;
+}

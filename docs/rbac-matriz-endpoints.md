@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (206 call-sites, 37 archivos)
+## 2. Matriz de endpoints por archivo (207 call-sites, 37 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -175,7 +175,7 @@ sección 4.
 ### `src/facturacion/`
 
 **`invoices.routes.ts`** — `requireModule(FACTURACION)` en las MUTACIONES y en `createAfipCredentialsRouter`. Los GET de `/api/invoices` van **sin** gate de módulo: leer un comprobante fiscal ya emitido es obligación legal de exhibición (`criterios-datos.md` línea 24; ver `diseno-cascada-enforcement-2026-08-30.md` §3d — 30/08/2026). Dos routers:
-- `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo)
+- `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/unreconciled` — `FRONT_DESK` (sin gate de módulo, 10/09/2026 — bandeja "factura viva no conciliada", registrada ANTES de `/:id` para no quedar sombreada por ese patrón); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo)
 - `createAfipCredentialsRouter` (todo `requireModule(FACTURACION)`): GET `/status` — `MANAGEMENT`; PUT `/` — `MANAGEMENT`; DELETE `/` — `MANAGEMENT`
 
 ### `src/platform/`
