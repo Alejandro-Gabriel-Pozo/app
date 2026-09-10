@@ -101,13 +101,29 @@ futuros, cada uno con su propio alcance.
   `platform.schema.sql` cambia de tamaño sin que se toquen sus citas en
   `docs/`? (probablemente no — el ruido sería alto) ¿o alcanza con
   dejarlo como disciplina de revisión manual al tocar ese archivo?
-- **`PRESET-GROUP-VALIDATION-001`** (08-09/09/2026, gate
-  `architecture-governor`). `PUT /platform/role-presets/:name` acepta
-  cualquier string como `permissionGroups[]` — no valida contra el
-  catálogo real de `security/roles.ts`. Un superadmin podría guardar un
-  grupo mal tipeado o inexistente sin ningún error, y ese valor basura se
-  propagaría por el mismo backfill a todos los tenants. Sin código
-  todavía.
+- **`PRESET-GROUP-VALIDATION-001`** — ✅ **RESUELTO en código, LOCAL/sin
+  pushear ni deployar** (`app-main` `dc81a39`, gate `architecture-governor`
+  09-10/09/2026, diseño + implementación + sign-off, los 3 con revisión
+  separada). `PUT /platform/role-presets/:name` y
+  `PUT /platform/plan-limits/:plan` ahora validan `permissionGroups[]` /
+  `allowedPermissionGroups` con `z.nativeEnum(Roles)` contra el catálogo
+  real de `security/roles.ts` — un grupo mal tipeado o inexistente
+  devuelve `400 VALIDATION_ERROR` (`error.middleware.ts:34`) en vez de
+  guardarse. `allowedRoleNames` queda sin tocar a propósito (no tiene
+  catálogo fijo: se compara contra `role.name`, y los roles pueden ser
+  CUSTOM con nombre libre). 2 tests nuevos + mutation testing (revertir a
+  `z.string()` pone en rojo la aserción del error capturado, no la del
+  repo) + query read-only contra la BD de plataforma de producción (Neon
+  `pdb-ppms`/`br-royal-mouse-aybe2ai3`): 0 filas fuera de catálogo en
+  `role_preset_permission_groups` ni `plan_limit_allowed_permission_groups`
+  — el fail-loud no rompe nada existente. **Lo que sigue sin cerrar, a
+  propósito:** `permission_group` sigue siendo `VARCHAR(50)` sin FK/CHECK
+  en `platform.schema.sql` — SQL a mano contra la BD de plataforma (la
+  única vía de revocación documentada, `PRESET-REVOKE-001` abajo) saltea
+  esta cerca por completo; es una cerca sobre el camino del panel, no
+  sobre la columna. **Falta:** push + deploy + verificación en producción
+  (el `400` en producción es inferencia del `error.middleware.ts` global,
+  todavía sin ejercitar end-to-end contra estas 2 rutas).
 - **`PRESET-REVOKE-001`** (08-09/09/2026, gate `architecture-governor`).
   No existe ninguna vía de revocación real en el producto: sacar un
   grupo de un preset por el panel no revoca nada de los negocios que ya
