@@ -136,9 +136,20 @@ futuros, cada uno con su propio alcance.
   del negocio. Hoy la única vía es SQL a mano contra la BD de
   plataforma. Hacer el backfill simétrico (agregar un `DELETE`) es un
   radio de explosión distinto — declarado, no decidido.
-- **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas, LOCAL/sin
-  pushear ni deployar** (`51ea0dc` + `db04daa`, gate `architecture-governor`
-  09-10/09/2026). Ronda 1 corrigió el eco del `PUT /role-presets/:name`
+- **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas,
+  pusheado y deployado** (`51ea0dc` + `db04daa` + `fa50557`, gate
+  `architecture-governor` 09-10/09/2026). Render `dep-dahcnveq1p3s73dbdovg`
+  en commit `fa50557` = `live`; `/health` con `uptimeSeconds` creciente
+  entre dos muestras (133→136s), instancia nueva sirviendo. **Verificación
+  funcional pedida por el gate (guardar un preset sin cambios y comparar
+  `PUT` vs. `GET` tras recargar) NO realizada, declarado**: requiere
+  credenciales de superadmin de producción (`PLATFORM_ADMIN_EMAIL`/
+  `PLATFORM_ADMIN_PASSWORD`, `sync: false` en `render.yaml`, no presentes
+  en `.env` local ni en ningún otro lado de esta sesión) -- no se
+  fabricó un JWT de plataforma a mano para evitar autenticar contra
+  producción con un secreto de origen incierto. Lo verificado es deploy
+  + identidad de instancia, no el comportamiento end-to-end de las 2
+  rutas corregidas. Ronda 1 corrigió el eco del `PUT /role-presets/:name`
   (devolvía el input en vez de releer). El gate, aplicando por primera vez
   el §4.0 (gate de análisis de impacto, agregado a su propia definición
   esta misma sesión) sobre ESE fix, encontró que la ronda 1 releía por
