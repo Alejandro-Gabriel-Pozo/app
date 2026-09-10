@@ -121,9 +121,13 @@ futuros, cada uno con su propio alcance.
   en `platform.schema.sql` — SQL a mano contra la BD de plataforma (la
   única vía de revocación documentada, `PRESET-REVOKE-001` abajo) saltea
   esta cerca por completo; es una cerca sobre el camino del panel, no
-  sobre la columna. **Falta:** push + deploy + verificación en producción
-  (el `400` en producción es inferencia del `error.middleware.ts` global,
-  todavía sin ejercitar end-to-end contra estas 2 rutas).
+  sobre la columna. **Pusheado y deployado** (`485b334`, Render
+  `dep-dahaogmq1p3s73b1paa0` = `live`, `/health` con `uptimeSeconds`
+  creciente = instancia nueva sirviendo). **Sin verificar, declarado:** el
+  `400` real contra estas 2 rutas en producción sigue siendo inferencia
+  del `error.middleware.ts` global (`ZodError → 400`, verificado por
+  lectura, no ejercitado end-to-end) — requeriría credenciales de
+  superadmin de producción, no disponibles en esta sesión.
 - **`PRESET-REVOKE-001`** (08-09/09/2026, gate `architecture-governor`).
   No existe ninguna vía de revocación real en el producto: sacar un
   grupo de un preset por el panel no revoca nada de los negocios que ya
