@@ -205,9 +205,23 @@ solo un test de caracterización.
     a la factura recién emitida? Las dos son defendibles -- según la regla
     de este repo ("Preguntas de alcance pueden esconder una decisión de
     negocio"), esto bloquea diseñar el Block B.
-  - Corrección de hecho: `DB_POOL_MAX` es **10** (`src/db/pg.client.ts:94`),
-    no 5 -- varios documentos de esta sesión y de `pendientes-2026-09-08.md`
-    citan `max:5`, stale.
+  - **Corrección retractada (gate architecture-governor, 09-10/09/2026):**
+    una versión anterior de este bullet decía "`DB_POOL_MAX` es 10, no 5 --
+    varios documentos citan `max:5`, stale". Eso conflacionaba dos pools
+    distintos y estaba MAL -- son los 6 documentos citados los que tenían
+    razón, no esta corrección. Hay dos pools separados en el repo: el de
+    PLATAFORMA (`src/db/pg.client.ts:94`, `max: parseInt(DB_POOL_MAX ?? '10')`,
+    detrás de `getPlatformRawPool()`) y el de CADA TENANT
+    (`src/platform/tenant.middleware.ts:105`, `max: 5` hardcodeado, sin env
+    var, uno por negocio). `confirmRefund()` corre sobre el pool de
+    TENANT -- confirmado en `src/reservas/reservations.routes.ts:164-174`,
+    `buildCancellationRefundService(req)` usa `req.db` +
+    `buildTenantTransactionManager(req)`, nunca el pool de plataforma. Los
+    `max: 5` citados en `pendientes-2026-09-03.md:497`, `-09-05.md:816`,
+    `-09-06.md:136`/`:138`, `-09-08.md:507`/`:1091` y
+    `zulu-hub-continuidad-2026-09-08.md:167` (la dimensión de
+    `POOL-STARV-001`) son correctos y no estaban stale -- no re-abrir esa
+    dimensión a partir de esta nota.
 - **Residual B-1 / "3.2-b"** — sigue abierto, sin tocar en este bloque.
   Diagnóstico angostado por el research: el camino de `recordPayment()` CON
   `allocations` ya es correcto y transaccional -- no hace falta tocarlo.

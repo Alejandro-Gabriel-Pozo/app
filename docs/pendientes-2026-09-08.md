@@ -418,6 +418,14 @@ mecanismo, 3.5 falta que exista el orquestador de 3.3.
 
 ### #24 — `REFUND-ISSUED-RACE-01` (encontrado buscando la carrera de 3.2, no cerrable por ningún lock de fila)
 
+**➡️ Seguimiento en `pendientes-2026-09-10.md`** (09-10/09/2026, gate
+`architecture-governor`): ahora tiene test de caracterización contra
+Postgres real (`b6ed750`), diseño de bracket de 2 tx RECHAZADO, y 3 anclas
+de este bullet corregidas (`invoice.service.ts:945` → `:1087`,
+`sql.invoice.repository.ts:718-728` → `:814-825`) -- no las edito acá para
+no perder el texto original de este item, ver el archivo nuevo para el
+detalle vigente.
+
 `InvoiceService.finalizeIssued()` (`invoice.service.ts:945`) → `markIssued()`
 (`sql.invoice.repository.ts:718-728`, `UPDATE invoices SET status='ISSUED',
 issued_at=NOW() WHERE id=$1`) es el **único** escritor de
