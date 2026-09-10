@@ -811,7 +811,7 @@ export class PlatformRepository {
    *  lee esto al CREAR un negocio" es verdadera, pero la conclusión de
    *  que eso hace inocuo editar acá es falsa, porque ese no es el único
    *  camino que lee esta tabla -- el backfill SQL de
-   *  platform.schema.sql:341-346 también la lee, en CADA ARRANQUE del
+   *  platform.schema.sql:350-355 también la lee, en CADA ARRANQUE del
    *  proceso, y propaga cada grupo agregado a todos los negocios
    *  existentes. Ver el comentario de platform.routes.ts (GET/PUT
    *  /platform/role-presets) para el mecanismo completo. */
