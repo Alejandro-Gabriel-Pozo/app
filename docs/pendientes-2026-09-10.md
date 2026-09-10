@@ -62,6 +62,37 @@ autorizado explícitamente por el usuario ("si", dos veces).
      (`ROLES-CATALOG-DRIFT-001`) — congela el CONJUNTO ordenado del
      catálogo `Roles` + espejo `key===value` (no un conteo — un conteo no
      detecta un rename). 3 mutaciones verificadas (agregar/sacar/renombrar).
+3. **Guard `isSystem` en `RoleService.renameRole()` — ✅ implementado,
+   verificado, LOCAL/sin pushear** (`8fc30c3`, `app-main`; `cbdf1bd`,
+   `appfrontend-main` — comentario espejo). Hallazgo encontrado de paso
+   por el gate al revisar `PRESET-REVOKE-001` (10/09/2026): `renameRole()`
+   no tenía guard de `isSystem` -- consecuencia real, no solo higiene:
+   (a) el backfill de arranque (`platform.schema.sql:408-412`) inserta
+   con `id` determinístico bajo `ON CONFLICT (business_id, name)`; un
+   rename libera ese par y el próximo INSERT choca contra `roles_pkey`
+   SIN capturar (`server.ts`, `process.exit(1)`) -- el próximo arranque
+   del proceso revienta; (b) `roles.name` es de facto clave técnica de
+   autorización (`users.routes.ts:201,276`, `user-invitation.routes.ts:156`
+   comparan por nombre) -- un ADMIN (ya tiene `Roles.MANAGEMENT`,
+   suficiente para `PUT /api/roles/:id`) podía renombrar el rol OWNER de
+   su negocio y saltarse esos guards. **Medido en producción (10/09/2026,
+   Neon `morning-unit-50056927`/`pdb-ppms`/`br-royal-mouse-aybe2ai3`):
+   0 roles de sistema renombrados hoy** -- puramente preventivo, sin
+   outage latente ni explotación previa. Guard:
+   `before.isSystem && before.name !== name` (preserva el `PUT
+   {name, permissionGroups}` completo que ya manda el frontend). 6
+   mutantes verificados, cada uno con un set rojo distinto de los otros
+   cinco (no todos disjuntos entre sí -- M5⊃M6 -- pero cada uno
+   discrimina). Test de integración contra Postgres real confirma el
+   crash (`roles_pkey`) sin el guard. **Residual, no cerrado a propósito:**
+   ningún test cubre que renombrar un rol CUSTOM audite el cambio de
+   nombre (`role.service.ts:158-167`) -- deuda preexistente, no
+   empeorada por este bloque. **Fix estructural pendiente, bloque
+   aparte:** los consumidores por nombre (`users.routes.ts`,
+   `user-invitation.routes.ts`, `platform.repository.ts:1156/1178`, el
+   techo `allowedRoleNames`) siguen autorizando por `roles.name` en vez
+   de por `role.id`/`is_system` -- el guard cierra el camino que CREA la
+   divergencia, no la dependencia estructural.
    - **No autorizado, gate propio, precondición ya cumplida:** el checkbox
      de `EMISOR_NOTA_CREDITO` en `roles-de-fabrica/page.tsx` (bloque B) —
      agregarlo ahora, con la copy ya corregida y verificada en
@@ -121,7 +152,9 @@ futuros, cada uno con su propio alcance.
   CUSTOM con nombre libre). 2 tests nuevos + mutation testing (revertir a
   `z.string()` pone en rojo la aserción del error capturado, no la del
   repo) + query read-only contra la BD de plataforma de producción (Neon
-  `pdb-ppms`/`br-royal-mouse-aybe2ai3`): 0 filas fuera de catálogo en
+  proyecto `morning-unit-50056927`, base `pdb-ppms`, branch
+  `br-royal-mouse-aybe2ai3` -- los tres identificadores de la MISMA BD,
+  reconciliados 10/09/2026): 0 filas fuera de catálogo en
   `role_preset_permission_groups` ni `plan_limit_allowed_permission_groups`
   — el fail-loud no rompe nada existente. **Lo que sigue sin cerrar, a
   propósito:** `permission_group` sigue siendo `VARCHAR(50)` sin FK/CHECK
@@ -488,9 +521,13 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (`SELECT ... FROM financial_transactions ft JOIN invoices i ON
   i.id=ft.reversed_invoice_id WHERE ft.type='REFUND' AND
   ft.customer_id<>i.customer_id`, Neon `ancient-king-17098519`, branches
-  `production`+`tenant-hotel-los-alamos`). No urgente -- no hay bug
-  manifestándose hoy. Sigue como deuda de diseño (el código no lo
-  garantiza estructuralmente, solo no divergió todavía en la práctica).
+  `production`=Demo + `tenant-hotel-los-alamos`=Hotel los Álamos --
+  **las dos son datos de práctica ficticios** (memoria del proyecto:
+  "Tenant DBs are test data"), no clientes reales; "0 divergencia" acá
+  es más débil que si fuera producción real con tráfico genuino). No
+  urgente -- no hay bug manifestándose hoy. Sigue como deuda de diseño
+  (el código no lo garantiza estructuralmente, solo no divergió todavía
+  en los datos de práctica).
 - **A7.6** — cuántos días de retención para las columnas nuevas de
   observabilidad del outbox (`first_failed_at`/`last_failed_at`) antes de
   purgar. Bloquea el bloque 4.2 (`OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01`).
