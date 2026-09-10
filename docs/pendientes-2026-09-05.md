@@ -128,13 +128,18 @@ integración manual — no corre en ningún pipeline de CI.
   SQL no sería necesariamente consistente con este helper. No se tocó el
   comparador en este bloque a propósito (la extracción tenía que ser cero
   cambio de comportamiento) — decisión de diseño diferida, no bug.
-- **3 falsos negativos declarados de la cerca `lock-order.test.ts`**
-  (documentados en su propio header): exige el nombre literal `client` como
-  argumento; un método `...ForUpdate` nuevo agregado dentro de
-  `sql.invoice.repository.ts` es invisible (archivo excluido a propósito);
-  y el chequeo de `canonicalInvoiceLockOrder()` solo prueba que la función
-  aparece en el archivo, no que envuelve el array que de verdad alimenta el
-  loop de lock.
+- ~~**3 falsos negativos declarados de la cerca `lock-order.test.ts`**~~
+  **corregido a 2 abiertos + 1 cerrado (09/09/2026, gate `architecture-governor`,
+  commit `7150dfa`):** de los 3 documentados en el header original --
+  (1) exige el nombre literal `client` como argumento; (2) un método
+  `...ForUpdate` nuevo agregado dentro de `sql.invoice.repository.ts` es
+  invisible (archivo excluido a propósito); (3) el chequeo de
+  `canonicalInvoiceLockOrder()` solo prueba que la función aparece en el
+  archivo, no que envuelve el array que de verdad alimenta el loop de
+  lock -- el **(2) disparó de verdad** (`getInFlightCreditNoteTotalForUpdate`/
+  `...ForPairForUpdate`, agregados 08/09/2026, quedaron invisibles hasta
+  hoy) y se cerró: `LOCK_CALL_RE` extendido, `facturacion/invoice.service.ts`
+  clasificado en `SINGLE_INVOICE_CALLERS`. **(1) y (3) siguen abiertos.**
 
 ---
 

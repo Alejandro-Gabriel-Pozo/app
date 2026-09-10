@@ -1349,6 +1349,22 @@ demás allowlists del repo (`PUBLIC_ROUTES`, `EXCLUDED_ROWS`,
 parseables por archivo, compararlo contra 0 o contra lo que
 corresponda) es el próximo bloque de código de este ítem.
 
+**Riesgo de auto-deadlock por anidamiento de `PgTransactionManager.run()`
+-- sin cerca, sin ocurrir hoy (09/09/2026, gate `architecture-governor`,
+encontrado de paso cerrando LOCK-ORDER-001, `7150dfa`).** Si alguna vez
+`requestInvoice()` (`src/facturacion/invoice.service.ts`) se llamara
+DENTRO de una transacción que ya lockeó la misma fila de `invoices`, el
+modo de falla no sería ABBA (mismo lock, mismo xid, Postgres lo concede)
+sino un deadlock real entre DOS conexiones distintas del pool --
+`PgTransactionManager.run()` (`src/db/pg.transaction-manager.ts:23`) hace
+`pool.connect()` nuevo en cada invocación, sin detectar reentrada.
+Verificado: los 5 call-sites productivos de `requestInvoice()` corren
+hoy fuera de toda tx abierta (`cancel-order-with-credit-note.service.ts:164,328`,
+`cancel-reservation-with-credit-note.service.ts:278,482`,
+`api/routes/invoices.routes.ts:97`) -- el riesgo es un supuesto sin
+ocurrir, no un bug activo, y ninguna cerca lo vigila si alguien lo
+rompiera. Reproducir: `grep -rn "requestInvoice(" src --include="*.ts" | grep -v test`.
+
 **Backlog de producto (sin fecha):** Gap C1-C · AR-FACT-NO-ISSUED-01 Fases 2-8 ·
 FACT-BORRADOR-001 (v2.8) · C1-B (bloqueada por proveedor) · C2/C3 · D7 (5 endpoints
 de reportes sin consumidor) · **ORDER-10 B4** (período contable — **decisión del
