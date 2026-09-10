@@ -196,19 +196,30 @@ chicos ya identificados:
   sobre `origin/main` (`9be3eb7`). Verificar con `git fetch` +
   `git rev-parse origin/main` inmediatamente antes, no asumir que sigue
   en `9be3eb7` solo porque este corte lo vio así.
-- **Bloque chico de docs, antes de seguir con código nuevo** (pedido
-  explícito del gate de cierre de LOCK-ORDER-001): corregir
-  `pendientes-2026-09-05.md:131` (3→2 falsos negativos) y registrar el
-  residual de auto-deadlock de §3b con ancla verificable.
-- **Segundo candidato transversal elegido por el usuario, sin empezar:**
-  el rol `EMISOR_NOTA_CREDITO` (backend, `security/roles.ts`) nunca se
-  propagó a 3 catálogos hardcodeados de `appfrontend-main`
-  (`dashboard/roles/page.tsx`, `superadmin/roles-de-fabrica/page.tsx`,
-  `superadmin/planes/page.tsx`) -- no se puede otorgar/revocar/ver quién
-  tiene ese privilegio desde el panel. Cross-repo, toca autorización:
-  necesita su propio gate verificando los dos lados (si la ausencia es
-  solo presentación -- fail-open -- o si algo del backend depende de que
-  el frontend lo declare -- fail-closed) antes de tocar código.
+- ~~**Bloque chico de docs, antes de seguir con código nuevo**~~ **✅
+  RESUELTO** (`271fdd4`, `1cd9cea`): `pendientes-2026-09-05.md:131`
+  corregido a 2 falsos negativos abiertos + 1 cerrado, residual de
+  auto-deadlock registrado con ancla en `pendientes-2026-09-08.md`.
+- **Segundo candidato transversal elegido por el usuario -- 🟡 PARCIAL,
+  2 de 3 catálogos cerrados** (`appfrontend-main` `ba01d3d`,
+  `app-main` `f0bee83`, 09/09/2026): el rol `EMISOR_NOTA_CREDITO`
+  (backend, `security/roles.ts`) nunca se había propagado a 3 catálogos
+  hardcodeados de `appfrontend-main`. Verificado con los dos lados antes
+  de tocar código, como pedía este mismo ítem: `dashboard/roles/page.tsx`
+  era fail-CLOSED real (PRO/ENTERPRISE no podía armar un rol custom con
+  el grupo aunque el backend lo permitiera, `plan_limit_allowed_permission_groups`
+  con 0 filas = sin restricción) -- ✅ cerrado, igual que
+  `superadmin/planes/page.tsx` (lectura viva, sin propagación, reversible)
+  -- ✅ cerrado. **`superadmin/roles-de-fabrica/page.tsx` sigue abierto a
+  propósito:** edita PRESETS que SÍ se propagan por backfill a tenants
+  existentes en cada boot, y su copy actual ("no afecta a negocios que ya
+  existen") es falsa -- agregar el checkbox ahí sin corregir la copy
+  habría sido el único camino activamente peligroso de todo el bloque
+  (otorgar autoridad fiscal AFIP a cualquier preset, en producción, sin
+  revocación real). Cross-repo con `app-main/src/platform/platform.routes.ts:422-423`
+  (misma afirmación falsa), bloque aparte con su propio gate. Detalle
+  completo en `pendientes-2026-09-08.md` y
+  `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md:228`.
 - **Bloques de código heredados del primer arco, ninguno bloqueante:**
   `3.3-c` (cablear F4 en `findBlockingInvoiceLinkage()`, firma congelada),
   `3.3-e` (índice de rendimiento), el clasificador por PAR

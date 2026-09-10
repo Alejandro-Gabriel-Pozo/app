@@ -1119,7 +1119,12 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
   (09/09/2026, gate `architecture-governor`, segundo candidato transversal
   del día).** Tres catálogos a mano del frontend listaban 8 grupos sin él:
   `dashboard/roles/page.tsx:18-26`, `superadmin/roles-de-fabrica/page.tsx`,
-  `superadmin/planes/page.tsx`.
+  `superadmin/planes/page.tsx`. **NO se perdía en el save** (verificado
+  antes de tocar nada): `roles/page.tsx:83` sembraba el form desde
+  `[...r.permissionGroups]` y `:104` lo mandaba entero -- un rol que ya
+  tenía el grupo lo conservaba. Fail-safe, no fail-open -- por eso esto no
+  bloqueó el gate final del 08/09, aunque siguiera siendo un hueco de
+  governance real.
   - **✅ Cerrados 2 de 3** (`appfrontend-main`, `ba01d3d`): `dashboard/roles/page.tsx`
     -- hueco funcional REAL, no cosmético, verificado: `platform.schema.sql:782-786`
     deja `plan_limit_allowed_permission_groups` con 0 filas a propósito para
@@ -1191,8 +1196,11 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 (~~`getByReservationId` UNION + fail-closed, 5 caracterizaciones~~ ✅ bloque 3.1,
 `3525bde` — ver #22; siguen abiertos: subcasos directa/consolidada/pool mixto,
 `EXPIRED-FACT-01`, F4 en reservas/subcaso 2) (#5) · Anexo A1/A2/A4 ·
-Frontend (3 catálogos sin `EMISOR_NOTA_CREDITO`, copy falsa `roles-de-fabrica`,
-consumir `description`/`kind` del dead-letter).
+Frontend (🟡 bloque 5.1 -- 2 de 3 catálogos sin `EMISOR_NOTA_CREDITO` ya
+cerrados en `appfrontend-main` `ba01d3d`, detalle en la sección
+"🟠 Deuda menor detectada" de este mismo archivo; `roles-de-fabrica` sigue
+abierto con su copy falsa, cross-repo, gate propio; consumir
+`description`/`kind` del dead-letter).
 
 **Deuda estructural:** Residual B-1 (redefinido 08/09 como **3.2-b**, ver #25 —
 no cerrable sin transaccionalizar `recordPayment()`) · ~~`REFUND-INT-GUARD-001`~~
