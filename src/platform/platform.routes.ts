@@ -454,7 +454,9 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   //
   // 1. CATÁLOGO (`role_preset_permission_groups`) -- lo que este PUT
   //    escribe. Hasta 09-10/09/2026 el seed de los 23 pares originales
-  //    (`platform.schema.sql:376-392`) corría SIN CONDICIÓN en cada
+  //    (`platform.schema.sql`, `INSERT INTO role_preset_permission_groups`
+  //    -- cita por nombre desde SCHEMA-ANCHOR-DRIFT-001, 10/09/2026)
+  //    corría SIN CONDICIÓN en cada
   //    arranque y reponía cualquiera de esos 23 que el panel sacara --
   //    "editar acá no persiste" para esos pares específicos. Corregido:
   //    el seed ahora corre UNA SOLA VEZ POR INSTALACIÓN, gateado por
@@ -463,7 +465,9 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   //    agregue.
   //
   // 2. PROPAGACIÓN A NEGOCIOS EXISTENTES (`role_permission_groups`, por
-  //    negocio) -- el backfill de `platform.schema.sql:414-419`, que
+  //    negocio) -- el backfill de `platform.schema.sql`
+  //    (`INSERT INTO role_permission_groups` -- cita por nombre desde
+  //    SCHEMA-ANCHOR-DRIFT-001, 10/09/2026), que
   //    corre en CADA ARRANQUE del proceso (`server.ts:33-53`, no solo en
   //    deploy), hace CROSS JOIN de todos los negocios contra los presets
   //    y copia cada `permission_group` del catálogo a TODOS los negocios

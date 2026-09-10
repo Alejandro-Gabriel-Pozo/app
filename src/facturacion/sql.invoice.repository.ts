@@ -156,7 +156,9 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // Sin el JOIN a `financial_transactions ft ON ft.id = i.financial_transaction_id`
     // que usa `getOutstandingByCustomerId`: acá se busca por `i.id`
     // directo, y ese JOIN excluiría toda factura CONSOLIDADA
-    // (`financial_transaction_id IS NULL` a propósito, ver schema.sql:3139) --
+    // (`financial_transaction_id IS NULL` a propósito, ver schema.sql --
+    // `ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL`,
+    // cita por nombre desde SCHEMA-ANCHOR-DRIFT-001, 10/09/2026) --
     // exactamente el tipo de factura contra la que este método también
     // tiene que poder calcular saldo.
     // ADR común cancelar-con-NC (06/09/2026, N1.b) -- la contribución de una
@@ -235,7 +237,9 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // O2-F2 (03/09/2026, F2.1) -- el JOIN original exigía
     // `ft.id = i.financial_transaction_id`, lo que excluía TODA factura
     // consolidada (`i.financial_transaction_id IS NULL` a propósito, ver
-    // schema.sql:3139) del listado -- una factura consolidada cobrada quedaba
+    // schema.sql -- `ALTER TABLE invoices ALTER COLUMN financial_transaction_id
+    // DROP NOT NULL`, cita por nombre desde SCHEMA-ANCHOR-DRIFT-001,
+    // 10/09/2026) del listado -- una factura consolidada cobrada quedaba
     // invisible para este modal de conciliación aunque tuviera saldo real.
     // Ahora: consolidada (financial_transaction_id IS NULL) siempre pasa --
     // nunca se genera una consolidada para un REFUND, así que no hace falta

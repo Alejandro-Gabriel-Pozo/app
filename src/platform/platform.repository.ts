@@ -827,9 +827,10 @@ export class PlatformRepository {
    *  `architecture-governor`): la premisa "provisionSystemRoles() solo
    *  lee esto al CREAR un negocio" es verdadera, pero la conclusión de
    *  que eso hace inocuo editar acá es falsa, porque ese no es el único
-   *  camino que lee esta tabla -- el backfill SQL de
-   *  platform.schema.sql:414-419 también la lee, en CADA ARRANQUE del
-   *  proceso, y propaga cada grupo agregado a todos los negocios
+   *  camino que lee esta tabla -- el backfill SQL de platform.schema.sql
+   *  (`INSERT INTO role_permission_groups` -- cita por nombre desde
+   *  SCHEMA-ANCHOR-DRIFT-001, 10/09/2026) también la lee, en CADA ARRANQUE
+   *  del proceso, y propaga cada grupo agregado a todos los negocios
    *  existentes. Ver el comentario de platform.routes.ts (GET/PUT
    *  /platform/role-presets) para el mecanismo completo. */
   async listRolePresets(client: SqlClient = this.db): Promise<RolePresetAdmin[]> {

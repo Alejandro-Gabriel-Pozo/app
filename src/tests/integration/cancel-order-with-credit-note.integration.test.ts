@@ -189,7 +189,8 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
     await db.query('DELETE FROM invoices');
     await db.query('DELETE FROM financial_transactions');
     // `uq_cash_shift_one_open_per_business` (índice único parcial
-    // `WHERE status='OPEN'`, schema.sql:2436) rechazaría un 2do turno OPEN
+    // `WHERE status='OPEN'`, schema.sql -- cita por nombre desde
+    // SCHEMA-ANCHOR-DRIFT-001, 10/09/2026) rechazaría un 2do turno OPEN
     // para el mismo negocio en el test siguiente. Va DESPUÉS de
     // `financial_transactions` por el orden de la FK `shift_id`.
     await db.query('DELETE FROM cash_register_shifts');

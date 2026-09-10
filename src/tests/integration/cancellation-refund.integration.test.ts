@@ -186,8 +186,10 @@ async function seedCancelledReservationWithPendingInvoice(opts: { totalPrice: nu
  * queda **NULL** y el vínculo cargo<->factura vive en `invoice_charges` --
  * que es exactamente lo que hace `requestConsolidatedInvoice()`
  * (`invoice.service.ts:558`). El `CREATE TABLE` de `invoices` declara esa
- * columna `NOT NULL`, pero `schema.sql:3139` la afloja con
- * `ALTER COLUMN ... DROP NOT NULL` justamente para permitir este caso.
+ * columna `NOT NULL`, pero `schema.sql` la afloja con
+ * `ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL`
+ * (cita por nombre desde SCHEMA-ANCHOR-DRIFT-001, 10/09/2026) justamente
+ * para permitir este caso.
  *
  * Forma tomada del flujo real (`transferStayBalanceToReceivable()`,
  * `accounts-receivable.service.ts:163-174`): el CHARGE de la empresa lleva

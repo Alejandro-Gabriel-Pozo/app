@@ -226,7 +226,10 @@ export class CancelOrderWithCreditNoteService {
       }
 
       // ADJUSTMENT compensatorio. `amount` va CON SIGNO NEGATIVO: el
-      // `chk_financial_transactions_amount` (schema.sql:2189-2190) es
+      // constraint `chk_financial_transactions_amount` (schema.sql --
+      // `ALTER TABLE financial_transactions ADD CONSTRAINT
+      // chk_financial_transactions_amount`, cita por nombre no por línea
+      // desde SCHEMA-ANCHOR-DRIFT-001, 10/09/2026) es
       // `CHECK (amount >= 0 OR type = 'ADJUSTMENT')` -- desde el 19/08/2026
       // `ADJUSTMENT` es el único `type` que admite monto negativo, justamente
       // para representar una nota de crédito en el ledger. Los consumidores

@@ -71,14 +71,19 @@ import { Roles } from '../../security/roles.js';
  *    ESTE repo no cambió de forma inesperada".
  * 3. NO cubre las otras superficies same-repo que también hay que
  *    propagar a mano al agregar un grupo: `role_preset_permission_groups`
- *    (`src/db/platform.schema.sql:376-392`), `plan_limit_allowed_permission_groups`
- *    (`platform.schema.sql:855-859`), `CUSTOMER_PERMISSION_GROUPS`
+ *    (`src/db/platform.schema.sql` -- `INSERT INTO role_preset_permission_groups`),
+ *    `plan_limit_allowed_permission_groups`
+ *    (`platform.schema.sql` -- `INSERT INTO plan_limit_allowed_permission_groups`),
+ *    `CUSTOMER_PERMISSION_GROUPS`
  *    (`roles.ts:74-84`, sincronizado a mano por su propio docblock),
  *    `docs/rbac-matriz-endpoints.md` (columna de grupo por fila), y la
- *    prosa de `platform.schema.sql:228-231` (a la fecha de este commit,
+ *    prosa del docblock de `platform.schema.sql`
+ *    (`CREATE TABLE IF NOT EXISTS roles (`, a la fecha de este commit,
  *    ya STALE -- dice "~7 claves fijas" y lista 7, sin
  *    `EMISOR_NOTA_CREDITO`; hallazgo nuevo, bloque de docs aparte, no
- *    corregido acá).
+ *    corregido acá). Citas por nombre, no por número de línea, desde
+ *    SCHEMA-ANCHOR-DRIFT-001 (10/09/2026, grounding ERP: ni ERPNext ni
+ *    Odoo citan por línea dentro del propio repo).
  */
 
 /** Conjunto ORDENADO congelado -- ver el docblock de arriba para por qué

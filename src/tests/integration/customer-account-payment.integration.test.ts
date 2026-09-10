@@ -48,7 +48,10 @@ let cbteNroCounter = 1;
 /**
  * Factura ISSUED mínima para estos tests: crea primero el CHARGE que la
  * factura referencia (FK histórica, aunque hoy sea nullable para
- * consolidadas -- ver schema.sql:3130-3139) y despues inserta la fila de
+ * consolidadas -- ver schema.sql,
+ * `ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL`,
+ * cita por nombre desde SCHEMA-ANCHOR-DRIFT-001, 10/09/2026) y despues
+ * inserta la fila de
  * `invoices` directo, que es más simple que pasar por todo el flujo AFIP
  * (fuera de alcance de O2-F1). El CHARGE necesita un origen (reservationId
  * -- `SqlFinancialTransactionRepository.insert()` lo exige, A3.10: todo
