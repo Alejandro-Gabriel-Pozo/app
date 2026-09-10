@@ -155,6 +155,86 @@ futuros, cada uno con su propio alcance.
 
 ---
 
+## Deuda estructural grande, investigada esta sesión — arrastrada con anclas corregidas
+
+Estos dos ítems venían de `pendientes-2026-09-08.md` (#24 y #25) y se habían
+caído del arrastre a este archivo cuando se abrió (mismo modo de falla que
+el incidente del roadmap del 25/08 — el único doc que se relee al empezar
+sesión no los tenía). Investigados a fondo esta sesión: research ERP
+(`auditor-circuitos-erp`, ERPNext + Odoo) → diseño propuesto → gate
+`architecture-governor`, que **rechazó el diseño propuesto** y autorizó
+solo un test de caracterización.
+
+- **`REFUND-ISSUED-RACE-01`** — 🟡 **medido con test de caracterización,
+  LOCAL/sin pushear** (`src/tests/integration/refund-issued-race.integration.test.ts`,
+  nuevo, gate 09-10/09/2026, Block A). `InvoiceService.finalizeIssued()` →
+  `markIssued()` (`src/facturacion/sql.invoice.repository.ts:814-825` —
+  **no `:718-728`**, esa cita estaba corrida) es el único escritor de
+  `invoices.status='ISSUED'`, corre por el pool sin transacción, después de
+  AFIP. `CancellationRefundService.confirmRefund()` vive en
+  **`src/reservas/cancellation-refund.service.ts`** (**no**
+  `src/facturacion/` — esa cita también estaba corrida) y lee
+  `issuedInvoices` en `:189`, dentro de su transacción. Si una factura
+  `PENDING` de la reserva pasa a `ISSUED` en la ventana entre esa lectura y
+  el COMMIT, el monto cae a `:sin-asignar` en vez de atarse a la factura
+  real, y si es consolidada, evade el fail-closed de 3.1
+  (`ReservationOnConsolidatedInvoiceError`) sin aviso. **Las 2 variantes
+  ahora están medidas contra Postgres real** (antes: "No medido en
+  producción"), no solo inferidas.
+  - **Diseño RECHAZADO por el gate**: el bracket de 2 transacciones (patrón
+    N1.a, el que sí usa `cancel-reservation-with-credit-note.service.ts`)
+    no aplica -- `confirmRefund()` no tiene ninguna llamada de red que
+    bracketear, y aplicarlo igual reabriría 3 guards ya cerrados
+    (BRECHA-REFUND-01 Fase 3, O2F2-B, FOR-KEY-SHARE-001). Re-lockear la
+    reserva tampoco sirve: `markIssued()` nunca toca `reservations`, mismo
+    lock-sin-efecto que un gate anterior (08/09) ya había rechazado.
+  - **Forma correcta identificada, no implementada todavía**: ensanchar el
+    `FOR UPDATE` existente (`:261-263`) para cubrir también las facturas
+    `PENDING`, no solo las `ISSUED` -- `getRefundableForUpdate()` ya es
+    status-agnóstico (`sql.invoice.repository.ts:201`). **Bloqueado a
+    propósito**: si `markIssued()` blocked-then-throws, la excepción sale
+    **sin capturar** de `issue()` (`invoice.service.ts:1087` — no
+    `:945`, esa cita también estaba corrida) y la factura queda `PENDING`
+    con un CAE real ya emitido en AFIP -- `retryExisting()` la trataría
+    como "segura para reintentar" y pediría un **segundo CAE para el mismo
+    cargo**. Hay que blindar ese camino de falla ANTES de ensanchar el
+    lock.
+  - **Pregunta de negocio pendiente, todavía sin `AskUserQuestion`**: si
+    una factura llega a `ISSUED` a mitad de un refund, ¿el resultado
+    correcto es (i) abortar con 409 reintentable, o (ii) atar el reembolso
+    a la factura recién emitida? Las dos son defendibles -- según la regla
+    de este repo ("Preguntas de alcance pueden esconder una decisión de
+    negocio"), esto bloquea diseñar el Block B.
+  - Corrección de hecho: `DB_POOL_MAX` es **10** (`src/db/pg.client.ts:94`),
+    no 5 -- varios documentos de esta sesión y de `pendientes-2026-09-08.md`
+    citan `max:5`, stale.
+- **Residual B-1 / "3.2-b"** — sigue abierto, sin tocar en este bloque.
+  Diagnóstico angostado por el research: el camino de `recordPayment()` CON
+  `allocations` ya es correcto y transaccional -- no hace falta tocarlo.
+  Solo el camino SIN `allocations` (`customer-account.service.ts:139`,
+  `this.financialRepo.create({...})` suelto por el pool) necesita
+  transaccionalizarse -- gap mecánico, no de diseño, reusando
+  `createIdempotentPaymentWithClient` (NO un `createWithClient` armado a
+  mano -- el camino con idempotencia nula releía por el pool dentro de una
+  tx sería el mismo aliasing hazard ya documentado en
+  `cancellation-refund.service.ts:345-354`). `lockById()` (la primitiva que
+  se había diseñado en una sesión anterior) es **prematura** -- ningún
+  camino real crea un `PAYMENT` en `PENDING` contra una reserva todavía.
+  `settleByReservationId()` (`sql.financial-transaction.repository.ts:280-289`)
+  es un interferente dormido -- el tripwire propuesto por el research
+  ("alertar si actualiza >0 filas") es RUIDO, no señal, porque settear
+  `CHARGE`/`ADJUSTMENT` en `PENDING` es el trabajo normal de ese handler;
+  la forma correcta es agregar `AND type <> 'PAYMENT'` al `UPDATE`
+  (arregla la interferencia en vez de solo vigilarla).
+
+**Próximo bloque, no autorizado todavía**: ninguno de los dos. Antes de
+diseñar el Block B de `REFUND-ISSUED-RACE-01` hace falta la decisión de
+negocio de arriba. Antes de tocar la residual B-1 hace falta su propio
+gate de alcance (transaccionalizar + el filtro de tipo en
+`settleByReservationId()`).
+
+---
+
 ## Documentales — correcciones in-place
 
 - `pendientes-2026-09-06.md:1104` ("`superadmin/roles-de-fabrica/page.tsx:60-62`
