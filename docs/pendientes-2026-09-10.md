@@ -516,11 +516,33 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   tienen el grupo) — opción (a) destruir personalizaciones de negocio +
   guard `isSystem` en `RoleService.updatePermissionGroups()`, o (b)
   preservarlas con columna de procedencia nueva. Ver más arriba.
-- **`SCHEMA-ANCHOR-DRIFT-001`** — ¿vale una cerca, dado que ya van 4
-  apariciones en 2 días (2 autoinfligidas por los commits que lo
-  corregían)? El supuesto "probablemente no, sería ruidoso" (línea
-  ~100-103 de este archivo) ya no se sostiene tan fácil con esa
-  frecuencia -- vale replanteártelo con esta evidencia nueva.
+- **`SCHEMA-ANCHOR-DRIFT-001` — ✅ RESUELTO, ACOTADO (10/09/2026, gate
+  `architecture-governor`, `d7268f3`+`6b235e0`+`9cad495`, pusheado y
+  deployado -- `dep-dahh842jnfac73ddhhtg`, `live` confirmado en Render,
+  CI verde incluido `schema-version-check` corriendo por el camino real
+  no solo el fallback).** Decisión del dueño con grounding ERP (ni
+  ERPNext ni Odoo citan por número de línea dentro del propio repo --
+  nombre de archivo/método/constraint, o SHA de commit para código
+  externo; 1 solo caso de línea numérica en ~2M líneas revisadas):
+  citar por nombre, no por línea. **Resuelto SOLO para esta clase
+  exacta:** 0 anclas de línea a `schema.sql`/`platform.schema.sql` en
+  `src/` de los dos repos, verificado por `grep` directo (no inferido) —
+  y el propio bloque volvió a autoinfligirse 2 veces mientras estaba
+  abierto (4 anclas por `d7268f3`, 2 más por `8fc30c3` aterrizando en
+  paralelo), la 4ª y 5ª aparición del patrón, ambas corregidas hacia
+  adelante en el mismo bloque, ambas verificadas con el mismo método.
+  **Lo que sigue abierto, con número medido, no una estimación:**
+  ~42 anclas `archivo.ts:N` (a OTROS archivos `.ts`, no a los schemas)
+  en `src/` de `app-main` -- esta cifra se mueve sola con el desarrollo
+  normal, no se congeló; ~102 anclas en `docs/erp-auditoria-v2/fichas/`
+  (ya gobernadas por `validar-anclas.py`, blind spot documentado en
+  `00-programa-v2.md` §4.2); ~158 en docs fechados históricos
+  (`diseno-*`, `pendientes-*`, `mapa-*` -- deuda declarada, no se
+  re-fecha retroactivamente); 31 en `hallazgos.csv` (derivado, se
+  regenera solo). **Próximo bloque, no autorizado todavía:** una cerca
+  que falle si aparece una ancla NUEVA de línea a cualquiera de los dos
+  schemas en `src/` -- baseline 0, allowlist vacío, sin el problema de
+  ruido que hacía inviable la cerca cuando el baseline era 78% stale.
 - **`credit_note_request` + bandeja completa** (#4b, ADR "cancelar con
   NC") — en HOLD, decisión del dueño (ADR §6.5/§10 fila 1). Ver
   `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`.
