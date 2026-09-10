@@ -482,12 +482,15 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **`EMISOR_NOTA_CREDITO`, checkbox en `roles-de-fabrica`** (bloque B) —
   la precondición (copy corregida y verificada en producción) YA se
   cumple desde hoy. Listo para su propio gate de diseño cuando se pida.
-- **W2, `cancellation-refund.service.ts:271`** — el `REFUND` se asienta
-  contra `reservation.customer.id` (huésped), no necesariamente el
-  titular real de la factura. Antes de decidir si corregirlo, hace falta
-  una query read-only de producción (las 2 tenants) que mida si
-  `invoice.customerId` diverge de `reservation.customer.id` en datos
-  reales -- sin esa medición, no hay decisión que tomar todavía.
+- **W2, `cancellation-refund.service.ts:271`** — ✅ **medido 10/09/2026**:
+  0 filas de divergencia entre `invoice.customerId` y
+  `reservation.customer.id` en REFUNDs reales, en las 2 tenants
+  (`SELECT ... FROM financial_transactions ft JOIN invoices i ON
+  i.id=ft.reversed_invoice_id WHERE ft.type='REFUND' AND
+  ft.customer_id<>i.customer_id`, Neon `ancient-king-17098519`, branches
+  `production`+`tenant-hotel-los-alamos`). No urgente -- no hay bug
+  manifestándose hoy. Sigue como deuda de diseño (el código no lo
+  garantiza estructuralmente, solo no divergió todavía en la práctica).
 - **A7.6** — cuántos días de retención para las columnas nuevas de
   observabilidad del outbox (`first_failed_at`/`last_failed_at`) antes de
   purgar. Bloquea el bloque 4.2 (`OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01`).
