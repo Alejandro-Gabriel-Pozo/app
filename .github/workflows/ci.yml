@@ -128,6 +128,50 @@ jobs:
             exit 0
           fi
 
+          # 09-10/09/2026 (falso positivo real: cd4dff6/5049c2d tocaron
+          # schema.sql con SOLO comentarios -- corrigiendo anclas de línea
+          # hacia platform.schema.sql -- y este chequeo exigió un bump que
+          # no correspondía). 51% de schema.sql son líneas `--` (medido);
+          # una cerca ciega al contenido sobre ese archivo iba a seguir
+          # disparando en falso. Filtra el diff a solo líneas que NO son
+          # comentario (`--`, con espacio opcional antes) ni blancas --
+          # mismo criterio que stripComments() usa en otras cercas de este
+          # repo (generate-route-inventory.ts, api-auth-gate-order.test.ts),
+          # pero acotado a SQL: solo entiende `--`, no `/* */` (hoy 0
+          # ocurrencias de `/* ` en schema.sql -- si alguien lo agrega,
+          # ese comentario NO se filtra y el chequeo exige un bump de más,
+          # nunca de menos, así que no es un hueco de seguridad, solo un
+          # falso positivo nuevo el día que pase).
+          #
+          # Residual declarado, no cerrado acá: una línea que empieza con
+          # `--` pero es DATA -- dentro de un literal de comillas simples
+          # que cruza un salto de línea, o de un cuerpo $$...$$ -- se
+          # filtraría igual, aunque sea SQL real. Verificado que hoy (v47)
+          # esa clase está vacía (0 líneas `--` dentro de bloques `$$`, 0
+          # literales con comillas simples que crucen renglón) -- pero no
+          # es estructuralmente imposible a futuro. Si algún día un seed
+          # necesita un literal multilínea, revisar este filtro antes de
+          # confiar en él para ESE commit.
+          #
+          # SCHEMA_DIFF se captura SIN `|| true`: bajo `bash -e` (el shell
+          # de este job), un git diff que fallara (BASE inalcanzable,
+          # historia recortada) mata el step acá -- no lo deja pasar en
+          # silencio disfrazado de "solo comentarios". El `|| true` de más
+          # abajo cubre únicamente "el grep no tuvo matches", que es
+          # esperado y no un error.
+          SCHEMA_DIFF=$(git diff "$BASE" "$HEAD" -- src/db/schema.sql)
+          NON_COMMENT_DIFF=$(printf '%s\n' "$SCHEMA_DIFF" \
+            | grep -E '^[+-]' \
+            | grep -vE '^(\+\+\+|---)' \
+            | grep -vE '^[+-][[:space:]]*--' \
+            | grep -vE '^[+-][[:space:]]*$' || true)
+
+          if [ -z "$NON_COMMENT_DIFF" ]; then
+            echo "schema.sql cambió pero solo en comentarios/líneas en blanco -- nada que chequear. Diff ignorado (verde silencioso evitado a propósito, ver ci.yml):"
+            printf '%s\n' "$SCHEMA_DIFF"
+            exit 0
+          fi
+
           # -E (POSIX extended), no -P: -P depende de PCRE y falla con
           # "supports only unibyte and UTF-8 locales" en algunos entornos
           # (confirmado localmente en Git Bash / MSYS2) — -E es portable.
