@@ -284,8 +284,10 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 -- modelo mental original, pero el seed de más abajo corría SIN CONDICIÓN
 -- en cada arranque -- un par que el panel de superadmin sacara (GET/PUT
 -- /platform/role-presets) volvía solo en el próximo reinicio. Corregido
--- (09-10/09/2026, PRESET-REVOKE-001, gate `architecture-governor`, 3
--- rondas de diseño): el seed de los 23 pares de acá abajo ahora corre
+-- (09-10/09/2026, PRESET-REVOKE-001, revisado en varias rondas por el
+-- gate `architecture-governor` -- ver docs/pendientes-2026-09-10.md para
+-- el detalle, no repetir un conteo acá): el seed de los 23 pares de acá
+-- abajo ahora corre
 -- UNA SOLA VEZ POR INSTALACIÓN, gateado por `platform_seed_markers`
 -- (tabla nueva, ver el bloque de acá abajo) -- no por si la tabla está
 -- vacía (esa alternativa tiene un agujero: el panel PUEDE vaciarla,

@@ -179,8 +179,9 @@ describe.skipIf(skipIfNoDb)('platform.schema.sql contra Postgres real', () => {
 
 /**
  * =========================================================================
- * PRESET-REVOKE-001 (09-10/09/2026, gate `architecture-governor`, 5 rondas
- * de diseño) -- marca de seed para `role_preset_permission_groups`.
+ * PRESET-REVOKE-001 (09-10/09/2026, revisado en varias rondas por el gate
+ * `architecture-governor`, ver docs/pendientes-2026-09-10.md) -- marca de
+ * seed para `role_preset_permission_groups`.
  *
  * `describe` de PRIMER NIVEL, BD propia (no comparte la del describe de
  * arriba): los tests de acá abajo mutan el catálogo de presets a propósito

@@ -449,11 +449,12 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   // los 5 roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER).
   //
   // Mecanismo, dos capas que NO se confunden (PRESET-REVOKE-001,
-  // 09-10/09/2026, gate `architecture-governor`, 3 rondas de diseño):
+  // 09-10/09/2026, revisado en varias rondas por el gate
+  // `architecture-governor` -- ver docs/pendientes-2026-09-10.md):
   //
   // 1. CATÁLOGO (`role_preset_permission_groups`) -- lo que este PUT
   //    escribe. Hasta 09-10/09/2026 el seed de los 23 pares originales
-  //    (`platform.schema.sql:320-331`) corría SIN CONDICIÓN en cada
+  //    (`platform.schema.sql:374-390`) corría SIN CONDICIÓN en cada
   //    arranque y reponía cualquiera de esos 23 que el panel sacara --
   //    "editar acá no persiste" para esos pares específicos. Corregido:
   //    el seed ahora corre UNA SOLA VEZ POR INSTALACIÓN, gateado por
