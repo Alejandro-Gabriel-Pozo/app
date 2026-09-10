@@ -136,11 +136,43 @@ futuros, cada uno con su propio alcance.
   del negocio. Hoy la única vía es SQL a mano contra la BD de
   plataforma. Hacer el backfill simétrico (agregar un `DELETE`) es un
   radio de explosión distinto — declarado, no decidido.
-- **`PRESET-SAVE-ECHO-001`** (08-09/09/2026, gate `architecture-governor`,
-  chico). El `PUT` de `role-presets` devuelve el eco del request en vez
-  de releer la fila real de la BD tras el `DELETE`+`INSERT`. Si el
-  `INSERT` fallara a mitad de camino (parcial), el response seguiría
-  mostrando éxito completo.
+- **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas, LOCAL/sin
+  pushear ni deployar** (`51ea0dc` + `db04daa`, gate `architecture-governor`
+  09-10/09/2026). Ronda 1 corrigió el eco del `PUT /role-presets/:name`
+  (devolvía el input en vez de releer). El gate, aplicando por primera vez
+  el §4.0 (gate de análisis de impacto, agregado a su propia definición
+  esta misma sesión) sobre ESE fix, encontró que la ronda 1 releía por
+  `this.db` (el POOL) en vez de por el `client` de la transacción externa
+  que el único call-site real (`platform.routes.ts`) siempre pasa --
+  bajo READ COMMITTED, esa lectura no ve el `DELETE`/`INSERT` sin
+  `COMMIT` todavía y devuelve el estado ANTERIOR. Con la ronda 1 sola en
+  producción: el superadmin tilda un grupo, guarda, ve "actualizado" en
+  verde, y el checkbox se destilda solo en pantalla -- mentira en la
+  dirección OPUESTA al bug original, y peor (el eco viejo al menos
+  coincidía con lo pedido). **Segundo sitio con el mismo defecto,
+  encontrado por el §4.0**: `updatePlanLimits()` (`platform.repository.ts`)
+  -- el método usado como "ejemplo correcto" en la ronda 1 tenía el mismo
+  problema (releía vía `listPlanLimits()` por el pool). Los dos corregidos
+  en `db04daa`: `listRolePresets()`/`listPlanLimits()` ahora aceptan un
+  `client` opcional, los `update*` pasan `externalClient ?? this.db`.
+  4 tests con 2 fakes distintos (pool vs. client de tx, estados
+  deliberadamente distintos entre sí y del input) + 2 mutantes verificados
+  (eco del input, lectura por pool en vez de por client). **Sin verificar,
+  declarado**: no hay test de integración de estas rutas contra Postgres
+  real -- la corrección queda demostrada por unit test + semántica
+  documentada de READ COMMITTED, no por ejecución contra la BD real.
+  - **Hallazgo nuevo del mismo barrido, NO corregido, para bloque propio**:
+    `SqlReservationRepository.save()` (`src/reservas/sql.reservation.repository.ts`,
+    método `syncLines`) hace `DELETE` + loop de `INSERT` por `this.sqlClient`
+    (el pool) SIN transacción cuando se entra por `save()` en vez de por
+    `saveWithClient()` -- mismo tipo de no-atomicidad que el Bug #5 del
+    27/08 ya cerró en varios otros sitios de este archivo, pero éste quedó
+    afuera. No confundir con `PRESET-SAVE-ECHO-001` -- es un hallazgo
+    distinto, mismo barrido de impacto.
+  - Observación menor, riesgo bajo, no accionada: `security/customer.auth.service.ts:87`
+    devuelve `customer: { fullName: input.fullName, email: input.email }`
+    tras el alta -- eco de input, pero fila única sin loop, blast radius
+    chico.
 - **`SUPERADMIN-CONTRAST-001`** (09-10/09/2026, gate
   `architecture-governor`, hallado incidentalmente al verificar que el
   bloque de advertencia nuevo renderizara bien). Pre-existente, NO
