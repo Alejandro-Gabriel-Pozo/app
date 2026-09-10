@@ -698,8 +698,10 @@ export class InvoiceService {
    * - **Parcial**, o total contra una factura "Nivel A" sin `invoice_items`
    *   → rama proporcional heredada: escala el desglose por tasa YA CONGELADO
    *   por `factor = abs(tx.amount) / original.impTotal`, una sola línea
-   *   sintética. **Deuda declarada:** el prorrateo por línea del parcial es
-   *   N4-b / B-reservas (`resolveRefundableForPair()`, ya existe sin cablear).
+   *   sintética. `resolveRefundableForPair()` SÍ está cableado (corrección
+   *   10/09/2026 -- este comentario decía "ya existe sin cablear", ya no es
+   *   cierto): lo llama `buildCreditNote()` más abajo (`:816`) para el
+   *   cruce independiente del monto contra la composición fiscal congelada.
    *   Un `ADJUSTMENT` NUNCA cae acá con `invoice_items` presentes (una orden
    *   se cancela todo-o-nada por construcción, ADR §5); si llega sin líneas
    *   se rechaza con `OrderInvoiceHasNoLinesError` (defensivo -- toda factura

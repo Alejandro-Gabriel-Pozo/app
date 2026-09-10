@@ -2,14 +2,16 @@
  * @file refund-attribution.ts
  * @description N4-a (05/09/2026, architecture-governor) -- cálculo puro de
  * cuánto de una factura consolidada es atribuible a UNA reserva puntual, y
- * cuánto de eso todavía se puede reembolsar. Bloque previo al fix de
- * `confirmRefund()` vs. facturas consolidadas (hallazgo #1,
- * docs/pendientes-2026-09-05.md) -- función pura, sin acceso a BD, sin
- * ningún caller de producción todavía. El wiring real (leer `invoice_items`,
- * `afip_request.Iva[]` y los REFUND ya aplicados, y cablear esto a
- * `getByReservationId()`/`getRefundableForUpdate()`) es N4-b, pendiente de
- * la respuesta del contador sobre el nivel de desagregación fiscal
- * aceptable (Q1 refinada, pendientes-2026-09-05.md).
+ * cuánto de eso todavía se puede reembolsar. **Tiene caller de producción
+ * desde el bloque 3.3-a (08/09/2026)**: `InvoiceService.buildCreditNote()`
+ * (`invoice.service.ts:816`) llama `resolveRefundableForPair()` para
+ * cruzar el monto del ledger contra la composición fiscal congelada
+ * (corrección 10/09/2026, gate `architecture-governor` -- este docblock
+ * decía "sin caller todavía", ya no es cierto). `distributeGroupAmount()`
+ * (`:137`) ya reparte sobre `subtotal` (el NETO congelado, `invoice_items`)
+ * -- decisión del dueño de usar NETO como denominador (10/09/2026,
+ * grounding ERP: ERPNext prorratea igual, `taxes_and_totals.ts:612-614`)
+ * es un no-op sobre este archivo, ya estaba así.
  *
  * ## Por qué NO es un prorrateo de `imp_total` a secas
  * La primera fórmula propuesta (`imp_total * share_R / SUM(ic.amount)`) fue

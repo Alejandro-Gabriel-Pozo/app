@@ -493,11 +493,36 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   purgar. Bloquea el bloque 4.2 (`OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01`).
 - **3.3-d, residual 1 (consolidada-parcial)** — F4 pregunta por la
   factura ENTERA, la NC del escape es parcial por reserva. Cierre:
-  clasificador por PAR `(invoiceId, reservationId)`; el denominador
-  (neto vs. `imp_total` con IVA) es una decisión de diseño sin tomar.
+  clasificador por PAR `(invoiceId, reservationId)`, todavía sin
+  construir. **Corrección 10/09/2026 (gate `architecture-governor`)**:
+  el denominador NETO ya está implementado (`refund-attribution.ts:137`,
+  `distributeGroupAmount()`) -- la decisión del dueño (NETO) es un no-op
+  sobre ese archivo. Lo que falta de verdad es el **numerador**: el
+  clasificador por par no existe, y si se arma con NETO como denominador
+  sin ajustar también el numerador a `SUM(nc.imp_neto)`, el `<=` de
+  `isInvoiceFullyCompensatedByIssuedCreditNotes()` (`cancel-with-credit-note.ts:89-94`)
+  queda fail-open (una NC que cubra ~82.6% del neto ya daría "totalmente
+  compensado"). Sin casos reales hoy (0/15 reservas en factura
+  consolidada, medición 08/09/2026) -- no urgente.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ensanchar la
   guarda de `registrarDesenlace()` cambia semántica compartida con
-  órdenes; bloque propio.
+  órdenes. **Corrección 10/09/2026**: el alcance real es más ancho de lo
+  que el nombre sugiere -- `TIPO_NO_LIQUIDABLE` lo dispara cualquier fila
+  `PAYMENT` **o `REFUND`** bajo la reserva (`cancellation-refund.service.ts:335`
+  también crea `REFUND` con `reservationId`, no solo `recordPayment()`),
+  y hay dos guardas con la misma condición (`outbox.handlers.ts:189-193`
+  Y `:336-340` dentro de `registrarDesenlace()`), no una -- ensanchar solo
+  la primera no alcanza. Además el set exacto de 2 rechazos no cubre el
+  set real (`CARGO_ANULADO` es un tercer rechazo independiente, con al
+  menos 3 combinaciones alcanzables). Forma sugerida por el gate: un
+  allowlist positivo de "co-rechazos benignos" bajo el prefijo
+  `opts?.comprobanteReconciliado` ya existente, no un set enumerado de 2
+  elementos ni un filtro en el productor (`candidatos` alimenta 5
+  contadores distintos, filtrar ahí silenciaría `RESERVA_INEXISTENTE`).
+  Sin casos reales hoy (0/15 reservas canceladas con comprobante vivo,
+  medición 08/09/2026 -- confirmado de nuevo 10/09/2026, 0 filas en las
+  2 tenants) -- no urgente. Próximo paso: discovery de la matriz completa
+  de combinaciones de rechazos alcanzables, no implementación directa.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
