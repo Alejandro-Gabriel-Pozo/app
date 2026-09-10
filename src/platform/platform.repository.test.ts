@@ -126,35 +126,79 @@ describe('PlatformRepository — escrituras multi-tabla exigen TransactionManage
 });
 
 /**
- * PRESET-SAVE-ECHO-001 (09-10/09/2026, gate `architecture-governor`) --
- * antes `updateRolePresetPermissionGroups()` devolvía `{ name,
- * permissionGroups }` (el INPUT del caller) en vez de releer lo que
- * realmente quedó en la BD tras el `DELETE`+`INSERT`. Si el `INSERT` fallara
- * a mitad de camino, el caller igual recibía éxito completo con el array
- * que HABÍA PEDIDO, no el real.
+ * PRESET-SAVE-ECHO-001 (09-10/09/2026, gate `architecture-governor`,
+ * corregido en 2 rondas). Ronda 1 -- `updateRolePresetPermissionGroups()`
+ * devolvía `{ name, permissionGroups }`, un eco del INPUT, en vez de releer
+ * la BD. Ronda 2 (encontrada por el §4.0 al re-revisar ESTE fix) -- la
+ * primera versión releía por `this.db` (el pool) en vez de por el `client`
+ * de la transacción externa: bajo READ COMMITTED, esa lectura corre por
+ * OTRA conexión que todavía no ve el `DELETE`/`INSERT` sin `COMMIT` -- vuelve
+ * el estado ANTERIOR. `updatePlanLimits()` (más abajo) tenía el MISMO
+ * defecto de ronda 2, a pesar de haberse usado como "ejemplo correcto" en
+ * la ronda 1.
+ *
+ * Estos tests usan DOS fakes distintos a propósito -- uno hace de pool
+ * (`this.db`, estado VIEJO), otro de client de transacción (estado NUEVO,
+ * con un tercer valor que NI el input NI el pool tienen) -- así una sola
+ * aserción distingue los 3 mundos: eco del input, lectura por el pool
+ * equivocado, o lectura real por el client correcto.
  */
-class FakeUpdateRolePresetSqlClient implements SqlClient {
+class StalePoolSqlClient implements SqlClient {
   async query<T = unknown>(sql: string): Promise<{ rows: T[]; rowCount?: number }> {
     if (sql.includes('SELECT 1 FROM role_presets')) return { rows: [{}] as T[], rowCount: 1 };
-    if (sql.includes('DELETE FROM role_preset_permission_groups')) return { rows: [] as T[], rowCount: 1 };
-    if (sql.includes('INSERT INTO role_preset_permission_groups')) return { rows: [] as T[], rowCount: 1 };
     if (sql.includes('FROM role_presets rp')) {
-      // Lo que "quedó en la BD" según este mock -- deliberadamente DISTINTO
-      // del input que el test le pasa a updateRolePresetPermissionGroups()
-      // más abajo. Si el código todavía hiciera eco del input, la aserción
-      // del test fallaría (esperaría ['ORDERS'], no ['STAFF']).
+      // Estado VIEJO -- lo que un SELECT por el pool vería mientras la
+      // transacción externa todavía no hizo COMMIT.
       return { rows: [{ name: 'WAITER', permission_group: 'STAFF' }] as T[] };
     }
+    if (sql.includes('FROM plan_limits')) return { rows: [{ plan: 'STARTER', max_categories: 1, max_resources: 1, max_active_memberships: 1, max_custom_roles: 0 }] as T[] };
+    if (sql.includes('FROM plan_limit_allowed_roles')) return { rows: [{ plan: 'STARTER', role_name: 'ADMIN' }] as T[] };
+    if (sql.includes('FROM plan_limit_allowed_permission_groups')) return { rows: [{ plan: 'STARTER', permission_group: 'STAFF' }] as T[] };
+    return { rows: [] as T[] };
+  }
+}
+
+class TxClientSqlClient implements SqlClient {
+  async query<T = unknown>(sql: string): Promise<{ rows: T[]; rowCount?: number }> {
+    if (sql.includes('DELETE') || sql.includes('INSERT') || sql.includes('UPDATE')) return { rows: [] as T[], rowCount: 1 };
+    if (sql.includes('FROM role_presets rp')) {
+      // Estado NUEVO -- DOS grupos, ninguno igual al input (['ORDERS']) ni
+      // al estado viejo del pool ('STAFF') -- un eco del input daría
+      // ['ORDERS'], una lectura por el pool daría ['STAFF'], solo la
+      // lectura real por ESTE client da lo de abajo.
+      return { rows: [
+        { name: 'WAITER', permission_group: 'MANAGEMENT' },
+        { name: 'WAITER', permission_group: 'ORDERS' },
+      ] as T[] };
+    }
+    if (sql.includes('FROM plan_limits')) return { rows: [{ plan: 'STARTER', max_categories: 5, max_resources: 5, max_active_memberships: 5, max_custom_roles: 5 }] as T[] };
+    if (sql.includes('FROM plan_limit_allowed_roles')) return { rows: [{ plan: 'STARTER', role_name: 'OWNER' }, { plan: 'STARTER', role_name: 'ADMIN' }] as T[] };
+    if (sql.includes('FROM plan_limit_allowed_permission_groups')) return { rows: [{ plan: 'STARTER', permission_group: 'MANAGEMENT' }] as T[] };
     return { rows: [] as T[] };
   }
 }
 
 describe('PlatformRepository.updateRolePresetPermissionGroups()', () => {
-  it('devuelve lo que quedó realmente en la BD (releído), no un eco del permissionGroups del caller', async () => {
-    const db = new FakeUpdateRolePresetSqlClient();
-    const repo = new PlatformRepository(db, fakeTxManager(db));
+  it('relee por el CLIENT de la transacción externa, no por el pool ni por eco del input', async () => {
+    const pool = new StalePoolSqlClient();
+    const tx = new TxClientSqlClient();
+    const repo = new PlatformRepository(pool, fakeTxManager(pool));
 
-    const result = await repo.updateRolePresetPermissionGroups('WAITER', ['ORDERS'], db);
+    const result = await repo.updateRolePresetPermissionGroups('WAITER', ['ORDERS'], tx);
+
+    // Ni el eco del input (['ORDERS']) ni la lectura stale del pool
+    // (['STAFF']) -- tiene que ser el estado real del client de tx.
+    expect(result).toEqual({ name: 'WAITER', permissionGroups: ['MANAGEMENT', 'ORDERS'] });
+  });
+
+  it('sin externalClient -- relee por el pool (this.db), porque la tx propia ya hizo COMMIT antes de este punto', async () => {
+    const pool = new StalePoolSqlClient();
+    // fakeTxManager corre `work` contra el mismo `pool` -- simula que
+    // txRun() abrió y cerró su propia transacción sobre esa conexión antes
+    // de que el código llegue a releer.
+    const repo = new PlatformRepository(pool, fakeTxManager(pool));
+
+    const result = await repo.updateRolePresetPermissionGroups('WAITER', ['ORDERS']);
 
     expect(result).toEqual({ name: 'WAITER', permissionGroups: ['STAFF'] });
   });
@@ -172,6 +216,21 @@ describe('PlatformRepository.updateRolePresetPermissionGroups()', () => {
     const result = await repo.updateRolePresetPermissionGroups('NO_EXISTE', ['ORDERS'], db);
 
     expect(result).toBeUndefined();
+  });
+});
+
+describe('PlatformRepository.updatePlanLimits() -- releer por el client correcto (mismo defecto de ronda 2 que arriba)', () => {
+  it('relee por el CLIENT de la transacción externa, no por el pool', async () => {
+    const pool = new StalePoolSqlClient();
+    const tx = new TxClientSqlClient();
+    const repo = new PlatformRepository(pool, fakeTxManager(pool));
+
+    const result = await repo.updatePlanLimits(BusinessPlan.STARTER, {
+      maxCategories: 5, maxResources: 5, maxActiveMemberships: 5, maxCustomRoles: 5,
+      allowedRoleNames: ['OWNER', 'ADMIN'], allowedPermissionGroups: ['MANAGEMENT'],
+    }, tx);
+
+    expect(result).toMatchObject({ maxCategories: 5, allowedRoleNames: ['OWNER', 'ADMIN'], allowedPermissionGroups: ['MANAGEMENT'] });
   });
 });
 

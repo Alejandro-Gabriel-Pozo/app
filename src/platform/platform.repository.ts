@@ -741,8 +741,20 @@ export class PlatformRepository {
    * para el resto del código de negocio). Acá `null`/`[]` viajan tal cual
    * están en la base — el frontend decide cómo mostrar "sin límite".
    */
-  async listPlanLimits(): Promise<PlanLimitsAdmin[]> {
-    const limitsResult = await this.db.query<{
+  /**
+   * `client` (09-10/09/2026, gate `architecture-governor`, hallazgo del §4.0
+   * sobre `PRESET-SAVE-ECHO-001`) -- por defecto `this.db` (el pool), pero
+   * `updatePlanLimits()` lo llama pasando SU PROPIO `externalClient` cuando
+   * hay uno: sin esto, releer después de escribir DENTRO de una transacción
+   * ajena corre por OTRA conexión del pool y, bajo READ COMMITTED, no ve el
+   * `DELETE`/`INSERT` todavía sin `COMMIT` -- devuelve el estado ANTERIOR,
+   * no el que se acaba de guardar. Mismo defecto que tenía
+   * `updateRolePresetPermissionGroups()` (ver su docblock), encontrado acá
+   * por el gate al re-auditar el sitio que se había usado como "ejemplo de
+   * cómo se hace bien".
+   */
+  async listPlanLimits(client: SqlClient = this.db): Promise<PlanLimitsAdmin[]> {
+    const limitsResult = await client.query<{
       plan: string;
       max_categories: number | null;
       max_resources: number | null;
@@ -750,10 +762,10 @@ export class PlatformRepository {
       max_custom_roles: number | null;
     }>(`SELECT plan, max_categories, max_resources, max_active_memberships, max_custom_roles FROM plan_limits ORDER BY plan`);
 
-    const rolesResult = await this.db.query<{ plan: string; role_name: string }>(
+    const rolesResult = await client.query<{ plan: string; role_name: string }>(
       `SELECT plan, role_name FROM plan_limit_allowed_roles`,
     );
-    const groupsResult = await this.db.query<{ plan: string; permission_group: string }>(
+    const groupsResult = await client.query<{ plan: string; permission_group: string }>(
       `SELECT plan, permission_group FROM plan_limit_allowed_permission_groups`,
     );
 
@@ -802,7 +814,11 @@ export class PlatformRepository {
     if (externalClient) await work(externalClient);
     else await this.txRun('updatePlanLimits', work);
 
-    return (await this.listPlanLimits()).find((p) => p.plan === plan)!;
+    // externalClient ?? this.db -- si hay transacción externa TODAVÍA
+    // abierta (sin COMMIT), releer tiene que ir por ESA MISMA conexión; si
+    // no, la escritura de arriba ya commiteó en su propia tx y this.db (el
+    // pool) ya la ve. Ver el docblock de listPlanLimits() para el porqué.
+    return (await this.listPlanLimits(externalClient ?? this.db)).find((p) => p.plan === plan)!;
   }
 
   /** Catálogo global de los 5 roles de fábrica. Editar acá SÍ afecta
@@ -815,8 +831,8 @@ export class PlatformRepository {
    *  proceso, y propaga cada grupo agregado a todos los negocios
    *  existentes. Ver el comentario de platform.routes.ts (GET/PUT
    *  /platform/role-presets) para el mecanismo completo. */
-  async listRolePresets(): Promise<RolePresetAdmin[]> {
-    const result = await this.db.query<{ name: string; permission_group: string | null }>(
+  async listRolePresets(client: SqlClient = this.db): Promise<RolePresetAdmin[]> {
+    const result = await client.query<{ name: string; permission_group: string | null }>(
       `SELECT rp.name, rppg.permission_group
        FROM role_presets rp
        LEFT JOIN role_preset_permission_groups rppg ON rppg.preset_name = rp.name
@@ -856,13 +872,20 @@ export class PlatformRepository {
     if (externalClient) await work(externalClient);
     else await this.txRun('updateRolePresetPermissionGroups', work);
 
-    // PRESET-SAVE-ECHO-001 (09-10/09/2026, gate `architecture-governor`) --
-    // antes devolvía `{ name, permissionGroups }`, un eco del INPUT: si el
-    // loop de INSERT de `work()` fallara a mitad de camino (parcial), el
-    // caller igual recibía éxito completo con el array que HABÍA PEDIDO
-    // guardar, no el que realmente quedó. Mismo patrón que
-    // `updatePlanLimits()` un poco más arriba: releer de la fuente real.
-    return (await this.listRolePresets()).find((p) => p.name === name)!;
+    // PRESET-SAVE-ECHO-001 (09-10/09/2026, gate `architecture-governor`,
+    // corregido en 2 rondas): la primera versión de este fix releía por
+    // `this.listRolePresets()` a secas -- por el POOL, no por
+    // `externalClient`. El único call-site real (`platform.routes.ts`)
+    // SIEMPRE pasa un `client` de una transacción todavía sin `COMMIT` en
+    // ese punto -- releer por el pool, bajo READ COMMITTED, no ve el
+    // `DELETE`/`INSERT` recién hecho y devuelve el estado ANTERIOR. Sin
+    // `externalClient` (nadie lo hace hoy, pero es el contrato del método),
+    // `work()` ya commiteó en su propia tx al llegar acá, así que `this.db`
+    // sí es correcto -- por eso `externalClient ?? this.db`, no `this.db` a
+    // secas. Mismo defecto encontrado por el gate en `updatePlanLimits()`
+    // (arriba), que se usó como "ejemplo de cómo se hace bien" en la
+    // primera ronda de este fix y en realidad tenía el mismo problema.
+    return (await this.listRolePresets(externalClient ?? this.db)).find((p) => p.name === name)!;
   }
 
   // -------------------------------------------------------------------------
