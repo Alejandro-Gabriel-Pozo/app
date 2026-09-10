@@ -1,12 +1,19 @@
 # Pendientes — 10/09/2026
 
 Fuente de verdad vigente (reemplaza a `pendientes-2026-09-08.md` como el
-archivo que se lee al empezar la próxima sesión). Arrastra únicamente lo
-que esta sesión tocó, con ancla re-verificada. **Todo lo demás que seguía
-abierto en `pendientes-2026-09-08.md`** (deuda estructural, seguridad,
-backlog de producto, ADR "cancelar con NC" — resto) **sigue abierto tal
-cual está ahí** — no se re-auditó en esta sesión, así que no se re-lista
-acá (regla del proyecto: no duplicar contenido que no se re-chequeó).
+archivo que se lee al empezar la próxima sesión).
+
+**Actualización 10/09/2026, tarde — consolidación pedida por el dueño**:
+las secciones de abajo (arco transversal, hallazgos del gate,
+`REFUND-ISSUED-RACE-01`) son lo que esta sesión tocó o encontró
+directamente, con ancla re-verificada. La sección **"Backlog completo
+consolidado"**, al final de este archivo, agrega TODO lo que seguía
+abierto en `pendientes-2026-09-08.md` (deuda estructural, seguridad,
+backlog de producto, ADR "cancelar con NC" — resto) — leído entero para
+esta consolidación, pero **sin revalidar cada ancla una por una** (eso
+excede lo que se puede hacer en una sesión; se señalan las que ya se sabe
+que están corridas). No confundir "consolidado" con "re-auditado a
+fondo".
 
 ---
 
@@ -409,3 +416,151 @@ gate de alcance (transaccionalizar + el filtro de tipo en
   decían "sigue abierto"/"LOCAL sin pushear" reescritos in-place a
   "cerrado, verificado en producción" (`7cee110` para push, este archivo
   para el estado post-deploy).
+
+---
+
+## Backlog completo consolidado (10/09/2026, tarde)
+
+Todo lo que seguía abierto en `pendientes-2026-09-08.md` -- leído entero,
+sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
+(cerrado o con ancla corregida) contra lo que se arrastra tal cual estaba
+(ancla vieja, sin re-chequear). Agrupado igual que el archivo de origen.
+
+### 🔴 Bloqueado en una decisión del dueño
+
+- **`REFUND-ISSUED-RACE-01`, Block B** — abortar con 409 vs. atar
+  tardíamente el reembolso a la factura recién `ISSUED`. Bloquea diseñar
+  el arreglo real (ensanchar el `FOR UPDATE`, hoy bloqueado además por
+  blindar el camino de falla de `markIssued()` primero). Ver más arriba
+  en este mismo archivo.
+- **`PRESET-REVOKE-001`, la mitad real** (revocar hacia negocios que ya
+  tienen el grupo) — opción (a) destruir personalizaciones de negocio +
+  guard `isSystem` en `RoleService.updatePermissionGroups()`, o (b)
+  preservarlas con columna de procedencia nueva. Ver más arriba.
+- **`SCHEMA-ANCHOR-DRIFT-001`** — ¿vale una cerca, dado que ya van 4
+  apariciones en 2 días (2 autoinfligidas por los commits que lo
+  corregían)? El supuesto "probablemente no, sería ruidoso" (línea
+  ~100-103 de este archivo) ya no se sostiene tan fácil con esa
+  frecuencia -- vale replanteártelo con esta evidencia nueva.
+- **`credit_note_request` + bandeja completa** (#4b, ADR "cancelar con
+  NC") — en HOLD, decisión del dueño (ADR §6.5/§10 fila 1). Ver
+  `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`.
+- **UI de `cancellation-refund/preview\|confirm`** (#6-A4, circuito C2
+  de plata) — D2-diferido, decisión de roadmap explícita, no
+  follow-up automático del ADR.
+- **`EMISOR_NOTA_CREDITO`, checkbox en `roles-de-fabrica`** (bloque B) —
+  la precondición (copy corregida y verificada en producción) YA se
+  cumple desde hoy. Listo para su propio gate de diseño cuando se pida.
+- **W2, `cancellation-refund.service.ts:271`** — el `REFUND` se asienta
+  contra `reservation.customer.id` (huésped), no necesariamente el
+  titular real de la factura. Antes de decidir si corregirlo, hace falta
+  una query read-only de producción (las 2 tenants) que mida si
+  `invoice.customerId` diverge de `reservation.customer.id` en datos
+  reales -- sin esa medición, no hay decisión que tomar todavía.
+- **A7.6** — cuántos días de retención para las columnas nuevas de
+  observabilidad del outbox (`first_failed_at`/`last_failed_at`) antes de
+  purgar. Bloquea el bloque 4.2 (`OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01`).
+- **3.3-d, residual 1 (consolidada-parcial)** — F4 pregunta por la
+  factura ENTERA, la NC del escape es parcial por reserva. Cierre:
+  clasificador por PAR `(invoiceId, reservationId)`; el denominador
+  (neto vs. `imp_total` con IVA) es una decisión de diseño sin tomar.
+- **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ensanchar la
+  guarda de `registrarDesenlace()` cambia semántica compartida con
+  órdenes; bloque propio.
+
+### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
+
+- **Residual B-1 / 3.2-b** (`CustomerAccountService.recordPayment()`,
+  camino sin `allocations`) — transaccionalizar (mecánico, patrón ya
+  usado 20 líneas más abajo en el mismo archivo) + filtro de tipo en
+  `settleByReservationId()` (interferente dormido). Mecanismo ya
+  investigado a fondo esta sesión (research ERPNext/Odoo/QloApps, ver
+  más arriba).
+- **`PLAN-LIMITS-SEED-REVERT-001`** — mismo defecto y mismo mecanismo que
+  `PRESET-REVOKE-001` (marca de seed), aplicado a
+  `plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`/
+  `max_custom_roles`. Ver más arriba.
+- **`RBAC-MATRIX-SECTION2-001`, hueco del `EXCLUDED_FILES`** — la cerca
+  solo verifica que el CONTEO de rutas protegidas siga coincidiendo, no
+  que el archivo siga sin bullets parseables. Cerrarlo (contar bullets
+  parseables por archivo) es prerequisito antes de normalizar cualquiera
+  de los 11 archivos en prosa (85 rutas protegidas sin verificar fila
+  por fila: `customer.routes.ts` 7, `invoices.routes.ts` 8,
+  `admin.routes.ts` 2, `platform.routes.ts` 11,
+  `waste-reasons.routes.ts` 5, `consumption-destinations.routes.ts` 5,
+  `products.routes.ts` 30, `cancellation-policies.routes.ts` 5,
+  `roles.routes.ts` 5, `user-invitation.routes.ts` 4,
+  `accounts-receivable.routes.ts` 3 -- este último con un bullet que ya
+  diverge del código real, `GET /?companyCustomerId=` vs `GET /`).
+- **`SUPERADMIN-CONTRAST-001`** — texto casi ilegible en `/superadmin/*`
+  (blanco sobre el `--bg` claro de V2). Calculado, no medido en
+  navegador -- confirmar antes de priorizar.
+- **`SqlReservationRepository.save()`/`syncLines`** no atómico por el
+  pool cuando no se entra vía `saveWithClient()` -- hallazgo de esta
+  sesión, sin bloque todavía.
+- **`SEC-ROT-001`** — runbook de rotación ya escrito, falta el código
+  real: 2 claves + `reencrypt-secrets.ts` + cambiar IV de 16 a 12 bytes.
+- **`CONCIL-INCONSIST-01`** (absorbe `INV-ORF-01` + pt1 `ORDER-13`) --
+  diseño ya grounded contra ERPNext/Odoo (cron que NO emite + query
+  on-demand + contador junto a `countDeadLettered()`). 0 filas huérfanas
+  medidas (07/09) -- riesgo latente, no urgente.
+- **`OUTBOX-RETRY-HIST-01`** + **`OUTBOX-BACKOFF-01`** — mismo DDL
+  (`first_failed_at`/`last_failed_at` en `domain_events`), bloqueado por
+  A7.6 (arriba).
+- **`OUTBOX-DL-COMPENSATOR-01`** — idempotencia del compensador de
+  `onDeadLetter`; bloquea a `CONCIL-INCONSIST-01`, así que va primero si
+  se retoma esta familia.
+- **Deuda de comentario en `outbox.handlers.ts`** — el docblock de
+  `registrarDesenlace()` sigue diciendo que solo `handleOrderCancelled`
+  pasa `opts`; desde `6d55876` también `handleReservationCancelled` lo
+  pasa. Comment-only, chico.
+- **5 bloques `@swagger` sin generar nada** (`auth.routes.ts:154,248,293`,
+  `business.routes.ts:48,79`) -- `swagger-jsdoc` no está instalado, esos
+  comentarios no alimentan ningún artefacto. Limpieza, no bug.
+- **`FACT-INV-BIZID-001`/`FAILOPEN-001`** — solo re-etiquetar, sin
+  cambio de código.
+
+### 🟢 Deuda aceptada, no bug (documentado, no accionable)
+
+- **TTL de NC `PENDING`/`FAILED_UNCERTAIN` huérfana** — verificado contra
+  ERPNext/Odoo/QloApps: ninguno tiene TTL automático de una corrección
+  fiscal en curso tampoco. Mitigado con `GET /api/invoices?status=` +
+  `MID-LOG-001`, ya existentes.
+- **A6.6** — quién puede cancelar/rechazar una solicitud de NC en curso.
+  No aplica hoy (`credit_note_request` sigue en HOLD) -- anotado para
+  cuando se reabra.
+
+### Menores / cosmético
+
+- **`OUTBOX-DL-THROTTLE-RESET-01`** 🟠 — el cooldown del aviso de
+  dead-letter se resetea con `pool.on('error')`, correlacionado con
+  outages. Techo real sigue bajo, no urgente.
+- **`EMAIL-FROMNAME-RFC5322-01`** 🟠 — `email.sender.ts:72`, `from` sin
+  quotear ante `"`/`<`/`,`/`;` en `display_name`.
+- **Desfase de fecha "08/09"→"07/09"** en ~5 docs -- verificar si sigue
+  aplicando (puede que ya se haya corregido en una sesión posterior).
+- **`DA-CONT-001`**, **`DOC-ANCLA-001`**, ficha M10 desactualizada --
+  sin detalle adicional en el archivo de origen, solo el nombre.
+
+### 📋 Backlog de producto (sin fecha, roadmap -- no re-auditado)
+
+`Gap C1-C` · `AR-FACT-NO-ISSUED-01` Fases 2-8 · `FACT-BORRADOR-001` (v2.8)
+· C1-B (bloqueada por proveedor externo) · C2/C3 · D7 (5 endpoints de
+reportes sin consumidor de frontend) · circuito POS-caja (`ORDER-12`/
+`CAJA-ORD-01`/`AUDIT-ORD-01`) · heredados (Redis, BullMQ, downgrade de
+plan, datos demo en prod).
+
+**Ojo, esto es distinto del roadmap de producto completo**
+(`docs/roadmap-pms-multirubro.md`, qué le falta a la app por rubro) --
+ese documento NO se leyó en esta sesión ni en esta consolidación. Por
+regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
+("repasá el roadmap") si lo querés en el radar.
+
+### ✅ Cerrado, confirmado durante esta lectura (no estaba marcado así antes)
+
+- `lock-order.test.ts` blind spot sobre `getInFlightCreditNoteTotalForUpdate`/
+  `ForPair` (#27.2 de `pendientes-2026-09-08.md`) -- esto es el mismo FN#2
+  que esta sesión cerró temprano (`7150dfa`+`271fdd4`+`1cd9cea`), solo que
+  el archivo de origen todavía lo listaba como "declarado sin arreglar".
+  Confirmado con el propio `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md:487`,
+  que ya dice "✅ cerrado el 09/09/2026".
