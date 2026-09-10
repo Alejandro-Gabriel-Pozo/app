@@ -111,6 +111,44 @@ Chequeo barato antes de correr nada: contar los `$` que **no** forman parte
 de un par. Al 29/08 el único legítimo está dentro de un comentario
 (`psql $PLATFORM_DATABASE_URL`).
 
+### Recuperar un preset de roles vaciado por error (09-10/09/2026, `PRESET-REVOKE-001`)
+
+Desde el bloque de la marca de seed (`platform_seed_markers`,
+`platform.schema.sql`, seed de `role_preset_permission_groups`), el seed de
+los 23 pares de fábrica corre **una sola vez por instalación** — la primera
+vez que arranca contra una BD de plataforma nueva. Después de eso, editar
+un preset por el panel (`PUT /platform/role-presets/:name`) persiste de
+verdad: un reinicio del servidor **ya no repone** lo que se haya sacado.
+
+Esto es justo lo que se pidió, pero tiene un piso que no existe todavía a
+nivel schema: `UpdateRolePresetSchema` (`platform.routes.ts`) no exige un
+mínimo de grupos — guardar un preset con el array vacío es una operación
+válida hoy. Si eso pasa (por error, o probando la pantalla), el resultado
+persiste: cualquier negocio NUEVO que se cree después nace con ese rol sin
+ningún `permission_group`, y `authorize()` es fail-closed — 403 en todo lo
+que dependa de ese rol, sin ningún error visible que lo explique.
+
+**Recuperación** (el mecanismo lo permite porque el backfill sigue siendo
+solo-agrega, `ON CONFLICT DO NOTHING` — no pisa nada que el superadmin haya
+agregado a mano):
+
+```sql
+-- Conectado a PLATFORM_DATABASE_URL (nunca a una tenant DB):
+DELETE FROM platform_seed_markers WHERE seed_key = 'role_preset_permission_groups';
+```
+
+En el próximo arranque del proceso (deploy o `restart` manual del servicio
+en Render), el seed corre una vez más, completa los 23 pares originales que
+falten (vía `ON CONFLICT DO NOTHING`, sin duplicar ni pisar ediciones
+reales que ya estuvieran bien) y vuelve a dejar la marca puesta. **No hace
+falta restaurar un backup para esto** — es la vía normal, no el último
+recurso.
+
+Si el superadmin había editado ADEMÁS otros presets de forma legítima
+(agregando o sacando algo que no fuera un vaciado accidental), esas
+ediciones sobreviven igual: el seed solo agrega lo que falte de los 23
+pares originales, nunca saca nada que ya esté.
+
 ## Procedimiento 3 — Rollback: qué revertir y qué NO
 
 > **Agregado el 28/08/2026**, después del deploy de la v44. Hasta ese día el runbook no

@@ -189,6 +189,28 @@ futuros, cada uno con su propio alcance.
   todavía, sin implementar**: la marca de seed en sí -- diseño cerrado,
   pendiente de mandar al gate con el alcance reducido a (c) para
   `READY FOR IMPLEMENTATION`.
+- **`PLAN-LIMITS-SEED-REVERT-001`** (09-10/09/2026, gate
+  `architecture-governor`, encontrado al aplicar §4.0 sobre el diseño de
+  `PRESET-REVOKE-001` -- mismo defecto, mismo archivo, tercera vez que
+  aparece este par). `platform.schema.sql:774-776` (`max_custom_roles`),
+  `:779` (`plan_limit_allowed_roles`) y `:791`
+  (`plan_limit_allowed_permission_groups`) corren INCONDICIONALMENTE en
+  cada arranque, igual que el seed de presets antes de este bloque -- y
+  los 3 tienen escritor real por panel
+  (`PUT /platform/plan-limits/:plan`, `platform.repository.ts:778-821`,
+  `DELETE`+`INSERT` del set completo; UI de checkboxes en
+  `appfrontend-main/src/app/superadmin/planes/page.tsx:153-154`).
+  **Consecuencia, no mecanismo**: destildar un grupo de permisos de
+  FREE/STARTER en el panel de planes se revierte solo en el próximo
+  reinicio del servidor -- el TECHO de autorización de roles CUSTOM se
+  re-ensancha sin que nadie lo haya decidido. Más grave que el caso de
+  presets: acá la reversión re-abre una restricción (fail-open), no
+  repone un default. Mismo defecto para `max_custom_roles=null` ("sin
+  límite"): el panel lo acepta, pero `:774-776` lo revierte a `0` en el
+  próximo arranque si empezó `NULL`. **No corregido en este bloque a
+  propósito** -- mismo criterio de "un bloque chico por vez"; el fix,
+  cuando se encare, es la misma técnica de marca de seed que
+  `PRESET-REVOKE-001`, aplicada a estos 3 sitios.
 - **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas,
   pusheado y deployado** (`51ea0dc` + `db04daa` + `fa50557`, gate
   `architecture-governor` 09-10/09/2026). Render `dep-dahcnveq1p3s73dbdovg`
