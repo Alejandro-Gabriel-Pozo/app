@@ -168,7 +168,52 @@ futuros, cada uno con su propio alcance.
   del `error.middleware.ts` global (`ZodError → 400`, verificado por
   lectura, no ejercitado end-to-end) — requeriría credenciales de
   superadmin de producción, no disponibles en esta sesión.
-- **`PRESET-REVOKE-001`** — 🟡 **HOLD, en diseño activo, 2 rondas de gate,
+- **`PRESET-REVOKE-001` — ✅ IMPLEMENTADO ENTERO (Parte 1+2), LOCAL/sin
+  pushear** (10/09/2026, gate `architecture-governor`, `2c1c7ff`+`e8f97db`+`43d1c00`
+  en `app-main`, `0123129` en `appfrontend-main`). La mitad que había
+  quedado abierta (revocar hacia negocios que ya tienen el grupo) se
+  cerró en la misma sesión, no quedó para "un bloque futuro":
+  - **Parte 1** (`2c1c7ff`) -- `RoleService.updatePermissionGroups()`
+    ya NO permite customizar el set de permisos de un rol `isSystem` por
+    negocio (reversión de R11, con fecha). 409, guard por cambio de set
+    (no incondicional), 3 mutantes con sets rojos disjuntos.
+  - **Parte 2** (`e8f97db`) -- `PlatformRepository.updateRolePresetPermissionGroups()`
+    propaga altas Y bajas a TODOS los roles de sistema de TODOS los
+    negocios, dentro de la MISMA transacción del PUT -- ya no depende
+    del próximo arranque para ninguna de las dos direcciones. 2
+    mutantes verificados contra Postgres real.
+  - **Decisión de la ronda de cierre**: el reconcile de arranque (marca
+    `platform_seed_markers` corriendo una sola vez) se SACÓ del alcance
+    -- medido en producción (10/09/2026) que el stock de divergencia
+    histórica era 0/0, así que con el guard de la Parte 1 puesto ese
+    reconcile hubiera sido un `DELETE` destructivo de radio
+    plataforma-completa que nunca ejecuta nada.
+  - **Runbook actualizado** (`43d1c00`) -- recuperación de un preset
+    vaciado por error reescrita para la propagación instantánea: vía
+    normal usa `platform_audit_log.old_value` + re-guardar por el panel
+    (sin reinicio, sin backup); break-glass SQL con verificación antes
+    de `COMMIT` como último recurso.
+  - **Cartel del frontend corregido** (`0123129`,
+    `appfrontend-main/src/app/superadmin/roles-de-fabrica/page.tsx`) --
+    ya no afirma lo contrario de lo que el botón hace; agrega la
+    advertencia del escenario de lockout (vaciar `OWNER` sin
+    `MANAGEMENT`) y muestra el radio real (altas/bajas propagadas) en
+    el toast de guardado.
+  - Re-medido en producción inmediatamente antes de este cierre
+    (10/09/2026, Neon `morning-unit-50056927`): 0/0/0 en las 3 queries
+    de divergencia -- ninguna migración de datos hace falta, el código
+    nuevo empieza desde un estado ya consistente.
+  - **Fix estructural pendiente, bloque aparte, no cerrado acá**: los
+    consumidores por nombre de `roles.name` (`users.routes.ts:201,276`,
+    `user-invitation.routes.ts:156`, `platform.repository.ts:1156,1178`,
+    el techo `allowedRoleNames`) siguen autorizando por nombre en vez de
+    por `role.id`/`is_system`. El guard de `renameRole()` (`8fc30c3`,
+    bloque previo) cierra el camino que PRODUCE la divergencia; no
+    cambia esa dependencia estructural.
+
+- ~~`PRESET-REVOKE-001`~~ (detalle histórico de las 2 rondas de diseño
+  que llevaron a la decisión de arriba, preservado como registro) — 🟡
+  **HOLD, en diseño activo, 2 rondas de gate,
   alcance recién acotado por el dueño** (09-10/09/2026, gate
   `architecture-governor`). **Corrección de una afirmación falsa que
   este mismo bullet tenía**: `role.service.ts:182` NO bloquea editar
@@ -239,19 +284,12 @@ futuros, cada uno con su propio alcance.
   upgrade real que prueban los tests es el que va a correr en el
   próximo deploy, sin ninguna revocación previa que revertir.
 
-  **Hallazgos nuevos de la revisión de implementación, registrados,
-  NO corregidos en este bloque:**
-  - **Copy del frontend queda falsa al deployar** --
-    `appfrontend-main/src/app/superadmin/roles-de-fabrica/page.tsx:74-77`
-    dice hoy en producción "Destildar un grupo que viene de fábrica no
-    persiste: vuelve solo en el próximo arranque" -- exactamente lo que
-    este bloque corrige. El deploy de `cd4dff6` vuelve esa frase falsa
-    de inmediato. **Bloque cross-repo aparte, ORDENADO por deploy**: la
-    copy del frontend no se toca hasta que el backend esté deployado y
-    verificado en producción -- mismo criterio que ya se aplicó para
-    `roles-de-fabrica`/`PRESET-GROUP-VALIDATION-001` en un bloque
-    anterior de esta sesión. El párrafo vecino (`:67-72`, "el backfill
-    solo agrega, nunca borra") sigue siendo cierto y NO se toca.
+  **Hallazgos de la revisión de implementación, registrados en su momento:**
+  - **Copy del frontend** -- ✅ **corregida** (`0123129`, ver el bloque
+    `✅ IMPLEMENTADO ENTERO` de arriba). Quedó falsa entre el deploy de
+    `cd4dff6` (marca de seed) y el de la Parte 2 -- corregida en la
+    misma sesión en que la Parte 2 se implementó, no quedó pendiente
+    entre sesiones.
   - **Negativo confirmado, no hacía falta corregir nada**: se verificó
     que el catálogo de 8 grupos del frontend (`roles-de-fabrica/page.tsx:9-12`,
     sin `EMISOR_NOTA_CREDITO`, `ROLES-CATALOG-DRIFT-001`) NO pierde ese
@@ -512,10 +550,10 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   archivo). La mitad NO tocada (blindar `markIssued()` para poder
   ensanchar el `FOR UPDATE`) sigue abierta, sin decisión pendiente --
   bloque propio.
-- **`PRESET-REVOKE-001`, la mitad real** (revocar hacia negocios que ya
-  tienen el grupo) — opción (a) destruir personalizaciones de negocio +
-  guard `isSystem` en `RoleService.updatePermissionGroups()`, o (b)
-  preservarlas con columna de procedencia nueva. Ver más arriba.
+- ~~`PRESET-REVOKE-001`, la mitad real~~ — ✅ **RESUELTO 10/09/2026**
+  (opción (a), destruir -- decisión del dueño, medido 0 personalizaciones
+  reales que destruir. Parte 1+2 implementadas, LOCAL/sin pushear. Ver
+  el bloque `✅ IMPLEMENTADO ENTERO` más arriba en este mismo archivo).
 - **`SCHEMA-ANCHOR-DRIFT-001` — ✅ RESUELTO, ACOTADO (10/09/2026, gate
   `architecture-governor`, `d7268f3`+`6b235e0`+`9cad495`, pusheado y
   deployado -- `dep-dahh842jnfac73ddhhtg`, `live` confirmado en Render,
