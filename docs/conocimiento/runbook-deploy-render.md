@@ -113,65 +113,104 @@ de un par. Al 29/08 el único legítimo está dentro de un comentario
 
 ### Recuperar un preset de roles vaciado por error (09-10/09/2026, `PRESET-REVOKE-001`)
 
-**Aplica desde que se deploye el bloque de la marca de seed
-(`platform_seed_markers`, `PRESET-REVOKE-001`) — hoy esa tabla NO EXISTE
-todavía en ningún entorno.** Cuando exista: el seed de los 23 pares de
-fábrica (`platform.schema.sql`, seed de `role_preset_permission_groups`)
-corre **una sola vez por instalación** — la primera vez que arranca contra
-una BD de plataforma nueva, o la primera vez que arranca DESPUÉS de este
-deploy contra una BD que ya tenía los 23 pares sin la marca (ver "primer
-arranque tras el deploy" más abajo). Después de eso, editar un preset por
-el panel (`PUT /platform/role-presets/:name`) persiste de verdad: un
-reinicio del servidor **ya no repone** lo que se haya sacado.
+**Reescrito 10/09/2026 -- Parte 1+2 ya deployadas, esta sección describe
+la realidad actual, no la versión anterior del mecanismo.** Desde
+`PRESET-REVOKE-001` Parte 1+2:
 
-**Primer arranque tras el deploy — un revert final, una sola vez.** La
-marca todavía no existe en ese arranque, así que el seed corre una última
-vez y repone cualquier par de los 23 originales que un superadmin ya
-hubiera sacado ANTES del deploy. Es esperable, no un bug: si alguien
-revocó `BOOKING` de `RECEPTIONIST` el día anterior, lo va a ver reaparecer
-después de este deploy, y recién desde ESE punto en adelante sacarlo
-vuelve a persistir de verdad. Avisar de esto antes de deployar si se sabe
-que alguien editó un preset recientemente.
+1. Un rol "sistema" (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER) **ya
+   no se puede customizar** por `PUT /api/roles/:id` -- `RoleService.updatePermissionGroups()`
+   rechaza con 409 si el negocio intenta cambiarle el set de permisos a
+   un rol de sistema. La única vía de cambiar qué puede hacer un rol de
+   sistema es el catálogo de presets.
+2. `PUT /platform/role-presets/:name` propaga **al instante, en las DOS
+   direcciones**, a TODOS los negocios existentes -- altas y bajas,
+   dentro de la MISMA transacción del PUT, no en el próximo arranque.
 
-Esto es justo lo que se pidió, pero tiene un piso que no existe todavía a
-nivel schema: `UpdateRolePresetSchema` (`platform.routes.ts`) no exige un
-mínimo de grupos — guardar un preset con el array vacío es una operación
-válida hoy. Si eso pasa (por error, o probando la pantalla), el resultado
-persiste: cualquier negocio NUEVO que se cree después nace con ese rol sin
-ningún `permission_group`, y `authorize()` es fail-closed — 403 en todo lo
-que dependa de ese rol, sin ningún error visible que lo explique.
+**Radio real de un error acá subió, no bajó.** `UpdateRolePresetSchema`
+sigue sin exigir un mínimo de grupos -- guardar un preset con el array
+vacío es válido. Con la propagación instantánea, eso vacía el rol de
+fábrica correspondiente **en TODOS los negocios existentes, ya**, no
+solo en los que se creen después. Si el preset vaciado es `OWNER` sin
+`MANAGEMENT`, ningún negocio puede volver a entrar a sus propias
+pantallas de roles/usuarios (`authorize(Roles.MANAGEMENT)`) -- pero el
+panel de **superadmin** sigue accesible (`authorizePlatform(...)`, un
+camino de auth completamente separado del tenant), así que la
+recuperación de acá abajo SIEMPRE está disponible, sin necesitar acceso
+a ningún negocio.
 
-**Recuperación** (el mecanismo lo permite porque el backfill sigue siendo
-solo-agrega, `ON CONFLICT DO NOTHING` — no pisa nada que el superadmin haya
-agregado a mano):
+**Recuperación -- paso 1, in-app, sin SQL (vía normal).** El propio PUT
+que vació el preset dejó registrado el set ANTERIOR en `platform_audit_log`
+(`recordPlatformChanges`, `entity='role_presets'`). Consultar (read-only,
+conectado a `PLATFORM_DATABASE_URL`):
 
 ```sql
--- Conectado a PLATFORM_DATABASE_URL (nunca a una tenant DB):
-DELETE FROM platform_seed_markers WHERE seed_key = 'role_preset_permission_groups';
+SELECT changed_at, changed_by, old_value, new_value
+FROM platform_audit_log
+WHERE entity = 'role_presets' AND entity_id = '<NOMBRE_DEL_PRESET>' -- ej. 'OWNER'
+ORDER BY changed_at DESC
+LIMIT 5;
 ```
 
-En el próximo arranque del proceso (deploy o `restart` manual del servicio
-en Render), el seed corre una vez más, completa los 23 pares originales que
-falten (vía `ON CONFLICT DO NOTHING`, sin duplicar ni pisar ediciones
-reales que ya estuvieran bien) y vuelve a dejar la marca puesta. **No hace
-falta restaurar un backup para esto** — es la vía normal, no el último
-recurso.
+Tomar el `old_value` de la fila más reciente (el set previo al error) y
+volver a guardarlo por el panel de superadmin
+(`PUT /platform/role-presets/:name`, `appfrontend-main/src/app/superadmin/roles-de-fabrica`)
+o directo contra la API. Eso dispara de nuevo la Parte 2 (altas) y repone
+el set correcto en todos los negocios al instante -- **sin reiniciar el
+proceso, sin backup, sin SQL de escritura.**
 
-**Asimetría, importante no pasarla por alto**: esta recuperación NO es
-gratis para el resto del catálogo. El seed es solo-agrega
-(`ON CONFLICT DO NOTHING`) — completa lo que falte de los 23 pares
-ORIGINALES, pero no distingue "faltaba por un vaciado accidental" de
-"faltaba porque alguien lo sacó a propósito, de forma legítima". Si el
-superadmin había AGREGADO algo nuevo a otro preset (ej. un grupo que no es
-uno de los 23), eso sobrevive sin problema — el seed no lo toca. Pero si
-había SACADO uno de los 23 pares originales de OTRO preset, de forma
-legítima, esta recuperación se lo repone también — no hay forma de que el
-seed distinga una revocación real de un vaciado por error, los dos se ven
-igual (el par ya no está). Por eso esta vía es para el caso específico
-"vacié un preset por error, quiero los defaults de vuelta", no una
-recuperación general y gratuita — si hay revocaciones legítimas de otros
-presets que no se quieren perder, hay que volver a aplicarlas a mano
-después de correr esto.
+**Recuperación -- paso 2, break-glass (solo si el paso 1 no es viable --
+panel caído, o no hay fila de `platform_audit_log` utilizable).**
+Contra `PLATFORM_DATABASE_URL`, en una transacción, verificando ANTES de
+comprometer:
+
+```sql
+BEGIN;
+
+INSERT INTO role_preset_permission_groups (preset_name, permission_group)
+SELECT '<NOMBRE_DEL_PRESET>', g
+FROM UNNEST(ARRAY['<grupo_1>', '<grupo_2>', '...']::varchar[]) AS g -- del old_value recuperado, o de la lista de 23 pares originales si no hay auditoría utilizable
+ON CONFLICT (preset_name, permission_group) DO NOTHING;
+
+INSERT INTO role_permission_groups (role_id, permission_group)
+SELECT r.id, rppg.permission_group
+FROM roles r
+JOIN role_preset_permission_groups rppg ON rppg.preset_name = r.name
+WHERE r.name = '<NOMBRE_DEL_PRESET>' AND r.is_system = TRUE
+ON CONFLICT (role_id, permission_group) DO NOTHING;
+
+-- Verificación antes de COMMIT -- ej. para OWNER, confirmar que TODOS
+-- los negocios recuperaron MANAGEMENT:
+SELECT r.business_id,
+       COUNT(*) FILTER (WHERE rpg.permission_group = 'MANAGEMENT') AS tiene_management
+FROM roles r
+LEFT JOIN role_permission_groups rpg ON rpg.role_id = r.id
+WHERE r.name = '<NOMBRE_DEL_PRESET>' AND r.is_system = TRUE
+GROUP BY r.business_id;
+-- Si TODAS las filas dan tiene_management = 1 (o el criterio que
+-- corresponda al preset) -> COMMIT; si no -> ROLLBACK y revisar.
+
+COMMIT;
+```
+
+**Por qué este break-glass ya NO sirve como recuperación general** (a
+diferencia de la versión anterior de esta sección, que borraba
+`platform_seed_markers` para hacer correr el seed de nuevo): con la
+Parte 1 puesta, no hay forma de que un negocio tenga customizado un rol
+de sistema por fuera del catálogo -- así que restaurar el catálogo (paso
+1 o 2 de arriba) restaura TODO lo que puede haberse perdido, sin la
+asimetría ni el residual que la versión anterior de esta sección
+describía ("si había sacado uno de los 23 pares originales de OTRO
+preset, de forma legítima, esta recuperación se lo repone también"). Esa
+categoría de problema ya no existe: cualquier estado de
+`role_permission_groups` de un rol de sistema es, por construcción,
+igual al catálogo -- no hay una segunda fuente de verdad que pisar por
+error.
+
+**`platform_seed_markers` sigue existiendo** (gatea el seed histórico de
+los 23 pares originales, corre una sola vez por instalación) pero **ya
+no es parte del camino de recuperación** -- borrar esa marca no ayuda
+con un preset vaciado hoy, porque el seed que gatea nunca vuelve a correr
+después del primer arranque post-deploy (ver más abajo, sigue igual).
 
 ## Procedimiento 3 — Rollback: qué revertir y qué NO
 
