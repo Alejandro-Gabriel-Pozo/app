@@ -70,10 +70,12 @@
  * `financial_transactions` vía `settleByIdsWithClient`. Orden: reserva
  * primero si las dos hicieran falta en la misma tx (nunca ocurre hoy). Por
  * eso este archivo NO entra en `lock-order.test.ts`
- * (`LOCK_CALL_RE` sólo vigila `applyCapped*`/`getOutstandingForUpdate(client`/
- * `getRefundableForUpdate(client` — ninguno de los cuales llama este
- * orquestador) — no es un descuido, es que acá no hay ABBA posible por
- * construcción.
+ * (`LOCK_CALL_RE` vigila `applyCapped*`/`getOutstandingForUpdate(client`/
+ * `getRefundableForUpdate(client`/`getInFlightCreditNoteTotalForUpdate(client`/
+ * `getInFlightCreditNoteTotalForPairForUpdate(client` — ninguno de los
+ * cuales llama este orquestador directo, los llama `invoice.service.ts`
+ * dentro de `requestInvoice()`) — no es un descuido, es que acá no hay
+ * ABBA posible por construcción.
  */
 
 import { randomUUID } from 'node:crypto';

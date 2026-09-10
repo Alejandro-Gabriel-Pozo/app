@@ -914,8 +914,14 @@ export class InvoiceService {
       // dentro de una consolidada (rama nueva de arriba). Convive con el
       // tope global de arriba, no lo reemplaza: una consolidada puede tener
       // cupo global de sobra y aun así dejar que UNA reserva se lleve más
-      // de lo que le corresponde. Reusa el `FOR UPDATE` que ya tomó la
-      // sentencia de arriba sobre la MISMA fila -- no toma un lock nuevo.
+      // de lo que le corresponde. Toma su PROPIO `FOR UPDATE` sobre la
+      // MISMA fila que la sentencia de arriba (corrección del gate del
+      // 08/09/2026 en sql.invoice.repository.ts, ver docblock ahí -- ya NO
+      // depende de que el caller haya lockeado antes). Es un re-lock
+      // same-tx: Postgres lo concede de inmediato, sin esperar (LOCK-ORDER-001,
+      // gate architecture-governor 09/09/2026 -- por eso este archivo entra
+      // a SINGLE_INVOICE_CALLERS, no a MULTI: nunca se sostienen dos filas
+      // de invoices PREEXISTENTES distintas a la vez).
       if (pairAttribution) {
         const pairInFlight = await this.invoiceRepo.getInFlightCreditNoteTotalForPairForUpdate(
           client, original.id, pairAttribution.reservationId,

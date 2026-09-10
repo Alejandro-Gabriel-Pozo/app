@@ -20,8 +20,10 @@ const SRC_DIR = join(__dirname, '../..');
  *
  * No es un parser: cuenta qué archivos invocan las primitivas que lockean
  * una fila de `invoices` (`applyCappedPaymentToInvoice`,
- * `applyCappedRefundToInvoice` de `payment-application.ts`, o
- * `getOutstandingForUpdate`/`getRefundableForUpdate` llamadas directo con
+ * `applyCappedRefundToInvoice` de `payment-application.ts`;
+ * `getOutstandingForUpdate`/`getRefundableForUpdate`; o
+ * `getInFlightCreditNoteTotalForUpdate`/`...ForPairForUpdate` de
+ * `invoice.repository.ts`, agregadas 09/09/2026 -- llamadas directo con
  * un `client`) y exige que la lista sea EXACTAMENTE la conocida hoy. Cada
  * caller cae en una de dos categorías, ambas explícitas abajo: lockea MÁS
  * DE UNA factura en la misma transacción (tiene que usar
@@ -52,7 +54,12 @@ const SRC_DIR = join(__dirname, '../..');
  *      `DEFINITION_FILES` (excluido a propósito, porque ahí SIEMPRE
  *      aparece el argumento `client` en la firma) y esta cerca no
  *      distingue "define el método" de "lo llama para lockear varias
- *      filas".
+ *      filas". **Disparó de verdad, no es hipotético:** los bloques 2.4 y
+ *      3.3-a (08/09/2026) agregaron `getInFlightCreditNoteTotalForUpdate()`/
+ *      `...ForPairForUpdate()` a `invoice.repository.ts` y esta cerca no se
+ *      enteró hasta el 09/09/2026, cuando se agregaron a `LOCK_CALL_RE` a
+ *      mano (gate `architecture-governor`) -- el punto ciego siempre iba a
+ *      necesitar una corrección manual, y esta fue la primera vez.
  *   3. El segundo `expect` (`canonicalInvoiceLockOrder\s*\(`) solo prueba
  *      que la función aparece EN ALGÚN LADO del archivo -- no que envuelve
  *      el array que de verdad alimenta el loop de lock. Un archivo podría
@@ -71,6 +78,8 @@ const MULTI_INVOICE_CALLERS = [
 const SINGLE_INVOICE_CALLERS: Record<string, string> = {
   'clientes-finanzas/accounts-receivable.service.ts':
     'markCollected() resuelve UNA factura por resolveInvoiceLinkage(), sin loop -- un solo lock, no hay ABBA que ordenar',
+  'facturacion/invoice.service.ts':
+    'getInFlightCreditNoteTotalForUpdate()/...ForPairForUpdate() ejecutan DOS sentencias FOR UPDATE, pero las dos sobre la MISMA fila preexistente (original.id) -- la segunda es un re-lock de una fila que la propia transacción ya tiene tomada (mismo xid, misma conexión vía PgTransactionManager.run()), Postgres la concede de inmediato sin esperar. Nunca se sostienen dos filas de invoices PREEXISTENTES distintas a la vez (createWithClient() inserta la NC nueva en la misma tx, pero es invisible para otras transacciones hasta el commit -- no puede participar de un ciclo de espera). Un solo lock real, no hay ABBA que ordenar. Verificado (gate architecture-governor, 09/09/2026): sql.invoice.repository.ts:502-512 documenta que getInFlightCreditNoteTotalForPairForUpdate() toma su PROPIO FOR UPDATE, no depende de un lock previo -- el comentario del call-site que decía lo contrario (invoice.service.ts, corregido en el mismo commit) describía el diseño anterior a esa corrección del 08/09/2026.',
 };
 
 /** Definen las primitivas de lock -- no son "callers" que lockeen varias
@@ -84,7 +93,7 @@ const DEFINITION_FILES = new Set([
 ]);
 
 const LOCK_CALL_RE =
-  /\b(applyCappedPaymentToInvoice|applyCappedRefundToInvoice)\s*\(|\bgetOutstandingForUpdate\s*\(\s*client\b|\bgetRefundableForUpdate\s*\(\s*client\b/;
+  /\b(applyCappedPaymentToInvoice|applyCappedRefundToInvoice)\s*\(|\bgetOutstandingForUpdate\s*\(\s*client\b|\bgetRefundableForUpdate\s*\(\s*client\b|\bgetInFlightCreditNoteTotalForUpdate\s*\(\s*client\b|\bgetInFlightCreditNoteTotalForPairForUpdate\s*\(\s*client\b/;
 
 /** Igual que en `rbac-matrix-sync.test.ts`: saca `/* *\/` y `//` antes de
  *  matchear -- si no, un comentario que MENCIONA `canonicalInvoiceLockOrder()`
