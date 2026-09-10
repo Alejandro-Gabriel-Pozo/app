@@ -126,6 +126,56 @@ describe('PlatformRepository — escrituras multi-tabla exigen TransactionManage
 });
 
 /**
+ * PRESET-SAVE-ECHO-001 (09-10/09/2026, gate `architecture-governor`) --
+ * antes `updateRolePresetPermissionGroups()` devolvía `{ name,
+ * permissionGroups }` (el INPUT del caller) en vez de releer lo que
+ * realmente quedó en la BD tras el `DELETE`+`INSERT`. Si el `INSERT` fallara
+ * a mitad de camino, el caller igual recibía éxito completo con el array
+ * que HABÍA PEDIDO, no el real.
+ */
+class FakeUpdateRolePresetSqlClient implements SqlClient {
+  async query<T = unknown>(sql: string): Promise<{ rows: T[]; rowCount?: number }> {
+    if (sql.includes('SELECT 1 FROM role_presets')) return { rows: [{}] as T[], rowCount: 1 };
+    if (sql.includes('DELETE FROM role_preset_permission_groups')) return { rows: [] as T[], rowCount: 1 };
+    if (sql.includes('INSERT INTO role_preset_permission_groups')) return { rows: [] as T[], rowCount: 1 };
+    if (sql.includes('FROM role_presets rp')) {
+      // Lo que "quedó en la BD" según este mock -- deliberadamente DISTINTO
+      // del input que el test le pasa a updateRolePresetPermissionGroups()
+      // más abajo. Si el código todavía hiciera eco del input, la aserción
+      // del test fallaría (esperaría ['ORDERS'], no ['STAFF']).
+      return { rows: [{ name: 'WAITER', permission_group: 'STAFF' }] as T[] };
+    }
+    return { rows: [] as T[] };
+  }
+}
+
+describe('PlatformRepository.updateRolePresetPermissionGroups()', () => {
+  it('devuelve lo que quedó realmente en la BD (releído), no un eco del permissionGroups del caller', async () => {
+    const db = new FakeUpdateRolePresetSqlClient();
+    const repo = new PlatformRepository(db, fakeTxManager(db));
+
+    const result = await repo.updateRolePresetPermissionGroups('WAITER', ['ORDERS'], db);
+
+    expect(result).toEqual({ name: 'WAITER', permissionGroups: ['STAFF'] });
+  });
+
+  it('undefined si el preset no existe -- no llega a escribir ni a releer', async () => {
+    class NoPresetSqlClient implements SqlClient {
+      async query<T = unknown>(sql: string): Promise<{ rows: T[]; rowCount?: number }> {
+        if (sql.includes('SELECT 1 FROM role_presets')) return { rows: [] as T[] };
+        return { rows: [] as T[] };
+      }
+    }
+    const db = new NoPresetSqlClient();
+    const repo = new PlatformRepository(db, fakeTxManager(db));
+
+    const result = await repo.updateRolePresetPermissionGroups('NO_EXISTE', ['ORDERS'], db);
+
+    expect(result).toBeUndefined();
+  });
+});
+
+/**
  * Guardia de regresión para el mismo tipo de deuda estructural, pero en
  * PLAN_LIMITS (18/08/2026): antes una constante TS, ahora la tabla
  * `plan_limits`/`plan_limit_allowed_roles`. Verifica el mapeo NULL→Infinity

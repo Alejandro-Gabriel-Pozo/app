@@ -856,7 +856,13 @@ export class PlatformRepository {
     if (externalClient) await work(externalClient);
     else await this.txRun('updateRolePresetPermissionGroups', work);
 
-    return { name, permissionGroups };
+    // PRESET-SAVE-ECHO-001 (09-10/09/2026, gate `architecture-governor`) --
+    // antes devolvía `{ name, permissionGroups }`, un eco del INPUT: si el
+    // loop de INSERT de `work()` fallara a mitad de camino (parcial), el
+    // caller igual recibía éxito completo con el array que HABÍA PEDIDO
+    // guardar, no el que realmente quedó. Mismo patrón que
+    // `updatePlanLimits()` un poco más arriba: releer de la fuente real.
+    return (await this.listRolePresets()).find((p) => p.name === name)!;
   }
 
   // -------------------------------------------------------------------------
