@@ -295,16 +295,41 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 -- el seed). Desde que la marca existe, editar un preset por el panel
 -- persiste de verdad -- un reinicio ya no lo pisa.
 --
--- Lo que esto NO resuelve, a propósito, alcance de un bloque futuro: la
--- PROPAGACIÓN hacia negocios que YA EXISTEN sigue siendo asimétrica.
--- Agregar un permission_group a un preset SÍ se copia a todos los
--- negocios existentes, vía el backfill de acá abajo (`:412-417`,
--- CROSS JOIN businesses, ON CONFLICT DO NOTHING, sin cambios en este
--- bloque). Sacar un permission_group de un preset NO se lo saca a NINGÚN
--- negocio que ya lo tuviera -- eso sigue exigiendo SQL a mano contra la
--- BD de plataforma. La marca de acá abajo resuelve "¿el catálogo persiste
--- lo que edito?", no "¿mi edición alcanza a los negocios existentes?" --
--- son dos preguntas distintas, con dos respuestas distintas.
+-- PRESET-REVOKE-001 Parte 1+2 (10/09/2026, gate `architecture-governor`) --
+-- la asimetría de propagación descrita acá arriba (agregar SÍ llega a
+-- negocios existentes, sacar NO) quedó cerrada. Dos cambios, en
+-- `role.service.ts` y `platform.repository.ts` (código TS, no este
+-- archivo):
+--   1. `RoleService.updatePermissionGroups()` ya NO permite customizar el
+--      SET de permisos de un rol "sistema" por `PUT /api/roles/:id`
+--      (reversión de R11, con fecha -- antes SÍ se podía, ver el docblock
+--      de ese método). La única vía de cambiar qué puede hacer un rol de
+--      sistema es este catálogo, vía `PUT /platform/role-presets/:name`.
+--   2. `PlatformRepository.updateRolePresetPermissionGroups()` propaga en
+--      las DOS direcciones, dentro de la MISMA transacción del PUT, no
+--      solo en el próximo arranque: altas Y bajas llegan al instante a
+--      TODOS los roles "sistema" de TODOS los negocios existentes.
+--      Destructivo a propósito (decisión del dueño) -- no distingue
+--      procedencia porque, con el guard de arriba puesto, ya no puede
+--      haber ninguna otra procedencia.
+--
+-- El backfill de acá abajo (`INSERT INTO role_permission_groups (`) NO
+-- se retiró -- pasa de ser EL mecanismo de propagación a ser una RED DE
+-- AUTO-REPARACIÓN de la dirección "alta", para la única ventana que le
+-- queda: un negocio creado (`createBusiness()` → `provisionSystemRoles()`)
+-- justo en la carrera con un PUT concurrente a este catálogo puede nacer
+-- con el snapshot viejo del preset; el próximo arranque del proceso lo
+-- repara (add-only, `ON CONFLICT DO NOTHING`, no puede violar nada). La
+-- dirección "baja" de esa misma carrera queda expuesta a propósito
+-- (ventana de milisegundos, consecuencia acotada) -- riesgo residual
+-- aceptado, no tapado.
+--
+-- Reconcile de arranque que se había diseñado primero (marca
+-- `platform_seed_markers`, correr una sola vez): se sacó del alcance.
+-- Medido en producción (10/09/2026) que el stock de divergencia
+-- histórica era 0/0 -- con el guard de la Parte 1 puesto, ese reconcile
+-- hubiera sido un DELETE destructivo de radio plataforma-completa que
+-- nunca ejecuta nada.
 --
 -- Antes de este mecanismo, los 5 roles "sistema" y sus permission_groups
 -- estaban escritos DOS veces a mano: como array TS en

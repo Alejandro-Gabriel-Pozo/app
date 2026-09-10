@@ -188,7 +188,10 @@ describe('PlatformRepository.updateRolePresetPermissionGroups()', () => {
 
     // Ni el eco del input (['ORDERS']) ni la lectura stale del pool
     // (['STAFF']) -- tiene que ser el estado real del client de tx.
-    expect(result).toEqual({ name: 'WAITER', permissionGroups: ['MANAGEMENT', 'ORDERS'] });
+    // propagatedGranted/Revoked: 1 y 1 -- TxClientSqlClient devuelve
+    // rowCount:1 para cualquier INSERT/DELETE/UPDATE (PRESET-REVOKE-001
+    // Parte 2, 10/09/2026).
+    expect(result).toEqual({ name: 'WAITER', permissionGroups: ['MANAGEMENT', 'ORDERS'], propagatedGranted: 1, propagatedRevoked: 1 });
   });
 
   it('sin externalClient -- relee por el pool (this.db), porque la tx propia ya hizo COMMIT antes de este punto', async () => {
@@ -200,7 +203,9 @@ describe('PlatformRepository.updateRolePresetPermissionGroups()', () => {
 
     const result = await repo.updateRolePresetPermissionGroups('WAITER', ['ORDERS']);
 
-    expect(result).toEqual({ name: 'WAITER', permissionGroups: ['STAFF'] });
+    // propagatedGranted/Revoked: 0 -- StalePoolSqlClient no tiene un catch-all
+    // de rowCount para INSERT/DELETE genéricos (PRESET-REVOKE-001 Parte 2).
+    expect(result).toEqual({ name: 'WAITER', permissionGroups: ['STAFF'], propagatedGranted: 0, propagatedRevoked: 0 });
   });
 
   it('undefined si el preset no existe -- no llega a escribir ni a releer', async () => {

@@ -358,6 +358,133 @@ describe.skipIf(skipIfNoDb)('PRESET-REVOKE-001 — marca de seed de role_preset_
 });
 
 /**
+ * PRESET-REVOKE-001 Parte 2 (10/09/2026, gate `architecture-governor`) --
+ * propagación bidireccional set-based, disparada por
+ * `PlatformRepository.updateRolePresetPermissionGroups()` (el mismo
+ * método que usa `PUT /platform/role-presets/:name`), no por el
+ * arranque. BD propia (no `db2` del describe de arriba) para no
+ * heredar el estado del test que borra WAITER a propósito.
+ */
+describe.skipIf(skipIfNoDb)('PRESET-REVOKE-001 Parte 2 — propagación bidireccional del PUT de presets', () => {
+  let db4: SqlClient;
+  let dbName4: string;
+  let pool4: pg.Pool;
+  let repo: PlatformRepository;
+
+  const BIZ_A = 'biz-preset-revoke-001-parte2-a';
+  const BIZ_B = 'biz-preset-revoke-001-parte2-b';
+
+  beforeAll(async () => {
+    ({ db: db4, dbName: dbName4, pool: pool4 } = await createTestDatabase());
+    await db4.query(readPlatformSchema(), []);
+    repo = new PlatformRepository(db4);
+    for (const [id, slug] of [[BIZ_A, 'preset-revoke-001-parte2-a'], [BIZ_B, 'preset-revoke-001-parte2-b']]) {
+      await db4.query(
+        `INSERT INTO businesses (id, name, slug, owner_email) VALUES ($1, $2, $3, $4)`,
+        [id, 'Negocio de prueba', slug, `${slug}@test.local`],
+      );
+    }
+    await db4.query(readPlatformSchema(), []); // provisiona los 5 roles de sistema en los 2 negocios
+  }, 90_000);
+
+  afterAll(async () => {
+    if (dbName4) await dropTestDatabase(dbName4, pool4);
+  });
+
+  async function systemRoleGroups(businessId: string, presetName: string): Promise<string[]> {
+    const { rows } = await db4.query<{ permission_group: string }>(
+      `SELECT rpg.permission_group
+       FROM roles r
+       JOIN role_permission_groups rpg ON rpg.role_id = r.id
+       WHERE r.business_id = $1 AND r.name = $2 AND r.is_system = TRUE
+       ORDER BY rpg.permission_group`,
+      [businessId, presetName],
+    );
+    return rows.map((r) => r.permission_group);
+  }
+
+  it('M3 -- agregar un grupo al preset aparece en el rol de fábrica de un negocio existente SIN reaplicar el schema', async () => {
+    expect(await systemRoleGroups(BIZ_A, 'WAITER')).not.toContain('MANAGEMENT');
+
+    const before = await repo.listRolePresets();
+    const waiter = before.find((p) => p.name === 'WAITER')!;
+    const result = await repo.updateRolePresetPermissionGroups('WAITER', [...waiter.permissionGroups, 'MANAGEMENT'], db4);
+
+    expect(result?.propagatedGranted).toBeGreaterThanOrEqual(2); // BIZ_A + BIZ_B
+    // Retención positiva -- mata al mutante que dropea el statement de altas.
+    expect(await systemRoleGroups(BIZ_A, 'WAITER')).toContain('MANAGEMENT');
+    expect(await systemRoleGroups(BIZ_B, 'WAITER')).toContain('MANAGEMENT');
+
+    await repo.updateRolePresetPermissionGroups('WAITER', waiter.permissionGroups, db4); // deshace para no ensuciar tests siguientes
+  });
+
+  it('M2 -- sacar un grupo del preset lo borra del rol de fábrica de un negocio existente, retención positiva del resto', async () => {
+    const before = await repo.listRolePresets();
+    const receptionist = before.find((p) => p.name === 'RECEPTIONIST')!;
+    expect(receptionist.permissionGroups).toContain('BOOKING');
+    expect(await systemRoleGroups(BIZ_A, 'RECEPTIONIST')).toContain('BOOKING');
+
+    const result = await repo.updateRolePresetPermissionGroups(
+      'RECEPTIONIST',
+      receptionist.permissionGroups.filter((g) => g !== 'BOOKING'),
+      db4,
+    );
+
+    expect(result?.propagatedRevoked).toBeGreaterThanOrEqual(2); // BIZ_A + BIZ_B
+
+    const groupsA = await systemRoleGroups(BIZ_A, 'RECEPTIONIST');
+    // Lo que importa: BOOKING se fue.
+    expect(groupsA).not.toContain('BOOKING');
+    // Retención positiva de lo que NO se tocó -- mata al mutante que
+    // invierte NOT IN a IN (ese mutante borraría todo MENOS BOOKING).
+    expect(groupsA).toContain('STAFF');
+    expect(groupsA).toContain('FRONT_DESK');
+    expect(groupsA).toContain('EMISOR_NOTA_CREDITO');
+    expect(await systemRoleGroups(BIZ_B, 'RECEPTIONIST')).not.toContain('BOOKING');
+
+    await repo.updateRolePresetPermissionGroups('RECEPTIONIST', receptionist.permissionGroups, db4); // deshace
+  });
+
+  it('un rol CUSTOM del mismo negocio con el mismo permission_group NO se toca -- mata la caída del filtro is_system=TRUE', async () => {
+    const customRoleId = 'role-preset-revoke-001-parte2-custom';
+    await db4.query(
+      `INSERT INTO roles (id, business_id, name, is_system) VALUES ($1, $2, 'Custom Waiter', FALSE)`,
+      [customRoleId, BIZ_A],
+    );
+    await db4.query(
+      `INSERT INTO role_permission_groups (role_id, permission_group) VALUES ($1, 'BOOKING')`,
+      [customRoleId],
+    );
+
+    const before = await repo.listRolePresets();
+    const waiter = before.find((p) => p.name === 'WAITER')!;
+    // WAITER de fábrica no tiene BOOKING -- este PUT no lo toca ni se lo
+    // saca a nadie, pero si el filtro is_system cayera, borraría la fila
+    // del rol custom de arriba igual (mismo permission_group, mismo negocio).
+    await repo.updateRolePresetPermissionGroups('WAITER', waiter.permissionGroups, db4);
+
+    const { rows } = await db4.query(
+      `SELECT 1 FROM role_permission_groups WHERE role_id = $1 AND permission_group = 'BOOKING'`,
+      [customRoleId],
+    );
+    expect(rows.length, 'el rol custom conserva su BOOKING -- el DELETE de la Parte 2 filtra is_system=TRUE').toBe(1);
+  });
+
+  it('reaplicar el schema después de una baja NO la repone -- el backfill de arranque es add-only', async () => {
+    const before = await repo.listRolePresets();
+    const receptionist = before.find((p) => p.name === 'RECEPTIONIST')!;
+    await repo.updateRolePresetPermissionGroups('RECEPTIONIST', receptionist.permissionGroups.filter((g) => g !== 'BOOKING'), db4);
+    expect(await systemRoleGroups(BIZ_A, 'RECEPTIONIST')).not.toContain('BOOKING');
+
+    await db4.query(readPlatformSchema(), []);
+
+    expect(await systemRoleGroups(BIZ_A, 'RECEPTIONIST'), 'add-only: reaplicar el schema no repone una baja').not.toContain('BOOKING');
+
+    await repo.updateRolePresetPermissionGroups('RECEPTIONIST', receptionist.permissionGroups, db4); // deshace
+  });
+});
+
+/**
  * Guard `isSystem` en `RoleService.renameRole()` (10/09/2026, gate
  * `architecture-governor`, bloque previo a `PRESET-REVOKE-001`) --
  * caracterización del modo de falla que el guard cierra hacia adelante.

@@ -518,6 +518,29 @@ export function createPlatformRouter(container: PlatformContainer): Router {
             { businessId: null, entity: 'role_presets', entityId: name, changedBy: req.platformUser!.id },
             diffFields(before, { permissionGroups: body.permissionGroups }),
           );
+
+          // PRESET-REVOKE-001 Parte 2 (10/09/2026, gate `architecture-governor`)
+          // -- `recordPlatformChanges` de arriba graba que el CATÁLOGO cambió
+          // (`entity='role_presets'`, `business_id=NULL`), no cuántas filas
+          // de NEGOCIOS se tocaron. Sin esto, la propagación bidireccional a
+          // `role_permission_groups` de todos los negocios queda sin rastro
+          // propio -- distinto del cambio de catálogo, mismo criterio que
+          // por qué `financial_transactions` y su `ADJUSTMENT` compensatorio
+          // son dos hechos, no uno. `business_id: null` también: la
+          // propagación toca N negocios, no uno puntual.
+          if (result && (result.propagatedGranted > 0 || result.propagatedRevoked > 0)) {
+            await recordPlatformChanges(
+              client,
+              platformAuditLogRepository,
+              { businessId: null, entity: 'role_presets_propagation', entityId: name, changedBy: req.platformUser!.id },
+              [{
+                field: 'permissionGroups',
+                oldValue: null,
+                newValue: `granted=${result.propagatedGranted}, revoked=${result.propagatedRevoked}`,
+              }],
+            );
+          }
+
           return result;
         });
 

@@ -182,6 +182,19 @@ export interface RolePresetAdmin {
   permissionGroups: string[];
 }
 
+/**
+ * PRESET-REVOKE-001 Parte 2 (10/09/2026) -- cuántas filas tocó la
+ * propagación bidireccional a los roles "sistema" de todos los negocios.
+ * El superadmin necesita saber el radio real de su click, no solo que
+ * el catálogo cambió (`recordPlatformChanges` de `platform.routes.ts`
+ * graba `entity='role_presets'`, `business_id=NULL` -- eso dice que el
+ * CATÁLOGO cambió, no cuántas filas de NEGOCIOS se tocaron).
+ */
+export interface RolePresetUpdateResult extends RolePresetAdmin {
+  propagatedGranted: number;
+  propagatedRevoked: number;
+}
+
 /** Resultado combinado para el hook de authenticate() — ver auth.middleware.ts */
 export interface MembershipContext {
   active: boolean;
@@ -853,7 +866,7 @@ export class PlatformRepository {
     name: string,
     permissionGroups: string[],
     externalClient?: SqlClient,
-  ): Promise<RolePresetAdmin | undefined> {
+  ): Promise<RolePresetUpdateResult | undefined> {
     const exists = await this.db.query(`SELECT 1 FROM role_presets WHERE name = $1`, [name]);
     if (exists.rows.length === 0) return undefined;
 
@@ -864,11 +877,74 @@ export class PlatformRepository {
     // `externalClient` (28/08/2026, Fase 2): mismo criterio que
     // updatePlanLimits — corre en la transacción del caller si la hay, para
     // que el rastro de auditoría entre con el cambio o no entre ninguno.
+    let propagatedGranted = 0;
+    let propagatedRevoked = 0;
     const work = async (client: SqlClient): Promise<void> => {
       await client.query(`DELETE FROM role_preset_permission_groups WHERE preset_name = $1`, [name]);
       for (const group of permissionGroups) {
         await client.query(`INSERT INTO role_preset_permission_groups (preset_name, permission_group) VALUES ($1, $2)`, [name, group]);
       }
+
+      // PRESET-REVOKE-001 Parte 2 (10/09/2026, gate `architecture-governor`)
+      // -- propagación bidireccional a los roles "sistema" de TODOS los
+      // negocios, en la MISMA transacción que el catálogo recién escrito
+      // arriba (no del array `permissionGroups` de entrada -- una sola
+      // fuente de verdad dentro de la tx). Set-based, sin loop por negocio;
+      // con 2 negocios hoy cuesta igual que con 200.
+      //
+      // Reemplaza al reconcile de arranque que se había diseñado primero
+      // (una marca `platform_seed_markers` corriendo UNA sola vez): medido
+      // en producción (10/09/2026) que el stock de divergencia era 0/0 --
+      // con el guard de la Parte 1 puesto, ese reconcile hubiera sido un
+      // DELETE destructivo de radio plataforma-completa que nunca ejecuta
+      // nada. Se sacó del alcance (decisión del dueño); esto de acá es la
+      // forma real de la Parte 2, disparada por el PUT, no por el arranque.
+      //
+      // ALTAS -- espeja el JOIN del backfill de arranque
+      // (`platform.schema.sql`, `INSERT INTO role_permission_groups (` --
+      // cita por nombre desde SCHEMA-ANCHOR-DRIFT-001) en vez de inventar
+      // un segundo. `ON CONFLICT DO NOTHING`: un negocio que ya tiene el
+      // par (por el backfill, o por una propagación anterior) no duplica.
+      const granted = await client.query(
+        `INSERT INTO role_permission_groups (role_id, permission_group)
+         SELECT r.id, rppg.permission_group
+         FROM roles r
+         JOIN role_preset_permission_groups rppg ON rppg.preset_name = r.name
+         WHERE r.name = $1 AND r.is_system = TRUE
+         ON CONFLICT (role_id, permission_group) DO NOTHING`,
+        [name],
+      );
+      propagatedGranted = granted.rowCount ?? 0;
+
+      // BAJAS -- borra de TODOS los roles "sistema" con este nombre
+      // cualquier permission_group que ya no esté en el catálogo recién
+      // escrito. Destructivo a propósito (decisión del dueño): no
+      // distingue "vino del backfill" de "un OWNER/ADMIN lo customizó a
+      // mano vía PUT /api/roles/:id" -- con el guard de la Parte 1 puesto,
+      // esa segunda vía ya no puede producir nada nuevo, así que las dos
+      // formas son idénticas hacia adelante (razón por la que NO hace
+      // falta columna de procedencia, opción (b) descartada).
+      //
+      // Array vacío (`permissionGroups = []`, alcanzable -- `UpdateRolePresetSchema`
+      // no exige mínimo): la subconsulta del NOT IN da 0 filas, `NOT IN (∅)`
+      // es TRUE para cualquier fila, así que borra TODO el set del preset
+      // en todos los negocios. Es la semántica correcta (preset vacío =>
+      // rol de fábrica vacío) -- pensado, no un accidente.
+      //
+      // NOT IN + NULL: si la subconsulta devolviera algún NULL, el NOT IN
+      // completo da NULL y el DELETE no borra nada, en silencio. No puede
+      // pasar acá: `role_preset_permission_groups.permission_group` es
+      // NOT NULL y los valores ya pasaron por `z.nativeEnum(Roles)`
+      // (PRESET-GROUP-VALIDATION-001) antes de llegar a este INSERT.
+      const revoked = await client.query(
+        `DELETE FROM role_permission_groups
+         WHERE role_id IN (SELECT id FROM roles WHERE name = $1 AND is_system = TRUE)
+           AND permission_group NOT IN (
+             SELECT permission_group FROM role_preset_permission_groups WHERE preset_name = $1
+           )`,
+        [name],
+      );
+      propagatedRevoked = revoked.rowCount ?? 0;
     };
 
     if (externalClient) await work(externalClient);
@@ -887,7 +963,8 @@ export class PlatformRepository {
     // secas. Mismo defecto encontrado por el gate en `updatePlanLimits()`
     // (arriba), que se usó como "ejemplo de cómo se hace bien" en la
     // primera ronda de este fix y en realidad tenía el mismo problema.
-    return (await this.listRolePresets(externalClient ?? this.db)).find((p) => p.name === name)!;
+    const preset = (await this.listRolePresets(externalClient ?? this.db)).find((p) => p.name === name)!;
+    return { ...preset, propagatedGranted, propagatedRevoked };
   }
 
   // -------------------------------------------------------------------------
