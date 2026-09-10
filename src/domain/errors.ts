@@ -195,6 +195,24 @@ export class RefundBaseChangedError extends DomainError {
   }
 }
 
+/**
+ * REFUND-ISSUED-RACE-01 Block B (10/09/2026, gate `architecture-governor`)
+ * -- code propio, deliberadamente NO reusa `RefundBaseChangedError`. El
+ * log de producción (`error.middleware.ts`, MID-LOG-001) solo emite el
+ * `code`, nunca el `message` (A7.1) -- reusar el code mezclaría esta
+ * carrera con BRECHA-REFUND-01-B en la única señal observable, e
+ * inutilizaría `0 warns REFUND_BASE_CHANGED` como evidencia ya citada
+ * (`docs/pendientes-2026-09-06.md:819`/`:832`) de esa OTRA carrera.
+ */
+export class RefundInvoiceSetChangedError extends DomainError {
+  constructor(reservationId: string) {
+    super(
+      `El conjunto de facturas emitidas de la reserva "${reservationId}" cambió durante el cálculo del reembolso -- reintentá la operación.`,
+      'REFUND_INVOICE_SET_CHANGED',
+    );
+  }
+}
+
 export class InvalidCustomerError extends DomainError {
   constructor(message: string) {
     super(message, 'INVALID_CUSTOMER');

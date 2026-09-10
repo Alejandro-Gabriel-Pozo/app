@@ -301,6 +301,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESERVATION_NOT_CANCELLED':
     case 'NOTHING_TO_REFUND':
     case 'REFUND_BASE_CHANGED':
+    case 'REFUND_INVOICE_SET_CHANGED':
     case 'INVOICE_NOT_REVERSIBLE':
     case 'ORDER_CHARGE_INVOICED':
     case 'ORDER_CANCELLED_CANNOT_INVOICE':

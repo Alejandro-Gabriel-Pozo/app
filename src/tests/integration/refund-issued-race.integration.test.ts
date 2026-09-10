@@ -1,15 +1,16 @@
 /**
  * @file refund-issued-race.integration.test.ts
- * @description CARACTERIZACIÓN -- REFUND-ISSUED-RACE-01
- * (`docs/pendientes-2026-09-08.md`, ítem #24). Gate `architecture-governor`,
- * 09-10/09/2026, Block A -- test-only, cero código de producción tocado.
+ * @description REFUND-ISSUED-RACE-01 Block A+B (`docs/pendientes-2026-09-08.md`,
+ * ítem #24). Gate `architecture-governor`, 09-10/09/2026.
  *
- * ATENCIÓN, LEER ANTES DE "ARREGLAR" NINGUNO DE ESTOS TESTS: los dos de
- * abajo afirman el comportamiento ACTUAL, que es DEFECTUOSO. No son la
- * especificación -- documentan el defecto con precisión para que quede
- * rojo-en-registro antes de que alguien lo toque, mismo criterio que la
- * sección "CARACTERIZACIÓN" de `cancellation-refund.integration.test.ts`
- * (hallazgo #1 de la cuarta vuelta).
+ * Block A (09-10/09/2026) midió el defecto con test de caracterización.
+ * Block B (10/09/2026) agregó el fix -- `CancellationRefundService`
+ * relee `issuedInvoices` justo antes del COMMIT y aborta con
+ * `RefundInvoiceSetChangedError` (409) si el conjunto cambió. Estos 2
+ * tests, convertidos in-place (no se duplicó el harness, el "antes" queda
+ * en el historial de git, `b6ed750`), ahora afirman la ESPECIFICACIÓN: la
+ * carrera se detecta, la transacción hace rollback real, y el REINTENTO
+ * converge al resultado correcto.
  *
  * ## La ventana que esto mide, y por qué NINGÚN test existente la cubre
  *
@@ -67,6 +68,7 @@ import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.f
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
+import { RefundInvoiceSetChangedError, ReservationOnConsolidatedInvoiceError } from '../../domain/errors.js';
 
 let db: SqlClient;
 let pool: pg.Pool;
@@ -230,7 +232,7 @@ function makeService(financialTransactionRepo: SqlFinancialTransactionRepository
   );
 }
 
-describe.skipIf(skipIfNoDb)('CARACTERIZACIÓN -- REFUND-ISSUED-RACE-01: una factura que pasa a ISSUED DESPUÉS de leer issuedInvoices y ANTES del COMMIT', () => {
+describe.skipIf(skipIfNoDb)('REFUND-ISSUED-RACE-01: una factura que pasa a ISSUED DESPUÉS de leer issuedInvoices y ANTES del COMMIT', () => {
   beforeAll(async () => {
     ({ db, pool, dbName } = await createTestDatabase());
   }, 30_000);
@@ -239,47 +241,67 @@ describe.skipIf(skipIfNoDb)('CARACTERIZACIÓN -- REFUND-ISSUED-RACE-01: una fact
     await dropTestDatabase(dbName, pool);
   });
 
-  it('factura DIRECTA -- el monto cae a :sin-asignar en vez de atarse a la factura recién ISSUED', async () => {
+  it('factura DIRECTA -- aborta con RefundInvoiceSetChangedError, hace rollback real, y el reintento ata correctamente', async () => {
     const { reservation, invoiceId } = await seedCancelledReservationWithPendingDirectInvoice({
       totalPrice: 1000, paid: 1000,
     });
 
     const service = makeService(new InvoiceIssuedMidTxFinancialTransactionRepository(db, invoiceId));
 
-    const created = await service.confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+    await expect(service.confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toBeInstanceOf(RefundInvoiceSetChangedError);
 
-    // DEFECTO: la factura ya está ISSUED en la BD (la interferencia la marcó
-    // antes del commit) pero el REFUND quedó :sin-asignar -- issuedInvoices
-    // se leyó ANTES de que eso pasara.
+    // Rollback real: el INSERT del chunk :sin-asignar que corrió DENTRO de
+    // la transacción abortada no quedó commiteado.
+    const { rows: txRows } = await db.query<{ count: string }>(
+      `SELECT count(*) FROM financial_transactions WHERE reservation_id = $1 AND type = 'REFUND'`,
+      [reservation.id],
+    );
+    expect(txRows[0]?.count, 'rollback real -- ningún REFUND debe haber quedado commiteado').toBe('0');
+
+    // La interferencia SÍ quedó commiteada (corrió en su propia conexión,
+    // por el pool) -- prueba que el aislamiento cross-conexión se sostuvo y
+    // que el rollback de confirmRefund() no la deshizo de rebote.
+    const { rows: invRows } = await db.query<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [invoiceId]);
+    expect(invRows[0]?.status, 'la factura sigue ISSUED -- la interferencia no se deshizo con el rollback').toBe('ISSUED');
+
+    // Convergencia del reintento: con un repo limpio (sin decorator), el
+    // segundo llamado ve la factura ya ISSUED desde la lectura inicial y
+    // ata el reembolso correctamente -- ya no hay carrera.
+    const retryService = makeService(new SqlFinancialTransactionRepository(db));
+    const created = await retryService.confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
     expect(created).toHaveLength(1);
     expect(created[0]?.amount).toBe(1000);
-    expect(created[0]?.reversedInvoiceId, 'DEFECTO: debería ser invoiceId, no null -- issuedInvoices no vio la transición').toBeNull();
-
-    const { rows } = await db.query<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [invoiceId]);
-    expect(rows[0]?.status, 'la factura SÍ terminó ISSUED -- la interferencia no fue revertida por el commit de confirmRefund()').toBe('ISSUED');
+    expect(created[0]?.reversedInvoiceId).toBe(invoiceId);
   });
 
-  it('factura CONSOLIDADA -- confirmRefund() completa SIN ReservationOnConsolidatedInvoiceError, evadiendo el fail-closed de 3.1', async () => {
+  it('factura CONSOLIDADA -- aborta con RefundInvoiceSetChangedError, y el reintento choca con el fail-closed de 3.1', async () => {
     const { reservation, invoiceId } = await seedCancelledReservationWithPendingConsolidatedInvoice({
       totalPrice: 1000, paid: 1000,
     });
 
     const service = makeService(new InvoiceIssuedMidTxFinancialTransactionRepository(db, invoiceId));
 
-    // DEFECTO: el guard de 3.1 (`consolidated = issuedInvoices.find(...)`,
-    // `:242`) corrió ANTES de la interferencia, con issuedInvoices vacío --
-    // no rechaza. Un `.rejects` acá fallaría; lo que se afirma es que
-    // RESUELVE, precisamente lo que NO debería pasar con una consolidada
-    // ISSUED de por medio.
-    const created = await service.confirmRefund(reservation.id, BUSINESS_ID, 'user-1');
+    await expect(service.confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toBeInstanceOf(RefundInvoiceSetChangedError);
 
-    expect(created).toHaveLength(1);
-    expect(created[0]?.reversedInvoiceId).toBeNull();
+    const { rows: txRows } = await db.query<{ count: string }>(
+      `SELECT count(*) FROM financial_transactions WHERE reservation_id = $1 AND type = 'REFUND'`,
+      [reservation.id],
+    );
+    expect(txRows[0]?.count, 'rollback real -- ningún REFUND debe haber quedado commiteado').toBe('0');
 
-    const { rows } = await db.query<{ status: string; financial_transaction_id: string | null }>(
+    const { rows: invRows } = await db.query<{ status: string; financial_transaction_id: string | null }>(
       `SELECT status, financial_transaction_id FROM invoices WHERE id = $1`, [invoiceId],
     );
-    expect(rows[0]?.status, 'la consolidada SÍ terminó ISSUED').toBe('ISSUED');
-    expect(rows[0]?.financial_transaction_id, 'sigue siendo consolidada (FK NULL) -- el guard de 3.1 la habría rechazado si la hubiera visto a tiempo').toBeNull();
+    expect(invRows[0]?.status, 'la consolidada sigue ISSUED').toBe('ISSUED');
+    expect(invRows[0]?.financial_transaction_id, 'sigue siendo consolidada (FK NULL)').toBeNull();
+
+    // Convergencia del reintento: con la consolidada ya ISSUED desde la
+    // lectura inicial, el guard fail-closed de 3.1 SÍ la ve y rechaza --
+    // exactamente lo que la carrera evadía antes del fix.
+    const retryService = makeService(new SqlFinancialTransactionRepository(db));
+    await expect(retryService.confirmRefund(reservation.id, BUSINESS_ID, 'user-1'))
+      .rejects.toBeInstanceOf(ReservationOnConsolidatedInvoiceError);
   });
 });

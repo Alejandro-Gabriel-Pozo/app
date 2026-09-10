@@ -556,3 +556,59 @@ describe('CancellationRefundService.confirmRefund -- BRECHA-REFUND-01-B (guard o
     expect(financialRepo.created).toHaveLength(1);
   });
 });
+
+describe('CancellationRefundService.confirmRefund -- REFUND-ISSUED-RACE-01 Block B (10/09/2026, guard hermano de BRECHA-REFUND-01-B)', () => {
+  // `InvoiceRepository.getByReservationId()` se llama dos veces dentro de
+  // `confirmRefund()`: una para leer `issuedInvoices` (`:189`, foto inicial)
+  // y otra en el re-chequeo, justo antes del COMMIT (`:367`). Esta fake
+  // devuelve un set MAYOR en la segunda llamada -- simula una factura que
+  // pasó de PENDING a ISSUED (`markIssued()`, por el pool, sin tx) en la
+  // ventana entre las dos lecturas. Mismo patrón que `ShiftingCollectedRepository`
+  // de arriba (BRECHA-REFUND-01-B), aplicado al invoice repo en vez del
+  // financial repo -- este archivo no corre contra Postgres real (eso lo
+  // hace `src/tests/integration/refund-issued-race.integration.test.ts`,
+  // que necesita `TEST_DATABASE_URL` a mano y no forma parte de CI); este
+  // unitario es la única cobertura del guard nuevo que SÍ corre en CI.
+  class ShiftingIssuedInvoicesRepository extends FakeInvoiceRepository {
+    private calls = 0;
+    constructor(private readonly snapshots: Invoice[][]) { super(snapshots[0] ?? []); }
+    override async getByReservationId(): Promise<Invoice[]> {
+      const snapshot = this.snapshots[Math.min(this.calls, this.snapshots.length - 1)]!;
+      this.calls += 1;
+      return snapshot;
+    }
+  }
+
+  function buildWithShiftingIssuedInvoices(snapshots: Invoice[][]) {
+    const financialRepo = new FakeFinancialTransactionRepository(1000);
+    const invoiceRepo = new ShiftingIssuedInvoicesRepository(snapshots);
+    const service = new CancellationRefundService(
+      new FakeReservationRepository(makeReservation()),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true }),
+      financialRepo,
+      invoiceRepo,
+      new FakeBusinessProfileRepository(),
+      new InMemoryTransactionManager(),
+    );
+    return { service, financialRepo, invoiceRepo };
+  }
+
+  it('M2 -- aborta con RefundInvoiceSetChangedError si aparece una factura ISSUED nueva entre la foto inicial y el re-chequeo', async () => {
+    const nuevaIssued = makeInvoice({ id: 'inv-nueva', impTotal: 1000, issuedAt: daysFromNow(-1) });
+    const { service } = buildWithShiftingIssuedInvoices([[], [nuevaIssued]]);
+
+    await expect(service.confirmRefund('res-1', 'biz-1', 'user-1'))
+      .rejects.toMatchObject({ code: 'REFUND_INVOICE_SET_CHANGED' });
+  });
+
+  it('no dispara el guard cuando el set de ISSUED no cambió -- el camino feliz sigue creando el reembolso (mata el mutante que degrada a "size > 0")', async () => {
+    const yaVista = makeInvoice({ id: 'inv-a', impTotal: 1000, issuedAt: daysFromNow(-1) });
+    const { service, financialRepo } = buildWithShiftingIssuedInvoices([[yaVista], [yaVista]]);
+
+    const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+
+    expect(created).toHaveLength(1);
+    expect(created[0]?.reversedInvoiceId).toBe('inv-a');
+    expect(financialRepo.created).toHaveLength(1);
+  });
+});

@@ -398,10 +398,41 @@ solo un test de caracterización.
   la forma correcta es agregar `AND type <> 'PAYMENT'` al `UPDATE`
   (arregla la interferencia en vez de solo vigilarla).
 
-**Próximo bloque, no autorizado todavía**: ninguno de los dos. Antes de
-diseñar el Block B de `REFUND-ISSUED-RACE-01` hace falta la decisión de
-negocio de arriba. Antes de tocar la residual B-1 hace falta su propio
-gate de alcance (transaccionalizar + el filtro de tipo en
+**`REFUND-ISSUED-RACE-01` Block B — ✅ implementado (10/09/2026, gate
+`architecture-governor`, LOCAL/sin pushear).** Decisión del dueño con
+grounding ERP (ERPNext lock optimista, Odoo lock pesimista + precondición
+de estado -- los dos convergen en abortar, ninguno recalcula/ata en la
+misma operación): **abortar con 409 reintentable**, code propio
+`REFUND_INVOICE_SET_CHANGED` (no reusa `REFUND_BASE_CHANGED` -- el log de
+producción solo emite `code`, nunca `message`, A7.1; reusar mezclaría dos
+carreras distintas en una sola métrica e inutilizaría `0 warns
+REFUND_BASE_CHANGED` como evidencia ya citada de `BRECHA-REFUND-01-B`).
+Extiende el bloque `BRECHA-REFUND-01-B` existente (`cancellation-refund.service.ts:379-422`)
+con un guard hermano: relee `issuedInvoices` por el pool justo antes del
+COMMIT y aborta si aparece una factura que no estaba en la foto inicial.
+Predicado compartido extraído (`isReversibleIssuedInvoice()`) entre la
+foto inicial y el re-chequeo. 2 tests de integración convertidos
+in-place (de caracterización a spec, con aserción de rollback real +
+convergencia del reintento) + 2 tests unitarios nuevos con cobertura en
+CI (`ShiftingIssuedInvoicesRepository`, mismo patrón que
+`ShiftingCollectedRepository`). Mutación M1/M2 corrida y confirmada con
+sets de rojo disjuntos (M1: 1 test; M2: 10 tests, sin solape). `tsc`/
+`eslint` limpios, 539 tests de la suite `reservas`+`facturacion`+
+`api/middleware` en verde. **No corrí los 2 tests de integración
+convertidos** -- `TEST_DATABASE_URL` no está definida en este entorno;
+declarado, no una omisión.
+
+**⚠️ ESTRECHA, NO CIERRA `REFUND-ISSUED-RACE-01`**: bajo READ COMMITTED,
+la ventana entre el SELECT del re-chequeo y el COMMIT sigue descubierta
+-- un `markIssued()` que commitea justo en esa ventana milimétrica sigue
+sin detectarse. Mismo límite declarado que (c) del guard hermano de
+`collected`. No presentar esto como "cerrado" en ningún doc futuro.
+
+**Próximo bloque, no autorizado todavía**: la mitad NO tocada de
+`REFUND-ISSUED-RACE-01` (blindar el camino de falla de `markIssued()`
+antes de poder ensanchar el `FOR UPDATE`, si algún día se revisita la
+opción B rechazada) y la residual B-1 (transaccionalizar + el filtro de
+tipo en
 `settleByReservationId()`).
 
 ---

@@ -29,7 +29,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { ReservationStatus } from '../types/enums.js';
-import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError, RefundBaseChangedError, ReservationOnConsolidatedInvoiceError } from '../domain/errors.js';
+import { ReservationNotFoundError, ReservationNotCancelledError, NothingToRefundError, RefundBaseChangedError, RefundInvoiceSetChangedError, ReservationOnConsolidatedInvoiceError } from '../domain/errors.js';
 import { round2 } from '../domain/money.js';
 import { CBTE_TIPO_FACTURA_B } from '../facturacion/afip-catalog.constants.js';
 import { acquireIdempotencyLock, applyCappedRefundToInvoice, createIdempotentPaymentWithClient, canonicalInvoiceLockOrder } from '../clientes-finanzas/payment-application.js';
@@ -65,6 +65,18 @@ export class CancellationRefundService {
    */
   private matchesRefundIdempotencyKey(tx: FinancialTransaction, baseIdempotencyKey: string): boolean {
     return tx.type === 'REFUND' && (tx.idempotencyKey?.startsWith(`${baseIdempotencyKey}:`) ?? false);
+  }
+
+  /**
+   * REFUND-ISSUED-RACE-01 Block B (10/09/2026, gate `architecture-governor`)
+   * -- predicado compartido entre la foto inicial de `:189` y el re-chequeo
+   * de `:367` (mismo criterio que `matchesRefundIdempotencyKey`, extraído
+   * para el mismo motivo: dos copias del mismo filtro divergen en silencio
+   * el día que se emita Factura A o C, gatillo ya declarado en el docblock
+   * original de este filtro).
+   */
+  private isReversibleIssuedInvoice(inv: { status: string; cbteTipo: number }): boolean {
+    return inv.status === 'ISSUED' && inv.cbteTipo === CBTE_TIPO_FACTURA_B;
   }
 
   async previewRefund(reservationId: string, businessId: string): Promise<CancellationRefundPreview> {
@@ -187,7 +199,7 @@ export class CancellationRefundService {
       // aplicando: filtra Notas de Crédito ya emitidas (misma tabla
       // `invoices`) para que el reparto no les pegue.
       const issuedInvoices = (await this.invoiceRepo.getByReservationId(reservationId))
-        .filter((inv) => inv.status === 'ISSUED' && inv.cbteTipo === CBTE_TIPO_FACTURA_B)
+        .filter((inv) => this.isReversibleIssuedInvoice(inv))
         // Desempate explícito por id -- documenta el invariante de que el
         // orden LIFO tiene que ser determinístico incluso si dos facturas
         // comparten el mismo issuedAt (no cambia el resultado de ningún
@@ -367,6 +379,46 @@ export class CancellationRefundService {
       const collectedRecheck = await this.financialTransactionRepo.getCollectedPaymentTotalForReservation(reservationId);
       if (round2(collectedRecheck) !== round2(collected)) {
         throw new RefundBaseChangedError(reservationId);
+      }
+
+      // REFUND-ISSUED-RACE-01 Block B (10/09/2026, gate `architecture-governor`)
+      // -- hermano del guard de arriba, mismo lugar, mismo criterio (relectura
+      // por el POOL -- no por `client` -- justo antes del COMMIT, comparar
+      // contra la foto inicial, abortar con 409 reintentable si cambió).
+      // Decisión del dueño (grounding ERP: ERPNext usa lock optimista por
+      // timestamp, Odoo usa lock pesimista + precondición de estado -- los
+      // dos convergen en "abortar", ninguno recalcula/ata en la misma
+      // operación): abortar, no atar tardíamente el reembolso a la factura
+      // recién `ISSUED`.
+      //
+      // Por qué DETECTA SOLO ALTAS (una factura PENDING que pasó a ISSUED),
+      // no bajas: la dirección "baja" ya está protegida por el pre-lockeo
+      // canónico de `:262` (`getRefundableForUpdate()` toma `FOR UPDATE`
+      // sobre cada factura de `issuedInvoices`) -- una factura YA vista como
+      // ISSUED no puede dejar de estarlo bajo ese lock. Una factura PENDING
+      // nunca se lockea (ensanchar el `FOR UPDATE` a las `PENDING` fue
+      // rechazado en un gate anterior -- riesgo de bloquear `markIssued()` a
+      // mitad de un CAE ya emitido en AFIP), así que la dirección "alta" es
+      // la única que este chequeo necesita cubrir.
+      //
+      // Por qué el ORDEN entre este chequeo y el de `collected` de arriba NO
+      // importa: `markIssued()` (`sql.invoice.repository.ts:814-825`) solo
+      // hace UPDATE sobre `invoices` -- nunca toca `financial_transactions`.
+      // `collectedRecheck` es estructuralmente ciego a este evento, así que
+      // los dos chequeos son ortogonales; cualquiera de los dos que dispare
+      // primero aborta la misma transacción con un resultado equivalente
+      // (409 reintentable). No lo reordenes asumiendo que uno depende del
+      // otro -- no depende.
+      //
+      // NO CIERRA REFUND-ISSUED-RACE-01, lo ESTRECHA: bajo READ COMMITTED,
+      // la ventana entre este SELECT y el COMMIT sigue descubierta -- un
+      // `markIssued()` que commitea justo en esa ventana sigue sin
+      // detectarse. Mismo límite que (c) del guard de `collected`, arriba.
+      const seenIssuedIds = new Set(issuedInvoices.map((inv) => inv.id));
+      const issuedInvoicesRecheck = (await this.invoiceRepo.getByReservationId(reservationId))
+        .filter((inv) => this.isReversibleIssuedInvoice(inv));
+      if (issuedInvoicesRecheck.some((inv) => !seenIssuedIds.has(inv.id))) {
+        throw new RefundInvoiceSetChangedError(reservationId);
       }
     });
 
