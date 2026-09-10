@@ -150,7 +150,9 @@ export class RoleService {
 
     // Guard isSystem (10/09/2026, gate `architecture-governor`, bloque
     // previo a PRESET-REVOKE-001) -- dos razones, ninguna cosmética:
-    // (a) el backfill de arranque (`platform.schema.sql:408-412`) inserta
+    // (a) el backfill de arranque (`platform.schema.sql`, `INSERT INTO
+    // roles (` -- cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001
+    // 10/09/2026) inserta
     // con `id` determinístico (`role-<biz>-<nombre-preset-en-minúscula>`)
     // bajo `ON CONFLICT (business_id, name)`. Un rename libera ese par
     // `(business_id, name)` -- el próximo INSERT ya no matchea ese

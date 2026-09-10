@@ -202,7 +202,9 @@ describe('RoleService', () => {
 
     // M4 -- comparar case-insensitive. `uq_roles_business_name` es
     // case-sensitive: un rename solo-de-mayúsculas rompe igual el
-    // backfill determinístico (`platform.schema.sql:408-412`).
+    // backfill determinístico (`platform.schema.sql`, `INSERT INTO
+    // roles (` -- cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001
+    // 10/09/2026).
     it('rechaza un rename solo-de-mayúsculas sobre un rol "sistema" (case-sensitive)', async () => {
       await expect(
         service.renameRole('role-biz-1-receptionist', 'biz-1', 'receptionist', 'identity-1'),
