@@ -1361,9 +1361,23 @@ sino un deadlock real entre DOS conexiones distintas del pool --
 Verificado: los 5 call-sites productivos de `requestInvoice()` corren
 hoy fuera de toda tx abierta (`cancel-order-with-credit-note.service.ts:164,328`,
 `cancel-reservation-with-credit-note.service.ts:278,482`,
-`api/routes/invoices.routes.ts:97`) -- el riesgo es un supuesto sin
+`src/facturacion/invoices.routes.ts:97`) -- el riesgo es un supuesto sin
 ocurrir, no un bug activo, y ninguna cerca lo vigila si alguien lo
-rompiera. Reproducir: `grep -rn "requestInvoice(" src --include="*.ts" | grep -v test`.
+rompiera. Reproducir: `grep -rn "requestInvoice(" src --include="*.ts" | grep -v test`
+-- **ese comando es el ancla robusta de este ítem, no los números de
+línea de arriba.** Corrección de registro (09/09/2026, gate
+`architecture-governor`, segunda ronda sobre este mismo ítem): las líneas
+de `cancel-reservation-with-credit-note.service.ts` citadas primero
+(276/480) eran correctas en `9be3eb7` -- `7150dfa` agregó 2 líneas al
+docblock de ese archivo y corrió el ancla a 278/482, no fue un error de
+transcripción como se dijo al principio, fue la regla 2 de "Pendientes —
+revalidar antes de arrastrar" (el ancla se mueve, re-chequeala) actuando
+sobre el propio commit que se estaba documentando. Y
+`api/routes/invoices.routes.ts:97` (ruta de directorio equivocada,
+corregido a `src/facturacion/invoices.routes.ts:97`) sí fue una
+transcripción de memoria después de correr el grep correcto -- el mismo
+patrón que el array parafraseado de la mutación (d) en `7150dfa`: el paso
+de verificar corrió, el paso de copiar el resultado no.
 
 **Backlog de producto (sin fecha):** Gap C1-C · AR-FACT-NO-ISSUED-01 Fases 2-8 ·
 FACT-BORRADOR-001 (v2.8) · C1-B (bloqueada por proveedor) · C2/C3 · D7 (5 endpoints
