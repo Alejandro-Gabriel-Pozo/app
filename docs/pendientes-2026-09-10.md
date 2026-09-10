@@ -197,7 +197,7 @@ futuros, cada uno con su propio alcance.
   (`plan_limit_allowed_permission_groups`) corren INCONDICIONALMENTE en
   cada arranque, igual que el seed de presets antes de este bloque -- y
   los 3 tienen escritor real por panel
-  (`PUT /platform/plan-limits/:plan`, `platform.repository.ts:778-821`,
+  (`PUT /platform/plan-limits/:plan`, `platform.repository.ts:783-822`,
   `DELETE`+`INSERT` del set completo; UI de checkboxes en
   `appfrontend-main/src/app/superadmin/planes/page.tsx:153-154`).
   **Consecuencia, no mecanismo**: destildar un grupo de permisos de

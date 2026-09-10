@@ -113,12 +113,25 @@ de un par. Al 29/08 el único legítimo está dentro de un comentario
 
 ### Recuperar un preset de roles vaciado por error (09-10/09/2026, `PRESET-REVOKE-001`)
 
-Desde el bloque de la marca de seed (`platform_seed_markers`,
-`platform.schema.sql`, seed de `role_preset_permission_groups`), el seed de
-los 23 pares de fábrica corre **una sola vez por instalación** — la primera
-vez que arranca contra una BD de plataforma nueva. Después de eso, editar
-un preset por el panel (`PUT /platform/role-presets/:name`) persiste de
-verdad: un reinicio del servidor **ya no repone** lo que se haya sacado.
+**Aplica desde que se deploye el bloque de la marca de seed
+(`platform_seed_markers`, `PRESET-REVOKE-001`) — hoy esa tabla NO EXISTE
+todavía en ningún entorno.** Cuando exista: el seed de los 23 pares de
+fábrica (`platform.schema.sql`, seed de `role_preset_permission_groups`)
+corre **una sola vez por instalación** — la primera vez que arranca contra
+una BD de plataforma nueva, o la primera vez que arranca DESPUÉS de este
+deploy contra una BD que ya tenía los 23 pares sin la marca (ver "primer
+arranque tras el deploy" más abajo). Después de eso, editar un preset por
+el panel (`PUT /platform/role-presets/:name`) persiste de verdad: un
+reinicio del servidor **ya no repone** lo que se haya sacado.
+
+**Primer arranque tras el deploy — un revert final, una sola vez.** La
+marca todavía no existe en ese arranque, así que el seed corre una última
+vez y repone cualquier par de los 23 originales que un superadmin ya
+hubiera sacado ANTES del deploy. Es esperable, no un bug: si alguien
+revocó `BOOKING` de `RECEPTIONIST` el día anterior, lo va a ver reaparecer
+después de este deploy, y recién desde ESE punto en adelante sacarlo
+vuelve a persistir de verdad. Avisar de esto antes de deployar si se sabe
+que alguien editó un preset recientemente.
 
 Esto es justo lo que se pidió, pero tiene un piso que no existe todavía a
 nivel schema: `UpdateRolePresetSchema` (`platform.routes.ts`) no exige un
@@ -144,10 +157,21 @@ reales que ya estuvieran bien) y vuelve a dejar la marca puesta. **No hace
 falta restaurar un backup para esto** — es la vía normal, no el último
 recurso.
 
-Si el superadmin había editado ADEMÁS otros presets de forma legítima
-(agregando o sacando algo que no fuera un vaciado accidental), esas
-ediciones sobreviven igual: el seed solo agrega lo que falte de los 23
-pares originales, nunca saca nada que ya esté.
+**Asimetría, importante no pasarla por alto**: esta recuperación NO es
+gratis para el resto del catálogo. El seed es solo-agrega
+(`ON CONFLICT DO NOTHING`) — completa lo que falte de los 23 pares
+ORIGINALES, pero no distingue "faltaba por un vaciado accidental" de
+"faltaba porque alguien lo sacó a propósito, de forma legítima". Si el
+superadmin había AGREGADO algo nuevo a otro preset (ej. un grupo que no es
+uno de los 23), eso sobrevive sin problema — el seed no lo toca. Pero si
+había SACADO uno de los 23 pares originales de OTRO preset, de forma
+legítima, esta recuperación se lo repone también — no hay forma de que el
+seed distinga una revocación real de un vaciado por error, los dos se ven
+igual (el par ya no está). Por eso esta vía es para el caso específico
+"vacié un preset por error, quiero los defaults de vuelta", no una
+recuperación general y gratuita — si hay revocaciones legítimas de otros
+presets que no se quieren perder, hay que volver a aplicarlas a mano
+después de correr esto.
 
 ## Procedimiento 3 — Rollback: qué revertir y qué NO
 
