@@ -180,6 +180,27 @@ antes de empezar a normalizar cualquiera de los 11 archivos. Normalizar
 esos 11 archivos a bullets (y sacarlos de `EXCLUDED_FILES`) es, además,
 un bloque de docs aparte, no decidido todavía.
 
+**`ROLES-CATALOG-DRIFT-001` (09/09/2026, gate `architecture-governor`,
+**décimo** artefacto manual del repo -- cuenta corrida, ver la nota de
+numeración en "Contratos"): nació del caso real de `EMISOR_NOTA_CREDITO`
+(bloque 5.1) -- agregado a `Roles` el 07/09/2026, nunca propagado a
+`appfrontend-main`, descubierto recién el 09/09/2026.
+`src/tests/security/roles-catalog-sync.test.ts` congela el CONJUNTO
+ordenado del catálogo (no un conteo -- un conteo no detecta que se
+RENOMBRE una clave manteniendo el tamaño, mutación verificada) + un
+espejo `key === value` (la clave persiste tal cual en
+`role_permission_groups.permission_group`). El mensaje de falla apunta a
+los 3 catálogos a mano de `appfrontend-main` y a `docs/pendientes-2026-09-08.md`
+bloque 5.1 -- el detalle de CADA catálogo (no los tres tienen la misma
+regla de inclusión: `dashboard/roles/page.tsx` excluye `CUSTOMER_ONLY` a
+propósito) vive en el docblock del archivo, no en el mensaje, para no
+citar rutas exactas de otro repo en un string que nadie relee hasta que
+falla. **No verifica que `appfrontend-main` se haya actualizado** -- es
+un recordatorio en el momento del cambio de este repo, no un chequeo de
+sincronía real entre los dos (no hay CI compartida). Y está VERDE hoy con
+`roles-de-fabrica/page.tsx` todavía desincronizado (8 de 9) -- verde acá
+no implica que los 3 catálogos del frontend estén al día.
+
 ## Contratos — spec OpenAPI vs rutas reales
 
 Distinto de RBAC: esto es sobre qué documenta `src/openapi/spec.ts`, no

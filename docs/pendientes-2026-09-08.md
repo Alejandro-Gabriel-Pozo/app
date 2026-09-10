@@ -1151,11 +1151,13 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     muestra `permissionGroups.length` (un número), nunca los nombres, y
     los roles `isSystem` (`OWNER`/`ADMIN`/`RECEPTIONIST`, los que
     realmente tienen el grupo) nunca abren el modal. Bloque de UI aparte.
-  - **Cerca de fondo, todavía sin escribir:** no existe ninguna cerca sobre
-    el TAMAÑO del catálogo `Roles` de `security/roles.ts` (mismo patrón
-    que `EXPECTED_AUTHORIZE_CALL_SITES`) -- sin eso, el próximo grupo
-    agregado va a volver a driftear igual que este. Candidato para la
-    próxima sesión transversal.
+  - ~~**Cerca de fondo, todavía sin escribir**~~ **✅ RESUELTO (09/09/2026,
+    gate `architecture-governor`)**: `src/tests/security/roles-catalog-sync.test.ts`
+    (`ROLES-CATALOG-DRIFT-001`) congela el conjunto del catálogo `Roles` +
+    espejo `key===value`, con 3 mutaciones verificadas (agregar, sacar,
+    RENOMBRAR un grupo). No verifica que `appfrontend-main` se haya
+    actualizado de verdad -- sigue siendo un recordatorio en el momento
+    del cambio, no una sincronía real entre repos.
 - **TTL de NC `PENDING`/`FAILED_UNCERTAIN` huérfana — deuda aceptada, no
   bug.** (08/09/2026, gate `architecture-governor` bloque 2.2, grounding
   `auditor-circuitos-erp`.) Una NC que queda `PENDING` (nunca se resolvió con
