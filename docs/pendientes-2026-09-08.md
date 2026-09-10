@@ -1134,19 +1134,25 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
     `plan_limit_allowed_permission_groups` se lee vivo en cada request
     (`assertPermissionGroupsAllowedInPlan`), no se propaga a tenants;
     agregar el checkbox ahí es reversible y simétrico.
-  - **🔴 Sigue abierto, a propósito, `superadmin/roles-de-fabrica/page.tsx`.**
-    Ese archivo edita PRESETS, que SÍ se propagan por backfill a TODOS los
-    tenants existentes en cada boot (`platform.schema.sql:341-346`,
-    `ON CONFLICT DO NOTHING` -- un otorgamiento sobrevive el próximo
-    deploy, una revocación no revoca nada). Su copy actual ("Editar acá NO
-    afecta a los negocios que ya existen") es **FALSA** -- verificado
-    leyendo `platform.repository.ts:841-843` (el `UPDATE` solo toca la
-    tabla de presets) + el backfill. Agregar el checkbox ahí sin corregir
-    esa copy le daría a superadmin un click para otorgar autoridad fiscal
-    AFIP a `WAITER`/`HOUSEKEEPING` en producción, bajo un cartel que dice
-    lo contrario. Misma afirmación falsa duplicada en el backend:
-    `src/platform/platform.routes.ts:422-423`. Bloque cross-repo aparte,
-    con su propio gate -- corrige los dos lados en el mismo cambio.
+  - **✅ Copy falsa corregida, todavía LOCAL/sin pushear ni deployar
+    (`app-main` `f91d7ad`+`328b134`+`14c5166`, `appfrontend-main`
+    `5ba8b57`+`6a427c9`; gate `architecture-governor`, 09-10/09/2026).**
+    `superadmin/roles-de-fabrica/page.tsx` edita PRESETS, que SÍ se
+    propagan por backfill a TODOS los tenants existentes en cada boot
+    (`platform.schema.sql:350-355`, `ON CONFLICT DO NOTHING` -- un
+    otorgamiento sobrevive el próximo deploy, una revocación no revoca
+    nada). La copy vieja ("Editar acá NO afecta a los negocios que ya
+    existen") era **FALSA** -- verificado leyendo
+    `platform.repository.ts:850-852` (`DELETE` + loop de `INSERT` sobre la
+    tabla de presets, no un `UPDATE`) + el backfill. Reemplazada por un
+    bloque de advertencia visible con el mecanismo real
+    (`roles-de-fabrica/page.tsx:57-79`). Misma afirmación falsa que estaba
+    duplicada en el backend, corregida en el mismo bloque:
+    `src/platform/platform.routes.ts:419-437`. **El checkbox de
+    `EMISOR_NOTA_CREDITO` en este catálogo (bloque B) sigue sin agregar** --
+    su precondición declarada es que esta corrección esté verificada EN
+    PRODUCCIÓN, no solo commiteada; falta push + deploy + verificación de
+    los dos repos antes de tocarlo.
   - **También sigue abierto:** "no se puede identificar" -- `dashboard/roles/page.tsx:196`
     muestra `permissionGroups.length` (un número), nunca los nombres, y
     los roles `isSystem` (`OWNER`/`ADMIN`/`RECEPTIONIST`, los que
@@ -1200,9 +1206,11 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
 `EXPIRED-FACT-01`, F4 en reservas/subcaso 2) (#5) · Anexo A1/A2/A4 ·
 Frontend (🟡 bloque 5.1 -- 2 de 3 catálogos sin `EMISOR_NOTA_CREDITO` ya
 cerrados en `appfrontend-main` `ba01d3d`, detalle en la sección
-"🟠 Deuda menor detectada" de este mismo archivo; `roles-de-fabrica` sigue
-abierto con su copy falsa, cross-repo, gate propio; consumir
-`description`/`kind` del dead-letter).
+"🟠 Deuda menor detectada" de este mismo archivo; copy falsa de
+`roles-de-fabrica` corregida cross-repo pero todavía LOCAL/sin pushear
+(ver esa misma sección) -- el checkbox de `EMISOR_NOTA_CREDITO` en ese
+catálogo sigue sin agregar, gate propio; consumir `description`/`kind`
+del dead-letter).
 
 **Deuda estructural:** Residual B-1 (redefinido 08/09 como **3.2-b**, ver #25 —
 no cerrable sin transaccionalizar `recordPayment()`) · ~~`REFUND-INT-GUARD-001`~~

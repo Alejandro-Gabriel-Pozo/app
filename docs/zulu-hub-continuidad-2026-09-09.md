@@ -210,15 +210,18 @@ chicos ya identificados:
   el grupo aunque el backend lo permitiera, `plan_limit_allowed_permission_groups`
   con 0 filas = sin restricción) -- ✅ cerrado, igual que
   `superadmin/planes/page.tsx` (lectura viva, sin propagación, reversible)
-  -- ✅ cerrado. **`superadmin/roles-de-fabrica/page.tsx` sigue abierto a
-  propósito:** edita PRESETS que SÍ se propagan por backfill a tenants
-  existentes en cada boot, y su copy actual ("no afecta a negocios que ya
-  existen") es falsa -- agregar el checkbox ahí sin corregir la copy
-  habría sido el único camino activamente peligroso de todo el bloque
-  (otorgar autoridad fiscal AFIP a cualquier preset, en producción, sin
-  revocación real). Cross-repo con `app-main/src/platform/platform.routes.ts:422-423`
-  (misma afirmación falsa), bloque aparte con su propio gate. Detalle
-  completo en `pendientes-2026-09-08.md` y
+  -- ✅ cerrado. **`superadmin/roles-de-fabrica/page.tsx` -- copy falsa
+  corregida, todavía LOCAL/sin pushear ni deployar** (gate
+  `architecture-governor`, 09-10/09/2026): edita PRESETS que SÍ se
+  propagan por backfill a tenants existentes en cada boot; la copy vieja
+  ("no afecta a negocios que ya existen") era falsa -- reemplazada por un
+  bloque de advertencia con el mecanismo real. Cross-repo con
+  `app-main/src/platform/platform.routes.ts:419-437` (misma afirmación
+  falsa, corregida en el mismo bloque). **Falta:** push + deploy +
+  verificación en producción de los 2 repos; el checkbox de
+  `EMISOR_NOTA_CREDITO` en este catálogo (bloque B) sigue sin agregar,
+  precondicionado a esa verificación. Detalle completo en
+  `pendientes-2026-09-08.md` y
   `plan-cierre-cancelacion-nc-y-deuda-estructural-2026-09-08.md:228`.
 - **Bloques de código heredados del primer arco, ninguno bloqueante:**
   `3.3-c` (cablear F4 en `findBlockingInvoiceLinkage()`, firma congelada),
