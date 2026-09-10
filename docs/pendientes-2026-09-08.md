@@ -1115,19 +1115,42 @@ justificación del `Math.abs`) — ADR línea 573. Ninguno abierto.
   que la regla 10 de la sesión de plan advierte (esa nombra
   `credit-note-compensation.integration.test.ts`, donde un flake taparía un
   TOCTOU documentado — archivo y clase de riesgo distintos). → bloque propio.
-- **`EMISOR_NOTA_CREDITO` no existe en `appfrontend-main`** (HEAD `613c206`, 0
-  hits). En `app-main` está en `security/roles.ts:59` y en `platform.schema.sql:314,317,319`
-  (OWNER/ADMIN/RECEPTIONIST). Tres catálogos a mano del frontend listan 8 grupos
-  sin él: `dashboard/roles/page.tsx:18-26`, `superadmin/roles-de-fabrica/page.tsx`,
-  `superadmin/planes/page.tsx`. **NO se pierde en el save**: `roles/page.tsx:83`
-  siembra el form desde `[...r.permissionGroups]` y `:104` lo manda entero — un
-  rol que ya lo tenga lo conserva. **Consecuencia:** el privilegio de emitir una
-  Nota de Crédito fiscal **no se puede otorgar a un rol custom, no se puede
-  revocar y no se puede identificar** en el panel de administración. Fail-safe
-  (no fail-open) y los presets lo llevan, por eso no bloqueó el gate final —
-  pero es un hueco de governance vivo sobre una capacidad AFIP. → bloque **5.1**
-  del plan (frontend), sin dependencias. Interactúa con 2.1 (la bandeja de NC):
-  el panel no puede mostrar quién tiene el permiso.
+- **`EMISOR_NOTA_CREDITO` en `appfrontend-main`, bloque 5.1 -- 🟡 PARCIAL
+  (09/09/2026, gate `architecture-governor`, segundo candidato transversal
+  del día).** Tres catálogos a mano del frontend listaban 8 grupos sin él:
+  `dashboard/roles/page.tsx:18-26`, `superadmin/roles-de-fabrica/page.tsx`,
+  `superadmin/planes/page.tsx`.
+  - **✅ Cerrados 2 de 3** (`appfrontend-main`, `ba01d3d`): `dashboard/roles/page.tsx`
+    -- hueco funcional REAL, no cosmético, verificado: `platform.schema.sql:782-786`
+    deja `plan_limit_allowed_permission_groups` con 0 filas a propósito para
+    PRO/ENTERPRISE ("0 filas = sin restricción"), o sea que esos negocios SÍ
+    podían crear un rol custom con este grupo según el backend, pero no
+    existía ningún checkbox para hacerlo. `superadmin/planes/page.tsx` --
+    `plan_limit_allowed_permission_groups` se lee vivo en cada request
+    (`assertPermissionGroupsAllowedInPlan`), no se propaga a tenants;
+    agregar el checkbox ahí es reversible y simétrico.
+  - **🔴 Sigue abierto, a propósito, `superadmin/roles-de-fabrica/page.tsx`.**
+    Ese archivo edita PRESETS, que SÍ se propagan por backfill a TODOS los
+    tenants existentes en cada boot (`platform.schema.sql:341-346`,
+    `ON CONFLICT DO NOTHING` -- un otorgamiento sobrevive el próximo
+    deploy, una revocación no revoca nada). Su copy actual ("Editar acá NO
+    afecta a los negocios que ya existen") es **FALSA** -- verificado
+    leyendo `platform.repository.ts:841-843` (el `UPDATE` solo toca la
+    tabla de presets) + el backfill. Agregar el checkbox ahí sin corregir
+    esa copy le daría a superadmin un click para otorgar autoridad fiscal
+    AFIP a `WAITER`/`HOUSEKEEPING` en producción, bajo un cartel que dice
+    lo contrario. Misma afirmación falsa duplicada en el backend:
+    `src/platform/platform.routes.ts:422-423`. Bloque cross-repo aparte,
+    con su propio gate -- corrige los dos lados en el mismo cambio.
+  - **También sigue abierto:** "no se puede identificar" -- `dashboard/roles/page.tsx:196`
+    muestra `permissionGroups.length` (un número), nunca los nombres, y
+    los roles `isSystem` (`OWNER`/`ADMIN`/`RECEPTIONIST`, los que
+    realmente tienen el grupo) nunca abren el modal. Bloque de UI aparte.
+  - **Cerca de fondo, todavía sin escribir:** no existe ninguna cerca sobre
+    el TAMAÑO del catálogo `Roles` de `security/roles.ts` (mismo patrón
+    que `EXPECTED_AUTHORIZE_CALL_SITES`) -- sin eso, el próximo grupo
+    agregado va a volver a driftear igual que este. Candidato para la
+    próxima sesión transversal.
 - **TTL de NC `PENDING`/`FAILED_UNCERTAIN` huérfana — deuda aceptada, no
   bug.** (08/09/2026, gate `architecture-governor` bloque 2.2, grounding
   `auditor-circuitos-erp`.) Una NC que queda `PENDING` (nunca se resolvió con
