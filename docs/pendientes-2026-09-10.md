@@ -128,14 +128,67 @@ futuros, cada uno con su propio alcance.
   del `error.middleware.ts` global (`ZodError → 400`, verificado por
   lectura, no ejercitado end-to-end) — requeriría credenciales de
   superadmin de producción, no disponibles en esta sesión.
-- **`PRESET-REVOKE-001`** (08-09/09/2026, gate `architecture-governor`).
-  No existe ninguna vía de revocación real en el producto: sacar un
-  grupo de un preset por el panel no revoca nada de los negocios que ya
-  lo tenían (el backfill solo agrega, `ON CONFLICT DO NOTHING`), y
-  `role.service.ts:182` bloquea editar roles `isSystem` desde el panel
-  del negocio. Hoy la única vía es SQL a mano contra la BD de
-  plataforma. Hacer el backfill simétrico (agregar un `DELETE`) es un
-  radio de explosión distinto — declarado, no decidido.
+- **`PRESET-REVOKE-001`** — 🟡 **HOLD, en diseño activo, 2 rondas de gate,
+  alcance recién acotado por el dueño** (09-10/09/2026, gate
+  `architecture-governor`). **Corrección de una afirmación falsa que
+  este mismo bullet tenía**: `role.service.ts:182` NO bloquea editar
+  grupos de permiso de roles `isSystem` -- esa línea vive dentro de
+  `deactivateRole()` y bloquea DESACTIVAR, nada más.
+  `RoleService.updatePermissionGroups()` (`:112-118`) sí permite editar
+  qué puede hacer un rol de sistema (`OWNER`/`ADMIN`/etc.) por negocio,
+  a propósito, según su propio docblock -- alcanzable por
+  `PUT /api/roles/:id` (`roles.routes.ts:160`, sin guard de `isSystem`),
+  soportado, con límite de plan y auditado en `audit_log`. El panel
+  (`dashboard/roles/page.tsx`) lo oculta con "No editable" para roles de
+  sistema, pero eso es UI, no un bloqueo real de la API -- confundir las
+  dos cosas fue lo que produjo la afirmación falsa original. (Nota: este
+  ítem no existe en `pendientes-2026-09-08.md` -- el ancla anterior
+  citando ese archivo estaba mal, el detalle completo siempre vivió acá.)
+
+  **Investigación ERP** (`auditor-circuitos-erp`, ERPNext/Odoo/QloApps):
+  los 3 convergen en que revocar un permiso de una plantilla se propaga
+  a quien ya la tenía asignada -- ninguno lo deja manual. Con esa
+  evidencia, el dueño decidió alinear `app-main` al patrón de ERPNext
+  (backfill simétrico: agregar Y quitar).
+
+  **2 rondas de diseño, 2 `HOLD` del gate, cada una achicando el
+  alcance real**:
+  1. Diseño inicial (`DELETE` simétrico solo en el backfill) -- `HOLD`:
+     el seed de 23 pares (`platform.schema.sql:320-331`) corre
+     INCONDICIONALMENTE en cada arranque y repone cualquier par
+     revocado por panel -- el `DELETE` hubiera sido inerte para toda la
+     matriz de fábrica (los 23 pares cubren el 100% del default).
+  2. Diseño con seed condicional ("solo si la tabla está vacía") +
+     `DELETE` con guard -- `HOLD`: encontró que el guard por vacío es
+     alcanzable desde el propio panel (guardar con el array vacío deja
+     la tabla vacía, resucitando el seed) -- se corrigió a una tabla de
+     "marcas de seed" (`platform_seed_markers`, gatea por clave, no por
+     contenido). Pero **el hallazgo que bloqueó esta ronda es más
+     grande**: `RoleService.updatePermissionGroups()` (arriba) es un
+     escritor legítimo, soportado y auditado de `role_permission_groups`
+     para roles de sistema, que la matriz de impacto original no había
+     detectado -- un `DELETE` simétrico le borraría a cualquier negocio
+     su personalización de rol de fábrica en el próximo reinicio del
+     servidor, SIN rastro de auditoría de esa reversión (la
+     personalización original sí quedó auditada).
+
+  **Decisión del dueño sobre esto (09-10/09/2026)**: opción **(c)** de
+  las 3 que presentó el gate -- **implementar SOLO la marca de seed,
+  SIN el `DELETE`, en este bloque.** Cierra el bug real que motivó todo
+  esto (editar un preset de fábrica por panel ahora persiste de verdad
+  en el catálogo -- ya no hay resurrección del seed original en el
+  próximo arranque) sin tocar ninguna personalización de ningún
+  negocio. **Lo que sigue sin resolver, a propósito**: sacar un grupo de
+  un preset sigue sin revocárselo a los negocios que ya lo tenían
+  asignado (el backfill de `:350-355` sigue siendo solo-agrega, sin
+  cambios) -- eso queda para un bloque futuro, condicionado a que el
+  dueño elija entre destruir las personalizaciones de negocio (opción
+  original "a": agregar guard `isSystem` a `updatePermissionGroups()`
+  en el mismo bloque) o preservarlas con una columna de procedencia
+  nueva (opción "b", cambio de schema más grande). **No autorizado
+  todavía, sin implementar**: la marca de seed en sí -- diseño cerrado,
+  pendiente de mandar al gate con el alcance reducido a (c) para
+  `READY FOR IMPLEMENTATION`.
 - **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas,
   pusheado y deployado** (`51ea0dc` + `db04daa` + `fa50557`, gate
   `architecture-governor` 09-10/09/2026). Render `dep-dahcnveq1p3s73dbdovg`
