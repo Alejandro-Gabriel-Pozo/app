@@ -135,15 +135,19 @@ describe('RoleService', () => {
   });
 
   describe('updatePermissionGroups', () => {
-    it('audita el cambio cuando el set de grupos cambia', async () => {
-      await service.updatePermissionGroups('role-biz-1-receptionist', 'biz-1', ['STAFF'], 'identity-1');
+    it('audita el cambio cuando el set de grupos cambia (rol custom)', async () => {
+      const role = await service.createRole('biz-1', 'Custom', ['STAFF', 'BOOKING'], 'identity-1');
+      // createRole() ya auditó una vez (ver describe('createRole') más arriba) --
+      // este update tiene que sumar una SEGUNDA entrada, no reemplazarla.
 
-      const entries = await auditRepo.findByEntity('roles', 'role-biz-1-receptionist');
-      expect(entries).toHaveLength(1);
-      expect(entries[0]!.field).toBe('permissionGroups');
+      await service.updatePermissionGroups(role.id, 'biz-1', ['STAFF'], 'identity-1');
+
+      const entries = await auditRepo.findByEntity('roles', role.id);
+      expect(entries).toHaveLength(2);
+      expect(entries[1]!.field).toBe('permissionGroups');
     });
 
-    it('no audita nada si el set de grupos no cambia (mismo contenido, distinto orden)', async () => {
+    it('no audita nada si el set de grupos no cambia (mismo contenido, distinto orden) -- rol "sistema" incluido', async () => {
       await service.updatePermissionGroups(
         'role-biz-1-receptionist',
         'biz-1',
@@ -159,9 +163,26 @@ describe('RoleService', () => {
       ).rejects.toBeInstanceOf(RoleNotFoundError);
     });
 
-    it('funciona sobre roles "sistema" — editar sus permisos es el punto del feature', async () => {
-      const updated = await service.updatePermissionGroups('role-biz-1-receptionist', 'biz-1', ['STAFF'], 'identity-1');
-      expect(updated.permissionGroups).toEqual(['STAFF']);
+    // PRESET-REVOKE-001 Parte 1 (10/09/2026) -- reversión de R11. M1/M2:
+    // rechaza CUANDO el set cambia, y NO llama a platformRepo (verificable
+    // por lo que el fake persiste).
+    it('rechaza cambiar el set de permisos de un rol "sistema" -- CannotModifySystemRoleError', async () => {
+      await expect(
+        service.updatePermissionGroups('role-biz-1-receptionist', 'biz-1', ['STAFF'], 'identity-1'),
+      ).rejects.toBeInstanceOf(CannotModifySystemRoleError);
+
+      // M5 -- el guard corta ANTES de escribir: el set original sigue intacto.
+      const found = await platformRepo.getRoleById('role-biz-1-receptionist', 'biz-1');
+      expect(found?.permissionGroups).toEqual(['STAFF', 'FRONT_DESK', 'BOOKING']);
+      expect(auditRepo.all()).toHaveLength(0);
+    });
+
+    it('un rol custom SÍ puede cambiar su set libremente (M2 -- negativo, mata el guard incondicional)', async () => {
+      const role = await service.createRole('biz-1', 'Custom', ['STAFF', 'BOOKING'], 'identity-1');
+
+      const updated = await service.updatePermissionGroups(role.id, 'biz-1', ['FRONT_DESK'], 'identity-1');
+
+      expect(updated.permissionGroups).toEqual(['FRONT_DESK']);
     });
   });
 

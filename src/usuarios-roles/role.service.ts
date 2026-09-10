@@ -59,6 +59,20 @@ function assertValidPermissionGroups(groups: string[]): void {
   }
 }
 
+/**
+ * PRESET-REVOKE-001 Parte 1 (10/09/2026) -- comparación por CONJUNTO
+ * ordenado, no por array ni por longitud a secas: `['A','B']` y
+ * `['B','A']` son el mismo set (el orden de `permissionGroups` nunca fue
+ * significativo, ver `diffFields` un poco más abajo en este archivo, que
+ * ya ordena antes de comparar).
+ */
+function sameGroupSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((g, i) => g === sortedB[i]);
+}
+
 export class RoleService {
   constructor(
     private readonly platformRepo: PlatformRepository,
@@ -110,10 +124,28 @@ export class RoleService {
   }
 
   /**
-   * Reemplaza el set de permission_groups de un rol existente — incluye
-   * roles "sistema" (R11: bloquear hacia adelante no aplica acá, editar
-   * QUÉ puede hacer OWNER/ADMIN/etc. es exactamente el punto de este
-   * feature). Lo único que un rol "sistema" no puede es desactivarse —
+   * Reemplaza el set de permission_groups de un rol existente.
+   *
+   * **PRESET-REVOKE-001 Parte 1 (10/09/2026, gate `architecture-governor`)
+   * -- reversión de una decisión de diseño anterior, con fecha, no
+   * "nunca existió":** hasta hoy, R11 decía "bloquear hacia adelante no
+   * aplica acá, editar QUÉ puede hacer OWNER/ADMIN/etc. es exactamente el
+   * punto de este feature" -- eso dejó de ser cierto. Ahora un rol
+   * "sistema" **no puede** customizar su propio set de grupos por acá.
+   * La única vía de cambiar qué puede hacer un rol de sistema es el
+   * preset de fábrica (`PUT /platform/role-presets/:name`), que desde
+   * la Parte 2 de este mismo bloque propaga a todos los negocios al
+   * instante, en las dos direcciones (altas y bajas).
+   *
+   * Guard por CAMBIO DE SET, no incondicional: comparado como conjunto
+   * ordenado (mismo criterio que `renameRole()`, `before.name !== name`)
+   * -- el frontend manda siempre `{name, permissionGroups}` juntos
+   * (`appfrontend-main/src/app/dashboard/roles/page.tsx`), así que un PUT
+   * idempotente sobre un rol de sistema (el set no cambia) no debe dar
+   * 409. Reusa `CannotModifySystemRoleError` (mismo 409 que `renameRole()`
+   * y `deactivateRole()`, cero wiring nuevo).
+   *
+   * Lo único que un rol "sistema" sigue sin poder es desactivarse —
    * ver deactivateRole().
    */
   async updatePermissionGroups(
@@ -125,6 +157,11 @@ export class RoleService {
     assertValidPermissionGroups(permissionGroups);
 
     const before = await this.getRole(id, businessId); // throws si no existe
+
+    if (before.isSystem && !sameGroupSet(before.permissionGroups, permissionGroups)) {
+      throw new CannotModifySystemRoleError(id, 'editar los grupos de permiso de');
+    }
+
     const updated = await this.platformRepo.updateRolePermissionGroups(id, businessId, permissionGroups);
 
     const changes = diffFields(
