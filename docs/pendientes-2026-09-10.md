@@ -355,9 +355,14 @@ sesión no los tenía). Investigados a fondo esta sesión: research ERP
 `architecture-governor`, que **rechazó el diseño propuesto** y autorizó
 solo un test de caracterización.
 
-- **`REFUND-ISSUED-RACE-01`** — 🟡 **medido con test de caracterización,
-  LOCAL/sin pushear** (`src/tests/integration/refund-issued-race.integration.test.ts`,
-  nuevo, gate 09-10/09/2026, Block A). `InvoiceService.finalizeIssued()` →
+- **`REFUND-ISSUED-RACE-01`** — Block A: medido con test de
+  caracterización (`b6ed750`, **pusheado desde antes de esta sesión,
+  está en `origin/main`**). **Corrección 10/09/2026, tarde**: Block B
+  (abortar con 409) ya se implementó encima y convirtió esos mismos 2
+  tests de caracterización a spec -- ya no documentan el defecto, prueban
+  el fix. Ver el bloque `✅ implementado` más arriba.
+  (`src/tests/integration/refund-issued-race.integration.test.ts`,
+  gate 09-10/09/2026, Block A). `InvoiceService.finalizeIssued()` →
   `markIssued()` (`src/facturacion/sql.invoice.repository.ts:814-825` —
   **no `:718-728`**, esa cita estaba corrida) es el único escritor de
   `invoices.status='ISSUED'`, corre por el pool sin transacción, después de
@@ -450,10 +455,19 @@ convergencia del reintento) + 2 tests unitarios nuevos con cobertura en
 CI (`ShiftingIssuedInvoicesRepository`, mismo patrón que
 `ShiftingCollectedRepository`). Mutación M1/M2 corrida y confirmada con
 sets de rojo disjuntos (M1: 1 test; M2: 10 tests, sin solape). `tsc`/
-`eslint` limpios, 539 tests de la suite `reservas`+`facturacion`+
-`api/middleware` en verde. **No corrí los 2 tests de integración
-convertidos** -- `TEST_DATABASE_URL` no está definida en este entorno;
-declarado, no una omisión.
+`eslint` limpios. **Corregido 10/09/2026, tarde -- ya se corrieron los 2
+tests de integración**, contra Postgres real (Neon, branch de test
+`test-integration-db` del proyecto tenant): pasan los dos, con las 3
+aserciones completas (rechazo, rollback real -- 0 filas `REFUND`
+commiteadas --, e interferencia commiteada). Reintento converge en los
+dos casos: directa ata `reversedInvoiceId`, consolidada choca con
+`ReservationOnConsolidatedInvoiceError`. Y no son 539 tests, es la suite
+COMPLETA del proyecto: **2047 passed, 1 todo, 160 archivos** (`npm run
+test`). **Residual de cobertura en CI, declarado:** los 2 tests de
+integración NO corren en el pipeline de CI (necesitan `TEST_DATABASE_URL`
+a mano) -- en CI, toda la protección de este guard descansa en el único
+test unitario nuevo que sí corre ahí. Si ese test se borra o se ablanda,
+CI no lo va a atrapar.
 
 **⚠️ ESTRECHA, NO CIERRA `REFUND-ISSUED-RACE-01`**: bajo READ COMMITTED,
 la ventana entre el SELECT del re-chequeo y el COMMIT sigue descubierta
@@ -492,11 +506,12 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### 🔴 Bloqueado en una decisión del dueño
 
-- **`REFUND-ISSUED-RACE-01`, Block B** — abortar con 409 vs. atar
-  tardíamente el reembolso a la factura recién `ISSUED`. Bloquea diseñar
-  el arreglo real (ensanchar el `FOR UPDATE`, hoy bloqueado además por
-  blindar el camino de falla de `markIssued()` primero). Ver más arriba
-  en este mismo archivo.
+- ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
+  abortar con 409; implementado, verificado contra Postgres real,
+  `FEATURE VERIFIED` por el gate. Ver el bloque de arriba en este mismo
+  archivo). La mitad NO tocada (blindar `markIssued()` para poder
+  ensanchar el `FOR UPDATE`) sigue abierta, sin decisión pendiente --
+  bloque propio.
 - **`PRESET-REVOKE-001`, la mitad real** (revocar hacia negocios que ya
   tienen el grupo) — opción (a) destruir personalizaciones de negocio +
   guard `isSystem` en `RoleService.updatePermissionGroups()`, o (b)
