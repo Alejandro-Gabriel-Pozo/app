@@ -418,7 +418,7 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
   // GET/PUT /platform/role-presets — L (23/08/2026). Catálogo global de
   // los 5 roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER).
-  // Corrección (09/09/2026, gate `architecture-governor`): "editar acá NO
+  // Corrección (09-10/09/2026, gate `architecture-governor`): "editar acá NO
   // afecta negocios ya provisionados" era FALSO para agregar un grupo --
   // solo era cierto para el camino TS de `provisionSystemRoles()` (que
   // efectivamente solo lee esto al CREAR un negocio). El backfill SQL de

@@ -271,7 +271,7 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 -- Mismo patrón que `modules` (ver más abajo en este archivo): tabla de
 -- catálogo de plataforma, con el seed de acá abajo aplicado con
 -- ON CONFLICT DO NOTHING. "Seedeada una sola vez" (redacción original,
--- corregida 09/09/2026) es el modelo mental que produjo un punto ciego
+-- corregida 09-10/09/2026) es el modelo mental que produjo un punto ciego
 -- real: el seed CORRE EN CADA ARRANQUE del proceso (no una sola vez), así
 -- que un par que el panel de superadmin borre y que esté en el seed de
 -- abajo vuelve solo en el próximo arranque -- la tabla ya NO es "solo
@@ -288,7 +288,7 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 -- query. Panel de superadmin para editar esto sin tocar código: existe
 -- desde el 23/08/2026 (`GET/PUT /platform/role-presets`,
 -- `appfrontend-main/src/app/superadmin/roles-de-fabrica`) -- ver el
--- comentario de arriba (corregido 09/09/2026) para el mecanismo real de
+-- comentario de arriba (corregido 09-10/09/2026) para el mecanismo real de
 -- propagación, distinto del que se asumía cuando se escribió este párrafo.
 -- ---------------------------------------------------------------------------
 

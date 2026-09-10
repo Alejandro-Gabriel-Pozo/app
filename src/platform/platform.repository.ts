@@ -806,7 +806,7 @@ export class PlatformRepository {
   }
 
   /** Catálogo global de los 5 roles de fábrica. Editar acá SÍ afecta
-   *  negocios ya provisionados -- corrección 09/09/2026 (gate
+   *  negocios ya provisionados -- corrección 09-10/09/2026 (gate
    *  `architecture-governor`): la premisa "provisionSystemRoles() solo
    *  lee esto al CREAR un negocio" es verdadera, pero la conclusión de
    *  que eso hace inocuo editar acá es falsa, porque ese no es el único
