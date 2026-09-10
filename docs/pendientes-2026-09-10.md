@@ -168,11 +168,28 @@ futuros, cada uno con su propio alcance.
   del `error.middleware.ts` global (`ZodError → 400`, verificado por
   lectura, no ejercitado end-to-end) — requeriría credenciales de
   superadmin de producción, no disponibles en esta sesión.
-- **`PRESET-REVOKE-001` — ✅ IMPLEMENTADO ENTERO (Parte 1+2), LOCAL/sin
-  pushear** (10/09/2026, gate `architecture-governor`, `2c1c7ff`+`e8f97db`+`43d1c00`
-  en `app-main`, `0123129` en `appfrontend-main`). La mitad que había
+- **`PRESET-REVOKE-001` — ✅ RESUELTO ENTERO (Parte 1+2), PUSHEADO Y
+  DEPLOYADO, VERIFICADO EN PRODUCCIÓN** (10/09/2026, gate
+  `architecture-governor`, `2c1c7ff`+`e8f97db`+`43d1c00`+`ebf9d5e` en
+  `app-main`, `0123129` en `appfrontend-main`). La mitad que había
   quedado abierta (revocar hacia negocios que ya tienen el grupo) se
   cerró en la misma sesión, no quedó para "un bloque futuro":
+  - **CI**: job `integration` (el que ejercita el SQL destructivo de la
+    Parte 2 contra Postgres real por primera vez, `vitest.config.ts`
+    excluye esa carpeta del job `test`) -- ✅ `success`, run `34529816290`,
+    junto con `test`/`schema-version-check`/`route-inventory-check`/
+    `lint`/`typecheck`.
+  - **Render**: deploy `dep-dahhlce417fc73dsisv0`, commit `ebf9d5e` =
+    `live` (identidad del deploy confirmada por la API de Render, no
+    solo `/health`).
+  - **Post-deploy, read-only contra producción** (Neon
+    `morning-unit-50056927`): 23 pares de catálogo intactos, 0
+    divergencia en las dos direcciones entre `role_preset_permission_groups`
+    y `role_permission_groups` de los 2 negocios -- el deploy no movió
+    ni una fila, como se esperaba (nadie tocó un preset durante la
+    ventana de deploy).
+  - `git ls-remote` + `HEAD` local = `origin/main` en los dos repos,
+    confirmado tras el push.
   - **Parte 1** (`2c1c7ff`) -- `RoleService.updatePermissionGroups()`
     ya NO permite customizar el set de permisos de un rol `isSystem` por
     negocio (reversión de R11, con fecha). 409, guard por cambio de set

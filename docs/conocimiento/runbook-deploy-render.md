@@ -113,12 +113,12 @@ de un par. Al 29/08 el único legítimo está dentro de un comentario
 
 ### Recuperar un preset de roles vaciado por error (09-10/09/2026, `PRESET-REVOKE-001`)
 
-**Reescrito 10/09/2026 -- aplica desde que Parte 1+2 estén deployadas.
-Estado real a la fecha de este commit: implementado en código, LOCAL,
-sin pushear ni deployar todavía** (`2c1c7ff`+`e8f97db` en `app-main`) --
-esta sección describe el comportamiento que va a regir una vez
-deployado, no lo que rige hoy en producción. Desde
-`PRESET-REVOKE-001` Parte 1+2:
+**Reescrito 10/09/2026, deployado el mismo día -- rige desde ahora.**
+Estado confirmado: `2c1c7ff`+`e8f97db` (`app-main`) deployados en
+Render (`dep-dahhlce417fc73dsisv0`, `live`), CI `integration` en verde
+(ejercitó el `DELETE` de la Parte 2 contra Postgres real antes de
+llegar a producción), y verificación read-only post-deploy confirmando
+0 divergencia. Desde `PRESET-REVOKE-001` Parte 1+2:
 
 1. Un rol "sistema" (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER) **ya
    no se puede customizar** por `PUT /api/roles/:id` -- `RoleService.updatePermissionGroups()`
