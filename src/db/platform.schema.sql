@@ -269,8 +269,15 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 -- hardcodeados y duplicados en TS y SQL).
 --
 -- Mismo patrón que `modules` (ver más abajo en este archivo): tabla de
--- catálogo de plataforma, seedeada una sola vez acá con ON CONFLICT DO
--- NOTHING. Antes, los 5 roles "sistema" (OWNER/ADMIN/RECEPTIONIST/
+-- catálogo de plataforma, con el seed de acá abajo aplicado con
+-- ON CONFLICT DO NOTHING. "Seedeada una sola vez" (redacción original,
+-- corregida 09/09/2026) es el modelo mental que produjo un punto ciego
+-- real: el seed CORRE EN CADA ARRANQUE del proceso (no una sola vez), así
+-- que un par que el panel de superadmin borre y que esté en el seed de
+-- abajo vuelve solo en el próximo arranque -- la tabla ya NO es "solo
+-- seed", desde que existe un panel que también le escribe encima (ver
+-- platform.routes.ts, GET/PUT /platform/role-presets, para el mecanismo
+-- completo). Antes, los 5 roles "sistema" (OWNER/ADMIN/RECEPTIONIST/
 -- HOUSEKEEPING/WAITER) y sus permission_groups estaban escritos DOS veces
 -- a mano: como array TS en PlatformRepository.provisionSystemRoles() y
 -- como UNION ALL literal acá abajo — cualquier cambio a un preset
@@ -278,9 +285,11 @@ CREATE TABLE IF NOT EXISTS role_permission_groups (
 -- sin ninguna garantía de que quedaran sincronizados. Ahora hay una sola
 -- fuente de datos (esta tabla): el backfill de acá abajo la LEE via JOIN
 -- en vez de repetirla, y provisionSystemRoles() (TS) hace lo mismo con una
--- query. Panel de superadmin para editar esto sin tocar código: anotado
--- aparte en pendientes, sin alcance definido todavía — lo de acá es sólo
--- sacar la duplicación, no esa UI.
+-- query. Panel de superadmin para editar esto sin tocar código: existe
+-- desde el 23/08/2026 (`GET/PUT /platform/role-presets`,
+-- `appfrontend-main/src/app/superadmin/roles-de-fabrica`) -- ver el
+-- comentario de arriba (corregido 09/09/2026) para el mecanismo real de
+-- propagación, distinto del que se asumía cuando se escribió este párrafo.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS role_presets (

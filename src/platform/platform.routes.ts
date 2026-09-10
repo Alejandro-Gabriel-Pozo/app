@@ -417,12 +417,23 @@ export function createPlatformRouter(container: PlatformContainer): Router {
   );
 
   // GET/PUT /platform/role-presets — L (23/08/2026). Catálogo global de
-  // los 5 roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER)
-  // que se copian a `roles` al crear un negocio (provisionSystemRoles()).
-  // Editar acá NO afecta negocios ya provisionados -- solo los que se
-  // creen de ahí en adelante. No se pueden agregar/borrar presets (un rol
-  // de fábrica nuevo requiere tocar código en varios lugares que asumen
-  // estos 5 nombres, no es solo una fila de config).
+  // los 5 roles de fábrica (OWNER/ADMIN/RECEPTIONIST/HOUSEKEEPING/WAITER).
+  // Corrección (09/09/2026, gate `architecture-governor`): "editar acá NO
+  // afecta negocios ya provisionados" era FALSO para agregar un grupo --
+  // solo era cierto para el camino TS de `provisionSystemRoles()` (que
+  // efectivamente solo lee esto al CREAR un negocio). El backfill SQL de
+  // `platform.schema.sql:341-346` corre en CADA ARRANQUE del proceso
+  // (`server.ts:33-53`, no solo en deploy), hace CROSS JOIN de todos los
+  // negocios contra los presets, y copia cada permission_group agregado a
+  // TODOS los negocios existentes -- `ON CONFLICT DO NOTHING`, así que
+  // agrega pero nunca borra. Sacar un par SEEDEADO (los 23 de
+  // `platform.schema.sql:311-322`) tampoco persiste: el seed lo
+  // re-inserta en el próximo arranque. No hay vía de revocación en ningún
+  // panel (`role.service.ts:182` bloquea editar roles `isSystem`) --
+  // sacarle un grupo a un negocio existente exige SQL a mano contra la BD
+  // de plataforma. No se pueden agregar/borrar presets (un rol de fábrica
+  // nuevo requiere tocar código en varios lugares que asumen estos 5
+  // nombres, no es solo una fila de config).
   router.get(
     '/role-presets',
     async (_req: Request, res: Response, next: NextFunction): Promise<void> => {

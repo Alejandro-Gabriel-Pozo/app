@@ -805,7 +805,16 @@ export class PlatformRepository {
     return (await this.listPlanLimits()).find((p) => p.plan === plan)!;
   }
 
-  /** Catálogo global de los 5 roles de fábrica — editar acá NO afecta negocios ya provisionados (`provisionSystemRoles()` solo lee esto al CREAR un negocio), solo los nuevos de ahí en adelante. */
+  /** Catálogo global de los 5 roles de fábrica. Editar acá SÍ afecta
+   *  negocios ya provisionados -- corrección 09/09/2026 (gate
+   *  `architecture-governor`): la premisa "provisionSystemRoles() solo
+   *  lee esto al CREAR un negocio" es verdadera, pero la conclusión de
+   *  que eso hace inocuo editar acá es falsa, porque ese no es el único
+   *  camino que lee esta tabla -- el backfill SQL de
+   *  platform.schema.sql:341-346 también la lee, en CADA ARRANQUE del
+   *  proceso, y propaga cada grupo agregado a todos los negocios
+   *  existentes. Ver el comentario de platform.routes.ts (GET/PUT
+   *  /platform/role-presets) para el mecanismo completo. */
   async listRolePresets(): Promise<RolePresetAdmin[]> {
     const result = await this.db.query<{ name: string; permission_group: string | null }>(
       `SELECT rp.name, rppg.permission_group
