@@ -25,8 +25,10 @@
  * A diferencia de `for-key-share-lock-semantics.integration.test.ts` (que sí
  * necesita una carrera real porque mide un lock), acá no hace falta: el
  * guard compara dos LECTURAS SECUENCIALES dentro de la misma invocación
- * (`collected` en `cancellation-refund.service.ts:295`, `collectedRecheck`
- * en `:367`). Alcanza con que la escritura interferente ya haya COMMITEADO
+ * (variables `collected` y `collectedRecheck` en
+ * `cancellation-refund.service.ts` -- cita por nombre, no línea, desde
+ * SCHEMA-ANCHOR-DRIFT-001 10/09/2026). Alcanza con que la escritura
+ * interferente ya haya COMMITEADO
  * antes de la segunda lectura -- determinístico, sin sleeps ni
  * `Promise.race`. Se logra decorando `createWithClient()` (el método que
  * `confirmRefund()` usa para insertar SU PROPIO REFUND, ya DENTRO de la

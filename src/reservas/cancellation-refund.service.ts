@@ -402,7 +402,8 @@ export class CancellationRefundService {
       // la única que este chequeo necesita cubrir.
       //
       // Por qué el ORDEN entre este chequeo y el de `collected` de arriba NO
-      // importa: `markIssued()` (`sql.invoice.repository.ts:814-825`) solo
+      // importa: `markIssued()` (`sql.invoice.repository.ts` -- cita por
+      // nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001 10/09/2026) solo
       // hace UPDATE sobre `invoices` -- nunca toca `financial_transactions`.
       // `collectedRecheck` es estructuralmente ciego a este evento, así que
       // los dos chequeos son ortogonales; cualquiera de los dos que dispare

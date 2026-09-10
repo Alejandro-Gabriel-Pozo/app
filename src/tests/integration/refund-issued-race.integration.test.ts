@@ -15,10 +15,11 @@
  * ## La ventana que esto mide, y por qué NINGÚN test existente la cubre
  *
  * `CancellationRefundService.confirmRefund()` lee `issuedInvoices` DENTRO de
- * su transacción (`cancellation-refund.service.ts:189`), filtrando
- * `status === 'ISSUED'`. Si una factura `PENDING` de la misma reserva pasa a
- * `ISSUED` (`markIssued()`, `sql.invoice.repository.ts:814-825` -- UPDATE
- * suelto por el pool, sin `client`, sin transacción, disparado por
+ * su transacción (`cancellation-refund.service.ts`, variable `issuedInvoices`
+ * -- cita por nombre, no línea, desde SCHEMA-ANCHOR-DRIFT-001 10/09/2026),
+ * filtrando `status === 'ISSUED'`. Si una factura `PENDING` de la misma
+ * reserva pasa a `ISSUED` (método `markIssued()`, `sql.invoice.repository.ts`
+ * -- UPDATE suelto por el pool, sin `client`, sin transacción, disparado por
  * `InvoiceService.finalizeIssued()` después de que AFIP responde) DESPUÉS de
  * esa lectura pero ANTES del COMMIT, el monto que le correspondía a esa
  * factura cae al chunk `:sin-asignar` (ledger-only, sin Nota de Crédito) en

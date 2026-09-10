@@ -89,8 +89,11 @@ const SRC_DIR = join(__dirname, '../..');
 
 /** Los dos únicos archivos que escriben `reversedInvoiceId` en una fila de
  *  `financial_transactions`. Verificado a mano que el `type` del write es
- *  `REFUND` (`cancellation-refund.service.ts:273`) / `ADJUSTMENT`
- *  (`cancel-order-with-credit-note.service.ts:261`,
+ *  `REFUND` (`cancellation-refund.service.ts`, el chunk `type: 'REFUND'`
+ *  dentro del loop de reparto) / `ADJUSTMENT`
+ *  (`cancel-order-with-credit-note.service.ts`, el `createWithClient(...)`
+ *  con `reversedInvoiceId: originalInvoiceId` -- citas por nombre, no
+ *  línea, desde SCHEMA-ANCHOR-DRIFT-001 10/09/2026),
  *  `cancel-reservation-with-credit-note.service.ts` -- bloque 3.3-b1,
  *  09/09/2026, mismo `type: 'ADJUSTMENT'`, ahora con `reservationId`
  *  seteado en vez de `null`). */
