@@ -172,23 +172,52 @@ futuros, cada uno con su propio alcance.
      servidor, SIN rastro de auditoría de esa reversión (la
      personalización original sí quedó auditada).
 
-  **Decisión del dueño sobre esto (09-10/09/2026)**: opción **(c)** de
-  las 3 que presentó el gate -- **implementar SOLO la marca de seed,
-  SIN el `DELETE`, en este bloque.** Cierra el bug real que motivó todo
-  esto (editar un preset de fábrica por panel ahora persiste de verdad
-  en el catálogo -- ya no hay resurrección del seed original en el
-  próximo arranque) sin tocar ninguna personalización de ningún
-  negocio. **Lo que sigue sin resolver, a propósito**: sacar un grupo de
-  un preset sigue sin revocárselo a los negocios que ya lo tenían
-  asignado (el backfill de `:350-355` sigue siendo solo-agrega, sin
-  cambios) -- eso queda para un bloque futuro, condicionado a que el
-  dueño elija entre destruir las personalizaciones de negocio (opción
-  original "a": agregar guard `isSystem` a `updatePermissionGroups()`
-  en el mismo bloque) o preservarlas con una columna de procedencia
-  nueva (opción "b", cambio de schema más grande). **No autorizado
-  todavía, sin implementar**: la marca de seed en sí -- diseño cerrado,
-  pendiente de mandar al gate con el alcance reducido a (c) para
-  `READY FOR IMPLEMENTATION`.
+  **Decisión del dueño (09-10/09/2026)**: opción **(c)** de las 3 que
+  presentó el gate -- **implementar SOLO la marca de seed, SIN el
+  `DELETE`, en este bloque.** Cierra el bug real que motivó todo esto
+  (editar un preset de fábrica por panel ahora persiste de verdad en el
+  catálogo -- ya no hay resurrección del seed original en el próximo
+  arranque) sin tocar ninguna personalización de ningún negocio. **Lo
+  que sigue sin resolver, a propósito**: sacar un grupo de un preset
+  sigue sin revocárselo a los negocios que ya lo tenían asignado (el
+  backfill de `platform.schema.sql:412-417` sigue siendo solo-agrega,
+  sin cambios) -- eso queda para un bloque futuro, condicionado a que
+  el dueño elija entre destruir las personalizaciones de negocio
+  (opción original "a": agregar guard `isSystem` a
+  `updatePermissionGroups()` en el mismo bloque) o preservarlas con una
+  columna de procedencia nueva (opción "b", cambio de schema más
+  grande).
+
+  **✅ IMPLEMENTADO en código, LOCAL/sin pushear ni deployar**
+  (`cd4dff6` + `18a3c93`, 09-10/09/2026). Tabla `platform_seed_markers`
+  + seed de los 23 pares gateado por marca (no por vacío). 7 tests
+  nuevos en `platform-schema.integration.test.ts` (`describe` aislado,
+  BD propia) + 2 mutation tests con conjuntos de rojo distintos, los 2
+  revertidos. Verificado en producción antes de commitear: 23 pares
+  intactos, `platform_seed_markers` todavía no existe -- el camino de
+  upgrade real que prueban los tests es el que va a correr en el
+  próximo deploy, sin ninguna revocación previa que revertir.
+
+  **Hallazgos nuevos de la revisión de implementación, registrados,
+  NO corregidos en este bloque:**
+  - **Copy del frontend queda falsa al deployar** --
+    `appfrontend-main/src/app/superadmin/roles-de-fabrica/page.tsx:74-77`
+    dice hoy en producción "Destildar un grupo que viene de fábrica no
+    persiste: vuelve solo en el próximo arranque" -- exactamente lo que
+    este bloque corrige. El deploy de `cd4dff6` vuelve esa frase falsa
+    de inmediato. **Bloque cross-repo aparte, ORDENADO por deploy**: la
+    copy del frontend no se toca hasta que el backend esté deployado y
+    verificado en producción -- mismo criterio que ya se aplicó para
+    `roles-de-fabrica`/`PRESET-GROUP-VALIDATION-001` en un bloque
+    anterior de esta sesión. El párrafo vecino (`:67-72`, "el backfill
+    solo agrega, nunca borra") sigue siendo cierto y NO se toca.
+  - **Negativo confirmado, no hacía falta corregir nada**: se verificó
+    que el catálogo de 8 grupos del frontend (`roles-de-fabrica/page.tsx:9-12`,
+    sin `EMISOR_NOTA_CREDITO`, `ROLES-CATALOG-DRIFT-001`) NO pierde ese
+    9° grupo al guardar -- `handleSave()` manda el array completo
+    cargado por el `GET`, `toggle()` solo agrega/saca la clave
+    tildada. El 9° grupo sobrevive invisible, igual que antes de este
+    bloque.
 - **`PLAN-LIMITS-SEED-REVERT-001`** (09-10/09/2026, gate
   `architecture-governor`, encontrado al aplicar §4.0 sobre el diseño de
   `PRESET-REVOKE-001` -- mismo defecto, mismo archivo, tercera vez que
