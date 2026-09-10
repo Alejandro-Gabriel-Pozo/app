@@ -16,6 +16,7 @@ import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js
 import { PlatformRole } from '../types/enums.js';
 import { recordPlatformChanges } from './platform-audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
+import { Roles } from '../security/roles.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -62,21 +63,43 @@ const UpdateBusinessPlanSchema = z.object({
 // numéricos = sin límite (mismo criterio que la columna real);
 // `allowedRoleNames`/`allowedPermissionGroups` vacíos = sin restricción
 // ('ALL' en la forma resuelta que consume el resto del código).
+// PRESET-GROUP-VALIDATION-001 (09-10/09/2026, gate `architecture-governor`)
+// — antes `z.array(z.string())`: cualquier string se aceptaba y se
+// propagaba sin chequeo, vía el mismo backfill que el resto de esta
+// sesión reconstruyó, a `role_preset_permission_groups`/
+// `plan_limit_allowed_permission_groups`. `z.nativeEnum(Roles)` (no
+// `z.enum(Object.values(Roles))`: la forma vigente en este repo con Zod
+// 3.25, ver `BusinessPlan` un poco más abajo) lo cierra del lado del
+// panel. Enum = catálogo COMPLETO (los 9 grupos, incluido
+// `CUSTOMER_ONLY`) a propósito -- decidir un subconjunto asignable desde
+// acá es una decisión de autorización aparte, no una corrección de typo.
+// Lo que esto NO cierra, a propósito: `permission_group` sigue siendo
+// `VARCHAR(50)` sin FK/CHECK en `platform.schema.sql` -- SQL a mano
+// contra la BD de plataforma (la única vía de revocación documentada,
+// ver el comentario de la ruta GET/PUT /role-presets más abajo) saltea
+// esta cerca por completo. Es una cerca sobre el camino del panel, no
+// sobre la columna.
+const PermissionGroupSchema = z.nativeEnum(Roles);
+
 const NullableNonNegativeInt = z.number().int().min(0).nullable();
 const UpdatePlanLimitsSchema = z.object({
   maxCategories: NullableNonNegativeInt,
   maxResources: NullableNonNegativeInt,
   maxActiveMemberships: NullableNonNegativeInt,
   maxCustomRoles: NullableNonNegativeInt,
+  // `allowedRoleNames` queda `z.array(z.string())` a propósito: se compara
+  // contra `role.name` (`users.routes.ts`), y los roles pueden ser CUSTOM
+  // con cualquier nombre que el tenant elija -- no hay catálogo fijo
+  // contra el cual validar sin rechazar un valor legítimo.
   allowedRoleNames: z.array(z.string()),
-  allowedPermissionGroups: z.array(z.string()),
+  allowedPermissionGroups: z.array(PermissionGroupSchema),
 });
 
 // L (23/08/2026) — editar los grupos de permiso de un preset de rol de
 // fábrica. Solo permission_groups: el `name` es fijo (los 5 presets no se
 // crean/borran desde acá, ver docblock de la ruta).
 const UpdateRolePresetSchema = z.object({
-  permissionGroups: z.array(z.string()),
+  permissionGroups: z.array(PermissionGroupSchema),
 });
 
 function firstString(val: unknown): string | undefined {

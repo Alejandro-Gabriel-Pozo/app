@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ZodError } from 'zod';
 import type { Request, Response } from 'express';
 import { createPlatformRouter } from './platform.routes.js';
 import { signPlatformToken } from './platform.auth.middleware.js';
@@ -69,19 +70,31 @@ function reqWith(opts: { token?: string; body?: unknown; params?: Record<string,
 type RouteHandler = { handle: (req: Request, res: Response, next: (err?: unknown) => void) => unknown };
 type RouterLayer = RouteHandler & { route?: { path: string; methods: Record<string, boolean>; stack: RouteHandler[] } };
 
-/** Corre TODO router.stack en orden -- incluye el router.use() de auth, no solo la ruta pedida. */
+/**
+ * Corre TODO router.stack en orden -- incluye el router.use() de auth, no
+ * solo la ruta pedida.
+ *
+ * `res.nextError` (09-10/09/2026, PRESET-GROUP-VALIDATION-001) -- aditivo,
+ * ningún test previo lo lee. Antes los dos `next`/`routeNext` descartaban
+ * `err` en silencio (`if (err) return;`): un `ZodError` real salía del
+ * handler y desaparecía sin que `res.statusCode`/`res.body` se movieran, así
+ * que un test no podía distinguir "Zod rechazó el input" de "la ruta no hizo
+ * nada por cualquier otro motivo". No se agrega el `errorHandler` real (eso
+ * es responsabilidad de `error.middleware.ts`, cubierto por su propio test)
+ * -- solo se captura el error para poder afirmar CUÁL fue.
+ */
 async function runRoute(
   router: ReturnType<typeof createPlatformRouter>,
   method: 'get' | 'post' | 'patch' | 'put',
   path: string,
   req: Request,
-): Promise<Response & { statusCode?: number; body?: unknown }> {
+): Promise<Response & { statusCode?: number; body?: unknown; nextError?: unknown }> {
   const stack = (router as unknown as { stack: RouterLayer[] }).stack;
-  const res = fakeRes();
+  const res = fakeRes() as Response & { statusCode?: number; body?: unknown; nextError?: unknown };
 
   let i = 0;
   const next = (err?: unknown): void => {
-    if (err) return;
+    if (err) { res.nextError = err; return; }
     dispatch();
   };
   function dispatch(): void {
@@ -91,7 +104,7 @@ async function runRoute(
       if (layer.route.path !== path || !layer.route.methods[method]) { dispatch(); return; }
       let j = 0;
       const routeNext = (err2?: unknown): void => {
-        if (err2) return;
+        if (err2) { res.nextError = err2; return; }
         const mw = layer.route!.stack[j++];
         if (mw) void mw.handle(req, res, routeNext);
       };
@@ -531,6 +544,23 @@ describe('GET/PUT /plan-limits', () => {
     expect(platformRepo.updatePlanLimits).toHaveBeenCalledWith(BusinessPlan.STARTER, expect.objectContaining({ maxCategories: 5 }), FAKE_TX_CLIENT);
     expect(res.statusCode).toBeUndefined();
   });
+
+  // PRESET-GROUP-VALIDATION-001 (09-10/09/2026, gate `architecture-governor`)
+  // -- antes `allowedPermissionGroups` era `z.array(z.string())`: cualquier
+  // string se aceptaba sin chequeo contra el catálogo real de `Roles`.
+  it('PUT /plan-limits/:plan rechaza un grupo de permiso inválido en allowedPermissionGroups', async () => {
+    const platformRepo = fakePlatformRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    const res = await runRoute(router, 'put', '/plan-limits/:plan', reqWith({
+      token: superadminToken(), params: { plan: BusinessPlan.STARTER },
+      body: { maxCategories: null, maxResources: null, maxActiveMemberships: null, maxCustomRoles: null, allowedRoleNames: [], allowedPermissionGroups: ['MANAGMENT'] },
+    }));
+
+    expect(res.nextError).toBeInstanceOf(ZodError);
+    expect((res.nextError as ZodError).issues[0]).toMatchObject({ path: ['allowedPermissionGroups', 0] });
+    expect(platformRepo.updatePlanLimits).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET/PUT /role-presets', () => {
@@ -571,6 +601,25 @@ describe('GET/PUT /role-presets', () => {
 
     expect(platformRepo.updateRolePresetPermissionGroups).toHaveBeenCalledWith('WAITER', ['ORDERS'], FAKE_TX_CLIENT);
     expect(res.body).toMatchObject({ name: 'WAITER', permissionGroups: ['ORDERS'] });
+  });
+
+  // PRESET-GROUP-VALIDATION-001 (09-10/09/2026, gate `architecture-governor`)
+  // -- antes `permissionGroups` era `z.array(z.string())`: cualquier string
+  // se aceptaba sin chequeo contra el catálogo real de `Roles`, y ese valor
+  // basura se propagaba por el backfill a TODOS los negocios existentes.
+  it('PUT /role-presets/:name rechaza un grupo de permiso inválido', async () => {
+    const platformRepo = fakePlatformRepo({
+      listRolePresets: vi.fn(async () => [{ name: 'WAITER', permissionGroups: ['STAFF'] }]),
+    });
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    const res = await runRoute(router, 'put', '/role-presets/:name', reqWith({
+      token: superadminToken(), params: { name: 'WAITER' }, body: { permissionGroups: ['GRUPO_FICTICIO'] },
+    }));
+
+    expect(res.nextError).toBeInstanceOf(ZodError);
+    expect((res.nextError as ZodError).issues[0]).toMatchObject({ path: ['permissionGroups', 0] });
+    expect(platformRepo.updateRolePresetPermissionGroups).not.toHaveBeenCalled();
   });
 });
 
