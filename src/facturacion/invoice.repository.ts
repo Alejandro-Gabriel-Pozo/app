@@ -47,39 +47,77 @@ export interface InvoiceRepository {
    */
   getByReservationId(reservationId: string): Promise<Invoice[]>;
   /**
-   * C1-Fase C (23/08/2026), predicado corregido 11/09/2026 (hueco de
-   * doble comprobante, gate `architecture-governor`) — de la lista dada,
-   * cuáles YA tienen una fila en `invoice_charges`, **sin importar el
-   * `status` de la factura a la que apunta**. Guard contra double-billing
-   * en `InvoiceService.requestConsolidatedInvoice()`: una fila
-   * `accounts_receivable` PENDIENTE_FACTURAR cuyo cargo YA está en
-   * `invoice_charges` (ej. se marcó FACTURADO por el paso de "mark
-   * invoiced" pero el paso siguiente falló a mitad de camino, o la
-   * factura quedó `PENDING`/`FAILED_UNCERTAIN` porque el proceso murió
-   * antes de la respuesta de AFIP) no se puede facturar una segunda vez.
+   * C1-Fase C (23/08/2026), predicado corregido 11/09/2026 en 2 rondas
+   * (hueco de doble comprobante, gate `architecture-governor`) — de la
+   * lista dada, cuáles YA tienen un comprobante vivo por CUALQUIERA de
+   * los 2 caminos de emisión. Guard contra double-billing en
+   * `InvoiceService.requestConsolidatedInvoice()`: una fila
+   * `accounts_receivable` PENDIENTE_FACTURAR cuyo cargo YA está
+   * facturado (por la vía consolidada -- `invoice_charges` -- o por la
+   * vía individual -- `invoices.financial_transaction_id` directo, ej.
+   * alguien clickeó "Facturar" en cuentas-corrientes sobre ese mismo
+   * cargo) no se puede volver a facturar.
    *
-   * **Por qué NO filtra por status (a diferencia de
-   * `getInFlightCreditNoteTotalForUpdate()`/`ForPair`, mismo archivo, que
-   * SÍ usan `status = ANY(['ISSUED','PENDING','FAILED_UNCERTAIN'])`):**
-   * ahí el recurso reservado es cupo monetario de NC, y una NC `REJECTED`
-   * (AFIP confirmó que no existe) efectivamente libera ese cupo. Acá el
-   * recurso es la fila `invoice_charges` en sí — se inserta ANTES de
-   * llamar a AFIP, en la misma transacción que la factura `PENDING`
-   * (`sql.invoice.repository.ts::createWithClient()`), y
-   * **nunca se borra**, sea cual sea el desenlace (`ISSUED`, `REJECTED`,
-   * `FAILED_UNCERTAIN` quedan todos con su `invoice_charges` intacto).
-   * `idx_invoice_charges_ft` (`schema.sql`) es un índice ÚNICO sobre
-   * `financial_transaction_id` sin `WHERE` de status — status-agnóstico,
-   * igual que este predicado. Filtrar por `ISSUED` (bug original) o por
-   * la lista de NC (`REJECTED` afuera) deja pasar el guard para una
-   * factura `REJECTED`/`PENDING`/`FAILED_UNCERTAIN` cuyo INSERT real
-   * después choca igual contra el índice, solo que con un 23505 crudo en
-   * vez de `AccountsReceivableAlreadyInvoicedError` — exactamente el
-   * error tipado que este método existe para dar. Tres predicados
-   * distintos sobre "¿este cargo tiene un comprobante vivo?" conviven a
-   * propósito en este archivo (este método, el cap de NC de arriba, y
+   * **DOS ramas, DOS políticas de status distintas, a propósito -- no
+   * armonizar sin re-derivar cada una:**
+   *
+   * 1. **`invoice_charges` (ronda 1, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01`)
+   *    -- status-agnóstico, SIN filtro.** El recurso protegido es la fila
+   *    `invoice_charges` en sí -- se inserta ANTES de llamar a AFIP, en la
+   *    misma transacción que la factura `PENDING`
+   *    (`sql.invoice.repository.ts::createWithClient()`), y **nunca se
+   *    borra**, sea cual sea el desenlace (`ISSUED`, `REJECTED`,
+   *    `FAILED_UNCERTAIN` quedan todos con su `invoice_charges` intacto).
+   *    `idx_invoice_charges_ft` (`schema.sql`) es un índice ÚNICO sobre
+   *    `financial_transaction_id` sin `WHERE` de status -- filtrar acá
+   *    dejaría pasar el guard para un INSERT que igual choca contra el
+   *    índice, solo que con un 23505 crudo en vez de
+   *    `AccountsReceivableAlreadyInvoicedError`.
+   * 2. **`invoices.financial_transaction_id` directo (ronda 2,
+   *    `INVOICE-CHARGES-GUARD-1BIS-01`) -- filtrada por
+   *    `INVOICE_STATUSES_CONSUMING_CHARGE`
+   *    (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN`, NO `REJECTED`).** Acá NO
+   *    hay índice único forzando nada -- una factura individual
+   *    `REJECTED` sobre este mismo `ftId` es perfectamente reintentable
+   *    (mismo `idempotencyKey` determinístico, `retryExisting()` la
+   *    reemite) y AFIP confirmó que no existe, así que no debe bloquear
+   *    para siempre (decisión del dueño, grounding ERP: Odoo excluye
+   *    `state=='cancel'` de `qty_invoiced`, ERPNext excluye
+   *    `docstatus==2`).
+   *
+   * **Asimetría real, declarada a propósito**: un cargo cuya factura
+   * CONSOLIDADA fue `REJECTED` queda bloqueado para re-consolidarse PARA
+   * SIEMPRE (rama 1, sin filtro) -- pero SÍ es facturable por el camino
+   * individual (`InvoiceService.requestInvoice()`, ronda 1 lo permitió a
+   * propósito). No son la misma pregunta: "¿puedo facturar este cargo
+   * DE NUEVO por otra vía?" (rama 2, permisivo con `REJECTED`) vs.
+   * "¿puede este cargo terminar en DOS `invoice_charges`?" (rama 1,
+   * nunca, es lo que el índice único ya impide). Ver el test dedicado en
+   * `consolidated-invoice-toctou.integration.test.ts` que fija esta
+   * asimetría -- si algún día se "corrige" armonizando las dos ramas, ese
+   * test tiene que romper primero.
+   *
+   * **Supuesto de código, sin constraint que lo fuerce**: la rama 2 no
+   * puede matchear una Nota de Crédito -- las NC persisten el id del
+   * REFUND/ADJUSTMENT que revierten (`InvoiceService::buildCreditNote()`),
+   * nunca el id del CHARGE original, y el único creador de
+   * `accounts_receivable.financialTransactionId` que alimenta este guard
+   * (`AccountsReceivableService::transferStayBalanceToReceivable()`,
+   * `accounts-receivable.service.ts:169`) hardcodea `type: 'CHARGE'`. Es
+   * un invariante de código (un solo call-site), no un CHECK de schema --
+   * si aparece un segundo creador de AR que no sea `CHARGE`, revisar esto.
+   *
+   * **Diagnóstico**: el `Set` devuelto no distingue de qué rama vino cada
+   * id -- si hace falta saber CUÁL de los 2 caminos ya facturó un cargo
+   * puntual para atender un caso real, usar `resolveInvoiceLinkage()`
+   * (mismo archivo), que sí lo distingue.
+   *
+   * Tres predicados distintos sobre "¿este cargo tiene un comprobante
+   * vivo?" conviven a propósito en este archivo (este método -- ahora con
+   * 2 sub-políticas propias --, el cap de NC de
+   * `getInFlightCreditNoteTotalForUpdate()`/`ForPair`, y
    * `sql.financial-transaction.repository.ts` para anulación de CHARGEs)
-   * porque responden preguntas distintas sobre las mismas tablas — no
+   * porque responden preguntas distintas sobre las mismas tablas -- no
    * unificar sin re-derivar cada uno.
    */
   getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>>;

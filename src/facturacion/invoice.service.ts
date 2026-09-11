@@ -528,10 +528,14 @@ export class InvoiceService {
     // getInvoicedFinancialTransactionIds -- predicado corregido 11/09/2026,
     // NO filtra por status): acá ya se descartó que sea un reintento del
     // mismo pedido -- si igual aparece un cargo YA VINCULADO a un
-    // `invoice_charges` (sin importar el status de esa factura), es un
-    // SET distinto de cargos que se solapa con una factura previa
-    // (inconsistencia real, no un reintento). Se rechaza toda la
-    // operación, no se arma una factura parcial en silencio (R15).
+    // comprobante vivo por CUALQUIERA de los 2 caminos (invoice_charges
+    // de otra consolidada, o invoices.financial_transaction_id directo
+    // de una factura individual -- ver el docblock de
+    // getInvoicedFinancialTransactionIds() para la asimetría de status
+    // entre las 2 ramas), es un SET distinto de cargos que se solapa con
+    // una factura previa (inconsistencia real, no un reintento). Se
+    // rechaza toda la operación, no se arma una factura parcial en
+    // silencio (R15).
     const alreadyInvoiced = await this.invoiceRepo.getInvoicedFinancialTransactionIds(financialTransactionIds);
     if (alreadyInvoiced.size > 0) {
       throw new AccountsReceivableAlreadyInvoicedError(input.companyCustomerId, [...alreadyInvoiced]);

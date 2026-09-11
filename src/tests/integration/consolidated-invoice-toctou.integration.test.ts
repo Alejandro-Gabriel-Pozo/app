@@ -318,6 +318,87 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
       },
       30_000,
     );
+
+    /**
+     * `INVOICE-CHARGES-GUARD-1BIS-01` (11/09/2026, gate `architecture-governor`,
+     * ronda 2) -- arm simétrico: reproduce lo que deja `requestInvoice()`
+     * (camino INDIVIDUAL, ej. "Facturar" en cuentas-corrientes) para ese
+     * mismo cargo -- una fila `invoices` con `financial_transaction_id`
+     * directo, SIN ninguna fila en `invoice_charges` (eso solo lo escribe
+     * la consolidada).
+     */
+    async function seedIndividualInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
+            pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
+            imp_neto, imp_iva, imp_total, status)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
+        [invoiceId, BIZ, chargeFtId, customerId, `invoice:${chargeFtId}`, CBTE_TIPO_FACTURA_B, status],
+      );
+    }
+
+    it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
+      'rechaza el lote nuevo si un cargo YA tiene una factura INDIVIDUAL directa %s -- arm 1-bis',
+      async (priorStatus) => {
+        const company = await seedCustomer(db);
+        const stuck = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedIndividualInvoiceForCharge(stuck.chargeId, company.id, priorStatus);
+        await seedPendingArWithCharge(company.id, 'CONFIRMED', 50);
+
+        await expect(
+          invoiceService.requestConsolidatedInvoice({ businessId: BIZ, companyCustomerId: company.id, changedBy: 'user-1' }),
+        ).rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
+
+        const { rows: chargeRows } = await db.query<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM invoice_charges WHERE financial_transaction_id = $1`, [stuck.chargeId],
+        );
+        expect(Number(chargeRows[0]!.count)).toBe(0); // ninguna consolidada nueva se creó -- el cargo sigue sin invoice_charges
+      },
+      30_000,
+    );
+
+    it(
+      'NO rechaza si la factura INDIVIDUAL que linkea el cargo está REJECTED -- AFIP la rechazó, no bloquea la re-consolidación',
+      async () => {
+        const company = await seedCustomer(db);
+        const rejected = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedIndividualInvoiceForCharge(rejected.chargeId, company.id, 'REJECTED');
+        const fresh = await seedPendingArWithCharge(company.id, 'CONFIRMED', 50);
+
+        const invoice = await invoiceService.requestConsolidatedInvoice({ businessId: BIZ, companyCustomerId: company.id, changedBy: 'user-1' });
+
+        expect(invoice.status).toBe('ISSUED');
+        const { rows: chargeRows } = await db.query<{ financial_transaction_id: string }>(
+          `SELECT financial_transaction_id FROM invoice_charges WHERE invoice_id = $1`, [invoice.id],
+        );
+        // La consolidada nueva cubre los DOS cargos -- el REJECTED no quedó
+        // excluido silenciosamente, se facturó de nuevo como corresponde.
+        expect(chargeRows.map((r) => r.financial_transaction_id).sort()).toEqual([rejected.chargeId, fresh.chargeId].sort());
+      },
+      30_000,
+    );
+
+    it(
+      'asimetría a propósito: una consolidada REJECTED (rama invoice_charges) SIGUE bloqueando la re-consolidación -- no se "corrige" armonizando con la rama individual',
+      async () => {
+        // Mismo escenario que el it.each de más arriba (status REJECTED,
+        // rama invoice_charges) -- test dedicado y nombrado para que quien
+        // intente unificar las 2 ramas del predicado tenga que romper ESTE
+        // test primero, no descubrirlo en producción. Ver el docblock de
+        // getInvoicedFinancialTransactionIds() (invoice.repository.ts).
+        const company = await seedCustomer(db);
+        const stuck = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedStuckInvoiceForCharge(stuck.chargeId, company.id, 'REJECTED');
+        await seedPendingArWithCharge(company.id, 'CONFIRMED', 50);
+
+        await expect(
+          invoiceService.requestConsolidatedInvoice({ businessId: BIZ, companyCustomerId: company.id, changedBy: 'user-1' }),
+        ).rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
+      },
+      30_000,
+    );
   });
 
   // -------------------------------------------------------------------------
