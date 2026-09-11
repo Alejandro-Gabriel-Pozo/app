@@ -98,6 +98,33 @@ autorizado explícitamente por el usuario ("si", dos veces).
      agregarlo ahora, con la copy ya corregida y verificada en
      producción, deja de ser el único camino peligroso que era antes.
      Sigue siendo su propio bloque, su propio gate.
+4. **Polling adaptativo — bloque 1 (helper + `CompanyCatalogPropagationWorker`)
+   — ✅ CERRADO, pusheado y deployado en producción, verificado**
+   (`6f1289a`+`02629b7`). Detalle completo, 2 rondas de gate y las 3
+   condiciones (C1 bloqueante: import cruzado hacia `platform/` desde un
+   servicio de dominio, corregido con inyección por constructor; C2:
+   backoff tras error; C3: ventana de wake perdido) en
+   `docs/diseno-polling-adaptativo-neon-2026-09-10.md`. Motivo del bloque:
+   los 3 workers de producción pollean más seguido que la ventana fija de
+   5 min del scale-to-zero de Neon, agotando el cupo de compute del plan
+   free el 10/09/2026 (incidente resuelto activando billing en la
+   organización; este bloque es el fix de fondo, no el apagafuegos).
+   **Verificado en producción:** CI `integration` job en verde (run
+   `34546841825`), deploy `dep-dahknmks728c73bi7utg` = `live` en el
+   commit `02629b7` (identidad confirmada por API de Render, no solo
+   `/health`), `/health/db` → `connected`.
+   - **NO cierra el grupo "polling adaptativo de los 3 workers"** —
+     `OutboxWorker` y `ReservationHoldExpiryWorker` siguen con
+     `setInterval` fijo, coexistencia transitoria declarada. Cada uno
+     tiene su propio diseño pendiente en el mismo doc (§3.2 hold-expiry:
+     wake calculado desde `MIN(deposit_due_by)`; §3.3 outbox: wake
+     post-commit, con la garantía exacta ya elegida por el dueño pero
+     todavía en HOLD hasta que la matriz de impacto incluya
+     `CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001` — ver más abajo).
+   - **El ahorro de compute sigue siendo inferido, no medido** — nada
+     corrió todavía contra Neon post-deploy para confirmar el efecto real
+     sobre el consumo. Pendiente: medir actividad de compute 24-48h
+     después de este deploy.
 
 ---
 
