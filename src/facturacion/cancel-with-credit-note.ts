@@ -93,6 +93,36 @@ export function isInvoiceFullyCompensatedByIssuedCreditNotes(
   return round2(invoiceImpTotal - issuedCreditNoteTotal) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
 }
 
+/**
+ * 3.3-d residual 1 (11/09/2026, docs/diseno-33d-residuales-2026-09-11.md) --
+ * variante de F4 POR PAR (factura, reserva) en vez de por factura entera.
+ * Precedente ERP: Odoo `account.partial.reconcile` reconcilia por LÍNEA
+ * (`account.move.line`), no por documento -- este repo ya usa el mismo
+ * criterio para el MONTO (`resolveRefundableForPair()`), esto lo extiende
+ * al ESTADO de reconciliación.
+ *
+ * `attributedTotal` es BRUTO (neto+IVA, `refund-attribution.ts:233`
+ * `attributedNeto + attributedIva`), NO `attributedNeto` -- comparación
+ * bruto-contra-bruto, mismo criterio que F4 (`imp_total` de la factura
+ * vs. `SUM(nc.imp_total)`, las dos incluyen IVA). El "NETO" de la
+ * decisión del dueño (grounding ERPNext) es sobre la BASE DE PRORRATEO
+ * dentro de `distributeGroupAmount()`, no sobre esta comparación final --
+ * no confundir los dos. Un guard que comparara `attributedNeto` acá
+ * reintroduciría el fail-open de ~21% que motivó este comentario.
+ *
+ * `issuedCreditNoteTotalForReservation` es el BRUTO de las NC `ISSUED`
+ * cuyas `invoice_items` cubren esta reserva -- ver
+ * `SqlInvoiceRepository.getIssuedCreditNoteCompensationTotalForReservation()`
+ * para el detalle de qué hace seguro ese numerador (no es 1:1 garantizado
+ * por schema, es una propiedad de las 3 ramas de `buildCreditNote()`).
+ */
+export function isReservationPortionFullyCompensatedByIssuedCreditNotes(
+  attributedTotal: number,
+  issuedCreditNoteTotalForReservation: number,
+): boolean {
+  return round2(attributedTotal - issuedCreditNoteTotalForReservation) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
+}
+
 // ---------------------------------------------------------------------------
 // Token de autorización tipado (ADR común §4, capa iii)
 // ---------------------------------------------------------------------------

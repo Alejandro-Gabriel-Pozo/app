@@ -143,11 +143,17 @@ export interface CreateInvoiceInput {
  * completan para `motivo === 'REVERSION_ABIERTA'` -- un candidato B1
  * puro no tiene, todavía, ninguna fila revertidora que describir.
  *
- * **Falso positivo heredado, aceptado, no oculto**: la divergencia 1 del
- * docblock de `classifyReservationLiveInvoice` (F4 pregunta por la
- * factura ENTERA, una cancelación consolidada-parcial en el camino feliz
- * también da `NOT_RECONCILED`) aparece acá igual -- residual de 3.3-d,
- * bloque aparte.
+ * **Falso positivo RESUELTO (11/09/2026, 3.3-d residual 1,
+ * docs/diseno-33d-residuales-2026-09-11.md)** para el camino RESOLVED de
+ * `classifyReservationLiveInvoice`: una cancelación consolidada-parcial ya
+ * no da `NOT_RECONCILED` en el camino feliz -- el clasificador pregunta
+ * por la PORCIÓN de la reserva, no por la factura entera. **Sigue
+ * aplicando, sin cambios, al camino BLOCKED** (facturas Nivel A sin
+ * `invoice_items` -- fail-back declarado a F4-por-factura-entera, mismo
+ * comportamiento de siempre, por diseño, no por descuido). El residual
+ * simétrico del lado ÓRDENES (`classifyOrderLiveInvoice` sigue con F4 por
+ * factura entera siempre) queda registrado aparte,
+ * `ORDER-CONSOLIDATED-PARTIAL-01` en `docs/pendientes-2026-09-10.md`.
  *
  * **Falso negativo conocido, aceptado, no oculto (C1, gate 10/09/2026)**:
  * el candidato-enumeration de B2 (`sql.invoice.repository.ts`) filtra

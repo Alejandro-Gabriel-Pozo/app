@@ -749,19 +749,38 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
     Precedente registrado para la próxima vez que la razón "total pasó a
     ser N+1, es solo un test" se use para no escalar -- compararla contra
     este caso, no re-argumentarla de cero.
-- **3.3-d, residual 1 (consolidada-parcial)** — F4 pregunta por la
-  factura ENTERA, la NC del escape es parcial por reserva. Cierre:
-  clasificador por PAR `(invoiceId, reservationId)`, todavía sin
-  construir. **Corrección 10/09/2026 (gate `architecture-governor`)**:
-  el denominador NETO ya está implementado (`refund-attribution.ts:137`,
-  `distributeGroupAmount()`) -- la decisión del dueño (NETO) es un no-op
-  sobre ese archivo. Lo que falta de verdad es el **numerador**: el
-  clasificador por par no existe, y si se arma con NETO como denominador
-  sin ajustar también el numerador a `SUM(nc.imp_neto)`, el `<=` de
-  `isInvoiceFullyCompensatedByIssuedCreditNotes()` (`cancel-with-credit-note.ts:89-94`)
-  queda fail-open (una NC que cubra ~82.6% del neto ya daría "totalmente
-  compensado"). Sin casos reales hoy (0/15 reservas en factura
-  consolidada, medición 08/09/2026) -- no urgente.
+- **3.3-d, residual 1 (consolidada-parcial)** — ✅ **RESUELTO (11/09/2026,
+  gate `architecture-governor`, Commit A, `docs/diseno-33d-residuales-2026-09-11.md`)**.
+  F4 pregunta por la factura ENTERA, la NC del escape es parcial por
+  reserva. Cierre: clasificador por PAR `(invoiceId, reservationId)` en
+  `classifyReservationLiveInvoice()` -- `resolveReservationPairAttribution()`
+  usa `resolveRefundableForPair()` (BRUTO, `attributedTotal`, no NETO --
+  ver docblock de `isReservationPortionFullyCompensatedByIssuedCreditNotes()`
+  en `cancel-with-credit-note.ts`, la corrección del 10/09/2026 sobre NETO
+  como denominador de PRORRATEO seguía vigente pero es una pregunta
+  distinta de contra qué se compara el resultado) cuando la factura tiene
+  `invoice_items` (`RESOLVED`); fail-back byte a byte al F4-factura-entera
+  de antes cuando no (`BLOCKED`, Nivel A -- 9/11 facturas reales de la
+  tenant Demo). Verificado contra el orquestador real, no solo SQL
+  fabricado: `cancel-reservation-with-credit-note.integration.test.ts`,
+  caso `C1(i)`, pasó de pinear `NOT_RECONCILED` a confirmar `RECONCILED`.
+  Deja abierto, aparte, el residual simétrico del lado ÓRDENES -- ver
+  `ORDER-CONSOLIDATED-PARTIAL-01` más abajo.
+- **`ORDER-CONSOLIDATED-PARTIAL-01`** (11/09/2026, registrado junto con el
+  cierre de 3.3-d residual 1) — `classifyOrderLiveInvoice()` sigue
+  preguntando por la factura ENTERA siempre, sin el clasificador por par
+  que residual 1 le agregó al lado RESERVAS. Las órdenes SÍ soportan
+  facturación consolidada multi-orden (`InvoiceService.requestConsolidatedInvoice()`,
+  `invoice.service.ts:481,540-541`, lockea `orderIds` Y `reservationIds`
+  para el mismo comprobante) -- la asunción original de este bloque de que
+  "las órdenes no tienen esto" era falsa, corregida en
+  `docs/diseno-33d-residuales-2026-09-11.md` §1.4. Fuera de alcance de
+  Commit A a propósito (disciplina de bloque chico, no imposibilidad
+  estructural). Sin casos reales hoy (mismo criterio de medición que
+  residual 1 -- revalidar contra `invoice_items`/`invoice_charges` de
+  órdenes antes de encarar). Próximo paso: mismo patrón de
+  `resolveReservationPairAttribution()`/`getIssuedCreditNoteCompensationTotalForReservation()`,
+  pero por `orderId`, bloque y gate propios.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ensanchar la
   guarda de `registrarDesenlace()` cambia semántica compartida con
   órdenes. **Corrección 10/09/2026**: el alcance real es más ancho de lo

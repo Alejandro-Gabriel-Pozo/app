@@ -530,7 +530,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
     }, 40_000);
 
     // ─── Condición C1 del gate (09/09/2026): 2 casos adicionales, medidos ───
-    it('C1(i) -- consolidada 2 reservas, escape PARCIAL: residual conocido, NO cerrado -- classifyReservationLiveInvoice da NOT_RECONCILED en el camino feliz (F4 mira la factura ENTERA, no la porción)', async () => {
+    it('C1(i) -- consolidada 2 reservas, escape PARCIAL: residual RESUELTO (11/09/2026, 3.3-d residual 1, docs/diseno-33d-residuales-2026-09-11.md) -- classifyReservationLiveInvoice da RECONCILED en el camino feliz (clasifica por PAR factura-reserva, ya no por factura ENTERA)', async () => {
       const { reservationId: resA, customerId: custA } = await seedConfirmedReservation(60);
       const { reservationId: resB, customerId: custB } = await seedConfirmedReservation(40);
 
@@ -568,17 +568,24 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
       await buildSut(invoiceService).cancelReservationWithCreditNote(resA, auth(resA));
 
       // MEDIDO, no asumido: el residual declarado en el docblock de la
-      // interfaz se confirma acá -- la NC parcial (impTotal=60 de 100) no
-      // cierra F4 de la factura ENTERA.
-      expect(await invoiceRepo.classifyReservationLiveInvoice(db, resA)).toBe('NOT_RECONCILED');
+      // interfaz (divergencia 1, "F4 mira la factura ENTERA") queda cerrado
+      // acá -- la NC parcial que produce el escape real (impTotal=60,
+      // ligada a resA vía invoice_items.reservation_id) SÍ cierra la
+      // porción de resA, aunque la factura entera (100) siga sin cubrirse
+      // (resB, 40, no tiene NC). Confirmado contra el orquestador REAL
+      // (`cancelReservationWithCreditNote()`), no una fabricación de SQL --
+      // este es el caso que el gate de cierre de Commit A (11/09/2026)
+      // exigió correr antes de dar por cerrado el bloque.
+      expect(await invoiceRepo.classifyReservationLiveInvoice(db, resA)).toBe('RECONCILED');
 
       await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(resA));
 
-      // Sigue grave -- residual conocido, PINEADO como comportamiento actual,
-      // no corregido en este bloque (ver docblock de la interfaz, divergencia 1).
-      expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
-        expect.stringContaining('anomalía de integridad'),
+      // Ya no es grave -- el falso positivo desaparece, mismo patrón de log
+      // que el caso individual de más arriba (factura NO consolidada).
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+        expect.stringContaining('reconciliado por Nota de Crédito'),
       );
     }, 40_000);
 

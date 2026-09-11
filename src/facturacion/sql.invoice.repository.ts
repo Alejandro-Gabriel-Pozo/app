@@ -2,8 +2,9 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput, UnreconciledLiveInvoice } from './invoice.entities.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
-import { isInvoiceFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
+import { isInvoiceFullyCompensatedByIssuedCreditNotes, isReservationPortionFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
+import { resolveRefundableForPair, type ResolveRefundableForPairResult, type FrozenInvoiceItemShare, type FrozenIvaEntry } from './refund-attribution.js';
 import { randomUUID } from 'node:crypto';
 
 interface InvoiceRow {
@@ -414,6 +415,97 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return parseFloat(rows[0]!.compensated);
   }
 
+  /**
+   * 3.3-d residual 1 (11/09/2026, docs/diseno-33d-residuales-2026-09-11.md
+   * §1.2) -- numerador de F4-por-par: BRUTO (imp_total, no subtotal/neto por
+   * línea) de las NC `ISSUED` cuyas `invoice_items` cubren la reserva `R`.
+   *
+   * Reusa `NC_LINKAGE_UNION` (mismo criterio que `getIssuedCreditNoteCompensationTotal`
+   * de arriba -- NO un cuarto UNION individual/consolidada copiado a mano) y
+   * el mismo dedup por FILA `(nc_invoice_id, imp_total)`, no por valor
+   * (`SUM(DISTINCT imp_total)` colapsaría dos NC distintas del mismo
+   * importe). Mantiene `nc.cbte_tipo = ANY($3)` -- sin este filtro, cualquier
+   * comprobante ligado a la FT revertidora sumaría su `imp_total`, fail-open
+   * (mismo riesgo documentado en F4 arriba).
+   *
+   * **Por qué sumar el `imp_total` COMPLETO de la NC alcanza, sin prorratear
+   * por línea:** es una propiedad de las 3 ramas de
+   * `InvoiceService.buildCreditNote()` (invoice.service.ts), NO del schema --
+   * documentado en el docblock de `isReservationPortionFullyCompensatedByIssuedCreditNotes()`
+   * y en §1.6 del diseño. La rama por par es 1:1 con la reserva; la rama de
+   * reversión total cubre la factura ENTERA (más que la porción de R, nunca
+   * menos -- sobre-compensación, no sub-compensación); la rama proporcional
+   * legacy emite una sola línea por transacción revertidora. Ninguna de las
+   * 3 reparte una NC PARCIAL entre múltiples reservas -- si una cuarta rama
+   * lo hiciera, este numerador quedaría fail-open sin que nada lo detecte.
+   */
+  private async getIssuedCreditNoteCompensationTotalForReservation(
+    client: SqlClient,
+    invoiceId: string,
+    reservationId: string,
+  ): Promise<number> {
+    const { rows } = await client.query<{ compensated: string }>(
+      `SELECT COALESCE(SUM(dedup.imp_total), 0) AS compensated
+         FROM (
+           SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
+             FROM financial_transactions r
+             JOIN (${NC_LINKAGE_UNION}) nc ON nc.reverting_ft_id = r.id
+             JOIN invoice_items ii ON ii.invoice_id = nc.nc_invoice_id AND ii.reservation_id = $2
+            WHERE r.reversed_invoice_id = $1
+              AND r.type IN ('REFUND', 'ADJUSTMENT')
+              AND nc.status = 'ISSUED'
+              AND nc.cbte_tipo = ANY($3::int[])
+         ) dedup`,
+      [invoiceId, reservationId, [...CBTE_TIPOS_NOTA_CREDITO]],
+    );
+    return parseFloat(rows[0]!.compensated);
+  }
+
+  /**
+   * 3.3-d residual 1, §1.7 -- resuelve la atribución (factura, reserva) para
+   * el clasificador, con `client` explícito (DEFENSIVE_DEVELOPING §3,
+   * diseño §1.8 -- NUNCA `getItemsByInvoiceId()`/`getById()`, que usan
+   * `this.db`, no el `client` de la transacción/tenant en curso).
+   *
+   * Devuelve `BLOCKED` para facturas Nivel A (sin `invoice_items`, la
+   * mayoría de las facturas reales de al menos una tenant -- ver
+   * `refund-attribution.ts:46-48`) y para cualquier otra anomalía que
+   * `resolveRefundableForPair()` ya sabe detectar -- el caller (`classifyReservationLiveInvoice`)
+   * hace fail-back a F4-por-factura-entera en ese caso, sin re-implementar
+   * la detección de anomalías acá.
+   */
+  private async resolveReservationPairAttribution(
+    client: SqlClient,
+    invoiceId: string,
+    reservationId: string,
+  ): Promise<ResolveRefundableForPairResult> {
+    const { rows: itemRows } = await client.query<{
+      reservation_id: string | null; subtotal: string; iva_rate: string;
+    }>(
+      `SELECT reservation_id, subtotal, iva_rate FROM invoice_items WHERE invoice_id = $1`,
+      [invoiceId],
+    );
+    const items: FrozenInvoiceItemShare[] = itemRows.map((row) => ({
+      reservationId: row.reservation_id,
+      subtotal: parseFloat(row.subtotal),
+      ivaRate: parseFloat(row.iva_rate),
+    }));
+
+    const { rows: invoiceRows } = await client.query<{ afip_request: unknown }>(
+      `SELECT afip_request FROM invoices WHERE id = $1`,
+      [invoiceId],
+    );
+    const frozenIva: FrozenIvaEntry[] = (
+      (invoiceRows[0]?.afip_request as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
+    ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
+
+    // `alreadyRefunded: 0` -- el clasificador solo usa `attributedTotal`, no
+    // `refundable` (que restaría lo ya reembolsado). No es un valor real de
+    // "nada reembolsado todavía", es simplemente el campo que esta llamada
+    // no necesita.
+    return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId });
+  }
+
   async getInFlightCreditNoteTotalForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
     // Bloque 2.4 (tope N5, `docs/pendientes-2026-09-08.md` #21, gate
     // `architecture-governor` 08/09/2026) -- a diferencia de
@@ -598,9 +690,21 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   ): Promise<'RECONCILED' | 'NOT_RECONCILED'> {
     // Bloque 3.3-d (09/09/2026, gate `architecture-governor`) -- espejo de
     // classifyOrderLiveInvoice() de arriba. Ver el docblock de la interfaz
-    // para las 3 divergencias reales frente a órdenes (F4 por factura
-    // ENTERA no por porción, ledger de alcance factura, guarda más frágil
-    // del lado reservas) -- no reafirmar acá lo que ya dice ese docblock.
+    // para las divergencias frente a órdenes.
+    //
+    // 3.3-d residual 1 (11/09/2026, docs/diseno-33d-residuales-2026-09-11.md)
+    // -- las divergencias 1 y 2 originales (F4 por factura ENTERA, ledger de
+    // alcance FACTURA) se resuelven acá clasificando por PAR (esta factura,
+    // esta reserva) cuando se puede -- `resolveReservationPairAttribution()`
+    // devuelve `RESOLVED` para eso. Cuando NO se puede (facturas Nivel A sin
+    // `invoice_items` -- la MAYORÍA de las facturas reales de al menos una
+    // tenant, ver `refund-attribution.ts:46-48` -- o cualquier otra anomalía
+    // que `resolveRefundableForPair()` ya sabe detectar, `BLOCKED`), fail-back
+    // a F4-por-factura-entera + ledger sin scope, BYTE A BYTE el
+    // comportamiento de antes de este bloque -- las dos mitades (fiscal y
+    // ledger) siguen la MISMA rama siempre, nunca una mezcla de las dos
+    // (eso fue exactamente cómo nació la divergencia 2 original -- preguntar
+    // por sujetos distintos en cada mitad).
 
     // Factura B (`cbte_tipo = 6`) ISSUED ligada a algún CHARGE de la
     // reserva, por el camino individual (`invoices.financial_transaction_id`)
@@ -628,25 +732,47 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     if (facturas.length === 0) return 'NOT_RECONCILED';
 
     for (const f of facturas) {
-      // (1) FISCAL -- F4, reusado verbatim. Ver divergencia 1 del docblock
-      //     de la interfaz: pregunta por la factura ENTERA.
-      const compensado = await this.getIssuedCreditNoteCompensationTotal(client, f.id);
-      if (!isInvoiceFullyCompensatedByIssuedCreditNotes(parseFloat(f.imp_total), compensado)) {
-        return 'NOT_RECONCILED';
+      const pair = await this.resolveReservationPairAttribution(client, f.id, reservationId);
+
+      if (pair.kind === 'RESOLVED') {
+        // (1) FISCAL -- por PAR: la porción de ESTA reserva vs. las NC ISSUED
+        //     que la cubren específicamente (invoice_items.reservation_id).
+        const compensadoPorReserva = await this.getIssuedCreditNoteCompensationTotalForReservation(client, f.id, reservationId);
+        if (!isReservationPortionFullyCompensatedByIssuedCreditNotes(pair.attributedTotal, compensadoPorReserva)) {
+          return 'NOT_RECONCILED';
+        }
+        // (2) LEDGER -- scoped a esta reserva, misma rama que (1).
+        const { rows: rev } = await client.query<{ total: string; settled: string }>(
+          `SELECT COUNT(*)                                  AS total,
+                  COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
+             FROM financial_transactions
+            WHERE reversed_invoice_id = $1
+              AND reservation_id = $2
+              AND type IN ('REFUND', 'ADJUSTMENT')`,
+          [f.id, reservationId],
+        );
+        const total = Number(rev[0]!.total);
+        const settled = Number(rev[0]!.settled);
+        if (total === 0 || total !== settled) return 'NOT_RECONCILED';
+      } else {
+        // Fail-back declarado (§1.7 del diseño) -- Nivel A / anomalía: F4 por
+        // factura entera, tal cual el comportamiento de antes de este bloque.
+        const compensado = await this.getIssuedCreditNoteCompensationTotal(client, f.id);
+        if (!isInvoiceFullyCompensatedByIssuedCreditNotes(parseFloat(f.imp_total), compensado)) {
+          return 'NOT_RECONCILED';
+        }
+        const { rows: rev } = await client.query<{ total: string; settled: string }>(
+          `SELECT COUNT(*)                                  AS total,
+                  COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
+             FROM financial_transactions
+            WHERE reversed_invoice_id = $1
+              AND type IN ('REFUND', 'ADJUSTMENT')`,
+          [f.id],
+        );
+        const total = Number(rev[0]!.total);
+        const settled = Number(rev[0]!.settled);
+        if (total === 0 || total !== settled) return 'NOT_RECONCILED';
       }
-      // (2) LEDGER -- ver divergencia 2 del docblock: alcance FACTURA, no
-      //     de esta reserva puntual.
-      const { rows: rev } = await client.query<{ total: string; settled: string }>(
-        `SELECT COUNT(*)                                  AS total,
-                COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
-           FROM financial_transactions
-          WHERE reversed_invoice_id = $1
-            AND type IN ('REFUND', 'ADJUSTMENT')`,
-        [f.id],
-      );
-      const total = Number(rev[0]!.total);
-      const settled = Number(rev[0]!.settled);
-      if (total === 0 || total !== settled) return 'NOT_RECONCILED';
     }
     return 'RECONCILED';
   }

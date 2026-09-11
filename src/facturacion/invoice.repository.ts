@@ -294,41 +294,49 @@ export interface InvoiceRepository {
    * doctrina — pero con TRES divergencias reales frente a órdenes que el
    * gate exigió declarar acá (condición C3), no copiar el docblock verbatim:
    *
-   * 1. **F4 pregunta por la factura ENTERA, no por la porción de esta
-   *    reserva.** Una orden liga exactamente una factura, nunca consolidada
-   *    (1:1, `invoices.financial_transaction_id`); una reserva puede compartir
-   *    una factura CONSOLIDADA con otras reservas. El escape de reservas
-   *    (`cancel-reservation-with-credit-note.service.ts`) para ese caso emite
-   *    una NC **PARCIAL** (solo la porción de esta reserva, `frozenChargeIds`) —
-   *    `getIssuedCreditNoteCompensationTotal()` no ve "compensación parcial",
-   *    ve "¿el `imp_total` completo de la factura está cubierto?". **Residual
-   *    conocido, no cerrado por este bloque:** una cancelación consolidada-parcial
-   *    en el camino feliz da `'NOT_RECONCILED'` acá (la factura entera sigue
-   *    sin compensar del todo) → sigue `grave` en `registrarDesenlace()`. Cerrarlo
-   *    exigiría un clasificador por PAR `(invoiceId, reservationId)` — mismo
-   *    primitivo que ya usa el tope por par de 3.3-a
-   *    (`getInFlightCreditNoteTotalForPairForUpdate`, filtro
-   *    `r.reservation_id = $2`) pero con un denominador propio a decidir
-   *    (¿neto de cargos, o `imp_total` con IVA de la porción?) — bloque de
-   *    diseño aparte, gate propio.
-   * 2. **La condición de ledger (`reversed_invoice_id = $1`) es de alcance
-   *    FACTURA, no de esta reserva** — en una consolidada, cuenta también las
-   *    filas revertidoras de OTRAS reservas contra la misma factura. Sigue
-   *    siendo fail-closed (sólo ESTRECHA: más filas por chequear, nunca
-   *    menos), pero significa que el ledger de una reserva puede depender de
-   *    que OTRA reserva haya settleado su propia porción.
-   * 3. **La guarda que la llama (`handleReservationCancelled`) es más frágil
-   *    que su par de órdenes.** `voidByReservationId()` no filtra
+   * 1. **RESUELTO (11/09/2026, 3.3-d residual 1,
+   *    docs/diseno-33d-residuales-2026-09-11.md).** F4 preguntaba por la
+   *    factura ENTERA, no por la porción de esta reserva -- una reserva
+   *    puede compartir una factura CONSOLIDADA con otras, y el escape emite
+   *    una NC **PARCIAL** (solo la porción de esta reserva). Ahora el
+   *    clasificador resuelve la atribución por PAR `(invoiceId,
+   *    reservationId)` vía `resolveRefundableForPair()` (reusa el mismo
+   *    primitivo del tope de 3.3-a) cuando la factura tiene `invoice_items`
+   *    congelados; compara BRUTO contra BRUTO
+   *    (`isReservationPortionFullyCompensatedByIssuedCreditNotes()`,
+   *    `cancel-with-credit-note.ts`) contra el numerador nuevo
+   *    (`getIssuedCreditNoteCompensationTotalForReservation()`,
+   *    `sql.invoice.repository.ts`). **Excepción declarada, no residual
+   *    oculto:** facturas Nivel A (sin `invoice_items` -- la MAYORÍA de las
+   *    facturas reales de al menos una tenant, `refund-attribution.ts:46-48`)
+   *    hacen fail-back a F4-por-factura-entera, comportamiento idéntico al
+   *    de antes de este bloque. El residual simétrico del lado ÓRDENES
+   *    (`classifyOrderLiveInvoice` sigue con F4 por factura entera siempre,
+   *    sin fail-back porque nunca lo necesita hoy) queda registrado aparte:
+   *    `ORDER-CONSOLIDATED-PARTIAL-01`, `docs/pendientes-2026-09-10.md`.
+   * 2. **RESUELTO junto con el punto 1.** La condición de ledger
+   *    (`reversed_invoice_id = $1`) era de alcance FACTURA -- en una
+   *    consolidada, contaba también las filas revertidoras de OTRAS
+   *    reservas. Ahora sigue la MISMA rama que el chequeo fiscal: scoped a
+   *    `reservation_id = $2` cuando el par se resuelve, sin scope (como
+   *    antes) en el fail-back Nivel A. Las dos mitades preguntan siempre
+   *    por el mismo sujeto -- mezclar sujetos distintos entre las dos
+   *    mitades fue justo cómo nació esta divergencia originalmente.
+   * 3. **Sigue abierto, bloque propio (residual 2 de 3.3-d, en curso).** La
+   *    guarda que llama a este método (`handleReservationCancelled`) es más
+   *    frágil que su par de órdenes: `voidByReservationId()` no filtra
    *    `candidatos` por `type` (a diferencia del guard de entrada de
    *    `voidByOrderId()`) — una reserva con un `PAYMENT` propio
    *    (`CustomerAccountService.recordPayment()`, alcanzable por
    *    `POST /api/customers/.../payments`, algo que NO puede pasarle a una
    *    orden) produce `rechazos = ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']`
    *    — la rama ESTRECHA del handler (exactamente un rechazo) no dispara, y
-   *    este método ni se llama. **El pasivo de deploy que este bloque retira
-   *    queda acotado al subconjunto "factura directa, sin `PAYMENT` propio ni
-   *    filas anuladas previas en la reserva"** — ver la medición real en
-   *    `pendientes-2026-09-08.md` #27.
+   *    este método ni se llama. Diseño completo (allowlist de co-rechazos
+   *    benignos) en `docs/diseno-33d-residuales-2026-09-11.md` §2, todavía
+   *    sin implementar (Commit B, gate propio). **El pasivo de deploy que
+   *    el fix de este método retira queda acotado al subconjunto "factura
+   *    directa o consolidada, sin `PAYMENT` propio ni filas anuladas
+   *    previas en la reserva"** hasta que ese bloque cierre.
    *
    * Recibe `client` crudo del tenant, sin lock — mismo criterio que
    * `classifyOrderLiveInvoice`.
