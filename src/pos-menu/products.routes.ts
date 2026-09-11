@@ -96,6 +96,7 @@ import {
 import { CompanyCatalogService } from './company-catalog.service.js';
 import { CompanyRepository } from '../platform/company.repository.js';
 import { PlatformRepository } from '../platform/platform.repository.js';
+import { wakeCompanySyncWorker } from '../platform/company-sync.registry.js';
 import { createPlatformPool, buildPlatformTransactionManager } from '../container.js';
 
 function buildProductService(req: Request): ProductService {
@@ -125,6 +126,7 @@ function buildCompanyCatalogService(req: Request): CompanyCatalogService {
     new SqlRecipeItemRepository(req.db!),
     new CompanyRepository(platformClient),
     new PlatformRepository(platformClient, buildPlatformTransactionManager()),
+    wakeCompanySyncWorker,
   );
 }
 

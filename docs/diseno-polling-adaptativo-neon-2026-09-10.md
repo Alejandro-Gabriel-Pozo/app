@@ -107,13 +107,30 @@ neutra:
 - `activeIntervalMs = 10_000` (sin cambio).
 - `idleIntervalMs = 600_000` (10 min). Justificado por su propio docblock
   ("no es el camino crítico de venta, corre poco frecuente").
-- **Wake natural, sin problema de capas**: el único call site que encola
-  una fila en `company_catalog_propagation_queue` vive en el mismo
-  proceso, mismo módulo (`platform/`). Ese call site llama
-  `worker.poll()` (o un método `wake()` que solo dispara un poll
-  inmediato y resetea el timer a `activeIntervalMs`) después de encolar
-  — sin nueva dependencia entre capas, el propio `platform/` ya conoce al
-  worker.
+- **Corrección (C1, gate, ronda 3, 10/09/2026) — esta premisa era falsa
+  tal como estaba escrita.** Decía que el único call site que encola una
+  fila en `company_catalog_propagation_queue` vivía "en el mismo módulo
+  (`platform/`)". Verificado: el único call site de producción de
+  `enqueuePropagation()` es `src/pos-menu/company-catalog.service.ts:228`
+  (`syncToCanonical()`) — un servicio de **dominio** (`pos-menu/`), no de
+  `platform/`. La implementación original importaba
+  `wakeCompanySyncWorker` directo desde ese servicio, lo cual sí cruzaba
+  la capa que este diseño pedía no cruzar, y además revertía la
+  convención propia del archivo (todas sus dependencias entran por
+  constructor y se testean con fakes en memoria, nunca con `vi.mock` de
+  un módulo).
+  **Mecanismo real, corregido:** `CompanyCatalogService` recibe un 5º
+  parámetro de constructor opcional, `onPropagationEnqueued: () => void`
+  (default no-op), y lo llama después de `enqueuePropagation()` en vez de
+  importar el registry. El **composition root** (`src/pos-menu/products.routes.ts`,
+  que ya es el lugar legítimo de este repo para conectar infraestructura
+  concreta — ver la excepción de `*.routes.ts` en `.dependency-cruiser.cjs`)
+  es quien importa `wakeCompanySyncWorker` y lo pasa como ese callback.
+  `pos-menu/ → platform/` no está prohibido por ninguna regla de
+  `lint:arch` (la regla `platform-no-depende-de-dominios-de-negocio` es
+  de sentido único, `platform/ → DOMINIOS`) — lo que se corrigió no es
+  una violación de lint, es que el import vivía en el lugar equivocado
+  (el servicio de dominio) en vez del composition root.
 
 ### 3.2 `ReservationHoldExpiryWorker` — NO binario, wake calculado
 

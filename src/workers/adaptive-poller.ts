@@ -36,10 +36,23 @@ import { logger } from '../logger.js';
  * programado. Si ya hay un poll EN VUELO cuando se llama, `wake()` no
  * hace nada -- el resultado de ese poll decide el próximo delay como
  * siempre. No hay cola de "un wake pendiente": llamarlo varias veces
- * seguidas equivale a llamarlo una vez. Alcanza para el caso de uso
- * actual (§3.1 del diseño, `CompanyCatalogPropagationWorker`); si un
- * caso futuro necesita una garantía más fuerte, es una extensión de este
- * archivo, no una reescritura.
+ * seguidas equivale a llamarlo una vez.
+ *
+ * **Ventana de wake perdido (C3, gate `architecture-governor`, ronda 3,
+ * 10/09/2026), nombrada explícitamente, no solo "puede pasar":** si se
+ * encola trabajo nuevo MIENTRAS un poll ya está en vuelo, y ese poll
+ * arrancó ANTES de que el trabajo nuevo existiera, `pollFn()` va a
+ * devolver `false` (no lo vio) y el próximo intervalo va a ser
+ * `idleIntervalMs` completo -- el `wake()` de ese trabajo se pierde sin
+ * dejar rastro. Alcanza para el caso de uso actual (§3.1 del diseño,
+ * `CompanyCatalogPropagationWorker`, donde perder un wake solo demora
+ * hasta 10 min una propagación de catálogo de baja frecuencia). **NO
+ * alcanza para un caso que necesite garantía exacta** (el bloque del
+ * wake de `OutboxWorker`, todavía en HOLD, donde el dueño pidió
+ * justamente evitar la espera de `idleIntervalMs`) -- ese caso necesita
+ * encolar el wake pendiente y consumirlo al terminar el poll en curso,
+ * no descartarlo. Es una extensión de este archivo, no una reescritura,
+ * pero no está hecha todavía.
  */
 export class AdaptivePoller {
   private timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -67,6 +80,13 @@ export class AdaptivePoller {
    * generación ANTES de esperar, así que ninguna reprogramación en vuelo
    * puede sobrevivir a este `stop()`, sin importar cuándo se haya
    * llamado.
+   *
+   * Un `stop()` llamado mientras OTRO `stop()` ya está en su propio
+   * `while (this.inFlight)` es un no-op inmediato (`this.started` ya es
+   * `false`) -- no espera al ciclo en curso. El primer `stop()` en
+   * llamarse es el que garantiza la espera; el segundo no aporta nada
+   * adicional, pero tampoco rompe nada (mismo resultado final: sin
+   * timer armado, sin poll en vuelo).
    */
   async stop(): Promise<void> {
     if (!this.started) return;

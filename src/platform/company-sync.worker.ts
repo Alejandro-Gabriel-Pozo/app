@@ -94,6 +94,12 @@ export class CompanyCatalogPropagationWorker {
         await this.processOne(row);
       }
     } catch (err) {
+      // C2 (gate, ronda 3): un error acá deja foundWork=false -> el próximo
+      // intervalo es IDLE_INTERVAL_MS (10 min), no ACTIVE_INTERVAL_MS (10s)
+      // como antes de este bloque. Aceptado a propósito para este worker
+      // (no es el camino crítico de venta, no vale martillar una BD caída
+      // cada 10s) -- no asumir el mismo criterio al migrar OutboxWorker,
+      // donde reintentar rápido tras un error transitorio sí importa.
       logger.error({ err }, '[CompanyCatalogPropagationWorker] Error en poll()');
     } finally {
       this.running = false;

@@ -52,7 +52,6 @@ import type { IProductRepository } from './product.repository.js';
 import type { Product } from './product.entities.js';
 import type { RecipeItemRepository } from '../repositories/recipe-item.repository.js';
 import type { CompanyProduct, CompanyRecipeItem } from '../platform/company.repository.js';
-import { wakeCompanySyncWorker } from '../platform/company-sync.registry.js';
 import { ProductNotFoundError } from './product.service.js';
 import {
   BusinessNotInCompanyError,
@@ -89,6 +88,20 @@ export class CompanyCatalogService {
     private readonly recipeItemRepo: RecipeItemRepository,
     private readonly companyRepo: ICompanyCatalogRepository,
     private readonly platformRepo: IBusinessDirectory,
+    /**
+     * Callback opcional, sin implementación por default (C1, gate
+     * `architecture-governor`, ronda 3, 10/09/2026): despierta el worker de
+     * propagación de catálogo (`CompanyCatalogPropagationWorker`) apenas se
+     * encola una fila nueva, en vez de esperar hasta `idleIntervalMs`
+     * (docs/diseno-polling-adaptativo-neon-2026-09-10.md §3.1). Por
+     * constructor, NO por import directo de `platform/company-sync.registry.js`
+     * -- este servicio vive en `pos-menu/` y su convención declarada es
+     * testear con fakes inyectados (mismo criterio que
+     * `IProductRepository`/`InventoryLevelRepository`), no con `vi.mock` de
+     * un módulo. El composition root (`products.routes.ts`) es quien conoce
+     * `wakeCompanySyncWorker` y lo cablea acá.
+     */
+    private readonly onPropagationEnqueued: () => void = () => {},
   ) {}
 
   /** Catálogo canónico completo de la empresa del negocio dado — para que el panel ofrezca "¿es este?" al dar de alta. */
@@ -229,7 +242,7 @@ export class CompanyCatalogService {
       // Despierta el worker de inmediato si estaba en reposo -- si no,
       // esta propagación esperaría hasta idleIntervalMs (10 min). Ver
       // docs/diseno-polling-adaptativo-neon-2026-09-10.md §3.1.
-      wakeCompanySyncWorker();
+      this.onPropagationEnqueued();
     }
   }
 
