@@ -905,23 +905,52 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   contador), o es puramente informativo y el evento nunca debió esperar
   un handler? Sin esa respuesta no hay bloque que diseñar.
 - **Hueco de doble comprobante en `getInvoicedFinancialTransactionIds()`**
-  -- el propio `pendientes-2026-09-06.md` ya pedía que esto "mereciera
-  fila propia" y nunca la tuvo; se perdió en el mismo salto a `-08.md` que
-  `EVT-ORF-01`, encontrado en la misma auditoría de arrastre (11/09/2026).
-  **Reverificado contra el código real**: `sql.invoice.repository.ts:964-974`
-  filtra `WHERE i.status = 'ISSUED'` -- una factura `PENDING`/
-  `FAILED_UNCERTAIN` (en curso, todavía no confirmada por AFIP) para el
-  mismo cargo NO cuenta como "ya facturado". Impacto real, no teórico: es
-  el guard anti-double-billing de `InvoiceService.requestConsolidatedInvoice()`
-  (`invoice.service.ts:503-512`, comentario propio: "si igual aparece un
-  cargo ya facturado... se rechaza toda la operación") -- si dos pedidos
-  de consolidada se solapan mientras el primero todavía tiene una factura
-  `PENDING` sin resolver con AFIP, el guard no lo detecta y el segundo
-  pedido puede facturar el mismo cargo dos veces. Mismo patrón de fix que
-  ya se aplicó en otros puntos de este archivo para el mismo tipo de hueco
-  (`status = ANY(['ISSUED','PENDING','FAILED_UNCERTAIN'])` en vez de
-  `= 'ISSUED'` a secas) -- mecánico una vez que se prioriza, no requiere
-  diseño nuevo.
+  -- ✅ **RESUELTO (11/09/2026, gate `architecture-governor`, 1 ronda
+  HOLD → APROBADO)**. El propio `pendientes-2026-09-06.md` ya pedía que
+  esto "mereciera fila propia" y nunca la tuvo; se perdió en el salto a
+  `-08.md`, encontrado en la auditoría de arrastre del 11/09/2026.
+  **Corrección del gate sobre el diseño propuesto originalmente en esta
+  misma fila**: el fix planeado (`status = ANY(['ISSUED','PENDING',
+  'FAILED_UNCERTAIN'])`, copiando la doctrina de `getInFlightCreditNoteTotalForUpdate()`)
+  tenía un defecto material -- `REJECTED` quedaba afuera, pero
+  `invoice_charges` NUNCA se borra sea cual sea el desenlace de la
+  factura (verificado: 0 `DELETE FROM invoice_charges` en código
+  productivo), así que una factura `REJECTED` seguía bloqueando el cargo
+  para siempre vía `idx_invoice_charges_ft` (único, sin filtro de
+  status) -- con el predicado propuesto, ese caso hubiera seguido dando
+  un `23505` crudo en vez del error tipado, exactamente lo que el bloque
+  decía cerrar. **Predicado final, recomendado por el gate**: sin `JOIN`
+  a `invoices` ni filtro de status -- "¿existe la fila en
+  `invoice_charges`?", la misma pregunta que responde el índice único.
+  Cambios: `sql.invoice.repository.ts:964-974` (SQL) + su docblock en
+  `invoice.repository.ts` (doctrina completa: por qué este método NO
+  sigue el patrón de los otros dos que sí filtran por status) +
+  `errors.ts` (mensaje de `AccountsReceivableAlreadyInvoicedError`,
+  antes decía "ya facturados" -- exacto solo para `ISSUED`, corregido a
+  "ya están vinculados a un comprobante") + `schema.sql:3211-3218`
+  (comentario, **0 DDL**) + 2 comentarios en `invoice.service.ts`.
+  **Verificado contra Neon, las 2 tenants reales, antes de tocar
+  código**: `idx_invoice_charges_ft` confirmado único de verdad en las
+  dos (`ancient-king-17098519`, branches `production` y
+  `tenant-hotel-los-alamos`); 0 filas con `invoice_charges` fuera de
+  `ISSUED` en las dos -- no hay inconsistencia retroactiva que limpiar,
+  el fix es puramente hacia adelante. **Mutación verificada dos veces**
+  (unit + integración): revertir el predicado a `status='ISSUED'` pone
+  en rojo exactamente los 3 tests nuevos (`PENDING`/`FAILED_UNCERTAIN`/
+  `REJECTED`) en las dos capas -- en integración contra Postgres real,
+  el rojo es literalmente el `23505` crudo (`duplicate key value
+  violates unique constraint "idx_invoice_charges_ft"`) que el gate
+  predijo, no un fallo genérico. `npx tsc --noEmit` limpio, `npx eslint`
+  limpio, suite unitaria completa 2092/2092 verde, 6/6 tests de
+  integración de `consolidated-invoice-toctou.integration.test.ts`
+  corridos de verdad contra Postgres real (no skipeados,
+  `TEST_DATABASE_URL` presente). **Fuera de alcance, registrado, no
+  resuelto en este bloque**: `docs/diseno-factura-borrador-2026-08-31.md`
+  (FACT-BORRADOR-001, v2.8, diseño SIN aprobar) cita este guard con
+  anclas ya podridas (`invoice.service.ts:429-432`, hoy `:503-512`) y
+  planea revalidarlo dentro de la transacción de emisión -- deuda
+  registrada, no se tocó ese documento (no aprobado, fuera del radio de
+  este fix). **LOCAL, sin pushear ni deployar todavía.**
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
