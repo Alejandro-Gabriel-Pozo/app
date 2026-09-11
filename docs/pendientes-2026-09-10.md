@@ -1397,11 +1397,32 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **5 bloques `@swagger` sin generar nada** (`auth.routes.ts:154,248,293`,
   `business.routes.ts:48,79`) -- `swagger-jsdoc` no está instalado, esos
   comentarios no alimentan ningún artefacto. Limpieza, no bug.
-- **`FACT-INV-BIZID-001`/`FAILOPEN-001`** — solo re-etiquetar, sin
-  cambio de código.
 
 ### 🟢 Deuda aceptada, no bug (documentado, no accionable)
 
+- **`FACT-INV-BIZID-001` / `FAILOPEN-001`** — ✅ triage de seguridad
+  07/09/2026 (`pendientes-2026-09-06.md`, HEAD `1e28f8f`) bajó los dos de
+  severidad; re-verificado acá el 11/09/2026 contra HEAD `aa607ac` (anclas
+  corregidas, la cita original tenía una corrida). Ninguno es riesgo vivo.
+  **`FAILOPEN-001`**: el fail-open es solo visibilidad de módulos en el
+  menú (`appfrontend-main/src/app/dashboard/NavList.tsx:191-196`, no
+  `:182` como decía el triage original). `managementOnly` en el frontend
+  (`useIsManagement()`, `useAuthRole.ts:14`) es fail-**closed** (`false`
+  sin user), pero no es "el gate real" — su propio docblock aclara que no
+  gatea nada por sí solo; el gate real es `authorize()` en el backend,
+  que igual se exige en cada ruta.
+  **`FACT-INV-BIZID-001`**: los 2 orígenes HTTP directos
+  (`invoices.routes.ts:102`/`:127`) siguen siendo `req.user!.businessId!`
+  — el cliente no puede inyectar otro valor. Desde el triage original
+  aparecieron 4 call-sites más (post cancelar-con-NC,
+  `cancel-order-with-credit-note.service.ts:165`/`:332` y
+  `cancel-reservation-with-credit-note.service.ts:279`/`:483`) que pasan
+  `businessId` de una fila ya leída de la tenant DB, no de `req.user`
+  directo — sigue sin ser un hueco porque el aislamiento real es físico
+  (una BD por negocio, A2.8; declarado explícito en
+  `invoice.repository.ts:193`), no el wiring de `req.user`. Es un
+  invariante sin test explícito (defensa en profundidad), no un riesgo
+  vivo. Sin acción de código.
 - **TTL de NC `PENDING`/`FAILED_UNCERTAIN` huérfana** — verificado contra
   ERPNext/Odoo/QloApps: ninguno tiene TTL automático de una corrección
   fiscal en curso tampoco. Mitigado con `GET /api/invoices?status=` +
