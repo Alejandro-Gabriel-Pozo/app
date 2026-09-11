@@ -1161,6 +1161,21 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `downloadPdf`), `appfrontend-main/src/components/FacturarButton.tsx`
   (el estado nuevo, sin salida). **No bloqueante hoy** (0 casos reales) --
   bloque propio, gate propio.
+  **Actualización 11/09/2026, `INVOICE-CHARGES-FACTURACION-SCREEN-01`
+  (gate `architecture-governor`) -- la primera mitad del patrón ERP ya
+  tiene navegación real, la segunda sigue sin cerrar.** `invoicesApi.listByCustomer()`
+  + pantalla `/dashboard/facturacion` (`appfrontend-main`, commit local
+  `42c8611`) + `GET /api/invoices?customerId=` enriquecido con
+  `cbteTipoLabel()` (`app-main`, commit local `844247b`) -- el estado
+  "Facturado (consolidado)" de `FacturarButton` ahora es un `<Link>` a
+  esa pantalla, preseleccionando al cliente. **Todavía NO es el link
+  preciso cargo→factura**: el usuario llega a la lista completa del
+  cliente y tiene que escanearla para encontrar cuál comprobante cubre
+  el cargo puntual -- eso requiere exponer
+  `InvoiceRepository.resolveInvoiceLinkage()` por HTTP (hoy sin ningún
+  endpoint, solo consumidores internos), bloque backend + contrato
+  cruzado, sin decisión ni gate todavía. No marcar este ítem `✅
+  RESUELTO` hasta que exista ese link preciso.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
