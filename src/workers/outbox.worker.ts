@@ -519,7 +519,8 @@ export class OutboxWorker {
 
   /**
    * OUTBOX-DL-COMPENSATOR-01 (11/09/2026, Bloque A) -- mismo patrón
-   * claim/release que `runHandler()` (`:469-505`), aplicado a un
+   * claim/release que `runHandler()`, más arriba en esta misma clase,
+   * aplicado a un
    * compensador de dead-letter en vez de a un handler normal. Reclama el
    * casillero en `processed_events` ANTES de correr (mismo motivo: dos
    * disparos solapados no pueden correr el mismo compensador dos veces) y
