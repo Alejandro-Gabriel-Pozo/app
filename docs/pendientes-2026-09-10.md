@@ -971,27 +971,31 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (`InvoiceService.requestConsolidatedInvoice()`, `invoice.service.ts:505`
   y `:570`) -- confirmado.
 
-  **Estado: HOLD para implementación (gate `architecture-governor`,
-  11/09/2026).** No autorizado tocar `invoice.service.ts`,
-  `cancel-order-with-credit-note.service.ts`, `refund-attribution.ts`,
-  `sql.invoice.repository.ts` ni schema todavía. **Próximo bloque**:
-  rehacer la matriz de impacto con `:223-226` adentro (matriz original no
-  lo tenía) + `refund-attribution.ts` (los 3 sitios que hoy usan
-  `reservationId`) + `credit-note-escape-containment.test.ts` (¿`SIGNATURES`
-  congela alguna de las funciones en alcance?) + leer
-  `docs/diseno-cancelacion-orden-nota-credito-2026-09-05.md` (ADR
-  específico de órdenes, probablemente reafirma todo-o-nada, hay que
-  reconciliar) + query read-only de producción: ¿existen hoy facturas
-  consolidadas multi-orden reales? (cambia la urgencia, no el diseño).
-  **Split recomendado por el gate para cuando la matriz cierre** (no
-  empezar todavía): 1a) generalizar `resolveRefundableForPair()` sobre
-  una clave de atribución opaca, función pura, sin wiring; 1b) camino de
-  lectura -- JOIN + mirror `r.order_id = $2` del tope por par, integración
-  contra Postgres real; 1c) relajar `:223-226` de "exactamente un cargo" a
-  "el cargo de esta orden está entre los cargos de la factura" + wire de
-  la rama de orden en `buildCreditNote()` -- el bloque que toca plata,
-  último y más chico; 1d) aparte, después: `classifyOrderLiveInvoice()`
-  con awareness de pares.
+  **Estado (actualizado 11/09/2026, segunda ronda de gate): bloque 1a
+  ✅ IMPLEMENTADO, LOCAL/sin pushear** (`629fb27`,
+  `refund-attribution.ts` generalizado sobre clave de atribución opaca,
+  behavior-preserving, 217/217 tests de facturación sin regresión,
+  `credit-note-escape-containment.test.ts` verificado que sigue sin
+  tocarlo). Nombres de campo (`reservationId`) NO renombrados a
+  propósito -- renombrarlos hubiera tocado los 2 callers de producción,
+  fuera de alcance de 1a; el rename real queda para 1c. **1b/1c/1d
+  siguen en HOLD** -- la matriz de impacto rehecha encontró 8
+  ubicaciones más no mapeadas originalmente, la más grave un numerador
+  de F4 (`sql.invoice.repository.ts:443-454`,
+  `getIssuedCreditNoteCompensationTotalForReservation`) que SÍ necesita
+  el JOIN (a diferencia del tope por par, que no). El ADR de órdenes NO
+  reafirma todo-o-nada como doctrina -- solo excluye el caso del alcance
+  de un bloque anterior (ver ADRs reconciliados, `3aa04ef`). Query de
+  producción sobre facturas consolidadas multi-orden reales: sigue sin
+  correr (sin credenciales/tools de Neon en esa sesión del gate).
+  **Hallazgo NO buscado, real, en código YA en producción** (encontrado
+  al escribir los tests de 1a, no corregido -- necesita su propio gate):
+  `distributeGroupAmount()` (`refund-attribution.ts`) tiene un defecto de
+  redondeo -- si una consolidada mezcla un item sin clave (origen orden)
+  y uno con clave (origen reserva) en el MISMO grupo de tasa, el residuo
+  de redondeo le atribuye TODO el monto del item sin clave a la clave
+  presente, no un centavo. Vivo desde el bloque 3.3-a (08/09/2026).
+  Alcanzable con datos reales: no medido.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
@@ -1053,17 +1057,35 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `ROLES-CATALOG-DRIFT-001`. **No bundleado en este cierre, a propósito**
   -- ver `RESERVATION-STATUS-EXPIRED-FRONTEND-01` más abajo, bloque
   propio.
-- **`RESERVATION-STATUS-EXPIRED-FRONTEND-01`** (11/09/2026, hallazgo del
-  gate al cerrar `EVT-ORF-01` de arriba, `requiere query` ya satisfecha
-  por lectura de código, sin decisión de negocio pendiente -- es un bug
-  de contrato cross-repo, no una elección). `appfrontend-main/src/lib/reservas/types.ts:1`
-  agrega `'EXPIRED'` a `ReservationStatus`; `ALL_STATUSES` en
-  `dashboard/reservas/page.tsx` y `dashboard/turnos/page.tsx` lo suma a
-  las opciones del filtro; `STATUS_BADGE_CLASS`/`STATUS_LABEL` ganan una
-  entrada para `EXPIRED` en los 4 archivos que hoy no tienen fallback
-  (`reservas/page.tsx`, `reservas/[id]/page.tsx`, `turnos/page.tsx`,
-  `turnos/[id]/page.tsx`). Bloque chico, reversible, sin schema ni
-  backend -- encarado aparte en esta misma sesión.
+- **`RESERVATION-STATUS-EXPIRED-FRONTEND-01`** — ✅ **RESUELTO, LOCAL/sin
+  pushear** (`appfrontend-main` `b38bce4`, 11/09/2026, gate
+  `architecture-governor` APPROVED WITH CONDITIONS). Alcance final, 6
+  archivos + `globals.css` (más grande que el mapeo original de 4
+  archivos -- el gate encontró 2 consumidores más):
+  `lib/reservas/types.ts:1` agrega `'EXPIRED'`; `STATUS_LABEL`/
+  `STATUS_BADGE_CLASS`/`ALL_STATUSES` en `dashboard/reservas/page.tsx`,
+  `dashboard/reservas/[id]/page.tsx`, `dashboard/turnos/page.tsx`,
+  `dashboard/turnos/[id]/page.tsx`; `STATUS_BADGE`/`STATUS_LABEL` en el
+  portal de clientes (`cuenta/reservas/page.tsx`, `CANCELLABLE` dejado
+  SIN `EXPIRED` a propósito). **El hallazgo más grave era
+  `RoomCalendar.tsx`, no cosmético:** una reserva `EXPIRED` caía al
+  fallback `STATUS_BAR_STYLE.PENDING` y se dibujaba en el tape chart como
+  pendiente real, ocupando lugar que el backend ya trata como libre
+  (`NON_BLOCKING_STATUSES`) -- corregido excluyéndola del `Record` y del
+  filtro de `:214`. Badge nuevo `.badge-expired` (no reusa
+  `badge-cancelled`, backend distingue los dos estados a propósito),
+  compuesto solo con tokens existentes (`--surface-4`/`--border`/
+  `--text-primary`), cero hex/Tailwind crudo. Verificado: `tsc --noEmit`
+  limpio (con `node_modules` real instalado, no el ruido de módulos
+  ausentes), `eslint` limpio, `npm run lint:visual` sin deuda nueva,
+  25/25 tests unitarios sin regresión. **No verificado, declarado:**
+  captura de pantalla real con una reserva `EXPIRED` -- no había datos de
+  prueba a mano y fabricarlos en una tenant compartida fue descartado
+  (mismo criterio que otros bloques de esta sesión). **Follow-up
+  identificado, no parte de este bloque:** no existe ningún test que
+  congele `ReservationStatus` entre los 2 repos (análogo de
+  `roles-catalog-sync.test.ts`) -- es lo que permitió que este drift
+  viviera ~3 semanas sin que nadie lo notara.
 - **Hueco de doble comprobante en `getInvoicedFinancialTransactionIds()`**
   -- ✅ **RESUELTO, PERO SOLO PARA LA DIRECCIÓN CONSOLIDADA↔CONSOLIDADA**
   (11/09/2026, gate `architecture-governor`, ronda 2: HOLD → APPROVED WITH
