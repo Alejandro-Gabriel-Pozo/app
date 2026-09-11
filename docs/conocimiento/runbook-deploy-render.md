@@ -233,11 +233,40 @@ categoría de problema ya no existe: cualquier estado de
 igual al catálogo -- no hay una segunda fuente de verdad que pisar por
 error.
 
-**`platform_seed_markers` sigue existiendo** (gatea el seed histórico de
-los 23 pares originales, corre una sola vez por instalación) pero **ya
-no es parte del camino de recuperación** -- borrar esa marca no ayuda
-con un preset vaciado hoy, porque el seed que gatea nunca vuelve a correr
-después del primer arranque post-deploy (ver más abajo, sigue igual).
+**`platform_seed_markers` sigue existiendo** y, desde el 11/09/2026
+(`PLAN-LIMITS-SEED-REVERT-001`), gatea CUATRO seed_keys, no una sola --
+`role_preset_permission_groups` (el seed histórico de los 23 pares
+originales, el que motivó esta sección), `plan_limits_max_custom_roles`,
+`plan_limit_allowed_roles` y `plan_limit_allowed_permission_groups`
+(`src/db/platform.schema.sql`, bloque PLAN_LIMITS). Verificado contra el
+código real -- `grep seed_key src/db/platform.schema.sql`, exactamente
+estas 4, ninguna quinta.
+
+**Ninguna de las 4 es parte del camino de recuperación** -- borrar
+CUALQUIERA de las 4 marcas NO ayuda con un preset o un límite de plan
+vaciado hoy, porque el seed que cada una gatea nunca vuelve a correr
+después del primer arranque post-deploy (ver más abajo, sigue igual para
+`role_preset_permission_groups`).
+
+**Para las 3 marcas de `PLAN-LIMITS-SEED-REVERT-001`, borrar la marca es
+directamente PELIGROSO, no solo inútil** -- a diferencia de
+`role_preset_permission_groups` (donde el break-glass de arriba ya
+reemplazó el "borrar la marca" por el INSERT dirigido, así que el riesgo
+quedó neutralizado por el procedimiento nuevo), estas 3 no tienen
+procedimiento de recuperación reescrito todavía: borrar
+`plan_limit_allowed_roles` o `plan_limit_allowed_permission_groups` hace
+correr de nuevo el `INSERT` de defaults -- si un superadmin había
+REVOCADO un rol o un grupo de permisos de FREE/STARTER por el panel
+(`PUT /platform/plan-limits/:plan`), esa revocación se pierde y el techo
+de autorización de roles CUSTOM se RE-ENSANCHA sin que nadie lo haya
+decidido (fail-open, el mismo defecto que `PLAN-LIMITS-SEED-REVERT-001`
+existe para cerrar). Borrar `plan_limits_max_custom_roles` hace correr de
+nuevo el backfill y pisa un `max_custom_roles = NULL` ("sin límite")
+puesto a propósito por el panel, volviéndolo a 0/2/10. **Recuperación
+correcta para estas 3**: releer el valor/set deseado (de auditoría o del
+dueño) y escribirlo por `PlatformRepository.updatePlanLimits()` (o el
+`UPDATE`/`DELETE`+`INSERT` equivalente a mano, dentro de una transacción)
+-- nunca borrando la marca.
 
 ## Procedimiento 3 — Rollback: qué revertir y qué NO
 

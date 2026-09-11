@@ -441,6 +441,17 @@ futuros, cada uno con su propio alcance.
   post-deploy la revierte una vez y hay que decirle al dueño qué fila se
   va a pisar ANTES de deployar. No medido en esta sesión -- local, sin
   push, sin deploy.
+  **Runbook reconciliado** (`c128cc2` + un commit doc-only posterior, gate
+  `architecture-governor`, hallazgo del cierre "GROUP VERIFIED"):
+  `docs/conocimiento/runbook-deploy-render.md` describía
+  `platform_seed_markers` como si gatéara una sola seed_key
+  (`role_preset_permission_groups`) y decía "borrar la marca no ayuda,
+  pero tampoco hace daño" -- desactualizado desde `0a72f0f`, que sumó 3
+  seed_keys más. Corregido: enumera las 4, y para las 3 nuevas aclara que
+  borrar la marca NO es solo inútil sino PELIGROSO (re-ensancha un techo
+  de autorización revocado, fail-open) -- a diferencia de
+  `role_preset_permission_groups`, que sí tiene su break-glass reescrito
+  más arriba en el mismo runbook.
 - **`PLAN-LIMITS-EMPTY-MEANS-ALL-001`** (11/09/2026, gate
   `architecture-governor`, condición C5 de `PLAN-LIMITS-SEED-REVERT-001`
   de arriba, `requiere decisión del dueño`, NO implementado). Consecuencia,
