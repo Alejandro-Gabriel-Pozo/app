@@ -169,11 +169,32 @@ export async function createTestDatabase(): Promise<{ db: SqlClient; dbName: str
 /**
  * Elimina la BD temporal. Llamar en afterAll().
  * Cierra el pool del tenant antes de hacer DROP.
+ *
+ * `INTEGRATION-HARNESS-DROPDB-MASK-01` (11/09/2026, gate `architecture-governor`)
+ * -- `pool` puede llegar `undefined` cuando `createTestDatabase()` falló en
+ * `beforeAll` (medido: timeout real contra Neon por contención) y la
+ * variable del test file nunca se asignó. Sin este guard, `pool.end()`
+ * tiraba `TypeError: Cannot read properties of undefined (reading 'end')`
+ * que TAPABA el error real (el timeout) en el resumen de la corrida.
+ *
+ * **Esto NO limpia el huérfano.** Si `createTestDatabase()` falló DESPUÉS
+ * de `CREATE DATABASE` (`:142`, sin try/catch hasta el `return` de `:166`
+ * -- el caso medido, un timeout aplicando `schema.sql` en `:164`), la BD
+ * queda creada y su pool abierto, sin que este guard (ni ningún otro
+ * código de este archivo) los cierre -- `dbName` también es `undefined`
+ * acá, así que no hay nada que buscar para dropear. Ese huérfano se
+ * acumula hacia el límite de recursos de Neon ya documentado
+ * (`runbook-deploy-render.md`, 10 branches/proyecto plan free) por un
+ * camino distinto (bases de datos huérfanas dentro de UN branch, no
+ * branches de más) -- registrado aparte en pendientes, no resuelto acá:
+ * la solución real es un try/catch DENTRO de `createTestDatabase()` que
+ * cierre lo que alcanzó a crear antes de relanzar, bloque propio.
  */
 export async function dropTestDatabase(
   dbName: string,
-  pool: pg.Pool,
+  pool: pg.Pool | undefined,
 ): Promise<void> {
+  if (!pool) return;
   await pool.end();
 
   const baseUrl = requireTestDatabaseUrl();
