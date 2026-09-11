@@ -765,7 +765,14 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   fabricado: `cancel-reservation-with-credit-note.integration.test.ts`,
   caso `C1(i)`, pasó de pinear `NOT_RECONCILED` a confirmar `RECONCILED`.
   Deja abierto, aparte, el residual simétrico del lado ÓRDENES -- ver
-  `ORDER-CONSOLIDATED-PARTIAL-01` más abajo.
+  `ORDER-CONSOLIDATED-PARTIAL-01` más abajo. **PUSHEADO Y DEPLOYADO en
+  producción, verificado**: commits `15f81ae` (código) + `f5947cc` (docs,
+  registro del flake de harness encontrado al cerrar) pusheados
+  11/09/2026 con autorización explícita del dueño; deploy
+  `dep-dahmiau7bikc73e8vffg` = `live` (finished 02:37:46Z); log de build
+  confirma `migrate:tenants` -- `2 negocio(s) con BD asignada. Versión
+  objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: sin cambio de schema,
+  la versión objetivo no se movió); `GET /health/db` = 200 post-deploy.
 - **`ORDER-CONSOLIDATED-PARTIAL-01`** (11/09/2026, registrado junto con el
   cierre de 3.3-d residual 1) — `classifyOrderLiveInvoice()` sigue
   preguntando por la factura ENTERA siempre, sin el clasificador por par
