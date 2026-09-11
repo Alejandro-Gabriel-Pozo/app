@@ -260,18 +260,31 @@ Proyectos reales (los dos son de la org `org-bold-unit-53932069`, región `aws-u
 | **Tenants** (una BD por negocio) | `ancient-king-17098519` — *DB-APP-PPMS* | `br-snowy-tree-ax5wmq70` |
 | **Plataforma** (central, `PLATFORM_DATABASE_URL`) | `morning-unit-50056927` — *pdb-ppms* | `br-royal-mouse-aybe2ai3` |
 
-Respaldos existentes al 29/08/2026:
+Respaldos existentes al 10/09/2026 (`respaldo-pre-v44-2026-08-28` y
+`respaldo-pre-temporada-2026-08-28` de tenants se BORRARON ese día para
+liberar cupo de branches del plan free -- 10/proyecto, ver más abajo --
+ya estaban superados por respaldos más nuevos):
 
 | Proyecto | Branch de respaldo | Id | Estado capturado |
 |---|---|---|---|
 | Plataforma | `respaldo-pre-fase3-2026-08-29` | `br-purple-mud-aycvlyj4` | LSN `0/347F870`, 17:33:25Z. **Sin** `industries`, `industry_capabilities`, `terminology_defaults`, `businesses.industry_key`, `business_modules.source` ni `modules.context_color` — verificado consultando producción antes de crearlo |
 | Tenants | `respaldo-pre-fase3-2026-08-29` | `br-twilight-poetry-axtplxx1` | LSN `0/3D3BC38`, 17:33:19Z. La Fase 3 no toca el schema de tenant; se respalda igual porque el deploy reinicia el backend y reaplica **los dos** esquemas |
-| Tenants | `respaldo-pre-v44-2026-08-28` | `br-square-snow-ax4hgrmo` | v43, sin las columnas del sobre ni `processed_events` |
-| Plataforma | `respaldo-pre-v44-2026-08-28` | `br-ancient-flower-ays1lofk` | sin `platform_audit_log` ni `modules.active/implemented` |
-| Tenants | `respaldo-pre-temporada-2026-08-28` | `br-soft-frost-axh918xl` | anterior, del mismo día 16:53Z |
+| Tenants (Demo) | `respaldo-pre-push-2026-09-07` | `br-fancy-tree-ax52rqma` | LSN previo a un push del 06-07/09 |
+| Tenants (Demo) | `respaldo-pre-v47-demo-2026-09-08` | `br-steep-sunset-axxvv9il` | pre-schema v47 (CHECK `chk_financial_transactions_reversed_invoice_type`) |
+| Tenants (Demo) | `respaldo-pre-outbox-backoff-v48-2026-09-10` | `br-summer-wildflower-axziua6w` | LSN `0/4A9BAC0`. Pre-schema v48 (`OUTBOX-RETRY-HIST-01`/`OUTBOX-BACKOFF-01` -- `domain_events` sin `first_failed_at`/`last_failed_at` todavía) |
+| Tenants (Hotel los Álamos) | `respaldo-hotel-pre-outbox-backoff-v48-2026-09-10` | `br-snowy-rain-ax87eljw` | LSN `0/2EDD018`. Mismo motivo que el de arriba, otra tenant |
+
+**Límite de branches del plan free: 10 por proyecto** (confirmado en
+vivo el 10/09/2026 -- `create_branch` devuelve `branches limit
+exceeded` al intentar el 11°). Antes de crear un respaldo nuevo,
+`list_branches` y borrar el más viejo genuinamente superado (nunca uno
+que sea el único registro de un estado que no se pueda reconstruir de
+otra forma) -- no asumir que siempre hay cupo libre.
 
 Los branches de respaldo se crean con **`no_compute: true`**: son almacenamiento, sin
-compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint.
+compute ocioso ni costo. Para *leerlos* hay que crearles un endpoint --
+`run_sql` contra un branch `no_compute` devuelve `endpoint not found`
+directo, es esperado, no un error real.
 
 **No confundir con estos, que NO son respaldos:** `tenant-template-empty`
 (`br-polished-hill-axn1uibp`, plantilla de aprovisionamiento — ver `neon-provisioning.ts`),
