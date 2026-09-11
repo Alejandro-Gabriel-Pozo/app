@@ -248,8 +248,11 @@ SELECT seed_key FROM platform_seed_markers ORDER BY seed_key;
 ```
 corrida contra esa base, no esta lista ni la fecha de ningún commit. Si
 esa instalación no llegó todavía al deploy que agrega las 3 últimas
-seed_keys, la consulta devuelve solo la primera fila -- eso no es un
-error, es la BD reflejando el código que corrió hasta ese momento ahí.
+seed_keys, la consulta devuelve una sola fila --
+`role_preset_permission_groups`, nombrada así, no "la primera" (el
+`ORDER BY seed_key` alfabético la deja ÚLTIMA cuando las 4 están
+presentes, no primera) -- eso no es un error, es la BD reflejando el
+código que corrió hasta ese momento ahí.
 
 **Ninguna de las 4, esté o no presente en una instalación dada, es parte
 del camino de recuperación** -- borrar CUALQUIERA de las marcas que
