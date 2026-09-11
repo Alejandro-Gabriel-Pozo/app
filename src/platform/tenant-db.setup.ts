@@ -24,9 +24,10 @@
  *    mano por SQL Editor/psql como antes.
  *
  * ## Variables de entorno requeridas
- * | Variable          | Descripción                                      |
- * |-------------------|---------------------------------------------------|
- * | DB_ENCRYPTION_KEY | 32 bytes hex para cifrar db_urls en la BD central |
+ * | Variable              | Descripción                                          |
+ * |------------------------|------------------------------------------------------|
+ * | DB_ENCRYPTION_KEY      | 32 bytes hex para cifrar db_urls en la BD central     |
+ * | DB_ENCRYPTION_KEY_OLD  | OPCIONAL -- 32 bytes hex, clave anterior durante una rotación en curso (SEC-ROT-001). Ver `docs/conocimiento/runbook-rotacion-db-encryption-key.md`. Sin ella, comportamiento idéntico al de una sola clave. |
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
@@ -70,8 +71,28 @@ export async function encryptConnectionString(plaintext: string): Promise<string
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
 }
 
-export async function decryptConnectionString(ciphertext: string): Promise<string> {
-  const key = await deriveEncryptionKey();
+/**
+ * SEC-ROT-001 (11/09/2026, gate `architecture-governor`) -- `opts.allowOldKey`
+ * (default `true`) es lo que hace posible rotar `DB_ENCRYPTION_KEY` sin
+ * downtime: durante la ventana de rotación (`DB_ENCRYPTION_KEY_OLD` seteada,
+ * ver el runbook), un ciphertext puede haber sido escrito con la clave
+ * ANTERIOR y necesita ese fallback para seguir siendo legible.
+ *
+ * `opts?` es un objeto, no un booleano posicional, A PROPÓSITO: los 10
+ * call sites productivos de esta función pasan exactamente un argumento
+ * (`ciphertext`) de forma explícita -- ninguno es point-free
+ * (`arr.map(decryptConnectionString)`), que es el único patrón donde un
+ * segundo parámetro posicional heredaría el índice del array por accidente
+ * y activaría/desactivaría el fallback sin que nadie lo haya pedido.
+ * Verificado al agregar este parámetro (`grep` de `map(`/`then(` sobre los
+ * call sites, vacío) -- si algún día se agrega un consumidor point-free,
+ * hay que re-verificar esto, no asumir que sigue siendo cierto.
+ */
+export async function decryptConnectionString(
+  ciphertext: string,
+  opts?: { allowOldKey?: boolean },
+): Promise<string> {
+  const allowOldKey = opts?.allowOldKey ?? true;
   const [ivHex, authTagHex, dataHex] = ciphertext.split(':');
   if (!ivHex || !authTagHex || !dataHex) {
     throw new Error('[tenant-db.setup] Formato de ciphertext inválido — esperado: iv:authTag:ciphertext');
@@ -79,9 +100,40 @@ export async function decryptConnectionString(ciphertext: string): Promise<strin
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
   const data = Buffer.from(dataHex, 'hex');
-  const decipher = createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+
+  const tryDecryptWith = (key: Buffer): string => {
+    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+  };
+
+  const primaryKey = await deriveEncryptionKey();
+  try {
+    return tryDecryptWith(primaryKey);
+  } catch (primaryErr) {
+    // Sin DB_ENCRYPTION_KEY_OLD (el caso de siempre, fuera de una rotación
+    // activa) o con allowOldKey:false: comportamiento IDÉNTICO al de antes
+    // de este bloque -- un solo intento de descifrado, se relanza el error
+    // de la primaria tal cual, sin envolver.
+    const oldKey = allowOldKey ? await deriveOldEncryptionKey() : null;
+    if (!oldKey) throw primaryErr;
+
+    try {
+      return tryDecryptWith(oldKey);
+    } catch {
+      // Compuesto, no el error de la vieja a secas (P2 del gate, con
+      // evidencia: error.middleware.ts nunca filtra este mensaje al
+      // cliente, solo a logs/Sentry -- no hay costo en ser explícito, y el
+      // operador necesita saber, a las 3 de la mañana, si DB_ENCRYPTION_KEY_OLD
+      // siquiera estaba cargada). Nunca material de clave ni ciphertext acá.
+      throw new Error(
+        '[tenant-db.setup] No se pudo descifrar -- se probaron 2 claves ' +
+        '(DB_ENCRYPTION_KEY y DB_ENCRYPTION_KEY_OLD, ambas configuradas) y ' +
+        'ninguna de las dos matchea. Ver docs/conocimiento/runbook-rotacion-db-encryption-key.md.',
+        { cause: primaryErr },
+      );
+    }
+  }
 }
 
 async function deriveEncryptionKey(): Promise<Buffer> {
@@ -97,6 +149,29 @@ async function deriveEncryptionKey(): Promise<Buffer> {
   if (keyBuffer.length !== 32) {
     throw new Error(
       `[tenant-db.setup] DB_ENCRYPTION_KEY debe ser 32 bytes en hex (64 caracteres). ` +
+      `Recibido: ${keyBuffer.length} bytes.`,
+    );
+  }
+  return keyBuffer;
+}
+
+/**
+ * SEC-ROT-001 -- clave anterior durante una rotación en curso. `null` (no
+ * error) cuando `DB_ENCRYPTION_KEY_OLD` no está seteada -- ese es el estado
+ * normal, fuera de una ventana de rotación activa, y `decryptConnectionString()`
+ * lo trata como "sin fallback disponible", no como una falla. Si SÍ está
+ * seteada pero mal formada, falla ruidosa -- mismo criterio fail-loud que
+ * `deriveEncryptionKey()`: una clave de rotación cargada a medias tiene que
+ * hacer ruido al arrancar el proceso, no fallar en silencio a mitad de una
+ * rotación real. Sin exportar -- sin consumidor fuera de este archivo.
+ */
+async function deriveOldEncryptionKey(): Promise<Buffer | null> {
+  const keyMaterial = process.env.DB_ENCRYPTION_KEY_OLD;
+  if (!keyMaterial) return null;
+  const keyBuffer = Buffer.from(keyMaterial, 'hex');
+  if (keyBuffer.length !== 32) {
+    throw new Error(
+      `[tenant-db.setup] DB_ENCRYPTION_KEY_OLD debe ser 32 bytes en hex (64 caracteres). ` +
       `Recibido: ${keyBuffer.length} bytes.`,
     );
   }

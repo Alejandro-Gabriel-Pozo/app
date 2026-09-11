@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type * as NodeCrypto from 'node:crypto';
 
 const VALID_KEY_HEX = 'a'.repeat(64); // 32 bytes en hex
 
@@ -68,6 +69,128 @@ describe('encryptConnectionString / decryptConnectionString', () => {
     const { encryptConnectionString } = await import('./tenant-db.setup.js');
 
     await expect(encryptConnectionString('postgresql://algo')).rejects.toThrow(/debe ser 32 bytes en hex/);
+  });
+});
+
+describe('decryptConnectionString -- modo de dos claves (SEC-ROT-001, 11/09/2026)', () => {
+  const OLD_KEY_HEX = 'b'.repeat(64); // 32 bytes en hex, distinta de VALID_KEY_HEX
+  const FAKE_CIPHERTEXT = `${'11'.repeat(16)}:${'22'.repeat(16)}:${'33'.repeat(10)}`; // formato válido, ilegible con cualquier clave
+  const originalKey = process.env.DB_ENCRYPTION_KEY;
+  const originalOldKey = process.env.DB_ENCRYPTION_KEY_OLD;
+
+  beforeEach(() => {
+    process.env.DB_ENCRYPTION_KEY = VALID_KEY_HEX;
+    delete process.env.DB_ENCRYPTION_KEY_OLD;
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.DB_ENCRYPTION_KEY;
+    else process.env.DB_ENCRYPTION_KEY = originalKey;
+    if (originalOldKey === undefined) delete process.env.DB_ENCRYPTION_KEY_OLD;
+    else process.env.DB_ENCRYPTION_KEY_OLD = originalOldKey;
+  });
+
+  it('sin DB_ENCRYPTION_KEY_OLD, descifra normal con la primaria -- comportamiento sin cambios', async () => {
+    const { encryptConnectionString, decryptConnectionString } = await import('./tenant-db.setup.js');
+    const ciphertext = await encryptConnectionString('postgresql://algo');
+
+    await expect(decryptConnectionString(ciphertext)).resolves.toBe('postgresql://algo');
+  });
+
+  it('con DB_ENCRYPTION_KEY_OLD configurada, descifra un ciphertext escrito con la clave VIEJA usando el fallback', async () => {
+    // Simula "antes de rotar": la vieja era la primaria de ese momento.
+    process.env.DB_ENCRYPTION_KEY = OLD_KEY_HEX;
+    const { encryptConnectionString } = await import('./tenant-db.setup.js');
+    const ciphertextConLaVieja = await encryptConnectionString('postgresql://rotado');
+
+    // Ahora la nueva es la primaria, la vieja queda de respaldo.
+    process.env.DB_ENCRYPTION_KEY = VALID_KEY_HEX;
+    process.env.DB_ENCRYPTION_KEY_OLD = OLD_KEY_HEX;
+    const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+    await expect(decryptConnectionString(ciphertextConLaVieja)).resolves.toBe('postgresql://rotado');
+  });
+
+  it('sin DB_ENCRYPTION_KEY_OLD, un ciphertext ilegible falla con el error ORIGINAL de la primaria, sin envolver', async () => {
+    const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+    await expect(decryptConnectionString(FAKE_CIPHERTEXT)).rejects.not.toThrow(/se probaron 2 claves/);
+  });
+
+  it('con DB_ENCRYPTION_KEY_OLD configurada pero NINGUNA de las 2 matchea, falla con el mensaje compuesto y cause = error de la primaria', async () => {
+    process.env.DB_ENCRYPTION_KEY_OLD = OLD_KEY_HEX;
+    const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+    await expect(decryptConnectionString(FAKE_CIPHERTEXT)).rejects.toThrow(/se probaron 2 claves/);
+    try {
+      await decryptConnectionString(FAKE_CIPHERTEXT);
+      expect.unreachable();
+    } catch (err) {
+      expect((err as Error).cause).toBeInstanceOf(Error);
+    }
+  });
+
+  it('con DB_ENCRYPTION_KEY_OLD de longitud incorrecta (y la primaria fallando), falla ruidoso -- mismo criterio fail-loud que la primaria', async () => {
+    process.env.DB_ENCRYPTION_KEY_OLD = 'muycorta';
+    const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+    await expect(decryptConnectionString(FAKE_CIPHERTEXT)).rejects.toThrow(/DB_ENCRYPTION_KEY_OLD debe ser 32 bytes/);
+  });
+
+  it('con allowOldKey:false, NO descifra un ciphertext de la vieja aunque DB_ENCRYPTION_KEY_OLD esté configurada y sea correcta (condición 2 del gate)', async () => {
+    process.env.DB_ENCRYPTION_KEY = OLD_KEY_HEX;
+    const { encryptConnectionString } = await import('./tenant-db.setup.js');
+    const ciphertextConLaVieja = await encryptConnectionString('postgresql://rotado');
+
+    process.env.DB_ENCRYPTION_KEY = VALID_KEY_HEX;
+    process.env.DB_ENCRYPTION_KEY_OLD = OLD_KEY_HEX;
+    const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+    await expect(decryptConnectionString(ciphertextConLaVieja, { allowOldKey: false })).rejects.toThrow();
+  });
+
+  // ── Evidencia de CONTEO real, no solo del resultado (pedido explícito del gate) ──
+  describe('conteo real de intentos de Decipheriv', () => {
+    beforeEach(() => {
+      vi.resetModules();
+    });
+
+    afterEach(() => {
+      vi.doUnmock('node:crypto');
+    });
+
+    it('sin DB_ENCRYPTION_KEY_OLD, un ciphertext ilegible dispara EXACTAMENTE 1 intento de Decipheriv', async () => {
+      vi.doMock('node:crypto', async (importOriginal) => {
+        const actual = await importOriginal<typeof NodeCrypto>();
+        return {
+          ...actual,
+          createDecipheriv: vi.fn((...args: Parameters<typeof actual.createDecipheriv>) => actual.createDecipheriv(...args)),
+        };
+      });
+      const crypto = await import('node:crypto');
+      const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+      await expect(decryptConnectionString(FAKE_CIPHERTEXT)).rejects.toThrow();
+
+      expect(vi.mocked(crypto.createDecipheriv)).toHaveBeenCalledTimes(1);
+    });
+
+    it('con DB_ENCRYPTION_KEY_OLD configurada, un ciphertext ilegible dispara EXACTAMENTE 2 intentos de Decipheriv (primaria + vieja)', async () => {
+      process.env.DB_ENCRYPTION_KEY_OLD = OLD_KEY_HEX;
+      vi.doMock('node:crypto', async (importOriginal) => {
+        const actual = await importOriginal<typeof NodeCrypto>();
+        return {
+          ...actual,
+          createDecipheriv: vi.fn((...args: Parameters<typeof actual.createDecipheriv>) => actual.createDecipheriv(...args)),
+        };
+      });
+      const crypto = await import('node:crypto');
+      const { decryptConnectionString } = await import('./tenant-db.setup.js');
+
+      await expect(decryptConnectionString(FAKE_CIPHERTEXT)).rejects.toThrow();
+
+      expect(vi.mocked(crypto.createDecipheriv)).toHaveBeenCalledTimes(2);
+    });
   });
 });
 
