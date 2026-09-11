@@ -688,18 +688,32 @@ export class CreditNoteCancellationRejectedError extends DomainError {
 }
 
 /**
- * ADR común cancelar-con-NC §3 N2.a (sub-bloque 4) -- guarda defensiva: el
- * conjunto de CARGO(s) que la factura original facturó (derivado de la
+ * ADR común cancelar-con-NC §3 N2.a (sub-bloque 4) -- guarda defensiva sobre
+ * el conjunto de CARGO(s) que la factura original facturó (derivado de la
  * FACTURA, `InvoiceRepository.getChargeIdsForInvoice()`, no del documento --
- * N1.a(iii)) tiene cardinalidad ≠ 1, o el único id no coincide con el CHARGE
- * de la orden. Para una orden esto es **inalcanzable** (una orden = un CHARGE,
- * índice único v45; una factura de orden nunca es consolidada) -- si salta,
- * hay una inconsistencia de datos y el escape aborta sin tocar nada.
+ * N1.a(iii)).
+ *
+ * Dos condiciones distintas, dos épocas:
+ * - Hasta 1c-i (11/09/2026): cardinalidad ≠ 1, o el único id no coincide con
+ *   el CHARGE de la orden -- **inalcanzable** para una orden (un CHARGE por
+ *   orden, índice único v45), invariante rota si salta.
+ * - Desde 1c-i (gate `architecture-governor`, bloque `ORDER-CONSOLIDATED-PARTIAL-01`):
+ *   el CHARGE de la orden SÍ figura entre los de la factura (ya no exige
+ *   cardinalidad 1), pero la factura es consolidada con cargos de OTRAS
+ *   órdenes (`chargeIdCount > 1`) -- **alcanzable de verdad** (una orden
+ *   puede facturarse junto a otras vía `requestConsolidatedInvoice()`). La
+ *   NC granular por orden en una consolidada todavía no está cableada
+ *   (`buildCreditNote()` no tiene la rama de atribución de órdenes -- eso es
+ *   1c-ii, en HOLD): decisión del dueño, gate 1c-i, con grounding ERPNext/
+ *   Odoo/Dolibarr/Cloudbeds/QloApps (los 5 rechazan en el borde en vez de
+ *   dejar un estado a medias) -- rechazar acá, sin cambio de comportamiento
+ *   observable respecto de la versión anterior de este guard. 1c-ii retira
+ *   esta condición cuando cablee la rama real.
  */
 export class CreditNoteMultiInvoiceError extends DomainError {
   constructor(orderId: string, invoiceId: string, chargeIdCount: number) {
     super(
-      `La factura "${invoiceId}" de la orden "${orderId}" abarca ${chargeIdCount} cargo(s) -- la cancelación con Nota de Crédito solo admite una factura con exactamente un cargo. Operación abortada.`,
+      `La factura "${invoiceId}" de la orden "${orderId}" es consolidada (${chargeIdCount} cargo(s)) -- la Nota de Crédito granular para una orden dentro de una factura consolidada todavía no está soportada. Operación abortada.`,
       'CREDIT_NOTE_MULTI_INVOICE',
     );
   }
@@ -1103,6 +1117,16 @@ export class CreditNoteMixedStayError extends DomainError {
  * este guard, `buildCreditNote()` tomaría la rama de reversión TOTAL (N3)
  * y copiaría TODAS las líneas -- incluida la de la reserva ajena -- sin
  * correr el tope por par (bloque 3.3-a).
+ *
+ * Reusada por `cancelOrderWithCreditNote()` desde 1c-i (11/09/2026, gate
+ * `architecture-governor`, `ORDER-CONSOLIDATED-PARTIAL-01`) para el mismo
+ * hazard con órdenes -- el primer parámetro pasa a ser un `orderId`.
+ * Deuda de wording YA CONOCIDA, no resuelta acá (mismo criterio que
+ * `cancel-reservation-with-credit-note.service.ts:325-333`): el mensaje
+ * sigue diciendo "La reserva…" también cuando quien la dispara es una
+ * orden. Corregirlo exige tocar la clase (parametrizar por tipo de
+ * documento o separar el texto de `code`/`financialTransactionId`), fuera
+ * del alcance "reuso + docblock" de este bloque.
  */
 export class CreditNoteConsolidatedFullReversalError extends DomainError {
   constructor(reservationId: string, invoiceId: string, amount: number, impTotal: number) {

@@ -56,6 +56,7 @@ import { SqlBusinessProfileRepository } from '../../repositories/sql.business-pr
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlCashRegisterShiftRepository } from '../../clientes-finanzas/sql.cash-register-shift.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
+import { SqlAccountsReceivableRepository } from '../../clientes-finanzas/sql.accounts-receivable.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
 import { CancelOrderWithCreditNoteService } from '../../facturacion/cancel-order-with-credit-note.service.js';
@@ -64,7 +65,7 @@ import { authorizeCreditNoteCancellation } from '../../facturacion/cancel-with-c
 import { handleOrderCancelled } from '../../workers/outbox.handlers.js';
 import { logger } from '../../logger.js';
 import type { DomainEvent } from '../../repositories/domain-event.repository.js';
-import { CreditNoteCancellationPendingError } from '../../domain/errors.js';
+import { CreditNoteCancellationPendingError, CreditNoteMultiInvoiceError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
@@ -214,6 +215,22 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
+      () => buildArcaBillingAdapter(arcaFactory()),
+    );
+  }
+
+  /**
+   * Variante de `buildInvoiceService()` con `AccountsReceivableRepository`
+   * REAL (`SqlAccountsReceivableRepository`) en vez de `FakeAccountsReceivableRepo`
+   * -- necesaria para `requestConsolidatedInvoice()`, que factura lo que
+   * encuentra PENDIENTE_FACTURAR de verdad en `accounts_receivable`. Usada
+   * solo por el describe `(d)` más abajo.
+   */
+  function buildInvoiceServiceWithRealAR(arcaFactory: () => Arca): InvoiceService {
+    return new InvoiceService(
+      invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
+      orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
+      pgTxManager, new SqlAccountsReceivableRepository(db), new SqlAuditLogRepository(db),
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }
@@ -595,6 +612,148 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
         `SELECT status FROM stays WHERE id = $1`, [stayId],
       );
       expect(stayRows[0]!.status).toBe('CHECKED_OUT');
+    }, 30_000);
+  });
+
+  // ─── 1c-i (11/09/2026, gate `architecture-governor`) -- guard cardinal a
+  // membership + rechazo tipado sobre una consolidada REAL multi-orden ───
+  describe('(d) 1c-i -- consolidada real multi-orden vía requestConsolidatedInvoice(), rechazo en el borde', () => {
+    /**
+     * IMPORTANTE -- verificado en esta sesión, no heredado del gate sin
+     * chequear: el ÚNICO creador real de `accounts_receivable` en
+     * producción hoy es `AccountsReceivableService.transferStayBalanceToReceivable()`
+     * (`accounts-receivable.service.ts:164-174`), que SIEMPRE setea
+     * `reservationId` en el CHARGE que factura, NUNCA `orderId` --
+     * confirmado además por el docblock de
+     * `consolidated-invoice-toctou.integration.test.ts` (mismo día, gate
+     * anterior de esta sesión) y por `grep` propio: CERO referencias a
+     * `AccountsReceivableService`/`arRepo` en todo `src/pos-menu/`. Una
+     * consolidada real con 2 cargos de 2 ÓRDENES distintas **no es
+     * alcanzable hoy por ningún camino de producción** -- el hallazgo del
+     * gate de diseño de 1c-i que la calificó "producible hoy, no
+     * hipotética" verificó que `requestConsolidatedInvoice()` no discrimina
+     * por origen del cargo, pero no verificó si algo REAL puebla
+     * `accounts_receivable` con un cargo de orden. Nada lo hace.
+     *
+     * Este describe construye la fila `accounts_receivable` a mano (mismo
+     * criterio que `seedPendingArWithCharge()` de
+     * `consolidated-invoice-toctou.integration.test.ts` ya usa para
+     * reservas) para probar que el CÓDIGO se comporta bien SI ese estado
+     * llegara a existir -- no que exista hoy. Sigue siendo la evidencia que
+     * el gate pidió (una consolidada real vía `requestConsolidatedInvoice()`,
+     * no un `INSERT` a mano en `invoices`/`invoice_charges`), solo que la
+     * premisa de alcanzabilidad de la ronda anterior queda corregida acá.
+     */
+    /**
+     * `seedCustomer()` (helpers/seed.ts) resuelve `customer_number` vía el
+     * contador atómico de `number_sequences` -- pero el `beforeAll` de este
+     * archivo ya insertó `CUS` con `customer_number = 1` A MANO, sin pasar
+     * por ese contador (`:156`, precede a este bloque). El contador sigue
+     * en 1, así que el primer `seedCustomer()` real de este archivo
+     * colisionaría con `CUS`. Se inserta a mano acá, mismo criterio que
+     * `CUS`, con números que no colisionan.
+     */
+    let nextCustomerNumber = 900;
+    async function seedRawCustomer(name: string): Promise<{ id: string }> {
+      const id = randomUUID();
+      await db.query(
+        `INSERT INTO customers (id, full_name, display_name, customer_number)
+         VALUES ($1, $2, $2, $3)`,
+        [id, name, nextCustomerNumber++],
+      );
+      return { id };
+    }
+
+    async function seedCompanyChargeForOrder(
+      company: { id: string }, stayId: string, orderId: string, amount: number,
+    ): Promise<{ chargeId: string; arId: string }> {
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: company.id, orderId,
+        type: 'CHARGE', amount, currency: 'ARS', status: 'SETTLED',
+      });
+      const ar = await new SqlAccountsReceivableRepository(db).createWithClient(db, {
+        id: randomUUID(), businessId: BIZ, stayId, companyCustomerId: company.id,
+        amount, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
+        transferredBy: ACTOR, notes: null, financialTransactionId: charge!.id,
+      });
+      return { chargeId: charge!.id, arId: ar.id };
+    }
+
+    /** Estadía dummy, solo para satisfacer el FK NOT NULL de `accounts_receivable.stay_id` -- sin relación funcional con las órdenes de este describe. */
+    async function seedDummyStay(): Promise<string> {
+      const category = await seedCategory(db);
+      const resource = await seedResource(db, category.id);
+      const guest = await seedRawCustomer('Huésped dummy CANCEL-CN');
+      const reservation = await seedReservation(db, resource.id, guest.id);
+      const stayId = randomUUID();
+      await db.query(
+        `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [stayId, BIZ, reservation.id, resource.id, guest.id, ACTOR],
+      );
+      return stayId;
+    }
+
+    it('consolidada real de 2 órdenes (60% no llega al borde del 100%): cancelar-con-NC la orden A rechaza con CreditNoteMultiInvoiceError, la orden B queda intacta', async () => {
+      const invoiceService = buildInvoiceServiceWithRealAR(fakeArcaClientOk);
+      const sut = buildSut(invoiceService);
+      const company = await seedRawCustomer('Empresa CANCEL-CN 1c-i');
+      const stayId = await seedDummyStay();
+
+      const orderA = await orderService.createOrder({
+        businessId: BIZ, customerId: CUS, locationId: LOC,
+        items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
+      });
+      await orderService.confirmOrder(orderA.id, ACTOR);
+      const { chargeId: chargeAId } = await seedCompanyChargeForOrder(company, stayId, orderA.id, 100);
+
+      const orderB = await orderService.createOrder({
+        businessId: BIZ, customerId: CUS, locationId: LOC,
+        items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
+      });
+      await orderService.confirmOrder(orderB.id, ACTOR);
+      const { chargeId: chargeBId } = await seedCompanyChargeForOrder(company, stayId, orderB.id, 100);
+
+      // La consolidada REAL -- 2 cargos, 2 órdenes distintas, un solo
+      // comprobante (`invoice_charges`, no `invoices.financial_transaction_id`).
+      const invoice = await invoiceService.requestConsolidatedInvoice({
+        businessId: BIZ, companyCustomerId: company.id, changedBy: ACTOR,
+      });
+      expect(invoice.status).toBe('ISSUED');
+      const { rows: chargeRows } = await db.query<{ financial_transaction_id: string }>(
+        `SELECT financial_transaction_id FROM invoice_charges WHERE invoice_id = $1`, [invoice.id],
+      );
+      expect(chargeRows.map((r) => r.financial_transaction_id).sort()).toEqual([chargeAId, chargeBId].sort());
+
+      // El intento de escape sobre la orden A: rechazo tipado, NO el throw
+      // interno N1.a -- decisión (B) del dueño (grounding ERPNext/Odoo/
+      // Dolibarr/Cloudbeds/QloApps).
+      const err = await sut.cancelOrderWithCreditNote(orderA.id, auth(orderA.id)).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CreditNoteMultiInvoiceError);
+
+      // Cero filas nuevas: nada se creó, nada se tocó.
+      const { rows: adjRows } = await db.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM financial_transactions WHERE order_id = $1 AND type = 'ADJUSTMENT'`, [orderA.id],
+      );
+      expect(Number(adjRows[0]!.count)).toBe(0);
+
+      // La orden A sigue CONFIRMED -- el escape no la tocó.
+      const { rows: orderARows } = await db.query<{ status: string }>(
+        `SELECT status FROM orders WHERE id = $1`, [orderA.id],
+      );
+      expect(orderARows[0]!.status).toBe('CONFIRMED');
+
+      // El cargo AJENO (orden B) sigue exactamente como estaba -- SETTLED,
+      // sin tocar. Esta es la evidencia central de 1c-i: si tx2 hubiera
+      // re-derivado `getChargeIdsForInvoice()` en vez de usar el conjunto
+      // congelado, un bug ahí habría podido re-settlear (no-op inocuo acá
+      // porque ya está SETTLED) o, peor, si el escape hubiera avanzado más
+      // allá del rechazo, tocar algo de la orden B.
+      const { rows: chargeBRows } = await db.query<{ status: string; order_id: string }>(
+        `SELECT status, order_id FROM financial_transactions WHERE id = $1`, [chargeBId],
+      );
+      expect(chargeBRows[0]!.status).toBe('SETTLED');
+      expect(chargeBRows[0]!.order_id).toBe(orderB.id);
     }, 30_000);
   });
 });

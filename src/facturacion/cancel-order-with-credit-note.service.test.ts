@@ -14,6 +14,7 @@ import {
   CreditNoteCancellationPendingError,
   CreditNoteCancellationRejectedError,
   CreditNoteMultiInvoiceError,
+  CreditNoteConsolidatedFullReversalError,
   InvalidOrderTransitionError,
   OrderNotFoundError,
 } from '../domain/errors.js';
@@ -81,8 +82,15 @@ class FakeFinancialTransactionRepo {
 class FakeInvoiceRepo {
   linkage: InvoiceLinkage = { kind: 'ISSUED', invoiceId: INVOICE_ID };
   chargeIds: string[] = [CHARGE_ID];
+  // Suficientemente alto para NO disparar el guard de reversión total con el
+  // CHARGE de 121 por default -- los tests que quieren ese guard lo bajan.
+  impTotal = 10_000;
+  invoice: { id: string } | null = { id: INVOICE_ID };
   async resolveInvoiceLinkage(_ftId: string): Promise<InvoiceLinkage> { return this.linkage; }
   async getChargeIdsForInvoice(_invoiceId: string): Promise<string[]> { return this.chargeIds; }
+  async getById(_invoiceId: string): Promise<Invoice | null> {
+    return this.invoice ? ({ id: this.invoice.id, impTotal: this.impTotal } as unknown as Invoice) : null;
+  }
 }
 
 class FakeInvoiceService {
@@ -204,12 +212,81 @@ describe('CancelOrderWithCreditNoteService', () => {
     expect(port.calls).toBe(0);
   });
 
-  it('N2.a -- si la factura abarca >1 cargo: CreditNoteMultiInvoiceError, no se crea nada ni se llama a AFIP', async () => {
+  it('1c-i -- N2.a pasó a membership: factura consolidada con OTRA orden -- CreditNoteMultiInvoiceError ("todavía no soportado"), no se crea nada ni se llama a AFIP', async () => {
     inv.chargeIds = [CHARGE_ID, 'ft-charge-2'];
+    // impTotal (10_000 default) bien por encima del CHARGE (121): NO es el
+    // borde del 100%, así que es el rechazo GENERAL el que dispara, no el
+    // de reversión total -- confirma el orden de los dos guards.
 
     await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteMultiInvoiceError);
     expect(ft.rows.size).toBe(0);
     expect(svc.calls).toBe(0);
+  });
+
+  it('1c-i -- consolidada al borde del 100% con OTRA orden: CreditNoteConsolidatedFullReversalError, NO CreditNoteMultiInvoiceError -- se chequea primero', async () => {
+    inv.chargeIds = [CHARGE_ID, 'ft-charge-2'];
+    inv.impTotal = 121; // el CHARGE de esta orden ya es el 100% del impTotal
+
+    const err = await sut.cancelOrderWithCreditNote(ORDER_ID, auth()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CreditNoteConsolidatedFullReversalError);
+    expect(err).not.toBeInstanceOf(CreditNoteMultiInvoiceError);
+    expect(ft.rows.size).toBe(0);
+    expect(svc.calls).toBe(0);
+  });
+
+  it('1c-i -- borde de tolerancia: 0.005 por debajo del impTotal SÍ dispara reversión total (>= impTotal - tolerancia)', async () => {
+    inv.chargeIds = [CHARGE_ID, 'ft-charge-2'];
+    inv.impTotal = 121.005; // charge.amount(121) >= round2(121.005 - 0.01) === 120.995
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteConsolidatedFullReversalError);
+  });
+
+  it('1c-i -- fuera de tolerancia: 1 peso por debajo del impTotal NO dispara reversión total, cae al rechazo general', async () => {
+    inv.chargeIds = [CHARGE_ID, 'ft-charge-2'];
+    inv.impTotal = 122; // charge.amount(121) < round2(122 - 0.01) === 121.99
+
+    const err = await sut.cancelOrderWithCreditNote(ORDER_ID, auth()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CreditNoteMultiInvoiceError);
+    expect(err).not.toBeInstanceOf(CreditNoteConsolidatedFullReversalError);
+  });
+
+  it('1c-i -- factura sin la otra orden (chargeIds no incluye charge.id): sigue rechazando -- invariante rota, mismo criterio que antes', async () => {
+    inv.chargeIds = ['ft-charge-ajena'];
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteMultiInvoiceError);
+    expect(ft.rows.size).toBe(0);
+  });
+
+  it('1c-i -- resolveInvoiceLinkage dice ISSUED pero getById no encuentra la factura -- invariante rota, diagnosticable', async () => {
+    inv.invoice = null;
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
+      .rejects.toThrow(/invariante rota/);
+  });
+
+  it('1c-i -- tx2 NO re-deriva chargeIds: getChargeIdsForInvoice se llama UNA sola vez (en tx1), nunca en tx2', async () => {
+    // Precedente de reservas: la razón de fondo por la que tx2 no puede
+    // re-derivar es que, en una consolidada multi-orden, una 2da llamada
+    // vería TODOS los cargos de la factura (incluidos los de otras
+    // órdenes) y los settlearía. Acá basta con probar que la 2da llamada
+    // nunca ocurre -- si ocurriera, esta fake explota con un mensaje
+    // diagnosticable en vez de fallar en silencio.
+    let calls = 0;
+    const originalGetChargeIds = inv.getChargeIdsForInvoice.bind(inv);
+    inv.getChargeIdsForInvoice = async (id: string) => {
+      calls++;
+      if (calls > 1) throw new Error('getChargeIdsForInvoice NO debería llamarse una 2da vez (tx2 re-derivando)');
+      return originalGetChargeIds(id);
+    };
+
+    const res = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+
+    expect(res.emitted).toBe(true);
+    expect(calls).toBe(1);
+    expect(ft.settleCalls).toEqual([
+      { ids: [res.adjustmentId], businessId: BIZ },
+      { ids: [CHARGE_ID], businessId: BIZ },
+    ]);
   });
 
   it('orden en estado no cancelable -- InvalidOrderTransitionError', async () => {

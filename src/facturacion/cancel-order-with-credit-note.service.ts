@@ -25,8 +25,12 @@
  *        de `OrderCancelPort` que vive en `pos-menu/`), `ADJUSTMENT` →
  *        SETTLED, y el `UPDATE` dirigido del/los CARGO(s) revertido(s) →
  *        SETTLED con las tres restricciones de N1.a: (i) solo `status`,
- *        (ii) `WHERE status = 'PENDING'`, (iii) ids derivados de la FACTURA
- *        (`InvoiceRepository.getChargeIdsForInvoice()`), nunca del documento.
+ *        (ii) `WHERE status = 'PENDING'`, (iii) ids CONGELADOS en tx1
+ *        (`frozenChargeIds`, resuelto una sola vez contra la FACTURA vía
+ *        `InvoiceRepository.getChargeIdsForInvoice()` -- 1c-i, 11/09/2026:
+ *        antes tx2 volvía a llamar a `getChargeIdsForInvoice()`, lo que en
+ *        una factura consolidada multi-orden habría settleado también el
+ *        cargo de OTRA orden; ahora nunca se re-deriva), nunca del documento.
  *
  * ## D1 — la orden NO se cancela si la NC no llegó a `ISSUED`
  * Si AFIP no confirma el CAE (`AfipRequestUncertainError`, o `retryExisting()`
@@ -47,12 +51,14 @@ import type { InvoiceService } from './invoice.service.js';
 import type { IOrderRepository, OrderTransitionOutcome } from '../pos-menu/order.repository.js';
 import type { Order } from '../pos-menu/order.entities.js';
 import type { CreditNoteCancellationAuthorization } from './cancel-with-credit-note.js';
+import { CREDIT_NOTE_COMPENSATION_TOLERANCE } from './cancel-with-credit-note.js';
 import {
   AfipRequestRejectedError,
   AfipRequestUncertainError,
   CreditNoteCancellationPendingError,
   CreditNoteCancellationRejectedError,
   CreditNoteMultiInvoiceError,
+  CreditNoteConsolidatedFullReversalError,
   CreditNoteIssuedOrderNotCancellableError,
 } from '../domain/errors.js';
 import { OrderNotFoundError, InvalidOrderTransitionError } from '../domain/errors.js';
@@ -100,7 +106,7 @@ type FinancialTransactionRepoForCancel = Pick<
   settleByIdsWithClient: NonNullable<FinancialTransactionRepository['settleByIdsWithClient']>;
 };
 
-type InvoiceRepoForCancel = Pick<InvoiceRepository, 'resolveInvoiceLinkage' | 'getChargeIdsForInvoice'>;
+type InvoiceRepoForCancel = Pick<InvoiceRepository, 'resolveInvoiceLinkage' | 'getChargeIdsForInvoice' | 'getById'>;
 type OrderRepoForCancel = Pick<IOrderRepository, 'getByIdForUpdate'>;
 type InvoiceServiceForCancel = Pick<InvoiceService, 'requestInvoice'>;
 
@@ -217,11 +223,58 @@ export class CancelOrderWithCreditNoteService {
       }
       const originalInvoiceId = linkage.invoiceId;
 
-      // N2.a -- el conjunto de CARGO(s) que la factura facturó se deriva de
-      // la FACTURA (N1.a iii), no del documento. Para una orden es {charge.id}
-      // por construcción; assert defensivo.
+      // 1c-i (11/09/2026, gate `architecture-governor`): N2.a pasó de exigir
+      // cardinalidad exactamente 1 a un chequeo de membership -- el CHARGE
+      // de ESTA orden tiene que estar entre los que la FACTURA facturó
+      // (N1.a iii, `InvoiceRepository.getChargeIdsForInvoice()`), sin
+      // importar cuántos otros cargos -- de OTRAS órdenes, en una
+      // consolidada real vía `requestConsolidatedInvoice()` -- tenga la
+      // misma factura. `frozenChargeIds` es el conjunto que tx2 settlea más
+      // abajo (nunca re-derivado); para una orden, siempre el singleton
+      // `{charge.id}` (CHARGE único por orden, índice v45) -- a diferencia
+      // del precedente de reservas (`cancel-reservation-with-credit-note.service.ts`),
+      // que puede tener varios cargos congelados y por eso sí necesita una
+      // intersección.
+      const original = await this.invoiceRepo.getById(originalInvoiceId);
+      if (!original) {
+        throw new Error(
+          `cancelOrderWithCreditNote: resolveInvoiceLinkage() devolvió ISSUED para "${originalInvoiceId}" pero getById() no la encontró -- invariante rota.`,
+        );
+      }
       const chargeIds = await this.invoiceRepo.getChargeIdsForInvoice(originalInvoiceId);
-      if (chargeIds.length !== 1 || chargeIds[0] !== charge.id) {
+      if (!chargeIds.includes(charge.id)) {
+        throw new CreditNoteMultiInvoiceError(orderId, originalInvoiceId, chargeIds.length);
+      }
+      const frozenChargeIds = [charge.id];
+      const isProperSubset = chargeIds.length > frozenChargeIds.length;
+
+      // Borde de la consolidada al 100% -- mismo guard que el precedente de
+      // reservas (`cancel-reservation-with-credit-note.service.ts`, guard
+      // "borde de la consolidada al 100%"): si esta orden es un
+      // subconjunto PROPIO de los cargos de la factura (hay cargos de OTRA
+      // orden en la misma consolidada) pero el monto de la NC igual suma el
+      // 100% del `impTotal` (la otra orden aporta $0), `buildCreditNote()`
+      // tomaría la rama de reversión TOTAL y copiaría TODAS las líneas --
+      // incluidas las ajenas -- sin correr el tope por par. Se chequea
+      // ANTES del rechazo general de abajo porque es el hazard más grave de
+      // los dos (copiaría líneas ajenas, no solo "todavía no soportado") y
+      // sigue vigente después de 1c-ii (no lo retira, a diferencia del
+      // rechazo general).
+      const absAmount = round2(charge.amount);
+      if (isProperSubset && absAmount >= round2(original.impTotal - CREDIT_NOTE_COMPENSATION_TOLERANCE)) {
+        throw new CreditNoteConsolidatedFullReversalError(orderId, originalInvoiceId, absAmount, original.impTotal);
+      }
+      // 1c-i deja preparada la estructura (conjunto congelado + el guard de
+      // arriba) para 1c-ii -- todavía en HOLD, `InvoiceService.buildCreditNote()`
+      // no tiene cableada la rama de atribución de órdenes. Hasta que
+      // exista, CUALQUIER subconjunto propio se rechaza acá -- decisión del
+      // dueño (gate 1c-i, grounding ERPNext/Odoo/Dolibarr/Cloudbeds/QloApps:
+      // los 5 bloquean en el borde con un rechazo explícito antes de tocar
+      // el ledger, nunca dejan un estado a medias) -- sin cambio de
+      // comportamiento observable respecto de la versión anterior de este
+      // guard, solo la vía por la que se llega al mismo rechazo. 1c-ii
+      // retira esta condición cuando cablee la rama real.
+      if (isProperSubset) {
         throw new CreditNoteMultiInvoiceError(orderId, originalInvoiceId, chargeIds.length);
       }
 
@@ -259,10 +312,11 @@ export class CancelOrderWithCreditNoteService {
       // 1c-0 (11/09/2026, gate `architecture-governor`): el ADJUSTMENT hereda
       // el `stayId` del CHARGE que revierte -- `null` es un valor válido, no
       // "sin decidir". No hay rama "mixed" acá (a diferencia del precedente
-      // de reservas, `cancelReservationWithCreditNote`): los guards de
-      // arriba (`charges.length !== 1` y `chargeIds.length !== 1`) ya dejan
-      // el conjunto congelado como el singleton `{charge}` por construcción,
-      // así que un solo `stayId` posible. Antes de este fix el ADJUSTMENT se
+      // de reservas, `cancelReservationWithCreditNote`): el guard de
+      // `charges.length !== 1` arriba más el rechazo de `isProperSubset`
+      // (1c-i, ver más arriba) ya dejan el conjunto congelado como el
+      // singleton `{charge}` por construcción, así que un solo `stayId`
+      // posible. Antes de este fix el ADJUSTMENT se
       // creaba con `stayId: null` incondicional: `getNetBalanceByStayId`
       // (columna `financial_transactions.stay_id`) sumaba el CHARGE de la
       // estadía pero no la reversión, sobre-declarando el saldo y bloqueando
@@ -287,17 +341,22 @@ export class CancelOrderWithCreditNoteService {
         }
       };
 
-      // SEIS lecturas de tx1 -- `getByIdempotencyKey` en la rama CANCELLED
-      // (:192), `getByOrderId` (:200), `resolveInvoiceLinkage` (:210),
-      // `getChargeIdsForInvoice` (:223), el `getByIdempotencyKey` de abajo
-      // (:277) y el re-read del fallback post-ON-CONFLICT (:309) -- van por el
-      // pool del repo, NO por `client`. Sano: entre `getByIdForUpdate` (:186)
-      // y `createWithClient` (:283) NO hay write vía `client` (nada
+      // SIETE lecturas de tx1 (1c-i sumó `invoiceRepo.getById()`) --
+      // `getByIdempotencyKey` en la rama CANCELLED, `getByOrderId`,
+      // `resolveInvoiceLinkage`, `getById`, `getChargeIdsForInvoice`, el
+      // `getByIdempotencyKey` de más abajo (`existing = prior ?? ...`) y el
+      // re-read del fallback post-ON-CONFLICT -- van todas por el pool del
+      // repo, NO por `client`. Sano: entre `getByIdForUpdate` (arriba) y
+      // `createWithClient` (abajo) NO hay write vía `client` (nada
       // no-commiteado propio que perder); un concurrente commiteado se ve bajo
       // READ COMMITTED; el fallback ve la fila por el lock especulativo del
       // índice único de `idempotency_key`. Costo residual: presión de pool
       // (2 de 5 conexiones por escape, `tenant.middleware.ts` max:5) --
-      // POOL-STARV-001 (#10 / bloque 3.2-pre); pasar `client` a las 6 va ahí.
+      // POOL-STARV-001 (#10 / bloque 3.2-pre); pasar `client` a las 7 va ahí.
+      // Citas de línea retiradas a propósito (1c-i, gate `architecture-governor`
+      // -- de-anclar a nombres de símbolo, no renumerar: las de la ronda de
+      // 1c-0 ya habían quedado stale por el mismo corrimiento que este
+      // bloque hubiera vuelto a producir).
       const existing = prior ?? (await this.financialTransactionRepo.getByIdempotencyKey(key));
       let adjustment: FinancialTransaction;
       if (existing) {
@@ -343,7 +402,7 @@ export class CancelOrderWithCreditNoteService {
         }
       }
 
-      return { adjustmentId: adjustment.id, originalInvoiceId, businessId: order.businessId };
+      return { adjustmentId: adjustment.id, originalInvoiceId, businessId: order.businessId, frozenChargeIds };
     });
 
     // --- AFIP: emitir la NC (fuera de toda tx, sin lock -- N10) -----------
@@ -374,12 +433,18 @@ export class CancelOrderWithCreditNoteService {
     const finalOrder = await this.transactionManager.run(async (client) => {
       const outcome = await this.orderCancelPort.cancelForCreditNote(client, orderId, auth.confirmedBy);
       if (outcome.resultado === 'CAMBIO' || outcome.resultado === 'YA_ESTABA') {
-        // (b) ADJUSTMENT -> SETTLED. (c) CARGO(s) de la FACTURA -> SETTLED
-        //     (ids derivados de la factura, N1.a iii; `WHERE status='PENDING'`
-        //     dentro del repo, N1.a ii; solo `status`, N1.a i).
+        // (b) ADJUSTMENT -> SETTLED. (c) CARGO(s) CONGELADOS en tx1 -> SETTLED
+        //     (`WHERE status='PENDING'` dentro del repo, N1.a ii; solo
+        //     `status`, N1.a i).
         await this.financialTransactionRepo.settleByIdsWithClient(client, [prep.adjustmentId], prep.businessId);
-        const chargeIds = await this.invoiceRepo.getChargeIdsForInvoice(prep.originalInvoiceId);
-        await this.financialTransactionRepo.settleByIdsWithClient(client, chargeIds, prep.businessId);
+        // 1c-i (11/09/2026, gate `architecture-governor`): settlea el
+        // conjunto CONGELADO en tx1 (`prep.frozenChargeIds`), NUNCA
+        // re-derivado acá -- una re-derivación con `getChargeIdsForInvoice`
+        // settlearía también el cargo de OTRA orden en una consolidada.
+        // Mismo criterio que el precedente de reservas
+        // (`cancel-reservation-with-credit-note.service.ts`, comentario
+        // "C1 del gate" sobre `settleByIdsWithClient(client, prep.frozenChargeIds, ...)`).
+        await this.financialTransactionRepo.settleByIdsWithClient(client, prep.frozenChargeIds, prep.businessId);
         return outcome.order;
       }
       // NO_EXISTE / NO_ELEGIBLE / ESTADO_DESCONOCIDO -- la NC ya está emitida
