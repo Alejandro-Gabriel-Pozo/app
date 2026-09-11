@@ -51,6 +51,69 @@ describe('ResendEmailSender', () => {
   });
 });
 
+describe('ResendEmailSender — header From (EMAIL-FROMNAME-RFC5322-01)', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => { global.fetch = originalFetch; });
+
+  async function sendAndGetFrom(fromName: string): Promise<string> {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const sender = new ResendEmailSender('re_test_key', 'notificaciones@zuluhub.com.ar');
+    await sender.send({ to: 'cliente@example.com', fromName, subject: 's', html: 'h' });
+    const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body);
+    return body.from as string;
+  }
+
+  it('nombre simple -- no cambia, sin comillas (contrato de no-regresión)', async () => {
+    expect(await sendAndGetFrom('ZuluHub')).toBe('ZuluHub <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con coma -- se quotea (la coma se lee como separador de direcciones)', async () => {
+    expect(await sendAndGetFrom('Hotel Los Andes, S.A.'))
+      .toBe('"Hotel Los Andes, S.A." <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con comillas internas -- se escapan y se quotea todo', async () => {
+    expect(await sendAndGetFrom('Hotel "Los Andes"'))
+      .toBe('"Hotel \\"Los Andes\\"" <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con < y > -- se quotea (rompe la sintaxis addr-spec)', async () => {
+    expect(await sendAndGetFrom('Hotel <Los Andes>'))
+      .toBe('"Hotel <Los Andes>" <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con parentesis -- se quotea (sin quotear, RFC 5322 los lee como comentario y descarta el texto)', async () => {
+    expect(await sendAndGetFrom('Hotel (ex Posada) Los Andes'))
+      .toBe('"Hotel (ex Posada) Los Andes" <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con @ -- se quotea', async () => {
+    expect(await sendAndGetFrom('Hotel @ Costanera'))
+      .toBe('"Hotel @ Costanera" <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con corchetes -- se quotea (delimitadores de domain-literal)', async () => {
+    expect(await sendAndGetFrom('Hotel [Sucursal Centro]'))
+      .toBe('"Hotel [Sucursal Centro]" <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con backslash -- se escapa y se quotea', async () => {
+    expect(await sendAndGetFrom('Hotel\\Andes'))
+      .toBe('"Hotel\\\\Andes" <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre con caracter de control -- se descarta (strip), no se rechaza el envio', async () => {
+    expect(await sendAndGetFrom('Hotel\x07Andes'))
+      .toBe('HotelAndes <notificaciones@zuluhub.com.ar>');
+  });
+
+  it('nombre no-ASCII combinado con caracter especial -- UTF-8 crudo + quoteado', async () => {
+    expect(await sendAndGetFrom('Hotel "Los Álamos", S.A.'))
+      .toBe('"Hotel \\"Los Álamos\\", S.A." <notificaciones@zuluhub.com.ar>');
+  });
+});
+
 describe('NoopEmailSender', () => {
   it('no falla y loguea cuando no hay credenciales', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
