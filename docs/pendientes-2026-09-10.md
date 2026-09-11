@@ -1241,21 +1241,32 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   camino de reservas (vivo, comparte código), no de emitir mal una NC
   de orden.
 
-  **Decisión de negocio pendiente, bloquea `1c-ii-c` (NO 1c-ii-b):**
-  retirar el rechazo placeholder de 1c-i
+  **Decisión de negocio -- ✅ RESUELTA (11/09/2026, dueño + grounding
+  ERPNext/Odoo/QloApps/Dolibarr), implementación pendiente en
+  `1c-ii-c`.** Retirar el rechazo placeholder de 1c-i
   (`cancel-order-with-credit-note.service.ts:277-279`) movería una
   falla determinística de ANTES del ledger (hoy, dentro de tx1, antes
   del INSERT del ADJUSTMENT) a DESPUÉS (si `buildCreditNote()` tira
   `CreditNoteAttributionBlockedError`/`_MismatchError` tras el commit
   de tx1) -- un ADJUSTMENT PENDING huérfano permanente, a diferencia de
-  un rechazo de AFIP (transitorio, reintentable). Choca con el mismo
-  grounding ERPNext/Odoo/Dolibarr/Cloudbeds/QloApps que motivó el
-  diseño de 1c-i. Dos respuestas razonables: (a) pre-validar la
-  atribución en tx1 antes del INSERT del ADJUSTMENT (cuesta una 3ra
-  computación de atribución, o pasar `client` y reordenar), o (b)
-  aceptar el ADJUSTMENT huérfano como estado "solicitud" (N11), mismo
-  criterio que ya se acepta para un fallo de AFIP. Requiere
-  `AskUserQuestion` antes de encarar 1c-ii-c -- no resuelto todavía.
+  un rechazo de AFIP (transitorio, reintentable). **Decisión: (a)
+  pre-validar la atribución en tx1, antes del INSERT del ADJUSTMENT.**
+  El grounding corrigió la dicotomía original ("¿pre-validar cuesta una
+  3ra computación, o aceptar el huérfano?") -- Odoo (`account_move_reversal.py`,
+  `_prepare_default_reversal()` + `@api.constrains` ANTES de escribir
+  ningún `account.move`) y ERPNext (`make_return_doc()` construye y
+  valida el documento SIN guardar, los GL entries recién existen en
+  `on_submit`) resuelven esto con UN SOLO cómputo -- no dos: la
+  atribución se hace al tope de tx1, sobre datos que tx1 YA lee (las
+  "siete lecturas de tx1",
+  `cancel-order-with-credit-note.service.ts:344`), y el resultado se
+  CONGELA para tx2 -- mismo mecanismo que `frozenChargeIds` (nacido del
+  mismo modo de falla). Dolibarr es el único de los 5 que escribe
+  primero y valida después (`compta/facture/card.php`, rama NC de
+  situación, sin rollback explícito) -- es el contraejemplo, no el
+  modelo a seguir. Implementación queda para cuando se encare
+  `1c-ii-c` (después de `1c-ii-b`, todavía en HOLD) -- este bullet solo
+  fija la decisión, no el código.
 
   **Deuda de wording, sin bloque asignado:** `CreditNoteAttributionBlockedError`,
   `CreditNoteAttributionMismatchError` y `CreditNotePairCapExceededError`
