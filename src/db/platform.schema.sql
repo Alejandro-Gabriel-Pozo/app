@@ -364,16 +364,24 @@ CREATE TABLE IF NOT EXISTS role_preset_permission_groups (
 );
 
 -- PRESET-REVOKE-001 (09-10/09/2026) -- marca de seeds de plataforma
--- aplicados una sola vez. Alcance HOY: solo `role_preset_permission_groups`
--- (seed_key = 'role_preset_permission_groups', sin sufijo de versión --
--- nada en el diseño actual produce un ".v2" de esta clave; si algún día
--- hace falta versionar de verdad, se decide en ese momento). Los seeds
--- incondicionales de `plan_limit_allowed_roles`/
--- `plan_limit_allowed_permission_groups`/`max_custom_roles` (más abajo en
--- este archivo) tienen el MISMO defecto (PLAN-LIMITS-SEED-REVERT-001,
--- docs/pendientes-2026-09-10.md) pero quedan deliberadamente FUERA de
--- este bloque -- mismo mecanismo, cuando se encare, con su propia
--- seed_key.
+-- aplicados una sola vez. Primera seed_key: `role_preset_permission_groups`
+-- (sin sufijo de versión -- nada en el diseño actual produce un ".v2" de
+-- esta clave; si algún día hace falta versionar de verdad, se decide en
+-- ese momento).
+--
+-- PLAN-LIMITS-SEED-REVERT-001 (11/09/2026, gate `architecture-governor`,
+-- docs/pendientes-2026-09-10.md) -- mismo defecto, mismo mecanismo,
+-- encontrado al revisar PRESET-REVOKE-001, aplicado acá a los 3 seeds
+-- incondicionales que habían quedado deliberadamente fuera de ese primer
+-- bloque (bloque PLAN_LIMITS, más abajo en este archivo): el backfill de
+-- `max_custom_roles` (seed_key `plan_limits_max_custom_roles`, gatea una
+-- columna, no una tabla) y los `INSERT` de
+-- `plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`
+-- (seed_key = nombre de tabla, mismo criterio que la primera). 3
+-- seed_keys propias, no una compartida -- permite revertir/re-correr una
+-- sin arrastrar las otras. Ver el docblock del bloque PLAN_LIMITS para el
+-- detalle de cada sitio y el hueco que este cambio deja abierto a
+-- propósito (0 filas = 'ALL', PLAN-LIMITS-EMPTY-MEANS-ALL-001).
 CREATE TABLE IF NOT EXISTS platform_seed_markers (
   seed_key    VARCHAR(100) PRIMARY KEY,
   applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -803,9 +811,52 @@ END $$;
 --
 -- `plan_limit_allowed_roles`: 0 filas para un plan = sin restricción de
 -- roles ('ALL' en TS), mismo criterio null-significa-sin-límite que los
--- números de arriba, aplicado a una lista en vez de a un escalar. No es
--- ambiguo con "plan mal configurado" porque plan_limits y sus 3 filas se
--- seedean siempre juntas acá abajo, nunca incrementalmente.
+-- números de arriba, aplicado a una lista en vez de a un escalar.
+--
+-- PLAN-LIMITS-SEED-REVERT-001 (11/09/2026, gate `architecture-governor`)
+-- rompió PARCIALMENTE el invariante que sostenía el párrafo de arriba.
+-- Hasta esa fecha, "`plan_limits` y sus 3 filas hijas se seedean siempre
+-- juntas acá abajo, nunca incrementalmente" garantizaba que 0 filas nunca
+-- significara "plan todavía sin configurar" por accidente. Desde que los
+-- 2 `INSERT` hijos (seed_keys `plan_limit_allowed_roles`/
+-- `plan_limit_allowed_permission_groups`) y el backfill de
+-- `max_custom_roles` (seed_key `plan_limits_max_custom_roles`) quedaron
+-- gateados por `platform_seed_markers` -- necesario para que una
+-- revocación del panel (`PUT /platform/plan-limits/:plan`) persista de
+-- verdad, en vez de revertirse sola en el próximo arranque -- mientras
+-- que el `INSERT INTO plan_limits` del PADRE (unas líneas más abajo)
+-- SIGUE corriendo SIN GATE en cada arranque (`ON CONFLICT (plan) DO
+-- NOTHING`): un plan NUEVO agregado a `BusinessPlan` en el futuro nace,
+-- en toda instalación que ya arrancó una vez con este bloque, CON fila en
+-- `plan_limits` pero SIN filas en las 2 tablas hijas -- 0 filas = 'ALL',
+-- techo de roles CUSTOM abierto en silencio, sin que nadie lo haya
+-- decidido. Mitigación: sembrar el plan nuevo por el panel en el MISMO
+-- cambio que lo agrega a `BusinessPlan`, no confiar en este seed para
+-- eso. Si algún día hace falta que el seed cubra un plan nuevo
+-- automáticamente, la seed_key tiene que llevar sufijo de versión
+-- (`.v2`) -- un `INSERT` nuevo bajo la MISMA seed_key no dispara, la
+-- marca ya existe.
+--
+-- Enforcement de estos límites es SOLO en la escritura (`roles.routes.ts`
+-- al crear un rol CUSTOM, `user-invitation.routes.ts` al invitar) --
+-- bajar un techo de plan (por el panel o por este seed) NO revoca
+-- retroactivamente roles CUSTOM ya creados que lo excedían. Preexistente
+-- a PLAN-LIMITS-SEED-REVERT-001, no una regresión de ese cambio.
+--
+-- PLAN-LIMITS-EMPTY-MEANS-ALL-001 (11/09/2026, gate `architecture-governor`,
+-- docs/pendientes-2026-09-10.md, requiere decisión del dueño, NO resuelto
+-- acá): "0 filas = 'ALL'" es fail-OPEN, al revés del criterio de
+-- `role_preset_permission_groups` (0 pares = ese preset no puede nada,
+-- fail-closed). `UpdatePlanLimitsSchema` no exige mínimo -- un
+-- superadmin puede destildar los 5 checkboxes de un plan en el panel
+-- (`appfrontend-main/.../planes/page.tsx`) creyendo que lo restringe y
+-- obtener el techo MÁXIMO abierto. Antes de este bloque, ese vacío se
+-- autorreparaba por accidente en el próximo reinicio (mismo bug que el
+-- resto de este archivo); desde este commit, con el seed gateado,
+-- persiste de verdad -- correcto para el caso frecuente (destildar UNO),
+-- pero saca la red que existía para el caso "los 5 a la vez". No se
+-- resuelve acá -- `.min(1)` en el schema sería incorrecto (PRO/ENTERPRISE
+-- tienen 0 filas legítimamente, significan 'ALL' a propósito).
 --
 -- No es MAESTRO/TRANSACCIÓN/DOCUMENTO (docs/criterios-datos.md Parte 1) —
 -- catálogo de plataforma sin business_id, mismo trato que `modules`.
@@ -860,16 +911,51 @@ ON CONFLICT (plan) DO NOTHING;
 -- max_custom_roles), el ON CONFLICT DO NOTHING de arriba no toca la fila
 -- existente. Backfill explícito para no dejar NULL (="sin límite") donde
 -- el default real es 0/2/10.
-UPDATE plan_limits SET max_custom_roles = 0  WHERE plan = 'FREE'    AND max_custom_roles IS NULL;
-UPDATE plan_limits SET max_custom_roles = 2  WHERE plan = 'STARTER' AND max_custom_roles IS NULL;
-UPDATE plan_limits SET max_custom_roles = 10 WHERE plan = 'PRO'     AND max_custom_roles IS NULL;
+--
+-- PLAN-LIMITS-SEED-REVERT-001 (11/09/2026, gate `architecture-governor`)
+-- -- hasta acá este backfill corría SIN CONDICIÓN en cada arranque: un
+-- superadmin que pusiera `max_custom_roles = NULL` por el panel (`PUT
+-- /platform/plan-limits/:plan`, `UpdatePlanLimitsSchema` lo acepta,
+-- significa "sin límite" a propósito) lo perdía solo en el próximo
+-- reinicio -- este backfill lo reponía a 0/2/10 sin que nadie lo hubiera
+-- decidido. Gateado por `platform_seed_markers` (seed_key
+-- `plan_limits_max_custom_roles`, misma técnica que
+-- `role_preset_permission_groups` de PRESET-REVOKE-001), no por si la
+-- columna sigue NULL: la MARCA decide si el backfill corre, no el valor.
+-- El primer arranque tras este deploy, si alguna instalación tenía un
+-- NULL puesto a propósito por el panel ANTES de este cambio, lo revierte
+-- UNA vez -- desde ahí, persiste (medir divergencia real en producción
+-- antes de deployar, ver docs/pendientes-2026-09-10.md).
+UPDATE plan_limits SET max_custom_roles = 0  WHERE plan = 'FREE'    AND max_custom_roles IS NULL
+  AND NOT EXISTS (SELECT 1 FROM platform_seed_markers WHERE seed_key = 'plan_limits_max_custom_roles');
+UPDATE plan_limits SET max_custom_roles = 2  WHERE plan = 'STARTER' AND max_custom_roles IS NULL
+  AND NOT EXISTS (SELECT 1 FROM platform_seed_markers WHERE seed_key = 'plan_limits_max_custom_roles');
+UPDATE plan_limits SET max_custom_roles = 10 WHERE plan = 'PRO'     AND max_custom_roles IS NULL
+  AND NOT EXISTS (SELECT 1 FROM platform_seed_markers WHERE seed_key = 'plan_limits_max_custom_roles');
 -- ENTERPRISE se queda NULL a propósito (sin límite) -- nada que backfillear.
 
-INSERT INTO plan_limit_allowed_roles (plan, role_name) VALUES
+INSERT INTO platform_seed_markers (seed_key) VALUES ('plan_limits_max_custom_roles')
+ON CONFLICT (seed_key) DO NOTHING;
+
+-- PLAN-LIMITS-SEED-REVERT-001 (11/09/2026, gate `architecture-governor`)
+-- -- gateado por platform_seed_markers (seed_key
+-- 'plan_limit_allowed_roles'), mismo mecanismo que
+-- role_preset_permission_groups (PRESET-REVOKE-001): sin esto, sacar un
+-- rol permitido por el panel (`PUT /platform/plan-limits/:plan`) se
+-- revertía solo en el próximo arranque.
+INSERT INTO plan_limit_allowed_roles (plan, role_name)
+SELECT * FROM (VALUES
   ('FREE',    'ADMIN'),
   ('STARTER', 'ADMIN'), ('STARTER', 'RECEPTIONIST'), ('STARTER', 'HOUSEKEEPING'), ('STARTER', 'WAITER')
   -- PRO y ENTERPRISE: sin filas a propósito -- 0 filas = sin restricción ('ALL').
+) AS seed(plan, role_name)
+WHERE NOT EXISTS (
+  SELECT 1 FROM platform_seed_markers WHERE seed_key = 'plan_limit_allowed_roles'
+)
 ON CONFLICT (plan, role_name) DO NOTHING;
+
+INSERT INTO platform_seed_markers (seed_key) VALUES ('plan_limit_allowed_roles')
+ON CONFLICT (seed_key) DO NOTHING;
 
 -- L (23/08/2026) -- techo de permisos para roles CUSTOM (no los de fábrica):
 -- FREE/STARTER no pueden incluir OWNER_ONLY/MANAGEMENT en un rol propio.
@@ -877,11 +963,31 @@ ON CONFLICT (plan, role_name) DO NOTHING;
 -- PRESET curado por la plataforma -- lo que se restringe acá es que el
 -- negocio arme un "gerente"/"dueño" a medida combinando grupos por su
 -- cuenta; ese nivel de armado libre queda reservado a PRO/ENTERPRISE.
-INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group) VALUES
+-- PLAN-LIMITS-SEED-REVERT-001 (11/09/2026, gate `architecture-governor`)
+-- -- gateado por platform_seed_markers (seed_key
+-- 'plan_limit_allowed_permission_groups'), mismo mecanismo que
+-- role_preset_permission_groups (PRESET-REVOKE-001) -- pero MÁS grave que
+-- ese caso: "0 filas" acá no significa "sin permisos" (fail-closed) sino
+-- "sin restricción" (`PlatformRepository.getPlanLimits()` -> 'ALL',
+-- fail-open). Con el seed incondicional, destildar UN grupo del panel y
+-- perderlo en el próximo reinicio terminaba, sin querer, en el techo
+-- MÁXIMO abierto -- eso ya no pasa solo. El caso simétrico (destildar los
+-- 5 a propósito y quedar deliberadamente en 'ALL', alcanzable por UI)
+-- queda intacto y ahora SÍ persiste -- ver PLAN-LIMITS-EMPTY-MEANS-ALL-001
+-- en el docblock de arriba del bloque, decisión del dueño, no resuelto acá.
+INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group)
+SELECT * FROM (VALUES
   ('FREE',    'STAFF'), ('FREE',    'FRONT_DESK'), ('FREE',    'HOUSEKEEPING_AND_MANAGEMENT'), ('FREE',    'ORDERS'), ('FREE',    'BOOKING'),
   ('STARTER', 'STAFF'), ('STARTER', 'FRONT_DESK'), ('STARTER', 'HOUSEKEEPING_AND_MANAGEMENT'), ('STARTER', 'ORDERS'), ('STARTER', 'BOOKING')
   -- PRO y ENTERPRISE: sin filas a propósito -- 0 filas = sin restricción ('ALL').
+) AS seed(plan, permission_group)
+WHERE NOT EXISTS (
+  SELECT 1 FROM platform_seed_markers WHERE seed_key = 'plan_limit_allowed_permission_groups'
+)
 ON CONFLICT (plan, permission_group) DO NOTHING;
+
+INSERT INTO platform_seed_markers (seed_key) VALUES ('plan_limit_allowed_permission_groups')
+ON CONFLICT (seed_key) DO NOTHING;
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'plan_limits_updated_at') THEN

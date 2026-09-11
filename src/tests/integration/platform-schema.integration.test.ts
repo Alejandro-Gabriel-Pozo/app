@@ -29,6 +29,7 @@ import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.j
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { PlatformAuditLogRepository } from '../../platform/platform-audit-log.repository.js';
 import { PlatformRepository } from '../../platform/platform.repository.js';
+import type { BusinessPlan } from '../../types/enums.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -481,6 +482,216 @@ describe.skipIf(skipIfNoDb)('PRESET-REVOKE-001 Parte 2 — propagación bidirecc
     expect(await systemRoleGroups(BIZ_A, 'RECEPTIONIST'), 'add-only: reaplicar el schema no repone una baja').not.toContain('BOOKING');
 
     await repo.updateRolePresetPermissionGroups('RECEPTIONIST', receptionist.permissionGroups, db4); // deshace
+  });
+});
+
+/**
+ * =========================================================================
+ * PLAN-LIMITS-SEED-REVERT-001 (11/09/2026, gate `architecture-governor`,
+ * ver docs/pendientes-2026-09-10.md) -- mismo defecto y mismo mecanismo
+ * que PRESET-REVOKE-001, aplicado a los 3 seeds incondicionales del
+ * bloque PLAN_LIMITS de `platform.schema.sql`: el backfill de
+ * `max_custom_roles` (seed_key `plan_limits_max_custom_roles`) y los
+ * `INSERT` de `plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`
+ * (seed_key = nombre de tabla).
+ *
+ * `describe` de PRIMER NIVEL, BD propia -- los tests de acá abajo mutan
+ * `plan_limits` y sus 2 tablas hijas a propósito (vía `updatePlanLimits()`
+ * real), mismo criterio que el describe de `PRESET-REVOKE-001`.
+ * =========================================================================
+ */
+describe.skipIf(skipIfNoDb)('PLAN-LIMITS-SEED-REVERT-001 — marca de seed de plan_limits/plan_limit_allowed_roles/plan_limit_allowed_permission_groups', () => {
+  let db5: SqlClient;
+  let dbName5: string;
+  let pool5: pg.Pool;
+  let repo5: PlatformRepository;
+
+  const SEED_KEYS = [
+    'plan_limits_max_custom_roles',
+    'plan_limit_allowed_roles',
+    'plan_limit_allowed_permission_groups',
+  ] as const;
+
+  async function markerExists(seedKey: string): Promise<boolean> {
+    const { rows } = await db5.query(
+      `SELECT 1 FROM platform_seed_markers WHERE seed_key = $1`,
+      [seedKey],
+    );
+    return rows.length > 0;
+  }
+
+  async function maxCustomRoles(plan: string): Promise<number | null> {
+    const { rows } = await db5.query<{ max_custom_roles: number | null }>(
+      `SELECT max_custom_roles FROM plan_limits WHERE plan = $1`,
+      [plan],
+    );
+    return rows[0]!.max_custom_roles;
+  }
+
+  async function allowedRoles(plan: string): Promise<string[]> {
+    const { rows } = await db5.query<{ role_name: string }>(
+      `SELECT role_name FROM plan_limit_allowed_roles WHERE plan = $1 ORDER BY role_name`,
+      [plan],
+    );
+    return rows.map((r) => r.role_name);
+  }
+
+  async function allowedPermissionGroups(plan: string): Promise<string[]> {
+    const { rows } = await db5.query<{ permission_group: string }>(
+      `SELECT permission_group FROM plan_limit_allowed_permission_groups WHERE plan = $1 ORDER BY permission_group`,
+      [plan],
+    );
+    return rows.map((r) => r.permission_group);
+  }
+
+  // Set completo hoy vigente en `updatePlanLimits()` real -- input de
+  // UpdatePlanLimitsInput, mismo contrato que UpdatePlanLimitsSchema.
+  function fullInput(plan: 'FREE' | 'STARTER', overrides: Partial<{
+    maxCustomRoles: number | null;
+    allowedRoleNames: string[];
+    allowedPermissionGroups: string[];
+  }> = {}): { maxCategories: number | null; maxResources: number | null; maxActiveMemberships: number | null; maxCustomRoles: number | null; allowedRoleNames: string[]; allowedPermissionGroups: string[] } {
+    const base = plan === 'FREE'
+      ? { maxCategories: 1, maxResources: 5, maxActiveMemberships: 1, maxCustomRoles: 0, allowedRoleNames: ['ADMIN'], allowedPermissionGroups: ['STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] }
+      : { maxCategories: 3, maxResources: 20, maxActiveMemberships: 5, maxCustomRoles: 2, allowedRoleNames: ['ADMIN', 'RECEPTIONIST', 'HOUSEKEEPING', 'WAITER'], allowedPermissionGroups: ['STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'BOOKING'] };
+    return { ...base, ...overrides };
+  }
+
+  beforeAll(async () => {
+    ({ db: db5, dbName: dbName5, pool: pool5 } = await createTestDatabase());
+    await db5.query(readPlatformSchema(), []);
+    repo5 = new PlatformRepository(db5);
+  }, 90_000);
+
+  afterAll(async () => {
+    if (dbName5) await dropTestDatabase(dbName5, pool5);
+  });
+
+  it('primer arranque histórico: las 3 marcas existen y los valores/filas seedeados son los esperados', async () => {
+    for (const key of SEED_KEYS) {
+      expect(await markerExists(key), `falta marca ${key}`).toBe(true);
+    }
+    expect(await maxCustomRoles('FREE')).toBe(0);
+    expect(await maxCustomRoles('STARTER')).toBe(2);
+    expect(await maxCustomRoles('PRO')).toBe(10);
+    expect(await maxCustomRoles('ENTERPRISE')).toBeNull(); // sin límite a propósito, nunca backfilleado
+
+    expect(await allowedRoles('FREE')).toEqual(['ADMIN']);
+    expect(await allowedRoles('STARTER')).toEqual(['ADMIN', 'HOUSEKEEPING', 'RECEPTIONIST', 'WAITER']);
+    expect(await allowedPermissionGroups('FREE')).toEqual(['BOOKING', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'STAFF']);
+    expect(await allowedPermissionGroups('STARTER')).toEqual(['BOOKING', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'STAFF']);
+  });
+
+  it('camino de upgrade real: borrar las 3 marcas y reaplicar no duplica nada y las vuelve a crear', async () => {
+    for (const key of SEED_KEYS) {
+      await db5.query(`DELETE FROM platform_seed_markers WHERE seed_key = $1`, [key]);
+      expect(await markerExists(key)).toBe(false);
+    }
+
+    await db5.query(readPlatformSchema(), []);
+
+    for (const key of SEED_KEYS) {
+      expect(await markerExists(key), `no se recreó ${key}`).toBe(true);
+    }
+    // ON CONFLICT real, no duplicó nada -- mismos valores que el primer arranque.
+    expect(await maxCustomRoles('FREE')).toBe(0);
+    expect(await allowedRoles('STARTER')).toEqual(['ADMIN', 'HOUSEKEEPING', 'RECEPTIONIST', 'WAITER']);
+    expect(await allowedPermissionGroups('STARTER')).toEqual(['BOOKING', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'STAFF']);
+  });
+
+  it('plan_limit_allowed_roles: primer arranque post-deploy revierte UNA vez una revocación pre-existente, después persiste', async () => {
+    // Simula una instalación que YA tenía el seed de FREE/ADMIN (deploy
+    // anterior a este bloque) donde un superadmin sacó ese único rol
+    // permitido de FREE -- sin marca, porque la marca todavía no existía.
+    await db5.query(`DELETE FROM platform_seed_markers WHERE seed_key = 'plan_limit_allowed_roles'`);
+    await db5.query(`DELETE FROM plan_limit_allowed_roles WHERE plan = 'FREE' AND role_name = 'ADMIN'`);
+    expect(await allowedRoles('FREE')).toEqual([]);
+
+    // El arranque QUE INSTALA la marca: todavía no existe en el momento en
+    // que el seed se evalúa, así que corre una última vez.
+    await db5.query(readPlatformSchema(), []);
+    expect(await allowedRoles('FREE'), 'el primer arranque post-deploy repone la revocación pre-existente -- esperado').toEqual(['ADMIN']);
+    expect(await markerExists('plan_limit_allowed_roles')).toBe(true);
+
+    // Desde ACÁ en adelante (marca ya instalada), sacar el rol por el
+    // repositorio real persiste de verdad -- CARACTERIZACIÓN (rojo sin el
+    // fix, verde con él).
+    await repo5.updatePlanLimits('FREE' as BusinessPlan, fullInput('FREE', { allowedRoleNames: [] }), db5);
+    expect(await allowedRoles('FREE')).toEqual([]);
+    await db5.query(readPlatformSchema(), []);
+    expect(await allowedRoles('FREE'), 'con la marca ya instalada, esta revocación SÍ persiste').toEqual([]);
+
+    // deshace para no ensuciar los tests siguientes
+    await repo5.updatePlanLimits('FREE' as BusinessPlan, fullInput('FREE'), db5);
+  });
+
+  it('plan_limit_allowed_permission_groups: sacar UN grupo por el repositorio real persiste tras reaplicar, con retención positiva del resto', async () => {
+    await repo5.updatePlanLimits(
+      'STARTER' as BusinessPlan,
+      fullInput('STARTER', { allowedPermissionGroups: ['STAFF', 'FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS'] }), // sin BOOKING
+      db5,
+    );
+    expect(await allowedPermissionGroups('STARTER')).not.toContain('BOOKING');
+
+    await db5.query(readPlatformSchema(), []);
+
+    // Retención positiva -- mata al mutante que invierte NOT EXISTS/EXISTS
+    // en la subconsulta (ese mutante borraría justo lo que coincide).
+    expect(await allowedPermissionGroups('STARTER')).toEqual(['FRONT_DESK', 'HOUSEKEEPING_AND_MANAGEMENT', 'ORDERS', 'STAFF']);
+    // Lo que importa: BOOKING sigue sin estar -- el seed YA NO lo repuso.
+    expect(await allowedPermissionGroups('STARTER')).not.toContain('BOOKING');
+
+    // deshace
+    await repo5.updatePlanLimits('STARTER' as BusinessPlan, fullInput('STARTER'), db5);
+  });
+
+  it('max_custom_roles: NULL puesto por el panel (antes de la marca) se revierte UNA vez, después persiste', async () => {
+    await db5.query(`DELETE FROM platform_seed_markers WHERE seed_key = 'plan_limits_max_custom_roles'`);
+    await db5.query(`UPDATE plan_limits SET max_custom_roles = NULL WHERE plan = 'STARTER'`);
+    expect(await maxCustomRoles('STARTER')).toBeNull();
+
+    await db5.query(readPlatformSchema(), []);
+    expect(await maxCustomRoles('STARTER'), 'el primer arranque post-deploy repone el default -- esperado').toBe(2);
+    expect(await markerExists('plan_limits_max_custom_roles')).toBe(true);
+
+    // Desde acá, poner NULL por el repositorio real (panel: "sin límite")
+    // persiste de verdad -- CARACTERIZACIÓN (rojo sin el fix, verde con él).
+    await repo5.updatePlanLimits('STARTER' as BusinessPlan, fullInput('STARTER', { maxCustomRoles: null }), db5);
+    expect(await maxCustomRoles('STARTER')).toBeNull();
+    await db5.query(readPlatformSchema(), []);
+    expect(await maxCustomRoles('STARTER'), 'con la marca ya instalada, este NULL SÍ persiste').toBeNull();
+
+    // deshace
+    await repo5.updatePlanLimits('STARTER' as BusinessPlan, fullInput('STARTER'), db5);
+  });
+
+  it('PLAN-LIMITS-EMPTY-MEANS-ALL-001 -- vaciar TODOS los grupos permitidos de un plan persiste como \'ALL\' (fail-open deliberado, no resuelto en este bloque)', async () => {
+    await repo5.updatePlanLimits('STARTER' as BusinessPlan, fullInput('STARTER', { allowedPermissionGroups: [] }), db5);
+    expect(await allowedPermissionGroups('STARTER')).toEqual([]);
+
+    await db5.query(readPlatformSchema(), []);
+
+    // El seed gateado no repone el set -- correcto, es lo que este bloque
+    // arregla. Pero la consecuencia hacia el resto del sistema es
+    // fail-open: 0 filas se lee como 'ALL', no como "sin permisos".
+    expect(await allowedPermissionGroups('STARTER'), 'el vacío deliberado persiste -- ya no se autorrepara solo').toEqual([]);
+    const resolved = await repo5.getPlanLimits('STARTER' as BusinessPlan);
+    expect(resolved?.allowedPermissionGroups, 'PLAN-LIMITS-EMPTY-MEANS-ALL-001: 0 filas = sin restricción, no sin permisos').toBe('ALL');
+
+    // deshace
+    await repo5.updatePlanLimits('STARTER' as BusinessPlan, fullInput('STARTER'), db5);
+  });
+
+  it('idempotencia: una reaplicación más no cambia nada', async () => {
+    const before = {
+      free: await maxCustomRoles('FREE'),
+      starterRoles: await allowedRoles('STARTER'),
+      starterGroups: await allowedPermissionGroups('STARTER'),
+    };
+    await db5.query(readPlatformSchema(), []);
+    expect(await maxCustomRoles('FREE')).toBe(before.free);
+    expect(await allowedRoles('STARTER')).toEqual(before.starterRoles);
+    expect(await allowedPermissionGroups('STARTER')).toEqual(before.starterGroups);
   });
 });
 
