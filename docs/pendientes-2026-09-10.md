@@ -1082,6 +1082,25 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `onDeadLetter()` en el futuro tiene que saber que un olvido de nombre
   ahora es visible también desde el portal, no solo desde el panel de
   staff.
+  **PUSHEADO Y DEPLOYADO en producción, verificado** (junto con
+  `CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001`): 8 commits
+  (`2d811d6`..`d495b9f`) pusheados 11/09/2026 con autorización explícita
+  del dueño; deploy `dep-daht2c1srm7s73d8l8t0` = `live` (finished
+  10:01:56Z), instancia nueva `srv-d8tdt41kh4rs73buo5ng-h8k78`; log de
+  build confirma `migrate:tenants` -- `2 negocio(s) con BD asignada.
+  Versión objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: ninguno de
+  los 8 commits cambia schema); `GET /health/db` = 200 post-deploy.
+  **Sin verificar, declarado**: el arranque real de `OutboxWorker` vía
+  el nuevo call site del portal (`ensureTenantWorker` desde
+  `customer.routes.ts`) es por-tenant y bajo demanda -- solo corre
+  cuando llega una request real de ese tenant, no en el boot del
+  proceso, así que no aparece en los logs de arranque. Confirmarlo
+  requeriría tráfico orgánico real de portal para un tenant, o generar
+  una request sintética contra producción -- ninguna de las dos se hizo
+  en esta sesión. El deploy en sí está confirmado con evidencia real
+  (build, migrate:tenants, health, identidad de instancia); el
+  comportamiento del nuevo call site en tráfico real queda para la
+  próxima vez que alguien lo audite con datos de producción.
 - **Deuda de comentario en `outbox.handlers.ts`** — el docblock de
   `registrarDesenlace()` sigue diciendo que solo `handleOrderCancelled`
   pasa `opts`; desde `6d55876` también `handleReservationCancelled` lo
