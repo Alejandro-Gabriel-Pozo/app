@@ -166,22 +166,34 @@ futuros, cada uno con su propio alcance.
   `platform.schema.sql` cambia de tamaño sin que se toquen sus citas en
   `docs/`? (probablemente no — el ruido sería alto) ¿o alcanza con
   dejarlo como disciplina de revisión manual al tocar ese archivo?
-- **`CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001` (10/09/2026, gate
-  `architecture-governor`, ronda 2 del diseño de polling adaptativo).**
-  `customer.routes.ts` (portal de clientes) se monta en `app.ts:275`,
-  **antes** del gate `tenantMiddleware` de `app.ts:345` — resuelve su
-  pool directo y nunca llama `ensureTenantWorker`. Ese router SÍ inserta
-  eventos de dominio (`SqlDomainEventRepository` en
-  `customer.routes.ts:232`, inyectado en `ReservationService`). Si un
-  tenant recibe solo tráfico de portal desde que arrancó el proceso, **no
-  existe `OutboxWorker` para ese `businessId` en absoluto** — sus eventos
-  quedan sin despachar hasta que alguna request de staff autenticada cree
-  el worker. Hoy queda enmascarado (el staff siempre genera tráfico
-  autenticado a diario); se vuelve más visible con cualquier mecanismo de
-  wake del bloque de polling adaptativo (`docs/diseno-polling-adaptativo-neon-2026-09-10.md`
-  §3.3). Decisión de producto pendiente, no técnica: ¿el portal también
-  arranca su propio worker? ¿hay un worker de respaldo activo conocido
-  por tenant? No se arregla en el bloque de polling — es su propio ítem.
+- **`CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001`** — ✅ **RESUELTO (11/09/2026,
+  gate `architecture-governor`, decisión del dueño).** `customer.routes.ts`
+  (portal de clientes) se monta en `app.ts:275`, **antes** del gate
+  `tenantMiddleware` de `app.ts:345` — resolvía su pool directo y nunca
+  llamaba `ensureTenantWorker`. Ese router SÍ inserta eventos de dominio
+  (`SqlDomainEventRepository`, inyectado en `ReservationService`). Un
+  tenant con tráfico ÚNICAMENTE de portal nunca despachaba sus eventos.
+  Cierre: `customer.routes.ts` llama `ensureTenantWorker()` desde el mismo
+  `router.use(...)` que ya resuelve `req.db` -- mecanismo simple elegido
+  por el dueño entre 3 opciones presentadas (simple / barrido periódico de
+  respaldo / solo en endpoints que escriben evento).
+  **Costo real, corregido por el gate antes de la decisión final** (mi
+  primera pregunta al dueño lo entendía mal -- decía "1 timer"): 
+  `ensureTenantWorker()` arranca DOS timers por tenant, no uno --
+  `OutboxWorker` 5s Y `ReservationHoldExpiryWorker` 60s
+  (`outbox.registry.ts:134-143`) -- y la primera corrida del segundo en un
+  tenant portal-only barre TODAS las holds vencidas acumuladas de una vez,
+  anulando las transacciones financieras asociadas. Impacto medido hoy: 0
+  (las 2 tenants reales ya tienen tráfico de staff a diario). El dueño
+  confirmó la opción simple igual, con el costo corregido sobre la mesa.
+  Idempotente por diseño (`workers.has(businessId)`) -- el segundo caller
+  (portal o staff, el que llegue después) es un no-op. Tests: 2 nuevos en
+  `customer.routes.test.ts` (el middleware `router.use` no lo camina el
+  helper `runRoute` existente -- hay que ubicarlo por contenido de
+  `.handle.toString()`, no por posición) + evidencia de mutación (sacar la
+  línea nueva pone en rojo exactamente esos 2 tests, aplicada y revertida
+  sin commitear). Comentarios stale corregidos en `outbox.registry.ts`
+  (4 lugares que asumían `tenantMiddleware` como único caller).
 - **`PRESET-GROUP-VALIDATION-001`** — ✅ **RESUELTO en código, LOCAL/sin
   pushear ni deployar** (`app-main` `dc81a39`, gate `architecture-governor`
   09-10/09/2026, diseño + implementación + sign-off, los 3 con revisión

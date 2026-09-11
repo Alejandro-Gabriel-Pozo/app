@@ -3,10 +3,14 @@
  * @description Registro de workers de outbox por tenant.
  *
  * Instancia un OutboxWorker por tenant activo, arrancado bajo demanda
- * desde tenantMiddleware (fix C4). Esto garantiza que cada worker lea
- * de la base de datos correcta para cada tenant.
+ * desde tenantMiddleware (fix C4) y, desde CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001
+ * (11/09/2026), también desde el middleware de `customer.routes.ts` -- dos
+ * callers, mismo primitivo idempotente (`ensureTenantWorker`). Esto garantiza
+ * que cada worker lea de la base de datos correcta para cada tenant.
  *
- * Trade-off: con N tenants activos hay N timers de 5 s.
+ * Trade-off: `ensureTenantWorker` arranca DOS timers por tenant activo, no
+ * uno -- `OutboxWorker` a 5 s (abajo) y `ReservationHoldExpiryWorker` a 60 s
+ * (`:134-143`). Con N tenants activos son 2N timers.
  * Aceptable hasta ~200 tenants (mismo techo que MAX_TENANT_POOLS).
  * Más allá, considerar un único worker que itere sobre tenants activos
  * o migrar el outbox a LISTEN/NOTIFY.
@@ -46,8 +50,13 @@ const holdExpiryWorkers = new Map<string, ReservationHoldExpiryWorker>();
 const emailSender = createEmailSender();
 
 /**
- * Arranca un worker de outbox para el tenant dado si aún no existe.
- * Llamar desde tenantMiddleware después de resolver req.db.
+ * Arranca un worker de outbox (y su `ReservationHoldExpiryWorker` hermano,
+ * `:134-143`) para el tenant dado si aún no existe. Llamar después de
+ * resolver `req.db` -- hoy dos callers: `tenantMiddleware` (staff) y el
+ * middleware de `customer.routes.ts` (portal de clientes,
+ * CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001, 11/09/2026) -- cualquiera de los
+ * dos que llegue primero para un `businessId` gana, el segundo es un no-op
+ * por el guard de `workers.has(businessId)` de abajo.
  *
  * `rawPool` (además de `db`, el SqlClient) es necesario para el handler de
  * inventario: necesita un TransactionManager real (BEGIN/COMMIT/ROLLBACK
@@ -55,8 +64,8 @@ const emailSender = createEmailSender();
  * PgTransactionManager exige el pool crudo, no el wrapper SqlClient. No se
  * importa getTenantRawPool() de tenant.middleware.ts acá a propósito —
  * ese archivo ya importa este (ensureTenantWorker/stopTenantWorker) y
- * cerraría un ciclo de imports (dependency-cruiser no-circular). El
- * caller (tenant.middleware.ts) ya tiene el pool, se lo pasa directo.
+ * cerraría un ciclo de imports (dependency-cruiser no-circular). Cada
+ * caller ya tiene su propio pool resuelto, se lo pasa directo.
  */
 export function ensureTenantWorker(
   businessId: string,
@@ -88,9 +97,10 @@ export function ensureTenantWorker(
   const productService           = new ProductService(productRepo, productVariantRepo, auditLogRepo, inventoryLevelRepo, transactionManager);
   const businessProfileRepo      = new SqlBusinessProfileRepository(db);
 
-  // `db` es el SqlClient DEL TENANT (lo pasa tenant.middleware.ts), igual que
-  // el resto de los repos de arriba — processed_events vive en la tenant DB,
-  // no en la de plataforma (docs/DEFENSIVE_DEVELOPING.md §3).
+  // `db` es el SqlClient DEL TENANT (lo pasa el caller -- tenantMiddleware o
+  // el middleware de customer.routes.ts), igual que el resto de los repos de
+  // arriba — processed_events vive en la tenant DB, no en la de plataforma
+  // (docs/DEFENSIVE_DEVELOPING.md §3).
   const processedEventRepo = new SqlProcessedEventRepository(db);
 
   // O5 / D2-C: aviso por email a los MANAGEMENT del tenant cuando un evento

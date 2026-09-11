@@ -98,6 +98,7 @@ import {
   TenantInactiveError,
   TenantNotReadyError,
 } from '../../platform/tenant.middleware.js';
+import { ensureTenantWorker } from '../../workers/outbox.registry.js';
 import { buildTransactionManagerFromPool } from '../../db/tenant-context.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { SqlResourceRepository }     from '../../reservas/sql.resource.repository.js';
@@ -542,6 +543,23 @@ export function createCustomerRouter(
   // Resuelve req.db para el negocio del cliente autenticado — mismo campo
   // que usa tenantMiddleware, aunque ese middleware nunca llega a correr
   // sobre este router (se monta antes, y además ignora role=CUSTOMER).
+  //
+  // CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001 (11/09/2026, gate
+  // `architecture-governor`, decisión del dueño): sin este `ensureTenantWorker`,
+  // un negocio con tráfico ÚNICAMENTE de portal nunca arrancaba
+  // `OutboxWorker`/`ReservationHoldExpiryWorker` -- este router sí escribe a
+  // `domain_events` (`buildService()` construye `ReservationService` con
+  // `SqlDomainEventRepository`), y esos eventos quedaban insertados sin
+  // despachar nunca. Costo aceptado, no un efecto colateral escondido:
+  // `ensureTenantWorker` arranca DOS timers por tenant, no uno
+  // (`outbox.registry.ts` -- `OutboxWorker` 5s + `ReservationHoldExpiryWorker`
+  // 60s), y si el negocio nunca había tenido tráfico de staff, el primer
+  // arranque de `ReservationHoldExpiryWorker` barre de una sola vez todas las
+  // holds vencidas acumuladas, con efecto financiero real (anula las
+  // transacciones asociadas). Idempotente por diseño
+  // (`workers.has(businessId)` en `ensureTenantWorker`) -- llamarlo en cada
+  // request del portal después de la primera vez es un lookup de `Map`, sin
+  // costo real.
   router.use(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const businessId = req.user?.businessId;
@@ -550,6 +568,7 @@ export function createCustomerRouter(
         return;
       }
       req.db = await getTenantClient(businessId, platformRepo);
+      ensureTenantWorker(businessId, req.db, getTenantRawPool(businessId), platformRepo);
       next();
     } catch (err) {
       if (isTenantError(err)) { respondTenantError(err, res); return; }

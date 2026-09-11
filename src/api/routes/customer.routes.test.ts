@@ -12,16 +12,36 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { createCustomerRouter } from './customer.routes.js';
 import type { AppContainer } from '../../container.js';
 import type { PlatformRepository, Business } from '../../platform/platform.repository.js';
 import { UserRole } from '../../types/enums.js';
 import type * as TenantMiddleware from '../../platform/tenant.middleware.js';
+import { ensureTenantWorker } from '../../workers/outbox.registry.js';
+
+/** Identificable por referencia -- así un test puede confirmar que ES este objeto el que llegó a ensureTenantWorker(), no cualquier objeto con la misma forma. */
+const FAKE_TENANT_CLIENT = { __fake: 'tenant-client' } as never;
+const FAKE_TENANT_RAW_POOL = { __fake: 'tenant-raw-pool' } as never;
+
+// CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001 (11/09/2026) -- tenant.middleware.ts
+// hace `import { ensureTenantWorker, stopTenantWorker } from
+// '../workers/outbox.registry.js'` por NOMBRE; el mock de tenant.middleware.js
+// de abajo carga el módulo REAL vía importOriginal, así que este factory
+// tiene que exportar los dos nombres o el linking de ESM rompe para todo el
+// archivo de test, no solo para los tests nuevos.
+vi.mock('../../workers/outbox.registry.js', () => ({
+  ensureTenantWorker: vi.fn(),
+  stopTenantWorker: vi.fn(),
+}));
 
 vi.mock('../../platform/tenant.middleware.js', async (importOriginal) => {
   const actual = await importOriginal<typeof TenantMiddleware>();
-  return { ...actual, getTenantRawPool: vi.fn(() => ({}) as never) };
+  return {
+    ...actual,
+    getTenantRawPool: vi.fn(() => FAKE_TENANT_RAW_POOL),
+    getTenantClient: vi.fn(async () => FAKE_TENANT_CLIENT),
+  };
 });
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
@@ -149,5 +169,60 @@ describe('GET /api/customer/me — chequeo de businessSlug (19/08/2026)', () => 
     const res = await runRoute(router, 'get', '/me', req);
 
     expect(res.status).toHaveBeenCalledWith(401);
+  });
+});
+
+describe('customer.routes -- resolución de req.db (CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001, 11/09/2026)', () => {
+  // `runRoute` (arriba) solo camina `layer.route.stack` -- los middlewares
+  // montados con `router.use(...)` (sin `.route`) nunca se ejecutan con ese
+  // helper. El middleware que resuelve `req.db` y arranca el worker del
+  // tenant es exactamente uno de esos -- hace falta encontrarlo por
+  // contenido (su `.handle.toString()` incluye el nombre de la función que
+  // llama), no por posición, para no depender de cuántos `.use()` haya antes.
+  function findTenantDbMiddleware(
+    router: ReturnType<typeof createCustomerRouter>,
+  ): (req: Request, res: Response, next: NextFunction) => unknown {
+    const stack = (router as unknown as {
+      stack: Array<{ route?: unknown; handle: (req: Request, res: Response, next: NextFunction) => unknown }>;
+    }).stack;
+    const layer = stack.find((l) => !l.route && l.handle.toString().includes('ensureTenantWorker'));
+    if (!layer) throw new Error('No se encontró el middleware que resuelve req.db y arranca el worker del tenant');
+    return layer.handle;
+  }
+
+  it('arranca el worker del tenant con el mismo db/rawPool/platformRepo que usa para resolver req.db', async () => {
+    const platformRepo = { getManagementEmails: vi.fn() } as unknown as PlatformRepository;
+    const router = createCustomerRouter(fakeContainer(), platformRepo);
+    const middleware = findTenantDbMiddleware(router);
+
+    const req = { user: { businessId: 'biz-portal-1' } } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(req.db).toBe(FAKE_TENANT_CLIENT);
+    expect(vi.mocked(ensureTenantWorker)).toHaveBeenCalledWith(
+      'biz-portal-1',
+      FAKE_TENANT_CLIENT,
+      FAKE_TENANT_RAW_POOL,
+      platformRepo,
+    );
+    expect(next).toHaveBeenCalledWith(); // sin error -- sigue la cadena
+  });
+
+  it('NO arranca ningún worker si no hay businessId en el token (401 antes de resolver req.db)', async () => {
+    const platformRepo = {} as unknown as PlatformRepository;
+    const router = createCustomerRouter(fakeContainer(), platformRepo);
+    const middleware = findTenantDbMiddleware(router);
+
+    const req = { user: {} } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(vi.mocked(ensureTenantWorker)).not.toHaveBeenCalled();
   });
 });
