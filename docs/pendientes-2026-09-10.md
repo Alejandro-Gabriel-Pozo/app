@@ -441,17 +441,30 @@ futuros, cada uno con su propio alcance.
   post-deploy la revierte una vez y hay que decirle al dueño qué fila se
   va a pisar ANTES de deployar. No medido en esta sesión -- local, sin
   push, sin deploy.
-  **Runbook reconciliado** (`c128cc2` + un commit doc-only posterior, gate
-  `architecture-governor`, hallazgo del cierre "GROUP VERIFIED"):
-  `docs/conocimiento/runbook-deploy-render.md` describía
+  **Runbook reconciliado, en 2 pasadas** (`fe60917` + este commit, gate
+  `architecture-governor`, hallazgo del cierre "GROUP VERIFIED" --
+  encontrado dos veces, la segunda DENTRO de la corrección de la
+  primera): `docs/conocimiento/runbook-deploy-render.md` describía
   `platform_seed_markers` como si gatéara una sola seed_key
   (`role_preset_permission_groups`) y decía "borrar la marca no ayuda,
   pero tampoco hace daño" -- desactualizado desde `0a72f0f`, que sumó 3
-  seed_keys más. Corregido: enumera las 4, y para las 3 nuevas aclara que
+  seed_keys más. `fe60917` enumeró las 4 y agregó, para las 3 nuevas, que
   borrar la marca NO es solo inútil sino PELIGROSO (re-ensancha un techo
   de autorización revocado, fail-open) -- a diferencia de
   `role_preset_permission_groups`, que sí tiene su break-glass reescrito
-  más arriba en el mismo runbook.
+  más arriba en el mismo runbook. El gate encontró DOS defectos en
+  `fe60917` mismo: (a) afirmaba "desde el 11/09/2026 gatea CUATRO" como
+  hecho de producción cuando `0a72f0f` (las 3 seed_keys nuevas) no está
+  pusheado -- solo `cd4dff6` (la primera) está en `origin/main` -- mismo
+  patrón de "estado de push como hecho fijo del texto" que este mismo
+  archivo prohíbe más arriba; (b) el "ver más abajo" que citaba no
+  resolvía a nada (nada de seeds bajo esa línea en las 600 del archivo).
+  Este commit corrige los dos: el runbook ahora describe lo que el código
+  DEFINE (por nombre, no por fecha ni línea) y remite a `SELECT seed_key
+  FROM platform_seed_markers ORDER BY seed_key` como la única fuente
+  autoritativa del estado real de una instalación puntual -- verdadero
+  antes y después de cualquier deploy futuro, sin necesidad de reescribir
+  esta nota de nuevo.
 - **`PLAN-LIMITS-EMPTY-MEANS-ALL-001`** (11/09/2026, gate
   `architecture-governor`, condición C5 de `PLAN-LIMITS-SEED-REVERT-001`
   de arriba, `requiere decisión del dueño`, NO implementado). Consecuencia,

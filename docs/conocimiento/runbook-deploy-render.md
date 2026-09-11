@@ -233,28 +233,39 @@ categoría de problema ya no existe: cualquier estado de
 igual al catálogo -- no hay una segunda fuente de verdad que pisar por
 error.
 
-**`platform_seed_markers` sigue existiendo** y, desde el 11/09/2026
-(`PLAN-LIMITS-SEED-REVERT-001`), gatea CUATRO seed_keys, no una sola --
-`role_preset_permission_groups` (el seed histórico de los 23 pares
-originales, el que motivó esta sección), `plan_limits_max_custom_roles`,
-`plan_limit_allowed_roles` y `plan_limit_allowed_permission_groups`
-(`src/db/platform.schema.sql`, bloque PLAN_LIMITS). Verificado contra el
-código real -- `grep seed_key src/db/platform.schema.sql`, exactamente
-estas 4, ninguna quinta.
+**`platform_seed_markers` sigue existiendo.** El CÓDIGO actual
+(`src/db/platform.schema.sql`, bloques `platform_seed_markers` y
+PLAN_LIMITS -- cita por nombre, no por línea, desde
+`SCHEMA-ANCHOR-DRIFT-001`) define 4 seed_keys que esta tabla puede
+gatear: `role_preset_permission_groups` (el seed histórico de los 23
+pares originales, el que motivó esta sección), `plan_limits_max_custom_roles`,
+`plan_limit_allowed_roles` y `plan_limit_allowed_permission_groups`.
+Eso es lo que el código DEFINE, no necesariamente lo que ya corrió en
+una instalación puntual -- **la respuesta autoritativa para la instalación
+que tengas delante es siempre**
+```sql
+SELECT seed_key FROM platform_seed_markers ORDER BY seed_key;
+```
+corrida contra esa base, no esta lista ni la fecha de ningún commit. Si
+esa instalación no llegó todavía al deploy que agrega las 3 últimas
+seed_keys, la consulta devuelve solo la primera fila -- eso no es un
+error, es la BD reflejando el código que corrió hasta ese momento ahí.
 
-**Ninguna de las 4 es parte del camino de recuperación** -- borrar
-CUALQUIERA de las 4 marcas NO ayuda con un preset o un límite de plan
-vaciado hoy, porque el seed que cada una gatea nunca vuelve a correr
-después del primer arranque post-deploy (ver más abajo, sigue igual para
-`role_preset_permission_groups`).
+**Ninguna de las 4, esté o no presente en una instalación dada, es parte
+del camino de recuperación** -- borrar CUALQUIERA de las marcas que
+existan no ayuda con un preset o un límite de plan vaciado hoy: el seed
+que cada una gatea nunca vuelve a correr después del primer arranque en
+el que esa marca se creó.
 
-**Para las 3 marcas de `PLAN-LIMITS-SEED-REVERT-001`, borrar la marca es
-directamente PELIGROSO, no solo inútil** -- a diferencia de
-`role_preset_permission_groups` (donde el break-glass de arriba ya
-reemplazó el "borrar la marca" por el INSERT dirigido, así que el riesgo
-quedó neutralizado por el procedimiento nuevo), estas 3 no tienen
-procedimiento de recuperación reescrito todavía: borrar
-`plan_limit_allowed_roles` o `plan_limit_allowed_permission_groups` hace
+**Para `plan_limits_max_custom_roles`/`plan_limit_allowed_roles`/
+`plan_limit_allowed_permission_groups`, borrar la marca (si está
+presente) es directamente PELIGROSO, no solo inútil** -- a diferencia de
+`role_preset_permission_groups` (donde el break-glass de esta misma
+sección, arriba, ya reemplazó el "borrar la marca" por el INSERT
+dirigido, así que el riesgo quedó neutralizado por el procedimiento
+reescrito), estas 3 no tienen procedimiento de recuperación reescrito
+todavía: borrar `plan_limit_allowed_roles` o
+`plan_limit_allowed_permission_groups` hace
 correr de nuevo el `INSERT` de defaults -- si un superadmin había
 REVOCADO un rol o un grupo de permisos de FREE/STARTER por el panel
 (`PUT /platform/plan-limits/:plan`), esa revocación se pierde y el techo
