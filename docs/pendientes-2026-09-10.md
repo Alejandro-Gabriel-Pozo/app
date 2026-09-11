@@ -1097,27 +1097,54 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   2097/2097 -- este bloque no agrega tests unitarios a propósito, la
   cobertura real vive en integración.
 
-- **`INVOICE-CHARGES-GUARD-FRONTEND-02` (Bloque 2)** -- frontend, NO
-  resuelto. `FacturarButton.tsx` sigue ofreciendo "Facturar" sobre un
-  cargo ya facturado por el otro camino -- su propio docblock (`:11-16`)
-  afirma una idempotencia que no aplica al camino consolidado (hallazgo
-  ya registrado arriba). Censo completado (11/09/2026, gate
-  `architecture-governor`): los 2 montajes
-  (`appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:304-306`
-  y `reservas/[id]/page.tsx:112-123`) comparten la MISMA fuente --
-  `reservas/[id]` llama `customerAccountApi.getStatement()` igual que
-  cuentas-corrientes, sin endpoint propio. Un solo punto de fix:
-  extender `CustomerAccountService.getStatement()`
-  (`app-main/src/clientes-finanzas/customer-account.service.ts:74-84`)
-  con linkage por transacción. **Pregunta abierta, sin decidir**: ese
-  endpoint (`GET /customers/:id/account`) está gateado por
-  `requireModule(ModuleKey.CUENTAS_CORRIENTES)`
-  (`customers.routes.ts:813-815`), mientras que la emisión real es
-  `requireModule(ModuleKey.FACTURACION)` (`invoices.routes.ts:90`) --
-  ¿es aceptable que la respuesta de un módulo lleve datos de linkage de
-  facturación? (el rol SÍ alcanza en las dos puntas, `FRONT_DESK`; es
-  cruce de MÓDULO, no de rol). Bloque propio, gate propio, después del
-  1-bis.
+- **`INVOICE-CHARGES-GUARD-FRONTEND-02` (Bloque 2)** -- ✅ **RESUELTO EN
+  CÓDIGO, Commit 1 (backend) + Commit 2 (frontend)** (11/09/2026, gate
+  `architecture-governor`, varias rondas). Cruce de módulo (pregunta que
+  quedaba abierta) resuelto por el dueño: el linkage SOLO se calcula/expone
+  si el negocio tiene `FACTURACION` habilitado -- `GET /customers/:id/account`
+  (`customers.routes.ts`) chequea el gate a nivel de route, sin tocar
+  `CustomerAccountService` (se mantiene tenant-puro). Backend:
+  `InvoiceRepository.getFinancialTransactionIdsCoveredByConsolidated()`
+  (método NUEVO, deliberadamente separado de
+  `getInvoicedFinancialTransactionIds()` -- reusar ese hubiera ocultado el
+  botón también sobre una factura individual propia, regresión real
+  encontrada por el gate en la primera ronda de diseño). Frontend:
+  `FacturarButton` oculta el botón SOLO cuando el cargo está cubierto por
+  una consolidada viva (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN`, no
+  `REJECTED`) -- los otros 3 estados (CAE+PDF, "Reintentar factura",
+  "Facturación no habilitada") sin cambios, grounding ERP confirmó que ya
+  eran correctos. **Estado**: `app-main` `086b827` pusheado y deployado,
+  verificado (`live`, `migrate:tenants` 2/2 OK, `/health/db` 200).
+  `appfrontend-main` `dde7837` LOCAL, sin pushear -- Vercel también es
+  push=deploy (confirmado por el dueño), pendiente de autorización.
+  **Verificación visual en vivo del estado nuevo, NO hecha** -- 0 casos
+  reales hoy en ninguna tenant para dispararlo, y escribir datos de prueba
+  en una tenant compartida fue explícitamente rechazado por el gate
+  (`irreversible-action-gate`). El `<span>` nuevo reusa byte-a-byte el
+  mismo patrón de estilo que el estado "Facturación no habilitada" del
+  mismo componente (ya probado en producción) -- declarado como
+  verificación de bajo costo, no como sustituto de haberlo visto en pantalla.
+
+- **`INVOICE-CHARGES-BUTTON-DEADEND-01`** (11/09/2026, hallazgo del gate
+  al cerrar el Commit 2 -- consecuencia, no mecanismo). Un cargo cubierto
+  por una factura consolidada muestra "Facturado (consolidado)" y el
+  usuario **no tiene ningún camino a ese comprobante** -- ni número, ni
+  CAE, ni PDF -- desde ninguna pantalla. Antes de este bloque, al menos el
+  click fallido nombraba el comprobante (`"El cargo X ya está vinculado
+  al comprobante Y"`); ahora no hay ningún camino, ni siquiera torpe. El
+  patrón ERP completo (Odoo/ERPNext, grounding ya verificado) es "ocultar
+  la acción de crear" + "un widget separado y persistente para ver
+  documentos ya vinculados" (`Connections` en ERPNext) -- este bloque
+  implementó solo la primera mitad. El backend YA expone lo necesario
+  (`GET /api/invoices?customerId=`, `InvoiceRepository.getByCustomerId()`,
+  agregado en O2-F2 explícitamente "para facturas consolidadas, que no
+  había forma de listar por cliente en absoluto") -- falta el consumidor
+  en el frontend. Anclas:
+  `appfrontend-main/src/lib/facturacion/api.ts:19-38` (`invoicesApi` no
+  tiene `listByCustomer`, solo `get`/`listByFinancialTransaction`/
+  `downloadPdf`), `appfrontend-main/src/components/FacturarButton.tsx`
+  (el estado nuevo, sin salida). **No bloqueante hoy** (0 casos reales) --
+  bloque propio, gate propio.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
