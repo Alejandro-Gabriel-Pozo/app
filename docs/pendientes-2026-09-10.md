@@ -1086,22 +1086,47 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
     a mano (mismo criterio que `consolidated-invoice-toctou.integration.test.ts`
     ya usa para reservas) para probar que el código responde bien SI
     ese estado llegara a existir.
-  - **`STAY-ADJUSTMENT-PRICE-001` -- hallazgo nuevo del gate de 1c-0,
-    NO corregido, bloque propio pendiente.**
-    `src/workers/outbox.handlers.ts:299-310`
-    (`handleReservationPriceAdjusted`) crea el ADJUSTMENT de un ajuste
-    de precio de reserva SIN campo `stayId` -- queda NULL siempre (a
-    diferencia del ADJUSTMENT del escape de órdenes, que 1c-0 ya
-    corrigió). `linkStayToReservationCharges` solo rescata filas creadas
-    ANTES del check-in (`UPDATE ... WHERE stay_id IS NULL`, sin filtrar
-    por `type`) -- un ajuste confirmado con el huésped YA adentro nunca
-    llega al folio. El signo importa en las dos direcciones: ajuste
-    NEGATIVO sobre-declara el folio (traba check-out, infla una
-    transferencia a cuenta corriente); ajuste POSITIVO SUB-declara el
-    folio -- `checkOut()` deja salir al huésped con deuda real, más
-    grave que el bug que 1c-0 cerró. Requiere su propio gate + su
-    propia query de producción (no la misma de 1c-0: esta es sobre
-    ajustes de precio, no sobre el escape de NC).
+  **`STAY-ADJUSTMENT-PRICE-001` -- ✅ RESUELTO (11/09/2026, gate
+  `architecture-governor`, `e57138d`).** `handleReservationPriceAdjusted()`
+  (`src/workers/outbox.handlers.ts`) creaba el ADJUSTMENT de un ajuste de
+  precio de reserva SIN campo `stayId` -- quedaba NULL siempre (a
+  diferencia del ADJUSTMENT del escape de órdenes, que 1c-0 ya corrigió).
+  `linkStayToReservationCharges()` corre UNA sola vez, al hacer check-in,
+  y solo rescata filas que en ESE momento tengan `stay_id` NULL -- un
+  ajuste confirmado con el huésped YA adentro nunca lo adopta nadie
+  después. **Corrección a la redacción original de este ítem (regla 3,
+  "describir la consecuencia real, no una más grande" -- verificado por
+  el gate):** el fail-mode incondicional, con o sin `SETTLED`, es que
+  `getFolio()` (`GET /stays/:id/folio`) nunca muestra el ajuste -- no
+  filtra por status. Los dos fail-modes de saldo (sobre-declara/traba
+  check-out con signo negativo; sub-declara/deja salir al huésped con
+  deuda con signo positivo) SÍ requieren que la fila llegue a `SETTLED`
+  primero (`getNetBalanceByStayId` filtra `status='SETTLED'`) -- ocurre
+  cuando la reserva se completa antes de cerrar la estadía, camino real
+  pero no el único. Fix: el `stayId` se resuelve en el handler mismo (no
+  desde el payload del evento -- cierra la ventana de carrera
+  check-in-entre-emisión-y-dispatch), mismo patrón que
+  `StayService.approveScheduleChange()` ya usa para el mismo problema
+  general. 50/50 unit (+6) + 3/3 integration (nuevo archivo, contra
+  Postgres real, los dos signos) + 3 mutantes manuales -- uno de ellos
+  (sacar el `?? null`) ni siquiera compila, `exactOptionalPropertyTypes`
+  lo rechaza antes de llegar a runtime. Suite completa: 2140/2140 unit
+  (162 archivos), 291/292 integration -- mismo 1 rojo preexistente de
+  1c-0/1c-i, no relacionado.
+
+  **Hallazgo adyacente del mismo gate, NO resuelto, sin bloque
+  asignado todavía:** `StayService.checkOut()` (`stay.service.ts:231`,
+  guard de saldo vía `getNetBalanceByStayId`,
+  `sql.financial-transaction.repository.ts:900-901`) solo cuenta
+  transacciones `SETTLED` -- el CHARGE de saldo y cualquier ADJUSTMENT
+  de una reserva quedan `PENDING` hasta `reservation.completed`
+  (`settleByReservationId`, disparado solo desde
+  `completeReservation()` → `POST` de `reservations.routes.ts`), que
+  **`checkOut()` no dispara**. En el orden habitual (check-out primero,
+  completar después), el guard de saldo del check-out ignora esas
+  filas hoy, con o sin este fix. Ancla verificada, sin decisión de
+  negocio tomada sobre si eso es el comportamiento correcto o un bug
+  aparte -- requiere su propio gate.
   - **`financial-transaction.repository.ts:347-352` (comentario
     ORDER-15) -- premisa caduca, hallazgo del gate de 1c-0.** El
     comentario dice *"un ADJUSTMENT con `order_id` -- que hoy no
