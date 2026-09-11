@@ -264,43 +264,31 @@ export class CancelOrderWithCreditNoteService {
       if (isProperSubset && absAmount >= round2(original.impTotal - CREDIT_NOTE_COMPENSATION_TOLERANCE)) {
         throw new CreditNoteConsolidatedFullReversalError(orderId, originalInvoiceId, absAmount, original.impTotal);
       }
-      // 1c-i deja preparada la estructura (conjunto congelado + el guard de
-      // arriba) para 1c-ii -- todavía en HOLD, `InvoiceService.buildCreditNote()`
-      // no tiene cableada la rama de atribución de órdenes. Hasta que
-      // exista, CUALQUIER subconjunto propio se rechaza acá -- decisión del
-      // dueño (gate 1c-i, grounding ERPNext/Odoo/Dolibarr/Cloudbeds/QloApps:
-      // los 5 bloquean en el borde con un rechazo explícito antes de tocar
-      // el ledger, nunca dejan un estado a medias). 1c-ii retira esta
-      // condición cuando cablee la rama real.
+      // 1c-ii-c (11/09/2026, gate `architecture-governor`) -- RETIRADO el
+      // rechazo placeholder de 1c-i que bloqueaba TODO subconjunto propio
+      // (`isProperSubset`). Ya no hace falta: `InvoiceService.buildCreditNote()`
+      // tiene cableada la rama de atribución de órdenes desde 1c-ii-b
+      // (`e02a4fb`) -- espejo estructural exacto de la rama de reservas, que
+      // NUNCA tuvo un rechazo equivalente acá (mismo diseño que este
+      // orquestador adopta ahora, ver `cancel-reservation-with-credit-note.service.ts`).
+      // Sigue vigente el guard del borde-100% de arriba (`CreditNoteConsolidatedFullReversalError`)
+      // -- 1c-ii-c no lo toca.
       //
-      // Corrección (auditoría `erp-audit-orchestrator`, 11/09/2026): "sin
-      // cambio de comportamiento observable" NO es verdad en general para
-      // este guard -- lo es para el caso que YA estaba cubierto (una sola
-      // orden por factura, `chargeIds.length === 1`, jamás llega acá). Para
-      // `chargeIds.length > 1` con `absAmount` dentro de la tolerancia del
-      // 100% del `impTotal`, el guard de arriba (`:264`) intercepta ANTES y
-      // cambia el código de error de `CREDIT_NOTE_MULTI_INVOICE` a
-      // `CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL` -- mismo 409
-      // (`error.middleware.ts`), `code`/`message` distintos. Observable para
-      // un consumidor que discrimine por `code`. Sin efecto práctico hoy
-      // (`isProperSubset` es inalcanzable -- ver `getConsolidatedInvoiceIdsForFinancialTransactions`/
-      // `accounts_receivable`, ningún cargo de orden entra hoy a una
-      // consolidada), pero la afirmación tiene que quedar acotada, no
-      // general.
-      //
-      // Segunda corrección de la misma auditoría, más importante: la
-      // protección real hoy contra "tx2 settlea el cargo de OTRA orden" es
-      // ESTE rechazo, no el congelamiento de `frozenChargeIds` de arriba --
-      // ningún test ejercita tx2 con `chargeIds.length > 1` (mutante propio
-      // de la auditoría: devolver `frozenChargeIds: chargeIds` en vez de
-      // `[charge.id]` sigue verde en toda la suite, porque nada llega a tx2
-      // en ese escenario). 1c-ii-c, cuando retire este `if`, HEREDA esa
-      // ventana sin cobertura -- criterio de aceptación bloqueante para
-      // ese bloque: un test que pruebe que tx2 no settlea cargos ajenos con
-      // el placeholder ya retirado, no solo que no re-deriva.
-      if (isProperSubset) {
-        throw new CreditNoteMultiInvoiceError(orderId, originalInvoiceId, chargeIds.length);
-      }
+      // MUT-B, criterio de aceptación bloqueante registrado por la auditoría
+      // `erp-audit-orchestrator` (11/09/2026) al cerrar 1c-i -- CERRADO acá,
+      // con evidencia, no solo con la intención: hasta este commit, ningún
+      // test ejercitaba tx2 con `chargeIds.length > 1` (el placeholder
+      // siempre rechazaba antes), así que un mutante que devolviera
+      // `frozenChargeIds: chargeIds` (el conjunto ENTERO) en vez de
+      // `[charge.id]` seguía verde en toda la suite -- la protección real
+      // contra "tx2 liquida el cargo de OTRA orden" era el rechazo, no el
+      // congelamiento. `credit-note-pair-cap.integration.test.ts` -- test
+      // "1c-ii-c -- tx2 NO liquida el cargo de una orden AJENA en la misma
+      // consolidada" -- ahora sí ejercita el escenario real (2 órdenes
+      // reales, contra Postgres real) y prueba, leyendo la fila de la OTRA
+      // orden en la base después de la llamada, que sigue `PENDING`.
+      // Reproducido el mutante (`frozenChargeIds: chargeIds`) después de
+      // este commit: ese test se pone rojo, ningún otro.
 
       // ADJUSTMENT compensatorio. `amount` va CON SIGNO NEGATIVO: el
       // constraint `chk_financial_transactions_amount` (schema.sql --

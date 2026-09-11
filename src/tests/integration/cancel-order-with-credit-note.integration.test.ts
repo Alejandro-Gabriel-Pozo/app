@@ -65,7 +65,7 @@ import { authorizeCreditNoteCancellation } from '../../facturacion/cancel-with-c
 import { handleOrderCancelled } from '../../workers/outbox.handlers.js';
 import { logger } from '../../logger.js';
 import type { DomainEvent } from '../../repositories/domain-event.repository.js';
-import { CreditNoteCancellationPendingError, CreditNoteMultiInvoiceError } from '../../domain/errors.js';
+import { CreditNoteCancellationPendingError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
@@ -694,10 +694,19 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       return stayId;
     }
 
-    it('consolidada real de 2 órdenes (60% no llega al borde del 100%): cancelar-con-NC la orden A rechaza con CreditNoteMultiInvoiceError, la orden B queda intacta', async () => {
+    it('1c-ii-c -- consolidada real de 2 órdenes (60% no llega al borde del 100%): cancelar-con-NC la orden A EMITE la NC, el cargo AJENO (orden B) no se toca', async () => {
+      // MUT-B (11/09/2026, gate `architecture-governor`, criterio de
+      // aceptación bloqueante registrado al cerrar 1c-i, cerrado acá) --
+      // este test reemplaza al de 1c-i (que probaba el RECHAZO con
+      // `CreditNoteMultiInvoiceError`, retirado en 1c-ii-c): ahora que
+      // `buildCreditNote()` tiene la rama de atribución de órdenes
+      // (1c-ii-b), el escenario "orden A en una consolidada con la orden B"
+      // ya no rechaza -- tiene que EMITIR, y la prueba real de que tx2 no
+      // liquida el cargo AJENO es que la fila de la orden B, leída de la
+      // base DESPUÉS del escape, siga intacta.
       const invoiceService = buildInvoiceServiceWithRealAR(fakeArcaClientOk);
       const sut = buildSut(invoiceService);
-      const company = await seedRawCustomer('Empresa CANCEL-CN 1c-i');
+      const company = await seedRawCustomer('Empresa CANCEL-CN 1c-ii-c');
       const stayId = await seedDummyStay();
 
       const orderA = await orderService.createOrder({
@@ -712,7 +721,25 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
         items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
       });
       await orderService.confirmOrder(orderB.id, ACTOR);
-      const { chargeId: chargeBId } = await seedCompanyChargeForOrder(company, stayId, orderB.id, 100);
+      // A diferencia de `seedCompanyChargeForOrder()` (que deja el CHARGE
+      // SETTLED, ya transferido a la empresa): acá lo dejamos PENDING a
+      // propósito -- si tx2 re-derivara `getChargeIdsForInvoice()` en vez
+      // de usar `frozenChargeIds` congelado en tx1, esta fila SÍ pasaría a
+      // SETTLED (`settleByIdsWithClient()` matchea `status='PENDING'`) y
+      // el test lo detectaría. Con el cargo ya SETTLED (como en el
+      // fixture viejo) un bug de re-derivación habría sido un no-op
+      // inocuo -- no discriminaba nada, exactamente el hueco que
+      // `erp-audit-orchestrator` encontró en 1c-i.
+      const chargeB = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: company.id, orderId: orderB.id,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      const chargeBId = chargeB!.id;
+      await new SqlAccountsReceivableRepository(db).createWithClient(db, {
+        id: randomUUID(), businessId: BIZ, stayId, companyCustomerId: company.id,
+        amount: 100, currency: 'ARS', status: 'PENDIENTE_FACTURAR',
+        transferredBy: ACTOR, notes: null, financialTransactionId: chargeBId,
+      });
 
       // La consolidada REAL -- 2 cargos, 2 órdenes distintas, un solo
       // comprobante (`invoice_charges`, no `invoices.financial_transaction_id`).
@@ -725,35 +752,40 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       );
       expect(chargeRows.map((r) => r.financial_transaction_id).sort()).toEqual([chargeAId, chargeBId].sort());
 
-      // El intento de escape sobre la orden A: rechazo tipado, NO el throw
-      // interno N1.a -- decisión (B) del dueño (grounding ERPNext/Odoo/
-      // Dolibarr/Cloudbeds/QloApps).
-      const err = await sut.cancelOrderWithCreditNote(orderA.id, auth(orderA.id)).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(CreditNoteMultiInvoiceError);
+      // El escape sobre la orden A ahora EMITE la NC -- placeholder de
+      // 1c-i retirado, `buildCreditNote()` atribuye la porción de la
+      // orden A vía `getOrderIdsByInvoiceItemId()` + `resolveRefundableForPair()`.
+      const result = await sut.cancelOrderWithCreditNote(orderA.id, auth(orderA.id));
+      expect(result.emitted).toBe(true);
+      expect(result.creditNote.status).toBe('ISSUED');
 
-      // Cero filas nuevas: nada se creó, nada se tocó.
-      const { rows: adjRows } = await db.query<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM financial_transactions WHERE order_id = $1 AND type = 'ADJUSTMENT'`, [orderA.id],
-      );
-      expect(Number(adjRows[0]!.count)).toBe(0);
-
-      // La orden A sigue CONFIRMED -- el escape no la tocó.
+      // La orden A pasó a CANCELLED, su ADJUSTMENT quedó SETTLED (tx2 completó).
       const { rows: orderARows } = await db.query<{ status: string }>(
         `SELECT status FROM orders WHERE id = $1`, [orderA.id],
       );
-      expect(orderARows[0]!.status).toBe('CONFIRMED');
+      expect(orderARows[0]!.status).toBe('CANCELLED');
+      const { rows: adjRows } = await db.query<{ status: string }>(
+        `SELECT status FROM financial_transactions WHERE order_id = $1 AND type = 'ADJUSTMENT'`, [orderA.id],
+      );
+      expect(adjRows).toHaveLength(1);
+      expect(adjRows[0]!.status).toBe('SETTLED');
 
-      // El cargo AJENO (orden B) sigue exactamente como estaba -- SETTLED,
-      // sin tocar. Esta es la evidencia central de 1c-i: si tx2 hubiera
+      // MUT-B, la prueba central: el cargo de la orden B -- AJENA a este
+      // escape -- sigue EXACTAMENTE como estaba, PENDING. Si tx2 hubiera
       // re-derivado `getChargeIdsForInvoice()` en vez de usar el conjunto
-      // congelado, un bug ahí habría podido re-settlear (no-op inocuo acá
-      // porque ya está SETTLED) o, peor, si el escape hubiera avanzado más
-      // allá del rechazo, tocar algo de la orden B.
+      // congelado en tx1 (`frozenChargeIds`), esta fila habría pasado a
+      // SETTLED.
       const { rows: chargeBRows } = await db.query<{ status: string; order_id: string }>(
         `SELECT status, order_id FROM financial_transactions WHERE id = $1`, [chargeBId],
       );
-      expect(chargeBRows[0]!.status).toBe('SETTLED');
+      expect(chargeBRows[0]!.status).toBe('PENDING');
       expect(chargeBRows[0]!.order_id).toBe(orderB.id);
+
+      // La orden B sigue CONFIRMED -- el escape de A no la tocó.
+      const { rows: orderBRows } = await db.query<{ status: string }>(
+        `SELECT status FROM orders WHERE id = $1`, [orderB.id],
+      );
+      expect(orderBRows[0]!.status).toBe('CONFIRMED');
     }, 30_000);
   });
 });

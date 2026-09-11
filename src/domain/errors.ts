@@ -634,9 +634,21 @@ export class OrderChargeInvoicedError extends DomainError {
  * ninguna fila en `invoice_items` -- una factura "Nivel A" pre-v32 -- no hay
  * de dónde copiar y una línea sintética dejaría los dos orígenes en `null`,
  * violando el CHECK. No debería ocurrir para una orden: toda factura de orden
- * es post-v32. Guarda defensiva. (Para una reserva Nivel A el camino
- * proporcional -- rama `else` de `buildCreditNote` -- sigue funcionando con la
- * línea sintética `reservation_id`, no lanza este error.)
+ * es post-v32. Guarda defensiva.
+ *
+ * **Corrección (11/09/2026, gate `architecture-governor`, hallazgo al
+ * cerrar 1c-ii-c) -- el paréntesis original de este docblock era falso.**
+ * Decía que para una reserva Nivel A "el camino proporcional... sigue
+ * funcionando con la línea sintética `reservation_id`, no lanza este
+ * error" -- no es así: la rama `else` (heredada/proporcional) de
+ * `buildCreditNote()` tira ESTE MISMO error para CUALQUIER `ADJUSTMENT`
+ * que llegue ahí con `originalItems.length === 0`, sin importar si el
+ * sujeto es una orden o una reserva -- el nombre de la clase (y de su
+ * `code`, `ORDER_INVOICE_HAS_NO_LINES`) queda mal puesto para el caso
+ * reserva. Deuda de wording preexistente, sin bloque asignado (mismo
+ * criterio que la de `CreditNoteAttribution*Error`/`CreditNotePairCapExceededError`
+ * diciendo "la reserva" también para órdenes) -- no se corrige acá,
+ * solo se deja de afirmar lo contrario.
  */
 export class OrderInvoiceHasNoLinesError extends DomainError {
   constructor(invoiceId: string, financialTransactionId: string) {
@@ -693,27 +705,23 @@ export class CreditNoteCancellationRejectedError extends DomainError {
  * FACTURA, `InvoiceRepository.getChargeIdsForInvoice()`, no del documento --
  * N1.a(iii)).
  *
- * Dos condiciones distintas, dos épocas:
- * - Hasta 1c-i (11/09/2026): cardinalidad ≠ 1, o el único id no coincide con
- *   el CHARGE de la orden -- **inalcanzable** para una orden (un CHARGE por
- *   orden, índice único v45), invariante rota si salta.
- * - Desde 1c-i (gate `architecture-governor`, bloque `ORDER-CONSOLIDATED-PARTIAL-01`):
- *   el CHARGE de la orden SÍ figura entre los de la factura (ya no exige
- *   cardinalidad 1), pero la factura es consolidada con cargos de OTRAS
- *   órdenes (`chargeIdCount > 1`) -- **alcanzable de verdad** (una orden
- *   puede facturarse junto a otras vía `requestConsolidatedInvoice()`). La
- *   NC granular por orden en una consolidada todavía no está cableada
- *   (`buildCreditNote()` no tiene la rama de atribución de órdenes -- eso es
- *   1c-ii, en HOLD): decisión del dueño, gate 1c-i, con grounding ERPNext/
- *   Odoo/Dolibarr/Cloudbeds/QloApps (los 5 rechazan en el borde en vez de
- *   dejar un estado a medias) -- rechazar acá, sin cambio de comportamiento
- *   observable respecto de la versión anterior de este guard. 1c-ii retira
- *   esta condición cuando cablee la rama real.
+ * **Corrección (11/09/2026, gate `architecture-governor`, bloque 1c-ii-c) --
+ * el único caso que queda.** Hasta 1c-ii-b esta clase cubría DOS
+ * condiciones (invariante-rota, inalcanzable, y "consolidada no soportada
+ * todavía", alcanzable); la segunda se retiró en 1c-ii-c porque dejó de ser
+ * cierta -- `InvoiceService.buildCreditNote()` SÍ tiene cableada la rama de
+ * atribución de órdenes desde 1c-ii-b (espejo de la de reservas). El único
+ * disparador que le queda es el original, defensivo: el CHARGE de la orden
+ * NO figura entre los que `getChargeIdsForInvoice()` devuelve para la
+ * factura que se está revirtiendo -- **inalcanzable** para una orden (un
+ * CHARGE por orden, índice único v45; `originalInvoiceId` se resolvió DESDE
+ * ese mismo CHARGE, así que tiene que aparecer en su propia factura por
+ * construcción) -- si salta, es invariante rota, no un caso de negocio.
  */
 export class CreditNoteMultiInvoiceError extends DomainError {
   constructor(orderId: string, invoiceId: string, chargeIdCount: number) {
     super(
-      `La factura "${invoiceId}" de la orden "${orderId}" es consolidada (${chargeIdCount} cargo(s)) -- la Nota de Crédito granular para una orden dentro de una factura consolidada todavía no está soportada. Operación abortada.`,
+      `El cargo de la orden "${orderId}" no figura entre los ${chargeIdCount} cargo(s) que factura "${invoiceId}" -- invariante rota (el cargo se resolvió DESDE esa misma factura). Operación abortada.`,
       'CREDIT_NOTE_MULTI_INVOICE',
     );
   }

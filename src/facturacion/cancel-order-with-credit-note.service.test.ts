@@ -212,15 +212,30 @@ describe('CancelOrderWithCreditNoteService', () => {
     expect(port.calls).toBe(0);
   });
 
-  it('1c-i -- N2.a pasó a membership: factura consolidada con OTRA orden -- CreditNoteMultiInvoiceError ("todavía no soportado"), no se crea nada ni se llama a AFIP', async () => {
+  it('1c-ii-c -- consolidada real con OTRA orden (subset propio, lejos del borde 100%): la NC ahora se emite -- placeholder de 1c-i retirado, buildCreditNote() ya tiene la rama de atribución de órdenes (1c-ii-b)', async () => {
     inv.chargeIds = [CHARGE_ID, 'ft-charge-2'];
     // impTotal (10_000 default) bien por encima del CHARGE (121): NO es el
-    // borde del 100%, así que es el rechazo GENERAL el que dispara, no el
-    // de reversión total -- confirma el orden de los dos guards.
+    // borde del 100% -- hasta 1c-ii-c esto rechazaba con
+    // CreditNoteMultiInvoiceError (placeholder de 1c-i). El fake de
+    // InvoiceService no modela la atribución real por línea (eso lo prueba
+    // el test de integración dedicado, con Postgres real) -- este test
+    // prueba que el ORQUESTADOR ya no bloquea el caso en tx1.
+    const res = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
 
-    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteMultiInvoiceError);
-    expect(ft.rows.size).toBe(0);
-    expect(svc.calls).toBe(0);
+    expect(res.emitted).toBe(true);
+    expect(res.order.status).toBe('CANCELLED');
+    expect(svc.calls).toBe(1);
+    // tx2 settlea el conjunto CONGELADO (frozenChargeIds = [charge.id]),
+    // NUNCA 'ft-charge-2' -- el cargo de la orden AJENA de la consolidada.
+    // MUT-B: esta aserción no cambia con o sin el placeholder porque el
+    // fake no re-deriva nada -- la prueba real, con el JOIN de
+    // getChargeIdsForInvoice() en juego de verdad, vive en
+    // credit-note-pair-cap.integration.test.ts.
+    const adj = [...ft.rows.values()][0]!;
+    expect(ft.settleCalls).toEqual([
+      { ids: [adj.id], businessId: BIZ },
+      { ids: [CHARGE_ID], businessId: BIZ },
+    ]);
   });
 
   it('1c-i -- consolidada al borde del 100% con OTRA orden: CreditNoteConsolidatedFullReversalError, NO CreditNoteMultiInvoiceError -- se chequea primero', async () => {
@@ -241,13 +256,12 @@ describe('CancelOrderWithCreditNoteService', () => {
     await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteConsolidatedFullReversalError);
   });
 
-  it('1c-i -- fuera de tolerancia: 1 peso por debajo del impTotal NO dispara reversión total, cae al rechazo general', async () => {
+  it('1c-ii-c -- fuera de tolerancia: 1 peso por debajo del impTotal NO dispara reversión total, la NC se emite igual (ya no cae a ningún rechazo general)', async () => {
     inv.chargeIds = [CHARGE_ID, 'ft-charge-2'];
     inv.impTotal = 122; // charge.amount(121) < round2(122 - 0.01) === 121.99
 
-    const err = await sut.cancelOrderWithCreditNote(ORDER_ID, auth()).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(CreditNoteMultiInvoiceError);
-    expect(err).not.toBeInstanceOf(CreditNoteConsolidatedFullReversalError);
+    const res = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+    expect(res.emitted).toBe(true);
   });
 
   it('1c-i -- factura sin la otra orden (chargeIds no incluye charge.id): sigue rechazando -- invariante rota, mismo criterio que antes', async () => {
