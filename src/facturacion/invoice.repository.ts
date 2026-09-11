@@ -47,13 +47,40 @@ export interface InvoiceRepository {
    */
   getByReservationId(reservationId: string): Promise<Invoice[]>;
   /**
-   * C1-Fase C (23/08/2026) — de la lista dada, cuáles YA tienen una fila
-   * en `invoice_charges` apuntando a una factura `ISSUED`. Guard contra
-   * double-billing en `InvoiceService.requestConsolidatedInvoice()`: una
-   * fila `accounts_receivable` PENDIENTE_FACTURAR cuyo cargo YA está en
-   * una factura real (ej. se marcó FACTURADO por el paso de "mark
-   * invoiced" pero el paso siguiente falló a mitad de camino) no se puede
-   * facturar una segunda vez.
+   * C1-Fase C (23/08/2026), predicado corregido 11/09/2026 (hueco de
+   * doble comprobante, gate `architecture-governor`) — de la lista dada,
+   * cuáles YA tienen una fila en `invoice_charges`, **sin importar el
+   * `status` de la factura a la que apunta**. Guard contra double-billing
+   * en `InvoiceService.requestConsolidatedInvoice()`: una fila
+   * `accounts_receivable` PENDIENTE_FACTURAR cuyo cargo YA está en
+   * `invoice_charges` (ej. se marcó FACTURADO por el paso de "mark
+   * invoiced" pero el paso siguiente falló a mitad de camino, o la
+   * factura quedó `PENDING`/`FAILED_UNCERTAIN` porque el proceso murió
+   * antes de la respuesta de AFIP) no se puede facturar una segunda vez.
+   *
+   * **Por qué NO filtra por status (a diferencia de
+   * `getInFlightCreditNoteTotalForUpdate()`/`ForPair`, mismo archivo, que
+   * SÍ usan `status = ANY(['ISSUED','PENDING','FAILED_UNCERTAIN'])`):**
+   * ahí el recurso reservado es cupo monetario de NC, y una NC `REJECTED`
+   * (AFIP confirmó que no existe) efectivamente libera ese cupo. Acá el
+   * recurso es la fila `invoice_charges` en sí — se inserta ANTES de
+   * llamar a AFIP, en la misma transacción que la factura `PENDING`
+   * (`sql.invoice.repository.ts::createWithClient()`), y
+   * **nunca se borra**, sea cual sea el desenlace (`ISSUED`, `REJECTED`,
+   * `FAILED_UNCERTAIN` quedan todos con su `invoice_charges` intacto).
+   * `idx_invoice_charges_ft` (`schema.sql`) es un índice ÚNICO sobre
+   * `financial_transaction_id` sin `WHERE` de status — status-agnóstico,
+   * igual que este predicado. Filtrar por `ISSUED` (bug original) o por
+   * la lista de NC (`REJECTED` afuera) deja pasar el guard para una
+   * factura `REJECTED`/`PENDING`/`FAILED_UNCERTAIN` cuyo INSERT real
+   * después choca igual contra el índice, solo que con un 23505 crudo en
+   * vez de `AccountsReceivableAlreadyInvoicedError` — exactamente el
+   * error tipado que este método existe para dar. Tres predicados
+   * distintos sobre "¿este cargo tiene un comprobante vivo?" conviven a
+   * propósito en este archivo (este método, el cap de NC de arriba, y
+   * `sql.financial-transaction.repository.ts` para anulación de CHARGEs)
+   * porque responden preguntas distintas sobre las mismas tablas — no
+   * unificar sin re-derivar cada uno.
    */
   getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>>;
   /**

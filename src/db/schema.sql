@@ -3208,11 +3208,14 @@ ALTER TABLE invoices ALTER COLUMN financial_transaction_id DROP NOT NULL;
 -- fuerte, no un id suelto en JSONB sin integridad). ON DELETE RESTRICT en
 -- las dos FKs: ni una factura ISSUED ni un financial_transaction que ya
 -- se facturó se pueden hacer desaparecer (R12/DOCUMENTO -- nunca se
--- borra). Único índice sobre financial_transaction_id: un mismo cargo no
--- puede terminar facturado en dos comprobantes distintos -- el guard real
--- contra double-billing vive en InvoiceService (chequea contra facturas
--- ISSUED antes de armar una consolidada nueva), esto es la última línea
--- de defensa a nivel de base.
+-- borra). Único índice sobre financial_transaction_id, SIN filtro de
+-- status: un mismo cargo no puede terminar en dos comprobantes distintos,
+-- sin importar el desenlace de ninguno de los dos (ISSUED/PENDING/
+-- REJECTED/FAILED_UNCERTAIN). Este índice es la protección REAL contra
+-- double-billing -- InvoiceService.getInvoicedFinancialTransactionIds()
+-- (corregido 11/09/2026, ver su docblock en invoice.repository.ts) espeja
+-- este mismo predicado status-agnóstico para dar un error tipado ANTES
+-- de que el INSERT real choque acá.
 CREATE TABLE IF NOT EXISTS invoice_charges (
   id                        VARCHAR(255)  PRIMARY KEY,
   invoice_id                VARCHAR(255)  NOT NULL REFERENCES invoices(id) ON DELETE RESTRICT,

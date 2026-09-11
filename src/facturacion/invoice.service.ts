@@ -501,11 +501,13 @@ export class InvoiceService {
     if (existing) return this.retryExisting(existing);
 
     // Guard contra double-billing (ver docblock de
-    // getInvoicedFinancialTransactionIds): acá ya se descartó que sea un
-    // reintento del mismo pedido -- si igual aparece un cargo ya
-    // facturado, es un SET distinto de cargos que se solapa con una
-    // factura previa (inconsistencia real, no un reintento). Se rechaza
-    // toda la operación, no se arma una factura parcial en silencio (R15).
+    // getInvoicedFinancialTransactionIds -- predicado corregido 11/09/2026,
+    // NO filtra por status): acá ya se descartó que sea un reintento del
+    // mismo pedido -- si igual aparece un cargo YA VINCULADO a un
+    // `invoice_charges` (sin importar el status de esa factura), es un
+    // SET distinto de cargos que se solapa con una factura previa
+    // (inconsistencia real, no un reintento). Se rechaza toda la
+    // operación, no se arma una factura parcial en silencio (R15).
     const alreadyInvoiced = await this.invoiceRepo.getInvoicedFinancialTransactionIds(financialTransactionIds);
     if (alreadyInvoiced.size > 0) {
       throw new AccountsReceivableAlreadyInvoicedError(input.companyCustomerId, [...alreadyInvoiced]);

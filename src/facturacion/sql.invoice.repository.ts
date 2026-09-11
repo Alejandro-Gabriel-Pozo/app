@@ -962,12 +962,16 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>> {
+    // Predicado corregido 11/09/2026 -- ver el docblock de la interfaz
+    // (invoice.repository.ts) para por qué NO filtra por i.status (a
+    // diferencia de getInFlightCreditNoteTotalForUpdate()/ForPair, más
+    // arriba en este mismo archivo). Sin JOIN a invoices a propósito: el
+    // predicado real es "¿existe la fila en invoice_charges?", la misma
+    // pregunta que responde idx_invoice_charges_ft (único, sin status).
     if (financialTransactionIds.length === 0) return new Set();
     const { rows } = await this.db.query<{ financial_transaction_id: string }>(
-      `SELECT ic.financial_transaction_id
-       FROM invoice_charges ic
-       JOIN invoices i ON i.id = ic.invoice_id
-       WHERE i.status = 'ISSUED' AND ic.financial_transaction_id = ANY($1::VARCHAR[])`,
+      `SELECT financial_transaction_id FROM invoice_charges
+        WHERE financial_transaction_id = ANY($1::VARCHAR[])`,
       [financialTransactionIds],
     );
     return new Set(rows.map((r) => r.financial_transaction_id));

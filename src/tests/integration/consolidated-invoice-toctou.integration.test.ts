@@ -56,7 +56,7 @@ import { SqlBusinessProfileRepository } from '../../repositories/sql.business-pr
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
-import { ReservationCancelledCannotInvoiceError } from '../../domain/errors.js';
+import { ReservationCancelledCannotInvoiceError, AccountsReceivableAlreadyInvoicedError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
@@ -264,6 +264,61 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
     expect(stillGoodAr!.status).toBe('PENDIENTE_FACTURAR');
     expect(cancelledAr!.status).toBe('PENDIENTE_FACTURAR');
   }, 30_000);
+
+  describe('hueco de doble comprobante (11/09/2026, gate architecture-governor) -- getInvoicedFinancialTransactionIds() contra Postgres real', () => {
+    /**
+     * Reproduce a mano lo que create()/createWithClient() deja armado para
+     * una consolidada que NUNCA llegó a ISSUED: la fila `invoices` +
+     * `invoice_charges` SÍ existen (se insertan en la misma transacción,
+     * antes de llamar a AFIP -- ver sql.invoice.repository.ts), pero el
+     * status quedó PENDING/FAILED_UNCERTAIN/REJECTED. `invoice_charges`
+     * nunca se borra, sea cual sea el desenlace.
+     */
+    async function seedStuckInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
+      const invoiceId = randomUUID();
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
+            pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
+            imp_neto, imp_iva, imp_total, status)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
+        [invoiceId, BIZ, chargeFtId, customerId, `invoice:consolidated:stuck-${invoiceId}`, CBTE_TIPO_FACTURA_B, status],
+      );
+      await db.query(
+        `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+         VALUES ($1, $2, $3, 100)`,
+        [randomUUID(), invoiceId, chargeFtId],
+      );
+    }
+
+    it.each(['PENDING', 'FAILED_UNCERTAIN', 'REJECTED'] as const)(
+      'rechaza el lote nuevo si un cargo YA tiene invoice_charges apuntando a una factura %s -- no solo ISSUED',
+      async (priorStatus) => {
+        const company = await seedCustomer(db);
+        // AR "vieja", nunca marcada FACTURADO -- su cargo ya quedó atado a
+        // una factura previa que no llegó a ISSUED (el escenario real: el
+        // proceso murió antes de la respuesta AFIP, o AFIP la rechazó).
+        const stuck = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedStuckInvoiceForCharge(stuck.chargeId, company.id, priorStatus);
+        // AR nueva, genuina -- cambia el SET de financialTransactionIds
+        // (y por lo tanto el idempotencyKey) respecto del intento anterior,
+        // así que esto NO es un reintento: getByIdempotencyKey() no
+        // matchea, y el guard anti double-billing es lo único que puede
+        // frenarlo.
+        await seedPendingArWithCharge(company.id, 'CONFIRMED', 50);
+
+        await expect(
+          invoiceService.requestConsolidatedInvoice({ businessId: BIZ, companyCustomerId: company.id, changedBy: 'user-1' }),
+        ).rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
+
+        const { rows: invoiceCountRows } = await db.query<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM invoices WHERE customer_id = $1 AND status != $2`, [company.id, priorStatus],
+        );
+        expect(Number(invoiceCountRows[0]!.count)).toBe(0); // ninguna factura NUEVA se creó -- solo sigue existiendo la vieja atascada
+      },
+      30_000,
+    );
+  });
 
   // -------------------------------------------------------------------------
   // La evidencia crítica -- NO deja el orden de llegada al azar. Sostiene a

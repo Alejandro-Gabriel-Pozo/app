@@ -858,17 +858,23 @@ export class NothingToInvoiceError extends DomainError {
 }
 
 /**
- * C1-Fase C (23/08/2026) — guard anti double-billing en
- * InvoiceService.requestConsolidatedInvoice(): alguna de las filas
- * PENDIENTE_FACTURAR que se iba a consolidar ya tiene una factura ISSUED
- * real (inconsistencia -- normalmente por un fallo a mitad de camino al
- * marcar la fila FACTURADO la vez anterior). Se rechaza toda la
- * operación en vez de facturar una factura parcial en silencio (R15).
+ * C1-Fase C (23/08/2026), predicado corregido 11/09/2026 (hueco de doble
+ * comprobante, gate `architecture-governor`) — guard anti double-billing
+ * en InvoiceService.requestConsolidatedInvoice(): alguna de las filas
+ * PENDIENTE_FACTURAR que se iba a consolidar YA tiene una fila en
+ * `invoice_charges`, sin importar el status de la factura a la que
+ * apunta (inconsistencia -- normalmente por un fallo a mitad de camino al
+ * marcar la fila FACTURADO la vez anterior, o una factura previa que
+ * quedó PENDING/FAILED_UNCERTAIN/REJECTED con sus invoice_charges ya
+ * insertados). Se rechaza toda la operación en vez de facturar una
+ * factura parcial en silencio (R15). Antes (23/08/2026-11/09/2026) el
+ * mensaje decía "ya facturados", exacto solo para ISSUED -- corregido a
+ * lenguaje neutral de status, ver invoice.repository.ts para el porqué.
  */
 export class AccountsReceivableAlreadyInvoicedError extends DomainError {
   constructor(companyCustomerId: string, financialTransactionIds: string[]) {
     super(
-      `El cliente "${companyCustomerId}" tiene cargos ya facturados que todavía figuran pendientes ` +
+      `El cliente "${companyCustomerId}" tiene cargos que ya están vinculados a un comprobante ` +
       `(${financialTransactionIds.join(', ')}) -- revisar antes de facturar de nuevo, no se generó ningún comprobante.`,
       'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED',
     );

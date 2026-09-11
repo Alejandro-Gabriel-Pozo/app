@@ -39,9 +39,12 @@ class FakeInvoiceRepository implements InvoiceRepository {
     return [...this.invoices.values()].filter((i) => i.financialTransactionId === ftId);
   }
   async getInvoicedFinancialTransactionIds(ids: string[]): Promise<Set<string>> {
+    // Predicado corregido 11/09/2026 -- espeja sql.invoice.repository.ts:
+    // "¿existe la fila en invoice_charges?", sin mirar status (ver
+    // docblock de invoice.repository.ts para el porqué).
     const result = new Set<string>();
-    for (const [ftId, invoiceId] of this.charges) {
-      if (ids.includes(ftId) && this.invoices.get(invoiceId)?.status === 'ISSUED') result.add(ftId);
+    for (const ftId of this.charges.keys()) {
+      if (ids.includes(ftId)) result.add(ftId);
     }
     return result;
   }
@@ -1680,6 +1683,37 @@ describe('InvoiceService — C1-Fase C', () => {
       await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
         .rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
     });
+
+    it.each(['PENDING', 'FAILED_UNCERTAIN', 'REJECTED'] as const)(
+      'rechaza (guard anti double-billing, hueco de doble comprobante 11/09/2026) si algún cargo pendiente YA tiene una fila en invoice_charges apuntando a una factura %s -- no solo ISSUED',
+      async (priorStatus) => {
+        // Antes del fix (bug real): el guard SOLO miraba status='ISSUED'. Una
+        // factura previa PENDING (proceso murió antes de la respuesta de
+        // AFIP), FAILED_UNCERTAIN (AFIP respondió ambiguo) o REJECTED (AFIP
+        // la rechazó, pero invoice_charges NUNCA se borra -- ver docblock de
+        // invoice.repository.ts) dejaba pasar un segundo intento hasta el
+        // INSERT real, que recién ahí chocaba contra idx_invoice_charges_ft
+        // con un 23505 crudo en vez de este error tipado.
+        const pending = [makeAr({ id: 'ar-1', financialTransactionId: 'ft-1', amount: 100 })];
+        const txs = new Map([['ft-1', makeTx({ id: 'ft-1', customerId: 'cust-empresa', amount: 100 })]]);
+        const { service, invoiceRepo } = buildConsolidatedService({ pending, txs });
+
+        const priorInvoiceId = 'inv-previa';
+        invoiceRepo.invoices.set(priorInvoiceId, {
+          id: priorInvoiceId, businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+          idempotencyKey: 'invoice:consolidated:otra', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+          cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+          impNeto: 100, impIva: 0, impTotal: 100, cae: null, caeVto: null, status: priorStatus,
+          afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+          afipRequest: {}, afipResponse: {}, errorMessage: priorStatus === 'REJECTED' ? 'rechazado por AFIP' : null,
+          createdAt: new Date(), issuedAt: null,
+        });
+        invoiceRepo.charges.set('ft-1', priorInvoiceId);
+
+        await expect(service.requestConsolidatedInvoice({ businessId: 'biz-1', companyCustomerId: 'cust-empresa', changedBy: 'identity-1' }))
+          .rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
+      },
+    );
 
     describe('FACT-CONSOL-TOCTOU-01 (05/09/2026) -- guard TOCTOU generalizado a N cargos: rechaza el lote entero si CUALQUIERA de las órdenes/reservas de origen ya está CANCELLED', () => {
       it('rechaza TODO el lote si la reserva de uno solo de los N cargos ya está CANCELLED -- no emite ningún CAE, no marca ninguna AR', async () => {
