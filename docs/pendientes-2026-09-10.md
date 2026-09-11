@@ -897,49 +897,101 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   confirma `migrate:tenants` -- `2 negocio(s) con BD asignada. Versión
   objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: sin cambio de schema,
   la versión objetivo no se movió); `GET /health/db` = 200 post-deploy.
-- **`ORDER-CONSOLIDATED-PARTIAL-01`** — **RE-ESCOPEADO (11/09/2026, gate
-  `architecture-governor`)**: la premisa original ("falta espejar el
-  clasificador del lado órdenes, mismo patrón que residual 1") era falsa.
-  Investigado a fondo: no es un hueco de LECTURA (un falso positivo
-  silencioso en `classifyOrderLiveInvoice()`) -- es que el lado de
-  ESCRITURA nunca llega a producir el estado que ese clasificador tendría
-  que leer:
-  1. `cancel-order-with-credit-note.service.ts:291,293` -- el `ADJUSTMENT`
-     del escape de órdenes SIEMPRE lleva `reservationId: null`.
-  2. `invoice.service.ts:794` -- la rama "pair" de `buildCreditNote()`
-     (la que emite una NC atribuida a una reserva/orden dentro de una
-     consolidada) exige `tx.reservationId != null` -- un ADJUSTMENT de
-     orden nunca entra ahí.
-  3. `invoice.service.ts:836-847` -- cuando ese ADJUSTMENT llega a la rama
-     restante y NO es una reversión total (exactamente el caso de una
-     orden dentro de una consolidada multi-orden), el código **tira**
-     (`N1.a`) en vez de emitir una NC mal formada.
-  4. **Hallazgo del gate (a):** ese throw no es un no-op limpio -- `tx1`
-     ya commiteó el `ADJUSTMENT` `PENDING` con `reversed_invoice_id` antes
-     de que `buildCreditNote()` corra fuera de transacción, así que queda
-     una fila huérfana que el fast-path de idempotencia reencuentra y
-     vuelve a tirar en cada reintento. Limpiarla es parte de la decisión
-     de producto de abajo, no un detalle menor.
-  5. **Hallazgo del gate (b):** tampoco hay falso positivo alcanzable por
-     otra vía (invoice mixta reserva+orden, o el `ADJUSTMENT` huérfano de
-     (4)) -- en los dos casos `classifyOrderLiveInvoice()` da
-     `NOT_RECONCILED` correctamente, porque la porción de la orden
-     genuinamente no está compensada.
-  6. Complicación adicional si algún día se decide construir el lado de
-     escritura: `invoice_items` no tiene `order_id` directo, solo
-     `order_item_id` (FK a `order_items.id`) -- un mirror de
-     `resolveRefundableForPair()` necesitaría el JOIN intermedio
-     `order_items.order_id`, no es un find-and-replace de `reservationId`.
+- **`ORDER-CONSOLIDATED-PARTIAL-01`** — **DECIDIDO (negocio) + HOLD
+  (implementación), 11/09/2026.** Pregunta de producto que este bloque
+  dejaba abierta -- ✅ **RESPONDIDA con grounding ERP** (Cloudbeds,
+  Odoo, ERPNext, QloApps vía `auditor-circuitos-erp` +
+  `AskUserQuestion` al dueño con el trade-off completo): sí, se va a
+  soportar cancelar con NC una orden específica dentro de un comprobante
+  consolidado multi-orden, atribuyendo la NC solo a esa orden. Evidencia:
+  ERPNext tuvo el mismo bug exacto (PR real `frappe/erpnext#46277`, crea
+  una NC separada por cada POS Invoice original al consolidar) y QloApps
+  ata la devolución a una reserva/booking específica (`id_htl_booking` en
+  `order_return_detail`/`order_slip_detail`). Cloudbeds -- el único de
+  los 4 con evidencia clara en sentido contrario ("the invoice cannot be
+  canceled partially") -- fue mostrado igual antes de decidir. Odoo
+  inconcluso.
 
-  **Queda como pregunta de producto sin decidir, no como bug:** ¿se va a
-  soportar alguna vez cancelar una orden parcial dentro de una consolidada
-  multi-orden con NC? Si la respuesta es sí, es trabajo de ESCRITURA nuevo
-  (extender la rama pair de `buildCreditNote()` a órdenes + limpiar el
-  huérfano de (4)) del cual el clasificador-espejo sería un requisito
-  POSTERIOR, no el bloque en sí. Las órdenes SÍ soportan facturación
-  consolidada multi-orden (`InvoiceService.requestConsolidatedInvoice()`,
-  `invoice.service.ts:481,540-541`) -- eso seguía siendo cierto, lo que
-  estaba mal era asumir que el hueco resultante era de lectura.
+  **Mapeo de código, re-verificado por el gate (anclas corridas,
+  corregidas):**
+  1. `cancel-order-with-credit-note.service.ts:290-291` -- el `ADJUSTMENT`
+     del escape de órdenes SIEMPRE lleva `reservationId: null`. Válido.
+  2. `invoice.service.ts:824` -- la rama "pair" de `buildCreditNote()`
+     exige `tx.reservationId != null` -- un ADJUSTMENT de orden nunca
+     entra ahí. Válido.
+  3. `invoice.service.ts:864-877` (throw en `:874`) -- cuando ese
+     ADJUSTMENT llega a la rama restante sin ser reversión total, el
+     código tira (`N1.a`). Válido **como texto, pero inalcanzable para
+     este caso** -- ver bloqueo real más abajo.
+  4. ~~Hallazgo "row huérfana" (`tx1` commitea el ADJUSTMENT antes del
+     throw)~~ -- **REFUTADO por el gate**: el test
+     `cancel-order-with-credit-note.service.test.ts:204-210`
+     (`expect(ft.rows.size).toBe(0)`) prueba que no queda nada
+     commiteado. No hay row que limpiar -- el hazard estructural que
+     describía (tx1 commitea antes de que `buildCreditNote()` corra fuera
+     de transacción) es real en general, pero no se materializa en este
+     camino.
+  5. **Bloqueo real, no mapeado en la primera ronda -- encontrado por el
+     gate, 12 líneas antes del hallazgo #1, mismo archivo:**
+     `cancel-order-with-credit-note.service.ts:223-226` --
+     `getChargeIdsForInvoice()` (UNION `invoices.financial_transaction_id`
+     + `invoice_charges`) devuelve N>1 cargos para una consolidada
+     multi-orden, y el guard tira `CreditNoteMultiInvoiceError` **antes**
+     de llegar a la parte que este bloque investigaba originalmente
+     (`:286`, dentro de la misma transacción `tx1`, `:185-326`). El throw
+     de `invoice.service.ts:874` (hallazgo #3) es código muerto para este
+     camino -- está guardado río arriba.
+  6. `invoice_items` no tiene `order_id` directo, solo `order_item_id`
+     (FK a `order_items.id`) -- confirmado, y **más preciso de lo que se
+     había dicho**: el gate verificó que el JOIN
+     `invoice_items.order_item_id → order_items.order_id` es estable
+     (`order_items.order_id` nunca se actualiza en `src/pos-menu/`, y el
+     `ON DELETE SET NULL` no puede orfanar una línea facturada sin violar
+     `chk_invoice_item_origin` primero) -- **no hace falta columna nueva
+     ni bump de `CURRENT_SCHEMA_VERSION`**, alcanza con el JOIN. Además,
+     la query de tope por par (`getInFlightCreditNoteTotalForPairForUpdate`,
+     `sql.invoice.repository.ts:591`) NO necesita el JOIN -- filtra sobre
+     la transacción reversora, que ya trae `order_id` directo. Solo el
+     lado de ATRIBUCIÓN necesita el JOIN.
+  7. Corrección semántica: el guard de `:223-226` está etiquetado "N2.a"
+     en el código, pero **no lo es** -- ADR §6.5/N2.a (línea 274 del ADR
+     común) exige cardinalidad 1:1 NC↔factura, y una NC de orden granular
+     sigue apuntando a una sola factura. Lo que `:223-226` enforcea de
+     verdad es el §5 ("órdenes es todo o nada", línea 394 del ADR) -- la
+     regla que esta decisión efectivamente amiende. Ojo al actualizar el
+     ADR: no reabrir N2.a por error.
+  8. Grounding adicional ya existente en el ADR (línea 476, hallazgo
+     previo de `auditor-circuitos-erp` del 08/09) que sostiene la forma
+     de la solución: ERPNext no proratea nada porque cada línea ya sabe
+     su FK de origen -- solo el desglose de IVA congelado
+     (`afip_request.Iva[]`) necesita redistribuirse por grupo de tasa,
+     que es exactamente lo que `resolveRefundableForPair()` ya hace.
+
+  Las órdenes SÍ soportan facturación consolidada multi-orden
+  (`InvoiceService.requestConsolidatedInvoice()`, `invoice.service.ts:505`
+  y `:570`) -- confirmado.
+
+  **Estado: HOLD para implementación (gate `architecture-governor`,
+  11/09/2026).** No autorizado tocar `invoice.service.ts`,
+  `cancel-order-with-credit-note.service.ts`, `refund-attribution.ts`,
+  `sql.invoice.repository.ts` ni schema todavía. **Próximo bloque**:
+  rehacer la matriz de impacto con `:223-226` adentro (matriz original no
+  lo tenía) + `refund-attribution.ts` (los 3 sitios que hoy usan
+  `reservationId`) + `credit-note-escape-containment.test.ts` (¿`SIGNATURES`
+  congela alguna de las funciones en alcance?) + leer
+  `docs/diseno-cancelacion-orden-nota-credito-2026-09-05.md` (ADR
+  específico de órdenes, probablemente reafirma todo-o-nada, hay que
+  reconciliar) + query read-only de producción: ¿existen hoy facturas
+  consolidadas multi-orden reales? (cambia la urgencia, no el diseño).
+  **Split recomendado por el gate para cuando la matriz cierre** (no
+  empezar todavía): 1a) generalizar `resolveRefundableForPair()` sobre
+  una clave de atribución opaca, función pura, sin wiring; 1b) camino de
+  lectura -- JOIN + mirror `r.order_id = $2` del tope por par, integración
+  contra Postgres real; 1c) relajar `:223-226` de "exactamente un cargo" a
+  "el cargo de esta orden está entre los cargos de la factura" + wire de
+  la rama de orden en `buildCreditNote()` -- el bloque que toca plata,
+  último y más chico; 1d) aparte, después: `classifyOrderLiveInvoice()`
+  con awareness de pares.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
@@ -965,25 +1017,53 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   push (no solo tsc): 19/19 tests de integración en 3 suites reales
   (incluida la que había dado el flake) con la firma nueva de
   `dropTestDatabase()`.
-- **`EVT-ORF-01`** — `reservation.expired` se emite y NINGÚN handler lo
-  escucha. Hallazgo ORIGINAL de `pendientes-2026-09-02.md`, arrastrado
-  sin cambios por `-03.md`/`-05.md`, con detalle completo todavía en
-  `pendientes-2026-09-06.md` ("se persiste y el worker lo descarta cada
-  5s -- cruza con A7.6"). **Se cayó en el salto a `pendientes-2026-09-08.md`
-  sin que nadie lo decidiera ni lo resolviera** -- encontrado recién ahora
-  (11/09/2026, auditoría de arrastre pedida por el dueño, barrido completo
-  09-02→09-10). **Reverificado contra el código real hoy, sigue siendo
-  100% cierto**: `reservation-hold-expiry.worker.ts:127` emite
-  `reservation.expired`; `src/workers/outbox.handlers.ts` no tiene
-  absolutamente ninguna mención de ese `eventType` (ni `.on(...)`, ni
-  handler suelto) -- el propio test de `outbox.worker.test.ts:626-627`
-  documenta que un evento sin handler registrado "no debe trabar la cola",
-  confirmando que hoy se descarta en silencio, por diseño del worker, no
-  por accidente puntual. **Decisión de producto pendiente, no técnica**:
-  ¿hace falta algún consumidor real para este evento (ej. liberar algo
-  más allá de lo que el worker ya hace directo, notificar, actualizar un
-  contador), o es puramente informativo y el evento nunca debió esperar
-  un handler? Sin esa respuesta no hay bloque que diseñar.
+- **`EVT-ORF-01`** — ✅ **CERRADO SIN HANDLER (11/09/2026, decisión del
+  dueño, grounding ERP: Cloudbeds/Odoo/ERPNext/QloApps vía
+  `auditor-circuitos-erp`, gate `architecture-governor` APPROVED WITH
+  CONDITIONS).** `reservation.expired` se emite y ningún handler lo
+  escucha -- reverificado, sigue siendo cierto:
+  `reservation-hold-expiry.worker.ts:127` emite el evento;
+  `src/workers/outbox.handlers.ts` no tiene ninguna mención de ese
+  `eventType`; se descarta en silencio, por diseño del worker (el propio
+  test de `outbox.worker.test.ts:626-627` documenta que un evento sin
+  handler "no debe trabar la cola" como comportamiento esperado, no bug).
+  **Decisión adoptada**: se queda sin handler dedicado, a propósito.
+  Ningún sistema investigado con evidencia confirmada (Odoo, ERPNext,
+  QloApps, Cloudbeds) dispara notificación obligatoria por defecto al
+  vencer un hold sin seña -- Cloudbeds, el único 100% hotelero comercial
+  del grupo y el más maduro, hace exactamente lo mismo que este repo:
+  libera el hold y nada más (Courtesy Hold / calendar blocks). Ningún ERP
+  investigado envía email automático al huésped por defecto en este caso
+  (donde existe, es opt-in/configurable, no comportamiento de fábrica).
+  **Corrección del gate (11/09/2026) sobre una afirmación falsa de esta
+  misma sesión**: se había dicho que el estado `EXPIRED` "ya es
+  reportable" en el producto porque `Reservation.expire()` deja
+  `status = EXPIRED`, distinto de `CANCELLED` (`domain/reservation.entities.ts:361`,
+  terminal en `:85`). Cierto a nivel de dato, **falso end-to-end**:
+  `appfrontend-main/src/lib/reservas/types.ts:1` (`ReservationStatus`) NO
+  incluye `EXPIRED` -- solo 4 de los 5 valores del enum real del backend
+  (`src/types/enums.ts:13`). Consecuencia real: una reserva `EXPIRED` se
+  renderiza hoy en `dashboard/reservas/page.tsx` y `dashboard/turnos/page.tsx`
+  con badge vacío y sin label (`STATUS_BADGE_CLASS`/`STATUS_LABEL` sin
+  fallback, 9 sitios en 5 archivos -- `reservas/page.tsx`,
+  `reservas/[id]/page.tsx`, `turnos/page.tsx`, `turnos/[id]/page.tsx`), y
+  el filtro de estado (`ALL_STATUSES`, 2 archivos) no permite
+  seleccionarlo. `dashboard/page.tsx:53` es el único sitio que degrada
+  bien (`?? r.status ?? '—'`). Mismo patrón de drift cross-repo que
+  `ROLES-CATALOG-DRIFT-001`. **No bundleado en este cierre, a propósito**
+  -- ver `RESERVATION-STATUS-EXPIRED-FRONTEND-01` más abajo, bloque
+  propio.
+- **`RESERVATION-STATUS-EXPIRED-FRONTEND-01`** (11/09/2026, hallazgo del
+  gate al cerrar `EVT-ORF-01` de arriba, `requiere query` ya satisfecha
+  por lectura de código, sin decisión de negocio pendiente -- es un bug
+  de contrato cross-repo, no una elección). `appfrontend-main/src/lib/reservas/types.ts:1`
+  agrega `'EXPIRED'` a `ReservationStatus`; `ALL_STATUSES` en
+  `dashboard/reservas/page.tsx` y `dashboard/turnos/page.tsx` lo suma a
+  las opciones del filtro; `STATUS_BADGE_CLASS`/`STATUS_LABEL` ganan una
+  entrada para `EXPIRED` en los 4 archivos que hoy no tienen fallback
+  (`reservas/page.tsx`, `reservas/[id]/page.tsx`, `turnos/page.tsx`,
+  `turnos/[id]/page.tsx`). Bloque chico, reversible, sin schema ni
+  backend -- encarado aparte en esta misma sesión.
 - **Hueco de doble comprobante en `getInvoicedFinancialTransactionIds()`**
   -- ✅ **RESUELTO, PERO SOLO PARA LA DIRECCIÓN CONSOLIDADA↔CONSOLIDADA**
   (11/09/2026, gate `architecture-governor`, ronda 2: HOLD → APPROVED WITH
