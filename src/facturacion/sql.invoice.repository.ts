@@ -981,6 +981,25 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return new Set(rows.map((r) => r.financial_transaction_id));
   }
 
+  async getFinancialTransactionIdsCoveredByConsolidated(financialTransactionIds: string[]): Promise<Set<string>> {
+    // Ver el docblock de la interfaz (invoice.repository.ts) -- CON JOIN y
+    // CON filtro de status a propósito, a diferencia de la rama
+    // invoice_charges de getInvoicedFinancialTransactionIds() (esa es
+    // status-agnóstica porque responde otra pregunta, forzada por el
+    // índice único). Acá el criterio es "¿requestInvoice() rechazaría
+    // esto?" -- mismo predicado que ese guard, INVOICE_STATUSES_CONSUMING_CHARGE.
+    if (financialTransactionIds.length === 0) return new Set();
+    const { rows } = await this.db.query<{ financial_transaction_id: string }>(
+      `SELECT ic.financial_transaction_id
+       FROM invoice_charges ic
+       JOIN invoices i ON i.id = ic.invoice_id
+       WHERE ic.financial_transaction_id = ANY($1::VARCHAR[])
+         AND i.status = ANY($2::text[])`,
+      [financialTransactionIds, [...INVOICE_STATUSES_CONSUMING_CHARGE]],
+    );
+    return new Set(rows.map((r) => r.financial_transaction_id));
+  }
+
   async getByReservationId(reservationId: string): Promise<Invoice[]> {
     // Bloque 3.1 (ADR común cancelar-con-NC §6.1, `docs/pendientes-2026-09-08.md`
     // #5a, gate `architecture-governor` 08/09/2026) -- antes esto era un

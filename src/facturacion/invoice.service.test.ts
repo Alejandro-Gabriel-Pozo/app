@@ -3,6 +3,7 @@ import type { Arca } from '@arcasdk/core';
 import { InvoiceService, hashIds } from './invoice.service.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
+import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from './afip-credentials.repository.js';
 import type { FinancialTransactionRepository, FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { AccountsReceivableRepository, AccountReceivable } from '../clientes-finanzas/accounts-receivable.repository.js';
@@ -70,6 +71,20 @@ class FakeInvoiceRepository implements InvoiceRepository {
   // B3 bloque 2.1 (08/09/2026) -- sin caller todavía en InvoiceService.
   async getByStatus(status: InvoiceStatus): Promise<Invoice[]> {
     return [...this.invoices.values()].filter((i) => i.status === status);
+  }
+  async getFinancialTransactionIdsCoveredByConsolidated(ids: string[]): Promise<Set<string>> {
+    // Espeja el SQL real: rama invoice_charges CON filtro de status
+    // (INVOICE_STATUSES_CONSUMING_CHARGE) -- a diferencia de
+    // getInvoicedFinancialTransactionIds() de arriba, que en esa rama es
+    // status-agnóstica a propósito. Ver docblock de la interfaz.
+    const result = new Set<string>();
+    for (const [chargeFtId, invoiceId] of this.charges) {
+      const status = this.invoices.get(invoiceId)?.status;
+      if (ids.includes(chargeFtId) && status && (INVOICE_STATUSES_CONSUMING_CHARGE as readonly string[]).includes(status)) {
+        result.add(chargeFtId);
+      }
+    }
+    return result;
   }
   async resolveInvoiceLinkage(ftId: string): Promise<InvoiceLinkage> {
     const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);

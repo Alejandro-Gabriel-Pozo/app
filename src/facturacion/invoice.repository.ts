@@ -112,15 +112,57 @@ export interface InvoiceRepository {
    * puntual para atender un caso real, usar `resolveInvoiceLinkage()`
    * (mismo archivo), que sí lo distingue.
    *
-   * Tres predicados distintos sobre "¿este cargo tiene un comprobante
-   * vivo?" conviven a propósito en este archivo (este método -- ahora con
-   * 2 sub-políticas propias --, el cap de NC de
-   * `getInFlightCreditNoteTotalForUpdate()`/`ForPair`, y
-   * `sql.financial-transaction.repository.ts` para anulación de CHARGEs)
-   * porque responden preguntas distintas sobre las mismas tablas -- no
-   * unificar sin re-derivar cada uno.
+   * Predicados distintos sobre "¿este cargo tiene un comprobante vivo?"
+   * conviven a propósito en este archivo -- responden preguntas distintas
+   * sobre las mismas tablas, no unificar sin re-derivar cada uno:
+   *
+   * | Predicado                                              | Pregunta                                  | Status               |
+   * |---------------------------------------------------------|--------------------------------------------|----------------------|
+   * | este método, rama `invoice_charges`                     | ¿puedo re-consolidar este cargo?          | agnóstico (índice único lo fuerza) |
+   * | este método, rama `invoices` (1-bis)                     | ¿puedo facturar individual este cargo?    | `INVOICE_STATUSES_CONSUMING_CHARGE` |
+   * | guard de `InvoiceService.requestInvoice()`               | ¿emito individual ahora?                  | `INVOICE_STATUSES_CONSUMING_CHARGE` |
+   * | `getFinancialTransactionIdsCoveredByConsolidated()` (abajo) | ¿tiene sentido ofrecer el botón en la UI? | `INVOICE_STATUSES_CONSUMING_CHARGE`, solo rama `invoice_charges` |
+   * | `getInFlightCreditNoteTotalForUpdate()`/`ForPair`         | ¿queda cupo para otra NC?                 | `INVOICE_STATUSES_CONSUMING_CHARGE` |
+   * | `sql.financial-transaction.repository.ts`                | ¿anulo este CHARGE?                       | (propio, ver ese archivo) |
    */
   getInvoicedFinancialTransactionIds(financialTransactionIds: string[]): Promise<Set<string>>;
+  /**
+   * `INVOICE-CHARGES-GUARD-FRONTEND-02` (11/09/2026, Bloque 2, gate
+   * `architecture-governor`) — de la lista dada, cuáles NO tiene sentido
+   * ofrecer para facturación individual porque están cubiertos por una
+   * consolidada VIVA (no `REJECTED`). Consumidor: `GET /customers/:id/account`,
+   * para que `FacturarButton` (appfrontend-main) oculte el botón en ese
+   * caso puntual -- nunca para el resto de los estados de una factura
+   * INDIVIDUAL propia (`ISSUED` sigue mostrando CAE+PDF, `PENDING`/
+   * `FAILED_UNCERTAIN` siguen ofreciendo "Reintentar factura" -- grounding
+   * ERP verificado: ningún ERP maduro oculta un documento fiscal en curso o
+   * fallido, lo muestra con su estado y una acción de reintento, ej. Odoo
+   * `account_edi` `action_retry_edi_documents_error`).
+   *
+   * **Criterio de diseño, sin margen de interpretación**: este método
+   * devuelve `true` para un `ftId` EXACTAMENTE cuando
+   * `InvoiceService.requestInvoice()` lanzaría
+   * `InvoiceAlreadyLinkedByOtherPathError` -- el botón no tiene que
+   * adivinar nada, solo no ofrecer una acción que el backend va a
+   * rechazar. Por eso el predicado filtra por
+   * `INVOICE_STATUSES_CONSUMING_CHARGE` igual que ese guard -- **NO** es
+   * el mismo predicado status-agnóstico de la rama `invoice_charges` de
+   * `getInvoicedFinancialTransactionIds()` de arriba (esa responde "¿puede
+   * este cargo re-consolidarse?", forzada por `idx_invoice_charges_ft`
+   * único; ésta responde "¿tiene sentido ofrecer el botón individual?").
+   * Una consolidada `REJECTED` deja el cargo bloqueado para re-consolidar
+   * PARA SIEMPRE (esa rama), pero SÍ facturable individual (este método
+   * debe devolver `false` para ese caso, dejando el botón visible) --
+   * confundir los dos predicados fue exactamente la regresión que este
+   * método corrige (esconder el botón también sobre una consolidada
+   * `REJECTED`, dejando el único camino restante -- el individual --
+   * inalcanzable desde la UI).
+   *
+   * Cuarto predicado sobre "¿este cargo tiene un comprobante vivo?" en
+   * este archivo (ver la tabla completa en el docblock del método de
+   * arriba) -- no unificar con ninguno de los otros tres sin re-derivar.
+   */
+  getFinancialTransactionIdsCoveredByConsolidated(financialTransactionIds: string[]): Promise<Set<string>>;
   /**
    * I4 (23/08/2026, pendientes-2026-08-23.md — conciliación de pagos,
    * verificación de auditoría externa) — facturas `ISSUED` de un cliente

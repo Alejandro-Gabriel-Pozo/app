@@ -56,7 +56,7 @@ import { SqlBusinessProfileRepository } from '../../repositories/sql.business-pr
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
-import { ReservationCancelledCannotInvoiceError, AccountsReceivableAlreadyInvoicedError } from '../../domain/errors.js';
+import { ReservationCancelledCannotInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
@@ -265,32 +265,51 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
     expect(cancelledAr!.status).toBe('PENDIENTE_FACTURAR');
   }, 30_000);
 
-  describe('hueco de doble comprobante (11/09/2026, gate architecture-governor) -- getInvoicedFinancialTransactionIds() contra Postgres real', () => {
-    /**
-     * Reproduce a mano lo que create()/createWithClient() deja armado para
-     * una consolidada que NUNCA llegó a ISSUED: la fila `invoices` +
-     * `invoice_charges` SÍ existen (se insertan en la misma transacción,
-     * antes de llamar a AFIP -- ver sql.invoice.repository.ts), pero el
-     * status quedó PENDING/FAILED_UNCERTAIN/REJECTED. `invoice_charges`
-     * nunca se borra, sea cual sea el desenlace.
-     */
-    async function seedStuckInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
-      const invoiceId = randomUUID();
-      await db.query(
-        `INSERT INTO invoices
-           (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
-            pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
-            imp_neto, imp_iva, imp_total, status)
-         VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
-        [invoiceId, BIZ, chargeFtId, customerId, `invoice:consolidated:stuck-${invoiceId}`, CBTE_TIPO_FACTURA_B, status],
-      );
-      await db.query(
-        `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
-         VALUES ($1, $2, $3, 100)`,
-        [randomUUID(), invoiceId, chargeFtId],
-      );
-    }
+  /**
+   * Reproduce a mano lo que create()/createWithClient() deja armado para
+   * una consolidada que NUNCA llegó a ISSUED: la fila `invoices` +
+   * `invoice_charges` SÍ existen (se insertan en la misma transacción,
+   * antes de llamar a AFIP -- ver sql.invoice.repository.ts), pero el
+   * status quedó PENDING/FAILED_UNCERTAIN/REJECTED. `invoice_charges`
+   * nunca se borra, sea cual sea el desenlace. Promovido a scope externo
+   * (11/09/2026, Bloque 2) -- lo reusan 2 describe hermanos.
+   */
+  async function seedStuckInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
+    const invoiceId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
+          pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
+          imp_neto, imp_iva, imp_total, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
+      [invoiceId, BIZ, chargeFtId, customerId, `invoice:consolidated:stuck-${invoiceId}`, CBTE_TIPO_FACTURA_B, status],
+    );
+    await db.query(
+      `INSERT INTO invoice_charges (id, invoice_id, financial_transaction_id, amount)
+       VALUES ($1, $2, $3, 100)`,
+      [randomUUID(), invoiceId, chargeFtId],
+    );
+  }
 
+  /**
+   * Reproduce lo que deja `requestInvoice()` (camino INDIVIDUAL) para ese
+   * mismo cargo -- una fila `invoices` con `financial_transaction_id`
+   * directo, SIN ninguna fila en `invoice_charges` (eso solo lo escribe la
+   * consolidada). Promovido a scope externo (11/09/2026, Bloque 2).
+   */
+  async function seedIndividualInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
+    const invoiceId = randomUUID();
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
+          pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
+          imp_neto, imp_iva, imp_total, status)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
+      [invoiceId, BIZ, chargeFtId, customerId, `invoice:${chargeFtId}`, CBTE_TIPO_FACTURA_B, status],
+    );
+  }
+
+  describe('hueco de doble comprobante (11/09/2026, gate architecture-governor) -- getInvoicedFinancialTransactionIds() contra Postgres real', () => {
     it.each(['PENDING', 'FAILED_UNCERTAIN', 'REJECTED'] as const)(
       'rechaza el lote nuevo si un cargo YA tiene invoice_charges apuntando a una factura %s -- no solo ISSUED',
       async (priorStatus) => {
@@ -319,26 +338,10 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
       30_000,
     );
 
-    /**
-     * `INVOICE-CHARGES-GUARD-1BIS-01` (11/09/2026, gate `architecture-governor`,
-     * ronda 2) -- arm simétrico: reproduce lo que deja `requestInvoice()`
-     * (camino INDIVIDUAL, ej. "Facturar" en cuentas-corrientes) para ese
-     * mismo cargo -- una fila `invoices` con `financial_transaction_id`
-     * directo, SIN ninguna fila en `invoice_charges` (eso solo lo escribe
-     * la consolidada).
-     */
-    async function seedIndividualInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
-      const invoiceId = randomUUID();
-      await db.query(
-        `INSERT INTO invoices
-           (id, business_id, financial_transaction_id, customer_id, idempotency_key, environment,
-            pto_vta, cbte_tipo, concepto, doc_tipo, doc_nro, condicion_iva_receptor_id,
-            imp_neto, imp_iva, imp_total, status)
-         VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, 2, 99, '0', 5, 82.64, 17.36, 100, $7)`,
-        [invoiceId, BIZ, chargeFtId, customerId, `invoice:${chargeFtId}`, CBTE_TIPO_FACTURA_B, status],
-      );
-    }
-
+    // INVOICE-CHARGES-GUARD-1BIS-01 (11/09/2026) -- arm simétrico: reproduce
+    // lo que deja requestInvoice() (camino INDIVIDUAL) para ese mismo cargo.
+    // seedIndividualInvoiceForCharge() ahora vive en scope externo (Bloque 2
+    // la reusa desde su propio describe hermano).
     it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
       'rechaza el lote nuevo si un cargo YA tiene una factura INDIVIDUAL directa %s -- arm 1-bis',
       async (priorStatus) => {
@@ -396,6 +399,69 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
         await expect(
           invoiceService.requestConsolidatedInvoice({ businessId: BIZ, companyCustomerId: company.id, changedBy: 'user-1' }),
         ).rejects.toThrow(AccountsReceivableAlreadyInvoicedError);
+      },
+      30_000,
+    );
+  });
+
+  describe('INVOICE-CHARGES-GUARD-FRONTEND-02 (11/09/2026, Bloque 2, gate architecture-governor) -- getFinancialTransactionIdsCoveredByConsolidated() contra Postgres real', () => {
+    /**
+     * Propiedad de simetría exigida por el gate: el mismo cargo que hace
+     * que InvoiceService.requestInvoice() (camino individual) tire
+     * InvoiceAlreadyLinkedByOtherPathError tiene que ser el que
+     * getFinancialTransactionIdsCoveredByConsolidated() devuelve como
+     * cubierto -- y viceversa (REJECTED no bloquea ninguno de los dos).
+     * Reusa seedPendingArWithCharge()/seedStuckInvoiceForCharge() ya
+     * definidos en este archivo (describe de arriba).
+     */
+    it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
+      'cargo cubierto por consolidada %s: getFinancialTransactionIdsCoveredByConsolidated() lo marca Y requestInvoice() lo rechaza -- misma respuesta',
+      async (status) => {
+        const company = await seedCustomer(db);
+        const covered = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedStuckInvoiceForCharge(covered.chargeId, company.id, status);
+
+        const invoiceRepo = new SqlInvoiceRepository(db);
+        const coveredIds = await invoiceRepo.getFinancialTransactionIdsCoveredByConsolidated([covered.chargeId]);
+        expect(coveredIds.has(covered.chargeId)).toBe(true);
+
+        await expect(
+          invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: covered.chargeId, changedBy: 'user-1' }),
+        ).rejects.toThrow(InvoiceAlreadyLinkedByOtherPathError);
+      },
+      30_000,
+    );
+
+    it(
+      'cargo cubierto por consolidada REJECTED: NI getFinancialTransactionIdsCoveredByConsolidated() lo marca NI requestInvoice() lo rechaza -- el botón sigue ofreciéndose, la emisión individual sigue funcionando',
+      async () => {
+        const company = await seedCustomer(db);
+        const rejected = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedStuckInvoiceForCharge(rejected.chargeId, company.id, 'REJECTED');
+
+        const invoiceRepo = new SqlInvoiceRepository(db);
+        const coveredIds = await invoiceRepo.getFinancialTransactionIdsCoveredByConsolidated([rejected.chargeId]);
+        expect(coveredIds.has(rejected.chargeId)).toBe(false);
+
+        const invoice = await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: rejected.chargeId, changedBy: 'user-1' });
+        expect(invoice.status).toBe('ISSUED');
+      },
+      30_000,
+    );
+
+    it(
+      'una factura INDIVIDUAL propia (cualquier status) NO marca al cargo como cubierto -- este método solo mira invoice_charges, no invoices.financial_transaction_id',
+      async () => {
+        const company = await seedCustomer(db);
+        const individual = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedIndividualInvoiceForCharge(individual.chargeId, company.id, 'ISSUED');
+
+        const invoiceRepo = new SqlInvoiceRepository(db);
+        const coveredIds = await invoiceRepo.getFinancialTransactionIdsCoveredByConsolidated([individual.chargeId]);
+        // No cubierto por ESTE método -- el guard que SÍ protege este caso
+        // es el de requestInvoice() (idempotencia propia, invoice:<ftId>),
+        // no el que alimenta al botón del Bloque 2.
+        expect(coveredIds.has(individual.chargeId)).toBe(false);
       },
       30_000,
     );

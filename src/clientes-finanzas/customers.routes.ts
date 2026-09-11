@@ -809,6 +809,24 @@ export function createCustomersRouter(container: AppContainer): Router {
   }
 
   // GET /customers/:id/account — estado de cuenta (balance + transacciones)
+  //
+  // INVOICE-CHARGES-GUARD-FRONTEND-02 (11/09/2026, Bloque 2, gate
+  // `architecture-governor`) -- enriquece con `coveredByConsolidatedTransactionIds`
+  // SOLO si el negocio tiene FACTURACION habilitado (decisión del dueño:
+  // esta ruta está gateada por CUENTAS_CORRIENTES, no por FACTURACION, y
+  // un negocio sin ese módulo no debe pagar el costo de la query ni recibir
+  // ese dato -- los 2 módulos son independientes, `requireModule()` no lo
+  // exige). El chequeo vive ACÁ, no en `CustomerAccountService` (que se
+  // mantiene tenant-puro, sin conocimiento de módulos de plataforma --
+  // mismo principio que separa `req.db` de `getPlatformRawPool()`).
+  //
+  // `requireModule()` (arriba, línea de este mismo router) ya llama
+  // `container.getBusinessModuleGates()` y descarta el resultado -- este
+  // segundo fetch es una consulta más a la BD de plataforma por request.
+  // Aceptado a propósito (dejar los gates en `req` toca middleware
+  // compartido, bloque aparte) pero con el MISMO manejo de error que
+  // `requireModule()` para no degradar silenciosamente a 500 si la
+  // plataforma no responde.
   router.get(
     '/:id/account',
     authorize(Roles.FRONT_DESK),
@@ -816,7 +834,27 @@ export function createCustomersRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const statement = await buildCustomerAccountService(req).getStatement(String(req.params['id']));
-        res.json(statement);
+
+        let gates: Record<string, { enabled: boolean }>;
+        try {
+          gates = await container.getBusinessModuleGates(req.user!.businessId as string);
+        } catch {
+          res.status(503).json({
+            code: 'PLATFORM_UNAVAILABLE',
+            message: 'No se pudo verificar los módulos habilitados del negocio.',
+          });
+          return;
+        }
+
+        if (!gates[ModuleKey.FACTURACION]?.enabled) {
+          res.json(statement);
+          return;
+        }
+
+        const chargeIds = statement.transactions.filter((tx) => tx.type === 'CHARGE').map((tx) => tx.id);
+        const invoiceRepo = new SqlInvoiceRepository(req.db!);
+        const covered = await invoiceRepo.getFinancialTransactionIdsCoveredByConsolidated(chargeIds);
+        res.json({ ...statement, coveredByConsolidatedTransactionIds: [...covered] });
       } catch (err) { next(err); }
     },
   );
