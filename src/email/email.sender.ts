@@ -33,6 +33,36 @@
  * duplicado, no una pérdida de dinero/stock. Si se vuelve un problema real,
  * la solución es la misma que ya usa `stock_movements`: una tabla de
  * envíos con índice único por (aggregateId, eventType).
+ *
+ * ## Header `From` — quoted-string RFC 5322 (EMAIL-FROMNAME-RFC5322-01)
+ * `fromName` es texto libre (`business_profile.display_name`, sin límite de
+ * charset más allá de `VARCHAR(255)`/zod `.max(255)`) interpolado en
+ * `From: "<nombre>" <email>`. `formatFromDisplayName()` lo deja tal cual si
+ * no tiene ningún carácter RFC 5322 "special" (caso común, sin cambio de
+ * comportamiento) y lo quotea+escapa si tiene alguno — no solo los que
+ * rompen el parsing de forma ruidosa (`,`/`;` — se leen como separador de
+ * direcciones) sino también `(`/`)`, que abren un *comment* RFC 5322: sin
+ * quotear, el texto entre paréntesis se DESCARTA del nombre visible en
+ * silencio, sin ningún error que alguien reporte.
+ * - **Caracteres de control (incluye CR/LF):** un quoted-string no puede
+ *   contenerlos ni escapados (requerirían folding, que este formateo de una
+ *   sola línea no hace) — se descartan (strip), no se rechaza el envío.
+ *   Mismo criterio fail-open que el resto de este archivo: un nombre con
+ *   basura de control no debe tumbar el mail de confirmación de reserva.
+ *   Nota: el payload viaja como `JSON.stringify(...)` al REST API de Resend,
+ *   así que un `\n` crudo ya llega JSON-escapado — el riesgo acá es
+ *   parsing de dirección roto, no inyección de headers SMTP.
+ * - **No-ASCII (ej. "Hotel Los Álamos"):** deliberadamente fuera de
+ *   alcance — RFC 5322 es 7-bit ASCII y un nombre no-ASCII sin encoded-word
+ *   (RFC 2047) no es estrictamente compliant. Funciona hoy porque Resend
+ *   decodifica/acepta UTF-8 crudo en el campo `from` — dependencia del
+ *   proveedor, no del spec, y ya está fijada por el test que verifica que
+ *   `Hotel Los Álamos` pasa sin comillas. Agregar RFC 2047 es un ítem aparte.
+ * - **`fromName` vacío o solo espacios:** no debería ser alcanzable — zod
+ *   exige `.trim().min(1)` en el perfil y los 4 call sites usan
+ *   `?? DEFAULT_SENDER_NAME` — pero `formatFromDisplayName()` es la última
+ *   línea de defensa: un string vacío entra sin caracteres especiales y sale
+ *   igual, vacío, sin comillas ni error.
  */
 
 import { logger } from '../logger.js';
@@ -54,6 +84,30 @@ export interface EmailSender {
   send(message: EmailMessage): Promise<void>;
 }
 
+/**
+ * Caracteres "special" de RFC 5322 que, sin quotear el display-name, rompen
+ * el parsing del header `From` o (`(`/`)`) descartan texto en silencio —
+ * ver docblock del archivo. Uso interno de este módulo, no exportado.
+ */
+const RFC5322_SPECIAL_CHARS = /["<>,;:\\()@[\]]/;
+
+/** Caracteres de control (incluye CR/LF) — ver docblock: se descartan, no se rechazan. */
+// eslint-disable-next-line no-control-regex -- intencional: barrido de control chars del display-name, no un bug.
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
+
+/**
+ * Formatea `fromName` para el header `From` — ver docblock del archivo
+ * (EMAIL-FROMNAME-RFC5322-01). Sin caracteres especiales, lo devuelve tal
+ * cual (sin comillas, caso común, sin cambio de comportamiento). Con
+ * caracteres especiales, escapa `\` y `"` y lo envuelve en comillas dobles.
+ */
+function formatFromDisplayName(fromName: string): string {
+  const stripped = fromName.replace(CONTROL_CHARS, '');
+  if (!RFC5322_SPECIAL_CHARS.test(stripped)) return stripped;
+  const escaped = stripped.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 export class ResendEmailSender implements EmailSender {
   constructor(
     private readonly apiKey: string,
@@ -69,7 +123,7 @@ export class ResendEmailSender implements EmailSender {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: `${message.fromName} <${this.fromEmail}>`,
+        from: `${formatFromDisplayName(message.fromName)} <${this.fromEmail}>`,
         to: [message.to],
         ...(message.replyTo && { reply_to: message.replyTo }),
         subject: message.subject,
