@@ -183,9 +183,24 @@ futuros, cada uno con su propio alcance.
   `OutboxWorker` 5s Y `ReservationHoldExpiryWorker` 60s
   (`outbox.registry.ts:134-143`) -- y la primera corrida del segundo en un
   tenant portal-only barre TODAS las holds vencidas acumuladas de una vez,
-  anulando las transacciones financieras asociadas. Impacto medido hoy: 0
-  (las 2 tenants reales ya tienen tráfico de staff a diario). El dueño
-  confirmó la opción simple igual, con el costo corregido sobre la mesa.
+  anulando las transacciones financieras asociadas. El dueño confirmó la
+  opción simple igual, con el costo corregido sobre la mesa.
+  **Corrección 11/09/2026 (gate `architecture-governor`, auditoría a
+  posteriori de este commit)**: la afirmación original de esta entrada
+  ("impacto medido hoy: 0, las 2 tenants reales ya tienen tráfico de staff
+  a diario") era una INFERENCIA desde el tráfico, no una medición del
+  backlog real -- el gate marcó la diferencia como condición bloqueante
+  antes de push/deploy, dado el efecto financiero irreversible. **Medido
+  de verdad, read-only, antes de pedir push** (`SELECT COUNT(*) FROM
+  reservations WHERE status = 'PENDING' AND deposit_due_by IS NOT NULL
+  AND deposit_due_by < NOW()`, mismo predicado que
+  `getPendingWithExpiredDeposit()`, `sql.reservation.repository.ts:290-298`):
+  **0 holds vencidas en Demo** (Neon `ancient-king-17098519`, branch
+  `production`/`br-snowy-tree-ax5wmq70`) **y 0 en Hotel los Álamos**
+  (branch `tenant-hotel-los-alamos`/`br-square-leaf-axzvu903`), medido
+  11/09/2026 ~09:46 UTC. Ahora sí es medición, no inferencia -- el primer
+  arranque de `ReservationHoldExpiryWorker` vía el nuevo call site del
+  portal es inocuo en las 2 tenants reales hoy.
   Idempotente por diseño (`workers.has(businessId)`) -- el segundo caller
   (portal o staff, el que llegue después) es un no-op. Tests: 2 nuevos en
   `customer.routes.test.ts` (el middleware `router.use` no lo camina el
