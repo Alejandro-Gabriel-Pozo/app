@@ -61,52 +61,93 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
  * `accounts-receivable.routes.ts`, que tiene 3 rutas protegidas, no 1). Si
  * alguien agrega una ruta a uno de estos 11 archivos sin normalizar la
  * sección 2, la suite se pone roja -- no queda como deuda invisible.
+ *
+ * ## `docBullets` -- por qué es un CONJUNTO congelado, no un conteo (11/09/2026)
+ * El hueco original: la única aserción sobre `EXCLUDED_FILES` era
+ * "¿el conteo total de rutas protegidas sigue coincidiendo con `hiddenCount`?"
+ * -- eso NO detecta que alguien normalice un archivo a bullets reales en la
+ * sección 2 y se olvide de sacarlo de `EXCLUDED_FILES`: los bullets nuevos
+ * describen las mismas rutas que ya se contaban vía prosa, el TOTAL no se
+ * mueve, y la cerca queda verde ignorando los bullets nuevos por completo.
+ *
+ * Un segundo campo `EXPECTED_PARSEABLE_COUNT` (comparar contra un número)
+ * tiene el MISMO defecto que el original -- un conteo no distingue "el
+ * archivo sigue en prosa" de "alguien reescribió un bullet preservando el
+ * tamaño del conjunto". El caso real, ya en este archivo, es
+ * `accounts-receivable.routes.ts`: 3 bullets reales, uno de ellos
+ * (`GET /?companyCustomerId=`) diverge del código real (`GET /`). Si se
+ * corrige esa línea sin sacar el archivo de `EXCLUDED_FILES`, un conteo
+ * contra 3 sigue dando 3 -- verde, hueco sin cerrar en el único archivo que
+ * hoy tiene bullets de verdad. Por eso `docBullets` es el CONJUNTO exacto
+ * (`"MÉTODO path"`, mismo formato que `DocBullet`) esperado bajo el
+ * marcador de cada archivo -- comparación de conjunto insensible al orden,
+ * no de tamaño. Mismo criterio que `roles-catalog-sync.test.ts` (congela el
+ * conjunto ordenado del catálogo de roles, no un conteo, por la misma razón:
+ * un conteo no ve un renombre que preserva el tamaño -- verificado por
+ * mutación el 09/09/2026).
  */
 
-const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string }> = {
+const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string; docBullets: string[] }> = {
   'api/routes/customer.routes.ts': {
     hiddenCount: 7,
     motivo: 'Párrafo narrativo (líneas 116-124 del doc): "7 rutas de /me/*" descritas en prosa, no como bullets.',
+    docBullets: [],
   },
   'facturacion/invoices.routes.ts': {
     hiddenCount: 9, // +1: GET /api/invoices/unreconciled (10/09/2026)
     motivo: 'Prosa por router (2 factories del mismo archivo, createInvoicesRouter + createAfipCredentialsRouter), rutas listadas inline separadas por ";", no como bullets.',
+    docBullets: [],
   },
   'platform/admin.routes.ts': {
     hiddenCount: 2,
     motivo: 'Prosa de una línea: "POST /repair-tenant-db, POST /set-tenant-url", no bullets.',
+    docBullets: [],
   },
   'platform/platform.routes.ts': {
     hiddenCount: 11,
     motivo: 'Prosa de un párrafo largo con notación de corchetes opcionales ([/:plan], [/:name]) que no es expandible por regex sin reescritura a mano.',
+    docBullets: [],
   },
   'pos-menu/waste-reasons.routes.ts': {
     hiddenCount: 5,
     motivo: 'Prosa de una línea: "GET /, GET /:id, POST /, PUT /:id, DELETE /:id — todo MANAGEMENT", no bullets.',
+    docBullets: [],
   },
   'pos-menu/consumption-destinations.routes.ts': {
     hiddenCount: 5,
     motivo: 'Mismo patrón que waste-reasons.routes.ts (gemelo declarado en el doc), prosa de una línea, no bullets.',
+    docBullets: [],
   },
   'pos-menu/products.routes.ts': {
     hiddenCount: 30,
     motivo: 'Prosa con comodines ("/:id/variants*", "/price-override/*") que agrupan varias rutas reales bajo un solo patrón -- no es 1:1 expandible sin leer cada authorize() real a mano.',
+    docBullets: [],
   },
   'reservas/cancellation-policies.routes.ts': {
     hiddenCount: 5,
     motivo: 'Prosa de una línea: "GET /, GET /:id, POST /, PUT /:id, DELETE /:id — todo MANAGEMENT", no bullets.',
+    docBullets: [],
   },
   'usuarios-roles/roles.routes.ts': {
     hiddenCount: 5,
     motivo: 'Prosa de una línea: "GET /, GET /:id, POST /, PUT /:id, DELETE /:id — todo MANAGEMENT", no bullets.',
+    docBullets: [],
   },
   'usuarios-roles/user-invitation.routes.ts': {
     hiddenCount: 4,
     motivo: 'Prosa de una línea para createUserInvitationsRouter: "GET /, POST /, POST /:id/resend, DELETE /:id", no bullets. (El otro router del archivo, createInvitationAcceptanceRouter, es público -- sección 4.)',
+    docBullets: [],
   },
   'clientes-finanzas/accounts-receivable.routes.ts': {
     hiddenCount: 3,
     motivo: 'SÍ tiene bullets (no es prosa), pero uno diverge del código real: el doc dice "GET `/?companyCustomerId=`", el código real es "GET `/`" -- un parser fila-por-fila lo marcaría en las dos direcciones a la vez. Corregir esa línea es edición de docs, fuera de alcance de este bloque (declarado explícitamente por el gate) -- hasta entonces, los 3 bullets del archivo quedan sin verificar, no solo el divergente, para no verificar 2 de 3 y dar una falsa sensación de cobertura completa.',
+    // Conjunto CONGELADO a propósito -- incluye el bullet divergente
+    // (GET /?companyCustomerId= vs. el código real GET /) tal cual está
+    // hoy en el doc. Si alguien corrige esa línea sin sacar el archivo de
+    // EXCLUDED_FILES, este conjunto deja de matchear y el test de abajo
+    // rompe -- señal correcta: "el archivo cambió, revisá si sigue
+    // perteneciendo acá", no una falla espuria.
+    docBullets: ['GET /?companyCustomerId=', 'POST /:id/mark-invoiced', 'POST /:id/mark-collected'],
   },
 };
 
@@ -217,6 +258,34 @@ describe('RBAC-MATRIX-SECTION2-001 -- sección 2 de rbac-matriz-endpoints.md sin
         violations.push(
           `${file}: EXCLUDED_FILES declara ${hiddenCount} rutas protegidas escondidas, pero el código tiene ${protectedCount} -- actualizá el número (o normalizá el archivo a bullets y sacalo de EXCLUDED_FILES).`,
         );
+      }
+    }
+    expect(violations, violations.join('\n  ')).toEqual([]);
+  });
+
+  it('EXCLUDED_FILES sigue sin bullets parseables NUEVOS en la sección 2 (conjunto congelado, no conteo)', () => {
+    const violations: string[] = [];
+    for (const [file, { docBullets: expected }] of Object.entries(EXCLUDED_FILES)) {
+      const actual = docBullets
+        .filter((b) => routesFileMap.get(b.file) === file)
+        .map((b) => `${b.method} ${b.path}`);
+
+      const expectedSet = new Set(expected);
+      const actualSet = new Set(actual);
+      const missing = expected.filter((e) => !actualSet.has(e));
+      const extra = actual.filter((a) => !expectedSet.has(a));
+
+      if (missing.length > 0 || extra.length > 0) {
+        const parts: string[] = [];
+        if (extra.length > 0) {
+          parts.push(
+            `bullet(s) NUEVO(s) que EXCLUDED_FILES no declaraba: ${extra.join(', ')} -- si el archivo se normalizó a bullets, sacalo de EXCLUDED_FILES (y agregá sus filas a la verificación fila-por-fila) en el mismo cambio.`,
+          );
+        }
+        if (missing.length > 0) {
+          parts.push(`bullet(s) declarado(s) en EXCLUDED_FILES que ya no aparecen en el doc: ${missing.join(', ')}.`);
+        }
+        violations.push(`${file}: ${parts.join(' ')}`);
       }
     }
     expect(violations, violations.join('\n  ')).toEqual([]);
