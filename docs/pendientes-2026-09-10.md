@@ -1011,8 +1011,15 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   cierre de `OUTBOX-BACKOFF-01`; sí es motivo más fuerte para que este
   ítem vaya primero si se retoma la familia.
   **Bloque A -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
-  `APPROVED WITH CONDITIONS`).** Prerrequisito de idempotencia, sin el
-  sweep de recuperación en sí (eso sigue en HOLD, ver abajo).
+  `APPROVED WITH CONDITIONS`, cierre `FEATURE VERIFIED`).** Es el
+  PRERREQUISITO de idempotencia, no la solución -- **la carrera de
+  `OUTBOX-DL-COMPENSATOR-01` sigue abierta, sin cambios**: si el proceso
+  muere hoy entre que `recordFailure()` confirma el dead-letter y que el
+  compensador termina de correr, el stock sigue quedando retenido para
+  siempre, sin que nada lo reintente automáticamente. Lo único que
+  cambió es que ahora existe la marca durable en `processed_events` que
+  un sweep de recuperación futuro necesitaría para saber si ya corrió --
+  ese sweep sigue en HOLD, ver abajo.
   `OutboxWorker.onDeadLetter(eventType, handler, options)` ahora exige
   `options.name` cuando hay `processedEventRepository` (mismo guard que
   `on()`, mensaje espejado) -- **no opcional** como venía en la primera
