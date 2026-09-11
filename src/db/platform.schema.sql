@@ -943,6 +943,14 @@ ON CONFLICT (seed_key) DO NOTHING;
 -- role_preset_permission_groups (PRESET-REVOKE-001): sin esto, sacar un
 -- rol permitido por el panel (`PUT /platform/plan-limits/:plan`) se
 -- revertía solo en el próximo arranque.
+--
+-- Con la marca instalada, este VALUES corre una sola vez por instalación:
+-- agregar un rol default nuevo de acá en más se hace por el PANEL, no
+-- editando el VALUES de abajo (no tendría efecto en una instalación que
+-- ya arrancó con este bloque) -- mismo criterio que
+-- role_preset_permission_groups (ver su docblock, arriba en este
+-- archivo). Un `.v2` de la seed_key es la vía si algún día hace falta
+-- que un VALUES nuevo tenga efecto real en instalaciones ya arrancadas.
 INSERT INTO plan_limit_allowed_roles (plan, role_name)
 SELECT * FROM (VALUES
   ('FREE',    'ADMIN'),
@@ -975,6 +983,16 @@ ON CONFLICT (seed_key) DO NOTHING;
 -- 5 a propósito y quedar deliberadamente en 'ALL', alcanzable por UI)
 -- queda intacto y ahora SÍ persiste -- ver PLAN-LIMITS-EMPTY-MEANS-ALL-001
 -- en el docblock de arriba del bloque, decisión del dueño, no resuelto acá.
+--
+-- Con la marca instalada, este VALUES corre una sola vez por instalación:
+-- agregar un permission_group default nuevo de acá en más se hace por el
+-- PANEL, no editando el VALUES de abajo (no tendría efecto en una
+-- instalación que ya arrancó con este bloque) -- mismo criterio que
+-- role_preset_permission_groups (ver su docblock, arriba en este
+-- archivo; y `roles-catalog-sync.test.ts`, que hasta este commit decía
+-- lo contrario -- corregido en el mismo cambio). Un `.v2` de la seed_key
+-- es la vía si algún día hace falta que un VALUES nuevo tenga efecto real
+-- en instalaciones ya arrancadas.
 INSERT INTO plan_limit_allowed_permission_groups (plan, permission_group)
 SELECT * FROM (VALUES
   ('FREE',    'STAFF'), ('FREE',    'FRONT_DESK'), ('FREE',    'HOUSEKEEPING_AND_MANAGEMENT'), ('FREE',    'ORDERS'), ('FREE',    'BOOKING'),
