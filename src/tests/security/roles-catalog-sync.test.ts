@@ -70,11 +70,9 @@ import { Roles } from '../../security/roles.js';
  *    catálogos del frontend están en sync" -- implica solo "el catálogo de
  *    ESTE repo no cambió de forma inesperada".
  * 3. NO cubre las otras superficies same-repo que también hay que
- *    propagar a mano al agregar un grupo: `role_preset_permission_groups`
- *    (`src/db/platform.schema.sql` -- `INSERT INTO role_preset_permission_groups`),
- *    `plan_limit_allowed_permission_groups`
- *    (`platform.schema.sql` -- `INSERT INTO plan_limit_allowed_permission_groups`),
- *    `CUSTOMER_PERMISSION_GROUPS`
+ *    propagar al agregar un grupo default nuevo: `role_preset_permission_groups`
+ *    y `plan_limit_allowed_permission_groups` (ambas en
+ *    `src/db/platform.schema.sql`), `CUSTOMER_PERMISSION_GROUPS`
  *    (`roles.ts:74-84`, sincronizado a mano por su propio docblock),
  *    `docs/rbac-matriz-endpoints.md` (columna de grupo por fila), y la
  *    prosa del docblock de `platform.schema.sql`
@@ -84,6 +82,22 @@ import { Roles } from '../../security/roles.js';
  *    corregido acá). Citas por nombre, no por número de línea, desde
  *    SCHEMA-ANCHOR-DRIFT-001 (10/09/2026, grounding ERP: ni ERPNext ni
  *    Odoo citan por línea dentro del propio repo).
+ *
+ *    **Corregido 11/09/2026 (PLAN-LIMITS-SEED-REVERT-001, gate
+ *    `architecture-governor`):** hasta esa fecha, esta nota decía que
+ *    "propagar a mano" para `plan_limit_allowed_permission_groups`
+ *    significaba editar el `INSERT ... VALUES` de `platform.schema.sql`
+ *    directamente. ESO YA NO ES CIERTO -- ese `INSERT`, igual que el de
+ *    `role_preset_permission_groups` desde PRESET-REVOKE-001
+ *    (09-10/09/2026), quedó gateado por `platform_seed_markers`: editar
+ *    el `VALUES` no tiene efecto en ninguna instalación que ya arrancó
+ *    una vez con ese bloque. La vía real para propagar un grupo default
+ *    nuevo a `plan_limit_allowed_permission_groups` en una instalación
+ *    existente es el panel (`PUT /platform/plan-limits/:plan`), no el
+ *    `VALUES` -- mismo criterio que `role_preset_permission_groups` vía
+ *    `PUT /platform/role-presets/:name`. Editar el `VALUES` de cualquiera
+ *    de las dos tablas solo importa para una instalación que TODAVÍA no
+ *    arrancó ninguna vez (primer deploy histórico).
  */
 
 /** Conjunto ORDENADO congelado -- ver el docblock de arriba para por qué

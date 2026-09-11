@@ -233,11 +233,54 @@ categoría de problema ya no existe: cualquier estado de
 igual al catálogo -- no hay una segunda fuente de verdad que pisar por
 error.
 
-**`platform_seed_markers` sigue existiendo** (gatea el seed histórico de
-los 23 pares originales, corre una sola vez por instalación) pero **ya
-no es parte del camino de recuperación** -- borrar esa marca no ayuda
-con un preset vaciado hoy, porque el seed que gatea nunca vuelve a correr
-después del primer arranque post-deploy (ver más abajo, sigue igual).
+**`platform_seed_markers` sigue existiendo.** El CÓDIGO actual
+(`src/db/platform.schema.sql`, bloques `platform_seed_markers` y
+PLAN_LIMITS -- cita por nombre, no por línea, desde
+`SCHEMA-ANCHOR-DRIFT-001`) define 4 seed_keys que esta tabla puede
+gatear: `role_preset_permission_groups` (el seed histórico de los 23
+pares originales, el que motivó esta sección), `plan_limits_max_custom_roles`,
+`plan_limit_allowed_roles` y `plan_limit_allowed_permission_groups`.
+Eso es lo que el código DEFINE, no necesariamente lo que ya corrió en
+una instalación puntual -- **la respuesta autoritativa para la instalación
+que tengas delante es siempre**
+```sql
+SELECT seed_key FROM platform_seed_markers ORDER BY seed_key;
+```
+corrida contra esa base, no esta lista ni la fecha de ningún commit. Si
+esa instalación no llegó todavía al deploy que agrega las 3 últimas
+seed_keys, la consulta devuelve una sola fila --
+`role_preset_permission_groups`, nombrada así, no "la primera" (el
+`ORDER BY seed_key` alfabético la deja ÚLTIMA cuando las 4 están
+presentes, no primera) -- eso no es un error, es la BD reflejando el
+código que corrió hasta ese momento ahí.
+
+**Ninguna de las 4, esté o no presente en una instalación dada, es parte
+del camino de recuperación** -- borrar CUALQUIERA de las marcas que
+existan no ayuda con un preset o un límite de plan vaciado hoy: el seed
+que cada una gatea nunca vuelve a correr después del primer arranque en
+el que esa marca se creó.
+
+**Para `plan_limits_max_custom_roles`/`plan_limit_allowed_roles`/
+`plan_limit_allowed_permission_groups`, borrar la marca (si está
+presente) es directamente PELIGROSO, no solo inútil** -- a diferencia de
+`role_preset_permission_groups` (donde el break-glass de esta misma
+sección, arriba, ya reemplazó el "borrar la marca" por el INSERT
+dirigido, así que el riesgo quedó neutralizado por el procedimiento
+reescrito), estas 3 no tienen procedimiento de recuperación reescrito
+todavía: borrar `plan_limit_allowed_roles` o
+`plan_limit_allowed_permission_groups` hace
+correr de nuevo el `INSERT` de defaults -- si un superadmin había
+REVOCADO un rol o un grupo de permisos de FREE/STARTER por el panel
+(`PUT /platform/plan-limits/:plan`), esa revocación se pierde y el techo
+de autorización de roles CUSTOM se RE-ENSANCHA sin que nadie lo haya
+decidido (fail-open, el mismo defecto que `PLAN-LIMITS-SEED-REVERT-001`
+existe para cerrar). Borrar `plan_limits_max_custom_roles` hace correr de
+nuevo el backfill y pisa un `max_custom_roles = NULL` ("sin límite")
+puesto a propósito por el panel, volviéndolo a 0/2/10. **Recuperación
+correcta para estas 3**: releer el valor/set deseado (de auditoría o del
+dueño) y escribirlo por `PlatformRepository.updatePlanLimits()` (o el
+`UPDATE`/`DELETE`+`INSERT` equivalente a mano, dentro de una transacción)
+-- nunca borrando la marca.
 
 ## Procedimiento 3 — Rollback: qué revertir y qué NO
 

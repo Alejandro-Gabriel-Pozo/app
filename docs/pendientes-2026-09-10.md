@@ -384,30 +384,110 @@ futuros, cada uno con su propio alcance.
     cargado por el `GET`, `toggle()` solo agrega/saca la clave
     tildada. El 9° grupo sobrevive invisible, igual que antes de este
     bloque.
-- **`PLAN-LIMITS-SEED-REVERT-001`** (09-10/09/2026, gate
-  `architecture-governor`, encontrado al aplicar §4.0 sobre el diseño de
+- **`PLAN-LIMITS-SEED-REVERT-001`** — ✅ **RESUELTO (11/09/2026, gate
+  `architecture-governor`, APPROVED WITH CONDITIONS, todas cumplidas en el
+  mismo commit).** Hallado 09-10/09/2026 al aplicar §4.0 sobre el diseño de
   `PRESET-REVOKE-001` -- mismo defecto, mismo archivo, tercera vez que
-  aparece este par). `platform.schema.sql:838-840` (`max_custom_roles`,
-  numeración corregida tras `cd4dff6`+`18a3c93` -- ancla original
-  `:774-776`), `:843` (`plan_limit_allowed_roles`, era `:779`) y `:855`
-  (`plan_limit_allowed_permission_groups`, era `:791`) corren
-  INCONDICIONALMENTE en
-  cada arranque, igual que el seed de presets antes de este bloque -- y
-  los 3 tienen escritor real por panel
-  (`PUT /platform/plan-limits/:plan`, `platform.repository.ts:783-822`,
-  `DELETE`+`INSERT` del set completo; UI de checkboxes en
-  `appfrontend-main/src/app/superadmin/planes/page.tsx:153-154`).
+  aparece este par. Anchors de esta entrada YA estaban stale al momento de
+  cerrarla (shift de +25 líneas por commits de facturación posteriores a
+  esta sesión, ninguno tocaba este bloque) -- corregido citando por
+  NOMBRE, no línea, desde `SCHEMA-ANCHOR-DRIFT-001` (mismo criterio que
+  `roles-catalog-sync.test.ts` ya adoptó por la misma razón).
+  El backfill de `max_custom_roles` (`src/db/platform.schema.sql`, los 3
+  `UPDATE plan_limits SET max_custom_roles = ...`) y los `INSERT` de
+  `plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`
+  corrían INCONDICIONALMENTE en cada arranque, igual que el seed de
+  presets antes de `PRESET-REVOKE-001` -- y los 3 tienen escritor real por
+  panel (`PUT /platform/plan-limits/:plan` -> `updatePlanLimits()` en
+  `platform.repository.ts`, `DELETE`+`INSERT`/`UPDATE` del set completo;
+  UI de checkboxes en `appfrontend-main/src/app/superadmin/planes/page.tsx`,
+  no tocado, fuera de alcance a propósito).
   **Consecuencia, no mecanismo**: destildar un grupo de permisos de
-  FREE/STARTER en el panel de planes se revierte solo en el próximo
+  FREE/STARTER en el panel de planes se revertía solo en el próximo
   reinicio del servidor -- el TECHO de autorización de roles CUSTOM se
-  re-ensancha sin que nadie lo haya decidido. Más grave que el caso de
-  presets: acá la reversión re-abre una restricción (fail-open), no
-  repone un default. Mismo defecto para `max_custom_roles=null` ("sin
-  límite"): el panel lo acepta, pero `:774-776` lo revierte a `0` en el
-  próximo arranque si empezó `NULL`. **No corregido en este bloque a
-  propósito** -- mismo criterio de "un bloque chico por vez"; el fix,
-  cuando se encare, es la misma técnica de marca de seed que
-  `PRESET-REVOKE-001`, aplicada a estos 3 sitios.
+  re-ensanchaba sin que nadie lo hubiera decidido. Más grave que el caso
+  de presets: acá la reversión re-abría una restricción (fail-open), no
+  reponía un default. Mismo defecto para `max_custom_roles=null` ("sin
+  límite"): el panel lo acepta, pero el backfill lo revertía a 0/2/10 en
+  el próximo arranque si empezó `NULL`.
+  **Fix**: mismo mecanismo que `PRESET-REVOKE-001` -- reusa
+  `platform_seed_markers` (ya existente), 3 seed_keys propias
+  (`plan_limits_max_custom_roles`, `plan_limit_allowed_roles`,
+  `plan_limit_allowed_permission_groups`). `src/db/platform.schema.sql`
+  (los 3 seeds gateados + 2 docblocks actualizados),
+  `src/tests/integration/platform-schema.integration.test.ts` (describe
+  de primer nivel nuevo, 7 tests: primer arranque histórico, upgrade real,
+  revocación pre-existente revierte una vez para `plan_limit_allowed_roles`,
+  retención positiva al sacar un grupo de `plan_limit_allowed_permission_groups`,
+  `max_custom_roles=NULL` revierte una vez y después persiste, semántica
+  del vacío -- `PLAN-LIMITS-EMPTY-MEANS-ALL-001` de abajo --, idempotencia).
+  29/29 tests del archivo en verde contra Postgres real
+  (`TEST_DATABASE_URL`, Neon, `test-integration-db`), suite unitaria
+  completa 2100/2100 (+1 skip +1 todo preexistentes), `tsc --noEmit` y
+  `eslint` limpios. Mutation testing manual, 6 mutantes (sacar el
+  `WHERE NOT EXISTS`/`AND NOT EXISTS` de cada uno de los 3 sitios + sacar
+  el `INSERT` de cada marca), cada uno puesto en rojo un test nombrado y
+  revertido antes de commitear -- evidencia completa en el mensaje del
+  commit. Condiciones del gate cumplidas en el mismo commit: docblock de
+  `plan_limits` corregido (el invariante "las 3 filas se seedean siempre
+  juntas" ya no es cierto para un plan `BusinessPlan` nuevo agregado a
+  futuro -- documentado con la mitigación), test de semántica del vacío
+  (C2, ver arriba), anchor de `platform.repository.ts` citado por nombre
+  (C3), ítem `PLAN-LIMITS-EMPTY-MEANS-ALL-001` abierto abajo (C5).
+  **Pendiente antes de deploy (C4, NO del commit)**: medir divergencia
+  real en producción (4 SELECT read-only sobre `plan_limits`/
+  `plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`/
+  `platform_seed_markers`) -- si hay divergencia, el primer arranque
+  post-deploy la revierte una vez y hay que decirle al dueño qué fila se
+  va a pisar ANTES de deployar. No medido en esta sesión -- local, sin
+  push, sin deploy.
+  **Runbook reconciliado, en 2 pasadas** (`fe60917` + este commit, gate
+  `architecture-governor`, hallazgo del cierre "GROUP VERIFIED" --
+  encontrado dos veces, la segunda DENTRO de la corrección de la
+  primera): `docs/conocimiento/runbook-deploy-render.md` describía
+  `platform_seed_markers` como si gatéara una sola seed_key
+  (`role_preset_permission_groups`) y decía "borrar la marca no ayuda,
+  pero tampoco hace daño" -- desactualizado desde `0a72f0f`, que sumó 3
+  seed_keys más. `fe60917` enumeró las 4 y agregó, para las 3 nuevas, que
+  borrar la marca NO es solo inútil sino PELIGROSO (re-ensancha un techo
+  de autorización revocado, fail-open) -- a diferencia de
+  `role_preset_permission_groups`, que sí tiene su break-glass reescrito
+  más arriba en el mismo runbook. El gate encontró DOS defectos en
+  `fe60917` mismo: (a) afirmaba "desde el 11/09/2026 gatea CUATRO" como
+  hecho de producción cuando `0a72f0f` (las 3 seed_keys nuevas) no está
+  pusheado -- solo `cd4dff6` (la primera) está en `origin/main` -- mismo
+  patrón de "estado de push como hecho fijo del texto" que este mismo
+  archivo prohíbe más arriba (nota de precisión: no es solo `cd4dff6` --
+  `18a3c93`, la segunda mitad de la misma reconciliación de
+  `PRESET-REVOKE-001`, ver línea 364 más abajo, también está en
+  `origin/main` -- re-chequear con `git merge-base --is-ancestor <hash>
+  origin/main` antes de asumir cualquiera de los dos, en vez de confiar en
+  esta nota); (b) el "ver más abajo" que citaba no resolvía a nada (nada
+  de seeds bajo esa línea en las 600 del archivo). Este commit corrige los
+  dos: el runbook ahora describe lo que el código DEFINE (por nombre, no
+  por fecha ni línea) y remite a `SELECT seed_key FROM
+  platform_seed_markers ORDER BY seed_key` como única fuente autoritativa
+  del estado real de una instalación puntual -- verdadero antes y después
+  de cualquier deploy futuro, sin necesidad de reescribir esta nota de
+  nuevo.
+- **`PLAN-LIMITS-EMPTY-MEANS-ALL-001`** (11/09/2026, gate
+  `architecture-governor`, condición C5 de `PLAN-LIMITS-SEED-REVERT-001`
+  de arriba, `requiere decisión del dueño`, NO implementado). Consecuencia,
+  no mecanismo: destildar TODOS los grupos de permiso de un plan en el
+  panel de superadmin (`appfrontend-main/.../planes/page.tsx`) lo deja SIN
+  RESTRICCIÓN ('ALL') en vez de SIN PERMISOS -- al revés de
+  `role_preset_permission_groups` (0 pares = ese preset no puede nada,
+  fail-closed), acá 0 filas en `plan_limit_allowed_permission_groups` se
+  lee como 'ALL' (fail-open, `PlatformRepository.getPlanLimits()`).
+  Alcanzable por UI: `UpdatePlanLimitsSchema` no exige mínimo. Antes de
+  `PLAN-LIMITS-SEED-REVERT-001` esto se autorreparaba por accidente en el
+  próximo reinicio (mismo bug que el resto del archivo); desde ese commit,
+  con el seed gateado, un vaciado deliberado persiste de verdad -- correcto
+  para el caso frecuente (destildar UNO), pero saca la red que existía
+  para el caso "los 5 a la vez". `.min(1)` en el schema sería incorrecto
+  (PRO/ENTERPRISE tienen 0 filas legítimamente). Decisión del dueño: ¿UI
+  que confirme explícitamente "sin restricción" al vaciar el set, un
+  mínimo distinto de 1, o aceptar el fail-open como está?
 - **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas,
   pusheado y deployado** (`51ea0dc` + `db04daa` + `fa50557`, gate
   `architecture-governor` 09-10/09/2026). Render `dep-dahcnveq1p3s73dbdovg`
@@ -1217,10 +1297,12 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `settleByReservationId()` (interferente dormido). Mecanismo ya
   investigado a fondo esta sesión (research ERPNext/Odoo/QloApps, ver
   más arriba).
-- **`PLAN-LIMITS-SEED-REVERT-001`** — mismo defecto y mismo mecanismo que
-  `PRESET-REVOKE-001` (marca de seed), aplicado a
+- **`PLAN-LIMITS-SEED-REVERT-001`** — ✅ **RESUELTO (11/09/2026)**, mismo
+  mecanismo que `PRESET-REVOKE-001` (marca de seed), aplicado a
   `plan_limit_allowed_roles`/`plan_limit_allowed_permission_groups`/
-  `max_custom_roles`. Ver más arriba.
+  `max_custom_roles`. Ver más arriba. Abrió `PLAN-LIMITS-EMPTY-MEANS-ALL-001`
+  (decisión del dueño, no implementado) y dejó C4 (medir divergencia real
+  en producción) pendiente antes de deploy.
 - **`RBAC-MATRIX-SECTION2-001`, hueco del `EXCLUDED_FILES`** — la cerca
   solo verifica que el CONTEO de rutas protegidas siga coincidiendo, no
   que el archivo siga sin bullets parseables. Cerrarlo (contar bullets
