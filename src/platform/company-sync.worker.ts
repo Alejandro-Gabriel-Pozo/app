@@ -9,6 +9,13 @@
  * conexión. Nunca mantiene un pool abierto por tenant (no es el camino
  * crítico de venta, corre poco frecuente, una conexión de vida corta por
  * fila alcanza — mismo patrón que applyTenantSchema()/migrate-tenants.ts).
+ *
+ * Importa `AdaptivePoller` de `src/workers/` (`platform/ → workers/`) --
+ * dependencia entre capas aceptada por el gate `architecture-governor`
+ * para el bloque de polling adaptativo (10/09/2026,
+ * docs/diseno-polling-adaptativo-neon-2026-09-10.md): el helper es
+ * infraestructura transversal (scheduling puro, sin repo/pool/SqlClient),
+ * no un worker de negocio del que `platform/` dependa.
  */
 
 import { randomUUID } from 'crypto';
@@ -17,12 +24,24 @@ import type { CompanyRepository, CompanyProduct, CompanyRecipeItem, PropagationQ
 import type { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './tenant-db.setup.js';
 import { logger } from '../logger.js';
+import { AdaptivePoller } from '../workers/adaptive-poller.js';
 
 const BATCH_SIZE = 20;
 const MAX_RETRIES = 5;
 
+/**
+ * Cadencia de polling (docs/diseno-polling-adaptativo-neon-2026-09-10.md,
+ * bloque 1 -- el único de los tres workers migrado hasta ahora al
+ * scheduler adaptativo de `AdaptivePoller`). `ACTIVE_INTERVAL_MS` sin
+ * cambio respecto del valor histórico; `IDLE_INTERVAL_MS` (10 min, no 5)
+ * dejar un colchón real de inactividad facturable por encima de la
+ * ventana fija de scale-to-zero de Neon.
+ */
+const ACTIVE_INTERVAL_MS = 10_000;
+const IDLE_INTERVAL_MS = 600_000;
+
 export class CompanyCatalogPropagationWorker {
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private poller: AdaptivePoller | null = null;
   private running = false;
 
   constructor(
@@ -30,24 +49,47 @@ export class CompanyCatalogPropagationWorker {
     private readonly platformRepo: PlatformRepository,
   ) {}
 
-  start(intervalMs: number): void {
-    if (this.timer) return; // ya arrancado -- no-op, evita duplicar el interval
-    this.timer = setInterval(() => { void this.poll(); }, intervalMs);
+  /**
+   * Los parámetros son opcionales (con los valores de producción como
+   * default) para que los tests puedan pasar intervalos chicos sin
+   * esperar minutos reales bajo fake timers.
+   */
+  start(activeIntervalMs = ACTIVE_INTERVAL_MS, idleIntervalMs = IDLE_INTERVAL_MS): void {
+    if (this.poller) return; // ya arrancado -- no-op, evita duplicar el scheduler
+    this.poller = new AdaptivePoller(() => this.poll(), activeIntervalMs, idleIntervalMs);
+    this.poller.start();
   }
 
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+  async stop(): Promise<void> {
+    if (!this.poller) return;
+    const poller = this.poller;
+    this.poller = null;
+    await poller.stop();
   }
 
-  /** Público para poder testear/disparar un ciclo puntual sin esperar el interval. */
-  async poll(): Promise<void> {
-    if (this.running) return; // un poll anterior sigue en curso -- no solapar
+  /**
+   * Despierta el worker al instante en vez de esperar hasta
+   * `idleIntervalMs` -- pensado para el endpoint que encola una fila de
+   * propagación nueva (§3.1 del diseño). Best-effort: si hay un poll en
+   * vuelo justo en este momento, no hace nada (ver docblock de
+   * `AdaptivePoller.wake()`).
+   */
+  wake(): void {
+    this.poller?.wake();
+  }
+
+  /**
+   * Público para poder testear/disparar un ciclo puntual sin esperar el
+   * intervalo. @returns true si encontró filas pendientes -- usado por
+   * `AdaptivePoller` para decidir el próximo intervalo (activo vs idle).
+   */
+  async poll(): Promise<boolean> {
+    if (this.running) return false; // un poll anterior sigue en curso -- no solapar
     this.running = true;
+    let foundWork = false;
     try {
       const pending = await this.companyRepo.getPendingPropagation(BATCH_SIZE);
+      foundWork = pending.length > 0;
       for (const row of pending) {
         await this.processOne(row);
       }
@@ -56,6 +98,7 @@ export class CompanyCatalogPropagationWorker {
     } finally {
       this.running = false;
     }
+    return foundWork;
   }
 
   private async processOne(row: PropagationQueueRow): Promise<void> {

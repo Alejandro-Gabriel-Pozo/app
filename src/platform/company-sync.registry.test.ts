@@ -4,11 +4,13 @@ import type { PlatformRepository } from './platform.repository.js';
 
 const startMock = vi.fn();
 const stopMock = vi.fn();
+const wakeMock = vi.fn();
 
 vi.mock('./company-sync.worker.js', () => ({
   CompanyCatalogPropagationWorker: vi.fn().mockImplementation(() => ({
     start: startMock,
     stop: stopMock,
+    wake: wakeMock,
   })),
 }));
 
@@ -60,5 +62,22 @@ describe('company-sync.registry -- singleton único por proceso', () => {
     const { stopCompanySyncWorker } = await import('./company-sync.registry.js');
     await expect(stopCompanySyncWorker()).resolves.not.toThrow();
     expect(stopMock).not.toHaveBeenCalled();
+  });
+
+  it('wakeCompanySyncWorker despierta el worker arrancado', async () => {
+    const { startCompanySyncWorker, wakeCompanySyncWorker } = await import('./company-sync.registry.js');
+    const companyRepo = {} as CompanyRepository;
+    const platformRepo = {} as PlatformRepository;
+
+    startCompanySyncWorker(companyRepo, platformRepo);
+    wakeCompanySyncWorker();
+
+    expect(wakeMock).toHaveBeenCalledOnce();
+  });
+
+  it('wakeCompanySyncWorker sin haber arrancado no rompe (no-op)', async () => {
+    const { wakeCompanySyncWorker } = await import('./company-sync.registry.js');
+    expect(() => wakeCompanySyncWorker()).not.toThrow();
+    expect(wakeMock).not.toHaveBeenCalled();
   });
 });

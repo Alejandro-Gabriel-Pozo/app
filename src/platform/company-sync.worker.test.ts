@@ -60,23 +60,89 @@ describe('CompanyCatalogPropagationWorker', () => {
   });
 
   describe('start/stop', () => {
-    it('start() arranca un interval; llamarlo dos veces no duplica el timer', () => {
+    it('start() arranca el scheduler; llamarlo dos veces no duplica la cadena', async () => {
       vi.useFakeTimers();
       const worker = new CompanyCatalogPropagationWorker(makeCompanyRepo(), makePlatformRepo());
-      const pollSpy = vi.spyOn(worker, 'poll').mockResolvedValue();
+      const pollSpy = vi.spyOn(worker, 'poll').mockResolvedValue(false);
 
-      worker.start(1000);
-      worker.start(1000); // no-op, ya arrancado
-      vi.advanceTimersByTime(1000);
+      worker.start(1000, 5000);
+      worker.start(1000, 5000); // no-op, ya arrancado
+      await vi.advanceTimersByTimeAsync(1000);
 
       expect(pollSpy).toHaveBeenCalledTimes(1);
-      worker.stop();
+      await worker.stop();
       vi.useRealTimers();
     });
 
-    it('stop() sin haber arrancado no rompe', () => {
+    it('el primer poll no es inmediato -- corre recién después de activeIntervalMs', async () => {
+      vi.useFakeTimers();
       const worker = new CompanyCatalogPropagationWorker(makeCompanyRepo(), makePlatformRepo());
-      expect(() => worker.stop()).not.toThrow();
+      const pollSpy = vi.spyOn(worker, 'poll').mockResolvedValue(false);
+
+      worker.start(1000, 5000);
+      expect(pollSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(pollSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pollSpy).toHaveBeenCalledTimes(1);
+
+      await worker.stop();
+      vi.useRealTimers();
+    });
+
+    it('stop() sin haber arrancado no rompe', async () => {
+      const worker = new CompanyCatalogPropagationWorker(makeCompanyRepo(), makePlatformRepo());
+      await expect(worker.stop()).resolves.not.toThrow();
+    });
+
+    it('stop() espera a que un poll en curso termine antes de resolver', async () => {
+      vi.useFakeTimers();
+      let resolvePoll!: () => void;
+      const pending = new Promise<void>((resolve) => { resolvePoll = resolve; });
+      const companyRepo = makeCompanyRepo({
+        getPendingPropagation: vi.fn(() => pending.then(() => [])),
+      });
+      const worker = new CompanyCatalogPropagationWorker(companyRepo, makePlatformRepo());
+
+      worker.start(1000, 5000);
+      await vi.advanceTimersByTimeAsync(1000); // dispara el poll, que queda colgado en getPendingPropagation
+
+      let stopped = false;
+      const stopPromise = worker.stop().then(() => { stopped = true; });
+
+      // Mientras el poll sigue en vuelo, stop() todavía no debería haber resuelto.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(stopped).toBe(false);
+
+      resolvePoll();
+      // stop() espera `inFlight` en pasos de 50ms (setTimeout real, bajo
+      // fake timers) -- hace falta seguir avanzando el reloj simulado
+      // para que ese loop note que el poll ya terminó.
+      await vi.advanceTimersByTimeAsync(200);
+      await stopPromise;
+      expect(stopped).toBe(true);
+
+      vi.useRealTimers();
+    });
+
+    it('wake() dispara un poll de inmediato en vez de esperar el intervalo', async () => {
+      vi.useFakeTimers();
+      const worker = new CompanyCatalogPropagationWorker(makeCompanyRepo(), makePlatformRepo());
+      const pollSpy = vi.spyOn(worker, 'poll').mockResolvedValue(false);
+
+      worker.start(60_000, 600_000); // intervalo largo -- sin wake(), no dispararía en este test
+      worker.wake();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(pollSpy).toHaveBeenCalledTimes(1);
+
+      await worker.stop();
+      vi.useRealTimers();
+    });
+
+    it('wake() sin haber arrancado no rompe', () => {
+      const worker = new CompanyCatalogPropagationWorker(makeCompanyRepo(), makePlatformRepo());
+      expect(() => worker.wake()).not.toThrow();
     });
   });
 

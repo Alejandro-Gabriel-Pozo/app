@@ -1,5 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CompanyCatalogService } from './company-catalog.service.js';
+
+const wakeCompanySyncWorkerMock = vi.fn();
+vi.mock('../platform/company-sync.registry.js', () => ({
+  wakeCompanySyncWorker: () => wakeCompanySyncWorkerMock(),
+}));
 import type { ICompanyCatalogRepository, IBusinessDirectory } from './company-catalog.service.js';
 import { ProductNotFoundError } from './product.service.js';
 import {
@@ -151,6 +156,7 @@ describe('CompanyCatalogService', () => {
   let service: CompanyCatalogService;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     productRepo = new FakeProductRepository();
     recipeItemRepo = new FakeRecipeItemRepository();
     companyRepo = new FakeCompanyCatalogRepository();
@@ -226,6 +232,7 @@ describe('CompanyCatalogService', () => {
 
       expect(await companyRepo.getCompanyProduct('prod-1')).toBeUndefined();
       expect(companyRepo.propagationCalls).toHaveLength(0);
+      expect(wakeCompanySyncWorkerMock).not.toHaveBeenCalled();
     });
 
     it('sube el producto nuevo al catálogo canónico y propaga a las sucursales hermanas', async () => {
@@ -240,6 +247,20 @@ describe('CompanyCatalogService', () => {
 
       const local = await productRepo.getById('prod-1');
       expect(local?.companyProductId).toBe('prod-1');
+
+      // Despierta el worker de propagación de inmediato -- si no,
+      // esperaría hasta idleIntervalMs (docs/diseno-polling-adaptativo-neon-2026-09-10.md §3.1).
+      expect(wakeCompanySyncWorkerMock).toHaveBeenCalledOnce();
+    });
+
+    it('sin sucursales hermanas (única en su empresa), NO despierta el worker -- no hay nada que propagar', async () => {
+      businessDirectory.seed('biz-unica', 'company-sola');
+      productRepo.seed(makeProduct({ id: 'prod-1', businessId: 'biz-unica' }));
+
+      await service.autoShareIfLinked('biz-unica', 'prod-1');
+
+      expect(companyRepo.propagationCalls).toHaveLength(0);
+      expect(wakeCompanySyncWorkerMock).not.toHaveBeenCalled();
     });
   });
 
@@ -277,6 +298,7 @@ describe('CompanyCatalogService', () => {
 
       expect(companyRepo.propagationCalls).toHaveLength(1);
       expect(companyRepo.propagationCalls[0]!.targetBusinessIds.sort()).toEqual(['biz-b', 'biz-c']);
+      expect(wakeCompanySyncWorkerMock).toHaveBeenCalledOnce();
     });
 
     it('es idempotente: compartir un producto ya compartido lo re-sincroniza sin duplicar el vínculo', async () => {

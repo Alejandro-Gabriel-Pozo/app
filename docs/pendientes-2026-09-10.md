@@ -139,6 +139,22 @@ futuros, cada uno con su propio alcance.
   `platform.schema.sql` cambia de tamaño sin que se toquen sus citas en
   `docs/`? (probablemente no — el ruido sería alto) ¿o alcanza con
   dejarlo como disciplina de revisión manual al tocar ese archivo?
+- **`CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001` (10/09/2026, gate
+  `architecture-governor`, ronda 2 del diseño de polling adaptativo).**
+  `customer.routes.ts` (portal de clientes) se monta en `app.ts:275`,
+  **antes** del gate `tenantMiddleware` de `app.ts:345` — resuelve su
+  pool directo y nunca llama `ensureTenantWorker`. Ese router SÍ inserta
+  eventos de dominio (`SqlDomainEventRepository` en
+  `customer.routes.ts:232`, inyectado en `ReservationService`). Si un
+  tenant recibe solo tráfico de portal desde que arrancó el proceso, **no
+  existe `OutboxWorker` para ese `businessId` en absoluto** — sus eventos
+  quedan sin despachar hasta que alguna request de staff autenticada cree
+  el worker. Hoy queda enmascarado (el staff siempre genera tráfico
+  autenticado a diario); se vuelve más visible con cualquier mecanismo de
+  wake del bloque de polling adaptativo (`docs/diseno-polling-adaptativo-neon-2026-09-10.md`
+  §3.3). Decisión de producto pendiente, no técnica: ¿el portal también
+  arranca su propio worker? ¿hay un worker de respaldo activo conocido
+  por tenant? No se arregla en el bloque de polling — es su propio ítem.
 - **`PRESET-GROUP-VALIDATION-001`** — ✅ **RESUELTO en código, LOCAL/sin
   pushear ni deployar** (`app-main` `dc81a39`, gate `architecture-governor`
   09-10/09/2026, diseño + implementación + sign-off, los 3 con revisión

@@ -52,6 +52,7 @@ import type { IProductRepository } from './product.repository.js';
 import type { Product } from './product.entities.js';
 import type { RecipeItemRepository } from '../repositories/recipe-item.repository.js';
 import type { CompanyProduct, CompanyRecipeItem } from '../platform/company.repository.js';
+import { wakeCompanySyncWorker } from '../platform/company-sync.registry.js';
 import { ProductNotFoundError } from './product.service.js';
 import {
   BusinessNotInCompanyError,
@@ -223,7 +224,13 @@ export class CompanyCatalogService {
 
     const siblings = await this.platformRepo.findBusinessesByCompanyId(companyId);
     const targetIds = siblings.filter((b) => b.id !== businessId).map((b) => b.id);
-    if (targetIds.length > 0) await this.companyRepo.enqueuePropagation(productId, targetIds);
+    if (targetIds.length > 0) {
+      await this.companyRepo.enqueuePropagation(productId, targetIds);
+      // Despierta el worker de inmediato si estaba en reposo -- si no,
+      // esta propagación esperaría hasta idleIntervalMs (10 min). Ver
+      // docs/diseno-polling-adaptativo-neon-2026-09-10.md §3.1.
+      wakeCompanySyncWorker();
+    }
   }
 
   // ---------------------------------------------------------------------------
