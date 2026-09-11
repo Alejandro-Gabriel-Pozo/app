@@ -972,7 +972,7 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   y `:570`) -- confirmado.
 
   **Estado (actualizado 11/09/2026, segunda ronda de gate): bloque 1a
-  ✅ IMPLEMENTADO, LOCAL/sin pushear** (`629fb27`,
+  ✅ IMPLEMENTADO** (`629fb27`,
   `refund-attribution.ts` generalizado sobre clave de atribución opaca,
   behavior-preserving, 217/217 tests de facturación sin regresión,
   `credit-note-escape-containment.test.ts` verificado que sigue sin
@@ -989,7 +989,7 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   producción sobre facturas consolidadas multi-orden reales: sigue sin
   correr (sin credenciales/tools de Neon en esa sesión del gate).
   **`REFUND-ATTRIBUTION-RESIDUAL-001` — ✅ RESUELTO (11/09/2026, gate
-  `architecture-governor`, `df7abc0`, LOCAL/sin pushear).** Hallazgo NO
+  `architecture-governor`, `df7abc0`).** Hallazgo NO
   buscado, real, en código YA en producción (encontrado al escribir los
   tests de 1a): `distributeGroupAmount()` (`refund-attribution.ts`)
   calculaba el residuo de redondeo contra `frozenAmount` COMPLETO en vez
@@ -1016,6 +1016,124 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   30/30 sin cambios. **Desbloquea el bloque 1c de
   `ORDER-CONSOLIDATED-PARTIAL-01`**, que sigue sin autorizar aparte --
   ver ese bullet más arriba.
+
+  **Bloque 1c -- HOLD (11/09/2026, ronda de gate del diseño de 1c).** No
+  rechazado: reseteado por un hallazgo no mapeado por ninguna ronda
+  previa (§4.0). El resto del diseño cierra limpio -- ver detalle de
+  cada punto en los bullets siguientes, en el orden que el gate los
+  resolvió.
+
+  - **`:360` (la línea que más preocupaba, "settlear TODAS las
+    charges de la consolidada, no solo la orden que se cancela")
+    -- resuelta, sin diseño nuevo.** El precedente de reservas
+    (`cancel-reservation-with-credit-note.service.ts:524-527`) ya
+    congela el conjunto de charges en `frozenChargeIds` en tx1 y nunca
+    re-deriva en tx2 -- mismo código-comentario cita exactamente este
+    riesgo. Para órdenes es más simple (CHARGE único por orden, índice
+    v45): el conjunto congelado es el singleton `{charge.id}`, la
+    re-derivación en `:360-361` se elimina y el guard cardinal
+    (`:223-226`) se relaja a una comprobación de membership.
+  - **Rename `reservationId` → clave neutra -- DIFERIDO, no forma
+    parte de 1c.** 1a asumió (`refund-attribution.ts:79-82`) que 1c
+    tocaría los 3 productores y podría hacer el rename ahí junto con el
+    wiring. Falso: 1c-ii solo toca `buildCreditNote()`;
+    `resolveReservationPairAttribution()` (producción, reservas) no
+    necesita cambiar. Renombrar ahora forzaría tocar ese método sin
+    necesidad, agrandando el diff de un bloque que emite comprobantes
+    fiscales reales. Bloque mecánico aparte, después de 1c/1d.
+    **Trampa registrada, no implementar:** unificar a
+    `attributionKey = reservationId ?? orderId` en una sola llamada de
+    `resolveRefundableForPair()` NO preserva comportamiento -- cambia
+    a qué clave se le asigna el residuo de redondeo
+    (`refund-attribution.ts:206-225`), un corrimiento de un centavo
+    contra `CREDIT_NOTE_COMPENSATION_TOLERANCE` que sí es
+    decision-relevant. Mantener las dos computaciones separadas, como
+    ya hace el `LEFT JOIN` de 1b.
+  - **Split propuesto por el gate, más chico que 1c-i/1c-ii original:
+    1c-0 → 1c-i → 1c-ii (+ 1d empaquetado, decisión del dueño,
+    confirmada por `AskUserQuestion` 11/09/2026).** 1c-0 (ver bullet
+    propio, ✅ RESUELTO) primero por decisión del dueño. 1c-i: relaja
+    el guard + congela `frozenChargeIds` + agrega el guard de reversión
+    total propia (`CreditNoteConsolidatedFullReversalError`, mismo
+    hazard que ya tiene su guardia del lado reservas) + espeja el tope
+    por par a `r.order_id` -- **sin rama nueva en `buildCreditNote()`**,
+    una consolidada multi-orden solo empieza a alcanzar el throw `N1.a`
+    ya existente (hoy código muerto) en vez del guard cardinal viejo;
+    nada nuevo llega a AFIP todavía. 1c-ii: recién ahí se cablea la
+    rama de atribución de órdenes -- primer commit de esta cadena que
+    puede emitir un comprobante que antes no existía. 1d
+    (`classifyOrderLiveInvoice` para órdenes, mismo residual que 3.3-d
+    cerró para reservas) va empaquetado con 1c-ii, no después --1b ya
+    construyó las piezas que necesita.
+  - **Producción, medido 11/09/2026 (Neon `ancient-king-17098519`,
+    ambos tenants, `production` y `tenant-hotel-los-alamos`): 0 facturas
+    consolidadas ISSUED con >1 orden distinta hoy.** El bloque es
+    preventivo, no desbloquea plata trabada ahora mismo.
+  - **`STAY-ADJUSTMENT-PRICE-001` -- hallazgo nuevo del gate de 1c-0,
+    NO corregido, bloque propio pendiente.**
+    `src/workers/outbox.handlers.ts:299-310`
+    (`handleReservationPriceAdjusted`) crea el ADJUSTMENT de un ajuste
+    de precio de reserva SIN campo `stayId` -- queda NULL siempre (a
+    diferencia del ADJUSTMENT del escape de órdenes, que 1c-0 ya
+    corrigió). `linkStayToReservationCharges` solo rescata filas creadas
+    ANTES del check-in (`UPDATE ... WHERE stay_id IS NULL`, sin filtrar
+    por `type`) -- un ajuste confirmado con el huésped YA adentro nunca
+    llega al folio. El signo importa en las dos direcciones: ajuste
+    NEGATIVO sobre-declara el folio (traba check-out, infla una
+    transferencia a cuenta corriente); ajuste POSITIVO SUB-declara el
+    folio -- `checkOut()` deja salir al huésped con deuda real, más
+    grave que el bug que 1c-0 cerró. Requiere su propio gate + su
+    propia query de producción (no la misma de 1c-0: esta es sobre
+    ajustes de precio, no sobre el escape de NC).
+  - **`financial-transaction.repository.ts:347-352` (comentario
+    ORDER-15) -- premisa caduca, hallazgo del gate de 1c-0.** El
+    comentario dice *"un ADJUSTMENT con `order_id` -- que hoy no
+    existe, el único creador siempre usa `reservationId`"* -- falso
+    desde que shippeó el escape de órdenes
+    (`cancel-order-with-credit-note.service.ts:290,293`). El hazard que
+    describe (ADJUSTMENT de orden anulable por `voidByOrderId` pero no
+    liquidable por `settleChargesByOrderId`) **parece** contenido por
+    ORDER-10 + la rama `comprobanteReconciliado`
+    (`outbox.handlers.ts:395`), pero el gate NO lo verificó end-to-end
+    -- no afirma que esté cerrado, solo que el comentario está
+    desactualizado. Corregir el comentario + verificar el hazard real
+    es un bloque de higiene chico, sin decisión de negocio.
+  - **Residual del borde de cuenta corriente -- declarado, no bloqueado
+    por 1c-0.** Si una estadía ya pasó por
+    `transferStayBalanceToReceivable` (PAYMENT que salda el folio a la
+    empresa) y DESPUÉS corre el escape de una orden de esa estadía, el
+    folio queda en negativo -- `checkOut()` sigue pasando (no bloquea
+    saldo negativo) pero `transferStayBalanceToReceivable` tiraría
+    `NoBalanceToTransferError` si se reintentara, y el crédito no vuelve
+    solo a la fila de `accounts_receivable` de la empresa (la
+    ADJUSTMENT lleva el `customerId` del huésped, no el de la empresa).
+    Pre-existente a 1c-0 (antes el folio quedaba inflado y positivo, que
+    es peor) -- 1c-0 lo hace visible, no lo introduce. Sin bloque
+    asignado todavía.
+
+  **`1c-0` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
+  `4aa09fe`).** El ADJUSTMENT compensatorio del escape de órdenes
+  (`cancel-order-with-credit-note.service.ts:292`) creaba `stayId: null`
+  incondicional -- una orden cargada a una estadía y cancelada por NC
+  dejaba el saldo de esa estadía sobre-declarado por el monto completo
+  de la orden (el CHARGE, SETTLED con `stay_id`, contaba en
+  `getNetBalanceByStayId`; la reversión, con `stay_id` NULL, no
+  matcheaba el `WHERE stay_id = $1`). Efecto real: `checkOut()` bloqueado
+  por una deuda que la NC ya canceló. Fix: el ADJUSTMENT hereda
+  `charge.stayId` -- sin rama "mixed" (a diferencia del precedente de
+  reservas), los guards existentes ya dejan el conjunto congelado como
+  singleton por construcción. Medido, read-only, ambos tenants
+  (`ancient-king-17098519`, 11/09/2026): 0 filas de órdenes canceladas
+  por el escape con `stay_id` huérfano -- preventivo, sin corrupción de
+  datos que reparar. 20/20 unit + 8/8 integration (contra Postgres real,
+  `StayService` con sus repos SQL reales, no fakes) + 3 mutantes
+  manuales con red-sets distintos. Suite completa: 2129/2129 unit
+  (162 archivos), 288/289 integration -- el 1 rojo
+  (`cancel-reservation-with-credit-note.integration.test.ts`, caso
+  C1(ii), `expect(logger.error).toHaveBeenCalledWith(...)` con 0 calls)
+  es preexistente en `origin/main` (confirmado con `git stash` + re-run
+  contra HEAD limpio antes de este commit) y no relacionado a 1c-0 --
+  **registrado, no investigado, sin bloque asignado todavía.**
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
