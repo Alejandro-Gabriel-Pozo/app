@@ -1023,23 +1023,84 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (`src/facturacion/sql.invoice.repository.ts:290-316`) -- pero hoy solo
   lo usan `AccountsReceivableService` y los 2 servicios de
   cancelar-con-NC, ninguno de los dos guards de emisión.
-  **Pregunta de producto sin decidir, no técnica (regla de este repo:
-  separar la pregunta de alcance de la decisión de negocio escondida
-  adentro)**: ¿facturar individualmente un cargo que ya está en un lote
-  consolidado pendiente es ALGUNA VEZ legítimo, o siempre un error? Y,
-  dado que hay más de una forma razonable de cerrar esto y se comportan
-  distinto: (a) solo guard de backend (el botón sigue, el click falla con
-  error tipado); (b) la UI deja de ofrecer facturación individual para
-  cargos en un lote AR; (c) las dos. Cada una es su propia pregunta,
-  requiere `AskUserQuestion` al dueño antes de diseñar el fix -- no
-  resolver ninguna de las dos como efecto colateral de la otra.
-  **HOLD en implementación -- bloque propio, matriz de impacto propia**
-  (mínimo: los 2 guards de emisión, `FacturarButton.tsx` + su docblock,
-  la condición de render de `cuentas-corrientes`, el uso en
-  `reservas/[id]`, las transiciones de AR `PENDIENTE_FACTURAR`/
-  `FACTURADO`, el split `FRONT_DESK`/`MANAGEMENT`, y los 3 callers
-  existentes de `resolveInvoiceLinkage()`) -- no extender sin la decisión
-  de producto de arriba.
+  **Pregunta de producto -- ✅ RESPONDIDA (11/09/2026, `AskUserQuestion`
+  al dueño, grounding ERP verificado contra código real)**: facturar
+  individualmente un cargo que ya está en un lote consolidado NO
+  facturado todavía sigue siendo legítimo (parcial/escalonado es el caso
+  normal en Odoo/ERPNext, no una excepción); lo único que se protege es
+  el CARGO PUNTUAL una vez que YA tiene un comprobante real, por
+  cualquiera de los dos caminos -- mismo patrón que
+  `POS Invoice.consolidated_invoice`/`status` de ERPNext. Forma de cierre
+  elegida: (c) backend + UI.
+
+  **Bloque 1 (guard individual) -- ✅ RESUELTO, LOCAL/sin pushear**
+  (11/09/2026, gate `architecture-governor`, 3 rondas: HOLD → APPROVED
+  WITH CONDITIONS → APPROVED WITH CONDITIONS, commit `81e9eb2`).
+  `InvoiceService.requestInvoice()` ahora rechaza (`InvoiceAlreadyLinkedByOtherPathError`)
+  si `resolveInvoiceLinkage(ftId)` encuentra un comprobante vivo del OTRO
+  camino (consolidada vía `invoice_charges`) en estado
+  `ISSUED`/`PENDING`/`FAILED_UNCERTAIN` -- `REJECTED` NO bloquea (decisión
+  grounded: Odoo excluye `state=='cancel'` de `qty_invoiced`,
+  `sale_order_line.py:1007-1011`; ERPNext excluye `docstatus==2`). Guard
+  posicionado DESPUÉS de la idempotencia propia del camino individual
+  (`invoice:<ftId>`) -- load-bearing, verificado con test dedicado que
+  prueba que los 4 call-sites de cancelación-con-NC siguen cayendo en
+  `retryExisting()`. Predicado `ISSUED|PENDING|FAILED_UNCERTAIN` extraído
+  a `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts`), reusado
+  en `getInFlightCreditNoteTotalForUpdate()`/`ForPair`
+  (`sql.invoice.repository.ts:583,620`, antes duplicado a mano). Mutación
+  verificada (comentar el guard pone en rojo exactamente los 3 tests que
+  dependen de él, los otros 2 siguen verdes). Medido read-only, las 2
+  tenants reales (Neon `ancient-king-17098519`): 0 cargos hoy en el
+  estado que el guard bloquearía -- el deploy no dispara el error nuevo
+  sobre ningún caso existente. Suite completa 2097/2097 (+5 desde el
+  bloque anterior), typecheck y eslint limpios.
+  **Límite de cobertura, declarado (condición del gate, no bloqueante
+  para este commit)**: el guard NO tiene cobertura de integración contra
+  Postgres real -- `src/tests/integration/**` está excluido de la config
+  default de vitest, y los 5 tests nuevos corren contra el fake en
+  memoria (`FakeInvoiceRepository`), no contra el SQL real de
+  `resolveInvoiceLinkage()`. Aceptable para este bloque (lectura pura,
+  método ya en producción con consumidores previos, sin DDL, 0 filas
+  afectadas medidas) -- **obligatorio para Bloque 1-bis**, que sí edita
+  SQL nuevo.
+
+- **`INVOICE-CHARGES-GUARD-1BIS-01`** -- arm simétrico, NO resuelto. Con
+  el Bloque 1 deployado, el hueco queda cerrado en una sola dirección. Un
+  cargo con factura INDIVIDUAL viva sigue pudiendo entrar a un lote
+  consolidado y generar un segundo comprobante AFIP sobre el mismo cargo
+  -- `getInvoicedFinancialTransactionIds()` (`sql.invoice.repository.ts:964-978`)
+  no mira `invoices.financial_transaction_id` directo, solo
+  `invoice_charges`. Decisión de producto ya resuelta (11/09/2026, mismo
+  estándar ERP de arriba): bloquear con
+  `INVOICE_STATUSES_CONSUMING_CHARGE` (`ISSUED|PENDING|FAILED_UNCERTAIN`),
+  no con `REJECTED`. Requiere test de integración contra Postgres real
+  (patrón ya existente en
+  `src/tests/integration/consolidated-invoice-toctou.integration.test.ts:268`)
+  -- un fake en memoria no prueba nada de SQL nuevo. Bloque propio, gate
+  propio.
+
+- **`INVOICE-CHARGES-GUARD-FRONTEND-02` (Bloque 2)** -- frontend, NO
+  resuelto. `FacturarButton.tsx` sigue ofreciendo "Facturar" sobre un
+  cargo ya facturado por el otro camino -- su propio docblock (`:11-16`)
+  afirma una idempotencia que no aplica al camino consolidado (hallazgo
+  ya registrado arriba). Censo completado (11/09/2026, gate
+  `architecture-governor`): los 2 montajes
+  (`appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:304-306`
+  y `reservas/[id]/page.tsx:112-123`) comparten la MISMA fuente --
+  `reservas/[id]` llama `customerAccountApi.getStatement()` igual que
+  cuentas-corrientes, sin endpoint propio. Un solo punto de fix:
+  extender `CustomerAccountService.getStatement()`
+  (`app-main/src/clientes-finanzas/customer-account.service.ts:74-84`)
+  con linkage por transacción. **Pregunta abierta, sin decidir**: ese
+  endpoint (`GET /customers/:id/account`) está gateado por
+  `requireModule(ModuleKey.CUENTAS_CORRIENTES)`
+  (`customers.routes.ts:813-815`), mientras que la emisión real es
+  `requireModule(ModuleKey.FACTURACION)` (`invoices.routes.ts:90`) --
+  ¿es aceptable que la respuesta de un módulo lleve datos de linkage de
+  facturación? (el rol SÍ alcanza en las dos puntas, `FRONT_DESK`; es
+  cruce de MÓDULO, no de rol). Bloque propio, gate propio, después del
+  1-bis.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
