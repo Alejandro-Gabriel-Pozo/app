@@ -492,12 +492,15 @@ solo un test de caracterización.
     como "segura para reintentar" y pediría un **segundo CAE para el mismo
     cargo**. Hay que blindar ese camino de falla ANTES de ensanchar el
     lock.
-  - **Pregunta de negocio pendiente, todavía sin `AskUserQuestion`**: si
-    una factura llega a `ISSUED` a mitad de un refund, ¿el resultado
-    correcto es (i) abortar con 409 reintentable, o (ii) atar el reembolso
-    a la factura recién emitida? Las dos son defendibles -- según la regla
-    de este repo ("Preguntas de alcance pueden esconder una decisión de
-    negocio"), esto bloquea diseñar el Block B.
+  - **Pregunta de negocio — ✅ RESPONDIDA (10/09/2026, decisión del dueño,
+    grounding ERPNext/Odoo)**: si una factura llega a `ISSUED` a mitad de
+    un refund, ¿el resultado correcto es (i) abortar con 409 reintentable,
+    o (ii) atar el reembolso a la factura recién emitida? Se eligió (i) --
+    ver el bloque `REFUND-ISSUED-RACE-01 Block B` más abajo, ya
+    implementado, pusheado y deployado. **Corrección 11/09/2026**: esta
+    viñeta seguía diciendo "todavía sin `AskUserQuestion`" -- quedó sin
+    actualizar cuando se decidió, mismo tipo de drift que las 2 entradas
+    "LOCAL/sin pushear" corregidas arriba en esta misma revisión.
   - **Corrección retractada (gate architecture-governor, 09-10/09/2026):**
     una versión anterior de este bullet decía "`DB_POOL_MAX` es 10, no 5 --
     varios documentos citan `max:5`, stale". Eso conflacionaba dos pools
@@ -534,8 +537,17 @@ solo un test de caracterización.
   la forma correcta es agregar `AND type <> 'PAYMENT'` al `UPDATE`
   (arregla la interferencia en vez de solo vigilarla).
 
-**`REFUND-ISSUED-RACE-01` Block B — ✅ implementado (10/09/2026, gate
-`architecture-governor`, LOCAL/sin pushear).** Decisión del dueño con
+**`REFUND-ISSUED-RACE-01` Block B — ✅ implementado, PUSHEADO Y
+DEPLOYADO en producción (10/09/2026, gate `architecture-governor`).**
+**Corrección 11/09/2026**: esta entrada decía "LOCAL/sin pushear" -- ya
+no es cierto, quedó sin actualizar cuando se pusheó. Verificado con
+`git log origin/main`: el commit `6b9a23b` ("REFUND-ISSUED-RACE-01
+Block B -- abortar si el set de facturas ISSUED cambia antes del
+commit") está en el historial remoto, ancestro directo de `68e0153`
+-- cuyo deploy (`dep-dahlnhgjo6nc73dg1qqg` = `live`) ya se confirmó con
+evidencia real en la entrada de `OUTBOX-RETRY-HIST-01`/`OUTBOX-BACKOFF-01`
+más arriba. Un deploy de Render sube el `HEAD` completo, no un diff --
+desplegar `68e0153` desplegó `6b9a23b` con él. Decisión del dueño con
 grounding ERP (ERPNext lock optimista, Odoo lock pesimista + precondición
 de estado -- los dos convergen en abortar, ninguno recalcula/ata en la
 misma operación): **abortar con 409 reintentable**, code propio
@@ -610,10 +622,15 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   archivo). La mitad NO tocada (blindar `markIssued()` para poder
   ensanchar el `FOR UPDATE`) sigue abierta, sin decisión pendiente --
   bloque propio.
-- ~~`PRESET-REVOKE-001`, la mitad real~~ — ✅ **RESUELTO 10/09/2026**
+- ~~`PRESET-REVOKE-001`, la mitad real~~ — ✅ **RESUELTO 10/09/2026,
+  PUSHEADO Y DEPLOYADO, VERIFICADO EN PRODUCCIÓN**
   (opción (a), destruir -- decisión del dueño, medido 0 personalizaciones
-  reales que destruir. Parte 1+2 implementadas, LOCAL/sin pushear. Ver
-  el bloque `✅ IMPLEMENTADO ENTERO` más arriba en este mismo archivo).
+  reales que destruir. Parte 1+2 implementadas. **Corrección 11/09/2026**:
+  esta línea decía "LOCAL/sin pushear" -- stale, quedó sin actualizar
+  cuando se pusheó (`2c1c7ff`+`e8f97db`, ambos en `git log origin/main`).
+  Ver el bloque `✅ RESUELTO ENTERO` más arriba en este mismo archivo, que
+  ya tenía la evidencia completa de deploy -- esta entrada corta no se
+  había sincronizado con esa).
 - **`SCHEMA-ANCHOR-DRIFT-001` — ✅ RESUELTO, ACOTADO (10/09/2026, gate
   `architecture-governor`, `d7268f3`+`6b235e0`+`9cad495`, pusheado y
   deployado -- `dep-dahh842jnfac73ddhhtg`, `live` confirmado en Render,
@@ -844,6 +861,38 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
+- **`POOL-MIXTO-MANUAL-01`** (bloque 3.5 del ADR común cancelar-con-NC,
+  hallazgo de esta revisión 11/09/2026 -- no estaba registrado en ningún
+  lado). `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+  §10 fila 2: el dueño decidió (08/09/2026) que el pool mixto (una
+  reserva con >1 factura `ISSUED` viva) se resuelve **manual, factura
+  por factura** -- no fan-out automático. §6.6 especifica el mecanismo:
+  "`>1` → error tipado fail-closed, SIN llamar a AFIP y SIN crear
+  ADJUSTMENT... bloque 3.5, gate propio, **con un parámetro explícito de
+  factura destino**". **Verificado en el código real
+  (`cancel-reservation-with-credit-note.service.ts:310-315`): la mitad
+  fail-closed SÍ está -- `issuedInvoiceIds.size > 1` tira
+  `CreditNoteReservationMultiInvoiceError` (correcto, seguro, ya
+  deployado como parte de 3.3-b1). La mitad "manual" NO está --
+  `cancelReservationWithCreditNote(reservationId, auth)` no acepta
+  ningún parámetro de factura destino** (`:252-255`, firma completa).
+  Efecto real: hoy, si una reserva llega a tener 2 facturas `ISSUED`
+  vivas simultáneas, el escape con NC queda permanentemente inalcanzable
+  para esa reserva -- no hay forma de que un operador la resuelva, ni por
+  API ni por panel (tampoco hay panel, ver el punto de frontend de
+  abajo). Fail-closed es lo correcto mientras tanto (no corrompe nada),
+  pero el bloque 3.5 tal como lo definió el dueño no está cerrado. Sin
+  medir en esta revisión cuántas reservas reales están en ese estado hoy
+  -- verificar contra Neon antes de priorizar.
+- **Frontend del ADR común cancelar-con-NC, declarado desde el diseño
+  original (§7, "en pasadas posteriores por bloque, hallazgo A4: hoy no
+  existe nada")** -- sigue sin existir ninguna pantalla para: la bandeja
+  de facturas vivas no conciliadas (`GET /api/invoices/unreconciled`, sin
+  consumidor de UI), el manejo de los `409 REFUND_INVOICE_SET_CHANGED`/
+  `CreditNoteReservationMultiInvoiceError` que el backend ya emite, ni un
+  panel para resolver manualmente el pool mixto de arriba una vez que
+  exista. Backend completo y deployado, frontend en cero -- mismo estado
+  que cuando se escribió el ADR.
 - **Residual B-1 / 3.2-b** (`CustomerAccountService.recordPayment()`,
   camino sin `allocations`) — transaccionalizar (mecánico, patrón ya
   usado 20 líneas más abajo en el mismo archivo) + filtro de tipo en
