@@ -773,40 +773,62 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   confirma `migrate:tenants` -- `2 negocio(s) con BD asignada. Versión
   objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: sin cambio de schema,
   la versión objetivo no se movió); `GET /health/db` = 200 post-deploy.
-- **`ORDER-CONSOLIDATED-PARTIAL-01`** (11/09/2026, registrado junto con el
-  cierre de 3.3-d residual 1) — `classifyOrderLiveInvoice()` sigue
-  preguntando por la factura ENTERA siempre, sin el clasificador por par
-  que residual 1 le agregó al lado RESERVAS. Las órdenes SÍ soportan
-  facturación consolidada multi-orden (`InvoiceService.requestConsolidatedInvoice()`,
-  `invoice.service.ts:481,540-541`, lockea `orderIds` Y `reservationIds`
-  para el mismo comprobante) -- la asunción original de este bloque de que
-  "las órdenes no tienen esto" era falsa, corregida en
-  `docs/diseno-33d-residuales-2026-09-11.md` §1.4. Fuera de alcance de
-  Commit A a propósito (disciplina de bloque chico, no imposibilidad
-  estructural). Sin casos reales hoy (mismo criterio de medición que
-  residual 1 -- revalidar contra `invoice_items`/`invoice_charges` de
-  órdenes antes de encarar). Próximo paso: mismo patrón de
-  `resolveReservationPairAttribution()`/`getIssuedCreditNoteCompensationTotalForReservation()`,
-  pero por `orderId`, bloque y gate propios.
-- **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ensanchar la
-  guarda de `registrarDesenlace()` cambia semántica compartida con
-  órdenes. **Corrección 10/09/2026**: el alcance real es más ancho de lo
-  que el nombre sugiere -- `TIPO_NO_LIQUIDABLE` lo dispara cualquier fila
-  `PAYMENT` **o `REFUND`** bajo la reserva (`cancellation-refund.service.ts:335`
-  también crea `REFUND` con `reservationId`, no solo `recordPayment()`),
-  y hay dos guardas con la misma condición (`outbox.handlers.ts:189-193`
-  Y `:336-340` dentro de `registrarDesenlace()`), no una -- ensanchar solo
-  la primera no alcanza. Además el set exacto de 2 rechazos no cubre el
-  set real (`CARGO_ANULADO` es un tercer rechazo independiente, con al
-  menos 3 combinaciones alcanzables). Forma sugerida por el gate: un
-  allowlist positivo de "co-rechazos benignos" bajo el prefijo
-  `opts?.comprobanteReconciliado` ya existente, no un set enumerado de 2
-  elementos ni un filtro en el productor (`candidatos` alimenta 5
-  contadores distintos, filtrar ahí silenciaría `RESERVA_INEXISTENTE`).
-  Sin casos reales hoy (0/15 reservas canceladas con comprobante vivo,
-  medición 08/09/2026 -- confirmado de nuevo 10/09/2026, 0 filas en las
-  2 tenants) -- no urgente. Próximo paso: discovery de la matriz completa
-  de combinaciones de rechazos alcanzables, no implementación directa.
+- **`ORDER-CONSOLIDATED-PARTIAL-01`** — **RE-ESCOPEADO (11/09/2026, gate
+  `architecture-governor`)**: la premisa original ("falta espejar el
+  clasificador del lado órdenes, mismo patrón que residual 1") era falsa.
+  Investigado a fondo: no es un hueco de LECTURA (un falso positivo
+  silencioso en `classifyOrderLiveInvoice()`) -- es que el lado de
+  ESCRITURA nunca llega a producir el estado que ese clasificador tendría
+  que leer:
+  1. `cancel-order-with-credit-note.service.ts:291,293` -- el `ADJUSTMENT`
+     del escape de órdenes SIEMPRE lleva `reservationId: null`.
+  2. `invoice.service.ts:794` -- la rama "pair" de `buildCreditNote()`
+     (la que emite una NC atribuida a una reserva/orden dentro de una
+     consolidada) exige `tx.reservationId != null` -- un ADJUSTMENT de
+     orden nunca entra ahí.
+  3. `invoice.service.ts:836-847` -- cuando ese ADJUSTMENT llega a la rama
+     restante y NO es una reversión total (exactamente el caso de una
+     orden dentro de una consolidada multi-orden), el código **tira**
+     (`N1.a`) en vez de emitir una NC mal formada.
+  4. **Hallazgo del gate (a):** ese throw no es un no-op limpio -- `tx1`
+     ya commiteó el `ADJUSTMENT` `PENDING` con `reversed_invoice_id` antes
+     de que `buildCreditNote()` corra fuera de transacción, así que queda
+     una fila huérfana que el fast-path de idempotencia reencuentra y
+     vuelve a tirar en cada reintento. Limpiarla es parte de la decisión
+     de producto de abajo, no un detalle menor.
+  5. **Hallazgo del gate (b):** tampoco hay falso positivo alcanzable por
+     otra vía (invoice mixta reserva+orden, o el `ADJUSTMENT` huérfano de
+     (4)) -- en los dos casos `classifyOrderLiveInvoice()` da
+     `NOT_RECONCILED` correctamente, porque la porción de la orden
+     genuinamente no está compensada.
+  6. Complicación adicional si algún día se decide construir el lado de
+     escritura: `invoice_items` no tiene `order_id` directo, solo
+     `order_item_id` (FK a `order_items.id`) -- un mirror de
+     `resolveRefundableForPair()` necesitaría el JOIN intermedio
+     `order_items.order_id`, no es un find-and-replace de `reservationId`.
+
+  **Queda como pregunta de producto sin decidir, no como bug:** ¿se va a
+  soportar alguna vez cancelar una orden parcial dentro de una consolidada
+  multi-orden con NC? Si la respuesta es sí, es trabajo de ESCRITURA nuevo
+  (extender la rama pair de `buildCreditNote()` a órdenes + limpiar el
+  huérfano de (4)) del cual el clasificador-espejo sería un requisito
+  POSTERIOR, no el bloque en sí. Las órdenes SÍ soportan facturación
+  consolidada multi-orden (`InvoiceService.requestConsolidatedInvoice()`,
+  `invoice.service.ts:481,540-541`) -- eso seguía siendo cierto, lo que
+  estaba mal era asumir que el hueco resultante era de lectura.
+- **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
+  (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
+  `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
+  allowlist positivo (`CO_RECHAZOS_BENIGNOS_SI_RECONCILIADO = {TIPO_NO_LIQUIDABLE}`)
+  compartido por los 3 call sites reales (`handleReservationCancelled`,
+  `handleOrderCancelled`, dentro de `registrarDesenlace()` -- eran 3, no 2
+  como decía la corrección anterior de este ítem). `CARGO_ANULADO` queda
+  FUERA a propósito (contador agregado, no distingue fila anulada = fila
+  viva de dos filas distintas). 8 tests nuevos + evidencia de mutación
+  (revertir solo 1 de los 3 call sites al exact-match viejo pone en rojo
+  exactamente los 2 tests de ese handler, aplicada y revertida sin
+  commitear). Sin casos reales todavía (0/15 medición previa) -- el cierre
+  es preventivo, no reactivo a un incidente.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
@@ -885,23 +907,30 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### Menores / cosmético
 
-- **`INTEGRATION-HARNESS-DROPDB-MASK-01`** 🟠 (11/09/2026, hallazgo de paso
-  al cerrar 3.3-d residual 1) -- en `src/tests/integration/helpers/db.ts`,
-  si `createTestDatabase()` falla en `beforeAll` (medido: timeout de 10s
-  contra Neon, contención real corriendo las 32 suites de integración
-  secuencial, cada una CREATE+DROP DATABASE) `pool` queda `undefined`, y
-  `afterAll` igual llama `dropTestDatabase(dbName, pool)` -- explota con
-  `TypeError: Cannot read properties of undefined (reading 'end')`
-  (`db.ts:177`, `pool.end()`). Ese segundo error TAPA el primero en el
-  resumen de la corrida (aparece como "Failed Suites", no como el timeout
-  real) -- quien lea el resultado sin abrir el detalle completo puede
-  pensar que el problema es `dropTestDatabase()`, no la contención de
-  `createTestDatabase()`. Confirmado flake, no regresión: la suite
-  afectada (`credit-note-compensation.integration.test.ts`) dio 10/10
-  passed corrida sola inmediatamente después, sin tocar nada. Fix
-  sugerido: en cada `afterAll` (o en el helper mismo), saltear
-  `dropTestDatabase()` si `pool` nunca se asignó -- mecánico, patrón
-  guard-clause, no decisión de diseño.
+- **`INTEGRATION-HARNESS-DROPDB-MASK-01`** — ✅ **RESUELTO (11/09/2026,
+  gate `architecture-governor`, commit `63e8d29`)**. `dropTestDatabase()`
+  ensanchó su firma a `pool: pg.Pool | undefined` con guard-clause de
+  retorno temprano -- ya no tapa el timeout real de `createTestDatabase()`
+  con un `TypeError` de `pool.end()`. Test dedicado (`db.test.ts`, corre
+  sin `TEST_DATABASE_URL`) confirma el guard. **No resuelve el huérfano
+  real** -- ver `INTEGRATION-HARNESS-ORPHAN-DB-01` abajo, condición
+  explícita del gate para no montarlo en el mismo commit.
+- **`INTEGRATION-HARNESS-ORPHAN-DB-01`** 🟠 (11/09/2026, hallazgo del gate
+  al revisar `INTEGRATION-HARNESS-DROPDB-MASK-01`) -- `createTestDatabase()`
+  (`db.ts:127-166`) no tiene try/catch entre `CREATE DATABASE` (`:142`) y
+  el `return` (`:166`, después de construir el pool en `:159` y aplicar
+  `schema.sql` completo en `:164`). Si el timeout medido (contención real
+  contra Neon) ocurre en `:164` -- el paso más probable, aplicar el schema
+  entero es lo más lento -- la BD `test_<uuid>` y su pool quedan
+  huérfanos: ni `dbName` ni `pool` se asignaron en el test file, así que ni
+  siquiera el guard de `dropTestDatabase()` (ya resuelto arriba) tiene con
+  qué buscarlos para dropearlos. Se acumulan hacia el límite de recursos
+  de Neon ya documentado (`runbook-deploy-render.md`, 10 branches/proyecto
+  plan free) por un camino DISTINTO (bases de datos huérfanas dentro de UN
+  branch/proyecto de test, no branches de más). Fix real: try/catch
+  DENTRO de `createTestDatabase()` que cierre el pool (si llegó a
+  construirse) y dropee la BD (si llegó a crearse) antes de relanzar el
+  error original -- bloque propio, con su propio gate.
 - **`OUTBOX-DL-THROTTLE-RESET-01`** 🟠 — el cooldown del aviso de
   dead-letter se resetea con `pool.on('error')`, correlacionado con
   outages. Techo real sigue bajo, no urgente.
