@@ -1176,3 +1176,33 @@ export class CreditNoteIssuedReservationNotCancellableError extends DomainError 
     );
   }
 }
+
+/**
+ * Bloque 1c-ii-b (11/09/2026, gate `architecture-governor`, condición C2,
+ * grounding `auditor-circuitos-erp`) -- `financial_transactions` no tiene
+ * CHECK que impida `order_id` Y `reservation_id` no-nulos a la vez en la
+ * misma fila (solo disciplina de los dos únicos creadores del escape de
+ * cancelar-con-NC, `cancel-order-with-credit-note.service.ts`/
+ * `cancel-reservation-with-credit-note.service.ts`, que hoy son mutuamente
+ * excluyentes por convención). Ninguno de los 5 sistemas de referencia
+ * consultados (Odoo, ERPNext, QloApps, Dolibarr, Cloudbeds -- ver grounding
+ * citado en `docs/pendientes-2026-09-10.md`) deja esta ambigüedad resuelta
+ * solo por una precedencia de código implícita; Odoo la cierra con un CHECK
+ * real en el propio ledger (`account_move_line._sql_constraints`). Acá el
+ * CHECK equivalente en `financial_transactions` queda como bloque de schema
+ * aparte (migración con riesgo de producción real, `migrate:tenants` corre
+ * contra todas las tenant DB en cada deploy) -- esta clase es la mitad
+ * "código" de la recomendación combinada: fail-loud apenas
+ * `buildCreditNote()` lee una fila ambigua, ANTES de cualquier rama de
+ * atribución, para no depender de qué rama corra primero ni de que el
+ * guard de monto (`CreditNoteAttributionMismatchError`) la tape por
+ * casualidad cuando los importes coinciden.
+ */
+export class CreditNoteAmbiguousSubjectError extends DomainError {
+  constructor(financialTransactionId: string, orderId: string, reservationId: string) {
+    super(
+      `La transacción "${financialTransactionId}" tiene orderId="${orderId}" Y reservationId="${reservationId}" a la vez -- estado ambiguo que la aplicación nunca debería producir (financial_transactions no tiene CHECK que lo impida en el schema). No se atribuye la Nota de Crédito a ninguno de los dos sin decisión explícita; revisión manual.`,
+      'CREDIT_NOTE_AMBIGUOUS_SUBJECT',
+    );
+  }
+}

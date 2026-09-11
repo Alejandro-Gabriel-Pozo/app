@@ -430,15 +430,20 @@ export class SqlInvoiceRepository implements InvoiceRepository {
    * (mismo riesgo documentado en F4 arriba).
    *
    * **Por qué sumar el `imp_total` COMPLETO de la NC alcanza, sin prorratear
-   * por línea:** es una propiedad de las 3 ramas de
+   * por línea:** es una propiedad de las 4 ramas de
    * `InvoiceService.buildCreditNote()` (invoice.service.ts), NO del schema --
    * documentado en el docblock de `isReservationPortionFullyCompensatedByIssuedCreditNotes()`
-   * y en §1.6 del diseño. La rama por par es 1:1 con la reserva; la rama de
-   * reversión total cubre la factura ENTERA (más que la porción de R, nunca
-   * menos -- sobre-compensación, no sub-compensación); la rama proporcional
-   * legacy emite una sola línea por transacción revertidora. Ninguna de las
-   * 3 reparte una NC PARCIAL entre múltiples reservas -- si una cuarta rama
-   * lo hiciera, este numerador quedaría fail-open sin que nada lo detecte.
+   * y en §1.6 del diseño. La rama por par (reserva) es 1:1 con la reserva;
+   * la rama por par (orden, 1c-ii-b) es 1:1 con la orden -- no toca este
+   * numerador; la rama de reversión total cubre la factura ENTERA (más que
+   * la porción de R, nunca menos -- sobre-compensación, no
+   * sub-compensación); la rama proporcional legacy emite una sola línea
+   * por transacción revertidora. **1c-ii-b agregó la 4ta rama que esta
+   * nota ya advertía** (11/09/2026) -- sigue sin repartir una NC PARCIAL
+   * entre múltiples reservas: es 1:1 con UNA orden, misma propiedad que
+   * la rama por par de reservas, así que el numerador se mantiene sano. Si
+   * una futura 5ta rama repartiera una NC entre múltiples sujetos, este
+   * numerador quedaría fail-open sin que nada lo detecte.
    */
   private async getIssuedCreditNoteCompensationTotalForReservation(
     client: SqlClient,
@@ -487,7 +492,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       [invoiceId],
     );
     const items: FrozenInvoiceItemShare[] = itemRows.map((row) => ({
-      reservationId: row.reservation_id,
+      attributionKey: row.reservation_id,
       subtotal: parseFloat(row.subtotal),
       ivaRate: parseFloat(row.iva_rate),
     }));
@@ -504,7 +509,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // `refundable` (que restaría lo ya reembolsado). No es un valor real de
     // "nada reembolsado todavía", es simplemente el campo que esta llamada
     // no necesita.
-    return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId });
+    return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, attributionKey: reservationId });
   }
 
   /**
@@ -516,17 +521,32 @@ export class SqlInvoiceRepository implements InvoiceRepository {
    * reserva -- vía el JOIN intermedio `order_items` (`invoice_items` no
    * tiene `order_id` directo, solo `order_item_id`).
    *
-   * **Sin consumidor de producción todavía** -- `buildCreditNote()` (bloque
-   * 1c) es quien lo va a llamar cuando cablee la rama de orden. El mismo
-   * argumento de "por qué sumar el `imp_total` COMPLETO alcanza, sin
-   * prorratear por línea" del método de reservas aplica acá igual: es una
-   * propiedad de las 3 ramas actuales de `buildCreditNote()`, no del
-   * schema. **1c agrega una CUARTA rama** (la de orden) -- ese mismo
-   * docblock ya advierte que una rama nueva que reparta una NC PARCIAL
-   * entre múltiples sujetos dejaría este numerador fail-open sin que nada
-   * lo detecte; 1c tiene que releer esa advertencia antes de cablear.
+   * **Sigue PARKEADO, sin consumidor de producción (corrección 11/09/2026,
+   * gate `architecture-governor`, bloque 1c-ii-b).** La expectativa
+   * original ("`buildCreditNote()` lo va a llamar cuando cablee la rama de
+   * orden") no se cumplió -- distinto método, distinta pregunta: este
+   * numerador responde "¿cuánto ya se compensó con NC ISSUED?" para el
+   * clasificador de reconciliación (mismo rol que
+   * `getIssuedCreditNoteCompensationTotalForReservation()`, consumido por
+   * `classifyReservationLiveInvoice()`); `buildCreditNote()` resuelve una
+   * pregunta distinta ("¿cuánto es atribuible?") vía
+   * `resolveRefundableForPair()` directo, sin pasar por ningún numerador de
+   * NC ya emitidas. `classifyOrderLiveInvoice()` (lado órdenes del mismo
+   * clasificador) sigue usando el numerador genérico por-factura-entera,
+   * no este -- por eso este método queda sin caller, igual que
+   * `resolveOrderPairAttribution()` de arriba, mismo criterio de "no se
+   * borra, el cálculo es correcto y puede hacer falta si el residual 1 de
+   * 3.3-d (lado órdenes) se encara".
    *
-   * **Invariante del que depende este mecanismo, y que 1c comparte**:
+   * El mismo argumento de "por qué sumar el `imp_total` COMPLETO alcanza,
+   * sin prorratear por línea" del método de reservas aplica acá igual: es
+   * una propiedad de las ramas de `buildCreditNote()`, no del schema.
+   * **1c-ii-b agregó la 4ta rama que este docblock advertía** -- sigue sin
+   * repartir una NC PARCIAL entre múltiples sujetos (es 1:1 con UNA orden),
+   * así que el numerador se mantiene sano; una futura 5ta rama que sí
+   * repartiera lo dejaría fail-open sin que nada lo detecte.
+   *
+   * **Invariante del que depende este mecanismo, y que 1c-ii-b comparte**:
    * `chk_invoice_item_origin` (XOR estricto `order_item_id`/`reservation_id`
    * en `invoice_items`, `src/db/schema.sql`). Si ese XOR se relaja alguna
    * vez, una fila con los dos orígenes contaría como sujeto real en el
@@ -570,15 +590,30 @@ export class SqlInvoiceRepository implements InvoiceRepository {
    * (cuentan en el denominador del grupo de tasa, sin recibir entrada
    * propia -- ver `refund-attribution.ts::distributeGroupAmount()`),
    * simétrico con cómo el método de reservas deja los ítems de origen
-   * ORDEN con `reservationId: null`. Un `JOIN` interno los descartaría del
+   * ORDEN con `attributionKey: null`. Un `JOIN` interno los descartaría del
    * denominador por completo, inflando la atribución del resto.
    *
-   * Sin consumidor de producción todavía (1c/1d). El campo de la clave de
-   * atribución sigue llamándose `reservationId` en `FrozenInvoiceItemShare`
-   * -- no renombrado a propósito, ver el docblock de `refund-attribution.ts`
-   * (bloque 1a): acá se le pasa `oi.order_id`, tratado como la misma clave
-   * opaca que ya probó `refund-attribution.test.ts` con ids con forma de
-   * orden.
+   * **PARKEADO -- sin consumidor de producción, decisión explícita (no un
+   * olvido) (11/09/2026, gate `architecture-governor`, condición C1 de
+   * 1c-ii-b).** La expectativa original de este docblock ("`buildCreditNote()`
+   * es quien lo va a llamar") no se cumplió: 1c-ii-b cableó la rama de
+   * órdenes de `buildCreditNote()` espejando la estructura de la rama de
+   * reservas -- lectura inline vía `getOrderIdsByInvoiceItemId()` (`this.db`,
+   * FUERA de la transacción, igual que `originalItems` ya resuelve la
+   * rama de reservas), no llamando a este método (que exige un `client`
+   * abierto). Motivo: mantener las dos ramas de `buildCreditNote()`
+   * estructuralmente simétricas -- llamar a este método hubiera obligado a
+   * mover el cómputo de atribución DENTRO de `transactionManager.run()`
+   * solo para el caso orden, una asimetría de concurrencia respecto de
+   * reservas y un adelanto parcial no pedido de la decisión de 1c-ii-c
+   * ("pre-validar en tx1"). Este método NO se borra: el cálculo es
+   * correcto (cobertura de integración real,
+   * `classify-order-live-invoice-pair.integration.test.ts`) y sirve de
+   * verificación de equivalencia cruzada contra el camino real de
+   * `buildCreditNote()` (ver ese mismo archivo de test, describe
+   * "1c-ii-b -- equivalencia") -- y queda disponible si algún consumidor
+   * futuro sí necesita resolver la atribución DENTRO de una transacción ya
+   * abierta.
    */
   async resolveOrderPairAttribution(
     client: SqlClient,
@@ -595,7 +630,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       [invoiceId],
     );
     const items: FrozenInvoiceItemShare[] = itemRows.map((row) => ({
-      reservationId: row.order_id,
+      attributionKey: row.order_id,
       subtotal: parseFloat(row.subtotal),
       ivaRate: parseFloat(row.iva_rate),
     }));
@@ -608,7 +643,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       (invoiceRows[0]?.afip_request as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
     ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
 
-    return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId: orderId });
+    return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, attributionKey: orderId });
   }
 
   async getInFlightCreditNoteTotalForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
@@ -1277,7 +1312,13 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   async getOrderIdsByInvoiceItemId(invoiceId: string): Promise<Map<string, string>> {
     // 1c-ii-a -- `this.db` (pool del tenant), mismo criterio que
     // `getItemsByInvoiceId()` de arriba: lectura simple, sin lock, no
-    // participa de ninguna transacción abierta por el caller.
+    // participa de ninguna transacción abierta por el caller. Consumidor
+    // real desde 1c-ii-b (11/09/2026): `InvoiceService.buildCreditNote()`
+    // lo llama para construir `shareItems` de la rama ORDER, exactamente
+    // como ya usa `originalItems` (con `this.invoiceRepo`, sin `client`)
+    // para la rama RESERVATION -- las dos ramas leen fuera del lock por
+    // simetría, ver la condición C1 del gate en el docblock de
+    // `resolveOrderPairAttribution()` de arriba.
     const { rows } = await this.db.query<{ invoice_item_id: string; order_id: string }>(
       `SELECT ii.id AS invoice_item_id, oi.order_id AS order_id
          FROM invoice_items ii

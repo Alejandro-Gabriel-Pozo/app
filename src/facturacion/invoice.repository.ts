@@ -348,12 +348,12 @@ export interface InvoiceRepository {
    * `subject` (1c-ii-a, 11/09/2026, gate `architecture-governor`) —
    * generalizado de `reservationId: string` a un discriminador cerrado
    * (`RESERVATION`/`ORDER`) para que el bloque 1c-ii-b (atribución de
-   * órdenes en `buildCreditNote()`, todavía en HOLD) pueda reusar este
-   * mismo método en vez de un hermano nuevo `...ForOrderPairForUpdate` —
-   * un método nuevo sería invisible para `lock-order.test.ts` (`LOCK_CALL_RE`)
-   * hasta que alguien se acordara de sumarlo a mano. Sin consumidor de
-   * `kind: 'ORDER'` todavía; el único call site real
-   * (`invoice.service.ts`) sigue pasando `kind: 'RESERVATION'`.
+   * órdenes en `buildCreditNote()`) pueda reusar este mismo método en vez
+   * de un hermano nuevo `...ForOrderPairForUpdate` — un método nuevo sería
+   * invisible para `lock-order.test.ts` (`LOCK_CALL_RE`) hasta que alguien
+   * se acordara de sumarlo a mano. **Consumidor real de `kind: 'ORDER'`
+   * desde 1c-ii-b** (11/09/2026) — `invoice.service.ts` pasa `kind: 'ORDER'`
+   * en la rama nueva, `kind: 'RESERVATION'` en la de siempre.
    */
   getInFlightCreditNoteTotalForPairForUpdate(
     client: SqlClient,
@@ -539,10 +539,12 @@ export interface InvoiceRepository {
    *
    * Solo trae entradas con `order_id` resuelto -- una línea de origen
    * RESERVA o el caso borde sin documento (`resolveInvoiceItems()`, Nivel A)
-   * simplemente no aparece en el `Map`. **Sin consumidor todavía** -- mismo
-   * criterio que `resolveOrderPairAttribution()`/`getIssuedCreditNoteCompensationTotalForOrder()`
-   * (bloque 1b): la rama de atribución de órdenes en `buildCreditNote()`
-   * (bloque 1c-ii-b) es quien lo va a usar.
+   * simplemente no aparece en el `Map`. **Consumidor real desde 1c-ii-b**
+   * (11/09/2026, gate `architecture-governor`) -- `InvoiceService.buildCreditNote()`
+   * lo llama para la rama de atribución de órdenes, espejando cómo la rama
+   * de reservas ya usa `getItemsByInvoiceId()` (ambas fuera de la
+   * transacción). `resolveOrderPairAttribution()` (bloque 1b) sigue
+   * PARKEADO, sin consumidor -- ver su propio docblock.
    */
   getOrderIdsByInvoiceItemId(invoiceId: string): Promise<Map<string, string>>;
 }

@@ -12,9 +12,16 @@
  * `orders`+`order_items`+`invoice_items.order_item_id` a mano, sin helper
  * `seedOrder` nuevo (no hacía falta).
  *
- * **Sin consumidor de producción todavía** -- estos métodos no están
- * cableados en `buildCreditNote()` (eso es 1c). Este test ejercita el JOIN
- * SQL en aislamiento, mismo criterio que su precedente de reservas.
+ * **`resolveOrderPairAttribution()` sigue PARKEADO, sin consumidor de
+ * producción (corrección 11/09/2026, gate `architecture-governor`, bloque
+ * 1c-ii-b, condición C1)** -- no se cableó en `buildCreditNote()`: la rama
+ * real de órdenes usa `getOrderIdsByInvoiceItemId()` + `resolveRefundableForPair()`
+ * inline (mismo patrón que la rama de reservas), no este método. Este test
+ * lo ejercita en aislamiento igual, mismo criterio que su precedente de
+ * reservas -- y el último `it()` de este archivo (equivalencia) prueba que
+ * el camino real de `buildCreditNote()` y este método parkeado dan el
+ * MISMO resultado para el mismo fixture, así que no hay dos fuentes de
+ * verdad divergentes conviviendo.
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
@@ -31,6 +38,7 @@ import type { SqlClient } from '../../repositories/sql.client.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { CBTE_TIPO_FACTURA_B } from '../../facturacion/afip-catalog.constants.js';
+import { resolveRefundableForPair, type FrozenInvoiceItemShare, type FrozenIvaEntry } from '../../facturacion/refund-attribution.js';
 
 const BIZ = 'biz-test-classify-order-pair-01';
 
@@ -209,5 +217,54 @@ describe.skipIf(skipIfNoDb)('resolveOrderPairAttribution() / getIssuedCreditNote
     // Sin ningún ADJUSTMENT/NC todavía -- 0.
     const before = await pgTxManager.run((client) => invoiceRepo.getIssuedCreditNoteCompensationTotalForOrder(client, invoiceId, order));
     expect(before).toBe(0);
+  });
+
+  it('1c-ii-b -- equivalencia: el camino REAL de buildCreditNote() (getOrderIdsByInvoiceItemId() + resolveRefundableForPair() inline, fuera de transacción) da el MISMO resultado que resolveOrderPairAttribution() (parkeado, dentro de transacción) para el mismo fixture', async () => {
+    // Condición C1 del gate de 1c-ii-b: elegir el camino inline (mismo que
+    // la rama de reservas) dejó DOS lectores del mismo concepto que no
+    // pueden divergir -- este test cruza los dos contra el mismo fixture
+    // MIXTO (orden + reserva en el mismo grupo de tasa, para ejercitar
+    // también el denominador con ítem sin clave).
+    const customer = await seedCustomer(db);
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id);
+    const reservation = await seedReservation(db, resource.id, customer.id);
+    const orderA = await seedOrder(customer.id);
+    const oiA = await seedOrderItem(orderA, 800);
+
+    const invoiceId = await seedInvoice(customer.id, {
+      impNeto: 1100, impIva: 168, iva: [{ id: 5, baseImp: 800, importe: 168 }],
+    });
+    await seedInvoiceItem(invoiceId, { orderItemId: oiA, subtotal: 800, ivaRate: 21 });
+    await seedInvoiceItem(invoiceId, { reservationId: reservation.id, subtotal: 300, ivaRate: 0 });
+
+    // Camino PARKEADO (bloque 1b) -- JOIN SQL propio, dentro de transacción.
+    const viaParked = await pgTxManager.run((client) => invoiceRepo.resolveOrderPairAttribution(client, invoiceId, orderA));
+
+    // Camino REAL de buildCreditNote() (1c-ii-b) -- exactamente las mismas
+    // llamadas que la rama ORDER de invoice.service.ts, fuera de transacción.
+    const orderIdMap = await invoiceRepo.getOrderIdsByInvoiceItemId(invoiceId);
+    const originalItems = await invoiceRepo.getItemsByInvoiceId(invoiceId);
+    const shareItems: FrozenInvoiceItemShare[] = originalItems.map((i) => ({
+      attributionKey: orderIdMap.get(i.id) ?? null, subtotal: i.subtotal, ivaRate: i.ivaRate,
+    }));
+    const invoice = await invoiceRepo.getById(invoiceId);
+    const frozenIva: FrozenIvaEntry[] = (
+      (invoice!.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
+    ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
+    const viaReal = resolveRefundableForPair({ items: shareItems, frozenIva, alreadyRefunded: 0, attributionKey: orderA });
+
+    expect(viaParked.kind).toBe('RESOLVED');
+    expect(viaReal.kind).toBe('RESOLVED');
+    if (viaParked.kind === 'RESOLVED' && viaReal.kind === 'RESOLVED') {
+      expect(viaReal.attributedNeto).toBe(viaParked.attributedNeto);
+      expect(viaReal.attributedIva).toBe(viaParked.attributedIva);
+      expect(viaReal.attributedTotal).toBe(viaParked.attributedTotal);
+      // Valor concreto (no solo "iguales entre sí") -- la orden participa
+      // 800/800 del grupo 21% (el otro 300 es la reserva, tasa 0%, no
+      // aporta a este grupo) -- 800 neto + 168 iva.
+      expect(viaReal.attributedNeto).toBe(800);
+      expect(viaReal.attributedIva).toBe(168);
+    }
   });
 });

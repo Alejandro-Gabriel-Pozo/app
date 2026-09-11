@@ -64,25 +64,27 @@
  * ## Bloque 1a (11/09/2026, gate `architecture-governor`) -- generalización
  * sobre clave de atribución opaca, `ORDER-CONSOLIDATED-PARTIAL-01`
  * Ninguna línea de esta función hace nada específico de "reserva" -- el
- * campo `reservationId` (de `FrozenInvoiceItemShare` y de
- * `ResolveRefundableForPairInput`) siempre se usó como una clave de
+ * campo, entonces `reservationId`, siempre se usó como una clave de
  * agrupación opaca: `distributeGroupAmount()` solo la usa como key de un
  * `Map`, nunca la interpreta. Verificado con casos nuevos en
  * `refund-attribution.test.ts` que pasan ids con forma de orden por ese
  * mismo campo y confirman reparto/denominador idénticos a los de reserva.
- * **Los nombres de campo NO se renombraron a propósito**: los 3 callers
- * (`invoice.service.ts::buildCreditNote()`,
- * `sql.invoice.repository.ts::resolveReservationPairAttribution()` -- los
- * 2 de producción, camino de reservas -- y
- * `sql.invoice.repository.ts::resolveOrderPairAttribution()`, bloque 1b,
- * todavía sin consumidor) siguen fuera de alcance de este bloque (condición del gate), y
- * renombrar hubiera exigido tocarlos. El rename real a una clave neutra
- * (`attributionKey`) queda para el bloque 1c, que igual necesita tocar
- * `invoice.service.ts` para cablear la rama de órdenes -- ahí el rename
- * y el wiring van juntos, no antes. `RESERVATION_NOT_IN_INVOICE` sí se
- * renombró (ver `BLOCKED.reason` abajo) porque es seguro sin tocar
- * ningún caller: ambos productores lo pasan a `attribution.reason` sin
- * comparar el literal.
+ * En 1a el rename se difirió a propósito (los 3 callers quedaban fuera de
+ * alcance) -- `RESERVATION_NOT_IN_INVOICE` sí se renombró entonces (ver
+ * `BLOCKED.reason` abajo) porque era seguro sin tocar ningún caller: ambos
+ * productores ya lo pasaban a `attribution.reason` sin comparar el literal.
+ *
+ * ## Bloque 1c-ii-b (11/09/2026, gate `architecture-governor`, condición
+ * C4) -- rename cumplido: `reservationId` → `attributionKey` en
+ * `FrozenInvoiceItemShare` y `ResolveRefundableForPairInput`, en el mismo
+ * commit que cablea la rama de órdenes en `buildCreditNote()` (el rename
+ * solo podía ir junto con tocar sus 2 callers de producción, que es lo que
+ * este bloque hace de todas formas). Los 3 callers actualizados:
+ * `invoice.service.ts::buildCreditNote()` (las 2 ramas, reserva y orden,
+ * pasan `attributionKey`), `sql.invoice.repository.ts::resolveReservationPairAttribution()`
+ * y `sql.invoice.repository.ts::resolveOrderPairAttribution()` (esta
+ * última sigue sin consumidor de producción -- ver su propio docblock,
+ * "parkeada" por decisión del gate, no por este rename).
  */
 
 import { round2 } from '../domain/money.js';
@@ -91,13 +93,16 @@ import { resolveIvaAlicuotaId } from './afip-catalog.constants.js';
 /** Insumo congelado de UN ítem de la factura (de cualquier sujeto, no solo el consultado -- hace falta el universo completo para el denominador de cada grupo de tasa). */
 export interface FrozenInvoiceItemShare {
   /**
-   * Clave de atribución opaca -- hoy siempre `invoice_items.reservation_id`
-   * (`null` = ítem de origen orden, cuenta en el denominador del grupo de
-   * tasa pero no recibe entrada propia en el resultado; ver
-   * `distributeGroupAmount()`). Nombre sin generalizar a propósito, ver
-   * docblock del archivo.
+   * Clave de atribución opaca -- `invoice_items.reservation_id` cuando el
+   * caller consulta por reserva, `order_items.order_id` (vía JOIN, no hay
+   * columna directa en `invoice_items`) cuando consulta por orden. `null`
+   * = ítem del OTRO tipo de sujeto: cuenta en el denominador del grupo de
+   * tasa pero no recibe entrada propia en el resultado (ver
+   * `distributeGroupAmount()`). Renombrado de `reservationId` en 1c-ii-b
+   * (ver docblock del archivo) -- la función nunca le dio tratamiento
+   * especial, es puramente la key de un `Map`.
    */
-  reservationId: string | null;
+  attributionKey: string | null;
   /** `invoice_items.subtotal` congelado -- neto de ese ítem al momento de emitir. */
   subtotal: number;
   /** `invoice_items.iva_rate` congelado -- porcentaje (ej. 21), no fracción. */
@@ -120,15 +125,14 @@ export interface ResolveRefundableForPairInput {
   /** Ya reembolsado contra ESTE PAR (factura, sujeto) -- `SUM(amount) WHERE reversed_invoice_id = I AND reservation_id = R AND status = 'SETTLED'`. Dimensión ya existente hoy, sin schema nuevo (el REFUND ya lleva las dos columnas). */
   alreadyRefunded: number;
   /**
-   * Clave de atribución cuyo remanente se calcula. Hoy un `reservationId`
-   * real en los 2 callers de producción (camino de reservas) y un
-   * `orderId` en el caller sin consumidor todavía del bloque 1b -- el
-   * campo se llama `reservationId` porque renombrarlo exige tocar esos
-   * callers (fuera de alcance del bloque 1a, ver docblock del archivo).
-   * La función no le da ningún tratamiento especial: es la clave de
-   * agrupación de `distributeGroupAmount()`, nada más.
+   * Clave de atribución cuyo remanente se calcula -- un `reservationId`
+   * real cuando el caller consulta por reserva, un `orderId` real cuando
+   * consulta por orden (renombrado de `reservationId` en 1c-ii-b, ver
+   * docblock del archivo). La función no le da ningún tratamiento
+   * especial: es la clave de agrupación de `distributeGroupAmount()`,
+   * nada más.
    */
-  reservationId: string;
+  attributionKey: string;
 }
 
 export type ResolveRefundableForPairResult =
@@ -163,7 +167,7 @@ export type ResolveRefundableForPairResult =
  * Reparte el `baseImp`/`importe` congelado de UN grupo de tasa entre los
  * sujetos que participan de ese grupo, con `round2` por sujeto y el
  * residuo de redondeo asignado al de mayor `subtotal` dentro del grupo
- * (decisión del dueño). Devuelve un Map por `reservationId` -- los ítems
+ * (decisión del dueño). Devuelve un Map por `attributionKey` -- los ítems
  * sin clave (origen del OTRO tipo de sujeto -- ej. una orden cuando se
  * consulta por reserva, o viceversa) cuentan en el denominador pero no
  * reciben entrada en el resultado.
@@ -194,34 +198,34 @@ function distributeGroupAmount(
   const result = new Map<string, number>();
   if (groupTotalSubtotal <= 0) return result;
 
-  const byReservation = new Map<string, number>();
+  const byKey = new Map<string, number>();
   let keyedSubtotalSum = 0;
   for (const item of itemsInGroup) {
-    if (item.reservationId == null) continue;
-    byReservation.set(item.reservationId, (byReservation.get(item.reservationId) ?? 0) + item.subtotal);
+    if (item.attributionKey == null) continue;
+    byKey.set(item.attributionKey, (byKey.get(item.attributionKey) ?? 0) + item.subtotal);
     keyedSubtotalSum += item.subtotal;
   }
-  if (byReservation.size === 0) return result;
+  if (byKey.size === 0) return result;
 
   let roundedSum = 0;
-  let maxShareReservationId: string | null = null;
+  let maxShareKey: string | null = null;
   let maxShareRaw = -Infinity;
 
-  for (const [reservationId, subtotalR] of byReservation) {
-    const raw = frozenAmount * (subtotalR / groupTotalSubtotal);
+  for (const [key, subtotalK] of byKey) {
+    const raw = frozenAmount * (subtotalK / groupTotalSubtotal);
     const rounded = round2(raw);
-    result.set(reservationId, rounded);
+    result.set(key, rounded);
     roundedSum = round2(roundedSum + rounded);
     if (raw > maxShareRaw) {
       maxShareRaw = raw;
-      maxShareReservationId = reservationId;
+      maxShareKey = key;
     }
   }
 
   const keyedPortionOfFrozenAmount = round2(frozenAmount * (keyedSubtotalSum / groupTotalSubtotal));
   const residual = round2(keyedPortionOfFrozenAmount - roundedSum);
-  if (residual !== 0 && maxShareReservationId !== null) {
-    result.set(maxShareReservationId, round2(result.get(maxShareReservationId)! + residual));
+  if (residual !== 0 && maxShareKey !== null) {
+    result.set(maxShareKey, round2(result.get(maxShareKey)! + residual));
   }
 
   return result;
@@ -233,7 +237,7 @@ function distributeGroupAmount(
  * todos los insumos ya congelados, ninguno se relee de configuración viva.
  */
 export function resolveRefundableForPair(input: ResolveRefundableForPairInput): ResolveRefundableForPairResult {
-  const { items, frozenIva, alreadyRefunded, reservationId } = input;
+  const { items, frozenIva, alreadyRefunded, attributionKey } = input;
 
   if (items.length === 0) {
     return {
@@ -242,11 +246,11 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
       detail: 'La factura no tiene invoice_items (probable factura Nivel A, anterior al corte del 23/08/2026) -- no hay composición fiscal original que atribuir. Escalar al escape administrativo, no aproximar.',
     };
   }
-  if (!items.some((i) => i.reservationId === reservationId)) {
+  if (!items.some((i) => i.attributionKey === attributionKey)) {
     return {
       kind: 'BLOCKED',
       reason: 'SUBJECT_NOT_IN_INVOICE',
-      detail: `La reserva "${reservationId}" no tiene ningún invoice_item en esta factura.`,
+      detail: `El sujeto "${attributionKey}" (reserva u orden) no tiene ningún invoice_item en esta factura.`,
     };
   }
 
@@ -269,8 +273,8 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
     // necesitar entrada en afip_request.Iva[] (ese array omite los grupos
     // con impIva = 0 -- ver buildIvaBreakdown()).
     if (rate === 0) {
-      const netoByReservation = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, groupTotalSubtotal);
-      attributedNeto = round2(attributedNeto + (netoByReservation.get(reservationId) ?? 0));
+      const netoByKey = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, groupTotalSubtotal);
+      attributedNeto = round2(attributedNeto + (netoByKey.get(attributionKey) ?? 0));
       continue;
     }
 
@@ -293,14 +297,14 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
       };
     }
 
-    const netoByReservation = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, frozenEntry.baseImp);
-    const ivaByReservation = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, frozenEntry.importe);
-    const netoShare = netoByReservation.get(reservationId);
+    const netoByKey = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, frozenEntry.baseImp);
+    const ivaByKey = distributeGroupAmount(itemsInGroup, groupTotalSubtotal, frozenEntry.importe);
+    const netoShare = netoByKey.get(attributionKey);
     if (netoShare !== undefined) {
-      ivaBreakdown.push({ id: alicuotaId, baseImp: netoShare, importe: ivaByReservation.get(reservationId) ?? 0 });
+      ivaBreakdown.push({ id: alicuotaId, baseImp: netoShare, importe: ivaByKey.get(attributionKey) ?? 0 });
     }
     attributedNeto = round2(attributedNeto + (netoShare ?? 0));
-    attributedIva = round2(attributedIva + (ivaByReservation.get(reservationId) ?? 0));
+    attributedIva = round2(attributedIva + (ivaByKey.get(attributionKey) ?? 0));
   }
 
   const attributedTotal = round2(attributedNeto + attributedIva);

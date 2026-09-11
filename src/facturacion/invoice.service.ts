@@ -59,6 +59,7 @@ import {
   CreditNotePairCapExceededError,
   CreditNoteAttributionBlockedError,
   CreditNoteAttributionMismatchError,
+  CreditNoteAmbiguousSubjectError,
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
@@ -732,7 +733,9 @@ export class InvoiceService {
    * positivos -- `CHECK (imp_total >= 0)`, mismo enfoque que Odoo
    * `out_refund`).
    *
-   * **Dos ramas según total vs. parcial:**
+   * **Cuatro ramas según total vs. parcial vs. sujeto (corrección
+   * 11/09/2026, gate `architecture-governor`, bloque 1c-ii-b -- este
+   * docblock decía "Dos ramas", desactualizado desde 3.3-a):**
    * - **Total** (`abs(tx.amount) == original.impTotal`, tol ±1 centavo) **y**
    *   la factura tiene `invoice_items` → **N3**: la NC COPIA sus líneas desde
    *   `invoice_items` de la original, preservando el back-ref
@@ -740,17 +743,26 @@ export class InvoiceService {
    *   `Iva[]` congelados de la original tal cual (factor = 1). Es la doctrina
    *   de ERPNext/Odoo (copia 1-a-1, impuestos desde las líneas, nunca factor
    *   de cabecera).
-   * - **Parcial**, o total contra una factura "Nivel A" sin `invoice_items`
-   *   → rama proporcional heredada: escala el desglose por tasa YA CONGELADO
-   *   por `factor = abs(tx.amount) / original.impTotal`, una sola línea
-   *   sintética. `resolveRefundableForPair()` SÍ está cableado (corrección
-   *   10/09/2026 -- este comentario decía "ya existe sin cablear", ya no es
-   *   cierto): lo llama `buildCreditNote()` más abajo (`:816`) para el
-   *   cruce independiente del monto contra la composición fiscal congelada.
-   *   Un `ADJUSTMENT` NUNCA cae acá con `invoice_items` presentes (una orden
-   *   se cancela todo-o-nada por construcción, ADR §5); si llega sin líneas
-   *   se rechaza con `OrderInvoiceHasNoLinesError` (defensivo -- toda factura
-   *   de orden es post-v32).
+   * - **Parcial, `ADJUSTMENT` con `reservationId`** (bloque 3.3-a) → rama
+   *   por-par de reserva: re-deriva el monto desde `resolveRefundableForPair()`
+   *   (composición fiscal congelada, N4-a) y lo CRUZA contra `abs(tx.amount)`,
+   *   copia 1-a-1 solo las líneas de esa reserva.
+   * - **Parcial, `ADJUSTMENT` con `orderId`** (bloque 1c-ii-b) → rama
+   *   por-par de orden, espejo estructural exacto de la anterior --
+   *   `resolveRefundableForPair()` sigue siendo el mismo cálculo puro, la
+   *   única diferencia es cómo se resuelve la clave de atribución por ítem
+   *   (`getOrderIdsByInvoiceItemId()`, JOIN vía `order_items` porque
+   *   `invoice_items` no tiene `order_id` directo).
+   * - **Cualquier otro caso** (parcial sin `reservationId` ni `orderId`, o
+   *   total contra una factura "Nivel A" sin `invoice_items`) → rama
+   *   proporcional heredada: escala el desglose por tasa YA CONGELADO por
+   *   `factor = abs(tx.amount) / original.impTotal`, una sola línea
+   *   sintética. Un `ADJUSTMENT` NUNCA cae acá con `invoice_items`
+   *   presentes Y un sujeto real (una orden se cancela todo-o-nada por
+   *   construcción, ADR §5, y las dos ramas por-par de arriba ya capturan
+   *   el caso con sujeto); si llega sin líneas se rechaza con
+   *   `OrderInvoiceHasNoLinesError` (defensivo -- toda factura de orden es
+   *   post-v32).
    */
   private async buildCreditNote(
     tx: FinancialTransaction,
@@ -784,6 +796,23 @@ export class InvoiceService {
     const isFullReversal =
       Math.abs(round2(amountToReverse - original.impTotal)) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
 
+    // 1c-ii-b (11/09/2026, gate `architecture-governor`, condición C2,
+    // grounding `auditor-circuitos-erp`) -- invariante de APLICACIÓN, no de
+    // schema: `financial_transactions` no tiene CHECK que impida
+    // `order_id` Y `reservation_id` no-nulos a la vez (solo disciplina de
+    // los dos creadores del escape). Fail-loud ACÁ, antes de cualquier
+    // rama, para no depender de una precedencia de código implícita
+    // (¿reserva gana? ¿orden?) ni de que el guard de monto de más abajo
+    // (`CreditNoteAttributionMismatchError`) la tape por casualidad cuando
+    // los importes coinciden. Sin restringir por `tx.type`/`isFullReversal`
+    // a propósito -- es un hecho sobre la FILA, no sobre qué rama la usa.
+    // El CHECK real de schema que cerraría la PRODUCCIÓN de esta fila
+    // (recomendado por el mismo grounding) queda como bloque de migración
+    // aparte -- nada de schema en este commit.
+    if (tx.orderId != null && tx.reservationId != null) {
+      throw new CreditNoteAmbiguousSubjectError(tx.id, tx.orderId, tx.reservationId);
+    }
+
     let items: CreateInvoiceItemInput[];
     let ivaEntries: Array<{ Id: number; BaseImp: number; Importe: number }>;
     let impNeto: number;
@@ -797,9 +826,9 @@ export class InvoiceService {
     // 1c-ii-a (11/09/2026, gate `architecture-governor`) -- `subject`
     // generalizado de `reservationId: string` a un discriminador cerrado,
     // espejo del que ganó `getInFlightCreditNoteTotalForPairForUpdate()`
-    // (`invoice.repository.ts`). Sin consumidor de `kind: 'ORDER'` todavía
-    // -- la rama de abajo (`:839`) sigue siendo exclusiva de reservas hasta
-    // el bloque 1c-ii-b (HOLD).
+    // (`invoice.repository.ts`). 1c-ii-b (11/09/2026) cableó el consumidor
+    // de `kind: 'ORDER'` -- dos ramas por-par ahora, reserva y orden, ver
+    // más abajo.
     let pairAttribution: { subject: { kind: 'RESERVATION' | 'ORDER'; id: string }; attributedTotal: number } | null = null;
 
     if (isFullReversal && originalItems.length > 0) {
@@ -847,27 +876,28 @@ export class InvoiceService {
       // Reversión PARCIAL de una factura consolidada, atribuida a UNA
       // reserva puntual (subcaso 2 de B-reservas, `resolveRefundableForPair()`
       // / N4-a). Predicado ESTRUCTURAL, no un flag del caller: llega acá
-      // solo un ADJUSTMENT con reserva, no total, con líneas -- un ADJUSTMENT
-      // de ORDEN (sin reservationId) sigue cayendo a la rama de abajo
-      // (todo-o-nada, ADR §5).
+      // solo un ADJUSTMENT con reserva, no total, con líneas. Desde
+      // 1c-ii-b, un ADJUSTMENT de ORDEN (sin `reservationId` -- el guard de
+      // ambigüedad de más arriba ya descartó que tenga los dos) cae a la
+      // rama espejo de abajo, no acá ni a la rama proporcional heredada.
       //
       // El monto NUNCA sale de `tx.amount` hacia un cálculo propio -- se
       // RE-DERIVA acá desde la composición fiscal congelada de la factura
       // (`invoice_items` + `afip_request.Iva[]`, vía N4-a) y `abs(tx.amount)`
       // solo se CRUZA contra ese resultado. Es lo que evita el doble
       // prorrateo que tendría escalar `factor = tx.amount / original.impTotal`
-      // (la rama de abajo) sobre un monto que YA es la porción de una
-      // reserva: ese factor divide por el total de la FACTURA ENTERA, un
-      // segundo denominador distinto del que usó N4-a.
+      // (la rama proporcional heredada) sobre un monto que YA es la
+      // porción de una reserva: ese factor divide por el total de la
+      // FACTURA ENTERA, un segundo denominador distinto del que usó N4-a.
       const reservationId = tx.reservationId;
       const shareItems: FrozenInvoiceItemShare[] = originalItems.map((i) => ({
-        reservationId: i.reservationId, subtotal: i.subtotal, ivaRate: i.ivaRate,
+        attributionKey: i.reservationId, subtotal: i.subtotal, ivaRate: i.ivaRate,
       }));
       const frozenIva = (
         (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
       ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
       const attribution = resolveRefundableForPair({
-        items: shareItems, frozenIva, alreadyRefunded: 0, reservationId,
+        items: shareItems, frozenIva, alreadyRefunded: 0, attributionKey: reservationId,
       });
       if (attribution.kind === 'BLOCKED') {
         throw new CreditNoteAttributionBlockedError(original.id, reservationId, attribution.reason, attribution.detail);
@@ -882,18 +912,72 @@ export class InvoiceService {
       impIva = attribution.attributedIva;
       impTotal = attribution.attributedTotal;
       pairAttribution = { subject: { kind: 'RESERVATION', id: reservationId }, attributedTotal: attribution.attributedTotal };
+    } else if (tx.type === 'ADJUSTMENT' && tx.orderId != null && originalItems.length > 0) {
+      // --- Bloque 1c-ii-b (11/09/2026, gate `architecture-governor`) ---
+      // Espejo estructural EXACTO de la rama de reservas de arriba, ahora
+      // para órdenes -- mismo predicado (ADJUSTMENT, sujeto no-nulo, con
+      // líneas), mismo mecanismo (`resolveRefundableForPair()`, N4-a/1a),
+      // mismo cruce de monto, misma copia 1-a-1 de la porción. Lo único
+      // que cambia es CÓMO se resuelve la clave de atribución por ítem:
+      // `invoice_items` no tiene `order_id` directo (solo
+      // `order_item_id`), así que hace falta el JOIN intermedio a
+      // `order_items` -- `getOrderIdsByInvoiceItemId()` (condición C1 del
+      // gate: lectura inline vía `this.invoiceRepo`, FUERA del lock, igual
+      // que `originalItems` ya resuelve arriba -- no
+      // `resolveOrderPairAttribution()`, que exige un `client` abierto y
+      // queda parkeada, ver su propio docblock).
+      //
+      // `orderIdMap.get(i.id) ?? null` sobre TODOS los `originalItems` --
+      // nunca un `.filter()` antes de mapear: las líneas que NO son de
+      // esta orden (otra orden, o una reserva, en la misma consolidada)
+      // tienen que seguir apareciendo con clave `null` para el
+      // denominador de cada grupo de tasa (`distributeGroupAmount()`) --
+      // filtrarlas acá reproduciría, invertido, `REFUND-ATTRIBUTION-RESIDUAL-001`.
+      const orderId = tx.orderId;
+      const orderIdMap = await this.invoiceRepo.getOrderIdsByInvoiceItemId(original.id);
+      const shareItems: FrozenInvoiceItemShare[] = originalItems.map((i) => ({
+        attributionKey: orderIdMap.get(i.id) ?? null, subtotal: i.subtotal, ivaRate: i.ivaRate,
+      }));
+      const frozenIva = (
+        (original.afipRequest as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
+      ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
+      const attribution = resolveRefundableForPair({
+        items: shareItems, frozenIva, alreadyRefunded: 0, attributionKey: orderId,
+      });
+      if (attribution.kind === 'BLOCKED') {
+        throw new CreditNoteAttributionBlockedError(original.id, orderId, attribution.reason, attribution.detail);
+      }
+      if (Math.abs(round2(amountToReverse - attribution.attributedTotal)) > CREDIT_NOTE_COMPENSATION_TOLERANCE) {
+        throw new CreditNoteAttributionMismatchError(original.id, orderId, amountToReverse, attribution.attributedTotal);
+      }
+      // N3 aplicado a la PORCIÓN -- copia 1-a-1, SOLO las líneas de esta orden.
+      items = creditNoteLinesFromInvoiceItems(originalItems.filter((i) => orderIdMap.get(i.id) === orderId));
+      ivaEntries = attribution.ivaBreakdown.map((e) => ({ Id: e.id, BaseImp: e.baseImp, Importe: e.importe }));
+      impNeto = attribution.attributedNeto;
+      impIva = attribution.attributedIva;
+      impTotal = attribution.attributedTotal;
+      pairAttribution = { subject: { kind: 'ORDER', id: orderId }, attributedTotal: attribution.attributedTotal };
     } else {
       // --- Rama proporcional heredada (parcial, o total Nivel A) ---
       if (tx.type === 'ADJUSTMENT') {
-        // Una orden se cancela todo-o-nada (ADR §5). Si un ADJUSTMENT llega
-        // acá es porque la factura no tiene `invoice_items` (Nivel A) -- que
-        // no debería pasar para una orden (post-v32) -- o porque llegó
-        // parcial, que sería un bug del orquestador (N1.a).
+        // Una orden (o una reserva, ADR §5/3.3-a) se cancela todo-o-nada
+        // salvo que exista atribución por-par -- las dos ramas de arriba
+        // (reserva, orden) ya capturan TODO ADJUSTMENT parcial con
+        // `originalItems.length > 0` y un sujeto real (`reservationId` o
+        // `orderId`, el guard de ambigüedad del tope de la función
+        // descarta que tenga los dos). Si un ADJUSTMENT llega ACÁ es
+        // porque (a) la factura no tiene `invoice_items` (Nivel A, con
+        // CUALQUIER sujeto o sin ninguno -- `OrderInvoiceHasNoLinesError`
+        // sigue mal nombrado para el caso reserva, deuda preexistente sin
+        // bloque asignado, no introducida por 1c-ii-b), o (b) es parcial
+        // Y no tiene NINGÚN sujeto (`orderId`/`reservationId` ambos
+        // `null`) -- una fila de ledger anómala, no un caso de negocio
+        // esperado.
         if (originalItems.length === 0) {
           throw new OrderInvoiceHasNoLinesError(original.id, tx.id);
         }
         throw new Error(
-          `[buildCreditNote] un ADJUSTMENT de orden debe revertir la factura completa (N1.a); ` +
+          `[buildCreditNote] un ADJUSTMENT parcial sin orderId ni reservationId no tiene sujeto de atribución (N1.a); ` +
           `llegó abs(amount)=${amountToReverse} contra impTotal=${original.impTotal}`,
         );
       }
