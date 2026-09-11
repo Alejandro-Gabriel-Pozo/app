@@ -1470,9 +1470,120 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   transacción/maestro/documento de `Invoice`/`InvoiceItem`/`FinancialTransaction`
   no cambia.
 
-  **`1c-ii-c`/`1d` siguen en HOLD**, sin fecha. El criterio de aceptación
-  bloqueante MUT-B (comentario `21fc413` + este archivo) sigue vigente
-  para cuando 1c-ii-c retire el placeholder de 1c-i.
+  **`1c-ii-c` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
+  APPROVED WITH CONDITIONS).** Retira el rechazo placeholder de 1c-i en
+  `cancel-order-with-credit-note.service.ts` (`if (isProperSubset) throw
+  new CreditNoteMultiInvoiceError(...)`) -- ya no hace falta:
+  `buildCreditNote()` tiene la rama de atribución de órdenes cableada
+  desde 1c-ii-b. El guard del borde-100% (`CreditNoteConsolidatedFullReversalError`)
+  **no se toca**, sigue vigente. `CreditNoteMultiInvoiceError` queda con
+  UN solo disparador real: el guard de membership (`!chargeIds.includes(charge.id)`),
+  invariante rota si salta (imposible por construcción: `originalInvoiceId`
+  se resolvió DESDE ese mismo cargo) -- docblock y mensaje corregidos a ese
+  único caso.
+
+  **MUT-B, criterio de aceptación bloqueante registrado al cerrar 1c-i --
+  CERRADO acá, con evidencia real, no solo la intención.** Antes de este
+  commit, ningún test ejercitaba tx2 con `chargeIds.length > 1` (el
+  placeholder siempre rechazaba antes) -- un mutante que devolviera
+  `frozenChargeIds: chargeIds` (el conjunto ENTERO de la consolidada) en
+  vez de `[charge.id]` seguía verde en toda la suite. Cerrado con dos
+  tests reescritos (antes probaban el RECHAZO, retirado; ahora prueban el
+  ÉXITO):
+  - Unitario (`cancel-order-with-credit-note.service.test.ts`, "1c-ii-c --
+    consolidada real con OTRA orden..."): afirma que `settleByIdsWithClient`
+    se llama con `[adj.id]` y `[CHARGE_ID]`, nunca con el cargo de la otra
+    orden.
+  - Integración contra Postgres real (`cancel-order-with-credit-note.integration.test.ts`,
+    describe "(d)"): 2 órdenes reales, consolidada real vía
+    `requestConsolidatedInvoice()`, el cargo de la orden AJENA sembrado
+    **PENDING a propósito** (no `SETTLED` como el fixture viejo de 1c-i --
+    con `SETTLED` un bug de re-derivación habría sido un no-op inocuo, no
+    discriminaba nada). Después de cancelar-con-NC la orden A, se lee la
+    fila de la orden B DIRECTO de la base: sigue `PENDING`.
+  - Mutación reproducida (aplicada y revertida, sin commitear) DESPUÉS
+    del fix: `frozenChargeIds: chargeIds` en el `return` de tx1 rompe
+    exactamente esos 2 tests (1 unitario + 1 de integración), ningún otro
+    -- 25/26 y 8/9 respectivamente, restaurado a 26/26 y 9/9 al revertir.
+
+  Evidencia (comando + salida real): `npx vitest run` -> 2147/2147
+  (idéntico al baseline, cero test nuevo neto -- 2 reescritos en el mismo
+  archivo, no agregados). `TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+  npx vitest run --config vitest.integration.config.ts` -> 295/296, único
+  rojo el mismo pre-existente de siempre (residual 2 de 3.3-d, no
+  relacionado). `npm run lint:arch` limpio (295 módulos). `tsc`/`eslint`
+  limpios.
+
+  **Hallazgo del gate, corregido en el mismo commit (Finding C):** el
+  docblock de `OrderInvoiceHasNoLinesError` (`domain/errors.ts`) afirmaba
+  que para una reserva Nivel A "el camino proporcional... sigue
+  funcionando... no lanza este error" -- falso: la rama heredada de
+  `buildCreditNote()` tira este mismo error para CUALQUIER `ADJUSTMENT`
+  (orden o reserva) con `originalItems.length === 0`. Corregido a
+  registrar la deuda de wording real (el nombre/`code` quedan mal puestos
+  para el caso reserva) en vez de afirmar lo contrario.
+
+  **`CN-ESCAPE-ORPHAN-ADJUSTMENT-001` (11/09/2026, hallazgo del gate
+  `architecture-governor` al revisar 1c-ii-c) -- registrado, NO
+  resuelto.** En los DOS escapes de cancelación-con-NC (órdenes y
+  reservas), tx1 commitea el `ADJUSTMENT` compensatorio ANTES de que
+  `InvoiceService.buildCreditNote()` valide la atribución fiscal (la
+  llamada real ocurre en el paso "AFIP", fuera de toda transacción,
+  DESPUÉS de que tx1 ya cerró). Si `buildCreditNote()` tira un error
+  determinístico -- factura "Nivel A" sin `invoice_items`
+  (`OrderInvoiceHasNoLinesError`), atribución `BLOCKED`/`MISMATCH`
+  (`CreditNoteAttributionBlockedError`/`CreditNoteAttributionMismatchError`),
+  o sujeto ambiguo (`CreditNoteAmbiguousSubjectError`, 1c-ii-b) -- el
+  `ADJUSTMENT` queda `PENDING` para siempre: reintentar con la misma
+  clave de idempotencia SIEMPRE recalcula lo mismo y falla igual, porque
+  los insumos (`invoice_items`/`afip_request.Iva[]` de la factura ya
+  emitida) son inmutables. Consecuencia real: el escape no se puede
+  completar y la orden/reserva queda con su factura viva sin resolver,
+  hasta intervención manual -- hoy sin pantalla que lo muestre (B3).
+  Alcanzable HOY por la vía Nivel A en los dos escapes (población
+  documentada: 9 de 11 facturas de la tenant `Demo`,
+  `refund-attribution.ts`); la vía de atribución `BLOCKED`/`MISMATCH` en
+  consolidada parcial hoy solo es alcanzable del lado reservas (órdenes
+  no puede: `accounts_receivable` nunca setea `orderId`). **Mitigación
+  parcial verificada:** la fila es financieramente inerte -- toda query
+  de saldo (`getOutstandingForUpdate`/`getRefundableForUpdate`/`getNetBalanceBy*`)
+  filtra `status = 'SETTLED'`, y los topes de NC (N5/por-par) cuentan
+  filas de `invoices`, nunca creadas en este camino. Sin incidente de
+  producción registrado. **No lo introduce 1c-ii-c** -- ya existía en los
+  dos escapes antes de este bloque.
+
+  **Decisión de producto sobre cómo cerrarlo -- grounding
+  `auditor-circuitos-erp` (11/09/2026), unánime en los 5 sistemas:**
+  ninguno de Odoo/ERPNext/Dolibarr/QloApps/Cloudbeds bloquea con un error
+  terminal cuando el cálculo automático de una NC/reversión no cierra --
+  los 5 (4 con documento fiscal real) dejan un documento en BORRADOR
+  (`account.move` sin confirmar en Odoo, `Sales Invoice` docstatus 0 en
+  ERPNext, `facture` brouillon en Dolibarr, `OrderSlip` con monto editable
+  en QloApps) que un humano completa/edita antes de que tenga efecto
+  fiscal -- la derivación automática es un PREFILL, no una condición.
+  Ninguno de los 5 intenta lo que hace este sistema (derivar
+  automáticamente por línea y decidir si "cierra" o no), así que el
+  estado "PENDING para siempre" que produce el bug no existe en ninguno
+  porque el camino que lo produce tampoco existe ahí.
+  **Descartada** la alternativa evaluada primero (marcar el `ADJUSTMENT`
+  como `FAILED` -- estado ya válido en el CHECK del schema,
+  `financial_transactions.status`, pero sin ningún escritor hoy): el
+  gate encontró que `voidByOrderId()`/`voidByReservationId()` YA cuentan
+  `FAILED` junto a `VOIDED` como "anulado" en sus reportes de
+  conciliación -- marcar así un `ADJUSTMENT` sin resolver lo escondería
+  en la conciliación como si el caso ya estuviera cerrado, el peor lugar
+  posible. **Alcance real, no decidido todavía:** construir una salida
+  manual (qué campos quedan editables -- ¿línea completa como
+  Odoo/ERPNext, o solo un monto con tope como QloApps?, para qué motivos
+  de `BLOCKED` se habilita, qué rol, qué pasa con el `ADJUSTMENT` viejo).
+  Revisar si `docs/diseno-factura-borrador-2026-08-31.md` (`FACT-BORRADOR-001`,
+  máquina de estados de borrador ya diseñada y con decisiones del dueño
+  cerradas -- D3, T2) cubre notas de crédito o solo facturas de venta
+  antes de diseñar un mecanismo nuevo. **Bloque propio, sin fecha, sin
+  encarar todavía** -- decisión explícita del dueño (11/09/2026) de
+  cerrar primero 1c-ii-c chico y tratar esto aparte.
+
+  **`1d` sigue en HOLD**, sin fecha.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
