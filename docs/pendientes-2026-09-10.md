@@ -707,17 +707,27 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   aparte, opción (a) `migrate-tenants.ts` explícitamente RECHAZADA por
   el gate (corre dentro del `buildCommand` de `render.yaml`, fail-loud
   por diseño -- un bug de purga ahí tumbaría deploys enteros).
-- **`OUTBOX-RETRY-HIST-01` + `OUTBOX-BACKOFF-01`** — ✅ **RESUELTO en
-  código, LOCAL/sin pushear ni deployar** (4 rondas de gate
+- **`OUTBOX-RETRY-HIST-01` + `OUTBOX-BACKOFF-01`** — ✅ **PUSHEADO Y
+  DEPLOYADO en producción, verificado** (5 rondas de gate
   `architecture-governor`, 10/09/2026; `app-main` `5f31533` observabilidad
-  + `b1e9705` backoff + commit C pendiente de hash con la cobertura de
-  `first_failed_at`). Diseño completo en
+  + `b1e9705` backoff + `a56864c` cobertura de `first_failed_at` +
+  `8fb9f5e`/`4bf269a` docs). Diseño completo en
   `docs/diseno-outbox-backoff-2026-09-10.md`. `domain_events` gana
   `first_failed_at`/`last_failed_at` (schema v48); `getPending()` excluye
   eventos en backoff (escalón 5s/30s/120s/300s según `retry_count`,
-  aprobado por el dueño; `maxRetries` se mantiene en 60). **Columnas NO
-  existen todavía en ninguna tenant DB real** -- recién con el próximo
-  deploy (`migrate:tenants`). Bug real encontrado y corregido ANTES de
+  aprobado por el dueño; `maxRetries` se mantiene en 60).
+  **Verificado en producción (10/09/2026):** deploy `dep-dahll9rtqb8s73c4650g`
+  = `live` en commit `4bf269a`; log de build confirma
+  `[migrate-tenants] 2/2 OK, 0 fallo(s)` (`biz-demo-01` y
+  `cd6cd508-...` migrados a v48, no inferido de un build verde); columnas
+  `first_failed_at`/`last_failed_at` confirmadas `timestamp with time
+  zone` en las 2 branches de tenant (Neon `ancient-king-17098519`);
+  `businesses.schema_version = 48` en las 2 filas (Neon
+  `morning-unit-50056927`); `/health/db` → `connected`. Backups
+  pre-deploy tomados antes de pushear:
+  `respaldo-pre-outbox-backoff-v48-2026-09-10` (Demo) y
+  `respaldo-hotel-pre-outbox-backoff-v48-2026-09-10` (Hotel los Alamos),
+  ver `docs/conocimiento/runbook-deploy-render.md`. Bug real encontrado y corregido ANTES de
   tocar código (ronda 2 del gate): el guard original de `first_failed_at`
   (`CASE WHEN retry_count = 0`) se hubiera roto con `retryDeadLettered()`
   (que resetea `retry_count`), pisando el dato en la falla siguiente a
@@ -808,10 +818,9 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   diseño ya grounded contra ERPNext/Odoo (cron que NO emite + query
   on-demand + contador junto a `countDeadLettered()`). 0 filas huérfanas
   medidas (07/09) -- riesgo latente, no urgente.
-- **`OUTBOX-RETRY-HIST-01`** + **`OUTBOX-BACKOFF-01`** — ✅ **RESUELTOS**,
-  ver la entrada completa más arriba (sección de esta sesión) -- ya no
-  bloqueados por A7.6, esa decisión ya se tomó y el código ya existe,
-  LOCAL/sin pushear.
+- **`OUTBOX-RETRY-HIST-01`** + **`OUTBOX-BACKOFF-01`** — ✅ **RESUELTOS,
+  pusheados y deployados en producción, verificados** -- ver la entrada
+  completa más arriba (sección de esta sesión).
 - **`OUTBOX-DL-COMPENSATOR-01`** — idempotencia del compensador de
   `onDeadLetter`; bloquea a `CONCIL-INCONSIST-01`, así que va primero si
   se retoma esta familia. **Riesgo agravado por `OUTBOX-BACKOFF-01`
