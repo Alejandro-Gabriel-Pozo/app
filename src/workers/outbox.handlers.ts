@@ -37,6 +37,7 @@ import type { TransactionManager } from '../db/transaction-manager.js';
 import { ChargeNotYetCreatedError, ChargeNeverCreatedError } from './outbox.worker.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
+import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { logger } from '../logger.js';
 import type { OutboxWorker } from './outbox.worker.js';
@@ -117,6 +118,11 @@ export function registerFinancialHandlers(
   // `invoiceRepo`/`db`, sólo necesita el método hermano.
   invoiceRepo: Pick<InvoiceRepository, 'classifyOrderLiveInvoice' | 'classifyReservationLiveInvoice'>,
   db: SqlClient,
+  // STAY-ADJUSTMENT-PRICE-001 (11/09/2026, gate `architecture-governor`) --
+  // `handleReservationPriceAdjusted` lo usa para heredar `stay_id` desde la
+  // Stay vigente de la reserva. `Pick` mínimo, mismo criterio que
+  // `invoiceRepo` arriba.
+  stayRepo: Pick<StayRepository, 'findByReservation'>,
 ): void {
   // Los nombres (`financial:*`) son la clave del casillero en
   // `processed_events` (28/08/2026, A10.3). Renombrar uno equivale a declarar
@@ -127,7 +133,7 @@ export function registerFinancialHandlers(
     .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo), { name: 'financial:reservation.confirmed' })
     .on('reservation.completed',      handleReservationCompleted(financialRepo),                      { name: 'financial:reservation.completed' })
     .on('reservation.cancelled',      handleReservationCancelled(financialRepo, invoiceRepo, db),      { name: 'financial:reservation.cancelled' })
-    .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo), { name: 'financial:reservation.price_adjusted' })
+    .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo), { name: 'financial:reservation.price_adjusted' })
     .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo, transactionManager), { name: 'financial:order.confirmed' })
     .on('order.completed',       handleOrderCompleted(financialRepo),                      { name: 'financial:order.completed' })
     .on('order.cancelled',       handleOrderCancelled(financialRepo, invoiceRepo, db),     { name: 'financial:order.cancelled' });
@@ -275,10 +281,38 @@ export function handleReservationCancelled(
  * arrastran a SETTLED/VOIDED junto con él (`settleByReservationId`/
  * `voidByReservationId` son un UPDATE por `reservation_id`, no por id de
  * transacción puntual, así que agarran cualquier PENDING de esa reserva).
+ *
+ * ## `stayId` (STAY-ADJUSTMENT-PRICE-001, 11/09/2026, gate `architecture-governor`)
+ * Se resuelve ACÁ, en el momento del INSERT -- no desde el payload del
+ * evento (a diferencia de `handleOrderConfirmed`, que sí lo toma del
+ * payload porque `orders.stay_id` es una columna del propio agregado).
+ * `ReservationService` no tiene ese campo: la única fuente es preguntarle
+ * al `StayRepository` la Stay vigente de la reserva, y hacerlo en el
+ * momento del INSERT (no al emitir el evento) cierra la ventana de carrera
+ * check-in-entre-emisión-y-dispatch en los dos órdenes posibles -- si el
+ * handler corre ANTES del check-in, esta fila queda con `stay_id` NULL y
+ * `StayService.checkIn()` la adopta después vía
+ * `linkStayToReservationCharges()` (mismo mecanismo que ya cubre el CHARGE
+ * original, `financial_transaction.repository.ts`); si corre DESPUÉS
+ * (huésped ya adentro), `linkStayToReservationCharges()` ya corrió una
+ * sola vez en el pasado y nunca vuelve a adoptar nada -- por eso hace
+ * falta resolverlo acá.
+ *
+ * Mismo patrón ya usado en `StayService.approveScheduleChange()`
+ * (`stay.service.ts`, `stayId: stay?.id ?? null`) para el mismo problema
+ * general ("movimiento financiero de una reserva creado en un momento
+ * arbitrario"): sin Stay, `stayId: null` sin error (no hay estadía que
+ * inflar/desinflar, y queda adoptable después); con una Stay CHECKED_OUT
+ * o NO_SHOW, se atribuye igual (no diverge de ese precedente -- cambiar
+ * esa regla es una decisión de producto que afecta a los dos sitios, no
+ * a éste). `findByReservation()` devuelve una sola fila (o ninguna) por
+ * `LIMIT 1` -- no hay conjunto del que pueda salir un valor "mixto", así
+ * que no aplica ningún guard tipo `CreditNoteMixedStayError`.
  */
 export function handleReservationPriceAdjusted(
   financialRepo: FinancialTransactionRepository,
   businessProfileRepo: BusinessProfileRepository,
+  stayRepo: Pick<StayRepository, 'findByReservation'>,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId, customerId, amount, confirmedByUserId } = event.payload as {
@@ -291,6 +325,7 @@ export function handleReservationPriceAdjusted(
     if (amount === 0) return;
 
     const { currency } = await businessProfileRepo.get();
+    const stay = await stayRepo.findByReservation(reservationId, event.businessId);
 
     // idempotencyKey: "${eventId}:ADJUSTMENT" — mismo criterio que
     // "${eventId}:CHARGE" en handleReservationConfirmed. confirmedBy queda
@@ -301,6 +336,7 @@ export function handleReservationPriceAdjusted(
       businessId:     event.businessId,
       customerId,
       reservationId,
+      stayId:         stay?.id ?? null,
       type:           'ADJUSTMENT',
       amount,
       currency,

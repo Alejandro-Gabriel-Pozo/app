@@ -28,6 +28,8 @@ import { ChargeNotYetCreatedError, ChargeNeverCreatedError } from './outbox.work
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
+import type { StayRepository } from '../pms-estadias/stay.repository.js';
+import { Stay, type StayStatus } from '../pms-estadias/stay.js';
 
 /** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
 class FakeBusinessProfileRepository implements BusinessProfileRepository {
@@ -390,6 +392,29 @@ describe('outbox.handlers — Order (O2)', () => {
   });
 });
 
+/** Stay mínima para los tests de STAY-ADJUSTMENT-PRICE-001 -- solo lo que `stay?.id` necesita. */
+function makeStay(id: string, status: StayStatus = 'CHECKED_IN'): Stay {
+  const now = new Date();
+  return Stay.restore({
+    id, businessId: 'biz-test', reservationId: 'res-1', resourceId: 'res-recurso-1',
+    customerId: 'cust-1', assignedBy: 'user-1', status,
+    checkedInAt: now, checkedOutAt: status === 'CHECKED_OUT' ? now : null,
+    noShowAt: status === 'NO_SHOW' ? now : null, notes: null,
+    housekeepingOverrideBy: null, housekeepingOverrideAt: null, housekeepingStatusAtOverride: null,
+    createdAt: now, updatedAt: now,
+  });
+}
+
+/** Fake mínimo -- `stay` configurable por test, `null` = sin estadía (caso más común pre-check-in). */
+class FakeStayRepository implements Pick<StayRepository, 'findByReservation'> {
+  stay: Stay | null = null;
+  calls: Array<{ reservationId: string; businessId: string }> = [];
+  async findByReservation(reservationId: string, businessId: string): Promise<Stay | null> {
+    this.calls.push({ reservationId, businessId });
+    return this.stay;
+  }
+}
+
 function fakeReservationEvent(payload: Record<string, unknown>): DomainEvent {
   return {
     id: 99,
@@ -465,16 +490,18 @@ describe('outbox.handlers — handleReservationConfirmed (C1-Fase A)', () => {
 describe('outbox.handlers — handleReservationPriceAdjusted', () => {
   let financialRepo: FakeFinancialTransactionRepository;
   let businessProfileRepo: FakeBusinessProfileRepository;
+  let stayRepo: FakeStayRepository;
 
   beforeEach(() => {
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
+    stayRepo = new FakeStayRepository();
   });
 
   it('crea un ADJUSTMENT PENDING con el monto positivo tal cual (cargo extra)', async () => {
     const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 200 });
 
-    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(event);
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event);
 
     expect(financialRepo.created).toHaveLength(1);
     expect(financialRepo.created[0]).toMatchObject({
@@ -491,7 +518,7 @@ describe('outbox.handlers — handleReservationPriceAdjusted', () => {
   it('crea un ADJUSTMENT con el monto NEGATIVO tal cual (nota de crédito) -- no le aplica Math.abs()', async () => {
     const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: -300 });
 
-    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(event);
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event);
 
     expect(financialRepo.created[0]).toMatchObject({ amount: -300 });
   });
@@ -501,13 +528,13 @@ describe('outbox.handlers — handleReservationPriceAdjusted', () => {
       reservationId: 'res-1', customerId: 'cust-1', amount: 200, confirmedByUserId: 'user-manager-1',
     });
 
-    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(event);
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event);
 
     expect(financialRepo.created[0]).toMatchObject({ confirmedBy: 'user-manager-1' });
   });
 
   it('no crea nada si amount es 0 (nada que ajustar)', async () => {
-    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo)(
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(
       fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 0 }),
     );
     expect(financialRepo.created).toHaveLength(0);
@@ -517,9 +544,56 @@ describe('outbox.handlers — handleReservationPriceAdjusted', () => {
     const usdProfileRepo = new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' }));
     const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 200 });
 
-    await handleReservationPriceAdjusted(financialRepo, usdProfileRepo)(event);
+    await handleReservationPriceAdjusted(financialRepo, usdProfileRepo, stayRepo)(event);
 
     expect(financialRepo.created[0]).toMatchObject({ currency: 'USD' });
+  });
+
+  // STAY-ADJUSTMENT-PRICE-001 (11/09/2026, gate `architecture-governor`) --
+  // el ADJUSTMENT hereda `stayId` de la Stay vigente de la reserva, resuelta
+  // en el momento del INSERT (no desde el payload del evento).
+  it('1c-0-símil -- hay una Stay CHECKED_IN: el ADJUSTMENT hereda su id, monto POSITIVO', async () => {
+    stayRepo.stay = makeStay('stay-1', 'CHECKED_IN');
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 200 });
+
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event);
+
+    expect(financialRepo.created[0]).toMatchObject({ stayId: 'stay-1', amount: 200 });
+    expect(stayRepo.calls).toEqual([{ reservationId: 'res-1', businessId: 'biz-test' }]);
+  });
+
+  it('hay una Stay CHECKED_IN: el ADJUSTMENT hereda su id, monto NEGATIVO', async () => {
+    stayRepo.stay = makeStay('stay-1', 'CHECKED_IN');
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: -300 });
+
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event);
+
+    expect(financialRepo.created[0]).toMatchObject({ stayId: 'stay-1', amount: -300 });
+  });
+
+  it('sin Stay para la reserva (ajuste confirmado ANTES del check-in): stayId null, sin lanzar', async () => {
+    stayRepo.stay = null;
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 200 });
+
+    await expect(handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event))
+      .resolves.toBeUndefined();
+    expect(financialRepo.created[0]).toMatchObject({ stayId: null });
+  });
+
+  it('amount === 0: ni siquiera consulta al StayRepository -- corta antes', async () => {
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(
+      fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 0 }),
+    );
+    expect(stayRepo.calls).toHaveLength(0);
+  });
+
+  it('Stay CHECKED_OUT (reserva ya cerrada): se atribuye igual -- mismo criterio que StayService.approveScheduleChange()', async () => {
+    stayRepo.stay = makeStay('stay-vieja', 'CHECKED_OUT');
+    const event = fakeReservationEvent({ reservationId: 'res-1', customerId: 'cust-1', amount: 150 });
+
+    await handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo)(event);
+
+    expect(financialRepo.created[0]).toMatchObject({ stayId: 'stay-vieja' });
   });
 });
 
