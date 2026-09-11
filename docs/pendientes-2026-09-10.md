@@ -1065,20 +1065,37 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   afectadas medidas) -- **obligatorio para Bloque 1-bis**, que sí edita
   SQL nuevo.
 
-- **`INVOICE-CHARGES-GUARD-1BIS-01`** -- arm simétrico, NO resuelto. Con
-  el Bloque 1 deployado, el hueco queda cerrado en una sola dirección. Un
-  cargo con factura INDIVIDUAL viva sigue pudiendo entrar a un lote
-  consolidado y generar un segundo comprobante AFIP sobre el mismo cargo
-  -- `getInvoicedFinancialTransactionIds()` (`sql.invoice.repository.ts:964-978`)
-  no mira `invoices.financial_transaction_id` directo, solo
-  `invoice_charges`. Decisión de producto ya resuelta (11/09/2026, mismo
-  estándar ERP de arriba): bloquear con
-  `INVOICE_STATUSES_CONSUMING_CHARGE` (`ISSUED|PENDING|FAILED_UNCERTAIN`),
-  no con `REJECTED`. Requiere test de integración contra Postgres real
-  (patrón ya existente en
-  `src/tests/integration/consolidated-invoice-toctou.integration.test.ts:268`)
-  -- un fake en memoria no prueba nada de SQL nuevo. Bloque propio, gate
-  propio.
+- **`INVOICE-CHARGES-GUARD-1BIS-01`** -- ✅ **RESUELTO, LOCAL/sin pushear**
+  (11/09/2026, gate `architecture-governor`, HOLD → APPROVED WITH
+  CONDITIONS). `getInvoicedFinancialTransactionIds()`
+  (`sql.invoice.repository.ts::getInvoicedFinancialTransactionIds()`)
+  ahora también mira `invoices.financial_transaction_id` directo (camino
+  individual), filtrado por `INVOICE_STATUSES_CONSUMING_CHARGE`
+  (`ISSUED|PENDING|FAILED_UNCERTAIN`, no `REJECTED`) -- `UNION` con la
+  rama `invoice_charges` existente, sin tocarla.
+  **Corrección de una afirmación de esta misma sesión, arriba en este
+  archivo**: "una consolidada `REJECTED` libera el cargo, no lo bloquea
+  para siempre" es cierta SOLO para el camino individual (Bloque 1). Para
+  re-consolidar, sigue siendo falsa -- `idx_invoice_charges_ft` es único,
+  sin filtro de status, y `invoice_charges` nunca se borra, así que un
+  cargo cuya consolidada quedó `REJECTED` NO puede volver a entrar a un
+  lote consolidado, aunque SÍ pueda facturarse individual. Asimetría a
+  propósito entre las 2 ramas del predicado, documentada en el docblock
+  de la interfaz (`invoice.repository.ts`) y fijada con un test
+  dedicado (`consolidated-invoice-toctou.integration.test.ts`, caso
+  "asimetría a propósito").
+  11 tests de integración contra Postgres real (no un fake -- condición
+  del gate, dado que este bloque SÍ edita SQL nuevo): 3 nuevos
+  (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN` vía factura individual
+  rechazan), 1 nuevo (`REJECTED` vía individual NO rechaza, la
+  consolidada nueva cubre el cargo), 1 nuevo (la asimetría -- consolidada
+  `REJECTED` sigue bloqueando), + los 6 preexistentes, todos verdes.
+  Mutación verificada contra Postgres real: revertir el SQL al de antes
+  de este bloque pone en rojo exactamente los 3 casos nuevos que
+  dependen de la rama agregada, los otros 8 quedan verdes. `npx tsc
+  --noEmit` y `npx eslint` limpios; `npm test` (unitarios) sin cambios,
+  2097/2097 -- este bloque no agrega tests unitarios a propósito, la
+  cobertura real vive en integración.
 
 - **`INVOICE-CHARGES-GUARD-FRONTEND-02` (Bloque 2)** -- frontend, NO
   resuelto. `FacturarButton.tsx` sigue ofreciendo "Facturar" sobre un
