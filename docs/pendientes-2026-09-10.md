@@ -1131,8 +1131,13 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
     ORDER-15) -- premisa caduca, hallazgo del gate de 1c-0.** El
     comentario dice *"un ADJUSTMENT con `order_id` -- que hoy no
     existe, el único creador siempre usa `reservationId`"* -- falso
-    desde que shippeó el escape de órdenes
-    (`cancel-order-with-credit-note.service.ts:290,293`). El hazard que
+    desde que shippeó el escape de órdenes (bloque de creación del
+    ADJUSTMENT compensatorio en `cancel-order-with-credit-note.service.ts`
+    -- `createWithClient(...)` con `orderId`/`stayId`; de-anclado a
+    símbolo, no a línea: la cita original `:290,293` ya quedó stale una
+    vez por el corrimiento de 1c-i, mismo motivo por el que el propio
+    archivo dejó de citarse líneas a sí mismo desde esa ronda -- ver el
+    comentario "Citas de línea retiradas a propósito" ahí). El hazard que
     describe (ADJUSTMENT de orden anulable por `voidByOrderId` pero no
     liquidable por `settleChargesByOrderId`) **parece** contenido por
     ORDER-10 + la rama `comprobanteReconciliado`
@@ -1155,7 +1160,11 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
   **`1c-0` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
   `4aa09fe`).** El ADJUSTMENT compensatorio del escape de órdenes
-  (`cancel-order-with-credit-note.service.ts:292`) creaba `stayId: null`
+  (`cancel-order-with-credit-note.service.ts`, asignación `const stayId =
+  charge.stayId ?? null` que alimenta el `createWithClient(...)` de más
+  abajo -- de-anclado a símbolo, no a línea, mismo motivo que la cita de
+  más arriba: `:292` ya había quedado stale por el corrimiento de 1c-i)
+  creaba `stayId: null`
   incondicional -- una orden cargada a una estadía y cancelada por NC
   dejaba el saldo de esa estadía sobre-declarado por el monto completo
   de la orden (el CHARGE, SETTLED con `stay_id`, contaba en
@@ -1233,6 +1242,23 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   debilidad ya existente del test de concurrencia, no una regresión de
   este commit.
 
+  **Corrección de evidencia de mutación (auditoría `erp-audit-orchestrator`,
+  11/09/2026, sobre `c58b8f2`).** El mensaje de ese commit (local, no
+  amendeable) afirma que el mutante M1 (invertir la columna del
+  discriminador) "rompe el discriminador Y los 3 tests preexistentes de
+  reservas" -- overclaim: rompe 2 de los 3, no los 3. No cambia la
+  conclusión (mutation testing sigue confirmando que el camino vivo
+  depende de esta línea), corrige el conteo exacto de tests afectados.
+  Mecanismo verificado línea por línea: bajo M1 el tope por par de
+  RESERVATION queda filtrando por una columna
+  que las reservas nunca tienen (`order_id`) y por eso siempre ve 0 en
+  vuelo -- deja de bloquear, no deja de dejar pasar. El test 2
+  ("las dos completan, la suma no excede el total") solo afirma que
+  ambas NC concurrentes terminan `ISSUED` -- eso sigue siendo cierto
+  aunque el tope nunca bloquee nada, así que M1 no lo toca; los otros
+  2 preexistentes sí afirman un rechazo (`CreditNotePairCapExceededError`
+  o "exactamente una NC") que M1 elimina.
+
   **Corrección de alcanzabilidad (gate, esta ronda):** 1c-ii no
   habilita ninguna emisión AFIP nueva alcanzable HOY -- mismo hallazgo
   que 1c-i (ver "Producción, medido 11/09/2026" arriba), reconfirmado:
@@ -1243,8 +1269,13 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
   **Decisión de negocio -- ✅ RESUELTA (11/09/2026, dueño + grounding
   ERPNext/Odoo/QloApps/Dolibarr), implementación pendiente en
-  `1c-ii-c`.** Retirar el rechazo placeholder de 1c-i
-  (`cancel-order-with-credit-note.service.ts:277-279`) movería una
+  `1c-ii-c`.** Retirar el rechazo placeholder de 1c-i (bloque
+  `if (isProperSubset) { throw new CreditNoteMultiInvoiceError(...) }` en
+  `cancel-order-with-credit-note.service.ts` -- de-anclado a símbolo, no a
+  línea, por el mismo motivo que las dos citas de más arriba: el comentario
+  que precede a ese `if` ya lleva registrado, desde el forward-fix
+  `21fc413`, el criterio de aceptación bloqueante MUT-B para cuando
+  `1c-ii-c` lo retire) movería una
   falla determinística de ANTES del ledger (hoy, dentro de tx1, antes
   del INSERT del ADJUSTMENT) a DESPUÉS (si `buildCreditNote()` tira
   `CreditNoteAttributionBlockedError`/`_MismatchError` tras el commit
@@ -1257,9 +1288,10 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   ningún `account.move`) y ERPNext (`make_return_doc()` construye y
   valida el documento SIN guardar, los GL entries recién existen en
   `on_submit`) resuelven esto con UN SOLO cómputo -- no dos: la
-  atribución se hace al tope de tx1, sobre datos que tx1 YA lee (las
-  "siete lecturas de tx1",
-  `cancel-order-with-credit-note.service.ts:344`), y el resultado se
+  atribución se hace al tope de tx1, sobre datos que tx1 YA lee (el
+  comentario "SIETE lecturas de tx1" de
+  `cancel-order-with-credit-note.service.ts` -- de-anclado a símbolo, no a
+  línea, mismo motivo que las citas de más arriba), y el resultado se
   CONGELA para tx2 -- mismo mecanismo que `frozenChargeIds` (nacido del
   mismo modo de falla). Dolibarr es el único de los 5 que escribe
   primero y valida después (`compta/facture/card.php`, rama NC de
