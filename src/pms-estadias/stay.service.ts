@@ -396,7 +396,9 @@ export class StayService {
    * reserva — si el proceso muere entre medio, la aprobación queda
    * registrada sin el cargo correspondiente creado. Misma clase de bug que
    * el que esto arregla, pero cruzando agregados (Reservation ↔
-   * FinancialTransaction) — diferido, ver docs/pendientes-2026-09-11.md.
+   * FinancialTransaction) — diferido, sin bloque propio todavía (no
+   * arrastrado a ningún `docs/pendientes-*.md` en el commit que agregó
+   * este comentario -- ver ese commit para el detalle completo).
    * Tampoco cubre el TOCTOU del chequeo de conflicto en sí: `findNextReservationOnResource()`
    * lee la reserva siguiente sin lock — preexistente, fuera de este bloque.
    */
