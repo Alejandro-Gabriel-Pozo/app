@@ -107,10 +107,39 @@ export class SqlDomainEventRepository implements DomainEventRepository {
     // todos en 0) el orden por `id` se conserva. Los handlers NO dependen del
     // orden estricto de procesamiento (inventory.handlers.ts:25-37 lo declara y
     // lo maneja con el casillero compartido).
+    //
+    // OUTBOX-BACKOFF-01 (schema v48, docs/diseno-outbox-backoff-2026-09-10.md
+    // §5) -- backoff real por evento, escalón aprobado por el dueño (patrón
+    // `retry_pattern` de OCA queue_job, no exponencial continuo ni intervalo
+    // fijo): retry_count 1-2 → 5s, 3-9 → 30s, 10-29 → 120s, ≥30 → 300s.
+    // `retry_count = 0` (nunca falló) siempre es elegible. `last_failed_at
+    // IS NULL` también es elegible SIN excepción -- cubre una fila que ya
+    // existía con retry_count > 0 antes de esta columna (falló bajo el
+    // código viejo, nunca tuvo `last_failed_at` seteado): sin esta rama,
+    // `retry_count = 0` da false, `NULL <= ...` da NULL (lógica de 3
+    // valores de SQL), `false OR NULL` da NULL, y la fila queda EXCLUIDA de
+    // getPending() para siempre -- no falla, desaparece (sin dead-letter,
+    // sin compensación de A8.7, sin rastro visible). Con esta rama, esa
+    // fila se reintenta en el próximo poll y `recordFailure()` le setea
+    // `last_failed_at` real -- autocura en un ciclo. Este `ORDER BY` sigue
+    // importando ADEMÁS del backoff, no en su lugar: el backoff decide
+    // "¿es candidato a reintentarse YA?"; el orden decide en qué secuencia
+    // se procesan los que sí lo son.
     const result = await this.sqlClient.query<DomainEventRow>(
       `SELECT ${EVENT_COLUMNS}
        FROM domain_events
        WHERE dispatched_at IS NULL AND failed_at IS NULL
+         AND (
+           retry_count = 0
+           OR last_failed_at IS NULL
+           OR last_failed_at <= NOW() - (
+             CASE
+               WHEN retry_count <= 2  THEN 5
+               WHEN retry_count <= 9  THEN 30
+               WHEN retry_count <= 29 THEN 120
+               ELSE 300
+             END || ' seconds')::interval
+         )
        ORDER BY retry_count ASC, id ASC
        LIMIT $1`,
       [limit],

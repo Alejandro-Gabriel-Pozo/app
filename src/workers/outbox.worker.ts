@@ -175,7 +175,19 @@ export class OutboxWorker {
   constructor(
     private readonly eventRepository: DomainEventRepository,
     private readonly pollIntervalMs = 5_000,
-    /** ~5 min de fallas seguidas a pollIntervalMs=5s antes de dead-letter. */
+    /**
+     * 60 intentos antes de dead-letter. YA NO son "~5 min de fallas
+     * seguidas" de forma fiable -- dos motivos independientes que se
+     * suman (OUTBOX-BACKOFF-01, schema v48,
+     * docs/diseno-outbox-backoff-2026-09-10.md §5/§11): (1) `ORDER BY
+     * retry_count ASC` (ORDER-13/O5) ya podía alargarlo si la cola tenía
+     * trabajo antes de este bloque; (2) el backoff real por evento en
+     * `getPending()` espacía los reintentos (5s/30s/120s/300s según
+     * `retry_count`), llevando el peor caso a ~3.3h de pared. Mantenido
+     * en 60 a propósito (decisión del dueño): el backoff ya reduce la
+     * presión sobre el downstream, no hace falta también acortar el
+     * número de intentos.
+     */
     private readonly maxRetries = 60,
     /**
      * Idempotencia por handler (A10.3). Opcional a propósito: los tests
@@ -379,7 +391,9 @@ export class OutboxWorker {
       );
 
       // Una versión sin handler NUNCA se arregla sola: reintentarla 60 veces
-      // (5 min) solo retrasa que alguien la vea. maxRetries=1 la manda a
+      // (con backoff real desde schema v48, hasta ~3.3h de pared -- ver
+      // docs/diseno-outbox-backoff-2026-09-10.md §5/§11) solo retrasa que
+      // alguien la vea. maxRetries=1 la manda a
       // dead-letter en el primer fallo, reusando la MISMA UPDATE atómica que
       // el resto — no un segundo camino de escritura (R14).
       // ORDER-13 / O5 (07/09/2026, docs/diseno-order13-o5-dead-letter-2026-09-07.md):
@@ -505,7 +519,10 @@ function categorizeError(err: unknown): string {
  * comportamiento de hoy. Difiere a propósito del fail-safe "block" de Odoo
  * (account_edi_document.py:11): en bajo volumen, dead-lettear un unknown
  * recuperable en el primer intento (y exigir reintento manual) es peor que
- * esperar 5 minutos. **Nota:** en este worker 'transient' y 'other' coinciden
+ * esperar a que el backoff real (schema v48, OUTBOX-BACKOFF-01,
+ * docs/diseno-outbox-backoff-2026-09-10.md §5) lo reintente solo -- ya no
+ * son "5 minutos", es hasta ~3.3h de pared en el peor caso. **Nota:** en
+ * este worker 'transient' y 'other' coinciden
  * (ambos reintentan) — el set `TRANSIENT_PG_CODES` recién cambia comportamiento
  * en `describeDeadLetter` (transitorio → "falla temporal"), o acá el día que el
  * default se invierta.

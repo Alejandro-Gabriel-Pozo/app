@@ -26,8 +26,14 @@
  * - No modifica `ORDER-16` ni la máquina de estados de `orders`: usa
  *   `domain_events` genéricos (`aggregateType: 'TEST'`), no depende de
  *   `OrderService` ni de ninguna entidad de negocio real.
- * - No modifica `outbox.worker.ts` ni `sql.domain-event.repository.ts` —
- *   solo agrega cobertura sobre el código tal como está.
+ * - (Histórico, ya no vigente) No modificaba `outbox.worker.ts` ni
+ *   `sql.domain-event.repository.ts` -- eso valía para el bloque O4
+ *   original (03/09/2026). OUTBOX-RETRY-HIST-01/OUTBOX-BACKOFF-01
+ *   (10/09/2026, schema v48, docs/diseno-outbox-backoff-2026-09-10.md) SÍ
+ *   los toca: backoff real por evento en `getPending()`. Los tests que
+ *   disparan dos+ polls consecutivos sobre el MISMO evento fallido usan
+ *   `forzarBackoffVencido()` (ver más abajo) para no acoplarse al backoff
+ *   real cuando lo que verifican es otra cosa (orden, reintento, dead-letter).
  *
  * ## Por qué contra la base y no con mocks
  * Lo que se prueba ES concurrencia y SQL: una `UPDATE` atómica que no puede
@@ -112,12 +118,31 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
   async function fila(id: number) {
     const { rows } = await db.query<{
       retry_count: number; failed_at: string | null; last_error: string | null;
-      dispatched_at: string | null;
+      dispatched_at: string | null; first_failed_at: string | null; last_failed_at: string | null;
     }>(
-      `SELECT retry_count, failed_at, last_error, dispatched_at FROM domain_events WHERE id = $1`,
+      `SELECT retry_count, failed_at, last_error, dispatched_at, first_failed_at, last_failed_at FROM domain_events WHERE id = $1`,
       [id],
     );
     return rows[0]!;
+  }
+
+  /**
+   * OUTBOX-BACKOFF-01 (schema v48, docs/diseno-outbox-backoff-2026-09-10.md
+   * §6) -- backdatea `last_failed_at` directo por SQL para que un evento que
+   * ya falló sea elegible de nuevo en el próximo `getPending()` sin esperar
+   * el backoff real. Los tests que dependen de disparar dos polls
+   * consecutivos sobre el MISMO evento fallido (antes de este bloque,
+   * inmediatamente elegible siempre) lo necesitan entre poll y poll -- sin
+   * esto, el segundo poll no encontraría el evento todavía (retry_count 1-2
+   * exige 5s desde `last_failed_at`). Sin abstracción de reloj en
+   * `SqlDomainEventRepository`: el test ya fabrica estado con SQL crudo,
+   * mismo patrón que el resto de este archivo.
+   */
+  async function forzarBackoffVencido(id: number): Promise<void> {
+    await db.query(
+      `UPDATE domain_events SET last_failed_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`,
+      [id],
+    );
   }
 
   // ===========================================================================
@@ -141,6 +166,10 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
 
       // idPrimero falló una vez (sigue pendiente, no dead-letter): pasa al fondo.
       await eventRepo.recordFailure(idPrimero, 'PG_40P01', 60);
+      // OUTBOX-BACKOFF-01: este test verifica el ORDER BY, no el backoff --
+      // sin esto, idPrimero (retry_count=1, backoff 5s) quedaría excluido de
+      // getPending() por estar todavía dentro de su ventana.
+      await forzarBackoffVencido(idPrimero);
 
       const pending = await eventRepo.getPending(50);
       expect(pending.map(numId)).toEqual([idSegundo, idPrimero]);
@@ -237,6 +266,113 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
   });
 
   // ===========================================================================
+  // SECCIÓN 1-B — OUTBOX-BACKOFF-01: backoff real por evento en getPending()
+  // (schema v48, 10/09/2026, docs/diseno-outbox-backoff-2026-09-10.md §5/§6).
+  // Reemplaza el mutation-testing de una función que no existe (el escalón
+  // vive solo en el CASE de la query) -- estos 13 tests son la evidencia
+  // real: 6 bordes del escalón (retry_count 2/3, 9/10, 29/30) x dentro/fuera
+  // de ventana, más la fila legacy con last_failed_at NULL (condición 1 del
+  // gate, ronda 2).
+  // ===========================================================================
+
+  describe('OUTBOX-BACKOFF-01 — backoff real en getPending()', () => {
+    /** Fila fabricada directo por SQL con el retry_count exacto que hace
+     *  falta -- recordFailure() siempre setea last_failed_at=NOW(), así que
+     *  no sirve para construir un pasado controlado. */
+    async function fabricarConRetryCount(retryCount: number, etiqueta: string): Promise<number> {
+      const id = await sembrar('t.backoff', `agg-backoff-${etiqueta}`);
+      await db.query(`UPDATE domain_events SET retry_count = $2 WHERE id = $1`, [id, retryCount]);
+      return id;
+    }
+
+    async function backdatarSegundos(id: number, segundos: number): Promise<void> {
+      await db.query(
+        `UPDATE domain_events SET last_failed_at = NOW() - ($2 || ' seconds')::interval WHERE id = $1`,
+        [id, segundos],
+      );
+    }
+
+    it('fila legacy: retry_count>0 con last_failed_at NULL es elegible de inmediato (autocura, condición 1 del gate)', async () => {
+      const id = await fabricarConRetryCount(5, 'legacy-null');
+      // last_failed_at queda NULL por default -- nunca se backdateó.
+      const pending = await eventRepo.getPending(50);
+      expect(pending.map(numId)).toContain(id);
+    });
+
+    it('borde retry_count=2 (tier 5s): hace 4s -- todavía NO elegible', async () => {
+      const id = await fabricarConRetryCount(2, 'b2-in');
+      await backdatarSegundos(id, 4);
+      expect((await eventRepo.getPending(50)).map(numId)).not.toContain(id);
+    });
+
+    it('borde retry_count=2 (tier 5s): hace 6s -- YA elegible', async () => {
+      const id = await fabricarConRetryCount(2, 'b2-out');
+      await backdatarSegundos(id, 6);
+      expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
+    });
+
+    it('borde retry_count=3 (tier 30s): hace 29s -- todavía NO elegible', async () => {
+      const id = await fabricarConRetryCount(3, 'b3-in');
+      await backdatarSegundos(id, 29);
+      expect((await eventRepo.getPending(50)).map(numId)).not.toContain(id);
+    });
+
+    it('borde retry_count=3 (tier 30s): hace 31s -- YA elegible', async () => {
+      const id = await fabricarConRetryCount(3, 'b3-out');
+      await backdatarSegundos(id, 31);
+      expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
+    });
+
+    it('borde retry_count=9 (todavía tier 30s): hace 29s -- todavía NO elegible', async () => {
+      const id = await fabricarConRetryCount(9, 'b9-in');
+      await backdatarSegundos(id, 29);
+      expect((await eventRepo.getPending(50)).map(numId)).not.toContain(id);
+    });
+
+    it('borde retry_count=9 (todavía tier 30s): hace 31s -- YA elegible', async () => {
+      const id = await fabricarConRetryCount(9, 'b9-out');
+      await backdatarSegundos(id, 31);
+      expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
+    });
+
+    it('borde retry_count=10 (tier 120s): hace 119s -- todavía NO elegible', async () => {
+      const id = await fabricarConRetryCount(10, 'b10-in');
+      await backdatarSegundos(id, 119);
+      expect((await eventRepo.getPending(50)).map(numId)).not.toContain(id);
+    });
+
+    it('borde retry_count=10 (tier 120s): hace 121s -- YA elegible', async () => {
+      const id = await fabricarConRetryCount(10, 'b10-out');
+      await backdatarSegundos(id, 121);
+      expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
+    });
+
+    it('borde retry_count=29 (todavía tier 120s): hace 119s -- todavía NO elegible', async () => {
+      const id = await fabricarConRetryCount(29, 'b29-in');
+      await backdatarSegundos(id, 119);
+      expect((await eventRepo.getPending(50)).map(numId)).not.toContain(id);
+    });
+
+    it('borde retry_count=29 (todavía tier 120s): hace 121s -- YA elegible', async () => {
+      const id = await fabricarConRetryCount(29, 'b29-out');
+      await backdatarSegundos(id, 121);
+      expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
+    });
+
+    it('borde retry_count=30 (tier 300s): hace 299s -- todavía NO elegible', async () => {
+      const id = await fabricarConRetryCount(30, 'b30-in');
+      await backdatarSegundos(id, 299);
+      expect((await eventRepo.getPending(50)).map(numId)).not.toContain(id);
+    });
+
+    it('borde retry_count=30 (tier 300s): hace 301s -- YA elegible', async () => {
+      const id = await fabricarConRetryCount(30, 'b30-out');
+      await backdatarSegundos(id, 301);
+      expect((await eventRepo.getPending(50)).map(numId)).toContain(id);
+    });
+  });
+
+  // ===========================================================================
   // SECCIÓN 2 — OutboxWorker (poll/dispatch reales) contra Postgres real
   // ===========================================================================
 
@@ -284,9 +420,11 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       await triggerPoll(worker); // 1/3 -- falla
       expect((await fila(id)).retry_count).toBe(1);
       expect((await fila(id)).dispatched_at).toBeNull();
+      await forzarBackoffVencido(id); // OUTBOX-BACKOFF-01 -- ver docblock de la función
 
       await triggerPoll(worker); // 2/3 -- falla
       expect((await fila(id)).retry_count).toBe(2);
+      await forzarBackoffVencido(id);
 
       await triggerPoll(worker); // 3/3 -- éxito
       expect(intento).toBe(3);
@@ -301,6 +439,7 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
 
       await triggerPoll(worker); // 1/2
       expect((await fila(id)).failed_at).toBeNull();
+      await forzarBackoffVencido(id); // OUTBOX-BACKOFF-01 -- ver docblock de la función
 
       await triggerPoll(worker); // 2/2 -> dead-letter
       const row = await fila(id);
@@ -417,6 +556,7 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
         [id],
       );
       expect(casilleros.map((c) => c.handler_name)).toEqual(['h-ok']);
+      await forzarBackoffVencido(id); // OUTBOX-BACKOFF-01 -- ver docblock de la función
 
       await triggerPoll(worker); // reintento: h-ok se SALTEA (casillero tomado), h-falla corre y esta vez sale bien
       expect(llamadasOk).toBe(1); // sigue en 1 -- no se re-ejecutó
