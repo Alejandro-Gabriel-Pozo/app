@@ -4,6 +4,7 @@
 - **Estado:** APROBADO CON CONDICIONES por `architecture-governor` — gate inicial (9 correcciones) + **re-gate de F1** (06/09/2026, 3 defectos de secuencia/forma + tercer sitio, todos aplicados). Decisiones del dueño: RBAC (grupo nuevo) ✓, A2 (portal no ofrece) ✓, F1 → Modelo 2a secuenciado ✓. Orden de bloques sin cambios (D3).
 - **Implementación (B-núcleo+órdenes):** sub-bloque 1/7 = `ad4d236` (aritmética de signo, N1.b); sub-bloque 2 = `854143b` (predicado F4 mitad SQL + doctrina + token de autz tipado, re-gate del governor APROBADO CON CONDICIONES 07/09/2026). Faltan los sub-bloques 2-6 de la lista del handoff (grupo de permiso, `buildCreditNote()`, orquestador + ruta, cableado de F4, cerca de arquitectura) + el gate final.
 - **N2.a (07/09/2026):** agregada tras revisión `auditor-circuitos-erp` — una NC apunta a exactamente una factura (1:1), cierra `F4-CONSOL-XFACT-01` y acota §10 fila 2.
+- **§5 amendado (11/09/2026, `ORDER-CONSOLIDATED-PARTIAL-01`, ver ese bullet en §5 más abajo):** "órdenes es todo o nada" deja de ser absoluto — decisión del dueño de soportar NC granular por orden dentro de una consolidada, grounding ERPNext/QloApps. N2.a NO se reabre (sigue siendo 1:1 NC↔factura). Implementación: bloque 1a hecho, 1b/1c/1d en HOLD.
 - **Reemplaza en la práctica a:** `diseno-confirmrefund-consolidadas-n4b-2026-09-06.md` (borrador N4-b, queda como registro del análisis previo).
 - **Extiende / unifica:** `diseno-cancelacion-orden-nota-credito-2026-09-05.md` (ORDER-10, sección órdenes) y `diseno-cancelacion-notas-credito-c2-2026-08-23.md` (C2, sección reservas).
 - **Autoría de las decisiones de negocio:** dueño del proyecto (encuadre 06/09/2026, tres respuestas `AskUserQuestion`). El encaje en el modelo lo propone este ADR; lo valida `architecture-governor`.
@@ -392,6 +393,19 @@ Recorte con **fundamento estructural**, no arbitrario.
 
 - **Cargo único por orden:** índice único v45 + `NOT EXISTS (order_id, type='CHARGE')` (`sql.financial-transaction.repository.ts:630-637`). No hay pool de facturas. B1 ya restringe a "exactamente una factura viva, individual, B, `impTotal == charge.amount`".
 - **Sin política de cancelación:** órdenes es todo o nada; el monto de la NC y el monto adeudado coinciden por construcción.
+  **AMENDADO (11/09/2026, `ORDER-CONSOLIDATED-PARTIAL-01`, decisión del dueño
+  con grounding ERP — ver `docs/pendientes-2026-09-10.md`).** Esta regla deja
+  de ser absoluta: se decidió soportar cancelar con NC una orden específica
+  dentro de un comprobante consolidado multi-orden, atribuyendo la NC solo a
+  esa orden (patrón ERPNext/QloApps). Estado de implementación: bloque 1a
+  (generalizar `resolveRefundableForPair()` sobre clave opaca) APPROVED e
+  implementado (`629fb27`); 1b/1c/1d (lectura, relajar el guard de
+  `cancel-order-with-credit-note.service.ts:223-226`, wiring real) siguen en
+  HOLD — matriz de impacto completa, falta re-gatear. Hasta que 1c cierre, el
+  comportamiento real sigue siendo todo-o-nada (el guard de `:223-226` no se
+  tocó). **No confundir con N2.a** (línea 274, más abajo) — esa regla de
+  cardinalidad 1:1 NC↔factura NO se reabre, una NC granular por orden sigue
+  apuntando a una sola factura.
 - **Consolidada FUERA de alcance (motivo corregido en el re-gate — Modelo 2a rompió el argumento viejo).**
   El razonamiento anterior era "`CHARGE SETTLED` = `COMPLETED` = incancelable" —
   **ya no vale**: N1.a promueve el `CHARGE` a `SETTLED` sin llevar el documento a
@@ -406,6 +420,13 @@ Recorte con **fundamento estructural**, no arbitrario.
   individual. La conclusión ("consolidada fuera de la sección órdenes")
   sobrevive; el argumento es "no existe el camino que meta un cargo de orden
   cancelable en una consolidada", no "el estado del cargo lo impide".
+  **STALE, corregido 11/09/2026:** ese "no existe el camino" ya no es cierto
+  desde que B2 shippeó — `cancel-order-with-credit-note.service.ts:223-226`
+  (`getChargeIdsForInvoice()`) demuestra que el camino SÍ existe (un cargo de
+  orden puede estar en una consolidada) y hoy lo bloquea explícitamente con
+  `CreditNoteMultiInvoiceError`, no porque el camino sea inalcanzable. El
+  párrafo de arriba describe por qué se pensó inalcanzable en su momento;
+  quedó desactualizado por el propio B2, no por este bloque.
 - **Restauración de stock:** `handleOrderCancelledStock` (`inventory.handlers.ts:143`, `:251-287`), y **NO restaura si `wasServed`** (`:287`). Una orden con Factura B casi siempre está servida → **el caso típico del escape NO restaura stock.** Hay que decirlo en la doc del método y en el mensaje al operador, no dejarlo emerger.
 - **El discriminador de `requestInvoice()` — cambio OBLIGATORIO de B-núcleo+órdenes (F2).**
   `invoice.service.ts:349` branchea `if (tx.type === 'REFUND')` para armar una NC
