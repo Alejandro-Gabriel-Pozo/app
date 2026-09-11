@@ -808,12 +808,26 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   diseño ya grounded contra ERPNext/Odoo (cron que NO emite + query
   on-demand + contador junto a `countDeadLettered()`). 0 filas huérfanas
   medidas (07/09) -- riesgo latente, no urgente.
-- **`OUTBOX-RETRY-HIST-01`** + **`OUTBOX-BACKOFF-01`** — mismo DDL
-  (`first_failed_at`/`last_failed_at` en `domain_events`), bloqueado por
-  A7.6 (arriba).
+- **`OUTBOX-RETRY-HIST-01`** + **`OUTBOX-BACKOFF-01`** — ✅ **RESUELTOS**,
+  ver la entrada completa más arriba (sección de esta sesión) -- ya no
+  bloqueados por A7.6, esa decisión ya se tomó y el código ya existe,
+  LOCAL/sin pushear.
 - **`OUTBOX-DL-COMPENSATOR-01`** — idempotencia del compensador de
   `onDeadLetter`; bloquea a `CONCIL-INCONSIST-01`, así que va primero si
-  se retoma esta familia.
+  se retoma esta familia. **Riesgo agravado por `OUTBOX-BACKOFF-01`
+  (gate `architecture-governor`, ronda 5, 10/09/2026, ver
+  `docs/diseno-outbox-backoff-2026-09-10.md`):** antes de ese bloque, los
+  dead-letters convergían en una ráfaga de ~5 minutos; con backoff real
+  se desparraman hasta ~3.3h. La carrera que este ítem describe (el
+  proceso muere entre `recordFailure()` devolviendo `true` y que el
+  compensador termine) sigue siendo igual de angosta por evento, pero
+  la cantidad de momentos de transición expuestos a un reinicio de
+  proceso (deploy de Render, restart, ciclo de scale-to-zero de Neon)
+  aumenta porque esos momentos ahora están esparcidos en una ventana
+  mucho más ancha -- y cada uno protege un recurso (stock retenido, A8.7)
+  que para entonces ya estuvo tomado más tiempo que antes. No bloquea el
+  cierre de `OUTBOX-BACKOFF-01`; sí es motivo más fuerte para que este
+  ítem vaya primero si se retoma la familia.
 - **Deuda de comentario en `outbox.handlers.ts`** — el docblock de
   `registrarDesenlace()` sigue diciendo que solo `handleOrderCancelled`
   pasa `opts`; desde `6d55876` también `handleReservationCancelled` lo
