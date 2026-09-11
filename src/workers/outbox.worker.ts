@@ -273,12 +273,15 @@ export class OutboxWorker {
    * reintentos normales. Chainable, igual que `on()`.
    *
    * ## Por qué `options.name` es obligatorio si hay processedEventRepository
-   * OUTBOX-DL-COMPENSATOR-01 (11/09/2026) -- mismo criterio que `on()`
-   * (`:242-249`): sin nombre no hay casillero que reclamar en
-   * `processed_events`, así que este compensador corre sin protección de
-   * idempotencia -- un requisito real para cualquier mecanismo de
-   * recuperación futuro (sweep) que necesite saber si ya corrió. Falla al
-   * arrancar el proceso, no en producción a las tres semanas.
+   * OUTBOX-DL-COMPENSATOR-01 (11/09/2026) -- mismo criterio que el guard
+   * de `on()`, más arriba en esta misma clase (sin número de línea a
+   * propósito -- la tercera vez que esta cita se rompió fue en el mismo
+   * commit que la corregía, ver `pendientes-2026-09-10.md`): sin nombre no
+   * hay casillero que reclamar en `processed_events`, así que este
+   * compensador corre sin protección de idempotencia -- un requisito real
+   * para cualquier mecanismo de recuperación futuro (sweep) que necesite
+   * saber si ya corrió. Falla al arrancar el proceso, no en producción a
+   * las tres semanas.
    */
   onDeadLetter(eventType: string, handler: EventHandler, options: DeadLetterHandlerOptions = {}): this {
     if (this.processedEventRepository && !options.name) {
