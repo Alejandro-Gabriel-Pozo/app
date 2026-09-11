@@ -20,9 +20,13 @@
  *
  * Este archivo cierra esa brecha. Lo que NO hace (fuera de alcance, por
  * instrucción explícita del 03/09):
- * - No toca O5 (tabla de incidentes durable) — `onDeadLetter()` se prueba
- *   como lo que es HOY (una acción best-effort logueada), no se le agrega
- *   persistencia nueva.
+ * - (Histórico, ya no vigente) No tocaba O5 (tabla de incidentes durable) —
+ *   `onDeadLetter()` se probaba como una acción best-effort logueada, sin
+ *   persistencia nueva. OUTBOX-DL-COMPENSATOR-01 (11/09/2026, Bloque A)
+ *   revierte esto a propósito: cada compensador nombrado ahora reclama su
+ *   casillero en `processed_events` antes de correr (mismo mecanismo que
+ *   `on()` ya usa para los handlers normales) -- prerrequisito de un sweep
+ *   de recuperación futuro (todavía en HOLD, matriz de impacto incompleta).
  * - No modifica `ORDER-16` ni la máquina de estados de `orders`: usa
  *   `domain_events` genéricos (`aggregateType: 'TEST'`), no depende de
  *   `OrderService` ni de ninguna entidad de negocio real.
@@ -675,7 +679,7 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       worker.on('t.compensable', async () => { throw new Error('falla siempre'); }, { name: 'h-compensable' });
       worker.onDeadLetter('t.compensable', async () => {
         failedAtVistoPorCompensador = (await fila(id)).failed_at;
-      });
+      }, { name: 'h-compensable:deadletter' });
 
       await triggerPoll(worker);
 
@@ -687,7 +691,7 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       const id = await sembrar('t.compensador-falla', 'agg-compensador-falla');
       const worker = new OutboxWorker(eventRepo, 5_000, 1, processedRepo);
       worker.on('t.compensador-falla', async () => { throw new Error('falla siempre'); }, { name: 'h-cf' });
-      worker.onDeadLetter('t.compensador-falla', async () => { throw new Error('el compensador también falla'); });
+      worker.onDeadLetter('t.compensador-falla', async () => { throw new Error('el compensador también falla'); }, { name: 'h-cf:deadletter' });
 
       await triggerPoll(worker);
 

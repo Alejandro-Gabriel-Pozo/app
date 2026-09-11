@@ -573,6 +573,77 @@ describe('OutboxWorker', () => {
 
       expect(handler).toHaveBeenCalledTimes(2);
     });
+
+    // -------------------------------------------------------------------------
+    // OUTBOX-DL-COMPENSATOR-01 (11/09/2026, Bloque A) -- mismo mecanismo de
+    // claim/release que los handlers normales de arriba, aplicado a
+    // onDeadLetter(). Prerrequisito de un sweep de recuperación futuro
+    // (todavía en HOLD): sin esto, un compensador no tiene forma de saber si
+    // ya corrió para un evento dado.
+    // -------------------------------------------------------------------------
+    describe('idempotencia del compensador de dead-letter', () => {
+      it('exige nombre del compensador cuando la idempotencia está activa', () => {
+        expect(() => guardedWorker.onDeadLetter('order.confirmed', vi.fn()))
+          .toThrow(/sin options\.name/);
+      });
+
+      it('sigue permitiendo compensadores sin nombre si NO hay repositorio de idempotencia', () => {
+        expect(() => worker.onDeadLetter('order.confirmed', vi.fn())).not.toThrow();
+      });
+
+      it('gana el casillero y corre cuando el evento cae en dead-letter', async () => {
+        // maxRetries=1 (no el 60 de guardedWorker) -- mismo criterio que los
+        // tests de onDeadLetter de más arriba: un solo poll alcanza para
+        // agotar reintentos y disparar el compensador.
+        const dlWorker = new OutboxWorker(repo, 5_000, 1, processed);
+        repo.insert(makeEvent('order.confirmed'));
+        dlWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); }, { name: 'order-confirmed-handler' });
+        const compensator = vi.fn().mockResolvedValue(undefined);
+        dlWorker.onDeadLetter('order.confirmed', compensator, { name: 'inventory:order.confirmed:deadletter-release' });
+
+        await triggerPoll(dlWorker);
+
+        expect(compensator).toHaveBeenCalledOnce();
+        expect(await processed.claim(repo.getAll()[0]!.id!, 'inventory:order.confirmed:deadletter-release'))
+          .toBe(false); // ya reclamado -- el compensador SÍ dejó su marca
+      });
+
+      it('si el casillero ya estaba tomado, NO vuelve a correr el compensador', async () => {
+        const dlWorker = new OutboxWorker(repo, 5_000, 1, processed);
+        repo.insert(makeEvent('order.confirmed'));
+        const eventId = repo.getAll()[0]!.id!;
+        // Simula que este compensador ya corrió antes (ej. un sweep de
+        // recuperación futuro que ya lo intentó) -- reclama el casillero de
+        // antemano, sin pasar por el worker.
+        await processed.claim(eventId, 'inventory:order.confirmed:deadletter-release');
+
+        dlWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); }, { name: 'order-confirmed-handler' });
+        const compensator = vi.fn().mockResolvedValue(undefined);
+        dlWorker.onDeadLetter('order.confirmed', compensator, { name: 'inventory:order.confirmed:deadletter-release' });
+
+        await triggerPoll(dlWorker);
+
+        expect(compensator).not.toHaveBeenCalled();
+      });
+
+      it('si el compensador falla, libera el casillero para que se lo pueda reintentar', async () => {
+        const dlWorker = new OutboxWorker(repo, 5_000, 1, processed);
+        repo.insert(makeEvent('order.confirmed'));
+        const eventId = repo.getAll()[0]!.id!;
+        dlWorker.on('order.confirmed', async () => { throw new Error('fallo persistente'); }, { name: 'order-confirmed-handler' });
+        dlWorker.onDeadLetter(
+          'order.confirmed',
+          async () => { throw new Error('el compensador también falla'); },
+          { name: 'inventory:order.confirmed:deadletter-release' },
+        );
+
+        await triggerPoll(dlWorker);
+
+        // Sin release(), esto daría false -- el casillero quedaría tomado
+        // para siempre por un compensador que nunca terminó de correr.
+        expect(await processed.claim(eventId, 'inventory:order.confirmed:deadletter-release')).toBe(true);
+      });
+    });
   });
 
   // ==========================================================================

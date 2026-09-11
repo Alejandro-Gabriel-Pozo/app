@@ -146,6 +146,7 @@ export function registerInventoryHandlers(
     .onDeadLetter(
       'order.confirmed',
       handleOrderConfirmedDeadLetterRelease(productService, stockMovementRepo, transactionManager),
+      { name: 'inventory:order.confirmed:deadletter-release' },
     );
 }
 

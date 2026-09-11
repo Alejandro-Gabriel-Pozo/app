@@ -995,6 +995,71 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   que para entonces ya estuvo tomado más tiempo que antes. No bloquea el
   cierre de `OUTBOX-BACKOFF-01`; sí es motivo más fuerte para que este
   ítem vaya primero si se retoma la familia.
+  **Bloque A -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
+  `APPROVED WITH CONDITIONS`).** Prerrequisito de idempotencia, sin el
+  sweep de recuperación en sí (eso sigue en HOLD, ver abajo).
+  `OutboxWorker.onDeadLetter(eventType, handler, options)` ahora exige
+  `options.name` cuando hay `processedEventRepository` (mismo guard que
+  `on()`, mensaje espejado) -- **no opcional** como venía en la primera
+  propuesta (el gate lo corrigió: opcional + un sweep futuro = un
+  compensador sin nombre correría para siempre sin dedup, exactamente el
+  modo de degradación que el guard de `on()` existe para impedir).
+  `runDeadLetterHandler()` nuevo reclama el casillero en
+  `processed_events` ANTES de correr y lo libera si el compensador falla
+  -- mismo patrón que `runHandler()`. Nombrado el único compensador real,
+  `'inventory:order.confirmed:deadletter-release'`
+  (`inventory.handlers.ts:146-150`). 2 tests de integración actualizados
+  (`outbox-worker.integration.test.ts`, registraban compensadores sin
+  nombre con `processedRepo` presente -- rompían con el guard nuevo) + 5
+  tests unitarios nuevos (gana el casillero → corre; ya tomado → saltea;
+  falla → libera; sin repo → corre como antes; exige nombre con repo
+  presente) + evidencia de mutación (sacar el claim/release pone en rojo
+  exactamente los 2 tests que prueban ese mecanismo, aplicada y
+  revertida). 38/38 tests de integración contra Postgres real
+  (`outbox-worker.integration.test.ts` completo, no solo los 2 tocados).
+  **Corrección de hecho del gate sobre mi propio análisis, antes de
+  autorizar**: cité `ux_stock_movements_order_item_type` como el índice
+  que hace idempotente a `releaseReservationHold()` -- ese índice ya no
+  existe (`schema.sql:1827`, dropeado), los vigentes son
+  `ux_stock_movements_order_item_type_product`/`_variant` y
+  `ux_stock_movements_order_item_resolution_product`/`_variant`
+  (`:1828-1843`). La conclusión (idempotente, seguro re-invocar) seguía
+  siendo cierta, la cita estaba muerta.
+  **El sweep de recuperación (el punto (c) del pedido original) sigue en
+  HOLD** -- el gate encontró 5 defectos de diseño reales (D1-D5:
+  retrocompatibilidad + sweep = compensador sin nombre corriendo para
+  siempre; costo sin auto-límite; claim-before-run angosta la carrera sin
+  cerrarla del todo; carrera nueva contra `retryDeadLettered()` manual;
+  riesgo de que el propio sweep apague el despacho de un tenant si tira
+  `42P01`) y 6 ubicaciones que la matriz de impacto original no
+  enumeraba (4 implementadores de `DomainEventRepository`, el propio
+  `schema.sql` con `handler_name VARCHAR(100)`, y la decisión explícita
+  del 03/09 en el header de `outbox-worker.integration.test.ts` de "no
+  agregarle persistencia nueva a `onDeadLetter`" -- que este mismo Bloque
+  A revierte a propósito, ya reconocida y dada de baja en ese header).
+  Próximo paso: `docs/diseno-outbox-dl-compensator-2026-09-11.md` con la
+  matriz completa y las 3 decisiones del dueño (cadencia del sweep,
+  observabilidad de la compensación recuperada, backfill sobre
+  dead-letters históricos al primer deploy) antes de volver al gate --
+  bloque propio, no encarado todavía.
+  **§8, nota de interacción cruzada (hallazgo del gate de
+  `CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001`, 11/09/2026)**: `ensureTenantWorker()`
+  ahora tiene DOS call sites -- `tenantMiddleware` (staff) y el middleware
+  de `customer.routes.ts` (portal de clientes). El guard nuevo de
+  `onDeadLetter()` de este bloque hace que un futuro compensador
+  registrado sin nombre (con `processedEventRepository` presente, que
+  siempre está en producción) tire una excepción DENTRO de
+  `ensureTenantWorker` -- y como el portal ahora también llama esa
+  función, ese error ya no solo rompería el arranque para tráfico de
+  staff, sino también la PRIMERA request autenticada de un cliente en el
+  portal para un tenant sin worker todavía (el `try/catch` del portal
+  manda cualquier error no-tenant a `next(err)` → 500). Hoy no hay
+  ningún compensador sin nombre (el único real, de inventario, ya lo
+  tiene) -- impacto real: cero. Pero es una consecuencia real de que los
+  dos bloques compartan el mismo primitivo, y quien agregue el próximo
+  `onDeadLetter()` en el futuro tiene que saber que un olvido de nombre
+  ahora es visible también desde el portal, no solo desde el panel de
+  staff.
 - **Deuda de comentario en `outbox.handlers.ts`** — el docblock de
   `registrarDesenlace()` sigue diciendo que solo `handleOrderCancelled`
   pasa `opts`; desde `6d55876` también `handleReservationCancelled` lo

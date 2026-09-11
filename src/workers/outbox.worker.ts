@@ -28,6 +28,24 @@ interface HandlerRegistration {
   version: number;
 }
 
+/** Ver `OutboxWorker.onDeadLetter()`. */
+export interface DeadLetterHandlerOptions {
+  /**
+   * Identidad estable del compensador dentro de `processed_events`. Mismo
+   * criterio que `HandlerOptions.name` -- obligatoria cuando el worker tiene
+   * `processedEventRepository` (OUTBOX-DL-COMPENSATOR-01, 11/09/2026):
+   * sin nombre no hay casillero que reclamar, así que un sweep de
+   * recuperación futuro no tendría forma de saber si este compensador ya
+   * corrió para un evento dado, y lo re-correría para siempre.
+   */
+  name?: string;
+}
+
+interface DeadLetterHandlerRegistration {
+  handler: EventHandler;
+  name: string | undefined;
+}
+
 /**
  * A10.4 — "versión desconocida se rechaza ruidosamente, nunca se asume
  * compatible". Se lanza cuando un evento llega con una `version` para la que
@@ -165,7 +183,7 @@ export class ChargeNeverCreatedError extends Error {
  */
 export class OutboxWorker {
   private readonly handlers = new Map<string, HandlerRegistration[]>();
-  private readonly deadLetterHandlers = new Map<string, EventHandler[]>();
+  private readonly deadLetterHandlers = new Map<string, DeadLetterHandlerRegistration[]>();
   private intervalId: ReturnType<typeof setInterval> | undefined = undefined;
   private polling = false;
 
@@ -243,10 +261,26 @@ export class OutboxWorker {
    * tipo agota `maxRetries` y cae en dead-letter (A8.7). Corre una sola
    * vez por transición a dead-letter — no en cada poll, no en los
    * reintentos normales. Chainable, igual que `on()`.
+   *
+   * ## Por qué `options.name` es obligatorio si hay processedEventRepository
+   * OUTBOX-DL-COMPENSATOR-01 (11/09/2026) -- mismo criterio que `on()`
+   * (`:224-231`): sin nombre no hay casillero que reclamar en
+   * `processed_events`, así que este compensador corre sin protección de
+   * idempotencia -- un requisito real para cualquier mecanismo de
+   * recuperación futuro (sweep) que necesite saber si ya corrió. Falla al
+   * arrancar el proceso, no en producción a las tres semanas.
    */
-  onDeadLetter(eventType: string, handler: EventHandler): this {
+  onDeadLetter(eventType: string, handler: EventHandler, options: DeadLetterHandlerOptions = {}): this {
+    if (this.processedEventRepository && !options.name) {
+      throw new Error(
+        `[OutboxWorker] El compensador de dead-letter de "${eventType}" se registró sin options.name. ` +
+        'Con idempotencia por handler activa, todo compensador necesita un nombre ' +
+        'estable para su casillero en processed_events.',
+      );
+    }
+
     const existing = this.deadLetterHandlers.get(eventType) ?? [];
-    this.deadLetterHandlers.set(eventType, [...existing, handler]);
+    this.deadLetterHandlers.set(eventType, [...existing, { handler, name: options.name }]);
     return this;
   }
 
@@ -471,16 +505,60 @@ export class OutboxWorker {
   }
 
   /**
+   * OUTBOX-DL-COMPENSATOR-01 (11/09/2026, Bloque A) -- mismo patrón
+   * claim/release que `runHandler()` (`:469-505`), aplicado a un
+   * compensador de dead-letter en vez de a un handler normal. Reclama el
+   * casillero en `processed_events` ANTES de correr (mismo motivo: dos
+   * disparos solapados no pueden correr el mismo compensador dos veces) y
+   * lo libera si el compensador falla (para que un reintento -- manual hoy,
+   * un sweep de recuperación en un bloque futuro -- lo pueda volver a
+   * intentar). Sin `processedEventRepository`, sin nombre, o sin
+   * `event.id`: corre tal cual, sin dedup -- mismo fallback que
+   * `runHandler()`.
+   */
+  private async runDeadLetterHandler(event: DomainEvent, reg: DeadLetterHandlerRegistration): Promise<void> {
+    const repo = this.processedEventRepository;
+
+    if (!repo || !reg.name || event.id === undefined) {
+      await reg.handler(event);
+      return;
+    }
+
+    const won = await repo.claim(event.id, reg.name);
+    if (!won) {
+      logger.debug(
+        { eventId: event.id, eventType: event.eventType, handler: reg.name },
+        '[OutboxWorker] Compensador de dead-letter ya procesado para este evento. Salteado.',
+      );
+      return;
+    }
+
+    try {
+      await reg.handler(event);
+    } catch (err) {
+      try {
+        await repo.release(event.id, reg.name);
+      } catch (releaseErr) {
+        logger.error(
+          { err: releaseErr, eventId: event.id, handler: reg.name },
+          '[OutboxWorker] No se pudo liberar el casillero de processed_events (compensador de dead-letter)',
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Corre las acciones compensatorias registradas para este eventType
    * (A8.7). Cada handler se aísla del resto — uno que falle no evita que
    * los demás corran, ni revierte la marca de dead-letter (ya persistida
    * antes de llegar acá).
    */
   private async runDeadLetterHandlers(event: DomainEvent): Promise<void> {
-    const handlers = this.deadLetterHandlers.get(event.eventType) ?? [];
-    if (handlers.length === 0) return;
+    const registrations = this.deadLetterHandlers.get(event.eventType) ?? [];
+    if (registrations.length === 0) return;
 
-    const results = await Promise.allSettled(handlers.map((h) => h(event)));
+    const results = await Promise.allSettled(registrations.map((reg) => this.runDeadLetterHandler(event, reg)));
     for (const result of results) {
       if (result.status === 'rejected') {
         logger.error(
