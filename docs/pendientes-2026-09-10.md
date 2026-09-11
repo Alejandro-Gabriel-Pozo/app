@@ -699,9 +699,14 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   urgente -- no hay bug manifestándose hoy. Sigue como deuda de diseño
   (el código no lo garantiza estructuralmente, solo no divergió todavía
   en los datos de práctica).
-- **A7.6** — cuántos días de retención para las columnas nuevas de
-  observabilidad del outbox (`first_failed_at`/`last_failed_at`) antes de
-  purgar. Bloquea el bloque 4.2 (`OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01`).
+- **A7.6** — ✅ **DECIDIDO 10/09/2026 (dueño): 90 días de retención**,
+  solo sobre eventos ya resueltos (`dispatched_at IS NOT NULL OR
+  failed_at IS NOT NULL`) — lo pendiente/en retry nunca se purga aunque
+  sea viejo. Destraba `OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01` (abajo,
+  diseño en curso, gate `architecture-governor` consultado). Mecanismo
+  de purga en sí (dónde corre — no hay cron existente en este repo más
+  allá de los 3 workers de polling) queda como pregunta abierta del
+  diseño, posiblemente diferida a bloque aparte.
 - **3.3-d, residual 1 (consolidada-parcial)** — F4 pregunta por la
   factura ENTERA, la NC del escape es parcial por reserva. Cierre:
   clasificador por PAR `(invoiceId, reservationId)`, todavía sin

@@ -17,6 +17,8 @@ interface DomainEventRow {
   retry_count: number;
   failed_at: Date | null;
   last_error: string | null;
+  first_failed_at: Date | null;
+  last_failed_at: Date | null;
 }
 
 /**
@@ -29,7 +31,8 @@ interface DomainEventRow {
 const EVENT_COLUMNS = `id, event_id, correlation_id, causation_id, version,
               business_id, aggregate_type, aggregate_id,
               event_type, payload, occurred_at, dispatched_at,
-              retry_count, failed_at, last_error`;
+              retry_count, failed_at, last_error,
+              first_failed_at, last_failed_at`;
 
 function toDomainEvent(row: DomainEventRow): DomainEvent {
   return {
@@ -48,6 +51,8 @@ function toDomainEvent(row: DomainEventRow): DomainEvent {
     retryCount:    row.retry_count,
     failedAt:      row.failed_at,
     lastError:     row.last_error,
+    firstFailedAt: row.first_failed_at,
+    lastFailedAt:  row.last_failed_at,
   };
 }
 
@@ -127,13 +132,25 @@ export class SqlDomainEventRepository implements DomainEventRepository {
    * UPDATE atómica: el incremento y la decisión de pasar a dead-letter son
    * la misma operación (A8.2 — no SELECT retry_count seguido de un IF en
    * memoria, que dos ciclos de poll solapados podrían leer a la vez).
+   *
+   * `first_failed_at` (OUTBOX-RETRY-HIST-01, docs/diseno-outbox-backoff-2026-09-10.md
+   * §2/§4): guard idempotente sobre LA COLUMNA MISMA (`IS NULL`), no sobre
+   * `retry_count = 0` -- `retryDeadLettered()` resetea `retry_count` a 0 en
+   * cada reintento manual, así que un guard sobre `retry_count` pisaría
+   * `first_failed_at` con la fecha de HOY en la falla siguiente a un
+   * reintento manual, destruyendo el dato que la columna existe para
+   * preservar (decisión del dueño: NO se resetea con un reintento manual).
+   * `last_failed_at` (OUTBOX-BACKOFF-01) se pisa en CADA falla, sin CASE --
+   * la usa el backoff de `getPending()`.
    */
   async recordFailure(id: number, errorCategory: string, maxRetries: number): Promise<boolean> {
     const result = await this.sqlClient.query<{ failed_at: Date | null }>(
       `UPDATE domain_events
-       SET retry_count = retry_count + 1,
-           last_error  = $2,
-           failed_at   = CASE WHEN retry_count + 1 >= $3 THEN NOW() ELSE failed_at END
+       SET retry_count     = retry_count + 1,
+           last_error      = $2,
+           first_failed_at = CASE WHEN first_failed_at IS NULL THEN NOW() ELSE first_failed_at END,
+           last_failed_at  = NOW(),
+           failed_at       = CASE WHEN retry_count + 1 >= $3 THEN NOW() ELSE failed_at END
        WHERE id = $1
        RETURNING failed_at`,
       [id, errorCategory.slice(0, 255), maxRetries],

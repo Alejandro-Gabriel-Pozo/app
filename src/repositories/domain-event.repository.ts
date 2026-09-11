@@ -48,6 +48,22 @@ export interface DomainEvent {
   /** Categoría del último error (código Postgres o nombre de excepción).
    *  NUNCA el mensaje completo — puede traer PII del cliente (A7.1). */
   lastError?: string | null;
+  /**
+   * OUTBOX-RETRY-HIST-01 (schema v48, docs/diseno-outbox-backoff-2026-09-10.md).
+   * Seteada UNA sola vez, en el primer fallo -- nunca se pisa después,
+   * NI SIQUIERA por un reintento manual que resetea `retryCount` (decisión
+   * del dueño: "esto viene fallando desde el lunes" sigue siendo cierto
+   * aunque alguien haya reintentado el miércoles). `null` en eventos que
+   * nunca fallaron, y en filas anteriores al 10/09/2026 hasta su próximo
+   * fallo (autocura solo, ver `recordFailure()`).
+   */
+  firstFailedAt?: Date | null;
+  /**
+   * OUTBOX-BACKOFF-01 (schema v48). Se pisa en CADA fallo -- `getPending()`
+   * la usa para calcular si ya pasó suficiente backoff antes de reintentar
+   * de nuevo este evento puntual.
+   */
+  lastFailedAt?: Date | null;
 }
 
 export interface DomainEventRepository {

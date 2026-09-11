@@ -172,6 +172,19 @@ vencido ahora mismo.
 - `idleIntervalMs = 600_000` (10 min), pero **solo como red de
   seguridad** — el camino principal es el wake().
 
+**Acoplamiento con `OUTBOX-RETRY-HIST-01`/`OUTBOX-BACKOFF-01`
+(registrado 10/09/2026, ver `docs/diseno-outbox-backoff-2026-09-10.md`
+§11 para el detalle completo):** ese bloque agrega backoff real por
+evento a `getPending()` (escalones 5s/30s/120s/300s según
+`retry_count`). El día que este worker migre a `AdaptivePoller`, un
+poll que encuentra todo en backoff cuenta como "sin trabajo" →
+`idleIntervalMs` (10 min) → el retraso efectivo de reintento pasa a ser
+`max(backoff_seconds, idleIntervalMs)`, y el escalón de 5s deja de
+existir en la práctica. Además, el vencimiento de un backoff no es hoy
+una fuente de `wake()` -- no hay timer que lo dispare. Esto tiene que
+resolverse (o al menos decidirse explícitamente como aceptable) ANTES
+de migrar este worker, no descubrirse en producción.
+
 #### Mecanismo de wake — propuesta, pendiente de aprobación del gate
 
 `insertWithClient()` (`SqlDomainEventRepository`) se llama desde 5+ call

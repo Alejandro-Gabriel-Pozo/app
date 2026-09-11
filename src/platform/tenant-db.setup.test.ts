@@ -93,7 +93,7 @@ describe('loadTenantSchema', () => {
 
 describe('applyTenantSchema', () => {
   const queryMock = vi.fn(async (sql: string): Promise<{ rows: Array<Record<string, unknown>> }> => {
-    if (sql.includes('SELECT MAX')) return { rows: [{ max: 47 }] };
+    if (sql.includes('SELECT MAX')) return { rows: [{ max: 48 }] };
     return { rows: [] };
   });
   const connectMock = vi.fn(async () => {});
@@ -135,8 +135,11 @@ describe('applyTenantSchema', () => {
     // (reversed_invoice_id sólo en filas REFUND/ADJUSTMENT) -- mitad de datos
     // de la condición 3 del re-gate del ADR cancelar-con-NC. Ver schema.sql,
     // bloque "schema v47".
-    expect(version).toBe(47);
-    expect(CURRENT_SCHEMA_VERSION).toBe(47);
+    // 47 -> 48 el 10/09/2026: OUTBOX-RETRY-HIST-01/OUTBOX-BACKOFF-01 --
+    // domain_events gana first_failed_at/last_failed_at. Ver
+    // docs/diseno-outbox-backoff-2026-09-10.md.
+    expect(version).toBe(48);
+    expect(CURRENT_SCHEMA_VERSION).toBe(48);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

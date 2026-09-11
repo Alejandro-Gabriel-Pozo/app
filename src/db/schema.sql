@@ -2009,6 +2009,16 @@ ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFA
 ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS failed_at   TIMESTAMPTZ;
 ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS last_error  VARCHAR(255);
 
+-- OUTBOX-RETRY-HIST-01 / OUTBOX-BACKOFF-01 (schema v48, 10/09/2026,
+-- docs/diseno-outbox-backoff-2026-09-10.md). first_failed_at: seteada UNA
+-- sola vez (patrón first_failure_date de Odoo, ir_cron.py:122) -- "¿hace
+-- cuánto que esto viene fallando?" sin perder el dato en cada reintento,
+-- incluido un reintento manual que resetea retry_count (retryDeadLettered()).
+-- last_failed_at: se pisa en CADA fallo -- backoff real por evento en
+-- getPending() la usa para calcular la próxima ventana elegible.
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS first_failed_at TIMESTAMPTZ;
+ALTER TABLE domain_events ADD COLUMN IF NOT EXISTS last_failed_at  TIMESTAMPTZ;
+
 -- dead-letter (failed_at IS NOT NULL) sale de la cola de pendientes: el
 -- worker ya no lo reintenta solo, queda esperando reintento manual.
 DROP INDEX IF EXISTS idx_domain_events_pending;

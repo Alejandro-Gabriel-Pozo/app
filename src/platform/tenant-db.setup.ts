@@ -335,7 +335,13 @@ async function deriveEncryptionKey(): Promise<Buffer> {
 // la whitelist de F4/N1.b ya no depende sólo de la cerca estática. Verificado
 // 0 filas con `reversed_invoice_id` en las dos tenants -> ADD CONSTRAINT
 // instantáneo, sin backfill. Ver schema.sql, bloque "schema v47".
-export const CURRENT_SCHEMA_VERSION = 47;
+// v48 (10/09/2026): OUTBOX-RETRY-HIST-01/OUTBOX-BACKOFF-01,
+// docs/diseno-outbox-backoff-2026-09-10.md. `domain_events` gana
+// `first_failed_at`/`last_failed_at` -- visibilidad de "hace cuánto que
+// esto falla" (Odoo `first_failure_date`) + backoff real por evento en
+// `getPending()` (esto último recién en el commit B de ese diseño, no
+// acá -- este bump acompaña las columnas, no el cambio de query).
+export const CURRENT_SCHEMA_VERSION = 48;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
