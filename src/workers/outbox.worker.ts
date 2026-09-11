@@ -163,6 +163,16 @@ export class ChargeNeverCreatedError extends Error {
  * relanza — el evento ya está en dead-letter y visible en el panel de
  * todos modos, un reintento manual sigue disponible.
  *
+ * OUTBOX-DL-COMPENSATOR-01 (11/09/2026, Bloque A) -- un compensador
+ * nombrado además reclama un casillero en `processed_events` ANTES de
+ * correr y lo libera si falla (mismo mecanismo que `on()` usa para los
+ * handlers normales, `runDeadLetterHandler()`) -- así que "corre UNA VEZ"
+ * de arriba ahora está garantizado por una marca durable, no solo por el
+ * hecho de que `onDeadLetter()` se invoca una vez por ciclo. Prerrequisito
+ * de un sweep de recuperación futuro (todavía en HOLD, matriz de impacto
+ * incompleta) que necesita saber, entre ciclos y entre restarts del
+ * proceso, si un compensador ya corrió para un evento dado.
+ *
  * ## Arranque diferido
  * Si la tabla domain_events todavía no existe en la BD (p.ej. primer deploy
  * antes de correr las migraciones), el worker loguea un aviso único y
@@ -264,7 +274,7 @@ export class OutboxWorker {
    *
    * ## Por qué `options.name` es obligatorio si hay processedEventRepository
    * OUTBOX-DL-COMPENSATOR-01 (11/09/2026) -- mismo criterio que `on()`
-   * (`:224-231`): sin nombre no hay casillero que reclamar en
+   * (`:242-249`): sin nombre no hay casillero que reclamar en
    * `processed_events`, así que este compensador corre sin protección de
    * idempotencia -- un requisito real para cualquier mecanismo de
    * recuperación futuro (sweep) que necesite saber si ya corrió. Falla al
