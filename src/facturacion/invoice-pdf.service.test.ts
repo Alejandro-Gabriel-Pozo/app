@@ -42,6 +42,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async markFailed(_id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async getStatus(): Promise<InvoiceStatus | null> { return this.invoice?.status ?? null; }
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> { return this.invoice?.id === invoiceId ? this.items : []; }
+  async getOrderIdsByInvoiceItemId() { return new Map<string, string>(); } // 1c-ii-a (11/09/2026) -- sin caller en este test
   async getChargeIdsForInvoice() { return []; } // ADR común cancelar-con-NC (N1.a iii) -- sin caller en este test
   async classifyOrderLiveInvoice(): Promise<'RECONCILED' | 'NOT_RECONCILED'> { return 'NOT_RECONCILED'; } // sub-bloque 5 (b) -- sin caller acá
   async classifyReservationLiveInvoice(): Promise<'RECONCILED' | 'NOT_RECONCILED'> { return 'NOT_RECONCILED'; } // bloque 3.3-d -- sin caller acá

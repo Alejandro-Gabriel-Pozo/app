@@ -129,6 +129,10 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-a -- tope POR PAR (invoiceId, reservatio
     ({ db, pool, dbName } = await createTestDatabase());
     const category = await seedCategory(db);
     categoryId = category.id;
+    // 1c-ii-a -- requerida para el `orders.location_id` FK del test del
+    // discriminador ORDER, ninguno de los tests preexistentes de este
+    // archivo tocaba `orders`.
+    await db.query(`INSERT INTO locations (id, name) VALUES ('loc-nc-pair-cap', 'NC-PAIR-CAP')`);
 
     await db.query(`UPDATE business_profile SET tax_id = '20111111112', afip_sales_point = 3`);
 
@@ -163,6 +167,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-a -- tope POR PAR (invoiceId, reservatio
     await db.query('UPDATE invoices SET financial_transaction_id = NULL');
     await db.query('DELETE FROM invoices');
     await db.query('DELETE FROM financial_transactions');
+    await db.query('DELETE FROM orders'); // 1c-ii-a -- test del discriminador ORDER
     await db.query('DELETE FROM reservations');
   });
 
@@ -229,6 +234,67 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-a -- tope POR PAR (invoiceId, reservatio
     });
     return tx!.id;
   }
+
+  /**
+   * 1c-ii-a (11/09/2026) -- reproduce a mano lo que deja una NC ISSUED real
+   * (individual o consolidada, acá individual alcanza) para un `financial_
+   * transaction_id` revertidor puntual -- lo mínimo que
+   * `getInFlightCreditNoteTotalForPairForUpdate()` necesita ver en
+   * `NC_LINKAGE_UNION` (rama `invoices.financial_transaction_id`).
+   */
+  async function seedIssuedCreditNoteFor(reversingFtId: string, customerId: string, amount: number): Promise<void> {
+    await db.query(
+      `INSERT INTO invoices
+         (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+          environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+          condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+          cae, cae_vto, status, issued_at)
+       VALUES ($1, $2, $3, $4, $5, 'homologacion', 3, $6, $7, 1, 96, '0',
+               5, 'PES', $8, 0, $8, '123', '2030-01-01', 'ISSUED', NOW())`,
+      [randomUUID(), BUSINESS_ID, reversingFtId, customerId, `idem-nc-${reversingFtId}`, CBTE_TIPO_NOTA_CREDITO_B, cbteNroCounter++, amount],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 0. 1c-ii-a -- discriminador RESERVATION/ORDER, contra Postgres real
+  //    (condición C4 del gate). Sin caller de `kind: 'ORDER'` todavía --
+  //    prueba el predicado SQL en aislamiento, no un flujo de producción
+  //    (ninguno existe hoy: `accounts_receivable` nunca lleva `order_id`).
+  // ---------------------------------------------------------------------------
+  it('discriminador RESERVATION/ORDER -- cada kind ve SOLO su propia NC en vuelo, nunca la del otro', async () => {
+    const { invoiceId, reservas } = await seedConsolidadaTresReservas();
+    const [resA] = reservas; // A = 500
+
+    // NC "de reserva": revierte parcialmente a nombre de resA.
+    const reservationAdjId = await seedAdjustment(invoiceId, resA!.customerId, resA!.reservationId, 200);
+    await seedIssuedCreditNoteFor(reservationAdjId, resA!.customerId, 200);
+
+    // NC "de orden": misma factura, mismo tipo de fila (ADJUSTMENT
+    // revertidor), pero con `orderId` en vez de `reservationId` -- no pasa
+    // por ningún orquestador real, solo ejercita el predicado SQL. `orders`
+    // tiene FK real -- fila mínima, sin pasar por OrderService.
+    const orderId = randomUUID();
+    await db.query(
+      `INSERT INTO orders (id, business_id, customer_id, status, location_id) VALUES ($1, $2, $3, 'CONFIRMED', 'loc-nc-pair-cap')`,
+      [orderId, BUSINESS_ID, resA!.customerId],
+    );
+    const orderAdjTx = await financialRepo.create({
+      id: randomUUID(), businessId: BUSINESS_ID, customerId: resA!.customerId, orderId,
+      type: 'ADJUSTMENT', amount: -100, currency: 'ARS', status: 'SETTLED', reversedInvoiceId: invoiceId,
+    });
+    await seedIssuedCreditNoteFor(orderAdjTx!.id, resA!.customerId, 100);
+
+    const reservationInFlight = await invoiceRepo.getInFlightCreditNoteTotalForPairForUpdate(
+      db, invoiceId, { kind: 'RESERVATION', id: resA!.reservationId },
+    );
+    const orderInFlight = await invoiceRepo.getInFlightCreditNoteTotalForPairForUpdate(
+      db, invoiceId, { kind: 'ORDER', id: orderId },
+    );
+
+    // Cada kind ve SOLO la suya -- ni de más (la del otro sujeto) ni de menos.
+    expect(reservationInFlight).toBe(200);
+    expect(orderInFlight).toBe(100);
+  }, 30_000);
 
   // ---------------------------------------------------------------------------
   // 1. Secuencial -- el tope GLOBAL tiene cupo de sobra, el tope POR PAR no.

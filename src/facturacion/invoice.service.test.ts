@@ -138,6 +138,11 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> {
     return this.items.get(invoiceId) ?? [];
   }
+  // 1c-ii-a (11/09/2026) -- sin caller todavía en InvoiceService, mismo
+  // criterio que getIssuedCreditNoteCompensationTotal de arriba. Vacío por
+  // default: el fake no modela order_items, los tests que lo necesiten lo
+  // sobreescriben o van a integración contra Postgres real.
+  async getOrderIdsByInvoiceItemId(): Promise<Map<string, string>> { return new Map(); }
   // ADR común cancelar-con-NC §3 N1.a(iii) -- inverso de resolveInvoiceLinkage().
   async getChargeIdsForInvoice(invoiceId: string): Promise<string[]> {
     const ids = new Set<string>();

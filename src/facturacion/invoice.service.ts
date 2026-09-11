@@ -794,7 +794,13 @@ export class InvoiceService {
     // El tope global (N5) ya corre para TODAS las ramas; este es el tope
     // ADICIONAL por par, que sólo tiene sentido cuando hubo una atribución
     // por reserva que proteger.
-    let pairAttribution: { reservationId: string; attributedTotal: number } | null = null;
+    // 1c-ii-a (11/09/2026, gate `architecture-governor`) -- `subject`
+    // generalizado de `reservationId: string` a un discriminador cerrado,
+    // espejo del que ganó `getInFlightCreditNoteTotalForPairForUpdate()`
+    // (`invoice.repository.ts`). Sin consumidor de `kind: 'ORDER'` todavía
+    // -- la rama de abajo (`:839`) sigue siendo exclusiva de reservas hasta
+    // el bloque 1c-ii-b (HOLD).
+    let pairAttribution: { subject: { kind: 'RESERVATION' | 'ORDER'; id: string }; attributedTotal: number } | null = null;
 
     if (isFullReversal && originalItems.length > 0) {
       // --- N3: reversión total con detalle de líneas -> copiar 1-a-1 ---
@@ -875,7 +881,7 @@ export class InvoiceService {
       impNeto = attribution.attributedNeto;
       impIva = attribution.attributedIva;
       impTotal = attribution.attributedTotal;
-      pairAttribution = { reservationId, attributedTotal: attribution.attributedTotal };
+      pairAttribution = { subject: { kind: 'RESERVATION', id: reservationId }, attributedTotal: attribution.attributedTotal };
     } else {
       // --- Rama proporcional heredada (parcial, o total Nivel A) ---
       if (tx.type === 'ADJUSTMENT') {
@@ -971,12 +977,12 @@ export class InvoiceService {
       // de invoices PREEXISTENTES distintas a la vez).
       if (pairAttribution) {
         const pairInFlight = await this.invoiceRepo.getInFlightCreditNoteTotalForPairForUpdate(
-          client, original.id, pairAttribution.reservationId,
+          client, original.id, pairAttribution.subject,
         );
         const pairProjected = round2(pairInFlight + impTotal);
         if (pairProjected > round2(pairAttribution.attributedTotal + CREDIT_NOTE_COMPENSATION_TOLERANCE)) {
           throw new CreditNotePairCapExceededError(
-            original.id, pairAttribution.reservationId, tx.id, impTotal, pairInFlight, pairAttribution.attributedTotal,
+            original.id, pairAttribution.subject.id, tx.id, impTotal, pairInFlight, pairAttribution.attributedTotal,
           );
         }
       }

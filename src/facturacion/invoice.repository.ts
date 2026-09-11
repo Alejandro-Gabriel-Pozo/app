@@ -330,13 +330,13 @@ export interface InvoiceRepository {
   /**
    * Bloque 3.3-a (08/09/2026, gate `architecture-governor`) — mismo tope
    * que `getInFlightCreditNoteTotalForUpdate()` (ISSUED + PENDING +
-   * FAILED_UNCERTAIN, excluye REJECTED) pero acotado a UNA reserva dentro
-   * de una factura consolidada (`AND r.reservation_id = $2`, la reserva de
-   * la transacción REVERTIDORA — no de la factura). Necesario porque el
-   * tope global topea la factura ENTERA: una consolidada con cupo global
-   * de sobra puede aun así dejar que una reserva puntual se lleve más de
-   * lo que le corresponde (`resolveRefundableForPair()`, N4-a). Los dos
-   * topes CONVIVEN, no se reemplazan — este es adicional, no un sustituto.
+   * FAILED_UNCERTAIN, excluye REJECTED) pero acotado a UN sujeto (reserva u
+   * orden) dentro de una factura consolidada — el sujeto de la transacción
+   * REVERTIDORA, no de la factura. Necesario porque el tope global topea la
+   * factura ENTERA: una consolidada con cupo global de sobra puede aun así
+   * dejar que un sujeto puntual se lleve más de lo que le corresponde
+   * (`resolveRefundableForPair()`, N4-a). Los dos topes CONVIVEN, no se
+   * reemplazan — este es adicional, no un sustituto.
    *
    * Toma su PROPIO lock (`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`,
    * corrección del gate 08/09/2026) — autocontenido, no depende de que el
@@ -344,8 +344,22 @@ export interface InvoiceRepository {
    * la misma transacción. Sobre una fila que la misma transacción ya tiene
    * lockeada (el caso real, `buildCreditNote()` llama a los dos seguidos)
    * el lock es instantáneo — no hay costo por sostenerlo dos veces.
+   *
+   * `subject` (1c-ii-a, 11/09/2026, gate `architecture-governor`) —
+   * generalizado de `reservationId: string` a un discriminador cerrado
+   * (`RESERVATION`/`ORDER`) para que el bloque 1c-ii-b (atribución de
+   * órdenes en `buildCreditNote()`, todavía en HOLD) pueda reusar este
+   * mismo método en vez de un hermano nuevo `...ForOrderPairForUpdate` —
+   * un método nuevo sería invisible para `lock-order.test.ts` (`LOCK_CALL_RE`)
+   * hasta que alguien se acordara de sumarlo a mano. Sin consumidor de
+   * `kind: 'ORDER'` todavía; el único call site real
+   * (`invoice.service.ts`) sigue pasando `kind: 'RESERVATION'`.
    */
-  getInFlightCreditNoteTotalForPairForUpdate(client: SqlClient, invoiceId: string, reservationId: string): Promise<number>;
+  getInFlightCreditNoteTotalForPairForUpdate(
+    client: SqlClient,
+    invoiceId: string,
+    subject: { kind: 'RESERVATION' | 'ORDER'; id: string },
+  ): Promise<number>;
   /**
    * ADR común cancelar-con-NC (§3 N1.a(iii)) — devuelve los
    * `financial_transactions.id` de los CARGO(s) que la factura `invoiceId`
@@ -514,4 +528,21 @@ export interface InvoiceRepository {
   getStatus(id: string): Promise<InvoiceStatus | null>;
   /** D8-Nivel B — líneas reales del comprobante (vacío = factura Nivel A, ver InvoicePdfService). */
   getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]>;
+  /**
+   * 1c-ii-a (11/09/2026, gate `architecture-governor`, preparación mecánica
+   * para `ORDER-CONSOLIDATED-PARTIAL-01`) — resuelve, para una factura, qué
+   * `order_id` corresponde a cada `invoice_items.id` de origen ORDEN (JOIN
+   * `invoice_items.order_item_id → order_items.order_id`, estable:
+   * `order_items.order_id` nunca se actualiza en `src/pos-menu/`, y el
+   * `ON DELETE SET NULL` de la FK no puede orfanar una línea ya facturada sin
+   * violar el CHECK `chk_invoice_item_origin` primero).
+   *
+   * Solo trae entradas con `order_id` resuelto -- una línea de origen
+   * RESERVA o el caso borde sin documento (`resolveInvoiceItems()`, Nivel A)
+   * simplemente no aparece en el `Map`. **Sin consumidor todavía** -- mismo
+   * criterio que `resolveOrderPairAttribution()`/`getIssuedCreditNoteCompensationTotalForOrder()`
+   * (bloque 1b): la rama de atribución de órdenes en `buildCreditNote()`
+   * (bloque 1c-ii-b) es quien lo va a usar.
+   */
+  getOrderIdsByInvoiceItemId(invoiceId: string): Promise<Map<string, string>>;
 }

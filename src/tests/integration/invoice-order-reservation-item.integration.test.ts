@@ -142,11 +142,19 @@ describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden c
       new SqlAuditLogRepository(db),
     );
 
+    // 1c-ii-a -- UNA sola instancia de mock persistente entre llamadas
+    // (mismo patrón que `credit-note-pair-cap.integration.test.ts`): el
+    // archivo original solo tenía 1 test, así que `() => fakeArcaClientOk()`
+    // (una closure NUEVA, con `nextNro` reseteado a 10, por cada llamada del
+    // factory) nunca colisionaba. Con más de un `requestInvoice()` real en
+    // el archivo, cada uno volvía a pedir `cbteNro=10/11` -> duplicado en
+    // `idx_invoices_talonario`.
+    const sharedArcaClient = fakeArcaClientOk();
     invoiceService = new InvoiceService(
       invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
-      () => buildArcaBillingAdapter(fakeArcaClientOk()),
+      () => buildArcaBillingAdapter(sharedArcaClient),
     );
   }, 60_000);
 
@@ -189,6 +197,65 @@ describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden c
       // El invariante que chk_invoice_item_origin exige a nivel base --
       // reservationId debe ser null cuando orderItemId no lo es.
       expect(items[0]!.reservationId).toBeNull();
+    },
+    30_000,
+  );
+
+  it(
+    '1c-ii-a (11/09/2026) -- getOrderIdsByInvoiceItemId() resuelve el order_id real vía JOIN invoice_items.order_item_id -> order_items.order_id',
+    async () => {
+      const category = await seedCategory(db);
+      const resource = await seedResource(db, category.id);
+      const customer = await seedCustomer(db);
+      const reservation = await seedReservation(db, resource.id, customer.id);
+
+      const order = await orderService.createOrder({
+        businessId: BIZ, customerId: customer.id, locationId: LOC,
+        items: [{
+          itemType: 'RESERVATION', reservationId: reservation.id,
+          productId: null, productVariantId: null,
+          quantity: 1, unitPrice: 100,
+        }],
+      });
+      await orderService.confirmOrder(order.id, 'user-xor-001');
+
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: customer.id, orderId: order.id,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      const invoice = await invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-xor-001',
+      });
+      expect(invoice.status).toBe('ISSUED');
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      const orderIds = await invoiceRepo.getOrderIdsByInvoiceItemId(invoice.id);
+
+      expect(orderIds.size).toBe(1);
+      expect(orderIds.get(items[0]!.id)).toBe(order.id);
+    },
+    30_000,
+  );
+
+  it(
+    '1c-ii-a -- getOrderIdsByInvoiceItemId() en una factura de RESERVA directa (sin order_item): Map vacío, no confunde el origen',
+    async () => {
+      const category = await seedCategory(db);
+      const resource = await seedResource(db, category.id);
+      const customer = await seedCustomer(db);
+      const reservation = await seedReservation(db, resource.id, customer.id);
+
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: customer.id, reservationId: reservation.id,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      const invoice = await invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-xor-001',
+      });
+      expect(invoice.status).toBe('ISSUED');
+
+      const orderIds = await invoiceRepo.getOrderIdsByInvoiceItemId(invoice.id);
+      expect(orderIds.size).toBe(0);
     },
     30_000,
   );

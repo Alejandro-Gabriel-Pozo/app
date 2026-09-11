@@ -692,13 +692,17 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return parseFloat(rows[0]!.in_flight);
   }
 
-  async getInFlightCreditNoteTotalForPairForUpdate(client: SqlClient, invoiceId: string, reservationId: string): Promise<number> {
+  async getInFlightCreditNoteTotalForPairForUpdate(
+    client: SqlClient,
+    invoiceId: string,
+    subject: { kind: 'RESERVATION' | 'ORDER'; id: string },
+  ): Promise<number> {
     // Bloque 3.3-a (08/09/2026, gate `architecture-governor`) -- mismo
-    // predicado que getInFlightCreditNoteTotalForUpdate(), con
-    // `r.reservation_id = $2` sumado: `r` es la transacción REVERTIDORA
-    // (REFUND/ADJUSTMENT), no la factura -- filtra por qué reserva generó
-    // cada NC/porción en vuelo contra `invoiceId`, no por qué reserva
-    // aparece en las líneas de la factura.
+    // predicado que getInFlightCreditNoteTotalForUpdate(), con un filtro de
+    // sujeto sumado: `r` es la transacción REVERTIDORA (REFUND/ADJUSTMENT),
+    // no la factura -- filtra por qué reserva/orden generó cada NC/porción
+    // en vuelo contra `invoiceId`, no por qué reserva/orden aparece en las
+    // líneas de la factura.
     //
     // Corrección del gate (08/09/2026): el nombre `...ForUpdate` tiene que
     // ser verdad por sí solo -- la versión anterior de este método confiaba
@@ -712,6 +716,19 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // lockeada, Postgres no espera nada -- misma conexión, sin costo de pool.
     await client.query(`SELECT 1 FROM invoices WHERE id = $1 FOR UPDATE`, [invoiceId]);
 
+    // 1c-ii-a (11/09/2026, gate `architecture-governor`) -- generalizado de
+    // `reservationId: string` a un discriminador cerrado. El nombre de
+    // columna sale de un `switch` sobre una unión cerrada, NUNCA se
+    // interpola un valor del caller -- la única forma segura de
+    // parametrizar qué columna filtrar sin abrir una inyección SQL.
+    // `resolveOrderPairAttribution()` (bloque 1b) es un precedente de la
+    // misma idea para otro método; acá se generaliza el existente en vez de
+    // agregar un método hermano `...ForOrderPairForUpdate` para que
+    // `LOCK_CALL_RE` (`lock-order.test.ts`) lo siga viendo como el mismo
+    // símbolo -- un método nuevo sería invisible para esa cerca hasta que
+    // alguien se acordara de sumarlo a mano.
+    const subjectColumn = subject.kind === 'RESERVATION' ? 'r.reservation_id' : 'r.order_id';
+
     const { rows } = await client.query<{ in_flight: string }>(
       `SELECT COALESCE(SUM(dedup.imp_total), 0) AS in_flight
          FROM (
@@ -719,12 +736,12 @@ export class SqlInvoiceRepository implements InvoiceRepository {
              FROM financial_transactions r
              JOIN (${NC_LINKAGE_UNION}) nc ON nc.reverting_ft_id = r.id
             WHERE r.reversed_invoice_id = $1
-              AND r.reservation_id = $2
+              AND ${subjectColumn} = $2
               AND r.type IN ('REFUND', 'ADJUSTMENT')
               AND nc.status = ANY($3::text[])
               AND nc.cbte_tipo = ANY($4::int[])
          ) dedup`,
-      [invoiceId, reservationId, [...INVOICE_STATUSES_CONSUMING_CHARGE], [...CBTE_TIPOS_NOTA_CREDITO]],
+      [invoiceId, subject.id, [...INVOICE_STATUSES_CONSUMING_CHARGE], [...CBTE_TIPOS_NOTA_CREDITO]],
     );
     return parseFloat(rows[0]!.in_flight);
   }
@@ -1255,6 +1272,20 @@ export class SqlInvoiceRepository implements InvoiceRepository {
       arcaUnitCode: row.arca_unit_code,
       createdAt: row.created_at,
     }));
+  }
+
+  async getOrderIdsByInvoiceItemId(invoiceId: string): Promise<Map<string, string>> {
+    // 1c-ii-a -- `this.db` (pool del tenant), mismo criterio que
+    // `getItemsByInvoiceId()` de arriba: lectura simple, sin lock, no
+    // participa de ninguna transacción abierta por el caller.
+    const { rows } = await this.db.query<{ invoice_item_id: string; order_id: string }>(
+      `SELECT ii.id AS invoice_item_id, oi.order_id AS order_id
+         FROM invoice_items ii
+         JOIN order_items oi ON oi.id = ii.order_item_id
+        WHERE ii.invoice_id = $1`,
+      [invoiceId],
+    );
+    return new Map(rows.map((row) => [row.invoice_item_id, row.order_id]));
   }
 
   async markIssued(id: string, data: MarkIssuedInput): Promise<Invoice> {
