@@ -472,7 +472,15 @@ export async function createApp(): Promise<{
       const housekeepingRepo = new SqlHousekeepingRepository(req.db);
       const financialRepo   = new SqlFinancialTransactionRepository(req.db);
       const businessProfileRepo = new SqlBusinessProfileRepository(req.db);
-      const stayService = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+      // Bug 5 (11/09/2026) — TransactionManager del TENANT (A2.8: mismo
+      // pool cacheado que `req.db`, no el de plataforma), para que
+      // StayService pueda envolver sus 3 cambios de horario en una
+      // transacción real. Mismo builder que ya usa `arService` dos líneas
+      // más abajo.
+      const stayService = new StayService(
+        stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
+        buildTenantTransactionManager(req),
+      );
 
       const arService = new AccountsReceivableService(
         new SqlAccountsReceivableRepository(req.db),

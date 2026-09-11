@@ -217,7 +217,13 @@ function buildStayService(req: Request): StayService {
   const housekeepingRepo = new SqlHousekeepingRepository(db);
   const financialRepo    = new SqlFinancialTransactionRepository(db);
   const businessProfileRepo = new SqlBusinessProfileRepository(db);
-  return new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+  // Bug 5 (11/09/2026) — mismo builder que ya usa
+  // buildCancelReservationWithCreditNoteService() más arriba en este
+  // archivo; TransactionManager del TENANT (A2.8), no el de plataforma.
+  return new StayService(
+    stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo,
+    buildTenantTransactionManager(req),
+  );
 }
 
 /**

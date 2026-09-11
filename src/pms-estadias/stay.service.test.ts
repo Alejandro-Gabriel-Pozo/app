@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StayService, StayBalanceOwedError, ResourceOccupiedError, ResourceNotReadyForCheckInError } from './stay.service.js';
 import { DateTime } from 'luxon';
 import type { Stay } from './stay.js';
@@ -11,15 +11,49 @@ import { InMemoryHousekeepingRepository } from './in-memory.housekeeping.reposit
 import type { StayRepository } from './stay.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
-import { NextArrivalConflictError } from '../domain/errors.js';
+import { NextArrivalConflictError, InvalidReservationError } from '../domain/errors.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_RESERVATION_ID = 'res-1';
 const TEST_RESOURCE_ID = 'room-1';
 const TEST_CUSTOMER_ID = 'cust-1';
+
+/**
+ * Ejecuta el work directamente sin abrir una transacción real. Mismo
+ * boilerplate que ya usan ~20 archivos `*.service.test.ts` de este repo
+ * (ej. `reservation.service.test.ts:61-68`) — suficiente para unit tests:
+ * lo que importa es que el servicio llama a `saveWithClient` (no `save`
+ * bare) DENTRO de `transactionManager.run()` (Bug 5, 11/09/2026).
+ */
+class InMemoryTransactionManager implements TransactionManager {
+  async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    const noopClient: SqlClient = {
+      async query() { return { rows: [], rowCount: 0 }; },
+    };
+    return work(noopClient);
+  }
+}
+
+/**
+ * Bug 5 (11/09/2026, architecture-governor, condición 2) — `InMemoryReservationRepository`
+ * NO implementa `getByIdWithLock` a propósito (ver su docblock: modo
+ * in-memory no tiene transacciones reales). Este wrapper existe SOLO para
+ * poder demostrar, en un test, que `StayService.requireReservationWithLock()`
+ * toma la rama CON lock cuando el repositorio la ofrece (en vez de caer
+ * siempre al fallback `getById` sin lock) — si alguien saca esa rama del
+ * servicio, `lockedReadCount` se queda en 0 y el test que lo verifica cae.
+ */
+class LockTrackingReservationRepository extends InMemoryReservationRepository {
+  public lockedReadCount = 0;
+  async getByIdWithLock(_client: SqlClient, id: string): Promise<Reservation | undefined> {
+    this.lockedReadCount++;
+    return this.getById(id);
+  }
+}
 
 /** Fake mínimo — memoria plana, solo lo que StayService llama. */
 class FakeStayRepository implements StayRepository {
@@ -111,7 +145,7 @@ describe('StayService — ledger (A1, paso 3)', () => {
     housekeepingRepo = new InMemoryHousekeepingRepository();
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
-    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo, new InMemoryTransactionManager());
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
     const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
@@ -226,7 +260,7 @@ describe('StayService — gating de check-in por limpieza', () => {
     housekeepingRepo = new InMemoryHousekeepingRepository();
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
-    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo, new InMemoryTransactionManager());
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
     const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
@@ -342,6 +376,7 @@ describe('StayService — horario de check-in/check-out', () => {
   let housekeepingRepo: InMemoryHousekeepingRepository;
   let financialRepo: FakeFinancialTransactionRepository;
   let businessProfileRepo: FakeBusinessProfileRepository;
+  let txManager: InMemoryTransactionManager;
   let service: StayService;
 
   beforeEach(async () => {
@@ -350,7 +385,8 @@ describe('StayService — horario de check-in/check-out', () => {
     housekeepingRepo = new InMemoryHousekeepingRepository();
     financialRepo = new FakeFinancialTransactionRepository();
     businessProfileRepo = new FakeBusinessProfileRepository(makeProfile());
-    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo);
+    txManager = new InMemoryTransactionManager();
+    service = new StayService(stayRepo, reservationRepo, housekeepingRepo, financialRepo, businessProfileRepo, txManager);
 
     const resource = new PhysicalResource(TEST_RESOURCE_ID, 'Habitación 1', 15000, 'cat-1');
     const customer = new Customer(TEST_CUSTOMER_ID, 'Huésped', 'huesped@example.com');
@@ -532,6 +568,76 @@ describe('StayService — horario de check-in/check-out', () => {
 
     expect(rejected.scheduleApprovalStatus).toBe('REJECTED');
     expect(rejected.scheduleApprovedBy).toBe('staff-1');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bug 5 (11/09/2026, architecture-governor) — regresión de atomicidad.
+  // ---------------------------------------------------------------------------
+
+  it('Bug 5 — approveScheduleChange() persiste con saveWithClient() dentro de una transacción, no con save() bare', async () => {
+    await service.requestScheduleChange({
+      reservationId: TEST_RESERVATION_ID,
+      requestedCheckOutTime: '13:00:00',
+    });
+
+    const runSpy = vi.spyOn(txManager, 'run');
+    const saveWithClientSpy = vi.spyOn(reservationRepo, 'saveWithClient');
+
+    await service.approveScheduleChange({
+      reservationId: TEST_RESERVATION_ID,
+      businessId: TEST_BUSINESS_ID,
+      approvedBy: 'staff-1',
+    });
+
+    // Si el fix se revierte a `reservationRepository.save(reservation)`
+    // bare (el bug original: UPSERT + syncLines() sin transacción), esta
+    // aserción cae -- saveWithClientSpy queda en 0 llamadas.
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(saveWithClientSpy).toHaveBeenCalledTimes(1);
+    expect(saveWithClientSpy.mock.calls[0]?.[1]?.id).toBe(TEST_RESERVATION_ID);
+  });
+
+  it('Bug 5 (condición 2) — approveScheduleChange() lockea la lectura (getByIdWithLock) y una segunda aprobación sobre la misma reserva ya APPROVED es rechazada por el invariante de dominio', async () => {
+    // InMemoryReservationRepository no implementa getByIdWithLock a
+    // propósito (ver su docblock) -- se usa este wrapper puntual para
+    // poder demostrar que StayService toma la rama CON lock cuando el
+    // repositorio la ofrece, no el fallback sin lock. Reemplaza el repo
+    // del describe por uno con el mismo estado sembrado en el beforeEach.
+    const lockingRepo = new LockTrackingReservationRepository();
+    const seeded = await reservationRepo.getById(TEST_RESERVATION_ID);
+    await lockingRepo.save(seeded!);
+    const lockingService = new StayService(
+      stayRepo, lockingRepo, housekeepingRepo, financialRepo, businessProfileRepo, new InMemoryTransactionManager(),
+    );
+
+    await lockingService.requestScheduleChange({
+      reservationId: TEST_RESERVATION_ID,
+      requestedCheckOutTime: '13:00:00',
+    });
+
+    await lockingService.approveScheduleChange({
+      reservationId: TEST_RESERVATION_ID,
+      businessId: TEST_BUSINESS_ID,
+      approvedBy: 'staff-1',
+    });
+
+    // Si `requireReservationWithLock()` deja de usar getByIdWithLock (ej.
+    // alguien lo revierte a un `getById()` liso), lockedReadCount se queda
+    // en 0 y esta aserción cae -- la prueba de que se toma la rama con
+    // lock, no solo de que el invariante existe.
+    expect(lockingRepo.lockedReadCount).toBeGreaterThan(0);
+
+    // La reserva ya quedó APPROVED -- una segunda aprobación (sin pedido
+    // PENDING nuevo) tiene que rechazarse por el invariante de
+    // `Reservation.approveScheduleChange()`, mismo mecanismo que usa
+    // `ReservationService.confirmReservation()` contra doble confirmación.
+    await expect(
+      lockingService.approveScheduleChange({
+        reservationId: TEST_RESERVATION_ID,
+        businessId: TEST_BUSINESS_ID,
+        approvedBy: 'staff-2',
+      }),
+    ).rejects.toThrow(InvalidReservationError);
   });
 
   it('checkOut() crea la tarea de limpieza con notBefore si hubo un late check-out aprobado (tarea sin crear todavía)', async () => {

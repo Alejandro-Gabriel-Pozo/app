@@ -37,6 +37,8 @@ import { combineDateAndTime } from '../reservas/reservation.service.js';
 import type { HousekeepingRepository } from './housekeeping.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
+import type { TransactionManager } from '../db/transaction-manager.js';
+import type { SqlClient } from '../repositories/sql.client.js';
 import { HousekeepingTask } from './housekeeping-task.js';
 import type { HousekeepingStatus } from './housekeeping-task.js';
 import { DomainError, ReservationNotFoundError, NextArrivalConflictError } from '../domain/errors.js';
@@ -140,6 +142,15 @@ export class StayService {
     private readonly housekeepingRepository: HousekeepingRepository,
     private readonly financialRepository: FinancialTransactionRepository,
     private readonly businessProfileRepository: BusinessProfileRepository,
+    /**
+     * Bug 5 (11/09/2026, architecture-governor) — antes, `requestScheduleChange`/
+     * `rejectScheduleChange`/`approveScheduleChange` guardaban la reserva con
+     * `reservationRepository.save()` (no transaccional): el UPSERT de
+     * `reservations` y el DELETE+INSERT de `reservation_lines` (`syncLines()`,
+     * sql.reservation.repository.ts) corrían como dos viajes sueltos al pool,
+     * sin lock. Ver docblock de cada método para el detalle.
+     */
+    private readonly transactionManager: TransactionManager,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -285,26 +296,53 @@ export class StayService {
    * COMPLETED vive en `Reservation.requestScheduleChange()` (invariante
    * del propio agregado).
    */
+  /**
+   * Bug 5 (11/09/2026, architecture-governor, condición 2) — la lectura +
+   * mutación se mueven ADENTRO de la transacción, con FOR UPDATE sobre esta
+   * fila puntual (mismo idiom que `ReservationService.confirmReservation()`/
+   * `cancelReservation()`/`completeReservation()`, reservation.service.ts:
+   * 806-819 — vía `requireReservationWithLock()` de más abajo). Esto cierra
+   * DOS cosas a la vez:
+   * 1. El UPSERT de `reservations` + el DELETE+INSERT de `reservation_lines`
+   *    (`syncLines()`, sql.reservation.repository.ts) ahora corren atómicos
+   *    dentro de una sola transacción — antes, `save()` no transaccional
+   *    podía dejar `reservation_lines` vacía o parcial si el proceso moría
+   *    entre medio.
+   * 2. El lock serializa contra otro `requestScheduleChange()`/
+   *    `approveScheduleChange()`/`rejectScheduleChange()` concurrente sobre
+   *    la MISMA reserva.
+   *
+   * NO cubre (fuera de alcance, declarado): el `financialRepository.create()`
+   * de `approveScheduleChange()` (CHARGE) queda fuera de su transacción a
+   * propósito (ver su propio docblock), ni el TOCTOU preexistente del
+   * chequeo de conflicto contra la PRÓXIMA reserva en `approveScheduleChange()`
+   * (lee esa otra reserva sin lock). Diferido, no arreglado en este bloque.
+   */
   async requestScheduleChange(input: RequestScheduleChangeInput): Promise<Reservation> {
-    const reservation = await this.reservationRepository.getById(input.reservationId);
-    if (!reservation) {
-      throw new ReservationNotFoundError(input.reservationId);
-    }
-    reservation.requestScheduleChange({
-      checkInTime:  input.requestedCheckInTime,
-      checkOutTime: input.requestedCheckOutTime,
+    let reservation!: Reservation;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      reservation = await this.requireReservationWithLock(client, input.reservationId);
+      reservation.requestScheduleChange({
+        checkInTime:  input.requestedCheckInTime,
+        checkOutTime: input.requestedCheckOutTime,
+      });
+      await this.reservationRepository.saveWithClient(client, reservation);
     });
-    await this.reservationRepository.save(reservation);
+
     return reservation;
   }
 
+  /** Bug 5 (11/09/2026) — ver docblock de requestScheduleChange() arriba. */
   async rejectScheduleChange(reservationId: string, rejectedBy: string): Promise<Reservation> {
-    const reservation = await this.reservationRepository.getById(reservationId);
-    if (!reservation) {
-      throw new ReservationNotFoundError(reservationId);
-    }
-    reservation.rejectScheduleChange(rejectedBy);
-    await this.reservationRepository.save(reservation);
+    let reservation!: Reservation;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      reservation = await this.requireReservationWithLock(client, reservationId);
+      reservation.rejectScheduleChange(rejectedBy);
+      await this.reservationRepository.saveWithClient(client, reservation);
+    });
+
     return reservation;
   }
 
@@ -335,16 +373,45 @@ export class StayService {
    *    preventiva": un badge de solo lectura en el tablero de housekeeping
    *    (fuera de este service) cubre la advertencia visual antes de esa hora.
    */
+  /**
+   * Bug 5 (11/09/2026, architecture-governor, condición 2) — el pre-chequeo
+   * de conflicto contra la PRÓXIMA reserva y `businessProfileRepository.get()`
+   * quedan FUERA de la transacción a propósito (mismo criterio que el
+   * `preCheck` de `ReservationService.confirmReservation()`,
+   * reservation.service.ts:781-792: no necesitan el lock de ESTA reserva, y
+   * no son la protección real contra la carrera). La lectura + mutación de
+   * LA RESERVA QUE SE APRUEBA sí corren adentro de la transacción, con lock
+   * (`requireReservationWithLock()`, mismo idiom que
+   * `requestScheduleChange()`/`rejectScheduleChange()` arriba): si dos
+   * aprobaciones concurrentes pasan el pre-chequeo sobre la misma reserva
+   * PENDING, la segunda ve — ya con el lock tomado — `scheduleApprovalStatus`
+   * en `APPROVED` (puesto por la primera, que commiteó primero) y
+   * `Reservation.approveScheduleChange()` la rechaza con
+   * `InvalidReservationError` ANTES de guardar — mismo mecanismo que usa
+   * `ReservationService.confirmReservation()` contra doble confirmación
+   * (reservation.service.ts:808-814).
+   *
+   * NO cubre (fuera de alcance, declarado): el `financialRepository.create()`
+   * de más abajo (CHARGE) corre DESPUÉS del commit de la transacción de la
+   * reserva — si el proceso muere entre medio, la aprobación queda
+   * registrada sin el cargo correspondiente creado. Misma clase de bug que
+   * el que esto arregla, pero cruzando agregados (Reservation ↔
+   * FinancialTransaction) — diferido, sin bloque propio todavía (no
+   * arrastrado a ningún `docs/pendientes-*.md` en el commit que agregó
+   * este comentario -- ver ese commit para el detalle completo).
+   * Tampoco cubre el TOCTOU del chequeo de conflicto en sí: `findNextReservationOnResource()`
+   * lee la reserva siguiente sin lock — preexistente, fuera de este bloque.
+   */
   async approveScheduleChange(input: ApproveScheduleChangeInput): Promise<Reservation> {
-    const reservation = await this.reservationRepository.getById(input.reservationId);
-    if (!reservation) {
+    const preCheck = await this.reservationRepository.getById(input.reservationId);
+    if (!preCheck) {
       throw new ReservationNotFoundError(input.reservationId);
     }
 
     const businessProfile = await this.businessProfileRepository.get();
 
-    if (reservation.requestedCheckOutTime) {
-      const next = await this.findNextReservationOnResource(reservation);
+    if (preCheck.requestedCheckOutTime) {
+      const next = await this.findNextReservationOnResource(preCheck);
       if (next) {
         const nextArrivalTime =
           next.scheduleApprovalStatus === 'APPROVED' && next.requestedCheckInTime
@@ -352,8 +419,8 @@ export class StayService {
             : businessProfile.defaultCheckInTime;
         const nextArrivalInstant = combineDateAndTime(next.startTime, nextArrivalTime, businessProfile.timezone);
         const requestedCheckoutInstant = combineDateAndTime(
-          reservation.endTime,
-          reservation.requestedCheckOutTime,
+          preCheck.endTime,
+          preCheck.requestedCheckOutTime,
           businessProfile.timezone,
         );
         if (nextArrivalInstant.getTime() < requestedCheckoutInstant.getTime()) {
@@ -362,8 +429,13 @@ export class StayService {
       }
     }
 
-    reservation.approveScheduleChange(input.approvedBy, input.chargeAmount ?? null);
-    await this.reservationRepository.save(reservation);
+    let reservation!: Reservation;
+
+    await this.transactionManager.run(async (client: SqlClient) => {
+      reservation = await this.requireReservationWithLock(client, input.reservationId);
+      reservation.approveScheduleChange(input.approvedBy, input.chargeAmount ?? null);
+      await this.reservationRepository.saveWithClient(client, reservation);
+    });
 
     if (input.chargeAmount != null && input.chargeAmount > 0) {
       const stay = await this.stayRepository.findByReservation(input.reservationId, input.businessId);
@@ -470,5 +542,25 @@ export class StayService {
       .filter((r) => r.id !== reservation.id && r.startTime.getTime() >= reservation.endTime.getTime())
       .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
     return next ?? null;
+  }
+
+  /**
+   * Bug 5 (11/09/2026, architecture-governor) — mismo idiom que
+   * `ReservationService.requireReservationWithLock()` (reservation.service.ts:
+   * 1011-1019): usa `getByIdWithLock` si el repositorio lo implementa
+   * (`SqlReservationRepository` sí — `getByIdWithLock`/sql.reservation.repository.ts:237;
+   * `InMemoryReservationRepository` no lo implementa — fallback sin lock a
+   * `getById`, mismo `?` opcional del puerto `ReservationRepository`, para
+   * no romper los dobles de test). Debe llamarse con el `client`
+   * transaccional de `this.transactionManager.run()`.
+   */
+  private async requireReservationWithLock(client: SqlClient, id: string): Promise<Reservation> {
+    const reservation = this.reservationRepository.getByIdWithLock
+      ? await this.reservationRepository.getByIdWithLock(client, id)
+      : await this.reservationRepository.getById(id);
+    if (!reservation) {
+      throw new ReservationNotFoundError(id);
+    }
+    return reservation;
   }
 }
