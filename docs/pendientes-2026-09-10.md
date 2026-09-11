@@ -645,7 +645,12 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   sin cambios (ADR §6.5/§10 fila 1). Ver
   `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`.
   **La bandeja SÍ se resolvió, sin tabla nueva** — ✅ **IMPLEMENTADO,
-  LOCAL/sin pushear** (10/09/2026, gate `architecture-governor`).
+  PUSHEADO Y DEPLOYADO en producción, verificado** (10/09/2026, gate
+  `architecture-governor`). `49372b0` (implementación) → `65f9c45`
+  (C1+C2 del gate: rename `TERMINAL_SIN_REVERSION` →
+  `TERMINAL_CON_COMPROBANTE_VIVO` + docblock de falso negativo conocido)
+  → deploy `dep-dahjrgu1egvs738b71u0` = `live`, `GET /api/invoices/unreconciled`
+  confirmado montado en producción (401 sin auth, no 404).
   Grounding ERP (Odoo `TransientModel` + ERPNext `docstatus=0`, 2 de 3,
   confirman que el HOLD de la tabla era correcto) → decisión del dueño:
   nombrar mejor el estado intermedio que ya existe, sin tabla.
