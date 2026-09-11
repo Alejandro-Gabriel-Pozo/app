@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveDocTipo, DOC_TIPO_CUIT, DOC_TIPO_DNI, DOC_TIPO_CONSUMIDOR_FINAL, paymentMethodLabel,
-  resolveIvaAlicuotaId, ivaAlicuotaPercentFromId, ivaAlicuotaLabel,
+  resolveIvaAlicuotaId, ivaAlicuotaPercentFromId, ivaAlicuotaLabel, cbteTipoLabel,
   CBTE_TIPOS_NOTA_CREDITO, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPO_FACTURA_B, CBTE_TIPO_FACTURA_A, CBTE_TIPO_FACTURA_C,
 } from './afip-catalog.constants.js';
 import { UnsupportedIvaRateError } from '../domain/errors.js';
@@ -88,5 +88,26 @@ describe('CBTE_TIPOS_NOTA_CREDITO', () => {
 
   it('no está vacío -- un conjunto vacío haría que F4 nunca cuente ninguna compensación (fail-closed total)', () => {
     expect(CBTE_TIPOS_NOTA_CREDITO.length).toBeGreaterThan(0);
+  });
+});
+
+// INVOICE-CHARGES-FACTURACION-SCREEN-01 (11/09/2026) -- consumido por
+// GET /api/invoices?customerId= para la pantalla "Facturación" del panel.
+describe('cbteTipoLabel', () => {
+  it('mapea cada tipo de comprobante conocido a su label en español', () => {
+    expect(cbteTipoLabel(CBTE_TIPO_FACTURA_A)).toBe('Factura A');
+    expect(cbteTipoLabel(CBTE_TIPO_FACTURA_B)).toBe('Factura B');
+    expect(cbteTipoLabel(CBTE_TIPO_FACTURA_C)).toBe('Factura C');
+    expect(cbteTipoLabel(CBTE_TIPO_NOTA_CREDITO_B)).toBe('Nota de Crédito B');
+  });
+
+  it('distingue Nota de Crédito de Factura por nombre -- no hace falta un chequeo aparte en el consumidor', () => {
+    const label = cbteTipoLabel(CBTE_TIPO_NOTA_CREDITO_B);
+    expect(label).toContain('Nota de Crédito');
+    expect(label).not.toContain('Factura');
+  });
+
+  it('cae a "Comprobante tipo N" para un cbteTipo desconocido, nunca inventa un nombre', () => {
+    expect(cbteTipoLabel(99)).toBe('Comprobante tipo 99');
   });
 });

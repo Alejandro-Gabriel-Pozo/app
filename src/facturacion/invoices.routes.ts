@@ -52,6 +52,7 @@ import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInv
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { InvoiceStatus } from './invoice.entities.js';
+import { cbteTipoLabel } from './afip-catalog.constants.js';
 
 /** B3 bloque 2.1 -- únicos valores válidos de `invoices.status` (invoice.entities.ts). */
 const VALID_INVOICE_STATUSES: readonly InvoiceStatus[] = ['PENDING', 'ISSUED', 'REJECTED', 'FAILED_UNCERTAIN'];
@@ -211,9 +212,13 @@ export function createInvoicesRouter(container: AppContainer): Router {
         // O2-F2 (03/09/2026, F2.2) -- todas las facturas de un cliente,
         // cualquier status. No verifica pertenencia de businessId acá porque
         // el aislamiento ya es físico (una BD por negocio, req.db) -- A2.8.
+        // `cbteTipoLabel` (11/09/2026, INVOICE-CHARGES-FACTURACION-SCREEN-01)
+        // -- SOLO esta rama la agrega, es la única que alimenta la pantalla
+        // "Facturación" del panel. Las otras respuestas de este archivo
+        // (`:152`, `:168`, `:207`, `:231`) quedan sin tocar a propósito.
         if (typeof customerId === 'string' && customerId) {
           const invoices = await new SqlInvoiceRepository(req.db!).getByCustomerId(customerId);
-          res.json(invoices);
+          res.json(invoices.map((inv) => ({ ...inv, cbteTipoLabel: cbteTipoLabel(inv.cbteTipo) })));
           return;
         }
 

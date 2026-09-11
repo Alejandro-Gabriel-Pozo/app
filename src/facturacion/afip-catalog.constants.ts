@@ -54,6 +54,31 @@ export const CBTE_TIPO_NOTA_CREDITO_B = 8;
  */
 export const CBTE_TIPOS_NOTA_CREDITO: readonly number[] = [CBTE_TIPO_NOTA_CREDITO_B];
 
+/**
+ * Etiqueta humana de `cbteTipo` -- mismo patrón que `docTipoLabel()`/
+ * `paymentMethodLabel()`/`ivaAlicuotaLabel()` de este mismo archivo:
+ * cómputo del lado del servidor, única fuente de verdad, el frontend
+ * nunca duplica este catálogo fiscal (mismo criterio que usa Odoo para
+ * labels de `selection` fields -- el cliente los pide resueltos, nunca
+ * los hardcodea). `INVOICE-CHARGES-FACTURACION-SCREEN-01` (11/09/2026,
+ * gate `architecture-governor`) -- consumida por
+ * `GET /api/invoices?customerId=` (`invoices.routes.ts`) para la pantalla
+ * "Facturación" del panel. Distingue Factura de Nota de Crédito por
+ * nombre -- no hace falta un chequeo aparte para eso en ningún consumidor.
+ * Default: mismo fallback que ya usaba `cuentas-corrientes/page.tsx` en
+ * el frontend antes de esta función ("Comprobante tipo N") -- nunca
+ * inventa un nombre para un `cbteTipo` que este sistema no emite hoy.
+ */
+export function cbteTipoLabel(cbteTipo: number): string {
+  switch (cbteTipo) {
+    case CBTE_TIPO_FACTURA_A: return 'Factura A';
+    case CBTE_TIPO_FACTURA_B: return 'Factura B';
+    case CBTE_TIPO_FACTURA_C: return 'Factura C';
+    case CBTE_TIPO_NOTA_CREDITO_B: return 'Nota de Crédito B';
+    default: return `Comprobante tipo ${cbteTipo}`;
+  }
+}
+
 /** Concepto del comprobante — determina si van fechas de servicio (FchServDesde/Hasta). */
 export const CONCEPTO_PRODUCTOS = 1;
 export const CONCEPTO_SERVICIOS = 2;
