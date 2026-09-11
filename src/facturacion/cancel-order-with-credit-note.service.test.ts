@@ -33,18 +33,21 @@ const ORDER_ID = 'ord-1';
 const INVOICE_ID = 'inv-1';
 const CHARGE_ID = 'ft-charge-1';
 
-function makeOrder(status: Order['status']): Order {
+function makeOrder(status: Order['status'], stayId?: string | null): Order {
   return {
-    id: ORDER_ID, businessId: BIZ, customerId: 'cust-1', status,
+    id: ORDER_ID, businessId: BIZ, customerId: 'cust-1', status, stayId: stayId ?? null,
     locationId: 'loc-1', servedAt: null, items: [],
   } as unknown as Order;
 }
 
-function makeCharge(): FinancialTransaction {
-  return {
+function makeCharge(stayId?: string | null): FinancialTransaction {
+  const base: FinancialTransaction = {
     id: CHARGE_ID, businessId: BIZ, customerId: 'cust-1', orderId: ORDER_ID,
     type: 'CHARGE', amount: 121, currency: 'ARS', status: 'PENDING',
   };
+  // `stayId` se omite (no `undefined` explícito) cuando no se pasa, para
+  // ejercitar el mismo caso que produce un CHARGE real sin la propiedad.
+  return stayId === undefined ? base : { ...base, stayId };
 }
 
 class FakeFinancialTransactionRepo {
@@ -279,7 +282,7 @@ describe('CancelOrderWithCreditNoteService', () => {
     } as FinancialTransaction);
 
     await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
-      .rejects.toThrow(/revierte la factura "inv-OTRA".*factura viva del cargo es "inv-1"/s);
+      .rejects.toThrow(/revierte factura="inv-OTRA".*se esperaba factura="inv-1"/s);
   });
 
   it('createWithClient devuelve null y el re-read no encuentra nada -- lanza "invariante rota", no un undefined', async () => {
@@ -289,5 +292,63 @@ describe('CancelOrderWithCreditNoteService', () => {
 
     await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
       .rejects.toThrow(/invariante rota \(un ADJUSTMENT no se borra\)/);
+  });
+
+  // 1c-0 (11/09/2026) -- el ADJUSTMENT hereda `stayId` del CHARGE que revierte.
+  it('1c-0 -- el CHARGE tiene stayId: el ADJUSTMENT compensatorio lo hereda', async () => {
+    ft.charges = [makeCharge('stay-1')];
+
+    await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+
+    const adj = [...ft.rows.values()][0]!;
+    expect(adj.stayId).toBe('stay-1');
+  });
+
+  it('1c-0 -- el stayId se hereda del CHARGE, NO de la orden (divergen a propósito)', async () => {
+    ord.order = makeOrder('CONFIRMED', 'stay-ORDEN');
+    ft.charges = [makeCharge('stay-CARGO')];
+
+    await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+
+    expect([...ft.rows.values()][0]!.stayId).toBe('stay-CARGO');
+  });
+
+  it('1c-0 -- el CHARGE tiene stayId: null explícito: el ADJUSTMENT queda con stayId null', async () => {
+    ft.charges = [makeCharge(null)];
+    await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+    expect([...ft.rows.values()][0]!.stayId).toBe(null);
+  });
+
+  it('1c-0 -- el CHARGE no tiene la propiedad stayId (undefined): la normalización `?? null` deja el ADJUSTMENT con stayId null, no undefined', async () => {
+    ft.charges = [makeCharge()];
+    await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+    expect([...ft.rows.values()][0]!.stayId).toBe(null);
+  });
+
+  it('1c-0 -- adopción idempotente COINCIDENTE: existing.stayId === charge.stayId, resuelve sin lanzar', async () => {
+    ft.charges = [makeCharge('stay-1')];
+    ft.rows.set('adj-existente', {
+      id: 'adj-existente', businessId: BIZ, customerId: 'cust-1', orderId: ORDER_ID,
+      type: 'ADJUSTMENT', amount: -121, currency: 'ARS', status: 'PENDING',
+      idempotencyKey: `cancel-order-with-cn:${ORDER_ID}`,
+      reversedInvoiceId: INVOICE_ID, stayId: 'stay-1',
+    } as FinancialTransaction);
+
+    const res = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+    expect(res.emitted).toBe(true);
+    expect(ft.rows.size).toBe(1); // no creó un 2do ADJUSTMENT
+  });
+
+  it('1c-0 -- adopción idempotente DIVERGENTE (fila pre-fix, stay_id NULL con CHARGE con stayId): lanza diagnosticable, no la adopta', async () => {
+    ft.charges = [makeCharge('stay-1')];
+    ft.rows.set('adj-pre-fix', {
+      id: 'adj-pre-fix', businessId: BIZ, customerId: 'cust-1', orderId: ORDER_ID,
+      type: 'ADJUSTMENT', amount: -121, currency: 'ARS', status: 'PENDING',
+      idempotencyKey: `cancel-order-with-cn:${ORDER_ID}`,
+      reversedInvoiceId: INVOICE_ID, stayId: null,
+    } as FinancialTransaction);
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
+      .rejects.toThrow(/stayId="null".*se esperaba factura="inv-1" stayId="stay-1"/s);
   });
 });

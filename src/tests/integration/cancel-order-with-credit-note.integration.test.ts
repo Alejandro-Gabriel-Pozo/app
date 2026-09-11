@@ -35,6 +35,12 @@ import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.j
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 
+import { StayService, StayBalanceOwedError } from '../../pms-estadias/stay.service.js';
+import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
+import { InMemoryHousekeepingRepository } from '../../pms-estadias/in-memory.housekeeping.repository.js';
+import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
+import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js';
+import { seedCategory, seedResource, seedReservation } from './helpers/seed.js';
 import { OrderService } from '../../pos-menu/order.service.js';
 import { SqlOrderRepository } from '../../pos-menu/sql.order.repository.js';
 import { ProductService } from '../../pos-menu/product.service.js';
@@ -495,5 +501,100 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
         expect.stringContaining('anomalía de integridad'),
       );
     }, 40_000);
+  });
+
+  // ─── 1c-0 (11/09/2026, gate `architecture-governor`) -- herencia de stayId ───
+  // El ADJUSTMENT compensatorio del escape ahora hereda `stay_id` del CHARGE
+  // que revierte. Antes de este fix se creaba con `stay_id` NULL incondicional:
+  // `getNetBalanceByStayId` sumaba el CHARGE de la estadía pero no la reversión,
+  // sobre-declarando el saldo y bloqueando `checkOut()` por una deuda ya
+  // cancelada por NC.
+  describe('(c) 1c-0 -- herencia de stayId en el ADJUSTMENT del escape', () => {
+    async function seedStayForOrder(): Promise<string> {
+      const category = await seedCategory(db);
+      const resource = await seedResource(db, category.id);
+      const reservation = await seedReservation(db, resource.id, CUS);
+      const stayId = randomUUID();
+      await db.query(
+        `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [stayId, BIZ, reservation.id, resource.id, CUS, ACTOR],
+      );
+      return stayId;
+    }
+
+    function buildStayService(): StayService {
+      return new StayService(
+        new SqlStayRepository(db),
+        new SqlReservationRepository(db, new SqlResourceRepository(db)),
+        new InMemoryHousekeepingRepository(),
+        financialRepo,
+        businessProfileRepo,
+        pgTxManager,
+      );
+    }
+
+    it('escape de una orden cargada a una estadía: el ADJUSTMENT hereda el stayId y checkOut() se desbloquea', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const sut = buildSut(invoiceService);
+      const stayService = buildStayService();
+      const stayId = await seedStayForOrder();
+
+      // Orden CONFIRMED con CHARGE atribuido a la estadía -- mismo camino que
+      // `handleOrderConfirmed` (`outbox.handlers.ts`) hereda de `orders.stay_id`;
+      // el fixture crea el CHARGE a mano, como el resto de este archivo.
+      const order = await orderService.createOrder({
+        businessId: BIZ, customerId: CUS, locationId: LOC, stayId,
+        items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
+      });
+      await orderService.confirmOrder(order.id, ACTOR);
+      // SETTLED, no PENDING: `getNetBalanceByStayId` (`financial_transactions.stay_id`
+      // + `status`) solo suma filas SETTLED -- una orden CONFIRMED (no
+      // COMPLETED, requisito del guard de `cancelOrderWithCreditNote`) deja
+      // su CHARGE en PENDING hasta `handleOrderCompleted`, así que en el
+      // camino real el CHARGE pasa a SETTLED recién en la MISMA tx2 del
+      // escape que también sella el ADJUSTMENT -- nunca antes. El servicio
+      // no valida `charge.status` (solo `order.status`), así que sembrarlo
+      // ya SETTLED es un estado alcanzable (post `order.completed`, antes de
+      // que otra cosa lo cancele) y es lo que permite el control
+      // anti-falso-positivo de abajo sin alterar la lógica bajo prueba.
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: CUS, orderId: order.id, stayId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'SETTLED',
+      });
+      const invoice = await invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR,
+      });
+      expect(invoice.status).toBe('ISSUED');
+
+      // Control anti-falso-positivo: ANTES del escape, checkOut() bloquea por
+      // el saldo real del CHARGE -- sin esto, un fixture con saldo 0 por
+      // cualquier otro motivo daría verde sin probar nada.
+      await expect(stayService.checkOut({ stayId, businessId: BIZ }))
+        .rejects.toBeInstanceOf(StayBalanceOwedError);
+
+      const res = await sut.cancelOrderWithCreditNote(order.id, auth(order.id));
+      expect(res.order.status).toBe('CANCELLED');
+
+      // El ADJUSTMENT compensatorio heredó el stayId del CHARGE (columna
+      // `financial_transactions.stay_id`, citada por nombre --
+      // SCHEMA-ANCHOR-DRIFT-001).
+      const { rows: adjRows } = await db.query<{ stay_id: string | null }>(
+        `SELECT stay_id FROM financial_transactions WHERE id = $1`, [res.adjustmentId],
+      );
+      expect(adjRows[0]!.stay_id).toBe(stayId);
+
+      // El saldo de la estadía neteó a 0 (CHARGE +100, ADJUSTMENT -100).
+      const balance = await financialRepo.getNetBalanceByStayId(stayId);
+      expect(Math.abs(balance)).toBeLessThanOrEqual(0.01);
+
+      // checkOut() ahora resuelve, y la Stay queda CHECKED_OUT.
+      const stay = await stayService.checkOut({ stayId, businessId: BIZ });
+      expect(stay.status).toBe('CHECKED_OUT');
+      const { rows: stayRows } = await db.query<{ status: string }>(
+        `SELECT status FROM stays WHERE id = $1`, [stayId],
+      );
+      expect(stayRows[0]!.status).toBe('CHECKED_OUT');
+    }, 30_000);
   });
 });

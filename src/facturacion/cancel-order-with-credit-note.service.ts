@@ -256,12 +256,33 @@ export class CancelOrderWithCreditNoteService {
       // orden (v45). El `!` viejo de acá abajo daba `undefined` y reventaba
       // con "Cannot read 'id' of undefined" varias líneas después; esto lo
       // hace diagnosticable en el punto exacto (deuda (i)/(ii) de `ef27e42`).
+      // 1c-0 (11/09/2026, gate `architecture-governor`): el ADJUSTMENT hereda
+      // el `stayId` del CHARGE que revierte -- `null` es un valor válido, no
+      // "sin decidir". No hay rama "mixed" acá (a diferencia del precedente
+      // de reservas, `cancelReservationWithCreditNote`): los guards de
+      // arriba (`charges.length !== 1` y `chargeIds.length !== 1`) ya dejan
+      // el conjunto congelado como el singleton `{charge}` por construcción,
+      // así que un solo `stayId` posible. Antes de este fix el ADJUSTMENT se
+      // creaba con `stayId: null` incondicional: `getNetBalanceByStayId`
+      // (columna `financial_transactions.stay_id`) sumaba el CHARGE de la
+      // estadía pero no la reversión, sobre-declarando el saldo y bloqueando
+      // `checkOut()` por una deuda ya cancelada por NC.
+      const stayId = charge.stayId ?? null;
+
       const assertRevertsExpectedInvoice = (adj: FinancialTransaction): void => {
-        if (adj.reversedInvoiceId !== originalInvoiceId) {
+        // Ventana de compatibilidad, a propósito (1c-0): un ADJUSTMENT PENDING
+        // creado ANTES de este fix, sobre una orden cuyo CHARGE tiene
+        // `stayId`, quedó grabado con `stay_id` NULL. El assert ya no lo
+        // adopta en silencio (eso reproduciría el bug que este bloque
+        // cierra) -- lanza acá, de forma diagnosticable, dejando el escape
+        // en vuelo trabado y visible en vez de resolverlo mal. Reanudable a
+        // mano (estado "solicitud", N11); no hay evidencia de producción de
+        // ninguna fila en esta ventana (0 filas medidas, ambos tenants).
+        if (adj.reversedInvoiceId !== originalInvoiceId || (adj.stayId ?? null) !== stayId) {
           throw new Error(
             `cancelOrderWithCreditNote: el ADJUSTMENT idempotente de la orden "${orderId}" ` +
-              `(key "${key}", id "${adj.id}") revierte la factura "${adj.reversedInvoiceId}", ` +
-              `pero la factura viva del cargo es "${originalInvoiceId}".`,
+              `(key "${key}", id "${adj.id}") revierte factura="${adj.reversedInvoiceId}" ` +
+              `stayId="${adj.stayId ?? null}", pero se esperaba factura="${originalInvoiceId}" stayId="${stayId}".`,
           );
         }
       };
@@ -289,7 +310,7 @@ export class CancelOrderWithCreditNoteService {
           customerId: charge.customerId,
           orderId,
           reservationId: null,
-          stayId: null,
+          stayId,
           type: 'ADJUSTMENT',
           amount: round2(-charge.amount),
           currency: charge.currency,
