@@ -507,6 +507,110 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId });
   }
 
+  /**
+   * `ORDER-CONSOLIDATED-PARTIAL-01` bloque 1b (11/09/2026, gate
+   * `architecture-governor`, APPROVED WITH CONDITIONS) -- espejo de
+   * `getIssuedCreditNoteCompensationTotalForReservation()` de arriba, mismo
+   * `NC_LINKAGE_UNION`, mismo dedup por fila, mismo filtro
+   * `nc.cbte_tipo = ANY(...)`, pero atribuyendo por ORDEN en vez de por
+   * reserva -- vía el JOIN intermedio `order_items` (`invoice_items` no
+   * tiene `order_id` directo, solo `order_item_id`).
+   *
+   * **Sin consumidor de producción todavía** -- `buildCreditNote()` (bloque
+   * 1c) es quien lo va a llamar cuando cablee la rama de orden. El mismo
+   * argumento de "por qué sumar el `imp_total` COMPLETO alcanza, sin
+   * prorratear por línea" del método de reservas aplica acá igual: es una
+   * propiedad de las 3 ramas actuales de `buildCreditNote()`, no del
+   * schema. **1c agrega una CUARTA rama** (la de orden) -- ese mismo
+   * docblock ya advierte que una rama nueva que reparta una NC PARCIAL
+   * entre múltiples sujetos dejaría este numerador fail-open sin que nada
+   * lo detecte; 1c tiene que releer esa advertencia antes de cablear.
+   *
+   * **Invariante del que depende este mecanismo, y que 1c comparte**:
+   * `chk_invoice_item_origin` (XOR estricto `order_item_id`/`reservation_id`
+   * en `invoice_items`, `src/db/schema.sql`). Si ese XOR se relaja alguna
+   * vez, una fila con los dos orígenes contaría como sujeto real en el
+   * numerador de reserva Y en este, atribuyendo el mismo monto dos veces.
+   * `INVOICE-ITEM-ORIGIN-XOR-001` (11/09/2026) es la investigación paralela
+   * que casi produce exactamente esa violación -- el fix de ese bloque
+   * (`resolveOrderItemLine()`, `invoice.service.ts`) es lo que garantiza
+   * hoy que el XOR se respeta en la escritura.
+   */
+  async getIssuedCreditNoteCompensationTotalForOrder(
+    client: SqlClient,
+    invoiceId: string,
+    orderId: string,
+  ): Promise<number> {
+    const { rows } = await client.query<{ compensated: string }>(
+      `SELECT COALESCE(SUM(dedup.imp_total), 0) AS compensated
+         FROM (
+           SELECT DISTINCT nc.nc_invoice_id, nc.imp_total
+             FROM financial_transactions r
+             JOIN (${NC_LINKAGE_UNION}) nc ON nc.reverting_ft_id = r.id
+             JOIN invoice_items ii ON ii.invoice_id = nc.nc_invoice_id
+             JOIN order_items oi ON oi.id = ii.order_item_id AND oi.order_id = $2
+            WHERE r.reversed_invoice_id = $1
+              AND r.type IN ('REFUND', 'ADJUSTMENT')
+              AND nc.status = 'ISSUED'
+              AND nc.cbte_tipo = ANY($3::int[])
+         ) dedup`,
+      [invoiceId, orderId, [...CBTE_TIPOS_NOTA_CREDITO]],
+    );
+    return parseFloat(rows[0]!.compensated);
+  }
+
+  /**
+   * `ORDER-CONSOLIDATED-PARTIAL-01` bloque 1b -- espejo de
+   * `resolveReservationPairAttribution()` de arriba, mismo `client`
+   * explícito (DEFENSIVE_DEVELOPING §3). A diferencia del método de
+   * reservas (que lee `reservation_id` directo de `invoice_items`), acá
+   * hace falta el JOIN a `order_items` para resolver `order_id` -- por eso
+   * es `LEFT JOIN`, no `JOIN`: los ítems de origen RESERVA de la misma
+   * factura tienen que seguir apareciendo en `items` con clave `null`
+   * (cuentan en el denominador del grupo de tasa, sin recibir entrada
+   * propia -- ver `refund-attribution.ts::distributeGroupAmount()`),
+   * simétrico con cómo el método de reservas deja los ítems de origen
+   * ORDEN con `reservationId: null`. Un `JOIN` interno los descartaría del
+   * denominador por completo, inflando la atribución del resto.
+   *
+   * Sin consumidor de producción todavía (1c/1d). El campo de la clave de
+   * atribución sigue llamándose `reservationId` en `FrozenInvoiceItemShare`
+   * -- no renombrado a propósito, ver el docblock de `refund-attribution.ts`
+   * (bloque 1a): acá se le pasa `oi.order_id`, tratado como la misma clave
+   * opaca que ya probó `refund-attribution.test.ts` con ids con forma de
+   * orden.
+   */
+  async resolveOrderPairAttribution(
+    client: SqlClient,
+    invoiceId: string,
+    orderId: string,
+  ): Promise<ResolveRefundableForPairResult> {
+    const { rows: itemRows } = await client.query<{
+      order_id: string | null; subtotal: string; iva_rate: string;
+    }>(
+      `SELECT oi.order_id, ii.subtotal, ii.iva_rate
+         FROM invoice_items ii
+         LEFT JOIN order_items oi ON oi.id = ii.order_item_id
+        WHERE ii.invoice_id = $1`,
+      [invoiceId],
+    );
+    const items: FrozenInvoiceItemShare[] = itemRows.map((row) => ({
+      reservationId: row.order_id,
+      subtotal: parseFloat(row.subtotal),
+      ivaRate: parseFloat(row.iva_rate),
+    }));
+
+    const { rows: invoiceRows } = await client.query<{ afip_request: unknown }>(
+      `SELECT afip_request FROM invoices WHERE id = $1`,
+      [invoiceId],
+    );
+    const frozenIva: FrozenIvaEntry[] = (
+      (invoiceRows[0]?.afip_request as { Iva?: Array<{ Id: number; BaseImp: number; Importe: number }> } | null)?.Iva ?? []
+    ).map((e) => ({ id: e.Id, baseImp: e.BaseImp, importe: e.Importe }));
+
+    return resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId: orderId });
+  }
+
   async getInFlightCreditNoteTotalForUpdate(client: SqlClient, invoiceId: string): Promise<number> {
     // Bloque 2.4 (tope N5, `docs/pendientes-2026-09-08.md` #21, gate
     // `architecture-governor` 08/09/2026) -- a diferencia de
