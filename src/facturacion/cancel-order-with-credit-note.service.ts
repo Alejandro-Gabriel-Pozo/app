@@ -270,10 +270,34 @@ export class CancelOrderWithCreditNoteService {
       // exista, CUALQUIER subconjunto propio se rechaza acá -- decisión del
       // dueño (gate 1c-i, grounding ERPNext/Odoo/Dolibarr/Cloudbeds/QloApps:
       // los 5 bloquean en el borde con un rechazo explícito antes de tocar
-      // el ledger, nunca dejan un estado a medias) -- sin cambio de
-      // comportamiento observable respecto de la versión anterior de este
-      // guard, solo la vía por la que se llega al mismo rechazo. 1c-ii
-      // retira esta condición cuando cablee la rama real.
+      // el ledger, nunca dejan un estado a medias). 1c-ii retira esta
+      // condición cuando cablee la rama real.
+      //
+      // Corrección (auditoría `erp-audit-orchestrator`, 11/09/2026): "sin
+      // cambio de comportamiento observable" NO es verdad en general para
+      // este guard -- lo es para el caso que YA estaba cubierto (una sola
+      // orden por factura, `chargeIds.length === 1`, jamás llega acá). Para
+      // `chargeIds.length > 1` con `absAmount` dentro de la tolerancia del
+      // 100% del `impTotal`, el guard de arriba (`:264`) intercepta ANTES y
+      // cambia el código de error de `CREDIT_NOTE_MULTI_INVOICE` a
+      // `CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL` -- mismo 409
+      // (`error.middleware.ts`), `code`/`message` distintos. Observable para
+      // un consumidor que discrimine por `code`. Sin efecto práctico hoy
+      // (`isProperSubset` es inalcanzable -- ver `getConsolidatedInvoiceIdsForFinancialTransactions`/
+      // `accounts_receivable`, ningún cargo de orden entra hoy a una
+      // consolidada), pero la afirmación tiene que quedar acotada, no
+      // general.
+      //
+      // Segunda corrección de la misma auditoría, más importante: la
+      // protección real hoy contra "tx2 settlea el cargo de OTRA orden" es
+      // ESTE rechazo, no el congelamiento de `frozenChargeIds` de arriba --
+      // ningún test ejercita tx2 con `chargeIds.length > 1` (mutante propio
+      // de la auditoría: devolver `frozenChargeIds: chargeIds` en vez de
+      // `[charge.id]` sigue verde en toda la suite, porque nada llega a tx2
+      // en ese escenario). 1c-ii-c, cuando retire este `if`, HEREDA esa
+      // ventana sin cobertura -- criterio de aceptación bloqueante para
+      // ese bloque: un test que pruebe que tx2 no settlea cargos ajenos con
+      // el placeholder ya retirado, no solo que no re-deriva.
       if (isProperSubset) {
         throw new CreditNoteMultiInvoiceError(orderId, originalInvoiceId, chargeIds.length);
       }
