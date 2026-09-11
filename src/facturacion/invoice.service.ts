@@ -20,6 +20,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { InvoiceRepository, MarkIssuedInput } from './invoice.repository.js';
 import type { Invoice, AfipEnvironment, CreateInvoiceItemInput } from './invoice.entities.js';
+import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { AfipCredentials, AfipCredentialsRepository } from './afip-credentials.repository.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { AccountsReceivableRepository } from '../clientes-finanzas/accounts-receivable.repository.js';
@@ -50,6 +51,7 @@ import {
   InvoiceNotReversibleError,
   NothingToInvoiceError,
   AccountsReceivableAlreadyInvoicedError,
+  InvoiceAlreadyLinkedByOtherPathError,
   OrderCancelledCannotInvoiceError,
   ReservationCancelledCannotInvoiceError,
   OrderInvoiceHasNoLinesError,
@@ -332,6 +334,28 @@ export class InvoiceService {
     const idempotencyKey = `invoice:${input.financialTransactionId}`;
     const existing = await this.invoiceRepo.getByIdempotencyKey(idempotencyKey);
     if (existing) return this.retryExisting(existing);
+
+    // Guard cruzado (INVOICE-CHARGES-GUARD-INDIVIDUAL-01, 11/09/2026, gate
+    // `architecture-governor`) -- DESPUÉS de la idempotencia propia de
+    // arriba, a propósito: la posición es load-bearing. Cualquier factura
+    // que ESTE camino (individual) ya haya creado para este `ftId` tiene
+    // clave `invoice:<ftId>` y la atrapa `:333` primero -- este guard solo
+    // puede ver un comprobante que vino del OTRO camino (consolidada, vía
+    // `invoice_charges`), con OTRA clave de idempotencia
+    // (`invoice:consolidated:<hash>`) que nunca va a chocar acá. Si este
+    // guard se moviera antes de `:333`, rompería el reintento de los 4
+    // call-sites de cancelación-con-NC (`cancel-order-with-credit-note.service.ts`,
+    // `cancel-reservation-with-credit-note.service.ts`) -- ver el docblock
+    // de `resolveInvoiceLinkage()` y de `INVOICE_STATUSES_CONSUMING_CHARGE`
+    // para el resto del razonamiento (por qué NO se reusa el predicado más
+    // fino de `retryExisting()`, y por qué `REJECTED` no bloquea).
+    const linkage = await this.invoiceRepo.resolveInvoiceLinkage(input.financialTransactionId);
+    if (linkage.kind === 'ISSUED') {
+      throw new InvoiceAlreadyLinkedByOtherPathError(input.financialTransactionId, linkage.invoiceId);
+    }
+    if (linkage.kind === 'NOT_ISSUED' && INVOICE_STATUSES_CONSUMING_CHARGE.includes(linkage.status)) {
+      throw new InvoiceAlreadyLinkedByOtherPathError(input.financialTransactionId, linkage.invoiceId);
+    }
 
     const tx = await this.financialTransactionRepo.getById(input.financialTransactionId);
     if (!tx) throw new FinancialTransactionNotFoundError(input.financialTransactionId);

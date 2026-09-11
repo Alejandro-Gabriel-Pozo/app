@@ -1,5 +1,6 @@
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { Invoice, CreateInvoiceInput, InvoiceStatus, AfipEnvironment, InvoiceItem, CreateInvoiceItemInput, UnreconciledLiveInvoice } from './invoice.entities.js';
+import { INVOICE_STATUSES_CONSUMING_CHARGE } from './invoice.entities.js';
 import type { InvoiceRepository, MarkIssuedInput, MarkFailedInput, InvoiceLinkage } from './invoice.repository.js';
 import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.repository.js';
 import { isInvoiceFullyCompensatedByIssuedCreditNotes, isReservationPortionFullyCompensatedByIssuedCreditNotes } from './cancel-with-credit-note.js';
@@ -582,7 +583,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
               AND nc.status = ANY($2::text[])
               AND nc.cbte_tipo = ANY($3::int[])
          ) dedup`,
-      [invoiceId, ['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'], [...CBTE_TIPOS_NOTA_CREDITO]],
+      [invoiceId, [...INVOICE_STATUSES_CONSUMING_CHARGE], [...CBTE_TIPOS_NOTA_CREDITO]],
     );
     return parseFloat(rows[0]!.in_flight);
   }
@@ -619,7 +620,7 @@ export class SqlInvoiceRepository implements InvoiceRepository {
               AND nc.status = ANY($3::text[])
               AND nc.cbte_tipo = ANY($4::int[])
          ) dedup`,
-      [invoiceId, reservationId, ['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'], [...CBTE_TIPOS_NOTA_CREDITO]],
+      [invoiceId, reservationId, [...INVOICE_STATUSES_CONSUMING_CHARGE], [...CBTE_TIPOS_NOTA_CREDITO]],
     );
     return parseFloat(rows[0]!.in_flight);
   }

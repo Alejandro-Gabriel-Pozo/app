@@ -882,6 +882,44 @@ export class AccountsReceivableAlreadyInvoicedError extends DomainError {
 }
 
 /**
+ * `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` (11/09/2026, gate
+ * `architecture-governor`) — guard cruzado en
+ * `InvoiceService.requestInvoice()` (camino INDIVIDUAL): el
+ * `financial_transaction_id` pedido ya tiene un comprobante vivo por el
+ * OTRO camino (consolidada, vía `invoice_charges`) -- `resolveInvoiceLinkage()`
+ * encontró `kind !== 'NONE'` con `status` en
+ * `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts`:
+ * `ISSUED`/`PENDING`/`FAILED_UNCERTAIN`, NO `REJECTED` -- una consolidada
+ * rechazada libera el cargo, mismo estándar verificado contra Odoo
+ * (`sale_order_line._prepare_qty_invoiced()`, excluye `state == 'cancel'`)
+ * y ERPNext (`BillingValidationService`, excluye `docstatus == 2`)).
+ *
+ * No reusa `AccountsReceivableAlreadyInvoicedError`: ese constructor exige
+ * `companyCustomerId` (el camino individual no lo tiene) y su código
+ * `ACCOUNTS_RECEIVABLE_ALREADY_INVOICED` es contrato observable del camino
+ * consolidado -- reusarlo mezclaría dos guards distintos en una sola
+ * métrica de log (A7.1), mismo motivo que separó `REFUND_INVOICE_SET_CHANGED`
+ * de `REFUND_BASE_CHANGED` en `BRECHA-REFUND-01-B`.
+ *
+ * Rechaza SIEMPRE (nunca devuelve el comprobante existente, aunque esté
+ * `ISSUED`): el único `ISSUED` alcanzable por esta rama es el de una
+ * consolidada (un individual `ISSUED` sobre el mismo `ftId` ya lo atrapa
+ * la idempotencia propia de `requestInvoice()`, `invoice:<ftId>`, ANTES de
+ * llegar acá) -- devolverlo como si fuera "la factura de este pedido"
+ * mostraría en el frontend (`FacturarButton.tsx`) un CAE/`impTotal` de un
+ * comprobante que cubre N cargos, no solo este, un dato engañoso.
+ */
+export class InvoiceAlreadyLinkedByOtherPathError extends DomainError {
+  constructor(financialTransactionId: string, linkedInvoiceId: string) {
+    super(
+      `El cargo "${financialTransactionId}" ya está vinculado al comprobante "${linkedInvoiceId}" ` +
+      `(emitido por otra vía) -- no se generó un comprobante nuevo.`,
+      'INVOICE_ALREADY_LINKED_BY_OTHER_PATH',
+    );
+  }
+}
+
+/**
  * 24/08/2026 (docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.md)
  * — decisión confirmada con el dueño (AskUserQuestion): no se puede abrir
  * una ventana de mantenimiento mientras haya una reserva CONFIRMED/PENDING

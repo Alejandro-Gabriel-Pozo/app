@@ -10,6 +10,36 @@ import type { PaymentMethod } from '../clientes-finanzas/financial-transaction.r
 export type InvoiceStatus = 'PENDING' | 'ISSUED' | 'REJECTED' | 'FAILED_UNCERTAIN';
 export type AfipEnvironment = 'homologacion' | 'produccion';
 
+/**
+ * Complemento exacto de `REJECTED` sobre los 4 valores de `InvoiceStatus`
+ * -- "¿este comprobante consume el recurso que protege, incluso sin estar
+ * `ISSUED` todavía?". `REJECTED` queda afuera SIEMPRE con este predicado:
+ * AFIP confirmó que el comprobante no existe, no consume nada (mismo
+ * criterio en los 3 sitios que lo usan). Extraída 11/09/2026
+ * (`INVOICE-CHARGES-GUARD-INDIVIDUAL-01`, gate `architecture-governor`)
+ * de un literal duplicado en `getInFlightCreditNoteTotalForUpdate()`/
+ * `ForPair` (`sql.invoice.repository.ts`) -- usada también por el guard
+ * cruzado individual-vs-consolidada de `InvoiceService.requestInvoice()`.
+ *
+ * **NO es el mismo predicado que `retryExisting()`** (`invoice.service.ts`),
+ * que es más fino (`ISSUED` + `FAILED_UNCERTAIN` con `afipContacted`) porque
+ * ahí se puede reintentar la MISMA fila. Esta constante es para los casos
+ * donde NO se puede reintentar el otro documento -- otro comprobante, con
+ * su propia idempotencia -- así que hay que ser conservador con cualquier
+ * estado no resuelto (`PENDING`/`FAILED_UNCERTAIN`), no solo con `ISSUED`.
+ * No unificar con el predicado de `retryExisting()` sin re-derivar por qué.
+ *
+ * `FAILED_UNCERTAIN` en esta lista es una decisión LOCAL de este repo, sin
+ * análogo en ERPNext/Odoo -- ninguno de los dos modela "no se sabe si el
+ * fisco lo emitió" (esta integración con AFIP es la única fuente de esa
+ * ambigüedad). El resto del predicado (excluir el estado "cancelado/
+ * rechazado") sí replica el estándar verificado contra código real:
+ * `sale_order_line._prepare_qty_invoiced()` (Odoo, excluye
+ * `move_id.state == 'cancel'`) y `BillingValidationService` (ERPNext,
+ * excluye `docstatus == 2`).
+ */
+export const INVOICE_STATUSES_CONSUMING_CHARGE: readonly InvoiceStatus[] = ['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'];
+
 export interface Invoice {
   id: string;
   businessId: string;

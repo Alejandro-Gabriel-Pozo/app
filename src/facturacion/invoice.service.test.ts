@@ -16,7 +16,7 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -1277,6 +1277,83 @@ describe('InvoiceService', () => {
       expect(retried.status).toBe('ISSUED');
       expect(retried.id).toBe(rejected!.id);
       expect(createNextVoucher).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('INVOICE-CHARGES-GUARD-INDIVIDUAL-01 (11/09/2026, gate architecture-governor) -- guard cruzado contra un comprobante del OTRO camino', () => {
+    /** Simula lo que deja `requestConsolidatedInvoice()`: una factura SIN `financialTransactionId` propio, con `ft-1` linkeado vía `invoice_charges`. */
+    function seedConsolidatedInvoiceForCharge(status: InvoiceStatus): void {
+      const id = 'inv-consolidada';
+      invoiceRepo.invoices.set(id, {
+        id, businessId: 'biz-1', financialTransactionId: null, customerId: 'cust-empresa',
+        idempotencyKey: 'invoice:consolidated:otro-lote', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_FACTURA_B,
+        cbteNro: status === 'ISSUED' ? 7 : null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 826.45, impIva: 173.55, impTotal: 1000, cae: status === 'ISSUED' ? 'CAE-CONSOLIDADA' : null,
+        caeVto: status === 'ISSUED' ? '2026-12-31' : null, status,
+        afipContacted: true, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: status === 'REJECTED' ? 'rechazado por AFIP' : null,
+        createdAt: new Date(), issuedAt: status === 'ISSUED' ? new Date() : null,
+      });
+      invoiceRepo.charges.set('ft-1', id);
+    }
+
+    it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
+      'rechaza con InvoiceAlreadyLinkedByOtherPathError si ft-1 ya está en invoice_charges de una consolidada %s',
+      async (status) => {
+        seedConsolidatedInvoiceForCharge(status);
+        const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+        const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+        await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+          .rejects.toThrow(InvoiceAlreadyLinkedByOtherPathError);
+        expect(createNextVoucher).not.toHaveBeenCalled(); // rechaza ANTES de tocar AFIP
+      },
+    );
+
+    it('NO rechaza si la consolidada que linkea ft-1 está REJECTED -- AFIP la rechazó, no consume el cargo (mismo estándar que Odoo/ERPNext)', async () => {
+      seedConsolidatedInvoiceForCharge('REJECTED');
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(9));
+      const service = buildService({ client: fakeArcaClient({ createNextVoucher }) });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.id).not.toBe('inv-consolidada'); // factura NUEVA, propia del camino individual
+      expect(createNextVoucher).toHaveBeenCalledTimes(1);
+    });
+
+    it('posición del guard (load-bearing): una NC (ADJUSTMENT) que YA tiene su propia invoice PENDING sigue cayendo en retryExisting(), no en el guard cruzado', async () => {
+      // Reproduce lo que dependen los 4 call-sites reales de cancelación-con-NC
+      // (cancel-order-with-credit-note.service.ts / cancel-reservation-with-credit-note.service.ts):
+      // un reintento del MISMO ADJUSTMENT tiene que devolver la NC ya creada
+      // por ESTE camino -- idempotencyKey `invoice:ft-1` matchea ANTES
+      // (:333-334) de que el guard cruzado (:335+) llegue a mirar `invoice_charges`.
+      // No hace falta seedear la factura original que revierte -- retryExisting()
+      // (`:1014-1032`) nunca toca `reversedInvoiceId`/tx.type, solo credentials
+      // + profile + el afipRequest ya guardado en la fila existente.
+      const pendingNc: Invoice = {
+        id: 'inv-nc-pendiente', businessId: 'biz-1', financialTransactionId: 'ft-1', customerId: 'cust-1',
+        idempotencyKey: 'invoice:ft-1', environment: 'homologacion', ptoVta: 3, cbteTipo: CBTE_TIPO_NOTA_CREDITO_B,
+        cbteNro: null, concepto: 2, docTipo: 99, docNro: '0', condicionIvaReceptorId: 5, moneda: 'PES',
+        impNeto: 82.64, impIva: 17.36, impTotal: 100, cae: null, caeVto: null, status: 'PENDING',
+        afipContacted: false, emisorCuit: '20111111112', paymentMethod: null, cardInstallments: null,
+        afipRequest: {}, afipResponse: {}, errorMessage: null, createdAt: new Date(), issuedAt: null,
+      };
+      invoiceRepo.invoices.set(pendingNc.id, pendingNc);
+
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(3));
+      const service = buildService({
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -100, orderId: 'ord-guard-pos', reversedInvoiceId: 'inv-orden-guard-pos' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const result = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      // retryExisting() sobre un PENDING sin afipContacted SÍ reintenta contra
+      // AFIP (mismo camino que el test de FAILED_UNCERTAIN sin contactar) --
+      // lo que importa acá es que NO tiró InvoiceAlreadyLinkedByOtherPathError.
+      expect(result.id).toBe('inv-nc-pendiente');
+      expect(createNextVoucher).toHaveBeenCalledTimes(1);
     });
   });
 
