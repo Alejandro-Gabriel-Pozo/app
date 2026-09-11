@@ -1451,15 +1451,95 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   abiertas" cuando en realidad ya están cerradas. No verificado de nuevo
   contra la ficha real en esta pasada -- solo se restituyó la cita que se
   había perdido, para que la próxima sesión no tenga que re-derivarla.
-- **`C-5`** (`FACT-BORRADOR-001`, v2.8, sigue en HOLD sin aprobar) --
-  hallazgo de `pendientes-2026-09-06.md:1131`: la rama de origen
+- **`C-5`** (`FACT-BORRADOR-001`, v2.10, sigue en HOLD sin aprobar; C-5 vive
+  acá, en pendientes -- la tabla de §26.1 del propio documento solo tiene
+  C-1 a C-4, no hay una fila C-5 ahí) -- hallazgo de
+  `pendientes-2026-09-06.md:1131`: la rama de origen
   `RECEIVABLE` aparece en §8 del documento de diseño y desaparece en §24,
   inconsistencia interna del propio doc. Se perdió en el salto a
   `pendientes-2026-09-08.md`, encontrado en la auditoría de arrastre
-  (11/09/2026). **No verificado contra el documento real en esta pasada**
-  -- impacto bajo mientras el diseño siga sin aprobar (nadie implementa
-  sobre una inconsistencia de un doc en HOLD), pero hay que resolverlo
-  antes de aprobar `FACT-BORRADOR-001`, no después.
+  (11/09/2026). **Re-verificado contra el documento real el 11/09/2026
+  (sesión de reconciliación, ver abajo) -- confirmado, sigue sin
+  resolver**: `source_type` (§6/§8, líneas del borrador) admite
+  `ORDER_ITEM`/`RESERVATION`/`RECEIVABLE`/`FREE`; `source_kind` (§24,
+  líneas emitidas) admite `ORDER_ITEM`/`RESERVATION`/`STAY`/`MANUAL` --
+  dos catálogos sin mapeo declarado entre sí, ninguno menciona al otro.
+  Impacto bajo mientras el diseño siga sin aprobar, pero hay que
+  resolverlo antes de aprobar `FACT-BORRADOR-001`, no después.
+- **Reconciliación `FACT-BORRADOR-001` vs. pedido del dueño "no se debería
+  facturar con un solo click, revisá el modelo de Odoo" (11/09/2026)** --
+  el pedido derivó primero en un documento nuevo
+  (`diseno-factura-borrador-confirmar-2026-09-11.md`) escrito **sin buscar
+  antes si ya existía diseño para el mismo problema**. Sí existía:
+  `FACT-BORRADOR-001` (11 días más viejo), con D3 (descarte por
+  `status='DISCARDED'`, nunca `DELETE` físico) y D4 (permiso separado
+  `FISCAL_ISSUE` para confirmar/emitir) ya decididos por el dueño --
+  contradichos por la propuesta nueva sin saberlo. **Corregido**: el
+  documento nuevo quedó retirado (su cabecera explica la contradicción
+  punto por punto) y sus tres aportes reales -- grounding contra Odoo
+  19.0 real confirmando el mínimo de 3 pasos, un hueco no tratado en
+  ninguna de las 26 secciones de `FACT-BORRADOR-001` (los guards
+  `OrderCancelledCannotInvoiceError`/`ReservationCancelledCannotInvoiceError`,
+  definidos en `errors.ts:783`/`:825`, lanzados en
+  `invoice.service.ts:423`/`:439` (individual) y `:584`/`:592`
+  (consolidada) -- nunca se revalidan al confirmar un borrador que vivió
+  varios días; el camino de un solo paso ya lo prueba hoy con 3 suites
+  TOCTOU de integración, que dejarían de sostener la garantía en cuanto
+  crear y emitir dejen de ser la misma transacción), y la pregunta sin
+  resolver de qué pasa con `POST /api/invoices` (la ruta de un solo paso
+  actual, ya citada en el doc) una vez que exista el camino de borrador --
+  se trasladaron al **§27** (nuevo, v2.9) de `FACT-BORRADOR-001`. Revisado
+  por el gate `architecture-governor` -- **APPROVED WITH CONDITIONS**,
+  4 correcciones aplicadas (anclas de §27.2, cita de C-5, bump de versión,
+  y esta misma entrada). Commit pendiente, 3 archivos en un solo commit
+  doc-only (`diseno-factura-borrador-2026-08-31.md`,
+  `diseno-factura-borrador-confirmar-2026-09-11.md`, este archivo).
+  El estado real sigue siendo el de antes: diseño **no aprobado**,
+  bloqueado por C-1 a C-4 (§26.1, mecánico) + C-5 (arriba, de decisión) +
+  las 5 decisiones de negocio de §26.3 (presupuesto de reintentos de
+  `ISSUED_PENDING_LEDGER`, quién ve esa cola, borradores abandonados,
+  cliente dado de baja, cierre de caja) + ahora también §27.2 (revalidar
+  cancelación al confirmar, mecánico) y §27.3 (destino de la ruta de un
+  solo paso, decisión). No se implementó código en esta sesión.
+- **Instrucción del dueño (11/09/2026, mismo bloque): re-verificar D1-D6
+  contra Odoo 19.0 real, con Odoo ganando donde diverja "más allá de las
+  decisiones que haya tomado antes"** -- **resuelta** (`FACT-BORRADOR-001`
+  v2.10, §28). Historia del proceso, no solo el resultado: una primera
+  ronda propuso D3 "retirada hacia Odoo, con condición" citando R14 mal
+  (`criterios-datos.md:255-259` es "un solo camino de escritura", nada
+  sobre borrado/edición) -- el gate `architecture-governor` lo encontró
+  antes de aprobar el commit. Re-anclada contra la regla real (tabla de
+  clasificación `criterios-datos.md:20-28`, fila "¿Se borra? Nunca. Se
+  cancela o se revierte" -- independiente de la fila "¿Se edita? Solo
+  antes de confirmarse") y contra el precedente real y directo de
+  `orders` (la entidad que el documento dice imitar: tiene su propio
+  `DRAFT`, *"carrito abierto sin confirmar"*, y la transición real es
+  `DRAFT → CANCELLED` -- cero `DELETE FROM orders` en todo el módulo, ni
+  siquiera para el carrito más abandonado posible), la conclusión se
+  revirtió y el dueño confirmó D3 **mantenida** con la evidencia completa
+  delante -- mismo trato que D6 recibió cuando su primer research resultó
+  incompleto. Resultado final, las 6:
+  - **D1 (cuándo nace el cargo), D3 (descarte de borrador, `DISCARDED`
+    siempre, nunca `DELETE` físico en ningún estado), D4 (permiso fiscal
+    separado), D5 (revalidación de catálogo fiscal) -- MANTENIDAS.** Cada
+    una tiene una razón de dominio real ya verificada contra este repo:
+    AFIP es constitutivo (D1); `orders` ya resolvió el mismo escenario de
+    "carrito abandonado" sin borrado físico (D3); `CN-ESCAPE-CONTAINMENT-001`
+    ya separa el mismo tipo de acto fiscal en otro punto del sistema (D4);
+    `afip-catalog.constants.ts` ya implementa la defensa que D5 exige, y
+    funciona (D5).
+  - **D2 (origen de línea), D6 (columna de descuento) -- retiradas hacia
+    el patrón de Odoo,** con riesgos reales aceptados explícitamente, no
+    ausentes: D2 contradice una regla ya escrita del `CLAUDE.md` raíz de
+    este repo (prohíbe "N columnas nullable sin discriminador" para
+    "exactamente uno de N") y pierde la distinción entre línea `MANUAL` y
+    origen perdido por bug; D6 pierde la capacidad de cargar un descuento
+    como monto fijo sin porcentaje.
+  - `§8`/`§24`/`§7.5`/`T18` de `FACT-BORRADOR-001` quedan `SUPERSEDIDAS`
+    (D3 no genera ninguna -- §4.3 queda intacta). `C-5` (arriba) queda sin
+    objeto si D2 se formaliza.
+  - Sigue sin autorizar `CREATE TABLE`, migraciones ni código -- disposición
+    de diseño, pendiente de pasar por el gate `architecture-governor`.
 - **`generate-route-inventory.ts` conecta contra la BD de plataforma
   REAL cuando se corre local** (10/09/2026, hallazgo de paso al
   regenerar `docs/inventario-rutas.md`) -- el docblock del script
@@ -1480,7 +1560,7 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### 📋 Backlog de producto (sin fecha, roadmap -- no re-auditado)
 
-`Gap C1-C` · `AR-FACT-NO-ISSUED-01` Fases 2-8 · `FACT-BORRADOR-001` (v2.8)
+`Gap C1-C` · `AR-FACT-NO-ISSUED-01` Fases 2-8 · `FACT-BORRADOR-001` (v2.10)
 · C1-B (bloqueada por proveedor externo) · C2/C3 · D7 (5 endpoints de
 reportes sin consumidor de frontend) · circuito POS-caja (`ORDER-12`/
 `CAJA-ORD-01`/`AUDIT-ORD-01`) · heredados (Redis, BullMQ, downgrade de

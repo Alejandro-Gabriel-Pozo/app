@@ -1,17 +1,24 @@
 # Diseño — Factura como borrador editable (proforma antes del CAE)
 
-- **Versión:** **v2.8** (31/08/2026). v2 reemplazó a v1; v2.1 corrigió la §17
+- **Versión:** **v2.10** (11/09/2026). v2 reemplazó a v1; v2.1 corrigió la §17
   con la auditoría read-only; v2.2 agregó la §23 (PN-1 resuelto) e integró
   `ISSUED_PENDING_LEDGER` en la §5; **v2.3 sumó los tres controles de emisión
   de §23.6, uno de los cuales —fallo posterior al cargo— era un hueco de v2.2;
   v2.4 agregó la §24 (origen multirubro de la línea); v2.5 agregó la §25 (D5,
   tratamiento fiscal); v2.6 agregó la §26 (hallazgos de dos revisiones independientes, con 4
   correcciones pendientes sobre este mismo documento); v2.7 reemplazó la §26.4 con la medición real
-  contra la base del tenant; **v2.8 señaliza los ~19 sitios superados por §23 y
-  corrige §17.3, §22 y el encabezado, que habían quedado falsos**. Sigue sin
-  autorizar schema ni código.
+  contra la base del tenant; v2.8 señaliza los ~19 sitios superados por §23 y
+  corrige §17.3, §22 y el encabezado, que habían quedado falsos; v2.9 agrega
+  la §27 (hallazgos de la sesión de reconciliación del 11/09/2026: grounding
+  Odoo, un hueco no tratado en §27.2, y la pregunta abierta de §27.3) y deja
+  registrada la instrucción del dueño de re-verificar D1-D6 contra Odoo real;
+  **v2.10 agrega la §28 con el resultado de esa re-verificación — D1/D3/D4/D5
+  mantenidas (D3 revirtió una primera ronda con justificación defectuosa,
+  §28.1bis), D2/D6 retiradas hacia el patrón de Odoo con riesgos aceptados
+  explícitamente (§28.2) — y marca §8/§24/§7.5/T18 como `SUPERSEDIDAS`**.
+  Sigue sin autorizar schema ni código.
   Ver §0 para el diff.
-- **Fecha:** 2026-08-31
+- **Fecha:** 2026-08-31 (creación) — última revisión 11/09/2026
 - **Estado:** **diseño, no implementado, y NO aprobado como diseño final.** v1
   fue aceptada por el dueño como **diagnóstico preliminar** y como encuadre
   estructural — **no** como autorización de schema. v2 formaliza las 6
@@ -53,6 +60,8 @@
 | **Origen de la línea** (v2.4) | `source_type` + label, sin forma definida | §24: discriminador `source_kind` NOT NULL + FKs reales + CHECK por rama, sobre el patrón de `order_items`. `MANUAL` es una rama declarada, no la ausencia de todo |
 | **D5 — fiscal** (v2.5) | pregunta abierta ("catálogo del tenant" inexistente) | §25: `fiscal_treatment` explícito + `arca_iva_id` + tasa. **Hallazgo:** `ImpTotConc`/`ImpOpEx` están hardcodeados en 0, así que hoy exento y no gravado **no se pueden representar** |
 | **Revisión** (v2.6) | — | §26: 4 correcciones pendientes **sobre este mismo documento** (una de ellas, §12.2, contradice a §23), 1 decisión de negocio abierta y 5 decisiones modeladas |
+| **Reconciliación** (v2.9) | — | §27: grounding Odoo (confirma el mínimo de 3 pasos, no las 6 decisiones), un hueco real no tratado antes (§27.2, revalidar guards de cancelación al confirmar un borrador), una pregunta abierta (§27.3, destino de `POST /api/invoices`), y re-confirmación de C-5. El dueño instruyó además re-verificar D1-D6 contra Odoo real con Odoo ganando en caso de divergencia |
+| **Resolución Odoo D1-D6** (v2.10) | — | §28: solo D2 (origen de línea) y D6 (descuento) terminan retiradas hacia Odoo, con riesgos aceptados explícitamente (§28.2). D1/D4/D5 mantenidas por razón de dominio real (AFIP constitutivo, precedente `CN-ESCAPE-CONTAINMENT-001` ya implementado, defensa de catálogo ya funcionando). D3 tuvo una primera ronda con justificación defectuosa (cita errónea de R14) que el gate encontró antes de aprobar — re-anclada contra la clasificación real y el precedente de `orders` (`DRAFT→CANCELLED`, nunca `DELETE`), revirtió a **mantenida** (§28.1bis). §8/§24/§7.5/T18 quedan `SUPERSEDIDAS`. C-5 queda sin objeto si D2 se formaliza |
 
 ---
 
@@ -2047,3 +2056,267 @@ reconciliación. Ninguno tiene rodaje.
 - `src/domain/money.ts` L14-16 · `src/domain/errors.ts` L504-511, L527-541 · `src/domain/business-profile.service.ts` L82-102
 - `src/pos-menu/order.entities.ts` L26-41 · `src/pos-menu/order.service.ts` L174-183, L421-430, L490 — el precedente de "borrador editable que se confirma"
 - `src/app.ts` L335
+
+---
+
+## 27. Hallazgos de reconciliación (11/09/2026) — no cambian ninguna decisión del dueño
+
+**Procedencia.** El pedido del dueño del 11/09/2026 fue *"no se debería
+poder facturar con un solo click, revisá el modelo de Odoo"*. Antes de
+escribir una propuesta nueva se investigó Odoo 19.0 real (código fuente
+local, no memoria) y se redactó un documento propio
+(`diseno-factura-borrador-confirmar-2026-09-11.md`) **sin buscar primero
+si ya existía diseño para el mismo problema**. Sí existía — este
+documento, escrito 11 días antes. Ese documento nuevo quedó **retirado**
+(ver su cabecera) y sus tres aportes reales, que no pisan ninguna decisión
+D1-D6/T1-T21/PN-1..5 ya tomada acá, se trasladan a esta sección.
+
+### 27.1 Grounding externo — Odoo 19.0 confirma el mínimo de 3 pasos (no las 6 decisiones enteras)
+
+Verificado contra código fuente real de Odoo 19.0 (no la versión SaaS, no
+memoria de otra sesión): el mínimo de acciones humanas explícitas entre
+"quiero facturar" y "existe un comprobante fiscal final" es **3** —
+`sale.advance.payment.inv` (wizard, no crea nada) → `create_invoices()`
+(`account.move` en `state='draft'`, nunca auto-postea) → `action_post()`
+(el único lugar donde `state` pasa a `'posted'`). Y para formatos que
+necesitan una llamada síncrona a una autoridad fiscal externa (análogo más
+cercano en el código real: ZATCA vía `l10n_sa_edi`, no hay módulo AFIP en
+este checkout), `_post()` (`account_edi/models/account_move.py:233-265`)
+**no** llama al servicio externo en la misma acción que postea: encola
+(`state='to_send'`) y lo dispara por cron async o un 4º click manual.
+
+**Relación con este documento:** el modelo de §5/§9/§23 (DRAFT editable →
+confirmar → CAE → cargo) ya es, en espíritu, el mismo mínimo de 3 pasos
+que Odoo aplica — eso es lo que confirma esta subsección.
+
+**Corrección (11/09/2026, misma sesión, tras la re-verificación mecánica
+pedida por el dueño):** esta subsección originalmente decía que la
+investigación *"confirma la dirección de D1-D6, no la cambia"*. Es
+**falso a nivel de mecanismo** — la re-verificación encontró que las 6
+decisiones divergen de cómo lo hace Odoo realmente, no solo el mínimo de
+pasos. Lo que sí sigue en pie es el punto alto: 3 pasos mínimo, con la
+llamada fiscal externa desacoplada de postear. El detalle mecánico de
+D1-D6 y la disposición del dueño sobre cada una viven en
+`docs/pendientes-2026-09-10.md` mientras la justificación de D3 está en
+HOLD (defecto de anclaje, encontrado por el gate) — no repetir el error
+de citar algo por sensación en vez de por lo que el grep realmente
+mostró.
+
+### 27.2 Hueco real no tratado en ninguna de las 26 secciones anteriores
+
+**Los guards `OrderCancelledCannotInvoiceError` / `ReservationCancelledCannotInvoiceError`
+no aparecen mencionados en ningún lugar de este documento** (verificado: 0
+resultados de grep sobre las 26 secciones previas a esta). Es una omisión
+real, no una decisión tomada y no repetida. Anclas correctas (corregidas
+tras revisión del gate — la primera versión de esta subsección citaba mal
+los tres sitios):
+
+- **Definidos:** `src/domain/errors.ts:783` (`OrderCancelledCannotInvoiceError`)
+  y `:825` (`ReservationCancelledCannotInvoiceError`).
+- **Lanzados, camino individual:** `src/facturacion/invoice.service.ts:423`
+  (orden) y `:439` (reserva).
+- **Lanzados, camino consolidado:** `src/facturacion/invoice.service.ts:584`
+  (orden) y `:592` (reserva). Ese es el punto donde entraría la
+  revalidación — no en el camino de cancelación (`order.service.ts:862` es
+  el guard de la dirección **opuesta**, `OrderChargeInvoicedError`: una
+  factura viva bloqueando una cancelación, no al revés).
+
+**Por qué importa con un borrador que vive días (todo el punto de §5):**
+hoy esos guards corren dentro de la misma transacción que crea la factura
+`PENDING` — cero ventana. Con `invoice_drafts` como tabla separada y
+`DRAFT` vivo potencialmente por días, se abre una ventana real: la orden o
+reserva de origen podría cancelarse **después** de crear el borrador y
+**antes** de confirmarlo. Si `confirmar()` no revalida esos guards al
+transicionar `DRAFT → ISSUING` (§10, paso 2 del pseudocódigo de §11), se
+emitiría un CAE real para una orden/reserva ya cancelada.
+
+**Esto ya está cubierto, y probado, para el camino de un solo paso** —
+tres suites de integración TOCTOU existentes ejercen exactamente este
+guard contra Postgres real:
+`src/tests/integration/order-cancel-invoice-toctou.integration.test.ts`,
+`reservation-cancel-invoice-toctou.integration.test.ts` y
+`consolidated-invoice-toctou.integration.test.ts`. El punto de §27.2 no es
+"falta un chequeo" — es que **el borrador reabre exactamente la ventana
+que esas tres suites ya cierran hoy**, y la garantía que prueban deja de
+sostenerse en cuanto la creación y la emisión dejan de ser la misma
+transacción.
+
+**No se propone una solución acá** — es una `⛔` nueva a agregar a la lista
+de precondiciones de implementación, del mismo tipo que PN-1/PN-2/PN-4 ya
+listadas en §21, no una sexta decisión de negocio: la revalidación en sí
+no tiene alternativa razonable (omitirla es el bug), lo único a decidir es
+dónde en el pseudocódigo de §11 entra el paso 2bis.
+
+### 27.3 Pregunta no tratada — destino de la ruta de un solo paso
+
+`POST /api/invoices` (`src/facturacion/invoices.routes.ts:94`, con
+`authorize(Roles.FRONT_DESK)` en `:97`) sí está citada en este documento
+(§4.4, §14, §21) como el camino actual de un solo click que crea Y emite
+en el mismo request — lo que **no** trata ninguna sección es su **destino**
+una vez que exista `invoice_drafts`. Dos caminos razonables y ninguno
+decidido:
+
+- Dejarla montada sin cambios (más reversible) — pero entonces sigue
+  siendo un bypass completo del punto del rediseño: cualquier consumidor
+  que la siga llamando (¿el propio `FacturarButton.tsx` migrado, u otro
+  cliente no contemplado?) sigue facturando en un solo click.
+- Retirarla o redirigirla al flujo de borrador — cambia un contrato
+  público, es su propio bloque con su propio gate.
+
+Se registra como pregunta abierta, no como propuesta — no es mía ni del
+asistente resolverla acá.
+
+### 27.4 No resuelto por esta sección
+
+`C-5` (registrado en `docs/pendientes-2026-09-10.md`, no en la tabla de
+§26.1 de este documento — esa tabla solo tiene C-1 a C-4; la numeración
+"C-5" es de pendientes, no de este doc) — la rama `RECEIVABLE` de §6/§8
+sin contraparte en el discriminador `source_kind` de §24 — sigue
+exactamente como estaba —
+confirmado de nuevo por grep el 11/09/2026: `source_kind` (§24.2) admite
+`ORDER_ITEM`/`RESERVATION`/`STAY`/`MANUAL`, `source_type` de §6/§8 admite
+`ORDER_ITEM`/`RESERVATION`/`RECEIVABLE`/`FREE` — dos catálogos distintos
+sin mapeo declarado entre sí. No se intentó resolver acá porque es
+territorio ya asignado a `C-5` y su resolución no es mecánica: falta
+decidir si una línea consolidada (`RECEIVABLE`) viaja a `invoice_items`
+como `MANUAL` (perdiendo la distinción) o si `source_kind` necesita una
+quinta rama. **Nota (v2.10, §28):** el dueño decidió retirar el
+discriminador `source_kind` hacia el patrón de Odoo para D2 — si eso se
+formaliza, C-5 deja de tener objeto (no hay dos catálogos que reconciliar
+si ninguno de los dos existe como discriminador). No se da por resuelto
+acá: `CREATE TABLE`/migración siguen en HOLD, y la retirada del
+discriminador es en sí una decisión con su riesgo aceptado explícitamente
+(§28.2).
+
+---
+
+## 28. Resolución de la re-verificación Odoo — decisión del dueño (11/09/2026)
+
+**No autoriza `CREATE TABLE`, migraciones ni código.** Es la disposición de
+las 6 decisiones tras la instrucción del dueño (§27, mismo día): re-verificar
+D1-D6 contra Odoo 19.0 real, con Odoo ganando "más allá de las decisiones
+tomadas antes" — investigación completa en un fork dedicado, contra el
+checkout local (`C:\Users\Usuario\Downloads\odoo-19.0`), sin memoria ni
+inferencia.
+
+**Resultado: las 6 decisiones divergen de Odoo en mecanismo.** El dueño
+revisó cada divergencia con su riesgo concreto (no en abstracto) y decidió
+caso por caso — **no es "Odoo gana en todo" aplicado ciego**, es la
+instrucción aplicada con la evidencia real delante. **Solo 2 de las 6
+(D2, D6) terminan retiradas hacia Odoo; D3 pasó por una primera ronda con
+una justificación defectuosa (ver §28.1bis) antes de asentarse en
+"mantenida":**
+
+| # | Resultado | Motivo |
+|---|---|---|
+| **D1** | **Mantenida.** Cargo nace después del CAE (opción C, §23) | AFIP es *constitutivo* (sin CAE no hay comprobante); el EDI que Odoo modela es *reporte* de un documento ya válido. Contabilizar antes del CAE, como Odoo, dejaría una deuda por un comprobante que nunca existió si AFIP rechaza — A3.8 no permite borrarlo, solo contra-asentar, y el cliente lo ve |
+| **D2** | **Retirada hacia Odoo.** Sin discriminador `source_kind`/CHECK "exactamente uno" — columnas nullable independientes por origen, sin invariante de base que las relacione | Ver §28.2 — riesgo aceptado explícitamente, no ausente |
+| **D3** | **Mantenida.** `status='DISCARDED'`, nunca `DELETE` físico, en cualquier estado — incluido `DRAFT` puro que nunca contactó AFIP | Ver §28.1bis — la primera ronda proponía `DELETE` condicionado a `DRAFT` puro citando R14 mal; re-anclada contra la clasificación real y el precedente de `orders`, la conclusión se revirtió |
+| **D4** | **Mantenida.** `FISCAL_ISSUE` separado, no se hereda del operativo | Precedente ya implementado en este mismo repo: `CN-ESCAPE-CONTAINMENT-001` exige un rol separado (`EMISOR_NOTA_CREDITO`) para el mismo tipo de acto fiscal irreversible, en otro punto del sistema. Aplanar D4 sería inconsistente con una separación de seguridad que ya existe y ya funciona |
+| **D5** | **Mantenida.** Sync + revalidación obligatoria antes de emitir + bloqueo por código vencido | `afip-catalog.constants.ts` ya implementa "fallar explícito antes que adivinar un código no confirmado" — es una defensa que funciona hoy. Copiar el catálogo estático de Odoo (sin revalidación runtime) sería retroceder una defensa ya construida, no adoptar un estándar superior |
+| **D6** | **Retirada hacia Odoo.** Un solo campo `discount_percent`, sin `discount_amount` como columna autoritativa en paralelo | Ver §28.2 — riesgo aceptado explícitamente, no ausente |
+
+### 28.1bis D3 — por qué se revirtió la primera ronda (proceso, no solo resultado)
+
+**La primera versión de esta tabla decía "retirada hacia Odoo, con
+condición" para D3**, con esta cita como motivo: *"coincide con R14
+(TRANSACCIÓN: no se edita después de confirmarse, no 'nunca se borra en
+ningún estado')"*. **Esa cita es falsa.** R14 (`criterios-datos.md:255-259`)
+es *"Un solo camino de escritura"* — nada, ni de lejos, sobre reglas de
+borrado o edición de una TRANSACCIÓN. El propio documento cita R14
+correctamente 9 veces en otros puntos (líneas 581, 781, 1015, 1070, 1303,
+1306, 2030); solo en esta fila decía otra cosa. Encontrado por el gate
+`architecture-governor` antes de aprobar el commit — no autodetectado.
+
+**La regla real a enfrentar** es la tabla de clasificación
+(`criterios-datos.md:20-28`), que tiene dos filas distintas para
+TRANSACCIÓN:
+
+| | TRANSACCIÓN |
+|---|---|
+| ¿Se edita? | **Solo antes de confirmarse** |
+| ¿Se borra? | **Nunca. Se cancela o se revierte** |
+
+Son preguntas independientes. Que editar esté permitido antes de
+confirmarse no dice nada sobre borrar — esa fila es categórica, sin
+excepción de estado.
+
+**Precedente real y directo, no lectura teórica de la tabla:** `orders`
+—la entidad que este mismo documento dice imitar explícitamente para el
+ciclo de vida borrador→confirmado (§5, T3)— **ya tiene** un estado `DRAFT`
+con la descripción textual *"orden creada, sin confirmar (carrito
+abierto)"* (`order.entities.ts:32`). Y la transición real, verificada
+contra el código (`ORDER_STATUSES`, `order.entities.ts:37`;
+`ORDER_ALLOWED_TRANSITIONS`, `order.service.ts:238`), es
+`DRAFT → CANCELLED`. **No existe ningún `DELETE FROM orders`** en
+`sql.order.repository.ts` ni en ningún lugar del módulo — ni siquiera para
+una orden que nunca salió de `DRAFT`, el carrito abandonado más inocuo que
+existe en el sistema. Si el precedente que este documento elige imitar no
+se permite borrar a sí mismo en el escenario más favorable a hacerlo, la
+excepción propuesta para `invoice_drafts` no tiene con qué sostenerse
+adentro de este repo — Odoo no alcanza para pisar un patrón ya
+implementado y consistente en el propio código.
+
+**Conclusión: D3 vuelve a "mantenida", como estaba antes de esta sesión.**
+El dueño confirmó la reversión con la evidencia completa delante (mismo
+trato que recibió D6 cuando su primer research resultó incompleto — ver
+§28.2). El error se atrapó antes de que el gate aprobara el commit, no
+después.
+
+### 28.1 Qué queda `SUPERSEDIDO` por esta resolución
+
+Mismo criterio que §23/§26.1 aplicaron antes: no se reescribe lo anterior,
+se marca. Pendiente de aplicar como bloque de higiene (no en este commit).
+**Solo D2 y D6 generan `SUPERSEDIDO` — D3 no cambia, así que §4.3 queda
+intacta:**
+
+- **D2 →** §8 (forma del origen con `source_type` de 4 valores), §24
+  completa (discriminador `source_kind`, CHECK por rama, FKs con
+  `ON DELETE RESTRICT` de §24.5) quedan `SUPERSEDIDAS`. El esbozo de §6
+  (columnas `source_kind`/`order_item_id`/etc.) también. Vuelve el
+  modelo de v1: columnas nullable por origen, sin invariante de base.
+- **D6 →** §7.5 completa (la tabla `discount_percent`=intención /
+  `discount_amount`=autoritativo, el cálculo determinista, el CHECK
+  `chk_draft_item_discount`) y T18 quedan `SUPERSEDIDAS`. Vuelve el
+  modelo de v1 para este punto ("pregunta abierta" pasa a "un solo
+  campo, resuelto").
+- **C-5** (§27.4) queda sin objeto si D2 se formaliza — no hay dos
+  catálogos de origen que reconciliar si ninguno de los dos existe.
+
+### 28.2 Riesgos aceptados explícitamente — no ausentes, declarados y asumidos
+
+**D2 — dos riesgos reales, ambos presentados al dueño antes de decidir:**
+
+1. **Contradice una regla ya escrita de este repo.** `CLAUDE.md` (raíz de
+   `app-main`) prohíbe explícitamente el patrón "N columnas nullable sin
+   discriminador" para "exactamente uno de N", y pide el patrón
+   CASE-based que §24 ya implementaba. Retirar el discriminador es una
+   excepción deliberada a esa regla, no un descuido — motivo: alinear con
+   Odoo, decisión del dueño, informada.
+2. **Pérdida de auditabilidad MANUAL vs. origen perdido.** Sin
+   `source_kind NOT NULL`, una línea con todos los ids de origen en
+   `NULL` vuelve a ser indistinguible entre "cargada a mano a propósito"
+   y "el origen se perdió por un bug" — exactamente el punto ciego que
+   §24.3 documentaba como motivo para el discriminador, y que Odoo
+   también tiene sin resolver (verificado: no hay forma de saber si una
+   `account.move.line` sin `sale_line_ids` ni `purchase_line_id` es
+   manual o con origen perdido). Se acepta como parte de seguir el
+   patrón de Odoo.
+
+**D6 — pérdida de capacidad real, presentada al dueño antes de decidir:**
+con un solo campo `discount_percent`, **ya no se puede cargar un
+descuento como monto fijo sin porcentaje** (ej. "descuento $500 por un
+problema puntual" sin que eso sea una fracción del subtotal) — todo
+descuento pasa a expresarse como % del subtotal. `chk_draft_item_discount`
+(el CHECK de §7.5 que ataba `discount_amount` al subtotal) deja de
+aplicar; su reemplazo (si hace falta alguno sobre un `discount_percent`
+0-100) es parte del bloque de implementación, no de este documento.
+
+### 28.3 Qué sigue sin resolver
+
+Nada de esto se implementa acá. `CREATE TABLE`, migraciones y código
+siguen en HOLD, ahora también condicionados a que este §28 pase por gate.
+Bloqueantes que **no** cambiaron: C-1 a C-4 (§26.1, mecánicos), §26.3 (5
+decisiones de negocio del dueño), §27.2 (mecánico, revalidar cancelación
+al confirmar) y §27.3 (decisión del dueño, destino de `POST /api/invoices`).
+Bloqueante que **desaparece** si D2 se formaliza: C-5 (§28.1).
