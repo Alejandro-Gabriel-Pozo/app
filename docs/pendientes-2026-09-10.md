@@ -858,6 +858,43 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   push (no solo tsc): 19/19 tests de integración en 3 suites reales
   (incluida la que había dado el flake) con la firma nueva de
   `dropTestDatabase()`.
+- **`EVT-ORF-01`** — `reservation.expired` se emite y NINGÚN handler lo
+  escucha. Hallazgo ORIGINAL de `pendientes-2026-09-02.md`, arrastrado
+  sin cambios por `-03.md`/`-05.md`, con detalle completo todavía en
+  `pendientes-2026-09-06.md` ("se persiste y el worker lo descarta cada
+  5s -- cruza con A7.6"). **Se cayó en el salto a `pendientes-2026-09-08.md`
+  sin que nadie lo decidiera ni lo resolviera** -- encontrado recién ahora
+  (11/09/2026, auditoría de arrastre pedida por el dueño, barrido completo
+  09-02→09-10). **Reverificado contra el código real hoy, sigue siendo
+  100% cierto**: `reservation-hold-expiry.worker.ts:127` emite
+  `reservation.expired`; `src/workers/outbox.handlers.ts` no tiene
+  absolutamente ninguna mención de ese `eventType` (ni `.on(...)`, ni
+  handler suelto) -- el propio test de `outbox.worker.test.ts:626-627`
+  documenta que un evento sin handler registrado "no debe trabar la cola",
+  confirmando que hoy se descarta en silencio, por diseño del worker, no
+  por accidente puntual. **Decisión de producto pendiente, no técnica**:
+  ¿hace falta algún consumidor real para este evento (ej. liberar algo
+  más allá de lo que el worker ya hace directo, notificar, actualizar un
+  contador), o es puramente informativo y el evento nunca debió esperar
+  un handler? Sin esa respuesta no hay bloque que diseñar.
+- **Hueco de doble comprobante en `getInvoicedFinancialTransactionIds()`**
+  -- el propio `pendientes-2026-09-06.md` ya pedía que esto "mereciera
+  fila propia" y nunca la tuvo; se perdió en el mismo salto a `-08.md` que
+  `EVT-ORF-01`, encontrado en la misma auditoría de arrastre (11/09/2026).
+  **Reverificado contra el código real**: `sql.invoice.repository.ts:964-974`
+  filtra `WHERE i.status = 'ISSUED'` -- una factura `PENDING`/
+  `FAILED_UNCERTAIN` (en curso, todavía no confirmada por AFIP) para el
+  mismo cargo NO cuenta como "ya facturado". Impacto real, no teórico: es
+  el guard anti-double-billing de `InvoiceService.requestConsolidatedInvoice()`
+  (`invoice.service.ts:503-512`, comentario propio: "si igual aparece un
+  cargo ya facturado... se rechaza toda la operación") -- si dos pedidos
+  de consolidada se solapan mientras el primero todavía tiene una factura
+  `PENDING` sin resolver con AFIP, el guard no lo detecta y el segundo
+  pedido puede facturar el mismo cargo dos veces. Mismo patrón de fix que
+  ya se aplicó en otros puntos de este archivo para el mismo tipo de hueco
+  (`status = ANY(['ISSUED','PENDING','FAILED_UNCERTAIN'])` en vez de
+  `= 'ISSUED'` a secas) -- mecánico una vez que se prioriza, no requiere
+  diseño nuevo.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
@@ -1000,7 +1037,22 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **Desfase de fecha "08/09"→"07/09"** en ~5 docs -- verificar si sigue
   aplicando (puede que ya se haya corregido en una sesión posterior).
 - **`DA-CONT-001`**, **`DOC-ANCLA-001`**, ficha M10 desactualizada --
-  sin detalle adicional en el archivo de origen, solo el nombre.
+  **mecanismo recuperado (11/09/2026, auditoría de arrastre)**: el ancla
+  sobrevivió el arrastre pero el detalle se degradó por el camino --
+  `pendientes-2026-09-06.md:1132` sí tenía el mecanismo completo:
+  `erp-auditoria-v2/fichas/M10-facturacion.md:133` dice "6 decisiones
+  abiertas" cuando en realidad ya están cerradas. No verificado de nuevo
+  contra la ficha real en esta pasada -- solo se restituyó la cita que se
+  había perdido, para que la próxima sesión no tenga que re-derivarla.
+- **`C-5`** (`FACT-BORRADOR-001`, v2.8, sigue en HOLD sin aprobar) --
+  hallazgo de `pendientes-2026-09-06.md:1131`: la rama de origen
+  `RECEIVABLE` aparece en §8 del documento de diseño y desaparece en §24,
+  inconsistencia interna del propio doc. Se perdió en el salto a
+  `pendientes-2026-09-08.md`, encontrado en la auditoría de arrastre
+  (11/09/2026). **No verificado contra el documento real en esta pasada**
+  -- impacto bajo mientras el diseño siga sin aprobar (nadie implementa
+  sobre una inconsistencia de un doc en HOLD), pero hay que resolverlo
+  antes de aprobar `FACT-BORRADOR-001`, no después.
 - **`generate-route-inventory.ts` conecta contra la BD de plataforma
   REAL cuando se corre local** (10/09/2026, hallazgo de paso al
   regenerar `docs/inventario-rutas.md`) -- el docblock del script
