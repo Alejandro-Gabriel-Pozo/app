@@ -1065,9 +1065,15 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   afectadas medidas) -- **obligatorio para Bloque 1-bis**, que sí edita
   SQL nuevo.
 
-- **`INVOICE-CHARGES-GUARD-1BIS-01`** -- ✅ **RESUELTO, LOCAL/sin pushear**
-  (11/09/2026, gate `architecture-governor`, HOLD → APPROVED WITH
-  CONDITIONS). `getInvoicedFinancialTransactionIds()`
+- **`INVOICE-CHARGES-GUARD-1BIS-01`** -- ✅ **RESUELTO, PUSHEADO Y
+  DEPLOYADO EN PRODUCCIÓN, VERIFICADO** (11/09/2026, gate
+  `architecture-governor`, HOLD → APPROVED WITH CONDITIONS; `605b3d5`,
+  deploy `dep-dahv9bgae00c73drq70g` = `live`, `migrate:tenants` 2/2 OK,
+  `/health/db?fresh=1` conectado -- **corrección 11/09/2026, tarde**:
+  esta línea decía "LOCAL/sin pushear", quedó sin actualizar cuando se
+  pusheó horas antes en la misma sesión, encontrado en la reconciliación
+  cross-feature de cierre de la familia `INVOICE-CHARGES-*`).
+  `getInvoicedFinancialTransactionIds()`
   (`sql.invoice.repository.ts::getInvoicedFinancialTransactionIds()`)
   ahora también mira `invoices.financial_transaction_id` directo (camino
   individual), filtrado por `INVOICE_STATUSES_CONSUMING_CHARGE`
@@ -1113,10 +1119,20 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   una consolidada viva (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN`, no
   `REJECTED`) -- los otros 3 estados (CAE+PDF, "Reintentar factura",
   "Facturación no habilitada") sin cambios, grounding ERP confirmó que ya
-  eran correctos. **Estado**: `app-main` `086b827` pusheado y deployado,
-  verificado (`live`, `migrate:tenants` 2/2 OK, `/health/db` 200).
-  `appfrontend-main` `dde7837` LOCAL, sin pushear -- Vercel también es
-  push=deploy (confirmado por el dueño), pendiente de autorización.
+  eran correctos. **Estado -- corrección 11/09/2026, tarde (reconciliación
+  cross-feature, encontrado sin actualizar tras el push)**: `app-main`
+  `086b827` **y** `dd500a0` (docs de cierre) pusheados y deployados,
+  verificados (`live`, `migrate:tenants` 2/2 OK, `/health/db` 200 en los
+  dos). `appfrontend-main` `dde7837` **PUSHEADO Y DEPLOYADO, VERIFICADO**
+  -- sin acceso a Vercel vía MCP esta sesión (`list_teams` vacío),
+  confirmado bajando el bundle JS real de `host.zuluhub.com.ar` y
+  greppeando: `"Facturado (consolidado)"` y `coveredByConsolidatedTransactionIds`
+  presentes en el chunk servido. Confirmado además contra la BD de
+  plataforma (Neon `morning-unit-50056927`) que Demo tiene `FACTURACION`
+  habilitado de verdad (ejercita el camino nuevo) y Hotel los Álamos no
+  (camino viejo, sin cambios) -- no se fabricó un JWT contra producción
+  para probar la respuesta HTTP completa end-to-end, mismo criterio que
+  `PRESET-SAVE-ECHO-001`.
   **Verificación visual en vivo del estado nuevo, NO hecha** -- 0 casos
   reales hoy en ninguna tenant para dispararlo, y escribir datos de prueba
   en una tenant compartida fue explícitamente rechazado por el gate
