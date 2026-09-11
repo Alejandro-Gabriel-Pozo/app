@@ -121,12 +121,78 @@ describe('resolveRefundableForPair()', () => {
     expect(result).toEqual(expect.objectContaining({ kind: 'BLOCKED', reason: 'NO_ITEMS' }));
   });
 
-  it('BLOQUEA (RESERVATION_NOT_IN_INVOICE) -- la reserva pedida no tiene ningún ítem en esta factura', () => {
+  it('BLOQUEA (SUBJECT_NOT_IN_INVOICE) -- la reserva pedida no tiene ningún ítem en esta factura', () => {
     const items: FrozenInvoiceItemShare[] = [{ reservationId: 'res-OTRA', subtotal: 100, ivaRate: 21 }];
     const result = resolveRefundableForPair({
       items, frozenIva: [{ id: 5, baseImp: 100, importe: 21 }], alreadyRefunded: 0, reservationId: 'res-A',
     });
-    expect(result).toEqual(expect.objectContaining({ kind: 'BLOCKED', reason: 'RESERVATION_NOT_IN_INVOICE' }));
+    expect(result).toEqual(expect.objectContaining({ kind: 'BLOCKED', reason: 'SUBJECT_NOT_IN_INVOICE' }));
+  });
+
+  describe('bloque 1a -- generalización sobre clave de atribución opaca (ORDER-CONSOLIDATED-PARTIAL-01)', () => {
+    // La función nunca le dio tratamiento especial a "reserva" -- estos
+    // casos pasan ids con FORMA de orden por el mismo campo `reservationId`
+    // (sin renombrar, ver docblock del archivo) y verifican que el reparto
+    // y el denominador se comportan exactamente igual que con ids de
+    // reserva. Sirve como prueba de que el pure function ya está listo
+    // para el modo orden sin cambiar una sola línea de lógica -- el wiring
+    // real (bloque 1c) es aparte.
+    it('acepta claves con forma de orden y reparte igual que con reservas', () => {
+      const items: FrozenInvoiceItemShare[] = [
+        { reservationId: 'order-A', subtotal: 500, ivaRate: 0 },
+        { reservationId: 'order-B', subtotal: 300, ivaRate: 0 },
+        { reservationId: 'order-C', subtotal: 200, ivaRate: 0 },
+      ];
+      const resultC = resolveRefundableForPair({ items, frozenIva: [], alreadyRefunded: 0, reservationId: 'order-C' });
+      expect(resultC.kind === 'RESOLVED' && resultC.attributedNeto).toBe(200);
+    });
+
+    it('mezcla claves de orden y de reserva en la misma factura -- cada una se atribuye por su propia clave, sin cruzarse', () => {
+      const items: FrozenInvoiceItemShare[] = [
+        { reservationId: 'res-A', subtotal: 800, ivaRate: 21 },
+        { reservationId: 'order-Z', subtotal: 200, ivaRate: 21 },
+      ];
+      const frozenIva: FrozenIvaEntry[] = [{ id: 5, baseImp: 1000, importe: 210 }];
+
+      const resultRes = resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId: 'res-A' });
+      const resultOrder = resolveRefundableForPair({ items, frozenIva, alreadyRefunded: 0, reservationId: 'order-Z' });
+
+      expect(resultRes.kind === 'RESOLVED' && resultRes.attributedNeto).toBe(800);
+      expect(resultRes.kind === 'RESOLVED' && resultRes.attributedIva).toBe(168);
+      expect(resultOrder.kind === 'RESOLVED' && resultOrder.attributedNeto).toBe(200);
+      expect(resultOrder.kind === 'RESOLVED' && resultOrder.attributedIva).toBe(42);
+    });
+
+    it('HALLAZGO 1a, NO corregido en este bloque -- un item sin clave (null) en el MISMO grupo de tasa que un item con clave hace que el residuo de redondeo le absorba TODO el monto del item sin clave a la clave presente, no solo un centavo', () => {
+      // Descubierto al generalizar, no buscado a propósito -- documenta el
+      // comportamiento REAL de `distributeGroupAmount()` hoy, no el
+      // esperado. `byReservation` (líneas ~127-131) solo suma los items
+      // CON clave (600); pero el residuo se calcula contra `frozenAmount`
+      // (que en este caso es `groupTotalSubtotal`, 1000 -- ambos items).
+      // El residuo (1000-600=400) no es un centavo de redondeo -- es el
+      // monto ENTERO del item sin clave, y cae sobre la única clave
+      // presente porque es la de "mayor participación" por default.
+      // **No confundir con el bloque 1a** (generalización sobre clave
+      // opaca) -- esto es un defecto preexistente de
+      // `distributeGroupAmount()`, ya en producción desde el bloque 3.3-a
+      // (08/09/2026), independiente de si la clave es de reserva o de
+      // orden. Reachability real: NINGÚN test de
+      // `invoice.service.test.ts` (`seedConsolidadaTresReservasDosTasas()`
+      // y afines) mezcla un item de orden (`reservationId: null`) con uno
+      // de reserva en el MISMO grupo de tasa -- así que esto nunca se
+      // ejercitó contra el único caller de producción (`invoice.service.ts:848`).
+      // Si una consolidada real mezcla reserva+orden a la MISMA tasa, y se
+      // pide la atribución de la reserva, hoy se lleva también el monto de
+      // la orden. Registrar como hallazgo propio (no `ORDER-CONSOLIDATED-PARTIAL-01`
+      // ni parte de este bloque 1a) -- requiere su propio gate antes de
+      // tocar `distributeGroupAmount()`.
+      const items: FrozenInvoiceItemShare[] = [
+        { reservationId: 'order-A', subtotal: 600, ivaRate: 0 },
+        { reservationId: null, subtotal: 400, ivaRate: 0 },
+      ];
+      const result = resolveRefundableForPair({ items, frozenIva: [], alreadyRefunded: 0, reservationId: 'order-A' });
+      expect(result.kind === 'RESOLVED' && result.attributedNeto).toBe(1000);
+    });
   });
 
   it('BLOQUEA (MISSING_FROZEN_IVA_ENTRY) -- grupo de tasa con IVA sin entrada congelada correspondiente, no se re-deriva', () => {

@@ -48,13 +48,40 @@
  * ningún ítem de la factura; o un grupo de tasa con IVA > 0 no tiene
  * entrada congelada correspondiente en `afip_request.Iva[]` (anomalía --
  * no se re-deriva bajo ninguna circunstancia).
+ *
+ * ## Bloque 1a (11/09/2026, gate `architecture-governor`) -- generalización
+ * sobre clave de atribución opaca, `ORDER-CONSOLIDATED-PARTIAL-01`
+ * Ninguna línea de esta función hace nada específico de "reserva" -- el
+ * campo `reservationId` (de `FrozenInvoiceItemShare` y de
+ * `ResolveRefundableForPairInput`) siempre se usó como una clave de
+ * agrupación opaca: `distributeGroupAmount()` solo la usa como key de un
+ * `Map`, nunca la interpreta. Verificado con casos nuevos en
+ * `refund-attribution.test.ts` que pasan ids con forma de orden por ese
+ * mismo campo y confirman reparto/denominador idénticos a los de reserva.
+ * **Los nombres de campo NO se renombraron a propósito**: los 2 callers de
+ * producción (`sql.invoice.repository.ts:591`, `invoice.service.ts:848`)
+ * siguen fuera de alcance de este bloque (condición del gate), y
+ * renombrar hubiera exigido tocarlos. El rename real a una clave neutra
+ * (`attributionKey`) queda para el bloque 1c, que igual necesita tocar
+ * `invoice.service.ts` para cablear la rama de órdenes -- ahí el rename
+ * y el wiring van juntos, no antes. `RESERVATION_NOT_IN_INVOICE` sí se
+ * renombró (ver `BLOCKED.reason` abajo) porque es seguro sin tocar
+ * ningún caller: ambos productores lo pasan a `attribution.reason` sin
+ * comparar el literal.
  */
 
 import { round2 } from '../domain/money.js';
 import { resolveIvaAlicuotaId } from './afip-catalog.constants.js';
 
-/** Insumo congelado de UN ítem de la factura (de cualquier reserva, no solo la consultada -- hace falta el universo completo para el denominador de cada grupo de tasa). */
+/** Insumo congelado de UN ítem de la factura (de cualquier sujeto, no solo el consultado -- hace falta el universo completo para el denominador de cada grupo de tasa). */
 export interface FrozenInvoiceItemShare {
+  /**
+   * Clave de atribución opaca -- hoy siempre `invoice_items.reservation_id`
+   * (`null` = ítem de origen orden, cuenta en el denominador del grupo de
+   * tasa pero no recibe entrada propia en el resultado; ver
+   * `distributeGroupAmount()`). Nombre sin generalizar a propósito, ver
+   * docblock del archivo.
+   */
   reservationId: string | null;
   /** `invoice_items.subtotal` congelado -- neto de ese ítem al momento de emitir. */
   subtotal: number;
@@ -71,12 +98,21 @@ export interface FrozenIvaEntry {
 }
 
 export interface ResolveRefundableForPairInput {
-  /** TODOS los `invoice_items` de la factura -- no filtrados por reserva. */
+  /** TODOS los `invoice_items` de la factura -- no filtrados por el sujeto consultado. */
   items: FrozenInvoiceItemShare[];
   /** `afip_request.Iva[]` congelado. Vacío si la factura no discrimina IVA en ningún grupo (todos a tasa 0%) o si es Nivel A. */
   frozenIva: FrozenIvaEntry[];
-  /** Ya reembolsado contra ESTE PAR (factura, reserva) -- `SUM(amount) WHERE reversed_invoice_id = I AND reservation_id = R AND status = 'SETTLED'`. Dimensión ya existente hoy, sin schema nuevo (el REFUND ya lleva las dos columnas). */
+  /** Ya reembolsado contra ESTE PAR (factura, sujeto) -- `SUM(amount) WHERE reversed_invoice_id = I AND reservation_id = R AND status = 'SETTLED'`. Dimensión ya existente hoy, sin schema nuevo (el REFUND ya lleva las dos columnas). */
   alreadyRefunded: number;
+  /**
+   * Clave de atribución cuyo remanente se calcula. Hoy siempre un
+   * `reservationId` real (únicos 2 callers de producción, ambos del
+   * camino de reservas) -- el campo se llama `reservationId` porque
+   * renombrarlo exige tocar esos callers (fuera de alcance del bloque
+   * 1a, ver docblock del archivo). La función no le da ningún
+   * tratamiento especial: es la clave de agrupación de
+   * `distributeGroupAmount()`, nada más.
+   */
   reservationId: string;
 }
 
@@ -104,7 +140,7 @@ export type ResolveRefundableForPairResult =
     }
   | {
       kind: 'BLOCKED';
-      reason: 'NO_ITEMS' | 'RESERVATION_NOT_IN_INVOICE' | 'MISSING_FROZEN_IVA_ENTRY';
+      reason: 'NO_ITEMS' | 'SUBJECT_NOT_IN_INVOICE' | 'MISSING_FROZEN_IVA_ENTRY';
       detail: string;
     };
 
@@ -172,7 +208,7 @@ export function resolveRefundableForPair(input: ResolveRefundableForPairInput): 
   if (!items.some((i) => i.reservationId === reservationId)) {
     return {
       kind: 'BLOCKED',
-      reason: 'RESERVATION_NOT_IN_INVOICE',
+      reason: 'SUBJECT_NOT_IN_INVOICE',
       detail: `La reserva "${reservationId}" no tiene ningún invoice_item en esta factura.`,
     };
   }
