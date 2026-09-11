@@ -34,11 +34,23 @@
  * esa tasa) es exactamente el input que produjo el `BaseImp`/`Importe`
  * congelado -- no una aproximación.
  *
- * ## Redondeo (decisión del dueño, 05/09/2026)
- * Repartir el `BaseImp`/`Importe` de un grupo de tasa entre N reservas con
+ * ## Redondeo (decisión del dueño, 05/09/2026; corregido 11/09/2026,
+ * `REFUND-ATTRIBUTION-RESIDUAL-001`)
+ * Repartir el `BaseImp`/`Importe` de un grupo de tasa entre N sujetos con
  * `round2` puede dejar un residuo de centavos. El dueño decidió: el residuo
- * lo absorbe la reserva con MAYOR participación (`subtotal`) dentro de ese
- * grupo de tasa -- determinístico, menor error relativo.
+ * lo absorbe el sujeto con MAYOR participación (`subtotal`) dentro de ese
+ * grupo de tasa -- determinístico, menor error relativo. **El residuo se
+ * calcula contra la PORCIÓN de `frozenAmount` que le corresponde a los
+ * ítems CON clave, no contra `frozenAmount` completo** -- si el grupo
+ * mezcla ítems con clave (ej. una reserva) e ítems sin clave (ej. una
+ * orden en la misma factura consolidada, mismo grupo de tasa), la porción
+ * del ítem sin clave no es de nadie y no puede caer en el residuo de
+ * redondeo de los que sí tienen clave. Antes de esta corrección,
+ * `distributeGroupAmount()` calculaba el residuo contra `frozenAmount`
+ * completo -- en un grupo mixto, esa "sobra" era en realidad la porción
+ * entera del ítem sin clave, atribuida completa al sujeto con clave de
+ * mayor participación (ver `distributeGroupAmount()` más abajo para el
+ * detalle del fix).
  *
  * ## Fail-closed (decisión del dueño: bloquear y escalar ante ambigüedad)
  * Nunca se aproxima. `resolveRefundableForPair()` devuelve `BLOCKED` en vez
@@ -58,9 +70,12 @@
  * `Map`, nunca la interpreta. Verificado con casos nuevos en
  * `refund-attribution.test.ts` que pasan ids con forma de orden por ese
  * mismo campo y confirman reparto/denominador idénticos a los de reserva.
- * **Los nombres de campo NO se renombraron a propósito**: los 2 callers de
- * producción (`sql.invoice.repository.ts:591`, `invoice.service.ts:848`)
- * siguen fuera de alcance de este bloque (condición del gate), y
+ * **Los nombres de campo NO se renombraron a propósito**: los 3 callers
+ * (`invoice.service.ts::buildCreditNote()`,
+ * `sql.invoice.repository.ts::resolveReservationPairAttribution()` -- los
+ * 2 de producción, camino de reservas -- y
+ * `sql.invoice.repository.ts::resolveOrderPairAttribution()`, bloque 1b,
+ * todavía sin consumidor) siguen fuera de alcance de este bloque (condición del gate), y
  * renombrar hubiera exigido tocarlos. El rename real a una clave neutra
  * (`attributionKey`) queda para el bloque 1c, que igual necesita tocar
  * `invoice.service.ts` para cablear la rama de órdenes -- ahí el rename
@@ -105,13 +120,13 @@ export interface ResolveRefundableForPairInput {
   /** Ya reembolsado contra ESTE PAR (factura, sujeto) -- `SUM(amount) WHERE reversed_invoice_id = I AND reservation_id = R AND status = 'SETTLED'`. Dimensión ya existente hoy, sin schema nuevo (el REFUND ya lleva las dos columnas). */
   alreadyRefunded: number;
   /**
-   * Clave de atribución cuyo remanente se calcula. Hoy siempre un
-   * `reservationId` real (únicos 2 callers de producción, ambos del
-   * camino de reservas) -- el campo se llama `reservationId` porque
-   * renombrarlo exige tocar esos callers (fuera de alcance del bloque
-   * 1a, ver docblock del archivo). La función no le da ningún
-   * tratamiento especial: es la clave de agrupación de
-   * `distributeGroupAmount()`, nada más.
+   * Clave de atribución cuyo remanente se calcula. Hoy un `reservationId`
+   * real en los 2 callers de producción (camino de reservas) y un
+   * `orderId` en el caller sin consumidor todavía del bloque 1b -- el
+   * campo se llama `reservationId` porque renombrarlo exige tocar esos
+   * callers (fuera de alcance del bloque 1a, ver docblock del archivo).
+   * La función no le da ningún tratamiento especial: es la clave de
+   * agrupación de `distributeGroupAmount()`, nada más.
    */
   reservationId: string;
 }
@@ -145,12 +160,31 @@ export type ResolveRefundableForPairResult =
     };
 
 /**
- * Reparte el `baseImp`/`importe` congelado de UN grupo de tasa entre las
- * reservas que participan de ese grupo, con `round2` por reserva y el
- * residuo de redondeo asignado a la de mayor `subtotal` dentro del grupo
+ * Reparte el `baseImp`/`importe` congelado de UN grupo de tasa entre los
+ * sujetos que participan de ese grupo, con `round2` por sujeto y el
+ * residuo de redondeo asignado al de mayor `subtotal` dentro del grupo
  * (decisión del dueño). Devuelve un Map por `reservationId` -- los ítems
- * sin reserva (origen orden) cuentan en el denominador pero no reciben
- * entrada en el resultado.
+ * sin clave (origen del OTRO tipo de sujeto -- ej. una orden cuando se
+ * consulta por reserva, o viceversa) cuentan en el denominador pero no
+ * reciben entrada en el resultado.
+ *
+ * `REFUND-ATTRIBUTION-RESIDUAL-001` (11/09/2026, gate
+ * `architecture-governor`, encontrado al escribir los tests del bloque
+ * 1a, confirmado con caller de producción vivo desde el bloque 3.3-a --
+ * `InvoiceService.buildCreditNote()`): el residuo de redondeo se calcula
+ * contra `keyedPortionOfFrozenAmount` (la porción de `frozenAmount` que
+ * le corresponde a los ítems CON clave, `frozenAmount * keyedSubtotalSum
+ * / groupTotalSubtotal`), NO contra `frozenAmount` completo. Antes de
+ * este fix, si el grupo de tasa mezclaba ítems con clave e ítems sin
+ * clave (ej. una consolidada con una reserva y una orden a la misma
+ * tasa), el "residuo" no era un centavo de redondeo -- era la porción
+ * ENTERA del ítem sin clave, atribuida completa al sujeto con clave de
+ * mayor participación (caso medido: 2420 en vez de 1210, el doble).
+ * Cuando `keyedSubtotalSum === groupTotalSubtotal` (ningún ítem sin
+ * clave en el grupo -- el caso de TODOS los tests anteriores a este
+ * fix), `keyedPortionOfFrozenAmount === frozenAmount` y el
+ * comportamiento es idéntico al de antes, verificado por fuzzing (800k
+ * casos, 0 divergencias).
  */
 function distributeGroupAmount(
   itemsInGroup: readonly FrozenInvoiceItemShare[],
@@ -161,9 +195,11 @@ function distributeGroupAmount(
   if (groupTotalSubtotal <= 0) return result;
 
   const byReservation = new Map<string, number>();
+  let keyedSubtotalSum = 0;
   for (const item of itemsInGroup) {
     if (item.reservationId == null) continue;
     byReservation.set(item.reservationId, (byReservation.get(item.reservationId) ?? 0) + item.subtotal);
+    keyedSubtotalSum += item.subtotal;
   }
   if (byReservation.size === 0) return result;
 
@@ -182,7 +218,8 @@ function distributeGroupAmount(
     }
   }
 
-  const residual = round2(frozenAmount - roundedSum);
+  const keyedPortionOfFrozenAmount = round2(frozenAmount * (keyedSubtotalSum / groupTotalSubtotal));
+  const residual = round2(keyedPortionOfFrozenAmount - roundedSum);
   if (residual !== 0 && maxShareReservationId !== null) {
     result.set(maxShareReservationId, round2(result.get(maxShareReservationId)! + residual));
   }

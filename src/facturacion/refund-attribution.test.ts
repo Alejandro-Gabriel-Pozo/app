@@ -163,35 +163,72 @@ describe('resolveRefundableForPair()', () => {
       expect(resultOrder.kind === 'RESOLVED' && resultOrder.attributedIva).toBe(42);
     });
 
-    it('HALLAZGO 1a, NO corregido en este bloque -- un item sin clave (null) en el MISMO grupo de tasa que un item con clave hace que el residuo de redondeo le absorba TODO el monto del item sin clave a la clave presente, no solo un centavo', () => {
-      // Descubierto al generalizar, no buscado a propósito -- documenta el
-      // comportamiento REAL de `distributeGroupAmount()` hoy, no el
-      // esperado. `byReservation` (líneas ~127-131) solo suma los items
-      // CON clave (600); pero el residuo se calcula contra `frozenAmount`
-      // (que en este caso es `groupTotalSubtotal`, 1000 -- ambos items).
-      // El residuo (1000-600=400) no es un centavo de redondeo -- es el
-      // monto ENTERO del item sin clave, y cae sobre la única clave
-      // presente porque es la de "mayor participación" por default.
-      // **No confundir con el bloque 1a** (generalización sobre clave
-      // opaca) -- esto es un defecto preexistente de
-      // `distributeGroupAmount()`, ya en producción desde el bloque 3.3-a
-      // (08/09/2026), independiente de si la clave es de reserva o de
-      // orden. Reachability real: NINGÚN test de
-      // `invoice.service.test.ts` (`seedConsolidadaTresReservasDosTasas()`
-      // y afines) mezcla un item de orden (`reservationId: null`) con uno
-      // de reserva en el MISMO grupo de tasa -- así que esto nunca se
-      // ejercitó contra el único caller de producción (`invoice.service.ts:848`).
-      // Si una consolidada real mezcla reserva+orden a la MISMA tasa, y se
-      // pide la atribución de la reserva, hoy se lleva también el monto de
-      // la orden. Registrar como hallazgo propio (no `ORDER-CONSOLIDATED-PARTIAL-01`
-      // ni parte de este bloque 1a) -- requiere su propio gate antes de
-      // tocar `distributeGroupAmount()`.
+    it('REFUND-ATTRIBUTION-RESIDUAL-001, RESUELTO (11/09/2026) -- un item sin clave (null) en el MISMO grupo de tasa que un item con clave YA NO le atribuye su monto a la clave presente', () => {
+      // Encontrado al generalizar el bloque 1a (11/09/2026), confirmado con
+      // caller de producción vivo desde el bloque 3.3-a
+      // (InvoiceService.buildCreditNote()) -- corregido en el mismo día,
+      // gate architecture-governor, APPROVED WITH CONDITIONS. Antes del
+      // fix: el residuo de redondeo se calculaba contra `frozenAmount`
+      // completo (1000, ambos items) en vez de contra la porción de los
+      // items CON clave (600) -- el "residuo" (1000-600=400) no era un
+      // centavo de redondeo, era el monto ENTERO del item sin clave. Con
+      // el fix, order-A se lleva exactamente su propia porción (600), el
+      // resto (400, sin clave) no es de nadie.
       const items: FrozenInvoiceItemShare[] = [
         { reservationId: 'order-A', subtotal: 600, ivaRate: 0 },
         { reservationId: null, subtotal: 400, ivaRate: 0 },
       ];
       const result = resolveRefundableForPair({ items, frozenIva: [], alreadyRefunded: 0, reservationId: 'order-A' });
-      expect(result.kind === 'RESOLVED' && result.attributedNeto).toBe(1000);
+      expect(result.kind === 'RESOLVED' && result.attributedNeto).toBe(600);
+    });
+
+    it('REFUND-ATTRIBUTION-RESIDUAL-001 -- conservación: atribuir por la clave del sujeto reserva y por la clave del sujeto orden de la MISMA factura suma exactamente el monto congelado, sin doble conteo', () => {
+      // El invariante del que depende el bloque 1c: atribuir por la clave A
+      // y por la clave B de la MISMA factura tiene que sumar el impTotal
+      // real, no menos (plata perdida) ni más (plata que sale dos veces).
+      //
+      // Modela lo que hacen los 2 resolvers reales, no un array compartido
+      // con las dos claves presentes a la vez (eso NO reproduce el bug --
+      // los 2 ítems ya tendrían clave, ninguno cuenta como "sin clave").
+      // `resolveReservationPairAttribution()` lee `reservation_id` directo:
+      // el ítem de orden llega con clave `null`. `resolveOrderPairAttribution()`
+      // hace LEFT JOIN a `order_items`: el ítem de reserva llega con clave
+      // `null` (el JOIN no matchea). Cada resolver ve al OTRO sujeto como
+      // "sin clave", nunca con su propia clave real.
+      const itemsVistosPorReserva: FrozenInvoiceItemShare[] = [
+        { reservationId: 'res-mix', subtotal: 1000, ivaRate: 21 },
+        { reservationId: null, subtotal: 1000, ivaRate: 21 }, // la orden, sin clave desde esta vista
+      ];
+      const itemsVistosPorOrden: FrozenInvoiceItemShare[] = [
+        { reservationId: null, subtotal: 1000, ivaRate: 21 }, // la reserva, sin clave desde esta vista
+        { reservationId: 'order-A', subtotal: 1000, ivaRate: 21 },
+      ];
+      const frozenIva: FrozenIvaEntry[] = [{ id: 5, baseImp: 2000, importe: 420 }];
+
+      const resultRes = resolveRefundableForPair({ items: itemsVistosPorReserva, frozenIva, alreadyRefunded: 0, reservationId: 'res-mix' });
+      const resultOrder = resolveRefundableForPair({ items: itemsVistosPorOrden, frozenIva, alreadyRefunded: 0, reservationId: 'order-A' });
+
+      expect(resultRes.kind === 'RESOLVED' && resultRes.attributedTotal).toBe(1210);
+      expect(resultOrder.kind === 'RESOLVED' && resultOrder.attributedTotal).toBe(1210);
+      expect(
+        resultOrder.kind === 'RESOLVED' && resultRes.kind === 'RESOLVED'
+          && round2sum(resultOrder.attributedTotal, resultRes.attributedTotal),
+      ).toBe(2420); // == impTotal real del grupo (2000 neto + 420 iva) -- con el bug daría 4840 (2420+2420)
+    });
+
+    it('REFUND-ATTRIBUTION-RESIDUAL-001, borde -- un item CON clave pero subtotal 0 ya no se lleva el grupo entero', () => {
+      // invoice_items.subtotal es DECIMAL(12,2) NOT NULL CHECK (subtotal >= 0)
+      // -- 0 es un valor legal (ej. una línea de cortesía). Antes del fix,
+      // como esa clave era la ÚNICA con clave presente, se llevaba el
+      // residuo completo (todo el monto del item sin clave) aunque su
+      // propia participación fuera 0. Con el fix, keyedSubtotalSum=0 -->
+      // keyedPortionOfFrozenAmount=0 --> esa clave no recibe nada.
+      const items: FrozenInvoiceItemShare[] = [
+        { reservationId: 'res-cortesia', subtotal: 0, ivaRate: 0 },
+        { reservationId: null, subtotal: 1000, ivaRate: 0 },
+      ];
+      const result = resolveRefundableForPair({ items, frozenIva: [], alreadyRefunded: 0, reservationId: 'res-cortesia' });
+      expect(result.kind === 'RESOLVED' && result.attributedNeto).toBe(0);
     });
   });
 

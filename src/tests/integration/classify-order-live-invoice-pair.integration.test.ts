@@ -170,20 +170,16 @@ describe.skipIf(skipIfNoDb)('resolveOrderPairAttribution() / getIssuedCreditNote
   });
 
   it(
-    'HALLAZGO 1a, medido acá -- factura que mezcla una orden y una RESERVA en el MISMO grupo de tasa: attributedTotal pineado en 2420 (INFLADO), el correcto sería 1210 -- REFUND-ATTRIBUTION-RESIDUAL-001, NO corregido en este bloque',
+    'REFUND-ATTRIBUTION-RESIDUAL-001, RESUELTO (11/09/2026) -- factura que mezcla una orden y una RESERVA en el MISMO grupo de tasa: attributedTotal ya da la mitad exacta (1210), no el doble (2420)',
     async () => {
       // No confundir con el resto de este archivo (bloque 1b, camino de
-      // lectura, sin bug) -- este caso documenta a propósito el defecto
-      // YA conocido de distributeGroupAmount() (registrado en
-      // refund-attribution.test.ts, bullet "HALLAZGO 1a" + docs/pendientes-2026-09-10.md):
-      // cuando un item CON clave (la orden) comparte grupo de tasa con un
-      // item SIN clave (acá, un item de origen RESERVA -- reservation_id
-      // no-null, order_item_id null), el residuo de redondeo le atribuye
-      // TODO el monto del item sin clave a la única clave presente, no un
-      // centavo. Un item de reserva (reservationId: 'res-mix') y un item
-      // de orden (subtotal 1000 cada uno, iva_rate 21%) en la MISMA
-      // factura -- pineando el valor INCORRECTO de hoy, no el esperado,
-      // a propósito.
+      // lectura) -- este caso mide el fix de distributeGroupAmount()
+      // (refund-attribution.ts) contra Postgres real, vía el consumidor
+      // de bloque 1b. Un item de reserva (reservationId: 'res-mix') y un
+      // item de orden (subtotal 1000 cada uno, iva_rate 21%) en la MISMA
+      // factura, mismo grupo de tasa -- antes del fix esto pineaba 2420
+      // (INFLADO, se llevaba también el monto del item sin clave); ahora
+      // da 1210, la porción real de la orden (neto 1000 + iva 210).
       const customer = await seedCustomer(db);
       const category = await seedCategory(db);
       const resource = await seedResource(db, category.id);
@@ -197,14 +193,9 @@ describe.skipIf(skipIfNoDb)('resolveOrderPairAttribution() / getIssuedCreditNote
 
       const result = await pgTxManager.run((client) => invoiceRepo.resolveOrderPairAttribution(client, invoiceId, order));
       expect(result.kind).toBe('RESOLVED');
-      // Valor CORRECTO sería 1210 (neto 1000 + iva 210, la mitad exacta del
-      // grupo). El pineado de abajo es el defecto conocido, no una
-      // aserción "deseada" -- si este número cambia a 1210, significa que
-      // REFUND-ATTRIBUTION-RESIDUAL-001 se corrigió y este test (y su
-      // comentario) quedaron obsoletos, hay que actualizarlos juntos.
-      expect(result.kind === 'RESOLVED' && result.attributedNeto).toBe(2000);
-      expect(result.kind === 'RESOLVED' && result.attributedIva).toBe(420);
-      expect(result.kind === 'RESOLVED' && result.attributedTotal).toBe(2420);
+      expect(result.kind === 'RESOLVED' && result.attributedNeto).toBe(1000);
+      expect(result.kind === 'RESOLVED' && result.attributedIva).toBe(210);
+      expect(result.kind === 'RESOLVED' && result.attributedTotal).toBe(1210);
     },
   );
 

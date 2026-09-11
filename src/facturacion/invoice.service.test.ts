@@ -1247,6 +1247,47 @@ describe('InvoiceService', () => {
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items[0]).toMatchObject({ orderItemId: 'oi-1', reservationId: null });
     });
+
+    it('REFUND-ATTRIBUTION-RESIDUAL-001, RESUELTO (11/09/2026) -- consolidada que mezcla una orden y una reserva en el MISMO grupo de tasa: la NC parcial de la reserva emite por su porción real, ya no revienta con CreditNoteAttributionMismatchError', async () => {
+      // Camino de PRODUCCIÓN real (no resolveOrderPairAttribution, que
+      // todavía no tiene consumidor -- bloque 1b). Antes del fix de
+      // distributeGroupAmount(), resolveRefundableForPair() atribuía 2420
+      // a res-A en vez de su porción real (1210) porque el ítem de orden
+      // sin clave en el mismo grupo de tasa (21%) se sumaba entero al
+      // residuo de la única clave presente. El ledger (el ADJUSTMENT real)
+      // siempre pidió 1210 -- antes del fix, el cruce
+      // `amountToReverse` (1210) vs. `attribution.attributedTotal` (2420)
+      // no coincidía y tiraba CreditNoteAttributionMismatchError SIEMPRE
+      // que una consolidada mezclaba origen orden + reserva a la misma
+      // tasa -- un camino de negocio legítimo (multirubro) quedaba
+      // bloqueado por el bug, no por una razón real de negocio.
+      seedOriginalInvoice({
+        id: 'inv-mixta-residual', financialTransactionId: null,
+        impNeto: 2000, impIva: 420, impTotal: 2420,
+        afipRequest: { Iva: [{ Id: 5, BaseImp: 2000, Importe: 420 }] },
+      });
+      seedOriginalItems('inv-mixta-residual', [
+        { reservationId: 'res-A', description: 'Res A', subtotal: 1000, unitPrice: 1000, ivaRate: 21 },
+        { orderItemId: 'oi-orden-Z', description: 'Orden Z', subtotal: 1000, unitPrice: 1000, ivaRate: 21 },
+      ]);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        // 1210 = 1000 neto + 210 iva -- la porción REAL de res-A, la que
+        // el fix hace que resolveRefundableForPair() atribuya de verdad.
+        tx: makeTx({ type: 'ADJUSTMENT', amount: -1210, reservationId: 'res-A', reversedInvoiceId: 'inv-mixta-residual' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+      expect(invoice).toMatchObject({ impNeto: 1000, impIva: 210, impTotal: 1210 });
+
+      // La línea copiada es SOLO la de res-A -- la de la orden no se
+      // arrastra (N3 aplicado a la porción, mismo criterio que el test de
+      // reconstrucción de arriba).
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ reservationId: 'res-A', subtotal: 1000, ivaRate: 21 });
+    });
   });
   });
 
