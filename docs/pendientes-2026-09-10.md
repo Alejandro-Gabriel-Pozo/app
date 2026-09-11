@@ -1300,14 +1300,179 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `1c-ii-c` (después de `1c-ii-b`, todavía en HOLD) -- este bullet solo
   fija la decisión, no el código.
 
-  **Deuda de wording, sin bloque asignado:** `CreditNoteAttributionBlockedError`,
-  `CreditNoteAttributionMismatchError` y `CreditNotePairCapExceededError`
-  (`domain/errors.ts`) van a decir *"La reserva …"* también cuando
-  quien dispara el error sea una orden -- misma deuda ya diferida para
-  `CreditNoteConsolidatedFullReversalError`. No requiere código de
-  error nuevo (`error.middleware.ts` ya mapea los 4 a 409).
+  **Deuda de wording, ESCALADA de teórica a real por 1c-ii-b (ver más
+  abajo).** `CreditNoteAttributionBlockedError`, `CreditNoteAttributionMismatchError`
+  y `CreditNotePairCapExceededError` (`domain/errors.ts`) dicen *"La
+  reserva …"* también cuando quien dispara el error es una orden -- misma
+  deuda ya diferida para `CreditNoteConsolidatedFullReversalError`. Hasta
+  1c-ii-a esto era teórico (ninguna orden llegaba a estas 3 clases); desde
+  1c-ii-b la rama ORDER de `buildCreditNote()` SÍ las tira con un
+  `orderId` real en el mensaje -- sigue sin bloque asignado (no requiere
+  código de error nuevo, `error.middleware.ts` ya mapea los 4 a 409), pero
+  ya no es un caso hipotético.
 
-  **`1c-ii-b`/`1c-ii-c`/`1d` siguen en HOLD**, sin fecha.
+  **`1c-ii-b` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
+  APPROVED WITH CONDITIONS, condiciones C1/C2/C4).** Cablea la rama ORDER
+  real en `buildCreditNote()` (`invoice.service.ts`) -- espejo estructural
+  exacto de la rama RESERVATION: mismo predicado (`ADJUSTMENT`, sujeto
+  no-nulo, con líneas), mismo `resolveRefundableForPair()`, mismo cruce de
+  monto contra `tx.amount`, misma copia 1-a-1 de la porción. Tres
+  decisiones del gate, cada una grounded o explícita:
+  - **C1 (lector de atribución, decisión del dueño tras
+    `AskUserQuestion`):** inline vía `getOrderIdsByInvoiceItemId()`
+    (`this.invoiceRepo`, FUERA de la transacción, igual que `originalItems`
+    ya resuelve la rama de reservas) -- NO `resolveOrderPairAttribution()`
+    (bloque 1b, que exige un `client` abierto). Ese método queda
+    **PARKEADO** (docblock corregido: no se borra, cálculo correcto,
+    cobertura de integración real) y se usa como oráculo de equivalencia:
+    `classify-order-live-invoice-pair.integration.test.ts` (nuevo `it`,
+    7mo test del archivo) prueba contra Postgres real que el camino
+    parkeado y el camino real de `buildCreditNote()` dan el MISMO
+    `attributedNeto`/`attributedIva`/`attributedTotal` para un fixture
+    mixto (orden + reserva en el mismo grupo de tasa) -- las dos lecturas
+    del mismo concepto no pueden divergir sin que este test lo note.
+  - **C2 (ambigüedad `orderId`+`reservationId` no-nulos a la vez,
+    grounding `auditor-circuitos-erp`):** `financial_transactions` no
+    tiene CHECK que lo impida (solo disciplina de los 2 creadores del
+    escape) -- ninguno de los 5 sistemas de referencia (Odoo, ERPNext,
+    QloApps, Dolibarr; Cloudbeds sin evidencia utilizable, closed-source)
+    deja esto resuelto solo por precedencia de código implícita. Odoo lo
+    cierra con CHECK real en el propio ledger
+    (`account_move_line._sql_constraints`); QloApps (único con el mismo
+    diseño de 2 columnas nullable) tiene el mismo agujero sin protección,
+    por limitación de MySQL 5.x que acá no aplica (Postgres). Recomendación
+    combinada, no una u otra: **(a) fail-loud en código, este commit** --
+    `CreditNoteAmbiguousSubjectError` (`domain/errors.ts`,
+    `CREDIT_NOTE_AMBIGUOUS_SUBJECT`, 409), guard en
+    `invoice.service.ts` ANTES de cualquier rama (ni siquiera depende de
+    `isFullReversal`) -- y **(b) CHECK real de schema, bloque de migración
+    APARTE** (nada de schema en este commit; riesgo de producción real,
+    `migrate:tenants` corre contra todas las tenant DB en cada deploy; la
+    forma recomendada es `(order_id IS NOT NULL)::int + (reservation_id
+    IS NOT NULL)::int <= 1` -- `<= 1`, NO `= 1`: `sql.invoice.repository.ts`
+    ya declaró NULL+NULL como falso negativo aceptado, un `= 1` lo
+    revertiría de contrabando -- vía `ADD CONSTRAINT ... NOT VALID` +
+    `VALIDATE CONSTRAINT` aparte, con medición previa por tenant. **Sin
+    bloque asignado todavía** -- backlog de schema, ver roadmap si aplica.
+  - **C4 (rename `attributionKey`, cumplido):** `reservationId` →
+    `attributionKey` en `FrozenInvoiceItemShare`/`ResolveRefundableForPairInput`
+    (`refund-attribution.ts`) y sus 3 callers (`invoice.service.ts` x2
+    ramas, `resolveReservationPairAttribution()`, `resolveOrderPairAttribution()`).
+    Cumple la promesa del bloque 1a en el mismo commit que cablea la rama
+    de órdenes, como estaba escrito.
+  - **C3 (docblocks "3 ramas" → 4 ramas):** actualizados
+    `getIssuedCreditNoteCompensationTotalForReservation()`/`ForOrder()`
+    (`sql.invoice.repository.ts`) -- la propiedad ("ninguna rama reparte
+    una NC parcial entre múltiples sujetos") se mantiene con la 4ta rama
+    porque es 1:1 con UNA orden, misma forma que la rama por-par de
+    reservas.
+
+  **Corrección del gate de pre-commit (segunda ronda, 11/09/2026,
+  `architecture-governor`, APPROVED WITH CONDITIONS -- 4 hallazgos, los 4
+  aplicados antes de commitear, ninguno de negocio):**
+  - **F1 -- mutante sobreviviente real, cerrado.** El test de tope-por-par
+    de orden sobreescribía `getInFlightCreditNoteTotalForPairForUpdate`
+    con `async () => 500` (mismo patrón que su espejo de reservas) --
+    ignora sus argumentos, así que un mutante que invirtiera
+    `kind: 'ORDER'` por `kind: 'RESERVATION'` en el `pairAttribution` de
+    la rama nueva seguía dejando el tope silenciosamente fail-open para
+    órdenes (filtra por `r.reservation_id = <orderId>`, que nunca
+    matchea, entonces `getInFlightCreditNoteTotalForPairForUpdate` da 0 y
+    el tope nunca bloquea) y el test entero de todos modos en VERDE (el
+    fake, 0-ário, tampoco tipaba los argumentos -- mismo defecto que
+    `ROLES-CATALOG-DRIFT-001`: un chequeo que no puede ver un rename
+    porque nunca inspecciona el valor). Corregido: el test captura la
+    llamada real y afirma `subject: { kind: 'ORDER', id: 'ord-A' }` --
+    reproducido el mutante después del fix, ahora rompe exactamente ese
+    test (`npx vitest run src/facturacion/invoice.service.test.ts` con el
+    mutante aplicado a mano vía script, revertido sin commitear: 82/83,
+    1 rojo, el correcto).
+  - **F2 -- comentario y mensaje de error desactualizados por este mismo
+    bloque.** La rama `else` heredada (proporcional/Nivel A) decía "un
+    ADJUSTMENT de orden debe revertir la factura completa" -- cierto
+    hasta 1c-ii-a, falso desde 1c-ii-b: ahora un `ADJUSTMENT` parcial con
+    `orderId` real nunca llega ahí (lo captura la rama nueva). Reescrito
+    para describir el único caso que sigue llegando: parcial SIN ningún
+    sujeto (`orderId`/`reservationId` ambos `null`), una fila de ledger
+    anómala.
+  - **F3 -- ancla de línea stale, reintroducida por este mismo diff.** El
+    docblock de `buildCreditNote()` citaba `:816` para el call site de
+    `resolveRefundableForPair()` -- ya estaba corrida en HEAD antes de
+    este bloque (apuntaba a una línea de comentario) y el diff la corrió
+    más. De-anclada a prosa, sin número de línea (mismo criterio que
+    `206964b`, el commit INMEDIATO ANTERIOR en esta misma rama, que hizo
+    exactamente esta corrección en otro archivo del mismo módulo).
+  - **F4 -- doctrina de ramas de `buildCreditNote()` sin actualizar por
+    3.3-a, agravado acá.** El docblock decía "Dos ramas según total vs.
+    parcial" desde 08/09 -- ya era 3 desde 3.3-a (rama por-par de
+    reserva) sin corregirse, y 1c-ii-b agregaba la 4ta sin tocar este
+    párrafo. Reescrito a "Cuatro ramas", con las dos ramas por-par
+    (reserva/orden) documentadas explícitamente y sin fecha de
+    vencimiento nueva.
+
+  Evidencia (COMANDO + salida real, no resumen -- corrección del gate:
+  la ronda anterior de este documento presentaba estos números como
+  verificados por el gate sin que el gate hubiera podido correr la suite
+  de integración, `TEST_DATABASE_URL` sin definir en su sesión):
+  - `npx vitest run` (unit, sin integración): **2147/2147**, 1 todo, 162
+    archivos (baseline 2140 +7 nuevos, IDÉNTICO en lo demás -- cero valor
+    esperado cambiado).
+  - `TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+    npx vitest run --config vitest.integration.config.ts`: **295/296**,
+    35/36 archivos. El único rojo:
+    `cancel-reservation-with-credit-note.integration.test.ts`, caso
+    C1(ii) del residual 2 de 3.3-d (`expected "spy" to be called ... /
+    Number of calls: 0`). **Re-verificado con `git stash` + mismo comando
+    contra HEAD (`206964b`, sin este cambio) en esta misma sesión, DOS
+    veces** (antes y después de aplicar F1-F4): mismo archivo, mismo
+    test, mismo mensaje -- confirmado PRE-EXISTENTE, no una regresión de
+    1c-ii-b.
+  - `classify-order-live-invoice-pair.integration.test.ts` en aislamiento
+    (mismo `TEST_DATABASE_URL`): **7/7**, incluido el test de equivalencia
+    C1 contra Postgres real.
+  - Mutation testing, 3 mutantes manuales (aplicados y revertidos, sin
+    commitear, cada uno restaurado desde una copia y reverificado en
+    82/83 → 83/83 después de revertir):
+    1. Filtrar `originalItems` a las líneas de la orden ANTES de mapear a
+       `shareItems` (en vez de `orderIdMap.get(i.id) ?? null` sobre
+       TODAS) reproduce el bug inverso de `REFUND-ATTRIBUTION-RESIDUAL-001`
+       -- rompe exactamente 3 de los 7 tests nuevos (mezcla orden+reserva,
+       reconstrucción de 3 órdenes, tope por par -- los 3 que dependen del
+       denominador correcto).
+    2. Neutralizar el guard de ambigüedad (`if (false)`) rompe
+       exactamente el test dedicado a `CREDIT_NOTE_AMBIGUOUS_SUBJECT`,
+       ninguno más.
+    3. (F1) Invertir `kind: 'ORDER'` → `'RESERVATION'` en `pairAttribution`
+       -- ANTES del fix de F1 sobrevivía (83/83 en verde, tope silenciosamente
+       fail-open para órdenes); DESPUÉS del fix rompe exactamente el test
+       de tope por par corregido, ninguno más.
+  - `cancel-order-with-credit-note.service.ts` **sin tocar** en ningún
+    momento (`git status --short` no lo lista) -- `frozenChargeIds`/tx2/el
+    placeholder de 1c-i quedan intactos, MUT-B sigue como criterio
+    bloqueante de 1c-ii-c, no de este bloque.
+  - **Chequeo pre-deploy que el gate pidió (no bloqueante para el commit,
+    corrido igual -- read-only, barato, mejor tenerlo listo antes de pedir
+    autorización de push):** `SELECT count(*) FROM financial_transactions
+    WHERE order_id IS NOT NULL AND reservation_id IS NOT NULL AND
+    reversed_invoice_id IS NOT NULL` contra los dos tenants reales del
+    proyecto Neon `ancient-king-17098519` -- **`production`
+    (`br-snowy-tree-ax5wmq70`): 0. `tenant-hotel-los-alamos`
+    (`br-square-leaf-axzvu903`): 0.** Ninguna fila hoy quedaría convertida
+    de NC-que-funciona a 409 por el guard nuevo -- el resto de las
+    branches del proyecto son backups/templates/test, no tenants vivos.
+
+  DEFENSIVE_DEVELOPING §2: cambio en `src/facturacion/` (dominio de
+  facturación, no `src/api/routes/`/`container.ts`/`platform/`/`workers/`
+  -- §3 no aplica). `criterios-negocio`: no crea entidad ni tabla nueva,
+  extiende un cálculo puro (`resolveRefundableForPair()`) y una rama de
+  servicio de dominio ya existente al segundo sujeto que el schema ya
+  soporta (`invoice_items.order_item_id`); la clasificación
+  transacción/maestro/documento de `Invoice`/`InvoiceItem`/`FinancialTransaction`
+  no cambia.
+
+  **`1c-ii-c`/`1d` siguen en HOLD**, sin fecha. El criterio de aceptación
+  bloqueante MUT-B (comentario `21fc413` + este archivo) sigue vigente
+  para cuando 1c-ii-c retire el placeholder de 1c-i.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
