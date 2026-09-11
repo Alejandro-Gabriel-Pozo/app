@@ -878,6 +878,23 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### Menores / cosmético
 
+- **`INTEGRATION-HARNESS-DROPDB-MASK-01`** 🟠 (11/09/2026, hallazgo de paso
+  al cerrar 3.3-d residual 1) -- en `src/tests/integration/helpers/db.ts`,
+  si `createTestDatabase()` falla en `beforeAll` (medido: timeout de 10s
+  contra Neon, contención real corriendo las 32 suites de integración
+  secuencial, cada una CREATE+DROP DATABASE) `pool` queda `undefined`, y
+  `afterAll` igual llama `dropTestDatabase(dbName, pool)` -- explota con
+  `TypeError: Cannot read properties of undefined (reading 'end')`
+  (`db.ts:177`, `pool.end()`). Ese segundo error TAPA el primero en el
+  resumen de la corrida (aparece como "Failed Suites", no como el timeout
+  real) -- quien lea el resultado sin abrir el detalle completo puede
+  pensar que el problema es `dropTestDatabase()`, no la contención de
+  `createTestDatabase()`. Confirmado flake, no regresión: la suite
+  afectada (`credit-note-compensation.integration.test.ts`) dio 10/10
+  passed corrida sola inmediatamente después, sin tocar nada. Fix
+  sugerido: en cada `afterAll` (o en el helper mismo), saltear
+  `dropTestDatabase()` si `pool` nunca se asignó -- mecánico, patrón
+  guard-clause, no decisión de diseño.
 - **`OUTBOX-DL-THROTTLE-RESET-01`** 🟠 — el cooldown del aviso de
   dead-letter se resetea con `pool.on('error')`, correlacionado con
   outages. Techo real sigue bajo, no urgente.
