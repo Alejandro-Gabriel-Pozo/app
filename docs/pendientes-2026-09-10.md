@@ -956,36 +956,90 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   planea revalidarlo dentro de la transacción de emisión -- deuda
   registrada, no se tocó ese documento (no aprobado, fuera del radio de
   este fix). **LOCAL, sin pushear ni deployar todavía.**
-- **`INVOICE-CHARGES-GUARD-INDIVIDUAL-01`** (11/09/2026, hallazgo del gate
-  `architecture-governor` al cerrar el ítem de arriba -- §4.0, tercera
-  dirección del mismo concepto, no bloqueante para esos 2 commits pero
-  registrada aparte). El fix de arriba cierra SOLO
-  consolidada-vs-consolidada (¿este cargo ya está en `invoice_charges` de
-  OTRA consolidada?). Hay una tercera dirección, sin guardia en ningún
-  lado: el camino INDIVIDUAL (`requestInvoice()`,
-  `src/facturacion/invoice.service.ts:326-334`) nunca escribe
-  `invoice_charges` -- solo las consolidadas pasan `charges`
-  (`src/facturacion/sql.invoice.repository.ts:1069-1076`, comentario
-  propio: "C1-Fase C -- solo facturas consolidadas pasan `charges`") --
-  así que `idx_invoice_charges_ft` (`src/db/schema.sql:3227-3228`) NO
-  cubre ese camino. Consecuencia: (a) `requestInvoice(ft)` no chequea si
-  `ft` ya está en un `invoice_charges` de una consolidada NO-`ISSUED`
-  (idempotencyKey `invoice:<ftId>` nunca choca con
-  `invoice:consolidated:<hash>`, así que ningún mecanismo existente lo
-  detecta); (b) simétricamente, el guard recién corregido de
-  `getInvoicedFinancialTransactionIds()` tampoco ve un cargo ya atado a
-  una factura INDIVIDUAL no-`ISSUED` -- la AR sigue PENDIENTE_FACTURAR y
-  puede reentrar en el próximo lote consolidado. El predicado completo,
-  agnóstico de los dos caminos, YA EXISTE en el repo --
-  `resolveInvoiceLinkage()` (`src/facturacion/sql.invoice.repository.ts:290-316`)
-  -- pero hoy solo lo usan `AccountsReceivableService` y los 2 servicios
-  de cancelar-con-NC, ninguno de los dos guards de emisión. **No
-  verificado**: si algún camino real de UI permite facturar
-  individualmente un cargo que ya está en un lote consolidado pendiente
-  (pregunta de alcanzabilidad, no de código), ni si hay filas reales hoy
-  en ese estado -- ninguna de las dos cosas se midió todavía. Bloque
-  propio, matriz de impacto propia (toca emisión AFIP + transiciones de
-  AR) -- no mecánico, no extender sin decisión de diseño nueva.
+- **`INVOICE-CHARGES-GUARD-INDIVIDUAL-01`** 🔴 **-- PRIORIDAD ESCALADA
+  (11/09/2026, gate `architecture-governor`, investigación de
+  alcanzabilidad completada)**. Nació como hallazgo del gate al cerrar el
+  ítem de arriba (§4.0, tercera dirección del mismo concepto). El fix de
+  arriba cierra SOLO consolidada-vs-consolidada. Esta tercera dirección
+  (camino INDIVIDUAL, `requestInvoice()` nunca escribe `invoice_charges`
+  -- solo las consolidadas pasan `charges`,
+  `src/facturacion/sql.invoice.repository.ts:1069-1076`) sigue sin
+  guardia. **Ya no es "no verificado": la alcanzabilidad por UI está
+  CONFIRMADA, no es teórica**, y la consecuencia real es que **un
+  usuario `FRONT_DESK` puede emitir un segundo CAE real de AFIP para un
+  cargo que una consolidada ya facturó** -- un duplicado fiscal no se
+  puede borrar, necesita una Nota de Crédito contra AFIP (R12/DOCUMENTO).
+  Tres hallazgos, cada uno agrava al anterior:
+  1. **El solapamiento es el camino de diseño, no una mala
+     configuración.** `AccountsReceivableService.transferStayBalanceToReceivable()`
+     (`src/clientes-finanzas/accounts-receivable.service.ts:121` exige
+     `company.kind === 'COMPANY'`; `:143-174`) crea un `CHARGE` `SETTLED`
+     nuevo (`companyChargeId`) en la cuenta corriente de la EMPRESA **a
+     propósito** -- comentario propio: la deuda tiene que verse en el
+     ledger normal "desde el momento de la transferencia, no recién
+     cuando se facture" (pedido explícito del dueño, F1-Pieza 3,
+     23/08/2026) -- y ESE MISMO `financial_transaction_id` es el que
+     queda `accounts_receivable.financialTransactionId` para la
+     consolidada. El camino que alimenta la factura consolidada es, por
+     diseño, el mismo cargo que aparece en cuentas corrientes.
+  2. **El botón individual de la UI tiene un argumento de seguridad
+     escrito que es falso para el camino consolidado.**
+     `appfrontend-main/src/components/FacturarButton.tsx:11-16` (usado en
+     `appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:304-306`
+     para cualquier cliente con `enableCurrentAccount=true`, sin filtrar
+     por `kind` -- una EMPRESA con cuenta corriente entra igual) dice
+     textual: "`POST /api/invoices` es idempotente por
+     `financialTransactionId`... reintentar el click en una factura ya
+     emitida devuelve la misma factura, nunca pide un CAE duplicado. Por
+     eso este componente no pre-consulta el estado al montar". Cierto
+     para el camino individual (`idempotencyKey = invoice:<ftId>`),
+     **falso para el consolidado** (`idempotencyKey =
+     invoice:consolidated:<hash>`, nunca choca) -- un cargo YA facturado
+     por una consolidada sigue mostrando el botón "Facturar" activo, y
+     clickearlo pide un segundo CAE real sin que ningún mecanismo lo
+     frene. No es solo un guard faltante -- es una justificación de
+     seguridad escrita que no aplica a este caso, exactamente el patrón
+     que `honest-degradation` existe para atrapar.
+  3. **Asimetría de autorización.** El endpoint consolidado es
+     `Roles.MANAGEMENT` a propósito (`src/facturacion/invoices.routes.ts:112-117`,
+     comentario propio: "es una decisión de facturación corporate, no una
+     operación de mostrador"); el individual es `Roles.FRONT_DESK`
+     (`:93-110`). Un recepcionista puede, sin querer, adelantarse o
+     duplicar una decisión de facturación corporate que el código
+     reservó a propósito para MANAGEMENT.
+  **Medido, read-only, las 2 tenants reales (Neon `ancient-king-17098519`,
+  11/09/2026)**: 3 queries -- (i) `invoices` individuales que YA coinciden
+  con un `financial_transaction_id` de `invoice_charges` (duplicado ya
+  ocurrido): `0`/`0`. (ii) AR `PENDIENTE_FACTURAR` cuyo cargo ya tiene una
+  invoice individual: `0`/`0`. (iii) cargos con `invoice_charges` (de
+  cualquier status) que pertenecen a un cliente con
+  `enable_current_account=true` (exposición en vivo -- el botón "Facturar"
+  visible sobre un cargo ya facturado por consolidada, aunque nadie lo
+  haya clickeado todavía): `0`/`0`. **Sin incidente real ni exposición en
+  vivo hoy en los datos de práctica -- el mecanismo es genuinamente
+  alcanzable, no solo posible en abstracto.**
+  El predicado completo, agnóstico de los dos caminos, YA EXISTE en el
+  repo -- `resolveInvoiceLinkage()`
+  (`src/facturacion/sql.invoice.repository.ts:290-316`) -- pero hoy solo
+  lo usan `AccountsReceivableService` y los 2 servicios de
+  cancelar-con-NC, ninguno de los dos guards de emisión.
+  **Pregunta de producto sin decidir, no técnica (regla de este repo:
+  separar la pregunta de alcance de la decisión de negocio escondida
+  adentro)**: ¿facturar individualmente un cargo que ya está en un lote
+  consolidado pendiente es ALGUNA VEZ legítimo, o siempre un error? Y,
+  dado que hay más de una forma razonable de cerrar esto y se comportan
+  distinto: (a) solo guard de backend (el botón sigue, el click falla con
+  error tipado); (b) la UI deja de ofrecer facturación individual para
+  cargos en un lote AR; (c) las dos. Cada una es su propia pregunta,
+  requiere `AskUserQuestion` al dueño antes de diseñar el fix -- no
+  resolver ninguna de las dos como efecto colateral de la otra.
+  **HOLD en implementación -- bloque propio, matriz de impacto propia**
+  (mínimo: los 2 guards de emisión, `FacturarButton.tsx` + su docblock,
+  la condición de render de `cuentas-corrientes`, el uso en
+  `reservas/[id]`, las transiciones de AR `PENDIENTE_FACTURAR`/
+  `FACTURADO`, el split `FRONT_DESK`/`MANAGEMENT`, y los 3 callers
+  existentes de `resolveInvoiceLinkage()`) -- no extender sin la decisión
+  de producto de arriba.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
