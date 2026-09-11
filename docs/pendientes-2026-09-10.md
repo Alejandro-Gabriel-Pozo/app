@@ -988,14 +988,34 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   de un bloque anterior (ver ADRs reconciliados, `3aa04ef`). Query de
   producción sobre facturas consolidadas multi-orden reales: sigue sin
   correr (sin credenciales/tools de Neon en esa sesión del gate).
-  **Hallazgo NO buscado, real, en código YA en producción** (encontrado
-  al escribir los tests de 1a, no corregido -- necesita su propio gate):
-  `distributeGroupAmount()` (`refund-attribution.ts`) tiene un defecto de
-  redondeo -- si una consolidada mezcla un item sin clave (origen orden)
-  y uno con clave (origen reserva) en el MISMO grupo de tasa, el residuo
-  de redondeo le atribuye TODO el monto del item sin clave a la clave
-  presente, no un centavo. Vivo desde el bloque 3.3-a (08/09/2026).
-  Alcanzable con datos reales: no medido.
+  **`REFUND-ATTRIBUTION-RESIDUAL-001` — ✅ RESUELTO (11/09/2026, gate
+  `architecture-governor`, `df7abc0`, LOCAL/sin pushear).** Hallazgo NO
+  buscado, real, en código YA en producción (encontrado al escribir los
+  tests de 1a): `distributeGroupAmount()` (`refund-attribution.ts`)
+  calculaba el residuo de redondeo contra `frozenAmount` COMPLETO en vez
+  de contra la porción de los ítems CON clave -- si una consolidada
+  mezclaba un ítem sin clave (origen orden) y uno con clave (origen
+  reserva) en el MISMO grupo de tasa, el residuo le atribuía TODO el
+  monto del ítem sin clave a la clave presente, no un centavo (medido:
+  2420 en vez de 1210, el doble). Vivo desde el bloque 3.3-a (08/09/2026).
+  **Cambio de comportamiento real, no solo refactor**: antes del fix,
+  una consolidada reserva+orden a la misma tasa hacía que
+  `InvoiceService.buildCreditNote()` SIEMPRE tirara
+  `CreditNoteAttributionMismatchError` (el ledger real nunca coincidía
+  con la atribución inflada) -- la NC parcial de esa reserva era
+  imposible de emitir. Ningún dinero salió mal atribuido a AFIP antes
+  del fix -- el guard de mismatch contenía el error fail-closed
+  (síntoma: "no se puede emitir", no "se emitió mal"). **Medido,
+  read-only, las 2 tenants reales** (Neon `ancient-king-17098519`,
+  11/09/2026): 0 facturas `ISSUED` mezclan `invoice_items` de origen
+  reserva y de origen orden en el mismo grupo de tasa en ninguna de las
+  2 -- el fix fue preventivo, nadie estaba bloqueado hoy por este bug.
+  4+1 tests nuevos/reescritos + evidencia de mutación (revertir solo la
+  línea del fix pone en rojo exactamente esos tests, aplicada y
+  revertida sin commitear). Suite completa 2123/2123 (+3), arquitectura
+  30/30 sin cambios. **Desbloquea el bloque 1c de
+  `ORDER-CONSOLIDATED-PARTIAL-01`**, que sigue sin autorizar aparte --
+  ver ese bullet más arriba.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
