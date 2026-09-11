@@ -295,7 +295,22 @@ export class InvoiceService {
       const reservation = item.reservationId ? await this.reservationRepo.getById(item.reservationId) : null;
       return {
         orderItemId: item.id,
-        reservationId: item.reservationId,
+        // INVOICE-ITEM-ORIGIN-XOR-001 (11/09/2026, gate architecture-governor,
+        // reproducido contra Postgres real -- 23514 en chk_invoice_item_origin
+        // antes de este fix). Esta línea nace de un order_item -- ESE es su
+        // origen documental, no la reserva a la que referencia (un hop más
+        // allá). chk_invoice_item_origin exige XOR estricto: setear los dos
+        // a la vez violaba el CHECK 100% de las veces que un order_item
+        // RESERVATION llegaba hasta acá (chk_order_item_polymorphic ya
+        // garantiza reservationId NOT NULL para ese itemType, así que el
+        // guard `? ... : null` de arriba nunca tomaba la rama null en una
+        // fila real). No se pierde información: order_items.reservation_id
+        // sigue siendo recuperable por JOIN, y refund-attribution.ts:151-153
+        // ya documenta que un ítem de origen orden cuenta en el denominador
+        // del grupo de tasa SIN entrada propia -- exactamente lo que
+        // reservationId: null produce acá, alineando el productor con el
+        // contrato que el consumidor ya asumía.
+        reservationId: null,
         description: reservation ? reservation.resource.name : 'Reserva',
         quantity: item.quantity,
         unitPrice: item.unitPrice,

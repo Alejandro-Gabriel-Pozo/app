@@ -821,7 +821,15 @@ describe('InvoiceService', () => {
       const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
-      expect(items[0]).toMatchObject({ description: 'Mesa Ventana', orderItemId: expect.any(String), reservationId: 'res-1' });
+      // INVOICE-ITEM-ORIGIN-XOR-001 (11/09/2026) -- esta aserción congelaba
+      // la forma INVÁLIDA (orderItemId Y reservationId no-null a la vez),
+      // que Postgres rechaza con 23514 contra chk_invoice_item_origin
+      // (reproducido contra Postgres real). El origen documental de esta
+      // línea es el order_item -- reservationId va null, recuperable por
+      // JOIN a order_items si hiciera falta (ver comentario en
+      // resolveOrderItemLine()). El nombre del recurso de la reserva se
+      // sigue resolviendo bien para la descripción -- eso no cambia.
+      expect(items[0]).toMatchObject({ description: 'Mesa Ventana', orderItemId: expect.any(String), reservationId: null });
     });
 
     it('una reserva facturada directo (sin orderId) arma UNA línea con tx.amount, no reservation.totalPrice', async () => {
