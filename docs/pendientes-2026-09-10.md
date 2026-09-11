@@ -828,7 +828,19 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (revertir solo 1 de los 3 call sites al exact-match viejo pone en rojo
   exactamente los 2 tests de ese handler, aplicada y revertida sin
   commitear). Sin casos reales todavía (0/15 medición previa) -- el cierre
-  es preventivo, no reactivo a un incidente.
+  es preventivo, no reactivo a un incidente. **PUSHEADO Y DEPLOYADO en
+  producción, verificado**: commits `63e8d29`+`cb8682c`+`f5b1369`
+  pusheados 11/09/2026 con autorización explícita del dueño; deploy
+  `dep-dahrak1srm7s73d71sgg` = `live` (finished 08:02:32Z), instancia
+  nueva `srv-d8tdt41kh4rs73buo5ng-cp4tr` (distinta de la vieja `-5h6xc`,
+  confirma que no es un healthcheck sirviéndose desde el proceso viejo);
+  log de build confirma `migrate:tenants` -- `2 negocio(s) con BD
+  asignada. Versión objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: sin
+  cambio de schema en ninguno de los 3 bloques); `GET /health/db` = 200
+  post-deploy. Bloque 3 verificado además contra Postgres real antes del
+  push (no solo tsc): 19/19 tests de integración en 3 suites reales
+  (incluida la que había dado el flake) con la firma nueva de
+  `dropTestDatabase()`.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
