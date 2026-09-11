@@ -1202,7 +1202,69 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   detectaría). Suite completa: 2135/2135 unit (162 archivos, incluidas
   las 4 cercas de arquitectura que este bloque podía afectar) + 288/289
   integration -- mismo 1 rojo preexistente de 1c-0, no relacionado.
-  **`1c-ii`/`1d` siguen en HOLD**, sin fecha.
+
+  **`1c-ii` -- el diseño original NO es implementable tal cual (gate,
+  11/09/2026), partido en 1c-ii-a/b/c.** Una ronda de gate anterior
+  asumió `resolveOrderPairAttribution()` (bloque 1b) como consumidor
+  directo de la rama de órdenes en `buildCreditNote()` -- falso:
+  `resolveOrderPairAttribution(client, …)` exige `SqlClient`, pero la
+  atribución de `buildCreditNote()` corre FUERA de la transacción. El
+  par correcto es `getOrderIdsByInvoiceItemId()` (nuevo) +
+  `resolveRefundableForPair()` directo, igual que ya hace la rama de
+  reservas -- `resolveOrderPairAttribution()` es para 1d
+  (`classifyOrderLiveInvoice`), no para esto.
+
+  **`1c-ii-a` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
+  `c58b8f2`).** Preparación mecánica, cero cambio de comportamiento
+  observable: `getOrderIdsByInvoiceItemId()` (nuevo, sin consumidor
+  todavía, mismo criterio que 1b), `getInFlightCreditNoteTotalForPairForUpdate()`
+  generalizado a un discriminador `{kind: 'RESERVATION'|'ORDER', id}`
+  (columna elegida por `switch` sobre unión cerrada, nunca interpolada),
+  `pairAttribution` local de `buildCreditNote()` generalizado en
+  paralelo. 2140/2140 unit IDÉNTICO al baseline (cero test roto, cero
+  valor esperado cambiado) + 294/295 integration (+3: discriminador
+  `RESERVATION` vs `ORDER` sobre la misma factura, `getOrderIdsByInvoiceItemId()`
+  contra el productor real, y equivalencia probada del camino de
+  reservas -- mismos 3 tests preexistentes de `credit-note-pair-cap.integration.test.ts`,
+  mismos valores). Mutation testing, 3 mutantes: 2 confirmados (invertir
+  columna del discriminador, `Map` vacío en el método nuevo); el 3ro
+  (sacar el `FOR UPDATE` preexistente de la línea que este bloque no
+  tocó) **no rompió ningún test en 3 corridas** -- declarado como
+  debilidad ya existente del test de concurrencia, no una regresión de
+  este commit.
+
+  **Corrección de alcanzabilidad (gate, esta ronda):** 1c-ii no
+  habilita ninguna emisión AFIP nueva alcanzable HOY -- mismo hallazgo
+  que 1c-i (ver "Producción, medido 11/09/2026" arriba), reconfirmado:
+  el único creador real de `accounts_receivable` nunca setea `orderId`.
+  El riesgo real de 1c-ii-b, cuando llegue, es de REGRESIÓN sobre el
+  camino de reservas (vivo, comparte código), no de emitir mal una NC
+  de orden.
+
+  **Decisión de negocio pendiente, bloquea `1c-ii-c` (NO 1c-ii-b):**
+  retirar el rechazo placeholder de 1c-i
+  (`cancel-order-with-credit-note.service.ts:277-279`) movería una
+  falla determinística de ANTES del ledger (hoy, dentro de tx1, antes
+  del INSERT del ADJUSTMENT) a DESPUÉS (si `buildCreditNote()` tira
+  `CreditNoteAttributionBlockedError`/`_MismatchError` tras el commit
+  de tx1) -- un ADJUSTMENT PENDING huérfano permanente, a diferencia de
+  un rechazo de AFIP (transitorio, reintentable). Choca con el mismo
+  grounding ERPNext/Odoo/Dolibarr/Cloudbeds/QloApps que motivó el
+  diseño de 1c-i. Dos respuestas razonables: (a) pre-validar la
+  atribución en tx1 antes del INSERT del ADJUSTMENT (cuesta una 3ra
+  computación de atribución, o pasar `client` y reordenar), o (b)
+  aceptar el ADJUSTMENT huérfano como estado "solicitud" (N11), mismo
+  criterio que ya se acepta para un fallo de AFIP. Requiere
+  `AskUserQuestion` antes de encarar 1c-ii-c -- no resuelto todavía.
+
+  **Deuda de wording, sin bloque asignado:** `CreditNoteAttributionBlockedError`,
+  `CreditNoteAttributionMismatchError` y `CreditNotePairCapExceededError`
+  (`domain/errors.ts`) van a decir *"La reserva …"* también cuando
+  quien dispara el error sea una orden -- misma deuda ya diferida para
+  `CreditNoteConsolidatedFullReversalError`. No requiere código de
+  error nuevo (`error.middleware.ts` ya mapea los 4 a 409).
+
+  **`1c-ii-b`/`1c-ii-c`/`1d` siguen en HOLD**, sin fecha.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
