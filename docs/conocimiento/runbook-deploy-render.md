@@ -1,6 +1,6 @@
 # Runbook — deploy Render (Node pin + migraciones con EXCLUDE)
 
-- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base)
+- **Fecha:** 2026-08-25 · **actualizado 2026-08-28** (Procedimiento 3 — rollback, y verificación contra la base) · **actualizado 2026-09-11** (trigger del deploy — push = deploy, sin `autoDeploy` explícito)
 - **Estado:** implementado (`engines.node` acotado; incidente del día resuelto)
 - **Categoría:** Runbook + Incidente
 - **Etiquetas:** `render` `node` `migrate:tenants` `patch-package` `v42` `v44` `rollback` `neon`
@@ -10,6 +10,30 @@
 ## Contexto
 
 Deploy de `e84c779` (locks de reservas + schema v42) falló **dos veces** por causas independientes.
+
+## Trigger del deploy — push a `main` = deploy, no dos decisiones (11/09/2026)
+
+**`render.yaml` no tiene la clave `autoDeploy`.** Sin ella, el default de Render es
+`autoDeploy: true` — verificado con `grep -n "autoDeploy" render.yaml` (0 resultados) y
+confirmado empíricamente: cada push a `main` de una sesión completa de trabajo (~10 pushes)
+disparó un deploy automático, cada uno con `trigger: "new_commit"` en `list_deploys`, sin
+ningún trigger manual aparte.
+
+**Consecuencia práctica, la que importa:** el `buildCommand` de `render.yaml` encadena
+`npm install && npx puppeteer browsers install chrome && npm run build && npm run
+migrate:tenants` — así que **todo push a `main` escribe en TODAS las tenant DB**, sin
+importar si el commit toca schema o no (`migrate:tenants` reaplica `schema.sql` de forma
+idempotente en cada corrida). No hay una autorización de "push" separada de una autorización
+de "deploy" en este servicio — son la misma decisión, y hay que pedirla así (nombrando
+`migrate:tenants` y el hecho de que escribe en todas las tenant DB), no como si fueran dos
+pasos donde el segundo pudiera reconsiderarse después del primero.
+
+**Por qué está anotado acá y no daba por sabido:** esta pregunta ("¿push y deploy son la
+misma autorización acá?") se re-derivó **tres veces en una sola sesión** (11/09/2026, cierre
+de `INVOICE-CHARGES-GUARD-INDIVIDUAL-01`/`-1BIS-01`) porque ninguna nota de continuidad ni
+este runbook lo tenían escrito — cada ronda de revisión tenía que volver a preguntarlo desde
+cero. Si `render.yaml` alguna vez agrega `autoDeploy: false` explícito (deploys manuales),
+esta sección queda obsoleta — revisarla en el mismo cambio.
 
 ## Procedimiento 1 — Node no es el de `render.yaml`
 
