@@ -25,6 +25,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async getByFinancialTransactionId() { return []; }
   async getInvoicedFinancialTransactionIds() { return new Set<string>(); }
   async getFinancialTransactionIdsCoveredByConsolidated() { return new Set<string>(); } // Bloque 2 (11/09/2026) -- sin caller en este test
+  async getConsolidatedInvoiceIdsForFinancialTransactions() { return new Map<string, string>(); } // INVOICE-CHARGES-BUTTON-DEADEND-01 (11/09/2026) -- sin caller en este test
   async getByReservationId() { return []; }
   async getOutstandingByCustomerId() { return []; }
   async getOutstandingForUpdate() { return 0; }

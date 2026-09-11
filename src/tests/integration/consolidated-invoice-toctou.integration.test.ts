@@ -274,7 +274,7 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
    * nunca se borra, sea cual sea el desenlace. Promovido a scope externo
    * (11/09/2026, Bloque 2) -- lo reusan 2 describe hermanos.
    */
-  async function seedStuckInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<void> {
+  async function seedStuckInvoiceForCharge(chargeFtId: string, customerId: string, status: string): Promise<{ id: string }> {
     const invoiceId = randomUUID();
     await db.query(
       `INSERT INTO invoices
@@ -289,6 +289,7 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
        VALUES ($1, $2, $3, 100)`,
       [randomUUID(), invoiceId, chargeFtId],
     );
+    return { id: invoiceId };
   }
 
   /**
@@ -462,6 +463,56 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
         // es el de requestInvoice() (idempotencia propia, invoice:<ftId>),
         // no el que alimenta al botón del Bloque 2.
         expect(coveredIds.has(individual.chargeId)).toBe(false);
+      },
+      30_000,
+    );
+  });
+
+  describe('INVOICE-CHARGES-BUTTON-DEADEND-01 (11/09/2026, gate architecture-governor, opción B) -- getConsolidatedInvoiceIdsForFinancialTransactions() contra Postgres real', () => {
+    /**
+     * Método hermano de getFinancialTransactionIdsCoveredByConsolidated()
+     * (describe de arriba) -- mismo predicado exacto, pero devuelve el
+     * invoiceId en vez del booleano. Estos 3 casos son el espejo directo
+     * de los 3 de arriba, verificando que las dos superficies (Set vs Map)
+     * coinciden EXACTAMENTE en qué cargos consideran cubiertos.
+     */
+    it.each(['ISSUED', 'PENDING', 'FAILED_UNCERTAIN'] as const)(
+      'cargo cubierto por consolidada %s: devuelve el invoiceId de la consolidada -- mismo cargo que marca getFinancialTransactionIdsCoveredByConsolidated()',
+      async (status) => {
+        const company = await seedCustomer(db);
+        const covered = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        const stuckInvoice = await seedStuckInvoiceForCharge(covered.chargeId, company.id, status);
+
+        const invoiceRepo = new SqlInvoiceRepository(db);
+        const coveredIds = await invoiceRepo.getFinancialTransactionIdsCoveredByConsolidated([covered.chargeId]);
+        const coveredInvoiceIds = await invoiceRepo.getConsolidatedInvoiceIdsForFinancialTransactions([covered.chargeId]);
+
+        expect(coveredIds.has(covered.chargeId)).toBe(true);
+        expect(coveredInvoiceIds.get(covered.chargeId)).toBe(stuckInvoice.id);
+      },
+      30_000,
+    );
+
+    it(
+      'cargo cubierto por consolidada REJECTED: NO aparece en el Map -- mismo criterio que el Set hermano',
+      async () => {
+        const company = await seedCustomer(db);
+        const rejected = await seedPendingArWithCharge(company.id, 'CONFIRMED', 100);
+        await seedStuckInvoiceForCharge(rejected.chargeId, company.id, 'REJECTED');
+
+        const invoiceRepo = new SqlInvoiceRepository(db);
+        const coveredInvoiceIds = await invoiceRepo.getConsolidatedInvoiceIdsForFinancialTransactions([rejected.chargeId]);
+        expect(coveredInvoiceIds.has(rejected.chargeId)).toBe(false);
+      },
+      30_000,
+    );
+
+    it(
+      'lista vacía de financialTransactionIds -- Map vacío, sin query',
+      async () => {
+        const invoiceRepo = new SqlInvoiceRepository(db);
+        const coveredInvoiceIds = await invoiceRepo.getConsolidatedInvoiceIdsForFinancialTransactions([]);
+        expect(coveredInvoiceIds.size).toBe(0);
       },
       30_000,
     );

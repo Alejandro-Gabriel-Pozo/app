@@ -86,6 +86,19 @@ class FakeInvoiceRepository implements InvoiceRepository {
     }
     return result;
   }
+  async getConsolidatedInvoiceIdsForFinancialTransactions(ids: string[]): Promise<Map<string, string>> {
+    // Método hermano de getFinancialTransactionIdsCoveredByConsolidated()
+    // de arriba -- mismo predicado, pero devuelve el invoiceId en vez del
+    // booleano. INVOICE-CHARGES-BUTTON-DEADEND-01 (11/09/2026).
+    const result = new Map<string, string>();
+    for (const [chargeFtId, invoiceId] of this.charges) {
+      const status = this.invoices.get(invoiceId)?.status;
+      if (ids.includes(chargeFtId) && status && (INVOICE_STATUSES_CONSUMING_CHARGE as readonly string[]).includes(status)) {
+        result.set(chargeFtId, invoiceId);
+      }
+    }
+    return result;
+  }
   async resolveInvoiceLinkage(ftId: string): Promise<InvoiceLinkage> {
     const individual = [...this.invoices.values()].find((i) => i.financialTransactionId === ftId);
     const invoice = individual ?? (() => {

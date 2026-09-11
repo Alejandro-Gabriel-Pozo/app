@@ -164,6 +164,22 @@ export interface InvoiceRepository {
    */
   getFinancialTransactionIdsCoveredByConsolidated(financialTransactionIds: string[]): Promise<Set<string>>;
   /**
+   * `INVOICE-CHARGES-BUTTON-DEADEND-01` (11/09/2026, gate
+   * `architecture-governor`, opción B) — método HERMANO de
+   * `getFinancialTransactionIdsCoveredByConsolidated()` de arriba, mismo
+   * predicado exacto (mismo `WHERE`, mismo filtro
+   * `INVOICE_STATUSES_CONSUMING_CHARGE`), pero devuelve el `invoiceId` de
+   * la consolidada en vez de solo el `Set` de cargos cubiertos -- para que
+   * el frontend pueda armar un link preciso cargo→factura en vez de
+   * mandar al usuario a la lista completa del cliente a buscarlo.
+   * Deliberadamente un método nuevo, NO una firma cambiada del de arriba
+   * (mismo criterio que forzó separar este archivo de
+   * `getInvoicedFinancialTransactionIds()`): cambiar el tipo de retorno
+   * de un método ya consumido rompe silenciosamente a quien solo
+   * necesita el booleano de cobertura.
+   */
+  getConsolidatedInvoiceIdsForFinancialTransactions(financialTransactionIds: string[]): Promise<Map<string, string>>;
+  /**
    * I4 (23/08/2026, pendientes-2026-08-23.md — conciliación de pagos,
    * verificación de auditoría externa) — facturas `ISSUED` de un cliente
    * (excluye Notas de Crédito, que se emiten desde `type='REFUND'`) con

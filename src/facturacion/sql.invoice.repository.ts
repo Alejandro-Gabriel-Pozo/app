@@ -1000,6 +1000,23 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     return new Set(rows.map((r) => r.financial_transaction_id));
   }
 
+  async getConsolidatedInvoiceIdsForFinancialTransactions(financialTransactionIds: string[]): Promise<Map<string, string>> {
+    // Método hermano de getFinancialTransactionIdsCoveredByConsolidated()
+    // -- mismo WHERE, mismo filtro INVOICE_STATUSES_CONSUMING_CHARGE, pero
+    // suma i.id al SELECT para devolver el invoiceId en vez de solo el
+    // booleano de cobertura (ver docblock de la interfaz).
+    if (financialTransactionIds.length === 0) return new Map();
+    const { rows } = await this.db.query<{ financial_transaction_id: string; invoice_id: string }>(
+      `SELECT ic.financial_transaction_id, i.id AS invoice_id
+       FROM invoice_charges ic
+       JOIN invoices i ON i.id = ic.invoice_id
+       WHERE ic.financial_transaction_id = ANY($1::VARCHAR[])
+         AND i.status = ANY($2::text[])`,
+      [financialTransactionIds, [...INVOICE_STATUSES_CONSUMING_CHARGE]],
+    );
+    return new Map(rows.map((r) => [r.financial_transaction_id, r.invoice_id]));
+  }
+
   async getByReservationId(reservationId: string): Promise<Invoice[]> {
     // Bloque 3.1 (ADR común cancelar-con-NC §6.1, `docs/pendientes-2026-09-08.md`
     // #5a, gate `architecture-governor` 08/09/2026) -- antes esto era un

@@ -854,7 +854,21 @@ export function createCustomersRouter(container: AppContainer): Router {
         const chargeIds = statement.transactions.filter((tx) => tx.type === 'CHARGE').map((tx) => tx.id);
         const invoiceRepo = new SqlInvoiceRepository(req.db!);
         const covered = await invoiceRepo.getFinancialTransactionIdsCoveredByConsolidated(chargeIds);
-        res.json({ ...statement, coveredByConsolidatedTransactionIds: [...covered] });
+        // INVOICE-CHARGES-BUTTON-DEADEND-01 (11/09/2026, gate architecture-governor,
+        // opción B): mismo predicado que `covered` de arriba, pero con el
+        // invoiceId -- para que el frontend arme un link preciso cargo→factura
+        // en vez de mandar a la lista completa del cliente. `covered`/
+        // `coveredByConsolidatedTransactionIds` se mantienen sin tocar durante
+        // la ventana de deploy (compatibilidad hacia atrás con un frontend viejo).
+        const coveredInvoiceIds = await invoiceRepo.getConsolidatedInvoiceIdsForFinancialTransactions(chargeIds);
+        res.json({
+          ...statement,
+          coveredByConsolidatedTransactionIds: [...covered],
+          coveredByConsolidatedInvoices: [...coveredInvoiceIds].map(([financialTransactionId, invoiceId]) => ({
+            financialTransactionId,
+            invoiceId,
+          })),
+        });
       } catch (err) { next(err); }
     },
   );
