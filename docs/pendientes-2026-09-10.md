@@ -457,14 +457,19 @@ futuros, cada uno con su propio alcance.
   hecho de producción cuando `0a72f0f` (las 3 seed_keys nuevas) no está
   pusheado -- solo `cd4dff6` (la primera) está en `origin/main` -- mismo
   patrón de "estado de push como hecho fijo del texto" que este mismo
-  archivo prohíbe más arriba; (b) el "ver más abajo" que citaba no
-  resolvía a nada (nada de seeds bajo esa línea en las 600 del archivo).
-  Este commit corrige los dos: el runbook ahora describe lo que el código
-  DEFINE (por nombre, no por fecha ni línea) y remite a `SELECT seed_key
-  FROM platform_seed_markers ORDER BY seed_key` como la única fuente
-  autoritativa del estado real de una instalación puntual -- verdadero
-  antes y después de cualquier deploy futuro, sin necesidad de reescribir
-  esta nota de nuevo.
+  archivo prohíbe más arriba (nota de precisión: no es solo `cd4dff6` --
+  `18a3c93`, la segunda mitad de la misma reconciliación de
+  `PRESET-REVOKE-001`, ver línea 364 más abajo, también está en
+  `origin/main` -- re-chequear con `git merge-base --is-ancestor <hash>
+  origin/main` antes de asumir cualquiera de los dos, en vez de confiar en
+  esta nota); (b) el "ver más abajo" que citaba no resolvía a nada (nada
+  de seeds bajo esa línea en las 600 del archivo). Este commit corrige los
+  dos: el runbook ahora describe lo que el código DEFINE (por nombre, no
+  por fecha ni línea) y remite a `SELECT seed_key FROM
+  platform_seed_markers ORDER BY seed_key` como única fuente autoritativa
+  del estado real de una instalación puntual -- verdadero antes y después
+  de cualquier deploy futuro, sin necesidad de reescribir esta nota de
+  nuevo.
 - **`PLAN-LIMITS-EMPTY-MEANS-ALL-001`** (11/09/2026, gate
   `architecture-governor`, condición C5 de `PLAN-LIMITS-SEED-REVERT-001`
   de arriba, `requiere decisión del dueño`, NO implementado). Consecuencia,
