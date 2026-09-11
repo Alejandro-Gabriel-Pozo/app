@@ -702,11 +702,43 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **A7.6** — ✅ **DECIDIDO 10/09/2026 (dueño): 90 días de retención**,
   solo sobre eventos ya resueltos (`dispatched_at IS NOT NULL OR
   failed_at IS NOT NULL`) — lo pendiente/en retry nunca se purga aunque
-  sea viejo. Destraba `OUTBOX-RETRY-HIST-01`+`OUTBOX-BACKOFF-01` (abajo,
-  diseño en curso, gate `architecture-governor` consultado). Mecanismo
-  de purga en sí (dónde corre — no hay cron existente en este repo más
-  allá de los 3 workers de polling) queda como pregunta abierta del
-  diseño, posiblemente diferida a bloque aparte.
+  sea viejo. La purga en sí (dónde corre — no hay cron existente en este
+  repo más allá de los 3 workers de polling) queda diferida a bloque
+  aparte, opción (a) `migrate-tenants.ts` explícitamente RECHAZADA por
+  el gate (corre dentro del `buildCommand` de `render.yaml`, fail-loud
+  por diseño -- un bug de purga ahí tumbaría deploys enteros).
+- **`OUTBOX-RETRY-HIST-01` + `OUTBOX-BACKOFF-01`** — ✅ **RESUELTO en
+  código, LOCAL/sin pushear ni deployar** (4 rondas de gate
+  `architecture-governor`, 10/09/2026; `app-main` `5f31533` observabilidad
+  + `b1e9705` backoff + commit C pendiente de hash con la cobertura de
+  `first_failed_at`). Diseño completo en
+  `docs/diseno-outbox-backoff-2026-09-10.md`. `domain_events` gana
+  `first_failed_at`/`last_failed_at` (schema v48); `getPending()` excluye
+  eventos en backoff (escalón 5s/30s/120s/300s según `retry_count`,
+  aprobado por el dueño; `maxRetries` se mantiene en 60). **Columnas NO
+  existen todavía en ninguna tenant DB real** -- recién con el próximo
+  deploy (`migrate:tenants`). Bug real encontrado y corregido ANTES de
+  tocar código (ronda 2 del gate): el guard original de `first_failed_at`
+  (`CASE WHEN retry_count = 0`) se hubiera roto con `retryDeadLettered()`
+  (que resetea `retry_count`), pisando el dato en la falla siguiente a
+  cualquier reintento manual -- corregido a `CASE WHEN first_failed_at
+  IS NULL`. 38/38 tests de integración contra Postgres real, incluida la
+  verificación de que el guard corregido discrimina de verdad (mutación
+  aplicada y revertida, no commiteada).
+  - **Nota de proceso (ronda 4 del gate):** la matriz de impacto original
+    contaba "3 secuencias" de tests de integración necesitando ajuste por
+    backoff; al implementar aparecieron 4 (el test de claim/release
+    también dispara 2 polls consecutivos sobre el mismo evento fallido).
+    El gate lo revisó explícitamente y lo calificó **no material** —no
+    ameritó volver a HOLD— por 4 motivos: (1) es un recuento mal hecho
+    DENTRO de una ubicación ya identificada en la matriz, no una
+    ubicación nueva; (2) lo detectó un mecanismo determinístico (la suite
+    se puso roja), no suerte; (3) solo afecta código de test, sin
+    consumidor de producción ni contrato ni schema; (4) se declaró en el
+    mensaje del commit y en el reporte al gate sin que se pidiera.
+    Precedente registrado para la próxima vez que la razón "total pasó a
+    ser N+1, es solo un test" se use para no escalar -- compararla contra
+    este caso, no re-argumentarla de cero.
 - **3.3-d, residual 1 (consolidada-parcial)** — F4 pregunta por la
   factura ENTERA, la NC del escape es parcial por reserva. Cierre:
   clasificador por PAR `(invoiceId, reservationId)`, todavía sin

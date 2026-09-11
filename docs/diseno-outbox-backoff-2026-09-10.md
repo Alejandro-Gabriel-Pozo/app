@@ -228,7 +228,7 @@ requiere tocar esa query.
 | `src/repositories/domain-event.repository.ts` (interfaz `DomainEvent`) | 2 campos opcionales nuevos | Bajo (additive) |
 | `src/api/routes/system.routes.ts:39-45` | spread automático -- los campos nuevos llegan solos a la API | Bajo |
 | `appfrontend-main/src/lib/sistema/types.ts:2-10` (`DeadLetterEvent`) | mirror manual -- declarar en el commit, no descubrir después (mismo defecto que `ROLES-CATALOG-DRIFT-001`) | Bajo, pero debe declararse |
-| `src/tests/integration/outbox-worker.integration.test.ts` (3 secuencias) | necesitan backdatear `last_failed_at` entre polls (§6) | Alto si no se ajustan primero |
+| `src/tests/integration/outbox-worker.integration.test.ts` (**4 secuencias**, corregido -- ver nota de proceso en `docs/pendientes-2026-09-10.md`: la ronda 1 contó 3, apareció una cuarta -- claim/release -- al implementar) | necesitan backdatear `last_failed_at` entre polls (§6) | Alto si no se ajustan primero |
 | `src/workers/outbox.worker.ts` (docblock líneas 178/382/508, ya marcadas stale por el bloque de polling adaptativo) | el "~5 min" pasa a ser aún menos preciso -- reescribir en el mismo commit | Medio |
 | `company_catalog_propagation_queue`/`company.repository.ts` | **fuera de este bloque** (§7) | — |
 | `docs/diseno-order13-o5-dead-letter-2026-09-07.md` §7 | follow-ups #1 (backoff) y #3 (first_failed_at) quedan resueltos por este bloque -- marcar ahí | Bajo |
@@ -285,3 +285,34 @@ si le toca despertar por su propia cadencia. Esto tiene que quedar
 escrito en los dos diseños ahora, mientras los dos siguen abiertos, para
 que quien encare la migración de `OutboxWorker` no lo descubra en
 producción.
+
+## 12. Commit C -- cobertura de `first_failed_at` (ronda 4 del gate)
+
+Condición bloqueante de la ronda 4: hasta el Commit B, ningún test
+afirmaba nada sobre `first_failed_at` -- ni que existiera, ni que se
+seteara una sola vez, ni que sobreviviera un reintento manual. El
+propio Commit A había reportado "22/22 sin cambio de comportamiento",
+una afirmación real pero que no dice nada sobre una columna que no
+existía cuando esos 22 tests se escribieron.
+
+Tres tests agregados a `outbox-worker.integration.test.ts` (sección
+`SqlDomainEventRepository — mecánica real`):
+1. `first_failed_at` es NULL antes de la primera falla, se setea en la
+   primera.
+2. No se pisa en fallas subsiguientes del mismo evento (separación real
+   de >1s entre dos `recordFailure()`).
+3. Sobrevive a `retryDeadLettered()` + una falla posterior -- la
+   decisión del dueño (ronda 2: "Mantener") y el guard corregido
+   (`first_failed_at IS NULL`, no `retry_count = 0`) en una sola
+   aserción.
+
+**Verificado que el test 3 discrimina de verdad**, no solo que pasa:
+revertido temporalmente el guard a `CASE WHEN retry_count = 0` (la
+forma que este gate rechazó en la ronda 2), corrida la suite -- **exactamente
+esa aserción, y solo esa, se pone roja** (`expected ... to deeply equal
+...`, dos timestamps distintos). Revertida la mutación de inmediato, sin
+commitear el estado roto. Confirma que el test es una regresión real
+contra el defecto que existe para prevenir, no una aserción que pasaría
+igual con o sin el guard correcto.
+
+Suite completa tras el Commit C: **38/38** (35 del Commit B + estos 3).

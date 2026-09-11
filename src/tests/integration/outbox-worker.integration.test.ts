@@ -263,6 +263,55 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
       const row = await fila(id);
       expect(row.retry_count).toBe(0);
     });
+
+    // OUTBOX-RETRY-HIST-01 (schema v48, docs/diseno-outbox-backoff-2026-09-10.md
+    // §2/§4) -- condición 1 del gate, ronda 4: hasta acá ningún test afirmaba
+    // nada sobre first_failed_at, ni siquiera que existiera. Estas 3 pruebas
+    // aseguran las 3 garantías reales de la columna.
+
+    it('first_failed_at: NULL antes de la primera falla, seteada en la primera falla', async () => {
+      const id = await sembrar('t.a', 'agg-first-failed-1');
+      expect((await fila(id)).first_failed_at).toBeNull();
+
+      await eventRepo.recordFailure(id, 'ERR', 60);
+
+      expect((await fila(id)).first_failed_at).not.toBeNull();
+    });
+
+    it('first_failed_at NO se pisa en fallas subsiguientes del mismo evento', async () => {
+      const id = await sembrar('t.a', 'agg-first-failed-2');
+      await eventRepo.recordFailure(id, 'ERR', 60);
+      const primeraVez = (await fila(id)).first_failed_at;
+
+      // Separación real de tiempo -- si el guard estuviera mal y recalculara
+      // NOW() en cada falla, un segundo de diferencia lo delataría.
+      await new Promise((r) => setTimeout(r, 1100));
+      await eventRepo.recordFailure(id, 'ERR', 60);
+
+      expect((await fila(id)).first_failed_at).toEqual(primeraVez);
+    });
+
+    it('first_failed_at SOBREVIVE a un reintento manual (retryDeadLettered) seguido de otra falla -- decisión del dueño (Mantener, ronda 2 del gate)', async () => {
+      const id = await sembrar('t.a', 'agg-first-failed-3');
+      await eventRepo.recordFailure(id, 'ERR', 1); // maxRetries=1 -> dead-letter YA
+      const filaOriginal = await fila(id);
+      expect(filaOriginal.failed_at).not.toBeNull();
+      const primeraVez = filaOriginal.first_failed_at;
+      expect(primeraVez).not.toBeNull();
+
+      await eventRepo.retryDeadLettered(id); // el panel lo reintenta -- retry_count vuelve a 0
+      expect((await fila(id)).retry_count).toBe(0);
+
+      await new Promise((r) => setTimeout(r, 1100));
+      await eventRepo.recordFailure(id, 'ERR', 60); // vuelve a fallar
+
+      // Si el guard fuera `CASE WHEN retry_count = 0 THEN NOW() ...` (la
+      // forma que este gate rechazó en la ronda 2), esta falla -- que ve
+      // retry_count=0 justo antes de incrementar -- pisaría first_failed_at
+      // con la fecha de HOY. Con el guard real (`first_failed_at IS NULL`),
+      // no cambia.
+      expect((await fila(id)).first_failed_at).toEqual(primeraVez);
+    });
   });
 
   // ===========================================================================
