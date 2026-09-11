@@ -1052,23 +1052,40 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   - **Split propuesto por el gate, más chico que 1c-i/1c-ii original:
     1c-0 → 1c-i → 1c-ii (+ 1d empaquetado, decisión del dueño,
     confirmada por `AskUserQuestion` 11/09/2026).** 1c-0 (ver bullet
-    propio, ✅ RESUELTO) primero por decisión del dueño. 1c-i: relaja
-    el guard + congela `frozenChargeIds` + agrega el guard de reversión
-    total propia (`CreditNoteConsolidatedFullReversalError`, mismo
-    hazard que ya tiene su guardia del lado reservas) + espeja el tope
-    por par a `r.order_id` -- **sin rama nueva en `buildCreditNote()`**,
-    una consolidada multi-orden solo empieza a alcanzar el throw `N1.a`
-    ya existente (hoy código muerto) en vez del guard cardinal viejo;
-    nada nuevo llega a AFIP todavía. 1c-ii: recién ahí se cablea la
-    rama de atribución de órdenes -- primer commit de esta cadena que
-    puede emitir un comprobante que antes no existía. 1d
-    (`classifyOrderLiveInvoice` para órdenes, mismo residual que 3.3-d
-    cerró para reservas) va empaquetado con 1c-ii, no después --1b ya
-    construyó las piezas que necesita.
+    propio, ✅ RESUELTO) primero por decisión del dueño. 1c-i (ver
+    bullet propio, ✅ RESUELTO): relaja el guard a membership + congela
+    `frozenChargeIds` + agrega el guard de reversión total propia
+    (`CreditNoteConsolidatedFullReversalError`, mismo hazard que ya
+    tiene su guardia del lado reservas) -- **sin rama nueva en
+    `buildCreditNote()`**. El espejo del tope por par a `r.order_id`
+    (punto 4 original) se corrigió: una 2da ronda de gate lo RECHAZÓ
+    para 1c-i (contradice `refund-attribution.ts:79-82`, que ya declara
+    que el rename+wiring van juntos en 1c-ii) -- va empaquetado ahí, no
+    en 1c-i. 1c-ii: recién ahí se cablea la rama de atribución de
+    órdenes -- primer commit de esta cadena que puede emitir un
+    comprobante que antes no existía. 1d (`classifyOrderLiveInvoice`
+    para órdenes, mismo residual que 3.3-d cerró para reservas) va
+    empaquetado con 1c-ii, no después -- 1b ya construyó las piezas que
+    necesita.
   - **Producción, medido 11/09/2026 (Neon `ancient-king-17098519`,
     ambos tenants, `production` y `tenant-hotel-los-alamos`): 0 facturas
     consolidadas ISSUED con >1 orden distinta hoy.** El bloque es
-    preventivo, no desbloquea plata trabada ahora mismo.
+    preventivo, no desbloquea plata trabada ahora mismo. **Corrección
+    (gate de 1c-i, verificado con código, no solo con la query): no es
+    solo "0 hoy" -- es "no alcanzable por NINGÚN camino de producción
+    todavía".** El único creador real de `accounts_receivable`
+    (`AccountsReceivableService.transferStayBalanceToReceivable()`,
+    `accounts-receivable.service.ts:168`) SIEMPRE setea `reservationId`
+    en el cargo que factura, NUNCA `orderId` -- 0 referencias a
+    `AccountsReceivableService`/`arRepo` en `src/pos-menu/` (grep).
+    `requestConsolidatedInvoice()` no discrimina por origen del cargo
+    (eso es cierto, lo verificó bien el gate de diseño), pero nada real
+    puebla `accounts_receivable` con un cargo de orden para que llegue
+    a usarlo. El escenario sigue siendo preventivo, más aún de lo que
+    se pensaba -- ver el test de integración de 1c-i, que lo construye
+    a mano (mismo criterio que `consolidated-invoice-toctou.integration.test.ts`
+    ya usa para reservas) para probar que el código responde bien SI
+    ese estado llegara a existir.
   - **`STAY-ADJUSTMENT-PRICE-001` -- hallazgo nuevo del gate de 1c-0,
     NO corregido, bloque propio pendiente.**
     `src/workers/outbox.handlers.ts:299-310`
@@ -1134,6 +1151,33 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   es preexistente en `origin/main` (confirmado con `git stash` + re-run
   contra HEAD limpio antes de este commit) y no relacionado a 1c-0 --
   **registrado, no investigado, sin bloque asignado todavía.**
+
+  **`1c-i` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
+  `d834329`).** `cancelOrderWithCreditNote()` bloqueaba TODA factura
+  consolidada (cardinalidad ≠ 1) con `CreditNoteMultiInvoiceError` --
+  correcto para el caso de siempre (una orden = una factura), pero
+  hubiera roto también la NC granular futura (1c-ii) sin distinguir
+  "esta orden no es la única en la factura" de "no soportado
+  todavía". Fix: guard a membership (`chargeIds.includes(charge.id)`)
+  + `frozenChargeIds` congelado en tx1 (nunca re-derivado en tx2 --
+  ahí vivía el hazard real: una re-derivación en una consolidada
+  multi-orden habría settleado también el cargo de OTRA orden) + guard
+  de reversión total (`CreditNoteConsolidatedFullReversalError`,
+  reusada del lado reservas) + rechazo explícito de cualquier
+  subconjunto propio mientras 1c-ii no exista (decisión del dueño,
+  grounding ERPNext/Odoo/Dolibarr/Cloudbeds/QloApps: los 5 bloquean en
+  el borde con un rechazo tipado, nunca dejan un estado a medias).
+  Corrige además la premisa de alcanzabilidad de la ronda de diseño
+  anterior -- ver el bullet de "Producción, medido 11/09/2026" más
+  arriba. 26/26 unit (+6) + 9/9 integration (+1, consolidada REAL vía
+  `requestConsolidatedInvoice()`, no un INSERT a mano) + 3 mutantes
+  manuales con red-sets distintos (uno de ellos, "tx2 no re-deriva", es
+  la ÚNICA red contra el bug real -- para el caso de una sola orden
+  re-derivar da el mismo resultado, así que ningún otro test lo
+  detectaría). Suite completa: 2135/2135 unit (162 archivos, incluidas
+  las 4 cercas de arquitectura que este bloque podía afectar) + 288/289
+  integration -- mismo 1 rojo preexistente de 1c-0, no relacionado.
+  **`1c-ii`/`1d` siguen en HOLD**, sin fecha.
 - **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
   (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`)**.
   `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
