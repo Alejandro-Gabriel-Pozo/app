@@ -328,6 +328,41 @@ describe('outbox.handlers — Order (O2)', () => {
       );
     });
 
+    // ─── 3.3-d residual 2 (11/09/2026, gate `architecture-governor`) ───────
+    // Mismo predicado que el lado reservas -- §2.1 del diseño concluyó que
+    // `TIPO_NO_LIQUIDABLE` del lado orden es "probablemente un no-op hoy"
+    // (ningún productor real de PAYMENT/REFUND setea `orderId`), pero el
+    // allowlist se aplica igual acá para no tener un 4to comportamiento
+    // implícito si algún día deja de serlo.
+    it('(b) TIPO_NO_LIQUIDABLE co-presente + RECONCILED -> SÍ consulta, reconciliado', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] };
+      clasificacion = 'RECONCILED';
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(fakeInvoiceRepo.classifyOrderLiveInvoice).toHaveBeenCalledWith(fakeDb, 'order-1');
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+        expect.stringContaining('reconciliado por Nota de Crédito'),
+      );
+    });
+
+    it('(b) CARGO_ANULADO co-presente -> NO consulta, sigue grave (§2.4, fuera del allowlist a propósito)', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_ANULADO', 'CARGO_CON_COMPROBANTE_VIVO'] };
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(fakeInvoiceRepo.classifyOrderLiveInvoice).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['CARGO_ANULADO', 'CARGO_CON_COMPROBANTE_VIVO'] }),
+        expect.stringContaining('anomalía de integridad'),
+      );
+    });
+
+    it('(b) ORDEN_SIN_CONFIRMAR co-presente -> NO consulta (valor fuera del allowlist, ni siquiera enumerado en §2.1 original)', async () => {
+      financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['ORDEN_SIN_CONFIRMAR', 'CARGO_CON_COMPROBANTE_VIVO'] };
+      await cancelar()(fakeEvent({ orderId: 'order-1' }));
+      expect(fakeInvoiceRepo.classifyOrderLiveInvoice).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalled();
+    });
+
     it('(b) NEGATIVO -- orden a CANCELLED con Factura B viva SIN NC (NOT_RECONCILED) -> sigue grave', async () => {
       financialRepo.voidDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] };
       clasificacion = 'NOT_RECONCILED';
@@ -532,14 +567,59 @@ describe('outbox.handlers — handleReservationCancelled (RESERVA-10, 05/09/2026
     expect(logger.error).not.toHaveBeenCalled();
   });
 
-  it('divergencia 3 (gate 09/09/2026) -- CARGO_CON_COMPROBANTE_VIVO junto con OTRO rechazo (ej. TIPO_NO_LIQUIDABLE de un PAYMENT propio) -> NO consulta la clasificación, sigue grave', async () => {
+  // ─── 3.3-d residual 2 (11/09/2026, gate `architecture-governor`) ───────
+  // Divergencia 3 RESUELTA: `TIPO_NO_LIQUIDABLE` co-presente con
+  // `CARGO_CON_COMPROBANTE_VIVO` (reserva con PAYMENT/REFUND histórico
+  // propio, ej. una seña) ya NO bloquea la consulta a la clasificación --
+  // antes de este bloque, el exact-match dejaba esto SIEMPRE `grave`
+  // aunque el comprobante estuviera reconciliado de verdad.
+  it('TIPO_NO_LIQUIDABLE co-presente + RECONCILED -> SÍ consulta la clasificación, reconciliado', async () => {
     financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] };
+    clasificacion = 'RECONCILED';
     await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
-    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).not.toHaveBeenCalled();
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).toHaveBeenCalledWith(fakeDb, 'res-1');
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+      expect.stringContaining('reconciliado por Nota de Crédito'),
+    );
+  });
+
+  it('TIPO_NO_LIQUIDABLE co-presente + NOT_RECONCILED -> SÍ consulta, sigue grave (no es una regresión: la porción real no está cubierta)', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] };
+    clasificacion = 'NOT_RECONCILED';
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).toHaveBeenCalledWith(fakeDb, 'res-1');
+    expect(logger.info).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] }),
       expect.stringContaining('anomalía de integridad'),
     );
+  });
+
+  // §2.4 del diseño -- CARGO_ANULADO queda FUERA del allowlist a propósito
+  // (el contador es agregado por candidato-set, no puede distinguir "la
+  // fila anulada es la misma que la viva" de "son dos filas distintas").
+  // Su sola presencia, con o sin TIPO_NO_LIQUIDABLE, tiene que seguir
+  // bloqueando la consulta -- NO es un caso benigno todavía.
+  it('CARGO_ANULADO co-presente -> NO consulta la clasificación, sigue grave (§2.4, fuera del allowlist a propósito)', async () => {
+    financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['CARGO_ANULADO', 'CARGO_CON_COMPROBANTE_VIVO'] };
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ causa: ['CARGO_ANULADO', 'CARGO_CON_COMPROBANTE_VIVO'] }),
+      expect.stringContaining('anomalía de integridad'),
+    );
+  });
+
+  it('CARGO_ANULADO + TIPO_NO_LIQUIDABLE + CARGO_CON_COMPROBANTE_VIVO -> NO consulta (un solo rechazo fuera del allowlist basta)', async () => {
+    financialRepo.voidReservaDesenlace = {
+      tipo: 'RECHAZADO',
+      rechazos: ['TIPO_NO_LIQUIDABLE', 'CARGO_ANULADO', 'CARGO_CON_COMPROBANTE_VIVO'],
+    };
+    await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(fakeInvoiceRepo.classifyReservationLiveInvoice).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('escape reconciliado (RECONCILED) -> logger.info reconciliado, NO error', async () => {

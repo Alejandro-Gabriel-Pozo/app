@@ -31,6 +31,7 @@ import type {
   PaymentInfo,
   PaymentMethod,
   EfectoDesenlace,
+  EfectoRechazo,
 } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import { ChargeNotYetCreatedError, ChargeNeverCreatedError } from './outbox.worker.js';
@@ -39,6 +40,60 @@ import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { logger } from '../logger.js';
 import type { OutboxWorker } from './outbox.worker.js';
+
+/**
+ * 3.3-d residual 2 (11/09/2026, gate `architecture-governor`,
+ * docs/diseno-33d-residuales-2026-09-11.md §2) -- co-rechazos que NO
+ * indican una anomalía cuando `voidByReservationId()`/`voidByOrderId()`
+ * ya concluyeron `CARGO_CON_COMPROBANTE_VIVO` y el caller ya verificó (vía
+ * `classify*LiveInvoice()`) que ese comprobante está reconciliado.
+ *
+ * **Esto es un allowlist POSITIVO, no un censo de todos los valores
+ * posibles de `EfectoRechazo`.** Cualquier valor NO listado acá -- ya
+ * exista hoy (ej. `ORDEN_SIN_CONFIRMAR`, que ni siquiera se analizó al
+ * diseñar esto -- corrección del gate, ronda de cierre) o se agregue en el
+ * futuro -- sigue escalando a `grave` por default: la conjunción de abajo
+ * (`esComprobanteVivoConCoRechazosBenignos`) es `false` para cualquier
+ * elemento fuera de este Set. Fail-closed por construcción, no por
+ * exhaustividad de la lista.
+ *
+ * `TIPO_NO_LIQUIDABLE` -- el `UPDATE` de `voidByReservationId()`/
+ * `voidByOrderId()` sólo toca filas `ft_type IN ('CHARGE','ADJUSTMENT')`
+ * (`sql.financial-transaction.repository.ts:385`); `TIPO_NO_LIQUIDABLE` se
+ * dispara por filas `ft_type NOT IN (...)` (`:431`) -- por construcción,
+ * una fila que causa este rechazo es una fila que esta operación NUNCA
+ * iba a tocar (un `PAYMENT`/`REFUND` histórico de la reserva/orden, sin
+ * relación con el void en sí). No es "fallamos en anular algo": es "había
+ * algo ahí que no correspondía anular".
+ *
+ * `CARGO_ANULADO` queda EXPLÍCITAMENTE FUERA (§2.4 del diseño, confirmado
+ * por el gate): el contador que lo produce es un booleano agregado por
+ * candidato-set, no un detalle por fila -- no se puede distinguir "la fila
+ * anulada es la MISMA que quedó con comprobante vivo" (posible anomalía
+ * real) de "son dos filas distintas" (el caso benigno de un reintento de
+ * cargo fallido). Conservador hasta que el query se reescriba para
+ * devolver detalle por fila -- bloque propio, no éste.
+ */
+const CO_RECHAZOS_BENIGNOS_SI_RECONCILIADO: ReadonlySet<EfectoRechazo> = new Set([
+  'TIPO_NO_LIQUIDABLE',
+]);
+
+/**
+ * `true` cuando el único rechazo "grave" presente es `CARGO_CON_COMPROBANTE_VIVO`
+ * -- cualquier otro rechazo presente tiene que estar en el allowlist de
+ * arriba. Reemplaza el exact-match `rechazos.length === 1 && rechazos[0] ===
+ * 'CARGO_CON_COMPROBANTE_VIVO'` que usaban, por separado y a mano, los 3
+ * call sites de este archivo (`handleReservationCancelled`,
+ * `handleOrderCancelled`, `registrarDesenlace()`) -- los 3 tienen que usar
+ * esta MISMA función: ensanchar solo uno de los 3 (ej. sólo
+ * `registrarDesenlace()`) deja `comprobanteReconciliado` en `false` para
+ * siempre en presencia de un co-rechazo benigno, porque el pre-check de los
+ * otros 2 nunca llega a llamar `classify*LiveInvoice()`.
+ */
+function esComprobanteVivoConCoRechazosBenignos(rechazos: readonly EfectoRechazo[]): boolean {
+  return rechazos.includes('CARGO_CON_COMPROBANTE_VIVO')
+    && rechazos.every((r) => r === 'CARGO_CON_COMPROBANTE_VIVO' || CO_RECHAZOS_BENIGNOS_SI_RECONCILIADO.has(r));
+}
 
 /**
  * Registra todos los handlers financieros en el worker.
@@ -176,20 +231,18 @@ export function handleReservationCancelled(
     const { reservationId } = event.payload as { reservationId: string };
     const desenlace = await financialRepo.voidByReservationId(reservationId, event.businessId);
 
-    // Rama ESTRECHA: sólo cuando el único rechazo es `CARGO_CON_COMPROBANTE_VIVO`.
-    // Del lado reservas esta guarda es MÁS FRÁGIL que su par de órdenes
-    // (divergencia 3 del docblock de `classifyReservationLiveInvoice`):
-    // `voidByReservationId()` no filtra `candidatos` por `type`, así que una
-    // reserva con un `PAYMENT` propio (`recordPayment()`, algo que NO puede
-    // pasarle a una orden) produce `['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']`
-    // -- 2 rechazos, esta rama NO dispara, sigue `grave`. Declarado, no
-    // corregido acá (ensanchar la guarda es un bloque propio, cambia
-    // semántica compartida con `registrarDesenlace()`).
+    // 3.3-d residual 2 (11/09/2026) -- allowlist de co-rechazos benignos,
+    // ya no exact-match. Antes: una reserva con un `PAYMENT` propio
+    // (`recordPayment()`, algo que NO puede pasarle a una orden) producía
+    // `['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO']` -- 2 rechazos,
+    // la rama exact-match no disparaba, seguía `grave` aunque el
+    // comprobante estuviera reconciliado. `esComprobanteVivoConCoRechazosBenignos()`
+    // (ver docblock al inicio del archivo) cubre ese caso sin abrir la
+    // puerta a cualquier combinación.
     let comprobanteReconciliado = false;
     if (
       desenlace.tipo === 'RECHAZADO'
-      && desenlace.rechazos.length === 1
-      && desenlace.rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'
+      && esComprobanteVivoConCoRechazosBenignos(desenlace.rechazos)
     ) {
       try {
         comprobanteReconciliado =
@@ -335,8 +388,7 @@ function registrarDesenlace(
   // `reconciliado: true` al lado -- forense sin perder la conclusión real.
   if (
     opts?.comprobanteReconciliado
-    && desenlace.rechazos.length === 1
-    && desenlace.rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'
+    && esComprobanteVivoConCoRechazosBenignos(desenlace.rechazos)
   ) {
     logger.info(
       { ...base, evento: 'efecto_rechazado', causa: desenlace.rechazos, reintentable: false, reconciliado: true },
@@ -478,16 +530,16 @@ export function handleOrderCancelled(
     const { orderId } = event.payload as { orderId: string };
     const desenlace = await financialRepo.voidByOrderId(orderId, event.businessId);
 
-    // Rama ESTRECHA: sólo cuando el único rechazo es `CARGO_CON_COMPROBANTE_VIVO`.
-    // Con cualquier otro rechazo (`ORDEN_INEXISTENTE`, `ESTADO_DESCONOCIDO`,
-    // ...) no se consulta la clasificación y `registrarDesenlace` lo trata
-    // como siempre. Para el 99% de las cancelaciones (sin factura viva)
-    // `voidByOrderId` devuelve `APLICADO`/`NADA_QUE_HACER` y esto ni corre.
+    // 3.3-d residual 2 (11/09/2026) -- allowlist de co-rechazos benignos,
+    // ya no exact-match. Con cualquier rechazo FUERA del allowlist
+    // (`ORDEN_INEXISTENTE`, `ESTADO_DESCONOCIDO`, ...) no se consulta la
+    // clasificación y `registrarDesenlace` lo trata como siempre. Para el
+    // 99% de las cancelaciones (sin factura viva) `voidByOrderId` devuelve
+    // `APLICADO`/`NADA_QUE_HACER` y esto ni corre.
     let comprobanteReconciliado = false;
     if (
       desenlace.tipo === 'RECHAZADO'
-      && desenlace.rechazos.length === 1
-      && desenlace.rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'
+      && esComprobanteVivoConCoRechazosBenignos(desenlace.rechazos)
     ) {
       try {
         comprobanteReconciliado =
