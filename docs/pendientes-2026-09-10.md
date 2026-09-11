@@ -905,8 +905,13 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   contador), o es puramente informativo y el evento nunca debió esperar
   un handler? Sin esa respuesta no hay bloque que diseñar.
 - **Hueco de doble comprobante en `getInvoicedFinancialTransactionIds()`**
-  -- ✅ **RESUELTO (11/09/2026, gate `architecture-governor`, 1 ronda
-  HOLD → APROBADO)**. El propio `pendientes-2026-09-06.md` ya pedía que
+  -- ✅ **RESUELTO, PERO SOLO PARA LA DIRECCIÓN CONSOLIDADA↔CONSOLIDADA**
+  (11/09/2026, gate `architecture-governor`, ronda 2: HOLD → APPROVED WITH
+  CONDITIONS, cierre `FEATURE VERIFIED` -- no `GROUP VERIFIED`). **No
+  declarar cerrado el concepto completo** -- el propio cierre encontró una
+  TERCERA dirección sin guardia, ver el ítem nuevo
+  `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` más abajo. El propio
+  `pendientes-2026-09-06.md` ya pedía que
   esto "mereciera fila propia" y nunca la tuvo; se perdió en el salto a
   `-08.md`, encontrado en la auditoría de arrastre del 11/09/2026.
   **Corrección del gate sobre el diseño propuesto originalmente en esta
@@ -951,6 +956,36 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   planea revalidarlo dentro de la transacción de emisión -- deuda
   registrada, no se tocó ese documento (no aprobado, fuera del radio de
   este fix). **LOCAL, sin pushear ni deployar todavía.**
+- **`INVOICE-CHARGES-GUARD-INDIVIDUAL-01`** (11/09/2026, hallazgo del gate
+  `architecture-governor` al cerrar el ítem de arriba -- §4.0, tercera
+  dirección del mismo concepto, no bloqueante para esos 2 commits pero
+  registrada aparte). El fix de arriba cierra SOLO
+  consolidada-vs-consolidada (¿este cargo ya está en `invoice_charges` de
+  OTRA consolidada?). Hay una tercera dirección, sin guardia en ningún
+  lado: el camino INDIVIDUAL (`requestInvoice()`,
+  `src/facturacion/invoice.service.ts:326-334`) nunca escribe
+  `invoice_charges` -- solo las consolidadas pasan `charges`
+  (`src/facturacion/sql.invoice.repository.ts:1069-1076`, comentario
+  propio: "C1-Fase C -- solo facturas consolidadas pasan `charges`") --
+  así que `idx_invoice_charges_ft` (`src/db/schema.sql:3227-3228`) NO
+  cubre ese camino. Consecuencia: (a) `requestInvoice(ft)` no chequea si
+  `ft` ya está en un `invoice_charges` de una consolidada NO-`ISSUED`
+  (idempotencyKey `invoice:<ftId>` nunca choca con
+  `invoice:consolidated:<hash>`, así que ningún mecanismo existente lo
+  detecta); (b) simétricamente, el guard recién corregido de
+  `getInvoicedFinancialTransactionIds()` tampoco ve un cargo ya atado a
+  una factura INDIVIDUAL no-`ISSUED` -- la AR sigue PENDIENTE_FACTURAR y
+  puede reentrar en el próximo lote consolidado. El predicado completo,
+  agnóstico de los dos caminos, YA EXISTE en el repo --
+  `resolveInvoiceLinkage()` (`src/facturacion/sql.invoice.repository.ts:290-316`)
+  -- pero hoy solo lo usan `AccountsReceivableService` y los 2 servicios
+  de cancelar-con-NC, ninguno de los dos guards de emisión. **No
+  verificado**: si algún camino real de UI permite facturar
+  individualmente un cargo que ya está en un lote consolidado pendiente
+  (pregunta de alcanzabilidad, no de código), ni si hay filas reales hoy
+  en ese estado -- ninguna de las dos cosas se midió todavía. Bloque
+  propio, matriz de impacto propia (toca emisión AFIP + transiciones de
+  AR) -- no mecánico, no extender sin decisión de diseño nueva.
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
