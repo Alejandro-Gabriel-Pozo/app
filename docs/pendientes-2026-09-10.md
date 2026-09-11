@@ -985,8 +985,43 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **`SqlReservationRepository.save()`/`syncLines`** no atómico por el
   pool cuando no se entra vía `saveWithClient()` -- hallazgo de esta
   sesión, sin bloque todavía.
-- **`SEC-ROT-001`** — runbook de rotación ya escrito, falta el código
-  real: 2 claves + `reencrypt-secrets.ts` + cambiar IV de 16 a 12 bytes.
+- **`SEC-ROT-001`** — runbook de rotación ya escrito
+  (`docs/conocimiento/runbook-rotacion-db-encryption-key.md`).
+  **Parte 1 -- ✅ RESUELTA (11/09/2026, gate `architecture-governor`,
+  2 rondas: HOLD → APPROVED WITH CONDITIONS, commit `74f6872`, LOCAL/sin
+  pushear).** `decryptConnectionString()` acepta `DB_ENCRYPTION_KEY_OLD`
+  como fallback -- las 3 familias de columnas cifradas (connection
+  strings de tenant, certificado/clave AFIP, tickets WSAA) pasan por las
+  MISMAS 2 funciones (`tenant-db.setup.ts`), así que este único cambio
+  las cubre a las tres. Sin `DB_ENCRYPTION_KEY_OLD` seteada, comportamiento
+  idéntico al de antes -- probado con conteo real de llamadas a
+  `Decipheriv` (spy sobre `node:crypto`), no solo con el resultado. El
+  gate encontró 5 ubicaciones nuevas en la matriz de impacto original
+  (N1-N5) -- la más seria: reusar `activateBusiness()` para el barrido
+  de la Parte 2 hubiera reactivado negocios `SUSPENDED`/`PENDING` en
+  silencio, así que la Parte 2 necesita un método angosto nuevo
+  (`PlatformRepository.updateDbUrlEncrypted()`) en vez de reusar ese.
+  **Sigue sin ser una capacidad real** -- runbook §2 sigue vigente:
+  falta la Parte 2 (`reencrypt-secrets.ts`, el barrido de re-cifrado) y
+  ensayar contra un branch Neon descartable antes de que "rotar" sea
+  algo que se pueda hacer de verdad.
+  **Fuera de alcance de la Parte 1, registrado para cuando se retome**:
+  Parte 2 (script de barrido + el método nuevo de `PlatformRepository`),
+  Parte 3 (IV 16→12, deliberadamente separada -- mezclarla hubiera roto
+  el argumento de "sin `DB_ENCRYPTION_KEY_OLD` el comportamiento es
+  idéntico" que hace segura a la Parte 1), el comentario fechado en
+  `render.yaml` junto a `DB_ENCRYPTION_KEY` (recién cuando
+  `DB_ENCRYPTION_KEY_OLD` exista de verdad en Render, no antes) + el
+  procedimiento de `docs/auditoria-dominios.md` que eso dispara, y una
+  línea nueva en la Fase 0 del runbook nombrando `admin.routes.ts:63`
+  (`set-tenant-url`) y `:124` (`repair-tenant-db`) como los 2 endpoints
+  que el freeze de rotación tiene que cubrir y que hoy nada hace cumplir.
+  **Hallazgo de paso, no de este bloque**: `migrate-tenants.ts:58` hace
+  `continue` ANTES de descifrar cuando el schema ya está al día -- o sea
+  que `npm run migrate:tenants` en cada deploy de Render NO es una
+  prueba de descifrado real para los tenants ya al día (que son la
+  mayoría, casi siempre). La red de seguridad implícita que la Fase 1
+  del runbook parecía dar por cierta no existe.
 - **`CONCIL-INCONSIST-01`** (absorbe `INV-ORF-01` + pt1 `ORDER-13`) --
   diseño ya grounded contra ERPNext/Odoo (cron que NO emite + query
   on-demand + contador junto a `countDeadLettered()`). 0 filas huérfanas
