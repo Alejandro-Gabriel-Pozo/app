@@ -632,5 +632,96 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
         expect.stringContaining('reconciliado por Nota de Crédito'),
       );
     }, 40_000);
+
+    // -------------------------------------------------------------------------
+    // Caso 5, residual 3 (docs/investigacion-decisiones-bloqueado-2026-09-12.md,
+    // decisión del dueño 12/09/2026, vía AskUserQuestion): "Lo fiscal va x un
+    // lado el flujo de dinero x otro" -- cancelar con NC resuelve el lado
+    // fiscal; el PAYMENT vivo pasa a crédito del cliente POR DEFECTO --
+    // EXCEPTO si se emite una devolución real de dinero, en cuyo caso no se
+    // genera crédito.
+    //
+    // Alcance de ESTE test, acotado por el gate `architecture-governor`
+    // (ronda 2, 12/09/2026) -- una primera versión afirmaba la regla en
+    // general y quedó en HOLD: la equivalencia "REFUND neutraliza EXACTO,
+    // nunca deja residual" SOLO vale con `refundPercentage = 100`. El único
+    // productor real de REFUND (`CancellationRefundService.confirmRefund()`,
+    // `reservas/cancellation-refund.service.ts:308`) calcula
+    // `refundAmount = round2(collected * refundPercentage / 100)` -- con un
+    // tier de cancelación parcial, el REFUND es MENOR al PAYMENT y queda un
+    // crédito residual (la penalidad retenida) que ESTE test no cubre: es
+    // una pregunta de negocio aparte (¿la penalidad retenida por política de
+    // cancelación debe convertirse en crédito del cliente?), sin decidir
+    // todavía -- no se resuelve acá.
+    it('Caso 5 residuo (refundPercentage=100) -- PAYMENT vivo tras cancelar con NC: balance negativo (crédito) por composición SETTLED; una devolución real del 100% lo neutraliza exacto', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { reservationId, customerId } = await seedConfirmedReservation(100);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+      });
+      await invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: charge!.id, changedBy: ACTOR });
+
+      // Seña cobrada ANTES de la cancelación (recordPayment() con
+      // reservationId, C1-Fase A) -- el mismo "PAYMENT propio" del test
+      // C1(ii) de arriba, acá para verificar el balance, no el log del outbox.
+      await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'PAYMENT', amount: 100, currency: 'ARS', status: 'SETTLED',
+      });
+
+      // Hallazgo del gate (ronda 2): el balance YA da -100 ACÁ, antes de
+      // cancelar -- el CHARGE todavía está PENDING (getNetBalanceByCustomerId
+      // filtra por SETTLED) y el PAYMENT ya es SETTLED. Una reserva con seña
+      // cobrada se ve como "crédito" en el estado de cuenta ANTES de
+      // cualquier NC -- no es un efecto de esta regla, es un hecho previo que
+      // el test de abajo tiene que discriminar, no confundir con el mecanismo
+      // que se está probando.
+      expect(await financialRepo.getNetBalanceByCustomerId(customerId)).toBe(-100);
+
+      await buildSut(invoiceService).cancelReservationWithCreditNote(reservationId, auth(reservationId));
+
+      // Discrimina el MECANISMO, no solo el total (el total solo, -100, es
+      // el mismo antes y después de cancelar -- ver arriba -- así que por sí
+      // solo no prueba que el ADJUSTMENT se haya creado y sellado). El
+      // crédito post-cancelación tiene que venir de esta composición
+      // EXACTA: CHARGE 100 SETTLED + ADJUSTMENT -100 SETTLED (revierte la NC)
+      // + PAYMENT -100 SETTLED = -100.
+      //
+      // MUTATION TESTING REAL (gate `architecture-governor`, ronda 2,
+      // 12/09/2026) -- comentar UNA sola de las 2 líneas de settle de
+      // `cancel-reservation-with-credit-note.service.ts` (tx2, la del
+      // ADJUSTMENT) deja el CHARGE settleado igual (la otra línea settlea el
+      // conjunto congelado, aparte) -- ESE mutante simple lo agarra tanto la
+      // composición de acá COMO el total solo (CHARGE +100 - PAYMENT 100 +
+      // ADJUSTMENT PENDING (0) = 0 ≠ -100), así que no demuestra que la
+      // composición aporte algo. El mutante que sí lo demuestra es
+      // comentar LAS 2 líneas de settle juntas: con CHARGE y ADJUSTMENT
+      // ambos PENDING (0 en el balance) + PAYMENT SETTLED (-100), el total
+      // da -100 IGUAL que el camino feliz -- verde, falso negativo -- y
+      // solo la composición (`adjustmentRow.status` PENDING ≠ SETTLED) lo
+      // detecta. Confirmado corriendo ese mutante doble con la composición
+      // comentada aparte: el total solo pasó (falso negativo real,
+      // reproducido y revertido, nada de esto quedó en el código).
+      const txs = await financialRepo.getByReservationId(reservationId);
+      const chargeRow = txs.find((t) => t.type === 'CHARGE');
+      const adjustmentRow = txs.find((t) => t.type === 'ADJUSTMENT');
+      expect(chargeRow?.status).toBe('SETTLED');
+      expect(adjustmentRow?.status).toBe('SETTLED');
+      expect(adjustmentRow?.amount).toBe(-100);
+      expect(await financialRepo.getNetBalanceByCustomerId(customerId)).toBe(-100);
+
+      // Devolución real del dinero, DEL 100% (refundPercentage=100, el único
+      // caso que este test cubre -- ver nota de alcance arriba) -- mismo
+      // signo que CHARGE (+amount, "plata devuelta AL cliente"), NO el signo
+      // de PAYMENT. El crédito de arriba se neutraliza EXACTO en este caso:
+      // los 2 caminos (fiscal ya resuelto por la NC, dinero resuelto acá por
+      // el REFUND) son independientes para el mismo monto.
+      await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId, reservationId,
+        type: 'REFUND', amount: 100, currency: 'ARS', status: 'SETTLED',
+      });
+      expect(await financialRepo.getNetBalanceByCustomerId(customerId)).toBe(0);
+    }, 40_000);
   });
 });
