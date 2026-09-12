@@ -2854,6 +2854,39 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **A6.6** — quién puede cancelar/rechazar una solicitud de NC en curso.
   No aplica hoy (`credit_note_request` sigue en HOLD) -- anotado para
   cuando se reabra.
+- **Guard `pg_constraint` (schema v51, caso 6 residuo parte 2) pierde
+  convergencia — `schema.sql`/`repair-tenant-db` ya no corrigen una
+  definición divergente de los 3 CHECK de `financial_transactions`.**
+  Hallazgo del gate `architecture-governor` al revisar el commit que sigue
+  a `2156f76`. El patrón viejo (`DROP CONSTRAINT IF EXISTS` + `ADD
+  CONSTRAINT` incondicional) no solo creaba la constraint: la hacía
+  converger — reaplicar `schema.sql` contra un tenant con una definición
+  vieja la reemplazaba por la canónica del archivo. Con el guard por
+  nombre (`IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname =
+  ...)`), eso desaparece: si algún tenant tiene
+  `chk_financial_transactions_amount` con una expresión más débil,
+  `schema.sql` — ni `POST /repair-tenant-db`, cuyo propio docblock en
+  `admin.routes.ts` dice "reparación/mantenimiento puntual" — nunca la va
+  a corregir, en silencio. Riesgo medido hoy: cero (revisado el historial,
+  bajo estos 3 nombres nunca hubo más de una definición). Riesgo hacia
+  adelante: si hace falta CAMBIAR la definición de alguno de estos 3 en el
+  futuro, hay que sacar el guard a mano, dejar correr un DROP+ADD real una
+  vez, y volver a poner el guard — documentado en el comentario de
+  `schema.sql` (bloque `chk_financial_transactions_amount`), pero sin
+  cerca que lo haga cumplir. Sin acción de código por ahora — declarado
+  para no perder el trade-off si algún día hace falta cambiar una de las
+  3 definiciones.
+- **`schema.sql` queda con dos patrones de CHECK conviviendo, sin regla
+  escrita de cuál usar en un bloque nuevo.** Mismo hallazgo del gate: ~40
+  pares `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` incondicionales
+  siguen con el patrón viejo, contra 3 con el guard `pg_constraint` nuevo
+  (`chk_financial_transactions_*`). Un contribuyente que copie el bloque
+  de al lado (`chk_reservations_*`/`chk_products_*`/
+  `chk_stock_movements_*` están a pocas líneas) puede quedarse con
+  cualquiera de los dos sin saber por qué elegir uno. Sin acción de
+  código: no está decidido si migrar los ~40 restantes conviene en todos
+  los casos (por la pérdida de convergencia del ítem de arriba), así que
+  no hay todavía una regla para escribir.
 
 ### Menores / cosmético
 
