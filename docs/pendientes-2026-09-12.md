@@ -100,6 +100,25 @@ cuando se pushea.
   `git log --oneline --grep "purga del outbox\|purgeResolved"` si hace
   falta citarlo desde otro documento.
 
+- **`CITY-LEDGER-SCHEMA-V52-001`** — el `ALTER` de schema v52
+  (`docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.2, estado
+  `REVERTIDO` + `reversed_by`/`_at`/`_reason` +
+  `reversal_transaction_id`/`replaces_ar_id` en `accounts_receivable`)
+  nunca corrió contra Postgres real — solo contra el mock de
+  `tenant-db.setup.test.ts`. El pre-flight (`SELECT conname,
+  pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid =
+  'accounts_receivable'::regclass`) SÍ se corrió antes de escribir el
+  `ALTER`, contra los 2 tenants reales (Neon `ancient-king-17098519`,
+  branches `br-snowy-tree-ax5wmq70` y `br-square-leaf-axzvu903`), y
+  confirmó que el CHECK de `status` se llama `accounts_receivable_status_check`
+  en ambos — pero eso no reemplaza confirmar el resultado del `ALTER`
+  después del deploy real. Confirmar, por tenant, tras el próximo
+  `migrate:tenants`: re-correr la misma query y verificar que existe
+  `chk_accounts_receivable_status` con los 4 valores **y** que
+  `accounts_receivable_status_check` ya NO existe (si aparecen las dos,
+  el `DROP` fue un no-op silencioso y hay que parar antes del Bloque 2).
+  Commit `b82d828` (app-main).
+
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
 se migraron a `docs/resuelto.md` hoy — viven mezcladas dentro de
