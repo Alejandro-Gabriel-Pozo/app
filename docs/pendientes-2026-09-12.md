@@ -25,6 +25,57 @@ documentos.
 
 ## ✅ Cerrado esta sesión (12/09/2026)
 
+- **Los 4 "bugs activos" del pedido "vamos primero con bugs activos" —
+  ✅ RESUELTO, los 4.** Origen: §1 y §10 de
+  `docs/auditoria-transversal-navegacion-autogestion-circuitos-2026-09-12.md`.
+  Implementados en paralelo (4 agentes, uno por bug, `isolation: "worktree"`
+  para los 2 de `app-main`), gate combinado de `architecture-governor`
+  aprobado con condición explícita de 4 commits separados (no 2 agrupados
+  por repo) — cada uno es su propia unidad de revert y de evidencia. El
+  push de los 4 requiere autorización explícita del dueño, no inferida de
+  este cierre de docs — el estado de push en sí no se registra acá a
+  propósito (regla del `CLAUDE.md` raíz, incidente del 11/09/2026: es un
+  hecho volátil que vence apenas alguien pushea); verificar en el momento
+  con `git log origin/main --oneline | grep &lt;hash&gt;` en el repo que
+  corresponda.
+  - **`CRASH-CUSTOMER-RATE-RENDER-01`** (§1.1 del doc consolidado — la
+    ficha de cualquier cliente con tarifa especial se caía,
+    `rate.price` vs. `fixedPrice` real). `CustomerRate`
+    (`appfrontend-main/src/lib/clientes/types.ts`) corregido al contrato
+    real (5 scopes + `fixedPrice`/`discountPercentage` nullable); dos
+    helpers nuevos en `clientes/[id]/page.tsx` reemplazan las dos
+    expresiones inline que rompían. **Commit `bbf98c0`** (appfrontend-main).
+    Sin verificar: abrir la ficha de un cliente con tarifa scope
+    `categoryId`/`bucket`/`productId` en un entorno real.
+  - **`REPORTS-DATEONLY-MISMATCH-001`** (§1.2 — los 5 reportes con
+    pantalla devolvían 400 siempre, `datetime-local`/`.toISOString()`
+    contra `dateOnlySchema`). Los 10 inputs de fecha de `reportes/page.tsx`
+    y los 3 bloques de reportes de `admin/page.tsx` pasados a
+    `type="date"`, sin transformación adicional; `components/ApiBlock.tsx`
+    suma `'date'` al tipo `InputDef` (necesario para que compile).
+    **Commit `9d70b07`**
+    (appfrontend-main). Sin verificar: solo se validó contra el regex de
+    `dateOnlySchema`, no contra una respuesta real de un backend
+    levantado (sin entorno/credenciales disponibles en esta sesión).
+  - **`PATCH-STATUS-EVICT-001`** (§10, severidad alta — suspender un
+    negocio no cortaba el acceso hasta reiniciar el proceso).
+    `PATCH /platform/businesses/:id/status` ahora llama a
+    `evictTenantPool()` (ya existente, mismo patrón que
+    `admin.routes.ts`) tras confirmar la transición. 3 tests nuevos.
+    **Commit `5c7bef9`** (app-main). Sin verificar: runtime real contra
+    Postgres — el test mockea `evictTenantPool`; confirmar 403
+    `BUSINESS_INACTIVE` sin reiniciar el proceso, suspendiendo un negocio
+    de prueba.
+  - **`PLATFORM-AUDIT-ACTOR-STABLE-001`** (§10, severidad alta — el
+    actor del audit log de plataforma era un UUID nuevo en cada login,
+    imposible de correlacionar por persona). `sub`/`userId` del token
+    de superadmin pasa de `randomUUID()` a `creds.email` (estable,
+    `VARCHAR(255)` sin CHECK de formato UUID en el schema). No rediseña
+    el modelo de un solo superadmin. **Commit `238b7df`** (app-main).
+    Limitación conocida, no bug: los tokens emitidos antes del deploy
+    siguen válidos hasta 8h con el `sub` viejo (UUID) — el audit log va a
+    tener un tramo mezclado UUID/email tras el deploy, esperado y no
+    corregible sin invalidar sesiones activas.
 - **`diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md`** —
   diseño de la salida manual para `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`
   (un `ADJUSTMENT` puede quedar `PENDING` para siempre si

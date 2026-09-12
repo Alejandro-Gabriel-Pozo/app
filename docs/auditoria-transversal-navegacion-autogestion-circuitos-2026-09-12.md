@@ -63,7 +63,7 @@ tres tipos:
 - **(c)** hueco de circuito completo — falta una capacidad entera, no un
   detalle.
 
-**Dos hallazgos son bugs activos, no huecos — ver §1, léanse primero.**
+**Dos hallazgos eran bugs activos, no huecos — ver §1; los dos quedaron ✅ RESUELTO el 12/09/2026 (detalle y hash en §1.1/§1.2).**
 
 Este documento NO re-audita lo que ya se descartó como no-hallazgo en la
 primera ronda (no hay links rotos en el sidebar; el circuito de check-in/
@@ -75,6 +75,12 @@ conclusiones siguen vigentes y no se repiten acá.
 ## 1. Hallazgos urgentes — bugs reales en el código actual, no huecos de producto
 
 ### 1.1 La ficha de cualquier cliente con una tarifa especial se cae (crash de render)
+
+**✅ RESUELTO (12/09/2026) — `CRASH-CUSTOMER-RATE-RENDER-01`, commit
+`bbf98c0` (appfrontend-main). Sin verificar todavía: abrir la ficha de
+un cliente con una tarifa scope `categoryId`/`bucket`/`productId` en un
+entorno real. Detalle en `docs/pendientes-2026-09-12.md`, sección
+"Cerrado esta sesión".**
 
 `appfrontend-main/src/app/dashboard/clientes/[id]/page.tsx:591` renderiza
 `rate.price.toLocaleString('es-AR')`, pero el backend devuelve `fixedPrice`,
@@ -91,6 +97,13 @@ revienta igual. Reparable solo en frontend, sin ninguna decisión de negocio
 de por medio.
 
 ### 1.2 La reportería PMS no tiene ningún camino funcional desde el producto
+
+**✅ RESUELTO (12/09/2026) — `REPORTS-DATEONLY-MISMATCH-001`, commit
+`9d70b07` (appfrontend-main). Sin verificar todavía: el fix se validó
+contra el regex de `dateOnlySchema`, no contra una respuesta real de un
+backend levantado (sin entorno/credenciales disponibles en esta sesión).
+Detalle en `docs/pendientes-2026-09-12.md`, sección "Cerrado esta
+sesión".**
 
 Los 5 reportes que SÍ tienen pantalla (`appfrontend-main/src/app/dashboard/reportes/page.tsx`)
 devuelven **400 siempre**, sin excepción. El input es
@@ -415,8 +428,8 @@ desde la UI.
 
 ### Hallazgos
 
-- **§1.1 de este documento** (el crash de `rate.price`) es el hallazgo más
-  urgente de este circuito.
+- **§1.1 de este documento** (el crash de `rate.price`) era el hallazgo
+  más urgente de este circuito — ✅ RESUELTO el 12/09/2026 (`bbf98c0`).
 - **La mitad del diseño D9 está muerta en producto**: columnas, índices,
   API y motor de pricing existen para `product_id`/`category_id`/`bucket`;
   sin UI, "10% a toda la categoría Suites para este cliente" no es una
@@ -526,27 +539,44 @@ quedó vieja desde el mismo día que se corrigió.
 
 Piezas sólidas existen (transiciones validadas, auditoría transaccional en
 la mayoría de las escrituras, degradación asistida de asientos ya
-implementada en backend) pero el circuito está roto en el alta, en la
-suspensión real, y no existe la baja.
+implementada en backend) pero el circuito está roto en el alta, y no
+existe la baja. La suspensión real (P1) y la inestabilidad del actor de
+auditoría (P2) — los dos hallazgos de severidad alta de esta sección —
+quedaron ✅ RESUELTO el 12/09/2026, ver abajo.
 
 ### Hallazgos de severidad alta
 
-- **Suspender un negocio no le corta el acceso hasta que se reinicie el
-  proceso.** El middleware de tenant (`platform/tenant.middleware.ts`)
+- **✅ RESUELTO (12/09/2026) — `PATCH-STATUS-EVICT-001`, commit `5c7bef9`
+  (app-main). Sin verificar todavía en runtime real: el fix tiene
+  cobertura de test con `evictTenantPool` mockeado, no una corrida contra
+  un Postgres real. Detalle en `docs/pendientes-2026-09-12.md`, sección
+  "Cerrado esta sesión".** Suspender un negocio no le cortaba el
+  acceso hasta que se reiniciara el proceso. El middleware de tenant
+  (`platform/tenant.middleware.ts`)
   devuelve el pool cacheado ANTES de consultar el estado del negocio; el
-  `PATCH` de status (`platform.routes.ts`) nunca llama a
+  `PATCH` de status (`platform.routes.ts`) nunca llamaba a
   `evictTenantPool()` — función definida en `tenant.middleware.ts:170` y
   ya usada por este mismo motivo, pero en OTRO archivo:
   `platform/admin.routes.ts:102,150`, con el comentario textual *"Sin
   esto, el pool cacheado en memoria (tenant.middleware.ts) sigue usando
   la connection string vieja hasta que el proceso reinicie"* — exactamente
-  el mismo mecanismo, nunca incorporado al `PATCH` de status. Es una línea
+  el mismo mecanismo, ahora incorporado al `PATCH` de status. Era una línea
   faltante, no diseño pendiente. Frappe Cloud trata la suspensión como
   estado operativo real, propagado, no un flag consultado perezosamente.
-- **El actor del audit log de plataforma es un UUID aleatorio que cambia
-  en cada login** del superadmin — no se puede reconstruir qué hizo una
-  persona ni siquiera hoy con un solo superadmin. El email sí viaja en el
-  token; es el dato que debería persistirse.
+  Verificación en entorno real (suspender un negocio de prueba, confirmar
+  403 `BUSINESS_INACTIVE` sin reiniciar el proceso) sigue pendiente.
+- **✅ RESUELTO (12/09/2026) — `PLATFORM-AUDIT-ACTOR-STABLE-001`, commit
+  `238b7df` (app-main). Limitación conocida, no un bug: los tokens
+  emitidos antes del deploy de este fix siguen válidos hasta 8h con el
+  `sub` viejo (UUID) — el audit log va a tener un tramo mezclado
+  UUID/email tras el deploy, esperado y no corregible sin invalidar
+  sesiones activas. Detalle en `docs/pendientes-2026-09-12.md`, sección
+  "Cerrado esta sesión".** El actor
+  del audit log de plataforma era un UUID aleatorio que cambiaba
+  en cada login del superadmin — no se podía reconstruir qué hizo una
+  persona ni siquiera con un solo superadmin. Ahora `sub`/`userId` del
+  token es el email (estable entre logins), que ya viajaba en el token.
+  No rediseña el modelo de un solo superadmin.
 
 ### Otros huecos de circuito (c)
 
@@ -592,16 +622,17 @@ suspensión real, y no existe la baja.
   Residuo del dueño: si algún módulo es un add-on PAGO (venta/baja
   autoservicio con facturación) — decisión de modelo comercial, no técnica.
 - **Actor único de plataforma**: no es urgente por el número de operadores
-  (hoy es uno), pero la inestabilidad del actor en el audit log sí lo es,
-  hoy mismo. Residuo del dueño: cuándo pasar a varios operadores y con qué
-  mecanismo.
+  (hoy es uno); la urgencia que sí tenía — la inestabilidad del actor en
+  el audit log — se resolvió el 12/09/2026 (`238b7df`,
+  `PLATFORM-AUDIT-ACTOR-STABLE-001`). El residuo del dueño sigue sin
+  resolver: cuándo pasar a varios operadores y con qué mecanismo.
 
 ---
 
 ## 11. Reportería — ⚠️ backend, ❌ producto
 
-*(§1.2 de este documento es el hallazgo más urgente de este circuito —
-léase ahí.)*
+*(§1.2 de este documento era el hallazgo más urgente de este circuito —
+✅ RESUELTO el 12/09/2026 (`9d70b07`), ver ahí para el detalle.)*
 
 - **6 de 11 endpoints sin consumidor** — 5 de POS/CRM ya están en el
   roadmap como gap conocido; el sexto (`DELETE /occupancy/purge`, borrado
@@ -713,8 +744,8 @@ distinción `closedAt`/`endDate`) — no es un hallazgo.
 
 | # | Hallazgo | Tipo | Severidad |
 |---|---|---|---|
-| **1.1** | Ficha de cliente se cae con cualquier tarifa especial (`rate.price` vs `fixedPrice`) | **bug activo** | 🔴 urgente |
-| **1.2** | Reportería PMS: los 5 reportes con pantalla devuelven 400 siempre | **bug activo** | 🔴 urgente |
+| **1.1** | Ficha de cliente se cae con cualquier tarifa especial (`rate.price` vs `fixedPrice`) | **bug activo** | ✅ RESUELTO (`bbf98c0`) |
+| **1.2** | Reportería PMS: los 5 reportes con pantalla devuelven 400 siempre | **bug activo** | ✅ RESUELTO (`9d70b07`) |
 | 2.* | Sidebar: Admin BD muerto, gateo por nombre de rol, City Ledger mal ubicado, catálogos sin agrupar, 3 listas con drift | UI+circuito | ❌/⚠️ |
 | 3 | Autogestión de usuario: circuito inexistente | circuito | ❌ |
 | 4 | `locations`: hueco de circuito + decisión multi-sucursal sin resolver | circuito+decisión | ❌ |
@@ -723,7 +754,7 @@ distinción `closedAt`/`endDate`) — no es un hallazgo.
 | 7.* | CRM: contacto de escritura única, tags sin lectura, walk-in bloqueado, política de facturación mal ubicada | circuito+(a) | ⚠️ |
 | 8.* | Tarifas: 2 de 3 modos y 3 de 5 scopes inalcanzables desde UI; sin vigencia temporal | circuito+decisión | ❌ |
 | 9.* | Roles: circuito ciego (sin legibilidad, sin reversibilidad, sin auditoría visible) | circuito+(a) | ⚠️ |
-| 10.* | Superadmin: suspensión no aplica, actor de auditoría inestable, alta produce tenant sin acceso, downgrade roto, `industry_key` inescribible, sin baja | circuito, 2 de severidad alta | ❌ |
+| 10.* | Superadmin: ~~suspensión no aplica~~ ✅ (`5c7bef9`), ~~actor de auditoría inestable~~ ✅ (`238b7df`); alta produce tenant sin acceso, downgrade roto, `industry_key` inescribible, sin baja siguen abiertos | circuito, 2 de severidad alta | ✅ RESUELTO ambos + ⚠️ resto |
 | 11.* | Reportería: 6 endpoints sin UI, "Reportes" es explorador de API, denominador inconsistente, purge sin gobernanza | circuito+(a) | ⚠️/❌ |
 | 12.* | Audit log: sin consumidor, sin feed global, cobertura desigual, nunca entró al roadmap | circuito | ❌ |
 | 13 | Dead-letter: drift de contrato de 5 días (backend ya resolvió, frontend no lo consume) | drift | ⚠️ |
@@ -756,7 +787,8 @@ así — patrón, no coincidencia**: el circuito se construye hasta el
 historial/auditoría y se detiene justo ahí. Pasa en housekeeping
 (`isOutOfService` muerto, sin audit), en CRM (altas/bajas sin auditar), en
 roles (desactivar sin auditar, catálogo sin legibilidad), en superadmin
-(audit log write-only, actor inestable), en audit-log en sí (cero
+(audit log write-only; el actor inestable que acompañaba este caso se
+resolvió el 12/09/2026, `238b7df`), en audit-log en sí (cero
 consumidores), y en maintenance-windows (histórico con cliente HTTP ya
 escrito, sin pantalla). Vale la pena leerlo como una sola causa transversal
 — "el historial no es prioridad de producto todavía" — no como 6 hallazgos
@@ -769,13 +801,21 @@ sueltos.
 No decidido por este documento — orden lógico según lo que cada ronda
 señaló como dependencia:
 
-1. **Los 2 bugs activos (§1)** no dependen de ninguna decisión — son
-   reparables ya, cada uno un cambio acotado de frontend.
-2. **P1 (suspensión que no corta acceso) y P2 (actor de auditoría
-   inestable)** del circuito de superadmin son los dos hallazgos de mayor
-   severidad de todo el documento fuera de los bugs — no dependen de
-   decisión de negocio tampoco (P1 es una línea faltante, P2 es persistir
-   un campo que ya viaja en el token).
+1. **✅ Los 2 bugs activos (§1)** — resueltos el 12/09/2026 (`bbf98c0`,
+   `9d70b07`, appfrontend-main).
+2. **✅ P1 (suspensión que no corta acceso) y P2 (actor de auditoría
+   inestable)** del circuito de superadmin — resueltos el 12/09/2026
+   (`5c7bef9`, `238b7df`, app-main). Verificación en entorno real de P1
+   (suspender un negocio de prueba, confirmar 403 sin reinicio) sigue
+   pendiente.
+
+   El push de estos 4 commits requiere autorización explícita del dueño,
+   nunca inferida de este cierre documental — el estado de push en sí no
+   se registra acá (regla del `CLAUDE.md` raíz, incidente del
+   11/09/2026: es un hecho volátil que vence en cuanto alguien pushea).
+   Verificar en el momento con
+   `git log origin/main --oneline | grep &lt;hash&gt;` en el repo que
+   corresponda.
 3. El resto son, en su mayoría, decisiones (b) con mecanismo ya resuelto
    por el grounding — el costo real de decidir cada una ya está medido en
    este documento; lo que falta es que el dueño resuelva el residuo
