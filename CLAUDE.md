@@ -34,6 +34,28 @@ Regla: si una pregunta de alcance, una vez resuelta, puede comportarse de más
 de una forma razonable, cada forma es su propia pregunta con
 `AskUserQuestion` — no la resuelvas como parte de la primera.
 
+**Principio ya declarado, transversal — chequearlo ANTES de diseñar, no
+después:** `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+dice, sobre facturación/NC (buscar la frase textual, no citar por línea —
+mismo criterio que SCHEMA-ANCHOR-DRIFT-001): *"La app no le dice al
+cliente cómo trabajar; le permite formalizar electrónicamente una
+decisión que el cliente ya tomó."* No es un principio acotado a esa
+feature — aplica a cualquier
+diseño que se plantee bloquear, rechazar en firme, o forzar un único
+camino cuando el sistema no puede resolver algo solo. Caso real
+(`CN-ESCAPE-ORPHAN-ADJUSTMENT-001`, 11-12/09/2026): frente a un
+`ADJUSTMENT` que puede quedar trabado si la atribución fiscal automática
+no cierra, la primera propuesta fue marcarlo "FALLIDO" de forma terminal
+y mandar al usuario fuera del sistema a resolverlo — sin haber
+chequeado este principio ni buscado el precedente ERP antes de diseñar.
+El grounding pedido DESPUÉS (`auditor-circuitos-erp`) fue unánime en los
+5 sistemas de referencia: ninguno bloquea así — todos dejan un documento
+en borrador que un humano completa. Repetible: antes de proponer un
+diseño que bloquea o dicta, primero preguntar "¿el sistema le da al
+negocio una salida propia, o lo manda a resolver por afuera?" — y si hay
+grounding ERP disponible, pedirlo ANTES de diseñar una solución propia,
+no para validarla después.
+
 ## Developing defensivo — obligatorio antes de dar un cambio por terminado
 
 Además de `criterios-negocio`, todo cambio de código (no solo los que
