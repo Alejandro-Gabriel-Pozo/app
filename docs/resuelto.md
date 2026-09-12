@@ -318,3 +318,23 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`, que ya
   dice, textual, "**✅ Punto ciego cerrado el 09/09/2026**". Origen:
   `pendientes-2026-09-12.md`.
+
+- **`CITY-LEDGER-SCHEMA-V52-001` — confirmado contra Postgres real, en los
+  2 tenants.** El `ALTER` de schema v52 (`docs/diseno-reconciliacion-
+  city-ledger-2026-09-12.md` §4.2, commit `b82d828`, push `23d6bf7`)
+  corrió en el deploy de Render y se verificó por tenant (Neon
+  `ancient-king-17098519`, branches `br-snowy-tree-ax5wmq70` y
+  `br-square-leaf-axzvu903`): `SELECT conname, pg_get_constraintdef(oid)
+  FROM pg_constraint WHERE conrelid = 'accounts_receivable'::regclass`
+  muestra `chk_accounts_receivable_status` con los 4 valores
+  (`PENDIENTE_FACTURAR`, `FACTURADO`, `COBRADO`, `REVERTIDO`) y **ninguna**
+  entrada `accounts_receivable_status_check` (el nombre viejo) — el `DROP`
+  no fue un no-op, no quedaron los dos CHECK conviviendo. Las 2 FK nuevas
+  (`reversal_transaction_id`, `replaces_ar_id`) están presentes, sin
+  cláusula `ON DELETE` explícita en `pg_get_constraintdef` porque `NO
+  ACTION` es el default de Postgres y se omite al imprimir — coincide con
+  lo escrito en el schema. `schema_migrations` confirma `MAX(version) = 52`
+  en ambos tenants. Backup previo verificado: ramas
+  `respaldo-pre-v52-city-ledger-2026-09-12` (producción) y
+  `respaldo-hotel-pre-v52-city-ledger-2026-09-12` (Hotel Los Álamos),
+  ambas `ready` antes del push. Origen: `pendientes-2026-09-12.md`.
