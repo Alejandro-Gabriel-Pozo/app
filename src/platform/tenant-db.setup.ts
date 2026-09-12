@@ -420,7 +420,11 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // docs/investigacion-decisiones-bloqueado-2026-09-12.md caso 3.
 // `stays.balance_override_by`/`balance_override_at`/`balance_at_override`
 // nuevos (A6.5 -- mismo patrón que housekeeping_override_* de v41).
-export const CURRENT_SCHEMA_VERSION = 49;
+// v50 (12/09/2026): CHECK `chk_financial_transactions_order_or_reservation`
+// (<=1 de order_id/reservation_id no-nulo), docs/investigacion-decisiones-
+// bloqueado-2026-09-12.md caso 6. Cierra a nivel de BD lo que
+// CreditNoteAmbiguousSubjectError solo rechazaba en lectura.
+export const CURRENT_SCHEMA_VERSION = 50;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

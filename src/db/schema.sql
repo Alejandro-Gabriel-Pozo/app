@@ -3607,3 +3607,38 @@ ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_override_by VARCHAR(255);
 ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_override_at TIMESTAMPTZ;
 ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_at_override DECIMAL(12, 2);
 
+-- ===========================================================================
+-- BLOQUE 22 — CHECK ESTRUCTURAL order_id/reservation_id EN
+-- financial_transactions (12/09/2026)
+-- docs/investigacion-decisiones-bloqueado-2026-09-12.md, caso 6
+-- ===========================================================================
+-- El guard de aplicación (CreditNoteAmbiguousSubjectError,
+-- invoice.service.ts) ya rechaza construir una NC sobre una fila con
+-- order_id Y reservation_id no-nulos a la vez -- pero es un guard de
+-- LECTURA, en el camino de construcción de la NC: no impide que la fila
+-- ambigua se CREE. Mismo hueco que chk_invoice_item_origin (tabla
+-- hermana) ya cierra para order_item_id/reservation_id -- acá faltaba el
+-- equivalente.
+--
+-- A diferencia de chk_invoice_item_origin (XOR estricto -- esa tabla
+-- siempre tiene uno de los dos), acá `<=1` y no `=1`: hay filas
+-- legítimas con los dos NULL (ej. el PAYMENT que
+-- AccountsReceivableService.transferStayBalanceToReceivable() crea con
+-- `stayId` únicamente, sin order_id ni reservation_id -- ver su propio
+-- comentario). Verificado por código (grep de todo call-site que crea
+-- `financial_transactions`, no por query directa a producción -- sin
+-- acceso a Postgres real en este entorno): ningún creador real del repo
+-- setea las dos columnas en el mismo INSERT.
+--
+-- Mismo patrón DROP+ADD idempotente que
+-- chk_financial_transactions_reversed_invoice_type (BLOQUE de schema v47,
+-- 08/09/2026, misma tabla) -- no `NOT VALID`/`VALIDATE CONSTRAINT`, que no
+-- es el patrón idiomático de este repo. Reaplicado en cada
+-- `migrate:tenants`: costo ya existente (dos constraints más chicos en la
+-- misma tabla), no uno nuevo.
+ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS chk_financial_transactions_order_or_reservation;
+ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_order_or_reservation CHECK (
+  (CASE WHEN order_id       IS NOT NULL THEN 1 ELSE 0 END +
+   CASE WHEN reservation_id IS NOT NULL THEN 1 ELSE 0 END) <= 1
+);
+

@@ -216,7 +216,7 @@ describe('loadTenantSchema', () => {
 
 describe('applyTenantSchema', () => {
   const queryMock = vi.fn(async (sql: string): Promise<{ rows: Array<Record<string, unknown>> }> => {
-    if (sql.includes('SELECT MAX')) return { rows: [{ max: 49 }] };
+    if (sql.includes('SELECT MAX')) return { rows: [{ max: 50 }] };
     return { rows: [] };
   });
   const connectMock = vi.fn(async () => {});
@@ -264,8 +264,10 @@ describe('applyTenantSchema', () => {
     // 48 -> 49 el 12/09/2026: checkOut() warn-and-override (caso 3) --
     // stays.balance_override_by/_at/balance_at_override. Ver
     // docs/investigacion-decisiones-bloqueado-2026-09-12.md.
-    expect(version).toBe(49);
-    expect(CURRENT_SCHEMA_VERSION).toBe(49);
+    // 49 -> 50 el 12/09/2026: CHECK chk_financial_transactions_order_or_reservation
+    // (caso 6). Ver docs/investigacion-decisiones-bloqueado-2026-09-12.md.
+    expect(version).toBe(50);
+    expect(CURRENT_SCHEMA_VERSION).toBe(50);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

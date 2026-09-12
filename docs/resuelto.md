@@ -22,6 +22,30 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ## 12/09/2026
 
+- **Caso 6 — CHECK estructural `chk_financial_transactions_order_or_reservation`
+  en `financial_transactions`.** Origen:
+  `docs/investigacion-decisiones-bloqueado-2026-09-12.md`, caso 6. El
+  guard de aplicación (`CreditNoteAmbiguousSubjectError`,
+  `invoice.service.ts`) ya rechazaba ATRIBUIR una NC a una fila con
+  `order_id` Y `reservation_id` no-nulos a la vez, pero es de lectura —
+  no impedía que la fila ambigua se creara. Cierra la asimetría con
+  `chk_invoice_item_origin` (tabla hermana) y
+  `chk_financial_transactions_reversed_invoice_type` (misma tabla, v47).
+  `<=1`, no `=1` como el precedente: hay filas legítimas con las dos
+  columnas NULL (el `PAYMENT` que
+  `AccountsReceivableService.transferStayBalanceToReceivable()` crea con
+  solo `stayId`). Schema v49→v50. Decisión del dueño 12/09/2026
+  (`AskUserQuestion`): bloque propio, ahora, no diferido. Introducido en
+  este mismo commit (app-main) — buscar el hash con
+  `git log --oneline --grep "chk_financial_transactions_order_or_reservation"`.
+  **No cerrado del todo:** el `ADD CONSTRAINT` valida filas existentes y
+  la verificación fue por código (14 call-sites, 7 archivos), no por
+  query contra las tenant DB reales — sin Postgres en este entorno.
+  Residuo abierto en `pendientes-2026-09-12.md`, § Verificaciones
+  pendientes (la query que lo cierra) y § 🔴 Bloqueado (residuo parte 2:
+  ¿mover los 3 CHECK de esta tabla a una migración numerada?). **No
+  deployar sin correr esa query primero.**
+
 - **Caso 3 — `StayService.checkOut()` cuenta saldo `PENDING` y
   MANAGEMENT puede forzarlo con rastro.** Origen: hallazgo adyacente del
   gate de 1c-0, registrado sin bloque asignado en

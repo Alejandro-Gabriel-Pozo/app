@@ -797,18 +797,22 @@ export class InvoiceService {
       Math.abs(round2(amountToReverse - original.impTotal)) <= CREDIT_NOTE_COMPENSATION_TOLERANCE;
 
     // 1c-ii-b (11/09/2026, gate `architecture-governor`, condición C2,
-    // grounding `auditor-circuitos-erp`) -- invariante de APLICACIÓN, no de
-    // schema: `financial_transactions` no tiene CHECK que impida
-    // `order_id` Y `reservation_id` no-nulos a la vez (solo disciplina de
-    // los dos creadores del escape). Fail-loud ACÁ, antes de cualquier
-    // rama, para no depender de una precedencia de código implícita
-    // (¿reserva gana? ¿orden?) ni de que el guard de monto de más abajo
-    // (`CreditNoteAttributionMismatchError`) la tape por casualidad cuando
-    // los importes coinciden. Sin restringir por `tx.type`/`isFullReversal`
-    // a propósito -- es un hecho sobre la FILA, no sobre qué rama la usa.
-    // El CHECK real de schema que cerraría la PRODUCCIÓN de esta fila
-    // (recomendado por el mismo grounding) queda como bloque de migración
-    // aparte -- nada de schema en este commit.
+    // grounding `auditor-circuitos-erp`) -- invariante de LECTURA: rechaza
+    // ATRIBUIR una NC a una fila con `order_id` Y `reservation_id`
+    // no-nulos a la vez, ANTES de cualquier rama, para no depender de una
+    // precedencia de código implícita (¿reserva gana? ¿orden?) ni de que
+    // el guard de monto de más abajo (`CreditNoteAttributionMismatchError`)
+    // la tape por casualidad cuando los importes coinciden. Sin restringir
+    // por `tx.type`/`isFullReversal` a propósito -- es un hecho sobre la
+    // FILA, no sobre qué rama la usa.
+    // Desde schema v50 (12/09/2026, caso 6 de
+    // docs/investigacion-decisiones-bloqueado-2026-09-12.md) la PRODUCCIÓN
+    // de esta fila también está cerrada a nivel de BD --
+    // `chk_financial_transactions_order_or_reservation` en
+    // `financial_transactions` (schema.sql). Este guard de acá NO se
+    // retira: el CHECK cubre la escritura, este guard sigue siendo la
+    // barrera de lectura -- dos momentos distintos, no la misma regla
+    // duplicada.
     if (tx.orderId != null && tx.reservationId != null) {
       throw new CreditNoteAmbiguousSubjectError(tx.id, tx.orderId, tx.reservationId);
     }

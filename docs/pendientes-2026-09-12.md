@@ -61,6 +61,31 @@ cuando se pushea.
   sin verificar: abrir `dashboard/estadias/[id]/page.tsx` con una
   estadía real con saldo pendiente y confirmar el flujo de
   `ConfirmDialog` de MANAGEMENT — commit `4cb5a04` (appfrontend-main).
+- **Caso 6 — `chk_financial_transactions_order_or_reservation` (CHECK
+  nuevo, schema v50) sin correr contra las tenant DB reales antes del
+  deploy.** `ADD CONSTRAINT` (sin `NOT VALID`) valida TODAS las filas
+  existentes de `financial_transactions` en cada tenant — se verificó por
+  código (14 call-sites de creación, en 7 archivos, revisados uno por
+  uno: ninguno setea `order_id` y `reservation_id` a la vez) y por lectura
+  de los 6 `INSERT` crudos de `src/tests/integration/`, NO por query
+  directa a producción — sin Postgres real en este entorno, y sin poder
+  revisar escritores históricos (`.git/shallow`, clone superficial, sin
+  historia completa). Acción puntual, antes de deployar: correr en cada
+  tenant DB —
+  ```sql
+  SELECT count(*) AS ambiguas FROM financial_transactions
+  WHERE order_id IS NOT NULL AND reservation_id IS NOT NULL;
+  ```
+  esperado `0` en todas. Si da `0` en todas, registrar el conteo en el
+  comentario del BLOQUE 22 de `schema.sql` (mismo formato que el
+  precedente de v47) en un commit forward, antes de deployar. Si da
+  distinto de `0` en alguna, el CHECK no puede shippear tal como está —
+  reabre la decisión (arreglar los datos, `NOT VALID`, o re-acotar).
+  Confirmar también que el set de tenants sigue siendo el mismo 2 de hace
+  4 días (Demo + Hotel los Álamos) antes de asumirlo. Introducido en este
+  mismo commit (app-main) — buscar el hash con
+  `git log --oneline --grep "chk_financial_transactions_order_or_reservation"`
+  si hace falta citarlo desde otro documento.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
@@ -1253,6 +1278,27 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   se espera la respuesta — el fix de `checkOut()` (Q1, sí decidido) es
   inseparable de este cambio de comportamiento porque comparten la
   misma función.
+
+- **Caso 6, residuo parte 2 — ¿mover los CHECK de `financial_transactions`
+  a un `migrations/NNN_*.sql` numerado? (12/09/2026, `requiere decisión
+  del dueño`).** Ancla:
+  `docs/investigacion-decisiones-bloqueado-2026-09-12.md:217-220` (el
+  "Residuo del dueño" original del caso 6 tenía 2 partes; la parte 1 —
+  encararlo ahora, bloque propio — ya se decidió; esta parte 2 sigue sin
+  responder). `financial_transactions` acumula ahora **3** CHECK
+  constraints (`chk_financial_transactions_amount`,
+  `chk_financial_transactions_reversed_invoice_type` de v47,
+  `chk_financial_transactions_order_or_reservation` de v50) que se
+  re-validan bajo `ACCESS EXCLUSIVE` en CADA deploy, para siempre, porque
+  `schema.sql` se reaplica completo en cada `migrate:tenants` (patrón
+  `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT`). El propio comentario
+  del v47 ya nombró el disparador: *"Si algún día pesa, mover a un
+  `&lt;NNN&gt;_*.sql` numerado (que corre una vez) en vez de reaplicarse."*
+  Este bloque suma el tercer CHECK sobre esa misma tabla — no decide si
+  "algún día" ya llegó. **Pregunta para el dueño:** ¿el costo recurrente
+  ya justifica mover estos 3 (o los que corresponda) a una migración
+  numerada, o sigue siendo aceptable mientras la tabla no crezca mucho
+  más?
 
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,
