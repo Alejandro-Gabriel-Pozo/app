@@ -61,31 +61,6 @@ cuando se pushea.
   sin verificar: abrir `dashboard/estadias/[id]/page.tsx` con una
   estadía real con saldo pendiente y confirmar el flujo de
   `ConfirmDialog` de MANAGEMENT — commit `4cb5a04` (appfrontend-main).
-- **Caso 6 — `chk_financial_transactions_order_or_reservation` (CHECK
-  nuevo, schema v50) sin correr contra las tenant DB reales antes del
-  deploy.** `ADD CONSTRAINT` (sin `NOT VALID`) valida TODAS las filas
-  existentes de `financial_transactions` en cada tenant — se verificó por
-  código (14 call-sites de creación, en 7 archivos, revisados uno por
-  uno: ninguno setea `order_id` y `reservation_id` a la vez) y por lectura
-  de los 6 `INSERT` crudos de `src/tests/integration/`, NO por query
-  directa a producción — sin Postgres real en este entorno, y sin poder
-  revisar escritores históricos (`.git/shallow`, clone superficial, sin
-  historia completa). Acción puntual, antes de deployar: correr en cada
-  tenant DB —
-  ```sql
-  SELECT count(*) AS ambiguas FROM financial_transactions
-  WHERE order_id IS NOT NULL AND reservation_id IS NOT NULL;
-  ```
-  esperado `0` en todas. Si da `0` en todas, registrar el conteo en el
-  comentario del BLOQUE 22 de `schema.sql` (mismo formato que el
-  precedente de v47) en un commit forward, antes de deployar. Si da
-  distinto de `0` en alguna, el CHECK no puede shippear tal como está —
-  reabre la decisión (arreglar los datos, `NOT VALID`, o re-acotar).
-  Confirmar también que el set de tenants sigue siendo el mismo 2 de hace
-  4 días (Demo + Hotel los Álamos) antes de asumirlo. Introducido en este
-  mismo commit (app-main) — buscar el hash con
-  `git log --oneline --grep "chk_financial_transactions_order_or_reservation"`
-  si hace falta citarlo desde otro documento.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí

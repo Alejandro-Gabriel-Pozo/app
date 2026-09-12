@@ -3626,9 +3626,21 @@ ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_at_override DECIMAL(12, 2);
 -- AccountsReceivableService.transferStayBalanceToReceivable() crea con
 -- `stayId` únicamente, sin order_id ni reservation_id -- ver su propio
 -- comentario). Verificado por código (grep de todo call-site que crea
--- `financial_transactions`, no por query directa a producción -- sin
--- acceso a Postgres real en este entorno): ningún creador real del repo
--- setea las dos columnas en el mismo INSERT.
+-- `financial_transactions`): ningún creador real del repo setea las dos
+-- columnas en el mismo INSERT.
+--
+-- Verificado el 12/09/2026 también contra las dos tenants de producción --
+-- el universo real que reaplica `migrate:tenants` (filtro real:
+-- `businesses.db_url_encrypted IS NOT NULL` en la BD de plataforma, sin
+-- filtro de status; cruzado ahí y son exactamente estas 2, ambas ACTIVE):
+-- Demo/`production` (`br-snowy-tree-ax5wmq70`) y Hotel los
+-- Álamos/`tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`), Neon
+-- `ancient-king-17098519`. `SELECT count(*) FROM financial_transactions
+-- WHERE order_id IS NOT NULL AND reservation_id IS NOT NULL` -> 0 filas en
+-- las dos, sobre 21 filas totales en Demo y 0 en Hotel los Álamos
+-- (denominador, mismo formato que el precedente de v47) -> el
+-- `ADD CONSTRAINT` es instantáneo, sin validación de filas existentes,
+-- sin backfill.
 --
 -- Mismo patrón DROP+ADD idempotente que
 -- chk_financial_transactions_reversed_invoice_type (BLOQUE de schema v47,

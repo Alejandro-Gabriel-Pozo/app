@@ -38,13 +38,30 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   (`AskUserQuestion`): bloque propio, ahora, no diferido. Introducido en
   este mismo commit (app-main) — buscar el hash con
   `git log --oneline --grep "chk_financial_transactions_order_or_reservation"`.
-  **No cerrado del todo:** el `ADD CONSTRAINT` valida filas existentes y
-  la verificación fue por código (14 call-sites, 7 archivos), no por
-  query contra las tenant DB reales — sin Postgres en este entorno.
-  Residuo abierto en `pendientes-2026-09-12.md`, § Verificaciones
-  pendientes (la query que lo cierra) y § 🔴 Bloqueado (residuo parte 2:
-  ¿mover los 3 CHECK de esta tabla a una migración numerada?). **No
-  deployar sin correr esa query primero.**
+  **Verificación contra producción cerrada el 12/09/2026** (vía Neon MCP).
+  El universo real de bases que toca `npm run migrate:tenants` no lo
+  define el listado de branches de Neon, sino
+  `src/scripts/migrate-tenants.ts`: `businesses` de la BD de plataforma
+  (Neon `morning-unit-50056927`, branch `production`/`br-royal-mouse-aybe2ai3`)
+  filtrado por `db_url_encrypted IS NOT NULL`, sin filtro de `status`.
+  Corrida esa query exacta —
+  `SELECT id, name, slug, status, schema_version, (db_url_encrypted IS
+  NOT NULL) AS tiene_db FROM businesses ORDER BY created_at DESC` —
+  devolvió exactamente 2 filas con `tiene_db = true`, las dos `ACTIVE`,
+  las dos en `schema_version 49` (pre-v50): Hotel los Álamos
+  (`hotel-los-alamos`) y Demo (`demo`). Coincide uno a uno con las 2
+  tenant DB ya probadas — cadena cerrada, no quedan bases sin verificar.
+  Sobre esas 2 (Neon `ancient-king-17098519`): `production`/Demo
+  (`br-snowy-tree-ax5wmq70`) y `tenant-hotel-los-alamos`
+  (`br-square-leaf-axzvu903`). `SELECT count(*) FROM
+  financial_transactions WHERE order_id IS NOT NULL AND reservation_id
+  IS NOT NULL` → `0` en las dos, sobre un total de 21 filas en Demo y 0
+  en Hotel los Álamos (denominador, mismo formato que el precedente de
+  v47). Evidencia también en el comentario del BLOQUE 22 de `schema.sql`.
+  Ya no bloquea el deploy. **Residuo que sigue abierto, sin relación con
+  esta verificación:** `pendientes-2026-09-12.md`, § 🔴 Bloqueado, "Caso
+  6, residuo parte 2" — ¿mover los 3 CHECK de esta tabla a una migración
+  numerada?
 
 - **Caso 3 — `StayService.checkOut()` cuenta saldo `PENDING` y
   MANAGEMENT puede forzarlo con rastro.** Origen: hallazgo adyacente del
