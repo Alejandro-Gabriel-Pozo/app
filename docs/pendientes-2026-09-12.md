@@ -23,98 +23,57 @@ documentos.
 
 ---
 
+## 🔍 Verificaciones pendientes (código listo, falta confirmar en entorno real)
+
+Distinto de "🔴 bloqueado en decisión" y de "🟡 listo para encarar": acá el
+código ya está escrito, gate-aprobado y (cuando corresponde) commiteado —
+lo único que falta es correrlo o medirlo contra algo que esta sesión no
+tuvo disponible (Postgres real, un backend levantado, producción). Se saca
+de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
+evidencia de la corrida, cuando alguien confirma el resultado real — no
+cuando se pushea.
+
+- **`CRASH-CUSTOMER-RATE-RENDER-01`** — abrir la ficha de un cliente con
+  una tarifa especial scope `categoryId`/`bucket`/`productId` en un
+  entorno real (los 3 scopes nuevos de D9), confirmar que
+  `clientes/[id]/page.tsx` la renderiza sin crash. Commit `bbf98c0`
+  (appfrontend-main).
+- **`REPORTS-DATEONLY-MISMATCH-001`** — confirmar los 5 reportes de
+  `reportes/page.tsx` contra un backend `app-main` real levantado (esta
+  sesión solo validó el formato contra el regex de `dateOnlySchema`, sin
+  entorno/credenciales disponibles). Commit `9d70b07` (appfrontend-main).
+- **`PATCH-STATUS-EVICT-001`** — suspender un negocio de prueba y
+  confirmar 403 `BUSINESS_INACTIVE` sin reiniciar el proceso (el test
+  nuevo mockea `evictTenantPool`, no corre contra Postgres real). Commit
+  `5c7bef9` (app-main).
+- **Polling adaptativo — ahorro de compute sin medir.** El bloque 1
+  (`6f1289a`+`02629b7`) está deployado y verificado en producción, pero el
+  ahorro de compute en Neon que motivó el bloque sigue siendo inferido, no
+  medido — falta correr 24-48h post-deploy y comparar actividad de compute.
+
+**Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
+este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
+se migraron a `docs/resuelto.md` hoy — viven mezcladas dentro de
+`🔴 Bloqueado en una decisión del dueño`, `🟡 Listo para encarar` y
+`🟢 Deuda aceptada` (medido con `grep -c`, no estimado). No se movieron:
+la mayoría son respuestas parciales dentro de tickets que siguen abiertos
+("la pregunta de negocio ✅ RESPONDIDA" pero la implementación sigue
+pendiente; "✅ RESUELTO en una dirección" con la otra dirección todavía
+abierta), no ítems cerrados autocontenidos — migrarlas mecánicamente
+perdería ese matiz. Migrarlas exige leer cada una individualmente; queda
+como bloque aparte, no decidido todavía.
+
+---
+
 ## ✅ Cerrado esta sesión (12/09/2026)
 
-- **Los 4 "bugs activos" del pedido "vamos primero con bugs activos" —
-  ✅ RESUELTO, los 4.** Origen: §1 y §10 de
-  `docs/auditoria-transversal-navegacion-autogestion-circuitos-2026-09-12.md`.
-  Implementados en paralelo (4 agentes, uno por bug, `isolation: "worktree"`
-  para los 2 de `app-main`), gate combinado de `architecture-governor`
-  aprobado con condición explícita de 4 commits separados (no 2 agrupados
-  por repo) — cada uno es su propia unidad de revert y de evidencia. El
-  push de los 4 requiere autorización explícita del dueño, no inferida de
-  este cierre de docs — el estado de push en sí no se registra acá a
-  propósito (regla del `CLAUDE.md` raíz, incidente del 11/09/2026: es un
-  hecho volátil que vence apenas alguien pushea); verificar en el momento
-  con `git log origin/main --oneline | grep &lt;hash&gt;` en el repo que
-  corresponda.
-  - **`CRASH-CUSTOMER-RATE-RENDER-01`** (§1.1 del doc consolidado — la
-    ficha de cualquier cliente con tarifa especial se caía,
-    `rate.price` vs. `fixedPrice` real). `CustomerRate`
-    (`appfrontend-main/src/lib/clientes/types.ts`) corregido al contrato
-    real (5 scopes + `fixedPrice`/`discountPercentage` nullable); dos
-    helpers nuevos en `clientes/[id]/page.tsx` reemplazan las dos
-    expresiones inline que rompían. **Commit `bbf98c0`** (appfrontend-main).
-    Sin verificar: abrir la ficha de un cliente con tarifa scope
-    `categoryId`/`bucket`/`productId` en un entorno real.
-  - **`REPORTS-DATEONLY-MISMATCH-001`** (§1.2 — los 5 reportes con
-    pantalla devolvían 400 siempre, `datetime-local`/`.toISOString()`
-    contra `dateOnlySchema`). Los 10 inputs de fecha de `reportes/page.tsx`
-    y los 3 bloques de reportes de `admin/page.tsx` pasados a
-    `type="date"`, sin transformación adicional; `components/ApiBlock.tsx`
-    suma `'date'` al tipo `InputDef` (necesario para que compile).
-    **Commit `9d70b07`**
-    (appfrontend-main). Sin verificar: solo se validó contra el regex de
-    `dateOnlySchema`, no contra una respuesta real de un backend
-    levantado (sin entorno/credenciales disponibles en esta sesión).
-  - **`PATCH-STATUS-EVICT-001`** (§10, severidad alta — suspender un
-    negocio no cortaba el acceso hasta reiniciar el proceso).
-    `PATCH /platform/businesses/:id/status` ahora llama a
-    `evictTenantPool()` (ya existente, mismo patrón que
-    `admin.routes.ts`) tras confirmar la transición. 3 tests nuevos.
-    **Commit `5c7bef9`** (app-main). Sin verificar: runtime real contra
-    Postgres — el test mockea `evictTenantPool`; confirmar 403
-    `BUSINESS_INACTIVE` sin reiniciar el proceso, suspendiendo un negocio
-    de prueba.
-  - **`PLATFORM-AUDIT-ACTOR-STABLE-001`** (§10, severidad alta — el
-    actor del audit log de plataforma era un UUID nuevo en cada login,
-    imposible de correlacionar por persona). `sub`/`userId` del token
-    de superadmin pasa de `randomUUID()` a `creds.email` (estable,
-    `VARCHAR(255)` sin CHECK de formato UUID en el schema). No rediseña
-    el modelo de un solo superadmin. **Commit `238b7df`** (app-main).
-    Limitación conocida, no bug: los tokens emitidos antes del deploy
-    siguen válidos hasta 8h con el `sub` viejo (UUID) — el audit log va a
-    tener un tramo mezclado UUID/email tras el deploy, esperado y no
-    corregible sin invalidar sesiones activas.
-- **`diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md`** —
-  diseño de la salida manual para `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`
-  (un `ADJUSTMENT` puede quedar `PENDING` para siempre si
-  `buildCreditNote()` falla determinísticamente después de que el
-  orquestador de escape ya commiteó tx1) y reapertura acotada de B3
-  (`credit_note_request`, ticket). **Cierre de DISEÑO, no de
-  implementación** — no confundir las dos cosas. 12 pasadas de
-  `architecture-governor` (v1→v7.2); cambio de alcance mayor en v7.0:
-  `NO_ITEMS` se retira porque la migración Nivel A→B ya cerró ese
-  período para cualquier tenant real y el dueño confirmó, vía
-  `AskUserQuestion`, que todos los tenants existentes hoy son
-  demo/descartables — con eso el único motivo habilitado es
-  `AMOUNT_MISMATCH`, que siempre tiene `invoice_items` de origen reales.
-  **Commit `15b2364`, pusheado — verificado que está en `origin/main`
-  vía `git log origin/main --oneline | grep 15b2364`.** No queda ninguna pregunta
-  abierta para el dueño (partición de §9: 0 de 10 ítems). **Sigue
-  bloqueada la IMPLEMENTACIÓN** por una precondición externa real: la
-  cadena de HOLD de `invoice_drafts` en `FACT-BORRADOR-001` (ítem 3 de
-  §9 del propio documento) — no hay tabla nueva, no hay código nuevo,
-  solo el diseño.
-- **`FACT-BORRADOR-001` §29 (v2.10→v2.11)** — nota registrada de una
-  propuesta del dueño (surgida en la sesión del ítem de arriba) para
-  modelar cargos administrativos/intangibles como ítem de catálogo de
-  primera clase, en vez de línea manual sin origen. Corrige dos
-  supuestos de la propuesta original contra el schema real
-  (`order_items.item_type` ya tiene 3 ramas, no 1; `products.product_type`
-  ya existe pero con OTRO significado — no reusable para
-  `PHYSICAL`/`SERVICE` sin colisión) y presenta dos alternativas: A
-  (columna `requires_inventory` ortogonal) y B (rama `SERVICE` nueva en
-  `item_type`, preferida por el dueño — con su costo medido contra
-  `app-main` **y** contra los 3 sitios de `appfrontend-main` que
-  hardcodean el tipo, mismo patrón de riesgo que
-  `ROLES-CATALOG-DRIFT-001`). No reabre §17/§24/§28 de ese documento
-  (opera en la capa de catálogo, no en el origen que declara la línea
-  de factura). No autoriza `CREATE TABLE`/migración/código — pasa por
-  `criterios-negocio` + `architecture-governor` antes de implementarse.
-  Dos pasadas de gate (la primera encontró 6 defectos de anclaje + el
-  hueco cross-repo, corregidos). **Commit `e747982`, pusheado a
-  `origin/main`, verificado.**
+**Los ítems cerrados de este bloque se movieron a `docs/resuelto.md`**
+(convención nueva del 12/09/2026 — ver `CLAUDE.md` raíz). Lo que tenía
+residuo sin confirmar quedó en `## 🔍 Verificaciones pendientes`, más
+arriba en este archivo. Queda acá solo la nota que sigue, que no es un
+ítem cerrado sino el resumen de la revisión que abre la sección
+siguiente:
+
 - **Revisión del 🔴 "Bloqueado en decisión del dueño" — TERMINADA
   (12/09/2026, `auditor-circuitos-erp`, grounding vía `WebSearch`/`WebFetch`
   contra los 5 sistemas de referencia, con instrucción explícita del
@@ -648,112 +607,13 @@ que a alguien se le ocurre nombrar.
 
 ## ✅ Cerrado esta sesión — arco transversal completo
 
-Dos candidatos transversales, elegidos por el usuario, trabajados uno
-después del otro, los dos con gate `architecture-governor` y push
-autorizado explícitamente por el usuario ("si", dos veces).
-
-1. **`lock-order.test.ts` blind spot (FN #2)** — ✅ `7150dfa`+`271fdd4`+`1cd9cea`,
-   pusheado y deployado. Detalle: `zulu-hub-continuidad-2026-09-09.md`.
-2. **`EMISOR_NOTA_CREDITO` — bloque 5.1, los 3 catálogos frontend** — ✅
-   **CERRADO 3/3, pusheado y deployado en producción, verificado.**
-   - `dashboard/roles/page.tsx` + `superadmin/planes/page.tsx` — ✅
-     `appfrontend-main` `ba01d3d` (09/09/2026).
-   - `superadmin/roles-de-fabrica/page.tsx` — copy falsa ("Editar acá NO
-     afecta a los negocios que ya existen") corregida por un bloque de
-     advertencia con el mecanismo real. Cross-repo:
-     - `app-main`: `f91d7ad` (corrige el comentario falso en 3 sitios) →
-       `328b134` (corrige deriva de fecha 09/09→09-10/09 + responde
-       `DEFENSIVE_DEVELOPING` §2/§3 retroactivo) → `14c5166` (corrige 3
-       anclas a `platform.schema.sql` nacidas corridas en `f91d7ad`) →
-       `7cee110` (reconcilia 4 punteros de docs que seguían afirmando
-       "sigue abierto") → `9d8ad1a` (corrige 2 anclas más, mismo defecto,
-       en `roles-catalog-sync.test.ts`).
-     - `appfrontend-main`: `5ba8b57` (bloque de advertencia + comentario
-       de `platformApi.ts`) → `6a427c9` (corrige deriva de fecha).
-   - **Verificado en producción, no solo pusheado:**
-     - Render: deploy `dep-dah75b3bc2fs73fi2trg` en commit `9d8ad1a` =
-       `live` (`migrate:tenants` corrió limpio contra todas las tenant
-       DB — si hubiera fallado, el build entero habría fallado). `/health`
-       con `uptimeSeconds` creciente entre dos muestras (91→94s),
-       confirmando instancia nueva sirviendo, no la vieja.
-     - Vercel: sin acceso a cuenta vía MCP en esta sesión (`list_teams`
-       vacío) — verificado bajando el bundle real de producción
-       (`/_next/static/immutable/chunks/0lwl30asjwpim.js`, resuelto desde
-       el HTML prerenderizado de `/superadmin/roles-de-fabrica`) y
-       greppeando: el texto nuevo de advertencia está presente verbatim,
-       **cero** ocurrencias del subtítulo falso viejo, tokens
-       `var(--danger)`/`--danger-border`/`--danger-dim)` presentes.
-       `PERMISSION_GROUPS` confirmado en 8 entradas, sin
-       `EMISOR_NOTA_CREDITO` — bloque B (ver abajo) correctamente todavía
-       no tocado.
-   - **Cerca de fondo (evita el próximo drift):** ✅ `5dbbbc6`,
-     `src/tests/security/roles-catalog-sync.test.ts`
-     (`ROLES-CATALOG-DRIFT-001`) — congela el CONJUNTO ordenado del
-     catálogo `Roles` + espejo `key===value` (no un conteo — un conteo no
-     detecta un rename). 3 mutaciones verificadas (agregar/sacar/renombrar).
-3. **Guard `isSystem` en `RoleService.renameRole()` — ✅ implementado,
-   verificado, LOCAL/sin pushear** (`8fc30c3`, `app-main`; `cbdf1bd`,
-   `appfrontend-main` — comentario espejo). Hallazgo encontrado de paso
-   por el gate al revisar `PRESET-REVOKE-001` (10/09/2026): `renameRole()`
-   no tenía guard de `isSystem` -- consecuencia real, no solo higiene:
-   (a) el backfill de arranque (`platform.schema.sql:408-412`) inserta
-   con `id` determinístico bajo `ON CONFLICT (business_id, name)`; un
-   rename libera ese par y el próximo INSERT choca contra `roles_pkey`
-   SIN capturar (`server.ts`, `process.exit(1)`) -- el próximo arranque
-   del proceso revienta; (b) `roles.name` es de facto clave técnica de
-   autorización (`users.routes.ts:201,276`, `user-invitation.routes.ts:156`
-   comparan por nombre) -- un ADMIN (ya tiene `Roles.MANAGEMENT`,
-   suficiente para `PUT /api/roles/:id`) podía renombrar el rol OWNER de
-   su negocio y saltarse esos guards. **Medido en producción (10/09/2026,
-   Neon `morning-unit-50056927`/`pdb-ppms`/`br-royal-mouse-aybe2ai3`):
-   0 roles de sistema renombrados hoy** -- puramente preventivo, sin
-   outage latente ni explotación previa. Guard:
-   `before.isSystem && before.name !== name` (preserva el `PUT
-   {name, permissionGroups}` completo que ya manda el frontend). 6
-   mutantes verificados, cada uno con un set rojo distinto de los otros
-   cinco (no todos disjuntos entre sí -- M5⊃M6 -- pero cada uno
-   discrimina). Test de integración contra Postgres real confirma el
-   crash (`roles_pkey`) sin el guard. **Residual, no cerrado a propósito:**
-   ningún test cubre que renombrar un rol CUSTOM audite el cambio de
-   nombre (`role.service.ts:158-167`) -- deuda preexistente, no
-   empeorada por este bloque. **Fix estructural pendiente, bloque
-   aparte:** los consumidores por nombre (`users.routes.ts`,
-   `user-invitation.routes.ts`, `platform.repository.ts:1156/1178`, el
-   techo `allowedRoleNames`) siguen autorizando por `roles.name` en vez
-   de por `role.id`/`is_system` -- el guard cierra el camino que CREA la
-   divergencia, no la dependencia estructural.
-   - **No autorizado, gate propio, precondición ya cumplida:** el checkbox
-     de `EMISOR_NOTA_CREDITO` en `roles-de-fabrica/page.tsx` (bloque B) —
-     agregarlo ahora, con la copy ya corregida y verificada en
-     producción, deja de ser el único camino peligroso que era antes.
-     Sigue siendo su propio bloque, su propio gate.
-4. **Polling adaptativo — bloque 1 (helper + `CompanyCatalogPropagationWorker`)
-   — ✅ CERRADO, pusheado y deployado en producción, verificado**
-   (`6f1289a`+`02629b7`). Detalle completo, 2 rondas de gate y las 3
-   condiciones (C1 bloqueante: import cruzado hacia `platform/` desde un
-   servicio de dominio, corregido con inyección por constructor; C2:
-   backoff tras error; C3: ventana de wake perdido) en
-   `docs/diseno-polling-adaptativo-neon-2026-09-10.md`. Motivo del bloque:
-   los 3 workers de producción pollean más seguido que la ventana fija de
-   5 min del scale-to-zero de Neon, agotando el cupo de compute del plan
-   free el 10/09/2026 (incidente resuelto activando billing en la
-   organización; este bloque es el fix de fondo, no el apagafuegos).
-   **Verificado en producción:** CI `integration` job en verde (run
-   `34546841825`), deploy `dep-dahknmks728c73bi7utg` = `live` en el
-   commit `02629b7` (identidad confirmada por API de Render, no solo
-   `/health`), `/health/db` → `connected`.
-   - **NO cierra el grupo "polling adaptativo de los 3 workers"** —
-     `OutboxWorker` y `ReservationHoldExpiryWorker` siguen con
-     `setInterval` fijo, coexistencia transitoria declarada. Cada uno
-     tiene su propio diseño pendiente en el mismo doc (§3.2 hold-expiry:
-     wake calculado desde `MIN(deposit_due_by)`; §3.3 outbox: wake
-     post-commit, con la garantía exacta ya elegida por el dueño pero
-     todavía en HOLD hasta que la matriz de impacto incluya
-     `CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001` — ver más abajo).
-   - **El ahorro de compute sigue siendo inferido, no medido** — nada
-     corrió todavía contra Neon post-deploy para confirmar el efecto real
-     sobre el consumo. Pendiente: medir actividad de compute 24-48h
-     después de este deploy.
+**Movido a `docs/resuelto.md`** (4 ítems: FN#2 lock-order, EMISOR_NOTA_CREDITO
+bloque 5.1, guard `isSystem` en `renameRole()`, polling adaptativo bloque 1).
+El residuo sin confirmar de dos de ellos quedó en
+`## 🔍 Verificaciones pendientes` más arriba (medir compute post-deploy del
+polling); el fix estructural relacionado con el guard `isSystem`
+(consumidores por `roles.name` en vez de `role.id`) se agregó como ítem
+nuevo en `### 🟡 Listo para encarar`, más abajo en este archivo.
 
 ---
 
@@ -2675,6 +2535,21 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
+- **Consumidores de `roles.name` en vez de `role.id`/`is_system`**
+  (residuo del guard `isSystem` en `renameRole()`, cerrado 10/09/2026 —
+  ver `docs/resuelto.md`). El guard cierra el camino que CREA la
+  divergencia (un rename ya no puede chocar contra `roles_pkey` ni
+  saltarse la protección de rol OWNER), pero los consumidores que siguen
+  autorizando por STRING de nombre en vez de por id/flag no se tocaron:
+  `users.routes.ts:201,276`, `user-invitation.routes.ts:156`, el JOIN
+  `role_preset_permission_groups rppg ON rppg.preset_name = r.name` de
+  `PlatformRepository::updateRolePresetPermissionGroups()`
+  (`platform.repository.ts`), y el techo `allowedRoleNames`
+  (`resolvePlanLimits()`, consumido en `users.routes.ts` por
+  `role.name`). Sin decisión de negocio de por medio — es una
+  refactorización de la forma en que esos sitios resuelven el rol (por
+  `role.id`/`is_system` en vez
+  de por `roles.name`), no un cambio de comportamiento.
 - **`POOL-MIXTO-MANUAL-01`** (bloque 3.5 del ADR común cancelar-con-NC,
   hallazgo de esta revisión 11/09/2026 -- no estaba registrado en ningún
   lado). `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
@@ -3093,9 +2968,5 @@ regla del proyecto no se lee automáticamente cada sesión; pedilo aparte
 
 ### ✅ Cerrado, confirmado durante esta lectura (no estaba marcado así antes)
 
-- `lock-order.test.ts` blind spot sobre `getInFlightCreditNoteTotalForUpdate`/
-  `ForPair` (#27.2 de `pendientes-2026-09-08.md`) -- esto es el mismo FN#2
-  que esta sesión cerró temprano (`7150dfa`+`271fdd4`+`1cd9cea`), solo que
-  el archivo de origen todavía lo listaba como "declarado sin arreglar".
-  Confirmado con el propio `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md:487`,
-  que ya dice "✅ cerrado el 09/09/2026".
+**Movido a `docs/resuelto.md`** — corrección de etiqueta del mismo FN#2
+(`lock-order.test.ts`) ya registrado como cerrado en `docs/resuelto.md`.
