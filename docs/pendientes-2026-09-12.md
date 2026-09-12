@@ -1739,73 +1739,36 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   es preexistente en `origin/main` (confirmado con `git stash` + re-run
   contra HEAD limpio antes de este commit) y no relacionado a 1c-0.
 
-  **`CN-VOID-COREJECT-STALE-TEST-001` -- ancla de línea + causa raíz
-  probable identificadas (12/09/2026, sesión del Zuluhub Test
-  Orchestrator -- no gate `architecture-governor`, ver nota de proceso al
-  final).** El `it()` que falla está en
-  `src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts:592`;
-  la assertion que efectivamente revienta es `:616`
-  (`expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({
-  causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] }), ...)`,
-  `Number of calls: 0`). **Re-confirmado independiente, dos días después**
-  con dos métodos distintos: (a) corrida real de los 200 archivos de la
-  suite completa vía el orquestador nuevo (`app-main-frontend-root/zuluhub-test-orchestrator/`,
-  6 agentes en paralelo, Postgres local) -- único `failed` de 200; (b)
-  el mismo archivo solo, con el comando NATIVO de este repo
-  (`TEST_DATABASE_URL=... npx vitest run src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts
-  --config vitest.integration.config.ts`, sin el orquestador, sin
-  paralelismo) -- mismo test, mismo `AssertionError`, 0 llamadas. Sigue
-  vivo hoy, dos días después de la última confirmación (11/09/2026).
+  **Caso 5, residual 2 -- verificación de datos reales, sin correr
+  todavía.** ¿Existe en producción el caso "seña cobrada (`PAYMENT` con
+  `reservation_id`), reembolsada (`REFUND`), y la reserva cancelada
+  DESPUÉS con NC (`ADJUSTMENT` con `reversed_invoice_id` no nulo)"? Bajo
+  el guard viejo (pre-11/09/2026, ya retirado) ese caso podía loguearse
+  como `grave` sin serlo -- ruido de log, no corrupción de datos (el
+  guard era conservador, nunca dejaba de anular por error). Query
+  candidata, no corrida todavía contra ninguna tenant DB:
+  ```sql
+  SELECT DISTINCT p.reservation_id
+  FROM financial_transactions p
+  JOIN financial_transactions r ON r.reservation_id = p.reservation_id AND r.type = 'REFUND'
+  JOIN financial_transactions a ON a.reservation_id = p.reservation_id
+    AND a.type = 'ADJUSTMENT' AND a.reversed_invoice_id IS NOT NULL
+  WHERE p.type = 'PAYMENT' AND p.reservation_id IS NOT NULL;
+  ```
+  Origen: `docs/investigacion-decisiones-bloqueado-2026-09-12.md`, Caso 5,
+  "Residuo del dueño" (segundo ítem).
 
-  **Causa raíz probable, no solo "preexistente" -- leído
-  `src/workers/outbox.handlers.ts:78-97` y
-  `docs/diseno-33d-residuales-2026-09-11.md` §2 (residual 2, el MISMO
-  diseño citado más arriba en este bloque para 3.3-d residual 2):** el
-  test `C1(ii)` fue escrito para el guard EXACT-MATCH viejo
-  (`rechazos.length === 1 && rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'`,
-  §2.2 del diseño) -- con esa lógica, el co-rechazo `TIPO_NO_LIQUIDABLE`
-  que agrega un `PAYMENT` propio de la reserva (vía `recordPayment()`)
-  rompía el match exacto y el guard se quedaba `grave` SIN consultar
-  `classifyReservationLiveInvoice()`, exactamente lo que el test todavía
-  afirma ("la guarda ESTRECHA no dispara, ni se consulta la
-  clasificación"). Pero `esComprobanteVivoConCoRechazosBenignos()`
-  (`outbox.handlers.ts:94-97`, shippeada por la MISMA sesión que resolvió
-  3.3-d residual 2, 11/09/2026, `CO_RECHAZOS_BENIGNOS_SI_RECONCILIADO`
-  incluye `TIPO_NO_LIQUIDABLE` a propósito) reemplazó ese exact-match por
-  un allowlist positivo -- y el diseño (§2.1, combinación 2) identifica
-  EXPLÍCITAMENTE "reserva con seña cobrada (muy común, cualquier reserva
-  con depósito)" como el caso que ese ensanche existe para cubrir, y el
-  gate lo confirmó en su momento (§2.3). El escenario del test (PAYMENT
-  vía `recordPayment()` con `reservationId`) es ese mismo caso -- con el
-  código de hoy, el guard SÍ dispara la consulta de clasificación en vez
-  de quedarse `grave` sin consultar. **El test no se actualizó cuando
-  residual 2 shippeó** -- probable stale test, no una anomalía de
-  producción nueva.
+  **Caso 5, residual 3 -- regla de crédito `PAYMENT`-vivo-tras-NC,
+  decisión del dueño ya tomada, implementación en curso (Bloque 5 de esta
+  sesión).** Ver `docs/investigacion-decisiones-bloqueado-2026-09-12.md`,
+  "Decisiones del dueño", ítem "Caso 5, residuo" -- el crédito es por
+  defecto salvo devolución real de dinero, dos caminos mutuamente
+  excluyentes para el mismo monto. Todavía sin gate propio en esta
+  sesión.
 
-  **No decidido en esta nota, a propósito (regla del `CLAUDE.md` sobre
-  preguntas de alcance escondiendo una decisión de negocio):** si el test
-  hay que actualizarlo para afirmar el comportamiento nuevo (el guard SÍ
-  consulta clasificación con un PAYMENT propio -- lo que el diseño ya
-  decidió que es lo correcto), o si el escenario de PAYMENT propio tiene
-  algo que lo distingue de "seña cobrada" que el allowlist debería
-  excluir aparte (ej. ¿una seña cobrada y luego reembolsada es distinta
-  de una seña cobrada y viva?) -- eso es una pregunta de negocio para el
-  dueño, no algo que esta nota resuelva. **Sin bloque asignado
-  todavía.**
-
-  **Nota de proceso:** esta identificación de causa raíz se hizo en una
-  sesión de infraestructura de testing (Zuluhub Test Orchestrator, repo
-  `app-main-frontend-root`), no vino de un gate `architecture-governor`
-  de `app-main` con acceso a Postgres de esta sesión -- es lectura de
-  código + del diseño ya aprobado, no una nueva corrida de mutation
-  testing. Verificar con una corrida real (actualizar el test y confirmar
-  que pasa) antes de dar la causa raíz por cerrada. **Propagado también a
-  `pendientes-2026-09-10.md` (mismo bullet) -- ese archivo y este
-  divergieron un momento por dos sesiones concurrentes trabajando en
-  paralelo (esta y `session_01SiDF22SQVRFyMhY85HTsNt`, que creó este
-  archivo `-12.md` arrastrando el `-10.md` ANTES de que este hallazgo se
-  agregara ahí) -- reconciliado con un merge de git, sin forzar nada,
-  verificado sin marcadores de conflicto.**
+  (La corrección de la causa raíz del test stale que este bullet
+  describía -- `CN-VOID-COREJECT-STALE-TEST-001`, residual 1 de 3 -- se
+  cerró y movió a `docs/resuelto.md`, 12/09/2026.)
 
   **`1c-i` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
   `d834329`).** `cancelOrderWithCreditNote()` bloqueaba TODA factura

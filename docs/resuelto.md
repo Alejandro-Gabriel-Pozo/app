@@ -338,3 +338,38 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   `respaldo-pre-v52-city-ledger-2026-09-12` (producción) y
   `respaldo-hotel-pre-v52-city-ledger-2026-09-12` (Hotel Los Álamos),
   ambas `ready` antes del push. Origen: `pendientes-2026-09-12.md`.
+
+- **`CN-VOID-COREJECT-STALE-TEST-001` -- cierra SOLO el test stale (residual
+  1 de 3 del Caso 5).** El `it()` `C1(ii)` de
+  `src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts`
+  seguía afirmando la guarda EXACT-MATCH vieja (`rechazos.length === 1 &&
+  rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'`), retirada el 11/09/2026
+  (3.3-d residual 2, `docs/diseno-33d-residuales-2026-09-11.md` §2) a favor
+  del allowlist positivo `esComprobanteVivoConCoRechazosBenignos()` que
+  incluye `TIPO_NO_LIQUIDABLE` a propósito -- el test nunca se actualizó
+  cuando ese residual shippeó. Reproducido primero TAL CUAL contra
+  Postgres 16 real (local, este sandbox, no Neon) para confirmar la causa
+  raíz de forma independiente -- falló exactamente como documentaba la
+  investigación previa (0 llamadas a `logger.error`). Corregido para
+  afirmar el comportamiento correcto y ya decidido (mismo patrón que el
+  test de la línea ~586 del mismo archivo y el test unitario espejo de
+  `src/workers/outbox.handlers.test.ts:651`): con el `PAYMENT` propio
+  presente, el handler SÍ consulta la clasificación, da `RECONCILED`, y
+  loguea `logger.info` con `reconciliado: true` -- nunca `logger.error`.
+  Ningún archivo de `src/` fuera del test cambió -- el código de
+  producción ya era correcto desde el 11/09/2026, lo que estaba mal era
+  la aserción. Verificado: el archivo solo (9/9), la suite de integración
+  COMPLETA contra el mismo Postgres real (36 archivos / 303 tests, 100%
+  verde -- antes 288/289 con este mismo test como único rojo), la suite
+  unitaria completa (163 archivos / 2158 tests), y `tsc --noEmit` limpio.
+  **Los otros 2 residuales del Caso 5 NO cierran acá, siguen abiertos:**
+  residual 2 (verificar contra datos reales de producción si existió el
+  caso "seña reembolsada, cancelada después con NC") y residual 3 (regla
+  de crédito `PAYMENT`-vivo-tras-NC, decisión del dueño ya tomada,
+  implementación en curso) -- ambos en
+  `docs/pendientes-2026-09-12.md`. **Nota de reconciliación:**
+  `docs/pendientes-2026-09-10.md` arrastra una copia divergente de este
+  mismo bullet (agregada ahí por una sesión concurrente después de que
+  `-12.md` ya se había ramificado de `-10.md`) -- superada por fecha,
+  nunca se actualiza sola; si alguien la lee sin saber esto puede
+  reabrir un ítem ya cerrado acá. Origen: `pendientes-2026-09-12.md`.

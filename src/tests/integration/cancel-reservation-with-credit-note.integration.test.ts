@@ -589,7 +589,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
       );
     }, 40_000);
 
-    it('C1(ii) -- reserva con un PAYMENT propio: voidByReservationId da 2 rechazos, la guarda ESTRECHA no dispara, ni se consulta la clasificación', async () => {
+    it('C1(ii) -- reserva con un PAYMENT propio: voidByReservationId da 2 rechazos, el allowlist de co-rechazos benignos SÍ dispara la consulta de clasificación (CN-VOID-COREJECT-STALE-TEST-001, corregido 12/09/2026)', async () => {
       const invoiceService = buildInvoiceService(fakeArcaClientOk);
       const { reservationId, customerId } = await seedConfirmedReservation(100);
       const charge = await financialRepo.create({
@@ -610,15 +610,26 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
 
       await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
 
-      // MEDIDO: 2 rechazos exactos, no 1 -- confirma que la rama estrecha del
-      // handler NO dispara con un PAYMENT presente (el pasivo de deploy que
-      // este bloque retira queda acotado a reservas SIN PAYMENT propio).
-      expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] }),
-        expect.stringContaining('anomalía de integridad'),
-      );
-      expect(logger.info).not.toHaveBeenCalledWith(
-        expect.objectContaining({ reconciliado: true }), expect.anything(),
+      // Este test afirmaba la guarda EXACT-MATCH vieja (`rechazos.length
+      // === 1 && rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'`), retirada el
+      // 11/09/2026 (3.3-d residual 2, docs/diseno-33d-residuales-2026-09-11.md
+      // §2) a favor de `esComprobanteVivoConCoRechazosBenignos()` -- un
+      // allowlist positivo que incluye `TIPO_NO_LIQUIDABLE` a propósito
+      // (docblock de `outbox.handlers.ts`, línea ~61: un PAYMENT/REFUND
+      // histórico de la reserva es, por construcción, una fila que
+      // `voidByReservationId()` nunca iba a tocar -- no una anomalía). Con
+      // el código de hoy, 2 rechazos exactos (`TIPO_NO_LIQUIDABLE` +
+      // `CARGO_CON_COMPROBANTE_VIVO`) SÍ disparan la consulta de
+      // clasificación -- y como el escape emitió la NC completa, clasifica
+      // RECONCILED: mismo patrón de log que el caso individual sin PAYMENT
+      // propio (línea ~587 de este archivo), `logger.error` nunca llamado.
+      // MEDIDO, no asumido: reproducido contra Postgres real (12/09/2026)
+      // antes de esta corrección -- 0 llamadas a logger.error, confirmando
+      // que la guarda vieja jamás disparaba en este escenario.
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'], reconciliado: true }),
+        expect.stringContaining('reconciliado por Nota de Crédito'),
       );
     }, 40_000);
   });
