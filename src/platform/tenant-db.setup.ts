@@ -435,7 +435,14 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // conectada a `applyTenantSchema()`, así que un tenant nuevo nunca
 // recibiría el CHECK. Ver schema.sql, comentario del primer bloque
 // (`chk_financial_transactions_amount`) para el razonamiento completo.
-export const CURRENT_SCHEMA_VERSION = 51;
+// v52 (12/09/2026): Bloque 1 de docs/diseno-reconciliacion-city-ledger-
+// 2026-09-12.md (gate architecture-governor, aprobado con condiciones).
+// `accounts_receivable` gana el estado terminal REVERTIDO (mismo guard
+// pg_constraint que v51) + `reversed_by`/`reversed_at`/`reversed_reason`
+// + `reversal_transaction_id`/`replaces_ar_id` (ON DELETE NO ACTION
+// explícito, ver schema.sql BLOQUE 9). Solo schema -- inerte hasta que
+// exista `reverseTransfer()` (Bloque 2, no incluido acá).
+export const CURRENT_SCHEMA_VERSION = 52;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

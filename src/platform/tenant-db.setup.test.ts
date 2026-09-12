@@ -269,8 +269,12 @@ describe('applyTenantSchema', () => {
     // 50 -> 51 el 12/09/2026: caso 6 residuo parte 2 -- los 3 CHECK de
     // financial_transactions pasan de DROP+ADD incondicional a guard
     // pg_constraint (sin cambio de forma en la tabla, solo de patrón).
-    expect(version).toBe(51);
-    expect(CURRENT_SCHEMA_VERSION).toBe(51);
+    // 51 -> 52 el 12/09/2026: Bloque 1 de docs/diseno-reconciliacion-
+    // city-ledger-2026-09-12.md -- accounts_receivable gana el estado
+    // REVERTIDO + reversed_by/_at/_reason + reversal_transaction_id/
+    // replaces_ar_id. Solo schema, inerte hasta el Bloque 2.
+    expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
+    expect(CURRENT_SCHEMA_VERSION).toBe(52);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

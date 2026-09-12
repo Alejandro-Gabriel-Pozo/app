@@ -172,7 +172,23 @@ mismo día):**
   decisión §3.7/§4.4) — 2 call-sites nuevos en la matriz de conteo, no un
   chequeo inline (ver §7.1).
 
-### 4.2 Schema — nuevo estado terminal + rastro (schema v52, a confirmar en el gate)
+### 4.2 Schema — nuevo estado terminal + rastro (schema v52)
+
+**Pre-flight ejecutado (condición bloqueante del gate, ronda 4, 12/09/2026)
+— ANTES de escribir el `ALTER` de más abajo, se corrió
+`SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE
+conrelid = 'accounts_receivable'::regclass;` contra los dos tenants
+reales (Neon, `ancient-king-17098519`): `br-snowy-tree-ax5wmq70`
+(Demo/producción) y `br-square-leaf-axzvu903` (Hotel Los Álamos).
+Confirmado en **ambos**: el constraint de `status` se llama, tal cual,
+`accounts_receivable_status_check` (el nombre autogenerado por Postgres
+para un CHECK de columna sin nombre explícito en el `CREATE TABLE`
+original). El `DROP CONSTRAINT IF EXISTS` de abajo apunta a ese nombre
+real, no a uno asumido — evita el modo de falla que el gate señaló:
+si el nombre real fuera otro, el `DROP` sería un no-op silencioso y
+quedarían el CHECK viejo (3 valores) y el nuevo (4) vigentes a la vez,
+rechazando `REVERTIDO` recién al llegar al Bloque 2, sin error visible
+en este deploy.
 
 ```sql
 -- accounts_receivable gana un 4° estado, terminal, fuera de la cadena
@@ -197,18 +213,29 @@ ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversed_reason VARCHAR
 -- balance_override_*/housekeeping_override_*).
 
 -- Vínculo hacia la fila compensatoria en financial_transactions -- permite
--- auditar "esta AR se revirtió con ESTA fila exacta del ledger", análogo a
--- accounts_receivable.financial_transaction_id ya existente.
+-- auditar "esta AR se revirtió con ESTA fila exacta del ledger".
+-- ON DELETE NO ACTION explícito (decisión propia, no analogía): R12
+-- ("TRANSACCIÓN nunca se edita, solo avanza de estado") implica que una
+-- fila de financial_transactions nunca se hard-deletea -- no hay camino
+-- de negocio que dispare este DELETE. accounts_receivable.financial_
+-- transaction_id (columna ya existente, distinta de ésta) tiene
+-- ON DELETE SET NULL, pero esa FK cubre otro caso (la transacción que
+-- generó el cargo original, ver BLOQUE 9) y no es una analogía correcta
+-- para ésta -- la corrección de este mismo párrafo la retira; ver gate
+-- ronda 4. Si en el futuro se decide permitir borrar filas del ledger,
+-- esta FK es la que hay que revisar primero.
 ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversal_transaction_id VARCHAR(255)
-  REFERENCES financial_transactions(id);
+  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
 
 -- Si la reversa deja un saldo real corregido, la AR NUEVA que se crea
 -- apunta a la que reemplaza (0 o 1 predecesora, nunca al revés -- la vieja
 -- no sabe de la nueva en el momento de crearse REVERTIDO, se linkea
 -- después dentro de la misma transacción). NULL = transferencia original,
--- no una corrección.
+-- no una corrección. ON DELETE NO ACTION explícito por el mismo motivo:
+-- ninguna AR se hard-deletea (mismo estatus de "transacción" que
+-- financial_transactions a los efectos de R12).
 ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS replaces_ar_id VARCHAR(255)
-  REFERENCES accounts_receivable(id);
+  REFERENCES accounts_receivable(id) ON DELETE NO ACTION;
 ```
 
 **Corrección del gate `architecture-governor` (bloqueante, ronda 1):** la

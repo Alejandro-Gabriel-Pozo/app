@@ -2396,6 +2396,49 @@ CREATE INDEX IF NOT EXISTS idx_ar_stay
 -- el modelo no cambian de forma, solo cambia quién lo llena.
 ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS invoice_ref VARCHAR(255);
 
+-- REVERTIDO (v52, 12/09/2026, docs/diseno-reconciliacion-city-ledger-
+-- 2026-09-12.md §4.2, gate architecture-governor) -- 4° estado, terminal,
+-- fuera de la cadena PENDIENTE_FACTURAR → FACTURADO → COBRADO (R12 sigue
+-- cumpliéndose: solo avanza, nunca vuelve atrás -- REVERTIDO es un destino
+-- nuevo, no un regreso a PENDIENTE_FACTURAR). Pre-flight ejecutado contra
+-- los 2 tenants reales antes de este ALTER: el CHECK de status se llama,
+-- en ambos, `accounts_receivable_status_check` (nombre autogenerado por
+-- Postgres) -- confirmado antes de asumirlo, por indicación del gate.
+ALTER TABLE accounts_receivable DROP CONSTRAINT IF EXISTS accounts_receivable_status_check;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_accounts_receivable_status') THEN
+    ALTER TABLE accounts_receivable ADD CONSTRAINT chk_accounts_receivable_status
+      CHECK (status IN ('PENDIENTE_FACTURAR', 'FACTURADO', 'COBRADO', 'REVERTIDO'));
+  END IF;
+END $$;
+-- (mismo guard pg_constraint adoptado en schema v51 -- docs/resuelto.md
+--  12/09/2026 -- evita revalidar un CHECK ya correcto en cada deploy)
+
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(255);
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ;
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversed_reason VARCHAR(500);
+-- motivo obligatorio a nivel aplicación (no CHECK NOT NULL -- las 3
+-- columnas son NULL para toda AR que nunca se revirtió, mismo criterio
+-- que balance_override_*/housekeeping_override_*).
+
+-- Vínculo hacia la fila compensatoria en financial_transactions -- permite
+-- auditar "esta AR se revirtió con ESTA fila exacta del ledger".
+-- ON DELETE NO ACTION explícito (decisión propia, no analogía con
+-- accounts_receivable.financial_transaction_id -- esa FK cubre otro caso,
+-- la transacción que originó el cargo, y tiene ON DELETE SET NULL por un
+-- motivo distinto): R12 implica que financial_transactions nunca se
+-- hard-deletea, así que este DELETE no tiene camino de negocio que lo
+-- dispare.
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversal_transaction_id VARCHAR(255)
+  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
+
+-- Si la reversa deja un saldo real corregido, la AR NUEVA que se crea
+-- apunta a la que reemplaza (0 o 1 predecesora, nunca al revés). NULL =
+-- transferencia original, no una corrección. ON DELETE NO ACTION explícito
+-- por el mismo motivo: ninguna fila de accounts_receivable se hard-deletea.
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS replaces_ar_id VARCHAR(255)
+  REFERENCES accounts_receivable(id) ON DELETE NO ACTION;
+
 -- ===========================================================================
 -- BLOQUE 10 — AUDIT LOG (docs/criterios-datos.md R8, docs/criterios-negocio.md A9.4)
 -- ===========================================================================
