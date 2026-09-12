@@ -287,6 +287,300 @@ responder acá:**
 
 ---
 
+## Auditoría transversal — navegación, autogestión y reservas (12/09/2026, `auditor-circuitos-erp`)
+
+Pedida por el dueño con 4 áreas puntuales, con grounding revalidado
+contra ERPNext, Dolibarr, QloApps y **`frappe/hospitality`** (sistema
+nuevo en esta sesión — módulo vertical de Frappe para hotelería,
+**archivado desde el 04/10/2023**: sirve como referencia de MODELADO,
+no de "estado del arte"; donde su modelo es más pobre que el de
+`app-main` se dice explícito, no todo grounding termina en hallazgo
+contra el repo propio).
+
+**Dos cosas que la auditoría descarta, para que no se re-pregunten:**
+no hay links rotos en el sidebar (las 21 entradas de `NavList.tsx`
+apuntan a rutas reales, y viceversa); el circuito de check-in/check-out
+de `app-main` (`stays`, con `checked_in_at`/`checked_out_at`/`no_show_at`
+y un índice único parcial que impide dos estadías activas sobre la
+misma reserva) es **superior** a las dos referencias hoteleras — ninguna
+de las dos modela no-show ni quién hizo el check-in.
+
+### Área 1 — Navegación / sidebar
+
+- **"Admin BD" — atajo muerto, promocionado.** `NavList.tsx:154-158`
+  (sin gate de rol) y un QuickLink del Home (`dashboard/page.tsx:292-295`)
+  apuntan a una pantalla cuya única acción, desde el 19/08/2026, exige
+  token de plataforma `SUPERADMIN` (`platform/admin.routes.ts:57`) — la
+  funcionalidad real se mudó a `/superadmin`. Falla para el 100% de los
+  usuarios del panel, incluido el OWNER. Una tercera copia
+  (`appfrontend-main/src/app/admin/page.tsx`, ruta raíz `/admin`) no
+  tiene ningún link entrante en todo el repo, lee el token a mano
+  saltando `AuthContext`, y hardcodea un enum de recursos
+  (`CABIN/RESTAURANT_TABLE/SPA/TOUR_SEAT`) que ya no existe en el
+  dominio. `admin.routes.ts:8` ya dice que se puede borrar sin efectos
+  secundarios.
+- **Causa raíz compartida de varios síntomas — el sidebar gatea por
+  NOMBRE de rol, no por grupo de permiso.** `useIsManagement()`
+  (`hooks/useAuthRole.ts:14-17`) compara `user.role === 'OWNER' || 'ADMIN'`,
+  pero `role` es el nombre LIBRE y editable de la fila de `roles`
+  (`PUT /api/roles/:id` lo renombra). Consecuencia real: roles
+  personalizados son una **feature paga** — un tenant que la compra y
+  crea un rol "Gerente" con el grupo `MANAGEMENT` pierde del sidebar
+  Usuarios y Roles aunque el backend lo autorice. El dato correcto
+  (`BusinessContext.permissionGroups`) ya está en el navegador y ya se
+  usa para otra cosa (`enabledModules`) — falta aplicarlo acá. Misma
+  causa explica: **Mi Negocio** y **Empresa** visibles sin gate
+  (`NavList.tsx:144-153`) para roles que el backend rechaza con 403 —
+  es el mismo incidente D6 que el `CLAUDE.md` de `app-main` ya
+  documentaba (regla 5 de "Pendientes — revalidar antes de arrastrar"),
+  nunca corregido del lado del sidebar. Y "Empresa" tiene un gap de
+  contrato adicional: `BusinessContext` no expone el plan del tenant —
+  **corrección post-gate: no es que sea imposible gatear por plan, es
+  que hoy no está en el contexto que `NavList` ya consume**. Sí existe
+  `GET /api/business/plan-limits` (`{ plan, limits }`, deliberadamente
+  sin `authorize(Roles.MANAGEMENT)`, con cliente ya tipado en
+  `lib/negocio/api.ts:51`) — gatear el sidebar por plan hoy exigiría un
+  fetch aparte a ese endpoint, o sumar `plan` al `BusinessContext` para
+  no duplicar la llamada.
+- **City Ledger operativo escondido dentro de "Reportes".**
+  `dashboard/reportes/page.tsx:200-330` no es un reporte — tiene la
+  política de facturación por empresa y un botón que **emite un
+  comprobante AFIP real** ("Facturar ahora"). Su único link está
+  gateado por `moduleKey: 'REPORTES'`, pero los endpoints que usa exigen
+  `requireModule(CUENTAS_CORRIENTES)` — un tenant con uno de los dos
+  módulos y no el otro pierde el camino de navegación o come 402 en el
+  peor punto posible. Contradice además la convención de
+  `appfrontend-main/CLAUDE.md` que excepciona `reportes` de Refine por
+  ser "solo lectura".
+- **Catálogos de POS separados de la transacción que los usa** (Motivos
+  de Merma, Destinos de Consumo — un solo campo `name` cada uno) como
+  ítems top-level del sidebar, cuando la transacción que los consume
+  (`WasteModal`) vive adentro de Productos — el propio empty-state
+  manda al usuario a "crear uno primero" en otra sección. Sidebar plano
+  de 21 ítems bajo un único `<ul>`, sin agrupación — ninguno de los 3
+  sistemas de referencia navega así por encima de ~10 entradas.
+  `frappe/hospitality` subordina esto a nivel de datos: menú activo,
+  serie de facturación y template de impuestos cuelgan del doctype
+  `Restaurant`, no son entidades sueltas.
+- **Tres catálogos manuales de navegación, ya con drift.** `NAV`,
+  `PAGE_TITLES` (`dashboard/layout.tsx:51-72`) y `REFINE_RESOURCES`
+  (`:34-48`) son listas paralelas de las mismas rutas. Facturación se
+  agregó a `NAV` el 11/09/2026 y no a `PAGE_TITLES` — el breadcrumb de
+  `/dashboard/facturacion` dice "Dashboard". Misma clase de deuda que
+  el repo ya tiene documentada del lado backend (`ROLES-CATALOG-DRIFT-001`
+  y afines).
+
+### Área 2 — Autogestión de usuario (❌ el circuito no existe)
+
+Ningún empleado puede ver ni editar su propia ficha — el bloque de
+usuario del sidebar es un `<div>` no clickeable. `GET /api/auth/me`
+tiene 3 rutas: GET, logout, refresh — **sin `PATCH`**. Todo `/api/users/*`
+exige `MANAGEMENT` o más. Cambiar la contraseña propia requiere salir a
+un flujo público de mail no autenticado (`/api/password-resets/*`),
+como si el usuario no estuviera logueado — no existe "cambiar mi
+contraseña con la contraseña actual". Frappe resuelve esto con un
+scope explícito (`update_password` acepta clave de reset O contraseña
+vieja verificada); Dolibarr tiene permisos de primera clase separados
+(`user->self->creer`, `user->self->password`) — `app-main` no tiene
+noción de "sobre mí mismo" en su modelo de roles.
+
+**Contraste que vale la pena marcar**: el portal de cliente tiene la
+asimetría inversa — `DELETE /api/customer/me` existe, no hay `PATCH`.
+El cliente puede borrarse la cuenta pero no corregirse el nombre ni el
+email.
+
+### Área 3 — Autogestión de empresa/sucursal (⚠️ negocio bien, sucursal no)
+
+- **"Mi Negocio" está bien resuelto** (identidad, fiscal AFIP,
+  certificado cifrado, candado `OWNER_ONLY` sobre el perfil fiscal ya
+  cargado) — observación menor: junta 4 dominios distintos en un
+  singleton con un único gate `MANAGEMENT`.
+- **`locations` (sucursales dentro de un tenant) — hueco de circuito
+  real, no scaffolding muerto.** **Corrección post-gate, dos precisiones:**
+  es FK `NOT NULL` de 3 tablas transaccionales (`resources`, `orders`,
+  `inventory_levels`) — no 4: en `stock_movements` las tres columnas de
+  ubicación (`location_id`, `from_location_id`, `to_location_id`) son
+  NULLABLE, con `chk_stock_movements_location` imponiendo "exactamente
+  una forma poblada" (TRANSFER exige el par `from`/`to`; el resto exige
+  `location_id` solo) — el argumento de fondo se sostiene igual (toda
+  fila de movimiento referencia al menos una `location`), solo cambia
+  el mecanismo. Y la tabla `locations` tiene **5** columnas
+  (`id, name, active, created_at, updated_at`), no 3 — ninguna de
+  domicilio/teléfono/horario, que es lo que importa para el hallazgo.
+  El CRUD no tiene `PUT`/`DELETE`, y en el
+  frontend **`locationId` no existe — cero ocurrencias**. Consecuencia
+  medida, no estimada: `docs/roadmap-pms-multirubro.md:237` declara
+  **"✅ Transferencia entre depósitos — resuelto"**, y el endpoint
+  existe con tests, pero con una sola ubicación sembrada y sin pantalla
+  para crear una segunda ni para disparar la transferencia, la feature
+  es inalcanzable para el usuario real — mismo modo de falla que el
+  `CLAUDE.md` raíz ya advierte sobre el roadmap. Además:
+  `business_profile.afip_sales_point` es único POR NEGOCIO, no por
+  sucursal — bloquea multi-sucursal real en Argentina, no es cosmético.
+  Y "sucursal" hoy significa dos cosas sin decidir: `locations` (fila
+  dentro del mismo tenant) vs. `companies` (otro tenant vinculado,
+  plan ENTERPRISE) — las dos mitades construidas, ninguna terminada.
+  ERPNext separa esto de fábrica (`Company`, árbol, con series de
+  numeración propias por compañía; `Warehouse` para el lado operativo,
+  también árbol). QloApps tiene el modelo más maduro:
+  `HotelBranchInformation` con horarios, dirección, políticas y
+  **reglas de reembolso por propiedad**, propias de cada sucursal.
+  `frappe/hospitality` está en la posición de hoy de `app-main`
+  (`Hotel Settings` es un Single, un solo hotel por instalación) — pero
+  es justamente el ejemplo de que el mismo equipo, al modelar
+  Restaurant después, lo sacó del Single. **Decisión pendiente, no
+  resuelta por el grounding**: ¿multi-sucursal se resuelve con
+  `locations` dentro de un tenant, o con un tenant por sucursal
+  agrupados por `companies`? Bloquea a cualquier cadena — hotelería,
+  gastronomía, barberías/spa — no es de un solo rubro.
+
+### Área 4 — Circuito de reservas: `app-main` vs. QloApps vs. `frappe/hospitality`
+
+- **`reservations` no tiene `location_id`** (a diferencia de `orders`,
+  que sí lo tiene) — hoy la sucursal de una reserva se deriva solo por
+  join a `resources.location_id`; reasignar un recurso de ubicación
+  re-atribuye retroactivamente TODAS sus reservas históricas, incluidos
+  reportes ya cerrados. Latente mientras haya una sola `location`, se
+  vuelve real el día que se resuelva el punto de Área 3. QloApps lleva
+  `id_hotel` en la propia línea de booking, no solo por join.
+  **Candidata a hallazgo.**
+  — **verificar si es intencional, no es error obvio**: `reservations`
+  snapshotea al cliente (`customer_name`/`customer_email`) pero NO al
+  recurso — renombrar "Cabaña 3" reescribe la historia en listados y
+  reportes. QloApps snapshotea agresivamente (nombre de habitación,
+  tipo, hotel, dirección) en cada línea de booking. La asimetría dentro
+  de la misma fila (sí para cliente, no para recurso) es lo raro, no
+  necesariamente un bug.
+- **Reserva por unidad concreta, no por tipo** (`resource_id NOT NULL`)
+  — decisión de producto pura, con alternativa ya vigente (reasignación
+  manual). `frappe/hospitality` es el extremo opuesto (reserva por tipo,
+  sin habitación — defecto reconocido por el propio proyecto,
+  `frappe/erpnext#16161`); QloApps hace las dos cosas a la vez
+  (`id_product` + `id_room`, más `is_back_order` para overbooking
+  deliberado) — el modelo hotelero maduro. Un hotel con unidades
+  intercambiables no puede vender "una cabaña doble" sin comprometer
+  cuál, lo que fragmenta disponibilidad. **No se resuelve acá — costo
+  alto, decisión de negocio.**
+- **Verificado y descartado como hallazgo (numerado 4.4 en el informe
+  original del agente — agregado acá para no dejar el salto de 4.3 a
+  4.5 sin explicar):** `adultos`/`ninos` (desglose de `party_size`) y
+  `requested_check_in_time`/`requested_check_out_time` +
+  `schedule_approval_status` + `schedule_charge_amount` (early
+  check-in/late check-out con cargo y aprobación) ya están cubiertos en
+  `app-main`, y comparados bien contra QloApps (que solo tiene
+  `adults`/`children`/`child_ages`, sin el desglose de aprobación) y
+  `frappe/hospitality` (que no cubre esto en absoluto — `late_checkin`
+  es apenas un checkbox). Sin acción.
+- **`bookable_services.booking_mode = 'event'`** — **corrección post-gate:
+  la afirmación original de este ítem era falsa.** `'event'` SÍ está
+  distinguido de `'block'`, ya implementado y ya decidido: en pricing
+  (`reservation-pricing.service.ts:132-140`) `'block'` cotiza por noche
+  (`calculateNights()`), `'slot'`/`'event'` cotizan como 1 unidad de
+  precio plano; en agenda (`reservation-schedule.service.ts:39-46`)
+  `'event'` queda excluido de la grilla de turnos, a mano por el
+  organizador. Los dos puntos llevan el mismo comentario: **"decisión
+  explícita, confirmada con el dueño, 18/08/2026,
+  `docs/auditoria-modularidad.md` Fase 4"**. No requiere decisión — ya
+  está tomada y documentada en el código hace más de 3 semanas. Sin
+  hallazgo real acá.
+
+### Tabla resumen (13 hallazgos + 1 descartado post-gate)
+
+| # | Hallazgo | Tipo | Estado | Bloquea |
+|---|---|---|---|---|
+| 1.A | "Admin BD" en sidebar + QuickLink del Home → SUPERADMIN de plataforma; `/admin` raíz huérfano | UI | ❌ | confianza/ruido |
+| 1.B | Sidebar gatea por nombre de rol, no por grupo — rompe roles personalizados (feature paga) | UI+circuito | ❌ | transversal, Planes y permisos |
+| 1.B-bis | `BusinessContext` no expone el plan — gatear "Empresa" por plan exige fetch aparte a `GET /api/business/plan-limits` | gap de contrato | ❌ | Planes y límites |
+| 1.C | City Ledger operativo dentro de "Reportes"; gate de nav ≠ gate de API | UI+decisión | ❌ | Caja/CxC/Facturación |
+| 1.D | Catálogos de POS top-level, separados de su transacción; sidebar sin agrupar | UI+decisión | ⚠️ | POS, UX general |
+| 1.E | 3 catálogos manuales de nav ya con drift (Facturación sin título) | UI | ⚠️ | — |
+| 2.1 | Autogestión de usuario: circuito inexistente para staff | circuito | ❌ | transversal |
+| 2.2 | Portal cliente: se puede borrar la cuenta, no corregir el nombre | circuito+decisión | ⚠️ | CRM |
+| 3.1 | "Mi Negocio" junta 4 dominios en un gate único | UI menor | ⚠️ | — |
+| 3.2 | `locations`: FK NOT NULL en 3 tablas + CHECK en `stock_movements`, CRUD incompleto, 0 en frontend, roadmap sobredeclarado | circuito+decisión | ❌ | multi-sucursal, todos los rubros |
+| 4.1 | `reservations` sin `location_id`; reasignar recurso reescribe historia | UI+decisión | ⚠️ | latente hasta resolver 3.2 |
+| 4.2 | `reservations` no snapshotea el nombre del recurso — verificar intención | decisión | ⚠️ | reportería PMS |
+| 4.3 | Sin reserva por tipo de unidad, solo por unidad concreta | decisión | ⚠️ | hotelería de volumen |
+| 4.4 | `adultos`/`ninos` + aprobación de check-in/check-out tardío — verificado, sin acción | — | ✅ verificado, sin acción | — |
+| ~~4.5~~ | ~~`booking_mode = 'event'` sin semántica~~ — **descartado post-gate, afirmación falsa**: ya implementado y decidido (18/08/2026) | — | ✅ descartado | — |
+
+**Fuentes externas** (repos públicos, rama `develop`/`main`, revalidadas
+esta sesión — no reusadas de grounding previo sin chequear):
+`frappe/frappe` (`core/doctype/user/user.{json,py}`,
+`public/js/.../toolbar.js`, `desk/doctype/workspace/workspace.json`),
+`frappe/erpnext` (`setup/doctype/company/company.json`,
+[Company-wise Naming Series](https://docs.frappe.io/erpnext/company-wise-naming-series)),
+`frappe/hospitality` ([repo](https://github.com/frappe/hospitality),
+`hotels/doctype/hotel_room_reservation/`, `hotels/doctype/hotel_settings/`,
+`restaurant/doctype/restaurant/`),
+[`frappe/erpnext#16161`](https://github.com/frappe/erpnext/issues/16161)
+(defecto reconocido, reserva sin habitación), `Qloapps/QloApps`
+(`modules/hotelreservationsystem/classes/HotelBookingDetail.php`,
+`HotelBranchInformation.php`), `Dolibarr/dolibarr`
+(`core/class/menubase.class.php`,
+[#11873](https://github.com/Dolibarr/dolibarr/issues/11873),
+[#30523](https://github.com/Dolibarr/dolibarr/issues/30523)).
+
+### Meta-hallazgo — esta ronda cubrió 4 áreas que el dueño nombró, no la superficie real de `app-main`
+
+**Corrección de metodología pedida explícitamente por el dueño, para
+dejar registrada antes de la próxima ronda**: esta auditoría arrancó de
+4 áreas que el dueño señaló a mano (navegación, autogestión de usuario,
+autogestión de empresa, reservas) — un método correcto pero parcial,
+porque asume que el dueño ya sabe dónde mirar. **El método correcto,
+declarado ahora como el que hay que seguir**: al revés — primero
+enumerar la superficie REAL de dominios de `app-main` (no una lista de
+memoria), y recién then, dominio por dominio, cruzarla contra qué
+tienen y cómo lo resuelven los sistemas de referencia. Esta ronda no lo
+hizo — quedó acotada a lo que el dueño pudo nombrar sin haber mirado el
+código.
+
+**Superficie real medida hoy** (prefijos de ruta reales de `app.ts`, no
+una lista de memoria — 34 dominios/prefijos montados, algunos ya
+tocados por esta ronda, la mayoría NO):
+
+`login` · `customer` (portal) · `admin` (tocado, 1.A) · `invitations` ·
+`password-resets` (tocado, 2.1) · `companies` (tocado parcial, 3.2) ·
+`auth`/me (tocado, 2.1) · `business/modules` · `business/plan-limits`
+(tocado parcial, 1.B-bis) · `resources` (tocado parcial, 4) ·
+`locations` (tocado, 3.2) · `reservations` (tocado, 4) ·
+`cancellation-policies` (**NO tocado**) · `customers` (**NO tocado** —
+CRM de clientes en sí, distinto del portal) · `rate-catalog` (**NO
+tocado** — tarifas especiales) · `users`/`users/invitations` (tocado
+parcial, 2.1) · `roles` (**NO tocado** — la UX de administrar roles en
+sí, más allá del bug de 1.B) · `categories` (**NO tocado**) ·
+`products` (tocado parcial, 1.D) · `orders` (tocado parcial, 1.D) ·
+`waste-reasons`/`consumption-destinations` (tocado, 1.D) ·
+`bookable-services` (tocado parcial, vía 4 — el ítem 4.5 que citaba este
+prefijo se descartó post-gate, ver arriba) · `business-hours` (**NO
+tocado**) · `business-profile`(+`afip-credentials`) (tocado, 3.1) ·
+`business/context` (tocado parcial, 1.B-bis) · `invoices` (tocado
+parcial, vía 1.C) · `audit-log` (**NO tocado**) · `reports` (tocado
+parcial, vía 1.C — el resto de los reportes NO) · `system` (**NO
+tocado**) · `housekeeping` (**NO tocado — módulo entero**) ·
+`maintenance-windows` (**NO tocado**) · `stays` (tocado — es la base del
+circuito de check-in/check-out ya evaluado como superior a las
+referencias, ver el párrafo de apertura de esta sección; NO cubre la
+gestión operativa de housekeeping/mantenimiento que depende de él, esos
+siguen sin tocar) · `accounts-receivable` (tocado tangencial, vía 1.C —
+el circuito propio NO) · **`cash-register`** (**NO tocado — arqueo de
+caja**, `requireModule(CUENTAS_CORRIENTES)`, `app.ts:387`; faltaba en
+esta lista, agregado post-gate). Faltan además, fuera de `app.ts`, los
+flujos de `/superadmin` (plataforma: aprovisionamiento de tenants,
+planes de fábrica) — ni rozados por esta ronda.
+
+**Cómo se retoma**: no re-lanzar "4 áreas más" a mano — la próxima
+ronda debería tomar esta lista de 34 prefijos, agruparlos en dominios de
+negocio reales (housekeeping, CRM/clientes, tarifas especiales,
+administración de roles/permisos, reportería, mantenimiento, superadmin
+de plataforma son los candidatos más grandes sin tocar todavía), y
+recorrer cada uno contra los 5 sistemas de referencia — mismo criterio
+de "existencia primero (Nivel 1), mecanismo después (Nivel 2)" que ya
+se usó acá, pero disparado por la superficie real del código, no por lo
+que a alguien se le ocurre nombrar.
+
+---
+
 ## ✅ Cerrado esta sesión — arco transversal completo
 
 Dos candidatos transversales, elegidos por el usuario, trabajados uno
