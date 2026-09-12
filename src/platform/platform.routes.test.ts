@@ -16,10 +16,12 @@ import type { Request, Response } from 'express';
 import { createPlatformRouter } from './platform.routes.js';
 import { signPlatformToken } from './platform.auth.middleware.js';
 import { signToken } from '../security/auth.middleware.js';
+import { evictTenantPool } from './tenant.middleware.js';
 import { BusinessPlan, BusinessStatus, PlatformRole } from '../types/enums.js';
 import type { PlatformRepository, Business } from './platform.repository.js';
 import type { PlatformContainer } from './platform.container.js';
 import type * as TenantDbSetup from './tenant-db.setup.js';
+import type * as TenantMiddleware from './tenant.middleware.js';
 
 vi.mock('./tenant-db.setup.js', async (importOriginal) => {
   const actual = await importOriginal<typeof TenantDbSetup>();
@@ -28,6 +30,16 @@ vi.mock('./tenant-db.setup.js', async (importOriginal) => {
 vi.mock('./neon-provisioning.js', () => ({
   provisionTenantDatabase: vi.fn(async () => ({ connectionString: 'postgresql://fake-neon-branch' })),
 }));
+// PATCH-STATUS-EVICT-001 (12/09/2026) — el fix de este archivo (evictTenantPool
+// tras cambiar business.status) necesita que el spy sea EL MISMO que importa
+// platform.routes.ts, para poder afirmar con qué businessId se lo llamó — no
+// alcanza con "no explotó" (mismo criterio que admin.routes.test.ts, que
+// mockea este módulo pero nunca asertó la call; acá sí, por eso es su propio
+// mock en vez de reusar ese).
+vi.mock('./tenant.middleware.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof TenantMiddleware>();
+  return { ...actual, evictTenantPool: vi.fn(async () => {}) };
+});
 
 const ORIGINAL_PLATFORM_SECRET = process.env.PLATFORM_JWT_SECRET;
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
@@ -362,6 +374,51 @@ describe('PATCH /businesses/:id/status', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toMatchObject({ code: 'SAME_STATUS' });
+  });
+
+  // PATCH-STATUS-EVICT-001 (12/09/2026) — bug de aislamiento confirmado: el
+  // pool de tenant cacheado (tenant.middleware.ts::tenantPools) solo chequea
+  // business.status en cache-MISS. Sin desalojar el pool acá, un negocio
+  // recién SUSPENDED/CANCELLED seguía operando con normalidad mientras el
+  // pool estuviera caliente — en la práctica, indefinidamente (LRU de 200).
+  // Mismo mecanismo que admin.routes.ts ya resuelve tras reapuntar la
+  // connection string de un tenant (ver su propio comentario junto al
+  // evictTenantPool de esos dos handlers).
+  it('desaloja el pool cacheado del tenant tras cambiar el estado', async () => {
+    const platformRepo = fakePlatformRepo({ findById: vi.fn(async () => fakeBusiness({ status: BusinessStatus.ACTIVE })) });
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    await runRoute(router, 'patch', '/businesses/:id/status', reqWith({
+      token: superadminToken(), params: { id: 'biz-1' }, body: { status: BusinessStatus.SUSPENDED },
+    }));
+
+    expect(vi.mocked(evictTenantPool)).toHaveBeenCalledExactlyOnceWith('biz-1');
+  });
+
+  it('NO desaloja ningún pool si la transición es inválida (negocio ya CANCELLED)', async () => {
+    const platformRepo = fakePlatformRepo({ findById: vi.fn(async () => fakeBusiness({ status: BusinessStatus.CANCELLED })) });
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    await runRoute(router, 'patch', '/businesses/:id/status', reqWith({
+      token: superadminToken(), params: { id: 'biz-1' }, body: { status: BusinessStatus.ACTIVE },
+    }));
+
+    expect(evictTenantPool).not.toHaveBeenCalled();
+  });
+
+  it('NO desaloja el pool si el UPDATE falla dentro de la transacción (evict solo tras commit durable)', async () => {
+    const platformRepo = fakePlatformRepo({
+      findById: vi.fn(async () => fakeBusiness({ status: BusinessStatus.ACTIVE })),
+      runInTransaction: vi.fn(async () => { throw new Error('conexión perdida a mitad de la transacción'); }),
+    });
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    const res = await runRoute(router, 'patch', '/businesses/:id/status', reqWith({
+      token: superadminToken(), params: { id: 'biz-1' }, body: { status: BusinessStatus.SUSPENDED },
+    }));
+
+    expect(res.nextError).toBeInstanceOf(Error);
+    expect(evictTenantPool).not.toHaveBeenCalled();
   });
 });
 

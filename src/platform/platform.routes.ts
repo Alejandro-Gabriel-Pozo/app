@@ -17,6 +17,7 @@ import { PlatformRole } from '../types/enums.js';
 import { recordPlatformChanges } from './platform-audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
 import { Roles } from '../security/roles.js';
+import { evictTenantPool } from './tenant.middleware.js';
 
 const PlatformLoginSchema = z.object({
   email:    z.string().email(),
@@ -268,6 +269,20 @@ export function createPlatformRouter(container: PlatformContainer): Router {
             ],
           );
         });
+        // El pool de tenant cacheado en tenant.middleware.ts se resuelve UNA
+        // vez y se reusa mientras esté caliente (LRU de MAX_TENANT_POOLS) —
+        // el chequeo de `business.status !== ACTIVE` de getTenantClient()
+        // solo corre en cache-miss. Sin este evict, un negocio recién
+        // SUSPENDED/CANCELLED seguía operando con normalidad (req.db se
+        // seguía resolviendo del cache) hasta que el proceso reiniciara o el
+        // pool cayera del LRU — en la práctica, indefinidamente. Mismo
+        // mecanismo, mismo fix, que admin.routes.ts (repair-tenant-db /
+        // set-tenant-url) ya aplica tras cambiar la connection string de un
+        // tenant. Va DESPUÉS de que `runInTransaction` resuelva (commit
+        // durable): si el UPDATE hubiera fallado, no hay pool que desalojar
+        // — el estado en BD central no cambió y el pool cacheado sigue
+        // siendo válido.
+        await evictTenantPool(business.id);
         const updated = await platformRepository.findById(business.id);
         res.json({ message: `Estado actualizado a ${body.status}`, business: updated ? toBusinessDto(updated) : null });
       } catch (err) { next(err); }
