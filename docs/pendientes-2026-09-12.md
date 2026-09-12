@@ -7,6 +7,20 @@ contenido íntegro conservado más abajo, sin re-auditar cada ancla una
 por una (eso excede lo que se puede hacer en una sesión) — solo la
 sección nueva de arriba es de hoy, con ancla verificada.
 
+**Actualización 12/09/2026, más tarde — sesión concurrente del Zuluhub
+Test Orchestrator (`app-main-frontend-root/zuluhub-test-orchestrator/`,
+sesión distinta a la que armó este archivo, sin gate `architecture-governor`
+de este repo de por medio).** Ese archivo nuevo se creó arrastrando
+`pendientes-2026-09-10.md` ANTES de que esta otra sesión le agregara
+`CN-VOID-COREJECT-STALE-TEST-001` (bullet `1c-0` más abajo) -- las dos
+sesiones corrieron en paralelo sobre el mismo repo sin saberlo, `git`
+detectó la divergencia recién al pushear, reconciliado con un merge
+normal (sin forzar nada, sin conflictos: tocaban archivos/secciones
+distintos). Esta actualización propaga ese hallazgo acá para que no
+quede huérfano en el archivo que dejó de ser "el de fecha más alta". No
+se tocó ningún archivo de `src/` en esta actualización -- solo
+documentos.
+
 ---
 
 ## ✅ Cerrado esta sesión (12/09/2026)
@@ -1758,8 +1772,75 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (`cancel-reservation-with-credit-note.integration.test.ts`, caso
   C1(ii), `expect(logger.error).toHaveBeenCalledWith(...)` con 0 calls)
   es preexistente en `origin/main` (confirmado con `git stash` + re-run
-  contra HEAD limpio antes de este commit) y no relacionado a 1c-0 --
-  **registrado, no investigado, sin bloque asignado todavía.**
+  contra HEAD limpio antes de este commit) y no relacionado a 1c-0.
+
+  **`CN-VOID-COREJECT-STALE-TEST-001` -- ancla de línea + causa raíz
+  probable identificadas (12/09/2026, sesión del Zuluhub Test
+  Orchestrator -- no gate `architecture-governor`, ver nota de proceso al
+  final).** El `it()` que falla está en
+  `src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts:592`;
+  la assertion que efectivamente revienta es `:616`
+  (`expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({
+  causa: ['TIPO_NO_LIQUIDABLE', 'CARGO_CON_COMPROBANTE_VIVO'] }), ...)`,
+  `Number of calls: 0`). **Re-confirmado independiente, dos días después**
+  con dos métodos distintos: (a) corrida real de los 200 archivos de la
+  suite completa vía el orquestador nuevo (`app-main-frontend-root/zuluhub-test-orchestrator/`,
+  6 agentes en paralelo, Postgres local) -- único `failed` de 200; (b)
+  el mismo archivo solo, con el comando NATIVO de este repo
+  (`TEST_DATABASE_URL=... npx vitest run src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts
+  --config vitest.integration.config.ts`, sin el orquestador, sin
+  paralelismo) -- mismo test, mismo `AssertionError`, 0 llamadas. Sigue
+  vivo hoy, dos días después de la última confirmación (11/09/2026).
+
+  **Causa raíz probable, no solo "preexistente" -- leído
+  `src/workers/outbox.handlers.ts:78-97` y
+  `docs/diseno-33d-residuales-2026-09-11.md` §2 (residual 2, el MISMO
+  diseño citado más arriba en este bloque para 3.3-d residual 2):** el
+  test `C1(ii)` fue escrito para el guard EXACT-MATCH viejo
+  (`rechazos.length === 1 && rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'`,
+  §2.2 del diseño) -- con esa lógica, el co-rechazo `TIPO_NO_LIQUIDABLE`
+  que agrega un `PAYMENT` propio de la reserva (vía `recordPayment()`)
+  rompía el match exacto y el guard se quedaba `grave` SIN consultar
+  `classifyReservationLiveInvoice()`, exactamente lo que el test todavía
+  afirma ("la guarda ESTRECHA no dispara, ni se consulta la
+  clasificación"). Pero `esComprobanteVivoConCoRechazosBenignos()`
+  (`outbox.handlers.ts:94-97`, shippeada por la MISMA sesión que resolvió
+  3.3-d residual 2, 11/09/2026, `CO_RECHAZOS_BENIGNOS_SI_RECONCILIADO`
+  incluye `TIPO_NO_LIQUIDABLE` a propósito) reemplazó ese exact-match por
+  un allowlist positivo -- y el diseño (§2.1, combinación 2) identifica
+  EXPLÍCITAMENTE "reserva con seña cobrada (muy común, cualquier reserva
+  con depósito)" como el caso que ese ensanche existe para cubrir, y el
+  gate lo confirmó en su momento (§2.3). El escenario del test (PAYMENT
+  vía `recordPayment()` con `reservationId`) es ese mismo caso -- con el
+  código de hoy, el guard SÍ dispara la consulta de clasificación en vez
+  de quedarse `grave` sin consultar. **El test no se actualizó cuando
+  residual 2 shippeó** -- probable stale test, no una anomalía de
+  producción nueva.
+
+  **No decidido en esta nota, a propósito (regla del `CLAUDE.md` sobre
+  preguntas de alcance escondiendo una decisión de negocio):** si el test
+  hay que actualizarlo para afirmar el comportamiento nuevo (el guard SÍ
+  consulta clasificación con un PAYMENT propio -- lo que el diseño ya
+  decidió que es lo correcto), o si el escenario de PAYMENT propio tiene
+  algo que lo distingue de "seña cobrada" que el allowlist debería
+  excluir aparte (ej. ¿una seña cobrada y luego reembolsada es distinta
+  de una seña cobrada y viva?) -- eso es una pregunta de negocio para el
+  dueño, no algo que esta nota resuelva. **Sin bloque asignado
+  todavía.**
+
+  **Nota de proceso:** esta identificación de causa raíz se hizo en una
+  sesión de infraestructura de testing (Zuluhub Test Orchestrator, repo
+  `app-main-frontend-root`), no vino de un gate `architecture-governor`
+  de `app-main` con acceso a Postgres de esta sesión -- es lectura de
+  código + del diseño ya aprobado, no una nueva corrida de mutation
+  testing. Verificar con una corrida real (actualizar el test y confirmar
+  que pasa) antes de dar la causa raíz por cerrada. **Propagado también a
+  `pendientes-2026-09-10.md` (mismo bullet) -- ese archivo y este
+  divergieron un momento por dos sesiones concurrentes trabajando en
+  paralelo (esta y `session_01SiDF22SQVRFyMhY85HTsNt`, que creó este
+  archivo `-12.md` arrastrando el `-10.md` ANTES de que este hallazgo se
+  agregara ahí) -- reconciliado con un merge de git, sin forzar nada,
+  verificado sin marcadores de conflicto.**
 
   **`1c-i` -- ✅ RESUELTO (11/09/2026, gate `architecture-governor`,
   `d834329`).** `cancelOrderWithCreditNote()` bloqueaba TODA factura
@@ -2001,7 +2082,10 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
     contra HEAD (`206964b`, sin este cambio) en esta misma sesión, DOS
     veces** (antes y después de aplicar F1-F4): mismo archivo, mismo
     test, mismo mensaje -- confirmado PRE-EXISTENTE, no una regresión de
-    1c-ii-b.
+    1c-ii-b. Ver `CN-VOID-COREJECT-STALE-TEST-001` más arriba (bullet de
+    `1c-0`) -- causa raíz probable identificada 12/09/2026: el test
+    parece codificar el guard exact-match que este MISMO residual 2
+    reemplazó por el allowlist positivo.
   - `classify-order-live-invoice-pair.integration.test.ts` en aislamiento
     (mismo `TEST_DATABASE_URL`): **7/7**, incluido el test de equivalencia
     C1 contra Postgres real.
