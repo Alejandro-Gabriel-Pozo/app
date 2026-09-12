@@ -216,7 +216,7 @@ describe('loadTenantSchema', () => {
 
 describe('applyTenantSchema', () => {
   const queryMock = vi.fn(async (sql: string): Promise<{ rows: Array<Record<string, unknown>> }> => {
-    if (sql.includes('SELECT MAX')) return { rows: [{ max: 50 }] };
+    if (sql.includes('SELECT MAX')) return { rows: [{ max: 51 }] };
     return { rows: [] };
   });
   const connectMock = vi.fn(async () => {});
@@ -266,8 +266,11 @@ describe('applyTenantSchema', () => {
     // docs/investigacion-decisiones-bloqueado-2026-09-12.md.
     // 49 -> 50 el 12/09/2026: CHECK chk_financial_transactions_order_or_reservation
     // (caso 6). Ver docs/investigacion-decisiones-bloqueado-2026-09-12.md.
-    expect(version).toBe(50);
-    expect(CURRENT_SCHEMA_VERSION).toBe(50);
+    // 50 -> 51 el 12/09/2026: caso 6 residuo parte 2 -- los 3 CHECK de
+    // financial_transactions pasan de DROP+ADD incondicional a guard
+    // pg_constraint (sin cambio de forma en la tabla, solo de patrón).
+    expect(version).toBe(51);
+    expect(CURRENT_SCHEMA_VERSION).toBe(51);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

@@ -58,10 +58,47 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   IS NOT NULL` → `0` en las dos, sobre un total de 21 filas en Demo y 0
   en Hotel los Álamos (denominador, mismo formato que el precedente de
   v47). Evidencia también en el comentario del BLOQUE 22 de `schema.sql`.
-  Ya no bloquea el deploy. **Residuo que sigue abierto, sin relación con
-  esta verificación:** `pendientes-2026-09-12.md`, § 🔴 Bloqueado, "Caso
-  6, residuo parte 2" — ¿mover los 3 CHECK de esta tabla a una migración
-  numerada?
+  Ya no bloquea el deploy.
+
+- **Caso 6, residuo parte 2 — costo recurrente de los 3 CHECK de
+  `financial_transactions`.** Origen:
+  `docs/investigacion-decisiones-bloqueado-2026-09-12.md:217-220`;
+  decisión del dueño 12/09/2026 (`AskUserQuestion`): sí, resolver el costo
+  ahora. **La pregunta tal como se planteó (¿mover a
+  `migrations/NNN_*.sql`?) resultó tener una respuesta técnica distinta a
+  la que se preguntó** — investigado antes de implementar (mismo criterio
+  que D5/`criterios-negocio.md`, no ejecutar una decisión de negocio sin
+  chequear que el mecanismo propuesto haga lo que promete):
+  `migrations/NNN_*.sql` NO está conectado a `applyTenantSchema()` —
+  ningún camino real de alta o reparación de tenant lo corre: son
+  **5** call-sites (gate `architecture-governor` corrigió la
+  enumeración original de esta entrada, que tenía 4 y se quedaba
+  `platform.routes.ts` afuera) — `business.routes.ts` (alta pública),
+  `admin.routes.ts` `repair-tenant-db`/`set-tenant-url`,
+  `platform.routes.ts` `POST /platform/businesses/:id/provision`
+  (reintento de aprovisionamiento del superadmin), y `migrate-tenants.ts`
+  (runner de deploy) — todos corren únicamente `schema.sql`. Moverlos a
+  `migrations/` habría dejado a todo tenant futuro sin los 3 CHECK, en
+  silencio. Implementado en cambio: los 3
+  (`chk_financial_transactions_amount`, `_reversed_invoice_type`,
+  `_order_or_reservation`) pasan del patrón `DROP CONSTRAINT IF EXISTS` +
+  `ADD CONSTRAINT` incondicional a un guard
+  `DO $$ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = ...)`
+  — el `ADD` (el costoso, revalida la tabla) solo corre la primera vez que
+  un tenant no lo tiene; un tenant nuevo lo sigue recibiendo igual, porque
+  sigue siendo parte de `schema.sql`. Schema v50→v51.
+  **Validado parcialmente, no contra el archivo completo:** corrida
+  aislada de los 3 bloques nuevos contra Neon real (rama
+  `test-integration-db`, vía `run_sql_transaction`, `TEMP TABLE`
+  descartable con la misma forma) — 1ª corrida crea las 3 constraints con
+  la definición exacta de `schema.sql`, 2ª corrida no falla y no las
+  re-crea, un INSERT válido pasa. `npx tsc --noEmit` limpio y
+  `npx vitest run` completo (163 archivos, 2155 tests) verde — **pero
+  ningún test de esa corrida ejecuta `schema.sql` contra Postgres real**
+  (`schema-redeploy-idempotent.integration.test.ts` es
+  `describe.skipIf(skipIfNoDb)`, sin `TEST_DATABASE_URL` en este entorno),
+  así que la suite verde no es evidencia sobre el SQL en sí. Residuo
+  abierto en `pendientes-2026-09-12.md`, § Verificaciones pendientes.
 
 - **Caso 3 — `StayService.checkOut()` cuenta saldo `PENDING` y
   MANAGEMENT puede forzarlo con rastro.** Origen: hallazgo adyacente del

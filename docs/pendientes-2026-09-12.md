@@ -61,6 +61,33 @@ cuando se pushea.
   sin verificar: abrir `dashboard/estadias/[id]/page.tsx` con una
   estadía real con saldo pendiente y confirmar el flujo de
   `ConfirmDialog` de MANAGEMENT — commit `4cb5a04` (appfrontend-main).
+- **Caso 6 residuo parte 2 — `schema.sql` completo (v51, guard
+  `pg_constraint` en los 3 CHECK de `financial_transactions`) nunca corrió
+  contra Postgres real en su orden real.** La validación de esta sesión
+  fue sobre los 3 bloques nuevos aislados, en una `TEMP TABLE` descartable
+  (Neon, rama `test-integration-db`, vía `run_sql_transaction`) — no sobre
+  el archivo completo, de punta a punta, contra una BD (el camino real de
+  alta de tenant, el mismo que ya rompió una vez el 25/08 — "relation
+  products does not exist", comentado en `schema.sql:1035-1039`).
+  `schema-redeploy-idempotent.integration.test.ts` es el harness que
+  corresponde y quedó `describe.skipIf(skipIfNoDb)` (sin
+  `TEST_DATABASE_URL` en este entorno) — no corrió. Acción puntual: correr
+  `npm run test:integration` con `TEST_DATABASE_URL` configurada. Además,
+  antes de autorizar el push/deploy de v51: correr, por cada tenant DB de
+  producción (Demo y Hotel los Álamos),
+  ```sql
+  SELECT conname, pg_get_constraintdef(oid)
+  FROM pg_constraint
+  WHERE conrelid = 'financial_transactions'::regclass AND contype = 'c'
+  ORDER BY conname;
+  ```
+  y comparar las 3 definiciones contra las de `schema.sql` — si alguna
+  difiere, el guard nuevo la va a congelar tal como está en vez de
+  corregirla (ver el residuo de diseño más abajo en 🟢 Deuda aceptada);
+  si coinciden o falta, el deploy es seguro. Introducido en el commit que
+  sigue a `2156f76` (app-main) — buscar el hash con
+  `git log --oneline --grep "financial_transactions.*pg_constraint\|Caso 6 residuo parte 2"`
+  si hace falta citarlo desde otro documento.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
@@ -1253,27 +1280,6 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   se espera la respuesta — el fix de `checkOut()` (Q1, sí decidido) es
   inseparable de este cambio de comportamiento porque comparten la
   misma función.
-
-- **Caso 6, residuo parte 2 — ¿mover los CHECK de `financial_transactions`
-  a un `migrations/NNN_*.sql` numerado? (12/09/2026, `requiere decisión
-  del dueño`).** Ancla:
-  `docs/investigacion-decisiones-bloqueado-2026-09-12.md:217-220` (el
-  "Residuo del dueño" original del caso 6 tenía 2 partes; la parte 1 —
-  encararlo ahora, bloque propio — ya se decidió; esta parte 2 sigue sin
-  responder). `financial_transactions` acumula ahora **3** CHECK
-  constraints (`chk_financial_transactions_amount`,
-  `chk_financial_transactions_reversed_invoice_type` de v47,
-  `chk_financial_transactions_order_or_reservation` de v50) que se
-  re-validan bajo `ACCESS EXCLUSIVE` en CADA deploy, para siempre, porque
-  `schema.sql` se reaplica completo en cada `migrate:tenants` (patrón
-  `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT`). El propio comentario
-  del v47 ya nombró el disparador: *"Si algún día pesa, mover a un
-  `&lt;NNN&gt;_*.sql` numerado (que corre una vez) en vez de reaplicarse."*
-  Este bloque suma el tercer CHECK sobre esa misma tabla — no decide si
-  "algún día" ya llegó. **Pregunta para el dueño:** ¿el costo recurrente
-  ya justifica mover estos 3 (o los que corresponda) a una migración
-  numerada, o sigue siendo aceptable mientras la tabla no crezca mucho
-  más?
 
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,

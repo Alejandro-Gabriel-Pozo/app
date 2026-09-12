@@ -424,7 +424,18 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // (<=1 de order_id/reservation_id no-nulo), docs/investigacion-decisiones-
 // bloqueado-2026-09-12.md caso 6. Cierra a nivel de BD lo que
 // CreditNoteAmbiguousSubjectError solo rechazaba en lectura.
-export const CURRENT_SCHEMA_VERSION = 50;
+// v51 (12/09/2026): Caso 6 residuo parte 2 (decisión del dueño el mismo
+// día). Los 3 CHECK de `financial_transactions`
+// (chk_financial_transactions_amount, _reversed_invoice_type,
+// _order_or_reservation) dejan el patrón DROP+ADD incondicional -- que
+// revalidaba la tabla entera bajo ACCESS EXCLUSIVE en CADA deploy, para
+// siempre -- por un guard `pg_constraint` (DO $$ IF NOT EXISTS ... $$):
+// el ADD solo corre (y revalida) la primera vez que un tenant no lo
+// tiene. NO se movieron a `migrations/NNN_*.sql` -- esa carpeta no está
+// conectada a `applyTenantSchema()`, así que un tenant nuevo nunca
+// recibiría el CHECK. Ver schema.sql, comentario del primer bloque
+// (`chk_financial_transactions_amount`) para el razonamiento completo.
+export const CURRENT_SCHEMA_VERSION = 51;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

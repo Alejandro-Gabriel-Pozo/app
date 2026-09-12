@@ -2209,12 +2209,35 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS stay_id VARCHAR(255)
 -- amount >= 0 como siempre (nunca tuvieron necesidad de signo). El nombre
 -- viejo del constraint (financial_transactions_amount_check) es el que
 -- Postgres autogenera para un CHECK de columna sin nombre explícito en el
--- CREATE TABLE original -- se dropea explícito porque, a diferencia de un
--- ADD COLUMN, un ALTER de un CHECK existente no es "agregar si falta".
+-- CREATE TABLE original -- se dropea explícito (barato: DROP no revalida
+-- filas) porque, a diferencia de un ADD COLUMN, un ALTER de un CHECK
+-- existente no es "agregar si falta".
+--
+-- schema v51 (12/09/2026, Caso 6 residuo parte 2,
+-- docs/investigacion-decisiones-bloqueado-2026-09-12.md:217-220 +
+-- decisión del dueño 12/09/2026): el patrón DROP+ADD incondicional de más
+-- abajo (histórico) revalida TODA la tabla bajo ACCESS EXCLUSIVE en CADA
+-- deploy, para siempre, aunque el constraint ya esté aplicado sin cambios.
+-- `migrations/NNN_*.sql` NO es la salida -- esa carpeta no está conectada
+-- a `applyTenantSchema()` (ver tenant-db.setup.ts): un tenant nuevo o un
+-- `repair-tenant-db` solo corre `schema.sql`, así que mover este CHECK
+-- ahí lo sacaría del alta de cualquier tenant futuro, silenciosamente.
+-- La salida real: el ADD queda adentro de este mismo archivo, pero
+-- guardado por `pg_constraint` -- solo corre (y revalida) la primera vez
+-- que un tenant no lo tiene; en cada deploy siguiente es un SELECT barato
+-- que no toca la tabla. Si el día de mañana hace falta CAMBIAR la
+-- definición de un constraint ya guardado así, hay que sacar el guard,
+-- dejar correr un DROP+ADD real una vez, y volver a poner el guard --
+-- documentado acá para no repetir la investigación.
 ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS financial_transactions_amount_check;
-ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS chk_financial_transactions_amount;
-ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_amount
-  CHECK (amount >= 0 OR type = 'ADJUSTMENT');
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_financial_transactions_amount'
+  ) THEN
+    ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_amount
+      CHECK (amount >= 0 OR type = 'ADJUSTMENT');
+  END IF;
+END $$;
 
 -- identity_id (JWT sub) de quien autorizó el movimiento a mano -- hoy solo
 -- lo completa la confirmación del ajuste de precio de una reserva
@@ -3035,21 +3058,21 @@ ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS reversed_invoice_id 
 -- `ADD CONSTRAINT` es instantáneo, sin validación de filas existentes, sin
 -- backfill. Ventana barata; el costo crece monótono con cada escape real.
 --
--- Patrón `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` (mismo que
--- chk_financial_transactions_amount arriba): un ALTER de un CHECK existente no
--- es "agregar si falta", así que se dropea explícito para que reaplicar
--- schema.sql sea idempotente.
---
--- COSTO RECURRENTE (no solo el backfill inicial): el par DROP+ADD corre en
--- CADA deploy (schema.sql se reaplica entero), así que `financial_transactions`
--- se re-valida bajo `ACCESS EXCLUSIVE` cada build, para siempre. Hoy son ~20
--- filas. `chk_financial_transactions_amount` ya paga lo mismo -- esto duplica
--- un costo existente, no lo introduce -- pero crece con la tabla que más crece
--- del modelo. Si algún día pesa, mover a un `<NNN>_*.sql` numerado (que corre
--- una vez) en vez de reaplicarse.
-ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS chk_financial_transactions_reversed_invoice_type;
-ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_reversed_invoice_type
-  CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND', 'ADJUSTMENT'));
+-- schema v51 (12/09/2026, Caso 6 residuo parte 2 -- ver el bloque
+-- `chk_financial_transactions_amount` de más arriba para el porqué
+-- completo, incluido por qué `migrations/NNN_*.sql` NO sirve acá): el
+-- costo recurrente que este comentario advertía se resolvió guardando el
+-- ADD con `pg_constraint`, no reaplicando DROP+ADD en cada deploy. Sin
+-- limpieza de nombre legacy acá (a diferencia del bloque de arriba): esta
+-- constraint nació ya con este nombre en v47, nunca tuvo uno autogenerado.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_financial_transactions_reversed_invoice_type'
+  ) THEN
+    ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_reversed_invoice_type
+      CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND', 'ADJUSTMENT'));
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- afip_tickets (23/08/2026, pendientes-2026-08-23.md -- bug real en
@@ -3642,15 +3665,22 @@ ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_at_override DECIMAL(12, 2);
 -- `ADD CONSTRAINT` es instantáneo, sin validación de filas existentes,
 -- sin backfill.
 --
--- Mismo patrón DROP+ADD idempotente que
--- chk_financial_transactions_reversed_invoice_type (BLOQUE de schema v47,
--- 08/09/2026, misma tabla) -- no `NOT VALID`/`VALIDATE CONSTRAINT`, que no
--- es el patrón idiomático de este repo. Reaplicado en cada
--- `migrate:tenants`: costo ya existente (dos constraints más chicos en la
--- misma tabla), no uno nuevo.
-ALTER TABLE financial_transactions DROP CONSTRAINT IF EXISTS chk_financial_transactions_order_or_reservation;
-ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_order_or_reservation CHECK (
-  (CASE WHEN order_id       IS NOT NULL THEN 1 ELSE 0 END +
-   CASE WHEN reservation_id IS NOT NULL THEN 1 ELSE 0 END) <= 1
-);
+-- schema v51 (12/09/2026, Caso 6 residuo parte 2, decisión del dueño el
+-- mismo día que este CHECK se deployó): el DROP+ADD incondicional de
+-- abajo (histórico, tal como se deployó en v50) queda reemplazado por el
+-- guard `pg_constraint` -- ver el bloque `chk_financial_transactions_amount`
+-- de más arriba para el razonamiento completo, incluido por qué
+-- `migrations/NNN_*.sql` no es una alternativa válida (no está conectado
+-- a `applyTenantSchema()`, así que un tenant nuevo nunca recibiría el
+-- CHECK). Sin limpieza de nombre legacy: nació con este nombre en v50.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_financial_transactions_order_or_reservation'
+  ) THEN
+    ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_order_or_reservation CHECK (
+      (CASE WHEN order_id       IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN reservation_id IS NOT NULL THEN 1 ELSE 0 END) <= 1
+    );
+  END IF;
+END $$;
 
