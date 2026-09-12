@@ -29,7 +29,8 @@ const COLUMNS = `
   id, business_id, reservation_id, resource_id, customer_id,
   assigned_by, status, checked_in_at, checked_out_at,
   no_show_at, notes, housekeeping_override_by, housekeeping_override_at,
-  housekeeping_status_at_override, created_at, updated_at
+  housekeeping_status_at_override, balance_override_by, balance_override_at,
+  balance_at_override, created_at, updated_at
 `;
 
 function rowToStay(row: Record<string, unknown>): Stay {
@@ -48,6 +49,11 @@ function rowToStay(row: Record<string, unknown>): Stay {
     housekeepingOverrideBy:       (row['housekeeping_override_by'] as string | null) ?? null,
     housekeepingOverrideAt:       row['housekeeping_override_at'] ? new Date(row['housekeeping_override_at'] as string) : null,
     housekeepingStatusAtOverride: (row['housekeeping_status_at_override'] as StayProps['housekeepingStatusAtOverride']) ?? null,
+    balanceOverrideBy: (row['balance_override_by'] as string | null) ?? null,
+    balanceOverrideAt: row['balance_override_at'] ? new Date(row['balance_override_at'] as string) : null,
+    balanceAtOverride: row['balance_at_override'] !== null && row['balance_at_override'] !== undefined
+      ? parseFloat(row['balance_at_override'] as string)
+      : null,
     createdAt:     new Date(row['created_at'] as string),
     updatedAt:     new Date(row['updated_at'] as string),
   } satisfies StayProps);
@@ -62,13 +68,15 @@ export class SqlStayRepository implements StayRepository {
          (id, business_id, reservation_id, resource_id, customer_id,
           assigned_by, status, checked_in_at, checked_out_at,
           no_show_at, notes, housekeeping_override_by, housekeeping_override_at,
-          housekeeping_status_at_override, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          housekeeping_status_at_override, balance_override_by, balance_override_at,
+          balance_at_override, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [
         stay.id, stay.businessId, stay.reservationId, stay.resourceId,
         stay.customerId, stay.assignedBy, stay.status, stay.checkedInAt,
         stay.checkedOutAt, stay.noShowAt, stay.notes,
         stay.housekeepingOverrideBy, stay.housekeepingOverrideAt, stay.housekeepingStatusAtOverride,
+        stay.balanceOverrideBy, stay.balanceOverrideAt, stay.balanceAtOverride,
         stay.createdAt, stay.updatedAt,
       ],
     );
@@ -77,11 +85,14 @@ export class SqlStayRepository implements StayRepository {
   async update(stay: Stay): Promise<void> {
     await this.db.query(
       `UPDATE stays
-       SET status=$1, checked_out_at=$2, no_show_at=$3, notes=$4, updated_at=$5
-       WHERE id=$6 AND business_id=$7`,
+       SET status=$1, checked_out_at=$2, no_show_at=$3, notes=$4,
+           balance_override_by=$5, balance_override_at=$6, balance_at_override=$7,
+           updated_at=$8
+       WHERE id=$9 AND business_id=$10`,
       [
-        stay.status, stay.checkedOutAt, stay.noShowAt,
-        stay.notes, stay.updatedAt, stay.id, stay.businessId,
+        stay.status, stay.checkedOutAt, stay.noShowAt, stay.notes,
+        stay.balanceOverrideBy, stay.balanceOverrideAt, stay.balanceAtOverride,
+        stay.updatedAt, stay.id, stay.businessId,
       ],
     );
   }

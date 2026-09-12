@@ -108,8 +108,7 @@ describe.skipIf(skipIfNoDb)('STAY-ADJUSTMENT-PRICE-001 -- handleReservationPrice
 
     // CHARGE original de la reserva (simula lo que handleReservationConfirmed
     // ya dejó armado antes del check-in) -- SETTLED, con stayId, para que el
-    // control anti-falso-positivo tenga una deuda real que compensar (mismo
-    // criterio que el test de 1c-0: getNetBalanceByStayId solo suma SETTLED).
+    // control anti-falso-positivo tenga una deuda real que compensar.
     const charge = await financialRepo.create({
       id: randomUUID(), businessId: BIZ, customerId, reservationId, stayId,
       type: 'CHARGE', amount: 1000, currency: 'ARS', status: 'SETTLED',
@@ -118,7 +117,7 @@ describe.skipIf(skipIfNoDb)('STAY-ADJUSTMENT-PRICE-001 -- handleReservationPrice
 
     // Control anti-falso-positivo: ANTES del ajuste, checkOut() bloquea por
     // el saldo real del CHARGE.
-    await expect(stayService.checkOut({ stayId, businessId: BIZ }))
+    await expect(stayService.checkOut({ stayId, businessId: BIZ, performedBy: 'staff-test' }))
       .rejects.toBeInstanceOf(StayBalanceOwedError);
 
     // El ajuste (NC de -1000, compensa el CHARGE completo) se confirma con
@@ -132,21 +131,28 @@ describe.skipIf(skipIfNoDb)('STAY-ADJUSTMENT-PRICE-001 -- handleReservationPrice
       [reservationId],
     );
     expect(adjRows).toHaveLength(1);
-    // Nivel (a) -- la fila queda PENDING con stay_id ya correcto, aunque
-    // todavía no compense nada (getNetBalanceByStayId exige SETTLED).
+    // La fila queda PENDING con stay_id ya correcto -- eso no cambió.
     expect(adjRows[0]!.stay_id).toBe(stayId);
     expect(adjRows[0]!.status).toBe('PENDING');
 
-    // Nivel (b) -- recién tras liquidar (mismo camino que handleReservationCompleted),
-    // el saldo neteado desbloquea checkOut().
+    // 12/09/2026 (caso 3, docs/investigacion-decisiones-bloqueado-2026-09-12.md)
+    // -- getNetBalanceByStayId() ahora incluye PENDING, no solo SETTLED: el
+    // ADJUSTMENT ya compensa el CHARGE ACÁ, antes de liquidar. Esto YA
+    // desbloquea checkOut() sin pasar por settleByReservationId() -- distinto
+    // del comportamiento viejo, donde el ADJUSTMENT PENDING era invisible y
+    // hacía falta el paso de liquidación para que el saldo se neteara.
+    const balanceBeforeSettle = await financialRepo.getNetBalanceByStayId(stayId);
+    expect(Math.abs(balanceBeforeSettle)).toBeLessThanOrEqual(0.01);
+    const stayBeforeSettle = await stayService.checkOut({ stayId, businessId: BIZ, performedBy: 'staff-test' });
+    expect(stayBeforeSettle.status).toBe('CHECKED_OUT');
+
+    // Liquidar después no debería cambiar nada del lado del saldo -- prueba
+    // que settleByReservationId() sigue funcionando (el camino real de
+    // reservation.completed lo sigue llamando), no que sea lo que desbloquea.
     const settled = await financialRepo.settleByReservationId(reservationId);
     expect(settled).toBe(1); // solo el ADJUSTMENT estaba PENDING (el CHARGE ya era SETTLED)
-
-    const balance = await financialRepo.getNetBalanceByStayId(stayId);
-    expect(Math.abs(balance)).toBeLessThanOrEqual(0.01);
-
-    const stay = await stayService.checkOut({ stayId, businessId: BIZ });
-    expect(stay.status).toBe('CHECKED_OUT');
+    const balanceAfterSettle = await financialRepo.getNetBalanceByStayId(stayId);
+    expect(Math.abs(balanceAfterSettle)).toBeLessThanOrEqual(0.01);
   }, 30_000);
 
   it('ajuste confirmado DESPUÉS del check-in (monto POSITIVO -- cargo extra): el ADJUSTMENT hereda stayId, y el saldo real bloquea checkOut() (antes: quedaba invisible, checkOut() dejaba salir al huésped con deuda)', async () => {
@@ -161,23 +167,30 @@ describe.skipIf(skipIfNoDb)('STAY-ADJUSTMENT-PRICE-001 -- handleReservationPrice
       priceAdjustedEvent(reservationId, customerId, 500, 2),
     );
 
-    const { rows: adjRows } = await db.query<{ stay_id: string | null }>(
-      `SELECT stay_id FROM financial_transactions WHERE reservation_id = $1 AND type = 'ADJUSTMENT'`,
+    const { rows: adjRows } = await db.query<{ stay_id: string | null; status: string }>(
+      `SELECT stay_id, status FROM financial_transactions WHERE reservation_id = $1 AND type = 'ADJUSTMENT'`,
       [reservationId],
     );
     expect(adjRows[0]!.stay_id).toBe(stayId);
+    expect(adjRows[0]!.status).toBe('PENDING');
 
+    // 12/09/2026 (caso 3) -- el saldo ya bloquea ACÁ, sin liquidar: el
+    // ADJUSTMENT PENDING ya cuenta. Antes del fix (status filtrado a
+    // SETTLED) este balance daba 0 hasta el settle; antes del fix de
+    // stay_id (11/09/2026) daba 0 siempre, checkOut() dejaba salir al
+    // huésped con la deuda del ajuste sin ver.
+    const balancePending = await financialRepo.getNetBalanceByStayId(stayId);
+    expect(balancePending).toBe(500);
+    await expect(stayService.checkOut({ stayId, businessId: BIZ, performedBy: 'staff-test' }))
+      .rejects.toBeInstanceOf(StayBalanceOwedError);
+
+    // Liquidar (camino real: reservation.completed) no cambia el resultado --
+    // el saldo sigue bloqueando, ahora con la fila SETTLED.
     const settled = await financialRepo.settleByReservationId(reservationId);
     expect(settled).toBe(1);
-
-    const balance = await financialRepo.getNetBalanceByStayId(stayId);
-    expect(balance).toBe(500);
-
-    // El saldo real ahora SÍ bloquea el check-out -- antes del fix, con
-    // stay_id NULL, este balance hubiera dado 0 (el ADJUSTMENT nunca
-    // hubiera contado) y checkOut() habría dejado salir al huésped con la
-    // deuda del ajuste sin ver.
-    await expect(stayService.checkOut({ stayId, businessId: BIZ }))
+    const balanceSettled = await financialRepo.getNetBalanceByStayId(stayId);
+    expect(balanceSettled).toBe(500);
+    await expect(stayService.checkOut({ stayId, businessId: BIZ, performedBy: 'staff-test' }))
       .rejects.toBeInstanceOf(StayBalanceOwedError);
   }, 30_000);
 

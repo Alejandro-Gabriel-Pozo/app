@@ -21,10 +21,20 @@
  * - checkIn(): adopta bajo `stay_id` los CHARGE que ya existían para la
  *   reserva (se crean en `reservation.confirmed`, antes de que la Stay
  *   exista) — ver `FinancialTransactionRepository.linkStayToReservationCharges`.
- * - checkOut(): bloquea si `getNetBalanceByStayId(stayId) > 0`. La única
- *   forma de saldar sin cobrar en el momento es
- *   `AccountsReceivableService.transferStayBalanceToReceivable` (rol
- *   MANAGEMENT), que deja el folio en $0 antes de reintentar el check-out.
+ * - checkOut(): bloquea si `getNetBalanceByStayId(stayId) > 0` (incluye
+ *   CHARGE/ADJUSTMENT en `PENDING`, no solo `SETTLED` — fix 12/09/2026,
+ *   antes el guard casi nunca veía el ítem de ingreso principal de la
+ *   estadía). Dos formas de seguir con saldo pendiente, sin necesidad de
+ *   cobrar en el momento:
+ *   1. `AccountsReceivableService.transferStayBalanceToReceivable` (rol
+ *      MANAGEMENT) — transfiere el saldo a cuenta corriente de una
+ *      empresa cliente, deja el folio en $0 antes de reintentar el
+ *      check-out.
+ *   2. `overridePendingBalance` (rol MANAGEMENT, 12/09/2026) — warn-and-
+ *      override: el check-out procede igual, sin transferir nada, con
+ *      rastro en `stays.balance_override_by/_at/balance_at_override`
+ *      (A6.5). Para el caso "el huésped paga en efectivo recién al
+ *      salir, pero el encargado ya cierra la habitación".
  */
 
 import { randomUUID } from 'node:crypto';
@@ -84,7 +94,7 @@ export class StayBalanceOwedError extends DomainError {
   constructor(stayId: string, balance: number) {
     super(
       `No se puede hacer check-out: la estadía ${stayId} tiene un saldo pendiente de ${balance}. ` +
-      `Cobrá el saldo o transferilo a cuenta por cobrar antes de reintentar.`,
+      `Cobrá el saldo, transferilo a cuenta por cobrar, o un encargado puede forzar el check-out igual.`,
       'STAY_BALANCE_OWED',
     );
   }
@@ -115,9 +125,18 @@ export interface StayFolio {
 export interface CheckOutInput {
   stayId: string;
   businessId: string;
+  /** userId de quien hace el check-out — necesario para el rastro del override (A6.5), igual que assignedBy en check-in. */
+  performedBy: string;
   notes?: string;
   /** Turno para la tarea de housekeeping post-checkout. Default: 'MORNING' del día siguiente. */
   nextCleaningShift?: string;
+  /**
+   * MANAGEMENT confirma el check-out pese a saldo pendiente (12/09/2026,
+   * caso 3 de docs/investigacion-decisiones-bloqueado-2026-09-12.md). La
+   * autorización real se valida en la ruta ANTES de llegar acá (A6.6) —
+   * este flag solo dice "ya se autorizó, procedé".
+   */
+  overridePendingBalance?: boolean;
 }
 
 export interface RequestScheduleChangeInput {
@@ -229,11 +248,15 @@ export class StayService {
     const stay = await this.getStayOrThrow(input.stayId, input.businessId);
 
     const balance = await this.financialRepository.getNetBalanceByStayId(stay.id);
+    let balanceOverride: { by: string; balance: number } | undefined;
     if (balance > 0) {
-      throw new StayBalanceOwedError(stay.id, balance);
+      if (!input.overridePendingBalance) {
+        throw new StayBalanceOwedError(stay.id, balance);
+      }
+      balanceOverride = { by: input.performedBy, balance };
     }
 
-    stay.checkOut(input.notes);
+    stay.checkOut(input.notes, balanceOverride);
     await this.stayRepository.update(stay);
 
     const businessProfile = await this.businessProfileRepository.get();

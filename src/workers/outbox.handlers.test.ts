@@ -401,6 +401,7 @@ function makeStay(id: string, status: StayStatus = 'CHECKED_IN'): Stay {
     checkedInAt: now, checkedOutAt: status === 'CHECKED_OUT' ? now : null,
     noShowAt: status === 'NO_SHOW' ? now : null, notes: null,
     housekeepingOverrideBy: null, housekeepingOverrideAt: null, housekeepingStatusAtOverride: null,
+    balanceOverrideBy: null, balanceOverrideAt: null, balanceAtOverride: null,
     createdAt: now, updatedAt: now,
   });
 }

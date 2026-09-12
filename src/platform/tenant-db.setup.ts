@@ -416,7 +416,11 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // esto falla" (Odoo `first_failure_date`) + backoff real por evento en
 // `getPending()` (esto último recién en el commit B de ese diseño, no
 // acá -- este bump acompaña las columnas, no el cambio de query).
-export const CURRENT_SCHEMA_VERSION = 48;
+// v49 (12/09/2026): checkOut() pasa a warn-and-override,
+// docs/investigacion-decisiones-bloqueado-2026-09-12.md caso 3.
+// `stays.balance_override_by`/`balance_override_at`/`balance_at_override`
+// nuevos (A6.5 -- mismo patrón que housekeeping_override_* de v41).
+export const CURRENT_SCHEMA_VERSION = 49;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

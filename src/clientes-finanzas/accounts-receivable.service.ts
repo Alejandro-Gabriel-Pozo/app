@@ -112,6 +112,26 @@ export class AccountsReceivableService {
     private readonly invoiceRepo: Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'resolveInvoiceLinkage'>,
   ) {}
 
+  /**
+   * Riesgo de reconciliación -- residuo Q2 del caso 3, SIN respuesta del
+   * dueño todavía (12/09/2026, docs/investigacion-decisiones-bloqueado-2026-09-12.md,
+   * ítem abierto en docs/pendientes-2026-09-12.md, `requiere decisión del
+   * dueño`): `getNetBalanceByStayId()` ahora incluye `PENDING`, así que esta
+   * transferencia puede mover un saldo que todavía no es final (ej. un
+   * `ADJUSTMENT` de precio que recién liquida en `reservation.completed`).
+   * Si después de transferir algo ajusta el saldo de la estadía hacia
+   * abajo (o la reserva se cancela), el folio del huésped puede quedar
+   * negativo mientras la empresa ya recibió el CHARGE completo, `SETTLED`,
+   * por el monto viejo. Antes del fix esto NO podía pasar con montos
+   * `PENDING` (la transferencia los ignoraba igual que `checkOut()`) --
+   * es un riesgo real que el fix introduce, no una regresión de algo que
+   * ya funcionaba. NO bloquea esta transferencia mientras se espera la
+   * decisión -- el fix de checkOut() (Q1, sí decidido) es inseparable de
+   * este cambio de comportamiento porque comparten la misma función.
+   * Mecanismo de reconciliación (detectar el desvío, ajustar la AR o la
+   * factura ya emitida a la empresa) es bloque aparte, y depende de esa
+   * decisión, no tomada todavía.
+   */
   async transferStayBalanceToReceivable(input: TransferStayBalanceInput): Promise<AccountReceivable> {
     const stay = await this.stayRepo.findById(input.stayId, input.businessId);
     if (!stay) throw new StayNotFoundError(input.stayId);

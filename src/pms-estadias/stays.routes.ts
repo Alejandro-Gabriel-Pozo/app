@@ -146,11 +146,25 @@ export function createStaysRouter(
     async (req, res, next) => {
       try {
         const body = CheckOutSchema.parse(req.body);
+        // A6.6 — el rol condiciona la transición en el SERVIDOR, no alcanza
+        // con ocultar el botón en el front. overridePendingBalance=true pide
+        // saltear el guard de saldo (12/09/2026) -- rechazo explícito si
+        // quien lo pide no es MANAGEMENT, mismo criterio que
+        // overrideHousekeeping en check-in.
+        if (body.overridePendingBalance && !(req.user!.permissionGroups ?? []).includes(Roles.MANAGEMENT)) {
+          res.status(403).json({
+            code: 'FORBIDDEN',
+            message: 'Solo un encargado puede forzar el check-out con saldo pendiente.',
+          });
+          return;
+        }
         const stay = await service.checkOut({
           stayId:     String(req.params['id']),
           businessId: req.user!.businessId as string,
+          performedBy: req.user!.id,
           ...(body.notes !== undefined && { notes: body.notes }),
           ...(body.nextCleaningShift !== undefined && { nextCleaningShift: body.nextCleaningShift }),
+          ...(body.overridePendingBalance !== undefined && { overridePendingBalance: body.overridePendingBalance }),
         });
         res.json(stay.toJSON());
       } catch (err) { next(err); }

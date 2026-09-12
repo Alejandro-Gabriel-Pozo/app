@@ -234,7 +234,7 @@ disponibilidad, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.m
 - GET `/resource/:resourceId` — `STAFF`
 - GET `/:id` — `FRONT_DESK`
 - POST `/check-in` — `FRONT_DESK` (`overrideHousekeeping: true` exige además `MANAGEMENT`, chequeo inline en el handler — 25/08/2026, gating de check-in por limpieza)
-- POST `/:id/check-out` — `FRONT_DESK`
+- POST `/:id/check-out` — `FRONT_DESK` (`overridePendingBalance: true` exige además `MANAGEMENT`, chequeo inline en el handler — 12/09/2026, caso 3 de `docs/investigacion-decisiones-bloqueado-2026-09-12.md`)
 - POST `/:id/no-show` — `FRONT_DESK`
 - GET `/:id/folio` — `FRONT_DESK`
 - POST `/:id/transfer-to-receivable` — `MANAGEMENT`

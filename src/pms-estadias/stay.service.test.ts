@@ -185,7 +185,7 @@ describe('StayService — ledger (A1, paso 3)', () => {
     financialRepo.netBalanceByStay = 15000;
 
     await expect(
-      service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID }),
+      service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID, performedBy: 'user-1' }),
     ).rejects.toThrow(StayBalanceOwedError);
 
     // No debe haber mutado el estado de la Stay si el checkout se bloqueó.
@@ -202,9 +202,41 @@ describe('StayService — ledger (A1, paso 3)', () => {
     });
     financialRepo.netBalanceByStay = 0;
 
-    const checkedOut = await service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID });
+    const checkedOut = await service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID, performedBy: 'user-1' });
 
     expect(checkedOut.status).toBe('CHECKED_OUT');
+    // Sin override -- los 3 campos quedan null, no solo "no se usaron".
+    expect(checkedOut.balanceOverrideBy).toBeNull();
+    expect(checkedOut.balanceOverrideAt).toBeNull();
+    expect(checkedOut.balanceAtOverride).toBeNull();
+  });
+
+  // 12/09/2026 (caso 3, docs/investigacion-decisiones-bloqueado-2026-09-12.md)
+  // -- warn-and-override: MANAGEMENT puede forzar el check-out con saldo
+  // pendiente. A6.5: deja rastro de quién/cuándo/cuánto, mismo criterio que
+  // overrideHousekeeping en check-in.
+  it('checkOut() con overridePendingBalance procede pese al saldo y deja rastro (A6.5)', async () => {
+    const stay = await service.checkIn({
+      reservationId: TEST_RESERVATION_ID,
+      resourceId: TEST_RESOURCE_ID,
+      businessId: TEST_BUSINESS_ID,
+      assignedBy: 'user-1',
+    });
+    financialRepo.netBalanceByStay = 15000;
+    const before = new Date();
+
+    const checkedOut = await service.checkOut({
+      stayId: stay.id,
+      businessId: TEST_BUSINESS_ID,
+      performedBy: 'manager-1',
+      overridePendingBalance: true,
+    });
+
+    expect(checkedOut.status).toBe('CHECKED_OUT');
+    expect(checkedOut.balanceOverrideBy).toBe('manager-1');
+    expect(checkedOut.balanceAtOverride).toBe(15000);
+    expect(checkedOut.balanceOverrideAt).not.toBeNull();
+    expect(checkedOut.balanceOverrideAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
   });
 
   it('checkIn() sigue rechazando un recurso ya ocupado (comportamiento previo intacto)', async () => {
@@ -657,7 +689,7 @@ describe('StayService — horario de check-in/check-out', () => {
       approvedBy: 'staff-1',
     });
 
-    await service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID });
+    await service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID, performedBy: 'user-1' });
 
     const tasks = await housekeepingRepo.findByResource(TEST_RESOURCE_ID, TEST_BUSINESS_ID);
     expect(tasks).toHaveLength(1);
@@ -672,7 +704,7 @@ describe('StayService — horario de check-in/check-out', () => {
       assignedBy: 'user-1',
     });
 
-    await service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID });
+    await service.checkOut({ stayId: stay.id, businessId: TEST_BUSINESS_ID, performedBy: 'user-1' });
 
     const tasks = await housekeepingRepo.findByResource(TEST_RESOURCE_ID, TEST_BUSINESS_ID);
     expect(tasks).toHaveLength(1);

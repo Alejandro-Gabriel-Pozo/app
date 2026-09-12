@@ -880,7 +880,16 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rowCount ?? 0;
   }
 
-  /** Mismo fix y mismo motivo que `getNetBalanceByCustomerId` — ver su docblock. */
+  /**
+   * Mismo fix de signo de REFUND que `getNetBalanceByCustomerId` — ver su
+   * docblock. Filtro de status corregido 12/09/2026 (caso 3 de
+   * `docs/investigacion-decisiones-bloqueado-2026-09-12.md`): antes exigía
+   * `status = 'SETTLED'` a secas, y el CHARGE de saldo / los ADJUSTMENT de
+   * precio nacen `PENDING` (liquidan recién en `reservation.completed`,
+   * ver `outbox.handlers.ts`) — el guard de `checkOut()` casi nunca veía el
+   * ítem de ingreso principal de la estadía. `PAYMENT`/`REFUND` siempre
+   * nacen `SETTLED` directo, así que incluir `PENDING` no les afecta.
+   */
   async getNetBalanceByStayId(stayId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
       `SELECT
@@ -896,7 +905,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
          ) AS net
        FROM financial_transactions
        WHERE stay_id = $1
-         AND status = 'SETTLED'`,
+         AND status IN ('PENDING', 'SETTLED')`,
       [stayId],
     );
     return parseFloat(result.rows[0]?.net ?? '0');

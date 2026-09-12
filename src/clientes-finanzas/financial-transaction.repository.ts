@@ -419,7 +419,9 @@ export interface FinancialTransactionRepository {
    * signo de REFUND que getNetBalanceByCustomerId, pero acotado a un
    * `stay_id`). Es lo que StayService.checkOut() consulta para decidir si
    * hay saldo pendiente — el balance del cliente completo mezclaría
-   * estadías/órdenes históricas ya saldadas con la actual.
+   * estadías/órdenes históricas ya saldadas con la actual. Incluye
+   * CHARGE/ADJUSTMENT en `PENDING`, no solo `SETTLED` (fix 12/09/2026 —
+   * ver docblock de la implementación).
    */
   getNetBalanceByStayId(stayId: string): Promise<number>;
 

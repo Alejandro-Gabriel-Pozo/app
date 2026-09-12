@@ -215,12 +215,46 @@ describe('stays.routes', () => {
   describe('POST /api/stays/:id/check-out', () => {
     it('hace check-out con body válido', async () => {
       const handler = getHandler(router, 'post', '/:id/check-out');
-      const req = { user: { businessId: BUSINESS_ID }, params: { id: 'stay-1' }, body: { notes: 'todo ok' } } as unknown as Request;
+      const req = { user: { businessId: BUSINESS_ID, id: 'user-1' }, params: { id: 'stay-1' }, body: { notes: 'todo ok' } } as unknown as Request;
       const res = fakeRes();
 
       await handler(req, res, throwingNext);
 
-      expect(service.checkOut).toHaveBeenCalledWith(expect.objectContaining({ stayId: 'stay-1', businessId: BUSINESS_ID, notes: 'todo ok' }));
+      expect(service.checkOut).toHaveBeenCalledWith(expect.objectContaining({ stayId: 'stay-1', businessId: BUSINESS_ID, performedBy: 'user-1', notes: 'todo ok' }));
+      expect(res.json).toHaveBeenCalledWith(makeStay().toJSON());
+    });
+
+    // 12/09/2026 (caso 3, docs/investigacion-decisiones-bloqueado-2026-09-12.md)
+    // -- warn-and-override de saldo pendiente: overridePendingBalance=true
+    // exige MANAGEMENT (A6.6, chequeo en el SERVIDOR). Mismo patrón que
+    // overrideHousekeeping en check-in.
+    it('rechaza con 403 overridePendingBalance=true si el usuario no tiene MANAGEMENT', async () => {
+      const handler = getHandler(router, 'post', '/:id/check-out');
+      const req = {
+        user: { businessId: BUSINESS_ID, id: 'user-1', permissionGroups: ['FRONT_DESK'] },
+        params: { id: 'stay-1' },
+        body: { overridePendingBalance: true },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, throwingNext);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(service.checkOut).not.toHaveBeenCalled();
+    });
+
+    it('permite overridePendingBalance=true si el usuario tiene MANAGEMENT', async () => {
+      const handler = getHandler(router, 'post', '/:id/check-out');
+      const req = {
+        user: { businessId: BUSINESS_ID, id: 'manager-1', permissionGroups: ['FRONT_DESK', 'MANAGEMENT'] },
+        params: { id: 'stay-1' },
+        body: { overridePendingBalance: true },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, throwingNext);
+
+      expect(service.checkOut).toHaveBeenCalledWith(expect.objectContaining({ performedBy: 'manager-1', overridePendingBalance: true }));
       expect(res.json).toHaveBeenCalledWith(makeStay().toJSON());
     });
   });

@@ -18,6 +18,8 @@ export const CheckInSchema = z.object({
 export const CheckOutSchema = z.object({
   notes: z.string().max(500).optional(),
   nextCleaningShift: z.enum(['MORNING', 'AFTERNOON', 'NIGHT']).optional(),
+  /** Warn-and-override de saldo pendiente (12/09/2026) — la ruta valida que quien lo pide sea MANAGEMENT antes de reenviarlo al servicio. */
+  overridePendingBalance: z.boolean().optional(),
 });
 
 export const TransferToReceivableSchema = z.object({

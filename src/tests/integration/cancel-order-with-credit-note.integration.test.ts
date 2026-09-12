@@ -565,8 +565,11 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
         items: [{ itemType: 'PRODUCT', productId: PROD, quantity: 1 }],
       });
       await orderService.confirmOrder(order.id, ACTOR);
-      // SETTLED, no PENDING: `getNetBalanceByStayId` (`financial_transactions.stay_id`
-      // + `status`) solo suma filas SETTLED -- una orden CONFIRMED (no
+      // Sembrado SETTLED (no PENDING) -- `getNetBalanceByStayId` incluye los
+      // dos estados desde el 12/09/2026 (caso 3,
+      // docs/investigacion-decisiones-bloqueado-2026-09-12.md), así que esto
+      // ya no es lo que hace falta para que el CHARGE cuente. Se sigue
+      // sembrando SETTLED por otro motivo, real: una orden CONFIRMED (no
       // COMPLETED, requisito del guard de `cancelOrderWithCreditNote`) deja
       // su CHARGE en PENDING hasta `handleOrderCompleted`, así que en el
       // camino real el CHARGE pasa a SETTLED recién en la MISMA tx2 del
@@ -587,7 +590,7 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       // Control anti-falso-positivo: ANTES del escape, checkOut() bloquea por
       // el saldo real del CHARGE -- sin esto, un fixture con saldo 0 por
       // cualquier otro motivo daría verde sin probar nada.
-      await expect(stayService.checkOut({ stayId, businessId: BIZ }))
+      await expect(stayService.checkOut({ stayId, businessId: BIZ, performedBy: 'staff-test' }))
         .rejects.toBeInstanceOf(StayBalanceOwedError);
 
       const res = await sut.cancelOrderWithCreditNote(order.id, auth(order.id));
@@ -606,7 +609,7 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       expect(Math.abs(balance)).toBeLessThanOrEqual(0.01);
 
       // checkOut() ahora resuelve, y la Stay queda CHECKED_OUT.
-      const stay = await stayService.checkOut({ stayId, businessId: BIZ });
+      const stay = await stayService.checkOut({ stayId, businessId: BIZ, performedBy: 'staff-test' });
       expect(stay.status).toBe('CHECKED_OUT');
       const { rows: stayRows } = await db.query<{ status: string }>(
         `SELECT status FROM stays WHERE id = $1`, [stayId],

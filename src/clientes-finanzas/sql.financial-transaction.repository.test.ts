@@ -670,7 +670,12 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     // PAYMENT. Un REFUND revierte un PAYMENT (A3.9, criterios-negocio.md
     // -- "todo movimiento tiene contrapartida"), necesita el signo
     // OPUESTO para cancelarlo, no el mismo para duplicarlo.
-    it('calcula CHARGE + ADJUSTMENT + REFUND - PAYMENT, solo SETTLED', async () => {
+    // 12/09/2026 (caso 3, docs/investigacion-decisiones-bloqueado-2026-09-12.md):
+    // antes filtraba solo SETTLED -- el CHARGE de saldo y los ADJUSTMENT de
+    // precio nacen PENDING, así que checkOut() casi nunca veía el ítem de
+    // ingreso principal de la estadía. Ahora incluye PENDING también
+    // (PAYMENT/REFUND siempre nacen SETTLED directo, no les afecta).
+    it('calcula CHARGE + ADJUSTMENT + REFUND - PAYMENT, PENDING y SETTLED', async () => {
       await repo.getNetBalanceByStayId('stay-1');
 
       const mockQuery = vi.mocked(mockSqlClient.query);
@@ -679,7 +684,7 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       expect(sql).toContain("WHEN 'ADJUSTMENT' THEN  amount");
       expect(sql).toContain("WHEN 'PAYMENT'    THEN -amount");
       expect(sql).toContain("WHEN 'REFUND'     THEN  amount");
-      expect(sql).toContain("status = 'SETTLED'");
+      expect(sql).toContain("status IN ('PENDING', 'SETTLED')");
       expect(sql).toContain('stay_id = $1');
       expect(params).toEqual(['stay-1']);
     });

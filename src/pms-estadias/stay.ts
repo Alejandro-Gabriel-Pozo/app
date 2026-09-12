@@ -61,6 +61,17 @@ export interface StayProps {
   housekeepingOverrideBy: string | null;
   housekeepingOverrideAt: Date | null;
   housekeepingStatusAtOverride: HousekeepingStatus | null;
+  /**
+   * Warn-and-override de checkOut() con saldo pendiente (12/09/2026,
+   * caso 3 de docs/investigacion-decisiones-bloqueado-2026-09-12.md):
+   * MANAGEMENT puede forzar el check-out pese a un saldo > 0. Mismo
+   * criterio A6.5 que housekeepingOverride* — los tres `null` si el
+   * check-out se hizo con saldo en $0 o negativo, sin necesidad de forzar.
+   */
+  balanceOverrideBy: string | null;
+  balanceOverrideAt: Date | null;
+  /** Saldo que había al momento del override — no el saldo actual (que cambia). */
+  balanceAtOverride: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -98,6 +109,9 @@ export class Stay {
       housekeepingOverrideBy: input.housekeepingOverride?.by ?? null,
       housekeepingOverrideAt: input.housekeepingOverride ? now : null,
       housekeepingStatusAtOverride: input.housekeepingOverride?.taskStatus ?? null,
+      balanceOverrideBy: null,
+      balanceOverrideAt: null,
+      balanceAtOverride: null,
       createdAt: now,
       updatedAt: now,
     });
@@ -115,7 +129,13 @@ export class Stay {
   // Comandos de dominio
   // ---------------------------------------------------------------------------
 
-  checkOut(notes?: string): void {
+  /**
+   * `balanceOverride` presente solo cuando MANAGEMENT fuerza el check-out
+   * pese a saldo pendiente — ver StayService.checkOut(). La autorización
+   * real (¿este usuario puede overridear?) se valida en la ruta ANTES de
+   * llegar acá (A6.6); este parámetro solo dice "ya se autorizó, procedé".
+   */
+  checkOut(notes?: string, balanceOverride?: { by: string; balance: number }): void {
     if (this.props.status !== 'CHECKED_IN') {
       throw new InvalidStayTransitionError(
         `No se puede hacer check-out desde el estado ${this.props.status}.`,
@@ -124,6 +144,11 @@ export class Stay {
     this.props.status = 'CHECKED_OUT';
     this.props.checkedOutAt = new Date();
     if (notes) this.props.notes = notes;
+    if (balanceOverride) {
+      this.props.balanceOverrideBy = balanceOverride.by;
+      this.props.balanceOverrideAt = new Date();
+      this.props.balanceAtOverride = balanceOverride.balance;
+    }
     this.props.updatedAt = new Date();
   }
 
@@ -161,6 +186,9 @@ export class Stay {
   get housekeepingOverrideBy(): string|null           { return this.props.housekeepingOverrideBy; }
   get housekeepingOverrideAt(): Date|null             { return this.props.housekeepingOverrideAt; }
   get housekeepingStatusAtOverride(): HousekeepingStatus|null { return this.props.housekeepingStatusAtOverride; }
+  get balanceOverrideBy(): string|null                { return this.props.balanceOverrideBy; }
+  get balanceOverrideAt(): Date|null                  { return this.props.balanceOverrideAt; }
+  get balanceAtOverride(): number|null                { return this.props.balanceAtOverride; }
   get createdAt(): Date         { return this.props.createdAt; }
   get updatedAt(): Date         { return this.props.updatedAt; }
 

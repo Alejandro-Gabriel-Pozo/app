@@ -3581,3 +3581,29 @@ ALTER TABLE rate_plans ADD CONSTRAINT excl_rate_plans_overlapping_validity
 ALTER TABLE resource_categories ALTER COLUMN is_exclusive DROP DEFAULT;
 ALTER TABLE bookable_services   ALTER COLUMN booking_mode DROP DEFAULT;
 
+-- ===========================================================================
+-- BLOQUE 21 — WARN-AND-OVERRIDE DE checkOut() CON SALDO PENDIENTE (12/09/2026)
+-- docs/investigacion-decisiones-bloqueado-2026-09-12.md, caso 3
+-- ===========================================================================
+-- getNetBalanceByStayId() filtraba solo status='SETTLED' -- el CHARGE de
+-- saldo y los ADJUSTMENT de precio nacen PENDING (liquidan recién en
+-- reservation.completed), así que el guard de checkOut() casi nunca veía
+-- el ítem de ingreso principal de la estadía. Corregido en
+-- sql.financial-transaction.repository.ts para incluir PENDING también.
+--
+-- Con el cálculo ya correcto, checkOut() pasa a "advertir y permitir con
+-- permiso" (decisión del dueño, grounding Cloudbeds/Oracle OPERA — ningún
+-- sistema de referencia trata un cargo ya posteado como "no cuenta", y el
+-- rango real va de advertir-y-permitir a bloquear-salvo-función-explícita,
+-- nunca bloqueo silencioso sin escape): MANAGEMENT puede forzar el
+-- check-out con saldo pendiente. Mismo patrón que
+-- housekeeping_override_by/_at (BLOQUE 13) -- A6.5, rastro de quién/cuándo/
+-- desde qué estado. `balance_at_override` es DECIMAL, no TIMESTAMPTZ ni
+-- VARCHAR: es el saldo (en la moneda del negocio) que había al momento del
+-- override, para poder auditar cuánto se dejó pasar sin cobrar.
+--
+-- Sin FK a `users` -- mismo criterio que housekeeping_override_by.
+ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_override_by VARCHAR(255);
+ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_override_at TIMESTAMPTZ;
+ALTER TABLE stays ADD COLUMN IF NOT EXISTS balance_at_override DECIMAL(12, 2);
+
