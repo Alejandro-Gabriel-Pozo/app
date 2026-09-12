@@ -22,6 +22,32 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ## 12/09/2026
 
+- **Caso 3 — `StayService.checkOut()` cuenta saldo `PENDING` y
+  MANAGEMENT puede forzarlo con rastro.** Origen: hallazgo adyacente del
+  gate de 1c-0, registrado sin bloque asignado en
+  `pendientes-2026-09-12.md`; investigado y con grounding en
+  `docs/investigacion-decisiones-bloqueado-2026-09-12.md`, caso 3.
+  `getNetBalanceByStayId()` filtraba `status = 'SETTLED'` a secas — el
+  CHARGE de saldo y los ADJUSTMENT de precio nacen `PENDING` y liquidan
+  recién en `reservation.completed`, que el check-out no dispara: el
+  guard casi nunca veía el ítem de ingreso principal de la estadía.
+  Corregido a `status IN ('PENDING', 'SETTLED')`. Con el cálculo ya
+  correcto, `checkOut()` pasa a advertir-y-permitir-con-permiso
+  (grounding Cloudbeds/Oracle OPERA, decisión del dueño): MANAGEMENT
+  puede forzar el check-out con `overridePendingBalance`, con rastro en
+  `stays.balance_override_by`/`_at`/`balance_at_override` (A6.5, mismo
+  patrón que `housekeepingOverride*`). Schema v48→v49. **Commit
+  `ad28d2e`** (app-main, backend) + **commit `4cb5a04`**
+  (appfrontend-main, contraparte de UI — sin la cual el fix de backend
+  solo habría dejado el botón de check-out deshabilitado para casi toda
+  estadía activa, regresión detectada por el gate en la primera pasada).
+  2 residuos NO cerrados con esto, quedan abiertos por separado: la
+  reconciliación de City Ledger con montos `PENDING` (Q2,
+  `pendientes-2026-09-12.md`, `🔴 Bloqueado`, `requiere decisión del
+  dueño`) y la corrida real de los 2 integration tests reescritos +
+  verificación de UI con datos reales (`pendientes-2026-09-12.md`,
+  `🔍 Verificaciones pendientes`).
+
 - **Los 4 "bugs activos" de la auditoría transversal del 12/09** — origen:
   §1 y §10 de `docs/auditoria-transversal-navegacion-autogestion-circuitos-2026-09-12.md`.
   Implementados en paralelo (4 agentes, uno por bug, `isolation: "worktree"`

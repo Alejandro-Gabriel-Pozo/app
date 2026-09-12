@@ -50,6 +50,17 @@ cuando se pushea.
   (`6f1289a`+`02629b7`) está deployado y verificado en producción, pero el
   ahorro de compute en Neon que motivó el bloque sigue siendo inferido, no
   medido — falta correr 24-48h post-deploy y comparar actividad de compute.
+- **Caso 3 — 2 integration tests reescritos sin correr contra Postgres
+  real.** `reservation-price-adjustment-stay.integration.test.ts` y
+  `cancel-order-with-credit-note.integration.test.ts` se reescribieron
+  para afirmar el comportamiento nuevo de `getNetBalanceByStayId()`
+  (incluye `PENDING`), pero `describe.skipIf(skipIfNoDb)` los saltea en
+  este entorno (sin Postgres real disponible) — nunca corrieron de
+  verdad. Acción puntual: correr `npm run test:integration` con
+  `TEST_DATABASE_URL` configurada. Commit `ad28d2e` (app-main). También
+  sin verificar: abrir `dashboard/estadias/[id]/page.tsx` con una
+  estadía real con saldo pendiente y confirmar el flujo de
+  `ConfirmDialog` de MANAGEMENT — commit `4cb5a04` (appfrontend-main).
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
@@ -1223,6 +1234,26 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 > `INVOICE-CHARGES-GUARD-INDIVIDUAL-01`, ya cubierto por la
 > reclasificación del ítem 6).
 
+- **Caso 3, residuo Q2 — reconciliación de City Ledger con montos
+  `PENDING` transferidos (12/09/2026, `requiere decisión del dueño`).**
+  Ancla: `accounts-receivable.service.ts::transferStayBalanceToReceivable`
+  (docblock del método, commit `ad28d2e`). Desde el fix de
+  `getNetBalanceByStayId()` (caso 3,
+  `docs/investigacion-decisiones-bloqueado-2026-09-12.md`),
+  `transferStayBalanceToReceivable` puede transferir un saldo que
+  todavía no es final (un `ADJUSTMENT` `PENDING` que recién liquida en
+  `reservation.completed`). Si después de transferir algo ajusta el
+  saldo de la estadía hacia abajo (o la reserva se cancela), el folio
+  del huésped puede quedar negativo mientras la empresa ya recibió el
+  `CHARGE` completo `SETTLED` por el monto viejo. **Pregunta para el
+  dueño:** ¿es aceptable este riesgo dado el volumen real de uso de
+  City Ledger, o hace falta un mecanismo de reconciliación (detectar el
+  desvío, ajustar la AR o la factura ya emitida a la empresa) antes de
+  que esto se use en producción? No bloquea la transferencia mientras
+  se espera la respuesta — el fix de `checkOut()` (Q1, sí decidido) es
+  inseparable de este cambio de comportamiento porque comparten la
+  misma función.
+
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,
   `FEATURE VERIFIED` por el gate. Ver el bloque de arriba en este mismo
@@ -1614,19 +1645,12 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (162 archivos), 291/292 integration -- mismo 1 rojo preexistente de
   1c-0/1c-i, no relacionado.
 
-  **Hallazgo adyacente del mismo gate, NO resuelto, sin bloque
-  asignado todavía:** `StayService.checkOut()` (`stay.service.ts:231`,
-  guard de saldo vía `getNetBalanceByStayId`,
-  `sql.financial-transaction.repository.ts:900-901`) solo cuenta
-  transacciones `SETTLED` -- el CHARGE de saldo y cualquier ADJUSTMENT
-  de una reserva quedan `PENDING` hasta `reservation.completed`
-  (`settleByReservationId`, disparado solo desde
-  `completeReservation()` → `POST` de `reservations.routes.ts`), que
-  **`checkOut()` no dispara**. En el orden habitual (check-out primero,
-  completar después), el guard de saldo del check-out ignora esas
-  filas hoy, con o sin este fix. Ancla verificada, sin decisión de
-  negocio tomada sobre si eso es el comportamiento correcto o un bug
-  aparte -- requiere su propio gate.
+  **Movido a `docs/resuelto.md`** — el hallazgo "`StayService.checkOut()`
+  solo cuenta `SETTLED`" se resolvió el 12/09/2026 (caso 3,
+  `ad28d2e`). Dos residuos de ese cierre quedan abiertos por separado:
+  el de reconciliación de AR más abajo en `### 🔴 Bloqueado en una
+  decisión del dueño`, y la verificación de los 2 integration tests en
+  `## 🔍 Verificaciones pendientes`, al principio de este archivo.
   - **`financial-transaction.repository.ts:347-352` (comentario
     ORDER-15) -- premisa caduca, hallazgo del gate de 1c-0.** El
     comentario dice *"un ADJUSTMENT con `order_id` -- que hoy no
