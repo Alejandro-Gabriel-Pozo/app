@@ -17,7 +17,7 @@
  *                             (se hashea en runtime; no se guarda en disco)
  */
 
-import { randomUUID, pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
+import { pbkdf2, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { signPlatformToken } from './platform.auth.middleware.js';
 import { PlatformRole } from '../types/enums.js';
@@ -113,7 +113,24 @@ export class PlatformAuthService {
       throw err;
     }
 
-    const userId = randomUUID();
+    // PLATFORM-AUDIT-ACTOR-STABLE-001 (12/09/2026) — `sub` = el email (ya
+    // normalizado a lowercase en getBootstrapCredentials).
+    // Antes era `randomUUID()`: un identificador NUEVO en cada login de la
+    // MISMA persona. Ese `sub` se expone como `req.platformUser.id` y se
+    // graba como `changed_by` en `platform_audit_log` (ver
+    // platform.routes.ts) — con un UUID aleatorio por login, ninguna fila
+    // de auditoría de un mismo superadmin podía reconstruirse como "la
+    // misma persona", ni siquiera con un solo operador como hoy. El email
+    // es estable entre logins y es el único identificador de persona que
+    // existe en este modelo de un solo operador (PLATFORM_ADMIN_EMAIL) —
+    // no hay una tabla de "platform users" con id propio. `changed_by` es
+    // VARCHAR(255) sin CHECK de formato UUID (src/db/platform.schema.sql),
+    // así que un string de email cabe sin transformación.
+    //
+    // Esto NO resuelve el modelo de múltiples superadmins (decisión de
+    // negocio aparte, no tomada) — solo hace estable el identificador de
+    // la única credencial que existe hoy.
+    const userId = creds.email;
 
     // Antes esto firmaba con getJwtSecret() (JWT_SECRET, el de empleados) y
     // un payload {platform_role} — authenticatePlatform() verifica contra
