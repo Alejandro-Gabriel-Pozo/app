@@ -319,6 +319,104 @@ describe.skipIf(skipIfNoDb)('O4 — OutboxWorker y SqlDomainEventRepository cont
   });
 
   // ===========================================================================
+  // SECCIÓN 1-C — purgeResolved() (Caso 1, 12/09/2026,
+  // docs/investigacion-decisiones-bloqueado-2026-09-12.md). "Resuelto" =
+  // dispatched_at IS NOT NULL OR failed_at IS NOT NULL (A7.6, decisión ya
+  // tomada 10/09/2026, docs/diseno-outbox-backoff-2026-09-10.md) — un
+  // PENDING nunca se purga sin importar su antigüedad.
+  // ===========================================================================
+
+  describe('purgeResolved — Caso 1, purga del outbox', () => {
+    /** Backdatea occurred_at directo por SQL — mismo criterio que
+     *  forzarBackoffVencido(): el test fabrica antigüedad real, no depende
+     *  de una abstracción de reloj que este repositorio no tiene. */
+    async function backdatearOccurredAt(id: number, diasAtras: number): Promise<void> {
+      await db.query(
+        `UPDATE domain_events SET occurred_at = NOW() - ($2 || ' days')::interval WHERE id = $1`,
+        [id, diasAtras],
+      );
+    }
+
+    it('no borra un PENDING viejo -- solo "resueltos" son elegibles, sin importar la antigüedad', async () => {
+      const id = await sembrar('t.a', 'agg-pending-viejo');
+      await backdatearOccurredAt(id, 200);
+
+      const borrados = await eventRepo.purgeResolved(90);
+
+      expect(borrados).toBe(0);
+      expect(await fila(id)).toBeTruthy();
+    });
+
+    it('no borra un resuelto (dispatched) DENTRO de la ventana de retención', async () => {
+      const id = await sembrar('t.a', 'agg-fresco-dispatched');
+      await eventRepo.markDispatched(id);
+      await backdatearOccurredAt(id, 10); // dentro de 90 días
+
+      const borrados = await eventRepo.purgeResolved(90);
+
+      expect(borrados).toBe(0);
+      expect(await fila(id)).toBeTruthy();
+    });
+
+    it('borra un dispatched FUERA de la ventana de retención', async () => {
+      const id = await sembrar('t.a', 'agg-viejo-dispatched');
+      await eventRepo.markDispatched(id);
+      await backdatearOccurredAt(id, 91);
+
+      const borrados = await eventRepo.purgeResolved(90);
+
+      expect(borrados).toBe(1);
+      const { rows } = await db.query('SELECT 1 FROM domain_events WHERE id = $1', [id]);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('borra un dead-letter (failed_at) fuera de la ventana, aunque nunca haya despachado', async () => {
+      const id = await sembrar('t.a', 'agg-viejo-dead-letter');
+      await eventRepo.recordFailure(id, 'ERR', 1); // maxRetries=1 -> dead-letter ya
+      await backdatearOccurredAt(id, 91);
+
+      const borrados = await eventRepo.purgeResolved(90);
+
+      expect(borrados).toBe(1);
+    });
+
+    it('un dead-letter viejo REINTENTADO manualmente ya no es "resuelto" -- no se purga', async () => {
+      const id = await sembrar('t.a', 'agg-reintentado');
+      await eventRepo.recordFailure(id, 'ERR', 1);
+      await backdatearOccurredAt(id, 200); // bien fuera de ventana
+      await eventRepo.retryDeadLettered(id); // failed_at vuelve a NULL -- vuelve a PENDING
+
+      const borrados = await eventRepo.purgeResolved(90);
+
+      expect(borrados).toBe(0); // occurred_at sigue viejo, pero ya no es "resuelto"
+      expect(await fila(id)).toBeTruthy();
+    });
+
+    it('processed_events cae por ON DELETE CASCADE al purgar su domain_event', async () => {
+      const id = await sembrar('t.a', 'agg-con-processed');
+      await eventRepo.markDispatched(id);
+      await backdatearOccurredAt(id, 91);
+      await processedRepo.claim(id, 'algun-handler'); // reclama el casillero -- crea la fila
+
+      await eventRepo.purgeResolved(90);
+
+      const { rows } = await db.query('SELECT 1 FROM processed_events WHERE domain_event_id = $1', [id]);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('caso límite: retentionDays=0 purga hasta lo resuelto HOY, sin tocar lo pendiente', async () => {
+      const dispatchedHoy = await sembrar('t.a', 'agg-dispatched-hoy');
+      await eventRepo.markDispatched(dispatchedHoy);
+      const pendingHoy = await sembrar('t.a', 'agg-pending-hoy');
+
+      const borrados = await eventRepo.purgeResolved(0);
+
+      expect(borrados).toBe(1);
+      expect(await fila(pendingHoy)).toBeTruthy();
+    });
+  });
+
+  // ===========================================================================
   // SECCIÓN 1-B — OUTBOX-BACKOFF-01: backoff real por evento en getPending()
   // (schema v48, 10/09/2026, docs/diseno-outbox-backoff-2026-09-10.md §5/§6).
   // Reemplaza el mutation-testing de una función que no existe (el escalón

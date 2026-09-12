@@ -17,6 +17,7 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
   async countDeadLettered() { return 0; }
   async getDeadLettered() { return []; }
   async retryDeadLettered() {}
+  async purgeResolved() { return 0; }
 }
 
 class InMemoryTransactionManager implements TransactionManager {

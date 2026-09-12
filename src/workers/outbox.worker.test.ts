@@ -69,6 +69,17 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
     // D1-A (07/09/2026): `lastError` se CONSERVA -- no se nulea al reintentar.
   }
 
+  async purgeResolved(retentionDays: number): Promise<number> {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const before = this.events.length;
+    this.events = this.events.filter((e) => {
+      const resuelto = e.dispatchedAt != null || e.failedAt != null;
+      const vencido = (e.occurredAt ?? new Date()) < cutoff;
+      return !(resuelto && vencido);
+    });
+    return before - this.events.length;
+  }
+
   getAll(): DomainEvent[] { return this.events; }
 }
 

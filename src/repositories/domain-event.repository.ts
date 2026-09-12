@@ -113,4 +113,19 @@ export interface DomainEventRepository {
    * el evento vuelve a fallar.
    */
   retryDeadLettered(id: number): Promise<void>;
+
+  /**
+   * Caso 1 (12/09/2026, docs/investigacion-decisiones-bloqueado-2026-09-12.md).
+   * Borra eventos "resueltos" (`dispatched_at IS NOT NULL OR failed_at IS
+   * NOT NULL` — decisión del dueño ya tomada el 10/09/2026, A7.6,
+   * docs/diseno-outbox-backoff-2026-09-10.md) con `occurred_at` más viejo
+   * que `retentionDays`. Un evento reintentado manualmente
+   * (`retryDeadLettered()`) vuelve a `failed_at IS NULL` y sale del filtro
+   * de "resuelto" hasta que despache o vuelva a fallar de nuevo — no hay
+   * ventana en la que un evento activo se purgue por error.
+   * `processed_events` se borra por `ON DELETE CASCADE` (schema.sql,
+   * BLOQUE 7), no hace falta un segundo DELETE.
+   * @returns cantidad de filas borradas.
+   */
+  purgeResolved(retentionDays: number): Promise<number>;
 }

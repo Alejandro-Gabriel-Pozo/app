@@ -100,6 +100,7 @@ class InMemoryDomainEventRepository implements DomainEventRepository {
   async countDeadLettered(): Promise<number> { return 0; }
   async getDeadLettered(): Promise<DomainEvent[]> { return []; }
   async retryDeadLettered(): Promise<void> {}
+  async purgeResolved(): Promise<number> { return 0; }
 }
 
 /** Ejecuta el work directamente sin abrir una transacción real — igual que en reservation.service.test.ts. */

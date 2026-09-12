@@ -2110,9 +2110,15 @@ CREATE TABLE IF NOT EXISTS processed_events (
 
 -- Purga: una fila de processed_events solo sirve mientras su evento puede
 -- volver a despacharse. Una vez que el evento tiene dispatched_at, nadie la
--- vuelve a leer. No se purga automáticamente todavía (con el volumen actual
--- no hace falta y un DELETE periódico es otra pieza que puede fallar en
--- silencio) -- queda anotado acá para cuando el volumen lo justifique.
+-- vuelve a leer.
+--
+-- 12/09/2026 (Bloque 3, Caso 1): esta fila SÍ se purga hoy -- no con un
+-- DELETE propio, sino por ON DELETE CASCADE cuando `purgeResolved()`
+-- (src/platform/outbox-purge.ts) borra el `domain_events` padre. El
+-- disparador sigue siendo manual (POST /platform/outbox/purge o
+-- `npm run purge:outbox`), no automático -- eso es lo que este comentario
+-- decía y sigue siendo cierto; lo que cambió es que "no se purga todavía"
+-- ya no lo es.
 
 CREATE TABLE IF NOT EXISTS occupancy_records (
   id             SERIAL        PRIMARY KEY,

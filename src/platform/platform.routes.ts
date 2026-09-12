@@ -13,6 +13,7 @@ import { authenticatePlatform, authorizePlatform } from './platform.auth.middlew
 import type { Business } from './platform.repository.js';
 import { provisionTenantDatabase } from './neon-provisioning.js';
 import { applyTenantSchema, encryptConnectionString } from './tenant-db.setup.js';
+import { purgeOutboxAcrossTenants, OUTBOX_RETENTION_DAYS } from './outbox-purge.js';
 import { PlatformRole } from '../types/enums.js';
 import { recordPlatformChanges } from './platform-audit-log.repository.js';
 import { diffFields } from '../domain/audit.js';
@@ -404,6 +405,30 @@ export function createPlatformRouter(container: PlatformContainer): Router {
 
         const updated = await platformRepository.findById(business.id);
         res.json({ message: 'Base de datos aprovisionada y negocio activado.', business: updated ? toBusinessDto(updated) : null });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /platform/outbox/purge — Caso 1 (12/09/2026,
+  // docs/investigacion-decisiones-bloqueado-2026-09-12.md). Recorre TODOS
+  // los tenants (decisión del dueño) y purga `domain_events` resueltos con
+  // más de OUTBOX_RETENTION_DAYS días — misma función que consume
+  // `src/scripts/purge-outbox.ts` (`npm run purge:outbox`), un solo lugar
+  // con la lógica real. Sin cron de Render todavía (decisión del dueño,
+  // plan free no lo soporta) — este endpoint es el disparador manual.
+  // fail-soft: un tenant caído no aborta el resto, va en `failed` de la
+  // respuesta (decisión del dueño: aviso por respuesta HTTP, sin canal
+  // nuevo).
+  router.post(
+    '/outbox/purge',
+    async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const results = await purgeOutboxAcrossTenants(platformRepository);
+        res.json({
+          retentionDays: OUTBOX_RETENTION_DAYS,
+          ok:     results.filter((r) => r.ok),
+          failed: results.filter((r) => !r.ok),
+        });
       } catch (err) { next(err); }
     },
   );

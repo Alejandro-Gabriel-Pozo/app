@@ -72,22 +72,33 @@ cuando se pushea.
   `schema-redeploy-idempotent.integration.test.ts` es el harness que
   corresponde y quedó `describe.skipIf(skipIfNoDb)` (sin
   `TEST_DATABASE_URL` en este entorno) — no corrió. Acción puntual: correr
-  `npm run test:integration` con `TEST_DATABASE_URL` configurada. Además,
-  antes de autorizar el push/deploy de v51: correr, por cada tenant DB de
-  producción (Demo y Hotel los Álamos),
-  ```sql
-  SELECT conname, pg_get_constraintdef(oid)
-  FROM pg_constraint
-  WHERE conrelid = 'financial_transactions'::regclass AND contype = 'c'
-  ORDER BY conname;
-  ```
-  y comparar las 3 definiciones contra las de `schema.sql` — si alguna
-  difiere, el guard nuevo la va a congelar tal como está en vez de
-  corregirla (ver el residuo de diseño más abajo en 🟢 Deuda aceptada);
-  si coinciden o falta, el deploy es seguro. Introducido en el commit que
-  sigue a `2156f76` (app-main) — buscar el hash con
-  `git log --oneline --grep "financial_transactions.*pg_constraint\|Caso 6 residuo parte 2"`
-  si hace falta citarlo desde otro documento.
+  `npm run test:integration` con `TEST_DATABASE_URL` configurada. **La
+  otra mitad de este ítem (comparar las 3 definiciones contra las de
+  `schema.sql` en cada tenant real) ya se cerró** — corrida el 12/09/2026
+  contra Demo y Hotel los Álamos vía Neon MCP, las 3 coinciden exacto, sin
+  colisión de nombre; ver `docs/resuelto.md`, entrada "Caso 6, residuo
+  parte 2" — no se repite acá, este bullet queda acotado a la mitad
+  todavía abierta (el archivo completo, de punta a punta). Commit
+  `9b7296a` (app-main).
+- **Caso 1 — purga del outbox: 7 tests de integración nuevos nunca
+  corrieron contra Postgres real.** `purgeResolved()`
+  (`sql.domain-event.repository.ts`) y el predicado de "resuelto"
+  (incluye dead-letter, confirmado por el dueño) están cubiertos por
+  `outbox-worker.integration.test.ts`, SECCIÓN 1-C (PENDING nunca se
+  purga, resuelto dentro/fuera de ventana, dead-letter, el caso
+  `retryDeadLettered()`, CASCADE de `processed_events`, caso límite
+  `retentionDays=0`) pero `describe.skipIf(skipIfNoDb)` los saltea sin
+  `TEST_DATABASE_URL` en este entorno. Acción puntual:
+  `TEST_DATABASE_URL=... npm run test:integration -- outbox-worker`.
+  También sin correr contra Postgres real (mismo motivo): el binding de
+  parámetro `($1 || ' days')::interval` en `purgeResolved()` — patrón
+  nuevo en este archivo (el precedente en `getPending()` usa una
+  expresión computada, no un parámetro bindeado); se espera que
+  resuelva sin problema (`unknown || unknown` → `text`), y si no, falla
+  ruidoso en la primera corrida real, no en silencio. Introducido en el
+  commit que sigue a `f2954d7` (app-main) — buscar el hash con
+  `git log --oneline --grep "purga del outbox\|purgeResolved"` si hace
+  falta citarlo desde otro documento.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
@@ -1381,14 +1392,6 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   urgente -- no hay bug manifestándose hoy. Sigue como deuda de diseño
   (el código no lo garantiza estructuralmente, solo no divergió todavía
   en los datos de práctica).
-- **A7.6** — ✅ **DECIDIDO 10/09/2026 (dueño): 90 días de retención**,
-  solo sobre eventos ya resueltos (`dispatched_at IS NOT NULL OR
-  failed_at IS NOT NULL`) — lo pendiente/en retry nunca se purga aunque
-  sea viejo. La purga en sí (dónde corre — no hay cron existente en este
-  repo más allá de los 3 workers de polling) queda diferida a bloque
-  aparte, opción (a) `migrate-tenants.ts` explícitamente RECHAZADA por
-  el gate (corre dentro del `buildCommand` de `render.yaml`, fail-loud
-  por diseño -- un bug de purga ahí tumbaría deploys enteros).
 - **`OUTBOX-RETRY-HIST-01` + `OUTBOX-BACKOFF-01`** — ✅ **PUSHEADO Y
   DEPLOYADO en producción, verificado** (5 rondas de gate
   `architecture-governor`, 10/09/2026; `app-main` `5f31533` observabilidad

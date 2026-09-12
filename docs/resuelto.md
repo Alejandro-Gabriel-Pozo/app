@@ -100,6 +100,49 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   así que la suite verde no es evidencia sobre el SQL en sí. Residuo
   abierto en `pendientes-2026-09-12.md`, § Verificaciones pendientes.
 
+- **Caso 1 — purga del outbox (A7.6).** Origen:
+  `docs/investigacion-decisiones-bloqueado-2026-09-12.md`, caso 1;
+  retención (90 días, solo eventos "resueltos") ya decidida el
+  10/09/2026, `docs/diseno-outbox-backoff-2026-09-10.md` §10 (cerrado
+  hoy con la resolución de la interacción `retryDeadLettered()` que
+  había quedado sin responder ahí). Decisión del dueño 12/09/2026
+  (`AskUserQuestion`, 3 rondas): endpoint manual de superadmin ahora,
+  sin cron de Render (plan free no lo soporta); alcance global (todos
+  los tenants de una corrida, patrón `migrate-tenants.ts`); aviso de
+  fallo por respuesta HTTP (`{ok, failed}`), sin canal nuevo; **dead-letter
+  SÍ se purga a los 90 días** (confirmado explícitamente después de que
+  el gate `architecture-governor` encontrara un consumidor no mapeado —
+  `GET /api/system/outbox/dead-letter`, `Roles.MANAGEMENT`, bandeja
+  operable en `appfrontend-main/components/SystemRail.tsx` — y planteara
+  la consecuencia en esos términos antes de aprobar).
+  `DomainEventRepository.purgeResolved(retentionDays)` nuevo
+  (`sql.domain-event.repository.ts`) — `DELETE FROM domain_events WHERE
+  occurred_at < NOW() - (retentionDays || ' days')::interval AND
+  (dispatched_at IS NOT NULL OR failed_at IS NOT NULL)`;
+  `processed_events` cae por `ON DELETE CASCADE` ya existente, sin
+  DELETE propio. `src/platform/outbox-purge.ts` (nuevo): una sola función
+  `purgeOutboxAcrossTenants()`, fail-soft (a diferencia de
+  `migrate-tenants.ts`, que sale con código 1 -- acá un tenant caído no
+  aborta el resto), consumida por 2 disparadores —
+  `POST /platform/outbox/purge` (SUPERADMIN, bajo el `router.use()` ya
+  existente de `platform.routes.ts`, sin `authorize()` nuevo que contar)
+  y `npm run purge:outbox` (script standalone, mismo armado que
+  `migrate-tenants.ts`). RBAC: `EXCLUDED_FILES['platform/platform.routes.ts'].hiddenCount`
+  11→12 (`rbac-matrix-section2-sync.test.ts`), fila nueva en
+  `docs/rbac-matriz-endpoints.md`, `docs/inventario-rutas.md` regenerado
+  (252→253) — `EXPECTED_AUTHORIZE_CALL_SITES` sin cambios (correcto: ese
+  contador es de `authorize(Roles.X)` de tenant, no de
+  `authorizePlatform`). `npx tsc --noEmit` limpio, `npx vitest run`
+  completo (163 archivos, 2158 tests) verde, `lint`/`lint:arch` limpios.
+  **No validado contra Postgres real:** 7 tests de integración nuevos
+  (`outbox-worker.integration.test.ts`, SECCIÓN 1-C) cubren el predicado
+  completo (PENDING nunca se purga, resuelto dentro/fuera de ventana,
+  dead-letter, el caso `retryDeadLettered()`, CASCADE de
+  `processed_events`, caso límite `retentionDays=0`) pero
+  `describe.skipIf(skipIfNoDb)` los saltea sin `TEST_DATABASE_URL` en
+  este entorno — nunca corrieron de verdad. Residuo en
+  `pendientes-2026-09-12.md`, § Verificaciones pendientes.
+
 - **Caso 3 — `StayService.checkOut()` cuenta saldo `PENDING` y
   MANAGEMENT puede forzarlo con rastro.** Origen: hallazgo adyacente del
   gate de 1c-0, registrado sin bloque asignado en

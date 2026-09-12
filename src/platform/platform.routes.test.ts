@@ -40,6 +40,15 @@ vi.mock('./tenant.middleware.js', async (importOriginal) => {
   const actual = await importOriginal<typeof TenantMiddleware>();
   return { ...actual, evictTenantPool: vi.fn(async () => {}) };
 });
+// Caso 1 (12/09/2026) -- purgeOutboxAcrossTenants() abre conexiones pg.Client
+// reales por tenant (mismo patrón que applyTenantSchema()); acá solo se
+// prueba que la ruta la llame y devuelva su resultado tal cual, no la
+// mecánica de conexión (esa la cubre purgeResolved() contra Postgres real,
+// outbox-worker.integration.test.ts).
+vi.mock('./outbox-purge.js', () => ({
+  purgeOutboxAcrossTenants: vi.fn(async () => [{ businessId: 'biz-1', ok: true, detail: '3 evento(s) borrado(s)' }]),
+  OUTBOX_RETENTION_DAYS: 90,
+}));
 
 const ORIGINAL_PLATFORM_SECRET = process.env.PLATFORM_JWT_SECRET;
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
@@ -561,6 +570,50 @@ describe('POST /businesses/:id/provision', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toMatchObject({ code: 'ALREADY_PROVISIONED' });
     expect(platformRepo.activateBusiness).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /outbox/purge', () => {
+  it('recorre todos los tenants y devuelve ok/failed + la retención vigente', async () => {
+    const { purgeOutboxAcrossTenants } = await import('./outbox-purge.js');
+    const platformRepo = fakePlatformRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    const res = await runRoute(router, 'post', '/outbox/purge', reqWith({ token: superadminToken() }));
+
+    expect(vi.mocked(purgeOutboxAcrossTenants)).toHaveBeenCalledWith(platformRepo);
+    expect(res.body).toEqual({
+      retentionDays: 90,
+      ok: [{ businessId: 'biz-1', ok: true, detail: '3 evento(s) borrado(s)' }],
+      failed: [],
+    });
+  });
+
+  it('separa los tenants fallidos en `failed` sin abortar la respuesta (fail-soft)', async () => {
+    const { purgeOutboxAcrossTenants } = await import('./outbox-purge.js');
+    vi.mocked(purgeOutboxAcrossTenants).mockResolvedValueOnce([
+      { businessId: 'biz-1', ok: true,  detail: '3 evento(s) borrado(s)' },
+      { businessId: 'biz-2', ok: false, detail: 'timeout' },
+    ]);
+    const platformRepo = fakePlatformRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    const res = await runRoute(router, 'post', '/outbox/purge', reqWith({ token: superadminToken() }));
+
+    expect(res.statusCode).toBeUndefined(); // 200 -- una falla parcial no es un error HTTP
+    expect(res.body).toMatchObject({
+      ok:     [{ businessId: 'biz-1', ok: true }],
+      failed: [{ businessId: 'biz-2', ok: false, detail: 'timeout' }],
+    });
+  });
+
+  it('requiere el gate SUPERADMIN, igual que el resto del router', async () => {
+    const platformRepo = fakePlatformRepo();
+    const router = createPlatformRouter(buildContainer(platformRepo));
+
+    const res = await runRoute(router, 'post', '/outbox/purge', reqWith());
+
+    expect(res.statusCode).toBe(401);
   });
 });
 

@@ -223,4 +223,22 @@ export class SqlDomainEventRepository implements DomainEventRepository {
       [id],
     );
   }
+
+  async purgeResolved(retentionDays: number): Promise<number> {
+    // Caso 1 (12/09/2026) -- "resuelto" = dispatched_at IS NOT NULL OR
+    // failed_at IS NOT NULL, decisión ya tomada el 10/09/2026 (A7.6,
+    // docs/diseno-outbox-backoff-2026-09-10.md). occurred_at, no
+    // last_failed_at/first_failed_at: un evento reintentado
+    // (retryDeadLettered()) vuelve a failed_at NULL y sale de este filtro
+    // hasta que despache o vuelva a fallar -- no hay ventana de purgar un
+    // evento activo. processed_events cae solo por ON DELETE CASCADE
+    // (schema.sql, BLOQUE 7).
+    const result = await this.sqlClient.query(
+      `DELETE FROM domain_events
+       WHERE occurred_at < NOW() - ($1 || ' days')::interval
+         AND (dispatched_at IS NOT NULL OR failed_at IS NOT NULL)`,
+      [retentionDays],
+    );
+    return result.rowCount ?? 0;
+  }
 }

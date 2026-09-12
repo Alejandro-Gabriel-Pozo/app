@@ -254,6 +254,23 @@ nuevo bajo el guard `IS NULL`, silenciosamente reseteando la retención.
 No se resuelve acá; se deja escrito para que el bloque de purga lo
 decida con el contexto completo.
 
+**Resuelto (12/09/2026, Bloque 3 -- `src/repositories/sql.domain-event.repository.ts::purgeResolved()`,
+`docs/investigacion-decisiones-bloqueado-2026-09-12.md` Caso 1).** La
+premisa de la interacción estaba parcialmente equivocada:
+`retryDeadLettered()` nunca tocó `first_failed_at` (solo limpia
+`failed_at`/`retry_count`, ver §8) -- así que "resetear la retención"
+no era literal. Igual, la preocupación de fondo (¿un evento activo
+puede purgarse por error?) es real y se cierra por construcción, no por
+parche: `purgeResolved()` ancla la antigüedad en `occurred_at`, que
+NINGÚN código muta jamás, y evalúa el predicado de "resuelto"
+(`dispatched_at IS NOT NULL OR failed_at IS NOT NULL`) en el momento
+mismo del `DELETE`, no contra un estado cacheado. Un evento reintentado
+manualmente vuelve a `failed_at = NULL` y deja de ser "resuelto" hasta
+que despache o vuelva a fallar -- no hay ventana en la que un evento
+activo se purgue. Verificado con un test de integración dedicado
+(`outbox-worker.integration.test.ts`, SECCIÓN 1-C, caso
+"un dead-letter viejo REINTENTADO manualmente ya no es 'resuelto'").
+
 ## 11. Acoplamiento con la futura migración de `OutboxWorker` a `AdaptivePoller` (registrado, ronda 2 del gate)
 
 `OutboxWorker` sigue en `setInterval` fijo hoy (ese bloque quedó en

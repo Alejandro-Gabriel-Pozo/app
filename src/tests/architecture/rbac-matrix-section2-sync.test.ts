@@ -104,7 +104,7 @@ const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string; docB
     docBullets: [],
   },
   'platform/platform.routes.ts': {
-    hiddenCount: 11,
+    hiddenCount: 12,
     motivo: 'Prosa de un párrafo largo con notación de corchetes opcionales ([/:plan], [/:name]) que no es expandible por regex sin reescritura a mano.',
     docBullets: [],
   },
