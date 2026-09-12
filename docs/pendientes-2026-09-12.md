@@ -1758,13 +1758,43 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   Origen: `docs/investigacion-decisiones-bloqueado-2026-09-12.md`, Caso 5,
   "Residuo del dueño" (segundo ítem).
 
-  **Caso 5, residual 3 -- regla de crédito `PAYMENT`-vivo-tras-NC,
-  decisión del dueño ya tomada, implementación en curso (Bloque 5 de esta
-  sesión).** Ver `docs/investigacion-decisiones-bloqueado-2026-09-12.md`,
-  "Decisiones del dueño", ítem "Caso 5, residuo" -- el crédito es por
-  defecto salvo devolución real de dinero, dos caminos mutuamente
-  excluyentes para el mismo monto. Todavía sin gate propio en esta
-  sesión.
+  **Caso 5, residual 3 -- regla de crédito `PAYMENT`-vivo-tras-NC:
+  verificado para `refundPercentage=100`, commit `9cb3fad` (2 rondas de
+  gate `architecture-governor`).** La regla del dueño ("crédito por
+  defecto, salvo devolución real de dinero") sale, para ese caso acotado,
+  de primitivos existentes (signo de `REFUND`, `ADJUSTMENT` negativo del
+  escape, `CustomerAccountService.getStatement()`) -- sin código nuevo,
+  con test de composición + mutation testing real en
+  `src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts`.
+  **NO cierra acá** -- el gate encontró 2 huecos reales que el alcance
+  100% no cubre, cada uno su propio ítem:
+
+  - **Penalidad retenida en reembolso parcial (`refundPercentage < 100`,
+    `CancellationRefundService.confirmRefund()`,
+    `reservas/cancellation-refund.service.ts:308`).** Pregunta al dueño
+    (`AskUserQuestion`, 12/09/2026): **"Depende del rubro/negocio, no hay
+    regla única"** -- explícitamente NO se decide una regla fija de
+    sistema. Consecuencia: no se implementa ningún mecanismo de crédito
+    para la penalidad retenida en este bloque -- haría falta un
+    mecanismo CONFIGURABLE por negocio/rubro, que es una feature aparte,
+    sin diseñar ni priorizar todavía. Sin bloque asignado.
+  - **PAYMENT sintético de City Ledger contamina el balance del cliente
+    (`AccountsReceivableService.transferStayBalanceToReceivable()`,
+    `clientes-finanzas/accounts-receivable.service.ts:156`).** Crea un
+    `PAYMENT` con `customerId: stay.customerId` (el huésped) y `stayId`
+    SIN `reservationId` -- no aparece en `getByReservationId()`, pero SÍ
+    contamina `getNetBalanceByCustomerId()`. Si una estadía transferida a
+    una empresa (City Ledger) tiene su reserva todavía `CONFIRMED`
+    (check-in no cambia `ReservationStatus`, verificado) y se cancela con
+    NC, el huésped queda con crédito de plata que nunca pagó, mientras el
+    `CHARGE` de la empresa sigue vivo -- `cancelReservationWithCreditNote()`
+    no tiene ningún guard sobre `accounts_receivable`. El gate lo marcó
+    como pregunta de DISEÑO, resoluble sin el dueño (definir si la regla
+    de crédito se computa por reserva o por cliente resuelve o elimina el
+    problema) -- pendiente de encarar, sin bloque asignado todavía.
+  - RBAC de `GET /customers/:id/account` -- verificado por el gate
+    (`FRONT_DESK` + preset `RECEPTIONIST` lo tiene), sin hallazgo. Cerrado,
+    no requiere seguimiento.
 
   (La corrección de la causa raíz del test stale que este bullet
   describía -- `CN-VOID-COREJECT-STALE-TEST-001`, residual 1 de 3 -- se
