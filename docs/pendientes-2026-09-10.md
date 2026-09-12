@@ -1552,6 +1552,22 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   producción registrado. **No lo introduce 1c-ii-c** -- ya existía en los
   dos escapes antes de este bloque.
 
+  **La lista completa y clasificada de TODO lo que `buildCreditNote()`
+  puede tirar (determinístico vs transitorio, con el porqué de cada uno)
+  ya no vive en este párrafo -- vive en `EXPECTED_THROWS`,
+  `src/tests/architecture/build-credit-note-throw-catalog.test.ts`
+  (`BUILD-CREDIT-NOTE-THROW-CATALOG-001`, 12/09/2026, retro de esta
+  misma sesión sobre por qué costó tantas vueltas cerrar este hallazgo):
+  esa cerca falla si `buildCreditNote()` gana o pierde un `throw` sin que
+  alguien lo clasifique acá y ahí. Motivo de existir: la lista de 3
+  errores de más arriba había quedado corta un commit después de
+  escribirse (`CreditNoteAmbiguousSubjectError` se agregó en 1c-ii-b,
+  `e02a4fb`, y no se sumó a esta enumeración hasta que el gate la
+  encontró revisando 1c-ii-c) -- una prosa a mano no se entera sola de un
+  caso nuevo agregado en otro bloque; una cerca sí. Al encarar la salida
+  manual, la fuente de verdad de qué interceptar es esa cerca, no este
+  párrafo.
+
   **Decisión de producto sobre cómo cerrarlo -- grounding
   `auditor-circuitos-erp` (11/09/2026), unánime en los 5 sistemas:**
   ninguno de Odoo/ERPNext/Dolibarr/QloApps/Cloudbeds bloquea con un error
