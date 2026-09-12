@@ -1,6 +1,6 @@
 # Diseño — Factura como borrador editable (proforma antes del CAE)
 
-- **Versión:** **v2.10** (11/09/2026). v2 reemplazó a v1; v2.1 corrigió la §17
+- **Versión:** **v2.11** (12/09/2026). v2 reemplazó a v1; v2.1 corrigió la §17
   con la auditoría read-only; v2.2 agregó la §23 (PN-1 resuelto) e integró
   `ISSUED_PENDING_LEDGER` en la §5; **v2.3 sumó los tres controles de emisión
   de §23.6, uno de los cuales —fallo posterior al cargo— era un hueco de v2.2;
@@ -12,13 +12,17 @@
   la §27 (hallazgos de la sesión de reconciliación del 11/09/2026: grounding
   Odoo, un hueco no tratado en §27.2, y la pregunta abierta de §27.3) y deja
   registrada la instrucción del dueño de re-verificar D1-D6 contra Odoo real;
-  **v2.10 agrega la §28 con el resultado de esa re-verificación — D1/D3/D4/D5
+  v2.10 agrega la §28 con el resultado de esa re-verificación — D1/D3/D4/D5
   mantenidas (D3 revirtió una primera ronda con justificación defectuosa,
   §28.1bis), D2/D6 retiradas hacia el patrón de Odoo con riesgos aceptados
-  explícitamente (§28.2) — y marca §8/§24/§7.5/T18 como `SUPERSEDIDAS`**.
+  explícitamente (§28.2) — y marca §8/§24/§7.5/T18 como `SUPERSEDIDAS`;
+  **v2.11 agrega la §29, nota registrada de una propuesta del dueño
+  (documento hermano de salida manual de NC, 12/09/2026) para modelar
+  cargos administrativos/intangibles como ítem de catálogo de primera
+  clase — no reabre §17/§24/§28, no autoriza schema ni código**.
   Sigue sin autorizar schema ni código.
   Ver §0 para el diff.
-- **Fecha:** 2026-08-31 (creación) — última revisión 11/09/2026
+- **Fecha:** 2026-08-31 (creación) — última revisión 12/09/2026
 - **Estado:** **diseño, no implementado, y NO aprobado como diseño final.** v1
   fue aceptada por el dueño como **diagnóstico preliminar** y como encuadre
   estructural — **no** como autorización de schema. v2 formaliza las 6
@@ -62,6 +66,7 @@
 | **Revisión** (v2.6) | — | §26: 4 correcciones pendientes **sobre este mismo documento** (una de ellas, §12.2, contradice a §23), 1 decisión de negocio abierta y 5 decisiones modeladas |
 | **Reconciliación** (v2.9) | — | §27: grounding Odoo (confirma el mínimo de 3 pasos, no las 6 decisiones), un hueco real no tratado antes (§27.2, revalidar guards de cancelación al confirmar un borrador), una pregunta abierta (§27.3, destino de `POST /api/invoices`), y re-confirmación de C-5. El dueño instruyó además re-verificar D1-D6 contra Odoo real con Odoo ganando en caso de divergencia |
 | **Resolución Odoo D1-D6** (v2.10) | — | §28: solo D2 (origen de línea) y D6 (descuento) terminan retiradas hacia Odoo, con riesgos aceptados explícitamente (§28.2). D1/D4/D5 mantenidas por razón de dominio real (AFIP constitutivo, precedente `CN-ESCAPE-CONTAINMENT-001` ya implementado, defensa de catálogo ya funcionando). D3 tuvo una primera ronda con justificación defectuosa (cita errónea de R14) que el gate encontró antes de aprobar — re-anclada contra la clasificación real y el precedente de `orders` (`DRAFT→CANCELLED`, nunca `DELETE`), revirtió a **mantenida** (§28.1bis). §8/§24/§7.5/T18 quedan `SUPERSEDIDAS`. C-5 queda sin objeto si D2 se formaliza |
+| **Nota de catálogo — servicios administrativos** (v2.11) | — | §29: propuesta del dueño (surgida en el documento hermano de salida manual de NC) para modelar cargos administrativos/intangibles como ítem de catálogo de primera clase — no como línea manual sin origen. Registra la propuesta, corrige dos supuestos contra el schema real (`order_items.item_type` ya tiene 3 ramas, no 1; `products.product_type` ya existe con OTRO significado — no reusable para PHYSICAL/SERVICE) y dos alternativas (A: columna `requires_inventory` ortogonal; B, preferida por el dueño: rama `SERVICE` nueva en `item_type`). No reabre §17/§24/§28 — opera en una capa distinta (catálogo, no origen de la línea de factura). No autoriza schema ni código |
 
 ---
 
@@ -2320,3 +2325,173 @@ Bloqueantes que **no** cambiaron: C-1 a C-4 (§26.1, mecánicos), §26.3 (5
 decisiones de negocio del dueño), §27.2 (mecánico, revalidar cancelación
 al confirmar) y §27.3 (decisión del dueño, destino de `POST /api/invoices`).
 Bloqueante que **desaparece** si D2 se formaliza: C-5 (§28.1).
+
+---
+
+## 29. Nota registrada — catálogo de servicios administrativos/intangibles como ítem de primera clase ("Alternativa B", propuesta del dueño, 12/09/2026)
+
+**No autoriza `CREATE TABLE`, migraciones ni código.** Registra una
+propuesta del dueño para que no se pierda, la ancla contra el schema real
+(corrigiendo dos supuestos de la propuesta original que no coincidían con
+el código), y deja explícito qué decide y qué NO decide respecto de las
+secciones ya cerradas de este mismo documento (§17, §24, §28).
+
+### 29.1 De dónde sale esta nota
+
+Surgió en la sesión de `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md`
+(documento hermano, mismo día), al analizar por qué una factura sin
+`invoice_items` (motivo `NO_ITEMS`, ahí retirado del alcance en su propia
+§0 por una razón de negocio distinta — todos los tenants de hoy son
+demo/descartables) no tiene de dónde sacar una línea real que precargar.
+El dueño observó la causa raíz de fondo, más allá de ese caso puntual: **un
+cargo administrativo intangible** ("Cargo por gestión", "Costo de envío",
+"Diferencia de tarifa") **no tiene hoy un lugar natural en el catálogo** —
+no es un producto físico con stock, no es un `bookable_service` con
+turno — así que termina como línea manual sin origen, o forzado dentro de
+un producto `RETAIL` que no le corresponde. Esta nota generaliza esa
+observación como propuesta de catálogo, independiente del documento que
+la originó.
+
+### 29.2 Corrección de dos supuestos contra el schema real
+
+La propuesta original asumía un punto de partida que **no coincide** con
+`src/db/schema.sql` verificado en esta sesión — la misma disciplina de
+"chequear el archivo antes de asumir" que ya corrigió un error de citación
+AFIP en el documento hermano:
+
+1. **`order_items.item_type` ya NO es binario `PRODUCT`.** Desde
+   `chk_order_item_polymorphic` (`schema.sql:1501-1521`), ya admite
+   `'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION'`, cada rama con su propio
+   FK obligatorio (`product_id`, `product_variant_id` + `product_id`,
+   `reservation_id`) y las otras dos en `NULL`. La "Alternativa B" de la
+   propuesta original (discriminador con ramas `PRODUCT`/`PRODUCT_VARIANT`/
+   `SERVICE`/`RESERVATION`) **ya existe en 3 de sus 4 ramas** — el trabajo
+   real no es crear el patrón, es agregarle UNA rama nueva (`SERVICE`).
+2. **`products.product_type` ya existe — con otro significado.**
+   `schema.sql:1161-1180` ya tiene esa columna, `NOT NULL`, con
+   `CHECK (product_type IN ('RAW_MATERIAL', 'COMPOSITE', 'RETAIL'))`. Es el
+   eje de **composición de inventario** (¿este producto se arma a partir de
+   otros vía receta, `assemble_on_demand`? ¿es materia prima de otro
+   producto? ¿se vende tal cual?), no el eje físico/intangible que proponía
+   la Alternativa A original (`PHYSICAL | SERVICE`). **Reusar el nombre
+   `product_type` para un segundo significado no es viable** — colisionaría
+   con un CHECK y un índice (`idx_products_type`) que ya lo usan para otra
+   cosa. Cualquier alternativa que toque `products` necesita una columna
+   nueva, con nombre propio, ortogonal a `product_type`.
+
+### 29.3 Qué relación tiene con §17/§24/§28 de este mismo documento — ninguna reapertura
+
+Esta nota **no reabre** ninguna decisión ya tomada en este documento:
+
+- **§17** cerró que `chk_invoice_item_origin` (`invoice_items`, el
+  documento emitido) **no se relaja** — sigue exigiendo exactamente uno de
+  `order_item_id`/`reservation_id`. Esta nota no lo toca: si un cargo
+  administrativo pasa a ser un `order_item` real (de cualquier `item_type`,
+  incluida una rama `SERVICE` nueva), su factura ya tiene un `order_item_id`
+  válido — el CHECK se satisface por construcción, no por excepción.
+- **§24/§28 (D2)** decidieron, en sentido contrario a agregar un
+  discriminador, **retirar** `source_kind` de `invoice_draft_items`/
+  `invoice_items` y volver al modelo de columnas nullable sin invariante de
+  base (alineado a Odoo, riesgo aceptado en §28.2). Esta nota **no propone
+  reabrir esa decisión** — opera en una capa distinta y anterior: el
+  catálogo de **`products`/`order_items`**, no el origen que la línea de
+  factura declara. Las dos decisiones son independientes; ninguna depende
+  de la otra.
+- **No resuelve el caso que sí motivó `source_kind`/`MANUAL` en §24**: una
+  factura **sin ninguna orden detrás** (un borrador libre, cargado a mano
+  por el operador, sin `order_item_id` que precargar porque no hay orden).
+  Un catálogo de servicios más completo reduce cuántas líneas terminan
+  siendo `MANUAL` por falta de un concepto vendible en el catálogo — pero
+  no elimina la necesidad de una línea verdaderamente libre para ese caso.
+  **Precisión, para no leerse como que la rama `MANUAL` sigue viva:** §24
+  completa (con su rama `MANUAL`) está `SUPERSEDIDA` por §28.1 — la
+  resolución vigente para ese caso es la de D2 (§28: columnas nullable por
+  origen, sin invariante de base — el riesgo de perder la distinción
+  MANUAL/origen-perdido se acepta explícitamente en §28.2). Es ESA
+  resolución, no `source_kind`/`MANUAL`, la que sigue gobernando el caso
+  de la factura sin orden — y esta nota no la toca.
+
+### 29.4 Las dos alternativas, ancladas contra el schema real
+
+**Alternativa A — mínima, con nombre de columna corregido.** Agregar a
+`products` una columna **nueva**, ortogonal a `product_type`, p. ej.
+`requires_inventory BOOLEAN NOT NULL DEFAULT TRUE` (default `TRUE`
+preserva el comportamiento de hoy para todo producto existente). Un
+`product_type = 'RETAIL'` con `requires_inventory = FALSE` sería un SKU
+vendible sin stock — "Cargo administrativo", "Costo de envío" — que sigue
+el flujo `products → order_items (item_type='PRODUCT') → invoice_items`
+sin tocar ningún CHECK de `order_items` ni de `invoice_items`. Menor
+superficie: una columna, un default, ningún branch nuevo en
+`chk_order_item_polymorphic`. Punto abierto, no resuelto acá: qué hace
+`OrderService.confirmOrder()`/el worker de inventario con
+`requires_inventory = FALSE` al confirmar la orden (`stock_movements`
+tiene una FK propia a `order_items` — `order_item_id`, `schema.sql:1651`
+— habría que saltear ese INSERT para estos ítems, no solo agregar la
+columna).
+
+**Alternativa B — más explícita, la preferida por el dueño
+("CREACIÓN ALGO MAS EXPLICITO ES LA SOLUCIÓN REAL").** Agregar una cuarta
+rama `'SERVICE'` a `order_items.item_type`
+(`schema.sql:1504-1505,1516-1520`), con su propio FK a un catálogo de
+servicios administrativos (podría ser una tabla nueva, o una reutilización
+acotada de `products` con `requires_inventory = FALSE` como en la
+Alternativa A, sirviendo de FK). Ventaja real: el modelo deja de llamarle
+"producto" a un concepto que no lo es — mismo argumento que ya ganó para
+`RESERVATION` (no se modeló una reserva como "producto sin stock", se le
+dio su propia rama con su propia FK a `reservations`). Costo real, medido
+contra el código, no en abstracto: **cada punto que hoy asume que
+`item_type` es exhaustivo con 3 valores necesita revisarse** — el propio
+`chk_order_item_polymorphic`, los 3 índices parciales de
+`schema.sql:1523-1526`, y los **cuatro** índices únicos parciales de
+`stock_movements` keyeados por `order_item_id`
+(`ux_stock_movements_order_item_type_product`/`_variant`,
+`schema.sql:1828-1833`; `ux_stock_movements_order_item_resolution_product`/
+`_variant`, `schema.sql:1836-1843`) — los cuatro son parciales sobre
+`product_id IS NOT NULL`/`product_variant_id IS NOT NULL`, así que un ítem
+`SERVICE` que no genera movimiento de stock no queda restringido por
+ninguno; habría que confirmarlo, no asumirlo.
+
+**Y el costo no termina en este repo — `item_type` es contrato
+bidireccional, no solo interno.** `appfrontend-main` lo hardcodea como
+unión cerrada de 3 valores, sin ningún mecanismo que lo mantenga
+sincronizado con `app-main` (mismo patrón de riesgo que
+`ROLES-CATALOG-DRIFT-001`, el catálogo de roles agregado en un repo y
+nunca propagado al otro, descubierto dos días después): `OrderItemType`
+en `lib/ordenes/types.ts:6` (`'PRODUCT' | 'PRODUCT_VARIANT' |
+'RESERVATION'`), el diccionario `ITEM_TYPE_LABEL` de
+`dashboard/ordenes/[id]/page.tsx:27-31` (degradaría a mostrar el string
+crudo `SERVICE` sin traducir, vía su propio fallback `?? item.itemType`
+en la línea 452), y la firma de `addItem()` en `lib/ordenes/api.ts:28`.
+Ninguno de los dos typechecks lo detecta solo. Agregar una rama nueva
+tiene que tocar los tres, en el mismo cambio — no es trabajo que quede
+"del lado del frontend" para después.
+
+Además, cualquier repositorio/servicio/reporte de `app-main` que haga
+`switch`/`if` sobre `item_type` (no relevado exhaustivamente en esta
+nota — un primer barrido encuentra al menos `pos-menu/order.entities.ts`,
+`order.service.ts`, `order-pricing.service.ts`,
+`sql.order.repository.ts`, `in-memory.order.repository.ts`,
+`orders.routes.ts`, `api/schemas/request.schemas.ts` y
+`facturacion/invoice.service.ts`; relevar sitio por sitio con precisión
+es trabajo de implementación, no de esta nota).
+
+### 29.5 Recomendación de esta nota, y lo que falta antes de tocar código
+
+Esta nota **no recomienda una alternativa por sobre la otra** — registra
+que el dueño ya se inclinó por la B, con su razón (expresar la diferencia
+en vez de forzarla dentro de "producto"), y dos correcciones que un
+diseño futuro de esa alternativa tiene que resolver antes de proponer un
+CHECK real: (1) qué entidad es el FK de la rama `SERVICE` — un catálogo
+nuevo, o `products` con `requires_inventory = FALSE` reutilizado como en
+A; (2) el relevamiento completo de sitios que asumen `item_type`
+exhaustivo en 3 valores, listado arriba como punto de partida, no como
+lista cerrada.
+
+**Antes de cualquier `CREATE TABLE`/`ALTER TABLE`/migración sobre esta
+propuesta:** pasa por la skill `criterios-negocio`
+(`.claude/skills/criterios-negocio/`) — un "servicio administrativo" en
+catálogo es, con alta probabilidad, un MAESTRO (mismo trato que
+`products`/`bookable_services`), y esa clasificación tiene reglas propias
+que revisar antes de tocar `order_items`/`invoice_items` — y por el gate
+`architecture-governor`, como cualquier cambio de schema o de contrato
+entre repos en este proyecto.
