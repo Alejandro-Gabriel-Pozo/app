@@ -402,6 +402,7 @@ implementación real:**
 | **`docs/inventario-rutas.md`** | Inventario de existencia (`CONTRACT-COVERAGE-001`) | Queda stale hasta `npm run docs:routes` |
 | **Mount de `app.ts`** — `requireModule(CUENTAS_CORRIENTES)` | La ruta nueva hereda ese gate de módulo, no solo el rol | Un tenant sin el módulo recibe 404/403 antes de llegar al chequeo de rol — declarar esto explícito, no asumirlo |
 | **`InvoiceService.requestConsolidatedInvoice()`** (hallazgo del gate, ronda 2) | Segundo escritor concurrente sin lock: lee `getPendingByCompanyCustomerId()` SIN lock, emite una factura AFIP real (CAE, irreversible), y recién después marca cada AR `FACTURADO` con `UPDATE ... WHERE status = 'PENDIENTE_FACTURAR'` best-effort (0 filas si ya cambió, sin log) | **Crítico** — si `reverseTransfer()` toma el lock de una AR y commitea ENTRE la lectura y el `markInvoiced` de este camino, AFIP ya emitió una factura real por un monto que el ledger ya revirtió, sin ningún rastro (el `UPDATE` no afecta filas y no hay `catch` que lo note). `arRepo.lockForUpdate()` de `reverseTransfer()` NO serializa contra este camino porque este camino nunca toma ese lock. Ver §7, pregunta de concurrencia ampliada |
+| **`InvoiceService.finalizeIssued()`** (hallazgo del gate, ronda 3 — TERCER escritor, más silencioso que el anterior) | Camino PER-RESERVATION de emisión (`POST /api/invoices` → `requestInvoice()` → `issue()`/`reconcileAfterFailure()`, `invoice.service.ts:1160-1176`), distinto de `requestConsolidatedInvoice()` (que cierra sus N filas aparte porque llega con `financialTransactionId` nulo). Emite el CAE AFIP primero, y DESPUÉS: `const ar = await getByFinancialTransactionId(...); if (ar && ar.status === 'PENDIENTE_FACTURAR') { await markInvoiced(...) }` | **Más grave que `requestConsolidatedInvoice()`:** acá no hay ni siquiera el `UPDATE` best-effort — es un `if` en memoria. Si `reverseTransfer()` ya commiteó `REVERTIDO` antes de que este `if` corra, la condición simplemente no entra, `markInvoiced` nunca se llama, y el `catch` que envuelve el bloque (`logger.error('no se pudo cerrar el gap de accounts_receivable')`) NUNCA se dispara porque no hay ninguna excepción — el `if` que no entra no es un error. Factura fiscal real emitida contra un cargo ya revertido, CERO rastro en logs. Ver §7.2(b), ampliada para cubrir los dos caminos |
 | **`listByCompany()`/`getByCompanyCustomerId()`** (hallazgo del gate, ronda 2) | Sin filtro de `status` — devuelve TODO, incluido `REVERTIDO` una vez que exista | Ver §7, pregunta nueva sobre si el panel de gestión de AR debe mostrar las revertidas, filtrarlas, o marcarlas distinto |
 
 ## 7. Preguntas abiertas (algunas para el dueño, algunas para el gate — marcadas cada una)
@@ -428,25 +429,38 @@ implementación real:**
      fila `financial_transactions` del `CHARGE` original
      (`SELECT ... FOR UPDATE`) DENTRO de la transacción de
      `reverseTransfer()`.
-   - **(b) `InvoiceService.requestConsolidatedInvoice()` — hallazgo nuevo
-     del gate, más grave que (a): no es solo concurrencia, es un camino
-     que emite un documento fiscal REAL sin ningún lock.** Lee
-     `getPendingByCompanyCustomerId()` sin lock, emite la factura AFIP
-     (CAE, irreversible), y recién después hace
-     `UPDATE accounts_receivable SET status='FACTURADO' WHERE id=$1 AND
-     status='PENDIENTE_FACTURAR'` por fila, best-effort — si
-     `reverseTransfer()` ya commiteó esa AR a `REVERTIDO` en el medio, el
-     `UPDATE` no afecta ninguna fila y ni siquiera loguea el desajuste (no
-     lanza, así que el `try/catch` que lo rodea nunca se entera). El lock
-     de `reverseTransfer()` sobre la fila AR **no sirve acá** — este
-     camino nunca toma ese lock, así que no hay nada que serializar
-     contra él. Cerrar esto puede exigir tocar el propio camino de emisión
-     AFIP (leer bajo lock antes de emitir, o re-chequear el estado
-     DESPUÉS de emitir y antes de dar la factura por buena) — un cambio
-     sobre una ruta que emite documentos fiscales reales merece su PROPIO
-     gate, no se resuelve como efecto colateral de este bloque.
-   Los dos quedan pendientes de diseñar en el bloque de implementación
-   real, con su propio gate cada uno si tocan código fuera de
+   - **(b) LOS DOS caminos de emisión de factura AFIP, no solo uno —
+     hallazgo ampliado en la ronda 3 del gate: no es solo concurrencia,
+     son dos caminos que emiten un documento fiscal REAL sin ningún
+     lock.**
+     - **`InvoiceService.requestConsolidatedInvoice()`** (consolidada, N
+       filas de AR a la vez): lee `getPendingByCompanyCustomerId()` sin
+       lock, emite la factura AFIP (CAE, irreversible), y recién después
+       hace `UPDATE accounts_receivable SET status='FACTURADO' WHERE
+       id=$1 AND status='PENDIENTE_FACTURAR'` por fila, best-effort — si
+       `reverseTransfer()` ya commiteó esa AR a `REVERTIDO` en el medio,
+       el `UPDATE` no afecta ninguna fila y ni siquiera loguea el
+       desajuste (no lanza, así que el `try/catch` que lo rodea nunca se
+       entera).
+     - **`InvoiceService.finalizeIssued()`** (per-reservation, `POST
+       /api/invoices` → `requestInvoice()` → `issue()`/
+       `reconcileAfterFailure()`, `invoice.service.ts:1160-1176`) — más
+       silencioso todavía: acá ni siquiera hay un `UPDATE`, es un `if (ar
+       && ar.status === 'PENDIENTE_FACTURAR')` en memoria. Si
+       `reverseTransfer()` ya commiteó antes, el `if` simplemente no
+       entra — `markInvoiced` nunca se llama y el `catch` que envuelve el
+       bloque no se dispara porque no hay ninguna excepción. Factura
+       fiscal real contra un cargo ya revertido, CERO rastro en logs.
+     El lock de `reverseTransfer()` sobre la fila AR **no sirve contra
+     ninguno de los dos** — ninguno de los dos caminos toma ese lock, así
+     que no hay nada que serializar. Cerrar esto puede exigir tocar el
+     propio camino de emisión AFIP en los dos lugares (leer bajo lock
+     antes de emitir, o re-chequear el estado DESPUÉS de emitir y antes
+     de dar la factura por buena) — un cambio sobre una ruta que emite
+     documentos fiscales reales merece su PROPIO gate, no se resuelve
+     como efecto colateral de este bloque.
+   Los dos (a y b) quedan pendientes de diseñar en el bloque de
+   implementación real, con su propio gate si tocan código fuera de
    `AccountsReceivableService`.
 3. **Gate, resuelta:** la extracción del helper compartido con
    `transferStayBalanceToReceivable()` (paso 6 de §4.3) es un **refactor
@@ -484,14 +498,21 @@ implementación real:**
    huésped, exactamente el efecto que el `CHARGE` original evita omitiendo
    ese campo (`accounts-receivable.service.ts`, bloque `companyChargeId`);
    ninguno de los dos pierde la trazabilidad de documento de origen
-   (F1-Pieza 2). **Resolución:** `reservationId: null, stayId: null` — la
-   trazabilidad no se pierde porque ya existe un camino mejor:
+   (F1-Pieza 2). **Resolución:** `reservationId: null, stayId: null` —
+   **legal**: el CHECK `chk_financial_transactions_order_or_reservation`
+   (`schema.sql`, BLOQUE 22) es `(...) <= 1` — "como máximo uno", no
+   "exactamente uno" — así que ambos NULL a la vez no viola nada (si
+   hubiera sido `= 1`, esta resolución habría roto un CHECK de producción
+   sin que nadie lo notara hasta el primer `INSERT`). La trazabilidad no
+   se pierde porque ya existe un camino mejor:
    `accounts_receivable.reversal_transaction_id` (§4.2) apunta a esta
    fila exacta, y `accounts_receivable.stay_id` (columna ya existente)
-   sigue siendo la trazabilidad de la AR hacia la estadía. Ninguna de las
-   dos falla de las otras 2 opciones aplica, y no hace falta que el
-   `financial_transactions` de la reversa cargue un documento que ya está
-   mejor representado un nivel arriba, en la AR misma.
+   sigue siendo la trazabilidad de la AR hacia la estadía — y
+   `CustomerAccountService.getStatement()` lee por `customer_id`, sin
+   filtrar por origen, así que la fila compensatoria aparece igual en la
+   cuenta corriente de la empresa, que es donde el operador la tiene que
+   ver. Sin comportamiento visible divergente para el negocio, no
+   ameritaba `AskUserQuestion` — es plomería interna.
 8. **Nueva (hallazgo del gate, ronda 2), para el dueño:** `listByCompany()`/
    `getByCompanyCustomerId()` no filtran por `status` — una vez que
    `REVERTIDO` exista, aparece igual que cualquier otra fila en el panel
@@ -503,8 +524,24 @@ implementación real:**
 
 ## 8. Bloques de implementación sugeridos (orden, no decisión)
 
-1. Schema v52 (nuevo estado + columnas) — bloque propio, gate propio.
+1. Schema v52 (nuevo estado + columnas) — bloque propio, gate propio. El
+   `ALTER`/guard de `chk_accounts_receivable_status` va DESPUÉS del
+   `CREATE TABLE IF NOT EXISTS accounts_receivable` en `schema.sql` (ya
+   es así en §4.2) — un tenant nuevo instala el CHECK inline de 3 valores
+   primero y depende de ese orden para terminar en 4. Este bloque es
+   inerte en producción hasta que exista `reverseTransfer()`: ninguna
+   fila puede llegar a `REVERTIDO` solo con el schema — ni la
+   concurrencia de §7.2 ni el filtro de listado de §7.8 son alcanzables
+   todavía, no hace falta resolverlas antes de este bloque.
 2. `AccountsReceivableService.reverseTransfer()` + ruta + RBAC + tests.
+   **El union TS `AccountsReceivableStatus` se mueve ACÁ, no en el
+   bloque 1** — vive en dos repos sin CI compartida
+   (`src/clientes-finanzas/accounts-receivable.repository.ts` y
+   `appfrontend-main/src/lib/finanzas/types.ts`); ampliar el backend
+   antes de tener el mecanismo real que produce `REVERTIDO` reproduciría
+   el modo de falla de `ROLES-CATALOG-DRIFT-001` (un catálogo que cambia
+   de un lado sin que el otro se entere). Los dos se actualizan juntos,
+   en este bloque.
 3. Detección/visibilidad en los 2 handlers de outbox (§4.5) — puede ir en
    el mismo bloque que 2, o separado si el gate prefiere acotar el radio.
 4. Bug colateral `voidByReservationId()` sin filtro de `customer_id`
