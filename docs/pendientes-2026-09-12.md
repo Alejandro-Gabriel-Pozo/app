@@ -325,6 +325,28 @@ cuando se pushea.
   propósito (mezclar el fix con el cierre de `VERIFY-001` habría
   combinado dos motivos distintos en un mismo commit) -- bloque de docs
   chico y aparte.
+- **`CITY-LEDGER-GUARD-ANCHOR-DRIFT-002`** (13/09/2026, gate
+  `architecture-governor`, encontrado en la 4ª ronda de revisión del
+  commit de docs de City Ledger Bloque 3b -- deuda de la misma clase que
+  `CITY-LEDGER-GUARD-ADR-ANCHOR-DRIFT-001`, sin corregir todavía. 3
+  anclas de línea a `outbox.handlers.ts` quedaron stale por commits
+  anteriores a `c9b1fd2` (no por ese commit -- ese ya se corrigió):
+  1. `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:35` cita
+     `handleReservationCancelled` en `outbox.handlers.ts:225-270` --
+     stale desde `d48a6e8` (Bloque 3a); real hoy `:318-445`.
+  2. `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:1011` y
+     `docs/pendientes-2026-09-12.md:220` (mismo par, citado en los 2
+     archivos) apuntan a los sitios de creación de `CHARGE` en `:192`/
+     `:206` -- real hoy `:209`/`:223`.
+  3. `docs/pendientes-2026-09-12.md:1826` cita la rama
+     `comprobanteReconciliado` en `outbox.handlers.ts:395` -- stale, sin
+     verificar el target real todavía (hay 3 ramas `comprobanteReconciliado`
+     distintas en el archivo, región candidata `:593-601`, no confirmada).
+  Mismo criterio que `SCHEMA-ANCHOR-DRIFT-001`: reemplazar por cita por
+  método/función cuando se corrija, no por rango de línea. No corregido
+  en este bloque a propósito (evitar una 5ª ronda de "corregir anclas
+  que el propio commit de corrección de anclas dejó rotas") -- bloque de
+  docs chico y aparte.
 - **`FACT-BORRADOR-DESIGN-ANCHOR-DRIFT-001`** (13/09/2026, encontrado al
   migrar el cierre de "Hueco de doble comprobante ...
   CONSOLIDADA↔CONSOLIDADA" a `docs/resuelto.md`; corregido 13/09/2026,
@@ -1470,21 +1492,40 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   por existencia de AR no revertida, filtro `!== 'REVERTIDO'`, `COBRADO`
   incluido a propósito; verificación contra Postgres real todavía
   pendiente, `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` más arriba en
-  este archivo). **3b -- DECIDIDO (`AskUserQuestion`, 13/09/2026: diseñar
-  la comparación de montos), diseño completo en §4.6 del diseño, sin
-  implementar todavía.** Detección por existencia no sirve para
-  `handleReservationCompleted` (dispara siempre, toda reserva de City
+  este archivo). **3b -- IMPLEMENTADO** (commit `c9b1fd2`, mecanismo
+  diseñado en §4.6 del diseño: detección por existencia no sirve para
+  `handleReservationCompleted` -- dispara siempre, toda reserva de City
   Ledger normal llega a `completed` con una AR `PENDIENTE_FACTURAR`
-  colgada) -- el mecanismo real compara `getNetBalanceByStayId(stayId)`
+  colgada -- el mecanismo real compara `round2(getNetBalanceByStayId(stayId))`
   contra cero DESPUÉS de `settleByReservationId()`, no `ar.amount` fila
-  por fila.
+  por fila; verificación contra Postgres real todavía pendiente,
+  `CITY-LEDGER-BLOQUE3B-INTEGRATION-VERIFY-001` más abajo en este mismo
+  bloque).
 
-  **Lo que sigue pendiente, sin implementar todavía:** Bloque 2
+  **Lo que sigue pendiente, sin implementar todavía:** solo Bloque 2
   (`reverseTransfer()` + ruta + RBAC + tests + sync cross-repo + los 3
-  hallazgos de concurrencia como precondición) y Bloque 3b (el mecanismo
-  de §4.6, ya diseñado). Con §7.8 ya decidido, no queda ninguna decisión
-  del dueño pendiente que bloquee el arranque del Bloque 2 -- cada uno
+  hallazgos de concurrencia como precondición). Con §7.8 ya decidido, no
+  queda ninguna decisión del dueño pendiente que bloquee su arranque --
   queda para su propio bloque de implementación con su propio gate.
+
+  **`CITY-LEDGER-BLOQUE3B-INTEGRATION-VERIFY-001`** -- el path de
+  detección de divergencia de monto en `handleReservationCompleted`
+  (commit `c9b1fd2`) nunca corrió contra Postgres real. Cubierto por 12
+  tests unitarios (mocks, `src/workers/outbox.handlers.test.ts`), pero ni
+  el wiring real (`SqlAccountsReceivableRepository`/`SqlStayRepository`)
+  ni un saldo real movido fuera de cero se ejercitaron. Comparte sesión
+  de verificación con `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` (más
+  arriba en este archivo) pero es una acción distinta, con un fixture
+  estrictamente más grande: (1) transferir el saldo de una estadía a una
+  empresa (`transferStayBalanceToReceivable()`), (2) un segundo
+  `confirmPriceAdjustment()` que mueva el saldo real fuera de cero
+  DESPUÉS de esa transferencia, (3) completar la reserva
+  (`completeReservation()`), (4) confirmar el log estructurado `evento:
+  reservation_completed_ar_divergencia` con el `balance` esperado.
+  Acción puntual: correr `npm run test:integration` con
+  `TEST_DATABASE_URL` configurada, agregando ese caso -- se corta de acá
+  (no se tacha) recién cuando alguien lo corre y confirma el resultado
+  real.
 
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,

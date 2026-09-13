@@ -423,16 +423,18 @@ lo dice en ningún lado:
   Verificación contra Postgres real pendiente -- ver
   `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` en
   `docs/pendientes-2026-09-12.md`.
-- **`handleReservationCompleted` -- DECIDIDO (`AskUserQuestion`, 13/09/2026):
-  diseñar la comparación de montos (opción A de las 3 planteadas).**
-  Detección por EXISTENCIA (el mecanismo de arriba) NO sirve acá: por
-  construcción, `checkOut()` exige saldo `<= 0`, y
-  `transferStayBalanceToReceivable()` es lo que lo habilita -- o sea que
-  TODA reserva de City Ledger normal llega a `completed` con una AR
-  `PENDIENTE_FACTURAR` colgada del stay. Detección por existencia
+- **`handleReservationCompleted` -- IMPLEMENTADO** (`AskUserQuestion`,
+  13/09/2026: diseñar la comparación de montos, opción A de las 3
+  planteadas; mecanismo en §4.6; implementado en `c9b1fd2`, verificado
+  solo a nivel unitario -- ver `CITY-LEDGER-BLOQUE3B-INTEGRATION-VERIFY-001`
+  en `docs/pendientes-2026-09-12.md` para la verificación contra Postgres
+  real, todavía sin correr). Detección por EXISTENCIA (el mecanismo de
+  arriba) NO sirve acá: por construcción, `checkOut()` exige saldo
+  `<= 0`, y `transferStayBalanceToReceivable()` es lo que lo habilita --
+  o sea que TODA reserva de City Ledger normal llega a `completed` con
+  una AR `PENDIENTE_FACTURAR` colgada del stay. Detección por existencia
   dispararía siempre, en el camino feliz, no en una anomalía. La
-  anomalía real de este lado es de MONTO (§1.1 Disparador A) -- mecanismo
-  diseñado en §4.6, todavía sin implementar (Bloque 3b).
+  anomalía real de este lado es de MONTO (§1.1 Disparador A).
 - **Escape de NC de orden -- IMPLEMENTADO** (`CancelOrderWithCreditNoteService`,
   Bloque 6 §9.2, 13/09/2026, commit `0f2aa24`): expone la AR existente
   (`getByStayId`) en la respuesta cuando la haya — ya recomendado en el
@@ -440,7 +442,7 @@ lo dice en ningún lado:
   (`CancelReservationWithCreditNoteService`) también lo tiene, mismo
   commit.
 
-### 4.6 Mecanismo — comparación de montos en `handleReservationCompleted` (Bloque 3b, DECIDIDO 13/09/2026, sin implementar)
+### 4.6 Mecanismo — comparación de montos en `handleReservationCompleted` (Bloque 3b, DECIDIDO 13/09/2026, IMPLEMENTADO en `c9b1fd2`, verificado solo a nivel unitario)
 
 **Por qué existencia no alcanza acá, y por qué monto sí.** Toda reserva de
 City Ledger normal llega a `completed` con una AR `PENDIENTE_FACTURAR`
@@ -490,16 +492,22 @@ más de una?" cuando un stay se transfirió más de una vez (no hay `UNIQUE`
 sobre `accounts_receivable.stay_id`, `schema.sql`).
 
 **Ubicación exacta:** dentro de `handleReservationCompleted`
-(`outbox.handlers.ts:228-235` hoy), DESPUÉS de
-`financialRepo.settleByReservationId(reservationId)` (`:233`) -- mismo lugar
+(`outbox.handlers.ts:233-316`), DESPUÉS de
+`financialRepo.settleByReservationId(reservationId)` (`:246`) -- mismo lugar
 relativo que Bloque 3a usa en `handleReservationCancelled` (después de
 `voidByReservationId()`), por la misma disciplina de orden. Mismas dos
 precondiciones de guarda, en el mismo orden. El wiring del registry no
-cruza ninguna dependencia nueva su borde (`stayRepo`/`accountsReceivableRepo`
-ya llegan a `registerFinancialHandlers`, `outbox.handlers.ts:145-148` /
-`outbox.registry.ts:145`) -- lo que sí cambia es la firma de
-`handleReservationCompleted` y su call-site (`:146`); ningún test invoca
-ese handler hoy, así que el cambio de firma no rompe nada existente:
+cruzó ninguna dependencia nueva su borde (`stayRepo`/`accountsReceivableRepo`
+ya llegaban a `registerFinancialHandlers`, `outbox.handlers.ts:119` /
+`outbox.registry.ts:145`) -- lo que cambió fue la firma de
+`handleReservationCompleted` y su call-site (`:151`); al momento de
+diseñar esto, ningún test invocaba ese handler, así que el cambio de
+firma no rompió nada existente. **Implementado en `c9b1fd2`**, con 12
+tests nuevos con mocks (`src/workers/outbox.handlers.test.ts`, describe
+`handleReservationCompleted (City Ledger Bloque 3b...)`) -- ver
+`CITY-LEDGER-BLOQUE3B-INTEGRATION-VERIFY-001` en
+`docs/pendientes-2026-09-12.md` para lo que sigue sin correr contra
+Postgres real:
 1. `stayRepo.findByReservation(reservationId, event.businessId)` -- si no
    hay stay (reserva sin estadía, o pre-check-in, o la reserva se
    completó ANTES de que existiera transferencia), no hay nada que
@@ -529,7 +537,7 @@ nombraba `REFUND` -- ningún productor real de `REFUND` setea `stay_id`:
 `cancellation-refund.service.ts:329-342` setea `reservationId`, no
 `stayId`, así que un `REFUND` nunca entra en este cálculo): un
 `ADJUSTMENT` de precio nuevo (`confirmPriceAdjustment()`, arriba); un
-cargo nuevo a la habitación (`handleOrderConfirmed`, `outbox.handlers.ts:595`,
+cargo nuevo a la habitación (`handleOrderConfirmed`, `outbox.handlers.ts:676`,
 "cargo a la habitación" con `stay_id` seteado); un `CHARGE` de
 `approveScheduleChange()` (`stay.service.ts:470`, late check-out/early
 check-in); o un `ADJUSTMENT` del escape de NC de una orden de la estadía
@@ -559,7 +567,7 @@ haber sido un desayuno.
 si `reservation.price_adjusted` falla transitoriamente en el outbox y
 `reservation.completed` se procesa primero (el worker no relanza el
 evento que falló antes de seguir con el siguiente -- mismo mecanismo que
-motivó T-01, `outbox.handlers.ts:622-643`), este detector lee el saldo
+motivó T-01, `outbox.handlers.ts:703-724`), este detector lee el saldo
 ANTES de que el ajuste pendiente llegue, no ve nada, y el ajuste puede
 quedar sin liquidar nunca. **FN-2:** si la reserva se completa ANTES de
 que exista la transferencia, la precondición 2 sale por vacío y el
@@ -805,23 +813,30 @@ implementación real:**
    `ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001` en
    `docs/pendientes-2026-09-12.md` para el detalle completo, no
    duplicado acá.
-3. Detección/visibilidad en los 2 handlers de outbox (§4.5). **El lado
-   `handleReservationCancelled` ya se hizo, separado y ANTES del Bloque 2**
-   (Bloque 3a, 13/09/2026, `d48a6e8`) -- no dependía de `reverseTransfer()`
-   para tener sentido, a diferencia de lo que este punto asumía. El lado
-   `handleReservationCompleted` sigue sin diseñar, ver §4.5.
+3. Detección/visibilidad en los 2 handlers de outbox (§4.5). **Los dos
+   lados ya se hicieron, separados y ANTES del Bloque 2** -- ninguno
+   dependía de `reverseTransfer()` para tener sentido, a diferencia de lo
+   que este punto asumía: `handleReservationCancelled` (Bloque 3a,
+   13/09/2026, `d48a6e8`) y `handleReservationCompleted` (Bloque 3b,
+   13/09/2026, diseño en §4.6, implementado en `c9b1fd2`) -- verificación
+   contra Postgres real de los dos, todavía pendiente, ver
+   `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` y
+   `CITY-LEDGER-BLOQUE3B-INTEGRATION-VERIFY-001` en
+   `docs/pendientes-2026-09-12.md`.
 4. Bug colateral `voidByReservationId()` sin filtro de `customer_id`
    (§1.2) — bloque independiente, no bloquea 1-3.
 5. FACTURADO/COBRADO (§5) — diferido, sin decisión de si se construye.
 6. Guard de facturación previa a la transferencia + exposición del
    escape de NC (§9) — encontrado por el gate `architecture-governor`
    durante Bloque 5 (Caso 5 residual 3, 12-13/09/2026), independiente de
-   1-5, no depende de `reverseTransfer()`. **Implementado, commiteado,
-   sin pushear todavía:** §9.2 (exposición, `0f2aa24`/`04da4b4`) y §9.1
-   (guard duro, `d75296a`) — ver ambas secciones más abajo. §9.4 (tercera
-   ubicación del mismo concepto, del lado de la emisión — exposición,
-   decisión del dueño "Exponer, no bloquear", commit `bc5cb46`) también
-   implementada — ver esa sección más abajo.
+   1-5, no depende de `reverseTransfer()`. **Implementado:** §9.2
+   (exposición, `0f2aa24`/`04da4b4`) y §9.1 (guard duro, `d75296a`) — ver
+   ambas secciones más abajo. §9.4 (tercera ubicación del mismo concepto,
+   del lado de la emisión — exposición, decisión del dueño "Exponer, no
+   bloquear", commit `bc5cb46`) también implementada — ver esa sección
+   más abajo. Estado de push de estos 4 commits: consultar
+   `git log origin/main --oneline | grep <hash>` en el momento, no
+   asumirlo de este texto.
 
 ## 9. Guard de facturación previa (Bloque 6, 13/09/2026)
 
