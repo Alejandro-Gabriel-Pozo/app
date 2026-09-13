@@ -575,3 +575,56 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   cobertura de integración contra Postgres real para el predicado nuevo, y
   la carrera real contra un `requestInvoice()` concurrente sin probar.
   Origen: `pendientes-2026-09-12.md`.
+
+- **`CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` -- decisión del dueño tomada
+  y expuesto (no bloqueado), commit `bc5cb46` (13/09/2026, gate
+  `architecture-governor`).** Dirección inversa de §9.1: el lock de
+  `reservations` que toma `transferStayBalanceToReceivable()` solo cierra
+  la carrera cuando `requestInvoice()` corre PRIMERO -- si la
+  transferencia corre primero (crea el `PAYMENT` del huésped + `CHARGE`
+  de la empresa + AR, commitea) y DESPUÉS alguien pide facturar
+  individualmente ese mismo cargo del huésped, `requestInvoice()` no
+  tenía ningún guard ni señal que lo mirara. El dueño decidió
+  (`AskUserQuestion`, 13/09/2026, "Exponer, no bloquear"): no agregar un
+  guard que bloquee la emisión -- agregar un campo aditivo opcional que
+  la exponga para revisión manual de management, mismo patrón que §9.2
+  (`AccountReceivableMarkCollectedResult`).
+  Mecanismo: `RequestInvoiceResult extends Invoice { accountsReceivableWarning?:
+  AccountsReceivableWarningEntry[] }`, un método privado nuevo
+  (`resolveAccountsReceivableWarning()`) que consulta
+  `accountsReceivableRepo.getByStayId()` (Pick del constructor ampliado),
+  filtra `status !== 'REVERTIDO'` y normaliza a `undefined` -- nunca `[]`
+  -- cuando no hay nada que revisar (la presencia de la clave es la
+  señal, verificado con `'accountsReceivableWarning' in invoice`).
+  Acotado a Factura B: devuelve `undefined` de entrada para
+  `tx.type IN ('REFUND', 'ADJUSTMENT')`, porque `requestInvoice()` tiene 4
+  call-sites de producción dentro de los 2 orquestadores de NC que YA
+  calculan y exponen este mismo warning por su propio camino (§9.2) --
+  sin el scoping, el campo aparecería duplicado en el mismo payload HTTP,
+  rompiendo el contrato de §9.2 ("presente si y solo si hay algo que
+  revisar"). Verificado por revisión de código, no solo por el `if`:
+  entre la resolución de `tx` y el merge final de `requestInvoice()` hay
+  un solo otro `return` (el fork NC) -- no queda camino que calcule el
+  warning y lo tire, ni que lo omita debiendo exponerlo.
+  6 tests nuevos (89/89 en el archivo, suite completa 2190/2190, +6), 2
+  rondas de mutation testing (comentar el scoping de NC rompe
+  exactamente los 2 tests NC; comentar la normalización `undefined`-vs-`[]`
+  rompe exactamente los 2 tests "sin warning"). `tsc --noEmit` y
+  `lint:arch` limpios. Gate de diseño: HOLD -> 2 correcciones aplicadas
+  (scoping NC; gap de `retryExisting()` registrado como pendiente en vez
+  de cerrado). Gate de cierre: APPROVED WITH CONDITIONS -- los 2 spies de
+  `logger.warn` en los tests nuevos ahora se restauran con
+  `mockRestore()`, para no filtrar el stub al segundo `describe`
+  top-level del mismo archivo (`invoice.service.test.ts:1937`).
+  **4 residuos NO resueltos acá, con su ancla, en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`:** `CITY-LEDGER-GUARD-RETRY-EMITS-001` (el fast-path
+  idempotente de `requestInvoice()` puede emitir una factura real sin
+  warning ni log en ciertos estados previos),
+  `CITY-LEDGER-GUARD-INVOICE-EMIT-VERIFY-001` (sin cobertura de
+  integración contra Postgres real ni e2e HTTP),
+  `CITY-LEDGER-GUARD-NO-UI-SURFACE-001` (0 consumidores en
+  `appfrontend-main/src` para `accountsReceivableWarning`, tanto en §9.2
+  como en §9.4), y `CITY-LEDGER-GUARD-AR-VIVA-PREDICATE-TRIPLE-001` (el
+  predicado "AR viva" escrito 3 veces, sin extraer a un helper
+  compartido). Origen: `pendientes-2026-09-12.md`.

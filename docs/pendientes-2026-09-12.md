@@ -146,31 +146,29 @@ cuando se pushea.
   y corra la transferencia contra Postgres real, y si el tiempo lo permite,
   un test de concurrencia real (2 conexiones, una insertando el `PENDING`
   dentro de su transacción mientras la otra intenta transferir).
-- **`CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001`** — Bloque 6, §9.1
-  (13/09/2026, gate `architecture-governor`, encontrado al revisar el
-  cierre de la extensión "en vuelo" -- una corrección anterior de este
-  mismo párrafo, el mismo día, ya había afirmado de más una vez).
-  El lock de `reservations` que toma `transferStayBalanceToReceivable()`
-  solo cierra la carrera cuando `requestInvoice()` corre PRIMERO (toma el
-  lock antes) -- ahí la transferencia queda esperando y ve la factura
-  `PENDING`/`ISSUED` ya committeada, bloquea correctamente. **La dirección
-  contraria sigue sin guard:** si la transferencia corre PRIMERO (lock,
-  ninguna factura todavía, crea el `PAYMENT` del huésped + `CHARGE` de la
-  empresa + AR, commitea), y RECIÉN DESPUÉS alguien pide facturar ese
-  mismo cargo del huésped, `InvoiceService.requestInvoice()` no tiene
-  ningún guard que mire si la estadía ya se transfirió a una empresa --
-  sus únicos guards son idempotencia propia, `resolveInvoiceLinkage()`
-  sobre el mismo `ftId`, y orden/reserva `CANCELLED`
-  (`invoice.service.ts:344-457`). Sale una Factura B al huésped por un
-  cargo cuyo saldo económico ya está en la cuenta corriente de la empresa
-  -- el mismo crédito fantasma que §9 entero existe para prevenir, por la
-  dirección que §9.1 no cubre. Preexistente desde el diseño original de
-  §9.1 (no introducido por la extensión "en vuelo" -- esa extensión
-  angosta la ventana de la OTRA dirección, nunca ensancha esta). Requiere
-  diseño propio (¿guard nuevo en `requestInvoice()` que mire si el
-  `financial_transaction_id` ya generó un `CHARGE` espejo contra una
-  empresa? ¿mismo predicado o uno distinto?) y su propio gate -- no
-  decidido ni implementado acá.
+- **`CITY-LEDGER-GUARD-RETRY-EMITS-001`** — §9.4, encontrado por el gate
+  `architecture-governor` al revisar el cierre de
+  `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` (13/09/2026, commit
+  `bc5cb46`), NO cerrado en ese bloque. `requestInvoice()` tiene un
+  fast-path idempotente (`invoice.service.ts:422`,
+  `if (existing) return this.retryExisting(existing);`) que corre ANTES
+  de que el nuevo warning de §9.4 pueda calcularse. `retryExisting()`
+  (`invoice.service.ts:1200-1218`) no se limita a devolver una invoice ya
+  `ISSUED`: llama `issue()` de verdad -- una emisión REAL contra AFIP --
+  salvo que el estado previo sea `ISSUED` o `FAILED_UNCERTAIN` con
+  `afipContacted`. Escenario concreto: invoice `PENDING` -> AFIP rechaza
+  (`REJECTED`, sin warning porque `REJECTED` no bloquea en ningún guard de
+  esta familia) -> `transferStayBalanceToReceivable()` corre sin
+  obstáculo -> alguien reintenta el mismo `POST /api/invoices` ->
+  `retryExisting()` -> `issue()` real -> Factura B emitida al huésped por
+  un cargo cuyo saldo ya está en la cuenta corriente de la empresa, sin
+  warning ni log. El tipo `RequestInvoiceResult` no lo puede detectar
+  (propiedad opcional -- `Invoice` sigue siendo asignable, el compilador
+  no fuerza el campo en ningún camino). Requiere diseño propio (¿cubrir la
+  rama de `retryExisting()` que llega a `issue()` con el mismo
+  `resolveAccountsReceivableWarning()`? ¿bloquear en vez de exponer, dado
+  que acá sí hay un guard hermano — §9.1 — para inspirarse?) y su propio
+  gate -- no decidido ni implementado acá.
 - **`CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`** (R2, deuda con ancla,
   defensiva hoy) — Bloque 6, §9.1 (13/09/2026, gate
   `architecture-governor`): un cargo *solo-estadía* (sin `reservationId`
@@ -231,6 +229,45 @@ cuando se pushea.
   cambios) y por la pantalla `/dashboard/facturacion`, así que es una
   regresión de UX en un atajo, no de acceso. No nombrado por el dueño al
   decidir -- registrado para que se note si alguien lo reporta.
+- **`CITY-LEDGER-GUARD-INVOICE-EMIT-VERIFY-001`** — §9.4 (13/09/2026, gate
+  `architecture-governor`, commit `bc5cb46`). Toda la evidencia de
+  `resolveAccountsReceivableWarning()` es unitaria contra
+  `FakeAccountsReceivableRepo` -- cero cobertura de integración contra el
+  `getByStayId()` real de `SqlAccountsReceivableRepository` sobre
+  Postgres, y ninguna prueba end-to-end vía `POST /api/invoices`. Mismo
+  hueco que `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` de arriba,
+  aplicado al camino de emisión en vez del de transferencia. Confirmar:
+  agregar un test de integración que seedee una `accounts_receivable`
+  real vinculada a la `stayId` del cargo y corra `requestInvoice()`
+  contra Postgres real, y si el tiempo lo permite, un test end-to-end vía
+  `POST /api/invoices`.
+- **`CITY-LEDGER-GUARD-NO-UI-SURFACE-001`** — §9.2 + §9.4 (13/09/2026, gate
+  `architecture-governor`, commit `bc5cb46`). `accountsReceivableWarning`
+  (el campo aditivo que tanto el escape de NC -- §9.2 -- como la emisión
+  de Factura B -- §9.4 -- exponen para revisión manual de management)
+  tiene **0 consumidores** en `appfrontend-main/src` (verificado por
+  grep). La decisión del dueño en ambos casos fue "exponer, no
+  bloquear" -- hoy esa exposición llega solo a los logs del servidor
+  (`nc_escape_con_ar_viva`, `factura_con_ar_viva`) y al JSON crudo de la
+  respuesta HTTP, sin ninguna pantalla que se lo muestre a management. Sin
+  esto, §9.2 y §9.4 quedan "resueltos" en el sentido de que no bloquean
+  nada indebidamente, pero la revisión manual que ambos dicen habilitar
+  no tiene dónde ocurrir todavía. Confirmar: diseñar y construir la
+  pantalla/sección del dashboard (`appfrontend-main`) que liste estas
+  facturas/notas de crédito con `accountsReceivableWarning` presente,
+  para que management la revise -- bloque de producto propio, con su
+  propio gate.
+- **`CITY-LEDGER-GUARD-AR-VIVA-PREDICATE-TRIPLE-001`** — §9.2 + §9.4
+  (13/09/2026, gate `architecture-governor`, commit `bc5cb46`). El
+  predicado "¿esta estadía/reserva tiene una AR viva?" (filtrar
+  `status !== 'REVERTIDO'` + mapear a `AccountsReceivableWarningEntry`)
+  está escrito 3 veces: `cancel-order-with-credit-note.service.ts:375-386`,
+  el equivalente en `cancel-reservation-with-credit-note.service.ts`, y
+  ahora `invoice.service.ts::resolveAccountsReceivableWarning()`. Si
+  mañana entra un estado nuevo tipo `ANULADO`, hay que tocar los 3
+  lugares a mano. El tipo compartido (`AccountsReceivableWarningEntry`)
+  ya vive en `cancel-with-credit-note.ts:56` -- casa natural para un
+  helper, no extraído todavía. Bloque aparte, no decidido.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí

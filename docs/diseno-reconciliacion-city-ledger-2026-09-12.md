@@ -580,8 +580,9 @@ implementación real:**
    1-5, no depende de `reverseTransfer()`. **Implementado, commiteado,
    sin pushear todavía:** §9.2 (exposición, `0f2aa24`/`04da4b4`) y §9.1
    (guard duro, `d75296a`) — ver ambas secciones más abajo. §9.4 (tercera
-   ubicación del mismo concepto, del lado de la emisión) queda
-   registrada, sin autorizar ni preguntar todavía.
+   ubicación del mismo concepto, del lado de la emisión — exposición,
+   decisión del dueño "Exponer, no bloquear", commit `bc5cb46`) también
+   implementada — ver esa sección más abajo.
 
 ## 9. Guard de facturación previa (Bloque 6, 13/09/2026)
 
@@ -776,22 +777,27 @@ importan" como afirmaba una versión anterior de este párrafo** -- esa
 frase fue un error de esta misma sesión, encontrado por el gate al
 revisar el cierre.
 
-**La dirección que sigue abierta, sin guard, es la contraria: la
-transferencia corre PRIMERO.** `transferStayBalanceToReceivable()` toma
-el lock, no ve ninguna factura (todavía no existe ninguna), crea el
-`PAYMENT` del huésped + el `CHARGE` de la empresa + la fila de AR, y
-commitea. `InvoiceService.requestInvoice()` corre DESPUÉS, sobre el MISMO
-cargo del huésped -- sus únicos guards son la idempotencia propia,
-`resolveInvoiceLinkage()` sobre ese mismo `ftId`, y los guards de orden/
-reserva `CANCELLED` (`invoice.service.ts:344-457`); **ninguno mira si la
-estadía ya se transfirió a una empresa.** Sale una Factura B al huésped
-por un cargo cuyo saldo económico ya está en la cuenta corriente de la
-empresa -- el mismo crédito fantasma que este bloque entero (§9) existe
-para prevenir, por la dirección que §9.1 no cubre. Preexistente desde el
-diseño original de §9.1, no introducido por la extensión "en vuelo" --
-esta extensión angosta la ventana de una dirección, nunca ensancha la
-otra. Registrado con su propia ancla en
-`docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001`.
+**La dirección contraria -- la transferencia corre PRIMERO -- ya no
+carece de señal, pero sigue sin guard, por decisión del dueño.**
+`transferStayBalanceToReceivable()` toma el lock, no ve ninguna factura
+(todavía no existe ninguna), crea el `PAYMENT` del huésped + el `CHARGE`
+de la empresa + la fila de AR, y commitea. `InvoiceService.requestInvoice()`
+corre DESPUÉS, sobre el MISMO cargo del huésped -- sus únicos guards
+siguen siendo la idempotencia propia, `resolveInvoiceLinkage()` sobre ese
+mismo `ftId`, y los guards de orden/reserva `CANCELLED`
+(`invoice.service.ts:344-457`); **ninguno bloquea si la estadía ya se
+transfirió a una empresa.** Sale una Factura B al huésped por un cargo
+cuyo saldo económico ya está en la cuenta corriente de la empresa -- el
+mismo crédito fantasma que este bloque entero (§9) existe para prevenir,
+por la dirección que §9.1 no cubre. Preexistente desde el diseño
+original de §9.1, no introducido por la extensión "en vuelo" -- esa
+extensión angosta la ventana de una dirección, nunca ensancha la otra.
+El dueño decidió (`AskUserQuestion`, "Exponer, no bloquear") no cerrar
+esto con un guard sino con exposición -- ver §9.4 más abajo (implementado,
+commit `bc5cb46`). Cerrado en ese sentido en
+`docs/resuelto.md` (`CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001`, `bc5cb46`);
+el residuo de `retryExisting()` que §9.4 no cierra queda en
+`docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-RETRY-EMITS-001`.
 
 Los cargos ligados a una **orden** (`orderId`) siguen sin quedar
 serializados en ninguna dirección -- `requestInvoice()` para una orden
@@ -878,7 +884,7 @@ bloquea.
   el caso "hay deuda corporativa viva" (el gate lo identificó como
   bloqueo accidental con diagnóstico equivocado) — bloque aparte.
 
-### 9.4 Tercera ubicación, encontrada por el gate — sin autorizar, sin preguntar todavía
+### 9.4 Tercera ubicación — exposición en la emisión (implementado, commit `bc5cb46`)
 
 El gate identificó una TERCERA ubicación del mismo concepto que ni 9.1
 (guard en la transferencia) ni 9.2 (exposición en la NC) previenen: un
@@ -886,6 +892,97 @@ guard del lado de la EMISIÓN ("no facturar al huésped un cargo de una
 estadía YA transferida a una empresa"). Cubre el orden inverso — se
 transfiere primero (sin invoice), y DESPUÉS alguien factura al huésped —
 que 9.1 no ve (no había invoice todavía al momento de transferir) y que
-9.2 solo expone, no previene. El dueño decidió sobre transferencia y
-sobre NC; sobre emisión no se le preguntó todavía. No construir por
-cuenta propia — registrado acá como ítem abierto, sin bloque asignado.
+9.2 solo expone, no previene.
+
+**Decisión del dueño (13/09/2026, `AskUserQuestion`, tras un agente de
+investigación que confirmó el mecanismo real y armó las opciones):
+"Exponer, no bloquear"** — mismo tratamiento que §9.2. La Factura B (o la
+NC) sale igual, es un documento fiscal real y AFIP no sabe nada de la
+cuenta corriente interna; se expone un campo aditivo +
+`logger.warn({ evento: 'factura_con_ar_viva', ... })` para revisión
+manual de management.
+
+**Mecanismo (`InvoiceService.requestInvoice()`), 1 ronda de gate
+(HOLD → APPROVED WITH CONDITIONS):**
+- `Pick<AccountsReceivableRepository, ...>` inyectado suma
+  `'getByStayId'`.
+- Tipo de retorno aditivo `RequestInvoiceResult extends Invoice { accountsReceivableWarning?: AccountsReceivableWarningEntry[] }`
+  — mismo patrón que `AccountReceivableMarkCollectedResult` (§F1-Pieza 3)
+  y que §9.2, reusando LOS MISMOS 2 tipos que §9.2 ya definió
+  (`cancel-with-credit-note.ts:53-61`), sin duplicarlos.
+- `resolveAccountsReceivableWarning(tx)`, privado, llamado justo después
+  de resolver `tx` (antes del fork `tx.type === 'REFUND'/'ADJUSTMENT'`):
+  `getByStayId(tx.stayId)`, filtra `!== 'REVERTIDO'`, normaliza
+  `undefined` — nunca `[]` — si no hay nada que revisar.
+- **Acotado a Factura B normal, a propósito — NO aplica a Nota de
+  Crédito** (`tx.type` `REFUND`/`ADJUSTMENT`, `return undefined`
+  explícito como primera línea del método). El gate encontró en la ronda
+  de diseño que cubrir NC acá duplicaría el campo en el MISMO payload
+  HTTP: los 2 orquestadores del escape con NC (§9.2) heredan `stayId` en
+  el `ADJUSTMENT` que crean y YA calculan/exponen este mismo warning por
+  su propio camino (`creditNote.accountsReceivableWarning` +
+  `result.accountsReceivableWarning` hermano, calculados por 2 caminos
+  distintos) — rompería el contrato "presente si y solo si hay algo que
+  revisar" que §9.2 ya documentó. El único productor de `REFUND` del
+  repo (`cancellation-refund.service.ts`) nunca setea `stayId`, así que
+  el método corta ahí igual. El hueco angosto que queda (facturar un
+  `ADJUSTMENT` huérfano, nunca facturado por ninguno de los 2
+  orquestadores, directo por `POST /api/invoices`) es territorio de
+  `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:274`, que
+  ya planea tocar `requestInvoice()` — no se cierra acá.
+- **Sin filtro redundante `ar.financialTransactionId !== tx.id`.** El
+  `CHARGE` que `transferStayBalanceToReceivable()` crea contra la
+  EMPRESA nunca lleva `stayId` (a propósito, `accounts-receivable.service.ts:292-315`,
+  invariante fijado por test en `accounts-receivable.service.test.ts:320`)
+  — facturar ESE cargo (el camino legítimo, F1-Pieza 3/C1-Fase C) nunca
+  llega con `tx.stayId` no nulo, así que el `if (!tx.stayId) return undefined;`
+  ya lo excluye. Un filtro redundante ahí sería código muerto sin cerca
+  que lo pruebe — el gate pidió sacarlo y anclar el invariante real en un
+  comentario en su lugar.
+- Evento de log propio, `factura_con_ar_viva` — NO reusa
+  `nc_escape_con_ar_viva` (§9.2), son 2 mecanismos distintos y las
+  consultas de log tienen que poder separarlos.
+
+**Residuo declarado, no cerrado en este bloque (el gate lo encontró y
+ofreció como alternativa a cerrarlo acá):** `retryExisting()` (el
+fast-path idempotente de `requestInvoice()`, que corre ANTES de resolver
+`tx`) puede terminar emitiendo el comprobante de verdad si el estado
+previo es `PENDING`, `REJECTED`, o `FAILED_UNCERTAIN` sin `afipContacted`
+— no solo devolver un comprobante ya `ISSUED` como en §9.2. Escenario
+real: factura rechazada por AFIP (`REJECTED`, sin AR todavía) →
+transferencia corre después (§9.1 no bloquea `REJECTED`) → reintento del
+mismo POST → `retryExisting()` → `issue()` real, sin warning ni log. Ver
+`docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-RETRY-EMITS-001`.
+
+**Tests:** 6 nuevos en `invoice.service.test.ts` (con AR viva → warning +
+log; sin AR → `undefined`, clave ausente, sin log; `REVERTIDO` →
+filtrada; sin `stayId` (cargo de la empresa) → `undefined`, ni siquiera
+consulta el repo; `ADJUSTMENT` con AR viva → no expone, no consulta;
+`REFUND` con AR viva → no expone, no consulta). Mutación verificada dos
+veces: sacar el scoping NC pone en rojo exactamente los 2 tests de
+NC; sacar la normalización a `undefined` pone en rojo exactamente los 2
+tests que esperan la clave ausente. 8 fakes de `AccountsReceivableRepository`
+en tests actualizados con `getByStayId` (1 unitario + 7 de integración,
+todos no-op salvo el unitario). Suite completa 2190/2190 (+6), sin
+regresión. *(La suite de integración no se cita acá a propósito -- los 7
+stubs tocados por este commit son no-op y no la mueven; cualquier
+conteo de integración pertenece al commit que efectivamente la
+modifique, no a este.)*
+
+**Sin cobertura de integración contra Postgres real específica de este
+campo** (el predicado depende del SQL real de `getByStayId()`), ni
+prueba end-to-end por HTTP — declarado, no cerrado
+(`CITY-LEDGER-GUARD-INVOICE-EMIT-VERIFY-001`,
+`docs/pendientes-2026-09-12.md`).
+
+**Sin superficie de UI, declarado:** `accountsReceivableWarning` (acá y en
+§9.2) tiene 0 consumidores en `appfrontend-main/src` — la exposición
+llega solo a logs de servidor y al JSON crudo de la respuesta; management
+no tiene todavía una pantalla que se lo muestre
+(`CITY-LEDGER-GUARD-NO-UI-SURFACE-001`, `docs/pendientes-2026-09-12.md`).
+
+**Predicado "AR viva" triplicado, declarado:** el mismo filtro
+`status !== 'REVERTIDO'` + mapeo a `AccountsReceivableWarningEntry` vive
+3 veces (orden NC, reserva NC, y este método) sin extraer a un helper
+compartido (`CITY-LEDGER-GUARD-AR-VIVA-PREDICATE-TRIPLE-001`,
+`docs/pendientes-2026-09-12.md`).
