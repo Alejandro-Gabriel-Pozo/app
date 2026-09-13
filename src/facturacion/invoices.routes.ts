@@ -7,7 +7,14 @@
  * PUT  /api/business-profile/afip-credentials        — MANAGEMENT
  * DELETE /api/business-profile/afip-credentials      — MANAGEMENT
  *
- * POST /api/invoices          — FRONT_DESK (pedir el CAE de un cobro ya existente)
+ * POST /api/invoices          — FRONT_DESK (pedir el CAE de un cobro ya existente);
+ *      si el cargo pertenece a un cliente kind='COMPANY' exige ADEMÁS
+ *      MANAGEMENT, chequeo inline en el handler (13/09/2026,
+ *      `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3, ver
+ *      `requireManagementForCompanyCharge()` más abajo) — NO aplica si el
+ *      cargo es REFUND/ADJUSTMENT (Nota de Crédito del escape de
+ *      cancelación, decisión separada del dueño: sigue alcanzando con
+ *      `Roles.EMISOR_NOTA_CREDITO`).
  * GET  /api/invoices/unreconciled — FRONT_DESK (10/09/2026, bandeja "factura
  *      viva no conciliada" -- ver InvoiceRepository.listUnreconciledLiveInvoices().
  *      Registrada ANTES de /:id, no la muevas después)
@@ -41,8 +48,10 @@ import { SqlInvoiceRepository } from './sql.invoice.repository.js';
 import { InvoiceService } from './invoice.service.js';
 import { InvoicePdfService } from './invoice-pdf.service.js';
 import { SqlFinancialTransactionRepository } from '../clientes-finanzas/sql.financial-transaction.repository.js';
+import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import { SqlBusinessProfileRepository } from '../repositories/sql.business-profile.repository.js';
 import { SqlCustomerRepository } from '../clientes-finanzas/sql.customer.repository.js';
+import type { CustomerRepository } from '../clientes-finanzas/customer.repository.js';
 import { SqlOrderRepository } from '../pos-menu/sql.order.repository.js';
 import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
@@ -86,6 +95,77 @@ export function buildInvoiceService(req: Request): InvoiceService {
   );
 }
 
+/**
+ * Hallazgo 3 de `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` (13/09/2026, gate
+ * `architecture-governor`, decisión del dueño vía `AskUserQuestion`):
+ * facturar individualmente un cargo de un cliente EMPRESA es una decisión
+ * de facturación corporate -- mismo criterio que ya usan
+ * transfer-to-receivable/mark-invoiced/mark-collected/consolidated (todos
+ * `Roles.MANAGEMENT`, ver `docs/rbac-matriz-endpoints.md`). Un cliente
+ * INDIVIDUAL sigue siendo `Roles.FRONT_DESK` (operación de mostrador
+ * normal, sin cambios).
+ *
+ * **Acotado a Factura, a propósito (decisión separada del dueño,
+ * 13/09/2026):** NO aplica si `tx.type` es `REFUND`/`ADJUSTMENT` -- ese es
+ * el fork de Nota de Crédito del escape de cancelación
+ * (`invoice.service.ts:402`), que ya tiene su propio rol dedicado
+ * (`Roles.EMISOR_NOTA_CREDITO`, deliberadamente por debajo de `MANAGEMENT`,
+ * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §10 q7,
+ * con grounding ERP). Este guard no reabre esa decisión -- si el fork de
+ * `invoice.service.ts:402` cambia de forma, revisar este predicado también.
+ *
+ * Función inline llamada a mano en el handler (NO middleware): necesita el
+ * body ya parseado por Zod para saber a qué cargo se refiere, antes de
+ * poder resolver a qué cliente pertenece. Mismo patrón que el
+ * `overrideHousekeeping`/`overridePendingBalance` de `stays.routes.ts`
+ * (elevación condicional a MANAGEMENT, 403 explícito), con el estilo de
+ * lookup-y-responder-uno-mismo de `requireOwnReservation()`
+ * (`api/routes/customer.routes.ts`). Un middleware Express nuevo en la
+ * cadena rompería la cerca `invoices.routes.test.ts` que cuenta
+ * `route.stack.length === 3` ("gate + authorize + handler") para los 2 POST.
+ */
+export async function requireManagementForCompanyCharge(
+  financialTransactionId: string,
+  financialTransactionRepo: Pick<FinancialTransactionRepository, 'getById'>,
+  customerRepo: Pick<CustomerRepository, 'getById'>,
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  const tx = await financialTransactionRepo.getById(financialTransactionId);
+  // No encontrado: no es este guard el que decide el 404 -- requestInvoice()
+  // ya lanza FinancialTransactionNotFoundError (invoice.service.ts:377) más
+  // adelante en el mismo handler. Dejar pasar.
+  if (!tx) return true;
+
+  if (tx.type === 'REFUND' || tx.type === 'ADJUSTMENT') return true;
+
+  const customer = await customerRepo.getById(tx.customerId);
+  // `financial_transactions.customer_id` es `NOT NULL REFERENCES
+  // customers(id)` (schema.sql, columna `customer_id` de la tabla
+  // `financial_transactions`) -- un cargo sin cliente resoluble es
+  // inalcanzable hoy en producción. Fail-CLOSED de todos modos (no un `?.`
+  // mudo que deje pasar en silencio): si esa garantía alguna vez se rompe,
+  // mejor un 403 ruidoso que facturar sin poder confirmar a quién.
+  if (!customer) {
+    res.status(403).json({
+      code: 'FORBIDDEN',
+      message: 'No se pudo resolver el cliente de este cargo -- no se puede confirmar el permiso requerido.',
+    });
+    return false;
+  }
+  if (customer.kind !== 'COMPANY') return true;
+
+  const allowed = (req.user!.permissionGroups ?? []).includes(Roles.MANAGEMENT);
+  if (!allowed) {
+    res.status(403).json({
+      code: 'FORBIDDEN',
+      message: 'Facturar individualmente un cargo de un cliente empresa es una decisión de facturación corporate -- solo un encargado puede hacerlo.',
+    });
+    return false;
+  }
+  return true;
+}
+
 export function createInvoicesRouter(container: AppContainer): Router {
   const router = Router();
   const gate = requireModule(container, ModuleKey.FACTURACION);
@@ -98,6 +178,16 @@ export function createInvoicesRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = RequestInvoiceSchema.parse(req.body);
+
+        const allowed = await requireManagementForCompanyCharge(
+          body.financialTransactionId,
+          new SqlFinancialTransactionRepository(req.db!),
+          new SqlCustomerRepository(req.db!),
+          req,
+          res,
+        );
+        if (!allowed) return;
+
         const invoice = await buildInvoiceService(req).requestInvoice({
           businessId: req.user!.businessId!,
           financialTransactionId: body.financialTransactionId,

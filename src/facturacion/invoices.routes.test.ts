@@ -20,9 +20,11 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { createInvoicesRouter, createAfipCredentialsRouter } from './invoices.routes.js';
+import { createInvoicesRouter, createAfipCredentialsRouter, requireManagementForCompanyCharge } from './invoices.routes.js';
 import type { AppContainer } from '../container.js';
 import type { Request, Response } from 'express';
+import type { FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
+import { Customer } from '../clientes-finanzas/customer.entities.js';
 
 function fakeRes() {
   const res: Partial<Response> & { statusCode?: number; body?: unknown } = {};
@@ -207,6 +209,156 @@ describe('POST /api/invoices -- validación de body (Zod)', () => {
     await handler(req, res, next);
 
     expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+describe('requireManagementForCompanyCharge() -- hallazgo 3 de INVOICE-CHARGES-GUARD-INDIVIDUAL-01 (13/09/2026, gate `architecture-governor`)', () => {
+  function fakeFinancialTransactionRepo(tx: FinancialTransaction | null) {
+    return { getById: vi.fn(async () => tx) };
+  }
+  function fakeCustomerRepo(customer: Customer | undefined) {
+    return { getById: vi.fn(async () => customer) };
+  }
+  function makeTx(overrides: Partial<FinancialTransaction> = {}): FinancialTransaction {
+    return {
+      id: 'ft-1', businessId: 'biz-1', customerId: 'cust-empresa', type: 'CHARGE',
+      amount: 1000, currency: 'ARS', status: 'SETTLED', createdAt: new Date(),
+      ...overrides,
+    } as FinancialTransaction;
+  }
+  function reqWithGroups(groups: string[]): Request {
+    return { user: { id: 'identity-1', businessId: 'biz-1', permissionGroups: groups } } as unknown as Request;
+  }
+
+  it('cliente COMPANY, sin MANAGEMENT -- bloquea con 403 FORBIDDEN', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(makeTx());
+    const customerRepo = fakeCustomerRepo(new Customer('cust-empresa', 'Empresa SA', [], 'COMPANY'));
+    const req = reqWithGroups(['FRONT_DESK']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-1', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(false);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.body).toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('cliente COMPANY, con MANAGEMENT -- deja pasar', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(makeTx());
+    const customerRepo = fakeCustomerRepo(new Customer('cust-empresa', 'Empresa SA', [], 'COMPANY'));
+    const req = reqWithGroups(['FRONT_DESK', 'MANAGEMENT']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-1', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(true);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('cliente INDIVIDUAL -- FRONT_DESK solo alcanza, sin regresión del mostrador normal', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(makeTx({ customerId: 'cust-individual' }));
+    const customerRepo = fakeCustomerRepo(new Customer('cust-individual', 'Huésped', [], 'INDIVIDUAL'));
+    const req = reqWithGroups(['FRONT_DESK']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-1', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(true);
+    expect(res.status).not.toHaveBeenCalled();
+    // No hace falta resolver el cliente si el guard de tipo ya dejó pasar --
+    // pero acá SÍ es COMPANY-candidato (CHARGE), así que el guard consulta
+    // el cliente igual; lo que importa es que no bloquea.
+  });
+
+  it('tx.type REFUND -- Nota de Crédito del escape de cancelación, NO aplica el guard aunque el cliente sea COMPANY sin MANAGEMENT', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(makeTx({ type: 'REFUND' }));
+    const customerRepo = fakeCustomerRepo(new Customer('cust-empresa', 'Empresa SA', [], 'COMPANY'));
+    const req = reqWithGroups(['EMISOR_NOTA_CREDITO']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-1', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(true);
+    expect(res.status).not.toHaveBeenCalled();
+    // Mutante que esto caza: si alguien saca la condición `tx.type ===
+    // 'REFUND' || tx.type === 'ADJUSTMENT'`, este test empieza a fallar
+    // (pasaría a exigir MANAGEMENT también acá).
+    expect(customerRepo.getById).not.toHaveBeenCalled();
+  });
+
+  it('tx.type ADJUSTMENT -- mismo bypass que REFUND', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(makeTx({ type: 'ADJUSTMENT' }));
+    const customerRepo = fakeCustomerRepo(new Customer('cust-empresa', 'Empresa SA', [], 'COMPANY'));
+    const req = reqWithGroups(['EMISOR_NOTA_CREDITO']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-1', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(true);
+    expect(customerRepo.getById).not.toHaveBeenCalled();
+  });
+
+  it('financial_transaction inexistente -- deja pasar, requestInvoice() decide el 404', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(null);
+    const customerRepo = fakeCustomerRepo(undefined);
+    const req = reqWithGroups(['FRONT_DESK']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-inexistente', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(true);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(customerRepo.getById).not.toHaveBeenCalled();
+  });
+
+  it('cliente irresoluble (inalcanzable hoy por la FK NOT NULL de schema.sql) -- fail-closed, 403', async () => {
+    const financialTransactionRepo = fakeFinancialTransactionRepo(makeTx());
+    const customerRepo = fakeCustomerRepo(undefined);
+    const req = reqWithGroups(['MANAGEMENT']);
+    const res = fakeRes();
+
+    const allowed = await requireManagementForCompanyCharge('ft-1', financialTransactionRepo, customerRepo, req, res);
+
+    expect(allowed).toBe(false);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.body).toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+describe('POST /api/invoices -- guard MANAGEMENT para cliente EMPRESA, cableado en el handler real', () => {
+  const COMPANY_TX_ROW = {
+    id: 'ft-1', business_id: 'biz-1', customer_id: 'cust-empresa', reservation_id: null,
+    order_id: null, stay_id: null, idempotency_key: null, type: 'CHARGE', amount: '1000',
+    currency: 'ARS', status: 'SETTLED', notes: null, payment_method: null, shift_id: null,
+    card_installments: null, card_surcharge_amount: null, confirmed_by: null,
+    reversed_invoice_id: null, settled_invoice_id: null, created_at: new Date(),
+  };
+  const COMPANY_CUSTOMER_ROW = {
+    id: 'cust-empresa', display_name: 'Empresa SA', password_hash: null, kind: 'COMPANY',
+    active: true, customer_number: 1, enable_current_account: true,
+    ccm_id: null, channel: null, ccm_value: null, is_primary: null, verified_at: null,
+  };
+
+  it('FRONT_DESK sin MANAGEMENT, cargo de una EMPRESA -- 403, nunca llama next() ni construye InvoiceService', async () => {
+    const router = createInvoicesRouter(FAKE_CONTAINER);
+    const handler = getHandler(router, 'post', '/');
+    const req = {
+      body: { financialTransactionId: 'ft-1' },
+      user: { id: 'identity-1', businessId: 'biz-1', permissionGroups: ['FRONT_DESK'] },
+      db: fakeDb(async (sql: string) => {
+        if (sql.includes('FROM financial_transactions')) return { rows: [COMPANY_TX_ROW] };
+        if (sql.includes('FROM customers')) return { rows: [COMPANY_CUSTOMER_ROW] };
+        throw new Error(`no debería llegar acá -- requestInvoice() no debe construirse: ${sql}`);
+      }),
+    } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.body).toMatchObject({ code: 'FORBIDDEN' });
+    expect(next).not.toHaveBeenCalled();
   });
 });
 
