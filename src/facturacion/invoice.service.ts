@@ -63,7 +63,7 @@ import {
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
-import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems } from './cancel-with-credit-note.js';
+import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems, type AccountsReceivableWarningEntry } from './cancel-with-credit-note.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import { logger } from '../logger.js';
 
@@ -80,6 +80,21 @@ const CONSUMIDOR_FINAL: Buyer = {
   docNro: '0',
   condicionIvaReceptorId: CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL,
 };
+
+/**
+ * §9.4 (13/09/2026, gate `architecture-governor`, decisión del dueño --
+ * `AskUserQuestion`, "Exponer, no bloquear"): la dirección inversa de §9.1
+ * -- la transferencia corre PRIMERO (crea el `PAYMENT` del huésped +
+ * `CHARGE` de la empresa + AR), y DESPUÉS alguien pide facturar
+ * individualmente ese mismo cargo del huésped. `requestInvoice()` no tiene
+ * ningún guard que mire eso -- este campo aditivo (mismo patrón
+ * `AccountReceivableMarkCollectedResult`/`accountsReceivableWarning` de
+ * §9.2) expone si la estadía del cargo que se está facturando ya tiene un
+ * traspaso vivo, para revisión manual de management. NO bloquea nada.
+ */
+export interface RequestInvoiceResult extends Invoice {
+  accountsReceivableWarning?: AccountsReceivableWarningEntry[];
+}
 
 export interface RequestInvoiceInput {
   businessId: string;
@@ -167,7 +182,7 @@ export class InvoiceService {
      */
     private readonly accountsReceivableRepo: Pick<
       AccountsReceivableRepository,
-      'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId'
+      'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'
     >,
     /**
      * I9 (24/08/2026, pendientes-2026-08-24.md) — invoices es DOCUMENTO
@@ -341,7 +356,62 @@ export class InvoiceService {
     };
   }
 
-  async requestInvoice(input: RequestInvoiceInput): Promise<Invoice> {
+  /**
+   * §9.4 (13/09/2026, gate `architecture-governor`, decisión del dueño --
+   * "Exponer, no bloquear"). Devuelve `undefined` -- nunca `[]` -- si no
+   * hay nada que revisar (mismo criterio de normalización que §9.2).
+   *
+   * Acotado a Factura B normal, a propósito: NO aplica a Nota de Crédito
+   * (`tx.type` `REFUND`/`ADJUSTMENT`). Los 3 únicos productores de esos
+   * tipos en el repo son `cancellation-refund.service.ts` (`REFUND`, nunca
+   * setea `stayId` -- este método corta antes igual) y los 2 orquestadores
+   * del escape con NC (`ADJUSTMENT`, heredan `stayId` Y YA calculan/exponen
+   * este mismo warning por su propio camino,
+   * `cancel-with-credit-note.ts:53-61`, §9.2) -- cubrirlo acá también
+   * duplicaría el campo en el mismo payload HTTP
+   * (`creditNote.accountsReceivableWarning` + el hermano de `result`),
+   * rompiendo el contrato "presente si y solo si hay algo que revisar" que
+   * §9.2 ya documentó. El hueco angosto que queda (facturar un
+   * `ADJUSTMENT` huérfano, nunca facturado por ninguno de los 2
+   * orquestadores, directo por `POST /api/invoices`) es territorio de
+   * `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:274`, que
+   * ya planea tocar `requestInvoice()` -- no se cierra acá.
+   */
+  private async resolveAccountsReceivableWarning(tx: FinancialTransaction): Promise<AccountsReceivableWarningEntry[] | undefined> {
+    if (tx.type === 'REFUND' || tx.type === 'ADJUSTMENT') return undefined;
+
+    // El `CHARGE` que `transferStayBalanceToReceivable()` crea contra la
+    // EMPRESA nunca lleva `stayId` -- a propósito, para no reabrir el
+    // folio del huésped (`accounts-receivable.service.ts:292-315`,
+    // invariante fijado por test en
+    // `accounts-receivable.service.test.ts:320`). Por eso no hace falta
+    // filtrar `ar.financialTransactionId !== tx.id` acá: facturar ESE
+    // cargo (el camino legítimo, F1-Pieza 3/C1-Fase C) nunca llega con
+    // `tx.stayId` no nulo -- este `if` ya lo excluye.
+    if (!tx.stayId) return undefined;
+
+    const entries = (await this.accountsReceivableRepo.getByStayId(tx.stayId))
+      .filter((ar) => (ar.status as string) !== 'REVERTIDO')
+      .map((ar): AccountsReceivableWarningEntry => ({
+        accountsReceivableId: ar.id,
+        companyCustomerId: ar.companyCustomerId,
+        status: ar.status,
+        amount: ar.amount,
+      }));
+    if (entries.length === 0) return undefined;
+
+    // Evento propio, NO reusar `nc_escape_con_ar_viva` (§9.2) -- son dos
+    // mecanismos distintos (acá es la Factura B/emisión, no el escape de
+    // NC) y las consultas de log tienen que poder separarlos.
+    logger.warn(
+      { evento: 'factura_con_ar_viva', financialTransactionId: tx.id, stayId: tx.stayId, accountsReceivableWarning: entries },
+      '[InvoiceService] requestInvoice(): la estadía de este cargo ya tiene un traspaso vivo a una empresa -- revisar manualmente.',
+    );
+
+    return entries;
+  }
+
+  async requestInvoice(input: RequestInvoiceInput): Promise<RequestInvoiceResult> {
     // Idempotencia DETERMINÍSTICA por financial_transaction_id (ver
     // docblock de schema.sql en la tabla invoices) — un reintento (doble
     // click, timeout del cliente, o el usuario volviendo a intentar tras
@@ -375,6 +445,8 @@ export class InvoiceService {
 
     const tx = await this.financialTransactionRepo.getById(input.financialTransactionId);
     if (!tx) throw new FinancialTransactionNotFoundError(input.financialTransactionId);
+
+    const accountsReceivableWarning = await this.resolveAccountsReceivableWarning(tx);
 
     const profile = await this.businessProfileRepo.get();
     // afipCuit (schema v25) gana si está cargado -- CUIT con el que
@@ -488,7 +560,8 @@ export class InvoiceService {
     });
 
     const client = this.clientFactory(credentials, authCuit, this.afipCredentialsRepo);
-    return this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
+    const result = await this.issue(client, invoice, afipRequest, credentials.environment, profile.afipSalesPoint);
+    return accountsReceivableWarning ? { ...result, accountsReceivableWarning } : result;
   }
 
   /**

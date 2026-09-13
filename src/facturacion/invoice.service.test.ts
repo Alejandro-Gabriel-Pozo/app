@@ -21,6 +21,7 @@ import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestR
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
+import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -252,7 +253,7 @@ class FakeTransactionManager implements TransactionManager {
 
 /** C1-Fase C -- Pick angosto, mismo que usa InvoiceService (bounded contexts). */
 class FakeAccountsReceivableRepo
-  implements Pick<AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId'>
+  implements Pick<AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'>
 {
   public rows = new Map<string, AccountReceivable>();
   public markInvoicedCalls: { id: string; invoiceRef: string | null | undefined }[] = [];
@@ -264,6 +265,10 @@ class FakeAccountsReceivableRepo
     return [...this.rows.values()].filter(
       (r) => r.companyCustomerId === companyCustomerId && r.status === 'PENDIENTE_FACTURAR' && r.financialTransactionId != null,
     );
+  }
+  /** §9.4 (13/09/2026) -- exposición de AR viva en `requestInvoice()`. */
+  async getByStayId(stayId: string): Promise<AccountReceivable[]> {
+    return [...this.rows.values()].filter((r) => r.stayId === stayId);
   }
   async markInvoiced(id: string, invoiceRef?: string | null): Promise<AccountReceivable | undefined> {
     this.markInvoicedCalls.push({ id, invoiceRef });
@@ -1759,6 +1764,112 @@ describe('InvoiceService', () => {
       expect(invoice.status).toBe('ISSUED');
       expect(invoice.cbteNro).toBe(11);
       expect(invoice.cae).toBe('CAE-RECOVERED');
+    });
+  });
+
+  describe('§9.4 (13/09/2026, gate `architecture-governor`, decisión del dueño -- "Exponer, no bloquear") -- exposición de AR viva en requestInvoice()', () => {
+    function makeArRow(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+      return {
+        id: 'ar-1', businessId: 'biz-1', stayId: 'stay-1', companyCustomerId: 'cust-empresa',
+        amount: 15000, currency: 'ARS', status: 'PENDIENTE_FACTURAR', transferredBy: 'user-1',
+        ...overrides,
+      };
+    }
+
+    it('cargo del huésped con AR viva sobre la misma estadía -- expone accountsReceivableWarning y loguea', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+      arRepo.rows.set('ar-1', makeArRow());
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ stayId: 'stay-1' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.accountsReceivableWarning).toEqual([
+        { accountsReceivableId: 'ar-1', companyCustomerId: 'cust-empresa', status: 'PENDIENTE_FACTURAR', amount: 15000 },
+      ]);
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0]![0]).toMatchObject({ evento: 'factura_con_ar_viva', financialTransactionId: 'ft-1', stayId: 'stay-1' });
+      warnSpy.mockRestore();
+    });
+
+    it('cargo del huésped SIN ninguna AR sobre la estadía -- undefined, no [], sin loguear', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ stayId: 'stay-1' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.status).toBe('ISSUED');
+      expect(invoice.accountsReceivableWarning).toBeUndefined();
+      // No solo `undefined` -- la CLAVE tiene que estar ausente, para que
+      // `res.json(invoice)` no serialice `"accountsReceivableWarning":null`
+      // ni la incluya como `undefined` (JSON.stringify la omite igual, pero
+      // el objeto en sí no debe cargar la propiedad -- mismo criterio que §9.2).
+      expect('accountsReceivableWarning' in invoice).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('AR REVERTIDO -- filtrada, no cuenta como viva', async () => {
+      arRepo.rows.set('ar-1', makeArRow({ status: 'REVERTIDO' as unknown as AccountReceivable['status'] }));
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ stayId: 'stay-1' }),
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.accountsReceivableWarning).toBeUndefined();
+    });
+
+    it('cargo sin stayId (el CHARGE propio de la empresa, F1-Pieza 3/C1-Fase C) -- undefined, ni siquiera consulta el repo de AR', async () => {
+      const getByStayIdSpy = vi.spyOn(arRepo, 'getByStayId');
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const service = buildService({
+        tx: makeTx({ customerId: 'cust-empresa' }), // sin stayId -- makeTx() no lo setea por default
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      expect(invoice.accountsReceivableWarning).toBeUndefined();
+      expect(getByStayIdSpy).not.toHaveBeenCalled();
+    });
+
+    it('tx.type ADJUSTMENT (escape de NC) con AR viva -- NO expone acá (los 2 orquestadores de §9.2 ya calculan/exponen lo mismo por su propio camino), no consulta el repo de AR', async () => {
+      const getByStayIdSpy = vi.spyOn(arRepo, 'getByStayId');
+      arRepo.rows.set('ar-1', makeArRow());
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', type: 'ADJUSTMENT', stayId: 'stay-1', reservationId: 'res-1' }),
+      });
+
+      // El resto del camino NC (buildCreditNote) no está fixtureado acá a
+      // propósito -- lo único que importa para este test es que el guard
+      // de §9.4 corre y decide ANTES de llegar a esa lógica, así que no
+      // hace falta simular una factura original para revertir.
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }).catch(() => {});
+
+      expect(getByStayIdSpy).not.toHaveBeenCalled();
+    });
+
+    it('tx.type REFUND con AR viva -- NO expone acá, no consulta el repo de AR', async () => {
+      const getByStayIdSpy = vi.spyOn(arRepo, 'getByStayId');
+      arRepo.rows.set('ar-1', makeArRow());
+      const service = buildService({
+        tx: makeTx({ id: 'ft-1', type: 'REFUND', stayId: 'stay-1' }),
+      });
+
+      await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }).catch(() => {});
+
+      expect(getByStayIdSpy).not.toHaveBeenCalled();
     });
   });
 });

@@ -76,10 +76,12 @@ class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
   async clearTicket(): Promise<void> {}
 }
 class FakeAccountsReceivableRepo implements Pick<
-  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId'
+  AccountsReceivableRepository, 'getByFinancialTransactionId' | 'markInvoiced' | 'getPendingByCompanyCustomerId' | 'getByStayId'
 > {
   async getByFinancialTransactionId(): Promise<AccountReceivable | undefined> { return undefined; }
   async getPendingByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
+  /** §9.4 (13/09/2026) -- exposición de AR viva en `requestInvoice()`; este archivo no la ejercita. */
+  async getByStayId(): Promise<AccountReceivable[]> { return []; }
   async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
 }
 /** buildCreditNote() (REFUND/ADJUSTMENT) nunca resuelve orden/reserva/producto -- ver docblock del archivo. */
