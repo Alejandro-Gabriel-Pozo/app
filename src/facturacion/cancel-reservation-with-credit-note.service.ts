@@ -80,6 +80,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { round2 } from '../domain/money.js';
+import { logger } from '../logger.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
@@ -90,7 +91,11 @@ import type { ReservationRepository } from '../reservas/reservation.repository.j
 import type { Reservation } from '../reservas/Reservation.js';
 import { ReservationStatus } from '../types/enums.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE } from './cancel-with-credit-note.js';
-import type { CreditNoteCancellationAuthorization } from './cancel-with-credit-note.js';
+import type {
+  CreditNoteCancellationAuthorization,
+  AccountsReceivableRepoForCancel,
+  AccountsReceivableWarningEntry,
+} from './cancel-with-credit-note.js';
 import {
   AfipRequestRejectedError,
   AfipRequestUncertainError,
@@ -190,6 +195,17 @@ export interface CancelReservationWithCreditNoteResult {
   originalInvoiceId: string;
   /** `true` si esta llamada emitió la NC ahora; `false` si la resolvió un fast-path idempotente. */
   emitted: boolean;
+  /**
+   * Bloque 6 (§9.2) -- presente solo si la estadía de esta reserva tiene
+   * alguna `accounts_receivable` activa (transferida a una empresa, no
+   * `REVERTIDO`). NO bloquea la NC -- ver docblock de
+   * `AccountsReceivableRepoForCancel` más arriba. `undefined` (no `[]`)
+   * cuando no aplica, para no obligar al caller a distinguir "sin AR" de
+   * "no se chequeó" -- hoy los dos casos son el mismo (nunca se chequea
+   * si `stayId` es `null`, o si se llegó acá por el fast-path -- ver nota
+   * en `cancelReservationWithCreditNote()`).
+   */
+  accountsReceivableWarning?: AccountsReceivableWarningEntry[];
 }
 
 /** Estado congelado en tx1, atravesado por AFIP hasta tx2 sin volver a derivarse. */
@@ -199,6 +215,8 @@ interface FrozenPrep {
   businessId: string;
   /** Intersección factura∩reserva — el ÚNICO conjunto que tx2 puede settlear (C1). */
   frozenChargeIds: string[];
+  /** Ver `AccountsReceivableWarningEntry` -- calculado en tx1, junto con `stayId`. */
+  accountsReceivableWarning?: AccountsReceivableWarningEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +231,9 @@ export class CancelReservationWithCreditNoteService {
     private readonly reservationRepo: ReservationRepoForCancel,
     private readonly reservationCancelPort: ReservationCancelPort,
     private readonly transactionManager: TransactionManager,
+    /** Bloque 6 (§9.2) -- opcional a propósito: los fakes de test que no
+     * ejercitan el camino de City Ledger no necesitan implementarlo. */
+    private readonly accountsReceivableRepo?: AccountsReceivableRepoForCancel,
   ) {}
 
   private idempotencyKey(reservationId: string, invoiceId: string): string {
@@ -281,6 +302,14 @@ export class CancelReservationWithCreditNoteService {
               changedBy: auth.confirmedBy,
             });
             if (creditNote.status === 'ISSUED') {
+              // Bloque 6 (§9.2): este fast-path retorna ANTES de tx1 --
+              // `stayId` nunca se resuelve acá (solo dentro de tx1, más
+              // abajo), así que `accountsReceivableWarning` queda
+              // `undefined` incondicionalmente en este camino. No es un
+              // vacío accidental: un reintento resuelto por este atajo
+              // simplemente no vuelve a chequear la AR. Sin bloque
+              // asignado para cerrarlo -- el `logger.warn` de tx1 sigue
+              // siendo la red real para la primera llamada.
               return {
                 reservation: priorReservation,
                 creditNote,
@@ -393,6 +422,60 @@ export class CancelReservationWithCreditNoteService {
       }
       const stayId = [...distinctStayIds][0] ?? null;
 
+      // Bloque 6 (§9.2, gate `architecture-governor` 13/09/2026, ronda 2)
+      // -- se llama adentro del callback de tx1 (después del lock `FOR
+      // UPDATE` de `reservations`, línea ~301), pero
+      // `AccountsReceivableRepoForCancel.getByStayId()` NO recibe
+      // `client`: `SqlAccountsReceivableRepository` usa su propio
+      // `sqlClient` (= `req.db`), una CONEXIÓN DISTINTA del pool del
+      // tenant, no la de esta transacción. Lo que el lock SÍ garantiza:
+      // una `transferStayBalanceToReceivable()` concurrente que necesite
+      // lockear la misma reserva no puede commitear mientras tx1 sigue
+      // abierta, así que el valor forense no se pierde por esa carrera en
+      // particular. Lo que NO garantiza: esta lectura no ve escrituras
+      // sin commitear de tx1 ni participa de su rollback -- da igual hoy
+      // (es de solo lectura), dejaría de dar igual si se la extendiera.
+      // Mismo patrón sin `client` que las otras 4 lecturas ya existentes
+      // de este mismo tx1 (`liveInvoiceIdsForReservation`,
+      // `getByIdempotencyKey`, `invoiceRepo.getById`,
+      // `getChargeIdsForInvoice`) -- no es una clase de riesgo nueva.
+      // Convertir las 5 a `*WithClient` (siguiendo la convención
+      // `createWithClient()` que el repo ya usa) es deuda con ancla,
+      // bloque aparte -- ver `pendientes-2026-09-13.md`.
+      //
+      // `REVERTIDO` ya es un valor legal de la columna `status` en
+      // Postgres (schema v52, `b82d828`) pero `AccountsReceivableStatus`
+      // (TS, accounts-receivable.repository.ts) todavía no lo declara a
+      // propósito -- se amplía junto con `reverseTransfer()` (Bloque 2 de
+      // §8 del diseño), no acá, para no reproducir
+      // `ROLES-CATALOG-DRIFT-001`. Cast a `string` en la comparación, no
+      // en el tipo.
+      //
+      // `undefined`, NUNCA `[]` -- normalizado acá (gate, ronda 2): sin
+      // esto, cualquier estadía SIN AR (el caso mayoritario) devolvía
+      // `[]`, que sobrevivía el spread condicional del `return` de más
+      // abajo y serializaba `"accountsReceivableWarning": []` en la
+      // respuesta HTTP -- 3 estados en vez de los 2 que el docblock de
+      // `CancelReservationWithCreditNoteResult` ya declaraba.
+      const activeReceivables = stayId && this.accountsReceivableRepo
+        ? (await this.accountsReceivableRepo.getByStayId(stayId))
+            .filter((ar) => (ar.status as string) !== 'REVERTIDO')
+            .map((ar): AccountsReceivableWarningEntry => ({
+              accountsReceivableId: ar.id,
+              companyCustomerId: ar.companyCustomerId,
+              status: ar.status,
+              amount: ar.amount,
+            }))
+        : [];
+      const accountsReceivableWarning: AccountsReceivableWarningEntry[] | undefined =
+        activeReceivables.length > 0 ? activeReceivables : undefined;
+      if (accountsReceivableWarning) {
+        logger.warn(
+          { evento: 'nc_escape_con_ar_viva', reservationId, stayId, accountsReceivableWarning },
+          '[cancelReservationWithCreditNote] la estadía tiene una cuenta por cobrar activa -- revisar el traspaso a la empresa',
+        );
+      }
+
       const assertRevertsExpectedInvoice = (adj: FinancialTransaction): void => {
         // Extiende el assert del precedente de órdenes con dos comparaciones
         // propias de reservas (condición C4 del gate): un ADJUSTMENT
@@ -473,6 +556,9 @@ export class CancelReservationWithCreditNoteService {
         originalInvoiceId,
         businessId: original.businessId,
         frozenChargeIds,
+        // exactOptionalPropertyTypes: solo se incluye la clave si no es
+        // undefined -- mismo patrón que PgSqlClient/outbox-purge.ts.
+        ...(accountsReceivableWarning !== undefined ? { accountsReceivableWarning } : {}),
       };
     });
 
@@ -544,6 +630,9 @@ export class CancelReservationWithCreditNoteService {
       adjustmentId: prep.adjustmentId,
       originalInvoiceId: prep.originalInvoiceId,
       emitted: true,
+      ...(prep.accountsReceivableWarning !== undefined
+        ? { accountsReceivableWarning: prep.accountsReceivableWarning }
+        : {}),
     };
   }
 

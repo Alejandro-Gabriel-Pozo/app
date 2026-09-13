@@ -112,6 +112,14 @@ class FakeOrderRepo {
   }
 }
 
+/** Bloque 6 (§9.2) -- fake mínimo de `AccountsReceivableRepoForCancel`. */
+class FakeAccountsReceivableRepo {
+  rows: Array<{ id: string; stayId: string; companyCustomerId: string; status: string; amount: number }> = [];
+  async getByStayId(stayId: string) {
+    return this.rows.filter((r) => r.stayId === stayId);
+  }
+}
+
 class FakeOrderCancelPort implements OrderCancelPort {
   outcome: OrderTransitionOutcome['resultado'] = 'CAMBIO';
   calls = 0;
@@ -138,6 +146,7 @@ describe('CancelOrderWithCreditNoteService', () => {
   let svc: FakeInvoiceService;
   let ord: FakeOrderRepo;
   let port: FakeOrderCancelPort;
+  let ar: FakeAccountsReceivableRepo;
   let sut: CancelOrderWithCreditNoteService;
 
   beforeEach(() => {
@@ -146,8 +155,9 @@ describe('CancelOrderWithCreditNoteService', () => {
     svc = new FakeInvoiceService();
     ord = new FakeOrderRepo();
     port = new FakeOrderCancelPort(ord);
+    ar = new FakeAccountsReceivableRepo();
     sut = new CancelOrderWithCreditNoteService(
-      svc as never, ft as never, inv as never, ord as never, port, txManager,
+      svc as never, ft as never, inv as never, ord as never, port, txManager, ar as never,
     );
   });
 
@@ -441,5 +451,38 @@ describe('CancelOrderWithCreditNoteService', () => {
 
     await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth()))
       .rejects.toThrow(/stayId="null".*se esperaba factura="inv-1" stayId="stay-1"/s);
+  });
+
+  // Bloque 6 (§9.2, gate `architecture-governor`, ronda 2) -- mismos 3
+  // casos que el precedente de reservas (`cancel-reservation-with-credit-note.service.test.ts`),
+  // ningún fake de este archivo pasaba el 7° parámetro antes de esto.
+  describe('accountsReceivableWarning (Bloque 6, §9.2)', () => {
+    it('orden cargada a una estadía con AR viva (PENDIENTE_FACTURAR) -- el resultado expone la entrada', async () => {
+      ft.charges = [makeCharge('stay-1')];
+      ar.rows.push({ id: 'ar-1', stayId: 'stay-1', companyCustomerId: 'empresa-1', status: 'PENDIENTE_FACTURAR', amount: 500 });
+
+      const result = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+
+      expect(result.accountsReceivableWarning).toEqual([
+        { accountsReceivableId: 'ar-1', companyCustomerId: 'empresa-1', status: 'PENDIENTE_FACTURAR', amount: 500 },
+      ]);
+    });
+
+    it('estadía con AR ya REVERTIDO -- se filtra, el resultado NO expone nada (undefined, no [])', async () => {
+      ft.charges = [makeCharge('stay-1')];
+      ar.rows.push({ id: 'ar-1', stayId: 'stay-1', companyCustomerId: 'empresa-1', status: 'REVERTIDO', amount: 500 });
+
+      const result = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+
+      expect(result.accountsReceivableWarning).toBeUndefined();
+    });
+
+    it('orden sin stayId (el caso mayoritario) -- ni siquiera consulta el repo de AR, undefined', async () => {
+      ft.charges = [makeCharge()]; // sin stayId
+
+      const result = await sut.cancelOrderWithCreditNote(ORDER_ID, auth());
+
+      expect(result.accountsReceivableWarning).toBeUndefined();
+    });
   });
 });

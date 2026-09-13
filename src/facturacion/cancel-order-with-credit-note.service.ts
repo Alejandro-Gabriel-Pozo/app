@@ -42,6 +42,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { round2 } from '../domain/money.js';
+import { logger } from '../logger.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
@@ -50,7 +51,11 @@ import type { Invoice } from './invoice.entities.js';
 import type { InvoiceService } from './invoice.service.js';
 import type { IOrderRepository, OrderTransitionOutcome } from '../pos-menu/order.repository.js';
 import type { Order } from '../pos-menu/order.entities.js';
-import type { CreditNoteCancellationAuthorization } from './cancel-with-credit-note.js';
+import type {
+  CreditNoteCancellationAuthorization,
+  AccountsReceivableRepoForCancel,
+  AccountsReceivableWarningEntry,
+} from './cancel-with-credit-note.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE } from './cancel-with-credit-note.js';
 import {
   AfipRequestRejectedError,
@@ -117,6 +122,13 @@ export interface CancelOrderWithCreditNoteResult {
   originalInvoiceId: string;
   /** `true` si esta llamada emitió la NC ahora; `false` si la resolvió un fast-path idempotente. */
   emitted: boolean;
+  /**
+   * Bloque 6 (§9.2) -- ver docblock de `AccountsReceivableRepoForCancel`
+   * (`cancel-with-credit-note.js`). `undefined` cuando no aplica (sin
+   * `stayId`, o resuelto por el fast-path -- ver nota en
+   * `cancelOrderWithCreditNote()`).
+   */
+  accountsReceivableWarning?: AccountsReceivableWarningEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +143,9 @@ export class CancelOrderWithCreditNoteService {
     private readonly orderRepo: OrderRepoForCancel,
     private readonly orderCancelPort: OrderCancelPort,
     private readonly transactionManager: TransactionManager,
+    /** Bloque 6 (§9.2) -- opcional a propósito, mismo criterio que el
+     * precedente de reservas (`cancel-reservation-with-credit-note.service.ts`). */
+    private readonly accountsReceivableRepo?: AccountsReceivableRepoForCancel,
   ) {}
 
   private idempotencyKey(orderId: string): string {
@@ -173,6 +188,10 @@ export class CancelOrderWithCreditNoteService {
             changedBy: auth.confirmedBy,
           });
           if (creditNote.status === 'ISSUED') {
+            // Bloque 6 (§9.2): fast-path, antes de tx1 -- `stayId` nunca se
+            // resuelve acá, `accountsReceivableWarning` queda `undefined`
+            // incondicionalmente en este camino. Ver misma nota en
+            // `cancelReservationWithCreditNote()`.
             return {
               order: priorOrder,
               creditNote,
@@ -335,6 +354,43 @@ export class CancelOrderWithCreditNoteService {
       // `checkOut()` por una deuda ya cancelada por NC.
       const stayId = charge.stayId ?? null;
 
+      // Bloque 6 (§9.2, gate `architecture-governor` 13/09/2026, ronda 2)
+      // -- se llama adentro del callback de tx1, después del lock de
+      // `orders` (N10, línea ~192), pero `getByStayId()` NO recibe
+      // `client` -- usa su propia conexión del pool del tenant, no la de
+      // esta transacción. El lock SÍ serializa contra una
+      // `transferStayBalanceToReceivable()` concurrente sobre la MISMA
+      // orden; NO hace que esta lectura vea escrituras sin commitear de
+      // tx1 ni participe de su rollback. Mismo patrón sin `client` que
+      // las demás lecturas de este tx1 -- no es una clase de riesgo
+      // nueva. Detalle completo (por qué, deuda con ancla) en el
+      // comentario espejo de `cancel-reservation-with-credit-note.service.ts`.
+      //
+      // `REVERTIDO` filtrado por cast a `string`, no en el tipo -- mismo
+      // razonamiento que el precedente de reservas (evita
+      // `ROLES-CATALOG-DRIFT-001`). `undefined`, NUNCA `[]` -- normalizado
+      // acá (gate, ronda 2): sin esto, una orden con estadía SIN AR (caso
+      // mayoritario) serializaba `"accountsReceivableWarning": []` en vez
+      // de omitir la clave.
+      const activeReceivables = stayId && this.accountsReceivableRepo
+        ? (await this.accountsReceivableRepo.getByStayId(stayId))
+            .filter((ar) => (ar.status as string) !== 'REVERTIDO')
+            .map((ar): AccountsReceivableWarningEntry => ({
+              accountsReceivableId: ar.id,
+              companyCustomerId: ar.companyCustomerId,
+              status: ar.status,
+              amount: ar.amount,
+            }))
+        : [];
+      const accountsReceivableWarning: AccountsReceivableWarningEntry[] | undefined =
+        activeReceivables.length > 0 ? activeReceivables : undefined;
+      if (accountsReceivableWarning) {
+        logger.warn(
+          { evento: 'nc_escape_con_ar_viva', orderId, stayId, accountsReceivableWarning },
+          '[cancelOrderWithCreditNote] la estadía tiene una cuenta por cobrar activa -- revisar el traspaso a la empresa',
+        );
+      }
+
       const assertRevertsExpectedInvoice = (adj: FinancialTransaction): void => {
         // Ventana de compatibilidad, a propósito (1c-0): un ADJUSTMENT PENDING
         // creado ANTES de este fix, sobre una orden cuyo CHARGE tiene
@@ -414,7 +470,13 @@ export class CancelOrderWithCreditNoteService {
         }
       }
 
-      return { adjustmentId: adjustment.id, originalInvoiceId, businessId: order.businessId, frozenChargeIds };
+      return {
+        adjustmentId: adjustment.id,
+        originalInvoiceId,
+        businessId: order.businessId,
+        frozenChargeIds,
+        accountsReceivableWarning,
+      };
     });
 
     // --- AFIP: emitir la NC (fuera de toda tx, sin lock -- N10) -----------
@@ -474,6 +536,9 @@ export class CancelOrderWithCreditNoteService {
       adjustmentId: prep.adjustmentId,
       originalInvoiceId: prep.originalInvoiceId,
       emitted: true,
+      ...(prep.accountsReceivableWarning !== undefined
+        ? { accountsReceivableWarning: prep.accountsReceivableWarning }
+        : {}),
     };
   }
 

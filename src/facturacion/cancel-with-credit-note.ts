@@ -31,6 +31,34 @@
 
 import { round2 } from '../domain/money.js';
 import type { InvoiceItem, CreateInvoiceItemInput } from './invoice.entities.js';
+import type { AccountsReceivableRepository } from '../clientes-finanzas/accounts-receivable.repository.js';
+
+// ---------------------------------------------------------------------------
+// City Ledger — exposición forense en el escape de NC (Bloque 6, 13/09/2026,
+// gate `architecture-governor`, docs/diseno-reconciliacion-city-ledger-2026-09-12.md §9.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compartido por `cancel-reservation-with-credit-note.service.ts` y
+ * `cancel-order-with-credit-note.service.ts` (los dos resuelven `stayId`
+ * antes de crear el `ADJUSTMENT` y necesitan el mismo chequeo) -- si la
+ * estadía ya transfirió su saldo a una empresa (City Ledger,
+ * `AccountsReceivableService.transferStayBalanceToReceivable()`), esta NC
+ * puede estarle generando al huésped un crédito por una factura cuyo cargo
+ * original ya fue neutralizado por ese traspaso, mientras el cargo de la
+ * empresa sigue vivo. NO bloquea -- es forense, mismo patrón que
+ * `AccountsReceivableService.markCollected()` (campo `collection` aditivo,
+ * no persistido).
+ */
+export type AccountsReceivableRepoForCancel = Pick<AccountsReceivableRepository, 'getByStayId'>;
+
+/** Subconjunto de `AccountReceivable` expuesto en `accountsReceivableWarning` -- solo lo que management necesita para decidir si hay que revisar el traspaso. */
+export interface AccountsReceivableWarningEntry {
+  accountsReceivableId: string;
+  companyCustomerId: string;
+  status: string;
+  amount: number;
+}
 
 // ---------------------------------------------------------------------------
 // F4 — "compensación total" (ADR común, N1 / Defecto B del re-gate)

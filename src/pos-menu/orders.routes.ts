@@ -61,6 +61,7 @@ import {
 } from '../facturacion/cancel-order-with-credit-note.service.js';
 import { OrderCancelForCreditNote }      from './order-cancel-for-credit-note.js';
 import { authorizeCreditNoteCancellation } from '../facturacion/cancel-with-credit-note.js';
+import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { resolveDefaultLocationId }      from '../platform/location.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { compact }                       from '../api/utils/compact.js';
@@ -128,6 +129,7 @@ function buildCancelOrderWithCreditNoteService(req: Request): CancelOrderWithCre
       new SqlAuditLogRepository(db),
     ),
     buildTenantTransactionManager(req),
+    new SqlAccountsReceivableRepository(db),
   );
 }
 

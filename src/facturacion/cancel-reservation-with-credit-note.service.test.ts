@@ -141,6 +141,14 @@ class FakeInvoiceService {
   }
 }
 
+/** Bloque 6 (§9.2) -- fake mínimo de `AccountsReceivableRepoForCancel`. */
+class FakeAccountsReceivableRepo {
+  rows: Array<{ id: string; stayId: string; companyCustomerId: string; status: string; amount: number }> = [];
+  async getByStayId(stayId: string) {
+    return this.rows.filter((r) => r.stayId === stayId);
+  }
+}
+
 class FakeReservationCancelPort implements ReservationCancelPort {
   outcome: ReservationCancelOutcome['resultado'] = 'CAMBIO';
   calls = 0;
@@ -170,6 +178,7 @@ describe('CancelReservationWithCreditNoteService', () => {
   let inv: FakeInvoiceRepo;
   let svc: FakeInvoiceService;
   let port: FakeReservationCancelPort;
+  let ar: FakeAccountsReceivableRepo;
   let sut: CancelReservationWithCreditNoteService;
 
   beforeEach(() => {
@@ -180,8 +189,9 @@ describe('CancelReservationWithCreditNoteService', () => {
     inv = new FakeInvoiceRepo();
     svc = new FakeInvoiceService();
     port = new FakeReservationCancelPort(res);
+    ar = new FakeAccountsReceivableRepo();
     sut = new CancelReservationWithCreditNoteService(
-      svc as never, ft as never, inv as never, res as never, port, txManager,
+      svc as never, ft as never, inv as never, res as never, port, txManager, ar as never,
     );
   });
 
@@ -448,5 +458,38 @@ describe('CancelReservationWithCreditNoteService', () => {
     expect(ft.rows.size).toBe(1); // NO se creó un 2do ADJUSTMENT
     expect(result.reservation.status).toBe(ReservationStatus.CANCELLED);
     expect([...ft.rows.values()][0]!.status).toBe('SETTLED');
+  });
+
+  // Bloque 6 (§9.2, gate `architecture-governor`, ronda 2) -- la rama de
+  // `accountsReceivableWarning` no tenía NINGÚN test que la ejercitara
+  // (ningún fake de este archivo pasaba el 7° parámetro): tsc verde no es
+  // evidencia de comportamiento. Estos 3 cierran esa cobertura.
+  describe('21-23. accountsReceivableWarning (Bloque 6, §9.2)', () => {
+    it('21. estadía con AR viva (PENDIENTE_FACTURAR) -- el resultado expone la entrada', async () => {
+      ft.allCharges.set(CHARGE_ID, makeCharge({ stayId: 'stay-1' }));
+      ar.rows.push({ id: 'ar-1', stayId: 'stay-1', companyCustomerId: 'empresa-1', status: 'PENDIENTE_FACTURAR', amount: 500 });
+
+      const result = await sut.cancelReservationWithCreditNote(RES_ID, auth());
+
+      expect(result.accountsReceivableWarning).toEqual([
+        { accountsReceivableId: 'ar-1', companyCustomerId: 'empresa-1', status: 'PENDIENTE_FACTURAR', amount: 500 },
+      ]);
+    });
+
+    it('22. estadía con AR ya REVERTIDO -- se filtra, el resultado NO expone nada (undefined, no [])', async () => {
+      ft.allCharges.set(CHARGE_ID, makeCharge({ stayId: 'stay-1' }));
+      ar.rows.push({ id: 'ar-1', stayId: 'stay-1', companyCustomerId: 'empresa-1', status: 'REVERTIDO', amount: 500 });
+
+      const result = await sut.cancelReservationWithCreditNote(RES_ID, auth());
+
+      expect(result.accountsReceivableWarning).toBeUndefined();
+    });
+
+    it('23. cargo sin stayId (el caso mayoritario) -- ni siquiera consulta el repo de AR, undefined', async () => {
+      // makeCharge() default: stayId null.
+      const result = await sut.cancelReservationWithCreditNote(RES_ID, auth());
+
+      expect(result.accountsReceivableWarning).toBeUndefined();
+    });
   });
 });

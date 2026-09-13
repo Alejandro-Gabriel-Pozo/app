@@ -115,6 +115,7 @@ import { buildInvoiceService }           from '../facturacion/invoices.routes.js
 import { CancelReservationWithCreditNoteService } from '../facturacion/cancel-reservation-with-credit-note.service.js';
 import { ReservationCancelForCreditNote } from './reservation-cancel-for-credit-note.js';
 import { authorizeCreditNoteCancellation } from '../facturacion/cancel-with-credit-note.js';
+import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import { InvalidReservationError } from '../domain/errors.js';
 import { logger } from '../logger.js';
 
@@ -200,6 +201,7 @@ function buildCancelReservationWithCreditNoteService(req: Request): CancelReserv
       new SqlAuditLogRepository(db),
     ),
     buildTenantTransactionManager(req),
+    new SqlAccountsReceivableRepository(db),
   );
 }
 
@@ -541,6 +543,14 @@ export function createReservationsRouter(container: AppContainer): Router {
           adjustmentId: result.adjustmentId,
           originalInvoiceId: result.originalInvoiceId,
           emitted: result.emitted,
+          // Bloque 6 (§9.2, gate `architecture-governor`, ronda 2) --
+          // `undefined` se serializa como ausencia de la clave
+          // (JSON.stringify la omite), nunca como `null` ni como `[]`
+          // (el service normaliza `[]` -> `undefined` antes de devolver,
+          // ver su docblock): el frontend puede chequear
+          // `'accountsReceivableWarning' in body` sin ambigüedad -- la
+          // clave está presente si y solo si hay algo que revisar.
+          accountsReceivableWarning: result.accountsReceivableWarning,
         });
       } catch (err) {
         // Reconciliación con error.middleware.ts (09/09/2026, gate
