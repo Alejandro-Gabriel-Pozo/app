@@ -406,18 +406,42 @@ bloqueantes pero a tener presente al implementar:**
 Dos puntos donde el sistema ya sabe que puede haber una AR afectada y hoy no
 lo dice en ningún lado:
 
-- **`handleReservationCompleted`/`handleReservationCancelled`**
-  (`outbox.handlers.ts`): después de `settleByReservationId()`/
-  `voidByReservationId()`, si la reserva tiene un `stay_id` con AR asociada
-  (`arRepo.getByStayId(stayId)`, filtrando estados no-terminales), loguear
-  estructurado (mismo patrón que `evento: cobro_ar_factura_ya_cubierta` en
-  `markCollected()`) — NO bloquear el handler, NO revertir automático (la
-  decisión sigue siendo del operador). Sin UI nueva en este bloque — el log
-  es la mitigación mínima; una alerta/bandeja para el operador queda
-  declarada como bloque aparte, no decidida.
-- **Escape de NC de orden** (`CancelOrderWithCreditNoteService`): exponer
-  la AR existente (`getByStayId`) en la respuesta cuando la haya — ya
-  recomendado en el Caso 4 original, mitigación de costo cero.
+- **`handleReservationCancelled` -- IMPLEMENTADO (Bloque 3a, 13/09/2026,
+  gate `architecture-governor`, commit `d48a6e8`).** Después de
+  `voidByReservationId()`, si la reserva tiene un `stay_id` con AR
+  asociada, loguear estructurado (`evento:
+  reservation_cancelled_con_ar_viva`, mismo patrón que `evento:
+  cobro_ar_factura_ya_cubierta` en `markCollected()`) — NO bloquea el
+  handler, NO revierte automático (la decisión sigue siendo del
+  operador; fail-open si la lectura de detección falla). El filtro real
+  es `!== 'REVERTIDO'` (cast a `string`), **no** "estados no-terminales"
+  como decía una versión anterior de este párrafo -- `COBRADO` está
+  INCLUIDO a propósito: una empresa que ya pagó un cargo que el ledger
+  acaba de anular es el caso más grave, no uno a excluir. Sin UI nueva en
+  este bloque — el log es la mitigación mínima; una alerta/bandeja para
+  el operador queda declarada como bloque aparte, no decidida.
+  Verificación contra Postgres real pendiente -- ver
+  `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` en
+  `docs/pendientes-2026-09-12.md`.
+- **`handleReservationCompleted` -- SIGUE EN HOLD, sin diseñar todavía**
+  (mismo gate, misma ronda). Detección por EXISTENCIA (el mecanismo de
+  arriba) NO sirve acá: por construcción, `checkOut()` exige saldo
+  `<= 0`, y `transferStayBalanceToReceivable()` es lo que lo habilita --
+  o sea que TODA reserva de City Ledger normal llega a `completed` con
+  una AR `PENDIENTE_FACTURAR` colgada del stay. Detección por existencia
+  dispararía siempre, en el camino feliz, no en una anomalía. La
+  anomalía real de este lado es de MONTO (§1.1 Disparador A: la reserva
+  se completa con un ajuste menor al transferido), no de existencia --
+  falta decidir (A) diseñar la comparación de montos, (B) medir la tasa
+  de falso positivo de la detección por existencia antes de descartarla,
+  o (C) declarar este lado fuera de alcance por ahora. Decisión del
+  dueño pendiente, no tomada todavía.
+- **Escape de NC de orden -- IMPLEMENTADO** (`CancelOrderWithCreditNoteService`,
+  Bloque 6 §9.2, 13/09/2026, commit `0f2aa24`): expone la AR existente
+  (`getByStayId`) en la respuesta cuando la haya — ya recomendado en el
+  Caso 4 original, mitigación de costo cero. Su gemelo de reservas
+  (`CancelReservationWithCreditNoteService`) también lo tiene, mismo
+  commit.
 
 ## 5. Mecanismo — FACTURADO/COBRADO (fuera del alcance de este bloque)
 
@@ -599,8 +623,11 @@ implementación real:**
    `ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001` en
    `docs/pendientes-2026-09-12.md` para el detalle completo, no
    duplicado acá.
-3. Detección/visibilidad en los 2 handlers de outbox (§4.5) — puede ir en
-   el mismo bloque que 2, o separado si el gate prefiere acotar el radio.
+3. Detección/visibilidad en los 2 handlers de outbox (§4.5). **El lado
+   `handleReservationCancelled` ya se hizo, separado y ANTES del Bloque 2**
+   (Bloque 3a, 13/09/2026, `d48a6e8`) -- no dependía de `reverseTransfer()`
+   para tener sentido, a diferencia de lo que este punto asumía. El lado
+   `handleReservationCompleted` sigue sin diseñar, ver §4.5.
 4. Bug colateral `voidByReservationId()` sin filtro de `customer_id`
    (§1.2) — bloque independiente, no bloquea 1-3.
 5. FACTURADO/COBRADO (§5) — diferido, sin decisión de si se construye.

@@ -441,7 +441,9 @@ export class CancelReservationWithCreditNoteService {
       // `getChargeIdsForInvoice`) -- no es una clase de riesgo nueva.
       // Convertir las 5 a `*WithClient` (siguiendo la convención
       // `createWithClient()` que el repo ya usa) es deuda con ancla,
-      // bloque aparte -- ver `pendientes-2026-09-13.md`.
+      // bloque aparte -- `CITY-LEDGER-AR-NESTED-CONN-001` en
+      // `docs/pendientes-2026-09-12.md` (el de fecha más alta hoy;
+      // `pendientes-2026-09-13.md` no existe).
       //
       // `REVERTIDO` ya es un valor legal de la columna `status` en
       // Postgres (schema v52, `b82d828`) pero `AccountsReceivableStatus`

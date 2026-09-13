@@ -190,10 +190,15 @@ export class AccountsReceivableService {
    * Mecanismo de reconciliación decidido: construir `reverseTransfer()` +
    * detección, diseñado en
    * `docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.3 (servicio) y
-   * §4.5 (detección por EXISTENCIA de AR no-terminal asociada + log
-   * estructurado en los 2 handlers de outbox -- NO todavía una comparación
-   * de montos; eso, si hace falta, queda como diseño a completar dentro del
-   * Bloque 3), secuenciado en §8. El schema (Bloque 1, estado `REVERTIDO`)
+   * §4.5. La mitad de §4.5 para `handleReservationCancelled` ya está
+   * IMPLEMENTADA (Bloque 3a, 13/09/2026, `d48a6e8`) -- detección por
+   * EXISTENCIA de AR no revertida (`!== 'REVERTIDO'`, `COBRADO` incluido
+   * a propósito) + `logger.warn({evento: reservation_cancelled_con_ar_viva})`,
+   * NO una comparación de montos. La otra mitad, `handleReservationCompleted`,
+   * SIGUE SIN DISEÑAR -- detección por existencia no sirve ahí (dispararía
+   * siempre en el camino feliz, ver §4.5); falta decidir si se diseña la
+   * comparación de montos, se mide el falso positivo, o se declara fuera
+   * de alcance. Secuenciado en §8. El schema (Bloque 1, estado `REVERTIDO`)
    * ya está implementado -- commit `b82d828`, `CURRENT_SCHEMA_VERSION = 52`
    * (`platform/tenant-db.setup.ts:445`) y CHECK de 4 valores en
    * `db/schema.sql`. `reverseTransfer()` en sí (Bloque 2) todavía NO existe

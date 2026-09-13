@@ -364,6 +364,31 @@ cuando se pushea.
   `EXPIRED` mostrando el badge nuevo (`.badge-expired`) — no había datos
   de prueba a mano en la sesión que cerró el bloque, sin fabricarlos en
   tenant compartida.
+- **`CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001`** — detección de AR
+  viva en `handleReservationCancelled()` nunca corrió contra Postgres
+  real (13/09/2026, commit `d48a6e8`). El código está gate-aprobado (3 rondas)
+  y cubierto por 8 tests con mocks (`FakeStayRepository`/
+  `FakeAccountsReceivableRepository`, `src/workers/outbox.handlers.test.ts`),
+  pero `TEST_DATABASE_URL` no estaba seteada en la sesión que lo escribió
+  -- ni el wiring real del registry (`accountsReceivableRepo = new
+  SqlAccountsReceivableRepository(db)`) ni el path completo se ejercitaron
+  contra una BD real. Los 5 call-sites actualizados en
+  `src/tests/integration/cancel-reservation-with-credit-note.integration.test.ts`
+  (líneas `479,507,532,589,619`) tampoco lo cubren, y **no alcanza con
+  sembrar un stay real ahí**: los 5 pasan `new FakeAccountsReceivableRepo()`
+  (`:99`, `getByStayId()` devuelve `[]` siempre) -- si alguien solo agrega
+  el stay pero no cambia ese fake, `findByReservation()` deja de dar
+  `null`, el detector CORRE, pero lee `[]` del fake y no loguea nada: el
+  verificador concluye "probado, no salta" cuando en realidad nunca leyó
+  una AR real -- falso negativo, no falta de cobertura. Acción puntual,
+  las DOS partes son necesarias, no alcanza con una sola: correr
+  `npm run test:integration` con `TEST_DATABASE_URL` configurada,
+  agregando un caso que (a) siembre un stay real y (b) reemplace
+  `new FakeAccountsReceivableRepo()` por `new SqlAccountsReceivableRepository(db)`
+  en ESE call-site -- que sí transfiera una estadía a una empresa y
+  cancele la reserva después -- o, en su defecto, cancelar una
+  reserva real con AR viva en un entorno con datos y confirmar el log
+  estructurado `evento: reservation_cancelled_con_ar_viva`.
 
 **Migración de ítems ✅ mezclados en el resto del archivo (13/09/2026,
 triage con 2 agentes en paralelo + ejecución propia):** de las 61
