@@ -529,3 +529,49 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   gating por rol ni por tipo de cliente) y la pérdida de un atajo de
   lectura (el guard corre antes de la idempotencia de `requestInvoice()`).
   Origen: `pendientes-2026-09-12.md`.
+
+- **`CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001` -- decisión del dueño tomada
+  y extensión implementada, commit `b09555a` (13/09/2026, gate
+  `architecture-governor`).** El guard de `transferStayBalanceToReceivable()`
+  (Bloque 6, §9.1, commit `d75296a`) solo bloqueaba sobre
+  `linkage.kind === 'ISSUED'`. El guard hermano de reservas
+  (`ReservationService.findBlockingInvoiceLinkage()`,
+  `reservas/reservation.service.ts:864-875`) también bloquea cuando el
+  comprobante está EN VUELO -- `NOT_ISSUED` con `status: 'PENDING'`, o
+  `FAILED_UNCERTAIN` con `afipContacted: true` (AFIP contactada, resultado
+  incierto). Asimetría encontrada por el gate al cerrar §9.1, registrada
+  como "requiere decisión del dueño". El dueño decidió (`AskUserQuestion`,
+  13/09/2026): extender el guard de §9.1 para que también bloquee esos 2
+  casos, igual que el guard hermano.
+  Mecanismo: mismo predicado exacto que el guard hermano, sin `classify*`
+  para la rama en vuelo (no hay nada que reconciliar sobre un comprobante
+  que ni siquiera se sabe si AFIP emitió). `REJECTED` nunca bloquea, ni
+  acá ni en el hermano. `StayChargeAlreadyInvoicedError` amplió su
+  constructor con un 3er parámetro (`invoiceStatus`, unión angosta) --
+  el mensaje del caso `ISSUED` se conserva verbatim (ya shippeado, visible
+  tal cual al staff), se agregó uno nuevo para el caso en vuelo.
+  Efecto colateral positivo, verificado por el gate: para cargos ligados a
+  una reserva, el mismo lock de `reservations` que el guard ya toma ahora
+  también serializa contra la ventana committeada en la que
+  `InvoiceService.requestInvoice()` deja la factura en `PENDING` mientras
+  espera la respuesta de AFIP -- cierra buena parte del residuo de
+  concurrencia de §9.1 para ese camino (orden y solo-estadía siguen igual,
+  sin ese lock).
+  6 tests nuevos, mutación verificada dos veces: (1) borrar la rama nueva
+  pone en rojo exactamente los 3 tests que dependen de ella, los otros 37
+  quedan verdes; (2) hardcodear el 3er argumento a `'ISSUED'` pone en rojo
+  exactamente el test que assertea el mensaje de `FAILED_UNCERTAIN`, los
+  otros 39 quedan verdes. `FakeInvoiceRepository` sin cambios -- ya
+  soportaba `NOT_ISSUED`. Suite completa 2184/2184 (163 archivos, +6),
+  integración 304/304 sin cambios, `tsc --noEmit` y `lint:arch` limpios.
+  **De paso, `CITY-LEDGER-GUARD-INVOICE-MISMATCH-001` (R3) se angostó** a
+  la rama `ISSUED` solamente -- en la rama nueva `NOT_ISSUED` el
+  `invoiceId` y el `status` del mensaje salen del MISMO
+  `resolveInvoiceLinkage()` que decidió bloquear, no hay mismatch posible
+  ahí.
+  **Residuo NO resuelto acá, con su ancla, en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`:** `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` -- cero
+  cobertura de integración contra Postgres real para el predicado nuevo, y
+  la carrera real contra un `requestInvoice()` concurrente sin probar.
+  Origen: `pendientes-2026-09-12.md`.

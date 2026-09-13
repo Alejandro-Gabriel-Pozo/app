@@ -130,20 +130,22 @@ cuando se pushea.
   sería ampliar un lado sin que el mecanismo real exista). Se angosta el
   cast (y probablemente se amplía el tipo) junto con el Bloque 2 de §8
   (`reverseTransfer()`) — no antes, no aislado.
-- **`CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001`** (R1, requiere decisión del
-  dueño) — Bloque 6, §9.1 (13/09/2026, gate `architecture-governor`,
-  `docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §9.1): el guard de
-  `transferStayBalanceToReceivable()` solo bloquea sobre
-  `linkage.kind === 'ISSUED'`. Una Factura B **en vuelo**
-  (`NOT_ISSUED` con `status: 'PENDING'`, o `FAILED_UNCERTAIN` con
-  `afipContacted: true`) NO bloquea — a diferencia del guard hermano de
-  reservas (`findBlockingInvoiceLinkage()`,
-  `src/reservas/reservation.service.ts:864-871`), que sí trata esos casos
-  como bloqueantes. Asimetría real entre los dos guards, encontrada por el
-  gate en la revisión de este bloque: si AFIP confirma la emisión después
-  de que la transferencia ya corrió, se reproduce el mismo hueco que este
-  bloque busca cerrar. Requiere `AskUserQuestion` — ¿el guard debe
-  bloquear también sobre "en vuelo"? — no a resolver por el implementador.
+- **`CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001`** — Bloque 6, §9.1
+  extensión "en vuelo" (13/09/2026, gate `architecture-governor`, commit
+  `b09555a` -- decisión del dueño de extender ya tomada y ya implementada,
+  esto es SOLO el residuo de verificación, no una decisión pendiente). El
+  predicado nuevo (bloquear sobre `NOT_ISSUED` `PENDING`/`FAILED_UNCERTAIN`+
+  `afipContacted`) tiene 6 tests nuevos, todos unitarios contra
+  `FakeInvoiceRepository` -- **cero cobertura de integración contra
+  Postgres real**, y el predicado depende del `status` que devuelve el SQL
+  real de `resolveInvoiceLinkage()` (`sql.invoice.repository.ts:316`).
+  Tampoco se probó la carrera real: una `transferStayBalanceToReceivable()`
+  concurrente con un `requestInvoice()` que recién está insertando la fila
+  `PENDING` (`invoice.service.ts:450-486`). Confirmar: agregar un test de
+  integración que seedee una `invoice` real en `PENDING`/`FAILED_UNCERTAIN`
+  y corra la transferencia contra Postgres real, y si el tiempo lo permite,
+  un test de concurrencia real (2 conexiones, una insertando el `PENDING`
+  dentro de su transacción mientras la otra intenta transferir).
 - **`CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`** (R2, deuda con ancla,
   defensiva hoy) — Bloque 6, §9.1 (13/09/2026, gate
   `architecture-governor`): un cargo *solo-estadía* (sin `reservationId`
@@ -157,14 +159,19 @@ cuando se pushea.
   `accounts-receivable.service.ts:264` — los 4 setean siempre
   `reservationId` u `orderId`). Revisar antes de que algún camino nuevo
   cree ese tipo de cargo facturable.
-- **`CITY-LEDGER-GUARD-INVOICE-MISMATCH-001`** (R3, cosmético, con ancla)
+- **`CITY-LEDGER-GUARD-INVOICE-MISMATCH-001`** (R3, cosmético, con ancla,
+  **acotado a la rama `ISSUED`** -- corregido 13/09/2026 al cerrar la
+  extensión "en vuelo", gate `architecture-governor`: en la rama nueva
+  `NOT_ISSUED` el `invoiceId` y el `status` del mensaje salen del MISMO
+  `resolveInvoiceLinkage(charge.id)` que decidió bloquear -- no hay
+  mismatch posible ahí, solo en la rama `ISSUED`)
   — Bloque 6, §9.1 (13/09/2026, gate `architecture-governor`): el
-  `invoiceId` del mensaje 422 de `StayChargeAlreadyInvoicedError` sale de
-  `resolveInvoiceLinkage(charge.id)` (por cargo), pero la decisión de
-  bloquear sale de `classify*(entidad)` (por reserva/orden completa). Con
-  2 facturas distintas sobre la misma reserva, el mensaje puede nombrar la
-  factura ya compensada mientras la que realmente bloquea es otra. El
-  mensaje llega tal cual al usuario
+  `invoiceId` del mensaje 422 de `StayChargeAlreadyInvoicedError` para el
+  caso `ISSUED` sale de `resolveInvoiceLinkage(charge.id)` (por cargo),
+  pero la decisión de bloquear sale de `classify*(entidad)` (por
+  reserva/orden completa). Con 2 facturas distintas sobre la misma
+  reserva, el mensaje puede nombrar la factura ya compensada mientras la
+  que realmente bloquea es otra. El mensaje llega tal cual al usuario
   (`appfrontend-main/src/app/dashboard/estadias/[id]/page.tsx:154`,
   `extractErrorMessage`). No confunde el resultado (bloquea igual, motivo
   correcto en esencia), pero el detalle puede inducir a error al staff que

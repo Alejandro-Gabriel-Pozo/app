@@ -639,7 +639,7 @@ fondo (el "pago" que saldó la factura del huésped fue plata real en los
    `AccountsReceivableService.markCollected()` (campo `collection`
    aditivo + `logger.warn`) -- para que management lo revise.
 
-### 9.1 Mecanismo — guard de transferencia (implementado, commit `d75296a`)
+### 9.1 Mecanismo — guard de transferencia (implementado, commit `d75296a`; extendido a facturas en vuelo, commit `b09555a`)
 
 **Corrección del gate (ronda 1, 13/09/2026):** el predicado original
 (`resolveInvoiceLinkage() === ISSUED`) es MÁS ANGOSTO que la definición
@@ -694,11 +694,52 @@ patrón que `reservation.service.ts:858-862` ya documenta), traer los
 2. **Solo si hay un `ISSUED`**, `classifyReservationLiveInvoice()`/
    `classifyOrderLiveInvoice()` según tenga `reservationId` u `orderId`. Si
    da `NOT_RECONCILED` (factura viva, no compensada), lanzar
-   `StayChargeAlreadyInvoicedError(stayId, invoiceId)` — nueva clase, mismo
-   archivo que `CompanyCustomerRequiredError`/`NoBalanceToTransferError`,
+   `StayChargeAlreadyInvoicedError(stayId, invoiceId, 'ISSUED')` — nueva
+   clase, mismo archivo que `CompanyCustomerRequiredError`/`NoBalanceToTransferError`,
    mapeada a 422 en `error.middleware.ts` (mismo grupo que
    `COMPANY_CUSTOMER_REQUIRED`/`CREDIT_NOTE_*`: "documento fiscal ya
-   emitido, acción no completa, no reintentar").
+   emitido, acción no completa, no reintentar"). El 3er parámetro
+   (`invoiceStatus`, unión angosta `'ISSUED' | 'PENDING' | 'FAILED_UNCERTAIN'`)
+   se agregó en la extensión "en vuelo" de más abajo -- el mensaje de este
+   caso se conserva verbatim, no se degradó a uno genérico.
+2-bis. **`NOT_ISSUED` EN VUELO -- extensión resuelta (13/09/2026, commit
+   `b09555a`, decisión del dueño vía `AskUserQuestion`, ver antes "Fuera de
+   alcance" más abajo, ahora cerrado).** Si `linkage.kind === 'NOT_ISSUED'`
+   y (`status === 'PENDING'`, o `status === 'FAILED_UNCERTAIN'` con
+   `afipContacted: true`), bloquea directo -- **sin** llamar a `classify*`
+   para esta rama: ese método pregunta "¿esta Factura B YA VIVA fue
+   compensada al 100% por NC?", y sobre un comprobante que ni siquiera se
+   sabe si AFIP emitió no hay nada que reconciliar. Mismo predicado exacto
+   que el guard hermano `ReservationService.findBlockingInvoiceLinkage()`
+   (`reservas/reservation.service.ts:864-875`). `REJECTED` nunca bloquea
+   (ni acá ni en el hermano) -- AFIP ya dijo que no.
+   Lanza `StayChargeAlreadyInvoicedError(stayId, invoiceId, linkage.status)`.
+   **Camino de salida de cada estado (doctrina de la ronda 1 -- nada
+   bloquea sin salida):** `PENDING` se resuelve a `ISSUED` (vía
+   `retryExisting()`, idempotente por `invoice:<ftId>` -- una fila
+   `PENDING` huérfana por un proceso muerto se destraba reintentando la
+   emisión, no queda huérfana para siempre) o a `REJECTED` (deja de
+   bloquear); `FAILED_UNCERTAIN` con `afipContacted` se destraba con la
+   reconciliación humana que este repo ya modela para ese estado.
+   **No se unifica con el guard de `markInvoiced()`/`markCollected()`** de
+   este mismo archivo (que sí bloquean con CUALQUIER `NOT_ISSUED`, incluido
+   `REJECTED`) -- miran un SUJETO distinto: ahí es
+   `ar.financialTransactionId` (el CHARGE contra la EMPRESA que este mismo
+   método crea), acá son los CHARGE del HUÉSPED. Predicados distintos a
+   propósito, no una inconsistencia a limpiar.
+   **Efecto colateral positivo, verificado por el gate, no buscado:** para
+   cargos ligados a una reserva, el lock de `reservations` que ya toma este
+   guard (ver más abajo) también serializa contra la ventana COMMITTEADA en
+   la que `InvoiceService.requestInvoice()` deja la factura en `PENDING`
+   mientras espera la respuesta de AFIP (`invoice.service.ts:450-488`) --
+   cierra buena parte del residuo de concurrencia declarado más abajo para
+   el camino reserva. No cambia nada para cargos de orden ni solo-estadía.
+   **Límite declarado, no cerrado en este commit:** este predicado nuevo
+   NO tiene cobertura de integración contra Postgres real (depende del
+   `status` que devuelve el SQL real de `resolveInvoiceLinkage()`) ni
+   prueba de la carrera real contra un `requestInvoice()` concurrente --
+   toda la evidencia es unitaria sobre fakes (ver
+   `docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001`).
 3. **Cargo *solo-estadía* (sin `reservationId` NI `orderId` — legal por el
    CHECK `chk_financial_transactions_order_or_reservation`: "a lo sumo
    uno", no "exactamente uno") con un `ISSUED` encima: fail-closed, bloquea
@@ -716,29 +757,23 @@ patrón que `reservation.service.ts:858-862` ya documenta), traer los
    ver `docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`).
 
 **Residuo de concurrencia declarado, no cerrado por este bloque — corregido
-13/09/2026 (el texto anterior afirmaba de más):** el único lock que este
-guard toma es `reservations` (`stay.reservationId`). Cierra la carrera
-contra `InvoiceService.requestInvoice()` para cargos ligados a una
-**reserva**. Los cargos ligados a una **orden** (`orderId`) NO quedan
-serializados — `requestInvoice()` para una orden lockea `orders`, no
-`reservations`, y este guard no toma ese lock. Los cargos *solo-estadía*
-tampoco tienen agregado que lockear. Para ambos casos el guard sigue siendo
-best-effort (lee sin lock propio), y la red real contra la carrera es §9.2
-(expone, no previene). No se agrega lock de `orders` a la transferencia en
-este bloque (el orden canónico de locks está documentado en
-`invoice.service.ts:585` y tocarlo es su propio gate).
-
-**Fuera de alcance de este bloque, registrado, no decidido (`docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001`):**
-el guard solo bloquea sobre `linkage.kind === 'ISSUED'`. Una Factura B en
-vuelo (`NOT_ISSUED` con `status: 'PENDING'`, o `FAILED_UNCERTAIN` con
-`afipContacted: true`) NO bloquea la transferencia — a diferencia del guard
-hermano de reservas (`findBlockingInvoiceLinkage()`,
-`reservation.service.ts:864-871`), que sí trata esos casos como bloqueantes.
-Es una asimetría real entre los dos guards, encontrada por el gate en la
-revisión de este bloque (13/09/2026): si AFIP confirma la emisión después de
-que la transferencia ya corrió, se puede reproducir el mismo hueco que este
-bloque busca cerrar. No resuelto acá — es una decisión de negocio (¿bloquear
-también sobre "en vuelo"?), no algo que el implementador deba decidir solo.
+13/09/2026, y de nuevo tras la extensión "en vuelo" (mismo día, commit
+`b09555a`):** el único lock que este guard toma es `reservations`
+(`stay.reservationId`). Para cargos ligados a una **reserva**, ese lock
+cierra la carrera contra `InvoiceService.requestInvoice()` en las DOS
+direcciones que importan: el `INSERT` inicial en `PENDING`
+(`invoice.service.ts:450-486`, dentro de la misma transacción que toma el
+lock) y el `ISSUED` final tras confirmar con AFIP -- la extensión "en
+vuelo" de 2-bis hace que la ventana `PENDING` committeada también quede
+cubierta, no solo el estado final. Los cargos ligados a una **orden**
+(`orderId`) siguen sin quedar serializados — `requestInvoice()` para una
+orden lockea `orders`, no `reservations`, y este guard no toma ese lock.
+Los cargos *solo-estadía* tampoco tienen agregado que lockear. Para esos
+dos casos el guard sigue siendo best-effort (lee sin lock propio), y la
+red real contra la carrera es §9.2 (expone, no previene). No se agrega
+lock de `orders` a la transferencia en este bloque (el orden canónico de
+locks está documentado en `invoice.service.ts:585` y tocarlo es su propio
+gate).
 
 ### 9.2 Mecanismo — exposición en el escape de NC (implementado, commit `0f2aa24`)
 
