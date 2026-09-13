@@ -457,6 +457,63 @@ y corregidos: `dc81a39` (`PRESET-GROUP-VALIDATION-001`) y
 `cd4dff6`+`18a3c93` (mitad de `PRESET-REVOKE-001`), los 3 confirmados
 ancestros de `origin/main`.
 
+**Actualización 13/09/2026 -- `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`
+cerrado en código, residuos de runtime separados (commit `93a9416`,
+gate `architecture-governor` APPROVED WITH CONDITIONS, condiciones de
+comentario aplicadas en el mismo commit).** El fix ((a) `recordPayment()`
+setea `stayId` cuando la estadía está `CHECKED_IN` al pagar, (c)
+`transferStayBalanceToReceivable()` corre
+`linkStayToReservationCharges()` como red de seguridad antes de leer el
+saldo) quedó gate-aprobado, tipado y con `vitest` verde (111/111 en los
+2 archivos de test con cambios de comentario; 156/156 en la ronda
+anterior sobre los 3 archivos con cambios de lógica) — pero sin una sola
+corrida contra Postgres real (sin `TEST_DATABASE_URL` en esta sesión).
+Cinco residuos, cada uno con su ancla y acción puntual:
+
+- **Filtro `CHECKED_IN` en `POST /:id/payments`** — confirmar contra
+  Postgres real: reserva con estadía `CHECKED_IN` → el `PAYMENT` nuevo
+  queda con `stay_id` seteado; reserva con única estadía `CHECKED_OUT`
+  → `stay_id` queda `null` (fail-safe, comportamiento sin cambios).
+  `src/clientes-finanzas/customers.routes.ts` (bloque `POST
+  /:id/payments`), commit `93a9416`.
+- **Red de seguridad (c)** — confirmar que
+  `linkStayToReservationCharges()` efectivamente adopta las filas
+  huérfanas al transferir y que el monto transferido coincide con el
+  saldo esperado; y confirmar el 409 nuevo (`StayChargeAlreadyInvoicedError`)
+  cuando el `CHARGE` recién adoptado tiene un comprobante fiscal vivo.
+  `src/clientes-finanzas/accounts-receivable.service.ts::transferStayBalanceToReceivable()`,
+  commit `93a9416`.
+- **`getFolio()` / frontend (`appfrontend-main`)** — desde este commit
+  el folio de una estadía puede traer filas `PAYMENT` que antes no
+  aparecían vinculadas; confirmar que la pantalla del folio las
+  renderiza con el signo correcto y no asume "toda fila es un cargo".
+  Residuo de runtime más visible del bloque — requiere UI con datos
+  reales, señalado por el gate como el próximo a mirar.
+- **`checkOut()`** — confirmar el cambio de comportamiento intencional:
+  un huésped que ya pagó durante la estadía no debería necesitar más
+  `overridePendingBalance` al hacer check-out, ahora que su pago tiene
+  `stay_id`. `src/pms-estadias/stay.service.ts`.
+- **Deriva de anclas causada por este commit** (`accounts-receivable.service.ts`
+  ganó 19 líneas contiguas en la 219 -- toda cita `≥219` en `src/`
+  quedó corrida `+19`, verificado una por una por el gate): `src/facturacion/invoice.service.ts:385`
+  (cita `:292-315`, real `311-334`); `src/reservas/cancellation-refund.service.ts:172`
+  (cita `:321`, real `340`) y `:183` (cita `customer-account.service.ts:240`,
+  real `~252`); `src/tests/integration/cancellation-refund.integration.test.ts:420`
+  y `:923` (citan `:353`/`:394`, reales `372`/`413`);
+  `src/tests/integration/accounts-receivable-invoice-linkage.integration.test.ts:653`
+  (cita `:275-318`, real `294-337`). Además hay anclas en `docs/` sin
+  enumerar exhaustivamente por el gate. Ninguna de estas citas está
+  rota funcionalmente (son comentarios/docs, no código que ejecute mal)
+  — es deuda de referencia, se corrige de-pineando por firma (mismo
+  criterio ya aplicado a `outbox.handlers.ts:249` en este mismo commit),
+  no urgente.
+
+No autorizado en este bloque, explícitamente fuera de alcance: el
+backfill histórico de los `PAYMENT` ya huérfanos en producción (necesita
+su propio `AskUserQuestion` sobre reservas multi-stay +
+`irreversible-action-gate`), y el push de este commit ni de los 6
+anteriores.
+
 ---
 
 ## ✅ Cerrado esta sesión (12/09/2026)
