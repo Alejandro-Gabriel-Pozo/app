@@ -1283,7 +1283,7 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 > duplicados de arriba) ya cerró del todo, ver `docs/resuelto.md`.
 
 - **Caso 3, residuo Q2 — reconciliación de City Ledger con montos
-  `PENDING` transferidos (12/09/2026, `requiere decisión del dueño`).**
+  `PENDING` transferidos — DECIDIDO (13/09/2026).**
   Ancla: `accounts-receivable.service.ts::transferStayBalanceToReceivable`
   (docblock del método, commit `ad28d2e`). Desde el fix de
   `getNetBalanceByStayId()` (caso 3,
@@ -1293,14 +1293,83 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `reservation.completed`). Si después de transferir algo ajusta el
   saldo de la estadía hacia abajo (o la reserva se cancela), el folio
   del huésped puede quedar negativo mientras la empresa ya recibió el
-  `CHARGE` completo `SETTLED` por el monto viejo. **Pregunta para el
-  dueño:** ¿es aceptable este riesgo dado el volumen real de uso de
-  City Ledger, o hace falta un mecanismo de reconciliación (detectar el
-  desvío, ajustar la AR o la factura ya emitida a la empresa) antes de
-  que esto se use en producción? No bloquea la transferencia mientras
-  se espera la respuesta — el fix de `checkOut()` (Q1, sí decidido) es
-  inseparable de este cambio de comportamiento porque comparten la
-  misma función.
+  `CHARGE` completo `SETTLED` por el monto viejo. Esto ya no queda sin
+  ninguna barrera: el guard del Bloque 6 §9.1 (`d75296a`, extendido en
+  `b09555a`) SÍ bloquea `transferStayBalanceToReceivable()` cuando algún
+  `CHARGE` de la estadía ya tiene una factura `ISSUED` viva al huésped —
+  lo que sigue sin cubrir es acotado al caso de un `ADJUSTMENT`
+  `PENDING` sin comprobante emitido todavía, que es el que este residuo
+  Q2 trata. El fix de `checkOut()` (Q1, sí decidido) es inseparable de
+  este cambio de comportamiento porque comparten la misma función.
+
+  **Decisión del dueño (`AskUserQuestion`, 13/09/2026 -- grounding ERP ya
+  registrado en §2/§3 del diseño, no nuevo de esta ronda: Cloudbeds/Odoo/
+  ERPNext/Dolibarr unánime en los 4 aplicables, QloApps sin city ledger
+  corporativo): no bloquear la transferencia ni construir reconciliación
+  automática -- ningún sistema de referencia hace ninguna de las dos
+  cosas. Construir `reverseTransfer()` + detección.** El mecanismo YA
+  está diseñado completo, no es diseño nuevo:
+  `docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.3
+  (`AccountsReceivableService.reverseTransfer()`, cita por firma del
+  método, no por línea -- mismo criterio que
+  `CITY-LEDGER-GUARD-ADR-ANCHOR-DRIFT-001` más arriba en este archivo),
+  §4.5 (detección por EXISTENCIA de AR no-terminal asociada + log
+  estructurado en los 2 handlers de outbox -- **no** es todavía una
+  comparación de montos (`ar.amount` vs. saldo vivo recalculado): esa
+  comparación, si hace falta, queda como diseño a completar dentro del
+  Bloque 3, no algo ya resuelto en §4.5), secuenciado en §8 en 6 bloques.
+  **El Bloque 1 (schema v52, estado `REVERTIDO`) YA ESTÁ IMPLEMENTADO Y
+  PUSHEADO** -- `b82d828`, en `origin/main`; `CURRENT_SCHEMA_VERSION = 52`
+  en `tenant-db.setup.ts`, CHECK de 4 valores en `schema.sql`. Lo que
+  sigue pendiente es Bloque 2 (`reverseTransfer()` + ruta + RBAC + tests
+  -- el union TS `AccountsReceivableStatus` en los 2 repos va con este
+  bloque, ya registrado como `ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001`
+  más arriba en este archivo, no se repite acá) y Bloque 3 (la detección
+  de §4.5, puede ir junto con el 2 o separado).
+
+  **Precondición declarada antes de dar el Bloque 2 por completo -- los
+  3 hallazgos de §7.2 no comparten el mismo tratamiento: el que toca
+  código fuera de `AccountsReceivableService` lleva gate propio (texto
+  del diseño, §7.2): "un cambio sobre una ruta que emite documentos
+  fiscales reales merece su PROPIO gate, no se resuelve como efecto
+  colateral de este bloque".** Son 3 hallazgos de concurrencia
+  documentados en §7.2, no 2: **(a)** `voidByReservationId()` (worker de
+  outbox, `handleReservationCancelled`) puede anular el MISMO `CHARGE`
+  original al `VOIDED` en el mismo instante en que `reverseTransfer()`
+  corre -- dos reversas del mismo cargo; requiere `SELECT ... FOR UPDATE`
+  sobre la fila `financial_transactions` del `CHARGE` original, dentro de
+  la transacción de `reverseTransfer()`. **(b)** los dos caminos de
+  emisión de factura AFIP --
+  `InvoiceService.requestConsolidatedInvoice()` (`UPDATE` best-effort
+  post-emisión que no loguea si no afecta ninguna fila) e
+  `InvoiceService.finalizeIssued()` (ni siquiera un `UPDATE`, un `if` en
+  memoria que simplemente no entra) -- pueden emitir un CAE real de AFIP
+  contra un cargo que `reverseTransfer()` ya revirtió, CERO rastro en
+  logs, porque ninguno de los dos caminos toma el lock de
+  `reverseTransfer()` sobre la fila AR. Los tres no comparten alcance:
+  **(a)** el diseño pide el lock "DENTRO de la transacción de
+  `reverseTransfer()`" -- código de `AccountsReceivableService`, mismo
+  servicio del Bloque 2, sin gate aparte. **(b)** toca el camino de
+  emisión AFIP en `InvoiceService` -- fuera de
+  `AccountsReceivableService`, y ese sí lleva su propio gate, tal como
+  dice la cita de arriba.
+
+  **Todavía queda una decisión del dueño abierta que bloquea el Bloque
+  2, distinta de la ya tomada acá:** §7.8 del diseño --
+  `listByCompany()`/`getByCompanyCustomerId()` no filtran por `status`;
+  ¿el panel de cuentas por cobrar de una empresa muestra las filas
+  `REVERTIDO`, las filtra por default, o las marca distinto? Texto del
+  diseño: *"Sin decidir -- bloque 2 de §8 no puede escribir la UI (ni
+  siquiera el contrato de la API de listado) sin esto."* Hace falta un
+  `AskUserQuestion` aparte antes de arrancar el Bloque 2.
+
+  **No implementado en esta sesión** -- el Bloque 1 (schema) ya estaba
+  hecho antes de esta decisión; lo que sigue pendiente es Bloque 2 +
+  Bloque 3 (servicio + ruta + RBAC + tests + sync cross-repo + detección
+  + los 3 hallazgos de concurrencia como precondición), decisión de
+  negocio ya tomada, diseño ya aprobado en lo que decide, queda para su
+  propio bloque de implementación con su propio gate -- empezando por el
+  `AskUserQuestion` de §7.8, no por código.
 
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,
