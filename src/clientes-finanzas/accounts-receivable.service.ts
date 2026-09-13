@@ -67,13 +67,25 @@ export class NoBalanceToTransferError extends DomainError {
  * compensada al 100% por NC (`classifyReservationLiveInvoice()`/
  * `classifyOrderLiveInvoice()` da `NOT_RECONCILED`) -- previene el crédito
  * fantasma de §9.2 en vez de solo exponerlo después.
+ *
+ * Extendido (13/09/2026, gate `architecture-governor`, decisión del dueño
+ * -- `AskUserQuestion`, `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001`) para
+ * cubrir también el comprobante EN VUELO -- mismo predicado que el guard
+ * hermano `ReservationService.findBlockingInvoiceLinkage()`
+ * (`reservas/reservation.service.ts:864-875`): `NOT_ISSUED` con
+ * `status: 'PENDING'`, o `FAILED_UNCERTAIN` con `afipContacted: true`.
+ * `REJECTED` nunca bloquea (acá ni en el hermano) -- AFIP ya dijo que no,
+ * no hay comprobante real que proteger. El mensaje conserva el texto
+ * `ISSUED` verbatim (ya shippeado, visible tal cual al staff via
+ * `extractErrorMessage()` en el frontend) y agrega uno nuevo para el caso
+ * en vuelo -- no lo reemplaza por uno genérico.
  */
 export class StayChargeAlreadyInvoicedError extends DomainError {
-  constructor(stayId: string, invoiceId: string) {
-    super(
-      `La estadía "${stayId}" tiene un cargo con la factura "${invoiceId}" emitida y vigente (no compensada del todo por Nota de Crédito) a nombre del huésped -- no se puede transferir el saldo a una empresa mientras ese comprobante siga vivo.`,
-      'STAY_CHARGE_ALREADY_INVOICED',
-    );
+  constructor(stayId: string, invoiceId: string, invoiceStatus: 'ISSUED' | 'PENDING' | 'FAILED_UNCERTAIN') {
+    const message = invoiceStatus === 'ISSUED'
+      ? `La estadía "${stayId}" tiene un cargo con la factura "${invoiceId}" emitida y vigente (no compensada del todo por Nota de Crédito) a nombre del huésped -- no se puede transferir el saldo a una empresa mientras ese comprobante siga vivo.`
+      : `La estadía "${stayId}" tiene un cargo con la factura "${invoiceId}" en trámite (estado: ${invoiceStatus}, todavía sin confirmar con AFIP) a nombre del huésped -- no se puede transferir el saldo a una empresa hasta que AFIP confirme la emisión o el comprobante se rechace.`;
+    super(message, 'STAY_CHARGE_ALREADY_INVOICED');
   }
 }
 
@@ -195,31 +207,68 @@ export class AccountsReceivableService {
       await this.reservationRepo.getByIdWithLock(client, stay.reservationId);
 
       // Guard: ¿algún CHARGE de esta estadía tiene una Factura B ISSUED
-      // vigente (no compensada del todo por NC)? Cloudbeds "Locked
-      // transaction" -- no se rutea/transfiere un cargo con comprobante
-      // fiscal vivo encima. `resolveInvoiceLinkage()` primero (existencia
-      // -- ISSUED o no) y SOLO SI hay factura viva, `classify*LiveInvoice()`
+      // vigente (no compensada del todo por NC), o EN VUELO (todavía sin
+      // confirmar con AFIP)? Cloudbeds "Locked transaction" -- no se
+      // rutea/transfiere un cargo con comprobante fiscal vivo o en trámite
+      // encima.
+      //
+      // Rama ISSUED: `resolveInvoiceLinkage()` primero (existencia -- ISSUED
+      // o no) y SOLO SI hay factura viva, `classify*LiveInvoice()`
       // (reconciliación real): los dos predicados juntos, nunca uno solo --
       // `classify*` por sí solo da `NOT_RECONCILED` también para "nunca se
       // facturó" (fail-closed documentado en su propio docblock), así que
       // usarlo sin el filtro de existencia bloquearía TODA transferencia,
       // no solo las que tienen un comprobante vivo sin conciliar.
+      //
+      // Rama NOT_ISSUED en vuelo (`PENDING`, o `FAILED_UNCERTAIN` con
+      // `afipContacted`): NO se llama a `classify*` -- ese método pregunta
+      // "¿esta Factura B YA VIVA fue compensada al 100% por NC?", y una NC
+      // solo puede compensar una factura `ISSUED` (no hay nada que
+      // reconciliar sobre un comprobante que ni siquiera se sabe si AFIP
+      // emitió). Bloquea directo, mismo predicado que el guard hermano
+      // `ReservationService.findBlockingInvoiceLinkage()`
+      // (`reservas/reservation.service.ts:864-875`). `REJECTED` nunca
+      // bloquea (ni acá ni en el hermano) -- AFIP ya dijo que no.
+      //
+      // Camino de salida de cada estado en vuelo (doctrina de la ronda 1 de
+      // este mismo bloque -- nada bloquea sin salida): `PENDING` se
+      // resuelve solo a `ISSUED` (vía `retryExisting()`, idempotente por
+      // `invoice:<ftId>` -- una fila `PENDING` huérfana por un proceso
+      // muerto se destraba reintentando la emisión, no queda huérfana para
+      // siempre) o a `REJECTED` (deja de bloquear); `FAILED_UNCERTAIN` con
+      // `afipContacted` se destraba con la reconciliación humana que este
+      // repo ya modela para ese estado (contactar a AFIP para confirmar).
+      //
+      // Por qué esto NO se unifica con el guard de `markInvoiced()`/
+      // `markCollected()` de este mismo archivo (que sí bloquean con
+      // CUALQUIER `NOT_ISSUED`, incluido `REJECTED`): miran un SUJETO
+      // distinto -- ahí es `ar.financialTransactionId` (el CHARGE contra la
+      // EMPRESA que este mismo método crea más abajo), acá son los CHARGE
+      // del HUÉSPED. Predicados distintos a propósito, no una
+      // inconsistencia a limpiar.
       const stayCharges = (await this.financialRepo.getByStayId(input.stayId)).filter((t) => t.type === 'CHARGE');
       for (const charge of stayCharges) {
         const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
-        if (linkage.kind !== 'ISSUED') continue;
-        // Cargo *solo-estadía* (sin reservationId NI orderId -- legal por
-        // el CHECK `chk_financial_transactions_order_or_reservation`, "a lo
-        // sumo uno", no "exactamente uno"): no hay entidad contra la cual
-        // llamar classify*. Fail-closed -- no se puede verificar
-        // reconciliación, se trata como comprobante vivo sin conciliar.
-        const classification = charge.reservationId
-          ? await this.invoiceRepo.classifyReservationLiveInvoice(client, charge.reservationId)
-          : charge.orderId
-            ? await this.invoiceRepo.classifyOrderLiveInvoice(client, charge.orderId)
-            : 'NOT_RECONCILED' as const;
-        if (classification === 'NOT_RECONCILED') {
-          throw new StayChargeAlreadyInvoicedError(input.stayId, linkage.invoiceId);
+
+        if (linkage.kind === 'ISSUED') {
+          // Cargo *solo-estadía* (sin reservationId NI orderId -- legal por
+          // el CHECK `chk_financial_transactions_order_or_reservation`, "a
+          // lo sumo uno", no "exactamente uno"): no hay entidad contra la
+          // cual llamar classify*. Fail-closed -- no se puede verificar
+          // reconciliación, se trata como comprobante vivo sin conciliar.
+          const classification = charge.reservationId
+            ? await this.invoiceRepo.classifyReservationLiveInvoice(client, charge.reservationId)
+            : charge.orderId
+              ? await this.invoiceRepo.classifyOrderLiveInvoice(client, charge.orderId)
+              : 'NOT_RECONCILED' as const;
+          if (classification === 'NOT_RECONCILED') {
+            throw new StayChargeAlreadyInvoicedError(input.stayId, linkage.invoiceId, 'ISSUED');
+          }
+          continue;
+        }
+
+        if (linkage.kind === 'NOT_ISSUED' && (linkage.status === 'PENDING' || (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted))) {
+          throw new StayChargeAlreadyInvoicedError(input.stayId, linkage.invoiceId, linkage.status);
         }
       }
 

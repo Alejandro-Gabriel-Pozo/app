@@ -509,6 +509,111 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
         companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
       })).rejects.toThrow(StayChargeAlreadyInvoicedError);
     });
+
+    // CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001 (13/09/2026, gate
+    // `architecture-governor`, decisión del dueño vía `AskUserQuestion`):
+    // el guard también bloquea sobre un comprobante EN VUELO (todavía sin
+    // confirmar con AFIP) -- mismo predicado que el guard hermano
+    // `ReservationService.findBlockingInvoiceLinkage()`. Sin `classify*`
+    // para esta rama (no hay nada que reconciliar sobre algo que ni
+    // siquiera se sabe si se emitió).
+    describe('extensión -- comprobante EN VUELO (NOT_ISSUED PENDING / FAILED_UNCERTAIN+afipContacted)', () => {
+      it('NOT_ISSUED PENDING -- bloquea sin consultar classify*', async () => {
+        financialRepo.stayCharges = [
+          { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+        ];
+        invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge-1', { invoiceId: 'inv-pending', status: 'PENDING', afipContacted: false });
+
+        await expect(service.transferStayBalanceToReceivable({
+          stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+          companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+        })).rejects.toThrow(StayChargeAlreadyInvoicedError);
+
+        expect(financialRepo.created).toHaveLength(0);
+        expect(arRepo.created).toHaveLength(0);
+        // Mutante que esto caza: si alguien agrega una llamada a
+        // classify*LiveInvoice() en la rama nueva (no debería -- no hay
+        // nada que reconciliar sobre un comprobante que ni siquiera se
+        // sabe si AFIP emitió), este assert lo atrapa.
+        expect(invoiceRepo.classifyCalls).toBe(0);
+      });
+
+      it('NOT_ISSUED FAILED_UNCERTAIN + afipContacted:true -- bloquea (no se sabe con certeza si se emitió)', async () => {
+        financialRepo.stayCharges = [
+          { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+        ];
+        invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge-1', { invoiceId: 'inv-uncertain', status: 'FAILED_UNCERTAIN', afipContacted: true });
+
+        const err = await service.transferStayBalanceToReceivable({
+          stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+          companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+        }).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(StayChargeAlreadyInvoicedError);
+        expect((err as Error).message).toContain('FAILED_UNCERTAIN');
+        expect(invoiceRepo.classifyCalls).toBe(0);
+      });
+
+      it('NOT_ISSUED FAILED_UNCERTAIN sin contactar AFIP (afipContacted:false) -- NO bloquea, procede', async () => {
+        financialRepo.stayCharges = [
+          { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+        ];
+        invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge-1', { invoiceId: 'inv-x', status: 'FAILED_UNCERTAIN', afipContacted: false });
+
+        const ar = await service.transferStayBalanceToReceivable({
+          stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+          companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+        });
+
+        expect(ar.status).toBe('PENDIENTE_FACTURAR');
+      });
+
+      it('NOT_ISSUED REJECTED -- NO bloquea (AFIP ya dijo que no), procede', async () => {
+        financialRepo.stayCharges = [
+          { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+        ];
+        invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge-1', { invoiceId: 'inv-x', status: 'REJECTED', afipContacted: true });
+
+        const ar = await service.transferStayBalanceToReceivable({
+          stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+          companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+        });
+
+        expect(ar.status).toBe('PENDIENTE_FACTURAR');
+      });
+
+      it('el mensaje del caso ISSUED conserva el texto verbatim ya shippeado (no se degradó al genérico)', async () => {
+        financialRepo.stayCharges = [
+          { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+        ];
+        invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge-1', 'inv-1');
+        invoiceRepo.reservationClassification.set(stay.reservationId, 'NOT_RECONCILED');
+
+        const err = await service.transferStayBalanceToReceivable({
+          stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+          companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+        }).catch((e: unknown) => e);
+
+        expect((err as Error).message).toContain('emitida y vigente (no compensada del todo por Nota de Crédito)');
+      });
+
+      it('dos cargos -- el primero limpio (NONE) y el segundo EN VUELO -- bloquea igual (el continue no corta el loop antes de tiempo)', async () => {
+        financialRepo.stayCharges = [
+          { id: 'ft-charge-clean', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 7000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+          { id: 'ft-charge-pending', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 8000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+        ];
+        // ft-charge-clean: sin entrada en ningún mapa -> resolveInvoiceLinkage da NONE.
+        invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge-pending', { invoiceId: 'inv-pending', status: 'PENDING', afipContacted: false });
+
+        await expect(service.transferStayBalanceToReceivable({
+          stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+          companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+        })).rejects.toThrow(StayChargeAlreadyInvoicedError);
+
+        expect(financialRepo.created).toHaveLength(0);
+        expect(arRepo.created).toHaveLength(0);
+      });
+    });
   });
 });
 
