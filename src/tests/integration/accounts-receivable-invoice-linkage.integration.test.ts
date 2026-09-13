@@ -35,6 +35,7 @@ import { SqlReservationRepository } from '../../reservas/sql.reservation.reposit
 import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 import { ReceivableInvoiceNotIssuedError } from '../../domain/errors.js';
+import { StayChargeAlreadyInvoicedError } from '../../clientes-finanzas/accounts-receivable.service.js';
 
 let db: SqlClient;
 let pool: pg.Pool;
@@ -553,5 +554,291 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.markCollected() -- víncu
 
     const stillPending = await arRepo.getById(ar.id);
     expect(stillPending?.status).toBe('PENDIENTE_FACTURAR');
+  });
+
+  // ---------------------------------------------------------------------
+  // CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001 (13/09/2026) -- residuo
+  // de verificación de `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001` (`b09555a`):
+  // ese commit extendió el guard de
+  // `AccountsReceivableService.transferStayBalanceToReceivable()` para
+  // bloquear también sobre un comprobante EN VUELO (`NOT_ISSUED` con
+  // `status: 'PENDING'`, o `FAILED_UNCERTAIN` con `afipContacted: true`),
+  // pero toda su evidencia era unitaria contra `FakeInvoiceRepository`
+  // (`accounts-receivable.service.test.ts`). Acá se prueba el predicado
+  // real: el `status`/`afip_contacted` que `SqlInvoiceRepository
+  // .resolveInvoiceLinkage()` devuelve contra Postgres real, no un fake que
+  // simplemente devuelve lo que el test le pide.
+  //
+  // Distinto del guard de `markCollected()` de arriba en este archivo: ahí
+  // el CHARGE es contra la EMPRESA (ya transferido); acá el CHARGE es
+  // contra el HUÉSPED, todavía sin transferir -- exactamente lo que
+  // `transferStayBalanceToReceivable()` bloquea o deja pasar.
+  // ---------------------------------------------------------------------
+  describe('AccountsReceivableService.transferStayBalanceToReceivable() -- guard §9.1 extensión "en vuelo" contra Postgres real', () => {
+    /**
+     * Arma estadía + reserva + CHARGE del HUÉSPED (nunca transferido),
+     * SIN ninguna `invoices` todavía -- el guard, sin invoice, no bloquea
+     * (mismo camino que "sin ninguna Factura B" del test unitario).
+     * `company` es un cliente COMPANY separado, destino de la
+     * transferencia.
+     */
+    async function seedGuestChargeScenario(amount = 1000) {
+      const category = await seedCategory(db);
+      const resource = await seedResource(db, category.id);
+      const guest = await seedCustomer(db);
+      const reservation = await seedReservation(db, resource.id, guest.id, { totalPrice: amount });
+      const company = await seedCustomer(db);
+      await db.query(`UPDATE customers SET kind = 'COMPANY' WHERE id = $1`, [company.id]);
+
+      const stayId = randomUUID();
+      await db.query(
+        `INSERT INTO stays (id, business_id, reservation_id, resource_id, customer_id, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, 'ident-test')`,
+        [stayId, BUSINESS_ID, reservation.id, resource.id, guest.id],
+      );
+
+      const financialRepo = new SqlFinancialTransactionRepository(db);
+      const charge = await financialRepo.create({
+        id: randomUUID(), businessId: BUSINESS_ID, customerId: guest.id,
+        reservationId: reservation.id, stayId, type: 'CHARGE', amount,
+        currency: 'ARS', status: 'SETTLED',
+      });
+
+      return { stayId, reservationId: reservation.id, guest, company, chargeId: charge!.id };
+    }
+
+    /**
+     * Arma el mismo escenario de arriba y AGREGA una fila `invoices` real
+     * vinculada a ese CHARGE, con el `status`/`afip_contacted` que pida el
+     * test. La invoice se emite a nombre del huésped (`customer_id =
+     * guest.id`), igual que el mensaje de `StayChargeAlreadyInvoicedError`
+     * lo describe ("a nombre del huésped").
+     */
+    async function seedGuestChargeWithInvoiceScenario(opts: {
+      status: 'PENDING' | 'FAILED_UNCERTAIN' | 'REJECTED';
+      afipContacted: boolean;
+      amount?: number;
+    }) {
+      const amount = opts.amount ?? 1000;
+      const scenario = await seedGuestChargeScenario(amount);
+
+      const invoiceId = randomUUID();
+      const cbteNro = cbteNroCounter++;
+      await db.query(
+        `INSERT INTO invoices
+           (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+            environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+            condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+            cae, cae_vto, status, afip_contacted)
+         VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+                 5, 'PES', $7, 0, $7, NULL, NULL, $8, $9)`,
+        [invoiceId, BUSINESS_ID, scenario.chargeId, scenario.guest.id, `idem-${invoiceId}`, cbteNro, amount, opts.status, opts.afipContacted],
+      );
+
+      return { ...scenario, invoiceId };
+    }
+
+    /** Ver `for-key-share-lock-semantics.integration.test.ts` -- misma
+     * utilidad, duplicada acá a propósito (archivo hermano, no exportada). */
+    async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ settled: boolean }> {
+      let settled = false;
+      void promise.then(() => { settled = true; }, () => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return { settled };
+    }
+
+    /**
+     * Cuenta filas reales creadas por la transferencia -- ninguna si el
+     * guard bloqueó. Cubre las 3 escrituras de
+     * `transferStayBalanceToReceivable()` (`accounts-receivable.service.ts:275-318`):
+     * el `PAYMENT` del huésped (por `stayId`, antes solo se afirmaba por el
+     * nombre del test sin contarlo -- corregido acá, gate
+     * `architecture-governor`), el `CHARGE` de la empresa y la fila de AR.
+     */
+    async function transferSideEffectCounts(stayId: string, companyId: string) {
+      const { rows: paymentRows } = await db.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM financial_transactions WHERE stay_id = $1 AND type = 'PAYMENT'`,
+        [stayId],
+      );
+      const { rows: chargeRows } = await db.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM financial_transactions WHERE customer_id = $1 AND type = 'CHARGE'`,
+        [companyId],
+      );
+      const { rows: arRows } = await db.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM accounts_receivable WHERE company_customer_id = $1`,
+        [companyId],
+      );
+      return { payments: Number(paymentRows[0]!.count), charges: Number(chargeRows[0]!.count), ars: Number(arRows[0]!.count) };
+    }
+
+    it('NOT_ISSUED PENDING (SQL real) -- bloquea con StayChargeAlreadyInvoicedError, no crea el PAYMENT del huésped ni el CHARGE/AR de la empresa', async () => {
+      const { stayId, company, invoiceId } = await seedGuestChargeWithInvoiceScenario({
+        status: 'PENDING', afipContacted: false,
+      });
+
+      const err = await makeArService().transferStayBalanceToReceivable({
+        stayId, businessId: BUSINESS_ID, companyCustomerId: company.id, transferredBy: 'ident-test',
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(StayChargeAlreadyInvoicedError);
+      expect((err as Error).message).toContain(invoiceId);
+      expect((err as Error).message).toContain('PENDING');
+
+      const counts = await transferSideEffectCounts(stayId, company.id);
+      expect(counts).toEqual({ payments: 0, charges: 0, ars: 0 });
+    });
+
+    it('NOT_ISSUED FAILED_UNCERTAIN + afip_contacted=true (SQL real) -- bloquea, no se sabe con certeza si AFIP emitió', async () => {
+      const { stayId, company, invoiceId } = await seedGuestChargeWithInvoiceScenario({
+        status: 'FAILED_UNCERTAIN', afipContacted: true,
+      });
+
+      const err = await makeArService().transferStayBalanceToReceivable({
+        stayId, businessId: BUSINESS_ID, companyCustomerId: company.id, transferredBy: 'ident-test',
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(StayChargeAlreadyInvoicedError);
+      expect((err as Error).message).toContain(invoiceId);
+      expect((err as Error).message).toContain('FAILED_UNCERTAIN');
+
+      const counts = await transferSideEffectCounts(stayId, company.id);
+      expect(counts).toEqual({ payments: 0, charges: 0, ars: 0 });
+    });
+
+    it('espejo -- NOT_ISSUED FAILED_UNCERTAIN sin contactar AFIP (afip_contacted=false, SQL real) -- NO bloquea, la transferencia procede', async () => {
+      const { stayId, company } = await seedGuestChargeWithInvoiceScenario({
+        status: 'FAILED_UNCERTAIN', afipContacted: false,
+      });
+
+      const ar = await makeArService().transferStayBalanceToReceivable({
+        stayId, businessId: BUSINESS_ID, companyCustomerId: company.id, transferredBy: 'ident-test',
+      });
+
+      expect(ar.status).toBe('PENDIENTE_FACTURAR');
+      const counts = await transferSideEffectCounts(stayId, company.id);
+      expect(counts).toEqual({ payments: 1, charges: 1, ars: 1 });
+    });
+
+    it('espejo -- NOT_ISSUED REJECTED (SQL real) -- NO bloquea, AFIP ya dijo que no', async () => {
+      const { stayId, company } = await seedGuestChargeWithInvoiceScenario({
+        status: 'REJECTED', afipContacted: true,
+      });
+
+      const ar = await makeArService().transferStayBalanceToReceivable({
+        stayId, businessId: BUSINESS_ID, companyCustomerId: company.id, transferredBy: 'ident-test',
+      });
+
+      expect(ar.status).toBe('PENDIENTE_FACTURAR');
+      const counts = await transferSideEffectCounts(stayId, company.id);
+      expect(counts).toEqual({ payments: 1, charges: 1, ars: 1 });
+    });
+
+    it('concurrencia real: requestInvoice() sosteniendo el lock de la reserva + insertando la invoice PENDING sin commitear todavía bloquea transferStayBalanceToReceivable(), y al commitear el guard real la ve y bloquea la transferencia (con brazo de control)', async () => {
+      // Dos escenarios independientes: `locked` es donde se reproduce la
+      // carrera real (InvoiceService.requestInvoice() -- mismo lock,
+      // mismo orden que el método real, `reservations FOR UPDATE` antes
+      // del INSERT en `invoices` -- corriendo "primero". Ancla por
+      // método, no por línea (`SCHEMA-ANCHOR-DRIFT-001`: la cita anterior
+      // a `invoice.service.ts:451-453` había quedado desactualizada, esas
+      // líneas hoy son otro código); `control` es un escenario sin ningún
+      // lock, para distinguir "bloqueó por el FOR UPDATE real" de "algo
+      // más frenó la conexión" (mismo criterio que
+      // for-key-share-lock-semantics.integration.test.ts).
+      //
+      // Acotado a cargos ligados a una RESERVA: `requestInvoice()` solo
+      // toma el lock de `reservations` cuando `tx.reservationId` no es
+      // nulo -- para un cargo solo-orden o solo-estadía no hay exclusión
+      // mutua alguna y esta prueba de concurrencia no aplica (superficie
+      // ya registrada, mitigada, en `CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`).
+      //
+      // Ventana de 600ms, gate `architecture-governor`: cómoda en
+      // Postgres local (corrida estable, ~660ms el test completo), pero
+      // es un heurístico de reloj de pared -- contra un `TEST_DATABASE_URL`
+      // remoto con latencia real, el brazo de control hace ~12-15
+      // round-trips dentro de esa ventana y puede quedar al límite (mismo
+      // modo de falla ya documentado en
+      // `src/tests/integration/helpers/db.ts:152-159` para el pool). No
+      // rediseñado acá -- declarado como limitación conocida.
+      const locked = await seedGuestChargeScenario(1000);
+      const control = await seedGuestChargeScenario(1000);
+
+      const clientA = await pool.connect();
+      let blockedTransfer: Promise<unknown> | undefined;
+      let controlTransfer: Promise<unknown> | undefined;
+      let committed = false;
+
+      try {
+        await clientA.query('BEGIN');
+        // Mismo lock y mismo ORDEN que InvoiceService.requestInvoice(): la
+        // reserva primero (FOR UPDATE), la fila `invoices` recién después,
+        // todavía sin commitear -- reproduce la ventana real: alguien
+        // pidiendo facturar mientras la transferencia está en camino.
+        await clientA.query('SELECT 1 FROM reservations WHERE id = $1 FOR UPDATE', [locked.reservationId]);
+        const invoiceId = randomUUID();
+        const cbteNro = cbteNroCounter++;
+        await clientA.query(
+          `INSERT INTO invoices
+             (id, business_id, financial_transaction_id, customer_id, idempotency_key,
+              environment, pto_vta, cbte_tipo, cbte_nro, concepto, doc_tipo, doc_nro,
+              condicion_iva_receptor_id, moneda, imp_neto, imp_iva, imp_total,
+              cae, cae_vto, status, afip_contacted)
+           VALUES ($1, $2, $3, $4, $5, 'homologacion', 1, 6, $6, 1, 96, '0',
+                   5, 'PES', 1000, 0, 1000, NULL, NULL, 'PENDING', false)`,
+          [invoiceId, BUSINESS_ID, locked.chargeId, locked.guest.id, `idem-${invoiceId}`, cbteNro],
+        );
+
+        // Las dos llamadas usan el MÉTODO REAL del servicio (no SQL a
+        // mano) -- cada una abre su propia transacción vía
+        // PgTransactionManager (su propia conexión del pool) e intenta
+        // lockear la reserva correspondiente como PRIMERA operación.
+        blockedTransfer = makeArService().transferStayBalanceToReceivable({
+          stayId: locked.stayId, businessId: BUSINESS_ID, companyCustomerId: locked.company.id, transferredBy: 'ident-test',
+        });
+        controlTransfer = makeArService().transferStayBalanceToReceivable({
+          stayId: control.stayId, businessId: BUSINESS_ID, companyCustomerId: control.company.id, transferredBy: 'ident-test',
+        });
+
+        const [blocked, controlResult] = await Promise.all([
+          settledWithin(blockedTransfer, 600),
+          settledWithin(controlTransfer, 600),
+        ]);
+
+        expect(
+          controlResult.settled,
+          'El brazo de CONTROL (reserva SIN ningún lock) no resolvió dentro de la ventana -- algo más está ' +
+          'frenando la conexión, no específicamente el FOR UPDATE. El resultado del bloqueado no es confiable.',
+        ).toBe(true);
+        expect(
+          blocked.settled,
+          'transferStayBalanceToReceivable() resolvió ANTES del commit de la transacción que sostiene el lock ' +
+          'de reservations -- no está esperando el mismo lock que requestInvoice() toma primero.',
+        ).toBe(false);
+
+        await clientA.query('COMMIT');
+        committed = true;
+
+        // Recién ahora, con la invoice PENDING commiteada y visible, la
+        // transferencia bloqueada obtiene el lock, corre el guard real
+        // contra Postgres y lo ve.
+        const err = await blockedTransfer.catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(StayChargeAlreadyInvoicedError);
+        expect((err as Error).message).toContain(invoiceId);
+        expect((err as Error).message).toContain('PENDING');
+
+        const blockedCounts = await transferSideEffectCounts(locked.stayId, locked.company.id);
+        expect(blockedCounts).toEqual({ payments: 0, charges: 0, ars: 0 });
+
+        // El control, sin ningún guard que lo frene, sí transfirió.
+        const controlAr = await controlTransfer as { status: string };
+        expect(controlAr.status).toBe('PENDIENTE_FACTURAR');
+        const controlCounts = await transferSideEffectCounts(control.stayId, control.company.id);
+        expect(controlCounts).toEqual({ payments: 1, charges: 1, ars: 1 });
+      } finally {
+        if (!committed) await clientA.query('COMMIT').catch(() => {});
+        if (blockedTransfer) await blockedTransfer.catch(() => {});
+        if (controlTransfer) await controlTransfer.catch(() => {});
+        clientA.release();
+      }
+    }, 10_000);
   });
 });
