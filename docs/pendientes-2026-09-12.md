@@ -525,6 +525,22 @@ su propio `AskUserQuestion` sobre reservas multi-stay +
 `irreversible-action-gate`), y el push de este commit ni de los 6
 anteriores.
 
+- **Residual B-1/3.2-b** (13/09/2026, commit `038cd83`, gate
+  `architecture-governor` APPROVED WITH CONDITIONS — código ya aplicado
+  las 3 condiciones). `TEST_DATABASE_URL` sin definir en este entorno:
+  nada de este bloque corrió contra Postgres real. Dos verificaciones
+  puntuales, no el bloque entero:
+  1. `sql.financial-transaction.repository.ts::settleByReservationId()`
+     — el `UPDATE ... AND type <> 'PAYMENT'` hoy solo está verificado por
+     assertion de string (`toContain`), no ejecutado contra una tabla
+     real.
+  2. `CustomerAccountService.recordPayment()`, rama sin `allocations` —
+     que la transacción nueva (`transactionManager.run(...)`) haga
+     commit/rollback de verdad; el `FakeTransactionManager` del test no
+     ejecuta `BEGIN`/`COMMIT` real, solo invoca el callback.
+  Se sacan de acá (se cortan, no se tachan) recién cuando alguien las
+  corra contra Postgres real y confirme el resultado.
+
 ---
 
 ## ✅ Cerrado esta sesión (12/09/2026)
@@ -2858,13 +2874,18 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `AR Transfer`, separado de `Amount Paid`, precisamente para no
   confundir un traspaso con un cobro real.
 
-  **Los 3 pasos — TODOS DECIDIDOS (13/09/2026):**
-  1. Vincular las dos patas de la transferencia — hoy sin FK entre sí,
-     solo texto libre en `notes`. Esto ya lo necesita
+  **Los 3 pasos — decididos el 13/09/2026; estado real después de
+  implementar (`8f11d19`, mismo día): pasos 1 y 2(a) implementados, 2(b)
+  y 3 siguen abiertos.**
+  1. ✅ **Hecho.** Vincular las dos patas de la transferencia — columna
+     nueva `guest_payment_transaction_id` en `accounts_receivable`
+     (schema v52→v53, `src/db/schema.sql`), simétrica a
+     `financial_transaction_id` (pata empresa). `ON DELETE NO ACTION`
+     (no `SET NULL`) a propósito — R15: si esta FK se vaciara sola, el
+     crédito fantasma reaparecería sin aviso. Esto ya lo necesita
      `reverseTransfer()` (todavía sin implementar —
      `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:587-594`
-     declara la misma dependencia sin resolver, del lado de esa
-     estructura de diseño).
+     declara la misma dependencia).
   2. **Declarar** (no alinear) — grounding COMPLEMENTARIO pedido hoy
      (set de sistemas distinto al del párrafo "Patrón de industria" de
      arriba: ahí Odoo/ERPNext/Dolibarr verificados en código sobre la
@@ -2878,39 +2899,50 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
      las obligaciones contratadas-no-firmes — mismo comportamiento que
      este repo ya tiene. ERPNext prueba además que nivel-documento y
      nivel-cuenta pueden contar estados distintos sin ser bug (dos
-     funciones con nombre propio para dos preguntas distintas). Alcance
-     de "declarar":
-     (a) Docblock explícito en `financial-transaction.repository.ts:367-374`
-     (la interfaz) sobre por qué `getNetBalanceByCustomerId()` es
-     `SETTLED`-only. El lado `ByStayId` YA declara su mitad
-     (`:417-426`: *"Incluye CHARGE/ADJUSTMENT en PENDING, no solo
-     SETTLED (fix 12/09/2026 …)"*) — este paso completa la simetría del
-     docblock, no lo escribe desde cero.
-     (b) **Hallazgo nuevo del grounding, a corregir en el mismo
-     bloque:** `CustomerAccountService.getStatement()`
+     funciones con nombre propio para dos preguntas distintas).
+     (a) ✅ **Hecho.** Docblock explícito en
+     `financial-transaction.repository.ts` (la interfaz) sobre por qué
+     `getNetBalanceByCustomerId()` es `SETTLED`-only. El lado
+     `ByStayId` ya declaraba su mitad — este paso completó la simetría.
+     (b) ❌ **Sigue abierto — NO se tocó en `8f11d19`.** Hallazgo del
+     grounding: `CustomerAccountService.getStatement()`
      (`customer-account.service.ts:74-84`) devuelve `balance` (solo
-     `SETTLED`) junto con `transactions` (sin ningún filtro de status,
-     `sql.financial-transaction.repository.ts:248`) en la misma
-     respuesta — el usuario ve filas que no suman el total de al lado.
-     Separar los dos universos explícitamente en el contrato de
-     respuesta. **Acá también se resuelve
+     `SETTLED`) junto con `transactions` (sin ningún filtro de status)
+     en la misma respuesta — el usuario ve filas que no suman el total
+     de al lado. Separar los dos universos explícitamente en el
+     contrato de respuesta sigue pendiente. **Acá también se resuelve
      `CITY-LEDGER-STATEMENT-TRANSFER-ROW-001` (decidido hoy vía
      `AskUserQuestion`): el statement del huésped sigue mostrando una
      fila propia por el traspaso a City Ledger** (precedente Cloudbeds:
      línea "AR Transfer" separada de "Amount Paid", nunca oculta — solo
-     etiquetada distinto). **Ojo, la decisión de hoy cubre solo
-     VISIBILIDAD (¿la fila se muestra o desaparece?), no el LABEL** —
-     si además hay que renombrar/etiquetar esa fila como "AR Transfer"
-     (hoy es un `PAYMENT` con `notes` en texto libre, sin
-     `payment_method`) queda EXPLÍCITAMENTE FUERA de este bloque,
-     backlog aparte — no asumir que "mostrar la fila" incluye
-     "relabelearla" sin volver a preguntar (mismo criterio D5).
-  3. Excluir la pata del huésped (el `PAYMENT` sintético) del agregado
+     etiquetada distinto). La decisión de hoy cubre solo VISIBILIDAD, no
+     el LABEL — relabelear como "AR Transfer" queda explícitamente
+     fuera, backlog aparte (mismo criterio D5).
+  3. ❌ **Sigue abierto — intentado y revertido en `8f11d19`.** Excluir
+     la pata del huésped (el `PAYMENT` sintético) del agregado
      `getNetBalanceByCustomerId()`, simétrico a como ya se excluye la
-     pata de la empresa del folio
-     (`accounts-receivable.service.ts:335-349`, comentado a propósito).
-     El punto 2(b) de arriba es precondición de que este paso no rompa
-     la visibilidad ya decidida de la fila de traspaso.
+     pata de la empresa del folio (`accounts-receivable.service.ts:335-349`).
+     **Se implementó en la misma ronda y el gate `architecture-governor`
+     encontró una regresión real:** excluir SOLO el `PAYMENT` sin
+     excluir también el `CHARGE` que se liquida después
+     (`reservation.completed` → `settleByReservationId()`, que no
+     filtra por `customer_id`) convierte un crédito fantasma
+     TRANSITORIO en una DEUDA fantasma PERMANENTE, visible en
+     `GET /customers/:id/account` (`appfrontend-main`,
+     `dashboard/cuentas-corrientes`). Revertido — verificado leyendo los
+     fakes y la suite de integración (no inferido de la corrida verde
+     post-revert, que no prueba nada sobre el código ya sacado): ningún
+     test existente cubre el balance del cliente DESPUÉS de
+     `reservation.completed` sobre una estadía transferida (hueco de
+     test real, no solo de código). **Dirección para el
+     próximo intento (no diseño cerrado):** excluir el PAR completo (el
+     folio entero de la estadía transferida), no una sola fila —
+     necesita su propio análisis de impacto (S4.0) porque
+     `getStatement()` es el único consumidor de producción, con
+     pantalla cross-repo (punto 2(b) de arriba es precondición: sin
+     separar los dos universos de la respuesta, no hay forma de
+     verificar que la exclusión del par no rompe la visibilidad ya
+     decidida de la fila de traspaso).
 
 - **`RESERVATION-STATUS-CROSSREPO-SYNC-001`** (13/09/2026, split del
   cierre de `RESERVATION-STATUS-EXPIRED-FRONTEND-01`, `docs/resuelto.md`
