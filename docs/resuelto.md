@@ -1053,3 +1053,253 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   declarado como verificación de bajo costo, no como sustituto de
   haberlo visto en pantalla.
   Origen: `pendientes-2026-09-12.md`.
+
+- **`PRESET-GROUP-VALIDATION-001`** — ✅ **RESUELTO en código, pusheado y
+  deployado** (`app-main` `dc81a39`, gate `architecture-governor`
+  09-10/09/2026, diseño + implementación + sign-off, los 3 con revisión
+  separada; migrado a este archivo 13/09/2026 -- el texto original decía
+  "LOCAL/sin pushear ni deployar" en la apertura pero el mismo bullet ya
+  declaraba más abajo "Pusheado y deployado" con evidencia -- contradicción
+  interna resuelta a favor de la evidencia real, verificado además con
+  `git merge-base --is-ancestor dc81a39 origin/main`).
+  `PUT /platform/role-presets/:name` y
+  `PUT /platform/plan-limits/:plan` ahora validan `permissionGroups[]` /
+  `allowedPermissionGroups` con `z.nativeEnum(Roles)` contra el catálogo
+  real de `security/roles.ts` — un grupo mal tipeado o inexistente
+  devuelve `400 VALIDATION_ERROR` (`error.middleware.ts:34`) en vez de
+  guardarse. `allowedRoleNames` queda sin tocar a propósito (no tiene
+  catálogo fijo: se compara contra `role.name`, y los roles pueden ser
+  CUSTOM con nombre libre). 2 tests nuevos + mutation testing (revertir a
+  `z.string()` pone en rojo la aserción del error capturado, no la del
+  repo) + query read-only contra la BD de plataforma de producción (Neon
+  proyecto `morning-unit-50056927`, base `pdb-ppms`, branch
+  `br-royal-mouse-aybe2ai3` -- los tres identificadores de la MISMA BD,
+  reconciliados 10/09/2026): 0 filas fuera de catálogo en
+  `role_preset_permission_groups` ni `plan_limit_allowed_permission_groups`
+  — el fail-loud no rompe nada existente. **Lo que sigue sin cerrar, a
+  propósito:** `permission_group` sigue siendo `VARCHAR(50)` sin FK/CHECK
+  en `platform.schema.sql` — SQL a mano contra la BD de plataforma
+  saltea esta cerca por completo (cierto siempre, sigue así); es una
+  cerca sobre el camino del panel, no sobre la columna. **Nota de
+  vigencia**: al momento de este commit (`dc81a39`, 10/09/2026 mañana),
+  SQL a mano era la ÚNICA vía de revocación documentada -- eso dejó de
+  ser cierto esa misma tarde, cuando `PRESET-REVOKE-001` Parte 2
+  (`e8f97db`, más abajo) agregó revocación real por panel
+  (`updateRolePresetPermissionGroups()` propaga bajas, no solo altas). Pusheado y deployado, confirmado: `485b334`,
+  Render `dep-dahaogmq1p3s73b1paa0` = `live`, `/health` con
+  `uptimeSeconds` creciente = instancia nueva sirviendo.
+  **1 residuo NO resuelto acá, con su ancla, en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`:** el `400` real contra estas 2 rutas en producción sigue
+  siendo inferencia del `error.middleware.ts` global, no ejercitado
+  end-to-end -- requiere credenciales de superadmin de producción, no
+  disponibles en la sesión que cerró el bloque.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`PRESET-REVOKE-001`** — ✅ **RESUELTO ENTERO (Parte 1+2), PUSHEADO Y
+  DEPLOYADO, VERIFICADO EN PRODUCCIÓN** (10/09/2026, gate
+  `architecture-governor`, `2c1c7ff`+`e8f97db`+`43d1c00`+`ebf9d5e` en
+  `app-main`, `0123129` en `appfrontend-main`; migrado a este archivo
+  13/09/2026, mergeando 2 bullets del archivo de origen -- el estado
+  final y la historia de diseño que llevó a él, antes separados en 2
+  ubicaciones distintas). La mitad que había
+  quedado abierta (revocar hacia negocios que ya tienen el grupo) se
+  cerró en la misma sesión, no quedó para "un bloque futuro":
+  - **CI**: job `integration` (el que ejercita el SQL destructivo de la
+    Parte 2 contra Postgres real por primera vez, `vitest.config.ts`
+    excluye esa carpeta del job `test`) -- ✅ `success`, run `34529816290`,
+    junto con `test`/`schema-version-check`/`route-inventory-check`/
+    `lint`/`typecheck`.
+  - **Render**: deploy `dep-dahhlce417fc73dsisv0`, commit `ebf9d5e` =
+    `live` (identidad del deploy confirmada por la API de Render, no
+    solo `/health`).
+  - **Post-deploy, read-only contra producción** (Neon
+    `morning-unit-50056927`): 23 pares de catálogo intactos, 0
+    divergencia en las dos direcciones entre `role_preset_permission_groups`
+    y `role_permission_groups` de los 2 negocios -- el deploy no movió
+    ni una fila, como se esperaba (nadie tocó un preset durante la
+    ventana de deploy).
+  - `git ls-remote` + `HEAD` local = `origin/main` en los dos repos,
+    confirmado tras el push.
+  - **Parte 1** (`2c1c7ff`) -- `RoleService.updatePermissionGroups()`
+    ya NO permite customizar el set de permisos de un rol `isSystem` por
+    negocio (reversión de R11, con fecha). 409, guard por cambio de set
+    (no incondicional), 3 mutantes con sets rojos disjuntos.
+  - **Parte 2** (`e8f97db`) -- `PlatformRepository.updateRolePresetPermissionGroups()`
+    propaga altas Y bajas a TODOS los roles de sistema de TODOS los
+    negocios, dentro de la MISMA transacción del PUT -- ya no depende
+    del próximo arranque para ninguna de las dos direcciones. 2
+    mutantes verificados contra Postgres real.
+  - **Decisión de la ronda de cierre**: el reconcile de arranque (marca
+    `platform_seed_markers` corriendo una sola vez) se SACÓ del alcance
+    -- medido en producción (10/09/2026) que el stock de divergencia
+    histórica era 0/0, así que con el guard de la Parte 1 puesto ese
+    reconcile hubiera sido un `DELETE` destructivo de radio
+    plataforma-completa que nunca ejecuta nada.
+  - **Runbook actualizado** (`43d1c00`) -- recuperación de un preset
+    vaciado por error reescrita para la propagación instantánea: vía
+    normal usa `platform_audit_log.old_value` + re-guardar por el panel
+    (sin reinicio, sin backup); break-glass SQL con verificación antes
+    de `COMMIT` como último recurso.
+  - **Cartel del frontend corregido** (`0123129`,
+    `appfrontend-main/src/app/superadmin/roles-de-fabrica/page.tsx`) --
+    ya no afirma lo contrario de lo que el botón hace; agrega la
+    advertencia del escenario de lockout (vaciar `OWNER` sin
+    `MANAGEMENT`) y muestra el radio real (altas/bajas propagadas) en
+    el toast de guardado.
+  - Re-medido en producción inmediatamente antes de este cierre
+    (10/09/2026, Neon `morning-unit-50056927`): 0/0/0 en las 3 queries
+    de divergencia -- ninguna migración de datos hace falta, el código
+    nuevo empieza desde un estado ya consistente.
+  - **Fix estructural pendiente, bloque aparte, no cerrado acá**: hay
+    consumidores por nombre de `roles.name` en vez de por
+    `role.id`/`is_system`. El guard de `renameRole()` (`8fc30c3`,
+    bloque previo) cierra el camino que PRODUCE la divergencia; no
+    cambia esa dependencia estructural. Anclas exactas y detalle
+    completo ya trackeados aparte en
+    `docs/pendientes-2026-09-12.md`, sección `### 🟡 Listo para
+    encarar` ("Consumidores de `roles.name`..." -- no repetidas acá a
+    propósito, para no arrastrar una segunda copia que pueda quedar
+    desactualizada).
+
+  **Historia de diseño (preservada como registro -- 2 rondas de `HOLD`
+  del gate antes de llegar a la decisión de arriba):**
+  **Corrección de una afirmación falsa que este bullet tenía en su
+  momento**: `role.service.ts:182` NO bloquea editar
+  grupos de permiso de roles `isSystem` -- esa línea vive dentro de
+  `deactivateRole()` y bloquea DESACTIVAR, nada más.
+  `RoleService.updatePermissionGroups()` (`:112-118`) sí permite editar
+  qué puede hacer un rol de sistema (`OWNER`/`ADMIN`/etc.) por negocio,
+  a propósito, según su propio docblock -- alcanzable por
+  `PUT /api/roles/:id` (`roles.routes.ts:160`, sin guard de `isSystem`),
+  soportado, con límite de plan y auditado en `audit_log`. El panel
+  (`dashboard/roles/page.tsx`) lo oculta con "No editable" para roles de
+  sistema, pero eso es UI, no un bloqueo real de la API -- confundir las
+  dos cosas fue lo que produjo la afirmación falsa original.
+
+  **Investigación ERP** (`auditor-circuitos-erp`, ERPNext/Odoo/QloApps):
+  los 3 convergen en que revocar un permiso de una plantilla se propaga
+  a quien ya la tenía asignada -- ninguno lo deja manual. Con esa
+  evidencia, el dueño decidió alinear `app-main` al patrón de ERPNext
+  (backfill simétrico: agregar Y quitar).
+
+  **2 rondas de diseño, 2 `HOLD` del gate, cada una achicando el
+  alcance real**:
+  1. Diseño inicial (`DELETE` simétrico solo en el backfill) -- `HOLD`:
+     el seed de 23 pares (`platform.schema.sql`, numeración
+     PRE-`cd4dff6`) corre
+     INCONDICIONALMENTE en cada arranque y repone cualquier par
+     revocado por panel -- el `DELETE` hubiera sido inerte para toda la
+     matriz de fábrica (los 23 pares cubren el 100% del default).
+  2. Diseño con seed condicional ("solo si la tabla está vacía") +
+     `DELETE` con guard -- `HOLD`: encontró que el guard por vacío es
+     alcanzable desde el propio panel (guardar con el array vacío deja
+     la tabla vacía, resucitando el seed) -- se corrigió a una tabla de
+     "marcas de seed" (`platform_seed_markers`, gatea por clave, no por
+     contenido). Pero **el hallazgo que bloqueó esta ronda es más
+     grande**: `RoleService.updatePermissionGroups()` (arriba) es un
+     escritor legítimo, soportado y auditado de `role_permission_groups`
+     para roles de sistema, que la matriz de impacto original no había
+     detectado -- un `DELETE` simétrico le borraría a cualquier negocio
+     su personalización de rol de fábrica en el próximo reinicio del
+     servidor, SIN rastro de auditoría de esa reversión (la
+     personalización original sí quedó auditada).
+
+  **Las 3 opciones que el gate presentó**: **(a)** agregar guard
+  `isSystem` a `updatePermissionGroups()` en el mismo bloque -- destruye
+  cualquier personalización de negocio existente sobre un rol de
+  sistema; **(b)** preservarlas con una columna de procedencia nueva --
+  cambio de schema más grande; **(c)** implementar SOLO la marca de
+  seed, sin `DELETE`, dejando la revocación hacia negocios que ya tienen
+  el grupo para un bloque futuro.
+
+  **Decisión del dueño (09-10/09/2026)**: opción **(c)** primero --
+  **implementar SOLO la marca de seed, SIN el
+  `DELETE`, en ese bloque.** Cierra el bug real que motivó todo esto
+  (editar un preset de fábrica por panel ahora persiste de verdad en el
+  catálogo -- ya no hay resurrección del seed original en el próximo
+  arranque) sin tocar ninguna personalización de ningún negocio. **El
+  cierre de ARRIBA (Parte 1+2, misma sesión) resolvió la pregunta que
+  quedaba entre (a) y (b): se midió 0 personalizaciones reales de
+  negocio que destruir** -- con ese número, la opción (a) ("destruir",
+  el guard `isSystem` de Parte 1, `2c1c7ff`) dejó de tener costo real y
+  se implementó, cerrando la mitad que en su
+  momento había quedado abierta sin la columna de procedencia nueva de
+  (b).
+
+  **Implementación de la marca de seed, pusheada y deployada**
+  (`cd4dff6` + `18a3c93`, 09-10/09/2026 -- el texto original decía
+  "LOCAL/sin pushear ni deployar", quedó stale; verificado 13/09/2026
+  que los 2 hashes son ancestros de `origin/main`). Tabla
+  `platform_seed_markers`
+  + seed de los 23 pares gateado por marca (no por vacío). 7 tests
+  nuevos en `platform-schema.integration.test.ts` (`describe` aislado,
+  BD propia) + 2 mutation tests con conjuntos de rojo distintos, los 2
+  revertidos. Verificado en producción antes de commitear: 23 pares
+  intactos, `platform_seed_markers` todavía no existe -- el camino de
+  upgrade real que prueban los tests es el que va a correr en el
+  próximo deploy, sin ninguna revocación previa que revertir.
+
+  **Hallazgos de la revisión de implementación, registrados en su momento:**
+  - **Copy del frontend** -- ✅ **corregida** (`0123129`, ver "Cartel del
+    frontend corregido" arriba). Quedó falsa entre el deploy de
+    `cd4dff6` (marca de seed) y el de la Parte 2 -- corregida en la
+    misma sesión en que la Parte 2 se implementó, no quedó pendiente
+    entre sesiones.
+  - **Negativo confirmado, no hacía falta corregir nada**: se verificó
+    que el catálogo de 8 grupos del frontend (`roles-de-fabrica/page.tsx`,
+    sin `EMISOR_NOTA_CREDITO`, `ROLES-CATALOG-DRIFT-001`) NO pierde ese
+    9° grupo al guardar -- `handleSave()` manda el array completo
+    cargado por el `GET`, `toggle()` solo agrega/saca la clave
+    tildada. El 9° grupo sobrevive invisible, igual que antes de este
+    bloque.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`PRESET-SAVE-ECHO-001`** — ✅ **RESUELTO en código, en 2 rondas,
+  pusheado y deployado** (`51ea0dc` + `db04daa` + `fa50557`, gate
+  `architecture-governor` 09-10/09/2026; migrado a este archivo
+  13/09/2026). Render `dep-dahcnveq1p3s73dbdovg`
+  en commit `fa50557` = `live`; `/health` con `uptimeSeconds` creciente
+  entre dos muestras (133→136s), instancia nueva sirviendo. Ronda 1
+  corrigió el eco del `PUT /role-presets/:name`
+  (devolvía el input en vez de releer). El gate, aplicando por primera vez
+  el §4.0 (gate de análisis de impacto, agregado a su propia definición
+  esa misma sesión) sobre ESE fix, encontró que la ronda 1 releía por
+  `this.db` (el POOL) en vez de por el `client` de la transacción externa
+  que el único call-site real (`platform.routes.ts`) siempre pasa --
+  bajo READ COMMITTED, esa lectura no ve el `DELETE`/`INSERT` sin
+  `COMMIT` todavía y devuelve el estado ANTERIOR. Con la ronda 1 sola en
+  producción: el superadmin tilda un grupo, guarda, ve "actualizado" en
+  verde, y el checkbox se destilda solo en pantalla -- mentira en la
+  dirección OPUESTA al bug original, y peor (el eco viejo al menos
+  coincidía con lo pedido). **Segundo sitio con el mismo defecto,
+  encontrado por el §4.0**: `updatePlanLimits()` (`platform.repository.ts`)
+  -- el método usado como "ejemplo correcto" en la ronda 1 tenía el mismo
+  problema (releía vía `listPlanLimits()` por el pool). Los dos corregidos
+  en `db04daa`: `listRolePresets()`/`listPlanLimits()` ahora aceptan un
+  `client` opcional, los `update*` pasan `externalClient ?? this.db`.
+  4 tests con 2 fakes distintos (pool vs. client de tx, estados
+  deliberadamente distintos entre sí y del input) + 2 mutantes verificados
+  (eco del input, lectura por pool en vez de por client).
+  **2 residuos NO resueltos acá:** (a) verificación funcional pedida por
+  el gate (guardar un preset sin cambios y comparar `PUT` vs. `GET` tras
+  recargar) no realizada -- requiere credenciales de superadmin de
+  producción, no disponibles en la sesión que cerró el bloque, ancla en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`; (b) sin test de
+  integración de estas rutas contra Postgres real -- la corrección queda
+  demostrada por unit test + semántica documentada de READ COMMITTED, no
+  por ejecución contra la BD real -- no es una verificación de código
+  listo, es ingeniería nueva (un test que no existe), ancla en
+  `docs/pendientes-2026-09-12.md` sección `### 🟡 Listo para encarar`.
+  **Hallazgo de paso, NO parte de este ítem, ya trackeado aparte**
+  (`docs/pendientes-2026-09-12.md`, `### 🟡 Listo para encarar`):
+  `SqlReservationRepository.save()`/`syncLines` hace `DELETE` + loop de
+  `INSERT` por el pool SIN transacción cuando se entra por `save()` en
+  vez de por `saveWithClient()` -- mismo tipo de no-atomicidad que el
+  Bug #5 del 27/08 ya cerró en otros sitios, pero éste quedó afuera.
+  Observación menor, riesgo bajo, no accionada:
+  `security/customer.auth.service.ts:87` devuelve `customer: {
+  fullName: input.fullName, email: input.email }` tras el alta -- eco de
+  input, pero fila única sin loop, blast radius chico.
+  Origen: `pendientes-2026-09-12.md`.
