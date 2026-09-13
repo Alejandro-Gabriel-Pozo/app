@@ -144,37 +144,60 @@ export class CustomerAccountService {
     const allocations = params.allocations ?? [];
 
     if (allocations.length === 0) {
-      // Comportamiento previo, sin cambios -- un único PAYMENT sin destino.
-      // paymentMethod: si es 'CASH', create() vincula la fila al turno OPEN
-      // del negocio automáticamente (ver SqlFinancialTransactionRepository.insert()).
-      const created = await this.financialRepo.create({
-        id: randomUUID(),
-        businessId: params.businessId,
-        customerId: params.customerId,
-        reservationId: params.reservationId ?? null,
-        stayId: params.stayId ?? null,
-        type: 'PAYMENT',
-        amount: params.amount,
-        currency,
-        status: 'SETTLED',
-        idempotencyKey: params.idempotencyKey ?? null,
-        notes: params.notes ?? null,
-        paymentMethod: params.paymentMethod ?? null,
-        cardInstallments: params.cardInstallments ?? null,
-        cardSurchargeAmount: params.cardSurchargeAmount ?? null,
-      });
+      // Residual B-1 / 3.2-b (13/09/2026) -- transaccionalizado (antes:
+      // `this.financialRepo.create()` suelto por el pool, sin transacción
+      // ni client). Mismo patrón que la rama `allocations` unas líneas más
+      // abajo: `createIdempotentPaymentWithClient()` ya resuelve el
+      // camino "amount <= 0 no crea nada" + "ON CONFLICT DO NOTHING ->
+      // releer por idempotencyKey" -- no hace falta reimplementarlo acá.
+      // Sin `acquireIdempotencyLock()` a propósito: esa lock existe para
+      // el caso multi-escritura de la rama `allocations` (el excedente de
+      // una factura depende del saldo releído DESPUÉS del insert
+      // anterior, dentro de la misma llamada) -- acá hay un solo insert,
+      // y el `ON CONFLICT DO NOTHING` de `createWithClient` ya serializa
+      // dos llamadas concurrentes con la misma key sin necesitar un lock
+      // explícito.
+      // paymentMethod: si es 'CASH', createWithClient() vincula la fila
+      // al turno OPEN del negocio automáticamente (ver
+      // SqlFinancialTransactionRepository.insert()).
+      const created = await this.transactionManager.run((client) =>
+        createIdempotentPaymentWithClient(this.financialRepo, client, {
+          id: randomUUID(),
+          businessId: params.businessId,
+          customerId: params.customerId,
+          reservationId: params.reservationId ?? null,
+          stayId: params.stayId ?? null,
+          type: 'PAYMENT',
+          amount: params.amount,
+          currency,
+          status: 'SETTLED',
+          idempotencyKey: params.idempotencyKey ?? null,
+          notes: params.notes ?? null,
+          paymentMethod: params.paymentMethod ?? null,
+          cardInstallments: params.cardInstallments ?? null,
+          cardSurchargeAmount: params.cardSurchargeAmount ?? null,
+        }),
+      );
 
       if (created) return [created];
 
-      // create() devolvió null: la idempotencyKey ya existía — no es un
-      // error, es el mismo pago de un reintento. Se devuelve la fila real.
-      const existing = params.idempotencyKey
-        ? await this.financialRepo.getByIdempotencyKey(params.idempotencyKey)
-        : undefined;
-      if (!existing) {
-        throw new Error('recordPayment: create() devolvió null sin idempotencyKey — no debería pasar');
-      }
-      return [existing];
+      // null acá significa: amount <= 0 y ninguna fila previa para esa
+      // idempotencyKey (con o sin key). Gate architecture-governor
+      // (13/09/2026) encontró que el comentario anterior afirmaba una
+      // equivalencia falsa: `SqlFinancialTransactionRepository.insert()`
+      // NO tiene guard de amount (verificado, líneas 71-203) -- el
+      // `create()` viejo SÍ insertaba una fila en amount <= 0 y la
+      // devolvía. Este `throw` es un cambio de comportamiento
+      // deliberado, no un "como antes": impide crear un PAYMENT en cero,
+      // que el propio docblock de `createIdempotentPaymentWithClient` ya
+      // declara sin sentido ("una fila en cero no documenta ningún
+      // movimiento real"). Hoy es inalcanzable por HTTP --
+      // `RecordPaymentSchema.amount` exige `z.number().positive()`
+      // (`src/api/schemas/request.schemas.ts:366`), único caller real
+      // (`customers.routes.ts:920`) -- pero si algún día se llama con
+      // amount <= 0 sin pasar por ese schema, ahora falla fuerte en vez
+      // de crear una fila que no representa ningún movimiento.
+      throw new Error('recordPayment: createIdempotentPaymentWithClient() devolvió null (amount <= 0 sin fila previa para la idempotencyKey) — no debería pasar por el schema HTTP');
     }
 
     // Con allocations: cada factura elegida tiene que existir, ser de este

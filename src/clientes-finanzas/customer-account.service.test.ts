@@ -78,8 +78,13 @@ class FakeTransactionManager implements TransactionManager {
    * `acquireIdempotencyLock`), para poder aseverar que se pidió sin depender
    * de un mock que lo trague en silencio (architecture-governor, 03/09/2026). */
   public rawQueries: { sql: string; params: unknown[] | undefined }[] = [];
+  /** Residual B-1 / 3.2-b (13/09/2026) -- cuántas veces se abrió una
+   * transacción, para aseverar que la rama sin `allocations` ahora
+   * transaccionaliza (antes: 0 llamadas, `create()` corría suelto). */
+  public runCallCount = 0;
 
   async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
+    this.runCallCount++;
     const client: SqlClient = {
       query: async (sql: string, params?: unknown[]) => {
         this.rawQueries.push({ sql, params });
@@ -136,6 +141,25 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
     await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100, paymentMethod: 'CASH' });
 
     expect(financialRepo.created[0]).toMatchObject({ paymentMethod: 'CASH', type: 'PAYMENT', status: 'SETTLED' });
+  });
+
+  // Residual B-1 / 3.2-b (13/09/2026) -- antes de este fix, la rama sin
+  // `allocations` llamaba `financialRepo.create()` directo, sin abrir
+  // ninguna transacción (0 llamadas a `transactionManager.run()`).
+  it('transaccionaliza la rama sin allocations (antes corría suelto por el pool)', async () => {
+    const txManager = new FakeTransactionManager();
+    const svc = new CustomerAccountService(
+      financialRepo,
+      new FakeCustomerRepository(new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]])) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile()),
+      new FakeInvoiceRepository(new Map()) as unknown as InvoiceRepository,
+      txManager,
+    );
+
+    await svc.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100 });
+
+    expect(txManager.runCallCount).toBe(1);
+    expect(financialRepo.created[0]).toMatchObject({ type: 'PAYMENT', amount: 100, status: 'SETTLED' });
   });
 
   it('paymentMethod queda null si no se pasa (compatibilidad con callers viejos)', async () => {

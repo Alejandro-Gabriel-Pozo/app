@@ -278,11 +278,23 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
   }
 
   async settleByReservationId(reservationId: string): Promise<number> {
+    // Residual B-1 / 3.2-b (13/09/2026) -- `AND type <> 'PAYMENT'` agregado
+    // a propósito, mismo criterio que el corolario de A3.9
+    // (criterios-negocio.md): un PAYMENT es dinero que YA cambió de manos,
+    // nunca una obligación pendiente de liquidar -- "settle" es un
+    // concepto de CHARGE/ADJUSTMENT, no de PAYMENT. Interferente dormido,
+    // no bug activo hoy: `PAYMENT` siempre se crea `SETTLED` directo
+    // (`CustomerAccountService.recordPayment`, ver docblock de
+    // `getSettledPaymentTotalForReservation` más abajo), así que esta
+    // cláusula nunca tocaba una fila real todavía -- se cierra antes de
+    // que algún camino futuro cree un PAYMENT PENDING y esta query lo
+    // liquide en silencio como side-effect de completar la reserva.
     const result = await this.sqlClient.query(
       `UPDATE financial_transactions
        SET status = 'SETTLED'
        WHERE reservation_id = $1
-         AND status = 'PENDING'`,
+         AND status = 'PENDING'
+         AND type <> 'PAYMENT'`,
       [reservationId],
     );
     return result.rowCount ?? 0;

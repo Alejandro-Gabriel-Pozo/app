@@ -223,7 +223,10 @@ export interface FinancialTransactionRepository {
   getByIdempotencyKey(idempotencyKey: string): Promise<FinancialTransaction | undefined>;
 
   /**
-   * Pasa a SETTLED todas las transacciones PENDING de una reserva.
+   * Pasa a SETTLED todas las transacciones PENDING de una reserva, salvo
+   * `PAYMENT` (excluido a propósito, 13/09/2026 -- un pago es dinero que
+   * ya cambió de manos, nunca una obligación pendiente de liquidar; ver
+   * el corolario de A3.9 en criterios-negocio.md).
    * Idempotente: si ya están SETTLED, no hace nada.
    * Retorna la cantidad de filas actualizadas.
    */

@@ -719,6 +719,21 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
     });
   });
 
+  describe('settleByReservationId', () => {
+    // Residual B-1 / 3.2-b (13/09/2026) -- PAYMENT nunca se liquida como
+    // side-effect de completar la reserva (A3.9: dinero que ya cambió de
+    // manos, no una obligación pendiente).
+    it('excluye PAYMENT del UPDATE (interferente dormido -- PAYMENT hoy siempre nace SETTLED, pero la query no debe depender de eso)', async () => {
+      await repo.settleByReservationId('res-1');
+
+      const mockQuery = vi.mocked(mockSqlClient.query);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain("status = 'PENDING'");
+      expect(sql).toContain("AND type <> 'PAYMENT'");
+      expect(params).toEqual(['res-1']);
+    });
+  });
+
   // Bug real en producción, 23/08/2026: voidByReservationId/voidByOrderId
   // anulaban CUALQUIER transacción PENDING/SETTLED de la reserva/orden sin
   // filtrar por `type` -- así que un PAYMENT ya cobrado (ej. una seña,
