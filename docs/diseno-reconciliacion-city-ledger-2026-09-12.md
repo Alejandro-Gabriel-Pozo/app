@@ -142,6 +142,29 @@ mismo día):**
    la ruta exige los DOS permisos a la vez**, no uno solo — mecanismo en
    §4.4.
 
+**Ronda 3 de decisiones (13/09/2026, `AskUserQuestion`):**
+
+8. **Filtro de listado (§7 punto 8): mostrar, con estado visible.**
+   `listByCompany()`/`getByCompanyCustomerId()` NO agregan ningún
+   parámetro de filtro nuevo al contrato de listado (se descartó
+   filtrar por default o exigir un toggle `includeReverted?`) — las
+   filas `REVERTIDO` aparecen mezcladas con el resto, con su estado
+   claramente marcado, para no esconder que hubo una corrección. El
+   tratamiento visual distinto (badge/color en vez de solo el texto del
+   status) queda como decisión de UI de `appfrontend-main`, a resolver
+   junto con el Bloque 2 -- **no** "cuando exista la pantalla": la
+   pantalla que consume `listByCompany()` ya existe hoy
+   (`appfrontend-main/src/app/dashboard/reportes/page.tsx`, vía
+   `accountsReceivableApi.listByCompany()`); lo que sigue sin fecha es
+   la pantalla para DISPARAR la reversa (`POST /:id/reverse`, punto 6 de
+   esta sección). Esa pantalla de listado hoy tiene `AR_STATUS_LABEL`
+   (`reportes/page.tsx`) con solo 3 claves -- sin ampliar ese `Record` y
+   el union TS junto con el Bloque 2, una fila `REVERTIDO` real se
+   renderiza con la celda de estado VACÍA, lo contrario de "mostrar, con
+   estado visible" que esta decisión pide. Ver
+   `ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001` en
+   `docs/pendientes-2026-09-12.md`.
+
 ## 4. Mecanismo — PENDIENTE_FACTURAR (el único que este bloque implementa en código nuevo)
 
 ### 4.1 Clasificación (`criterios-negocio`)
@@ -430,7 +453,7 @@ implementación real:**
 | **Mount de `app.ts`** — `requireModule(CUENTAS_CORRIENTES)` | La ruta nueva hereda ese gate de módulo, no solo el rol | Un tenant sin el módulo recibe 404/403 antes de llegar al chequeo de rol — declarar esto explícito, no asumirlo |
 | **`InvoiceService.requestConsolidatedInvoice()`** (hallazgo del gate, ronda 2) | Segundo escritor concurrente sin lock: lee `getPendingByCompanyCustomerId()` SIN lock, emite una factura AFIP real (CAE, irreversible), y recién después marca cada AR `FACTURADO` con `UPDATE ... WHERE status = 'PENDIENTE_FACTURAR'` best-effort (0 filas si ya cambió, sin log) | **Crítico** — si `reverseTransfer()` toma el lock de una AR y commitea ENTRE la lectura y el `markInvoiced` de este camino, AFIP ya emitió una factura real por un monto que el ledger ya revirtió, sin ningún rastro (el `UPDATE` no afecta filas y no hay `catch` que lo note). `arRepo.lockForUpdate()` de `reverseTransfer()` NO serializa contra este camino porque este camino nunca toma ese lock. Ver §7, pregunta de concurrencia ampliada |
 | **`InvoiceService.finalizeIssued()`** (hallazgo del gate, ronda 3 — TERCER escritor, más silencioso que el anterior) | Camino PER-RESERVATION de emisión (`POST /api/invoices` → `requestInvoice()` → `issue()`/`reconcileAfterFailure()`, `invoice.service.ts:1160-1176`), distinto de `requestConsolidatedInvoice()` (que cierra sus N filas aparte porque llega con `financialTransactionId` nulo). Emite el CAE AFIP primero, y DESPUÉS: `const ar = await getByFinancialTransactionId(...); if (ar && ar.status === 'PENDIENTE_FACTURAR') { await markInvoiced(...) }` | **Más grave que `requestConsolidatedInvoice()`:** acá no hay ni siquiera el `UPDATE` best-effort — es un `if` en memoria. Si `reverseTransfer()` ya commiteó `REVERTIDO` antes de que este `if` corra, la condición simplemente no entra, `markInvoiced` nunca se llama, y el `catch` que envuelve el bloque (`logger.error('no se pudo cerrar el gap de accounts_receivable')`) NUNCA se dispara porque no hay ninguna excepción — el `if` que no entra no es un error. Factura fiscal real emitida contra un cargo ya revertido, CERO rastro en logs. Ver §7.2(b), ampliada para cubrir los dos caminos |
-| **`listByCompany()`/`getByCompanyCustomerId()`** (hallazgo del gate, ronda 2) | Sin filtro de `status` — devuelve TODO, incluido `REVERTIDO` una vez que exista | Ver §7, pregunta nueva sobre si el panel de gestión de AR debe mostrar las revertidas, filtrarlas, o marcarlas distinto |
+| **`listByCompany()`/`getByCompanyCustomerId()`** (hallazgo del gate, ronda 2) | Sin filtro de `status` — devuelve TODO, incluido `REVERTIDO` una vez que exista | Decidido (§3.8, §7 punto 8): sin filtro nuevo, se muestra con estado visible. No requiere cambio del contrato HTTP de listado -- SÍ requiere ampliar el union TS y `AR_STATUS_LABEL` de la pantalla que ya consume este listado en `appfrontend-main`, junto con el Bloque 2 (`ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001`) |
 
 ## 7. Preguntas abiertas (algunas para el dueño, algunas para el gate — marcadas cada una)
 
@@ -540,14 +563,17 @@ implementación real:**
    cuenta corriente de la empresa, que es donde el operador la tiene que
    ver. Sin comportamiento visible divergente para el negocio, no
    ameritaba `AskUserQuestion` — es plomería interna.
-8. **Nueva (hallazgo del gate, ronda 2), para el dueño:** `listByCompany()`/
+8. **Dueño, resuelta (§3.8, ronda 3, 13/09/2026):** `listByCompany()`/
    `getByCompanyCustomerId()` no filtran por `status` — una vez que
    `REVERTIDO` exista, aparece igual que cualquier otra fila en el panel
-   de gestión de cuentas por cobrar de una empresa. ¿El panel debe
-   mostrar las revertidas (con su estado visible, para no esconder que
-   hubo una corrección), filtrarlas por default, o marcarlas distinto de
-   alguna forma? Sin decidir — bloque 2 de §8 no puede escribir la UI (ni
-   siquiera el contrato de la API de listado) sin esto.
+   de gestión de cuentas por cobrar de una empresa. La pregunta era si el
+   panel debía mostrar las revertidas (con su estado visible, para no
+   esconder que hubo una corrección), filtrarlas por default, o marcarlas
+   distinto de alguna forma. Decidido: mostrar, con estado visible, sin
+   agregar filtro nuevo al contrato de listado — el tratamiento visual
+   distinto queda como decisión de UI de `appfrontend-main`, no de este
+   mecanismo. Bloque 2 de §8 ya puede escribir el contrato de la API de
+   listado sin esta pregunta pendiente.
 
 ## 8. Bloques de implementación sugeridos (orden, no decisión)
 
@@ -568,7 +594,11 @@ implementación real:**
    antes de tener el mecanismo real que produce `REVERTIDO` reproduciría
    el modo de falla de `ROLES-CATALOG-DRIFT-001` (un catálogo que cambia
    de un lado sin que el otro se entere). Los dos se actualizan juntos,
-   en este bloque.
+   en este bloque -- junto con `AR_STATUS_LABEL` y los otros
+   consumidores de estado de `reportes/page.tsx`, ver §6 y
+   `ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001` en
+   `docs/pendientes-2026-09-12.md` para el detalle completo, no
+   duplicado acá.
 3. Detección/visibilidad en los 2 handlers de outbox (§4.5) — puede ir en
    el mismo bloque que 2, o separado si el gate prefiere acotar el radio.
 4. Bug colateral `voidByReservationId()` sin filtro de `customer_id`

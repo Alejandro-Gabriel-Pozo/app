@@ -158,6 +158,33 @@ cuando se pushea.
   sería ampliar un lado sin que el mecanismo real exista). Se angosta el
   cast (y probablemente se amplía el tipo) junto con el Bloque 2 de §8
   (`reverseTransfer()`) — no antes, no aislado.
+  **Segundo artefacto cross-repo del mismo concepto, encontrado por el
+  gate `architecture-governor` al revisar la decisión de §7.8
+  (13/09/2026):** `appfrontend-main/src/lib/finanzas/types.ts:37`
+  (`AccountsReceivableStatus`, mismo union de 3 valores) y
+  `appfrontend-main/src/app/dashboard/reportes/page.tsx:17`
+  (`AR_STATUS_LABEL: Record<AccountsReceivableStatus, string>`, 3
+  claves, consumida en `:304` como `{AR_STATUS_LABEL[ar.status]}`) --
+  esa pantalla YA CONSUME `listByCompany()` hoy. Consecuencia concreta
+  si se olvida ampliar junto con el Bloque 2: una fila `REVERTIDO` real
+  hace que `AR_STATUS_LABEL['REVERTIDO']` sea `undefined` y la celda de
+  estado se renderice vacía -- exactamente lo contrario de la decisión
+  de §7.8 ("mostrar, con estado visible, para no esconder que hubo una
+  corrección").
+  **Esta lista NO es exhaustiva todavía (mismo gate, misma revisión):**
+  la misma pantalla tiene otros 3 sitios que comparan `ar.status` contra
+  un literal -- `reportes/page.tsx:281` (habilita "Facturar ahora",
+  emite CAE AFIP real), `:308` ("Marcar facturado") y `:326` ("Marcar
+  cobrado"). Los 3 son ALLOWLIST (`=== 'PENDIENTE_FACTURAR'`/
+  `'FACTURADO'`), no denylist -- fallan del lado seguro por
+  construcción: una fila `REVERTIDO` no entra en ninguno de los 3
+  conteos ni ofrece acciones, sin que nadie lo haya decidido a
+  propósito. Antes de dar la matriz de impacto del Bloque 2 por cerrada,
+  falta enumerar también los 3 usos ya existentes en el backend del
+  mismo predicado (`(ar.status as string) !== 'REVERTIDO'` en
+  `cancel-order-with-credit-note.service.ts:377`,
+  `cancel-reservation-with-credit-note.service.ts:462` e
+  `invoice.service.ts:394`) y los 3 hallazgos de concurrencia de §7.2.
 - **`CITY-LEDGER-GUARD-RETRY-EMITS-001`** — §9.4, encontrado por el gate
   `architecture-governor` al revisar el cierre de
   `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` (13/09/2026, commit
@@ -1356,22 +1383,36 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `AccountsReceivableService`, y ese sí lleva su propio gate, tal como
   dice la cita de arriba.
 
-  **Todavía queda una decisión del dueño abierta que bloquea el Bloque
-  2, distinta de la ya tomada acá:** §7.8 del diseño --
-  `listByCompany()`/`getByCompanyCustomerId()` no filtran por `status`;
-  ¿el panel de cuentas por cobrar de una empresa muestra las filas
-  `REVERTIDO`, las filtra por default, o las marca distinto? Texto del
-  diseño: *"Sin decidir -- bloque 2 de §8 no puede escribir la UI (ni
-  siquiera el contrato de la API de listado) sin esto."* Hace falta un
-  `AskUserQuestion` aparte antes de arrancar el Bloque 2.
+  **§7.8 -- DECIDIDO (13/09/2026, `AskUserQuestion`):** el panel de
+  cuentas por cobrar de una empresa (`listByCompany()`/
+  `getByCompanyCustomerId()`) muestra las filas `REVERTIDO` tal cual,
+  mezcladas con el resto, con su estado visible -- no se esconde que
+  hubo una corrección. No se agrega ningún parámetro de filtro nuevo al
+  contrato HTTP de listado (se descartó filtrar por default o exigir un
+  toggle). El tratamiento visual distinto (badge/color en vez de solo
+  texto de status) queda como decisión de UI de `appfrontend-main`, a
+  resolver junto con el Bloque 2 -- **no** "cuando llegue la pantalla":
+  la pantalla que consume `listByCompany()` YA EXISTE hoy
+  (`appfrontend-main/src/app/dashboard/reportes/page.tsx`); lo que sigue
+  sin fecha es la pantalla para DISPARAR la reversa (`POST
+  /:id/reverse`, decisión distinta, §3.6/punto 5 de §7 del diseño). Esa
+  pantalla de listado tiene hoy `AR_STATUS_LABEL` con solo 3 claves --
+  sin ampliar ese `Record` y el union TS junto con el Bloque 2, una fila
+  `REVERTIDO` real se renderiza con la celda de estado VACÍA, lo
+  contrario de lo que esta decisión pide. Anclado en
+  `ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001` más arriba en este
+  archivo -- ampliada en este mismo commit para incluir
+  `AR_STATUS_LABEL` de `reportes/page.tsx` como segundo artefacto
+  cross-repo del mismo concepto (y, tras una segunda ronda del gate, los
+  3 sitios adicionales de comparación que esa misma pantalla ya tenía).
 
   **No implementado en esta sesión** -- el Bloque 1 (schema) ya estaba
   hecho antes de esta decisión; lo que sigue pendiente es Bloque 2 +
   Bloque 3 (servicio + ruta + RBAC + tests + sync cross-repo + detección
-  + los 3 hallazgos de concurrencia como precondición), decisión de
-  negocio ya tomada, diseño ya aprobado en lo que decide, queda para su
-  propio bloque de implementación con su propio gate -- empezando por el
-  `AskUserQuestion` de §7.8, no por código.
+  + los 3 hallazgos de concurrencia como precondición). Con §7.8 ya
+  decidido, no queda ninguna decisión del dueño pendiente que bloquee el
+  arranque del Bloque 2 -- queda para su propio bloque de implementación
+  con su propio gate, empezando por código esta vez.
 
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,

@@ -197,10 +197,11 @@ export class AccountsReceivableService {
    * ya está implementado -- commit `b82d828`, `CURRENT_SCHEMA_VERSION = 52`
    * (`platform/tenant-db.setup.ts:445`) y CHECK de 4 valores en
    * `db/schema.sql`. `reverseTransfer()` en sí (Bloque 2) todavía NO existe
-   * en este archivo -- el motivo no es falta de decisión sobre este riesgo,
-   * sino una decisión del dueño distinta todavía abierta (§7.8 del diseño: cómo
-   * `listByCompany()`/`getByCompanyCustomerId()` deben mostrar/filtrar las
-   * filas `REVERTIDO` una vez que existan).
+   * en este archivo -- no por falta de decisión: §7.8 del diseño (cómo
+   * `listByCompany()`/`getByCompanyCustomerId()` muestran las filas
+   * `REVERTIDO`) ya está decidido (§3.8, 13/09/2026, sin filtro nuevo en
+   * el contrato de listado). El motivo es simplemente que el Bloque 2
+   * todavía no se implementó.
    */
   async transferStayBalanceToReceivable(input: TransferStayBalanceInput): Promise<AccountReceivable> {
     const stay = await this.stayRepo.findById(input.stayId, input.businessId);
