@@ -757,23 +757,51 @@ patrón que `reservation.service.ts:858-862` ya documenta), traer los
    ver `docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`).
 
 **Residuo de concurrencia declarado, no cerrado por este bloque — corregido
-13/09/2026, y de nuevo tras la extensión "en vuelo" (mismo día, commit
-`b09555a`):** el único lock que este guard toma es `reservations`
-(`stay.reservationId`). Para cargos ligados a una **reserva**, ese lock
-cierra la carrera contra `InvoiceService.requestInvoice()` en las DOS
-direcciones que importan: el `INSERT` inicial en `PENDING`
-(`invoice.service.ts:450-486`, dentro de la misma transacción que toma el
-lock) y el `ISSUED` final tras confirmar con AFIP -- la extensión "en
-vuelo" de 2-bis hace que la ventana `PENDING` committeada también quede
-cubierta, no solo el estado final. Los cargos ligados a una **orden**
-(`orderId`) siguen sin quedar serializados — `requestInvoice()` para una
-orden lockea `orders`, no `reservations`, y este guard no toma ese lock.
-Los cargos *solo-estadía* tampoco tienen agregado que lockear. Para esos
-dos casos el guard sigue siendo best-effort (lee sin lock propio), y la
-red real contra la carrera es §9.2 (expone, no previene). No se agrega
-lock de `orders` a la transferencia en este bloque (el orden canónico de
-locks está documentado en `invoice.service.ts:585` y tocarlo es su propio
-gate).
+13/09/2026, y de nuevo tras la revisión de cierre de la extensión "en
+vuelo" (mismo día, gate `architecture-governor`, commit `b09555a` +
+follow-up de docs):** el único lock que este guard toma es `reservations`
+(`stay.reservationId`).
+
+Para cargos ligados a una **reserva**, cuando `requestInvoice()` corre
+PRIMERO (ya tomó el lock, la transferencia queda esperando), ese lock
+cierra la carrera en las dos ventanas de ESA dirección: el `INSERT`
+inicial en `PENDING` (`invoice.service.ts:450-488`, dentro de la misma
+transacción que toma el lock -- `:488` es el cierre de esa transacción,
+el borde real donde la fila `PENDING` queda visible para otra conexión)
+y el `ISSUED` final tras confirmar con AFIP -- la extensión "en vuelo"
+de 2-bis hace que la ventana `PENDING` committeada también quede
+cubierta, no solo el estado final. **Esto son dos ventanas de la MISMA
+dirección (`requestInvoice()` primero), no "las dos direcciones que
+importan" como afirmaba una versión anterior de este párrafo** -- esa
+frase fue un error de esta misma sesión, encontrado por el gate al
+revisar el cierre.
+
+**La dirección que sigue abierta, sin guard, es la contraria: la
+transferencia corre PRIMERO.** `transferStayBalanceToReceivable()` toma
+el lock, no ve ninguna factura (todavía no existe ninguna), crea el
+`PAYMENT` del huésped + el `CHARGE` de la empresa + la fila de AR, y
+commitea. `InvoiceService.requestInvoice()` corre DESPUÉS, sobre el MISMO
+cargo del huésped -- sus únicos guards son la idempotencia propia,
+`resolveInvoiceLinkage()` sobre ese mismo `ftId`, y los guards de orden/
+reserva `CANCELLED` (`invoice.service.ts:344-457`); **ninguno mira si la
+estadía ya se transfirió a una empresa.** Sale una Factura B al huésped
+por un cargo cuyo saldo económico ya está en la cuenta corriente de la
+empresa -- el mismo crédito fantasma que este bloque entero (§9) existe
+para prevenir, por la dirección que §9.1 no cubre. Preexistente desde el
+diseño original de §9.1, no introducido por la extensión "en vuelo" --
+esta extensión angosta la ventana de una dirección, nunca ensancha la
+otra. Registrado con su propia ancla en
+`docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001`.
+
+Los cargos ligados a una **orden** (`orderId`) siguen sin quedar
+serializados en ninguna dirección -- `requestInvoice()` para una orden
+lockea `orders`, no `reservations`, y este guard no toma ese lock. Los
+cargos *solo-estadía* tampoco tienen agregado que lockear. Para esos dos
+casos el guard sigue siendo best-effort (lee sin lock propio), y la red
+real contra la carrera es §9.2 (expone, no previene). No se agrega lock
+de `orders` a la transferencia en este bloque (el orden canónico de
+locks está documentado en `invoice.service.ts:585` y tocarlo es su
+propio gate).
 
 ### 9.2 Mecanismo — exposición en el escape de NC (implementado, commit `0f2aa24`)
 

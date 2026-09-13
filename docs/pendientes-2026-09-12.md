@@ -141,11 +141,36 @@ cuando se pushea.
   real de `resolveInvoiceLinkage()` (`sql.invoice.repository.ts:316`).
   Tampoco se probó la carrera real: una `transferStayBalanceToReceivable()`
   concurrente con un `requestInvoice()` que recién está insertando la fila
-  `PENDING` (`invoice.service.ts:450-486`). Confirmar: agregar un test de
+  `PENDING` (`invoice.service.ts:450-488`). Confirmar: agregar un test de
   integración que seedee una `invoice` real en `PENDING`/`FAILED_UNCERTAIN`
   y corra la transferencia contra Postgres real, y si el tiempo lo permite,
   un test de concurrencia real (2 conexiones, una insertando el `PENDING`
   dentro de su transacción mientras la otra intenta transferir).
+- **`CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001`** — Bloque 6, §9.1
+  (13/09/2026, gate `architecture-governor`, encontrado al revisar el
+  cierre de la extensión "en vuelo" -- una corrección anterior de este
+  mismo párrafo, el mismo día, ya había afirmado de más una vez).
+  El lock de `reservations` que toma `transferStayBalanceToReceivable()`
+  solo cierra la carrera cuando `requestInvoice()` corre PRIMERO (toma el
+  lock antes) -- ahí la transferencia queda esperando y ve la factura
+  `PENDING`/`ISSUED` ya committeada, bloquea correctamente. **La dirección
+  contraria sigue sin guard:** si la transferencia corre PRIMERO (lock,
+  ninguna factura todavía, crea el `PAYMENT` del huésped + `CHARGE` de la
+  empresa + AR, commitea), y RECIÉN DESPUÉS alguien pide facturar ese
+  mismo cargo del huésped, `InvoiceService.requestInvoice()` no tiene
+  ningún guard que mire si la estadía ya se transfirió a una empresa --
+  sus únicos guards son idempotencia propia, `resolveInvoiceLinkage()`
+  sobre el mismo `ftId`, y orden/reserva `CANCELLED`
+  (`invoice.service.ts:344-457`). Sale una Factura B al huésped por un
+  cargo cuyo saldo económico ya está en la cuenta corriente de la empresa
+  -- el mismo crédito fantasma que §9 entero existe para prevenir, por la
+  dirección que §9.1 no cubre. Preexistente desde el diseño original de
+  §9.1 (no introducido por la extensión "en vuelo" -- esa extensión
+  angosta la ventana de la OTRA dirección, nunca ensancha esta). Requiere
+  diseño propio (¿guard nuevo en `requestInvoice()` que mire si el
+  `financial_transaction_id` ya generó un `CHARGE` espejo contra una
+  empresa? ¿mismo predicado o uno distinto?) y su propio gate -- no
+  decidido ni implementado acá.
 - **`CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`** (R2, deuda con ancla,
   defensiva hoy) — Bloque 6, §9.1 (13/09/2026, gate
   `architecture-governor`): un cargo *solo-estadía* (sin `reservationId`
