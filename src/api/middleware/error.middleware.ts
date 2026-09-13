@@ -188,6 +188,9 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE':
     case 'CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED':
     case 'CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE':
+    // Bloque 6, §9.1 (13/09/2026) -- mismo grupo: documento fiscal ya
+    // emitido, acción no completa, no reintentar.
+    case 'STAY_CHARGE_ALREADY_INVOICED':
       return 422;
 
     // --- 401 Unauthorized ---

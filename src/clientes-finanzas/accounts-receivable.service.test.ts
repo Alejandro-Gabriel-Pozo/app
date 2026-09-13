@@ -5,7 +5,9 @@ import {
   NoBalanceToTransferError,
   AccountReceivableNotFoundError,
   InvalidAccountsReceivableTransitionError,
+  StayChargeAlreadyInvoicedError,
 } from './accounts-receivable.service.js';
+import type { ReservationRepoForTransfer } from './accounts-receivable.service.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 import { CustomerNotFoundError, ReceivableInvoiceNotIssuedError, ReceivableInvoiceReconciliationPendingError } from '../domain/errors.js';
 import { Customer } from './customer.entities.js';
@@ -93,12 +95,22 @@ class FakeAccountsReceivableRepository implements AccountsReceivableRepository {
 class FakeFinancialTransactionRepository implements FinancialTransactionRepository {
   public netBalanceByStay = 0;
   public created: Omit<FinancialTransaction, 'createdAt'>[] = [];
+  /** Bloque 6, §9.1 -- cargos de la estadía que el guard nuevo consulta. */
+  public stayCharges: FinancialTransaction[] = [];
+  /**
+   * Bloque 6, §9.1 -- orden real de operaciones, compartido con
+   * `FakeReservationRepositoryForTransfer` cuando el test pasa el mismo
+   * array a los dos fakes (ver guard §9.1 -- test de orden). Vacío para
+   * el resto de los tests, que no lo leen.
+   */
+  constructor(private readonly ops: string[] = []) {}
 
   async create(tx: Omit<FinancialTransaction, 'createdAt'>): Promise<FinancialTransaction | null> {
     return this.createWithClient({ async query() { return { rows: [], rowCount: 0 }; } }, tx);
   }
 
   async createWithClient(_client: SqlClient, tx: Omit<FinancialTransaction, 'createdAt'>): Promise<FinancialTransaction | null> {
+    this.ops.push('created-financial-transaction');
     this.created.push(tx);
     return { ...tx, createdAt: new Date() };
   }
@@ -108,7 +120,7 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByReservationId(): Promise<FinancialTransaction[]> { return []; }
   async getByOrderId(): Promise<FinancialTransaction[]> { return []; }
   async getByCustomerId(): Promise<FinancialTransaction[]> { return []; }
-  async getByStayId(): Promise<FinancialTransaction[]> { return []; }
+  async getByStayId(): Promise<FinancialTransaction[]> { this.ops.push('read-stay-charges'); return this.stayCharges; }
   async settleByReservationId(): Promise<number> { return 0; }
   async voidByReservationId() { return { tipo: 'NADA_QUE_HACER' as const }; }
   // O2 (03/09/2026) -- este doble no ejercita los efectos de orden.
@@ -140,6 +152,19 @@ class FakeCustomerRepository {
   async getById(id: string): Promise<Customer | undefined> { return this.customers.get(id); }
 }
 
+/** Bloque 6, §9.1 -- fake mínimo, solo `getByIdWithLock()` (lock de la
+ * reserva de origen de la estadía, primera operación del guard). */
+class FakeReservationRepositoryForTransfer implements ReservationRepoForTransfer {
+  lockCalls: string[] = [];
+  /** Ver `FakeFinancialTransactionRepository.ops` -- mismo array compartido. */
+  constructor(private readonly ops: string[] = []) {}
+  async getByIdWithLock(_client: SqlClient, id: string) {
+    this.ops.push('lock-reservation');
+    this.lockCalls.push(id);
+    return { id } as unknown as import('../reservas/Reservation.js').Reservation;
+  }
+}
+
 class InMemoryTransactionManager implements TransactionManager {
   async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
     const noopClient: SqlClient = { async query() { return { rows: [], rowCount: 0 }; } };
@@ -161,11 +186,23 @@ class FakeBusinessProfileRepository implements BusinessProfileRepository {
  * cobrado todavía") -- los tests que necesitan un saldo distinto lo setean
  * antes de llamar a `markCollected()`.
  */
-class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'resolveInvoiceLinkage'> {
+class FakeInvoiceRepository implements Pick<
+  InvoiceRepository,
+  'getOutstandingForUpdate' | 'resolveInvoiceLinkage' | 'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'
+> {
   public invoiceIdByFinancialTransactionId = new Map<string, string>();
   public outstandingByInvoiceId = new Map<string, number>();
   /** AR-FACT-NO-ISSUED-01 -- configura el caso NOT_ISSUED por ftId. */
   public notIssuedByFinancialTransactionId = new Map<string, { invoiceId: string; status: 'PENDING' | 'REJECTED' | 'FAILED_UNCERTAIN'; afipContacted: boolean }>();
+  /** Bloque 6, §9.1 -- clasificación por reservationId/orderId. Default 'RECONCILED' (no bloquea) para no romper los tests que no ejercitan el guard nuevo. */
+  public reservationClassification = new Map<string, 'RECONCILED' | 'NOT_RECONCILED'>();
+  public orderClassification = new Map<string, 'RECONCILED' | 'NOT_RECONCILED'>();
+  /** Bloque 6, §9.1 (condición C1 del gate) -- cuántas veces se llamó a
+   * cualquiera de los dos `classify*LiveInvoice()`. Prueba que el guard
+   * NO los llama cuando el pre-filtro `resolveInvoiceLinkage()` ya
+   * descartó el cargo (si no hay ningún ISSUED, el loop nunca debería
+   * pedir la clasificación). */
+  public classifyCalls = 0;
 
   async resolveInvoiceLinkage(financialTransactionId: string): Promise<InvoiceLinkage> {
     const issuedId = this.invoiceIdByFinancialTransactionId.get(financialTransactionId);
@@ -181,6 +218,16 @@ class FakeInvoiceRepository implements Pick<InvoiceRepository, 'getOutstandingFo
       throw new Error(`FakeInvoiceRepository: outstanding no seteado para "${invoiceId}"`);
     }
     return outstanding;
+  }
+
+  async classifyReservationLiveInvoice(_client: SqlClient, reservationId: string): Promise<'RECONCILED' | 'NOT_RECONCILED'> {
+    this.classifyCalls++;
+    return this.reservationClassification.get(reservationId) ?? 'RECONCILED';
+  }
+
+  async classifyOrderLiveInvoice(_client: SqlClient, orderId: string): Promise<'RECONCILED' | 'NOT_RECONCILED'> {
+    this.classifyCalls++;
+    return this.orderClassification.get(orderId) ?? 'RECONCILED';
   }
 }
 
@@ -232,6 +279,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile()),
       invoiceRepo,
+      new FakeReservationRepositoryForTransfer(),
     );
   });
 
@@ -286,6 +334,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile({ currency: 'USD' })),
       invoiceRepo,
+      new FakeReservationRepositoryForTransfer(),
     );
     financialRepo.netBalanceByStay = 500;
 
@@ -307,6 +356,7 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile()),
       invoiceRepo,
+      new FakeReservationRepositoryForTransfer(),
     );
 
     await expect(service.transferStayBalanceToReceivable({
@@ -338,6 +388,127 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
       companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
     })).rejects.toThrow(NoBalanceToTransferError);
+  });
+
+  // Bloque 6, §9.1 (13/09/2026, gate `architecture-governor`) -- guard
+  // duro: no se puede transferir el saldo de una estadía con un cargo que
+  // ya tiene una Factura B ISSUED vigente (no reconciliada por NC).
+  describe('guard §9.1 -- Factura B previa sobre un CHARGE de la estadía', () => {
+    beforeEach(() => {
+      financialRepo.netBalanceByStay = 15000;
+    });
+
+    it('lockea la reserva de origen ANTES de leer los cargos y de crear nada (orden real -- condición C2 del gate, no solo que el lock haya ocurrido)', async () => {
+      // Array compartido entre los dos fakes -- registra el ORDEN real de
+      // las operaciones, no solo si cada una ocurrió. Mutante que esto
+      // caza y el `lockCalls.toEqual(...)` de antes no cazaba: mover
+      // `getByIdWithLock()` DESPUÉS del loop del guard (condición C2 del
+      // gate `architecture-governor`, 13/09/2026).
+      const ops: string[] = [];
+      const reservationRepo = new FakeReservationRepositoryForTransfer(ops);
+      const orderedFinancialRepo = new FakeFinancialTransactionRepository(ops);
+      orderedFinancialRepo.netBalanceByStay = 15000;
+
+      service = new AccountsReceivableService(
+        arRepo, orderedFinancialRepo,
+        new FakeStayRepository(stay) as unknown as StayRepository,
+        new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+        new InMemoryTransactionManager(),
+        new FakeBusinessProfileRepository(makeProfile()),
+        invoiceRepo,
+        reservationRepo,
+      );
+
+      await service.transferStayBalanceToReceivable({
+        stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+        companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+      });
+
+      expect(reservationRepo.lockCalls).toEqual([stay.reservationId]);
+      expect(ops[0]).toBe('lock-reservation');
+      expect(ops[1]).toBe('read-stay-charges');
+      expect(ops.slice(2)).toEqual(['created-financial-transaction', 'created-financial-transaction']);
+    });
+
+    it('sin ninguna Factura B ISSUED sobre los cargos -- procede sin consultar classify* (condición C1 del gate)', async () => {
+      financialRepo.stayCharges = [
+        { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+      ];
+      // invoiceRepo.invoiceIdByFinancialTransactionId vacío -> resolveInvoiceLinkage da NONE.
+      // Trampa deliberada (condición C1 del gate `architecture-governor`,
+      // 13/09/2026): si el pre-filtro de `resolveInvoiceLinkage()` se
+      // borrara y el guard llamara a `classify*` directo, ESTA
+      // clasificación lo haría fallar -- sin el pre-filtro, el mutante ya
+      // no pasa este test (antes sobrevivía: el fake devolvía 'RECONCILED'
+      // por default y el guard nunca se ejercitaba de verdad).
+      invoiceRepo.reservationClassification.set(stay.reservationId, 'NOT_RECONCILED');
+
+      const ar = await service.transferStayBalanceToReceivable({
+        stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+        companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+      });
+
+      expect(ar.status).toBe('PENDIENTE_FACTURAR');
+      expect(invoiceRepo.classifyCalls).toBe(0);
+    });
+
+    it('Factura B ISSUED NO reconciliada (NOT_RECONCILED) -- StayChargeAlreadyInvoicedError, no crea nada', async () => {
+      financialRepo.stayCharges = [
+        { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+      ];
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge-1', 'inv-1');
+      invoiceRepo.reservationClassification.set(stay.reservationId, 'NOT_RECONCILED');
+
+      await expect(service.transferStayBalanceToReceivable({
+        stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+        companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+      })).rejects.toThrow(StayChargeAlreadyInvoicedError);
+
+      expect(financialRepo.created).toHaveLength(0);
+      expect(arRepo.created).toHaveLength(0);
+    });
+
+    it('Factura B ISSUED reconciliada al 100% por NC (RECONCILED) -- procede igual', async () => {
+      financialRepo.stayCharges = [
+        { id: 'ft-charge-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, reservationId: stay.reservationId, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+      ];
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge-1', 'inv-1');
+      invoiceRepo.reservationClassification.set(stay.reservationId, 'RECONCILED');
+
+      const ar = await service.transferStayBalanceToReceivable({
+        stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+        companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+      });
+
+      expect(ar.status).toBe('PENDIENTE_FACTURAR');
+    });
+
+    it('cargo cargado a una ORDEN (orderId, sin reservationId) con Factura B viva NO reconciliada -- también bloquea', async () => {
+      financialRepo.stayCharges = [
+        { id: 'ft-charge-order-1', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, orderId: 'order-1', stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+      ];
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge-order-1', 'inv-2');
+      invoiceRepo.orderClassification.set('order-1', 'NOT_RECONCILED');
+
+      await expect(service.transferStayBalanceToReceivable({
+        stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+        companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+      })).rejects.toThrow(StayChargeAlreadyInvoicedError);
+    });
+
+    it('cargo SOLO-ESTADÍA (sin reservationId ni orderId) con Factura B viva -- fail-closed, bloquea (no se puede verificar reconciliación)', async () => {
+      financialRepo.stayCharges = [
+        { id: 'ft-charge-standalone', businessId: TEST_BUSINESS_ID, customerId: TEST_GUEST_ID, stayId: TEST_STAY_ID, type: 'CHARGE', amount: 15000, currency: 'ARS', status: 'SETTLED' } as FinancialTransaction,
+      ];
+      invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge-standalone', 'inv-3');
+      // Ni reservationClassification ni orderClassification tienen entrada
+      // para este cargo -- no hay reservationId/orderId contra qué consultar.
+
+      await expect(service.transferStayBalanceToReceivable({
+        stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+        companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+      })).rejects.toThrow(StayChargeAlreadyInvoicedError);
+    });
   });
 });
 
@@ -382,6 +553,7 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       new InMemoryTransactionManager(),
       new FakeBusinessProfileRepository(makeProfile()),
       invoiceRepo,
+      new FakeReservationRepositoryForTransfer(),
     );
   });
 

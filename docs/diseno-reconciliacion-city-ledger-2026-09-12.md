@@ -671,23 +671,70 @@ de la transacción, con `reservationRepo.getByIdWithLock(client, stay.reservatio
 como primera operación (serializa contra `InvoiceService.requestInvoice()`,
 que toma el mismo lock — `invoice.service.ts:451-453`/`:604-606` — mismo
 patrón que `reservation.service.ts:858-862` ya documenta), traer los
-`CHARGE` de la estadía y, para cada uno, `classifyReservationLiveInvoice()`/
-`classifyOrderLiveInvoice()` según tenga `reservationId` u `orderId`. Si
-alguno da `NOT_RECONCILED` (factura viva, no compensada), lanzar
-`StayChargeAlreadyInvoicedError(stayId, invoiceId)` — nueva clase, mismo
-archivo que `CompanyCustomerRequiredError`/`NoBalanceToTransferError`,
-mapeada a 422 en `error.middleware.ts` (mismo grupo que
-`COMPANY_CUSTOMER_REQUIRED`/`CREDIT_NOTE_*`: "documento fiscal ya
-emitido, acción no completa, no reintentar").
+`CHARGE` de la estadía y, para cada uno:
 
-**Residuo de concurrencia declarado, no cerrado por este bloque:** el
-lock de `reservations`/`orders` cierra la carrera para cargos con
-`reservation_id`/`order_id`. Los cargos *solo-estadía* (`stay_id` sin
-ninguno de los dos, sancionados por el CHECK de `schema.sql:3731`) no
-tienen agregado que lockear — para esos el guard sigue siendo
-best-effort, y la red real es §9.2. No se agrega lock de `orders` a la
-transferencia en este bloque (el orden canónico de locks está
-documentado en `invoice.service.ts:585` y tocarlo es su propio gate).
+1. **Pre-filtro, load-bearing, no cosmético — `resolveInvoiceLinkage(charge.id)` primero.**
+   Si no da `ISSUED`, `continue` sin llamar a `classify*`. Es obligatorio
+   llamarlo ANTES de `classify*`, no en paralelo ni como optimización:
+   `classifyReservationLiveInvoice()`/`classifyOrderLiveInvoice()` devuelven
+   `NOT_RECONCILED` en DOS casos distintos que el nombre no distingue — "hay
+   una Factura B viva sin compensar" Y "nunca se facturó nada" (fail-closed
+   documentado en el propio docblock del método). Sin este pre-filtro,
+   `classify*` solo bloquearía TODA transferencia, incluida la inmensa
+   mayoría de estadías que nunca tuvieron una factura — no un caso raro, el
+   camino normal. Cubierto por un test que lo prueba de verdad (no solo que
+   pasa): `invoiceRepo.classifyCalls` en 0 cuando no hay ningún `ISSUED`, y un
+   segundo test que fija `NOT_RECONCILED` para esa misma reserva a propósito
+   — si el pre-filtro se borrara, ESE test fallaría (verificado por mutación,
+   condición C1 del gate, 13/09/2026).
+2. **Solo si hay un `ISSUED`**, `classifyReservationLiveInvoice()`/
+   `classifyOrderLiveInvoice()` según tenga `reservationId` u `orderId`. Si
+   da `NOT_RECONCILED` (factura viva, no compensada), lanzar
+   `StayChargeAlreadyInvoicedError(stayId, invoiceId)` — nueva clase, mismo
+   archivo que `CompanyCustomerRequiredError`/`NoBalanceToTransferError`,
+   mapeada a 422 en `error.middleware.ts` (mismo grupo que
+   `COMPANY_CUSTOMER_REQUIRED`/`CREDIT_NOTE_*`: "documento fiscal ya
+   emitido, acción no completa, no reintentar").
+3. **Cargo *solo-estadía* (sin `reservationId` NI `orderId` — legal por el
+   CHECK `chk_financial_transactions_order_or_reservation`: "a lo sumo
+   uno", no "exactamente uno") con un `ISSUED` encima: fail-closed, bloquea
+   sin camino de salida.** No hay entidad (reserva/orden) contra la cual
+   llamar `classify*`, así que no se puede distinguir "vivo" de "ya
+   reconciliado" — se trata como vivo. Es la misma clase de bloqueo
+   permanente que el dueño rechazó en la ronda 1 de este mismo bloque (ver
+   más arriba), en versión angosta: mitigado HOY porque **ningún camino de
+   producción crea un CHARGE solo-estadía** — los 4 sitios de creación
+   (`stay.service.ts:471`, `outbox.handlers.ts:192`/`:206`,
+   `accounts-receivable.service.ts:264`) siempre setean `reservationId` u
+   `orderId`. Defensivo, no un riesgo vivo — pero si algún día un camino
+   nuevo crea un cargo solo-estadía facturable, este guard lo bloquearía sin
+   salida y hay que revisarlo antes, no después (registrado como pendiente,
+   ver `docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`).
+
+**Residuo de concurrencia declarado, no cerrado por este bloque — corregido
+13/09/2026 (el texto anterior afirmaba de más):** el único lock que este
+guard toma es `reservations` (`stay.reservationId`). Cierra la carrera
+contra `InvoiceService.requestInvoice()` para cargos ligados a una
+**reserva**. Los cargos ligados a una **orden** (`orderId`) NO quedan
+serializados — `requestInvoice()` para una orden lockea `orders`, no
+`reservations`, y este guard no toma ese lock. Los cargos *solo-estadía*
+tampoco tienen agregado que lockear. Para ambos casos el guard sigue siendo
+best-effort (lee sin lock propio), y la red real contra la carrera es §9.2
+(expone, no previene). No se agrega lock de `orders` a la transferencia en
+este bloque (el orden canónico de locks está documentado en
+`invoice.service.ts:585` y tocarlo es su propio gate).
+
+**Fuera de alcance de este bloque, registrado, no decidido (`docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001`):**
+el guard solo bloquea sobre `linkage.kind === 'ISSUED'`. Una Factura B en
+vuelo (`NOT_ISSUED` con `status: 'PENDING'`, o `FAILED_UNCERTAIN` con
+`afipContacted: true`) NO bloquea la transferencia — a diferencia del guard
+hermano de reservas (`findBlockingInvoiceLinkage()`,
+`reservation.service.ts:864-871`), que sí trata esos casos como bloqueantes.
+Es una asimetría real entre los dos guards, encontrada por el gate en la
+revisión de este bloque (13/09/2026): si AFIP confirma la emisión después de
+que la transferencia ya corrió, se puede reproducir el mismo hueco que este
+bloque busca cerrar. No resuelto acá — es una decisión de negocio (¿bloquear
+también sobre "en vuelo"?), no algo que el implementador deba decidir solo.
 
 ### 9.2 Mecanismo — exposición en el escape de NC (implementado, commit `0f2aa24`)
 
@@ -730,7 +777,8 @@ bloquea.
    participa de su rollback -- da igual hoy (solo lectura). Mismo patrón
    sin `client` que otras 4 lecturas ya existentes de ese mismo tx1 -- no
    es una clase de riesgo nueva, pero queda como deuda con ancla (ver
-   `pendientes-2026-09-13.md`): convertir las 5 a `*WithClient()`
+   `docs/pendientes-2026-09-12.md`, `CITY-LEDGER-AR-NESTED-CONN-001`):
+   convertir las 5 a `*WithClient()`
    (convención `createWithClient()` que el repo ya usa) es su propio
    bloque.
 4. **La superficie real HOY es solo el `logger.warn`** — cero

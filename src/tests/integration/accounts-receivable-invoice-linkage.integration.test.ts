@@ -31,6 +31,8 @@ import { SqlCustomerRepository } from '../../clientes-finanzas/sql.customer.repo
 import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
+import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
+import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 import { ReceivableInvoiceNotIssuedError } from '../../domain/errors.js';
 
@@ -50,6 +52,7 @@ function makeArService(): AccountsReceivableService {
     new PgTransactionManager(pool),
     new SqlBusinessProfileRepository(db),
     new SqlInvoiceRepository(db),
+    new SqlReservationRepository(db, new SqlResourceRepository(db)),
   );
 }
 

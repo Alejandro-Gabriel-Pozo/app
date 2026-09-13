@@ -490,6 +490,7 @@ export async function createApp(): Promise<{
         buildTenantTransactionManager(req),
         businessProfileRepo,
         new SqlInvoiceRepository(req.db),
+        reservationRepo,
       );
 
       const router = createStaysRouter(stayService, arService);
@@ -509,6 +510,7 @@ export async function createApp(): Promise<{
         buildTenantTransactionManager(req),
         new SqlBusinessProfileRepository(req.db),
         new SqlInvoiceRepository(req.db),
+        new SqlReservationRepository(req.db, new SqlResourceRepository(req.db)),
       );
       const router = createAccountsReceivableRouter(arService);
       router(req, _res, next);

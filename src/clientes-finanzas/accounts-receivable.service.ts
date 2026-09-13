@@ -23,6 +23,7 @@ import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivabl
 import type { FinancialTransactionRepository } from './financial-transaction.repository.js';
 import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import type { CustomerRepository } from './customer.repository.js';
+import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
@@ -30,6 +31,16 @@ import { DomainError, CustomerNotFoundError, ReceivableInvoiceNotIssuedError, Re
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
 import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient } from './payment-application.js';
 import { logger } from '../logger.js';
+
+/**
+ * `getByIdWithLock` es OPCIONAL en `ReservationRepository` (mismo criterio
+ * que los orquestadores de NC, `cancel-reservation-with-credit-note.service.ts`).
+ * Acá se lo exige presente -- un fake sin este método no compila contra el
+ * guard de §9.1.
+ */
+export type ReservationRepoForTransfer = {
+  getByIdWithLock: NonNullable<ReservationRepository['getByIdWithLock']>;
+};
 
 export class CompanyCustomerRequiredError extends DomainError {
   constructor(customerId: string) {
@@ -43,6 +54,26 @@ export class CompanyCustomerRequiredError extends DomainError {
 export class NoBalanceToTransferError extends DomainError {
   constructor(stayId: string) {
     super(`La estadía "${stayId}" no tiene saldo pendiente para transferir.`, 'NO_BALANCE_TO_TRANSFER');
+  }
+}
+
+/**
+ * Bloque 6, §9.1 (13/09/2026, gate `architecture-governor`, docs/diseno-
+ * reconciliacion-city-ledger-2026-09-12.md, decisión del dueño --
+ * `AskUserQuestion`, predicado fuerte). Precedente Cloudbeds: "Locked
+ * transaction" -- no se puede rutear/transferir un cargo con comprobante
+ * fiscal vivo encima. Rechaza `transferStayBalanceToReceivable()` si algún
+ * `CHARGE` de la estadía tiene una Factura B `ISSUED` que NO está
+ * compensada al 100% por NC (`classifyReservationLiveInvoice()`/
+ * `classifyOrderLiveInvoice()` da `NOT_RECONCILED`) -- previene el crédito
+ * fantasma de §9.2 en vez de solo exponerlo después.
+ */
+export class StayChargeAlreadyInvoicedError extends DomainError {
+  constructor(stayId: string, invoiceId: string) {
+    super(
+      `La estadía "${stayId}" tiene un cargo con la factura "${invoiceId}" emitida y vigente (no compensada del todo por Nota de Crédito) a nombre del huésped -- no se puede transferir el saldo a una empresa mientras ese comprobante siga vivo.`,
+      'STAY_CHARGE_ALREADY_INVOICED',
+    );
   }
 }
 
@@ -106,10 +137,20 @@ export class AccountsReceivableService {
     /**
      * O2-F2 (03/09/2026) -- resolver a qué factura corresponde el
      * `financial_transaction_id` de una fila AR, y capar/lockear el pago
-     * contra ella en `markCollected()`. Solo los dos métodos de lectura que
-     * necesita -- mismo criterio que `CustomerAccountService`.
+     * contra ella en `markCollected()`. `classifyReservationLiveInvoice`/
+     * `classifyOrderLiveInvoice` (Bloque 6, §9.1) -- predicado fuerte del
+     * guard de `transferStayBalanceToReceivable()`, ver
+     * `StayChargeAlreadyInvoicedError`.
      */
-    private readonly invoiceRepo: Pick<InvoiceRepository, 'getOutstandingForUpdate' | 'resolveInvoiceLinkage'>,
+    private readonly invoiceRepo: Pick<
+      InvoiceRepository,
+      'getOutstandingForUpdate' | 'resolveInvoiceLinkage' | 'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'
+    >,
+    /** Bloque 6, §9.1 -- lock de `reservations` como primera operación de
+     * la transacción, serializa contra `InvoiceService.requestInvoice()`
+     * (mismo lock, `invoice.service.ts:451-453`/`:604-606`). `stays.reservation_id`
+     * es `NOT NULL` (schema.sql), así que siempre hay algo que lockear. */
+    private readonly reservationRepo: ReservationRepoForTransfer,
   ) {}
 
   /**
@@ -148,6 +189,40 @@ export class AccountsReceivableService {
     const { currency } = await this.businessProfileRepo.get();
 
     return this.transactionManager.run(async (client) => {
+      // Bloque 6, §9.1 -- lock PRIMERO (serializa contra requestInvoice()
+      // concurrente sobre la misma reserva), guard DESPUÉS. `stay.reservationId`
+      // es NOT NULL -- toda estadía tiene una reserva de origen.
+      await this.reservationRepo.getByIdWithLock(client, stay.reservationId);
+
+      // Guard: ¿algún CHARGE de esta estadía tiene una Factura B ISSUED
+      // vigente (no compensada del todo por NC)? Cloudbeds "Locked
+      // transaction" -- no se rutea/transfiere un cargo con comprobante
+      // fiscal vivo encima. `resolveInvoiceLinkage()` primero (existencia
+      // -- ISSUED o no) y SOLO SI hay factura viva, `classify*LiveInvoice()`
+      // (reconciliación real): los dos predicados juntos, nunca uno solo --
+      // `classify*` por sí solo da `NOT_RECONCILED` también para "nunca se
+      // facturó" (fail-closed documentado en su propio docblock), así que
+      // usarlo sin el filtro de existencia bloquearía TODA transferencia,
+      // no solo las que tienen un comprobante vivo sin conciliar.
+      const stayCharges = (await this.financialRepo.getByStayId(input.stayId)).filter((t) => t.type === 'CHARGE');
+      for (const charge of stayCharges) {
+        const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
+        if (linkage.kind !== 'ISSUED') continue;
+        // Cargo *solo-estadía* (sin reservationId NI orderId -- legal por
+        // el CHECK `chk_financial_transactions_order_or_reservation`, "a lo
+        // sumo uno", no "exactamente uno"): no hay entidad contra la cual
+        // llamar classify*. Fail-closed -- no se puede verificar
+        // reconciliación, se trata como comprobante vivo sin conciliar.
+        const classification = charge.reservationId
+          ? await this.invoiceRepo.classifyReservationLiveInvoice(client, charge.reservationId)
+          : charge.orderId
+            ? await this.invoiceRepo.classifyOrderLiveInvoice(client, charge.orderId)
+            : 'NOT_RECONCILED' as const;
+        if (classification === 'NOT_RECONCILED') {
+          throw new StayChargeAlreadyInvoicedError(input.stayId, linkage.invoiceId);
+        }
+      }
+
       await this.financialRepo.createWithClient(client, {
         id:         randomUUID(),
         businessId: input.businessId,

@@ -407,6 +407,7 @@ function makeArService(): AccountsReceivableService {
     new PgTransactionManager(pool),
     new SqlBusinessProfileRepository(db),
     new SqlInvoiceRepository(db),
+    new SqlReservationRepository(db, new SqlResourceRepository(db)),
   );
 }
 
