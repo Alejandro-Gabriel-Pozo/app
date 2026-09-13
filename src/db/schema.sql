@@ -2439,6 +2439,34 @@ ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversal_transaction_id
 ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS replaces_ar_id VARCHAR(255)
   REFERENCES accounts_receivable(id) ON DELETE NO ACTION;
 
+-- guest_payment_transaction_id (v53, 13/09/2026,
+-- CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1, gate
+-- architecture-governor) -- vincula esta AR con la fila PAYMENT sintética
+-- que transferStayBalanceToReceivable() crea para el huésped en la MISMA
+-- transacción (ver accounts-receivable.service.ts, el PAYMENT nace antes
+-- que esta fila). Antes de esta columna las dos patas de la transferencia
+-- no tenían FK entre sí -- solo texto libre en `notes` de cada una. Sin
+-- esto, getNetBalanceByCustomerId() no puede excluir esa pata del
+-- agregado por cliente (paso 3 del mismo ítem) sin arriesgar excluir un
+-- PAYMENT real de otro origen.
+-- ON DELETE NO ACTION explícito, mismo criterio que reversal_transaction_id
+-- unas líneas arriba: financial_transactions nunca se hard-deletea (R12),
+-- así que este DELETE no tiene camino de negocio que lo dispare. NO es
+-- analogía con accounts_receivable.financial_transaction_id (esa FK cubre
+-- la pata EMPRESA, con ON DELETE SET NULL por un motivo histórico
+-- distinto, ver su propio comentario más abajo en este archivo).
+-- Nullable, SIN backfill de filas ya transferidas antes de este cambio --
+-- mismo criterio que financial_transaction_id e invoice_source: NULL
+-- significa "transferencia previa a esta columna, no consta la pata del
+-- huésped". El backfill retroactivo (adoptar la pata huérfana de
+-- transferencias viejas) sigue sin autorizar -- ver
+-- docs/pendientes-2026-09-12.md, residuo de CITY-LEDGER-OVERTRANSFER-PAYMENT-001.
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS guest_payment_transaction_id VARCHAR(255)
+  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
+
+CREATE INDEX IF NOT EXISTS idx_ar_guest_payment_transaction
+  ON accounts_receivable (guest_payment_transaction_id) WHERE guest_payment_transaction_id IS NOT NULL;
+
 -- ===========================================================================
 -- BLOQUE 10 — AUDIT LOG (docs/criterios-datos.md R8, docs/criterios-negocio.md A9.4)
 -- ===========================================================================

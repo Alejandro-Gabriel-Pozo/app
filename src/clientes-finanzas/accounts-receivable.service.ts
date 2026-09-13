@@ -320,8 +320,14 @@ export class AccountsReceivableService {
         }
       }
 
+      // CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1
+      // (13/09/2026) -- el id se genera ACÁ, mismo motivo que
+      // `companyChargeId` un poco más abajo: hace falta guardarlo en
+      // `guestPaymentTransactionId` de la fila de accounts_receivable sin
+      // depender del retorno nullable de `createWithClient()`.
+      const guestPaymentId = randomUUID();
       await this.financialRepo.createWithClient(client, {
-        id:         randomUUID(),
+        id:         guestPaymentId,
         businessId: input.businessId,
         customerId: stay.customerId,
         stayId:     input.stayId,
@@ -371,6 +377,7 @@ export class AccountsReceivableService {
         stayId:            input.stayId,
         companyCustomerId: input.companyCustomerId,
         financialTransactionId: companyChargeId,
+        guestPaymentTransactionId: guestPaymentId,
         amount:            balance,
         currency,
         status:            'PENDIENTE_FACTURAR',

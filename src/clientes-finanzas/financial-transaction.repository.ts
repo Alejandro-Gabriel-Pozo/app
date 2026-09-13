@@ -370,6 +370,17 @@ export interface FinancialTransactionRepository {
    * ADJUSTMENT (no el de PAYMENT) porque revierte un PAYMENT -- necesita
    * el signo opuesto para cancelarlo, no duplicarlo (fix 23/08/2026, A3.9
    * criterios-negocio.md).
+   *
+   * `SETTLED`-only a propósito, DECLARADO (no alineado) contra
+   * `getNetBalanceByStayId()` -- que sí cuenta `PENDING`, ver su docblock
+   * más abajo -- porque son dos preguntas distintas: esta es el agregado
+   * por CLIENTE (solo obligaciones firmes, grounding 13/09/2026,
+   * `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` paso 2, 3/3
+   * sistemas verificados en código -- Odoo/ERPNext/QloApps), el otro es
+   * el folio de UNA estadía (donde lo contratado-pendiente sí importa).
+   * **El ítem sigue ABIERTO** (paso 3, sin implementar) -- ver el docblock
+   * de la implementación SQL para por qué excluir solo el `PAYMENT`
+   * sintético de una transferencia a City Ledger no alcanza.
    */
   getNetBalanceByCustomerId(customerId: string): Promise<number>;
 

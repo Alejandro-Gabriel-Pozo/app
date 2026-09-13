@@ -273,8 +273,12 @@ describe('applyTenantSchema', () => {
     // city-ledger-2026-09-12.md -- accounts_receivable gana el estado
     // REVERTIDO + reversed_by/_at/_reason + reversal_transaction_id/
     // replaces_ar_id. Solo schema, inerte hasta el Bloque 2.
+    // 52 -> 53 el 13/09/2026: CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001,
+    // paso 1 -- accounts_receivable gana guest_payment_transaction_id
+    // (pata del huésped, simétrica a financial_transaction_id ya
+    // existente). Acompaña el cambio de código del mismo commit.
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(52);
+    expect(CURRENT_SCHEMA_VERSION).toBe(53);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

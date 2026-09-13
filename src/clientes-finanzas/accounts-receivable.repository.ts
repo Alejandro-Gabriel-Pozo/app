@@ -44,6 +44,17 @@ export interface AccountReceivable {
    * backfill posible, ver comentario en schema.sql).
    */
   financialTransactionId?: string | null;
+  /**
+   * CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1 (13/09/2026)
+   * -- id del PAYMENT sintético que `transferStayBalanceToReceivable()`
+   * crea para el huésped en la misma transacción que esta fila (la pata
+   * OPUESTA a `financialTransactionId`, que es la del CHARGE contra la
+   * empresa). Sin esto, `getNetBalanceByCustomerId()` no puede excluir esa
+   * pata del agregado por cliente (paso 3) sin arriesgar excluir un
+   * `PAYMENT` real de otro origen. `null` en filas creadas antes de esta
+   * columna -- sin backfill retroactivo, ver schema.sql.
+   */
+  guestPaymentTransactionId?: string | null;
 }
 
 /** Fila del reporte por empresa/período — cierre de mes (A1, paso 5). */

@@ -21,6 +21,7 @@ interface AccountsReceivableRow {
   collected_at: Date | null;
   invoice_ref: string | null;
   financial_transaction_id: string | null;
+  guest_payment_transaction_id: string | null;
 }
 
 export class SqlAccountsReceivableRepository implements AccountsReceivableRepository {
@@ -32,8 +33,8 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
   ): Promise<AccountReceivable> {
     const result = await client.query<AccountsReceivableRow>(
       `INSERT INTO accounts_receivable
-         (id, business_id, stay_id, company_customer_id, amount, currency, status, transferred_by, notes, financial_transaction_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (id, business_id, stay_id, company_customer_id, amount, currency, status, transferred_by, notes, financial_transaction_id, guest_payment_transaction_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         ar.id,
@@ -46,6 +47,7 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
         ar.transferredBy,
         ar.notes ?? null,
         ar.financialTransactionId ?? null,
+        ar.guestPaymentTransactionId ?? null,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
@@ -184,6 +186,7 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
       collectedAt:        row.collected_at,
       invoiceRef:         row.invoice_ref,
       financialTransactionId: row.financial_transaction_id,
+      guestPaymentTransactionId: row.guest_payment_transaction_id,
     };
   }
 }

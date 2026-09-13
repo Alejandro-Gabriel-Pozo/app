@@ -442,7 +442,15 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // + `reversal_transaction_id`/`replaces_ar_id` (ON DELETE NO ACTION
 // explícito, ver schema.sql BLOQUE 9). Solo schema -- inerte hasta que
 // exista `reverseTransfer()` (Bloque 2, no incluido acá).
-export const CURRENT_SCHEMA_VERSION = 52;
+// v53 (13/09/2026): CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001,
+// paso 1 (grounding auditor-circuitos-erp + gate architecture-governor).
+// `accounts_receivable` gana `guest_payment_transaction_id` -- vincula la
+// pata del huésped (PAYMENT sintético) de transferStayBalanceToReceivable()
+// con la fila, simétrico a `financial_transaction_id` (pata empresa, ya
+// existía). Nullable, sin backfill retroactivo. Acompaña el cambio de
+// código del mismo commit (transferStayBalanceToReceivable() y
+// getNetBalanceByCustomerId(), paso 3 del mismo ítem).
+export const CURRENT_SCHEMA_VERSION = 53;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

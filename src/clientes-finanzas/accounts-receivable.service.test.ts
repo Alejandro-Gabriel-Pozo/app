@@ -331,6 +331,15 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
     expect(ar.amount).toBe(15000);
     expect(ar.companyCustomerId).toBe(TEST_COMPANY_ID);
     expect(ar.transferredBy).toBe('user-manager');
+
+    // CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1 (13/09/2026)
+    // -- la AR vincula las DOS patas: financialTransactionId (empresa, ya
+    // existía) y guestPaymentTransactionId (huésped, nuevo). Los ids tienen
+    // que coincidir con el PAYMENT/CHARGE reales creados arriba, no ser
+    // cualquier string.
+    expect(ar.financialTransactionId).toBe(financialRepo.created[1]!.id);
+    expect(ar.guestPaymentTransactionId).toBe(financialRepo.created[0]!.id);
+    expect(ar.guestPaymentTransactionId).not.toBe(ar.financialTransactionId);
   });
 
   // CITY-LEDGER-OVERTRANSFER-PAYMENT-001 (13/09/2026) -- (c), red de

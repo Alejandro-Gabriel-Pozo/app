@@ -809,6 +809,31 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
    * débito en vez de cancelarlo (cobro 1000 + reembolso 1000 daba -2000,
    * no 0). Ver también `voidByReservationId`/`voidByOrderId` más abajo —
    * el bug completo requería los dos fixes juntos.
+   *
+   * **`SETTLED`-only, a diferencia de `getNetBalanceByStayId()`** (que
+   * también cuenta `PENDING`, ver su docblock) — DECLARADO, no alineado
+   * (`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`, paso 2,
+   * 13/09/2026, grounding `auditor-circuitos-erp`: 3/3 sistemas
+   * verificados en código -- Odoo `_credit_debit_get`, ERPNext
+   * `get_balance_on()` vs. `get_customer_outstanding()`, QloApps
+   * `Customer::getOutstanding()` -- excluyen del agregado por CLIENTE las
+   * obligaciones contratadas-no-firmes; el nivel FOLIO (`getNetBalanceByStayId`)
+   * es una pregunta distinta, donde sí corresponde contar `PENDING`).
+   *
+   * **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` sigue ABIERTO**
+   * (paso 3, sin implementar) -- el `PAYMENT` sintético de una
+   * transferencia a City Ledger todavía cuenta acá sin excluir, y el
+   * `CHARGE` original de la reserva se liquida después
+   * (`reservation.completed` -> `settleByReservationId()`), así que
+   * excluir SOLO el `PAYMENT` (intentado y revertido el 13/09/2026, gate
+   * `architecture-governor`) deja al `CHARGE` sumando solo sin su
+   * contrapartida -- cambia un crédito fantasma transitorio por una DEUDA
+   * fantasma permanente, visible en `GET /customers/:id/account`. La
+   * exclusión correcta tiene que cubrir el PAR completo (folio entero de
+   * la estadía transferida), no una sola fila -- diseño pendiente, no
+   * resolver acá sin su propio §4.0 (consumidor único:
+   * `CustomerAccountService.getStatement()`, con pantalla en
+   * `appfrontend-main`).
    */
   async getNetBalanceByCustomerId(customerId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
