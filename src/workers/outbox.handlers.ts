@@ -246,8 +246,9 @@ export function handleReservationCompleted(
     await financialRepo.settleByReservationId(reservationId);
 
     // City Ledger Bloque 3b (§4.6) -- el invariante nace en
-    // `transferStayBalanceToReceivable()` (`accounts-receivable.service.ts:219`),
-    // no en `settleByReservationId()` de arriba (ese solo cambia
+    // `transferStayBalanceToReceivable()` (`accounts-receivable.service.ts`,
+    // cita por firma, no por línea -- mismo criterio que `17b54f5`), no en
+    // `settleByReservationId()` de arriba (ese solo cambia
     // `status`, `getNetBalanceByStayId()` ya suma `PENDING`+`SETTLED` por
     // igual -- correr esto DESPUÉS es disciplina de orden -- el trabajo
     // real primero, la detección después, fail-open -- no parte del
@@ -257,18 +258,30 @@ export function handleReservationCompleted(
     // Causas reales que mueven el saldo después de una transferencia:
     // un `ADJUSTMENT` de precio nuevo (`confirmPriceAdjustment()`), un
     // cargo nuevo a la habitación (`handleOrderConfirmed`), un `CHARGE`
-    // de `approveScheduleChange()`, o un `ADJUSTMENT` del escape de NC de
-    // una orden de la estadía -- NUNCA un `REFUND` (ningún productor real
-    // le setea `stay_id`). Positivo = la estadía quedó con un cargo sin
-    // compensar; negativo = un `ADJUSTMENT` de crédito posterior a la
-    // transferencia bajó el saldo -- nunca "sobrepago"
-    // (`chk_financial_transactions_amount` exige `amount >= 0` salvo
-    // `ADJUSTMENT`, así que un pago de más es estructuralmente invisible
-    // para este cálculo, ver `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`).
+    // de `approveScheduleChange()`, un `ADJUSTMENT` del escape de NC de
+    // una orden de la estadía. Un `REFUND` real: ningún productor le
+    // setea `stay_id` AL CREARLO, pero `linkStayToReservationCharges()`
+    // (`sql.financial-transaction.repository.ts`) adopta cualquier fila
+    // huérfana de la reserva sin filtrar por `type` -- incluido `REFUND`
+    // -- y desde `CITY-LEDGER-OVERTRANSFER-PAYMENT-001` corre también al
+    // momento de la transferencia, no solo en `checkIn()`. Un `REFUND`
+    // adoptado suma en `getNetBalanceByStayId()`, así que puede mover
+    // este saldo igual que un `CHARGE`. Positivo = la estadía quedó con
+    // un cargo (o un `REFUND` adoptado) sin compensar; negativo = un
+    // `ADJUSTMENT` de crédito posterior a la
+    // transferencia, **o** (desde `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`,
+    // 13/09/2026) un pago del huésped posterior a la transferencia --
+    // `recordPayment()` YA SETEA `stay_id` cuando la estadía está
+    // `CHECKED_IN` al momento del pago, así que un sobrepago DEJÓ de ser
+    // estructuralmente invisible para este cálculo. Sigue habiendo un
+    // caso donde el pago no se vincula (estadía no `CHECKED_IN` al pagar
+    // -- ver FP más abajo), así que "negativo" no distingue las dos
+    // causas por sí solo.
     //
-    // Falsos positivos DECLARADOS, no resueltos acá (§4.6): un cargo
-    // posterior a la transferencia que el huésped ya pagó no compensa
-    // (`recordPayment()` nunca setea `stay_id`); una estadía cerrada con
+    // Falsos positivos DECLARADOS, no resueltos acá (§4.6): un pago
+    // posterior a la transferencia hecho cuando la estadía NO estaba
+    // `CHECKED_IN` (ej. ya hizo check-out) no se vincula, mismo hueco
+    // que antes pero acotado a ese caso; una estadía cerrada con
     // `overridePendingBalance` ya revisada por un humano. Por eso el
     // mensaje describe LO MEDIDO, nunca afirma una causa como hecho
     // cierto. Fail-open, mismo criterio que Bloque 3a: el trabajo real
@@ -296,7 +309,7 @@ export function handleReservationCompleted(
                   amount: ar.amount,
                 })),
               },
-              '[outbox] la estadía no quedó en saldo cero al completar la reserva -- puede ser un ajuste de precio posterior a la transferencia, un cargo nuevo a la habitación, o una nota de crédito sobre una orden de la estadía',
+              '[outbox] la estadía no quedó en saldo cero al completar la reserva -- puede ser un ajuste de precio posterior a la transferencia, un cargo nuevo a la habitación, una nota de crédito sobre una orden de la estadía, o un pago del huésped posterior a la transferencia',
             );
           }
         }

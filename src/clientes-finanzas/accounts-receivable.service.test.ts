@@ -128,11 +128,17 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async createOrderChargeIfConfirmed() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async voidByOrderId() { return { tipo: 'NADA_QUE_HACER' } as const; }
   async getNetBalanceByCustomerId(): Promise<number> { return 0; }
-  async getNetBalanceByStayId(): Promise<number> { return this.netBalanceByStay; }
+  async getNetBalanceByStayId(): Promise<number> { this.ops.push('read-net-balance'); return this.netBalanceByStay; }
   async getSettledPaymentTotalForReservation(): Promise<number> { return 0; }
   async getCollectedPaymentTotalForReservation(): Promise<number> { return 0; }
   async getByShiftId(): Promise<FinancialTransaction[]> { return []; }
-  async linkStayToReservationCharges(): Promise<number> { return 0; }
+  /** CITY-LEDGER-OVERTRANSFER-PAYMENT-001 (13/09/2026) -- red de seguridad (c), test de orden más abajo. */
+  public linkStayToReservationChargesCalls: [string, string][] = [];
+  async linkStayToReservationCharges(stayId: string, reservationId: string): Promise<number> {
+    this.ops.push('link-stay-charges');
+    this.linkStayToReservationChargesCalls.push([stayId, reservationId]);
+    return 0;
+  }
 }
 
 class FakeStayRepository implements StayRepository {
@@ -326,6 +332,20 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
     expect(ar.transferredBy).toBe('user-manager');
   });
 
+  // CITY-LEDGER-OVERTRANSFER-PAYMENT-001 (13/09/2026) -- (c), red de
+  // seguridad: adopta cualquier PAYMENT/CHARGE huérfano de esta reserva
+  // antes de leer el saldo a transferir.
+  it('llama linkStayToReservationCharges(stay.id, stay.reservationId) antes de leer el saldo', async () => {
+    financialRepo.netBalanceByStay = 15000;
+
+    await service.transferStayBalanceToReceivable({
+      stayId: TEST_STAY_ID, businessId: TEST_BUSINESS_ID,
+      companyCustomerId: TEST_COMPANY_ID, transferredBy: 'user-manager',
+    });
+
+    expect(financialRepo.linkStayToReservationChargesCalls).toEqual([[stay.id, stay.reservationId]]);
+  });
+
   it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
     service = new AccountsReceivableService(
       arRepo, financialRepo,
@@ -425,9 +445,16 @@ describe('AccountsReceivableService.transferStayBalanceToReceivable', () => {
       });
 
       expect(reservationRepo.lockCalls).toEqual([stay.reservationId]);
-      expect(ops[0]).toBe('lock-reservation');
-      expect(ops[1]).toBe('read-stay-charges');
-      expect(ops.slice(2)).toEqual(['created-financial-transaction', 'created-financial-transaction']);
+      // CITY-LEDGER-OVERTRANSFER-PAYMENT-001 (13/09/2026) -- (c) corre
+      // ANTES de leer el saldo, y el saldo se lee ANTES de la transacción
+      // (fuera de ella a propósito, ver el comentario en el service) --
+      // los dos primeros ops ahora son de ese bloque nuevo, el lock sigue
+      // siendo lo primero DENTRO de la transacción.
+      expect(ops[0]).toBe('link-stay-charges');
+      expect(ops[1]).toBe('read-net-balance');
+      expect(ops[2]).toBe('lock-reservation');
+      expect(ops[3]).toBe('read-stay-charges');
+      expect(ops.slice(4)).toEqual(['created-financial-transaction', 'created-financial-transaction']);
     });
 
     it('sin ninguna Factura B ISSUED sobre los cargos -- procede sin consultar classify* (condición C1 del gate)', async () => {

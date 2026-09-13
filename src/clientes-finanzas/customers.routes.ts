@@ -32,6 +32,7 @@ import { SqlAuditLogRepository } from '../repositories/audit-log.repository.js';
 import { diffFields, recordFieldChangesWithClient } from '../domain/audit.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
+import { SqlStayRepository } from '../pms-estadias/stay.repository.js';
 import { SqlCategoryRepository } from '../reservas/sql.category.repository.js';
 import { SqlBookableServiceRepository } from '../reservas/sql.bookable-service.repository.js';
 import { SqlProductRepository } from '../pos-menu/sql.product.repository.js';
@@ -897,9 +898,24 @@ export function createCustomersRouter(container: AppContainer): Router {
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = RecordPaymentSchema.parse(req.body);
+        // `CITY-LEDGER-OVERTRANSFER-PAYMENT-001` (13/09/2026) -- resuelve
+        // `stayId` acá, no en el servicio (bounded context:
+        // `clientes-finanzas` no importa la entidad rica de
+        // `pms-estadias`, mismo patrón ya usado para `reservationId` unas
+        // líneas arriba). Solo si la estadía está `CHECKED_IN` -- texto
+        // literal de la decisión del dueño ("cuando la reserva tiene una
+        // estadía ACTIVA"). `findByReservation()` trae la más reciente
+        // sin filtrar por status (una reserva puede tener más de una
+        // estadía: `idx_stays_reservation_active` es un índice PARCIAL,
+        // `WHERE status = 'CHECKED_IN'`) -- una `CHECKED_OUT`/`NO_SHOW`
+        // NO cuenta como activa, y pasarle ese `stayId` movería el saldo
+        // de un folio ya cerrado.
+        let stayId: string | null = null;
         if (body.reservationId) {
           const reservation = await new SqlReservationRepository(req.db!, new SqlResourceRepository(req.db!)).getById(body.reservationId);
           if (!reservation) throw new ReservationNotFoundError(body.reservationId);
+          const stay = await new SqlStayRepository(req.db!).findByReservation(body.reservationId, req.user!.businessId as string);
+          if (stay && stay.status === 'CHECKED_IN') stayId = stay.id;
         }
         const txs = await buildCustomerAccountService(req).recordPayment({
           customerId: String(req.params['id']),
@@ -911,6 +927,7 @@ export function createCustomersRouter(container: AppContainer): Router {
           ...(body.notes && { notes: body.notes }),
           ...(body.idempotencyKey && { idempotencyKey: body.idempotencyKey }),
           ...(body.reservationId && { reservationId: body.reservationId }),
+          ...(stayId && { stayId }),
           ...(body.allocations && { allocations: body.allocations }),
         });
         res.status(201).json(txs);

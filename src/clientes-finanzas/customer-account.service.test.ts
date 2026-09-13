@@ -171,6 +171,19 @@ describe('CustomerAccountService.recordPayment — payment_method (Gap Tango #2)
     expect(financialRepo.created[0]).toMatchObject({ reservationId: null });
   });
 
+  // CITY-LEDGER-OVERTRANSFER-PAYMENT-001 (13/09/2026)
+  it('stayId se persiste cuando se pasa -- la ruta lo resuelve, este servicio solo lo reenvía', async () => {
+    await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 30, reservationId: 'res-1', stayId: 'stay-1' });
+
+    expect(financialRepo.created[0]).toMatchObject({ reservationId: 'res-1', stayId: 'stay-1' });
+  });
+
+  it('stayId queda null si no se pasa (comportamiento sin cambios -- pago sin estadía activa)', async () => {
+    await service.recordPayment({ customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 100 });
+
+    expect(financialRepo.created[0]).toMatchObject({ stayId: null });
+  });
+
   it('usa la moneda configurada en business_profile, no un valor fijo (auditoría de hardcodes, 17/08/2026)', async () => {
     const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
     service = new CustomerAccountService(
@@ -229,6 +242,20 @@ describe('CustomerAccountService.recordPayment — allocations (I4)', () => {
 
     expect(result).toHaveLength(1);
     expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 1210, status: 'SETTLED' });
+  });
+
+  // CITY-LEDGER-OVERTRANSFER-PAYMENT-001 (13/09/2026) -- la rama con
+  // allocations también seteaba stayId como huérfano; un pago del huésped
+  // en el mostrador contra una factura ya emitida es la misma plata.
+  it('stayId se persiste en la fila asignada Y en la fila sin asignar (las dos ramas de create())', async () => {
+    await service.recordPayment({
+      customerId: CUSTOMER_ID, businessId: BUSINESS_ID, amount: 1500, stayId: 'stay-1',
+      allocations: [{ invoiceId: 'inv-1', amount: 1210 }],
+    });
+
+    expect(financialRepo.created).toHaveLength(2);
+    expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', stayId: 'stay-1' });
+    expect(financialRepo.created[1]).toMatchObject({ settledInvoiceId: null, stayId: 'stay-1' });
   });
 
   it('si el monto pagado excede lo asignado, crea una fila extra sin asociar por el resto', async () => {

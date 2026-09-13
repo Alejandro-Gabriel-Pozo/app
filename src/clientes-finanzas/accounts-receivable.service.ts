@@ -216,6 +216,31 @@ export class AccountsReceivableService {
     if (!company) throw new CustomerNotFoundError(input.companyCustomerId);
     if (company.kind !== 'COMPANY') throw new CompanyCustomerRequiredError(input.companyCustomerId);
 
+    // `CITY-LEDGER-OVERTRANSFER-PAYMENT-001` (13/09/2026) -- red de
+    // seguridad, complemento de que `recordPayment()` ya setea `stayId`
+    // en el momento del pago (`customers.routes.ts`): adopta CUALQUIER
+    // fila de `financial_transactions` de esta reserva que haya quedado
+    // sin `stay_id` -- el `UPDATE` de
+    // `sql.financial-transaction.repository.ts::linkStayToReservationCharges()`
+    // no filtra por `type`, así que además de `PAYMENT`/`CHARGE` también
+    // adopta `ADJUSTMENT`/`REFUND` huérfanos (mismo backfill que
+    // `checkIn()` ya corre una vez, idempotente -- `WHERE stay_id IS
+    // NULL`). Por eso el efecto sobre el saldo no es sólo "baja el monto
+    // transferido" (un `PAYMENT` adoptado resta) -- un `REFUND` o
+    // `ADJUSTMENT` de crédito huérfano adoptado también SUBE el saldo
+    // que se transfiere. FUERA de la transacción de abajo a propósito:
+    // no tiene variante `WithClient`, corre sobre el pool del tenant (no
+    // el de esta tx) -- mezclar pools acá sería el defecto que
+    // `DEFENSIVE_DEVELOPING.md` §3 existe para evitar. Efecto colateral
+    // aceptado: si el guard de más abajo (comprobante fiscal vivo)
+    // rechaza la transferencia, la adopción YA COMMITEÓ y no se deshace
+    // -- benigno (es la misma adopción que `checkIn()` habría hecho),
+    // pero puede hacer que una transferencia que antes pasaba ahora
+    // choque con `StayChargeAlreadyInvoicedError` si el `CHARGE` recién
+    // adoptado tiene un comprobante vivo -- fail-closed, correcto, pero
+    // es un 409 nuevo sobre una operación existente.
+    await this.financialRepo.linkStayToReservationCharges(stay.id, stay.reservationId);
+
     const balance = await this.financialRepo.getNetBalanceByStayId(input.stayId);
     if (balance <= 0) throw new NoBalanceToTransferError(input.stayId);
 

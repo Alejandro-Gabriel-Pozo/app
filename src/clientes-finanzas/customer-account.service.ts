@@ -122,6 +122,17 @@ export class CustomerAccountService {
      * a ninguna reserva (comportamiento sin cambios).
      */
     reservationId?: string | null;
+    /**
+     * `CITY-LEDGER-OVERTRANSFER-PAYMENT-001` (13/09/2026, decisión del
+     * dueño con grounding ERP -- 5/5 sistemas de referencia vinculan el
+     * pago a su documento en el momento de crearlo, ninguno hace fallback
+     * de FK al leer el saldo). `null`/`undefined` (default) = pago sin
+     * estadía asociada, comportamiento sin cambios. El caller (la ruta)
+     * resuelve esto -- este servicio no importa `StayRepository` a
+     * propósito (bounded context, `clientes-finanzas` no conoce
+     * `pms-estadias`), mismo patrón que `reservationId` ya usa.
+     */
+    stayId?: string | null;
     /** I4 — conciliación: qué factura(s) salda este pago y cuánto de cada una. */
     allocations?: { invoiceId: string; amount: number }[];
   }): Promise<FinancialTransaction[]> {
@@ -141,6 +152,7 @@ export class CustomerAccountService {
         businessId: params.businessId,
         customerId: params.customerId,
         reservationId: params.reservationId ?? null,
+        stayId: params.stayId ?? null,
         type: 'PAYMENT',
         amount: params.amount,
         currency,
@@ -265,6 +277,7 @@ export class CustomerAccountService {
           businessId: params.businessId,
           customerId: params.customerId,
           reservationId: params.reservationId ?? null,
+          stayId: params.stayId ?? null,
           type: 'PAYMENT',
           amount: appliedAmount,
           currency,
@@ -293,6 +306,7 @@ export class CustomerAccountService {
         businessId: params.businessId,
         customerId: params.customerId,
         reservationId: params.reservationId ?? null,
+        stayId: params.stayId ?? null,
         type: 'PAYMENT',
         amount: unassigned,
         currency,

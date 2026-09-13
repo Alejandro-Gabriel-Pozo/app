@@ -18,7 +18,12 @@
  *   sería un mock tan grande y frágil que dejaría de probar el contrato
  *   real — esto es territorio de test de integración contra una BD de
  *   test real (`TEST_DATABASE_URL`, `vitest.integration.config.ts`), no de
- *   unit test con fakeDb.
+ *   unit test con fakeDb. `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`
+ *   (13/09/2026) agregó a POST /:id/payments una resolución de `stayId`
+ *   vía `SqlStayRepository` (solo si la estadía está `CHECKED_IN`) --
+ *   misma razón de exclusión, mismo territorio de integración: el caso
+ *   "reserva con una única estadía `CHECKED_OUT`" queda como verificación
+ *   pendiente junto con el resto de este bloque, no cubierto acá.
  * - PUT /:id/tax-profile y PUT /:id/billing-policy: solo el camino 404
  *   (customer no existe, corta ANTES de tocar la tabla de destino). El
  *   upsert en sí (INSERT+UPDATE de customer_addresses + customer_tax_profiles,
