@@ -166,24 +166,41 @@ export class AccountsReceivableService {
   ) {}
 
   /**
-   * Riesgo de reconciliación -- residuo Q2 del caso 3, SIN respuesta del
-   * dueño todavía (12/09/2026, docs/investigacion-decisiones-bloqueado-2026-09-12.md,
-   * ítem abierto en docs/pendientes-2026-09-12.md, `requiere decisión del
-   * dueño`): `getNetBalanceByStayId()` ahora incluye `PENDING`, así que esta
-   * transferencia puede mover un saldo que todavía no es final (ej. un
-   * `ADJUSTMENT` de precio que recién liquida en `reservation.completed`).
-   * Si después de transferir algo ajusta el saldo de la estadía hacia
-   * abajo (o la reserva se cancela), el folio del huésped puede quedar
-   * negativo mientras la empresa ya recibió el CHARGE completo, `SETTLED`,
-   * por el monto viejo. Antes del fix esto NO podía pasar con montos
-   * `PENDING` (la transferencia los ignoraba igual que `checkOut()`) --
-   * es un riesgo real que el fix introduce, no una regresión de algo que
-   * ya funcionaba. NO bloquea esta transferencia mientras se espera la
-   * decisión -- el fix de checkOut() (Q1, sí decidido) es inseparable de
-   * este cambio de comportamiento porque comparten la misma función.
-   * Mecanismo de reconciliación (detectar el desvío, ajustar la AR o la
-   * factura ya emitida a la empresa) es bloque aparte, y depende de esa
-   * decisión, no tomada todavía.
+   * Riesgo de reconciliación -- residuo Q2 del caso 3, DECIDIDO (13/09/2026,
+   * docs/pendientes-2026-09-12.md, sección "🔴 Bloqueado en una decisión del
+   * dueño", bullet "Caso 3, residuo Q2"): `getNetBalanceByStayId()` ahora
+   * incluye `PENDING`, así que esta transferencia puede mover un saldo que
+   * todavía no es final (ej. un `ADJUSTMENT` de precio que recién liquida en
+   * `reservation.completed`). Si después de transferir algo ajusta el saldo
+   * de la estadía hacia abajo (o la reserva se cancela), el folio del
+   * huésped puede quedar negativo mientras la empresa ya recibió el CHARGE
+   * completo, `SETTLED`, por el monto viejo. Antes del fix esto NO podía
+   * pasar con montos `PENDING` (la transferencia los ignoraba igual que
+   * `checkOut()`) -- es un riesgo real que el fix introduce, no una
+   * regresión de algo que ya funcionaba. NO bloquea esta transferencia --
+   * el fix de checkOut() (Q1, sí decidido) es inseparable de este cambio de
+   * comportamiento porque comparten la misma función. El guard del Bloque 6
+   * (§9.1 de docs/diseno-reconciliacion-city-ledger-2026-09-12.md,
+   * implementado más abajo en el cuerpo de este método vía
+   * `resolveInvoiceLinkage()`/`classify*LiveInvoice()`) ya cubre el caso de
+   * un `CHARGE` con factura `ISSUED` viva o en vuelo -- lo que sigue sin
+   * cubrir acá es el `ADJUSTMENT` `PENDING` sin comprobante emitido
+   * todavía, que es lo que este comentario describe.
+   *
+   * Mecanismo de reconciliación decidido: construir `reverseTransfer()` +
+   * detección, diseñado en
+   * `docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.3 (servicio) y
+   * §4.5 (detección por EXISTENCIA de AR no-terminal asociada + log
+   * estructurado en los 2 handlers de outbox -- NO todavía una comparación
+   * de montos; eso, si hace falta, queda como diseño a completar dentro del
+   * Bloque 3), secuenciado en §8. El schema (Bloque 1, estado `REVERTIDO`)
+   * ya está implementado -- commit `b82d828`, `CURRENT_SCHEMA_VERSION = 52`
+   * (`platform/tenant-db.setup.ts:445`) y CHECK de 4 valores en
+   * `db/schema.sql`. `reverseTransfer()` en sí (Bloque 2) todavía NO existe
+   * en este archivo -- el motivo no es falta de decisión sobre este riesgo,
+   * sino una decisión del dueño distinta todavía abierta (§7.8 del diseño: cómo
+   * `listByCompany()`/`getByCompanyCustomerId()` deben mostrar/filtrar las
+   * filas `REVERTIDO` una vez que existan).
    */
   async transferStayBalanceToReceivable(input: TransferStayBalanceInput): Promise<AccountReceivable> {
     const stay = await this.stayRepo.findById(input.stayId, input.businessId);
