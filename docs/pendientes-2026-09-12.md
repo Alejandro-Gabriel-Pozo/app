@@ -2792,22 +2792,6 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   ventana de PERMISO de cancelar, no de penalidad — son ejes distintos,
   no unificarlos).
 
-- **`CITY-LEDGER-STATEMENT-TRANSFER-ROW-001`** (13/09/2026, split de
-  `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` — ver
-  `### 🟡 Listo para encarar`, mismo grounding). Los 3 pasos técnicos de
-  ese ítem (vincular las dos patas de la transferencia, alinear la
-  asimetría de estados, excluir la pata del huésped del agregado
-  `getNetBalanceByCustomerId()`) no requieren decisión del dueño — esta
-  sí: una vez excluida esa pata del agregado, ¿el statement del huésped
-  (`CustomerAccountService.getStatement()`,
-  `customer-account.service.ts:79`) sigue mostrando una fila por el
-  traspaso a City Ledger, o desaparece directamente? Cloudbeds sí la
-  muestra, como línea "AR Transfer" separada de "Amount Paid" — no la
-  oculta, la etiqueta distinto. Separado del ítem técnico a propósito
-  (regla del `CLAUDE.md` de este repo, "un ítem con residuo no es
-  cerrado — dividí el residuo, no lo entierres") para que esta pregunta
-  no quede enterrada dentro de un ítem marcado "solo falta tiempo/gate".
-
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
 
 - **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`** (13/09/2026,
@@ -2874,27 +2858,59 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `AR Transfer`, separado de `Amount Paid`, precisamente para no
   confundir un traspaso con un cobro real.
 
-  **Recomendación técnica del grounding (esto NO requiere decisión del
-  dueño, es implementación):**
+  **Los 3 pasos — TODOS DECIDIDOS (13/09/2026):**
   1. Vincular las dos patas de la transferencia — hoy sin FK entre sí,
      solo texto libre en `notes`. Esto ya lo necesita
      `reverseTransfer()` (todavía sin implementar —
      `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:587-594`
      declara la misma dependencia sin resolver, del lado de esa
      estructura de diseño).
-  2. Alinear/declarar explícitamente la asimetría de estados entre los
-     dos métodos de saldo.
+  2. **Declarar** (no alinear) — grounding COMPLEMENTARIO pedido hoy
+     (set de sistemas distinto al del párrafo "Patrón de industria" de
+     arriba: ahí Odoo/ERPNext/Dolibarr verificados en código sobre la
+     pregunta folio-vs-cuenta; acá Odoo/ERPNext/QloApps sobre la
+     pregunta de FILTRO DE STATUS — Dolibarr no se re-groundeó para
+     esta pregunta puntual, no es una contradicción entre los dos
+     párrafos), específico sobre el filtro de status: 3/3 sistemas
+     verificados en código (Odoo `_credit_debit_get`, ERPNext
+     `get_balance_on()` vs. `get_customer_outstanding()`, QloApps
+     `Customer::getOutstanding()`) excluyen del agregado por cliente
+     las obligaciones contratadas-no-firmes — mismo comportamiento que
+     este repo ya tiene. ERPNext prueba además que nivel-documento y
+     nivel-cuenta pueden contar estados distintos sin ser bug (dos
+     funciones con nombre propio para dos preguntas distintas). Alcance
+     de "declarar":
+     (a) Docblock explícito en `financial-transaction.repository.ts:367-374`
+     (la interfaz) sobre por qué `getNetBalanceByCustomerId()` es
+     `SETTLED`-only. El lado `ByStayId` YA declara su mitad
+     (`:417-426`: *"Incluye CHARGE/ADJUSTMENT en PENDING, no solo
+     SETTLED (fix 12/09/2026 …)"*) — este paso completa la simetría del
+     docblock, no lo escribe desde cero.
+     (b) **Hallazgo nuevo del grounding, a corregir en el mismo
+     bloque:** `CustomerAccountService.getStatement()`
+     (`customer-account.service.ts:74-84`) devuelve `balance` (solo
+     `SETTLED`) junto con `transactions` (sin ningún filtro de status,
+     `sql.financial-transaction.repository.ts:248`) en la misma
+     respuesta — el usuario ve filas que no suman el total de al lado.
+     Separar los dos universos explícitamente en el contrato de
+     respuesta. **Acá también se resuelve
+     `CITY-LEDGER-STATEMENT-TRANSFER-ROW-001` (decidido hoy vía
+     `AskUserQuestion`): el statement del huésped sigue mostrando una
+     fila propia por el traspaso a City Ledger** (precedente Cloudbeds:
+     línea "AR Transfer" separada de "Amount Paid", nunca oculta — solo
+     etiquetada distinto). **Ojo, la decisión de hoy cubre solo
+     VISIBILIDAD (¿la fila se muestra o desaparece?), no el LABEL** —
+     si además hay que renombrar/etiquetar esa fila como "AR Transfer"
+     (hoy es un `PAYMENT` con `notes` en texto libre, sin
+     `payment_method`) queda EXPLÍCITAMENTE FUERA de este bloque,
+     backlog aparte — no asumir que "mostrar la fila" incluye
+     "relabelearla" sin volver a preguntar (mismo criterio D5).
   3. Excluir la pata del huésped (el `PAYMENT` sintético) del agregado
      `getNetBalanceByCustomerId()`, simétrico a como ya se excluye la
      pata de la empresa del folio
      (`accounts-receivable.service.ts:335-349`, comentado a propósito).
-
-  **Nota:** hay una decisión de negocio asociada (si el statement del
-  huésped debe seguir mostrando una fila por el traspaso) que NO es
-  parte de estos 3 pasos técnicos — separada abajo en
-  `### 🔴 Bloqueado en una decisión del dueño` como
-  `CITY-LEDGER-STATEMENT-TRANSFER-ROW-001`, para no enterrarla dentro
-  de un ítem marcado como "solo falta tiempo/gate".
+     El punto 2(b) de arriba es precondición de que este paso no rompa
+     la visibilidad ya decidida de la fila de traspaso.
 
 - **`RESERVATION-STATUS-CROSSREPO-SYNC-001`** (13/09/2026, split del
   cierre de `RESERVATION-STATUS-EXPIRED-FRONTEND-01`, `docs/resuelto.md`
