@@ -577,7 +577,11 @@ implementación real:**
 6. Guard de facturación previa a la transferencia + exposición del
    escape de NC (§9) — encontrado por el gate `architecture-governor`
    durante Bloque 5 (Caso 5 residual 3, 12-13/09/2026), independiente de
-   1-5, no depende de `reverseTransfer()`.
+   1-5, no depende de `reverseTransfer()`. **Implementado, commiteado,
+   sin pushear todavía:** §9.2 (exposición, `0f2aa24`/`04da4b4`) y §9.1
+   (guard duro, `d75296a`) — ver ambas secciones más abajo. §9.4 (tercera
+   ubicación del mismo concepto, del lado de la emisión) queda
+   registrada, sin autorizar ni preguntar todavía.
 
 ## 9. Guard de facturación previa (Bloque 6, 13/09/2026)
 
@@ -635,7 +639,7 @@ fondo (el "pago" que saldó la factura del huésped fue plata real en los
    `AccountsReceivableService.markCollected()` (campo `collection`
    aditivo + `logger.warn`) -- para que management lo revise.
 
-### 9.1 Mecanismo — guard de transferencia
+### 9.1 Mecanismo — guard de transferencia (implementado, commit `d75296a`)
 
 **Corrección del gate (ronda 1, 13/09/2026):** el predicado original
 (`resolveInvoiceLinkage() === ISSUED`) es MÁS ANGOSTO que la definición
