@@ -584,6 +584,84 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
    propia §26.3 lo marca *"verificar si es intencional"*), y cierre de
    caja sobre un borrador pendiente. Ninguna se responde en este bloque
    — quedan registradas para cuando se retome `FACT-BORRADOR-001`.
+
+   **Actualización 13/09/2026 — las 5 preguntas de §26.3 tienen
+   resultado.** Grounding a 6 sistemas (Odoo 16/18, ERPNext,
+   india-compliance, Dolibarr, QloApps, OCA/pms — verificados en
+   código real; Cloudbeds bloqueado por red, no usado como evidencia).
+   `docs/diseno-factura-borrador-2026-08-31.md` sigue en **v2.11**
+   (re-chequeado contra el propio encabezado del documento en el
+   momento de escribir esto — no citar sin re-chequear la versión de
+   nuevo si pasó tiempo).
+
+   1. **Presupuesto de reintentos** — **CERRADA por consenso, no
+      requiere al dueño.** No es un número, es una clasificación
+      transitorio/terminal (Odoo `blocking_level`, ERPNext
+      `Auto-Retry` vs. `Failed`). Este repo YA tiene el mecanismo de
+      clasificación transitorio/permanente:
+      `src/workers/outbox.worker.ts:451`,
+      `classifyError(err) === 'permanent' ? 1 : this.maxRetries` (el
+      `maxRetries=60` en sí vive en `outbox.worker.ts:219`, con su
+      docblock en `:610` — la cita `:139-140` que §26.3 usa hoy es un
+      ancla stale del propio documento de diseño, arrastrada acá sin
+      corregir, a corregir en un commit de docs aparte).
+      `EMISSION_BLOCKED` **no está implementado** — es el estado
+      terminal que `docs/diseno-factura-borrador-2026-08-31.md` §5
+      define para este mecanismo (`:52`, `:432`, `:445`, `:457`, `:501`,
+      `:526`), todavía sin código en `src/`. El `maxRetries=60`
+      aplica solo a asentar el `CHARGE` (paso transitorio, análogo al
+      outbox) — **nunca** a la llamada a AFIP en sí: eso tiene que ser
+      0 reintentos automáticos tras un rechazo confirmado, con
+      reintento manual explícito (acción humana, como
+      `action_retry_edi_documents_error` de Odoo).
+   2. **Quién ve la cola de borradores** — **CERRADA por consenso:**
+      rol de facturación, no mostrador/todo el staff. 2 de 3 sistemas
+      de referencia ni tienen pantalla dedicada — el error vive en el
+      documento mismo, con badge/filtro. No hace falta diseñar una
+      pantalla nueva.
+   3. **Borrador abandonado** — **CERRADA por consenso unánime (3/3):**
+      ningún sistema caduca ni borra automáticamente un borrador. Se
+      puede opcionalmente reportar por antigüedad — mejora sobre el
+      estado del arte, no paridad: ningún referente lo hace, así que no
+      vale citarlo como "así lo hace la industria".
+   4. **Cliente dado de baja** — **DECIDIDA por el dueño vía
+      `AskUserQuestion`, siguiendo la opción recomendada: "No bloquea
+      nunca".** El borrador sigue vivo y emitible aunque el cliente se
+      archive. Alineado con 2 de 3 referentes (Odoo/Dolibarr:
+      "archivar ≠ borrar", ningún chequeo de partner archivado al
+      emitir), con la regla ya existente de este repo
+      (`docs/criterios-datos.md`, borrado≠pausado) y con que hoy YA se
+      puede facturar a un cliente inactivo (no hay chequeo de
+      `customer.active` en facturación). Divergencia notada pero
+      descartada: ERPNext bloquea siempre (incluso retroactivo) con
+      escape configurable por rol.
+   5. **Cierre de caja con borrador pendiente** — **sin cerrar del
+      todo, parcialmente alineada.** Consenso en que el cierre SÍ se
+      defiende cuando es reversible o el operador puede resolverlo ahí
+      mismo (Odoo POS y ERPNext POS bloquean el cierre si hay facturas
+      no posteadas/no submiteadas) — pero para el caso que el operador
+      NO puede resolver solo (`ISSUED_PENDING_LEDGER`: ya emitido,
+      cargo sin asentar) ningún sistema de referencia tiene
+      precedente. La postura que ya traía el diseño (advertir, no
+      bloquear, para ESE estado específico) queda sin respaldo externo
+      pero también sin contradicción — se registra como "sin resolver
+      definitivamente, la postura propia se sostiene sola", no como
+      cerrada.
+
+   **Hallazgo transversal del grounding, no una de las 5 preguntas:**
+   tres de las cinco respuestas de los sistemas de referencia NO viven
+   en el documento de factura — viven en el cierre de caja
+   (`src/clientes-finanzas/cash-register.service.ts::closeShift()`,
+   líneas 104-124, hoy sin ninguna validación fiscal) y en el camino de
+   baja de cliente. Si `FACT-BORRADOR-001` se implementa solo dentro de
+   `src/facturacion/`, las preguntas 4 y 5 van a quedar sin dueño de
+   código — advertencia de reparto de trabajo a tener en cuenta ANTES
+   de partir esto en tareas, no después.
+
+   Con esto, las preguntas 1/2/3 quedan cerradas por evidencia (no hace
+   falta volver a preguntarle al dueño) y la 4 fue decidida por el
+   dueño; la 5 sigue abierta pero sin bloquear — la postura del diseño
+   se puede mantener sin más grounding disponible.
 2. **UI de `cancellation-refund/preview|confirm`** — **no es una
    decisión, es un circuito sin frontend.** Backend construido y con
    tests de integración (`reservations.routes.ts:589-618`,
@@ -704,13 +782,35 @@ pantallas nuevas en el portal. Costo no trivial: cada ruta nueva con
 sincronizar `EXPECTED_AUTHORIZE_CALL_SITES`, secciones 2 y 4 de
 `docs/rbac-matriz-endpoints.md`, y `docs/inventario-rutas.md`.
 
-**Dos decisiones de negocio nuevas que este circuito abre, sin
-responder acá:**
+**Dos decisiones de negocio nuevas que este circuito abre:**
 - Un cargo de huésped facturado en la consolidada de una EMPRESA (City
   Ledger): ¿el huésped ve ese comprobante, o solo la empresa? (el cargo
-  nace de la estadía, pero `invoices.customer_id` es la empresa, vía
+  nace de la estadía, pero `invoices.customer_id` es la empresa —
   `AccountsReceivableService.transferStayBalanceToReceivable()`,
-  `accounts-receivable.service.ts:121`).
+  `accounts-receivable.service.ts:211`, abre la cuenta por cobrar contra
+  `input.companyCustomerId`; la factura consolidada real la crea
+  `InvoiceService.requestConsolidatedInvoice()` con
+  `customerId: input.companyCustomerId`, `invoice.service.ts:691`).
+  **RESUELTA (13/09/2026) — decisión del dueño vía `AskUserQuestion`: "No
+  lo ve nunca".** Respaldo: grounding a 4 sistemas (Odoo, ERPNext,
+  Dolibarr, QloApps, los 4 verificados en código fuente real —
+  Cloudbeds quedó bloqueado por red, no se usó como evidencia) con
+  consenso unánime: la visibilidad del comprobante se resuelve por el
+  SUJETO del documento (`partner_id`/`commercial_partner_id`/`fk_soc`/
+  `id_customer` — la empresa), nunca por quién consumió el servicio, y
+  ninguno de los 4 filtra por línea (es todo-o-nada: la empresa ve el
+  comprobante completo o no lo ve, nunca una versión parcial recortada
+  al huésped). Esto es **precondición de diseño**, no un fix sobre algo
+  que hoy filtra mal — el Circuito B / portal documental sigue sin una
+  sola ruta de comprobantes: `customer.routes.ts` tiene 0 matches de
+  `folio`/`comprobante`, y los 3 matches de `invoice` (`:108`, `:242`,
+  `:260`) son solo el wiring de `SqlInvoiceRepository` como dependencia
+  de `ReservationService`, no una ruta de documentos. La decisión fija
+  la regla ANTES
+  de escribir la primera ruta (`GET /me/invoices`, etc.), para no
+  repetir el patrón de D5 (`CLAUDE.md`, "Preguntas de alcance pueden
+  esconder una decisión de negocio") de construir primero y decidir
+  después.
 - ¿El portal de comprobantes se habilita por tenant/módulo o viene
   siempre incluido con `FACTURACION`? **INVESTIGADA con grounding real
   (12/09/2026, `auditor-circuitos-erp`).** 4 de 5 sistemas tienen
@@ -2536,7 +2636,179 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   cruzado, sin decisión ni gate todavía. No marcar este ítem `✅
   RESUELTO` hasta que exista ese link preciso.
 
+- **`CANCEL-POLICY-SCOPE-BASE-001`** (13/09/2026, grounding
+  `auditor-circuitos-erp` a 5 sistemas: QloApps verificado en código
+  real; Cloudbeds verificado en su Help Center público — este grounding
+  puntual sí tuvo acceso directo a esas páginas (a diferencia de los
+  otros 3 groundings de esta sesión, donde Cloudbeds quedó bloqueado
+  por red y solo hubo excerpts de búsqueda — variación de acceso entre
+  rondas, no inconsistencia de criterio); ERPNext confirmado **sin**
+  motor de penalidad de
+  reserva — cancelación = Nota de Crédito manual; Odoo open-source
+  también **sin** motor de penalidad de reserva, solo aporta el patrón
+  de modelado de `account_payment_term` como catálogo con líneas
+  ordenadas; Dolibarr sin módulo de reserva). Relacionado pero distinto
+  de "Penalidad retenida en reembolso parcial" más arriba (esa pregunta
+  es sobre qué hacer con lo YA retenido al confirmar un reembolso
+  parcial; ésta es sobre CÓMO se configura y calcula la penalidad de
+  cancelación en sí, por rubro).
+
+  El repo ya tiene el motor de tramos (`cancellation_policies`, ladder
+  por `min_days_before_checkin`, `src/db/schema.sql:914-929`), pero
+  escala solo por `business_id` — sin scope por recurso/categoría/
+  bucket. El patrón de scope que falta ya existe implementado dos veces
+  en el mismo módulo (`deposit_policies`,
+  `src/db/schema.sql:867-898`, resource/service/category/bucket; y
+  `customer_rates`) — no hace falta inventar nada, solo extender
+  `cancellation_policies` con el mismo scope de 4 vías y el mismo
+  `SPECIFICITY_ORDER` de
+  `src/reservas/sql.deposit-policy.repository.ts:30`.
+
+  **DECIDIDA por el dueño vía `AskUserQuestion` — base de cálculo:
+  "Configurable por política".** Precedente Cloudbeds: `Full Deposit`
+  vs. `Full Stay`, el usuario elige por política si la base es la seña
+  o el valor total. Esto cierra el hallazgo de que hoy el repo calcula
+  sobre `collected` (lo efectivamente cobrado) sin precedente en ningún
+  sistema de referencia — ni QloApps ni Cloudbeds usan esa base.
+
+  **Quedan 4 sub-decisiones sin preguntar todavía** (no resueltas acá,
+  cada una con su evidencia para no tener que re-groundear):
+  - **Unidad temporal.** Hoy `min_days_before_checkin INTEGER CHECK
+    (>= 0)` (`src/db/schema.sql:917`) no expresa ventanas de horas
+    (barbería/spa). QloApps usa `days` **float** — precedente de que
+    días fraccionarios alcanzan sin cambiar de unidad. Es la decisión
+    más barata de tomar ahora, más cara de migrar después.
+  - **Si los extras/cargos adicionales entran a la base de cálculo.**
+    QloApps los incluye explícitamente
+    (`total_price_tax_incl + totalServicesPrice`).
+  - **Snapshot al reservar vs. regla viva al cancelar.** Ningún
+    referente lo resuelve de forma copiable — QloApps resuelve contra
+    la regla viva al cancelar, Cloudbeds sugiere snapshot al mostrar la
+    política al reservar. Mismo tipo de pregunta que el caso D5
+    (22/08/2026, `CLAUDE.md` de `app-main`, sección "Preguntas de
+    alcance pueden esconder una decisión de negocio") — no resolverla
+    como parte de otra pregunta.
+  - **Si POS/órdenes entra al mismo motor de penalidad.** Hoy
+    `src/pos-menu/order.service.ts` no tiene concepto de penalidad
+    (verificado: 0 matches de `penalt`/`cancellation` salvo un
+    comentario que remite al lado reservas, `:376`); ningún sistema de
+    referencia lo modela unificado con hotelería.
+
+  **Fuera de alcance de este bloque, a propósito** — el grounding
+  recomienda NO tocarlos acá, quedan como deuda separada si no lo están
+  ya: `rate_plans.cancellation_policy TEXT`
+  (`src/db/schema.sql:280` — sí se persiste y se expone, ver
+  `sql.bookable-service.repository.ts:57`/`:238`/`:263` y
+  `bookable-service.service.ts:201`; lo que falta es lógica de
+  cancelación que la consuma, no está "muerta" a nivel de dato) y
+  `CANCEL_ADVANCE_MS`
+  (`src/api/routes/customer.routes.ts:127`, constante hardcodeada de
+  ventana de PERMISO de cancelar, no de penalidad — son ejes distintos,
+  no unificarlos).
+
+- **`CITY-LEDGER-STATEMENT-TRANSFER-ROW-001`** (13/09/2026, split de
+  `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` — ver
+  `### 🟡 Listo para encarar`, mismo grounding). Los 3 pasos técnicos de
+  ese ítem (vincular las dos patas de la transferencia, alinear la
+  asimetría de estados, excluir la pata del huésped del agregado
+  `getNetBalanceByCustomerId()`) no requieren decisión del dueño — esta
+  sí: una vez excluida esa pata del agregado, ¿el statement del huésped
+  (`CustomerAccountService.getStatement()`,
+  `customer-account.service.ts:79`) sigue mostrando una fila por el
+  traspaso a City Ledger, o desaparece directamente? Cloudbeds sí la
+  muestra, como línea "AR Transfer" separada de "Amount Paid" — no la
+  oculta, la etiqueta distinto. Separado del ítem técnico a propósito
+  (regla del `CLAUDE.md` de este repo, "un ítem con residuo no es
+  cerrado — dividí el residuo, no lo entierres") para que esta pregunta
+  no quede enterrada dentro de un ítem marcado "solo falta tiempo/gate".
+
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
+
+- **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`** (13/09/2026,
+  grounding `auditor-circuitos-erp`). Bug nuevo, sin ticket todavía —
+  hermano del ya registrado más arriba en este archivo ("PAYMENT
+  sintético de City Ledger contamina el balance del cliente", dentro
+  del bloque `1c-0`/`ORDER-CONSOLIDATED-PARTIAL-01`) pero por un
+  mecanismo DISTINTO: aquel dispara con cancelación-con-NC de una
+  reserva `CONFIRMED`; éste dispara en el camino feliz, sin cancelar
+  nada.
+
+  **Causa:** `getNetBalanceByCustomerId()`
+  (`src/clientes-finanzas/sql.financial-transaction.repository.ts:813-832`)
+  filtra `AND status = 'SETTLED'`. `getNetBalanceByStayId()` (mismo
+  archivo, `:893-912`) filtra `AND status IN ('PENDING', 'SETTLED')`
+  desde un fix del 12/09/2026. Es una asimetría de estados **no
+  documentada como decisión** — a diferencia de la diferencia de scope
+  `customer_id` vs. `stay_id`, que sí está comentada
+  (`src/clientes-finanzas/financial-transaction.repository.ts:367-374`
+  y `:417-426`): esos docblocks explican por qué existen dos métodos
+  distintos, y `:422-424` sí declara por qué el método de estadía
+  cuenta `PENDING` (remite al docblock de implementación,
+  `sql.financial-transaction.repository.ts:885-892`). Lo que queda
+  genuinamente sin documentar es por qué el método de CLIENTE se quedó
+  en `SETTLED`-only.
+
+  **Consecuencia real:** en
+  `AccountsReceivableService.transferStayBalanceToReceivable()`
+  (`src/clientes-finanzas/accounts-receivable.service.ts`), el
+  `PAYMENT` sintético que se crea para el huésped nace `SETTLED`
+  (`:323-333`), pero el `CHARGE` original de la reserva que se está
+  transfiriendo (creado en `reservation.confirmed`, vía outbox) puede
+  seguir `PENDING` — liquida recién en el evento
+  `reservation.completed`. En ese instante: el folio de la estadía da 0
+  (correcto — `getNetBalanceByStayId()` cuenta el `PENDING`), pero
+  `getNetBalanceByCustomerId()` (solo `SETTLED`) ve el `PAYMENT` pero
+  NO el `CHARGE` que lo compensa → saldo negativo falso (crédito
+  fantasma) en el camino feliz, no solo en el camino de
+  cancelación-con-NC que ya estaba registrado. Se vuelve permanente si
+  la reserva se cancela después, o se emite una Nota de Crédito.
+
+  **Radio medido:** `getNetBalanceByCustomerId()` tiene un solo
+  consumidor de producción,
+  `CustomerAccountService.getStatement()`
+  (`src/clientes-finanzas/customer-account.service.ts:79`), expuesto
+  por `GET /api/customers/:id/account`
+  (`src/clientes-finanzas/customers.routes.ts:812-837`). El portal de
+  cliente no lo expone — verificado, 0 matches de
+  `account`/`statement`/`balance` en `src/api/routes/customer.routes.ts`
+  — lo ve staff, no el huésped. No contamina caja:
+  `sql.cash-register-shift.repository.ts:79` filtra por
+  `payment_method = 'CASH'`, la fila sintética no tiene
+  `payment_method`.
+
+  **Patrón de industria** (grounding a 5 sistemas, Odoo 18.0, ERPNext y
+  Dolibarr verificados en código real — Cloudbeds/OPERA solo por
+  excerpts de búsqueda, no código): folio/documento y cuenta/parte
+  coexisten en los 5, y el nivel cuenta SIEMPRE se deriva del nivel
+  documento — ninguno permite un "pago" sin documento de origen ni
+  contrapartida de dinero real (Odoo: `_credit_debit_get` suma
+  `amount_residual` NO conciliado; ERPNext: `get_balance_on()` suma
+  `GL Entry`; Dolibarr: todo pago se asigna a factura vía
+  `llx_paiement_facture`). Cloudbeds tiene el término propio
+  `AR Transfer`, separado de `Amount Paid`, precisamente para no
+  confundir un traspaso con un cobro real.
+
+  **Recomendación técnica del grounding (esto NO requiere decisión del
+  dueño, es implementación):**
+  1. Vincular las dos patas de la transferencia — hoy sin FK entre sí,
+     solo texto libre en `notes`. Esto ya lo necesita
+     `reverseTransfer()` (todavía sin implementar —
+     `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:587-594`
+     declara la misma dependencia sin resolver, del lado de esa
+     estructura de diseño).
+  2. Alinear/declarar explícitamente la asimetría de estados entre los
+     dos métodos de saldo.
+  3. Excluir la pata del huésped (el `PAYMENT` sintético) del agregado
+     `getNetBalanceByCustomerId()`, simétrico a como ya se excluye la
+     pata de la empresa del folio
+     (`accounts-receivable.service.ts:335-349`, comentado a propósito).
+
+  **Nota:** hay una decisión de negocio asociada (si el statement del
+  huésped debe seguir mostrando una fila por el traspaso) que NO es
+  parte de estos 3 pasos técnicos — separada abajo en
+  `### 🔴 Bloqueado en una decisión del dueño` como
+  `CITY-LEDGER-STATEMENT-TRANSFER-ROW-001`, para no enterrarla dentro
+  de un ítem marcado como "solo falta tiempo/gate".
 
 - **`RESERVATION-STATUS-CROSSREPO-SYNC-001`** (13/09/2026, split del
   cierre de `RESERVATION-STATUS-EXPIRED-FRONTEND-01`, `docs/resuelto.md`
