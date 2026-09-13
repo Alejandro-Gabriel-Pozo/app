@@ -30,6 +30,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { StayRepository } from '../pms-estadias/stay.repository.js';
 import { Stay, type StayStatus } from '../pms-estadias/stay.js';
+import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivableStatus } from '../clientes-finanzas/accounts-receivable.repository.js';
 
 /** Fake mínimo — devuelve un perfil fijo, currency configurable por test. */
 class FakeBusinessProfileRepository implements BusinessProfileRepository {
@@ -416,6 +417,32 @@ class FakeStayRepository implements Pick<StayRepository, 'findByReservation'> {
   }
 }
 
+/**
+ * City Ledger Bloque 3a (13/09/2026) -- `accountsReceivable` configurable
+ * por test, `[]` por defecto (caso más común: estadía sin traspaso a
+ * empresa).
+ */
+class FakeAccountsReceivableRepository implements Pick<AccountsReceivableRepository, 'getByStayId'> {
+  accountsReceivable: AccountReceivable[] = [];
+  calls: string[] = [];
+  /** `Error` -> `getByStayId` la tira (fail-open del detector, ver `handleReservationCancelled`). */
+  error: Error | null = null;
+  async getByStayId(stayId: string): Promise<AccountReceivable[]> {
+    this.calls.push(stayId);
+    if (this.error) throw this.error;
+    return this.accountsReceivable;
+  }
+}
+
+/** AR mínima -- solo lo que la detección de Bloque 3a lee y loguea. */
+function makeAR(status: AccountsReceivableStatus | 'REVERTIDO', overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+  return {
+    id: 'ar-1', businessId: 'biz-test', stayId: 'stay-1', companyCustomerId: 'company-1',
+    amount: 500, currency: 'ARS', status: status as AccountsReceivableStatus, transferredBy: 'user-1',
+    ...overrides,
+  };
+}
+
 function fakeReservationEvent(payload: Record<string, unknown>): DomainEvent {
   return {
     id: 99,
@@ -612,15 +639,120 @@ describe('outbox.handlers — handleReservationCancelled (RESERVA-10, 05/09/2026
     }),
   };
   const fakeDb = {} as SqlClient;
-  const cancelar = () => handleReservationCancelled(financialRepo, fakeInvoiceRepo, fakeDb);
+  // City Ledger Bloque 3a (13/09/2026) -- `stay = null` por defecto (caso
+  // más común: reserva sin estadía todavía, o estadía sin traspaso a
+  // empresa) reproduce exactamente el comportamiento de antes de este
+  // bloque en todos los tests de arriba, que no los configuran.
+  let stayRepo: FakeStayRepository;
+  let accountsReceivableRepo: FakeAccountsReceivableRepository;
+  const cancelar = () => handleReservationCancelled(financialRepo, fakeInvoiceRepo, fakeDb, stayRepo, accountsReceivableRepo);
 
   beforeEach(() => {
     financialRepo = new FakeFinancialTransactionRepository();
     clasificacion = 'NOT_RECONCILED';
+    stayRepo = new FakeStayRepository();
+    accountsReceivableRepo = new FakeAccountsReceivableRepository();
     fakeInvoiceRepo.classifyReservationLiveInvoice.mockClear();
     vi.mocked(logger.info).mockClear();
     vi.mocked(logger.warn).mockClear();
     vi.mocked(logger.error).mockClear();
+  });
+
+  // ─── City Ledger Bloque 3a (§4.5 bullet 1) ─────────────────────────────
+  describe('detección de AR viva (§4.5, no bloquea, no revierte)', () => {
+    it('sin estadía (stayRepo devuelve null) -> no consulta AR, no loguea', async () => {
+      stayRepo.stay = null;
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(accountsReceivableRepo.calls).toHaveLength(0);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ evento: 'reservation_cancelled_con_ar_viva' }),
+        expect.anything(),
+      );
+    });
+
+    it('con estadía pero sin AR asociada -> consulta, no loguea', async () => {
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.accountsReceivable = [];
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(accountsReceivableRepo.calls).toEqual(['stay-1']);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ evento: 'reservation_cancelled_con_ar_viva' }),
+        expect.anything(),
+      );
+    });
+
+    it('con AR PENDIENTE_FACTURAR viva -> loguea warn con evento + datos de la AR', async () => {
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR', { id: 'ar-9', amount: 1234 })];
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evento: 'reservation_cancelled_con_ar_viva',
+          reservationId: 'res-1',
+          stayId: 'stay-1',
+          accountsReceivable: [expect.objectContaining({ accountsReceivableId: 'ar-9', amount: 1234, status: 'PENDIENTE_FACTURAR' })],
+        }),
+        expect.stringContaining('cuenta por cobrar viva'),
+      );
+    });
+
+    it('con AR COBRADO -> también loguea (INCLUIDO a propósito, no es un estado terminal para este chequeo)', async () => {
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.accountsReceivable = [makeAR('COBRADO')];
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ evento: 'reservation_cancelled_con_ar_viva' }),
+        expect.anything(),
+      );
+    });
+
+    it('con AR REVERTIDO (cast a string -- el union TS todavía no declara el valor) -> filtrada, no loguea', async () => {
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.accountsReceivable = [makeAR('REVERTIDO')];
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ evento: 'reservation_cancelled_con_ar_viva' }),
+        expect.anything(),
+      );
+    });
+
+    it('mezcla REVERTIDO + PENDIENTE_FACTURAR -> loguea solo la viva, REVERTIDO no entra en el array', async () => {
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.accountsReceivable = [makeAR('REVERTIDO', { id: 'ar-vieja' }), makeAR('PENDIENTE_FACTURAR', { id: 'ar-nueva' })];
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountsReceivable: [expect.objectContaining({ accountsReceivableId: 'ar-nueva' })],
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('la detección corre incluso cuando el desenlace del void es RECHAZADO -- son mecanismos independientes', async () => {
+      financialRepo.voidReservaDesenlace = { tipo: 'RECHAZADO', rechazos: ['RESERVA_ESTADO_NO_ELEGIBLE'] };
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR')];
+      await cancelar()(fakeReservationEvent({ reservationId: 'res-1' }));
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ evento: 'reservation_cancelled_con_ar_viva' }),
+        expect.anything(),
+      );
+    });
+
+    it('fail-open: si getByStayId() tira, no propaga -- el handler ya completó el void, solo se pierde la visibilidad', async () => {
+      stayRepo.stay = makeStay('stay-1');
+      accountsReceivableRepo.error = new Error('conexión caída');
+      await expect(cancelar()(fakeReservationEvent({ reservationId: 'res-1' })))
+        .resolves.toBeUndefined();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evento: 'reservation_cancelled_ar_deteccion_fallida',
+          reservationId: 'res-1',
+          err: 'conexión caída',
+        }),
+        expect.stringContaining('detección de AR viva post-cancelación falló'),
+      );
+    });
   });
 
   it('anula pasando reservationId y businessId', async () => {

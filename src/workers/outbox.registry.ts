@@ -40,6 +40,7 @@ import { ReservationHoldExpiryWorker }         from './reservation-hold-expiry.w
 import { SqlReservationRepository }            from '../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository }               from '../reservas/sql.resource.repository.js';
 import { SqlStayRepository }                   from '../pms-estadias/stay.repository.js';
+import { SqlAccountsReceivableRepository }     from '../clientes-finanzas/sql.accounts-receivable.repository.js';
 import type { SqlClient }                      from '../repositories/sql.client.js';
 
 const workers = new Map<string, OutboxWorker>();
@@ -94,6 +95,12 @@ export function ensureTenantWorker(
   // ADJUSTMENT de un ajuste de precio confirmado DESPUÉS del check-in. Mismo
   // `db` de tenant que el resto (DEFENSIVE_DEVELOPING §3).
   const stayRepo                 = new SqlStayRepository(db);
+  // City Ledger Bloque 3a (13/09/2026, gate `architecture-governor`) --
+  // `handleReservationCancelled` lo usa para detectar AR viva colgada de
+  // la estadía. `accounts_receivable` es tabla de TENANT (`src/db/schema.sql`,
+  // no `platform.schema.sql`) -- mismo `db` de tenant que el resto
+  // (DEFENSIVE_DEVELOPING §3), nunca `getPlatformRawPool()`.
+  const accountsReceivableRepo   = new SqlAccountsReceivableRepository(db);
   const stockMovementRepo        = new SqlStockMovementRepository();
   const productRepo              = new SqlProductRepository(db);
   const productVariantRepo       = new SqlProductVariantRepository(db);
@@ -135,7 +142,7 @@ export function ensureTenantWorker(
   // fila de la orden y el INSERT del CHARGE tienen que compartir conexión.
   // Es el MISMO PgTransactionManager sobre el pool crudo del tenant que ya
   // usa el handler de inventario (DEFENSIVE_DEVELOPING §3).
-  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo, transactionManager, invoiceRepo, db, stayRepo);
+  registerFinancialHandlers(worker, financialTransactionRepo, businessProfileRepo, transactionManager, invoiceRepo, db, stayRepo, accountsReceivableRepo);
   registerInventoryHandlers(worker, productService, stockMovementRepo, transactionManager);
   registerEmailHandlers(worker, emailSender, businessProfileRepo);
   worker.start();

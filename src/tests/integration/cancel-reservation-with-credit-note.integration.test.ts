@@ -55,6 +55,7 @@ import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.j
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js';
+import { SqlStayRepository } from '../../pms-estadias/stay.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
 import { CancelReservationWithCreditNoteService } from '../../facturacion/cancel-reservation-with-credit-note.service.js';
@@ -151,6 +152,10 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
   let financialRepo: SqlFinancialTransactionRepository;
   let reservationRepo: SqlReservationRepository;
   let businessProfileRepo: SqlBusinessProfileRepository;
+  // City Ledger Bloque 3a (13/09/2026) -- lo necesita `handleReservationCancelled()`
+  // para resolver el stay de la reserva; este archivo no crea stays, así que
+  // siempre resuelve `null` y la detección de AR viva queda sin ejercitar acá.
+  let stayRepo: SqlStayRepository;
   let categoryId: string;
 
   beforeAll(async () => {
@@ -165,6 +170,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
     financialRepo = new SqlFinancialTransactionRepository(db);
     reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
     businessProfileRepo = new SqlBusinessProfileRepository(db);
+    stayRepo = new SqlStayRepository(db);
   }, 90_000);
 
   afterAll(async () => { await dropTestDatabase(dbName, pool); });
@@ -470,7 +476,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
 
       expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('RECONCILED');
 
-      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+      await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(reservationId));
 
       expect(logger.error).not.toHaveBeenCalled();
       expect(logger.info).toHaveBeenCalledWith(
@@ -498,7 +504,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
 
       expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('NOT_RECONCILED');
 
-      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+      await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(reservationId));
 
       expect(logger.info).not.toHaveBeenCalledWith(
         expect.objectContaining({ reconciliado: true }), expect.anything(),
@@ -523,7 +529,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
 
       expect(await invoiceRepo.classifyReservationLiveInvoice(db, reservationId)).toBe('NOT_RECONCILED');
 
-      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+      await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(reservationId));
 
       expect(logger.error).toHaveBeenCalledWith(
         expect.objectContaining({ causa: ['CARGO_CON_COMPROBANTE_VIVO'] }),
@@ -580,7 +586,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
       // exigió correr antes de dar por cerrado el bloque.
       expect(await invoiceRepo.classifyReservationLiveInvoice(db, resA)).toBe('RECONCILED');
 
-      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(resA));
+      await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(resA));
 
       // Ya no es grave -- el falso positivo desaparece, mismo patrón de log
       // que el caso individual de más arriba (factura NO consolidada).
@@ -610,7 +616,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
         type: 'PAYMENT', amount: 100, currency: 'ARS', status: 'SETTLED',
       });
 
-      await handleReservationCancelled(financialRepo, invoiceRepo, db)(reservationCancelledEvent(reservationId));
+      await handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, new FakeAccountsReceivableRepo())(reservationCancelledEvent(reservationId));
 
       // Este test afirmaba la guarda EXACT-MATCH vieja (`rechazos.length
       // === 1 && rechazos[0] === 'CARGO_CON_COMPROBANTE_VIVO'`), retirada el

@@ -16,7 +16,11 @@
  * ## Handlers registrados
  * - `reservation.confirmed`      → crea CHARGE PENDING en financial_transactions
  * - `reservation.completed`      → pasa CHARGE/ADJUSTMENT a SETTLED (por reservation_id, blanket update)
- * - `reservation.cancelled`      → pasa CHARGE/ADJUSTMENT a VOIDED (si existía)
+ * - `reservation.cancelled`      → pasa CHARGE/ADJUSTMENT a VOIDED (si existía); City Ledger
+ *                                   Bloque 3a (13/09/2026) además detecta y loguea (no bloquea,
+ *                                   no revierte) si la estadía tiene una AR no revertida en una
+ *                                   empresa (incluye `COBRADO` a propósito) --
+ *                                   `evento: reservation_cancelled_con_ar_viva`
  * - `reservation.price_adjusted` → crea ADJUSTMENT PENDING (19/08/2026, pendientes-2026-08-18.md punto I;
  *                                   monto con signo — positivo = cargo extra, negativo = nota de crédito)
  * - `order.confirmed`        → crea CHARGE PENDING (mismo mecanismo, por order_id)
@@ -38,6 +42,7 @@ import { ChargeNotYetCreatedError, ChargeNeverCreatedError } from './outbox.work
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { StayRepository } from '../pms-estadias/stay.repository.js';
+import type { AccountsReceivableRepository } from '../clientes-finanzas/accounts-receivable.repository.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { logger } from '../logger.js';
 import type { OutboxWorker } from './outbox.worker.js';
@@ -121,8 +126,15 @@ export function registerFinancialHandlers(
   // STAY-ADJUSTMENT-PRICE-001 (11/09/2026, gate `architecture-governor`) --
   // `handleReservationPriceAdjusted` lo usa para heredar `stay_id` desde la
   // Stay vigente de la reserva. `Pick` mínimo, mismo criterio que
-  // `invoiceRepo` arriba.
+  // `invoiceRepo` arriba. Bloque 3a de City Ledger (13/09/2026) lo reusa
+  // en `handleReservationCancelled`, mismo `Pick`.
   stayRepo: Pick<StayRepository, 'findByReservation'>,
+  // City Ledger Bloque 3a (13/09/2026, gate `architecture-governor`,
+  // §4.5 de docs/diseno-reconciliacion-city-ledger-2026-09-12.md) --
+  // detección de AR viva en `handleReservationCancelled`. `db` de tenant
+  // (DEFENSIVE_DEVELOPING §3): `accounts_receivable` vive en
+  // `src/db/schema.sql`, no en `platform.schema.sql`.
+  accountsReceivableRepo: Pick<AccountsReceivableRepository, 'getByStayId'>,
 ): void {
   // Los nombres (`financial:*`) son la clave del casillero en
   // `processed_events` (28/08/2026, A10.3). Renombrar uno equivale a declarar
@@ -132,7 +144,7 @@ export function registerFinancialHandlers(
   worker
     .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo), { name: 'financial:reservation.confirmed' })
     .on('reservation.completed',      handleReservationCompleted(financialRepo),                      { name: 'financial:reservation.completed' })
-    .on('reservation.cancelled',      handleReservationCancelled(financialRepo, invoiceRepo, db),      { name: 'financial:reservation.cancelled' })
+    .on('reservation.cancelled',      handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, accountsReceivableRepo), { name: 'financial:reservation.cancelled' })
     .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo), { name: 'financial:reservation.price_adjusted' })
     .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo, transactionManager), { name: 'financial:order.confirmed' })
     .on('order.completed',       handleOrderCompleted(financialRepo),                      { name: 'financial:order.completed' })
@@ -232,6 +244,15 @@ export function handleReservationCancelled(
   // docblock de `classifyReservationLiveInvoice`).
   invoiceRepo: Pick<InvoiceRepository, 'classifyReservationLiveInvoice'>,
   db: SqlClient,
+  // City Ledger Bloque 3a (13/09/2026, gate `architecture-governor`,
+  // §4.5 bullet 1 de docs/diseno-reconciliacion-city-ledger-2026-09-12.md)
+  // -- detección de AR viva colgada de la estadía de esta reserva. NO
+  // opcionales: el precedente del escape de NC (`accountsReceivableRepo`
+  // ahí sí es opcional) dejaría el detector apagado en silencio si algún
+  // caller nuevo se olvida del wiring -- acá no hay ese caller alternativo
+  // todavía, así que no hace falta la puerta de escape.
+  stayRepo: Pick<StayRepository, 'findByReservation'>,
+  accountsReceivableRepo: Pick<AccountsReceivableRepository, 'getByStayId'>,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId } = event.payload as { reservationId: string };
@@ -266,6 +287,79 @@ export function handleReservationCancelled(
     }
 
     registrarDesenlace(event, 'financial:reservation.cancelled', reservationId, desenlace, { comprobanteReconciliado });
+
+    // City Ledger Bloque 3a (13/09/2026, gate `architecture-governor`,
+    // §4.5 bullet 1) -- si la estadía de esta reserva ya se transfirió a
+    // una empresa (`transferStayBalanceToReceivable()`), `voidByReservationId()`
+    // arriba anula el `CHARGE`/`ADJUSTMENT` de la RESERVA, pero la fila
+    // `accounts_receivable` de la EMPRESA no se toca -- puede quedar
+    // cobrándole a la empresa una deuda que el ledger del huésped ya
+    // anuló (§1.2 del diseño). Detección por EXISTENCIA de AR no-terminal,
+    // NO por comparación de montos (eso queda para cuando se diseñe el
+    // lado `handleReservationCompleted`, ver docblock de
+    // `transferStayBalanceToReceivable()`). Filtro `!== 'REVERTIDO'`
+    // (cast a `string`, mismo criterio que evita `ROLES-CATALOG-DRIFT-001`
+    // -- `REVERTIDO` no existe en el union TS todavía) e
+    // INTENCIONALMENTE incluye `COBRADO`: una empresa que YA PAGÓ un
+    // cargo que el ledger acaba de anular es el caso más grave, no el más
+    // benigno -- corrige la ambigüedad de "estados no-terminales" del
+    // texto original de §4.5 (`COBRADO` es terminal en el flujo normal,
+    // pero no acá). NO bloquea el handler, NO revierte nada -- la
+    // decisión sigue siendo del operador (mismo principio que
+    // `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`: la
+    // app no decide por el negocio, solo se lo muestra). Puede duplicar
+    // en el log el `nc_escape_con_ar_viva` síncrono de
+    // `cancelReservationWithCreditNote()` (`0f2aa24`) cuando la
+    // cancelación vino por ese camino -- declarado, no corregido acá: dos
+    // señales del mismo incidente por dos caminos distintos (uno síncrono
+    // en el servicio, uno asíncrono en el outbox) no es el mismo bug que
+    // "nunca se detecta".
+    // Envuelto en try/catch a propósito: `voidByReservationId()` y
+    // `registrarDesenlace()` de arriba YA COMMITEARON -- el trabajo real
+    // de este handler terminó. Una falla acá (timeout de conexión, etc.)
+    // es un problema de la LECTURA de detección, no de la cancelación en
+    // sí; dejarla propagar tiraría el evento entero a reintento/dead-letter
+    // por algo que no es la cancelación, violando "NO bloquea el handler"
+    // (§4.5). Fail-open: se loguea el fallo y el handler completa igual --
+    // distinto del fail-closed de `classifyReservationLiveInvoice` de más
+    // arriba, que sí protege una decisión real (grave vs. reconciliado).
+    try {
+      const stay = await stayRepo.findByReservation(reservationId, event.businessId);
+      if (stay) {
+        const arsEnRiesgo = (await accountsReceivableRepo.getByStayId(stay.id))
+          .filter((ar) => (ar.status as string) !== 'REVERTIDO');
+        if (arsEnRiesgo.length > 0) {
+          logger.warn(
+            {
+              evento: 'reservation_cancelled_con_ar_viva',
+              tenant: event.businessId,
+              reservationId,
+              stayId: stay.id,
+              accountsReceivable: arsEnRiesgo.map((ar) => ({
+                accountsReceivableId: ar.id,
+                companyCustomerId: ar.companyCustomerId,
+                status: ar.status,
+                amount: ar.amount,
+              })),
+            },
+            '[outbox] reserva cancelada con cuenta por cobrar viva en la empresa -- revisar si el cargo de la empresa quedó desalineado con el ledger del huésped',
+          );
+        }
+      }
+    } catch (err) {
+      // `evento` propio, distinto de `reservation_cancelled_con_ar_viva` --
+      // sin esto, "no hay AR viva" y "el detector tiró y nunca miramos"
+      // quedan indistinguibles para quien busca por nombre de evento.
+      logger.warn(
+        {
+          evento: 'reservation_cancelled_ar_deteccion_fallida',
+          tenant: event.businessId,
+          reservationId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        '[outbox] detección de AR viva post-cancelación falló -- la cancelación ya se completó, esto solo afecta la visibilidad',
+      );
+    }
   };
 }
 
