@@ -1192,10 +1192,14 @@ futuros, cada uno con su propio alcance.
   **La deuda de fondo, que vale más que la lista puntual:** toda edición
   de `platform.schema.sql` corre en silencio cada ancla numérica
   posterior de los dos repos, y hoy nada lo detecta. Ningún test la
-  cubre. Decisión pendiente del dueño: ¿vale una cerca que falle si
-  `platform.schema.sql` cambia de tamaño sin que se toquen sus citas en
-  `docs/`? (probablemente no — el ruido sería alto) ¿o alcanza con
-  dejarlo como disciplina de revisión manual al tocar ese archivo?
+  cubre. **DECIDIDO por el dueño (13/09/2026): disciplina manual, no
+  cerca automática** — confirma lo que el propio hallazgo ya
+  anticipaba ("probablemente no, el ruido sería alto"). Se sigue
+  citando por NOMBRE, no por línea (convención ya adoptada en varios
+  puntos de este mismo archivo desde este hallazgo, ej.
+  `PLAN-LIMITS-SEED-REVERT-001` más abajo en esta misma lista), y se
+  revisa a mano al tocar
+  `platform.schema.sql`. Sin cerca nueva a construir.
 - **`PRESET-GROUP-VALIDATION-001`** — código cerrado, pusheado y
   deployado, cortado a `docs/resuelto.md` el 13/09/2026. Residuo de
   verificación separado, con ancla, en `## 🔍 Verificaciones
@@ -2735,28 +2739,46 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   sobre `collected` (lo efectivamente cobrado) sin precedente en ningún
   sistema de referencia — ni QloApps ni Cloudbeds usan esa base.
 
-  **Quedan 4 sub-decisiones sin preguntar todavía** (no resueltas acá,
-  cada una con su evidencia para no tener que re-groundear):
-  - **Unidad temporal.** Hoy `min_days_before_checkin INTEGER CHECK
-    (>= 0)` (`src/db/schema.sql:917`) no expresa ventanas de horas
-    (barbería/spa). QloApps usa `days` **float** — precedente de que
-    días fraccionarios alcanzan sin cambiar de unidad. Es la decisión
-    más barata de tomar ahora, más cara de migrar después.
-  - **Si los extras/cargos adicionales entran a la base de cálculo.**
-    QloApps los incluye explícitamente
+  **Las 4 sub-decisiones — TODAS DECIDIDAS (13/09/2026, vía
+  `AskUserQuestion` en esta sesión, ninguna registrada todavía en un
+  commit anterior) — con un residuo sin cerrar: el default de la
+  tercera todavía no está confirmado, ver abajo:**
+  - **Unidad temporal — días fraccionarios/float.** Hoy
+    `min_days_before_checkin INTEGER CHECK (>= 0)`
+    (`src/db/schema.sql:917`) no expresa ventanas de horas
+    (barbería/spa). Decidido vía `AskUserQuestion`: precedente QloApps
+    (`days` float) — sin cambiar de unidad si mañana hace falta una
+    ventana de horas.
+  - **Extras/cargos adicionales SÍ entran a la base de cálculo.**
+    Decidido vía `AskUserQuestion`: precedente QloApps, explícito
     (`total_price_tax_incl + totalServicesPrice`).
-  - **Snapshot al reservar vs. regla viva al cancelar.** Ningún
-    referente lo resuelve de forma copiable — QloApps resuelve contra
-    la regla viva al cancelar, Cloudbeds sugiere snapshot al mostrar la
-    política al reservar. Mismo tipo de pregunta que el caso D5
-    (22/08/2026, `CLAUDE.md` de `app-main`, sección "Preguntas de
-    alcance pueden esconder una decisión de negocio") — no resolverla
-    como parte de otra pregunta.
-  - **Si POS/órdenes entra al mismo motor de penalidad.** Hoy
+  - **Snapshot al reservar vs. regla viva al cancelar — CONFIGURABLE
+    POR TENANT, no una respuesta única del sistema.** Ningún referente
+    lo resuelve de forma copiable (QloApps resuelve contra la regla
+    viva, Cloudbeds sugiere snapshot) — mismo tipo de pregunta que el
+    caso D5 (22/08/2026, `CLAUDE.md` de `app-main`). Decisión del dueño
+    (13/09/2026): dado que es una decisión de la RELACIÓN del negocio
+    con sus clientes, no del sistema, el sistema no elige por el
+    tenant — se agrega como campo configurable. **Lo que el dueño
+    decidió es QUIÉN elige (el tenant), no DÓNDE vive el campo ni CON
+    QUÉ GRANULARIDAD** -- eso sigue sin preguntar, es una tercera
+    pregunta separada (mismo criterio D5): `business_profile` (un solo
+    valor por negocio, global) vs. scope de `cancellation_policies`
+    (por política/tramo, permitiría mezclar el criterio dentro del
+    mismo tenant) son dos alternativas con costo distinto, ninguna
+    elegida todavía. Default propuesto (para cuando el tenant no lo
+    configuró, sea cual sea el mecanismo elegido): **snapshot al
+    reservar** — más conservador, protege la expectativa del cliente;
+    a confirmar con el dueño si prefiere el otro default antes de
+    implementar.
+  - **POS/órdenes NO entra al mismo motor de penalidad — queda
+    acotado a reservas/turnos.** Decidido vía `AskUserQuestion`. Hoy
     `src/pos-menu/order.service.ts` no tiene concepto de penalidad
     (verificado: 0 matches de `penalt`/`cancellation` salvo un
     comentario que remite al lado reservas, `:376`); ningún sistema de
-    referencia lo modela unificado con hotelería.
+    referencia lo modela unificado con hotelería — se construye
+    separado si/cuando haga falta, sin acoplar POS al motor de
+    reservas.
 
   **Fuera de alcance de este bloque, a propósito** — el grounding
   recomienda NO tocarlos acá, quedan como deuda separada si no lo están
