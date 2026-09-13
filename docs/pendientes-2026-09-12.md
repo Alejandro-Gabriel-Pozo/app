@@ -169,6 +169,36 @@ cuando se pushea.
   `extractErrorMessage`). No confunde el resultado (bloquea igual, motivo
   correcto en esencia), pero el detalle puede inducir a error al staff que
   lo lee.
+- **`INVOICE-CHARGES-GUARD-FRONTEND-RESIDUE-001`** — residuo de
+  `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3 (13/09/2026, gate
+  `architecture-governor`, cerrado en `docs/resuelto.md`, commit
+  `495154f`). El backend ya exige `MANAGEMENT` para facturar
+  individualmente un cargo de un cliente `kind='COMPANY'`, pero
+  `appfrontend-main/src/components/FacturarButton.tsx` se monta sin
+  gating de rol ni de tipo de cliente en **2 pantallas**: la SUPERFICIE
+  PRINCIPAL es `appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:315`
+  (el statement de cuenta corriente, que renderiza el botón para todo
+  `tx.type === 'CHARGE'` no `VOIDED`/`FAILED` — exactamente la pantalla
+  que un cliente `COMPANY` con `enable_current_account=true` usa) y,
+  secundaria, `appfrontend-main/src/app/dashboard/reservas/[id]/page.tsx:517`.
+  Un `FRONT_DESK` sin `MANAGEMENT` sigue viendo el botón activo sobre un
+  cargo de empresa y ahora recibe un 403 al clickearlo (antes conseguía
+  la factura). Mismo patrón que `INVOICE-CHARGES-BUTTON-DEADEND-01`, ya
+  resuelto una vez para el caso consolidada -- acá aplica al caso nuevo.
+  Bloque de frontend aparte, no autorizado todavía.
+- **`INVOICE-CHARGES-GUARD-RETRY-PATH-001`** — residuo de
+  `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3 (13/09/2026, gate
+  `architecture-governor`, cerrado en `docs/resuelto.md`, commit
+  `495154f`). El guard `requireManagementForCompanyCharge()` corre ANTES
+  de la idempotencia de `requestInvoice()` (`retryExisting()`,
+  `invoice.service.ts:350-352`). Un `FRONT_DESK` que antes podía
+  re-obtener una factura YA EMITIDA de un cargo de empresa reintentando
+  el mismo `POST /api/invoices` (doble click, timeout del cliente) ahora
+  recibe 403 en ese camino puntual -- el dato sigue accesible por las
+  rutas GET (`/:id`, `?customerId=`, `/:id/pdf`, todas `FRONT_DESK` sin
+  cambios) y por la pantalla `/dashboard/facturacion`, así que es una
+  regresión de UX en un atajo, no de acceso. No nombrado por el dueño al
+  decidir -- registrado para que se note si alguien lo reporta.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
@@ -2382,8 +2412,9 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   (11/09/2026, gate `architecture-governor`, ronda 2: HOLD → APPROVED WITH
   CONDITIONS, cierre `FEATURE VERIFIED` -- no `GROUP VERIFIED`). **No
   declarar cerrado el concepto completo** -- el propio cierre encontró una
-  TERCERA dirección sin guardia, ver el ítem nuevo
-  `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` más abajo. El propio
+  TERCERA dirección sin guardia, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01`
+  -- los 3 hallazgos de ese ítem ya cerraron (13/09/2026), ver
+  `docs/resuelto.md`. El propio
   `pendientes-2026-09-06.md` ya pedía que
   esto "mereciera fila propia" y nunca la tuvo; se perdió en el salto a
   `-08.md`, encontrado en la auditoría de arrastre del 11/09/2026.
@@ -2429,153 +2460,6 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   planea revalidarlo dentro de la transacción de emisión -- deuda
   registrada, no se tocó ese documento (no aprobado, fuera del radio de
   este fix). **LOCAL, sin pushear ni deployar todavía.**
-- **`INVOICE-CHARGES-GUARD-INDIVIDUAL-01`** 🔴 **-- PRIORIDAD ESCALADA
-  (11/09/2026, gate `architecture-governor`, investigación de
-  alcanzabilidad completada)**. Nació como hallazgo del gate al cerrar el
-  ítem de arriba (§4.0, tercera dirección del mismo concepto). El fix de
-  arriba cierra SOLO consolidada-vs-consolidada. Esta tercera dirección
-  (camino INDIVIDUAL, `requestInvoice()` nunca escribe `invoice_charges`
-  -- solo las consolidadas pasan `charges`,
-  `src/facturacion/sql.invoice.repository.ts:1069-1076`) sigue sin
-  guardia. **Ya no es "no verificado": la alcanzabilidad por UI está
-  CONFIRMADA, no es teórica**, y la consecuencia real es que **un
-  usuario `FRONT_DESK` puede emitir un segundo CAE real de AFIP para un
-  cargo que una consolidada ya facturó** -- un duplicado fiscal no se
-  puede borrar, necesita una Nota de Crédito contra AFIP (R12/DOCUMENTO).
-  Tres hallazgos, cada uno agrava al anterior:
-  1. **El solapamiento es el camino de diseño, no una mala
-     configuración.** `AccountsReceivableService.transferStayBalanceToReceivable()`
-     (`src/clientes-finanzas/accounts-receivable.service.ts:121` exige
-     `company.kind === 'COMPANY'`; `:143-174`) crea un `CHARGE` `SETTLED`
-     nuevo (`companyChargeId`) en la cuenta corriente de la EMPRESA **a
-     propósito** -- comentario propio: la deuda tiene que verse en el
-     ledger normal "desde el momento de la transferencia, no recién
-     cuando se facture" (pedido explícito del dueño, F1-Pieza 3,
-     23/08/2026) -- y ESE MISMO `financial_transaction_id` es el que
-     queda `accounts_receivable.financialTransactionId` para la
-     consolidada. El camino que alimenta la factura consolidada es, por
-     diseño, el mismo cargo que aparece en cuentas corrientes.
-  2. **El botón individual de la UI tiene un argumento de seguridad
-     escrito que es falso para el camino consolidado.**
-     `appfrontend-main/src/components/FacturarButton.tsx:11-16` (usado en
-     `appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:304-306`
-     para cualquier cliente con `enableCurrentAccount=true`, sin filtrar
-     por `kind` -- una EMPRESA con cuenta corriente entra igual) dice
-     textual: "`POST /api/invoices` es idempotente por
-     `financialTransactionId`... reintentar el click en una factura ya
-     emitida devuelve la misma factura, nunca pide un CAE duplicado. Por
-     eso este componente no pre-consulta el estado al montar". Cierto
-     para el camino individual (`idempotencyKey = invoice:<ftId>`),
-     **falso para el consolidado** (`idempotencyKey =
-     invoice:consolidated:<hash>`, nunca choca) -- un cargo YA facturado
-     por una consolidada sigue mostrando el botón "Facturar" activo, y
-     clickearlo pide un segundo CAE real sin que ningún mecanismo lo
-     frene. No es solo un guard faltante -- es una justificación de
-     seguridad escrita que no aplica a este caso, exactamente el patrón
-     que `honest-degradation` existe para atrapar.
-  3. **Asimetría de autorización.** El endpoint consolidado es
-     `Roles.MANAGEMENT` a propósito (`src/facturacion/invoices.routes.ts:112-117`,
-     comentario propio: "es una decisión de facturación corporate, no una
-     operación de mostrador"); el individual es `Roles.FRONT_DESK`
-     (`:93-110`). Un recepcionista puede, sin querer, adelantarse o
-     duplicar una decisión de facturación corporate que el código
-     reservó a propósito para MANAGEMENT.
-  **Medido, read-only, las 2 tenants reales (Neon `ancient-king-17098519`,
-  11/09/2026)**: 3 queries -- (i) `invoices` individuales que YA coinciden
-  con un `financial_transaction_id` de `invoice_charges` (duplicado ya
-  ocurrido): `0`/`0`. (ii) AR `PENDIENTE_FACTURAR` cuyo cargo ya tiene una
-  invoice individual: `0`/`0`. (iii) cargos con `invoice_charges` (de
-  cualquier status) que pertenecen a un cliente con
-  `enable_current_account=true` (exposición en vivo -- el botón "Facturar"
-  visible sobre un cargo ya facturado por consolidada, aunque nadie lo
-  haya clickeado todavía): `0`/`0`. **Sin incidente real ni exposición en
-  vivo hoy en los datos de práctica -- el mecanismo es genuinamente
-  alcanzable, no solo posible en abstracto.**
-  El predicado completo, agnóstico de los dos caminos, YA EXISTE en el
-  repo -- `resolveInvoiceLinkage()`
-  (`src/facturacion/sql.invoice.repository.ts:290-316`) -- pero hoy solo
-  lo usan `AccountsReceivableService` y los 2 servicios de
-  cancelar-con-NC, ninguno de los dos guards de emisión.
-  **Pregunta de producto -- ✅ RESPONDIDA (11/09/2026, `AskUserQuestion`
-  al dueño, grounding ERP verificado contra código real)**: facturar
-  individualmente un cargo que ya está en un lote consolidado NO
-  facturado todavía sigue siendo legítimo (parcial/escalonado es el caso
-  normal en Odoo/ERPNext, no una excepción); lo único que se protege es
-  el CARGO PUNTUAL una vez que YA tiene un comprobante real, por
-  cualquiera de los dos caminos -- mismo patrón que
-  `POS Invoice.consolidated_invoice`/`status` de ERPNext. Forma de cierre
-  elegida: (c) backend + UI.
-
-  **Bloque 1 (guard individual) -- ✅ RESUELTO, LOCAL/sin pushear**
-  (11/09/2026, gate `architecture-governor`, 3 rondas: HOLD → APPROVED
-  WITH CONDITIONS → APPROVED WITH CONDITIONS, commit `81e9eb2`).
-  `InvoiceService.requestInvoice()` ahora rechaza (`InvoiceAlreadyLinkedByOtherPathError`)
-  si `resolveInvoiceLinkage(ftId)` encuentra un comprobante vivo del OTRO
-  camino (consolidada vía `invoice_charges`) en estado
-  `ISSUED`/`PENDING`/`FAILED_UNCERTAIN` -- `REJECTED` NO bloquea (decisión
-  grounded: Odoo excluye `state=='cancel'` de `qty_invoiced`,
-  `sale_order_line.py:1007-1011`; ERPNext excluye `docstatus==2`). Guard
-  posicionado DESPUÉS de la idempotencia propia del camino individual
-  (`invoice:<ftId>`) -- load-bearing, verificado con test dedicado que
-  prueba que los 4 call-sites de cancelación-con-NC siguen cayendo en
-  `retryExisting()`. Predicado `ISSUED|PENDING|FAILED_UNCERTAIN` extraído
-  a `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts`), reusado
-  en `getInFlightCreditNoteTotalForUpdate()`/`ForPair`
-  (`sql.invoice.repository.ts:583,620`, antes duplicado a mano). Mutación
-  verificada (comentar el guard pone en rojo exactamente los 3 tests que
-  dependen de él, los otros 2 siguen verdes). Medido read-only, las 2
-  tenants reales (Neon `ancient-king-17098519`): 0 cargos hoy en el
-  estado que el guard bloquearía -- el deploy no dispara el error nuevo
-  sobre ningún caso existente. Suite completa 2097/2097 (+5 desde el
-  bloque anterior), typecheck y eslint limpios.
-  **Límite de cobertura, declarado (condición del gate, no bloqueante
-  para este commit)**: el guard NO tiene cobertura de integración contra
-  Postgres real -- `src/tests/integration/**` está excluido de la config
-  default de vitest, y los 5 tests nuevos corren contra el fake en
-  memoria (`FakeInvoiceRepository`), no contra el SQL real de
-  `resolveInvoiceLinkage()`. Aceptable para este bloque (lectura pura,
-  método ya en producción con consumidores previos, sin DDL, 0 filas
-  afectadas medidas) -- **obligatorio para Bloque 1-bis**, que sí edita
-  SQL nuevo.
-
-- **`INVOICE-CHARGES-GUARD-1BIS-01`** -- ✅ **RESUELTO, PUSHEADO Y
-  DEPLOYADO EN PRODUCCIÓN, VERIFICADO** (11/09/2026, gate
-  `architecture-governor`, HOLD → APPROVED WITH CONDITIONS; `605b3d5`,
-  deploy `dep-dahv9bgae00c73drq70g` = `live`, `migrate:tenants` 2/2 OK,
-  `/health/db?fresh=1` conectado -- **corrección 11/09/2026, tarde**:
-  esta línea decía "LOCAL/sin pushear", quedó sin actualizar cuando se
-  pusheó horas antes en la misma sesión, encontrado en la reconciliación
-  cross-feature de cierre de la familia `INVOICE-CHARGES-*`).
-  `getInvoicedFinancialTransactionIds()`
-  (`sql.invoice.repository.ts::getInvoicedFinancialTransactionIds()`)
-  ahora también mira `invoices.financial_transaction_id` directo (camino
-  individual), filtrado por `INVOICE_STATUSES_CONSUMING_CHARGE`
-  (`ISSUED|PENDING|FAILED_UNCERTAIN`, no `REJECTED`) -- `UNION` con la
-  rama `invoice_charges` existente, sin tocarla.
-  **Corrección de una afirmación de esta misma sesión, arriba en este
-  archivo**: "una consolidada `REJECTED` libera el cargo, no lo bloquea
-  para siempre" es cierta SOLO para el camino individual (Bloque 1). Para
-  re-consolidar, sigue siendo falsa -- `idx_invoice_charges_ft` es único,
-  sin filtro de status, y `invoice_charges` nunca se borra, así que un
-  cargo cuya consolidada quedó `REJECTED` NO puede volver a entrar a un
-  lote consolidado, aunque SÍ pueda facturarse individual. Asimetría a
-  propósito entre las 2 ramas del predicado, documentada en el docblock
-  de la interfaz (`invoice.repository.ts`) y fijada con un test
-  dedicado (`consolidated-invoice-toctou.integration.test.ts`, caso
-  "asimetría a propósito").
-  11 tests de integración contra Postgres real (no un fake -- condición
-  del gate, dado que este bloque SÍ edita SQL nuevo): 3 nuevos
-  (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN` vía factura individual
-  rechazan), 1 nuevo (`REJECTED` vía individual NO rechaza, la
-  consolidada nueva cubre el cargo), 1 nuevo (la asimetría -- consolidada
-  `REJECTED` sigue bloqueando), + los 6 preexistentes, todos verdes.
-  Mutación verificada contra Postgres real: revertir el SQL al de antes
-  de este bloque pone en rojo exactamente los 3 casos nuevos que
-  dependen de la rama agregada, los otros 8 quedan verdes. `npx tsc
-  --noEmit` y `npx eslint` limpios; `npm test` (unitarios) sin cambios,
-  2097/2097 -- este bloque no agrega tests unitarios a propósito, la
-  cobertura real vive en integración.
-
 - **`INVOICE-CHARGES-GUARD-FRONTEND-02` (Bloque 2)** -- ✅ **RESUELTO EN
   CÓDIGO, Commit 1 (backend) + Commit 2 (frontend)** (11/09/2026, gate
   `architecture-governor`, varias rondas). Cruce de módulo (pregunta que

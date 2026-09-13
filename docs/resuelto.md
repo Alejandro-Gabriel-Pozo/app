@@ -373,3 +373,159 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   `-12.md` ya se había ramificado de `-10.md`) -- superada por fecha,
   nunca se actualiza sola; si alguien la lee sin saber esto puede
   reabrir un ítem ya cerrado acá. Origen: `pendientes-2026-09-12.md`.
+
+- **`INVOICE-CHARGES-GUARD-INDIVIDUAL-01` -- los 3 hallazgos cerrados
+  (13/09/2026).** Nació como hallazgo del gate `architecture-governor`
+  (11/09/2026) al cerrar el ítem de arriba (§4.0, tercera dirección del
+  mismo concepto). El fix de arriba cerraba SOLO consolidada-vs-consolidada.
+  Esta tercera dirección (camino INDIVIDUAL, `requestInvoice()` nunca
+  escribe `invoice_charges` -- solo las consolidadas pasan `charges`,
+  `src/facturacion/sql.invoice.repository.ts:1069-1076`) seguía sin
+  guardia. La alcanzabilidad por UI estaba CONFIRMADA, no era teórica: un
+  usuario `FRONT_DESK` podía emitir un segundo CAE real de AFIP para un
+  cargo que una consolidada ya había facturado -- un duplicado fiscal que
+  no se puede borrar, necesita una Nota de Crédito contra AFIP
+  (R12/DOCUMENTO). Tres hallazgos, cada uno agravaba al anterior:
+  1. **El solapamiento es el camino de diseño, no una mala
+     configuración.** `AccountsReceivableService.transferStayBalanceToReceivable()`
+     (`src/clientes-finanzas/accounts-receivable.service.ts:121` exige
+     `company.kind === 'COMPANY'`; `:143-174`) crea un `CHARGE` `SETTLED`
+     nuevo (`companyChargeId`) en la cuenta corriente de la EMPRESA a
+     propósito -- comentario propio: la deuda tiene que verse en el
+     ledger normal "desde el momento de la transferencia, no recién
+     cuando se facture" (pedido explícito del dueño, F1-Pieza 3,
+     23/08/2026) -- y ESE MISMO `financial_transaction_id` es el que
+     queda `accounts_receivable.financialTransactionId` para la
+     consolidada. El camino que alimenta la factura consolidada es, por
+     diseño, el mismo cargo que aparece en cuentas corrientes.
+  2. **El botón individual de la UI tenía un argumento de seguridad
+     escrito que era falso para el camino consolidado.**
+     `appfrontend-main/src/components/FacturarButton.tsx:11-16` (usado en
+     `appfrontend-main/src/app/dashboard/cuentas-corrientes/page.tsx:304-306`
+     para cualquier cliente con `enableCurrentAccount=true`, sin filtrar
+     por `kind` -- una EMPRESA con cuenta corriente entra igual) decía
+     textual: "`POST /api/invoices` es idempotente por
+     `financialTransactionId`... reintentar el click en una factura ya
+     emitida devuelve la misma factura, nunca pide un CAE duplicado. Por
+     eso este componente no pre-consulta el estado al montar". Cierto
+     para el camino individual (`idempotencyKey = invoice:<ftId>`),
+     falso para el consolidado (`idempotencyKey =
+     invoice:consolidated:<hash>`, nunca choca) -- un cargo YA facturado
+     por una consolidada seguía mostrando el botón "Facturar" activo, y
+     clickearlo pedía un segundo CAE real sin que ningún mecanismo lo
+     frenara. Exactamente el patrón que `honest-degradation` existe para
+     atrapar.
+  3. **Asimetría de autorización.** El endpoint consolidado era
+     `Roles.MANAGEMENT` a propósito (`src/facturacion/invoices.routes.ts:112-117`,
+     comentario propio: "es una decisión de facturación corporate, no una
+     operación de mostrador"); el individual era `Roles.FRONT_DESK` sin
+     ninguna excepción. Un recepcionista podía, sin querer, adelantarse o
+     duplicar una decisión de facturación corporate que el código
+     reservaba a propósito para MANAGEMENT.
+  **Medido, read-only, las 2 tenants reales (Neon `ancient-king-17098519`,
+  11/09/2026)**: 3 queries -- (i) `invoices` individuales que YA coinciden
+  con un `financial_transaction_id` de `invoice_charges` (duplicado ya
+  ocurrido): `0`/`0`. (ii) AR `PENDIENTE_FACTURAR` cuyo cargo ya tiene una
+  invoice individual: `0`/`0`. (iii) cargos con `invoice_charges` (de
+  cualquier status) que pertenecen a un cliente con
+  `enable_current_account=true` (exposición en vivo): `0`/`0`. Sin
+  incidente real ni exposición en vivo en los datos de práctica -- el
+  mecanismo era genuinamente alcanzable, no solo posible en abstracto.
+  **Pregunta de producto -- RESPONDIDA (11/09/2026, `AskUserQuestion` al
+  dueño, grounding ERP verificado contra código real)**: facturar
+  individualmente un cargo que ya está en un lote consolidado NO
+  facturado todavía sigue siendo legítimo (parcial/escalonado es el caso
+  normal en Odoo/ERPNext, no una excepción); lo único que se protege es
+  el CARGO PUNTUAL una vez que YA tiene un comprobante real, por
+  cualquiera de los dos caminos -- mismo patrón que
+  `POS Invoice.consolidated_invoice`/`status` de ERPNext. Forma de cierre
+  elegida: (c) backend + UI.
+
+  **Bloque 1 (guard individual)**, commit `81e9eb2` (gate
+  `architecture-governor`, 3 rondas: HOLD → APPROVED WITH CONDITIONS →
+  APPROVED WITH CONDITIONS). `InvoiceService.requestInvoice()` rechaza
+  (`InvoiceAlreadyLinkedByOtherPathError`) si `resolveInvoiceLinkage(ftId)`
+  encuentra un comprobante vivo del OTRO camino (consolidada vía
+  `invoice_charges`) en estado `ISSUED`/`PENDING`/`FAILED_UNCERTAIN` --
+  `REJECTED` NO bloquea (decisión grounded: Odoo excluye `state=='cancel'`
+  de `qty_invoiced`, `sale_order_line.py:1007-1011`; ERPNext excluye
+  `docstatus==2`). Guard posicionado DESPUÉS de la idempotencia propia del
+  camino individual (`invoice:<ftId>`) -- load-bearing, verificado con
+  test dedicado que prueba que los 4 call-sites de cancelación-con-NC
+  siguen cayendo en `retryExisting()`. Predicado
+  `ISSUED|PENDING|FAILED_UNCERTAIN` extraído a
+  `INVOICE_STATUSES_CONSUMING_CHARGE` (`invoice.entities.ts`), reusado en
+  `getInFlightCreditNoteTotalForUpdate()`/`ForPair`
+  (`sql.invoice.repository.ts:583,620`, antes duplicado a mano). Mutación
+  verificada (comentar el guard pone en rojo exactamente los 3 tests que
+  dependen de él, los otros 2 siguen verdes). Medido read-only, las 2
+  tenants reales (Neon `ancient-king-17098519`): 0 cargos en el estado que
+  el guard bloquearía -- el deploy no disparó el error nuevo sobre ningún
+  caso existente. Suite completa 2097/2097 (+5 desde el bloque anterior),
+  typecheck y eslint limpios.
+
+  **Bloque 1-bis**, commit `605b3d5`.
+  `getInvoicedFinancialTransactionIds()`
+  (`sql.invoice.repository.ts::getInvoicedFinancialTransactionIds()`)
+  también mira `invoices.financial_transaction_id` directo (camino
+  individual), filtrado por `INVOICE_STATUSES_CONSUMING_CHARGE`
+  (`ISSUED|PENDING|FAILED_UNCERTAIN`, no `REJECTED`) -- `UNION` con la
+  rama `invoice_charges` existente, sin tocarla. Asimetría a propósito
+  entre las 2 ramas del predicado (una consolidada `REJECTED` libera el
+  cargo para facturarse individual, pero NO para re-consolidarse --
+  `idx_invoice_charges_ft` es único, sin filtro de status, y
+  `invoice_charges` nunca se borra), documentada en el docblock de la
+  interfaz (`invoice.repository.ts`) y fijada con un test dedicado
+  (`consolidated-invoice-toctou.integration.test.ts`, caso "asimetría a
+  propósito"). 11 tests de integración contra Postgres real (este bloque
+  editó SQL nuevo): 3 nuevos (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN` vía
+  factura individual rechazan), 1 nuevo (`REJECTED` vía individual NO
+  rechaza, la consolidada nueva cubre el cargo), 1 nuevo (la asimetría --
+  consolidada `REJECTED` sigue bloqueando), + los 6 preexistentes, todos
+  verdes. Mutación verificada contra Postgres real: revertir el SQL al de
+  antes de este bloque pone en rojo exactamente los 3 casos nuevos que
+  dependen de la rama agregada, los otros 8 quedan verdes. `npx tsc
+  --noEmit` y `npx eslint` limpios; suite unitaria sin cambios, 2097/2097
+  -- este bloque no agregó tests unitarios a propósito, la cobertura real
+  vive en integración.
+
+  **Hallazgo 3 (asimetría de roles)**, commit `495154f` (13/09/2026, gate
+  `architecture-governor`, diseño + implementación en 2 rondas --
+  decisiones del dueño vía `AskUserQuestion`: "seguí con lo que esté en
+  rojo" → este ítem; "Exigir MANAGEMENT para facturar individual a una
+  EMPRESA"; "Solo Factura normal" para el fork de Nota de Crédito).
+  `requireManagementForCompanyCharge()` (`invoices.routes.ts`), llamada
+  inline en el handler de `POST /api/invoices` DESPUÉS de parsear el body
+  con Zod y ANTES de invocar `requestInvoice()` -- mismo patrón que el
+  `overrideHousekeeping`/`overridePendingBalance` de `stays.routes.ts`
+  (elevación condicional a `MANAGEMENT`, 403 explícito), con el lookup a
+  BD al estilo `requireOwnReservation()`. Acotado a Factura normal a
+  propósito -- NO aplica si `tx.type` es `REFUND`/`ADJUSTMENT` (la Nota de
+  Crédito del escape de cancelación sigue alcanzando con
+  `Roles.EMISOR_NOTA_CREDITO`, sin reabrir el ADR
+  `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §10 q7).
+  Fail-closed explícito si el cliente no se puede resolver (inalcanzable
+  hoy por el FK `NOT NULL` de `financial_transactions.customer_id` en
+  `schema.sql`, pero sin un `?.` mudo que lo tape en silencio). Ninguna de
+  las 10 cercas RBAC se tocó (corridas `rbac-matrix-sync`,
+  `rbac-matrix-section2-sync`, `rbac-route-coverage`, las 3 verdes) -- no
+  es un `authorize()` nuevo, la ruta ya tenía autz en su cadena.
+  `docs/rbac-matriz-endpoints.md:178` actualizada dentro de la prosa
+  existente, sin bullet nuevo (para no romper
+  `EXCLUDED_FILES.docBullets: []` de `rbac-matrix-section2-sync`). 8 tests
+  nuevos en `invoices.routes.test.ts` (7 directos sobre el guard exportado
+  + 1 de wiring real vía el handler), mutación verificada: comentar la
+  llamada al guard en el handler pone en rojo exactamente el test de
+  wiring, los otros 24 (16 preexistentes + 7 del guard suelto) quedan
+  verdes. Medido read-only, las 2 tenants reales (Neon
+  `ancient-king-17098519`, 13/09/2026): `0`/`0` cargos CHARGE de un
+  cliente `kind='COMPANY'` sin factura por ningún camino -- el 403 nuevo
+  no era alcanzable sobre ningún caso existente el día de este commit.
+  Suite completa 2178/2178 (163 archivos), suite de integración 304/304
+  sin cambios, `tsc --noEmit` y `lint:arch` limpios.
+  **2 residuos NO resueltos acá, con su ancla, en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`:** el frontend (`FacturarButton` en dos pantallas, sin
+  gating por rol ni por tipo de cliente) y la pérdida de un atajo de
+  lectura (el guard corre antes de la idempotencia de `requestInvoice()`).
+  Origen: `pendientes-2026-09-12.md`.
