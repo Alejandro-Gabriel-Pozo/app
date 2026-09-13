@@ -380,7 +380,8 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   mismo concepto). El fix de arriba cerraba SOLO consolidada-vs-consolidada.
   Esta tercera dirección (camino INDIVIDUAL, `requestInvoice()` nunca
   escribe `invoice_charges` -- solo las consolidadas pasan `charges`,
-  `src/facturacion/sql.invoice.repository.ts:1069-1076`) seguía sin
+  `src/facturacion/sql.invoice.repository.ts:1229-1235,1265-1272`)
+  seguía sin
   guardia. La alcanzabilidad por UI estaba CONFIRMADA, no era teórica: un
   usuario `FRONT_DESK` podía emitir un segundo CAE real de AFIP para un
   cargo que una consolidada ya había facturado -- un duplicado fiscal que
@@ -676,4 +677,379 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   una RESERVA (`requestInvoice()` no toma lock de `reservations` cuando
   `tx.reservationId` es nulo -- superficie ya registrada y mitigada en
   `CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`).
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`CUSTOMER-PORTAL-NO-OUTBOX-WORKER-001`** — ✅ **RESUELTO (11/09/2026,
+  gate `architecture-governor`, decisión del dueño; migrado a este archivo
+  13/09/2026, commit `895586d`).** `customer.routes.ts`
+  (portal de clientes) se monta en `app.ts:275`, **antes** del gate
+  `tenantMiddleware` de `app.ts:345` — resolvía su pool directo y nunca
+  llamaba `ensureTenantWorker`. Ese router SÍ inserta eventos de dominio
+  (`SqlDomainEventRepository`, inyectado en `ReservationService`). Un
+  tenant con tráfico ÚNICAMENTE de portal nunca despachaba sus eventos.
+  Cierre: `customer.routes.ts` llama `ensureTenantWorker()` desde el mismo
+  `router.use(...)` que ya resuelve `req.db` -- mecanismo simple elegido
+  por el dueño entre 3 opciones presentadas (simple / barrido periódico de
+  respaldo / solo en endpoints que escriben evento).
+  **Costo real, corregido por el gate antes de la decisión final** (mi
+  primera pregunta al dueño lo entendía mal -- decía "1 timer"): 
+  `ensureTenantWorker()` arranca DOS timers por tenant, no uno --
+  `OutboxWorker` 5s Y `ReservationHoldExpiryWorker` 60s
+  (`outbox.registry.ts:134-143`) -- y la primera corrida del segundo en un
+  tenant portal-only barre TODAS las holds vencidas acumuladas de una vez,
+  anulando las transacciones financieras asociadas. El dueño confirmó la
+  opción simple igual, con el costo corregido sobre la mesa.
+  **Corrección 11/09/2026 (gate `architecture-governor`, auditoría a
+  posteriori de este commit)**: la afirmación original de esta entrada
+  ("impacto medido hoy: 0, las 2 tenants reales ya tienen tráfico de staff
+  a diario") era una INFERENCIA desde el tráfico, no una medición del
+  backlog real -- el gate marcó la diferencia como condición bloqueante
+  antes de push/deploy, dado el efecto financiero irreversible. **Medido
+  de verdad, read-only, antes de pedir push** (`SELECT COUNT(*) FROM
+  reservations WHERE status = 'PENDING' AND deposit_due_by IS NOT NULL
+  AND deposit_due_by < NOW()`, mismo predicado que
+  `getPendingWithExpiredDeposit()`, `sql.reservation.repository.ts:290-298`):
+  **0 holds vencidas en Demo** (Neon `ancient-king-17098519`, branch
+  `production`/`br-snowy-tree-ax5wmq70`) **y 0 en Hotel los Álamos**
+  (branch `tenant-hotel-los-alamos`/`br-square-leaf-axzvu903`), medido
+  11/09/2026 ~09:46 UTC. Ahora sí es medición, no inferencia -- el primer
+  arranque de `ReservationHoldExpiryWorker` vía el nuevo call site del
+  portal es inocuo en las 2 tenants reales hoy.
+  Idempotente por diseño (`workers.has(businessId)`) -- el segundo caller
+  (portal o staff, el que llegue después) es un no-op. Tests: 2 nuevos en
+  `customer.routes.test.ts` (el middleware `router.use` no lo camina el
+  helper `runRoute` existente -- hay que ubicarlo por contenido de
+  `.handle.toString()`, no por posición) + evidencia de mutación (sacar la
+  línea nueva pone en rojo exactamente esos 2 tests, aplicada y revertida
+  sin commitear). Comentarios stale corregidos en `outbox.registry.ts`
+  (4 lugares que asumían `tenantMiddleware` como único caller).
+  Origen: `pendientes-2026-09-12.md`.
+
+- **"La bandeja" de facturas no conciliadas — IMPLEMENTADO, PUSHEADO Y
+  DEPLOYADO en producción, verificado** (10/09/2026, gate
+  `architecture-governor`, migrado a este archivo 13/09/2026). Parte del
+  bloque `credit_note_request` la TABLA que SÍ se resolvió, sin tabla
+  nueva -- la tabla en sí sigue en HOLD, decisión del dueño sin cambios
+  (`docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5/§10
+  fila 1), ver ese ítem en `docs/pendientes-2026-09-12.md`.
+  `49372b0` (implementación) → `65f9c45`
+  (C1+C2 del gate: rename `TERMINAL_SIN_REVERSION` →
+  `TERMINAL_CON_COMPROBANTE_VIVO` + docblock de falso negativo conocido)
+  → deploy `dep-dahjrgu1egvs738b71u0` = `live`, `GET /api/invoices/unreconciled`
+  confirmado montado en producción (401 sin auth, no 404).
+  Grounding ERP (Odoo `TransientModel` + ERPNext `docstatus=0`, 2 de 3,
+  confirman que el HOLD de la tabla era correcto) → decisión del dueño:
+  nombrar mejor el estado intermedio que ya existe, sin tabla.
+  `InvoiceRepository.listUnreconciledLiveInvoices()` (mecanismo de dos
+  pasos: enumera candidatos B1∪B2, clasifica con
+  `classifyOrderLiveInvoice`/`classifyReservationLiveInvoice` -- ya
+  existentes, cero SQL de compensación nuevo, una sola fuente de verdad
+  de "¿está conciliado?") + `GET /api/invoices/unreconciled`
+  (`Roles.FRONT_DESK`, sin gate de módulo, registrada ANTES de `/:id`).
+  Tipo `UnreconciledLiveInvoice` (`invoice.entities.ts`). Bug real
+  encontrado por el propio test de integración antes de cerrar: la
+  primera versión emitía una fila `TERMINAL_SIN_REVERSION` falsa para
+  candidatos que habían entrado SOLO por B2 (reserva activa, no
+  terminal, con una reversión abierta) -- corregido con un segundo gate
+  `isTerminal` explícito en el paso 2/3, que resultó ser el guard de
+  corrección real (verificado por mutación: sacar el filtro de estado
+  del paso 1 -- la enumeración de candidatos -- queda VERDE, es solo una
+  optimización de performance ahora; forzar `isTerminal = true` sí
+  rompe 2 tests, ese es el mutante que importa). 8 tests de integración
+  contra Postgres real (Neon), lado RESERVAS -- lado ORDER sin cobertura
+  directa, declarado (mismo query shape, mismo classify() reusado,
+  riesgo bajo pero no cero). Artefactos RBAC actualizados:
+  `EXPECTED_AUTHORIZE_CALL_SITES` 206→207,
+  `EXCLUDED_FILES['facturacion/invoices.routes.ts'].hiddenCount` 8→9,
+  fila + contador de `docs/rbac-matriz-endpoints.md`,
+  `docs/inventario-rutas.md` regenerado (251→252). Hallazgo de paso,
+  registrado en "Menores": `generate-route-inventory.ts` conectó contra
+  la BD de plataforma real al regenerar el inventario (docblock dice
+  "dummy", `.env` local ganó) -- sin escritura real, verificado.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`OUTBOX-RETRY-HIST-01` + `OUTBOX-BACKOFF-01`** — ✅ **PUSHEADO Y
+  DEPLOYADO en producción, verificado** (5 rondas de gate
+  `architecture-governor`, 10/09/2026; `app-main` `5f31533` observabilidad
+  + `b1e9705` backoff + `a56864c` cobertura de `first_failed_at` +
+  `8fb9f5e`/`4bf269a` docs; migrado a este archivo 13/09/2026). Diseño
+  completo en
+  `docs/diseno-outbox-backoff-2026-09-10.md`. `domain_events` gana
+  `first_failed_at`/`last_failed_at` (schema v48); `getPending()` excluye
+  eventos en backoff (escalón 5s/30s/120s/300s según `retry_count`,
+  aprobado por el dueño; `maxRetries` se mantiene en 60).
+  **Verificado en producción (10/09/2026):** deploy `dep-dahll9rtqb8s73c4650g`
+  = `live` en commit `4bf269a`; log de build confirma
+  `[migrate-tenants] 2/2 OK, 0 fallo(s)` (`biz-demo-01` y
+  `cd6cd508-...` migrados a v48, no inferido de un build verde); columnas
+  `first_failed_at`/`last_failed_at` confirmadas `timestamp with time
+  zone` en las 2 branches de tenant (Neon `ancient-king-17098519`);
+  `businesses.schema_version = 48` en las 2 filas (Neon
+  `morning-unit-50056927`); `/health/db` → `connected`. Backups
+  pre-deploy tomados antes de pushear:
+  `respaldo-pre-outbox-backoff-v48-2026-09-10` (Demo) y
+  `respaldo-hotel-pre-outbox-backoff-v48-2026-09-10` (Hotel los Alamos),
+  ver `docs/conocimiento/runbook-deploy-render.md`. Bug real encontrado y corregido ANTES de
+  tocar código (ronda 2 del gate): el guard original de `first_failed_at`
+  (`CASE WHEN retry_count = 0`) se hubiera roto con `retryDeadLettered()`
+  (que resetea `retry_count`), pisando el dato en la falla siguiente a
+  cualquier reintento manual -- corregido a `CASE WHEN first_failed_at
+  IS NULL`. 38/38 tests de integración contra Postgres real, incluida la
+  verificación de que el guard corregido discrimina de verdad (mutación
+  aplicada y revertida, no commiteada).
+  - **Nota de proceso (ronda 4 del gate):** la matriz de impacto original
+    contaba "3 secuencias" de tests de integración necesitando ajuste por
+    backoff; al implementar aparecieron 4 (el test de claim/release
+    también dispara 2 polls consecutivos sobre el mismo evento fallido).
+    El gate lo revisó explícitamente y lo calificó **no material** —no
+    ameritó volver a HOLD— por 4 motivos: (1) es un recuento mal hecho
+    DENTRO de una ubicación ya identificada en la matriz, no una
+    ubicación nueva; (2) lo detectó un mecanismo determinístico (la suite
+    se puso roja), no suerte; (3) solo afecta código de test, sin
+    consumidor de producción ni contrato ni schema; (4) se declaró en el
+    mensaje del commit y en el reporte al gate sin que se pidiera.
+    Precedente registrado para la próxima vez que la razón "total pasó a
+    ser N+1, es solo un test" se use para no escalar -- compararla contra
+    este caso, no re-argumentarla de cero.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **3.3-d, residual 1 (consolidada-parcial)** — ✅ **RESUELTO (11/09/2026,
+  gate `architecture-governor`, Commit A, `docs/diseno-33d-residuales-2026-09-11.md`;
+  migrado a este archivo 13/09/2026)**.
+  F4 pregunta por la factura ENTERA, la NC del escape es parcial por
+  reserva. Cierre: clasificador por PAR `(invoiceId, reservationId)` en
+  `classifyReservationLiveInvoice()` -- `resolveReservationPairAttribution()`
+  usa `resolveRefundableForPair()` (BRUTO, `attributedTotal`, no NETO --
+  ver docblock de `isReservationPortionFullyCompensatedByIssuedCreditNotes()`
+  en `cancel-with-credit-note.ts`, la corrección del 10/09/2026 sobre NETO
+  como denominador de PRORRATEO seguía vigente pero es una pregunta
+  distinta de contra qué se compara el resultado) cuando la factura tiene
+  `invoice_items` (`RESOLVED`); fail-back byte a byte al F4-factura-entera
+  de antes cuando no (`BLOCKED`, Nivel A -- 9/11 facturas reales de la
+  tenant Demo). Verificado contra el orquestador real, no solo SQL
+  fabricado: `cancel-reservation-with-credit-note.integration.test.ts`,
+  caso `C1(i)`, pasó de pinear `NOT_RECONCILED` a confirmar `RECONCILED`.
+  Deja abierto, aparte, el residual simétrico del lado ÓRDENES -- ver
+  `ORDER-CONSOLIDATED-PARTIAL-01` en `docs/pendientes-2026-09-12.md`.
+  **PUSHEADO Y DEPLOYADO en
+  producción, verificado**: commits `15f81ae` (código) + `f5947cc` (docs,
+  registro del flake de harness encontrado al cerrar) pusheados
+  11/09/2026 con autorización explícita del dueño; deploy
+  `dep-dahmiau7bikc73e8vffg` = `live` (finished 02:37:46Z); log de build
+  confirma `migrate:tenants` -- `2 negocio(s) con BD asignada. Versión
+  objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: sin cambio de schema,
+  la versión objetivo no se movió); `GET /health/db` = 200 post-deploy.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **3.3-d, residual 2 (reserva con `PAYMENT` propio)** — ✅ **RESUELTO
+  (11/09/2026, gate `architecture-governor`, Commit B, commit `cb8682c`;
+  migrado a este archivo 13/09/2026)**.
+  `esComprobanteVivoConCoRechazosBenignos()` (`outbox.handlers.ts`) --
+  allowlist positivo (`CO_RECHAZOS_BENIGNOS_SI_RECONCILIADO = {TIPO_NO_LIQUIDABLE}`)
+  compartido por los 3 call sites reales (`handleReservationCancelled`,
+  `handleOrderCancelled`, dentro de `registrarDesenlace()` -- eran 3, no 2
+  como decía la corrección anterior de este ítem). `CARGO_ANULADO` queda
+  FUERA a propósito (contador agregado, no distingue fila anulada = fila
+  viva de dos filas distintas). 8 tests nuevos + evidencia de mutación
+  (revertir solo 1 de los 3 call sites al exact-match viejo pone en rojo
+  exactamente los 2 tests de ese handler, aplicada y revertida sin
+  commitear). Sin casos reales todavía (0/15 medición previa) -- el cierre
+  es preventivo, no reactivo a un incidente. **PUSHEADO Y DEPLOYADO en
+  producción, verificado**: commits `63e8d29`+`cb8682c`+`f5b1369`
+  pusheados 11/09/2026 con autorización explícita del dueño; deploy
+  `dep-dahrak1srm7s73d71sgg` = `live` (finished 08:02:32Z), instancia
+  nueva `srv-d8tdt41kh4rs73buo5ng-cp4tr` (distinta de la vieja `-5h6xc`,
+  confirma que no es un healthcheck sirviéndose desde el proceso viejo);
+  log de build confirma `migrate:tenants` -- `2 negocio(s) con BD
+  asignada. Versión objetivo: v48.` / `2/2 OK, 0 fallo(s)` (esperado: sin
+  cambio de schema en ninguno de los 3 bloques); `GET /health/db` = 200
+  post-deploy. Bloque 3 verificado además contra Postgres real antes del
+  push (no solo tsc): 19/19 tests de integración en 3 suites reales
+  (incluida la que había dado el flake) con la firma nueva de
+  `dropTestDatabase()`.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`EVT-ORF-01`** — ✅ **CERRADO SIN HANDLER (11/09/2026, decisión del
+  dueño, grounding ERP: Cloudbeds/Odoo/ERPNext/QloApps vía
+  `auditor-circuitos-erp`, gate `architecture-governor` APPROVED WITH
+  CONDITIONS; migrado a este archivo 13/09/2026).** `reservation.expired`
+  se emite y ningún handler lo
+  escucha -- reverificado, sigue siendo cierto:
+  `reservation-hold-expiry.worker.ts:127` emite el evento;
+  `src/workers/outbox.handlers.ts` no tiene ninguna mención de ese
+  `eventType`; se descarta en silencio, por diseño del worker (el propio
+  test de `outbox.worker.test.ts:626-627` documenta que un evento sin
+  handler "no debe trabar la cola" como comportamiento esperado, no bug).
+  **Decisión adoptada**: se queda sin handler dedicado, a propósito.
+  Ningún sistema investigado con evidencia confirmada (Odoo, ERPNext,
+  QloApps, Cloudbeds) dispara notificación obligatoria por defecto al
+  vencer un hold sin seña -- Cloudbeds, el único 100% hotelero comercial
+  del grupo y el más maduro, hace exactamente lo mismo que este repo:
+  libera el hold y nada más (Courtesy Hold / calendar blocks). Ningún ERP
+  investigado envía email automático al huésped por defecto en este caso
+  (donde existe, es opt-in/configurable, no comportamiento de fábrica).
+  **Corrección del gate (11/09/2026) sobre una afirmación falsa de esta
+  misma sesión**: se había dicho que el estado `EXPIRED` "ya es
+  reportable" en el producto porque `Reservation.expire()` deja
+  `status = EXPIRED`, distinto de `CANCELLED` (`domain/reservation.entities.ts:361`,
+  terminal en `:85`). Cierto a nivel de dato, **falso end-to-end**:
+  `appfrontend-main/src/lib/reservas/types.ts:1` (`ReservationStatus`) NO
+  incluye `EXPIRED` -- solo 4 de los 5 valores del enum real del backend
+  (`src/types/enums.ts:13`). Consecuencia real: una reserva `EXPIRED` se
+  renderiza hoy en `dashboard/reservas/page.tsx` y `dashboard/turnos/page.tsx`
+  con badge vacío y sin label (`STATUS_BADGE_CLASS`/`STATUS_LABEL` sin
+  fallback, 9 sitios en 5 archivos -- `reservas/page.tsx`,
+  `reservas/[id]/page.tsx`, `turnos/page.tsx`, `turnos/[id]/page.tsx`), y
+  el filtro de estado (`ALL_STATUSES`, 2 archivos) no permite
+  seleccionarlo. `dashboard/page.tsx:53` es el único sitio que degrada
+  bien (`?? r.status ?? '—'`). Mismo patrón de drift cross-repo que
+  `ROLES-CATALOG-DRIFT-001`. **No bundleado en este cierre, a propósito**
+  -- el frontend se cerró aparte, ver la entrada
+  `RESERVATION-STATUS-EXPIRED-FRONTEND-01` más abajo en este mismo
+  archivo.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`RESERVATION-STATUS-EXPIRED-FRONTEND-01`** — ✅ **RESUELTO**
+  (`appfrontend-main` `b38bce4`, 11/09/2026, gate
+  `architecture-governor` APPROVED WITH CONDITIONS; migrado a este
+  archivo 13/09/2026 — **pusheado**, confirmado ancestro de `origin/main`
+  el 13/09/2026; el texto original decía "LOCAL/sin pushear", quedó
+  stale). Alcance final, 6
+  archivos + `globals.css` (más grande que el mapeo original de 4
+  archivos -- el gate encontró 2 consumidores más):
+  `lib/reservas/types.ts:1` agrega `'EXPIRED'`; `STATUS_LABEL`/
+  `STATUS_BADGE_CLASS`/`ALL_STATUSES` en `dashboard/reservas/page.tsx`,
+  `dashboard/reservas/[id]/page.tsx`, `dashboard/turnos/page.tsx`,
+  `dashboard/turnos/[id]/page.tsx`; `STATUS_BADGE`/`STATUS_LABEL` en el
+  portal de clientes (`cuenta/reservas/page.tsx`, `CANCELLABLE` dejado
+  SIN `EXPIRED` a propósito). **El hallazgo más grave era
+  `RoomCalendar.tsx`, no cosmético:** una reserva `EXPIRED` caía al
+  fallback `STATUS_BAR_STYLE.PENDING` y se dibujaba en el tape chart como
+  pendiente real, ocupando lugar que el backend ya trata como libre
+  (`NON_BLOCKING_STATUSES`) -- corregido excluyéndola del `Record` y del
+  filtro de `:214`. Badge nuevo `.badge-expired` (no reusa
+  `badge-cancelled`, backend distingue los dos estados a propósito),
+  compuesto solo con tokens existentes (`--surface-4`/`--border`/
+  `--text-primary`), cero hex/Tailwind crudo. Verificado: `tsc --noEmit`
+  limpio (con `node_modules` real instalado, no el ruido de módulos
+  ausentes), `eslint` limpio, `npm run lint:visual` sin deuda nueva,
+  25/25 tests unitarios sin regresión.
+  **2 residuos NO resueltos acá:** captura de pantalla real con una
+  reserva `EXPIRED` sin verificar, con ancla en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`; y `RESERVATION-STATUS-CROSSREPO-SYNC-001` (test que
+  congele `ReservationStatus` entre los 2 repos, todavía sin construir
+  -- no es una verificación de código listo, es ingeniería nueva, ver
+  `docs/pendientes-2026-09-12.md` sección `### 🟡 Listo para encarar`).
+  Origen: `pendientes-2026-09-12.md`.
+
+- **Hueco de doble comprobante en `getInvoicedFinancialTransactionIds()`**
+  -- ✅ **RESUELTO, PERO SOLO PARA LA DIRECCIÓN CONSOLIDADA↔CONSOLIDADA**
+  (11/09/2026, gate `architecture-governor`, ronda 2: HOLD → APPROVED WITH
+  CONDITIONS, cierre `FEATURE VERIFIED` -- no `GROUP VERIFIED`; migrado a
+  este archivo 13/09/2026 — **pusheado y deployado**, commit `a36f877`
+  confirmado ancestro de `origin/main`; el texto original decía "LOCAL,
+  sin pushear ni deployar todavía", quedó stale). **No
+  declarar cerrado el concepto completo** -- el propio cierre encontró una
+  TERCERA dirección sin guardia, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01`
+  -- los 3 hallazgos de ese ítem ya cerraron (13/09/2026, ver más
+  arriba en este mismo archivo). El propio
+  `pendientes-2026-09-06.md` ya pedía que
+  esto "mereciera fila propia" y nunca la tuvo; se perdió en el salto a
+  `-08.md`, encontrado en la auditoría de arrastre del 11/09/2026.
+  **Corrección del gate sobre el diseño propuesto originalmente en esta
+  misma fila**: el fix planeado (`status = ANY(['ISSUED','PENDING',
+  'FAILED_UNCERTAIN'])`, copiando la doctrina de `getInFlightCreditNoteTotalForUpdate()`)
+  tenía un defecto material -- `REJECTED` quedaba afuera, pero
+  `invoice_charges` NUNCA se borra sea cual sea el desenlace de la
+  factura (verificado: 0 `DELETE FROM invoice_charges` en código
+  productivo), así que una factura `REJECTED` seguía bloqueando el cargo
+  para siempre vía `idx_invoice_charges_ft` (único, sin filtro de
+  status) -- con el predicado propuesto, ese caso hubiera seguido dando
+  un `23505` crudo en vez del error tipado, exactamente lo que el bloque
+  decía cerrar. **Predicado final, recomendado por el gate**: sin `JOIN`
+  a `invoices` ni filtro de status -- "¿existe la fila en
+  `invoice_charges`?", la misma pregunta que responde el índice único.
+  Cambios: `sql.invoice.repository.ts:964-974` (SQL) + su docblock en
+  `invoice.repository.ts` (doctrina completa: por qué este método NO
+  sigue el patrón de los otros dos que sí filtran por status) +
+  `errors.ts` (mensaje de `AccountsReceivableAlreadyInvoicedError`,
+  antes decía "ya facturados" -- exacto solo para `ISSUED`, corregido a
+  "ya están vinculados a un comprobante") + `schema.sql:3211-3218`
+  (comentario, **0 DDL**) + 2 comentarios en `invoice.service.ts`.
+  **Verificado contra Neon, las 2 tenants reales, antes de tocar
+  código**: `idx_invoice_charges_ft` confirmado único de verdad en las
+  dos (`ancient-king-17098519`, branches `production` y
+  `tenant-hotel-los-alamos`); 0 filas con `invoice_charges` fuera de
+  `ISSUED` en las dos -- no hay inconsistencia retroactiva que limpiar,
+  el fix es puramente hacia adelante. **Mutación verificada dos veces**
+  (unit + integración): revertir el predicado a `status='ISSUED'` pone
+  en rojo exactamente los 3 tests nuevos (`PENDING`/`FAILED_UNCERTAIN`/
+  `REJECTED`) en las dos capas -- en integración contra Postgres real,
+  el rojo es literalmente el `23505` crudo (`duplicate key value
+  violates unique constraint "idx_invoice_charges_ft"`) que el gate
+  predijo, no un fallo genérico. `npx tsc --noEmit` limpio, `npx eslint`
+  limpio, suite unitaria completa 2092/2092 verde, 6/6 tests de
+  integración de `consolidated-invoice-toctou.integration.test.ts`
+  corridos de verdad contra Postgres real (no skipeados,
+  `TEST_DATABASE_URL` presente). **Fuera de alcance, registrado, no
+  resuelto en este bloque**: `docs/diseno-factura-borrador-2026-08-31.md`
+  cita este guard con anclas de línea que ya se movieron -- deuda
+  abierta, con su ancla propia, en `docs/pendientes-2026-09-12.md`
+  (`FACT-BORRADOR-DESIGN-ANCHOR-DRIFT-001`).
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`INTEGRATION-HARNESS-DROPDB-MASK-01`** — ✅ **RESUELTO (11/09/2026,
+  gate `architecture-governor`, commit `63e8d29`; migrado a este archivo
+  13/09/2026)**. `dropTestDatabase()`
+  ensanchó su firma a `pool: pg.Pool | undefined` con guard-clause de
+  retorno temprano -- ya no tapa el timeout real de `createTestDatabase()`
+  con un `TypeError` de `pool.end()`. Test dedicado (`db.test.ts`, corre
+  sin `TEST_DATABASE_URL`) confirma el guard. **No resuelve el huérfano
+  real** -- ver `INTEGRATION-HARNESS-ORPHAN-DB-01`,
+  `docs/pendientes-2026-09-12.md`, condición explícita del gate para no
+  montarlo en el mismo commit.
+  Origen: `pendientes-2026-09-12.md`.
+
+- **`INVOICE-CHARGES-GUARD-FRONTEND-02` (Bloque 2)** -- ✅ **RESUELTO EN
+  CÓDIGO, Commit 1 (backend) + Commit 2 (frontend)** (11/09/2026, gate
+  `architecture-governor`, varias rondas; migrado a este archivo
+  13/09/2026). Cruce de módulo (pregunta que
+  quedaba abierta) resuelto por el dueño: el linkage SOLO se calcula/expone
+  si el negocio tiene `FACTURACION` habilitado -- `GET /customers/:id/account`
+  (`customers.routes.ts`) chequea el gate a nivel de route, sin tocar
+  `CustomerAccountService` (se mantiene tenant-puro). Backend:
+  `InvoiceRepository.getFinancialTransactionIdsCoveredByConsolidated()`
+  (método NUEVO, deliberadamente separado de
+  `getInvoicedFinancialTransactionIds()` -- reusar ese hubiera ocultado el
+  botón también sobre una factura individual propia, regresión real
+  encontrada por el gate en la primera ronda de diseño). Frontend:
+  `FacturarButton` oculta el botón SOLO cuando el cargo está cubierto por
+  una consolidada viva (`ISSUED`/`PENDING`/`FAILED_UNCERTAIN`, no
+  `REJECTED`) -- los otros 3 estados (CAE+PDF, "Reintentar factura",
+  "Facturación no habilitada") sin cambios, grounding ERP confirmó que ya
+  eran correctos. **Estado -- corrección 11/09/2026, tarde (reconciliación
+  cross-feature, encontrado sin actualizar tras el push)**: `app-main`
+  `086b827` **y** `dd500a0` (docs de cierre) pusheados y deployados,
+  verificados (`live`, `migrate:tenants` 2/2 OK, `/health/db` 200 en los
+  dos). `appfrontend-main` `dde7837` **PUSHEADO Y DEPLOYADO, VERIFICADO**
+  -- sin acceso a Vercel vía MCP esta sesión (`list_teams` vacío),
+  confirmado bajando el bundle JS real de `host.zuluhub.com.ar` y
+  greppeando: `"Facturado (consolidado)"` y `coveredByConsolidatedTransactionIds`
+  presentes en el chunk servido. Confirmado además contra la BD de
+  plataforma (Neon `morning-unit-50056927`) que Demo tiene `FACTURACION`
+  habilitado de verdad (ejercita el camino nuevo) y Hotel los Álamos no
+  (camino viejo, sin cambios) -- no se fabricó un JWT contra producción
+  para probar la respuesta HTTP completa end-to-end, mismo criterio que
+  `PRESET-SAVE-ECHO-001`.
+  **1 residuo NO resuelto acá, con su ancla, en
+  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
+  pendientes`:** verificación visual en vivo del estado nuevo, no hecha
+  -- 0 casos reales hoy en ninguna tenant para dispararlo, y escribir
+  datos de prueba en una tenant compartida fue explícitamente rechazado
+  por el gate (`irreversible-action-gate`). El `<span>` nuevo reusa
+  byte-a-byte el mismo patrón de estilo que el estado "Facturación no
+  habilitada" del mismo componente (ya probado en producción) --
+  declarado como verificación de bajo costo, no como sustituto de
+  haberlo visto en pantalla.
   Origen: `pendientes-2026-09-12.md`.
