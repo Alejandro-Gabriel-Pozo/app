@@ -1334,6 +1334,38 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 > particular, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` (uno de los 3
 > duplicados de arriba) ya cerró del todo, ver `docs/resuelto.md`.
 
+- **`CITY-LEDGER-OVERTRANSFER-PAYMENT-001`** — hallazgo adyacente,
+  encontrado por el gate `architecture-governor` al revisar el diseño de
+  §4.6 (City Ledger Bloque 3b, 13/09/2026): un pago parcial del huésped
+  posterior al check-in NO baja `getNetBalanceByStayId()`, así que
+  `transferStayBalanceToReceivable()` puede transferir a la empresa MÁS
+  de lo que el huésped realmente debe. Causa raíz: `CustomerAccountService.recordPayment()`
+  (`customer-account.service.ts:137-152` rama sin `allocations`, `:265-296`
+  rama con `allocations`) nunca setea `stayId` en ninguna de las dos
+  ramas -- el `PAYMENT` que crea no entra en el `SUM` de
+  `getNetBalanceByStayId(stayId)` (`sql.financial-transaction.repository.ts:893-911`,
+  filtra `WHERE stay_id = $1`). El único backfill que adopta filas
+  sueltas al `stay_id` (`linkStayToReservationCharges()`,
+  `sql.financial-transaction.repository.ts:872-881`) tiene un solo
+  caller, `StayService.checkIn()` (`stay.service.ts:235`) -- corre UNA
+  vez, al check-in; nada vuelve a correrlo después, así que un pago
+  posterior al check-in queda huérfano de `stay_id` para siempre.
+  `transferStayBalanceToReceivable()` lee ese saldo sobre-declarado
+  (`accounts-receivable.service.ts:219-220`) y transfiere ese número tal
+  cual. **Bloqueado en una decisión del dueño porque hay al menos 3
+  arreglos válidos con semántica de negocio distinta, no solo código:**
+  (a) que `recordPayment()` setee `stayId` cuando la reserva tiene una
+  estadía activa; (b) que `getNetBalanceByStayId()` cuente también los
+  `PAYMENT` ligados por `reservation_id` (no solo `stay_id`); (c)
+  re-correr `linkStayToReservationCharges()` dentro de
+  `transferStayBalanceToReceivable()` antes de leer el saldo. Las tres
+  cambian qué desbloquea `checkOut()` (`stay.service.ts:250-258`, exige
+  `balance <= 0` salvo `overridePendingBalance`) -- comportamiento
+  visible para el negocio, no un detalle de implementación. Sin
+  `AskUserQuestion` todavía. No se toca en el Bloque 3b (detección de
+  divergencia en `handleReservationCompleted`, §4.6) -- ese bloque
+  declara este hallazgo como "fuera de alcance", no lo resuelve.
+
 - **Caso 3, residuo Q2 — reconciliación de City Ledger con montos
   `PENDING` transferidos — DECIDIDO (13/09/2026).**
   Ancla: `accounts-receivable.service.ts::transferStayBalanceToReceivable`
@@ -1431,13 +1463,28 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   cross-repo del mismo concepto (y, tras una segunda ronda del gate, los
   3 sitios adicionales de comparación que esa misma pantalla ya tenía).
 
-  **No implementado en esta sesión** -- el Bloque 1 (schema) ya estaba
-  hecho antes de esta decisión; lo que sigue pendiente es Bloque 2 +
-  Bloque 3 (servicio + ruta + RBAC + tests + sync cross-repo + detección
-  + los 3 hallazgos de concurrencia como precondición). Con §7.8 ya
-  decidido, no queda ninguna decisión del dueño pendiente que bloquee el
-  arranque del Bloque 2 -- queda para su propio bloque de implementación
-  con su propio gate, empezando por código esta vez.
+  **Actualización 13/09/2026, sesión posterior -- Bloque 3 dejó de ser un
+  solo bloque.** Se partió en 3a (`handleReservationCancelled`) y 3b
+  (`handleReservationCompleted`), porque no comparten mecanismo (§4.5 del
+  diseño, actualizado): **3a IMPLEMENTADO** (commit `d48a6e8`, detección
+  por existencia de AR no revertida, filtro `!== 'REVERTIDO'`, `COBRADO`
+  incluido a propósito; verificación contra Postgres real todavía
+  pendiente, `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` más arriba en
+  este archivo). **3b -- DECIDIDO (`AskUserQuestion`, 13/09/2026: diseñar
+  la comparación de montos), diseño completo en §4.6 del diseño, sin
+  implementar todavía.** Detección por existencia no sirve para
+  `handleReservationCompleted` (dispara siempre, toda reserva de City
+  Ledger normal llega a `completed` con una AR `PENDIENTE_FACTURAR`
+  colgada) -- el mecanismo real compara `getNetBalanceByStayId(stayId)`
+  contra cero DESPUÉS de `settleByReservationId()`, no `ar.amount` fila
+  por fila.
+
+  **Lo que sigue pendiente, sin implementar todavía:** Bloque 2
+  (`reverseTransfer()` + ruta + RBAC + tests + sync cross-repo + los 3
+  hallazgos de concurrencia como precondición) y Bloque 3b (el mecanismo
+  de §4.6, ya diseñado). Con §7.8 ya decidido, no queda ninguna decisión
+  del dueño pendiente que bloquee el arranque del Bloque 2 -- cada uno
+  queda para su propio bloque de implementación con su propio gate.
 
 - ~~`REFUND-ISSUED-RACE-01`, Block B~~ — ✅ **RESUELTO 10/09/2026** (decidido:
   abortar con 409; implementado, verificado contra Postgres real,

@@ -423,25 +423,207 @@ lo dice en ningún lado:
   Verificación contra Postgres real pendiente -- ver
   `CITY-LEDGER-BLOQUE3A-INTEGRATION-VERIFY-001` en
   `docs/pendientes-2026-09-12.md`.
-- **`handleReservationCompleted` -- SIGUE EN HOLD, sin diseñar todavía**
-  (mismo gate, misma ronda). Detección por EXISTENCIA (el mecanismo de
-  arriba) NO sirve acá: por construcción, `checkOut()` exige saldo
-  `<= 0`, y `transferStayBalanceToReceivable()` es lo que lo habilita --
-  o sea que TODA reserva de City Ledger normal llega a `completed` con
-  una AR `PENDIENTE_FACTURAR` colgada del stay. Detección por existencia
+- **`handleReservationCompleted` -- DECIDIDO (`AskUserQuestion`, 13/09/2026):
+  diseñar la comparación de montos (opción A de las 3 planteadas).**
+  Detección por EXISTENCIA (el mecanismo de arriba) NO sirve acá: por
+  construcción, `checkOut()` exige saldo `<= 0`, y
+  `transferStayBalanceToReceivable()` es lo que lo habilita -- o sea que
+  TODA reserva de City Ledger normal llega a `completed` con una AR
+  `PENDIENTE_FACTURAR` colgada del stay. Detección por existencia
   dispararía siempre, en el camino feliz, no en una anomalía. La
-  anomalía real de este lado es de MONTO (§1.1 Disparador A: la reserva
-  se completa con un ajuste menor al transferido), no de existencia --
-  falta decidir (A) diseñar la comparación de montos, (B) medir la tasa
-  de falso positivo de la detección por existencia antes de descartarla,
-  o (C) declarar este lado fuera de alcance por ahora. Decisión del
-  dueño pendiente, no tomada todavía.
+  anomalía real de este lado es de MONTO (§1.1 Disparador A) -- mecanismo
+  diseñado en §4.6, todavía sin implementar (Bloque 3b).
 - **Escape de NC de orden -- IMPLEMENTADO** (`CancelOrderWithCreditNoteService`,
   Bloque 6 §9.2, 13/09/2026, commit `0f2aa24`): expone la AR existente
   (`getByStayId`) en la respuesta cuando la haya — ya recomendado en el
   Caso 4 original, mitigación de costo cero. Su gemelo de reservas
   (`CancelReservationWithCreditNoteService`) también lo tiene, mismo
   commit.
+
+### 4.6 Mecanismo — comparación de montos en `handleReservationCompleted` (Bloque 3b, DECIDIDO 13/09/2026, sin implementar)
+
+**Por qué existencia no alcanza acá, y por qué monto sí.** Toda reserva de
+City Ledger normal llega a `completed` con una AR `PENDIENTE_FACTURAR`
+colgada del stay (§4.5, bullet 2 de arriba) -- existencia dispararía en el
+100% de los casos, sin señalar nada. La anomalía real (§1.1 Disparador A)
+es que el ledger de la estadía haya cambiado DESPUÉS de la transferencia:
+un segundo `confirmPriceAdjustment()` (`reservation.service.ts:665-762`,
+solo aplica a reservas `CONFIRMED`, crea un `ADJUSTMENT` `PENDING` nuevo
+con `amount` firmado) que ajusta el total hacia arriba o abajo.
+
+**Mecanismo: recalcular el saldo neto del stay y compararlo contra cero.**
+`FinancialTransactionRepository.getNetBalanceByStayId(stayId)`
+(`sql.financial-transaction.repository.ts:893-911`) suma
+`CHARGE`+`ADJUSTMENT` y resta `PAYMENT` (más `REFUND` sumado) sobre
+`PENDING`+`SETTLED`, **filtrando por `WHERE stay_id = $1`** -- corrección
+de una versión anterior de este párrafo, que decía "sin filtrar por
+`stay_id`". El invariante nace en la TRANSFERENCIA, no en el check-out:
+`transferStayBalanceToReceivable()` (`accounts-receivable.service.ts:219`)
+lee `balance = getNetBalanceByStayId(stayId)` y crea el `PAYMENT`
+sintético por ESE MISMO número. **"0 exacto" es relativo al saldo medido
+en esa lectura, no una garantía absoluta**: la lectura (`:219`) ocurre
+FUERA de la transacción y ANTES del lock (la transacción abre en `:226`,
+el lock de la reserva en `:230`) -- una fila nueva con el mismo `stay_id`
+que commitee en esa ventana (ej. un `handleOrderConfirmed` concurrente,
+que lockea la ORDEN, no la reserva) queda fuera del `PAYMENT` sintético.
+Esto no debilita el mecanismo -- una fila así es plata real sin
+compensar, el detector daría un verdadero positivo, no un falso -- pero
+no es una garantía transaccional para apoyar algo más duro (un `CHECK`,
+un guard bloqueante) el día de mañana. **No es lo mismo que el invariante
+de `checkOut()`**: desde el 12/09/2026 `checkOut()` acepta
+`overridePendingBalance` (rol MANAGEMENT, `stay.service.ts:250-259`) que
+cierra la estadía con saldo positivo a propósito -- el check-out ya NO
+garantiza saldo `<= 0` en general, solo la transferencia lo garantiza
+para el saldo que efectivamente leyó. Si nada más toca el `stay_id`
+después, el saldo medido sigue en `0` para siempre. El
+`settleByReservationId()` que corre antes de este bloque **no
+cambia el número** (`SET status='SETTLED' WHERE status='PENDING'`, y
+`getNetBalanceByStayId` ya suma `PENDING`+`SETTLED` por igual) -- correrlo
+antes es disciplina de orden (el trabajo real primero, la detección
+después, fail-open), no parte del cálculo.
+
+No hace falta comparar contra `ar.amount` fila por fila: el saldo neto del
+stay YA ES la comparación (`ar.amount` es exactamente lo que ese saldo
+valía al momento de transferir, y el `PAYMENT` sintético lo dejó en cero
+desde ese punto). Evita reabrir la ambigüedad de "¿contra cuál AR, si hay
+más de una?" cuando un stay se transfirió más de una vez (no hay `UNIQUE`
+sobre `accounts_receivable.stay_id`, `schema.sql`).
+
+**Ubicación exacta:** dentro de `handleReservationCompleted`
+(`outbox.handlers.ts:228-235` hoy), DESPUÉS de
+`financialRepo.settleByReservationId(reservationId)` (`:233`) -- mismo lugar
+relativo que Bloque 3a usa en `handleReservationCancelled` (después de
+`voidByReservationId()`), por la misma disciplina de orden. Mismas dos
+precondiciones de guarda, en el mismo orden. El wiring del registry no
+cruza ninguna dependencia nueva su borde (`stayRepo`/`accountsReceivableRepo`
+ya llegan a `registerFinancialHandlers`, `outbox.handlers.ts:145-148` /
+`outbox.registry.ts:145`) -- lo que sí cambia es la firma de
+`handleReservationCompleted` y su call-site (`:146`); ningún test invoca
+ese handler hoy, así que el cambio de firma no rompe nada existente:
+1. `stayRepo.findByReservation(reservationId, event.businessId)` -- si no
+   hay stay (reserva sin estadía, o pre-check-in, o la reserva se
+   completó ANTES de que existiera transferencia), no hay nada que
+   reconciliar, salir.
+2. `accountsReceivableRepo.getByStayId(stay.id)`, filtrado `!==
+   'REVERTIDO'` (mismo cast, mismo motivo que Bloque 3a) -- si viene
+   vacío, este stay nunca se transfirió a una empresa, no hay AR que
+   reconciliar, salir.
+3. Solo si pasó (1) y (2): `financialRepo.getNetBalanceByStayId(stay.id)`
+   -- si `round2(balance) !== 0` (reuso de `src/domain/money.ts::round2`,
+   evita falsos positivos por arrastre de punto flotante; sin tolerancia
+   adicional tipo `CREDIT_NOTE_COMPENSATION_TOLERANCE` -- esa constante
+   absorbe el desfase entre DOS documentos redondeados independientemente
+   -- NC vs. factura --, y acá los dos lados salen del mismo `SUM()` de
+   una sola query sobre `DECIMAL(12,2)`, sin segundo redondeo que
+   absorber; consecuencia aceptada: el detector va a avisar por 1
+   centavo, consistente con ser un `warn` que no bloquea nada) --
+   loguear estructurado con el monto de la divergencia y las AR
+   encontradas. NO bloquea el handler, NO revierte ni ajusta nada --
+   mismo principio que Bloque 3a y que el resto de este documento (la
+   decisión de reconciliar es del operador, vía el Bloque 2 cuando
+   exista).
+
+**Causas reales que mueven el saldo del stay después de una
+transferencia** (reemplaza una versión anterior de este párrafo que
+nombraba `REFUND` -- ningún productor real de `REFUND` setea `stay_id`:
+`cancellation-refund.service.ts:329-342` setea `reservationId`, no
+`stayId`, así que un `REFUND` nunca entra en este cálculo): un
+`ADJUSTMENT` de precio nuevo (`confirmPriceAdjustment()`, arriba); un
+cargo nuevo a la habitación (`handleOrderConfirmed`, `outbox.handlers.ts:595`,
+"cargo a la habitación" con `stay_id` seteado); un `CHARGE` de
+`approveScheduleChange()` (`stay.service.ts:470`, late check-out/early
+check-in); o un `ADJUSTMENT` del escape de NC de una orden de la estadía
+(`cancel-order-with-credit-note.service.ts:355`, hereda `stay_id` del
+`CHARGE` que revierte).
+
+**Falsos positivos declarados, no resueltos en este bloque (mismo
+criterio que Bloque 3a: fallan del lado de avisar de más, no de callar).**
+**FP-1:** la transferencia (`stays.routes.ts:203-222`, MANAGEMENT) NO
+exige check-out, solo `balance > 0` -- el huésped puede seguir alojado
+después de transferido, pedir algo con cargo a la habitación o un late
+check-out, y pagarlo él mismo. Ese pago entra por
+`CustomerAccountService.recordPayment()` (`customer-account.service.ts:137-152,
+265-296`), que **nunca setea `stay_id`** -- no compensa el cargo nuevo a
+ojos de este cálculo. El saldo queda positivo permanentemente sin que
+nada esté mal en el City Ledger; el detector avisa igual. **FP-2:** si un
+MANAGEMENT ya revisó y aceptó un saldo residual al cerrar el check-out
+con `overridePendingBalance`, el detector vuelve a levantar la mano sobre
+lo mismo sin saber que un humano ya lo miró. Ninguno de los dos invalida
+el mecanismo -- la política declarada es "cualquier causa que mueva el
+saldo de cero amerita la misma señal" -- pero el mensaje del log tiene
+que nombrar LO MEDIDO (el saldo no cerró en cero), no una causa
+específica, para no mandar al operador a buscar un problema donde puede
+haber sido un desayuno.
+
+**Falsos negativos declarados, no resueltos en este bloque.** **FN-1:**
+si `reservation.price_adjusted` falla transitoriamente en el outbox y
+`reservation.completed` se procesa primero (el worker no relanza el
+evento que falló antes de seguir con el siguiente -- mismo mecanismo que
+motivó T-01, `outbox.handlers.ts:622-643`), este detector lee el saldo
+ANTES de que el ajuste pendiente llegue, no ve nada, y el ajuste puede
+quedar sin liquidar nunca. **FN-2:** si la reserva se completa ANTES de
+que exista la transferencia, la precondición 2 sale por vacío y el
+mecanismo nunca corre para ese stay -- la ventana de detección es
+exactamente "transferencia → completado", que también es la única
+ventana en la que puede aparecer un `ADJUSTMENT` nuevo (`confirmPriceAdjustment`
+exige `CONFIRMED`). Acotado a propósito, no un hueco a cerrar en este
+bloque.
+
+**Concurrencia con Bloque 3a -- descartada, no un caso a manejar.**
+`Reservation.ts:77-86`: `CONFIRMED → [CANCELLED, COMPLETED]`, y las dos
+transiciones son terminales (`[COMPLETED]: []`, `[CANCELLED]: []`) bajo
+el mismo lock (`requireReservationWithLock`). Una reserva no puede emitir
+`reservation.completed` Y `reservation.cancelled` -- los dos detectores
+nunca corren sobre el mismo stay por el mismo motivo.
+
+**Dependencia real con el Bloque 2, declarada acá, no resuelta:**
+`reverseTransfer()` (sin implementar) tiene que crear su contrapartida
+CON `stay_id` -- si revierte la transferencia sin compensar el `PAYMENT`
+sintético que sí lleva `stay_id`, toda estadía revertida queda con saldo
+≠ 0 y este mecanismo dispara en cada una. El filtro `!== 'REVERTIDO'`
+cubre el caso "AR completamente revertida" (sale por vacío), no el caso
+mixto (una AR revertida + una re-transferida sobre el mismo stay).
+Precondición del Bloque 2, no de este.
+
+**Evento propuesto:** `reservation_completed_ar_divergencia` (paralelo a
+`reservation_cancelled_con_ar_viva` de Bloque 3a) -- payload: `tenant`,
+`reservationId`, `stayId`, `balance` (el saldo neto, con signo --
+positivo = la estadía quedó con un cargo sin compensar desde la
+transferencia; negativo = un `ADJUSTMENT` de crédito posterior a la
+transferencia bajó el saldo -- **nunca** "sobrepago": `chk_financial_transactions_amount`
+(`schema.sql:2238-2246`) exige `amount >= 0` salvo `ADJUSTMENT`, así que
+un saldo negativo solo puede venir de un `ADJUSTMENT` negativo, jamás de
+un pago de más -- el sobrepago es estructuralmente invisible para este
+cálculo, ver el hallazgo adyacente más abajo), y la misma proyección de
+AR que usa Bloque 3a (`accountsReceivableId`, `companyCustomerId`,
+`status`, `amount`). Mensaje del log: describe lo medido ("el saldo neto
+de la estadía no quedó en cero después de completar la reserva -- puede
+ser un ajuste de precio posterior a la transferencia, un cargo nuevo a la
+habitación, o una nota de crédito sobre una orden de la estadía"), nunca
+afirma que la AR quedó desalineada como hecho cierto.
+
+**Fail-open, mismo criterio que Bloque 3a:** el trabajo real
+(`settleByReservationId()`) ya commiteó antes de este bloque -- una falla
+de lectura acá no puede propagar y mandar a reintento algo que ya se
+completó. Try/catch envolviendo las 3 lecturas (stay, AR, saldo), con su
+propio evento de fallo (`reservation_completed_ar_deteccion_fallida`,
+mismo patrón que `reservation_cancelled_ar_deteccion_fallida`).
+
+**Qué NO decide este mecanismo:** no distingue la CAUSA de la divergencia
+entre las 4 nombradas arriba -- cualquier causa que mueva el saldo neto
+de cero es igual de digna de que el operador la revise, y distinguir
+causas sin necesidad real sería diseño especulativo. No resuelve FP-1/FP-2
+(silenciar por `overridePendingBalance`, por ejemplo) ni FN-1/FN-2.
+Tampoco decide qué hacer con la divergencia (eso es exactamente lo que el
+Bloque 2 -- `reverseTransfer()` -- construye).
+
+**Hallazgo adyacente, preexistente, fuera de alcance de este bloque:**
+un pago parcial del huésped posterior al check-in tampoco baja
+`getNetBalanceByStayId()` (mismo motivo que FP-1: `recordPayment()` no
+setea `stay_id`) -- `transferStayBalanceToReceivable()` puede transferir
+a la empresa MÁS de lo que el huésped realmente debe. No se toca en este
+bloque; ítem propio en `docs/pendientes-2026-09-12.md`, con ancla en
+`customer-account.service.ts:137-152` + `sql.financial-transaction.repository.ts:872-880`.
 
 ## 5. Mecanismo — FACTURADO/COBRADO (fuera del alcance de este bloque)
 
