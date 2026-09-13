@@ -2112,16 +2112,84 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   `FAILED` junto a `VOIDED` como "anulado" en sus reportes de
   conciliación -- marcar así un `ADJUSTMENT` sin resolver lo escondería
   en la conciliación como si el caso ya estuviera cerrado, el peor lugar
-  posible. **Alcance real, no decidido todavía:** construir una salida
-  manual (qué campos quedan editables -- ¿línea completa como
-  Odoo/ERPNext, o solo un monto con tope como QloApps?, para qué motivos
-  de `BLOCKED` se habilita, qué rol, qué pasa con el `ADJUSTMENT` viejo).
-  Revisar si `docs/diseno-factura-borrador-2026-08-31.md` (`FACT-BORRADOR-001`,
-  máquina de estados de borrador ya diseñada y con decisiones del dueño
-  cerradas -- D3, T2) cubre notas de crédito o solo facturas de venta
-  antes de diseñar un mecanismo nuevo. **Bloque propio, sin fecha, sin
-  encarar todavía** -- decisión explícita del dueño (11/09/2026) de
-  cerrar primero 1c-ii-c chico y tratar esto aparte.
+  posible.
+
+  **Corrección 13/09/2026 -- las 4 preguntas de alcance de más abajo ya
+  están decididas, este párrafo había quedado sin actualizar.** El
+  diseño completo vive en
+  `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md` (v7.2,
+  12 pasadas de `architecture-governor`, tabla de partición de §9:
+  "Preguntas reales abiertas para el dueño — ninguna, 0"):
+  - **Campos editables**: línea por línea (Odoo/ERPNext), no un monto
+    único con tope (QloApps) -- sobre `invoice_draft_items`. El diseño
+    ya topea por PAR (factura, sujeto) vía
+    `getInFlightCreditNoteTotalForPairForUpdate()` (§6.1 -- NO por
+    §9 ítem 9, que solo lo menciona para excluirlo) -- ese
+    tope NO filtra por origen de línea, suma el `imp_total` completo de
+    la NC contra el sujeto. Las queries que SÍ atribuyen por origen de
+    línea, y a las que el matiz de abajo realmente aplicaría, son
+    `getIssuedCreditNoteCompensationTotalForReservation()`/`...ForOrder()`.
+    Grounding ERP nuevo, re-verificado
+    13/09/2026 contra código crudo (`validate_quantity()`,
+    `sales_and_purchase_return.py`), **no citado en el diseño**:
+    ERPNext además topea cada línea individual contra el original menos
+    lo ya devuelto -- matiz a nivel de línea, complementario al tope
+    por par que ya existe, sugerencia condicional para cuando se
+    implemente, no decisión tomada.
+  - **Motivo habilitante**: solo `AMOUNT_MISMATCH`. **No es que
+    `AMOUNT_MISMATCH` "nunca dispare con cero líneas" -- ES `NO_ITEMS`
+    el motivo que dispara con cero líneas, y es justamente el que se
+    retiró en v7.0.** El motivo real del retiro (§0 del diseño): (a) el
+    período histórico "Nivel A" (facturas sin `invoice_items`) está
+    cerrado por la migración C3 -- toda factura posterior ya tiene
+    líneas reales; (b) supuesto de negocio VOLÁTIL, no verificable desde
+    el código -- todos los tenants de hoy son demo/descartables.
+    **Gatillo de reapertura, textual del diseño**: "Si alguna vez un
+    tenant de los que existen hoy se PROMUEVE a cliente de producción...
+    `NO_ITEMS` vuelve a ser un caso real -- nada en este documento lo va
+    a detectar solo." Cualquier decisión de promover un tenant demo a
+    producción tiene que re-chequear esto -- no vive en ningún otro
+    documento que se relea por sesión, así que queda anclado acá
+    también, no solo en §0. Grounding ERP nuevo, **no
+    citado en el diseño**: precedente parcial en Odoo (`blocking_level`
+    en `account.edi.document`, severidad persistida en el documento)
+    para cuando haga falta agregar un segundo motivo -- sugerencia
+    condicional, no decisión tomada.
+  - **Rol**: un solo grupo `EMISOR_NOTA_CREDITO` de punta a punta, sin
+    split D4 -- decidido por el dueño (12/09/2026) porque, a diferencia
+    de una factura de venta nueva (motivo real de D4 en
+    `FACT-BORRADOR-001`), acá no hay un actor "operativo" separado del
+    "fiscal" (§8 del diseño). **Cola que §8 marca "no es un detalle
+    menor" y este bullet no puede perder**: la ruta nueva de completado
+    manual queda FUERA de la aserción (D) de
+    `credit-note-escape-containment.test.ts` (que hoy solo congela las
+    2 rutas `cancel-with-credit-note`) -- sería el primer camino que
+    emite una NC por fuera del cuello de botella con token de marca
+    (`CreditNoteCancellationAuthorization`). Implica extender la
+    contención (cerca nueva o fila en el equivalente de
+    `ESCAPE_ROUTES`, el sexto artefacto manual del repo) -- a decidir
+    con el gate cuando se implemente, no resuelto por esta corrección.
+  - **El `ADJUSTMENT` viejo**: no cambia de fila ni se duplica -- la
+    misma fila viaja de `PENDING` a `SETTLED` (decisión textual de §4
+    del diseño, estados reales verificados en `schema.sql:2168`).
+    Grounding ERP nuevo, **no citado en el diseño**: análogo al
+    `account.move` en borrador de Odoo (no al patrón "anular y
+    reemitir" de ERPNext/Cloudbeds, que aplica al comprobante fiscal,
+    no al asiento de ledger) -- sugerencia condicional que refuerza la
+    decisión ya tomada, no la decide.
+
+  **La única precondición externa** que bloquea encarar esto es la
+  secuenciación detrás del HOLD de `invoice_drafts` en
+  `FACT-BORRADOR-001` (§9 ítem 3 del diseño) -- "no una pregunta de
+  nadie", solo falta de tiempo/gate. Pero el diseño deja 2 residuos más
+  que esta corrección no puede enterrar: el ítem 8 de §9 queda
+  "RESUELTO por el dueño" en el fondo, pero "el valor default, el
+  mecanismo de configuración y qué pasa al vencer siguen como bloque de
+  implementación (sin gate todavía)"; y el ítem 6 de §9 es "Parcial",
+  resolución condicional, explícitamente "no es un 'resuelto' liso como
+  2/4". **Bloque propio, sin fecha, sin encarar todavía** -- decisión
+  explícita del dueño (11/09/2026) de cerrar primero 1c-ii-c chico y
+  tratar esto aparte.
 
   **`1d` sigue en HOLD**, sin fecha.
 - **`RESERVATION-STATUS-EXPIRED-FRONTEND-01`** — implementación cerrada,
