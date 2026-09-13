@@ -20,6 +20,39 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 13/09/2026
+
+- **`CITY-LEDGER-OVERTRANSFER-PAYMENT-001`.** Origen:
+  `docs/pendientes-2026-09-12.md` (hallazgo del gate
+  `architecture-governor` al revisar §4.6 de City Ledger Bloque 3b). Un
+  pago parcial del huésped posterior al check-in no bajaba
+  `getNetBalanceByStayId()`, así que `transferStayBalanceToReceivable()`
+  podía transferir a la empresa más de lo que el huésped debía —
+  `CustomerAccountService.recordPayment()` nunca seteaba `stayId`, y el
+  único backfill (`linkStayToReservationCharges()`) corría una sola vez,
+  al check-in. Grounding ERP pedido ANTES de diseñar (`auditor-circuitos-erp`,
+  5/5 sistemas de referencia: todos vinculan el pago a su documento al
+  crearlo, ninguno hace fallback de FK al leer el saldo). Decisión del
+  dueño, (a)+(c) combinado (registrada en el mensaje de `93a9416`) —
+  `recordPayment()` setea
+  `stayId` cuando la estadía está `CHECKED_IN` al pagar (resuelto en la
+  ruta, sin romper bounded contexts — `SqlStayRepository` instanciado en
+  `customers.routes.ts`, mismo patrón que `reservationId`), y
+  `transferStayBalanceToReceivable()` corre `linkStayToReservationCharges()`
+  como red de seguridad antes de leer el saldo, para los `PAYMENT` ya
+  huérfanos. Gate: APPROVED WITH CONDITIONS, condiciones de comentario
+  aplicadas en el mismo commit. Commit `93a9416` (fix de código, 7
+  archivos) + `ddf7479` (docs, residuos de runtime registrados) — buscar
+  con `git log --oneline --grep "CITY-LEDGER-OVERTRANSFER-PAYMENT-001"`.
+  **No incluye** el backfill histórico de `PAYMENT` ya huérfanos en
+  producción (necesita su propio `AskUserQuestion` sobre reservas
+  multi-stay + `irreversible-action-gate`) ni los 6 residuos declarados
+  (2 contra Postgres real, 1 de UI con datos reales en
+  `appfrontend-main`, 1 de comportamiento de `checkOut()`, 1 de deriva
+  de anclas, 1 de un ADR que quedó contradiciendo al código) — esos
+  residuos viven en `docs/pendientes-2026-09-12.md`, sección `## 🔍
+  Verificaciones pendientes`.
+
 ## 12/09/2026
 
 - **Caso 6 — CHECK estructural `chk_financial_transactions_order_or_reservation`

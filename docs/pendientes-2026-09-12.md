@@ -468,7 +468,7 @@ saldo) quedó gate-aprobado, tipado y con `vitest` verde (111/111 en los
 2 archivos de test con cambios de comentario; 156/156 en la ronda
 anterior sobre los 3 archivos con cambios de lógica) — pero sin una sola
 corrida contra Postgres real (sin `TEST_DATABASE_URL` en esta sesión).
-Cinco residuos, cada uno con su ancla y acción puntual:
+Seis residuos, cada uno con su ancla y acción puntual:
 
 - **Filtro `CHECKED_IN` en `POST /:id/payments`** — confirmar contra
   Postgres real: reserva con estadía `CHECKED_IN` → el `PAYMENT` nuevo
@@ -507,6 +507,17 @@ Cinco residuos, cada uno con su ancla y acción puntual:
   — es deuda de referencia, se corrige de-pineando por firma (mismo
   criterio ya aplicado a `outbox.handlers.ts:249` en este mismo commit),
   no urgente.
+- **`docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.6 quedó
+  contradiciendo al código** — sigue diciendo que el sobrepago *"es
+  estructuralmente invisible para este cálculo"* y describe el hallazgo
+  como *"fuera de alcance de este bloque … ítem propio en
+  `docs/pendientes-2026-09-12.md`"* (puntero que, tras migrar ese ítem a
+  `docs/resuelto.md`, ya no tiene destino). Las dos afirmaciones son
+  falsas desde `93a9416`: el comentario de `handleReservationCompleted`
+  en `outbox.handlers.ts` ya dice lo contrario, y `getNetBalanceByStayId()`
+  resta `PAYMENT` sobre `WHERE stay_id`, así que un sobrepago con
+  `stay_id` seteado sí puede dar saldo negativo. Deuda de documento, no
+  de código; corregir en un bloque de docs aparte.
 
 No autorizado en este bloque, explícitamente fuera de alcance: el
 backfill histórico de los `PAYMENT` ya huérfanos en producción (necesita
@@ -1512,38 +1523,6 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 > ningún otro bullet suelto que todavía diga 🔴 más abajo. En
 > particular, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` (uno de los 3
 > duplicados de arriba) ya cerró del todo, ver `docs/resuelto.md`.
-
-- **`CITY-LEDGER-OVERTRANSFER-PAYMENT-001`** — hallazgo adyacente,
-  encontrado por el gate `architecture-governor` al revisar el diseño de
-  §4.6 (City Ledger Bloque 3b, 13/09/2026): un pago parcial del huésped
-  posterior al check-in NO baja `getNetBalanceByStayId()`, así que
-  `transferStayBalanceToReceivable()` puede transferir a la empresa MÁS
-  de lo que el huésped realmente debe. Causa raíz: `CustomerAccountService.recordPayment()`
-  (`customer-account.service.ts:137-152` rama sin `allocations`, `:265-296`
-  rama con `allocations`) nunca setea `stayId` en ninguna de las dos
-  ramas -- el `PAYMENT` que crea no entra en el `SUM` de
-  `getNetBalanceByStayId(stayId)` (`sql.financial-transaction.repository.ts:893-911`,
-  filtra `WHERE stay_id = $1`). El único backfill que adopta filas
-  sueltas al `stay_id` (`linkStayToReservationCharges()`,
-  `sql.financial-transaction.repository.ts:872-881`) tiene un solo
-  caller, `StayService.checkIn()` (`stay.service.ts:235`) -- corre UNA
-  vez, al check-in; nada vuelve a correrlo después, así que un pago
-  posterior al check-in queda huérfano de `stay_id` para siempre.
-  `transferStayBalanceToReceivable()` lee ese saldo sobre-declarado
-  (`accounts-receivable.service.ts:219-220`) y transfiere ese número tal
-  cual. **Bloqueado en una decisión del dueño porque hay al menos 3
-  arreglos válidos con semántica de negocio distinta, no solo código:**
-  (a) que `recordPayment()` setee `stayId` cuando la reserva tiene una
-  estadía activa; (b) que `getNetBalanceByStayId()` cuente también los
-  `PAYMENT` ligados por `reservation_id` (no solo `stay_id`); (c)
-  re-correr `linkStayToReservationCharges()` dentro de
-  `transferStayBalanceToReceivable()` antes de leer el saldo. Las tres
-  cambian qué desbloquea `checkOut()` (`stay.service.ts:250-258`, exige
-  `balance <= 0` salvo `overridePendingBalance`) -- comportamiento
-  visible para el negocio, no un detalle de implementación. Sin
-  `AskUserQuestion` todavía. No se toca en el Bloque 3b (detección de
-  divergencia en `handleReservationCompleted`, §4.6) -- ese bloque
-  declara este hallazgo como "fuera de alcance", no lo resuelve.
 
 - **Caso 3, residuo Q2 — reconciliación de City Ledger con montos
   `PENDING` transferidos — DECIDIDO (13/09/2026).**
