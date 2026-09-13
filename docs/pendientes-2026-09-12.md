@@ -100,6 +100,37 @@ cuando se pushea.
   `git log --oneline --grep "purga del outbox\|purgeResolved"` si hace
   falta citarlo desde otro documento.
 
+- **`CITY-LEDGER-AR-WARNING-VERIFY-001`** — Bloque 6, §9.2 (13/09/2026,
+  gate `architecture-governor`, commit `0f2aa24`): el warning
+  `accountsReceivableWarning` de los 2 escapes de NC está cubierto por 6
+  tests unitarios (fakes, sin BD) pero NUNCA se corrió contra Postgres
+  real con una `accounts_receivable` de verdad (requiere seedear un
+  check-in completo + `transferStayBalanceToReceivable()` + el escape de
+  NC). Confirmar: seedear ese camino real en un test de integración y
+  verificar que el campo llega correcto en la respuesta HTTP.
+- **`CITY-LEDGER-AR-NESTED-CONN-001`** — deuda de clase, con ancla
+  (Bloque 6, §9.2, 13/09/2026, gate `architecture-governor`): las 5
+  lecturas de tx1 en `cancel-reservation-with-credit-note.service.ts`
+  (`liveInvoiceIdsForReservation`, `getByIdempotencyKey`,
+  `invoiceRepo.getById`, `getChargeIdsForInvoice`, y la nueva
+  `accountsReceivableRepo.getByStayId()`) NO reciben `client` -- sacan una
+  SEGUNDA conexión del pool del tenant (`max: 5`,
+  `connectionTimeoutMillis: 5000`) mientras tx1 sigue abierta sobre la
+  primera. Hoy no rompe nada (son de solo lectura, el pool falla ruidoso
+  por timeout, no cuelga) pero es una clase de riesgo que crece con cada
+  lectura nueva que se agregue de la misma forma. Candidato: convertir
+  las 5 a `*WithClient()` (convención `createWithClient()` que el repo ya
+  usa). Bloque aparte, no decidido cuándo.
+- **`ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001`** — deuda con ancla
+  (Bloque 6, §9.2, 13/09/2026): `(ar.status as string) !== 'REVERTIDO'`
+  en los 2 escapes de NC filtra un valor que `AccountsReceivableStatus`
+  (TS) todavía no declara -- a propósito, mismo criterio que evitó
+  `ROLES-CATALOG-DRIFT-001` (el schema v52 ya acepta `REVERTIDO`, pero
+  `reverseTransfer()` no existe todavía, así que ampliar el tipo ahora
+  sería ampliar un lado sin que el mecanismo real exista). Se angosta el
+  cast (y probablemente se amplía el tipo) junto con el Bloque 2 de §8
+  (`reverseTransfer()`) — no antes, no aislado.
+
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
 se migraron a `docs/resuelto.md` hoy — viven mezcladas dentro de

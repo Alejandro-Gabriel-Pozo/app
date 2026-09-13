@@ -574,3 +574,203 @@ implementación real:**
 4. Bug colateral `voidByReservationId()` sin filtro de `customer_id`
    (§1.2) — bloque independiente, no bloquea 1-3.
 5. FACTURADO/COBRADO (§5) — diferido, sin decisión de si se construye.
+6. Guard de facturación previa a la transferencia + exposición del
+   escape de NC (§9) — encontrado por el gate `architecture-governor`
+   durante Bloque 5 (Caso 5 residual 3, 12-13/09/2026), independiente de
+   1-5, no depende de `reverseTransfer()`.
+
+## 9. Guard de facturación previa (Bloque 6, 13/09/2026)
+
+**Hallazgo (gate `architecture-governor`, verificando el Caso 5 residual
+3 de Bloque 5):** `cancelReservationWithCreditNote()` no filtra por
+`customer_id` al traer los cargos de una reserva
+(`getByReservationId()` es `WHERE reservation_id = $1`, sin más) — así
+que si la estadía de esa reserva ya se transfirió a una empresa
+(`AccountsReceivableService.transferStayBalanceToReceivable()`), el
+`CHARGE` de la empresa entra en el mismo cálculo. Combinado con el
+`PAYMENT` sintético que la transferencia crea contra el huésped (satura
+su folio a $0 sin plata real), el escape de NC puede generarle al
+huésped un `ADJUSTMENT` (crédito) por una factura cuyo cargo original ya
+fue neutralizado por el traspaso — crédito fantasma, mientras el
+`CHARGE` de la empresa sigue vivo sin tocarse. El mismo hueco existe en
+`cancelOrderWithCreditNoteService()` (órdenes cargadas a una estadía
+también llevan `stayId`).
+
+Medido contra el código real (no solo inferido): hoy hay **3 sub-casos**
+distintos, no uno — `PENDIENTE_FACTURAR` y `FACTURADO`-manual
+(`markInvoiced()` sin factura AFIP real) dejan pasar el crédito fantasma
+en silencio; `FACTURADO`-consolidada (`requestConsolidatedInvoice()`) ya
+bloquea hoy, mismo por accidente, con
+`CreditNoteReservationMultiInvoiceError` — mensaje equivocado ("elegí
+qué factura revertir" en vez de "hay una deuda corporativa viva").
+
+**Grounding ERP** (Cloudbeds, Oracle OPERA, Odoo, ERPNext, Dolibarr,
+QloApps — `auditor-circuitos-erp`, 12/09/2026): ningún sistema de
+referencia corrige los dos lados automático. Cloudbeds es el único que
+modela el traspaso como transferencia reversible con vínculo bidireccional
+al folio de origen (`"Route" bloqueado si la transacción está "Locked"
+por un comprobante fiscal vivo`); su guard vive del lado de la
+TRANSFERENCIA, no de la Nota de Crédito. Odoo/ERPNext/Dolibarr no
+bloquean la NC — la dejan proceder y exponen el desbalance resultante
+para que un humano lo cierre (ERPNext: *Unreconcile Payment*, v15;
+Dolibarr: conversión a descuento con `fk_soc`/`fk_facture_source`
+apuntando siempre al tercero y factura de origen). Ningún sistema deja
+que el crédito caiga en la contraparte equivocada — pero la razón de
+fondo (el "pago" que saldó la factura del huésped fue plata real en los
+5 sistemas) no aplica acá: el `PAYMENT` de este repo es sintético.
+
+**Decisiones del dueño (`AskUserQuestion`, 13/09/2026):**
+
+1. **Guard en la transferencia — SÍ, bloquear.**
+   `transferStayBalanceToReceivable()` rechaza si algún `CHARGE` de la
+   estadía ya tiene una factura `ISSUED` viva al huésped (mismo criterio
+   que "Locked transaction" de Cloudbeds) — previene que el estado malo
+   se forme. No contradice la decisión §3.2 (esa decisión es sobre
+   corregir una AR ya existente, no sobre crear una nueva).
+2. **Guard en la NC — exponer, no bloquear.** Para el caso que el guard
+   de arriba NO cubre (se transfiere SIN invoice previo, y recién
+   después se factura al huésped): la NC procede igual (§3.2 ya decide
+   que `FACTURADO`/`COBRADO` usan este escape), pero se detecta la AR
+   viva para esa estadía y se expone -- mismo patrón que
+   `AccountsReceivableService.markCollected()` (campo `collection`
+   aditivo + `logger.warn`) -- para que management lo revise.
+
+### 9.1 Mecanismo — guard de transferencia
+
+**Corrección del gate (ronda 1, 13/09/2026):** el predicado original
+(`resolveInvoiceLinkage() === ISSUED`) es MÁS ANGOSTO que la definición
+de "comprobante vivo" que este repo ya usa para esta pregunta exacta —
+no mira si la factura ya fue revertida al 100% por NC. Falso positivo
+concreto: una orden de POS cargada a la estadía, facturada y CANCELADA
+CON NC (factura totalmente compensada) antes de intentar la
+transferencia — con el predicado angosto, `transferStayBalanceToReceivable()`
+queda bloqueada PARA SIEMPRE, sin ningún camino de salida (no existe
+"des-emitir"). El guard hermano de reservas (`findBlockingInvoiceLinkage()`,
+RESERVA-10) usa el mismo predicado angosto, así que "ISSUED pelado" es
+consistente con los guards existentes pero NO con la corrección fiscal —
+dos respuestas razonables, no algo que el implementador deba resolver
+solo (mismo criterio que D5, `CLAUDE.md` raíz). **Decisión del dueño
+(`AskUserQuestion`, 13/09/2026): predicado FUERTE — reusar
+`InvoiceRepository.classifyReservationLiveInvoice()`/`classifyOrderLiveInvoice()`**
+(`RECONCILED` | `NOT_RECONCILED`, ya combinan F4 + reversa del ledger
+`SETTLED` — el mismo predicado que el escape de NC ya usa para saber si
+un `CARGO_CON_COMPROBANTE_VIVO` es una anomalía real o un caso
+reconciliado, ver `outbox.handlers.ts`).
+
+Consecuencia mecánica de elegir el predicado fuerte (declarada por el
+gate): `classify*` recibe un `SqlClient`, así que el guard corre DENTRO
+de la transacción (no antes de abrirla, como decía la versión anterior
+de este texto) y `AccountsReceivableService` necesita ampliar su
+`Pick<InvoiceRepository, ...>` inyectado (hoy
+`'getOutstandingForUpdate' | 'resolveInvoiceLinkage'`) con
+`'classifyReservationLiveInvoice' | 'classifyOrderLiveInvoice'` — 8
+sitios de construcción (2 producción, 6 test).
+
+En `AccountsReceivableService.transferStayBalanceToReceivable()`: dentro
+de la transacción, con `reservationRepo.getByIdWithLock(client, stay.reservationId)`
+como primera operación (serializa contra `InvoiceService.requestInvoice()`,
+que toma el mismo lock — `invoice.service.ts:451-453`/`:604-606` — mismo
+patrón que `reservation.service.ts:858-862` ya documenta), traer los
+`CHARGE` de la estadía y, para cada uno, `classifyReservationLiveInvoice()`/
+`classifyOrderLiveInvoice()` según tenga `reservationId` u `orderId`. Si
+alguno da `NOT_RECONCILED` (factura viva, no compensada), lanzar
+`StayChargeAlreadyInvoicedError(stayId, invoiceId)` — nueva clase, mismo
+archivo que `CompanyCustomerRequiredError`/`NoBalanceToTransferError`,
+mapeada a 422 en `error.middleware.ts` (mismo grupo que
+`COMPANY_CUSTOMER_REQUIRED`/`CREDIT_NOTE_*`: "documento fiscal ya
+emitido, acción no completa, no reintentar").
+
+**Residuo de concurrencia declarado, no cerrado por este bloque:** el
+lock de `reservations`/`orders` cierra la carrera para cargos con
+`reservation_id`/`order_id`. Los cargos *solo-estadía* (`stay_id` sin
+ninguno de los dos, sancionados por el CHECK de `schema.sql:3731`) no
+tienen agregado que lockear — para esos el guard sigue siendo
+best-effort, y la red real es §9.2. No se agrega lock de `orders` a la
+transferencia en este bloque (el orden canónico de locks está
+documentado en `invoice.service.ts:585` y tocarlo es su propio gate).
+
+### 9.2 Mecanismo — exposición en el escape de NC (implementado, commit `0f2aa24`)
+
+En los dos orquestadores (`cancel-reservation-with-credit-note.service.ts`
+y `cancel-order-with-credit-note.service.ts`), DENTRO de tx1 (no antes),
+justo después de resolver `stayId` (ya lo hacen los dos, para heredarlo
+en el `ADJUSTMENT`) y antes de crear/adoptar el `ADJUSTMENT`: si
+`stayId !== null` y el nuevo `accountsReceivableRepo` (opcional, 7°
+parámetro del constructor) está presente, `arRepo.getByStayId(stayId)`
+(tipo compartido `AccountsReceivableRepoForCancel`/`AccountsReceivableWarningEntry`
+en `cancel-with-credit-note.ts`, wireado en `reservations.routes.ts`/
+`orders.routes.ts` con `new SqlAccountsReceivableRepository(db)`),
+filtrando `(ar.status as string) !== 'REVERTIDO'` (cast a `string`, NO se
+amplía `AccountsReceivableStatus` en este bloque — ver comentario en el
+código, mismo criterio que evitó `ROLES-CATALOG-DRIFT-001`: el tipo se
+amplía junto con `reverseTransfer()`, Bloque 2 de §8). Si queda alguna
+fila: se agrega al resultado (`accountsReceivableWarning`) y
+`logger.warn({ evento: 'nc_escape_con_ar_viva', ... })` — no lanza, no
+bloquea.
+
+**Correcciones del gate aplicadas (ronda 1, condiciones del commit 1):**
+1. `reservations.routes.ts` serializa campo por campo
+   (`res.json({ reservation: toReservationDto(...), ... })`, nunca
+   `res.json(result)`) — se agregó `accountsReceivableWarning` ahí
+   explícito; sin este cambio quedaba descartado en silencio del lado
+   reservas mientras órdenes (que sí hace `res.json(result)`) lo
+   exponía — asimetría entre los dos escapes.
+2. El fast-path idempotente de los dos orquestadores retorna ANTES de
+   tx1 -- `stayId` nunca se resuelve ahí, así que ese camino nunca emite
+   el warning (declarado en el código, no un vacío accidental).
+3. **Corregido en ronda 2** (el texto original de esta condición
+   afirmaba de más): la lectura se LLAMA adentro del callback de tx1,
+   después del lock (`FOR UPDATE` de `reservations`/N10 de `orders`), pero
+   `AccountsReceivableRepoForCancel.getByStayId()` NO recibe `client` --
+   usa su propia conexión del pool del tenant, no la de la transacción.
+   Lo que el lock SÍ garantiza: una `transferStayBalanceToReceivable()`
+   concurrente que necesite el mismo lock no puede commitear mientras tx1
+   sigue abierta -- el valor forense no se pierde por esa carrera. Lo que
+   NO garantiza: la lectura no ve escrituras sin commitear de tx1 ni
+   participa de su rollback -- da igual hoy (solo lectura). Mismo patrón
+   sin `client` que otras 4 lecturas ya existentes de ese mismo tx1 -- no
+   es una clase de riesgo nueva, pero queda como deuda con ancla (ver
+   `pendientes-2026-09-13.md`): convertir las 5 a `*WithClient()`
+   (convención `createWithClient()` que el repo ya usa) es su propio
+   bloque.
+4. **La superficie real HOY es solo el `logger.warn`** — cero
+   referencias a estos dos escapes en `appfrontend-main/src` (verificado
+   por el gate, ronda 1 Y ronda 2). El campo en la respuesta HTTP existe
+   para cuando exista una UI, no hay ninguna consumiéndolo todavía.
+5. **Agregado en ronda 2** (hallazgo del gate: "62 tests pasaron sin
+   tocar los archivos de test" probaba ausencia de regresión, no que la
+   rama nueva funcionara -- ningún fake pasaba el 7° parámetro del
+   constructor, `accountsReceivableRepo` era `undefined` en el 100% de
+   las 2158+304 pruebas): `undefined`, NUNCA `[]`, normalizado en los dos
+   servicios antes de devolver -- sin esto, cualquier estadía SIN AR (el
+   caso mayoritario) serializaba `"accountsReceivableWarning": []` en vez
+   de omitir la clave, 3 estados en vez de los 2 que el docblock ya
+   declaraba. Y 6 tests unitarios nuevos (3 por orquestador, con un fake
+   `AccountsReceivableRepoForCancel`) que SÍ ejercitan la rama: AR viva →
+   entrada expuesta; solo `REVERTIDO` → filtrada, `undefined`; sin
+   `stayId` → `undefined` sin consultar el repo.
+
+### 9.3 Fuera de alcance de este bloque
+
+- Reversar la AR de verdad (`reverseTransfer()`) sigue siendo el Bloque 2
+  de §8 — la exposición de 9.2 es forense, no corrige nada por sí sola.
+- No se toca `PENDIENTE_FACTURAR` del lado de la NC más allá de la
+  exposición de 9.2 — el guard de 9.1 es lo que previene la mayoría de
+  los casos nuevos hacia adelante.
+- UI del frontend para mostrar `accountsReceivableWarning` — bloque
+  aparte, no decidido.
+- Corregir el mensaje de `CreditNoteReservationMultiInvoiceError` para
+  el caso "hay deuda corporativa viva" (el gate lo identificó como
+  bloqueo accidental con diagnóstico equivocado) — bloque aparte.
+
+### 9.4 Tercera ubicación, encontrada por el gate — sin autorizar, sin preguntar todavía
+
+El gate identificó una TERCERA ubicación del mismo concepto que ni 9.1
+(guard en la transferencia) ni 9.2 (exposición en la NC) previenen: un
+guard del lado de la EMISIÓN ("no facturar al huésped un cargo de una
+estadía YA transferida a una empresa"). Cubre el orden inverso — se
+transfiere primero (sin invoice), y DESPUÉS alguien factura al huésped —
+que 9.1 no ve (no había invoice todavía al momento de transferir) y que
+9.2 solo expone, no previene. El dueño decidió sobre transferencia y
+sobre NC; sobre emisión no se le preguntó todavía. No construir por
+cuenta propia — registrado acá como ítem abierto, sin bloque asignado.
