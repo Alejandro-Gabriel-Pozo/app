@@ -732,15 +732,19 @@ patrón que `reservation.service.ts:858-862` ya documenta), traer los
    cargos ligados a una reserva, el lock de `reservations` que ya toma este
    guard (ver más abajo) también serializa contra la ventana COMMITTEADA en
    la que `InvoiceService.requestInvoice()` deja la factura en `PENDING`
-   mientras espera la respuesta de AFIP (`invoice.service.ts:450-488`) --
-   cierra buena parte del residuo de concurrencia declarado más abajo para
-   el camino reserva. No cambia nada para cargos de orden ni solo-estadía.
-   **Límite declarado, no cerrado en este commit:** este predicado nuevo
-   NO tiene cobertura de integración contra Postgres real (depende del
-   `status` que devuelve el SQL real de `resolveInvoiceLinkage()`) ni
+   mientras espera la respuesta de AFIP (dentro del mismo
+   `transactionManager.run()` que toma el lock de `reservations` antes de
+   insertar la fila de `invoices` -- `invoice.service.ts::requestInvoice()`,
+   sin cita de línea a propósito, ver nota de anclaje más abajo) -- cierra
+   buena parte del residuo de concurrencia declarado más abajo para el
+   camino reserva. No cambia nada para cargos de orden ni solo-estadía.
+   **Límite cerrado (13/09/2026, gate `architecture-governor`, commit
+   `ea3e4a1`):** este predicado ya tenía, al momento de este commit
+   (`b09555a`), CERO cobertura de integración contra Postgres real ni
    prueba de la carrera real contra un `requestInvoice()` concurrente --
-   toda la evidencia es unitaria sobre fakes (ver
-   `docs/pendientes-2026-09-12.md`, `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001`).
+   toda la evidencia era unitaria sobre fakes. Confirmado contra Postgres
+   real y con un test de concurrencia con brazo de control, ver
+   `docs/resuelto.md`, `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001`.
 3. **Cargo *solo-estadía* (sin `reservationId` NI `orderId` — legal por el
    CHECK `chk_financial_transactions_order_or_reservation`: "a lo sumo
    uno", no "exactamente uno") con un `ISSUED` encima: fail-closed, bloquea
@@ -766,10 +770,14 @@ follow-up de docs):** el único lock que este guard toma es `reservations`
 Para cargos ligados a una **reserva**, cuando `requestInvoice()` corre
 PRIMERO (ya tomó el lock, la transferencia queda esperando), ese lock
 cierra la carrera en las dos ventanas de ESA dirección: el `INSERT`
-inicial en `PENDING` (`invoice.service.ts:450-488`, dentro de la misma
-transacción que toma el lock -- `:488` es el cierre de esa transacción,
-el borde real donde la fila `PENDING` queda visible para otra conexión)
-y el `ISSUED` final tras confirmar con AFIP -- la extensión "en vuelo"
+inicial en `PENDING` (dentro del mismo `transactionManager.run()` que
+toma el lock de `reservations` -- el commit de esa transacción, no una
+línea puntual, es el borde real donde la fila `PENDING` queda visible
+para otra conexión; ancla por método, `invoice.service.ts::requestInvoice()`,
+no por rango de línea -- corregido 13/09/2026, gate
+`architecture-governor`, la cita anterior a `:450-488` había quedado
+desactualizada por `bc5cb46`) y el `ISSUED` final tras confirmar con
+AFIP -- la extensión "en vuelo"
 de 2-bis hace que la ventana `PENDING` committeada también quede
 cubierta, no solo el estado final. **Esto son dos ventanas de la MISMA
 dirección (`requestInvoice()` primero), no "las dos direcciones que

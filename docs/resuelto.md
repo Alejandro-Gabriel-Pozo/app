@@ -569,12 +569,12 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   `invoiceId` y el `status` del mensaje salen del MISMO
   `resolveInvoiceLinkage()` que decidió bloquear, no hay mismatch posible
   ahí.
-  **Residuo NO resuelto acá, con su ancla, en
-  `docs/pendientes-2026-09-12.md` sección `## 🔍 Verificaciones
-  pendientes`:** `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` -- cero
+  **Residuo NO resuelto acá** (seguía abierto al momento de este commit,
+  `b09555a`): `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` -- cero
   cobertura de integración contra Postgres real para el predicado nuevo, y
   la carrera real contra un `requestInvoice()` concurrente sin probar.
-  Origen: `pendientes-2026-09-12.md`.
+  **Confirmado más abajo en este mismo archivo, commit `ea3e4a1`** -- ya
+  no vive en `docs/pendientes-2026-09-12.md`. Origen: `pendientes-2026-09-12.md`.
 
 - **`CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` -- decisión del dueño tomada
   y expuesto (no bloqueado), commit `bc5cb46` (13/09/2026, gate
@@ -628,3 +628,52 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   como en §9.4), y `CITY-LEDGER-GUARD-AR-VIVA-PREDICATE-TRIPLE-001` (el
   predicado "AR viva" escrito 3 veces, sin extraer a un helper
   compartido). Origen: `pendientes-2026-09-12.md`.
+
+- **`CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` -- confirmado contra
+  Postgres real, commit `ea3e4a1` (13/09/2026, gate
+  `architecture-governor`).** Residuo de verificación de
+  `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-001` (§9.1, commit `b09555a`): ese
+  bloque extendió el guard de
+  `AccountsReceivableService.transferStayBalanceToReceivable()` para
+  bloquear también sobre un comprobante EN VUELO
+  (`NOT_ISSUED`/`PENDING`, o `FAILED_UNCERTAIN` con `afipContacted`),
+  pero toda la evidencia era unitaria contra `FakeInvoiceRepository`.
+  5 tests nuevos en `accounts-receivable-invoice-linkage.integration.test.ts`,
+  corridos contra Postgres real con
+  `TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npx vitest run --config vitest.integration.config.ts src/tests/integration/accounts-receivable-invoice-linkage.integration.test.ts`
+  (el entorno de esta sesión sí tiene Postgres disponible -- la suite se
+  salteaba en silencio por falta de esa variable, no por ausencia real
+  del servidor; el config no-default es obligatorio, y `npm run
+  test:integration` es ESE MISMO comando sin la variable -- hay que
+  prefijársela igual, `TEST_DATABASE_URL=... npm run test:integration`,
+  porque sin ella y fuera de CI `skipIfNoDb` saltea la suite en silencio,
+  `src/tests/integration/helpers/db.ts`):
+  `NOT_ISSUED PENDING` bloquea (conteo real de las 3
+  escrituras que hace la transferencia -- `PAYMENT` del huésped, `CHARGE`
+  de la empresa, fila de AR -- no solo ausencia de excepción);
+  `FAILED_UNCERTAIN` + `afipContacted` bloquea; los 2 espejos
+  (`FAILED_UNCERTAIN` sin contactar, `REJECTED`) NO bloquean y sí dejan
+  las 3 escrituras; y un test de concurrencia real -- 2 conexiones del
+  pool, una sosteniendo el mismo lock y orden que
+  `InvoiceService.requestInvoice()` (`reservations FOR UPDATE` antes del
+  INSERT en `invoices`, todavía sin commitear) mientras la otra intenta
+  transferir, con un brazo de CONTROL sin ningún lock previo para
+  distinguir "bloqueó por el `FOR UPDATE` real" de "algo más frenó la
+  conexión" (mismo patrón que `for-key-share-lock-semantics.integration.test.ts`).
+  17/17 en el archivo (12 preexistentes + 5 nuevos), suite unitaria
+  completa 2190/2190 sin regresión, `tsc --noEmit` limpio.
+  Gate: APPROVED WITH CONDITIONS -- 3 correcciones aplicadas: (1) ancla
+  de línea corregida (el comentario citaba `invoice.service.ts:451-453`,
+  desactualizado -- corregido a citar el método por nombre y
+  comportamiento, no un rango de línea, mismo criterio que
+  `SCHEMA-ANCHOR-DRIFT-001`); (2) el conteo de side-effects ahora incluye
+  el `PAYMENT` del huésped (antes el título del primer test afirmaba "no
+  crea PAYMENT/CHARGE/AR" pero solo se contaban `CHARGE`/AR); (3) 2
+  limitaciones declaradas en el propio comentario del test de
+  concurrencia -- la ventana de 600ms es un heurístico de reloj de pared
+  (cómodo en Postgres local, al límite contra un `TEST_DATABASE_URL`
+  remoto con latencia real) y la prueba solo aplica a cargos ligados a
+  una RESERVA (`requestInvoice()` no toma lock de `reservations` cuando
+  `tx.reservationId` es nulo -- superficie ya registrada y mitigada en
+  `CITY-LEDGER-GUARD-STANDALONE-CHARGE-001`).
+  Origen: `pendientes-2026-09-12.md`.

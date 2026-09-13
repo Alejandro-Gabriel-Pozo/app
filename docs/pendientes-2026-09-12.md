@@ -130,22 +130,6 @@ cuando se pushea.
   sería ampliar un lado sin que el mecanismo real exista). Se angosta el
   cast (y probablemente se amplía el tipo) junto con el Bloque 2 de §8
   (`reverseTransfer()`) — no antes, no aislado.
-- **`CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001`** — Bloque 6, §9.1
-  extensión "en vuelo" (13/09/2026, gate `architecture-governor`, commit
-  `b09555a` -- decisión del dueño de extender ya tomada y ya implementada,
-  esto es SOLO el residuo de verificación, no una decisión pendiente). El
-  predicado nuevo (bloquear sobre `NOT_ISSUED` `PENDING`/`FAILED_UNCERTAIN`+
-  `afipContacted`) tiene 6 tests nuevos, todos unitarios contra
-  `FakeInvoiceRepository` -- **cero cobertura de integración contra
-  Postgres real**, y el predicado depende del `status` que devuelve el SQL
-  real de `resolveInvoiceLinkage()` (`sql.invoice.repository.ts:316`).
-  Tampoco se probó la carrera real: una `transferStayBalanceToReceivable()`
-  concurrente con un `requestInvoice()` que recién está insertando la fila
-  `PENDING` (`invoice.service.ts:450-488`). Confirmar: agregar un test de
-  integración que seedee una `invoice` real en `PENDING`/`FAILED_UNCERTAIN`
-  y corra la transferencia contra Postgres real, y si el tiempo lo permite,
-  un test de concurrencia real (2 conexiones, una insertando el `PENDING`
-  dentro de su transacción mientras la otra intenta transferir).
 - **`CITY-LEDGER-GUARD-RETRY-EMITS-001`** — §9.4, encontrado por el gate
   `architecture-governor` al revisar el cierre de
   `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` (13/09/2026, commit
@@ -235,8 +219,10 @@ cuando se pushea.
   `FakeAccountsReceivableRepo` -- cero cobertura de integración contra el
   `getByStayId()` real de `SqlAccountsReceivableRepository` sobre
   Postgres, y ninguna prueba end-to-end vía `POST /api/invoices`. Mismo
-  hueco que `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` de arriba,
-  aplicado al camino de emisión en vez del de transferencia. Confirmar:
+  hueco que `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001` (§9.1,
+  cerrado en `docs/resuelto.md`, commit `ea3e4a1`) tenía antes de
+  cerrarse, aplicado al camino de emisión en vez del de transferencia.
+  Confirmar:
   agregar un test de integración que seedee una `accounts_receivable`
   real vinculada a la `stayId` del cargo y corra `requestInvoice()`
   contra Postgres real, y si el tiempo lo permite, un test end-to-end vía
@@ -268,6 +254,22 @@ cuando se pushea.
   lugares a mano. El tipo compartido (`AccountsReceivableWarningEntry`)
   ya vive en `cancel-with-credit-note.ts:56` -- casa natural para un
   helper, no extraído todavía. Bloque aparte, no decidido.
+- **`CITY-LEDGER-GUARD-ADR-ANCHOR-DRIFT-001`** (13/09/2026, gate
+  `architecture-governor`, encontrado al cerrar
+  `CITY-LEDGER-GUARD-INVOICE-INFLIGHT-VERIFY-001`). `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:677`
+  cita `invoice.service.ts:451-453`/`:604-606` como el lock que
+  serializa contra `requestInvoice()` -- esas líneas ya quedaron
+  desactualizadas por `bc5cb46` (el código real se movió). El propio
+  repo ya declaró esa ancla podrida en otro archivo
+  (`src/tests/integration/accounts-receivable-invoice-linkage.integration.test.ts:742`,
+  comentario del test de concurrencia de §9.1), pero el ADR nunca se
+  corrigió -- dos afirmaciones contradictorias sobre la misma cita, en
+  dos archivos distintos. Confirmar: reemplazar por cita por método
+  (`invoice.service.ts::requestInvoice()`, sin rango de línea), mismo
+  criterio que `SCHEMA-ANCHOR-DRIFT-001`. No cerrado en este bloque a
+  propósito (mezclar el fix con el cierre de `VERIFY-001` habría
+  combinado dos motivos distintos en un mismo commit) -- bloque de docs
+  chico y aparte.
 
 **Deuda de migración declarada (12/09/2026, gate `architecture-governor`):**
 este archivo tiene **62 menciones más de ✅** fuera de las 3 secciones que sí
