@@ -2542,15 +2542,100 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   **La única precondición externa** que bloquea encarar esto es la
   secuenciación detrás del HOLD de `invoice_drafts` en
   `FACT-BORRADOR-001` (§9 ítem 3 del diseño) -- "no una pregunta de
-  nadie", solo falta de tiempo/gate. Pero el diseño deja 2 residuos más
-  que esta corrección no puede enterrar: el ítem 8 de §9 queda
-  "RESUELTO por el dueño" en el fondo, pero "el valor default, el
-  mecanismo de configuración y qué pasa al vencer siguen como bloque de
-  implementación (sin gate todavía)"; y el ítem 6 de §9 es "Parcial",
+  nadie", solo falta de tiempo/gate. El ítem 6 de §9 es "Parcial",
   resolución condicional, explícitamente "no es un 'resuelto' liso como
-  2/4". **Bloque propio, sin fecha, sin encarar todavía** -- decisión
-  explícita del dueño (11/09/2026) de cerrar primero 1c-ii-c chico y
-  tratar esto aparte.
+  2/4" -- verificado 13/09/2026 que no admite mecanismo de
+  configuración ni grounding nuevo (la ecuación AFIP no es negociable
+  por nadie; la clasificación por línea la resuelve el operador caso a
+  caso, ya cubierto por `FACT-BORRADOR-001` §25.7/§25.8). **Bloque
+  propio, sin fecha, sin encarar todavía** -- decisión explícita del
+  dueño (11/09/2026) de cerrar primero 1c-ii-c chico y tratar esto
+  aparte.
+
+  **Ítem 8 de §9 -- DECIDIDO (13/09/2026, grounding `auditor-circuitos-erp`
+  a 5 sistemas: Odoo/ERPNext/Dolibarr verificados en código, QloApps
+  parcial código + doc, Cloudbeds solo doc con red bloqueada).** El
+  dueño ya había resuelto que existe y es configurable por tenant
+  (12/09/2026); quedaban 3 sub-preguntas, ahora cerradas:
+  - **Valor default: apagada (sin ventana) por defecto** -- consenso
+    4/4 entre los sistemas con ventana configurable (Odoo 5 lock dates
+    vacíos, ERPNext 3 campos sin default, PrestaShop/QloApps
+    `PS_ORDER_RETURN = 0`; Cloudbeds queda afuera de este conteo -- su
+    ventana de 24hs no es configurable, no es instancia de la misma
+    pregunta). Sin efecto de comportamiento hoy (no hay ventana ahora
+    tampoco), por eso cerrado por consenso sin `AskUserQuestion`, mismo
+    criterio que "borrador abandonado" de `FACT-BORRADOR-001` §26.3.
+  - **Sub-decisión de evidencia más débil, NO cubierta por el consenso
+    de arriba -- a confirmar con el dueño recién al implementar (la
+    ventana apagada no le da efecto todavía):** si se activa, ¿desde
+    dónde se mide? Unidad días, medida desde el `created_at` del
+    `ADJUSTMENT` original (no desde la creación del borrador de NC) es
+    la recomendación, pero se apoya en **un solo** precedente del grupo
+    (`stock_frozen_upto_days` de ERPNext, `add_days(posting_date, N)
+    &lt;= today()` -- 1/5, no 4/5) y tiene una alternativa igual de
+    razonable ("cuánto hace que el operador lo tiene encima" en vez de
+    "cuánto hace que pasó el problema") -- criterio D5 del `CLAUDE.md`
+    raíz de este repo: no hereda la confianza del ítem de arriba solo
+    por estar en el mismo bullet. Sí descartado: un `lock_date` sobre
+    la fecha del documento (los 3 sistemas contables) **no dispararía
+    nunca** acá, porque la NC se emite con fecha de hoy.
+  - **Mecanismo: columna tipada en `business_profile`**, no tabla de
+    settings genérica ni hardcode -- precedente de los 2 sistemas que
+    evolucionaron este eje (Odoo `res.company`, ERPNext migró de
+    singleton global a `Company`); el contraejemplo (Dolibarr,
+    clave-valor genérico) es también el único sin bypass por rol ni
+    granularidad -- Dolibarr es además el contraejemplo del ítem 9,
+    aunque por otro motivo (ahí es el único sin origen por línea, no
+    por su forma de configuración; el ítem 9 nunca evaluó este patrón).
+    `business_profile` ya es el registro de política fiscal por tenant
+    en este repo (`default_iva_rate`) -- coincide con la conclusión
+    independiente de ORDER-10 B4 (`docs/pendientes-2026-09-05.md:1136`,
+    mismo precedente Odoo `res.company`), no descansa en un grounding
+    único.
+  - **Comportamiento al vencer: DECIDIDO por el dueño vía
+    `AskUserQuestion` -- solo advertir, no bloquear.** Coincide con el
+    hallazgo transversal del grounding: 0/5 sistemas dejan la acción
+    sin salida al vencer (todos bloquean con excepción por rol, o
+    redirigen a otro instrumento -- nunca "no hay nada que hacer").
+    Descarta la alternativa (bloquear + excepción por rol), que hubiera
+    exigido reabrir el ítem 1 (`EMISOR_NOTA_CREDITO`, un solo grupo,
+    12/09/2026) para agregar un segundo rol de excepción -- sin eso,
+    "requiere un rol" colapsa en el mismo rol que ya se pedía. El ítem
+    1 queda intacto, sin reabrir.
+
+  **Deuda de documento que este registro deja abierta, a propósito no
+  corregida acá:** `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md`
+  §9, fila del ítem 8, sigue diciendo (v7.2) "el valor default, el
+  mecanismo de configuración y qué pasa al vencer siguen como bloque de
+  implementación (sin gate todavía)" -- las 3 quedan decididas con este
+  bullet, dos de ellas por el dueño. Propagar a v7.3 cuando se abra el
+  bloque de implementación de §9 ítem 8, no en este commit de docs
+  (mismo criterio que `SCHEMA-ANCHOR-DRIFT-001`: no reescribir un
+  documento gate-aprobado fuera de su propio ciclo de revisión).
+
+  **Reconciliación cruzada sin resolver, para no perderla:** ORDER-10
+  B4 (`docs/pendientes-2026-09-05.md:1136`) y este ítem 8 proponen los
+  dos una columna de fecha/plazo fiscal en `business_profile`, por
+  controles distintos (cierre de período sobre fecha de documento vs.
+  ventana desde el `created_at` del `ADJUSTMENT`). No se contradicen --
+  la ventana de acá explícitamente "no dispara nunca" con la semántica
+  de period-lock -- pero nadie reconcilió todavía si son un mecanismo o
+  dos. Resolver antes de escribir la primera de las dos columnas.
+
+  **Hallazgo adicional del grounding, más importante que el mecanismo
+  de ventana en sí:** el ítem 8 trata como una sola cosa dos
+  "lateness" distintas -- emitir la NC tarde (fiscal, resuelto arriba)
+  y cancelar la orden/reserva tarde (`§7.1` tx2). El control estándar
+  de industria para lo segundo no es un reloj, es RE-VERIFICACIÓN DE
+  ESTADO (QloApps bloquea por "ya checked-in/checked-out" o "ya
+  solicitada la cancelación"; Odoo por `_need_cancel_request()`, ya
+  groundeado en `docs/pendientes-2026-09-05.md:1133`). El repo ya tiene
+  ese guard del lado reservas (`CreditNoteReservationInvoiceSetChangedError`)
+  y declara que le falta del lado órdenes -- hallazgo M3 punto 5 de §7.1
+  del diseño, hoy "riesgo residual aceptado, no decidido". El grounding
+  dice que ESE guard faltante es el control real, y la ventana temporal
+  es el control débil -- si hay que priorizar uno de los dos, priorizar
+  el guard de órdenes, no la ventana.
 
   **`1d` sigue en HOLD**, sin fecha.
 - **`RESERVATION-STATUS-EXPIRED-FRONTEND-01`** — implementación cerrada,
