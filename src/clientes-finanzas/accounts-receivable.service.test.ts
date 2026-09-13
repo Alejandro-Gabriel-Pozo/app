@@ -21,6 +21,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { InvoiceRepository, InvoiceLinkage } from '../facturacion/invoice.repository.js';
+import type { Reservation } from '../reservas/Reservation.js';
 
 const TEST_BUSINESS_ID = 'biz-test';
 const TEST_STAY_ID = 'stay-1';
@@ -167,7 +168,7 @@ class FakeReservationRepositoryForTransfer implements ReservationRepoForTransfer
   async getByIdWithLock(_client: SqlClient, id: string) {
     this.ops.push('lock-reservation');
     this.lockCalls.push(id);
-    return { id } as unknown as import('../reservas/Reservation.js').Reservation;
+    return { id } as unknown as Reservation;
   }
 }
 

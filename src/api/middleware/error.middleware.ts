@@ -180,6 +180,10 @@ function domainErrorStatus(error: DomainError): number {
     // 400/409. El comentario va acá arriba, no entre los case: un case con
     // cuerpo solo-comentario deja de contar como vacío y eslint
     // (no-fallthrough) pide un break (ver el bloque 402 más abajo).
+    //
+    // Bloque 6, §9.1 (13/09/2026) -- STAY_CHARGE_ALREADY_INVOICED entra al
+    // mismo grupo: documento fiscal ya emitido, acción no completa, no
+    // reintentar.
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
@@ -188,8 +192,6 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE':
     case 'CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED':
     case 'CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE':
-    // Bloque 6, §9.1 (13/09/2026) -- mismo grupo: documento fiscal ya
-    // emitido, acción no completa, no reintentar.
     case 'STAY_CHARGE_ALREADY_INVOICED':
       return 422;
 
