@@ -15,7 +15,11 @@
  *
  * ## Handlers registrados
  * - `reservation.confirmed`      → crea CHARGE PENDING en financial_transactions
- * - `reservation.completed`      → pasa CHARGE/ADJUSTMENT a SETTLED (por reservation_id, blanket update)
+ * - `reservation.completed`      → pasa CHARGE/ADJUSTMENT a SETTLED (por reservation_id, blanket
+ *                                   update); City Ledger Bloque 3b (13/09/2026) además detecta y
+ *                                   loguea (no bloquea, no revierte) si el saldo neto de la
+ *                                   estadía no quedó en cero -- `evento:
+ *                                   reservation_completed_ar_divergencia`
  * - `reservation.cancelled`      → pasa CHARGE/ADJUSTMENT a VOIDED (si existía); City Ledger
  *                                   Bloque 3a (13/09/2026) además detecta y loguea (no bloquea,
  *                                   no revierte) si la estadía tiene una AR no revertida en una
@@ -29,6 +33,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { round2 } from '../domain/money.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
 import type {
   FinancialTransactionRepository,
@@ -143,7 +148,7 @@ export function registerFinancialHandlers(
   // inventario, que escucha los MISMOS `order.confirmed`/`order.cancelled`.
   worker
     .on('reservation.confirmed',      handleReservationConfirmed(financialRepo, businessProfileRepo), { name: 'financial:reservation.confirmed' })
-    .on('reservation.completed',      handleReservationCompleted(financialRepo),                      { name: 'financial:reservation.completed' })
+    .on('reservation.completed',      handleReservationCompleted(financialRepo, stayRepo, accountsReceivableRepo), { name: 'financial:reservation.completed' })
     .on('reservation.cancelled',      handleReservationCancelled(financialRepo, invoiceRepo, db, stayRepo, accountsReceivableRepo), { name: 'financial:reservation.cancelled' })
     .on('reservation.price_adjusted', handleReservationPriceAdjusted(financialRepo, businessProfileRepo, stayRepo), { name: 'financial:reservation.price_adjusted' })
     .on('order.confirmed',       handleOrderConfirmed(financialRepo, businessProfileRepo, transactionManager), { name: 'financial:order.confirmed' })
@@ -227,10 +232,86 @@ export function handleReservationConfirmed(
 
 export function handleReservationCompleted(
   financialRepo: FinancialTransactionRepository,
+  // City Ledger Bloque 3b (13/09/2026, gate `architecture-governor`, §4.6
+  // de docs/diseno-reconciliacion-city-ledger-2026-09-12.md) -- detección
+  // de divergencia de MONTO (no existencia, ver §4.6 para por qué
+  // existencia no sirve acá) en el saldo de la estadía. Mismo `Pick` que
+  // `handleReservationCancelled` reusa de `handleReservationPriceAdjusted`,
+  // requeridos, no opcionales -- mismo criterio que Bloque 3a.
+  stayRepo: Pick<StayRepository, 'findByReservation'>,
+  accountsReceivableRepo: Pick<AccountsReceivableRepository, 'getByStayId'>,
 ) {
   return async (event: DomainEvent): Promise<void> => {
     const { reservationId } = event.payload as { reservationId: string };
     await financialRepo.settleByReservationId(reservationId);
+
+    // City Ledger Bloque 3b (§4.6) -- el invariante nace en
+    // `transferStayBalanceToReceivable()` (`accounts-receivable.service.ts:219`),
+    // no en `settleByReservationId()` de arriba (ese solo cambia
+    // `status`, `getNetBalanceByStayId()` ya suma `PENDING`+`SETTLED` por
+    // igual -- correr esto DESPUÉS es disciplina de orden -- el trabajo
+    // real primero, la detección después, fail-open -- no parte del
+    // cálculo). "0 exacto" es relativo al saldo que esa transferencia
+    // leyó, no una garantía transaccional dura (§4.6 documenta por qué).
+    //
+    // Causas reales que mueven el saldo después de una transferencia:
+    // un `ADJUSTMENT` de precio nuevo (`confirmPriceAdjustment()`), un
+    // cargo nuevo a la habitación (`handleOrderConfirmed`), un `CHARGE`
+    // de `approveScheduleChange()`, o un `ADJUSTMENT` del escape de NC de
+    // una orden de la estadía -- NUNCA un `REFUND` (ningún productor real
+    // le setea `stay_id`). Positivo = la estadía quedó con un cargo sin
+    // compensar; negativo = un `ADJUSTMENT` de crédito posterior a la
+    // transferencia bajó el saldo -- nunca "sobrepago"
+    // (`chk_financial_transactions_amount` exige `amount >= 0` salvo
+    // `ADJUSTMENT`, así que un pago de más es estructuralmente invisible
+    // para este cálculo, ver `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`).
+    //
+    // Falsos positivos DECLARADOS, no resueltos acá (§4.6): un cargo
+    // posterior a la transferencia que el huésped ya pagó no compensa
+    // (`recordPayment()` nunca setea `stay_id`); una estadía cerrada con
+    // `overridePendingBalance` ya revisada por un humano. Por eso el
+    // mensaje describe LO MEDIDO, nunca afirma una causa como hecho
+    // cierto. Fail-open, mismo criterio que Bloque 3a: el trabajo real
+    // (el settle de arriba) ya commiteó -- una falla acá no puede
+    // propagar y mandar a reintento algo que ya se completó.
+    try {
+      const stay = await stayRepo.findByReservation(reservationId, event.businessId);
+      if (stay) {
+        const arsEnRiesgo = (await accountsReceivableRepo.getByStayId(stay.id))
+          .filter((ar) => (ar.status as string) !== 'REVERTIDO');
+        if (arsEnRiesgo.length > 0) {
+          const balance = round2(await financialRepo.getNetBalanceByStayId(stay.id));
+          if (balance !== 0) {
+            logger.warn(
+              {
+                evento: 'reservation_completed_ar_divergencia',
+                tenant: event.businessId,
+                reservationId,
+                stayId: stay.id,
+                balance,
+                accountsReceivable: arsEnRiesgo.map((ar) => ({
+                  accountsReceivableId: ar.id,
+                  companyCustomerId: ar.companyCustomerId,
+                  status: ar.status,
+                  amount: ar.amount,
+                })),
+              },
+              '[outbox] la estadía no quedó en saldo cero al completar la reserva -- puede ser un ajuste de precio posterior a la transferencia, un cargo nuevo a la habitación, o una nota de crédito sobre una orden de la estadía',
+            );
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        {
+          evento: 'reservation_completed_ar_deteccion_fallida',
+          tenant: event.businessId,
+          reservationId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        '[outbox] detección de divergencia de AR post-completado falló -- la reserva ya se completó, esto solo afecta la visibilidad',
+      );
+    }
   };
 }
 

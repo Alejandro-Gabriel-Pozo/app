@@ -6,6 +6,7 @@ import {
   handleReservationConfirmed,
   handleReservationPriceAdjusted,
   handleReservationCancelled,
+  handleReservationCompleted,
 } from './outbox.handlers.js';
 import { logger } from '../logger.js';
 import type { DomainEvent } from '../repositories/domain-event.repository.js';
@@ -86,6 +87,10 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   public crearLanza: Error | null = null;
   public settleLanza: Error | null = null;
 
+  /** City Ledger Bloque 3b -- `netBalanceByStayId` configurable por test. */
+  public netBalanceByStayId = 0;
+  public netBalanceByStayIdCalls: string[] = [];
+
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) {
     this.created.push(tx);
     return { ...tx, createdAt: new Date() };
@@ -100,7 +105,11 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   async getByStayId() { return []; }
   async getByShiftId() { return []; }
   async getByIdempotencyKey() { return undefined; }
-  async settleByReservationId() { return 0; }
+  public settleReservaLlamadas: string[] = [];
+  async settleByReservationId(reservationId: string) {
+    this.settleReservaLlamadas.push(reservationId);
+    return 0;
+  }
   async voidByReservationId(reservationId: string, businessId: string) {
     this.voidReservaLlamadas.push([reservationId, businessId]);
     return this.voidReservaDesenlace;
@@ -122,7 +131,10 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
   }
 
   async getNetBalanceByCustomerId() { return 0; }
-  async getNetBalanceByStayId() { return 0; }
+  async getNetBalanceByStayId(stayId: string) {
+    this.netBalanceByStayIdCalls.push(stayId);
+    return this.netBalanceByStayId;
+  }
   async getSettledPaymentTotalForReservation() { return 0; }
   async getCollectedPaymentTotalForReservation() { return 0; }
   async linkStayToReservationCharges() { return 0; }
@@ -863,6 +875,163 @@ describe('outbox.handlers — handleReservationCancelled (RESERVA-10, 05/09/2026
     expect(logger.error).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('anomalía de integridad'),
+    );
+  });
+});
+
+describe('outbox.handlers — handleReservationCompleted (City Ledger Bloque 3b, 13/09/2026)', () => {
+  let financialRepo: FakeFinancialTransactionRepository;
+  let stayRepo: FakeStayRepository;
+  let accountsReceivableRepo: FakeAccountsReceivableRepository;
+  const completar = () => handleReservationCompleted(financialRepo, stayRepo, accountsReceivableRepo);
+
+  beforeEach(() => {
+    financialRepo = new FakeFinancialTransactionRepository();
+    // `stay = null` por defecto -- caso más común (turnos/servicios sin
+    // City Ledger), reproduce el comportamiento de antes de este bloque.
+    stayRepo = new FakeStayRepository();
+    accountsReceivableRepo = new FakeAccountsReceivableRepository();
+    vi.mocked(logger.warn).mockClear();
+  });
+
+  it('settlea la reserva pasando reservationId, antes de la detección de §4.6', async () => {
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(financialRepo.settleReservaLlamadas).toEqual(['res-1']);
+  });
+
+  it('resuelve el stay con el businessId del evento -- multi-tenant', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR')];
+    financialRepo.netBalanceByStayId = 50;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(stayRepo.calls).toEqual([{ reservationId: 'res-1', businessId: 'biz-test' }]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia', tenant: 'biz-test' }),
+      expect.anything(),
+    );
+  });
+
+  it('sin estadía -> no consulta AR ni saldo, no loguea', async () => {
+    stayRepo.stay = null;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(accountsReceivableRepo.calls).toHaveLength(0);
+    expect(financialRepo.netBalanceByStayIdCalls).toHaveLength(0);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia' }),
+      expect.anything(),
+    );
+  });
+
+  it('con estadía pero sin AR asociada -> consulta AR, no consulta saldo, no loguea', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [];
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(accountsReceivableRepo.calls).toEqual(['stay-1']);
+    expect(financialRepo.netBalanceByStayIdCalls).toHaveLength(0);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia' }),
+      expect.anything(),
+    );
+  });
+
+  it('con estadía y solo AR REVERTIDA -> no consulta saldo, no loguea (mismo cast que Bloque 3a)', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('REVERTIDO')];
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(financialRepo.netBalanceByStayIdCalls).toHaveLength(0);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia' }),
+      expect.anything(),
+    );
+  });
+
+  it('con AR viva y saldo en cero -> camino feliz, no loguea', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR')];
+    financialRepo.netBalanceByStayId = 0;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(financialRepo.netBalanceByStayIdCalls).toEqual(['stay-1']);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia' }),
+      expect.anything(),
+    );
+  });
+
+  it('con AR viva y saldo positivo -> loguea warn con balance + proyección de AR', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR', { id: 'ar-9', amount: 1234 })];
+    financialRepo.netBalanceByStayId = 50;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evento: 'reservation_completed_ar_divergencia',
+        reservationId: 'res-1',
+        stayId: 'stay-1',
+        balance: 50,
+        accountsReceivable: [expect.objectContaining({ accountsReceivableId: 'ar-9', amount: 1234 })],
+      }),
+      expect.stringContaining('no quedó en saldo cero'),
+    );
+  });
+
+  it('con AR viva y saldo negativo -> también loguea (ADJUSTMENT de crédito posterior, no "sobrepago")', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR')];
+    financialRepo.netBalanceByStayId = -30;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia', balance: -30 }),
+      expect.anything(),
+    );
+  });
+
+  it('mezcla REVERTIDO + COBRADO -> el array logueado solo trae la viva (COBRADO cuenta como viva a propósito)', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('REVERTIDO', { id: 'ar-vieja' }), makeAR('COBRADO', { id: 'ar-nueva' })];
+    financialRepo.netBalanceByStayId = 10;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountsReceivable: [expect.objectContaining({ accountsReceivableId: 'ar-nueva' })],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('tolerancia: 1 centavo de diferencia SÍ loguea -- sin tolerancia adicional a round2', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR')];
+    financialRepo.netBalanceByStayId = 0.01;
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia', balance: 0.01 }),
+      expect.anything(),
+    );
+  });
+
+  it('arrastre de punto flotante que redondea a cero -> no loguea (round2 absorbe el artefacto)', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.accountsReceivable = [makeAR('PENDIENTE_FACTURAR')];
+    financialRepo.netBalanceByStayId = 0.0049; // round2 -> 0
+    await completar()(fakeReservationEvent({ reservationId: 'res-1' }));
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ evento: 'reservation_completed_ar_divergencia' }),
+      expect.anything(),
+    );
+  });
+
+  it('fail-open: si getByStayId() tira, no propaga -- el handler ya completó el settle', async () => {
+    stayRepo.stay = makeStay('stay-1');
+    accountsReceivableRepo.error = new Error('conexión caída');
+    await expect(completar()(fakeReservationEvent({ reservationId: 'res-1' })))
+      .resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evento: 'reservation_completed_ar_deteccion_fallida',
+        reservationId: 'res-1',
+        err: 'conexión caída',
+      }),
+      expect.stringContaining('detección de divergencia de AR post-completado falló'),
     );
   });
 });
