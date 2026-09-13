@@ -1285,7 +1285,9 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 - **Caso 3, residuo Q2 — reconciliación de City Ledger con montos
   `PENDING` transferidos — DECIDIDO (13/09/2026).**
   Ancla: `accounts-receivable.service.ts::transferStayBalanceToReceivable`
-  (docblock del método, commit `ad28d2e`). Desde el fix de
+  (docblock del método -- sin pin de commit, mismo criterio de cita por
+  firma que el resto de este bullet; el docblock se actualizó de nuevo en
+  `9c051d6` para reflejar esta decisión). Desde el fix de
   `getNetBalanceByStayId()` (caso 3,
   `docs/investigacion-decisiones-bloqueado-2026-09-12.md`),
   `transferStayBalanceToReceivable` puede transferir un saldo que
