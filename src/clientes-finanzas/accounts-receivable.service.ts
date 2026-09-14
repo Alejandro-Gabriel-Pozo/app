@@ -19,6 +19,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { SqlClient } from '../repositories/sql.client.js';
 import type { AccountsReceivableRepository, AccountReceivable, AccountsReceivableStatus } from './accounts-receivable.repository.js';
 import type { FinancialTransactionRepository } from './financial-transaction.repository.js';
 import type { StayRepository } from '../pms-estadias/stay.repository.js';
@@ -320,70 +321,112 @@ export class AccountsReceivableService {
         }
       }
 
-      // CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1
-      // (13/09/2026) -- el id se genera ACÁ, mismo motivo que
-      // `companyChargeId` un poco más abajo: hace falta guardarlo en
-      // `guestPaymentTransactionId` de la fila de accounts_receivable sin
-      // depender del retorno nullable de `createWithClient()`.
-      const guestPaymentId = randomUUID();
-      await this.financialRepo.createWithClient(client, {
-        id:         guestPaymentId,
-        businessId: input.businessId,
-        customerId: stay.customerId,
-        stayId:     input.stayId,
-        type:       'PAYMENT',
-        amount:     balance,
-        currency,
-        status:     'SETTLED',
-        notes:      `Transferido a cuenta por cobrar — empresa ${input.companyCustomerId}`,
-      });
-
-      // F1-Pieza 3 (23/08/2026, pendientes-2026-08-23.md) — pedido explícito
-      // del dueño: la deuda tiene que aparecer en la cuenta corriente de la
-      // EMPRESA (CustomerAccountService.getStatement()) desde el momento de
-      // la transferencia, no recién cuando se facture — hasta ahora la
-      // deuda vivía solo en `accounts_receivable`, invisible en el ledger
-      // normal. `stayId` A PROPÓSITO NO va acá (a diferencia del PAYMENT de
-      // arriba): `getNetBalanceByStayId()` suma por `stay_id` sin filtrar
-      // por `customer_id` -- si este CHARGE llevara el mismo `stayId` que el
-      // PAYMENT que acaba de saldar el folio del huésped, el saldo de la
-      // ESTADÍA volvería a quedar positivo (el PAYMENT lo neutraliza, este
-      // CHARGE lo reabriría) y el check-out que la transferencia recién
-      // desbloqueó volvería a rechazar con StayBalanceOwedError. `reservationId`
-      // (F1-Pieza 2: documento de origen obligatorio) cumple el mismo rol de
-      // trazabilidad sin ese efecto colateral -- no participa en ningún
-      // cálculo de saldo por estadía.
-      // C1-Fase C (23/08/2026) -- el id se genera ACÁ (no se lee del
-      // resultado de createWithClient) para poder guardarlo en la fila de
-      // accounts_receivable de abajo sin depender del tipo de retorno
-      // nullable de createWithClient (solo es null en el path idempotente,
-      // que esta llamada no usa).
-      const companyChargeId = randomUUID();
-      await this.financialRepo.createWithClient(client, {
-        id:            companyChargeId,
-        businessId:    input.businessId,
-        customerId:    input.companyCustomerId,
-        reservationId: stay.reservationId,
-        type:          'CHARGE',
-        amount:        balance,
-        currency,
-        status:        'SETTLED',
-        notes:         `Cargo por estadía transferida a cuenta por cobrar — estadía ${input.stayId}`,
-      });
-
-      return this.arRepo.createWithClient(client, {
-        id:                randomUUID(),
+      return this.postStayTransfer(client, {
         businessId:        input.businessId,
         stayId:            input.stayId,
+        stayCustomerId:    stay.customerId,
+        reservationId:     stay.reservationId,
         companyCustomerId: input.companyCustomerId,
-        financialTransactionId: companyChargeId,
-        guestPaymentTransactionId: guestPaymentId,
-        amount:            balance,
+        balance,
         currency,
-        status:            'PENDIENTE_FACTURAR',
         transferredBy:     input.transferredBy,
         notes:             input.notes ?? null,
       });
+    });
+  }
+
+  /**
+   * Refactor puro (14/09/2026, previo al Bloque 3c de
+   * docs/diseno-reconciliacion-city-ledger-2026-09-12.md §7 punto 3 --
+   * "refactor previo, en su propio commit, sin cambio de comportamiento,
+   * probado por la suite existente ... antes de escribir una sola línea
+   * del mecanismo nuevo"). Extrae el "posteo" de
+   * `transferStayBalanceToReceivable()` (crear el PAYMENT del huésped, el
+   * CHARGE de la empresa y la fila de `accounts_receivable`, las 3 en la
+   * MISMA transacción) sin cambiar una sola línea de lógica -- la firma
+   * está pensada solo para este único caller, no para lo que
+   * `reverseTransfer()` vaya a necesitar (correctedBalance, replacesArId)
+   * más adelante -- eso se agrega en su propio commit, cuando haga falta.
+   */
+  private async postStayTransfer(
+    client: SqlClient,
+    params: {
+      businessId: string;
+      stayId: string;
+      /** `stay.customerId` -- el huésped a quien pertenece el folio que se salda. */
+      stayCustomerId: string;
+      /** `stay.reservationId` -- documento de origen del CHARGE contra la empresa. */
+      reservationId: string;
+      companyCustomerId: string;
+      balance: number;
+      currency: string;
+      transferredBy: string;
+      notes?: string | null;
+    },
+  ): Promise<AccountReceivable> {
+    // CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1
+    // (13/09/2026) -- el id se genera ACÁ, mismo motivo que
+    // `companyChargeId` un poco más abajo: hace falta guardarlo en
+    // `guestPaymentTransactionId` de la fila de accounts_receivable sin
+    // depender del retorno nullable de `createWithClient()`.
+    const guestPaymentId = randomUUID();
+    await this.financialRepo.createWithClient(client, {
+      id:         guestPaymentId,
+      businessId: params.businessId,
+      customerId: params.stayCustomerId,
+      stayId:     params.stayId,
+      type:       'PAYMENT',
+      amount:     params.balance,
+      currency:   params.currency,
+      status:     'SETTLED',
+      notes:      `Transferido a cuenta por cobrar — empresa ${params.companyCustomerId}`,
+    });
+
+    // F1-Pieza 3 (23/08/2026, pendientes-2026-08-23.md) — pedido explícito
+    // del dueño: la deuda tiene que aparecer en la cuenta corriente de la
+    // EMPRESA (CustomerAccountService.getStatement()) desde el momento de
+    // la transferencia, no recién cuando se facture — hasta ahora la
+    // deuda vivía solo en `accounts_receivable`, invisible en el ledger
+    // normal. `stayId` A PROPÓSITO NO va acá (a diferencia del PAYMENT de
+    // arriba): `getNetBalanceByStayId()` suma por `stay_id` sin filtrar
+    // por `customer_id` -- si este CHARGE llevara el mismo `stayId` que el
+    // PAYMENT que acaba de saldar el folio del huésped, el saldo de la
+    // ESTADÍA volvería a quedar positivo (el PAYMENT lo neutraliza, este
+    // CHARGE lo reabriría) y el check-out que la transferencia recién
+    // desbloqueó volvería a rechazar con StayBalanceOwedError. `reservationId`
+    // (F1-Pieza 2: documento de origen obligatorio) cumple el mismo rol de
+    // trazabilidad sin ese efecto colateral -- no participa en ningún
+    // cálculo de saldo por estadía.
+    // C1-Fase C (23/08/2026) -- el id se genera ACÁ (no se lee del
+    // resultado de createWithClient) para poder guardarlo en la fila de
+    // accounts_receivable de abajo sin depender del tipo de retorno
+    // nullable de createWithClient (solo es null en el path idempotente,
+    // que esta llamada no usa).
+    const companyChargeId = randomUUID();
+    await this.financialRepo.createWithClient(client, {
+      id:            companyChargeId,
+      businessId:    params.businessId,
+      customerId:    params.companyCustomerId,
+      reservationId: params.reservationId,
+      type:          'CHARGE',
+      amount:        params.balance,
+      currency:      params.currency,
+      status:        'SETTLED',
+      notes:         `Cargo por estadía transferida a cuenta por cobrar — estadía ${params.stayId}`,
+    });
+
+    return this.arRepo.createWithClient(client, {
+      id:                randomUUID(),
+      businessId:        params.businessId,
+      stayId:            params.stayId,
+      companyCustomerId: params.companyCustomerId,
+      financialTransactionId: companyChargeId,
+      guestPaymentTransactionId: guestPaymentId,
+      amount:            params.balance,
+      currency:          params.currency,
+      status:            'PENDIENTE_FACTURAR',
+      transferredBy:     params.transferredBy,
+      notes:             params.notes ?? null,
     });
   }
 
