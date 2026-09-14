@@ -988,6 +988,55 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
    `docs/diseno-factura-borrador-2026-08-31.md` §21/§30.4 para el texto
    completo y las citas. El diseño sigue sin autorizar `CREATE TABLE`,
    migraciones ni código: falta el gate `architecture-governor`.
+
+   **Actualización 14/09/2026, más tarde el mismo día (bloque de
+   correcciones puntuales del gate, v2.15) — stale.** Esa última frase
+   ("no tiene ninguna pregunta de negocio abierta") dejó de ser cierta
+   el mismo día en que se escribió: la investigación del hueco de
+   §17.3/§31.5 (una línea `MANUAL`/`STAY`-only de `invoice_draft_items`
+   no tiene hoy forma válida de convertirse en una fila de
+   `invoice_items` al emitir, y ni §29 la resuelve ni hay una forma
+   técnica sin ambigüedad que no reabra el `chk_invoice_item_origin` que
+   §17 ya cerró como no negociable) encontró que es una decisión de
+   negocio genuina, sin decidir — formalizada como **PN-6**
+   (`docs/diseno-factura-borrador-2026-08-31.md` §31.5, con la pregunta y
+   las dos opciones completas). `FACT-BORRADOR-001` (ahora **v2.15**)
+   vuelve a tener una pregunta de negocio bloqueante — mismo patrón que
+   ya le pasó a este mismo ítem con PN-2 (línea 970 arriba: "no estaba en
+   la lista de bloqueantes... encontrada al verificar"). No se reescribe
+   el párrafo de arriba — se marca acá, mismo criterio de todo este
+   archivo.
+
+   **Actualización 14/09/2026, más tarde el mismo día — PN-6 ✅
+   RESUELTA (v2.16).** El dueño decidió, en base al grounding ERP
+   pedido a `auditor-circuitos-erp` (Odoo 17, ERPNext, Dolibarr,
+   QloApps, Cloudbeds): se mantiene `chk_invoice_item_origin` sin
+   relajar (postura A) — **condicionada** a construir §29 (Alternativa
+   B, rama `SERVICE` de `item_type`, catálogo de servicios
+   administrativos, precedente QloApps) como parte del mismo bloque de
+   trabajo, no como deuda futura, siguiendo el principio ya declarado
+   en `CLAUDE.md` (*"la app no le dice al cliente cómo trabajar..."*) y
+   el precedente `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`. El grounding fue
+   4-a-1 a favor de permitir una línea sin producto de catálogo en el
+   documento final, pero **ninguno** de los 5 sistemas de referencia la
+   permite sin absolutamente ninguna coordenada obligatoria — la
+   variante literal de la opción (2) del planteo original de PN-6
+   (los tres orígenes en `NULL`, sin ninguna coordenada) **queda
+   descartada, no solo pospuesta.** Detalle completo, con la tabla
+   comparativa y la cita del veredicto, en
+   `docs/diseno-factura-borrador-2026-08-31.md` §31.5 (y el resumen en
+   §21). **Revisado además §29 completo (no solo §29.4): no está listo
+   para implementación tal cual** — §29.5 deja 2 sub-decisiones sin
+   resolver (qué entidad es el FK de la rama `SERVICE` nueva — un
+   catálogo propio o `products` reutilizado con
+   `requires_inventory = FALSE`; el relevamiento completo de sitios de
+   `app-main` que asumen `item_type` exhaustivo en 3 valores, listado
+   parcial ya en §29.4) — **candidatas a `AskUserQuestion` cuando se
+   encare la implementación de §29**, no resueltas por esta ronda de
+   documentación. Con esto, `FACT-BORRADOR-001` **no tiene ninguna
+   pregunta de negocio abierta que bloquee el `CREATE TABLE`** — sigue
+   sin autorizar `CREATE TABLE`, migraciones ni código: falta el gate
+   `architecture-governor` sobre el diseño técnico completo.
    `credit_note_request` la TABLA (bullet
    aparte, más abajo en este mismo archivo, ADR
    `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5/§10

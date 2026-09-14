@@ -1,37 +1,85 @@
 # Diseño — Factura como borrador editable (proforma antes del CAE)
 
-- **Versión:** **v2.14** (14/09/2026, Bloque 0 de consolidación — gate
-  `architecture-governor` rechazó implementar el diseño y autorizó
-  SOLO este bloque antes de volver a gatear). **v2.14 agrega la §31
-  "Modelo vigente"** — la forma actual y definitiva de `invoice_drafts`/
-  `invoice_draft_items`/`invoice_draft_charges` DESPUÉS de aplicar §23/
-  §25/§28, sin remisiones a secciones superseded — y corrige 5 defectos
-  reales que el gate encontró: **B1** (§12.3/§19.2/§22 describían un bug
-  de `getOutstandingByCustomerId()` que YA SE ARREGLÓ el 03/09/2026,
-  O2-F2/F2.1 — verificado contra `src/facturacion/sql.invoice.repository.ts`,
-  hoy `LEFT JOIN`); **B2** (§4.1/§21/§23.5 decían que el guard de
-  `SqlFinancialTransactionRepository.insert()` tiene 3 orígenes —
-  verificado contra el archivo real, hoy tiene **4**:
-  `reservationId`/`orderId`/`stayId`/`reversedTransactionId`, este
-  último agregado el mismo 14/09/2026 por otro bloque de esta sesión —
-  `invoice_draft_id` sería el **quinto**, no el cuarto; nota también que
-  `docs/criterios-negocio.md` describe 3 orígenes y quedó stale,
-  independiente de este diseño); **B4** (el aviso ⛔ de §6 enumeraba 3
-  cambios cuando son 4 — faltaba el retiro de
-  `discount_percent`/`discount_amount`/`chk_draft_item_discount` por
-  §28.1, y el segundo bullet estaba al revés: ni `source_type` ni
-  `source_kind` sobreviven como discriminador); **B5** (rediseño completo
-  de `chk_draft_invoice_ptr`, que no cubría `ISSUED_PENDING_LEDGER` ni
-  afirmaba nada sobre `invoice_id` en la tercera rama — ver §31); y
-  **T11** (marcada `SUPERSEDIDA` en la lista de §28.1, con la pregunta de
-  si `source_label_snapshot` sobrevive al retiro del discriminador
-  resuelta en §31: sí sobrevive). También resuelve la colisión de
-  numeración entre la serie transaccional de §11 (antes `T1`/`T1'`/
-  `T2(a)(b)(c)`) y la serie de decisiones técnicas de §20 (`T1`-`T21`):
-  la de §11 pasa a `PASO-1`/`PASO-1'`/`PASO-2(a)(b)(c)`, la de §20 queda
-  igual. **Ninguna de estas correcciones es una decisión de negocio
-  nueva ni autoriza `CREATE TABLE`, migraciones ni código** — siguen en
-  HOLD. Ver §0 para el diff.
+- **Versión:** **v2.16** (14/09/2026, **PN-6 RESUELTA** — decisión del
+  dueño en base al grounding ERP pedido a `auditor-circuitos-erp`, ver
+  §31.5). Se mantiene `chk_invoice_item_origin` sin relajar (**postura
+  A confirmada**) — pero **condicionada** a construir §29 (Alternativa
+  B: rama `SERVICE` de `item_type`, catálogo de servicios
+  administrativos) **como parte del mismo bloque de trabajo, no como
+  deuda futura** — mismo criterio que ya exige el `CLAUDE.md` de este
+  repo (*"La app no le dice al cliente cómo trabajar; le permite
+  formalizar electrónicamente una decisión que el cliente ya tomó"*) y
+  el precedente `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`: bloquear sin dar al
+  negocio una salida propia ya diseñada repetiría el antipatrón que ese
+  precedente documentó. El grounding (Odoo 17, ERPNext, Dolibarr,
+  QloApps, Cloudbeds) fue 4-a-1 a favor de permitir una línea sin
+  producto de catálogo en el documento FINAL — pero **ninguno** la
+  permite sin absolutamente ninguna coordenada obligatoria (cuenta
+  contable, o alícuota+tipo de producto, o impuesto+id estable, según
+  el sistema); la variante literal de la opción (2) de PN-6 (los tres
+  orígenes en `NULL`, sin ninguna coordenada) **queda descartada, no
+  solo pospuesta** — ningún referente la implementa así. El único que
+  bloquea (QloApps) lo hace por herencia de e-commerce, no por
+  integridad fiscal, y resuelve el cargo ad-hoc con el mismo patrón que
+  §29 ya proponía (catálogo barato de "service products"), lo que hace
+  de §29 la salida real, no una idea suelta. **Revisado además §29
+  completo (no solo §29.4): no está listo para implementación tal
+  cual** — §29.5 deja 2 sub-decisiones abiertas (qué entidad es el FK
+  de la rama `SERVICE`; el relevamiento completo de sitios que asumen
+  `item_type` exhaustivo en 3 valores) que esta ronda **no resuelve**,
+  señaladas ahora también desde §31.5. **PN-6 marcada ✅ RESUELTA en
+  §21 y §31.5; §17.3 actualizada.** Ninguna de estas correcciones
+  autoriza `CREATE TABLE`, migraciones ni código — siguen en HOLD; el
+  paso siguiente sigue siendo el gate `architecture-governor` sobre el
+  DISEÑO TÉCNICO completo (y, si se decide encarar §29 en el mismo
+  bloque, sobre esas 2 sub-decisiones también).
+
+- **Versión previa:** **v2.15** (14/09/2026, correcciones puntuales del gate
+  `architecture-governor` sobre v2.14 + investigación de diseño —
+  **reabre el diseño con una pregunta de negocio nueva, PN-6**). Cuatro
+  correcciones chicas y acotadas, autorizadas por el gate: **B6** (§31.6
+  nueva — el documento nunca mencionaba el bump de `CURRENT_SCHEMA_VERSION`
+  [hoy 55, sería 56] ni el patrón real `DO $$ ... pg_constraint ...` para
+  constraints nuevos sobre tablas existentes, ni por qué `migrations/NNN_*.sql`
+  no aplica); **B7** (§4.4/§14 — `Roles.FISCAL_ISSUE` reconciliado contra
+  `Roles.EMISOR_NOTA_CREDITO` ya existente, distintos a propósito — y hueco
+  de autorización real cerrado: `POST /api/invoice-drafts/:id/issue`
+  necesita el mismo guard `requireManagementForCompanyCharge()` que ya
+  tiene `POST /api/invoices` para clientes `kind='COMPANY'`); **§31.4
+  completada** (faltaban las 3 columnas nuevas que §9 exige en `invoices`
+  para el snapshot de receptor — `receptor_legal_name`/
+  `receptor_tax_condition`/`receptor_address_snapshot`, verificado que
+  `invoices` hoy solo tiene 3 de los 6 campos); y **marcadores `SUPERSEDIDA`
+  faltantes** en la tabla de §20 (T11, T18 — ya estaban marcados en §28.1,
+  no en la tabla que un lector consulta primero). **La investigación
+  central de esta ronda encontró que el hueco de §17.3/§31.5 (líneas
+  `MANUAL`/`STAY`-only de `invoice_draft_items` sin forma válida de llegar
+  a `invoice_items`) NO lo resuelve §29 (el propio §29.3 lo descarta
+  explícito) y NO es una forma derivable sin ambigüedad (colisiona con la
+  decisión ya cerrada de §17, "`chk_invoice_item_origin` no se relaja") —
+  es una decisión de negocio genuina, nueva, formalizada como **PN-6**
+  (§31.5, con pregunta y opciones completas) y **bloqueante del
+  `CREATE TABLE`**, mismo nivel que PN-1/PN-2 lo fueron. Como
+  consecuencia, las afirmaciones de §28.3/§30 ("no queda ninguna pregunta
+  de negocio abierta") quedan corregidas in situ, no reescritas (mismo
+  criterio que el resto del documento). Ninguna de estas correcciones
+  autoriza `CREATE TABLE`, migraciones ni código — siguen en HOLD, y con
+  PN-6 sin decidir el gate no puede pasar a esa etapa todavía.
+
+  **v2.14 agrega la §31 "Modelo vigente"** (14/09/2026, Bloque 0 de
+  consolidación — gate `architecture-governor` rechazó implementar el
+  diseño y autorizó solo este bloque): la forma actual y definitiva de
+  `invoice_drafts`/`invoice_draft_items`/`invoice_draft_charges` después
+  de aplicar §23/§25/§28, sin remisiones a secciones superseded, y
+  corrige 5 defectos que el gate encontró (**B1** bug de
+  `getOutstandingByCustomerId()` que ya estaba arreglado en código;
+  **B2** el guard de `SqlFinancialTransactionRepository.insert()` tiene 4
+  orígenes, no 3; **B4** aviso ⛔ de §6 incompleto/invertido; **B5**
+  rediseño de `chk_draft_invoice_ptr` para cubrir `ISSUED_PENDING_LEDGER`;
+  **T11** marcador `SUPERSEDIDA` faltante) y renumera la serie
+  transaccional de §11 a `PASO-1`/`PASO-1'`/`PASO-2(a)(b)(c)`. Ninguna de
+  estas correcciones es una decisión de negocio nueva ni autoriza
+  `CREATE TABLE`, migraciones ni código.
 
   **v2.13 resuelve PN-2** (§21/§30.4): el dueño decidió que "la regla de cuenta corriente" de D1 (§4.1) es el
   booleano ya existente `customers.enable_current_account`, **por cliente**
@@ -92,7 +140,14 @@
   tope de crédito por tenant (eso queda como backlog explícito, no
   descartado — §22). Con esa respuesta, **no queda ninguna pregunta de
   negocio BLOQUEANTE** en este documento — PN-3 y PN-5 siguen abiertas,
-  pero fuera del camino crítico (§30.3). Las limitaciones que impiden
+  pero fuera del camino crítico (§30.3). **Actualizado de nuevo, más
+  tarde el mismo 14/09/2026 (v2.15):** la investigación del gate encontró
+  una pregunta de negocio nueva y bloqueante, **PN-6** (§31.5) — el
+  párrafo de arriba quedó stale el mismo día en que se escribió, mismo
+  patrón que ya le pasó a este documento con PN-2. **Actualizado una
+  tercera vez, mismo día (v2.16):** **PN-6 quedó ✅ RESUELTA** (§31.5,
+  decisión del dueño en base a grounding ERP) — vuelve a ser cierto que
+  **no queda ninguna pregunta de negocio BLOQUEANTE**. Las limitaciones que impiden
   considerarlo verificado en runtime: **no se corrió la suite ni el
   typecheck sobre este diseño** (no hay código que correr), y **no se
   leyeron** el frontend, el adaptador real de AFIP ni el `OutboxWorker`.
@@ -135,6 +190,8 @@
 | **Cierre §26.3/§27.3 + hueco PN-2** (v2.12) | §26.3 punto 5 y §27.3 abiertas | §30: **cierre de caja** DECIDIDA (solo advertir, nunca bloquear, para `ISSUED_PENDING_LEDGER`) y **destino de `POST /api/invoices`** DECIDIDA (se retira o redirige, no bypass de un click) — ambas del dueño, 14/09/2026. La verificación de que no quedara ninguna otra pregunta de negocio abierta encontró que **PN-2 (§21) sigue sin resolver** (nunca se dijo si "la regla de cuenta corriente" que puede rechazar la emisión, D1 §4.1, es el booleano por cliente que ya existe o un tope de crédito por tenant a construir) — hallazgo, no una decisión tomada hoy. El diseño **no** queda completo por esto |
 | **PN-2 resuelta — decisiones de negocio completas** (v2.13) | PN-2 (§21) abierta, único bloqueante de negocio restante | §21/§30.4: **PN-2 DECIDIDA por el dueño** (14/09/2026) — la condición es `customers.enable_current_account`, por cliente; **no** se construye un tope de crédito por tenant ahora. El dueño lo declaró backlog futuro, no lo descartó (*"La feature nueva [tope de crédito] está bien pero no para ahora"*) — registrado en §22 y en `docs/pendientes-2026-09-12.md`. Con esto **no queda ninguna pregunta de negocio abierta** (§30.3). Sigue sin autorizar `CREATE TABLE`, migraciones ni código — falta el gate `architecture-governor` |
 | **Bloque 0 de consolidación — 5 defectos + §31** (v2.14) | Modelo vigente disperso entre §23/§24(superseded)/§25/§28; 5 defectos reales sin corregir | §31 nueva: la forma DEFINITIVA de `invoice_drafts`/`invoice_draft_items`/`invoice_draft_charges`, sin remisiones a secciones superseded. **B1** (§12.3/§19.2/§22): el bug de `getOutstandingByCustomerId()` **YA SE ARREGLÓ** (03/09/2026, O2-F2/F2.1) — deja de ser precondición de D1. **B2** (§4.1/§21/§23.5): el guard de `financial_transactions` tiene **4** orígenes hoy (sumó `reversedTransactionId` el 14/09/2026), no 3 — `invoice_draft_id` sería el quinto. **B4** (§6): el aviso ⛔ tenía 3 bullets, son 4 (faltaba el retiro de D6/descuento) y el segundo estaba al revés (ni `source_type` ni `source_kind` sobreviven). **B5** (§31): `chk_draft_invoice_ptr` rediseñado completo — cubre los 7 estados y afirma `invoice_id` NULL/NOT NULL por estado. **T11**: marcada `SUPERSEDIDA`; `source_label_snapshot` **sí sobrevive** al retiro del discriminador (§31). Además renombra la serie transaccional de §11 (`T1`/`T1'`/`T2(a)(b)(c)` → `PASO-1`/`PASO-1'`/`PASO-2(a)(b)(c)`) para no colisionar con la de §20. Ninguna decisión de negocio nueva; sigue sin autorizar `CREATE TABLE`, migraciones ni código |
+| **4 correcciones puntuales + PN-6** (v2.15) | §31 completa según v2.14, pero: sin idioma de convención de schema; roles sin reconciliar contra `EMISOR_NOTA_CREDITO`/guard de empresa; §31.4 a medias (3 de 6 columnas de receptor); T11/T18 sin marcar en la tabla de §20; hueco de líneas `MANUAL`/`STAY`-only sin investigar | **B6**: §31.6 nueva, convención de versión/constraint + por qué `migrations/` no aplica. **B7**: §4.4/§14 reconciliados — `FISCAL_ISSUE` ≠ `EMISOR_NOTA_CREDITO` (distintos a propósito), y guard `MANAGEMENT` agregado para cliente `COMPANY` al emitir desde el borrador (mismo criterio que `POST /api/invoices`). **§31.4 completa**: 3 columnas nuevas en `invoices` (`receptor_legal_name`/`receptor_tax_condition`/`receptor_address_snapshot`) que §9 ya exigía. **T11/T18 marcadas `SUPERSEDIDA`** en la tabla de §20 (ya lo estaban en §28.1, no ahí). **Investigación del hueco §17.3/§31.5**: NO lo resuelve §29 (§29.3 lo descarta explícito), NO es forma sin ambigüedad (colisiona con §17 cerrado) — es decisión de negocio genuina, formalizada como **PN-6** (§31.5), **bloqueante del `CREATE TABLE`**. Las afirmaciones de §28.3/§30 ("no queda ninguna pregunta de negocio abierta") quedan corregidas in situ por esto. Ninguna de las 4 correcciones es decisión de negocio nueva; PN-6 sí lo es y queda sin decidir — el diseño **vuelve a estar bloqueado en negocio** |
+| **PN-6 resuelta — grounding ERP + decisión del dueño** (v2.16) | PN-6 (§21/§31.5) abierta, único bloqueante de negocio restante | §31.5: **PN-6 DECIDIDA por el dueño** (14/09/2026), en base al grounding pedido a `auditor-circuitos-erp` (Odoo 17, ERPNext, Dolibarr, QloApps, Cloudbeds). Se mantiene `chk_invoice_item_origin` sin relajar (postura A) — **condicionada** a construir §29 (Alternativa B, rama `SERVICE`) en el mismo bloque, no como deuda futura, por el principio de `CLAUDE.md` (*"la app no le dice al cliente cómo trabajar..."*) y el precedente `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`. La variante literal de la opción (2) del planteo original (línea con los tres orígenes en `NULL`, sin ninguna coordenada) queda **descartada**, no solo pospuesta — ningún referente la implementa así. Revisado además §29 completo: **no está listo para implementación** — quedan 2 sub-decisiones abiertas en §29.5 (FK de la rama `SERVICE`; relevamiento de sitios que asumen `item_type` en 3 valores), listadas explícitamente para el dueño, no resueltas por esta ronda. §17.3 y §21 actualizadas. Con esto **no queda ninguna pregunta de negocio bloqueante** en el documento. Sigue sin autorizar `CREATE TABLE`, migraciones ni código — falta el gate `architecture-governor` |
 
 ---
 
@@ -410,18 +467,82 @@ a emitir.
 >
 > Esto **no** contradice la decisión: la confirma y le pone el costo real.
 
+> #### ⚠️ Reconciliación con roles ya existentes (B7, corrección del gate, 14/09/2026)
+>
+> §4.4/§14 proponían `Roles.FISCAL_ISSUE` sin reconciliarlo contra lo que ya
+> existe en `security/roles.ts` — hoy **9** grupos
+> (`OWNER_ONLY`/`MANAGEMENT`/`STAFF`/`FRONT_DESK`/
+> `HOUSEKEEPING_AND_MANAGEMENT`/`ORDERS`/`EMISOR_NOTA_CREDITO`/
+> `CUSTOMER_ONLY`/`BOOKING`, verificado contra el archivo); `FISCAL_ISSUE`
+> sería el **décimo**.
+>
+> **(a) ¿`FISCAL_ISSUE` solapa con `Roles.EMISOR_NOTA_CREDITO`?** No —
+> **derivable del propio dominio, sin preguntarle al dueño.**
+> `EMISOR_NOTA_CREDITO` (agregado 07-08/09/2026) es el escape de la guarda
+> fail-closed de **cancelación**: emite la Nota de Crédito que
+> `cancelOrder()`/`cancelReservation()` exigen para cancelar con efecto
+> fiscal, deliberadamente **por debajo** de `MANAGEMENT`
+> (`docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §10 q7,
+> con grounding ERP) para que recepción pueda cerrar una cancelación sin
+> escalar. `FISCAL_ISSUE` (este documento) gatea **emitir una factura de
+> venta nueva** desde el flujo de borrador — una acción de dominio
+> distinta (vender vs. cancelar-con-NC), aunque las dos sean "fiscal" en
+> sentido amplio. El propio repo ya sostiene dos roles fiscales separados
+> sin fusionarlos (el ADR de NC no propone fusionar con ningún futuro rol
+> de emisión de venta); no hay ningún hallazgo nuevo acá que justifique
+> unificarlos. **Quedan dos grupos fiscales, cada uno con su propio flujo
+> — no se propone unificar.**
+>
+> **(b) Hueco real de autorización — `POST /api/invoice-drafts/:id/issue`
+> necesita el mismo guard que `POST /api/invoices`.**
+> `requireManagementForCompanyCharge()` (`invoices.routes.ts:127-152`,
+> agregado 13/09/2026, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3)
+> exige `MANAGEMENT` **además de** `FRONT_DESK` en `POST /api/invoices`
+> cuando `customer.kind === 'COMPANY'` (no aplica a `REFUND`/`ADJUSTMENT`,
+> el fork de NC — ver su propio docblock). El endpoint de emisión de este
+> diseño (`POST /api/invoice-drafts/:id/issue`, §5/§11) **no tenía** el
+> guard equivalente propuesto en §4.4/§14. Sin él, facturar una empresa por
+> el flujo de borrador evita la escalada que el camino directo ya exige —
+> **hueco de autorización real, no cosmético**, ahora cerrado en el
+> mapeo de abajo: **`customer.kind === 'COMPANY'` ⇒ exigir `MANAGEMENT`
+> ADEMÁS de `FISCAL_ISSUE`** al confirmar y emitir, mismo predicado que
+> `requireManagementForCompanyCharge()` (reusado o su equivalente sobre
+> `invoice_drafts.customer_id` — no un guard reinventado).
+>
+> **Cuatro cercas RBAC reales que un grupo nuevo dispara** (`CLAUDE.md` de
+> este repo, sección RBAC — mismo incidente que ya cita §29.4 de este
+> documento como analogía, `ROLES-CATALOG-DRIFT-001`, aplica igual acá):
+> 1. `src/tests/security/roles-catalog-sync.test.ts` — se rompe **por
+>    diseño** al sumar un grupo al catálogo; hay que actualizarlo a
+>    propósito, no es un accidente a evitar.
+> 2. `EXPECTED_AUTHORIZE_CALL_SITES` de
+>    `src/tests/security/rbac-matrix-sync.test.ts` — sube con cada
+>    `authorize(Roles.FISCAL_ISSUE)`/`authorize(Roles.MANAGEMENT)` nuevo.
+> 3. Filas nuevas en `docs/rbac-matriz-endpoints.md` (sección 2, por
+>    endpoint, y sección 4 si alguno queda público — no es el caso acá).
+> 4. Propagación a los **3 catálogos hardcodeados** de `appfrontend-main`
+>    (`ROLES-CATALOG-DRIFT-001`) — mismo modo de falla que
+>    `EMISOR_NOTA_CREDITO` ya sufrió (agregado acá, no propagado, 2 días
+>    sin detectarse).
+>
+> Esto **no** contradice D4: lo confirma y reconcilia contra lo que el
+> repo ya tiene, en vez de proponer un grupo nuevo en el vacío.
+
 **Mapeo inicial propuesto** (conserva los roles actuales, como pidió el dueño):
 
 | Acción | Grupo | Hoy |
 |---|---|---|
 | Crear/editar/descartar borrador | `FRONT_DESK` | igual que `POST /api/invoices` (`invoices.routes.ts:74`) |
 | **Confirmar y emitir** | **`FISCAL_ISSUE` (nuevo)** | hoy inexistente; se seedea a los mismos roles que hoy tienen `FRONT_DESK` para no cambiar quién puede emitir **hoy** |
+| **Confirmar y emitir, cliente `kind='COMPANY'`** | **`FISCAL_ISSUE` + `MANAGEMENT`** | **B7 (14/09/2026):** mismo criterio que `requireManagementForCompanyCharge()` en `POST /api/invoices` (`invoices.routes.ts:127-152`) — sin este guard, el flujo de borrador sería un segundo camino que evita la escalada que el directo ya exige |
 | Emitir consolidada | `FISCAL_ISSUE` **+** `MANAGEMENT` | conserva `rbac-matriz-endpoints.md:151` y el motivo de `invoices.routes.ts:92-95` |
 | Registrar pago | `MANAGEMENT` (sin cambios) | `customers.routes.ts` |
 
 La emisión consolidada exigiendo **dos** grupos es lo que preserva la decisión
 ya escrita (*"es una decisión de facturación corporate, no una operación de
-mostrador"*) sin convertirla en una dependencia de industria.
+mostrador"*) sin convertirla en una dependencia de industria. El mismo
+criterio de dos grupos aplica ahora, por el mismo motivo, a emitir una
+individual de cliente `COMPANY` (B7, arriba).
 
 ### 4.5 D5 — Alícuota de línea libre: obligatoria, del catálogo del tenant
 
@@ -1174,9 +1295,14 @@ borrador puede mezclarlas con `ORDER_ITEM`, `RESERVATION` y `FREE`.
 |---|---|---|
 | Crear / editar / descartar borrador | `FRONT_DESK` | operativo |
 | **Confirmar y emitir** | **`FISCAL_ISSUE`** (nuevo) | **fiscal — no se hereda del operativo** |
+| **Confirmar y emitir, cliente `kind='COMPANY'`** | **`FISCAL_ISSUE` + `MANAGEMENT`** | **fiscal + corporate — B7 (14/09/2026), mismo guard que `requireManagementForCompanyCharge()` en `POST /api/invoices`** |
 | Emitir consolidada | `FISCAL_ISSUE` + `MANAGEMENT` | fiscal + corporate |
 | Registrar pago | `MANAGEMENT` | financiero |
 | Leer borrador | `FRONT_DESK` | operativo |
+
+**No confundir con `Roles.EMISOR_NOTA_CREDITO`** (escape de la guarda de
+cancelación) — grupo distinto, dominio de acción distinto (emitir venta
+nueva vs. cancelar-con-NC). Ver la reconciliación completa en §4.4, B7.
 
 **Aviso sobre el gate de módulo.** Todas estas rutas van **con**
 `requireModule(FACTURACION)`. Es tentador copiar la excepción de los GET de
@@ -1330,7 +1456,7 @@ descartada.** Detalle y procedencia en §26.4.
 | ¿El fallback es alcanzable hoy? | **No**, incluido el caso "orden sin ítems" |
 | ¿Relajar el constraint? | **Rechazado definitivamente** |
 | ¿Sirve como evidencia de producción? | **No** — cero emisiones fiscales reales con líneas |
-| Modelo de origen de la **línea libre** | **Sigue abierto** — ver §4.2 y §8 |
+| Modelo de origen de la **línea libre** | **Resuelto (PN-6, 14/09/2026)** — el CHECK se mantiene sin relajar (postura A), condicionado a construir §29 en el mismo bloque, ver §31.5 |
 | PN-1, D5 | **RESUELTOS** — PN-1 en §23 (opción C), D5 en §25 (con condición) |
 
 **El bloqueo se movió.** Ya no es la integridad histórica de `invoice_items`:
@@ -1430,14 +1556,14 @@ borrador consulta el estado de su factura para decidir entre `EMISSION_FAILED` y
 | T8 | `afipRequest` (con `CbteFch`) se construye en `PASO-2`, no al crear | `referencia-afip-wsfev1.md:318`, `:540` |
 | T9 | El CAE vive **fuera** de la transacción de BD | `diseno-cancelacion-notas-credito-c2-2026-08-23.md:241-244` |
 | T10 | Guard anti double-billing revalidado **dentro** de `PASO-2` | A8.2; `invoice.service.ts:429-432` |
-| T11 | `source_type` + `source_label_snapshot` congelados; ids de origen conservados | R9 (`criterios-datos.md:199-210`), R15 (`:266-270`) |
+| T11 | ~~`source_type` + `source_label_snapshot` congelados; ids de origen conservados~~ **`SUPERSEDIDA` (14/09/2026, marcador faltante en esta tabla — corregido por el gate; la marca ya existía en §28.1, no acá) — `source_type`/discriminador retirado por D2 (§28). `source_label_snapshot` e ids de origen SÍ sobreviven — ver la resolución completa en §28.1/§31.2** | R9 (`criterios-datos.md:199-210`), R15 (`:266-270`) |
 | T12 | El borrador copia el receptor; el emisor no se edita desde acá | R14 (`:255-259`); `errors.ts:527-541` |
 | T13 | Alícuota validada **al guardar**, no al emitir | `DEFENSIVE_DEVELOPING.md:18-22`; `afip-catalog.constants.ts:160-166` |
 | T14 | `version` (bloqueo optimista) | A8.4 (`criterios-negocio.md:372-375`) |
 | T15 | Auditar con `audit_log`/`updateWithAudit()` existentes | R8, A6.5, R14 |
 | T16 | Cero lecturas de `industryKey` en `src/facturacion/` | A5.3 (`criterios-negocio.md:258-261`) |
 | T17 | Sin moneda elegible; fallar ruidoso si `currency` no mapea a `PES` | A3.2 (`:132`); `referencia-afip-wsfev1.md:329`, `:562` |
-| T18 | `discount_amount` autoritativo + `discount_percent` descriptivo | A3.4 (`:140-142`), A3.5 (`:144-146`), A3.6 (`:148-151`) |
+| T18 | ~~`discount_amount` autoritativo + `discount_percent` descriptivo~~ **`SUPERSEDIDA` (14/09/2026, marcador faltante en esta tabla — corregido por el gate; la marca ya existía en §28.1, no acá) — D6 retirada hacia Odoo (§28): un solo campo `discount_percent`, sin `discount_amount` autoritativo en paralelo. Ver la resolución completa en §28.1/§28.2/§31.2** | A3.4 (`:140-142`), A3.5 (`:144-146`), A3.6 (`:148-151`) |
 | T19 | `subtotal` post-descuento → `buildIvaBreakdown()` no se toca | `invoice.service.ts:517` |
 | T20 | Sin outbox, sin eventos, sin reintento automático | A10.5 (`:490-492`), A8.6 (`:378`), A8.7 (`:381-391`) |
 | T21 | `afip_contacted = FALSE` explícito en el INSERT de la factura | §19.3; `schema.sql:2640` |
@@ -1503,6 +1629,26 @@ Ninguna estaba en v1. Las tres primeras **bloquean el `CREATE TABLE`**.
 > inferencia.
 
 **Y una que no es pregunta sino consulta a la base: §17.**
+
+> **PN-6 ✅ RESUELTA (14/09/2026) — ver §31.5.** El dueño eligió la
+> **postura (1)** del planteo original: se mantiene `chk_invoice_item_origin`
+> sin relajar — ninguna línea `MANUAL`/`STAY`-only cruza a `invoice_items`
+> sin resolverse antes a un `order_item_id`/`reservation_id` real —,
+> **condicionada** a construir §29 (Alternativa B, rama `SERVICE`) como
+> parte del mismo bloque de trabajo, no como deuda futura. Grounding ERP
+> (`auditor-circuitos-erp`) pedido antes de decidir: 4 de 5 sistemas de
+> referencia permiten una línea sin producto de catálogo, pero ninguno
+> sin absolutamente ninguna coordenada obligatoria — la opción (2)
+> literal del planteo original queda descartada, no solo pospuesta. Lo
+> que sigue abajo es el planteo original, conservado como historial.
+>
+> **PN-6 🔒 — agregada 14/09/2026 (investigación del gate), formalizada
+> completa en §31.5, no acá — ¿una línea `MANUAL`/`STAY`-only del
+> borrador se puede emitir tal cual (extendiendo `invoice_items`), o toda
+> línea tiene que resolverse a un `order_item_id`/`reservation_id` real
+> antes de poder confirmar y emitir?** Bloqueante del `CREATE TABLE`,
+> mismo nivel que PN-1/PN-2 lo fueron — sin ella, D1 (línea libre en el
+> borrador) no tiene camino completo hasta la factura emitida.
 
 ---
 
@@ -2568,6 +2714,20 @@ no bloqueantes. **PN-2** (§21), encontrada abierta por la verificación de
 tarde el mismo 14/09/2026 (§30.4) — no queda ninguna pregunta de negocio
 pendiente bloqueando el `CREATE TABLE`.
 
+**Corrección, más tarde el mismo 14/09/2026 (bloque de correcciones del
+gate).** Esa última frase quedó stale el mismo día que se escribió:
+**PN-6** (§31.5, hallada por la investigación del hueco de líneas
+`MANUAL`/`STAY`-only en `invoice_items`) es una pregunta de negocio nueva,
+sin decidir, y **sí** bloquea el `CREATE TABLE` — vuelve a haber una
+pregunta de negocio pendiente.
+
+**Actualización v2.16 (14/09/2026, mismo día):** **PN-6 quedó ✅
+RESUELTA** — ver §31.5 para la decisión completa (postura A, condicionada
+a construir §29 en el mismo bloque) y el grounding que la sustenta. Con
+esto no queda ninguna pregunta de negocio pendiente bloqueando el
+`CREATE TABLE`. No se reescribe el párrafo de arriba — se marca acá,
+mismo criterio de todo el resto del documento.
+
 ---
 
 ## 29. Nota registrada — catálogo de servicios administrativos/intangibles como ítem de primera clase ("Alternativa B", propuesta del dueño, 12/09/2026)
@@ -2752,6 +2912,21 @@ documento —incluida la que declaró esos dos ítems como "las últimas 2
 preguntas de negocio pendientes"— había señalado** (§30.2); y que el dueño
 también respondió PN-2, más tarde el mismo día (§30.4). Con las tres
 cerradas, §30.3 confirma que no queda ninguna pregunta de negocio abierta.
+
+**Corrección (bloque de correcciones del gate, 14/09/2026, más tarde el
+mismo día que este §30):** esa afirmación quedó stale por PN-6 (§31.5),
+una pregunta de negocio nueva encontrada por la investigación del hueco
+de líneas `MANUAL`/`STAY`-only en `invoice_items`, sin decidir todavía.
+Mismo patrón que ya le pasó a este documento con PN-2 (§26.3/§28.3
+declararon "cerrado" antes de que la verificación de §30 encontrara PN-2
+sin decidir) — **no** se reescribe §30.1/§30.3 más abajo, se marca acá,
+mismo criterio de no reescribir que usa todo el resto del documento.
+
+**Actualización v2.16 (14/09/2026, mismo día):** **PN-6 quedó ✅
+RESUELTA** — ver §31.5 para la decisión completa. Con esto la afirmación
+original de este §30 ("no queda ninguna pregunta de negocio abierta")
+vuelve a ser cierta, ahora de nuevo. No se reescribe la corrección de
+arriba — se marca acá, mismo criterio.
 
 ### 30.1 Qué NO queda abierto
 
@@ -3119,16 +3294,39 @@ discriminador).
 
 ### 31.4 Cambios sobre tablas existentes
 
+**Completado (corrección del gate, 14/09/2026):** esta sección omitía que
+§9 (vigente, no superseded) exige congelar el receptor completo al emitir
+con **seis** campos, y `invoices` hoy solo tiene tres
+(`doc_tipo`/`doc_nro`/`condicion_iva_receptor_id`, verificado en
+`schema.sql:2914-2916`, dentro del `CREATE TABLE invoices` real). Faltaban
+las otras tres en esta tabla — es la forma DEFINITIVA que §31 promete, así
+que tienen que estar acá, no solo mencionadas en §9.
+
 | Tabla | Cambio | Estado |
 |---|---|---|
 | `financial_transactions` | `invoice_draft_id` como origen documental adicional del guard de `SqlFinancialTransactionRepository.insert()` (B2: hoy sería el **quinto**, no el cuarto — el guard ya tiene 4: `reservationId`/`orderId`/`stayId`/`reversedTransactionId`) | PN-1 resuelto (§23.1, opción C). **Schema: en HOLD** |
 | `invoice_items` | **NINGUNO.** `chk_invoice_item_origin` queda exactamente como está — §28.1 retiró lo que §24.4 proponía (backfill de `source_kind`, CHECK discriminado, `ON DELETE RESTRICT`) | Sin cambios; ver §31.5 para lo que esto deja abierto |
+| `invoices` | **Tres columnas nuevas** — completan el snapshot de receptor que §9 exige y que hoy solo cubre a medias: `receptor_legal_name VARCHAR(255)`, `receptor_tax_condition VARCHAR(50)`, `receptor_address_snapshot VARCHAR(500)` — mismos nombres y tipos que ya usa `invoice_drafts` (§31.1), copiados en la misma transacción de emisión (§9, último párrafo; §11 `PASO-2`) | §9 vigente. **Schema: en HOLD** |
+
+**Nota de alcance, para no leerlo como que arregla algo más:** estas tres
+columnas congelan el receptor en `invoices`. No tocan el PDF, que sigue
+leyendo razón social/condición IVA en vivo — eso es §18, fuera de alcance
+de este diseño (repetido acá porque es la misma confusión que §9 ya
+advertía evitar).
 
 ### 31.5 Qué sigue abierto — no resuelto por esta consolidación
 
 Esta sección no inventa resoluciones nuevas más allá de B1/B2/B4/B5/T11.
 Lo que §17.3 ya dejaba abierto **sigue abierto**, ahora más visible por
-estar todo junto acá:
+estar todo junto acá.
+
+**Actualización (v2.16, 14/09/2026) — el primer punto de la lista de
+abajo ya no aplica: PN-6 quedó ✅ RESUELTA**, con su decisión y el
+grounding que la sustenta agregados al final de ese mismo punto (después
+de la caja de investigación del gate), no reescritos — mismo criterio
+que el resto del documento usa para no borrar historial. El título de
+esta sección sigue siendo correcto para el resto de su contenido (PN-3,
+PN-5, §27.2, C-3/C-4).
 
 - **El modelo de origen de la línea libre para `invoice_items` (el
   documento EMITIDO, no el borrador).** `chk_invoice_item_origin` exige
@@ -3140,6 +3338,189 @@ estar todo junto acá:
   mismo punto bloqueante que §4.2 señaló y §17.3 dejó "sigue abierto".
   Este bloque de consolidación no lo resuelve: lo hereda, explícito, en
   vez de dejarlo implícito entre secciones dispersas.
+
+  > #### Investigación del gate (14/09/2026) — ¿lo resuelve §29, es forma
+  > sin ambigüedad, o es una decisión de negocio nueva?
+  >
+  > **El hueco, preciso.** El flujo de emisión (`PASO-2(a)`, paso 8 de
+  > §11) inserta en `invoice_items` a partir de `invoice_draft_items` al
+  > confirmar. `chk_invoice_item_origin` (`invoice_items`, la tabla ya
+  > EMITIDA) sigue exigiendo exactamente uno de
+  > `order_item_id`/`reservation_id` — **§17 lo cerró como no negociable:
+  > "el constraint NO se relaja, no se elimina y no se modifica"**, y la
+  > auditoría de §17.2 lo reconfirmó, no lo reabrió. `invoice_draft_items`
+  > (§31.2), en cambio, admite hoy dos formas que ese `INSERT` no puede
+  > representar: una línea `MANUAL` (los tres orígenes en `NULL`) y una
+  > línea `STAY`-only (solo `stay_id` poblado — columna que
+  > `invoice_items` ni siquiera tiene). El caso de uso CENTRAL que motivó
+  > todo el documento (§0: *"que un error de carga detectado antes de
+  > emitir no obligue a nota de crédito"*) depende de poder editar/agregar
+  > líneas libremente en el borrador — pero hoy no hay ningún camino para
+  > que una línea sin ese origen llegue a ser una factura real.
+  >
+  > **(a) ¿Lo resuelve §29 (rama `SERVICE` de `item_type`) implícitamente?
+  > No — el propio §29.3 lo descarta, explícito, sin que haga falta
+  > reinterpretarlo:** *"no elimina la necesidad de una línea
+  > verdaderamente libre para ese caso"*. Un catálogo de servicios más
+  > completo (§29, Alternativa B) puede convertir ALGUNAS líneas que hoy
+  > serían `MANUAL` en un `order_item` real (creando el servicio al vuelo,
+  > referenciado por `order_item_id` — eso SÍ tendría un camino válido: el
+  > `CHECK` se satisface por construcción). Pero **no** resuelve la línea
+  > `MANUAL` genuinamente libre (el "ajuste de $500 por un error de carga
+  > puntual", sin concepto de catálogo detrás — exactamente el caso que
+  > motivó `source_kind`/`MANUAL` en el §24 ya `SUPERSEDIDO`, y que §29.3
+  > dice explícitamente que sigue sin dueño), y tampoco resuelve el caso
+  > `STAY`-only, que es un dominio distinto (estadías, no
+  > `products`/`order_items` — §29 no lo toca en ningún punto).
+  >
+  > **(b) ¿Es una forma derivable sin ambigüedad, sin decisión de
+  > negocio? No — colisiona de frente con una decisión ya cerrada
+  > (§17).** La única forma de que estas líneas lleguen a `invoice_items`
+  > sin tocar el `CHECK` es que ninguna sobreviva hasta la emisión sin
+  > resolverse a un origen real — es decir, **bloquear la confirmación**
+  > mientras quede una línea `MANUAL`/`STAY`-only sin resolver. La
+  > alternativa técnica — extender `invoice_items` (agregar `stay_id`,
+  > aflojar el `CHECK` a "al menos uno de tres", o admitir los tres
+  > `NULL`) — **es**, literalmente, relajar/modificar el mismo `CHECK` que
+  > §17 declaró **"rechazado definitivamente"**. No hay una tercera forma
+  > que sea pura cuestión de tipos/columnas sin tocar esa decisión.
+  >
+  > **(c) Es una decisión de negocio genuina — se formaliza como PN-6, sin
+  > resolverla acá, con el mismo detalle que PN-1/PN-2/PN-4/PN-5:**
+  >
+  > > **PN-6 🔒 — ¿Una línea `MANUAL`/`STAY`-only del borrador puede
+  > > emitirse tal cual (extendiendo `invoice_items`), o toda línea tiene
+  > > que resolverse a un `order_item_id`/`reservation_id` real antes de
+  > > poder confirmar y emitir?**
+  > >
+  > > Dos respuestas razonables, cada una con un costo real, ninguna obvia:
+  > >
+  > > 1. **Exigir resolución antes de emitir (bloqueo).** `FISCAL_ISSUE`
+  > >    rechaza confirmar un borrador con líneas `MANUAL`/`STAY`-only sin
+  > >    resolver — el operador las convierte a un `order_item` real (vía
+  > >    §29 si se construye la rama `SERVICE`) o las elimina antes de
+  > >    emitir. **A favor:** cero riesgo de schema, `chk_invoice_item_origin`
+  > >    queda exactamente como §17 lo dejó, R9/A3.9 (`criterios-negocio.md:159-161`,
+  > >    *"todo movimiento tiene contrapartida"*) se cumplen sin excepción
+  > >    en el documento fiscal inmutable. **En contra:** para el ajuste
+  > >    puntual sin concepto de catálogo (exactamente el escenario de
+  > >    §0 que motivó todo el documento) obliga a pasar por un catálogo
+  > >    que puede no tener sentido para un cargo de una sola vez —
+  > >    fricción justo donde el documento prometía sacarla.
+  > > 2. **Extender `invoice_items` para aceptar el origen real del
+  > >    borrador** (agregar `stay_id`; cambiar el `CHECK` a "al menos uno
+  > >    de `order_item_id`/`reservation_id`/`stay_id`", y decidir aparte
+  > >    si además se admite un `MANUAL` declarado con los tres en `NULL`).
+  > >    **A favor:** conserva el caso de uso de "corrección rápida" sin
+  > >    fricción, y `STAY` ya es un origen deliberado desde §24 punto 2
+  > >    (sobrevive en §31.2) — no sería un origen inventado, solo un
+  > >    origen que hoy no puede cruzar a `invoice_items`. **En contra:**
+  > >    reabre una decisión que §17 cerró como no negociable, y si además
+  > >    se admite `MANUAL` (tres `NULL`) reintroduce sin discriminador la
+  > >    ambigüedad que §24.3/§28.2 ya señalaron como riesgo aceptado
+  > >    — pero ahí el riesgo se aceptó para el BORRADOR editable; acá
+  > >    sería sobre el documento fiscal YA EMITIDO, inmutable, de mayor
+  > >    radio.
+  > >
+  > > Una variante intermedia existe (aceptar `STAY` real pero seguir
+  > > bloqueando `MANUAL` puro) — **no se propone acá como resolución**,
+  > > solo se deja anotada como parte del espacio de opciones que el dueño
+  > > puede elegir; sigue siendo la misma pregunta de fondo, con el mismo
+  > > mecanismo (`AskUserQuestion`) que cerró PN-1/PN-2.
+  > >
+  > > Sin esto, D1 (§4.1, la posibilidad de línea libre en el borrador) no
+  > > tiene un camino completo hasta la factura emitida — el borrador se
+  > > puede crear y editar, pero una línea así nunca podría confirmarse.
+  > > **Bloqueante del `CREATE TABLE`, mismo nivel que PN-1/PN-2 lo fueron.**
+
+  > #### PN-6 ✅ RESUELTA (14/09/2026) — grounding `auditor-circuitos-erp`
+  > + decisión del dueño
+  >
+  > **Decisión: postura (1) del planteo de arriba — se mantiene
+  > `chk_invoice_item_origin` sin relajar, ninguna línea
+  > `MANUAL`/`STAY`-only cruza a `invoice_items` sin resolverse antes a un
+  > `order_item_id`/`reservation_id` real — CONDICIONADA a construir §29
+  > (Alternativa B: rama `SERVICE` de `item_type`, catálogo de servicios
+  > administrativos, precedente QloApps) como parte del mismo bloque de
+  > trabajo, no como deuda futura.**
+  >
+  > **Por qué se pidió grounding antes de diseñar, no para validar
+  > después.** `CLAUDE.md` de este repo (raíz de `app-main`) ya declara
+  > el principio, cita textual: *"La app no le dice al cliente cómo
+  > trabajar; le permite formalizar electrónicamente una decisión que el
+  > cliente ya tomó."* Y documenta el antipatrón `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`
+  > (11-12/09/2026): frente a un caso estructuralmente equivalente — un
+  > `ADJUSTMENT` que puede quedar trabado si la atribución fiscal
+  > automática no cierra —, la primera propuesta fue bloquearlo en firme
+  > y mandar al usuario a resolver por afuera, sin haber pedido grounding
+  > antes; el grounding pedido después fue unánime: ningún ERP de
+  > referencia bloquea así. PN-6 repite la forma del problema (bloquear
+  > una emisión que el sistema no puede resolver solo), así que el mismo
+  > `CLAUDE.md` exige el mismo paso, en el mismo orden: grounding antes
+  > de proponer.
+  >
+  > **Resultado del grounding — `auditor-circuitos-erp`, Odoo 17/ERPNext/
+  > Dolibarr/QloApps/Cloudbeds, contra la opción (2) literal del planteo
+  > (línea con los tres orígenes en `NULL`, sin ninguna coordenada
+  > obligatoria):**
+  >
+  > | Sistema | ¿Línea sin producto en el documento FINAL? | Salvaguarda que usa en su lugar |
+  > |---|---|---|
+  > | Odoo 17 | Sí | `account_id NOT NULL` (cuenta contable) |
+  > | ERPNext | Sí — sacó el bloqueo que tenía (PR `#24643`) | `income_account`+`item_name`+`rate` obligatorios |
+  > | Dolibarr | Sí, el más permisivo | `description`+`tva_tx`+`product_type` |
+  > | QloApps | **No** — `product_id NOT NULL` | catálogo barato ("service products") — precedente directo de §29 |
+  > | Cloudbeds | Sí (`postCustomItem`) | impuesto obligatorio + `appItemID` estable |
+  > | Este repo | **No** — `chk_invoice_item_origin` | — (vínculo a otro documento transaccional, no solo a un producto) |
+  >
+  > **Cuatro puntos del veredicto que pesaron en la decisión:**
+  >
+  > 1. La evidencia apoya permitir la línea sin producto de catálogo,
+  >    4-a-1 — pero **ningún** sistema de referencia implementa la
+  >    opción (2) tal como estaba redactada en el planteo original
+  >    (importe sin ninguna coordenada obligatoria): todos exigen algo en
+  >    su lugar (cuenta contable, o alícuota+tipo de producto, o
+  >    impuesto+id estable). **Esa variante literal queda descartada, no
+  >    solo pospuesta** — no hay un referente del que copiarla.
+  > 2. `chk_invoice_item_origin` de este repo ya es **más estricto** que
+  >    los 5 referentes juntos, QloApps incluido: exige vínculo a **otro
+  >    documento transaccional** (orden o reserva), no solo a un producto
+  >    de catálogo.
+  > 3. Este repo no tiene plan de cuentas (`accounts_receivable` es City
+  >    Ledger, no mayor contable) — la salvaguarda tipo-Odoo/ERPNext
+  >    (cuenta contable obligatoria) no está disponible acá. Sí existe la
+  >    salvaguarda tipo-Dolibarr (`invoice_items.iva_rate NOT NULL`,
+  >    `schema.sql:3169`), pero hereda el techo ya documentado en §25.1:
+  >    `ImpTotConc`/`ImpOpEx` hardcodeados en `0`
+  >    (`invoice.service.ts:775,777,1098,1100`) — exento/no-gravado no se
+  >    puede representar todavía, así que cualquier ancla basada en
+  >    alícuota hereda esa limitación.
+  > 4. El único referente que bloquea (QloApps) lo hace por herencia de
+  >    e-commerce (PrestaShop), no por un argumento de integridad fiscal
+  >    — pero resuelve el cargo ad-hoc exactamente con el patrón que §29
+  >    ya proponía: un catálogo barato ("service products") en la misma
+  >    tabla que el inventario real, distinguido por flag. Bloquear
+  >    **sin** construir esa salida sería el mismo antipatrón que
+  >    `CN-ESCAPE-ORPHAN-ADJUSTMENT-001` ya documentó — por eso la
+  >    decisión ata (A) a §29 en el mismo bloque, no como deuda futura.
+  >
+  > **Qué NO decide esta resolución.** No decide la variante intermedia
+  > mencionada en el planteo original (aceptar `STAY` real pero seguir
+  > bloqueando `MANUAL` puro) — el dueño resolvió directamente por la
+  > postura (1) condicionada, sin pasar por esa variante; si en el futuro
+  > alguien quiere reabrirla es una pregunta nueva, no una lectura de
+  > esta resolución. Tampoco decide las 2 sub-decisiones que §29.5 deja
+  > abiertas dentro de la Alternativa B (qué entidad es el FK de la rama
+  > `SERVICE`; el relevamiento completo de sitios que asumen `item_type`
+  > exhaustivo en 3 valores) — quedan como trabajo pendiente antes de
+  > que §29 esté listo para implementarse, ver §29.5.
+  >
+  > **Esto no autoriza `CREATE TABLE`, migraciones ni código.** Sigue
+  > pendiente el gate `architecture-governor` sobre el diseño técnico
+  > completo — ahora incluyendo, si se decide encarar en el mismo
+  > bloque, la Alternativa B de §29 con sus 2 sub-decisiones resueltas
+  > primero.
+
 - **PN-3** (numeración humana de `orders`) y **PN-5** (recálculo de
   `CbteFch` en reintento tardío) — declaradas fuera del camino crítico
   por §30.3, no bloquean `CREATE TABLE` pero tampoco están resueltas.
@@ -3150,3 +3531,69 @@ estar todo junto acá:
 solo lugar, el paso siguiente sigue siendo el mismo que fijó §30.3: el
 gate `architecture-governor` sobre el DISEÑO TÉCNICO completo — este
 bloque es consolidación de lo ya decidido, no una ronda de aprobación.**
+
+### 31.6 Convención de versión de schema — faltaba, agregada por el gate (B6, 14/09/2026)
+
+**El documento nunca mencionó el bump de `CURRENT_SCHEMA_VERSION` ni el
+patrón real que este repo usa para constraints nuevos** (grepeado sobre
+todo el documento, cero resultados antes de esta subsección). Se agrega
+acá porque es donde vive el resto de "la forma DEFINITIVA" del modelo.
+
+**Versión.** `CURRENT_SCHEMA_VERSION` está hoy en **55**
+(`src/platform/tenant-db.setup.ts:471`, verificado). Si este diseño se
+implementa tal como está en §31, sería **v56** — un bump más al bloque de
+comentarios versionados que ya encabeza `schema.sql` (mismo formato que
+`v50`-`v55`, un bullet fechado por versión con qué cambia y por qué).
+
+**Patrón real para agregar un `CHECK`/`CONSTRAINT` nuevo sobre una tabla
+que YA EXISTE** (no aplica a `invoice_drafts`/`invoice_draft_items`/
+`invoice_draft_charges` — ver más abajo por qué): desde v50-v51, el patrón
+vigente NO es `ALTER TABLE ... ADD CONSTRAINT` incondicional (eso
+revalida la tabla entera bajo `ACCESS EXCLUSIVE` en cada deploy, para
+siempre) ni el `DROP CONSTRAINT` + `ADD CONSTRAINT` incondicional que v51
+retiró por el mismo motivo. El patrón real, con guard `pg_constraint`, ya
+usado varias veces (`schema.sql:2458-2461`, `chk_accounts_receivable_status`,
+citado como ejemplo real; también los tres `CHECK` de
+`financial_transactions` de v51):
+
+```sql
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_nombre_del_constraint') THEN
+    ALTER TABLE nombre_tabla ADD CONSTRAINT chk_nombre_del_constraint
+      CHECK (...);
+  END IF;
+END $$;
+```
+
+El `ADD` solo corre (y solo revalida la tabla) la primera vez que un
+tenant no tiene el constraint — en los deploys siguientes el `IF NOT
+EXISTS` lo salta. **Nada de lo que propone este diseño necesita este
+patrón hoy:** las tres tablas nuevas (§31.1-31.3) se crean con `CREATE
+TABLE IF NOT EXISTS` y sus `CHECK` **inline**, en el mismo `CREATE` — no
+hace falta el guard `pg_constraint` porque el constraint nace junto con
+la tabla, no se agrega después sobre una tabla ya poblada. Las tres
+columnas nuevas de `invoices` (§31.4, corrección de esta misma sesión)
+son `ADD COLUMN IF NOT EXISTS`, sin `CHECK` — también idempotentes sin
+guard. **Dónde SÍ haría falta este patrón, a futuro:** si la resolución
+de **PN-6** (§31.5, arriba) terminara extendiendo `chk_invoice_item_origin`
+sobre `invoice_items` (una tabla existente, con filas reales) — ese
+`ALTER TABLE ... ADD CONSTRAINT` tendría que ir con el guard
+`pg_constraint`, no incondicional. **Actualización (v2.16): no
+materializado.** PN-6 se resolvió por la postura que **no** toca
+`chk_invoice_item_origin` (§31.5) — este párrafo queda como hipotético
+descartado, no como trabajo pendiente.
+
+**Por qué `migrations/NNN_*.sql` no aplica.** Ese mecanismo existe en el
+repo (`migrations/003_domain_events.sql` en adelante) pero **no está
+conectado a `applyTenantSchema()`** — el comentario de
+`tenant-db.setup.ts:434-436` lo dice explícito: *"NO se movieron a
+`migrations/NNN_*.sql` -- esa carpeta no está conectada a
+`applyTenantSchema()`, así que un tenant nuevo nunca recibiría el
+CHECK."* Todo lo que un tenant (nuevo o existente) necesita tener
+termina en `schema.sql`, reaplicado completo e idempotente en cada deploy
+por `applyTenantSchema()` (`npm run migrate:tenants`, invocado desde el
+`buildCommand` de `render.yaml`) — es el único camino que garantiza que
+un tenant que se aprovisiona hoy y uno que existe desde hace un año
+terminan con el mismo schema. Las tres tablas y las tres columnas de este
+diseño, si se autorizan, van dentro de `schema.sql`, no como un archivo
+nuevo en `migrations/`.
