@@ -1037,6 +1037,21 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
    pregunta de negocio abierta que bloquee el `CREATE TABLE`** — sigue
    sin autorizar `CREATE TABLE`, migraciones ni código: falta el gate
    `architecture-governor` sobre el diseño técnico completo.
+
+   **Actualización 14/09/2026, más tarde el mismo día — las 2
+   sub-decisiones de arriba ✅ RESUELTAS, vía `AskUserQuestion`.** El
+   dueño decidió: **(1)** FK de la rama `SERVICE` = tabla nueva
+   dedicada (nombre sin fijar, p. ej. `service_items`), no `products`
+   reutilizado — mismo argumento que ya ganó para `RESERVATION`.
+   **(2)** `confirmOrder()` saltea el `INSERT` en `stock_movements` para
+   un ítem `SERVICE` — no hay producto/variante que mover. Texto
+   completo en `docs/diseno-factura-borrador-2026-08-31.md` §29.5
+   (v2.17). **Sigue sin resolverse** (paso mecánico, no de negocio) el
+   relevamiento completo de sitios que asumen `item_type` exhaustivo en
+   3 valores, listado parcial en §29.4 de ese mismo documento. Esto
+   **sigue sin autorizar** `CREATE TABLE`, `ALTER TABLE`, migraciones ni
+   código — falta el diseño real de la tabla nueva y el gate
+   `architecture-governor`.
    `credit_note_request` la TABLA (bullet
    aparte, más abajo en este mismo archivo, ADR
    `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5/§10

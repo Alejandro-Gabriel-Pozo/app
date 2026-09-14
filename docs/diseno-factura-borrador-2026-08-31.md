@@ -1,6 +1,22 @@
 # Diseño — Factura como borrador editable (proforma antes del CAE)
 
-- **Versión:** **v2.16** (14/09/2026, **PN-6 RESUELTA** — decisión del
+- **Versión:** **v2.17** (14/09/2026, **las 2 sub-decisiones de §29.5
+  RESUELTAS** — decisión del dueño, vía `AskUserQuestion`, ver §29.5).
+  **(1) FK de la rama `SERVICE`:** tabla nueva dedicada (nombre final sin
+  fijar todavía, p. ej. `service_items`) — no reutilizar `products` con
+  `requires_inventory = FALSE`, mismo argumento que ya ganó para
+  `RESERVATION`. **(2) `stock_movements`/`confirmOrder()`:** se saltea el
+  `INSERT` para un ítem `SERVICE` — no hay producto/variante que mover.
+  Sigue sin cerrarse el relevamiento completo de sitios que asumen
+  `item_type` exhaustivo en 3 valores (§29.4/§29.5) — paso mecánico
+  previo a implementar, no una decisión de negocio, y esta ronda no lo
+  resuelve. Este bloque **solo registra las 2 decisiones** — sigue sin
+  autorizar `CREATE TABLE`, `ALTER TABLE`, migraciones ni código: falta
+  todavía el diseño real de la tabla nueva (columnas, relación con
+  `products`/`bookable_services`, clasificación por `criterios-negocio`
+  como probable MAESTRO) y, después, el gate `architecture-governor`.
+
+- **Versión previa:** **v2.16** (14/09/2026, **PN-6 RESUELTA** — decisión del
   dueño en base al grounding ERP pedido a `auditor-circuitos-erp`, ver
   §31.5). Se mantiene `chk_invoice_item_origin` sin relajar (**postura
   A confirmada**) — pero **condicionada** a construir §29 (Alternativa
@@ -147,11 +163,21 @@
   patrón que ya le pasó a este documento con PN-2. **Actualizado una
   tercera vez, mismo día (v2.16):** **PN-6 quedó ✅ RESUELTA** (§31.5,
   decisión del dueño en base a grounding ERP) — vuelve a ser cierto que
-  **no queda ninguna pregunta de negocio BLOQUEANTE**. Las limitaciones que impiden
+  **no queda ninguna pregunta de negocio BLOQUEANTE**. **Actualizado una
+  cuarta vez, mismo día (v2.17):** PN-6 dejó §29 **condicionada** a
+  construirse en el mismo bloque, y §29.5 tenía 2 sub-decisiones propias
+  sin resolver — el dueño las resolvió, vía `AskUserQuestion`, más tarde
+  el mismo día (ver §29.5): tabla nueva dedicada como FK de la rama
+  `SERVICE`, y `confirmOrder()` saltea el `INSERT` en `stock_movements`
+  para esos ítems. Esto **no** era una pregunta de negocio bloqueante
+  para `invoice_drafts` en sí (PN-6 ya lo dejó resuelto en v2.16) — es
+  trabajo previo de §29, que PN-6 ató al mismo bloque. Queda todavía sin
+  cerrar el relevamiento mecánico de §29.4/§29.5 (sitios que asumen
+  `item_type` en 3 valores). Las limitaciones que impiden
   considerarlo verificado en runtime: **no se corrió la suite ni el
   typecheck sobre este diseño** (no hay código que correr), y **no se
   leyeron** el frontend, el adaptador real de AFIP ni el `OutboxWorker`.
-  Ver §22 y §30.
+  Ver §22, §29.5 y §30.
 - **Método:** `docs/DECISION_REVIEW.md` ("análisis de implicancias"). Disparo
   automático por `DECISION_REVIEW.md:119` — *"la decisión toca datos
   fiscales/legales (facturación, retención, AFIP/ARCA)"*. Todas las citas
@@ -192,6 +218,7 @@
 | **Bloque 0 de consolidación — 5 defectos + §31** (v2.14) | Modelo vigente disperso entre §23/§24(superseded)/§25/§28; 5 defectos reales sin corregir | §31 nueva: la forma DEFINITIVA de `invoice_drafts`/`invoice_draft_items`/`invoice_draft_charges`, sin remisiones a secciones superseded. **B1** (§12.3/§19.2/§22): el bug de `getOutstandingByCustomerId()` **YA SE ARREGLÓ** (03/09/2026, O2-F2/F2.1) — deja de ser precondición de D1. **B2** (§4.1/§21/§23.5): el guard de `financial_transactions` tiene **4** orígenes hoy (sumó `reversedTransactionId` el 14/09/2026), no 3 — `invoice_draft_id` sería el quinto. **B4** (§6): el aviso ⛔ tenía 3 bullets, son 4 (faltaba el retiro de D6/descuento) y el segundo estaba al revés (ni `source_type` ni `source_kind` sobreviven). **B5** (§31): `chk_draft_invoice_ptr` rediseñado completo — cubre los 7 estados y afirma `invoice_id` NULL/NOT NULL por estado. **T11**: marcada `SUPERSEDIDA`; `source_label_snapshot` **sí sobrevive** al retiro del discriminador (§31). Además renombra la serie transaccional de §11 (`T1`/`T1'`/`T2(a)(b)(c)` → `PASO-1`/`PASO-1'`/`PASO-2(a)(b)(c)`) para no colisionar con la de §20. Ninguna decisión de negocio nueva; sigue sin autorizar `CREATE TABLE`, migraciones ni código |
 | **4 correcciones puntuales + PN-6** (v2.15) | §31 completa según v2.14, pero: sin idioma de convención de schema; roles sin reconciliar contra `EMISOR_NOTA_CREDITO`/guard de empresa; §31.4 a medias (3 de 6 columnas de receptor); T11/T18 sin marcar en la tabla de §20; hueco de líneas `MANUAL`/`STAY`-only sin investigar | **B6**: §31.6 nueva, convención de versión/constraint + por qué `migrations/` no aplica. **B7**: §4.4/§14 reconciliados — `FISCAL_ISSUE` ≠ `EMISOR_NOTA_CREDITO` (distintos a propósito), y guard `MANAGEMENT` agregado para cliente `COMPANY` al emitir desde el borrador (mismo criterio que `POST /api/invoices`). **§31.4 completa**: 3 columnas nuevas en `invoices` (`receptor_legal_name`/`receptor_tax_condition`/`receptor_address_snapshot`) que §9 ya exigía. **T11/T18 marcadas `SUPERSEDIDA`** en la tabla de §20 (ya lo estaban en §28.1, no ahí). **Investigación del hueco §17.3/§31.5**: NO lo resuelve §29 (§29.3 lo descarta explícito), NO es forma sin ambigüedad (colisiona con §17 cerrado) — es decisión de negocio genuina, formalizada como **PN-6** (§31.5), **bloqueante del `CREATE TABLE`**. Las afirmaciones de §28.3/§30 ("no queda ninguna pregunta de negocio abierta") quedan corregidas in situ por esto. Ninguna de las 4 correcciones es decisión de negocio nueva; PN-6 sí lo es y queda sin decidir — el diseño **vuelve a estar bloqueado en negocio** |
 | **PN-6 resuelta — grounding ERP + decisión del dueño** (v2.16) | PN-6 (§21/§31.5) abierta, único bloqueante de negocio restante | §31.5: **PN-6 DECIDIDA por el dueño** (14/09/2026), en base al grounding pedido a `auditor-circuitos-erp` (Odoo 17, ERPNext, Dolibarr, QloApps, Cloudbeds). Se mantiene `chk_invoice_item_origin` sin relajar (postura A) — **condicionada** a construir §29 (Alternativa B, rama `SERVICE`) en el mismo bloque, no como deuda futura, por el principio de `CLAUDE.md` (*"la app no le dice al cliente cómo trabajar..."*) y el precedente `CN-ESCAPE-ORPHAN-ADJUSTMENT-001`. La variante literal de la opción (2) del planteo original (línea con los tres orígenes en `NULL`, sin ninguna coordenada) queda **descartada**, no solo pospuesta — ningún referente la implementa así. Revisado además §29 completo: **no está listo para implementación** — quedan 2 sub-decisiones abiertas en §29.5 (FK de la rama `SERVICE`; relevamiento de sitios que asumen `item_type` en 3 valores), listadas explícitamente para el dueño, no resueltas por esta ronda. §17.3 y §21 actualizadas. Con esto **no queda ninguna pregunta de negocio bloqueante** en el documento. Sigue sin autorizar `CREATE TABLE`, migraciones ni código — falta el gate `architecture-governor` |
+| **Las 2 sub-decisiones de §29.5 resueltas** (v2.17) | §29.5 dejaba 2 sub-decisiones abiertas, condición puesta por PN-6 (v2.16) para construir §29 en el mismo bloque | §29.5 (bloque nuevo): **(1) FK de la rama `SERVICE`** — tabla nueva dedicada (nombre sin fijar, p. ej. `service_items`), no reutilizar `products` con `requires_inventory = FALSE` — mismo argumento que ya ganó para `RESERVATION`. **(2) `stock_movements`/`confirmOrder()`** — se saltea el `INSERT` para un ítem `SERVICE`, no hay producto/variante que mover; `stock_movements` queda exclusivamente para ítems que sí mueven inventario real. Ambas decididas por el dueño, vía `AskUserQuestion`, 14/09/2026. **No resuelto por esta ronda:** el relevamiento completo de sitios de `app-main`/`appfrontend-main` que asumen `item_type` exhaustivo en 3 valores (§29.4/§29.5, punto 2) — paso mecánico previo a implementar, listado como punto de partida, no como lista cerrada. Ninguna decisión de esta fila autoriza `CREATE TABLE`, `ALTER TABLE`, migraciones ni código — falta todavía el diseño real de la tabla nueva (columnas, relación con `products`/`bookable_services`, clasificación `criterios-negocio`) y el gate `architecture-governor` |
 
 ---
 
@@ -2898,6 +2925,53 @@ que revisar antes de tocar `order_items`/`invoice_items` — y por el gate
 `architecture-governor`, como cualquier cambio de schema o de contrato
 entre repos en este proyecto.
 
+> #### Las 2 sub-decisiones de arriba ✅ RESUELTAS (14/09/2026) — decisión
+> del dueño, vía `AskUserQuestion`
+>
+> **Decisión (1) — FK de la rama `SERVICE`: tabla nueva dedicada**, no
+> reutilizar `products` con `requires_inventory = FALSE`. El dueño
+> confirmó el mismo argumento que ya había ganado para `RESERVATION`
+> (§29.4): no llamarle "producto" a un concepto que no lo es. El nombre
+> final de la tabla (p. ej. `service_items`) **no queda fijado acá** — es
+> parte del diseño real, todavía sin hacer. Costo aceptado explícitamente
+> por el dueño: mayor superficie de schema (tabla nueva + CRUD + UI
+> propia) en vez de reutilizar `products`.
+>
+> **Decisión (2) — `stock_movements`/`confirmOrder()` con un ítem
+> `SERVICE`: se saltea el `INSERT` en `stock_movements`** para esos
+> ítems — no hay producto ni variante que mover, no corresponde generar
+> movimiento de stock. `stock_movements` queda exclusivamente para ítems
+> que sí mueven inventario real. Esto responde, para la rama `SERVICE`
+> específicamente, el punto que §29.4 dejaba señalado sin confirmar sobre
+> los cuatro índices únicos parciales de `stock_movements`
+> (`schema.sql:1828-1833`, `:1836-1843`): un ítem `SERVICE` no genera fila
+> ahí, así que esos índices no lo restringen — no porque se haya
+> verificado que no hace falta, sino porque no corresponde que exista la
+> fila.
+>
+> **Lo que esto NO autoriza.** Sigue sin haber ningún `CREATE
+> TABLE`/`ALTER TABLE`/migración — falta todavía el diseño real de la
+> tabla nueva (nombre, columnas, relación con `products`/
+> `bookable_services` si la tiene, y sobre todo pasar por la skill
+> `criterios-negocio` para clasificarla — probable MAESTRO, mismo trato
+> que `products`/`bookable_services` — **antes** de proponer el `CHECK`
+> real sobre `order_items`/`invoice_items`, como ya exigía el párrafo de
+> arriba).
+>
+> **Lo que sigue sin cerrarse — no resuelto por esta ronda.** El punto
+> (2) de §29.5 (el relevamiento completo de sitios que asumen `item_type`
+> exhaustivo en 3 valores) es un paso **mecánico** previo a implementar,
+> distinto de las dos decisiones de negocio de arriba — sigue listado,
+> como punto de partida y no como lista cerrada: `pos-menu/order.entities.ts`,
+> `order.service.ts`, `order-pricing.service.ts`,
+> `sql.order.repository.ts`, `in-memory.order.repository.ts`,
+> `orders.routes.ts`, `api/schemas/request.schemas.ts`,
+> `facturacion/invoice.service.ts` (todos en `app-main`), más los 3
+> sitios hardcodeados de `appfrontend-main`: `lib/ordenes/types.ts:6`,
+> `dashboard/ordenes/[id]/page.tsx:27-31,452`, `lib/ordenes/api.ts:28`
+> (§29.4). Nadie lo relevó sitio por sitio todavía — sigue siendo trabajo
+> de implementación, no de esta nota.
+
 ---
 
 ## 30. Cierre de las últimas decisiones de negocio pendientes, incluida PN-2 (14/09/2026)
@@ -3520,6 +3594,14 @@ PN-5, §27.2, C-3/C-4).
   > completo — ahora incluyendo, si se decide encarar en el mismo
   > bloque, la Alternativa B de §29 con sus 2 sub-decisiones resueltas
   > primero.
+  >
+  > **Actualización (14/09/2026, más tarde el mismo día, v2.17):** el
+  > párrafo de arriba ("Tampoco decide las 2 sub-decisiones que §29.5
+  > deja abiertas...") quedó stale el mismo día en que se escribió — el
+  > dueño las resolvió, vía `AskUserQuestion`, más tarde esa fecha. No se
+  > reescribe el párrafo — se marca acá, mismo criterio que usa todo el
+  > resto del documento. Ver §29.5 para el texto completo de las dos
+  > decisiones.
 
 - **PN-3** (numeración humana de `orders`) y **PN-5** (recálculo de
   `CbteFch` en reintento tardío) — declaradas fuera del camino crítico
