@@ -90,21 +90,6 @@ cuando se pushea.
   copiar cuando se encare este bloque. No resuelto acá -- bloque aparte,
   con su propio diseño (decidir si se extiende `ESCAPE_ROUTES` a esta ruta
   o se crea una cerca nueva específica de AND-composition).
-- **`CITY-LEDGER-AR-REPORT-ROW-FRONTEND-MIRROR-001`** — deuda con ancla,
-  encontrada por el gate al revisar Bloque 3c-iii (14/09/2026).
-  `appfrontend-main/src/lib/finanzas/types.ts:81-88` tiene su propio
-  espejo de `AccountsReceivableReportRow` (`totalAmount`/`pendingAmount`/
-  `invoicedAmount`/`collectedAmount`) sin el bucket `revertedAmount` que
-  `app-main` agregó en este mismo bloque
-  (`sql.accounts-receivable.repository.ts::getReportByPeriod()`). A
-  diferencia del union `AccountsReceivableStatus` (que si se corrigió en
-  `appfrontend-main`, commit `b41dfbe`), acá nada compile-fuerza el
-  arreglo: el único consumidor del reporte tipa la respuesta como
-  `unknown` (`ApiSection`, `dashboard/reportes/page.tsx`) y la renderiza
-  cruda -- severidad hoy BAJA (tipo muerto, sin consumidor tipado), pero
-  mismo modo de falla exacto que `ROLES-CATALOG-DRIFT-001`. Acción
-  puntual: agregar `revertedAmount: number` a esa interfaz en
-  `appfrontend-main`, commit chico, sin lógica nueva.
 - **`REPORTS-DATEONLY-MISMATCH-001`** — confirmar los 5 reportes de
   `reportes/page.tsx` contra un backend `app-main` real levantado (esta
   sesión solo validó el formato contra el regex de `dateOnlySchema`, sin

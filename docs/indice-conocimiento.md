@@ -140,6 +140,7 @@ Si la tarea toca uno de esos flujos, leer el `diseno-*` **antes** de pendientes 
 | `update()`/`deactivate()` de una entidad auditada: el UPDATE y el INSERT en `audit_log` deben compartir transacción, no dos `await` sueltos | [conocimiento/playbook-audit-log-transaccional.md](conocimiento/playbook-audit-log-transaccional.md) |
 | Regla nueva de `dependency-cruiser`: verificarla con un archivo de violación de prueba ANTES de darla por buena — para un paquete npm, `to.path` es la ruta resuelta (`node_modules/express/index.js`), no el especificador, y una regla mal escrita nunca falla | `.dependency-cruiser.cjs` (docblock); pendientes 28/08 |
 | 2+ campos independientes que forman un concepto de negocio con nombre — antes de construir el alta, agrupar en selector nombrado + resumen visible, no controles sueltos | [conocimiento/playbook-campos-interactuantes-selector-nombrado.md](conocimiento/playbook-campos-interactuantes-selector-nombrado.md) |
+| Ampliar un `enum`/union/campo compartido entre módulos o entre repos: barrer TODOS los consumidores (exhaustivos, SQL, espejos de otro repo, comentarios con el nombre viejo, números de conteo) en una sola pasada ANTES del primer commit, no repartido entre rondas de gate | [conocimiento/playbook-auditoria-consumidores-antes-de-ampliar-tipo.md](conocimiento/playbook-auditoria-consumidores-antes-de-ampliar-tipo.md) |
 
 ### Mapas del sistema
 

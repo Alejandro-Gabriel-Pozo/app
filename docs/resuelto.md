@@ -20,6 +20,33 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
 
 ---
 
+## 14/09/2026
+
+- **`CITY-LEDGER-AR-REPORT-ROW-FRONTEND-MIRROR-001`.** Origen:
+  `docs/pendientes-2026-09-12.md` (hallazgo del gate `architecture-governor`
+  al revisar Bloque 3c-iii de City Ledger — la ruta
+  `POST /accounts-receivable/:id/reverse`). `appfrontend-main/src/lib/
+  finanzas/types.ts` tenía su propio espejo de
+  `AccountsReceivableReportRow` (`totalAmount`/`pendingAmount`/
+  `invoicedAmount`/`collectedAmount`) sin el bucket `revertedAmount` que
+  `app-main` agregó en el mismo bloque
+  (`sql.accounts-receivable.repository.ts::getReportByPeriod()`, para
+  que `pending+invoiced+collected+reverted` volviera a sumar `total`
+  una vez que existe una fila `REVERTIDO`). A diferencia del union
+  `AccountsReceivableStatus` (que sí compile-forceaba el arreglo vía
+  `AR_STATUS_LABEL`, `Record` exhaustivo), acá nada lo forzaba — el
+  único consumidor del reporte tipa la respuesta como `unknown` y la
+  renderiza cruda. Mismo modo de falla que `ROLES-CATALOG-DRIFT-001`,
+  severidad baja (tipo muerto, sin consumidor tipado todavía). Cerrado
+  agregando `revertedAmount: number` a la interfaz —
+  `appfrontend-main`, commit `e841d46`, verificado con `tsc --noEmit`
+  limpio, `lint` sin errores nuevos, `test:unit` (25 tests) verde.
+  Pusheado a `origin/main` de `appfrontend` el 14/09/2026 — estado de
+  push verificable con `git log origin/main --oneline | grep e841d46`
+  en ese repo, no citado acá como hecho fijo.
+
+---
+
 ## 13/09/2026
 
 - **`CITY-LEDGER-OVERTRANSFER-PAYMENT-001`.** Origen:
