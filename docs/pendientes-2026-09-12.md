@@ -142,13 +142,28 @@ cuando se pushea.
   (`liveInvoiceIdsForReservation`, `getByIdempotencyKey`,
   `invoiceRepo.getById`, `getChargeIdsForInvoice`, y la nueva
   `accountsReceivableRepo.getByStayId()`) NO reciben `client` -- sacan una
-  SEGUNDA conexión del pool del tenant (`max: 5`,
-  `connectionTimeoutMillis: 5000`) mientras tx1 sigue abierta sobre la
-  primera. Hoy no rompe nada (son de solo lectura, el pool falla ruidoso
-  por timeout, no cuelga) pero es una clase de riesgo que crece con cada
-  lectura nueva que se agregue de la misma forma. Candidato: convertir
-  las 5 a `*WithClient()` (convención `createWithClient()` que el repo ya
-  usa). Bloque aparte, no decidido cuándo.
+  SEGUNDA conexión del pool del tenant (**corrección 14/09/2026, gate
+  `architecture-governor`, ronda 4 de Bloque 3c-ii: el pool es `max: 10`
+  por default -- `DB_POOL_MAX`, `db/pg.client.ts:94` -- no `max: 5` como
+  decía este ítem hasta ahora**, `connectionTimeoutMillis: 5000`) mientras
+  tx1 sigue abierta sobre la primera. Hoy no rompe nada (son de solo
+  lectura, el pool falla ruidoso por timeout, no cuelga) pero es una clase
+  de riesgo que crece con cada lectura nueva que se agregue de la misma
+  forma. Candidato: convertir las 5 a `*WithClient()` (convención
+  `createWithClient()` que el repo ya usa). Bloque aparte, no decidido
+  cuándo.
+  **Instancia 6 (gate ronda 4, 14/09/2026) -- ya shippeada, sin registrar
+  hasta ahora:** `AccountsReceivableService.transferStayBalanceToReceivable()`
+  (`accounts-receivable.service.ts:257-321`) ya llama a
+  `this.invoiceRepo.resolveInvoiceLinkage(charge.id)` sin `client`, adentro
+  de `transactionManager.run()` -- mismo patrón exacto, mismo riesgo, sin
+  ancla en este ítem hasta esta corrección.
+  **Instancia 7 (anticipada, todavía no shippeada):** el paso 8-bis de
+  `AccountsReceivableService.reverseTransfer()`
+  (`docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.3) va a
+  reusar el mismo `resolveInvoiceLinkage()` sin `client` -- se registra
+  como instancia real recién cuando el código de Bloque 3c-ii exista, no
+  acá (este documento no adelanta código que todavía no se escribió).
 - **`ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001`** — deuda con ancla
   (Bloque 6, §9.2, 13/09/2026): `(ar.status as string) !== 'REVERTIDO'`
   en los 2 escapes de NC filtra un valor que `AccountsReceivableStatus`

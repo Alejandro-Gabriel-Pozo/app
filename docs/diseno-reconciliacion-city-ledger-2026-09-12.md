@@ -459,6 +459,33 @@ Lógica (una sola transacción, `TransactionManager.run`):
 1. `arRepo.getByIdWithLock(client, id)` — mismo patrón de concurrencia que
    `markCollected()` (evita una reversa y un `markCollected()` concurrentes
    sobre la misma fila).
+
+   **Finding A (gate, ronda 4, 14/09/2026) — decisión sobre el método,
+   no un simple renombre.** `AccountsReceivableRepository.lockForUpdate`
+   existe hoy (`accounts-receivable.repository.ts:134`) con firma
+   `Promise<void>` — bloquea la fila pero no la devuelve, porque su único
+   caller hoy (`markCollected()`) no la necesita de vuelta ahí (hace su
+   propio `getById` después). `reverseTransfer()` sí necesita la fila bajo
+   lock para re-chequear `status` autoritativamente (paso 7 original de
+   este documento) — un `Promise<void>` no alcanza. **Resolución: se
+   ENSANCHA el método existente, no se agrega uno nuevo en paralelo** —
+   `lockForUpdate` se renombra a `getByIdWithLock` y su firma pasa a
+   `Promise<AccountReceivable | undefined>` (mismo contrato que
+   `ReservationRepository.getByIdWithLock`), devolviendo la fila mapeada
+   en vez de `SELECT 1`. Se descarta agregar un segundo método de lock
+   sobre la misma tabla — duplicación que las convenciones de este repo ya
+   prohíben (`CLAUDE.md`, sección Modularidad). Efecto en cascada, 6 sitios
+   reales (no 1): la interfaz (`accounts-receivable.repository.ts:134`),
+   la implementación SQL (`sql.accounts-receivable.repository.ts:121`,
+   `SELECT 1 ... FOR UPDATE` → `SELECT * ... FOR UPDATE` + mapeo),
+   `markCollected()` como caller existente (`accounts-receivable.service.ts:587`,
+   comentario en `:655` — sigue descartando el valor de retorno, sin
+   cambio de comportamiento), el fake completo de
+   `accounts-receivable.service.test.ts:37,43`, el test unitario dedicado
+   de `sql.accounts-receivable.repository.test.ts:90,95` (aserciones sobre
+   `SELECT *` y la fila devuelta, no solo `SELECT 1`), y la referencia
+   cruzada de `payment-application.ts:30`. Todos entran en el mismo commit
+   (ii) — no se puede renombrar sin tocar los 6, es el mismo símbolo.
 2. Guard: si `ar.status === 'FACTURADO' || ar.status === 'COBRADO'` →
    `throw new ArReversalRequiresCreditNoteError(id, ar.status)` — enruta al
    circuito de NC existente (decisión §3.2), este método NO los maneja.
@@ -499,9 +526,11 @@ Lógica (una sola transacción, `TransactionManager.run`):
    `ar.companyCustomerId`, `amount: -ar.amount` (negativo — ver §4.2,
    corrección del gate), `status: 'SETTLED'` directo, `reversedInvoiceId:
    null` SIEMPRE (invariante que lo excluye de NC, ver §4.2),
-   `reservationId: charge.reservationId, stayId: null` (ver corrección de
-   arriba — `stayId` sigue en `null` sin cambios, esta fila no participa de
-   ningún folio), `reversedTransactionId:
+   `reservationId: charge.reservationId, stayId: charge.stayId`
+   (**CORRECCIÓN 14/09/2026, gate ronda 4 — Finding C, ver más abajo**: NO
+   siempre `null` — se lee del mismo `CHARGE` bloqueado en el paso
+   anterior. Ver "Finding C" después del paso 8-bis para el razonamiento
+   completo), `reversedTransactionId:
    ar.financialTransactionId` (**el campo que resuelve Finding A** — el
    `CHARGE` original de la empresa que esta fila corrige, mismo mecanismo
    general de `financial_transactions.reversed_transaction_id`, ver §4.2),
@@ -530,10 +559,63 @@ Lógica (una sola transacción, `TransactionManager.run`):
    mientras la transacción de `reverseTransfer()` sigue abierta en la
    primera (lectura fresca, más nueva que el `ar.status` pre-tx pero no
    transaccionalmente consistente con el lock ya tomado; sin riesgo de
-   deadlock, es un `SELECT` sin `FOR UPDATE`) — sexta instancia de la
-   deuda de clase `CITY-LEDGER-AR-NESTED-CONN-001`
-   (`docs/pendientes-2026-09-12.md`), a registrar en el commit de
-   implementación, no acá.
+   deadlock, es un `SELECT` sin `FOR UPDATE`) — séptima instancia de la
+   deuda de clase `CITY-LEDGER-AR-NESTED-CONN-001` (**corrección, gate
+   ronda 4:** la sexta ya es `transferStayBalanceToReceivable()`, shippeada
+   y recién registrada en `docs/pendientes-2026-09-12.md` en esta misma
+   pasada — ver ahí), a registrar como real recién en el commit de
+   implementación de este paso (Bloque 3c-ii), no acá.
+
+   **Finding C (gate, ronda 4 de Bloque 3c-ii, 14/09/2026) — el pin de
+   `reservationId` en la pata empresa crea un consumidor nuevo que el ADR
+   no tenía: `linkStayToReservationCharges()` / `getNetBalanceByStayId()`.**
+   `linkStayToReservationCharges(stayId, reservationId)`
+   (`sql.financial-transaction.repository.ts:921`) es
+   `UPDATE financial_transactions SET stay_id = $1 WHERE reservation_id =
+   $2 AND stay_id IS NULL` — sin filtro de `type` ni `customer_id`, corre
+   al check-in (`stay.service.ts:235`) y al tope de CADA transferencia
+   (`accounts-receivable.service.ts:243`, red de seguridad
+   `CITY-LEDGER-OVERTRANSFER-PAYMENT-001`, ya documentada, ya aceptada).
+   Con el pin de arriba, el `ADJUSTMENT` compensatorio de la pata empresa
+   queda con la forma exacta que ese `UPDATE` adopta (mismo
+   `reservation_id`, `stay_id IS NULL`). Si una adopción corre DESPUÉS de
+   crear el `CHARGE` original pero ANTES de crear este `ADJUSTMENT` (ej.:
+   un segundo check-in bajo la misma reserva), el `CHARGE` queda adoptado
+   a un folio (su `stay_id` deja de ser `NULL`) mientras el `ADJUSTMENT`
+   compensatorio, creado recién después, no lo está todavía — las dos
+   filas se desincronizan, y `getNetBalanceByStayId()` (que suma
+   `ADJUSTMENT`/`CHARGE` en `+amount` SIN filtrar por `customer_id`) le
+   suma al folio de ESE stay solo el `+amount` del `CHARGE` adoptado, sin
+   la `-amount` que lo cancela — deuda fantasma en un folio ajeno a la
+   empresa. (Nota aparte, no nueva de este hallazgo: la protección "a
+   propósito NO va acá" que el propio código documenta para el `CHARGE`
+   original — `accounts-receivable.service.ts`, bloque `companyChargeId`
+   — ya era incompleta ANTES de este bloque: protege el momento de
+   creación, no evita que `linkStayToReservationCharges()` adopte el
+   `CHARGE` más tarde por `reservation_id`. Ese hueco preexistente queda
+   fuera de alcance acá — no se toca el método compartido, ver mitigación
+   abajo.)
+
+   **Mitigación elegida — local, sin tocar el método compartido:** el
+   `ADJUSTMENT` compensatorio de la pata empresa NO nace con `stayId:
+   null` fijo — nace con `stayId: charge.stayId`, leyendo el `stay_id`
+   REAL que el `CHARGE` ya bloqueado (paso anterior, mismo `client`,
+   mismo lock) tiene en ESTE momento. Dos casos: si el `CHARGE` nunca fue
+   adoptado (`stay_id IS NULL`, el caso normal hoy), el `ADJUSTMENT` nace
+   igual con `stay_id: null` — sin cambio de comportamiento respecto a la
+   redacción anterior. Si el `CHARGE` SÍ fue adoptado por una carrera
+   externa, el `ADJUSTMENT` nace YA sincronizado con el mismo `stay_id` —
+   nunca hay una ventana donde uno de los dos está adoptado y el otro no,
+   porque se leen y escriben en la misma transacción, bajo el mismo lock.
+   `getNetBalanceByStayId()` de ese folio ve `+amount` y `-amount` juntos,
+   netea a cero. No hace falta filtrar `linkStayToReservationCharges()`
+   por `type`/`customer_id` (cambio de comportamiento sobre un método
+   compartido con otros callers, que ameritaría su propio gate) — el CHECK
+   `chk_financial_transactions_order_or_reservation` no incluye `stay_id`
+   (es un XOR entre `orderId`/`reservationId` únicamente, verificado
+   contra `schema.sql` BLOQUE 22), así que `reservationId` y `stayId`
+   coexistiendo en la misma fila es legal y ya es el patrón normal de todo
+   `CHARGE` de huésped adoptado en `checkIn()`.
 
    **Precondición sin guardar todavía (Condición C2 del gate, ronda
    Bloque 3b, 14/09/2026) — a resolver en el Bloque 3c, no acá.**
@@ -911,8 +993,8 @@ implementación real:**
 | `req.db` vs pool de plataforma | Sin cambios de wiring — mismo patrón que el resto de `AccountsReceivableService`, `req.db` vía `TransactionManager` inyectado, nunca `getPlatformRawPool()` | — (ya declarado) |
 | RBAC (`EXPECTED_AUTHORIZE_CALL_SITES`, `docs/rbac-matriz-endpoints.md`) | **+2 call-sites** (decisión §3.7: `MANAGEMENT` Y `EMISOR_NOTA_CREDITO` en cadena, no 1 solo) | — (ya declarado, número corregido) |
 | Schema (`CURRENT_SCHEMA_VERSION`) | v52 (ya aplicado, `b82d828`) para `REVERTIDO`/`reversed_*`/`replaces_ar_id`. **Corrección 14/09/2026 (commit `5ae9044`, Bloque 3a) — reemplaza la corrección del 13/09/2026 de esta misma fila, que quedó vieja el mismo día: NO se agregó `guest_reversal_transaction_id` (superseded, ver §4.2 addendum) — en cambio, v53→v54 sumó `financial_transactions.reversed_transaction_id` (auto-referencial, mecanismo GENERAL de reversa del ledger, no una columna dedicada por pata) y RETIRÓ `accounts_receivable.reversal_transaction_id` (v52, redundante con el campo nuevo). `reverseTransfer()` (Bloque 3c) no debe ningún bump de schema más para esto — el mecanismo ya está completo.** | — (ya declarado, número corregido) |
-| `reversed-invoice-id-convention.test.ts::WRITE_SITES` (§7 punto 9) | `3 → 4` — el `ADJUSTMENT` compensatorio de la pata huésped (§4.3 paso 6) escribe `reversedInvoiceId: null` explícito, igual que la pata empresa | Sin actualizar el número, la suite queda roja apenas se implementa — no es opcional |
-| **`AccountReceivable` (TS) vs `accounts_receivable` (schema v52)** (hallazgo del gate, ronda 3 de Bloque 3c-ii) | `reversed_by`/`reversed_at`/`reversed_reason`/`replaces_ar_id` existen en `schema.sql` desde v52 pero **cero** ocurrencias en `src/**/*.ts` — ni en la interfaz `AccountReceivable`, ni en `mapRow` de `sql.accounts-receivable.repository.ts`. `markRevertedWithClient()` (paso 7) escribe los primeros 3; el paso 8 (`correctedBalance`) necesita `replacesArId` en `postStayTransfer()` (firma a extender, ya pre-autorizado en el docblock de `49583cc`) y en `createWithClient`. Bloque 3c-ii tiene que declarar explícito si `reversed_by/at/reason` son write-only o si redondean de vuelta a la entidad — no dejarlo implícito, mismo criterio que ya se aplicó a `status` | Mismo modo de falla que el drift que este bloque entero vino a cerrar (`AccountsReceivableStatus` de 3 valores vs. 4 en BD) — repetirlo en 4 columnas más sin declararlo explícito reproduce el problema un nivel más abajo |
+| `reversed-invoice-id-convention.test.ts::WRITE_SITES` (§7 punto 9) | `3 → 4` — **corrección (gate ronda 4):** `WRITE_SITES` es una lista de ARCHIVOS (`reversed-invoice-id-convention.test.ts:100-104`), no de escrituras — `clientes-finanzas/accounts-receivable.service.ts` no está en la lista hoy, y las DOS patas (§4.3 pasos 5 y 6) escriben `reversedInvoiceId: null` ahí, así que el delta es "+1 archivo nuevo", no "la pata huésped" específicamente. También `expect(WRITE_SITES.length).toBe(3)` (`:179`) tiene que pasar a `4` en el mismo commit — dos ediciones en ese archivo, no una (ya lo decía §7 punto 9, repetido acá para que la fila de la matriz no quede desactualizada sola) | Sin actualizar el número, la suite queda roja apenas se implementa — no es opcional |
+| **`AccountReceivable` (TS) vs `accounts_receivable` (schema v52)** (hallazgo del gate, ronda 3 de Bloque 3c-ii) | `reversed_by`/`reversed_at`/`reversed_reason`/`replaces_ar_id` existen en `schema.sql` desde v52. **Corrección (gate ronda 4):** no son "cero ocurrencias" en `src/**/*.ts` sin matices — hay 3 menciones en comentarios (`tenant-db.setup.ts:441-442`, `tenant-db.setup.test.ts:274-275`, `accounts-receivable.service.ts:348`, ya consistentes con el retiro de `reversal_transaction_id` en v54 — verificado, el comentario de v54 en `tenant-db.setup.ts:460-461` ya declara ese retiro, no quedó stale). La afirmación correcta: **cero en código ejecutable** — ni en la interfaz `AccountReceivable`, ni en `mapRow` de `sql.accounts-receivable.repository.ts`. `markRevertedWithClient()` (paso 7) escribe los primeros 3; el paso 8 (`correctedBalance`) necesita `replacesArId` en `postStayTransfer()` y en `createWithClient` — **corrección de framing (gate ronda 4):** el docblock de `49583cc` no "pre-autoriza" esta extensión, la DIFIERE ("eso se agrega en su propio commit, cuando haga falta") — commit (ii) es ese commit, no algo ya aprobado de antemano. Bloque 3c-ii tiene que declarar explícito si `reversed_by/at/reason` son write-only o si redondean de vuelta a la entidad — no dejarlo implícito, mismo criterio que ya se aplicó a `status` | Mismo modo de falla que el drift que este bloque entero vino a cerrar (`AccountsReceivableStatus` de 3 valores vs. 4 en BD) — repetirlo en 4 columnas más sin declararlo explícito reproduce el problema un nivel más abajo |
 | **`sql.accounts-receivable.repository.ts::getReportByPeriod`** | `SUM(ar.amount)` y `COUNT(*)` sin filtro, más 3 `FILTER (WHERE ar.status = ...)` que solo cubren los 3 estados viejos | **Alto** — con `REVERTIDO` sumando al total pero sin bucket propio, `totalAmount ≠ pending+invoiced+collected` en `GET /api/reports/accounts-receivable`, y un par original+reemplazo duplica el total del cierre de mes |
 | **`appfrontend-main/src/lib/finanzas/types.ts`** — `AccountsReceivableStatus` (unión de 3 valores) | Contrato cross-repo, sin CI compartida que lo detecte | Rompe en silencio hasta que alguien vea el síntoma en producción |
 | **`appfrontend-main/src/app/dashboard/reportes/page.tsx`** — `AR_STATUS_LABEL: Record<AccountsReceivableStatus, string>` | Mapa de labels sin la 4ª clave | Una fila `REVERTIDO` renderiza `undefined` — en blanco, sin crash, mal en silencio |
@@ -1255,6 +1337,45 @@ implementación real:**
     tener presente esta consecuencia antes de autorizar el mecanismo: hoy
     la única forma de que alguien vea ese saldo es yendo a buscarlo a
     mano (`GET` del folio, o el propio log de auditoría de la reversa).
+12. **Técnica, resuelta acá (Finding B, gate ronda 4, 14/09/2026) —
+    mapeo HTTP de los 4 errores nuevos en `error.middleware.ts::domainErrorStatus()`.**
+    El gate propuso los 4 al grupo 422 (mismo que `STAY_CHARGE_ALREADY_INVOICED`,
+    "documento fiscal ya emitido, acción no completa, no reintentar").
+    Revisado contra el switch real (`error.middleware.ts:184-328`): ese
+    grupo 422 es específicamente para bloqueos por documento fiscal
+    (`CREDIT_NOTE_*`, `AFIP_REQUEST_REJECTED`) — encaja para
+    `ArReversalRequiresCreditNoteError` (literalmente redirige al circuito
+    de NC, mismo grupo semántico que sus hermanos `CREDIT_NOTE_CANCELLATION_PENDING`/
+    `CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE`), pero NO para los otros
+    tres — esos son "precondición de estado del recurso no cumplida", el
+    mismo grupo 409 de `NO_BALANCE_TO_TRANSFER`/`STAY_BALANCE_OWED`/
+    `RESERVATION_NOT_CANCELLED`. **Resolución (difiere de la propuesta del
+    gate, con el razonamiento de arriba):**
+    - `ArReversalRequiresCreditNoteError` → **422**, grupo `CREDIT_NOTE_*`.
+    - `ArReversalMissingGuestLinkError` → **409**, grupo de precondición de
+      estado (fila de AR anterior a `8f11d19`, sin vínculo — no es un
+      documento fiscal en juego, es una forma de dato que no soporta esta
+      operación).
+    - `ArReversalMissingCompanyLinkError` → **409**, mismo grupo, mismo
+      razonamiento (`ar.financialTransactionId == null`, precondición del
+      paso 5 original).
+    - `ArReversalChargeNotSettledError` → **409**, mismo grupo que
+      `RESERVATION_NOT_CANCELLED` — el `CHARGE` no está en el estado que
+      esta operación requiere.
+13. **Técnica, resuelta acá (Finding D, gate ronda 4, 14/09/2026) —
+    ¿`FinancialTransactionRepository.getByIdWithLock` obligatorio u
+    opcional en la interfaz?** Mismo patrón ya establecido en el propio
+    archivo para `settleByIdsWithClient?`
+    (`financial-transaction.repository.ts:260-264`, cita explícita a
+    `ReservationRepository.getByIdWithLock?`): opcional, con guard del
+    caller (`if (!repo.getByIdWithLock) throw`). Motivo medido, no
+    supuesto: hay **7** fakes completos (`implements
+    FinancialTransactionRepository`) en tests de otros módulos
+    (`invoice.service.test.ts:185,1883`, `stay.service.test.ts:75`,
+    `outbox.handlers.test.ts:69`, `customer-account.service.test.ts:18`,
+    `accounts-receivable.service.test.ts:96`, `cash-register.service.test.ts:80`)
+    que no necesitan este método — obligatorio rompe los 7 sin motivo,
+    mismo costo que ya justificó la opcionalidad de `settleByIdsWithClient?`.
 
 ## 8. Bloques de implementación sugeridos (orden, no decisión)
 
