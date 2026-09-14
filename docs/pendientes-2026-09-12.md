@@ -62,6 +62,31 @@ cuando se pushea.
   (`transferStayBalanceToReceivable()`) contra un tenant real, revertirla
   con `reverseTransfer()`, y confirmar en SQL directo que las 2 filas
   `ADJUSTMENT` quedan como el diseño describe.
+- **`CITY-LEDGER-ORDER-GUARD-M3-INTEGRATION-VERIFY-001`** — el guard de
+  re-verificación tx1→tx2 del escape de NC de órdenes (hallazgo M3,
+  14/09/2026, gate `architecture-governor`, APPROVED WITH CONDITIONS)
+  tiene código completo, gate-aprobado, y tests unitarios en verde -- pero
+  **nunca corrió contra Postgres real**. Existe
+  `src/tests/integration/cancel-order-with-credit-note.integration.test.ts`
+  (`describe.skipIf(skipIfNoDb)`, 12 llamadas reales al servicio) pero
+  `vitest.config.ts:17` excluye TODO `src/tests/integration/**` de `npm
+  test` -- ese archivo no participa de la corrida estándar, necesita
+  `npm run test:integration` con `TEST_DATABASE_URL` seteada, no
+  disponible en este entorno. Sin evidencia real todavía: la conexión
+  anidada dentro del lock (ver `CITY-LEDGER-AR-NESTED-CONN-001` instancia
+  11 arriba), la re-entrancia del lock del puerto
+  (`orderCancelPort.cancelForCreditNote`, misma fila, misma tx/conexión --
+  el comentario del código afirma que Postgres la concede de inmediato,
+  nunca verificado en runtime), y la concesión efectiva del lock bajo dos
+  transacciones genuinamente concurrentes. Mismo atenuante que el ítem de
+  arriba: el precedente de reservas (`CreditNoteReservationInvoiceSetChangedError`)
+  tampoco tiene test de integración dedicado -- no es una regresión de
+  este commit, es un residuo que ya existía del lado reservas y ahora se
+  duplica del lado órdenes. Acción puntual: correr `npm run
+  test:integration` con `TEST_DATABASE_URL` configurada, y agregar (o
+  confirmar que ya cubre) un caso que emita una factura AFIP real en la
+  ventana tx1→tx2 y confirme que `CreditNoteOrderInvoiceSetChangedError`
+  dispara antes de comprometer la cancelación.
 - **`CITY-LEDGER-REVERSE-ROUTE-GROUP-FREEZE-001`** — decisión diferida del
   ADR (§4.4, docs/diseno-reconciliacion-city-ledger-2026-09-12.md),
   encontrada sin resolver por el gate `architecture-governor` al revisar
@@ -230,6 +255,28 @@ cuando se pushea.
   ruidoso por timeout, no cuelga) -- las 4 son secuenciales dentro de la
   misma llamada, así que no multiplican la concurrencia POR REQUEST, solo
   el número de lecturas nested que este ítem tiene que seguir contando.
+
+  **Instancia 11 -- shippeada (hallazgo M3, 14/09/2026, gate
+  `architecture-governor`, ronda de gate de implementación) -- CUALITATIVAMENTE
+  DISTINTA de las 10 anteriores.** `cancel-order-with-credit-note.service.ts`,
+  tx2 del escape de NC de órdenes: `liveInvoiceIdsForOrder(orderId)` (sin
+  `client`) corre DENTRO de `transactionManager.run()`, DESPUÉS de
+  `this.orderRepo.getByIdForUpdate(client, orderId)` -- a diferencia de las
+  10 instancias anteriores (todas lecturas sueltas, sin ningún lock
+  sostenido a la vez), esta es la PRIMERA registrada que ocurre MIENTRAS
+  la transacción sostiene un `FOR UPDATE` sobre una fila real (`orders`).
+  Consecuencia distinta, no solo "una lectura más": bajo saturación del
+  pool del tenant (`max: 10` default, `connectionTimeoutMillis: 5000`,
+  `db/pg.client.ts:94`), lo que crece no es solo el riesgo de timeout de
+  la lectura -- es el TIEMPO DE RETENCIÓN DEL LOCK sobre `orders`, hasta
+  los mismos 5s del timeout, mientras esta transacción espera una segunda
+  conexión del mismo pool que la primera ya está usando. Mismo patrón
+  exacto en el precedente de reservas (`liveInvoiceIdsForReservation()`
+  dentro de tx2 de `cancel-reservation-with-credit-note.service.ts`, ya en
+  producción) -- no es una clase de riesgo nueva que este commit
+  introduce, pero si el precedente de reservas alguna vez se contó bajo
+  este ítem, no tenía su propia instancia numerada; queda corregido acá,
+  con las dos citadas.
 - **`ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001`** — deuda con ancla
   (Bloque 6, §9.2, 13/09/2026): `(ar.status as string) !== 'REVERTIDO'`
   en los 2 escapes de NC filtra un valor que `AccountsReceivableStatus`

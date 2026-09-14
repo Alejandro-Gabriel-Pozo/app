@@ -728,6 +728,27 @@ export class CreditNoteMultiInvoiceError extends DomainError {
 }
 
 /**
+ * M3 (`docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:1434-1440`,
+ * grounding ERP QloApps/Odoo citado en `docs/pendientes-2026-09-12.md:2861-2874`)
+ * -- espejo exacto de `CreditNoteReservationInvoiceSetChangedError` del lado
+ * reservas, para el escape de órdenes: carrera entre tx1 y tx2 del escape --
+ * entre el momento en que se decide qué facturas viven sobre la orden (tx1) y
+ * el momento en que se compromete la cancelación (tx2), AFIP pudo emitir una
+ * factura NUEVA sobre otro cargo de la misma orden (el round-trip a AFIP
+ * corre fuera de cualquier lock). La Nota de Crédito YA se emitió
+ * (irreversible) pero la orden NO se cancela -- el caso queda visible para
+ * revisión manual (mismo estado "solicitud", N11, que el resto de este ADR).
+ */
+export class CreditNoteOrderInvoiceSetChangedError extends DomainError {
+  constructor(orderId: string, expectedInvoiceId: string) {
+    super(
+      `El conjunto de facturas vivas de la orden "${orderId}" cambió entre el armado del ADJUSTMENT y la emisión de la Nota de Crédito -- ya no es exactamente "${expectedInvoiceId}". La Nota de Crédito se emitió pero la orden NO se canceló; el caso queda registrado para revisión manual.`,
+      'CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED',
+    );
+  }
+}
+
+/**
  * ADR común cancelar-con-NC §3 (sub-bloque 4) -- caso de carrera entre tx1 y
  * tx2 del escape: la Nota de Crédito **ya se emitió** (`ISSUED`, irreversible),
  * pero al ir a cancelar la orden en tx2 ésta cambió de estado (ej. un

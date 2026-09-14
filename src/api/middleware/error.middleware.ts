@@ -190,12 +190,19 @@ function domainErrorStatus(error: DomainError): number {
     // de Nota de Crédito. Los otros 3 códigos nuevos de reverseTransfer()
     // NO entran acá -- van al grupo 409 de más abajo, son precondición de
     // estado del recurso, no documento fiscal en juego.
+    //
+    // M3 (14/09/2026) -- `CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED`: espejo
+    // exacto de `CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED` del lado
+    // órdenes (mismo hallazgo, mismo guard, mismo grupo semántico -- la NC
+    // ya se emitió pero la orden no se pudo cancelar porque el conjunto de
+    // facturas vivas cambió entre tx1 y tx2).
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
     case 'UNSUPPORTED_IVA_RATE':
     case 'CREDIT_NOTE_CANCELLATION_PENDING':
     case 'CREDIT_NOTE_ISSUED_ORDER_NOT_CANCELLABLE':
+    case 'CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED':
     case 'CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED':
     case 'CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE':
     case 'STAY_CHARGE_ALREADY_INVOICED':

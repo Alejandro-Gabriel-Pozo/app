@@ -332,10 +332,13 @@ export function createOrdersRouter(container: AppContainer): Router {
         // seguridad" (su propio comentario lo anticipaba: "para un futuro
         // caller que haga next(err)").
         //
-        // Dos cambios de contrato reales sobre los 7 códigos alcanzables
+        // Dos cambios de contrato reales sobre los 8 códigos alcanzables
         // desde este orquestador (verificado contra domainErrorStatus() --
         // el 7mo, CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL, se sumó en 1c-i,
-        // 11/09/2026, ya mapeado a 409 sin cambios en el middleware):
+        // 11/09/2026, ya mapeado a 409 sin cambios en el middleware; el 8vo,
+        // CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED, se sumó en M3, 14/09/2026,
+        // guard de re-verificación tx1->tx2, mapeado a 422 -- ver
+        // cancel-order-with-credit-note.service.ts):
         // AFIP_REQUEST_REJECTED 409->422, AFIP_NOT_CONFIGURED 422->503 --
         // los dos, semánticamente más correctos (rechazo AFIP es regla de
         // negocio no conflicto/carrera; "sin configurar" es dependencia

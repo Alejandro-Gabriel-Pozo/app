@@ -15,6 +15,7 @@ import {
   CreditNoteCancellationRejectedError,
   CreditNoteMultiInvoiceError,
   CreditNoteConsolidatedFullReversalError,
+  CreditNoteOrderInvoiceSetChangedError,
   InvalidOrderTransitionError,
   OrderNotFoundError,
 } from '../domain/errors.js';
@@ -311,6 +312,47 @@ describe('CancelOrderWithCreditNoteService', () => {
       { ids: [res.adjustmentId], businessId: BIZ },
       { ids: [CHARGE_ID], businessId: BIZ },
     ]);
+  });
+
+  // M3 (`docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:1434-1440`)
+  // -- ventana tx1->tx2: el conjunto de facturas ISSUED vivas de la orden
+  // cambió mientras AFIP procesaba la NC. A diferencia del precedente de
+  // reservas (que puede tener varios CHARGE y agregar uno nuevo ISSUED), una
+  // orden tiene EXACTAMENTE un CHARGE (índice único v45) -- el escenario
+  // equivalente acá es que el linkage de ESE ÚNICO cargo cambie de factura
+  // entre tx1 y tx2 (ej. una re-emisión o una corrección administrativa
+  // corrió en la ventana): mismo efecto observable, `stillIssued` ya no
+  // contiene `prep.originalInvoiceId`.
+  it('M3 -- ventana tx1->tx2: el conjunto de facturas vivas de la orden cambió antes de tx2: CreditNoteOrderInvoiceSetChangedError, la orden NO se cancela', async () => {
+    const originalRequestInvoice = svc.requestInvoice.bind(svc);
+    svc.requestInvoice = async (input) => {
+      // Justo antes de que tx2 re-verifique, el linkage del cargo cambió --
+      // deja de resolver a la factura que tx1 congeló como `originalInvoiceId`.
+      inv.linkage = { kind: 'ISSUED', invoiceId: 'inv-OTRA-NUEVA' };
+      return originalRequestInvoice(input);
+    };
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteOrderInvoiceSetChangedError);
+    expect(ord.order.status).toBe('CONFIRMED'); // NO se canceló
+    expect(port.calls).toBe(0); // tx2 abortó ANTES de llamar al puerto
+    const adj = [...ft.rows.values()][0]!;
+    expect(adj.status).toBe('PENDING'); // N11 -- NC ISSUED, ADJUSTMENT PENDING, visible
+    expect(ft.settleCalls).toEqual([]); // nada se sella
+  });
+
+  // Mismo hallazgo, caso borde: la factura vuelve a NO estar ISSUED (ej. la
+  // resolución cambia a NONE) -- `issuedInvoiceIds.size` da 0, el guard tiene
+  // que atajarlo igual que el caso de arriba (no solo "cambió a OTRA factura").
+  it('M3 -- ventana tx1->tx2: la factura deja de estar ISSUED antes de tx2: CreditNoteOrderInvoiceSetChangedError', async () => {
+    const originalRequestInvoice = svc.requestInvoice.bind(svc);
+    svc.requestInvoice = async (input) => {
+      inv.linkage = { kind: 'NONE' };
+      return originalRequestInvoice(input);
+    };
+
+    await expect(sut.cancelOrderWithCreditNote(ORDER_ID, auth())).rejects.toBeInstanceOf(CreditNoteOrderInvoiceSetChangedError);
+    expect(ord.order.status).toBe('CONFIRMED');
+    expect(port.calls).toBe(0);
   });
 
   it('orden en estado no cancelable -- InvalidOrderTransitionError', async () => {

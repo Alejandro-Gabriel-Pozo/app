@@ -167,4 +167,15 @@ describe('error.middleware -- MID-LOG-001 política de logging de DomainError', 
     expect(res.statusCode).toBe(422);
     expect(logger.error).not.toHaveBeenCalled();
   });
+
+  // M3 (14/09/2026) -- espejo del test de arriba, lado órdenes: red de
+  // seguridad de `orders.routes.ts` (que también delega TODO a next(err)).
+  // Sin este case, CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED caería al
+  // `default:` -> 500 "sin mapeo" sin que ningún test lo avise.
+  it('CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED mapea a 422 -- documento fiscal ya emitido, no reintentar', () => {
+    const res = fakeRes();
+    errorHandler(new TestDomainError('CREDIT_NOTE_ORDER_INVOICE_SET_CHANGED'), fakeReq(), res, vi.fn());
+    expect(res.statusCode).toBe(422);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
 });

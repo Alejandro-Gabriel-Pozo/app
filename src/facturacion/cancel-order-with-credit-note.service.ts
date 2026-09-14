@@ -20,17 +20,34 @@
  *        `cancel-order-with-cn:<orderId>` (N11).
  *   AFIP: `InvoiceService.requestInvoice()` — SIN transacción abierta, sin
  *        lock (N10). Puede tardar, fallar incierto o ser rechazada.
- *   tx2 (post-AFIP, SOLO si la NC llegó a `ISSUED` — D1): transición
- *        `→ CANCELLED` + audit + evento `order.cancelled` (lo hace la impl
- *        de `OrderCancelPort` que vive en `pos-menu/`), `ADJUSTMENT` →
- *        SETTLED, y el `UPDATE` dirigido del/los CARGO(s) revertido(s) →
- *        SETTLED con las tres restricciones de N1.a: (i) solo `status`,
- *        (ii) `WHERE status = 'PENDING'`, (iii) ids CONGELADOS en tx1
- *        (`frozenChargeIds`, resuelto una sola vez contra la FACTURA vía
- *        `InvoiceRepository.getChargeIdsForInvoice()` -- 1c-i, 11/09/2026:
- *        antes tx2 volvía a llamar a `getChargeIdsForInvoice()`, lo que en
- *        una factura consolidada multi-orden habría settleado también el
- *        cargo de OTRA orden; ahora nunca se re-deriva), nunca del documento.
+ *   tx2 (post-AFIP, SOLO si la NC llegó a `ISSUED` — D1): re-lock de
+ *        `orders` (mismo `getByIdForUpdate` de tx1) → **re-verificación M3**
+ *        de que el conjunto de facturas ISSUED vivas de la orden sigue
+ *        siendo exactamente el revertido (`liveInvoiceIdsForOrder()`,
+ *        `CreditNoteOrderInvoiceSetChangedError` si cambió -- ver docblock
+ *        del método) → transición `→ CANCELLED` + audit + evento
+ *        `order.cancelled` (lo hace la impl de `OrderCancelPort` que vive en
+ *        `pos-menu/`), `ADJUSTMENT` → SETTLED, y el `UPDATE` dirigido del/los
+ *        CARGO(s) revertido(s) → SETTLED con las tres restricciones de N1.a:
+ *        (i) solo `status`, (ii) `WHERE status = 'PENDING'`, (iii) ids
+ *        CONGELADOS en tx1 (`frozenChargeIds`, resuelto una sola vez contra
+ *        la FACTURA vía `InvoiceRepository.getChargeIdsForInvoice()` -- 1c-i,
+ *        11/09/2026: antes tx2 volvía a llamar a `getChargeIdsForInvoice()`,
+ *        lo que en una factura consolidada multi-orden habría settleado
+ *        también el cargo de OTRA orden; ahora nunca se re-deriva), nunca
+ *        del documento.
+ *
+ * ## M3 — re-verificación del conjunto de facturas vivas en tx2 (11-14/09/2026)
+ * Hallazgo `docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:1434-1440`
+ * (grounding ERP QloApps/Odoo, `docs/pendientes-2026-09-12.md:2861-2874`):
+ * entre el commit de tx1 y tx2, `requestInvoice()` puede emitir una factura
+ * AFIP NUEVA sobre otro cargo de la orden (el round-trip corre sin lock).
+ * Sin re-verificar, tx2 comprometía la cancelación igual, dejando un
+ * comprobante fiscal real sin su Nota de Crédito. Mismo guard que el
+ * precedente de reservas (`cancel-reservation-with-credit-note.service.ts`,
+ * sección "ventana tx1→tx2" de su propio docblock) -- acá `liveInvoiceIdsForOrder()`
+ * generaliza la resolución que tx1 ya hacía, para que las dos transacciones
+ * usen la misma lógica.
  *
  * ## D1 — la orden NO se cancela si la NC no llegó a `ISSUED`
  * Si AFIP no confirma el CAE (`AfipRequestUncertainError`, o `retryExisting()`
@@ -46,7 +63,7 @@ import { logger } from '../logger.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { FinancialTransaction, FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
-import type { InvoiceRepository } from './invoice.repository.js';
+import type { InvoiceRepository, InvoiceLinkage } from './invoice.repository.js';
 import type { Invoice } from './invoice.entities.js';
 import type { InvoiceService } from './invoice.service.js';
 import type { IOrderRepository, OrderTransitionOutcome } from '../pos-menu/order.repository.js';
@@ -65,6 +82,7 @@ import {
   CreditNoteMultiInvoiceError,
   CreditNoteConsolidatedFullReversalError,
   CreditNoteIssuedOrderNotCancellableError,
+  CreditNoteOrderInvoiceSetChangedError,
 } from '../domain/errors.js';
 import { OrderNotFoundError, InvalidOrderTransitionError } from '../domain/errors.js';
 
@@ -153,6 +171,56 @@ export class CancelOrderWithCreditNoteService {
   }
 
   /**
+   * M3 (`docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:1434-1440`,
+   * grounding ERP QloApps/Odoo citado en `docs/pendientes-2026-09-12.md:2861-2874`)
+   * -- mismo criterio que `liveInvoiceIdsForReservation()` del precedente de
+   * reservas (`cancel-reservation-with-credit-note.service.ts`): recorre los
+   * `CHARGE` de la orden y devuelve el conjunto de facturas `ISSUED` vivas
+   * entre ellos. Se usa DOS veces, con requisitos distintos: en tx1 (bajo
+   * lock, resolución autoritativa de `originalInvoiceId`) y en tx2 (bajo
+   * re-lock, re-verificación de que ese conjunto no cambió mientras AFIP
+   * procesaba la NC -- la ventana que M3 encontró sin guardia).
+   *
+   * A diferencia del precedente de reservas, una orden tiene EXACTAMENTE un
+   * `CHARGE` (índice único v45, `charges.length !== 1` se sigue chequeando
+   * en el caller) -- así que `issuedInvoiceIds` acá nunca supera 1 elemento
+   * por construcción. El helper no asume esa cardinalidad (mismo cuerpo que
+   * el de reservas, sin bifurcar) para no duplicar la lógica de resolución
+   * de linkage entre los dos callers de este archivo.
+   */
+  private async liveInvoiceIdsForOrder(orderId: string): Promise<{
+    charges: FinancialTransaction[];
+    issuedInvoiceIds: Set<string>;
+    /**
+     * Condición C1 del gate (`architecture-governor`, ronda de implementación
+     * de M3, 14/09/2026) -- el `linkage` completo de cada cargo, no solo el
+     * subconjunto ISSUED. Antes de factorizar este helper, el mensaje de
+     * "sin factura ISSUED que revertir" incluía `(linkage: ${linkage.kind})`
+     * -- distinguía `NONE` ("nada facturado, cancelación normal alcanza") de
+     * `NOT_ISSUED` con `FAILED_UNCERTAIN`+`afipContacted` ("AFIP puede tener
+     * un comprobante, no es lo mismo"). El gate encontró que esa pérdida de
+     * detalle SÍ importa acá (a diferencia del precedente de reservas, que
+     * no pierde nada porque tira una clase de error TIPADA que carga la
+     * semántica) -- el único portador de esa distinción en órdenes era el
+     * string del mensaje, y solo lo ve `logger.error()` (nunca llega al
+     * body HTTP, `error.middleware.ts` lo colapsa a `INTERNAL_ERROR`
+     * genérico). Devolver el mapa evita una query nueva -- ya se resolvió
+     * `resolveInvoiceLinkage()` para cada cargo acá abajo.
+     */
+    linkages: Map<string, InvoiceLinkage>;
+  }> {
+    const charges = (await this.financialTransactionRepo.getByOrderId(orderId)).filter((t) => t.type === 'CHARGE');
+    const issuedInvoiceIds = new Set<string>();
+    const linkages = new Map<string, InvoiceLinkage>();
+    for (const charge of charges) {
+      const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
+      linkages.set(charge.id, linkage);
+      if (linkage.kind === 'ISSUED') issuedInvoiceIds.add(linkage.invoiceId);
+    }
+    return { charges, issuedInvoiceIds, linkages };
+  }
+
+  /**
    * Único punto de entrada. `auth` es el token branded del sub-bloque 2 —
    * sin él (o con `auth.scope.kind !== 'ORDER'`) esto no compila / aborta:
    * la prueba tipada de que el pedido pasó por `authorize(Roles.EMISOR_NOTA_CREDITO)`.
@@ -222,7 +290,11 @@ export class CancelOrderWithCreditNoteService {
         throw new InvalidOrderTransitionError(order.status, 'CANCELLED');
       }
 
-      const charges = (await this.financialTransactionRepo.getByOrderId(orderId)).filter((t) => t.type === 'CHARGE');
+      // M3: resolución vía el mismo helper que tx2 va a usar más abajo para
+      // re-verificar (`liveInvoiceIdsForOrder`) -- una sola fuente para
+      // "facturas ISSUED vivas de esta orden", no dos lógicas que puedan
+      // divergir.
+      const { charges, issuedInvoiceIds, linkages } = await this.liveInvoiceIdsForOrder(orderId);
       if (charges.length !== 1) {
         // Una orden tiene exactamente un CHARGE (índice único v45). 0 = no hay
         // nada facturado, la cancelación normal alcanza; >1 = inconsistencia.
@@ -232,15 +304,20 @@ export class CancelOrderWithCreditNoteService {
       }
       const charge = charges[0]!;
 
-      const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
-      if (linkage.kind !== 'ISSUED') {
+      if (issuedInvoiceIds.size !== 1) {
         // No hay Factura B viva que revertir -> este escape no aplica, la
         // cancelación normal (`OrderService.cancelOrder()`) es suficiente.
+        // (issuedInvoiceIds.size no puede superar 1 acá -- un único CHARGE
+        // resuelve a lo sumo una factura ISSUED -- así que "!== 1" equivale
+        // a "el único cargo no está ISSUED", mismo chequeo que antes hacía
+        // `linkage.kind !== 'ISSUED'` directo.) Condición C1 del gate --
+        // `linkage.kind` restaurado en el mensaje desde `linkages` (ya
+        // resuelto por `liveInvoiceIdsForOrder()`, sin query nueva).
         throw new Error(
-          `cancelOrderWithCreditNote: el cargo de la orden "${orderId}" no tiene una factura ISSUED que revertir (linkage: ${linkage.kind}). Usá la cancelación normal.`,
+          `cancelOrderWithCreditNote: el cargo de la orden "${orderId}" no tiene una factura ISSUED que revertir (linkage: ${linkages.get(charge.id)?.kind}). Usá la cancelación normal.`,
         );
       }
-      const originalInvoiceId = linkage.invoiceId;
+      const originalInvoiceId = [...issuedInvoiceIds][0]!;
 
       // 1c-i (11/09/2026, gate `architecture-governor`): N2.a pasó de exigir
       // cardinalidad exactamente 1 a un chequeo de membership -- el CHARGE
@@ -506,8 +583,33 @@ export class CancelOrderWithCreditNoteService {
       throw new CreditNoteCancellationPendingError(orderId, prep.adjustmentId);
     }
 
-    // --- tx2: settlement (SOLO con la NC ISSUED -- D1) -------------------
+    // --- tx2: re-lock + re-verificación de ventana + settlement -----------
     const finalOrder = await this.transactionManager.run(async (client) => {
+      // Re-lock propio primero, re-verificación, RECIÉN AHÍ el puerto --
+      // mismo orden que el precedente de reservas (condición C3 de su gate,
+      // `cancel-reservation-with-credit-note.service.ts`). El puerto vuelve
+      // a lockear la misma fila vía `transitionWithClient` (UPDATE
+      // condicional dentro de `OrderCancelForCreditNote`), re-entrante en la
+      // misma tx/conexión -- Postgres lo concede de inmediato.
+      const locked = await this.orderRepo.getByIdForUpdate(client, orderId);
+      if (!locked) throw new OrderNotFoundError(orderId);
+
+      // M3 (`docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:1434-1440`,
+      // grounding ERP citado en `docs/pendientes-2026-09-12.md:2861-2874`):
+      // ventana tx1->tx2 -- entre el commit de tx1 y este punto,
+      // `requestInvoice()` pudo haber emitido una factura AFIP NUEVA sobre
+      // otro cargo de la misma orden (el round-trip a AFIP corre fuera de
+      // cualquier lock, más arriba en esta misma función). Re-verificar que
+      // el conjunto de facturas ISSUED vivas de la orden sigue siendo
+      // EXACTAMENTE el revertido -- si no, abortar dejando el estado
+      // visible (NC ISSUED, ADJUSTMENT PENDING, mismo N11 que el resto de
+      // este ADR) en vez de comprometer la cancelación con un comprobante
+      // fiscal real sin la Nota de Crédito que le correspondía.
+      const { issuedInvoiceIds: stillIssued } = await this.liveInvoiceIdsForOrder(orderId);
+      if (stillIssued.size !== 1 || !stillIssued.has(prep.originalInvoiceId)) {
+        throw new CreditNoteOrderInvoiceSetChangedError(orderId, prep.originalInvoiceId);
+      }
+
       const outcome = await this.orderCancelPort.cancelForCreditNote(client, orderId, auth.confirmedBy);
       if (outcome.resultado === 'CAMBIO' || outcome.resultado === 'YA_ESTABA') {
         // (b) ADJUSTMENT -> SETTLED. (c) CARGO(s) CONGELADOS en tx1 -> SETTLED
