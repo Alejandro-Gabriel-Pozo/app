@@ -852,20 +852,24 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
    * obligaciones contratadas-no-firmes; el nivel FOLIO (`getNetBalanceByStayId`)
    * es una pregunta distinta, donde sí corresponde contar `PENDING`).
    *
-   * **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` sigue ABIERTO**
-   * (paso 3, sin implementar) -- el `PAYMENT` sintético de una
-   * transferencia a City Ledger todavía cuenta acá sin excluir, y el
-   * `CHARGE` original de la reserva se liquida después
-   * (`reservation.completed` -> `settleByReservationId()`), así que
-   * excluir SOLO el `PAYMENT` (intentado y revertido el 13/09/2026, gate
-   * `architecture-governor`) deja al `CHARGE` sumando solo sin su
-   * contrapartida -- cambia un crédito fantasma transitorio por una DEUDA
-   * fantasma permanente, visible en `GET /customers/:id/account`. La
-   * exclusión correcta tiene que cubrir el PAR completo (folio entero de
-   * la estadía transferida), no una sola fila -- diseño pendiente, no
-   * resolver acá sin su propio §4.0 (consumidor único:
-   * `CustomerAccountService.getStatement()`, con pantalla en
-   * `appfrontend-main`).
+   * **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` -- CERRADO
+   * (paso 3, DECIDIDO NO IMPLEMENTAR, 14/09/2026).** El `PAYMENT`
+   * sintético de una transferencia a City Ledger todavía cuenta acá sin
+   * excluir, y el `CHARGE` original de la reserva se liquida después
+   * (`reservation.completed` -> `settleByReservationId()`) -- crédito
+   * fantasma TRANSITORIO, se autocorrige solo cuando el `CHARGE` liquida
+   * (verificado empíricamente contra Postgres real). 4 rondas de diseño
+   * para excluirlo fueron rechazadas, cada una con un defecto aritmético
+   * real distinto (ver `docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md`
+   * §2, y el cierre del ítem completo en `docs/resuelto.md`, sección
+   * `14/09/2026`) -- la última (ronda 4, columna de vínculo con
+   * corrección proporcional) sobrevivió su propia verificación aritmética
+   * pero el dueño decidió, preguntado explícitamente, NO tocar este
+   * método: `balance` queda con su definición SETTLED-only actual, y
+   * `CustomerStatement.cityLedgerOutstanding` (paso 2(b),
+   * `getCityLedgerOutstandingByCustomerId()` más abajo en este archivo)
+   * resuelve la necesidad de visibilidad sin tocar este cálculo. **No
+   * reabrir sin nueva decisión del dueño.**
    */
   async getNetBalanceByCustomerId(customerId: string): Promise<number> {
     const result = await this.sqlClient.query<{ net: string }>(
