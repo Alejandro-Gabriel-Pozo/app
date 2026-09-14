@@ -89,6 +89,16 @@ export interface AccountsReceivableReportRow {
   pendingAmount: number;   // suma de filas PENDIENTE_FACTURAR
   invoicedAmount: number;  // suma de filas FACTURADO
   collectedAmount: number; // suma de filas COBRADO
+  /**
+   * Bloque 3c-iii (14/09/2026, gate `architecture-governor` de
+   * implementación de Bloque 3c-ii, precondición dura) -- suma de filas
+   * `REVERTIDO`. Sin este bucket, `pendingAmount + invoicedAmount +
+   * collectedAmount` dejaba de sumar `totalAmount` en cuanto existiera una
+   * fila revertida real -- `totalAmount` las incluye (sin filtro de
+   * status), los otros 3 `FILTER` no. Mismo criterio que los otros 3:
+   * bucket propio, no una resta implícita.
+   */
+  revertedAmount: number;  // suma de filas REVERTIDO
 }
 
 export interface AccountsReceivableRepository {

@@ -171,11 +171,18 @@ describe('SqlAccountsReceivableRepository', () => {
     expect(params).toEqual(['ar-1', 'user-manager', 'error de tipeo']);
   });
 
-  it('getReportByPeriod agrupa por empresa con FILTER por status (A1, paso 5)', async () => {
+  it('getReportByPeriod agrupa por empresa con FILTER por status, incluido REVERTIDO (A1, paso 5; bucket revertedAmount agregado Bloque 3c-iii, 14/09/2026, precondición dura del gate de implementación de reverseTransfer())', async () => {
     const from = new Date('2026-08-01');
     const to = new Date('2026-08-31');
+    vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+      rows: [{
+        company_customer_id: 'cust-empresa', company_name: 'Empresa SA', count: '4',
+        total_amount: '10000', pending_amount: '3000', invoiced_amount: '3000',
+        collected_amount: '2000', reverted_amount: '2000',
+      }],
+    });
 
-    await repo.getReportByPeriod(from, to);
+    const rows = await repo.getReportByPeriod(from, to);
 
     const mockQuery = vi.mocked(mockSqlClient.query);
     const [sql, params] = mockQuery.mock.calls[0]!;
@@ -184,7 +191,14 @@ describe('SqlAccountsReceivableRepository', () => {
     expect(sql).toContain("FILTER (WHERE ar.status = 'PENDIENTE_FACTURAR')");
     expect(sql).toContain("FILTER (WHERE ar.status = 'FACTURADO')");
     expect(sql).toContain("FILTER (WHERE ar.status = 'COBRADO')");
+    expect(sql).toContain("FILTER (WHERE ar.status = 'REVERTIDO')");
     expect(params).toEqual([from, to]);
+
+    // pending + invoiced + collected + reverted vuelve a sumar total --
+    // exactamente lo que el gate de implementación encontró roto sin este bucket.
+    expect(rows[0]!.revertedAmount).toBe(2000);
+    expect(rows[0]!.pendingAmount + rows[0]!.invoicedAmount + rows[0]!.collectedAmount + rows[0]!.revertedAmount)
+      .toBe(rows[0]!.totalAmount);
   });
 
   it('getByCompanyCustomerId ordena por created_at DESC', async () => {

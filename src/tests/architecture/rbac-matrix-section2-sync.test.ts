@@ -139,15 +139,15 @@ const EXCLUDED_FILES: Record<string, { hiddenCount: number; motivo: string; docB
     docBullets: [],
   },
   'clientes-finanzas/accounts-receivable.routes.ts': {
-    hiddenCount: 3,
-    motivo: 'SÍ tiene bullets (no es prosa), pero uno diverge del código real: el doc dice "GET `/?companyCustomerId=`", el código real es "GET `/`" -- un parser fila-por-fila lo marcaría en las dos direcciones a la vez. Corregir esa línea es edición de docs, fuera de alcance de este bloque (declarado explícitamente por el gate) -- hasta entonces, los 3 bullets del archivo quedan sin verificar, no solo el divergente, para no verificar 2 de 3 y dar una falsa sensación de cobertura completa.',
+    hiddenCount: 4,
+    motivo: 'SÍ tiene bullets (no es prosa), pero uno diverge del código real: el doc dice "GET `/?companyCustomerId=`", el código real es "GET `/`" -- un parser fila-por-fila lo marcaría en las dos direcciones a la vez. Corregir esa línea es edición de docs, fuera de alcance de este bloque (declarado explícitamente por el gate) -- hasta entonces, los 4 bullets del archivo quedan sin verificar, no solo el divergente, para no verificar 3 de 4 y dar una falsa sensación de cobertura completa. Bloque 3c-iii (14/09/2026) sumó POST /:id/reverse -- 3 -> 4, el archivo sigue en esta lista por el mismo motivo de siempre, no por la ruta nueva.',
     // Conjunto CONGELADO a propósito -- incluye el bullet divergente
     // (GET /?companyCustomerId= vs. el código real GET /) tal cual está
     // hoy en el doc. Si alguien corrige esa línea sin sacar el archivo de
     // EXCLUDED_FILES, este conjunto deja de matchear y el test de abajo
     // rompe -- señal correcta: "el archivo cambió, revisá si sigue
     // perteneciendo acá", no una falla espuria.
-    docBullets: ['GET /?companyCustomerId=', 'POST /:id/mark-invoiced', 'POST /:id/mark-collected'],
+    docBullets: ['GET /?companyCustomerId=', 'POST /:id/mark-invoiced', 'POST /:id/mark-collected', 'POST /:id/reverse'],
   },
 };
 

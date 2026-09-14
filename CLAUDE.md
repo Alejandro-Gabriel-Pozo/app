@@ -266,9 +266,19 @@ validando contra el archivo viejo — re-verificar a mano al tocar esos
 mounts.
 
 **Lo que esta cerca a propósito NO hace:** exigir que un endpoint real
-esté documentado. `spec.ts` cubre ~18 paths de **251** endpoints reales
-(33 routers montados en `app.ts` sin ninguna entrada acá) -- el 251 es
-medido, no estimado: ver `docs/inventario-rutas.md` más abajo. Cerrar esa brecha
+esté documentado. `spec.ts` cubre ~18 paths de **254** endpoints reales
+(**corrección 14/09/2026, Bloque 3c-iii, gate `architecture-governor`,
+ronda 2 -- la primera versión de esta corrección estaba mal:** esta cita
+decía **251**, pero esa cifra ya estaba stale ANTES de este bloque -- la
+última medición real, commiteada en `1516ca1` (`docs/inventario-rutas.md`),
+ya decía **253** (211+... no, 213 observados + 40 `CLOSURE_MOUNTS`), sin
+que esta cita se hubiera actualizado. `npm run docs:routes` regenerado
+tras sumar `POST /api/accounts-receivable/:id/reverse` da **254** -- el
+delta real es +1, exactamente esta ruta, no +3. La cita de acá simplemente
+no se había corregido la vez anterior que el artefacto se regeneró) (33
+routers montados en `app.ts` sin ninguna entrada acá) -- el 254 es medido,
+no estimado: ver
+`docs/inventario-rutas.md` más abajo. Cerrar esa brecha
 es `CONTRACT-COVERAGE-001` — decisión de producto (mantener el spec a
 mano vs. generarlo desde las rutas), no algo que un fence deba forzar. Ver
 `docs/pendientes-2026-09-08.md`, sección Higiene, para el detalle
@@ -287,8 +297,9 @@ sigue vigente — no se retira, este inventario no valida request/response.
 Seis mounts arman su router DENTRO de un middleware por-request (`req.db`,
 no al boot) y por eso el árbol vivo no los ve al caminar
 (`/api/reports`, `/api/system`, `/api/housekeeping`,
-`/api/maintenance-windows`, `/api/stays`, `/api/accounts-receivable` — 40
-endpoints, confirmado por spike real, no inferido). `CLOSURE_MOUNTS`
+`/api/maintenance-windows`, `/api/stays`, `/api/accounts-receivable` — 41
+endpoints (era 40, +1 por `POST /:id/reverse`, Bloque 3c-iii,
+14/09/2026), confirmado por spike real, no inferido). `CLOSURE_MOUNTS`
 (`src/scripts/generate-route-inventory.ts`) es el **octavo** artefacto
 manual del repo — mismo criterio que `MOUNT_TO_ROUTES_FILE`: allowlist
 chico, motivo por entrada, verificado en las dos direcciones (mount sin
@@ -301,7 +312,7 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 7 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-18 de 251). Depende de `NODE_ENV` — generado con `development`, `/` y
+18 de 254). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Pendientes — revalidar antes de arrastrar

@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (207 call-sites, 37 archivos)
+## 2. Matriz de endpoints por archivo (209 call-sites, 37 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -171,6 +171,7 @@ sección 4.
 - GET `/?companyCustomerId=` — `MANAGEMENT`
 - POST `/:id/mark-invoiced` — `MANAGEMENT`
 - POST `/:id/mark-collected` — `MANAGEMENT`
+- POST `/:id/reverse` — `MANAGEMENT` **Y** `EMISOR_NOTA_CREDITO` (Bloque 3c-iii, 14/09/2026, §3.7/§4.4 del ADR de City Ledger — dos `authorize()` en cadena, primer endpoint del repo que lo hace)
 
 ### `src/facturacion/`
 

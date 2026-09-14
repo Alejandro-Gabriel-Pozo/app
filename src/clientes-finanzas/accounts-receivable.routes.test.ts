@@ -13,7 +13,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createAccountsReceivableRouter } from './accounts-receivable.routes.js';
 import type { AccountsReceivableService } from './accounts-receivable.service.js';
-import { AccountReceivableNotFoundError, InvalidAccountsReceivableTransitionError } from './accounts-receivable.service.js';
+import {
+  AccountReceivableNotFoundError,
+  InvalidAccountsReceivableTransitionError,
+  ArReversalRequiresCreditNoteError,
+} from './accounts-receivable.service.js';
 import type { AccountReceivable } from './accounts-receivable.repository.js';
 import { ValidationError } from '../domain/errors.js';
 import type { Request, Response } from 'express';
@@ -45,6 +49,7 @@ function fakeService(overrides: Partial<Record<keyof AccountsReceivableService, 
     listByCompany: vi.fn(async () => [makeAr()]),
     markInvoiced: vi.fn(async () => makeAr({ status: 'FACTURADO' })),
     markCollected: vi.fn(async () => makeAr({ status: 'COBRADO' })),
+    reverseTransfer: vi.fn(async () => ({ reverted: makeAr({ status: 'REVERTIDO' }), replacement: null })),
     ...overrides,
   } as unknown as AccountsReceivableService;
 }
@@ -141,5 +146,75 @@ describe('POST /api/accounts-receivable/:id/mark-collected', () => {
     await handler(fakeReq({ params: { id: 'ar-x' } }), fakeRes(), next);
 
     expect(next).toHaveBeenCalledWith(expect.any(AccountReceivableNotFoundError));
+  });
+});
+
+describe('POST /api/accounts-receivable/:id/reverse (Bloque 3c-iii, 14/09/2026)', () => {
+  it('revierte con reason obligatorio, sin correctedBalance -- pasa reversedBy desde req.user.id', async () => {
+    const service = fakeService();
+    const handler = getHandler(createAccountsReceivableRouter(service), 'post', '/:id/reverse');
+    const res = fakeRes();
+
+    await handler(
+      fakeReq({ params: { id: 'ar-1' }, body: { reason: 'reserva cancelada después de transferir' }, user: { id: 'user-manager', businessId: 'biz-1' } } as never),
+      res,
+      () => { throw new Error('no debería llamar next()'); },
+    );
+
+    expect(service.reverseTransfer).toHaveBeenCalledWith({
+      accountReceivableId: 'ar-1',
+      reversedBy: 'user-manager',
+      reason: 'reserva cancelada después de transferir',
+    });
+    expect(res.json).toHaveBeenCalledWith({ reverted: makeAr({ status: 'REVERTIDO' }), replacement: null });
+  });
+
+  it('pasa correctedBalance cuando viene en el body', async () => {
+    const service = fakeService();
+    const handler = getHandler(createAccountsReceivableRouter(service), 'post', '/:id/reverse');
+
+    await handler(
+      fakeReq({ params: { id: 'ar-1' }, body: { reason: 'monto corregido', correctedBalance: 9000 }, user: { id: 'user-manager', businessId: 'biz-1' } } as never),
+      fakeRes(),
+      () => { throw new Error('no debería llamar next()'); },
+    );
+
+    expect(service.reverseTransfer).toHaveBeenCalledWith({
+      accountReceivableId: 'ar-1',
+      reversedBy: 'user-manager',
+      reason: 'monto corregido',
+      correctedBalance: 9000,
+    });
+  });
+
+  it('rechaza con ValidationError (vía next) si falta reason -- A6.5, motivo obligatorio', async () => {
+    const service = fakeService();
+    const handler = getHandler(createAccountsReceivableRouter(service), 'post', '/:id/reverse');
+    const next = vi.fn();
+
+    await handler(
+      fakeReq({ params: { id: 'ar-1' }, body: {}, user: { id: 'user-manager', businessId: 'biz-1' } } as never),
+      fakeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+    expect(service.reverseTransfer).not.toHaveBeenCalled();
+  });
+
+  it('propaga ArReversalRequiresCreditNoteError vía next (AR ya FACTURADO/COBRADO, o factura en vuelo)', async () => {
+    const service = fakeService({
+      reverseTransfer: vi.fn(async () => { throw new ArReversalRequiresCreditNoteError('ar-1', 'FACTURADO'); }),
+    });
+    const handler = getHandler(createAccountsReceivableRouter(service), 'post', '/:id/reverse');
+    const next = vi.fn();
+
+    await handler(
+      fakeReq({ params: { id: 'ar-1' }, body: { reason: 'motivo' }, user: { id: 'user-manager', businessId: 'biz-1' } } as never),
+      fakeRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledWith(expect.any(ArReversalRequiresCreditNoteError));
   });
 });

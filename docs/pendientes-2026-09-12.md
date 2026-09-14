@@ -43,7 +43,8 @@ cuando se pushea.
   gate `architecture-governor`, varias rondas de diseño más gate de
   implementación, APPROVED WITH CONDITIONS) tiene código completo,
   gate-aprobado, y la suite completa del repo en verde (163 archivos,
-  2237 tests) -- pero NINGUNO corrió contra Postgres real. **Acotado
+  2241 tests tras Bloque 3c-iii) -- pero NINGUNO corrió contra Postgres
+  real. **Acotado
   (gate de implementación, 14/09/2026):** el CHECK
   `chk_financial_transactions_order_or_reservation` aceptando
   `reservationId`+`stayId` juntos en el `ADJUSTMENT` de la pata empresa
@@ -61,6 +62,49 @@ cuando se pushea.
   (`transferStayBalanceToReceivable()`) contra un tenant real, revertirla
   con `reverseTransfer()`, y confirmar en SQL directo que las 2 filas
   `ADJUSTMENT` quedan como el diseño describe.
+- **`CITY-LEDGER-REVERSE-ROUTE-GROUP-FREEZE-001`** — decisión diferida del
+  ADR (§4.4, docs/diseno-reconciliacion-city-ledger-2026-09-12.md),
+  encontrada sin resolver por el gate `architecture-governor` al revisar
+  Bloque 3c-iii (14/09/2026). Los dos `authorize()` en cadena de
+  `POST /api/accounts-receivable/:id/reverse`
+  (`src/clientes-finanzas/accounts-receivable.routes.ts:99-100` --
+  `authorize(Roles.MANAGEMENT)` + `authorize(Roles.EMISOR_NOTA_CREDITO)`)
+  solo están protegidos por la cerca de CONTEO
+  (`rbac-matrix-sync.test.ts::EXPECTED_AUTHORIZE_CALL_SITES`) -- esa cerca
+  ve que HAY 2 `authorize()`, no CUÁLES grupos. Ninguna de las otras
+  cercas RBAC cierra ese hueco: `rbac-route-coverage` solo exige "algún"
+  authz; `rbac-matrix-section2-sync` no valida el grupo que cada fila
+  declara (documentado como hueco conocido en `CLAUDE.md`, sección RBAC);
+  y el archivo sigue en `EXCLUDED_FILES` de esa misma cerca (prosa, no
+  bullets parseables). **Consecuencia concreta, verificada por el gate:**
+  si alguien cambia `Roles.EMISOR_NOTA_CREDITO` por otro grupo cualquiera
+  en esa ruta (ej. `Roles.ORDERS`), el conteo total no se mueve (sigue en
+  209), `rbac-route-coverage` sigue verde (sigue habiendo 2 `authorize()`),
+  y la fila de la matriz queda stale sin que nada avise -- las 7 cercas
+  RBAC del repo quedan en verde mientras el escape fiscal de la reversa
+  (la protección que exige el doble rol a propósito, §3.7 del ADR) queda
+  abierto con un solo permiso. Mismo modo de falla, mismo remedio, que
+  `CN-ESCAPE-CONTAINMENT-001` ya resolvió para las rutas de cancelación
+  con NC (`ESCAPE_ROUTES`, congela el GRUPO exacto, no solo la cantidad)
+  -- ese archivo (`credit-note-escape-containment.test.ts`) es el patrón a
+  copiar cuando se encare este bloque. No resuelto acá -- bloque aparte,
+  con su propio diseño (decidir si se extiende `ESCAPE_ROUTES` a esta ruta
+  o se crea una cerca nueva específica de AND-composition).
+- **`CITY-LEDGER-AR-REPORT-ROW-FRONTEND-MIRROR-001`** — deuda con ancla,
+  encontrada por el gate al revisar Bloque 3c-iii (14/09/2026).
+  `appfrontend-main/src/lib/finanzas/types.ts:81-88` tiene su propio
+  espejo de `AccountsReceivableReportRow` (`totalAmount`/`pendingAmount`/
+  `invoicedAmount`/`collectedAmount`) sin el bucket `revertedAmount` que
+  `app-main` agregó en este mismo bloque
+  (`sql.accounts-receivable.repository.ts::getReportByPeriod()`). A
+  diferencia del union `AccountsReceivableStatus` (que si se corrigió en
+  `appfrontend-main`, commit `b41dfbe`), acá nada compile-fuerza el
+  arreglo: el único consumidor del reporte tipa la respuesta como
+  `unknown` (`ApiSection`, `dashboard/reportes/page.tsx`) y la renderiza
+  cruda -- severidad hoy BAJA (tipo muerto, sin consumidor tipado), pero
+  mismo modo de falla exacto que `ROLES-CATALOG-DRIFT-001`. Acción
+  puntual: agregar `revertedAmount: number` a esa interfaz en
+  `appfrontend-main`, commit chico, sin lógica nueva.
 - **`REPORTS-DATEONLY-MISMATCH-001`** — confirmar los 5 reportes de
   `reportes/page.tsx` contra un backend `app-main` real levantado (esta
   sesión solo validó el formato contra el regex de `dateOnlySchema`, sin

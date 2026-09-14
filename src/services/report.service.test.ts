@@ -361,6 +361,7 @@ describe('ReportService', () => {
           pendingAmount: 15000,
           invoicedAmount: 20000,
           collectedAmount: 10000,
+          revertedAmount: 0,
         },
       ]);
 

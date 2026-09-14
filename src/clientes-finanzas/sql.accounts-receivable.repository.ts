@@ -166,6 +166,7 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
       pending_amount: string;
       invoiced_amount: string;
       collected_amount: string;
+      reverted_amount: string;
     }>(
       `SELECT
          ar.company_customer_id,
@@ -174,7 +175,8 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
          SUM(ar.amount) AS total_amount,
          SUM(ar.amount) FILTER (WHERE ar.status = 'PENDIENTE_FACTURAR') AS pending_amount,
          SUM(ar.amount) FILTER (WHERE ar.status = 'FACTURADO')          AS invoiced_amount,
-         SUM(ar.amount) FILTER (WHERE ar.status = 'COBRADO')            AS collected_amount
+         SUM(ar.amount) FILTER (WHERE ar.status = 'COBRADO')            AS collected_amount,
+         SUM(ar.amount) FILTER (WHERE ar.status = 'REVERTIDO')          AS reverted_amount
        FROM accounts_receivable ar
        JOIN customers c ON c.id = ar.company_customer_id
        WHERE ar.created_at >= $1 AND ar.created_at <= $2
@@ -191,6 +193,7 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
       pendingAmount:      parseFloat(row.pending_amount ?? '0'),
       invoicedAmount:     parseFloat(row.invoiced_amount ?? '0'),
       collectedAmount:    parseFloat(row.collected_amount ?? '0'),
+      revertedAmount:     parseFloat(row.reverted_amount ?? '0'),
     }));
   }
 
