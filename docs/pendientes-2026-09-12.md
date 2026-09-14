@@ -505,8 +505,9 @@ cuando se pushea.
   `accountsReceivableWarning` (facturación) — es
   `cityLedgerOutstanding`, el campo nuevo de
   `CustomerAccountService.getStatement()` (paso 2(b) del ítem
-  `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`, arriba en este
-  mismo archivo, ~3052-3184). Como el circuito de cancelación con Nota de
+  `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` — ítem completo
+  cerrado 14/09/2026, cortado de este archivo, ver `docs/resuelto.md`,
+  sección `14/09/2026`). Como el circuito de cancelación con Nota de
   Crédito no actualiza `accounts_receivable.status` cuando cancela una
   reserva/orden con una AR activa encima (mismo hallazgo de
   `CITY-LEDGER-GUARD-NO-UI-SURFACE-001`), `cityLedgerOutstanding` puede
@@ -3081,140 +3082,6 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   no unificarlos).
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
-
-- **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`** (13/09/2026,
-  grounding `auditor-circuitos-erp`). Bug nuevo, sin ticket todavía —
-  hermano del ya registrado más arriba en este archivo ("PAYMENT
-  sintético de City Ledger contamina el balance del cliente", dentro
-  del bloque `1c-0`/`ORDER-CONSOLIDATED-PARTIAL-01`) pero por un
-  mecanismo DISTINTO: aquel dispara con cancelación-con-NC de una
-  reserva `CONFIRMED`; éste dispara en el camino feliz, sin cancelar
-  nada.
-
-  **Causa:** `getNetBalanceByCustomerId()`
-  (`src/clientes-finanzas/sql.financial-transaction.repository.ts:813-832`)
-  filtra `AND status = 'SETTLED'`. `getNetBalanceByStayId()` (mismo
-  archivo, `:893-912`) filtra `AND status IN ('PENDING', 'SETTLED')`
-  desde un fix del 12/09/2026. Es una asimetría de estados **no
-  documentada como decisión** — a diferencia de la diferencia de scope
-  `customer_id` vs. `stay_id`, que sí está comentada
-  (`src/clientes-finanzas/financial-transaction.repository.ts:367-374`
-  y `:417-426`): esos docblocks explican por qué existen dos métodos
-  distintos, y `:422-424` sí declara por qué el método de estadía
-  cuenta `PENDING` (remite al docblock de implementación,
-  `sql.financial-transaction.repository.ts:885-892`). Lo que queda
-  genuinamente sin documentar es por qué el método de CLIENTE se quedó
-  en `SETTLED`-only.
-
-  **Consecuencia real:** en
-  `AccountsReceivableService.transferStayBalanceToReceivable()`
-  (`src/clientes-finanzas/accounts-receivable.service.ts`), el
-  `PAYMENT` sintético que se crea para el huésped nace `SETTLED`
-  (`:323-333`), pero el `CHARGE` original de la reserva que se está
-  transfiriendo (creado en `reservation.confirmed`, vía outbox) puede
-  seguir `PENDING` — liquida recién en el evento
-  `reservation.completed`. En ese instante: el folio de la estadía da 0
-  (correcto — `getNetBalanceByStayId()` cuenta el `PENDING`), pero
-  `getNetBalanceByCustomerId()` (solo `SETTLED`) ve el `PAYMENT` pero
-  NO el `CHARGE` que lo compensa → saldo negativo falso (crédito
-  fantasma) en el camino feliz, no solo en el camino de
-  cancelación-con-NC que ya estaba registrado. Se vuelve permanente si
-  la reserva se cancela después, o se emite una Nota de Crédito.
-
-  **Radio medido:** `getNetBalanceByCustomerId()` tiene un solo
-  consumidor de producción,
-  `CustomerAccountService.getStatement()`
-  (`src/clientes-finanzas/customer-account.service.ts:79`), expuesto
-  por `GET /api/customers/:id/account`
-  (`src/clientes-finanzas/customers.routes.ts:812-837`). El portal de
-  cliente no lo expone — verificado, 0 matches de
-  `account`/`statement`/`balance` en `src/api/routes/customer.routes.ts`
-  — lo ve staff, no el huésped. No contamina caja:
-  `sql.cash-register-shift.repository.ts:79` filtra por
-  `payment_method = 'CASH'`, la fila sintética no tiene
-  `payment_method`.
-
-  **Patrón de industria** (grounding a 5 sistemas, Odoo 18.0, ERPNext y
-  Dolibarr verificados en código real — Cloudbeds/OPERA solo por
-  excerpts de búsqueda, no código): folio/documento y cuenta/parte
-  coexisten en los 5, y el nivel cuenta SIEMPRE se deriva del nivel
-  documento — ninguno permite un "pago" sin documento de origen ni
-  contrapartida de dinero real (Odoo: `_credit_debit_get` suma
-  `amount_residual` NO conciliado; ERPNext: `get_balance_on()` suma
-  `GL Entry`; Dolibarr: todo pago se asigna a factura vía
-  `llx_paiement_facture`). Cloudbeds tiene el término propio
-  `AR Transfer`, separado de `Amount Paid`, precisamente para no
-  confundir un traspaso con un cobro real.
-
-  **Los 3 pasos — decididos el 13/09/2026; estado real después de
-  implementar (`8f11d19`, mismo día): pasos 1 y 2(a) implementados, 2(b)
-  y 3 siguen abiertos.**
-  1. ✅ **Hecho.** Vincular las dos patas de la transferencia — columna
-     nueva `guest_payment_transaction_id` en `accounts_receivable`
-     (schema v52→v53, `src/db/schema.sql`), simétrica a
-     `financial_transaction_id` (pata empresa). `ON DELETE NO ACTION`
-     (no `SET NULL`) a propósito — R15: si esta FK se vaciara sola, el
-     crédito fantasma reaparecería sin aviso. Esto ya lo necesita
-     `reverseTransfer()` (todavía sin implementar —
-     `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:587-594`
-     declara la misma dependencia).
-  2. **Declarar** (no alinear) — grounding COMPLEMENTARIO pedido hoy
-     (set de sistemas distinto al del párrafo "Patrón de industria" de
-     arriba: ahí Odoo/ERPNext/Dolibarr verificados en código sobre la
-     pregunta folio-vs-cuenta; acá Odoo/ERPNext/QloApps sobre la
-     pregunta de FILTRO DE STATUS — Dolibarr no se re-groundeó para
-     esta pregunta puntual, no es una contradicción entre los dos
-     párrafos), específico sobre el filtro de status: 3/3 sistemas
-     verificados en código (Odoo `_credit_debit_get`, ERPNext
-     `get_balance_on()` vs. `get_customer_outstanding()`, QloApps
-     `Customer::getOutstanding()`) excluyen del agregado por cliente
-     las obligaciones contratadas-no-firmes — mismo comportamiento que
-     este repo ya tiene. ERPNext prueba además que nivel-documento y
-     nivel-cuenta pueden contar estados distintos sin ser bug (dos
-     funciones con nombre propio para dos preguntas distintas).
-     (a) ✅ **Hecho.** Docblock explícito en
-     `financial-transaction.repository.ts` (la interfaz) sobre por qué
-     `getNetBalanceByCustomerId()` es `SETTLED`-only. El lado
-     `ByStayId` ya declaraba su mitad — este paso completó la simetría.
-     (b) ❌ **Sigue abierto — NO se tocó en `8f11d19`.** Hallazgo del
-     grounding: `CustomerAccountService.getStatement()`
-     (`customer-account.service.ts:74-84`) devuelve `balance` (solo
-     `SETTLED`) junto con `transactions` (sin ningún filtro de status)
-     en la misma respuesta — el usuario ve filas que no suman el total
-     de al lado. Separar los dos universos explícitamente en el
-     contrato de respuesta sigue pendiente. **Acá también se resuelve
-     `CITY-LEDGER-STATEMENT-TRANSFER-ROW-001` (decidido hoy vía
-     `AskUserQuestion`): el statement del huésped sigue mostrando una
-     fila propia por el traspaso a City Ledger** (precedente Cloudbeds:
-     línea "AR Transfer" separada de "Amount Paid", nunca oculta — solo
-     etiquetada distinto). La decisión de hoy cubre solo VISIBILIDAD, no
-     el LABEL — relabelear como "AR Transfer" queda explícitamente
-     fuera, backlog aparte (mismo criterio D5).
-  3. ❌ **Sigue abierto — intentado y revertido en `8f11d19`.** Excluir
-     la pata del huésped (el `PAYMENT` sintético) del agregado
-     `getNetBalanceByCustomerId()`, simétrico a como ya se excluye la
-     pata de la empresa del folio (`accounts-receivable.service.ts:335-349`).
-     **Se implementó en la misma ronda y el gate `architecture-governor`
-     encontró una regresión real:** excluir SOLO el `PAYMENT` sin
-     excluir también el `CHARGE` que se liquida después
-     (`reservation.completed` → `settleByReservationId()`, que no
-     filtra por `customer_id`) convierte un crédito fantasma
-     TRANSITORIO en una DEUDA fantasma PERMANENTE, visible en
-     `GET /customers/:id/account` (`appfrontend-main`,
-     `dashboard/cuentas-corrientes`). Revertido — verificado leyendo los
-     fakes y la suite de integración (no inferido de la corrida verde
-     post-revert, que no prueba nada sobre el código ya sacado): ningún
-     test existente cubre el balance del cliente DESPUÉS de
-     `reservation.completed` sobre una estadía transferida (hueco de
-     test real, no solo de código). **Dirección para el
-     próximo intento (no diseño cerrado):** excluir el PAR completo (el
-     folio entero de la estadía transferida), no una sola fila —
-     necesita su propio análisis de impacto (S4.0) porque
-     `getStatement()` es el único consumidor de producción, con
-     pantalla cross-repo (punto 2(b) de arriba es precondición: sin
-     separar los dos universos de la respuesta, no hay forma de
-     verificar que la exclusión del par no rompe la visibilidad ya
-     decidida de la fila de traspaso).
 
 - **`RESERVATION-STATUS-CROSSREPO-SYNC-001`** (13/09/2026, split del
   cierre de `RESERVATION-STATUS-EXPIRED-FRONTEND-01`, `docs/resuelto.md`

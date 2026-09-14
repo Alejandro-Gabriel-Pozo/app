@@ -164,6 +164,68 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   vía `git add` por path explícito (no `git add .`/`commit -a`, para no
   arrastrar archivos de otras sesiones en curso en el mismo working tree).
 
+- **`CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001` — ítem completo
+  cerrado (los 3 pasos tienen resolución final, ninguno sigue abierto).**
+  Origen: `docs/pendientes-2026-09-12.md` (13/09/2026, grounding
+  `auditor-circuitos-erp`). Diseño y verificación completos en
+  `docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md`.
+
+  1. ✅ **Hecho.** Vincular las dos patas de la transferencia — columna
+     `guest_payment_transaction_id` en `accounts_receivable` (schema
+     v52→v53). Commit `8f11d19` (13/09/2026).
+  2. (a) ✅ **Hecho.** Docblock explícito en
+     `financial-transaction.repository.ts` sobre por qué
+     `getNetBalanceByCustomerId()` es `SETTLED`-only. Commit `8f11d19`
+     (mismo commit que el paso 1).
+     (b) ✅ **Hecho.** Separar los dos universos (`balance` SETTLED-only
+     vs. `transactions` sin filtro) en el contrato de respuesta de
+     `CustomerAccountService.getStatement()`, agregando el campo
+     `cityLedgerOutstanding` (paso 2(b) del diseño, §1). Resuelve además
+     `CITY-LEDGER-STATEMENT-TRANSFER-ROW-001` (la fila "AR Transfer" del
+     statement sigue visible). Commit `1dc6c84` (14/09/2026). **Residuo
+     explícito, no cerrado acá:** el relabel del `notes` de esa fila a
+     "AR Transfer" (hoy sigue con su texto original) queda FUERA — es
+     texto de UI, backlog sin bloque asignado todavía (ver §1.4 de
+     `docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md`).
+     Lo decidido acá es VISIBILIDAD de la fila, no su LABEL.
+  3. **DECIDIDO NO IMPLEMENTAR (14/09/2026).** Cuatro rondas de diseño
+     sucesivas para excluir del agregado del cliente la contribución
+     fantasma que crea una transferencia a City Ledger fueron RECHAZADAS
+     por el gate `architecture-governor`, cada una con un defecto
+     aritmético real y distinto — ronda 1: un `PAYMENT` real del huésped
+     contado como crédito fantasma; ronda 2: exclusión sin límite
+     temporal; ronda 3: el predicado con límite temporal por
+     `created_at` reproducía la misma regresión permanente que ya había
+     obligado a revertir `8f11d19` para un cargo de POS "a la
+     habitación" que no liquida junto con la reserva; ronda 4: una
+     columna de vínculo (`absorbed_by_ar_id`) con corrección
+     proporcional resolvía lo anterior pero rompía en la interacción con
+     `reverseTransfer()` y tenía un escenario de pago parcial +
+     liquidación escalonada sin medir bien. Con el diseño de la ronda 4
+     ya verificado aritméticamente (12/12 escenarios contra Postgres
+     real), el gate hizo la pregunta de negocio que quedaba, vía
+     `AskUserQuestion` al dueño: ¿`balance` debe absorber esta corrección
+     parcial, o debe quedar intacto (su definición actual, SETTLED-only,
+     groundeada contra Odoo/ERPNext/QloApps en el paso 1 de este mismo
+     ítem) dejando que `cityLedgerOutstanding` (paso 2(b), arriba)
+     resuelva la visibilidad? **El dueño respondió: no tocar `balance`.**
+     `getNetBalanceByCustomerId()` queda exactamente como está hoy, sin
+     ningún cambio. El crédito fantasma transitorio (el caso que motivó
+     las rondas) queda como comportamiento conocido y aceptado: se
+     autocorrige solo en el camino feliz cuando el `CHARGE` original
+     liquida (verificado empíricamente), y es explicable en pantalla vía
+     `cityLedgerOutstanding`. Detalle completo de las 4 rondas, sus
+     defectos y la verificación aritmética: §2 (§2.1-§2.9) de
+     `docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md`.
+
+  **Lo que esto NO cierra — sigue abierto, aparte:** el bug hermano de
+  cancelación-con-Nota-de-Crédito ("PAYMENT sintético de City Ledger
+  contamina el balance del cliente" — mismo síntoma que motivó este
+  ítem, pero por cancelación-con-NC en vez del camino feliz, y de forma
+  PERMANENTE, no transitoria) sigue vivo dentro de
+  `ORDER-CONSOLIDATED-PARTIAL-01` en `docs/pendientes-2026-09-12.md` —
+  la decisión de hoy sobre `balance` no lo toca ni lo resuelve.
+
 ---
 
 ## 13/09/2026
