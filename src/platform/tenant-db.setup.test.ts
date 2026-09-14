@@ -277,8 +277,13 @@ describe('applyTenantSchema', () => {
     // paso 1 -- accounts_receivable gana guest_payment_transaction_id
     // (pata del huésped, simétrica a financial_transaction_id ya
     // existente). Acompaña el cambio de código del mismo commit.
+    // 53 -> 54 el 14/09/2026: mecanismo general de reversa del ledger --
+    // financial_transactions gana reversed_transaction_id (auto-referencial,
+    // solo ADJUSTMENT) + 2 CHECK + índice; accounts_receivable pierde
+    // reversal_transaction_id (v52, redundante, 0 call sites, 0 filas en
+    // producción). Destraba Finding A de reverseTransfer() (Bloque 2).
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(53);
+    expect(CURRENT_SCHEMA_VERSION).toBe(54);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

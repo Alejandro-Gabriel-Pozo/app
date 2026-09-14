@@ -93,6 +93,18 @@ export interface FinancialTransaction {
    * cascada de borrado — mismo motivo que `reversedInvoiceId`.
    */
   settledInvoiceId?: string | null;
+  /**
+   * Mecanismo general de reversa del ledger (14/09/2026,
+   * docs/diseno-reconciliacion-city-ledger-2026-09-12.md §4.2/§4.3) —
+   * auto-referencia a la fila de `financial_transactions` que esta
+   * corrige, mismo patrón que `reversed_entry_id` (Odoo)/`reversal_of`
+   * (ERPNext), verificado en código real. Distinto de `reversedInvoiceId`
+   * — ese apunta a una FACTURA (para NC), este apunta a OTRA FILA del
+   * mismo ledger (para trazar una corrección interna, sin documento de
+   * negocio propio). Solo tiene sentido en `type = 'ADJUSTMENT'` (CHECK
+   * en BD). `null` para todo lo demás.
+   */
+  reversedTransactionId?: string | null;
   createdAt?: Date;
   /**
    * F1-Pieza 2 (23/08/2026, pendientes-2026-08-23.md — trazabilidad de

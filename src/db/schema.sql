@@ -2429,8 +2429,14 @@ ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversed_reason VARCHAR
 -- motivo distinto): R12 implica que financial_transactions nunca se
 -- hard-deletea, así que este DELETE no tiene camino de negocio que lo
 -- dispare.
-ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS reversal_transaction_id VARCHAR(255)
-  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
+-- RETIRADA en v54 (14/09/2026) -- no tocar este comentario histórico más
+-- que para dejar esta nota (mismo criterio que
+-- business_profile.afip_ticket_encrypted, ver ese comentario más abajo en
+-- este archivo): el `ADD COLUMN` real se sacó de acá (dejarlo habría
+-- hecho que cada deploy agregue Y borre esta columna en la misma corrida
+-- de schema.sql, tomando lock de FK sobre financial_transactions cada
+-- vez) -- el `DROP COLUMN` real está unas líneas más abajo, con el motivo
+-- completo de la baja.
 
 -- Si la reversa deja un saldo real corregido, la AR NUEVA que se crea
 -- apunta a la que reemplaza (0 o 1 predecesora, nunca al revés). NULL =
@@ -2466,6 +2472,29 @@ ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS guest_payment_transacti
 
 CREATE INDEX IF NOT EXISTS idx_ar_guest_payment_transaction
   ON accounts_receivable (guest_payment_transaction_id) WHERE guest_payment_transaction_id IS NOT NULL;
+
+-- accounts_receivable.reversal_transaction_id -- RETIRADA (v54, 14/09/2026,
+-- docs/diseno-reconciliacion-city-ledger-2026-09-12.md, gate
+-- architecture-governor). No se edita el comentario original de arriba
+-- (queda como registro histórico de por qué se agregó en v52) -- se
+-- retira hacia adelante, R12. Motivo: `financial_transactions.reversed_
+-- transaction_id` (auto-referencial, agregado en este mismo commit) hace
+-- esta columna redundante -- la misma trazabilidad sale de `SELECT * FROM
+-- financial_transactions WHERE reversed_transaction_id = ar.financial_
+-- transaction_id`, sin necesitar un puntero dedicado en accounts_receivable.
+-- Cero costo de retirarla: 0 call sites en todo src/ (nunca se agregó a la
+-- interfaz TS de AccountReceivable) y 0 filas en producción (medido
+-- 14/09/2026 contra los dos tenants reales). `guest_reversal_transaction_id`
+-- (addendum propuesto en el mismo ADR, nunca aplicado) queda superseded
+-- por el mismo motivo -- no se agrega.
+-- Ventana de deriva declarada (Condición 2 del gate, ronda Bloque 3a):
+-- al momento de este commit, docs/diseno-reconciliacion-city-ledger-
+-- 2026-09-12.md §4.2/§4.3/§7/§10 TODAVÍA describen el diseño anterior
+-- (esta columna + `guest_reversal_transaction_id`) -- el ADR se actualiza
+-- recién en el Bloque 3b, commit aparte. Hasta que ese commit aterrice,
+-- el ADR describe el diseño superseded por este mismo bloque, no leerlo
+-- como vigente.
+ALTER TABLE accounts_receivable DROP COLUMN IF EXISTS reversal_transaction_id;
 
 -- ===========================================================================
 -- BLOQUE 10 — AUDIT LOG (docs/criterios-datos.md R8, docs/criterios-negocio.md A9.4)
@@ -3150,6 +3179,63 @@ DO $$ BEGIN
       CHECK (reversed_invoice_id IS NULL OR type IN ('REFUND', 'ADJUSTMENT'));
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- financial_transactions.reversed_transaction_id (v54, 14/09/2026,
+-- docs/diseno-reconciliacion-city-ledger-2026-09-12.md §4.2/§4.3, gate
+-- architecture-governor + grounding auditor-circuitos-erp) -- auto-
+-- referencia DENTRO del propio ledger: la fila que corrige apunta a la
+-- fila que corrige. Mismo patrón que `reversed_entry_id` (Odoo,
+-- `account.move`) / `reversal_of` (ERPNext, Journal Entry), verificado en
+-- código real de los dos -- ninguno ata una corrección a un documento de
+-- negocio (reserva/orden), la atan a la fila del ledger que corrigen.
+--
+-- Generaliza el guard F1-Pieza 2 de `SqlFinancialTransactionRepository
+-- ::insert()` ("todo CHARGE/ADJUSTMENT necesita al menos un documento de
+-- origen"): una fila de reversa SÍ tiene un origen real -- la fila que
+-- corrige -- solo que no es `reservationId`/`orderId`/`stayId`. Nace de
+-- `reverseTransfer()` (Bloque 2 de City Ledger, sin implementar todavía),
+-- que necesitaba trazar un `ADJUSTMENT` compensatorio sin reservationId
+-- ni stayId propios -- la resolución que el ADR había cerrado primero
+-- (`reservationId: null, stayId: null`) resultó insertable-falsa contra
+-- ese guard (Finding A, ver el ADR).
+--
+-- Distinto de `reversed_invoice_id` (arriba): ese apunta a una FACTURA
+-- (para Nota de Crédito); este apunta a OTRA FILA de
+-- `financial_transactions` (para trazar una corrección interna del
+-- ledger). Los dos pueden convivir en teoría, sin conflicto de sentido.
+--
+-- Solo `ADJUSTMENT` -- es el primitivo de corrección ya elegido en este
+-- repo (ver la corrección REFUND->ADJUSTMENT del gate en el mismo ADR,
+-- §4.2). CHECK anti-loop: precedente `chk_company_recipe_item_not_self`
+-- (`platform.schema.sql`) es el único otro guard "no auto-referencia" del
+-- repo. ON DELETE NO ACTION: financial_transactions nunca se
+-- hard-deletea (R12), mismo criterio que `guest_payment_transaction_id`
+-- (más arriba, accounts_receivable).
+-- ---------------------------------------------------------------------------
+ALTER TABLE financial_transactions ADD COLUMN IF NOT EXISTS reversed_transaction_id VARCHAR(255)
+  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_financial_transactions_reversed_not_self'
+  ) THEN
+    ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_reversed_not_self
+      CHECK (reversed_transaction_id IS NULL OR reversed_transaction_id <> id);
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_financial_transactions_reversed_transaction_type'
+  ) THEN
+    ALTER TABLE financial_transactions ADD CONSTRAINT chk_financial_transactions_reversed_transaction_type
+      CHECK (reversed_transaction_id IS NULL OR type = 'ADJUSTMENT');
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_ft_reversed_transaction
+  ON financial_transactions (reversed_transaction_id) WHERE reversed_transaction_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- afip_tickets (23/08/2026, pendientes-2026-08-23.md -- bug real en

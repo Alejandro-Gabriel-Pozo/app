@@ -156,6 +156,38 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
         type: 'REFUND', amount: 100, currency: 'ARS', status: 'SETTLED',
       })).resolves.not.toBeNull();
     });
+
+    it('acepta un ADJUSTMENT con reversedTransactionId aunque reservationId/orderId/stayId sean null (14/09/2026, mecanismo general de reversa)', async () => {
+      vi.mocked(mockSqlClient.query).mockResolvedValueOnce({
+        rows: [{
+          id: 'tx-origen-6', business_id: 'biz-1', customer_id: 'cust-1',
+          reservation_id: null, order_id: null, stay_id: null,
+          idempotency_key: null, type: 'ADJUSTMENT', amount: '-100', currency: 'ARS',
+          status: 'SETTLED', notes: null, created_at: new Date(),
+          reversed_transaction_id: 'tx-original-1',
+        }],
+      });
+
+      await expect(repo.create({
+        id: 'tx-origen-6', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'ADJUSTMENT', amount: -100, currency: 'ARS', status: 'SETTLED',
+        reversedTransactionId: 'tx-original-1',
+      })).resolves.not.toBeNull();
+
+      const [sql, params] = vi.mocked(mockSqlClient.query).mock.calls[0]!;
+      expect(sql).toContain('reversed_transaction_id');
+      expect(params).toContain('tx-original-1');
+    });
+
+    it('sigue rechazando cuando los 4 (reservationId/orderId/stayId/reversedTransactionId) son null', async () => {
+      await expect(repo.create({
+        id: 'tx-origen-7', businessId: 'biz-1', customerId: 'cust-1',
+        type: 'ADJUSTMENT', amount: -50, currency: 'ARS', status: 'PENDING',
+        reversedTransactionId: null,
+      })).rejects.toThrow(/documento de origen/);
+
+      expect(mockSqlClient.query).not.toHaveBeenCalled();
+    });
   });
 
   describe('create — payment_method / shift_id (Gap Tango #2)', () => {

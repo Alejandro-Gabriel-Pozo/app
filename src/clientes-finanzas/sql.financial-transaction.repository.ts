@@ -36,6 +36,7 @@ interface TransactionRow {
   confirmed_by: string | null;
   reversed_invoice_id: string | null;
   settled_invoice_id: string | null;
+  reversed_transaction_id: string | null;
   created_at: Date;
 }
 
@@ -86,15 +87,24 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // PAYMENT/REFUND no entran: un pago de mostrador contra la cuenta
     // general del cliente, sin reserva/orden asociada, es un caso real
     // (CustomerAccountService.recordPayment() sin allocations).
+    //
+    // reversedTransactionId (14/09/2026, mecanismo general de reversa del
+    // ledger -- docs/diseno-reconciliacion-city-ledger-2026-09-12.md
+    // §4.2/§4.3) cuenta como documento de origen válido: una fila que
+    // corrige a otra fila del ledger SÍ tiene un origen real (A3.9), solo
+    // que no es reservationId/orderId/stayId -- generaliza el guard, no lo
+    // relaja (el CHECK de BD `chk_financial_transactions_reversed_transaction_type`
+    // igual restringe este campo a `type = 'ADJUSTMENT'`).
     if (
       (tx.type === 'CHARGE' || tx.type === 'ADJUSTMENT') &&
       tx.reservationId == null &&
       tx.orderId == null &&
-      tx.stayId == null
+      tx.stayId == null &&
+      tx.reversedTransactionId == null
     ) {
       throw new Error(
         `financial_transactions: un ${tx.type} necesita al menos un documento de origen ` +
-        `(reservationId, orderId o stayId) -- no debería crearse uno sin ninguno de los tres.`,
+        `(reservationId, orderId, stayId o reversedTransactionId) -- no debería crearse uno sin ninguno de los cuatro.`,
       );
     }
 
@@ -134,11 +144,11 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       // despacharse, terminaba en dead-letter tras 60 reintentos).
       const result = await client.query<TransactionRow>(
         `INSERT INTO financial_transactions
-           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by, reversed_invoice_id, settled_invoice_id)
+           (id, business_id, customer_id, reservation_id, order_id, stay_id, idempotency_key, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by, reversed_invoice_id, settled_invoice_id, reversed_transaction_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
            COALESCE($14, CASE WHEN $13::VARCHAR(20) = 'CASH'
              THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2::VARCHAR(255) AND status = 'OPEN')
-             ELSE NULL END), $15, $16, $17, $18, $19)
+             ELSE NULL END), $15, $16, $17, $18, $19, $20)
          ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
          RETURNING *`,
         [
@@ -161,6 +171,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
           tx.confirmedBy ?? null,
           tx.reversedInvoiceId ?? null,
           tx.settledInvoiceId ?? null,
+          tx.reversedTransactionId ?? null,
         ],
       );
       // RETURNING vacío = ON CONFLICT activado = fila ya existía = éxito silencioso.
@@ -172,11 +183,11 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     // arriba, incluidos los casts explícitos de $2/$12 -- mismo bug, mismo fix).
     const result = await client.query<TransactionRow>(
       `INSERT INTO financial_transactions
-         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by, reversed_invoice_id, settled_invoice_id)
+         (id, business_id, customer_id, reservation_id, order_id, stay_id, type, amount, currency, status, notes, payment_method, shift_id, card_installments, card_surcharge_amount, confirmed_by, reversed_invoice_id, settled_invoice_id, reversed_transaction_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
          COALESCE($13, CASE WHEN $12::VARCHAR(20) = 'CASH'
            THEN (SELECT id FROM cash_register_shifts WHERE business_id = $2::VARCHAR(255) AND status = 'OPEN')
-           ELSE NULL END), $14, $15, $16, $17, $18)
+           ELSE NULL END), $14, $15, $16, $17, $18, $19)
        RETURNING *`,
       [
         id,
@@ -197,6 +208,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
         tx.confirmedBy ?? null,
         tx.reversedInvoiceId ?? null,
         tx.settledInvoiceId ?? null,
+        tx.reversedTransactionId ?? null,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
@@ -973,6 +985,7 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
       confirmedBy:     row.confirmed_by,
       reversedInvoiceId: row.reversed_invoice_id,
       settledInvoiceId: row.settled_invoice_id,
+      reversedTransactionId: row.reversed_transaction_id,
       createdAt:       row.created_at,
       reservationNumber: row.reservation_number ?? null,
     };

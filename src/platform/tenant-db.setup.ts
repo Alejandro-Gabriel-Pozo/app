@@ -450,7 +450,18 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // existía). Nullable, sin backfill retroactivo. Acompaña el cambio de
 // código del mismo commit (transferStayBalanceToReceivable() y
 // getNetBalanceByCustomerId(), paso 3 del mismo ítem).
-export const CURRENT_SCHEMA_VERSION = 53;
+// v54 (14/09/2026): mecanismo general de reversa del ledger (grounding
+// auditor-circuitos-erp + gate architecture-governor, docs/diseno-
+// reconciliacion-city-ledger-2026-09-12.md §4.2/§4.3). `financial_transactions`
+// gana `reversed_transaction_id` (auto-referencial, solo ADJUSTMENT, mismo
+// patrón que `reversed_entry_id`/`reversal_of` de Odoo/ERPNext) + 2 CHECK
+// (anti-loop, tipo) + índice. `SqlFinancialTransactionRepository::insert()`
+// acepta ahora ese campo como documento de origen válido (guard F1-Pieza 2
+// generalizado, no relajado). `accounts_receivable.reversal_transaction_id`
+// (v52) se retira -- redundante con el campo nuevo, 0 call sites, 0 filas
+// en producción. Destraba Finding A de `reverseTransfer()` (Bloque 2,
+// todavía sin implementar).
+export const CURRENT_SCHEMA_VERSION = 54;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y
