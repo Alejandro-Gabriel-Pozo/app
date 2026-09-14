@@ -7,6 +7,7 @@ import type { SqlClient } from '../repositories/sql.client.js';
 import type { ResourceRepository } from './resource.repository.js';
 import type { ReservationLine } from './reservation.types.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
+import type { CancellationPolicySnapshot } from './cancellation-policy.repository.js';
 
 interface ReservationRow {
   id: string;
@@ -37,6 +38,7 @@ interface ReservationRow {
   applied_customer_rate_id: string | null;
   needs_maintenance_review?: boolean | null;
   is_exclusive_resource?: boolean | null;
+  cancellation_policy_snapshot?: string | CancellationPolicySnapshot | null;
 }
 
 /**
@@ -94,6 +96,12 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation.appliedCustomerRateId,
       reservation.needsMaintenanceReview,
       reservation.isExclusiveResource,
+      // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- JSONB o NULL,
+      // mismo criterio que `details` ($9) más arriba: serializado acá,
+      // parseado de vuelta en rowToReservation(). `null` viaja tal cual
+      // (columna nullable) -- no hay "sin política" vs. "política vacía"
+      // que distinguir en este nivel.
+      reservation.cancellationPolicySnapshot ? JSON.stringify(reservation.cancellationPolicySnapshot) : null,
     ];
   }
 
@@ -140,9 +148,9 @@ export class SqlReservationRepository implements ReservationRepository {
       requested_check_in_time, requested_check_out_time, schedule_approval_status,
       schedule_approved_by, schedule_charge_amount, deposit_amount, deposit_due_by,
       reservation_number, applied_customer_rate_id, needs_maintenance_review,
-      is_exclusive_resource
+      is_exclusive_resource, cancellation_policy_snapshot
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
     ON CONFLICT (id) DO UPDATE SET
       resource_id   = $5,
       status        = $6,
@@ -168,7 +176,8 @@ export class SqlReservationRepository implements ReservationRepository {
       reservation_number       = $25,
       applied_customer_rate_id = $26,
       needs_maintenance_review = $27,
-      is_exclusive_resource    = $28
+      is_exclusive_resource    = $28,
+      cancellation_policy_snapshot = $29
   `.trim();
 
   async save(reservation: Reservation): Promise<void> {
@@ -472,7 +481,7 @@ export class SqlReservationRepository implements ReservationRepository {
         r.requested_check_in_time, r.requested_check_out_time,
         r.schedule_approval_status, r.schedule_approved_by, r.schedule_charge_amount,
         r.deposit_amount, r.deposit_due_by, r.reservation_number, r.applied_customer_rate_id,
-        r.needs_maintenance_review, r.is_exclusive_resource
+        r.needs_maintenance_review, r.is_exclusive_resource, r.cancellation_policy_snapshot
       FROM reservations r
     `;
   }
@@ -524,6 +533,16 @@ export class SqlReservationRepository implements ReservationRepository {
       appliedCustomerRateId: row.applied_customer_rate_id,
       needsMaintenanceReview: row.needs_maintenance_review ?? false,
       isExclusiveResource: row.is_exclusive_resource ?? false,
+      // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- mismo patrón que `details`
+      // más arriba (pg puede devolver JSONB ya parseado o como string,
+      // según el driver/tipo de columna). `null`/undefined -- reserva
+      // vieja o sin tramo SNAPSHOT_AT_BOOKING vigente al confirmar -- cae
+      // al default `null` de Reservation.ts, que CancellationRefundService
+      // trata como "resolver contra la tabla en vivo".
+      cancellationPolicySnapshot:
+        typeof row.cancellation_policy_snapshot === 'string'
+          ? JSON.parse(row.cancellation_policy_snapshot)
+          : row.cancellation_policy_snapshot ?? null,
     });
   }
 

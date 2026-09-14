@@ -22,7 +22,9 @@
 
 import { randomUUID } from 'crypto';
 import type { ReservationRepository } from './reservation.repository.js';
+import type { Reservation } from './Reservation.js';
 import type { CancellationPolicyRepository } from './cancellation-policy.repository.js';
+import { resolveApplicableTierFromLadder } from './cancellation-policy.repository.js';
 import type { FinancialTransactionRepository, FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { InvoiceRepository } from '../facturacion/invoice.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
@@ -79,6 +81,43 @@ export class CancellationRefundService {
     return inv.status === 'ISSUED' && inv.cbteTipo === CBTE_TIPO_FACTURA_B;
   }
 
+  /**
+   * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- predicado
+   * compartido entre `previewRefund()` y `confirmRefund()` (mismo criterio
+   * que `matchesRefundIdempotencyKey`/`isReversibleIssuedInvoice` arriba:
+   * una sola implementación para las dos ramas, nunca dos copias que
+   * puedan divergir). Rama por reserva, no por tramo (ver la nota de
+   * diseño en `buildCancellationPolicySnapshot()`,
+   * cancellation-policy.repository.ts, para por qué):
+   *
+   *   - `reservation.cancellationPolicySnapshot` no-nulo -- la reserva se
+   *     confirmó con al menos un tramo `SNAPSHOT_AT_BOOKING` vigente;
+   *     resuelve el tramo ganador CONTRA EL LADDER CONGELADO
+   *     (`resolveApplicableTierFromLadder()`, función pura, sin tocar la
+   *     BD -- ni siquiera hace falta sacarlo del lock, ya no hay round
+   *     trip que sacar).
+   *   - `null` -- reserva sin snapshot (confirmada antes de este campo,
+   *     decisión del dueño 14/09/2026: cae a regla viva; o ningún tramo
+   *     activo al confirmar era SNAPSHOT_AT_BOOKING) -- MISMO camino que
+   *     existía antes de este bloque: `findApplicableTier()` contra la
+   *     tabla en vivo. Sigue corriendo FUERA del lock (ver comentario
+   *     ":147-153" más abajo en `confirmRefund()` para el porqué) -- esta
+   *     función no cambia ESA posición, solo agrega la rama que no
+   *     necesita ir a la BD en absoluto.
+   */
+  private async resolveRefundPercentage(
+    reservation: Pick<Reservation, 'cancellationPolicySnapshot'>,
+    businessId: string,
+    daysBeforeCheckin: number,
+  ): Promise<number> {
+    if (reservation.cancellationPolicySnapshot) {
+      const tier = resolveApplicableTierFromLadder(reservation.cancellationPolicySnapshot.tiers, daysBeforeCheckin);
+      return tier?.refundPercentage ?? 0;
+    }
+    const tier = await this.policyRepo.findApplicableTier(businessId, daysBeforeCheckin);
+    return tier?.refundPercentage ?? 0;
+  }
+
   async previewRefund(reservationId: string, businessId: string): Promise<CancellationRefundPreview> {
     const reservation = await this.reservationRepo.getById(reservationId);
     if (!reservation) throw new ReservationNotFoundError(reservationId);
@@ -86,8 +125,7 @@ export class CancellationRefundService {
 
     const collected = await this.financialTransactionRepo.getCollectedPaymentTotalForReservation(reservationId);
     const daysBeforeCheckin = Math.floor((reservation.startTime.getTime() - Date.now()) / MS_PER_DAY);
-    const tier = await this.policyRepo.findApplicableTier(businessId, daysBeforeCheckin);
-    const refundPercentage = tier?.refundPercentage ?? 0;
+    const refundPercentage = await this.resolveRefundPercentage(reservation, businessId, daysBeforeCheckin);
     const refundAmount = round2(collected * refundPercentage / 100);
 
     return { collected, daysBeforeCheckin, refundPercentage, refundAmount };
@@ -155,9 +193,17 @@ export class CancellationRefundService {
     // abajo): son los que determinan cuánto y contra qué factura se
     // reparte, y una foto vieja de esos dos es lo que producía el crédito
     // fantasma en ":sin-asignar".
+    //
+    // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) --
+    // `resolveRefundPercentage()` reemplaza el `findApplicableTier()`
+    // directo de acá: si `reservation.cancellationPolicySnapshot` es
+    // no-nulo, resuelve en memoria contra el ladder congelado (CERO round
+    // trips, más barato todavía que antes); si es `null`, hace EXACTAMENTE
+    // la misma query que antes, en el mismo lugar, fuera del lock -- el
+    // razonamiento del párrafo de arriba (catálogo/config no participan de
+    // la carrera) sigue aplicando sin cambios para esa rama.
     const daysBeforeCheckin = Math.floor((reservation.startTime.getTime() - Date.now()) / MS_PER_DAY);
-    const tier = await this.policyRepo.findApplicableTier(businessId, daysBeforeCheckin);
-    const refundPercentage = tier?.refundPercentage ?? 0;
+    const refundPercentage = await this.resolveRefundPercentage(reservation, businessId, daysBeforeCheckin);
     const { currency } = await this.businessProfileRepo.get();
 
     const created: FinancialTransaction[] = [];

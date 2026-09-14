@@ -27,6 +27,21 @@ import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.j
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import type { BusinessProfileRepository } from '../../repositories/business-profile.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
+// CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- para el test
+// end-to-end que confirma vía el flujo real (ReservationService, no un
+// INSERT directo) y así ejercita la población real del snapshot.
+import { ReservationService } from '../../reservas/reservation.service.js';
+import { SqlOccupancyRepository } from '../../reservas/sql.occupancy.repository.js';
+import { SqlCategoryRepository } from '../../reservas/sql.category.repository.js';
+import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
+import { SqlResourceLockRepository } from '../../reservas/sql.resource-lock.repository.js';
+import { SqlBookableServiceRepository } from '../../reservas/sql.bookable-service.repository.js';
+import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
+import { SqlOperatingHoursRepository } from '../../platform/sql.operating-hours.repository.js';
+import { SqlMaintenanceWindowRepository } from '../../pms-estadias/sql.maintenance-window.repository.js';
+import { SqlDepositPolicyRepository } from '../../reservas/sql.deposit-policy.repository.js';
+import { SqlNumberSequenceRepository } from '../../repositories/sql.number-sequence.repository.js';
+import { Customer } from '../../clientes-finanzas/customer.entities.js';
 // N1 (05/09/2026) -- camino AR puro real, no INSERT directos.
 import { AccountsReceivableService } from '../../clientes-finanzas/accounts-receivable.service.js';
 import { SqlAccountsReceivableRepository } from '../../clientes-finanzas/sql.accounts-receivable.repository.js';
@@ -50,6 +65,36 @@ function makeService(): CancellationRefundService {
     new SqlInvoiceRepository(db),
     new SqlBusinessProfileRepository(db),
     new PgTransactionManager(pool),
+  );
+}
+
+/**
+ * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- ReservationService
+ * real, mismas piezas que `reservation.service.integration.test.ts::buildService()`.
+ * Se usa SOLO en el describe de abajo, para pasar por `confirmReservation()`
+ * de verdad (no un INSERT directo como el resto de los seeds de este
+ * archivo) y así ejercitar la población real del snapshot.
+ */
+function buildReservationService(): ReservationService {
+  const resourceRepo = new SqlResourceRepository(db);
+  return new ReservationService(
+    new SqlReservationRepository(db, resourceRepo),
+    resourceRepo,
+    new SqlOccupancyRepository(db),
+    new SqlCategoryRepository(db),
+    new SqlDomainEventRepository(db),
+    new PgTransactionManager(pool),
+    new SqlResourceLockRepository(db),
+    new SqlBookableServiceRepository(db),
+    new SqlCustomerRateRepository(db),
+    new SqlOperatingHoursRepository(db),
+    new SqlMaintenanceWindowRepository(db),
+    new SqlDepositPolicyRepository(db),
+    new SqlBusinessProfileRepository(db),
+    new SqlFinancialTransactionRepository(db),
+    new SqlInvoiceRepository(db),
+    new SqlNumberSequenceRepository(db),
+    new SqlCancellationPolicyRepository(db),
   );
 }
 
@@ -1136,5 +1181,147 @@ describe.skipIf(skipIfNoDb)('SqlInvoiceRepository.getRefundableForUpdate() -- CA
     // sus $300 - $100 ya reembolsados), no de C.
     expect(refundableGlobal - correctCapForC).toBe(300);
     expect(refundableGlobal).not.toBe(correctCapForC);
+  });
+});
+
+// =============================================================================
+// CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- snapshot congelado,
+// end-to-end contra Postgres real. A diferencia del resto de este archivo
+// (seeds por INSERT directo, reserva nace CANCELLED), este describe pasa
+// por el flujo REAL completo: ReservationService.createReservation() +
+// confirmReservation() (que es quien puebla `cancellation_policy_snapshot`),
+// la política vigente CAMBIA después de confirmar, recién ahí se cancela y
+// se pide el reembolso -- la prueba de que "congela" significa algo real:
+// si el código regresara a resolver siempre en vivo, este test lo detecta
+// (el % observado cambiaría de 100 a 10).
+// =============================================================================
+describe.skipIf(skipIfNoDb)('CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- snapshot congelado (real Postgres, flujo completo)', () => {
+  /**
+   * `startTime`/`endTime` alineados al minuto (no `Date.now()` crudo): el
+   * split de ocupación (`splitDateRangeIntoDailyMinutes()`,
+   * occupancy.repository.ts) parte por día calendario y `total_minutes`/
+   * `booked_minutes` son INTEGER -- con milisegundos residuales de
+   * `Date.now()`, el bucket del día de checkout daba minutos fraccionarios
+   * (encontrado corriendo este test: "invalid input syntax for type
+   * integer: 504.36265"). No es un problema del Bloque 2 -- es un cuidado
+   * general al fijar fechas de fixture con offsets desde `Date.now()`, que
+   * el resto de este archivo evita usando literales ISO fijos.
+   */
+  function daysFromNowAtMinute(days: number): Date {
+    return new Date(Math.floor((Date.now() + days * 24 * 60 * 60 * 1000) / 60_000) * 60_000);
+  }
+
+  it('congela el % vigente al CONFIRMAR; un cambio posterior de la política no afecta el reembolso de esa reserva', async () => {
+    // businessId propio de este test (no el BUSINESS_ID compartido del
+    // resto del archivo) -- evita pisar/colisionar con la fila de
+    // threshold=0 que otros tests reusan vía ON CONFLICT, y con el umbral
+    // de 7 días de la SEGUNDA prueba de este mismo describe.
+    const businessId = `biz-snapshot-live-${randomUUID()}`;
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id, { basePrice: 1000 });
+    const guest = await seedCustomer(db);
+
+    // Tramo SNAPSHOT_AT_BOOKING: 100% si se cancela con >=7 días de anticipación.
+    const policyId = randomUUID();
+    await db.query(
+      `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage, policy_resolution_timing)
+       VALUES ($1, $2, 7, 100, 'SNAPSHOT_AT_BOOKING')`,
+      [policyId, businessId],
+    );
+
+    const reservationService = buildReservationService();
+    const created = await reservationService.createReservation({
+      id: randomUUID(),
+      resourceId: resource.id,
+      customer: new Customer(guest.id, guest.fullName, guest.email),
+      startTime: daysFromNowAtMinute(10),
+      endTime: daysFromNowAtMinute(11),
+      details: {},
+    });
+
+    const confirmed = await reservationService.confirmReservation(created.id, businessId);
+    expect(confirmed.cancellationPolicySnapshot, 'confirmReservation() tiene que congelar el ladder').not.toBeNull();
+    expect(confirmed.cancellationPolicySnapshot?.tiers).toEqual([
+      { minDaysBeforeCheckin: 7, refundPercentage: 100 },
+    ]);
+
+    // Cobro completo, para que haya algo que reembolsar.
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    await financialRepo.create({
+      id: randomUUID(), businessId, customerId: guest.id,
+      reservationId: confirmed.id, type: 'PAYMENT', amount: confirmed.totalPrice,
+      currency: 'ARS', status: 'SETTLED',
+    });
+
+    // La política vigente CAMBIA DESPUÉS de confirmar -- si el reembolso
+    // mirara la tabla en vivo, ahora daría 10%, no 100%.
+    await db.query(`UPDATE cancellation_policies SET refund_percentage = 10 WHERE id = $1`, [policyId]);
+
+    // Se cancela con la misma anticipación real (~10 días, sigue >= 7) --
+    // el tramo GANADOR es el mismo tanto en vivo como en el snapshot; lo
+    // único que puede diferir es el % que ese tramo paga.
+    const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+    const toCancel = await reservationRepo.getById(confirmed.id);
+    toCancel!.cancel();
+    await reservationRepo.save(toCancel!);
+
+    const refundService = makeService();
+    const preview = await refundService.previewRefund(confirmed.id, businessId);
+    expect(preview.refundPercentage, 'usa el snapshot congelado (100%), no la tabla en vivo (10%)').toBe(100);
+    expect(preview.refundAmount).toBe(confirmed.totalPrice);
+
+    const refunded = await refundService.confirmRefund(confirmed.id, businessId, 'user-1');
+    expect(refunded).toHaveLength(1);
+    expect(refunded[0]?.amount).toBe(confirmed.totalPrice);
+
+    // Control: la tabla en vivo de verdad cambió (si este assert fallara,
+    // el test de arriba no probaría nada -- confirmaría un no-cambio).
+    const liveTier = await new SqlCancellationPolicyRepository(db).findApplicableTier(businessId, 10);
+    expect(liveTier?.refundPercentage).toBe(10);
+  });
+
+  it('sin ningún tramo SNAPSHOT_AT_BOOKING vigente al confirmar, no congela nada -- la reserva sigue el camino LIVE de siempre', async () => {
+    const businessId = `biz-snapshot-null-${randomUUID()}`;
+    const category = await seedCategory(db);
+    const resource = await seedResource(db, category.id, { basePrice: 500 });
+    const guest = await seedCustomer(db);
+
+    const policyId = randomUUID();
+    await db.query(
+      `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage, policy_resolution_timing)
+       VALUES ($1, $2, 7, 60, 'LIVE_AT_CANCELLATION')`,
+      [policyId, businessId],
+    );
+
+    const reservationService = buildReservationService();
+    const created = await reservationService.createReservation({
+      id: randomUUID(),
+      resourceId: resource.id,
+      customer: new Customer(guest.id, guest.fullName, guest.email),
+      startTime: daysFromNowAtMinute(10),
+      endTime: daysFromNowAtMinute(11),
+      details: {},
+    });
+    const confirmed = await reservationService.confirmReservation(created.id, businessId);
+    expect(confirmed.cancellationPolicySnapshot).toBeNull();
+
+    const financialRepo = new SqlFinancialTransactionRepository(db);
+    await financialRepo.create({
+      id: randomUUID(), businessId, customerId: guest.id,
+      reservationId: confirmed.id, type: 'PAYMENT', amount: confirmed.totalPrice,
+      currency: 'ARS', status: 'SETTLED',
+    });
+
+    // Cambia la política DESPUÉS de confirmar -- sin snapshot, el reembolso
+    // SÍ debe reflejar este cambio (comportamiento de siempre).
+    await db.query(`UPDATE cancellation_policies SET refund_percentage = 20 WHERE id = $1`, [policyId]);
+
+    const reservationRepo = new SqlReservationRepository(db, new SqlResourceRepository(db));
+    const toCancel = await reservationRepo.getById(confirmed.id);
+    toCancel!.cancel();
+    await reservationRepo.save(toCancel!);
+
+    const preview = await makeService().previewRefund(confirmed.id, businessId);
+    expect(preview.refundPercentage).toBe(20);
   });
 });

@@ -73,6 +73,7 @@ import type { BookableResource } from './resource.entities.js';
 import type { ReservationCustomer } from './reservation-customer.entities.js';
 import { InvalidReservationError } from '../domain/errors.js';
 import type { ReservationSnapshot, ReservationLine } from './reservation.types.js';
+import type { CancellationPolicySnapshot } from './cancellation-policy.repository.js';
 
 const ALLOWED_TRANSITIONS: Record<
   ReservationStatus,
@@ -187,6 +188,20 @@ export interface ReservationProps {
    * de creada salvo reasignación de recurso).
    */
   isExclusiveResource?: boolean;
+  /**
+   * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- ladder de tramos
+   * de `cancellation_policies` CONGELADO al confirmar (R9,
+   * docs/criterios-datos.md), solo para negocios/tramos con
+   * `policyResolutionTiming === 'SNAPSHOT_AT_BOOKING'`. `null` = nada
+   * congelado (ver docblock completo en `src/db/schema.sql`, columna
+   * `cancellation_policy_snapshot` -- dos motivos indistinguibles a
+   * propósito: sin tramo SNAPSHOT vigente al confirmar, o reserva anterior
+   * a este campo). Optional/default null -- igual criterio que
+   * `needsMaintenanceReview`/`isExclusiveResource`: la inmensa mayoría de
+   * los callers (createReservation(), toda reserva PENDING) no tiene nada
+   * que congelar todavía.
+   */
+  cancellationPolicySnapshot?: CancellationPolicySnapshot | null;
 }
 
 export class Reservation {
@@ -212,6 +227,7 @@ export class Reservation {
   public readonly appliedCustomerRateId: string | null;
   public readonly needsMaintenanceReview: boolean;
   public readonly isExclusiveResource: boolean;
+  private _cancellationPolicySnapshot: CancellationPolicySnapshot | null;
 
   constructor(props: ReservationProps) {
     const {
@@ -242,6 +258,7 @@ export class Reservation {
       appliedCustomerRateId,
       needsMaintenanceReview = false,
       isExclusiveResource = false,
+      cancellationPolicySnapshot = null,
     } = props;
 
     if (!id.trim()) throw new InvalidReservationError('id es obligatorio');
@@ -304,6 +321,7 @@ export class Reservation {
     this.appliedCustomerRateId = appliedCustomerRateId;
     this.needsMaintenanceReview = needsMaintenanceReview;
     this.isExclusiveResource = isExclusiveResource;
+    this._cancellationPolicySnapshot = cancellationPolicySnapshot;
     this._status     = initialStatus;
   }
 
@@ -317,6 +335,8 @@ export class Reservation {
   get status(): ReservationStatus {
     return this._status;
   }
+
+  get cancellationPolicySnapshot(): CancellationPolicySnapshot | null { return this._cancellationPolicySnapshot; }
 
   get requestedCheckInTime(): string | null { return this._requestedCheckInTime; }
   get requestedCheckOutTime(): string | null { return this._requestedCheckOutTime; }
@@ -359,6 +379,37 @@ export class Reservation {
   complete(): void { this.transitionTo(ReservationStatus.COMPLETED);  }
   /** C1-Fase A — solo lo dispara `ReservationHoldExpiryWorker` (A6.6: nunca una acción de usuario). */
   expire(): void   { this.transitionTo(ReservationStatus.EXPIRED);    }
+
+  /**
+   * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) — congela (R9) el
+   * ladder de `cancellation_policies` aplicable a esta reserva, resuelto
+   * por `buildCancellationPolicySnapshot()` (cancellation-policy.repository.ts)
+   * ANTES de llamar acá — este método solo asienta el resultado ya
+   * decidido, no vuelve a consultar nada. Llamado por
+   * `ReservationService.confirmReservation()` inmediatamente después de
+   * `confirm()`, dentro de la MISMA transacción que persiste la reserva
+   * (una sola operación lógica, `atomic-state-mutation`).
+   *
+   * Guard de estado (no "ya estaba congelado"): a diferencia de
+   * `requestScheduleChange()`/`approveScheduleChange()` (que si tienen un
+   * guard de "ya había un pedido"), acá el guard es sobre CUÁNDO se puede
+   * llamar, no sobre si ya se llamó antes — `null` es un valor de negocio
+   * válido (nada que congelar) y llamarlo dos veces con el mismo valor no
+   * es un bug en sí. Lo que sí sería un bug es congelar el snapshot de una
+   * reserva que todavía no pasó a CONFIRMED (o que ya no lo está) — el
+   * único caller real (`confirmReservation()`) siempre llama a `confirm()`
+   * primero, dentro de la misma transacción, así que este guard nunca
+   * debería disparar en producción; está para que un caller nuevo que se
+   * salte ese orden falle alto y explícito, no en silencio.
+   */
+  freezeCancellationPolicy(snapshot: CancellationPolicySnapshot | null): void {
+    if (this._status !== ReservationStatus.CONFIRMED) {
+      throw new InvalidReservationError(
+        `El snapshot de política de cancelación solo se congela sobre una reserva CONFIRMED (estado actual: ${this._status}).`,
+      );
+    }
+    this._cancellationPolicySnapshot = snapshot;
+  }
 
   /**
    * Pedido de horario distinto al estándar del negocio (late check-out /

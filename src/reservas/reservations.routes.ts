@@ -137,6 +137,9 @@ function buildReservationService(req: Request): ReservationService {
   const financialTransactionRepo = new SqlFinancialTransactionRepository(db);
   const invoiceRepo           = new SqlInvoiceRepository(db);
   const numberSequenceRepo    = new SqlNumberSequenceRepository(db);
+  // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- confirmReservation() necesita
+  // el ladder de tramos del negocio para congelar el snapshot (R9).
+  const cancellationPolicyRepo = new SqlCancellationPolicyRepository(db);
   return new ReservationService(
     reservationRepo,
     resourceRepo,
@@ -154,6 +157,7 @@ function buildReservationService(req: Request): ReservationService {
     financialTransactionRepo,
     invoiceRepo,
     numberSequenceRepo,
+    cancellationPolicyRepo,
   );
 }
 

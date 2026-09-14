@@ -79,6 +79,8 @@ import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate
 import type { IOperatingHoursRepository } from '../platform/operating-hours.repository.js';
 import type { MaintenanceWindowRepository } from '../pms-estadias/maintenance-window.repository.js';
 import type { IDepositPolicyRepository } from './deposit-policy.repository.js';
+import type { CancellationPolicyRepository } from './cancellation-policy.repository.js';
+import { buildCancellationPolicySnapshot } from './cancellation-policy.repository.js';
 import type { BusinessProfileRepository } from '../repositories/business-profile.repository.js';
 import type { FinancialTransactionRepository } from '../clientes-finanzas/financial-transaction.repository.js';
 import type { NumberSequenceRepository } from '../repositories/number-sequence.repository.js';
@@ -145,6 +147,15 @@ export class ReservationService {
     private readonly invoiceRepo: Pick<InvoiceRepository, 'resolveInvoiceLinkage'>,
     /** D6 (22/08/2026) — número operativo, resuelto una sola vez en createReservation(). */
     private readonly numberSequenceRepository: NumberSequenceRepository,
+    /**
+     * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- solo
+     * `findAll()`: `confirmReservation()` congela (R9) el ladder ACTIVO
+     * completo de tramos del negocio, no un tramo puntual (ver
+     * `buildCancellationPolicySnapshot()`, cancellation-policy.repository.ts).
+     * `CancellationRefundService` es quien sigue usando `findApplicableTier()`
+     * para el camino LIVE_AT_CANCELLATION -- no se toca acá.
+     */
+    private readonly cancellationPolicyRepository: Pick<CancellationPolicyRepository, 'findAll'>,
     /**
      * J1 (23/08/2026) — reloj inyectable para el guard de "no crear/mover
      * una reserva al pasado". Opcional con default real: los ~101
@@ -567,6 +578,18 @@ export class ReservationService {
         appliedCustomerRateId,
         needsMaintenanceReview: existing.needsMaintenanceReview,
         isExclusiveResource,
+        // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- MISMA
+        // familia de bug que requestedCheckInTime/depositAmount/
+        // isExclusiveResource de arriba: Reservation.restore() defaultea a
+        // `null` los props no pasados, y el UPSERT los escribe sin
+        // condicional. Sin reenviarlo, mover/editar una reserva ya
+        // CONFIRMED (drag-to-move del calendario incluido -- este método
+        // acepta PENDING y CONFIRMED, ver guard más arriba) borraría en
+        // silencio el ladder ya congelado al confirmar, dejando la
+        // cancelación posterior caer a regla viva sin que nadie lo haya
+        // decidido. No se recalcula acá -- el ladder representa "qué regía
+        // al CONFIRMAR", independiente de que las fechas se editen después.
+        cancellationPolicySnapshot: existing.cancellationPolicySnapshot,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -731,6 +754,11 @@ export class ReservationService {
         // de bug ya corregido para requestedCheckInTime/scheduleApprovalStatus.
         needsMaintenanceReview: locked.needsMaintenanceReview,
         isExclusiveResource:    locked.isExclusiveResource,
+        // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- mismo motivo que en
+        // updateReservation(): sin reenviarlo, todo ajuste de precio sobre
+        // una reserva CONFIRMED borraría en silencio el ladder ya
+        // congelado al confirmar.
+        cancellationPolicySnapshot: locked.cancellationPolicySnapshot,
       });
 
       await this.reservationRepository.saveWithClient(client, updated);
@@ -803,6 +831,18 @@ export class ReservationService {
     // así que categoryId es el mismo con o sin lock.
     const category = await this.categoryRepository.findById(preCheck.resource.categoryId);
 
+    // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- resuelto FUERA
+    // de la transacción, mismo criterio que `category` arriba y que el
+    // catálogo/config que CancellationRefundService.confirmRefund() ya
+    // saca del lock a propósito (ver su comentario ":147-153"):
+    // `cancellation_policies` es una tabla de catálogo/config ajena a la
+    // fila de `reservations` que el FOR UPDATE de abajo va a lockear, no
+    // participa de ninguna carrera que ese lock deba cubrir. `null` (nada
+    // que congelar) es un resultado válido y frecuente -- ver
+    // `buildCancellationPolicySnapshot()`.
+    const cancellationPolicies = await this.cancellationPolicyRepository.findAll(businessId);
+    const cancellationPolicySnapshot = buildCancellationPolicySnapshot(cancellationPolicies, this.now());
+
     let reservation!: Reservation;
 
     // Bug 3 (25/08/2026) — la lectura + `.confirm()` se mueven ADENTRO de
@@ -815,6 +855,14 @@ export class ReservationService {
     await this.transactionManager.run(async (client: SqlClient) => {
       reservation = await this.requireReservationWithLock(client, id);
       reservation.confirm();
+      // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- misma transacción que el
+      // UPDATE de abajo (atomic-state-mutation: una sola operación
+      // lógica). Si `saveWithClient()`/el INSERT de evento fallan y la
+      // transacción hace rollback, el snapshot en memoria se descarta
+      // junto con la transición de estado -- nunca queda a medio poblar
+      // en la fila real (no hay ningún `await` entre este `.freezeCancellationPolicy()`
+      // y el `saveWithClient()` de abajo que pueda dejarlos desincronizados).
+      reservation.freezeCancellationPolicy(cancellationPolicySnapshot);
 
       await this.reservationRepository.saveWithClient(client, reservation);
       await this.domainEventRepository.insertWithClient(client, {

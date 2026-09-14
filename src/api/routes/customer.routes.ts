@@ -107,6 +107,7 @@ import { SqlBusinessProfileRepository } from '../../repositories/sql.business-pr
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlNumberSequenceRepository } from '../../repositories/sql.number-sequence.repository.js';
+import { SqlCancellationPolicyRepository } from '../../reservas/sql.cancellation-policy.repository.js';
 import { SqlReservationRepository }  from '../../reservas/sql.reservation.repository.js';
 import type { Reservation }          from '../../reservas/Reservation.js';
 import { SqlCustomerRepository }     from '../../clientes-finanzas/sql.customer.repository.js';
@@ -241,6 +242,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const financialTransactionRepo = new SqlFinancialTransactionRepository(client);
   const invoiceRepo = new SqlInvoiceRepository(client);
   const numberSequenceRepo = new SqlNumberSequenceRepository(client);
+  const cancellationPolicyRepo = new SqlCancellationPolicyRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -259,6 +261,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     financialTransactionRepo,
     invoiceRepo,
     numberSequenceRepo,
+    cancellationPolicyRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo, numberSequenceRepo };

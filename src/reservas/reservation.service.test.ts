@@ -14,6 +14,7 @@ import { InMemoryDepositPolicyRepository } from './in-memory.deposit-policy.repo
 import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operating-hours.repository.js';
 import { InMemoryMaintenanceWindowRepository } from '../pms-estadias/in-memory.maintenance-window.repository.js';
 import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.number-sequence.repository.js';
+import { InMemoryCancellationPolicyRepository } from './in-memory.cancellation-policy.repository.js';
 import { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
 import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
@@ -99,6 +100,7 @@ describe('ReservationService', () => {
   let financialTransactionRepo: FakePaymentLedger;
   let invoiceRepo: FakeInvoiceRepositoryForReservations;
   let numberSequenceRepo: InMemoryNumberSequenceRepository;
+  let cancellationPolicyRepo: InMemoryCancellationPolicyRepository;
   let service: ReservationService;
 
   /** Sin política de seña -- comportamiento default (deposit_amount = 0, gate nunca se activa). */
@@ -193,6 +195,7 @@ describe('ReservationService', () => {
     financialTransactionRepo = new FakePaymentLedger();
     invoiceRepo           = new FakeInvoiceRepositoryForReservations();
     numberSequenceRepo    = new InMemoryNumberSequenceRepository();
+    cancellationPolicyRepo = new InMemoryCancellationPolicyRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -211,6 +214,7 @@ describe('ReservationService', () => {
       financialTransactionRepo,
       invoiceRepo,
       numberSequenceRepo,
+      cancellationPolicyRepo,
       FROZEN_TEST_NOW,
     );
 
@@ -688,7 +692,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -713,6 +717,83 @@ describe('ReservationService', () => {
 
       const event = eventRepo.events[0] as { payload: { isLodging: boolean } };
       expect(event.payload.isLodging).toBe(true);
+    });
+
+    // ------------------------------------------------------------------
+    // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026)
+    // ------------------------------------------------------------------
+
+    it('sin tramos de cancelación configurados para el negocio, no congela nada (cancellationPolicySnapshot null)', async () => {
+      await service.createReservation({
+        id: 'res-sin-politica', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      const confirmed = await service.confirmReservation('res-sin-politica', TEST_BUSINESS_ID);
+      expect(confirmed.cancellationPolicySnapshot).toBeNull();
+    });
+
+    it('con al menos un tramo activo SNAPSHOT_AT_BOOKING, congela el ladder ACTIVO completo del negocio', async () => {
+      await cancellationPolicyRepo.create({
+        businessId: TEST_BUSINESS_ID, minDaysBeforeCheckin: 7, refundPercentage: 100,
+        policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
+      });
+      await cancellationPolicyRepo.create({
+        businessId: TEST_BUSINESS_ID, minDaysBeforeCheckin: 0, refundPercentage: 0,
+        policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
+      });
+      // Tramo INACTIVO -- no debe entrar al ladder congelado.
+      const inactiva = await cancellationPolicyRepo.create({
+        businessId: TEST_BUSINESS_ID, minDaysBeforeCheckin: 3, refundPercentage: 50,
+        policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
+      });
+      await cancellationPolicyRepo.deactivate(inactiva.id);
+
+      await service.createReservation({
+        id: 'res-con-politica', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      const confirmed = await service.confirmReservation('res-con-politica', TEST_BUSINESS_ID);
+
+      expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
+      expect(confirmed.cancellationPolicySnapshot?.version).toBe(1);
+      // findAll() devuelve ASC por minDaysBeforeCheckin (mismo ORDER BY que
+      // SqlCancellationPolicyRepository.findAll()) -- el orden no le
+      // importa a resolveApplicableTierFromLadder() (recorre todo el
+      // array), pero el snapshot congelado lo hereda tal cual.
+      expect(confirmed.cancellationPolicySnapshot?.tiers).toEqual([
+        { minDaysBeforeCheckin: 0, refundPercentage: 0 },
+        { minDaysBeforeCheckin: 7, refundPercentage: 100 },
+      ]);
+    });
+
+    it('con el único tramo activo en LIVE_AT_CANCELLATION, NO congela nada (cancellationPolicySnapshot null)', async () => {
+      await cancellationPolicyRepo.create({
+        businessId: TEST_BUSINESS_ID, minDaysBeforeCheckin: 7, refundPercentage: 100,
+        policyResolutionTiming: 'LIVE_AT_CANCELLATION',
+      });
+
+      await service.createReservation({
+        id: 'res-live', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      const confirmed = await service.confirmReservation('res-live', TEST_BUSINESS_ID);
+
+      expect(confirmed.cancellationPolicySnapshot).toBeNull();
+    });
+
+    it('no congela tramos de OTRO negocio (aislamiento multi-tenant del ladder)', async () => {
+      await cancellationPolicyRepo.create({
+        businessId: 'otro-negocio', minDaysBeforeCheckin: 7, refundPercentage: 100,
+        policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
+      });
+
+      await service.createReservation({
+        id: 'res-otro-negocio', resourceId: 't1', customer,
+        startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
+      });
+      const confirmed = await service.confirmReservation('res-otro-negocio', TEST_BUSINESS_ID);
+
+      expect(confirmed.cancellationPolicySnapshot).toBeNull();
     });
   });
 
@@ -844,7 +925,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -864,7 +945,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -889,7 +970,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -906,7 +987,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, categoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo,
+        depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1104,6 +1185,28 @@ describe('ReservationService', () => {
         startTime: new Date('2026-08-01T18:00:00Z'),
       });
       expect(updated.status).toBe('CONFIRMED');
+    });
+
+    // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- MISMA familia
+    // de bug que requestedCheckInTime/depositAmount/isExclusiveResource
+    // (ver los comentarios fechados dentro de updateReservation() en
+    // reservation.service.ts): Reservation.restore() defaultea a `null`
+    // los props no reenviados explícitamente. Sin el fix, este drag-to-move
+    // habría borrado el ladder ya congelado al confirmar.
+    it('drag-to-move sobre una reserva CONFIRMED preserva el cancellationPolicySnapshot ya congelado', async () => {
+      await cancellationPolicyRepo.create({
+        businessId: TEST_BUSINESS_ID, minDaysBeforeCheckin: 7, refundPercentage: 100,
+        policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
+      });
+      await createBase();
+      const confirmed = await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
+
+      const updated = await service.updateReservation('res-1', {
+        startTime: new Date('2026-08-01T18:00:00Z'),
+      });
+
+      expect(updated.cancellationPolicySnapshot).toEqual(confirmed.cancellationPolicySnapshot);
     });
 
     it('debe reasignar el recurso (drag-to-move a otra habitación) y validar disponibilidad contra el nuevo', async () => {
@@ -1391,6 +1494,30 @@ describe('ReservationService', () => {
           confirmedByUserId: 'user-manager-1',
         }),
       });
+    });
+
+    // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- misma familia
+    // de bug que needsMaintenanceReview/isExclusiveResource dentro de
+    // confirmPriceAdjustment() (ver su comentario fechado en
+    // reservation.service.ts): sin reenviar el snapshot ya congelado, un
+    // ajuste de precio lo habría borrado en silencio.
+    it('confirmPriceAdjustment preserva el cancellationPolicySnapshot ya congelado al confirmar', async () => {
+      await cancellationPolicyRepo.create({
+        businessId: TEST_BUSINESS_ID, minDaysBeforeCheckin: 7, refundPercentage: 100,
+        policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
+      });
+      await service.createReservation({
+        id: 'res-confirm-adjust-snapshot', resourceId: 't1', serviceId: 'svc-noche-adjust', customer,
+        startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
+        details: {},
+      });
+      const confirmed = await service.confirmReservation('res-confirm-adjust-snapshot', TEST_BUSINESS_ID);
+      expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
+
+      await service.updateReservation('res-confirm-adjust-snapshot', { endTime: new Date('2026-09-05T10:00:00Z') });
+      const adjusted = await service.confirmPriceAdjustment('res-confirm-adjust-snapshot', TEST_BUSINESS_ID, 'user-manager-1');
+
+      expect(adjusted.cancellationPolicySnapshot).toEqual(confirmed.cancellationPolicySnapshot);
     });
 
     it('confirmPriceAdjustment rechaza si no se informa confirmedByUserId', async () => {
@@ -1787,7 +1914,7 @@ describe('ReservationService', () => {
         reservationRepo, resourceRepo, occupancyRepo, lodgingCategoryRepo,
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
-        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo,
+        depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
         FROZEN_TEST_NOW,
       );
       // 27/08/2026 — decisión del dueño, docs/diseno-precio-servicio-vs-

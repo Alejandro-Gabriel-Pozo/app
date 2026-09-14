@@ -44,6 +44,7 @@ import { SqlBusinessProfileRepository } from '../../repositories/sql.business-pr
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlNumberSequenceRepository } from '../../repositories/sql.number-sequence.repository.js';
+import { SqlCancellationPolicyRepository } from '../../reservas/sql.cancellation-policy.repository.js';
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { Customer } from '../../clientes-finanzas/customer.entities.js';
 
@@ -166,6 +167,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
       financialRepo,
       invoiceRepo,
       new SqlNumberSequenceRepository(db),
+      new SqlCancellationPolicyRepository(db),
     );
 
     invoiceService = new InvoiceService(

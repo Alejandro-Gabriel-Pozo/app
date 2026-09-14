@@ -23,11 +23,29 @@ function daysFromNow(days: number): Date {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 }
 
-function makeReservation(overrides: { status?: ReservationStatus; checkinInDays?: number } = {}): Reservation {
+function makeReservation(overrides: {
+  status?: ReservationStatus;
+  checkinInDays?: number;
+  /**
+   * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (14/09/2026) -- por default
+   * `undefined` (Reservation.ts defaultea a `null`, camino LIVE_AT_CANCELLATION,
+   * comportamiento de siempre). Pasar un snapshot real ejercita la rama
+   * nueva de `CancellationRefundService.resolveRefundPercentage()`.
+   * `Reservation.freezeCancellationPolicy()` exige estado CONFIRMED -- para
+   * poder construir un fixture ya CANCELLED con snapshot (el caso real que
+   * este service necesita probar) esto NO pasa por ese método: arma la
+   * reserva vía `restore()` con `initialStatus` ya en el estado pedido y
+   * `cancellationPolicySnapshot` en el prop de construcción directamente
+   * (mismo mecanismo que usa `SqlReservationRepository.rowToReservation()`
+   * al reconstruir desde una fila real -- no hace falta pasar por
+   * confirm()+freeze() en un test que solo verifica lectura).
+   */
+  cancellationPolicySnapshot?: Reservation['cancellationPolicySnapshot'];
+} = {}): Reservation {
   const resource = new PhysicalResource('room-1', 'Habitación 1', 100, 'cat-1', null, 2);
   const customer = new Customer('cust-1', 'Juan Garcia', 'juan@example.com');
   const start = daysFromNow(overrides.checkinInDays ?? 10);
-  return new Reservation({
+  return Reservation.restore({
     id: 'res-1',
     customer,
     resource,
@@ -38,6 +56,7 @@ function makeReservation(overrides: { status?: ReservationStatus; checkinInDays?
     reservationNumber: 1,
     appliedCustomerRateId: null,
     initialStatus: overrides.status ?? ReservationStatus.CANCELLED,
+    cancellationPolicySnapshot: overrides.cancellationPolicySnapshot ?? null,
   });
 }
 
@@ -46,21 +65,31 @@ class FakeReservationRepository implements Pick<ReservationRepository, 'getById'
   async getById(): Promise<Reservation | undefined> { return this.reservation; }
 }
 
-// CANCEL-POLICY-SCOPE-BASE-001 (14/09/2026): las 18 fixtures de `tier`/
-// `FakePolicyRepository` de este archivo declaran `policyResolutionTiming:
-// 'LIVE_AT_CANCELLATION'` a propósito -- es el único comportamiento que
-// `CancellationRefundService` implementa HOY (Bloque 1: el campo existe en
-// CRUD, pero nada en este service todavía lee ni ramifica sobre
-// `SNAPSHOT_AT_BOOKING`; sigue resolviendo siempre contra la tabla en vivo,
-// como antes de este campo). Ninguna fixture cubre la rama
-// `SNAPSHOT_AT_BOOKING` porque esa rama no existe todavía -- el Bloque 2
-// (congelar el ladder en `reservations` y leerlo acá) va a necesitar
-// fixtures nuevas que ejerciten `SNAPSHOT_AT_BOOKING` real, no solo cambiar
-// el valor de esta constante. Ver `docs/pendientes-2026-09-12.md`,
-// CANCEL-POLICY-SCOPE-BASE-001 Bloque 2, para el detalle de esa deuda.
+// CANCEL-POLICY-SCOPE-BASE-001 Bloque 1 (14/09/2026): las 18 fixtures de
+// `tier`/`FakePolicyRepository` de este archivo declaran
+// `policyResolutionTiming: 'LIVE_AT_CANCELLATION'` a propósito -- ejercitan
+// el camino de SIEMPRE (reserva sin `cancellationPolicySnapshot`, resuelve
+// contra `FakePolicyRepository`/la tabla en vivo). No se tocan en el
+// Bloque 2: siguen siendo la cobertura de la rama `null` de
+// `resolveRefundPercentage()`. La rama `SNAPSHOT_AT_BOOKING` (reserva CON
+// `cancellationPolicySnapshot` no-nulo, resuelve en memoria contra el
+// ladder congelado, nunca toca `FakePolicyRepository`) tiene su propio
+// describe más abajo, `CancellationRefundService -- CANCEL-POLICY-SCOPE-BASE-001
+// Bloque 2 (snapshot congelado)`.
 class FakePolicyRepository implements Pick<CancellationPolicyRepository, 'findApplicableTier'> {
+  /**
+   * CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- contador de invocaciones. La
+   * rama `SNAPSHOT_AT_BOOKING` de `resolveRefundPercentage()` no debe
+   * llamar nunca a `findApplicableTier()` (resuelve en memoria contra el
+   * ladder congelado) -- este contador es lo que prueba esa ausencia, no
+   * solo que el RESULTADO final coincida por casualidad con el tier vivo.
+   */
+  public calls = 0;
   constructor(private readonly tier: CancellationPolicy | null) {}
-  async findApplicableTier(): Promise<CancellationPolicy | null> { return this.tier; }
+  async findApplicableTier(): Promise<CancellationPolicy | null> {
+    this.calls += 1;
+    return this.tier;
+  }
 }
 
 class FakeFinancialTransactionRepository implements
@@ -164,15 +193,16 @@ function buildService(opts: {
   const financialRepo = new FakeFinancialTransactionRepository(opts.collected ?? 0);
   const invoiceRepo = new FakeInvoiceRepository(opts.invoices ?? []);
   const transactionManager = new InMemoryTransactionManager();
+  const policyRepo = new FakePolicyRepository(opts.tier ?? null);
   const service = new CancellationRefundService(
     new FakeReservationRepository('reservation' in opts ? opts.reservation : makeReservation()),
-    new FakePolicyRepository(opts.tier ?? null),
+    policyRepo,
     financialRepo,
     invoiceRepo,
     new FakeBusinessProfileRepository(),
     transactionManager,
   );
-  return { service, financialRepo, invoiceRepo, transactionManager };
+  return { service, financialRepo, invoiceRepo, transactionManager, policyRepo };
 }
 
 // ---------------------------------------------------------------------------
@@ -622,5 +652,108 @@ describe('CancellationRefundService.confirmRefund -- REFUND-ISSUED-RACE-01 Block
     expect(created).toHaveLength(1);
     expect(created[0]?.reversedInvoiceId).toBe('inv-a');
     expect(financialRepo.created).toHaveLength(1);
+  });
+});
+
+describe('CancellationRefundService -- CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 (snapshot congelado)', () => {
+  // Ladder congelado de ejemplo: 100% a >=7 días, 0% a <7. El `tier` LIVE
+  // de cada test de abajo es deliberadamente DISTINTO al que el snapshot
+  // daría -- si `resolveRefundPercentage()` tocara la tabla en vivo por
+  // error (bug de regresión: alguien vuelve a poner `findApplicableTier()`
+  // incondicional), el resultado observado cambiaría y el test lo detecta,
+  // no solo por número sino porque `policyRepo.calls` también se verifica.
+  const SNAPSHOT_LADDER = {
+    version: 1 as const,
+    frozenAt: '2026-01-01T00:00:00.000Z',
+    tiers: [
+      { minDaysBeforeCheckin: 7, refundPercentage: 100 },
+      { minDaysBeforeCheckin: 0, refundPercentage: 0 },
+    ],
+  };
+  // Tier LIVE "trampa": si el service ignorara el snapshot y cayera igual a
+  // la tabla en vivo, daría 10% en vez del 100%/0% que dicta el ladder
+  // congelado -- cualquiera de los dos valores lo delataría.
+  const LIVE_TRAP_TIER: CancellationPolicy = {
+    id: 'p-live-trap', businessId: 'biz-1', minDaysBeforeCheckin: 0,
+    refundPercentage: 10, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION',
+  };
+
+  describe('previewRefund', () => {
+    it('resuelve el % contra el ladder congelado, no contra la tabla en vivo (checkinInDays=10 -> tramo 100%)', async () => {
+      const { service, policyRepo } = buildService({
+        reservation: makeReservation({ checkinInDays: 10, cancellationPolicySnapshot: SNAPSHOT_LADDER }),
+        tier: LIVE_TRAP_TIER,
+        collected: 1000,
+      });
+      const preview = await service.previewRefund('res-1', 'biz-1');
+      expect(preview.refundPercentage).toBe(100);
+      expect(preview.refundAmount).toBe(1000);
+      // La tabla en vivo nunca se consultó -- prueba que la rama realmente
+      // bifurca, no que el resultado coincidiera por casualidad.
+      expect(policyRepo.calls).toBe(0);
+    });
+
+    it('resuelve el tramo de menor anticipación cuando falta poco para el check-in (checkinInDays=2 -> tramo 0%)', async () => {
+      const { service, policyRepo } = buildService({
+        reservation: makeReservation({ checkinInDays: 2, cancellationPolicySnapshot: SNAPSHOT_LADDER }),
+        tier: LIVE_TRAP_TIER,
+        collected: 1000,
+      });
+      const preview = await service.previewRefund('res-1', 'biz-1');
+      expect(preview.refundPercentage).toBe(0);
+      expect(preview.refundAmount).toBe(0);
+      expect(policyRepo.calls).toBe(0);
+    });
+
+    it('sin snapshot (null, reserva vieja o política LIVE al confirmar) sigue resolviendo contra la tabla en vivo -- comportamiento sin cambios', async () => {
+      const { service, policyRepo } = buildService({
+        reservation: makeReservation({ checkinInDays: 10, cancellationPolicySnapshot: null }),
+        tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 40, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
+        collected: 1000,
+      });
+      const preview = await service.previewRefund('res-1', 'biz-1');
+      expect(preview.refundPercentage).toBe(40);
+      expect(policyRepo.calls).toBe(1);
+    });
+  });
+
+  describe('confirmRefund', () => {
+    it('crea el REFUND con el monto que dicta el ladder congelado, ignorando la tabla en vivo', async () => {
+      const { service, financialRepo, policyRepo } = buildService({
+        reservation: makeReservation({ checkinInDays: 10, cancellationPolicySnapshot: SNAPSHOT_LADDER }),
+        tier: LIVE_TRAP_TIER,
+        collected: 1000,
+        invoices: [],
+      });
+      const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
+      expect(created).toHaveLength(1);
+      expect(created[0]?.amount).toBe(1000);
+      expect(policyRepo.calls).toBe(0);
+      expect(financialRepo.created).toHaveLength(1);
+    });
+
+    it('NothingToRefundError cuando el tramo congelado da 0% (mismo guard que el camino LIVE)', async () => {
+      const { service } = buildService({
+        reservation: makeReservation({ checkinInDays: 2, cancellationPolicySnapshot: SNAPSHOT_LADDER }),
+        tier: LIVE_TRAP_TIER,
+        collected: 1000,
+        invoices: [],
+      });
+      await expect(service.confirmRefund('res-1', 'biz-1', 'user-1')).rejects.toThrow(NothingToRefundError);
+    });
+
+    it('ningún tramo del ladder aplica (anticipación negativa, sin tramo min=0 en el snapshot) -> 0%, NothingToRefundError', async () => {
+      const ladderSinTramoCero = {
+        version: 1 as const,
+        frozenAt: '2026-01-01T00:00:00.000Z',
+        tiers: [{ minDaysBeforeCheckin: 7, refundPercentage: 100 }],
+      };
+      const { service } = buildService({
+        reservation: makeReservation({ checkinInDays: -1, cancellationPolicySnapshot: ladderSinTramoCero }),
+        collected: 1000,
+        invoices: [],
+      });
+      await expect(service.confirmRefund('res-1', 'biz-1', 'user-1')).rejects.toThrow(NothingToRefundError);
+    });
   });
 });

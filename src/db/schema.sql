@@ -3639,6 +3639,55 @@ ALTER TABLE reservations ADD CONSTRAINT reservations_no_overlap_exclusive
     tstzrange(start_time, end_time, '[)') WITH &&
   ) WHERE (status IN ('PENDING', 'CONFIRMED') AND is_exclusive_resource);
 
+-- ---------------------------------------------------------------------------
+-- reservations.cancellation_policy_snapshot (14/09/2026,
+-- CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- docs/pendientes-2026-09-12.md).
+-- R9 (docs/criterios-datos.md: "una transacción congela lo que necesita
+-- del maestro que referencia") aplicado al ladder de tramos de
+-- cancellation_policies: el % de reembolso de una reserva SNAPSHOT_AT_BOOKING
+-- no puede depender de qué política esté vigente el día que alguien la
+-- cancele -- tiene que depender de la que regía al CONFIRMARLA. El Bloque 1
+-- (policy_resolution_timing, más arriba en este archivo) declaraba la
+-- intención sin tener nada que congelar; esta columna es lo que cierra esa
+-- brecha.
+--
+-- Poblada UNA VEZ, en ReservationService.confirmReservation() (nunca se
+-- recalcula después -- editar fechas/recurso de una reserva ya CONFIRMED,
+-- vía updateReservation()/confirmPriceAdjustment(), reenvía el valor tal
+-- cual, mismo criterio que depositAmount/isExclusiveResource/
+-- needsMaintenanceReview más arriba en este archivo). NULL en dos casos
+-- distintos, indistinguibles a propósito (mismo bit, misma consecuencia):
+--   (a) ninguno de los tramos ACTIVOS de cancellation_policies para el
+--       negocio tenía policy_resolution_timing = 'SNAPSHOT_AT_BOOKING' al
+--       confirmar (todos LIVE_AT_CANCELLATION, o no hay ningún tramo
+--       configurado) -- no hay nada que congelar, ESE tramo siempre se
+--       resuelve en vivo, por diseño.
+--   (b) la reserva se confirmó ANTES de que esta columna existiera --
+--       decisión del dueño (14/09/2026, CANCEL-POLICY-SCOPE-BASE-001
+--       Bloque 2): estas reservas CAEN A REGLA VIVA al cancelarse, el
+--       mismo comportamiento que tenían antes de que este campo existiera
+--       -- ningún trato distinto para reservas viejas.
+-- `CancellationRefundService` (previewRefund()/confirmRefund()) es el
+-- único lector: NULL => resuelve el tramo aplicable contra la tabla en
+-- vivo (camino que existía antes de este campo); no-NULL => resuelve
+-- contra el array `tiers` de este JSON, nunca vuelve a tocar
+-- cancellation_policies para esa reserva.
+--
+-- Forma (ver CancellationPolicySnapshot, cancellation-policy.repository.ts):
+--   { "version": 1, "frozenAt": "<ISO8601>", "tiers": [
+--       { "minDaysBeforeCheckin": <int>, "refundPercentage": <0-100> }, ...
+--   ] }
+-- `tiers` congela el LADDER COMPLETO de tramos ACTIVOS del negocio al
+-- momento de confirmar -- no solo el tramo ganador: cuál tramo gana
+-- depende de CUÁNDO se cancele, todavía desconocido al confirmar (una
+-- reserva confirmada con 20 días de anticipación puede cancelarse mañana
+-- o el día antes del check-in -- cada uno cae en un tramo distinto del
+-- mismo ladder). `version` -- versioned-schema-evolution: este JSON
+-- sobrevive al código que lo escribió (una reserva vieja se lee con
+-- código nuevo); un cambio de forma futuro se detecta por este campo, no
+-- por adivinar la forma.
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS cancellation_policy_snapshot JSONB;
+
 -- ===========================================================================
 -- Auditoría de columnas obligatorias (27/08/2026, docs/pendientes-2026-08-27.md,
 -- disparada por un caso real: products.sku nullable cuando en cualquier ERP
