@@ -46,6 +46,18 @@ class FakeReservationRepository implements Pick<ReservationRepository, 'getById'
   async getById(): Promise<Reservation | undefined> { return this.reservation; }
 }
 
+// CANCEL-POLICY-SCOPE-BASE-001 (14/09/2026): las 18 fixtures de `tier`/
+// `FakePolicyRepository` de este archivo declaran `policyResolutionTiming:
+// 'LIVE_AT_CANCELLATION'` a propósito -- es el único comportamiento que
+// `CancellationRefundService` implementa HOY (Bloque 1: el campo existe en
+// CRUD, pero nada en este service todavía lee ni ramifica sobre
+// `SNAPSHOT_AT_BOOKING`; sigue resolviendo siempre contra la tabla en vivo,
+// como antes de este campo). Ninguna fixture cubre la rama
+// `SNAPSHOT_AT_BOOKING` porque esa rama no existe todavía -- el Bloque 2
+// (congelar el ladder en `reservations` y leerlo acá) va a necesitar
+// fixtures nuevas que ejerciten `SNAPSHOT_AT_BOOKING` real, no solo cambiar
+// el valor de esta constante. Ver `docs/pendientes-2026-09-12.md`,
+// CANCEL-POLICY-SCOPE-BASE-001 Bloque 2, para el detalle de esa deuda.
 class FakePolicyRepository implements Pick<CancellationPolicyRepository, 'findApplicableTier'> {
   constructor(private readonly tier: CancellationPolicy | null) {}
   async findApplicableTier(): Promise<CancellationPolicy | null> { return this.tier; }
@@ -187,7 +199,7 @@ describe('CancellationRefundService.previewRefund', () => {
   it('calcula el reembolso solo sobre lo cobrado, según el tramo aplicable', async () => {
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
     });
     const preview = await service.previewRefund('res-1', 'biz-1');
     expect(preview.refundAmount).toBe(500);
@@ -203,7 +215,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('sin facturas ISSUED, crea un único REFUND ledger-only (reversedInvoiceId null)', async () => {
     const { service, financialRepo } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [],
     });
     const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
@@ -219,7 +231,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('una sola factura ISSUED cubre el reembolso completo', async () => {
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [makeInvoice({ id: 'inv-deposito', impTotal: 500, issuedAt: daysFromNow(-5) })],
     });
     const created = await service.confirmRefund('res-1', 'biz-1', 'user-1');
@@ -231,7 +243,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('reparto LIFO: consume primero la factura más nueva (saldo), después la más vieja (seña)', async () => {
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-sena', impTotal: 300, issuedAt: daysFromNow(-10) }),
         makeInvoice({ id: 'inv-saldo', impTotal: 500, issuedAt: daysFromNow(-1) }),
@@ -253,7 +265,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('F-A (05/09/2026) -- ignora Notas de Crédito ya emitidas en el reparto, aunque estén ISSUED y sean las más nuevas', async () => {
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-original', cbteTipo: 6, impTotal: 500, issuedAt: daysFromNow(-10) }),
         // NC de un reembolso anterior -- misma tabla, ISSUED, y más nueva
@@ -270,7 +282,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('bloque 3.1 (08/09/2026) -- rechaza con ReservationOnConsolidatedInvoiceError si la única factura ISSUED es consolidada (financialTransactionId null)', async () => {
     const { service, financialRepo } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-consolidada', financialTransactionId: null, impTotal: 1000, issuedAt: daysFromNow(-1) }),
       ],
@@ -284,7 +296,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('bloque 3.1 -- rechaza TODO el reembolso aunque también haya una factura DIRECTA reembolsable (todo-o-nada, no reparte solo contra la directa)', async () => {
     const { service, financialRepo, invoiceRepo } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-directa', financialTransactionId: 'ft-directa', impTotal: 400, issuedAt: daysFromNow(-10) }),
         makeInvoice({ id: 'inv-consolidada', financialTransactionId: null, impTotal: 600, issuedAt: daysFromNow(-1) }),
@@ -300,7 +312,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('bloque 3.1 -- regresión negativa: con SOLO facturas directas, el guard no dispara y el reparto sigue funcionando', async () => {
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-directa', financialTransactionId: 'ft-directa', impTotal: 1000, issuedAt: daysFromNow(-1) }),
       ],
@@ -313,7 +325,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('ignora facturas no ISSUED (PENDING/REJECTED) en el reparto', async () => {
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-pending', status: 'PENDING', impTotal: 500, issuedAt: null }),
         makeInvoice({ id: 'inv-issued', status: 'ISSUED', impTotal: 500, issuedAt: daysFromNow(-1) }),
@@ -327,7 +339,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('BRECHA-REFUND-01 Fase 3 -- pide el advisory lock como primera operación de la transacción', async () => {
     const { service, transactionManager } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [],
     });
     await service.confirmRefund('res-1', 'biz-1', 'user-1');
@@ -337,7 +349,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('BRECHA-REFUND-01 Fase 3 -- lockea las facturas candidatas en orden CANÓNICO (por id), no en el orden LIFO de negocio', async () => {
     const { service, invoiceRepo } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         // LIFO por issuedAt elegiría inv-b (más nueva) antes que inv-a --
         // el orden canónico (por id) es el opuesto.
@@ -355,7 +367,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('BRECHA-REFUND-01 Fase 3 -- reintento sobre la MISMA reserva (misma clave de idempotencia) devuelve las filas ya creadas, no duplica', async () => {
     const { service, financialRepo } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [makeInvoice({ id: 'inv-1', impTotal: 500, issuedAt: daysFromNow(-1) })],
     });
 
@@ -398,7 +410,7 @@ describe('CancellationRefundService.confirmRefund', () => {
     const financialRepo = new DynamicCollectedFinancialTransactionRepository(1000);
     const service = new CancellationRefundService(
       new FakeReservationRepository(makeReservation()),
-      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true }),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' }),
       financialRepo,
       new FakeInvoiceRepository([]),
       new FakeBusinessProfileRepository(),
@@ -444,7 +456,7 @@ describe('CancellationRefundService.confirmRefund', () => {
     const invoiceRepo = new FakeInvoiceRepository([]);
     const service = new CancellationRefundService(
       new FakeReservationRepository(makeReservation()),
-      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true }),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 50, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' }),
       financialRepo,
       invoiceRepo,
       new FakeBusinessProfileRepository(),
@@ -473,7 +485,7 @@ describe('CancellationRefundService.confirmRefund', () => {
     // alcanza y hace falta el tope real (bloque 2.4, bajo gate propio).
     const { service } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [
         makeInvoice({ id: 'inv-a', impTotal: 200, issuedAt: daysFromNow(-10) }),
         makeInvoice({ id: 'inv-b', impTotal: 300, issuedAt: daysFromNow(-5) }),
@@ -489,7 +501,7 @@ describe('CancellationRefundService.confirmRefund', () => {
   it('BRECHA-REFUND-01 Fase 3 -- capa contra getRefundableForUpdate(), no contra impTotal a secas (Q-A: nunca más de lo cobrado)', async () => {
     const { service, invoiceRepo } = buildService({
       collected: 1000,
-      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true },
+      tier: { id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
       invoices: [makeInvoice({ id: 'inv-1', impTotal: 1000, issuedAt: daysFromNow(-1) })],
     });
     // Simula que ya se reembolsaron 700 de esta factura por otro camino --
@@ -527,7 +539,7 @@ describe('CancellationRefundService.confirmRefund -- BRECHA-REFUND-01-B (guard o
     const financialRepo = new ShiftingCollectedRepository(values);
     const service = new CancellationRefundService(
       new FakeReservationRepository(makeReservation()),
-      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true }),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' }),
       financialRepo,
       new FakeInvoiceRepository([]),
       new FakeBusinessProfileRepository(),
@@ -584,7 +596,7 @@ describe('CancellationRefundService.confirmRefund -- REFUND-ISSUED-RACE-01 Block
     const invoiceRepo = new ShiftingIssuedInvoicesRepository(snapshots);
     const service = new CancellationRefundService(
       new FakeReservationRepository(makeReservation()),
-      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true }),
+      new FakePolicyRepository({ id: 'p-1', businessId: 'biz-1', minDaysBeforeCheckin: 7, refundPercentage: 100, active: true, policyResolutionTiming: 'LIVE_AT_CANCELLATION' }),
       financialRepo,
       invoiceRepo,
       new FakeBusinessProfileRepository(),

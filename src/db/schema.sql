@@ -928,6 +928,56 @@ CREATE INDEX IF NOT EXISTS idx_cancellation_policies_business ON cancellation_po
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cancellation_policies_threshold
   ON cancellation_policies (business_id, min_days_before_checkin) WHERE active = TRUE;
 
+-- policy_resolution_timing (14/09/2026, CANCEL-POLICY-SCOPE-BASE-001, residuo de
+-- la 3ra sub-decisión ya tomada el 13/09/2026 -- docs/pendientes-2026-09-12.md).
+-- Decisión del dueño vía AskUserQuestion, HOY: el campo vive POR TRAMO/FILA
+-- (scope de esta tabla), no global en business_profile -- permite mezclar
+-- criterio dentro del mismo tenant (ej. reservas corporativas con un
+-- criterio, temporada alta con otro). Enum, no boolean -- mismo criterio de
+-- estilo que `bucket`/`kind`/`status` de este archivo: los dos valores
+-- tienen nombre de negocio propio, no son un flag genérico.
+--   SNAPSHOT_AT_BOOKING   -- (default) el % de reembolso se resuelve contra
+--                            la política vigente AL MOMENTO DE RESERVAR, no
+--                            la que rige hoy. Default explícito porque R9
+--                            (docs/criterios-datos.md: "una transacción
+--                            congela lo que necesita del maestro/config, no
+--                            depende del estado presente") ya favorece este
+--                            modo de fondo -- coincide con lo que el dueño
+--                            pidió como default "más conservador".
+--   LIVE_AT_CANCELLATION  -- comportamiento HOY (sin este campo): se
+--                            resuelve contra la tabla en vivo con el
+--                            `daysBeforeCheckin` real de la cancelación
+--                            (`CancellationPolicyRepository.findApplicableTier()`).
+-- IMPORTANTE -- lo que este ALTER NO hace todavía: SNAPSHOT_AT_BOOKING no
+-- tiene, en este bloque, ningún dato congelado del que leer -- `reservations`
+-- no tiene columna de snapshot de política todavía (eso es Block 2, diseño
+-- discutido pero NO implementado en este commit: `reservations.
+-- cancellation_policy_snapshot JSONB`, poblada en `ReservationService.
+-- confirmReservation()`, consumida en `CancellationRefundService`). Hasta
+-- que exista, el campo queda escrito/leíble por el CRUD de política pero sin
+-- efecto observable en el cálculo real de reembolso -- no se toca
+-- `cancellation-refund.service.ts` en este bloque para no wirear una lectura
+-- que hoy no tiene nada real que consumir. Ver docs/pendientes-2026-09-12.md.
+--
+-- schema v51 (12/09/2026, Caso 6 residuo parte 2 -- ver el bloque
+-- `chk_financial_transactions_amount` más arriba para el porqué completo):
+-- constraint nueva guardada con `pg_constraint` en vez de DROP+ADD
+-- incondicional -- solo corre (y revalida) la primera vez que un tenant no
+-- la tiene; en cada deploy siguiente es un SELECT barato que no toca la
+-- tabla. Sin DROP CONSTRAINT IF EXISTS: nace ya con este nombre, nunca tuvo
+-- uno autogenerado por Postgres que limpiar (mismo criterio que la
+-- constraint `chk_financial_transactions_reversed_invoice_type`, más
+-- arriba en este mismo archivo).
+ALTER TABLE cancellation_policies ADD COLUMN IF NOT EXISTS policy_resolution_timing VARCHAR(30) NOT NULL DEFAULT 'SNAPSHOT_AT_BOOKING';
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_cancellation_policy_policy_resolution_timing'
+  ) THEN
+    ALTER TABLE cancellation_policies ADD CONSTRAINT chk_cancellation_policy_policy_resolution_timing
+      CHECK (policy_resolution_timing IN ('SNAPSHOT_AT_BOOKING', 'LIVE_AT_CANCELLATION'));
+  END IF;
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- business_hours  (horario de atención por defecto del negocio — "Mi Negocio")
 -- ---------------------------------------------------------------------------

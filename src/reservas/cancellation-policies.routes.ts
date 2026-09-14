@@ -62,7 +62,7 @@ export function createCancellationPoliciesRouter(_container: AppContainer): Rout
     try {
       const body    = CreateCancellationPolicySchema.parse(req.body);
       const service = buildService(req);
-      const policy  = await service.createPolicy(req.businessId!, body.minDaysBeforeCheckin, body.refundPercentage);
+      const policy  = await service.createPolicy(req.businessId!, body.minDaysBeforeCheckin, body.refundPercentage, body.policyResolutionTiming);
       res.status(201).json(policy);
     } catch (err) {
       if (err instanceof ZodError) { res.status(400).json({ code: 'VALIDATION_ERROR', errors: err.errors }); return; }
@@ -80,6 +80,7 @@ export function createCancellationPoliciesRouter(_container: AppContainer): Rout
           ...(body.minDaysBeforeCheckin !== undefined && { minDaysBeforeCheckin: body.minDaysBeforeCheckin }),
           ...(body.refundPercentage     !== undefined && { refundPercentage:     body.refundPercentage }),
           ...(body.active               !== undefined && { active:               body.active }),
+          ...(body.policyResolutionTiming    !== undefined && { policyResolutionTiming:    body.policyResolutionTiming }),
         },
         req.user!.id,
       );

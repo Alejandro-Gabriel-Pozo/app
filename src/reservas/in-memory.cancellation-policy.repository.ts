@@ -32,6 +32,9 @@ export class InMemoryCancellationPolicyRepository implements CancellationPolicyR
       minDaysBeforeCheckin: input.minDaysBeforeCheckin,
       refundPercentage: input.refundPercentage,
       active: true,
+      // Mismo default que la BD (schema.sql) -- ver docblock en
+      // cancellation-policy.repository.ts.
+      policyResolutionTiming: input.policyResolutionTiming ?? 'SNAPSHOT_AT_BOOKING',
     };
     this.policies.push(policy);
     return policy;
@@ -53,6 +56,7 @@ export class InMemoryCancellationPolicyRepository implements CancellationPolicyR
       ...(input.minDaysBeforeCheckin !== undefined && { minDaysBeforeCheckin: input.minDaysBeforeCheckin }),
       ...(input.refundPercentage     !== undefined && { refundPercentage:     input.refundPercentage }),
       ...(input.active               !== undefined && { active:               input.active }),
+      ...(input.policyResolutionTiming    !== undefined && { policyResolutionTiming:    input.policyResolutionTiming }),
     };
     this.policies[index] = updated;
     return updated;

@@ -5,10 +5,11 @@ import type {
   CancellationPolicyRepository,
   CreateCancellationPolicyInput,
   UpdateCancellationPolicyInput,
+  PolicyResolutionTiming,
 } from './cancellation-policy.repository.js';
 import { CancellationPolicyNotFoundError } from '../domain/errors.js';
 
-const RETURNING_COLS = `id, business_id, min_days_before_checkin, refund_percentage, active`;
+const RETURNING_COLS = `id, business_id, min_days_before_checkin, refund_percentage, active, policy_resolution_timing`;
 
 function mapRow(row: Record<string, unknown>): CancellationPolicy {
   return {
@@ -17,6 +18,7 @@ function mapRow(row: Record<string, unknown>): CancellationPolicy {
     minDaysBeforeCheckin:  row['min_days_before_checkin'] as number,
     refundPercentage:      parseFloat(row['refund_percentage'] as string),
     active:                row['active'] as boolean,
+    policyResolutionTiming:     row['policy_resolution_timing'] as PolicyResolutionTiming,
   };
 }
 
@@ -43,11 +45,16 @@ export class SqlCancellationPolicyRepository implements CancellationPolicyReposi
 
   async create(input: CreateCancellationPolicyInput): Promise<CancellationPolicy> {
     const id = randomUUID();
+    // policyResolutionTiming es opcional en el input -- si no se manda, se pasa
+    // explícito igual (en vez de omitir la columna del INSERT) para que el
+    // valor devuelto en `RETURNING` sea siempre el que el caller ve, sin
+    // depender de un segundo round-trip. Coincide con el DEFAULT de la BD
+    // (schema.sql), no lo duplica con un criterio distinto.
     const { rows } = await this.db.query<Record<string, unknown>>(
-      `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO cancellation_policies (id, business_id, min_days_before_checkin, refund_percentage, policy_resolution_timing)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING ${RETURNING_COLS}`,
-      [id, input.businessId, input.minDaysBeforeCheckin, input.refundPercentage],
+      [id, input.businessId, input.minDaysBeforeCheckin, input.refundPercentage, input.policyResolutionTiming ?? 'SNAPSHOT_AT_BOOKING'],
     );
     return mapRow(rows[0]!);
   }
@@ -68,6 +75,7 @@ export class SqlCancellationPolicyRepository implements CancellationPolicyReposi
     if (input.minDaysBeforeCheckin !== undefined) { fields.push(`min_days_before_checkin = $${idx++}`); params.push(input.minDaysBeforeCheckin); }
     if (input.refundPercentage     !== undefined) { fields.push(`refund_percentage = $${idx++}`);        params.push(input.refundPercentage); }
     if (input.active               !== undefined) { fields.push(`active = $${idx++}`);                   params.push(input.active); }
+    if (input.policyResolutionTiming    !== undefined) { fields.push(`policy_resolution_timing = $${idx++}`);      params.push(input.policyResolutionTiming); }
 
     if (fields.length === 0) {
       const policy = await this.findById(id);

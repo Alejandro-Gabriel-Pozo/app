@@ -461,7 +461,14 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // (v52) se retira -- redundante con el campo nuevo, 0 call sites, 0 filas
 // en producción. Destraba Finding A de `reverseTransfer()` (Bloque 2,
 // todavía sin implementar).
-export const CURRENT_SCHEMA_VERSION = 54;
+// v55 (14/09/2026): CANCEL-POLICY-SCOPE-BASE-001, residuo de "dónde vive el
+// campo snapshot-vs-live" (docs/pendientes-2026-09-12.md, decisión del dueño
+// vía AskUserQuestion). `cancellation_policies` gana `policy_resolution_timing`
+// (enum, NOT NULL DEFAULT 'SNAPSHOT_AT_BOOKING') + CHECK -- ver docblock en
+// schema.sql. Solo schema + CRUD (repositorio/servicio/rutas) -- inerte
+// hasta que exista snapshot congelado en `reservations` (Block 2, no
+// incluido acá).
+export const CURRENT_SCHEMA_VERSION = 55;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

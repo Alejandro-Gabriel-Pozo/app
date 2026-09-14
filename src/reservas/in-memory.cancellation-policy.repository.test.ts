@@ -46,4 +46,23 @@ describe('InMemoryCancellationPolicyRepository', () => {
     const found = await repo.findById(policy.id);
     expect(found?.active).toBe(false);
   });
+
+  // CANCEL-POLICY-SCOPE-BASE-001 (14/09/2026)
+  it('create() sin policyResolutionTiming usa el default SNAPSHOT_AT_BOOKING', async () => {
+    const policy = await repo.create({ businessId: 'biz', minDaysBeforeCheckin: 0, refundPercentage: 20 });
+    expect(policy.policyResolutionTiming).toBe('SNAPSHOT_AT_BOOKING');
+  });
+
+  it('create() respeta policyResolutionTiming explícito', async () => {
+    const policy = await repo.create({ businessId: 'biz', minDaysBeforeCheckin: 0, refundPercentage: 20, policyResolutionTiming: 'LIVE_AT_CANCELLATION' });
+    expect(policy.policyResolutionTiming).toBe('LIVE_AT_CANCELLATION');
+  });
+
+  it('update() cambia policyResolutionTiming sin mutar la fila anterior en el lugar', async () => {
+    const policy = await repo.create({ businessId: 'biz', minDaysBeforeCheckin: 0, refundPercentage: 20 });
+    const before = await repo.findById(policy.id);
+    const updated = await repo.update(policy.id, { policyResolutionTiming: 'LIVE_AT_CANCELLATION' });
+    expect(updated.policyResolutionTiming).toBe('LIVE_AT_CANCELLATION');
+    expect(before?.policyResolutionTiming).toBe('SNAPSHOT_AT_BOOKING');
+  });
 });

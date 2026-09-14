@@ -8,6 +8,7 @@
 import type {
   CancellationPolicyRepository,
   CancellationPolicy,
+  PolicyResolutionTiming,
 } from './cancellation-policy.repository.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -38,13 +39,19 @@ export class CancellationPolicyService {
     businessId: string,
     minDaysBeforeCheckin: number,
     refundPercentage: number,
+    policyResolutionTiming?: PolicyResolutionTiming,
   ): Promise<CancellationPolicy> {
-    return this.policyRepo.create({ businessId, minDaysBeforeCheckin, refundPercentage });
+    return this.policyRepo.create({
+      businessId,
+      minDaysBeforeCheckin,
+      refundPercentage,
+      ...(policyResolutionTiming !== undefined && { policyResolutionTiming }),
+    });
   }
 
   async updatePolicy(
     id: string,
-    input: { minDaysBeforeCheckin?: number; refundPercentage?: number; active?: boolean },
+    input: { minDaysBeforeCheckin?: number; refundPercentage?: number; active?: boolean; policyResolutionTiming?: PolicyResolutionTiming },
     changedBy: string,
   ): Promise<CancellationPolicy> {
     const before = await this.getPolicyById(id); // throws if not found

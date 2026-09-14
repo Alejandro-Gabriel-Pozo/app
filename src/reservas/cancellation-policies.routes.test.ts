@@ -54,10 +54,11 @@ function fakeDb(seed: Row[] = []) {
       return { rows: row ? [row] : [] };
     }
     if (/^INSERT INTO cancellation_policies/i.test(s)) {
-      const [id, businessId, minDays, refundPct] = params;
+      const [id, businessId, minDays, refundPct, policyResolutionTiming] = params;
       const row: Row = {
         id, business_id: businessId, min_days_before_checkin: minDays,
         refund_percentage: String(refundPct), active: true,
+        policy_resolution_timing: policyResolutionTiming,
       };
       policies.set(String(id), row);
       return { rows: [row] };
@@ -87,6 +88,7 @@ function makePolicyRow(overrides: Row = {}): Row {
   return {
     id: 'pol-1', business_id: 'biz-1', min_days_before_checkin: 3,
     refund_percentage: '50', active: true,
+    policy_resolution_timing: 'SNAPSHOT_AT_BOOKING',
     ...overrides,
   };
 }
@@ -162,6 +164,47 @@ describe('POST /api/cancellation-policies', () => {
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.body).toMatchObject({ code: 'VALIDATION_ERROR' });
   });
+
+  // CANCEL-POLICY-SCOPE-BASE-001 (14/09/2026) -- sin policyResolutionTiming en el
+  // body, la fila creada refleja el default de la BD (schema.sql), no un
+  // default duplicado en el schema Zod (ver comentario en
+  // api/schemas/cancellation-policy.schemas.ts).
+  it('sin policyResolutionTiming en el body, crea con el default SNAPSHOT_AT_BOOKING', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = { db: fakeDb([]), businessId: 'biz-1', body: { minDaysBeforeCheckin: 7, refundPercentage: 100 } } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no next'); });
+
+    expect(res.body).toMatchObject({ policyResolutionTiming: 'SNAPSHOT_AT_BOOKING' });
+  });
+
+  it('acepta policyResolutionTiming explícito en el body', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = {
+      db: fakeDb([]), businessId: 'biz-1',
+      body: { minDaysBeforeCheckin: 7, refundPercentage: 100, policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
+    } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no next'); });
+
+    expect(res.body).toMatchObject({ policyResolutionTiming: 'LIVE_AT_CANCELLATION' });
+  });
+
+  it('400 VALIDATION_ERROR con policyResolutionTiming fuera del enum', async () => {
+    const handler = getHandler(router, 'post', '/');
+    const req = {
+      db: fakeDb([]), businessId: 'biz-1',
+      body: { minDaysBeforeCheckin: 7, refundPercentage: 100, policyResolutionTiming: 'ALGO_INVALIDO' },
+    } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no next'); });
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
 });
 
 describe('PUT /api/cancellation-policies/:id', () => {
@@ -191,6 +234,21 @@ describe('PUT /api/cancellation-policies/:id', () => {
     await handler(req, res, () => { throw new Error('no next'); });
 
     expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it('actualiza policyResolutionTiming y lo audita', async () => {
+    const db = fakeDb([makePolicyRow()]);
+    const handler = getHandler(router, 'put', '/:id');
+    const req = {
+      db, params: { id: 'pol-1' }, user: { id: 'identity-admin' },
+      body: { policyResolutionTiming: 'LIVE_AT_CANCELLATION' },
+    } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no next'); });
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ policyResolutionTiming: 'LIVE_AT_CANCELLATION' }));
+    expect(db._auditCalls).toHaveLength(1);
   });
 });
 

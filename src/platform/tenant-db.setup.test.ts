@@ -282,8 +282,12 @@ describe('applyTenantSchema', () => {
     // solo ADJUSTMENT) + 2 CHECK + índice; accounts_receivable pierde
     // reversal_transaction_id (v52, redundante, 0 call sites, 0 filas en
     // producción). Destraba Finding A de reverseTransfer() (Bloque 2).
+    // 54 -> 55 el 14/09/2026: CANCEL-POLICY-SCOPE-BASE-001 -- cancellation_policies
+    // gana policy_resolution_timing (enum, NOT NULL DEFAULT 'SNAPSHOT_AT_BOOKING')
+    // + CHECK. Solo schema + CRUD, inerte hasta que exista snapshot
+    // congelado en reservations (Block 2, no incluido).
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(54);
+    expect(CURRENT_SCHEMA_VERSION).toBe(55);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {
