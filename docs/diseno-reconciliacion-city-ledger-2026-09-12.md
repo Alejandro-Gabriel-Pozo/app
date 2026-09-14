@@ -261,30 +261,38 @@ ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS replaces_ar_id VARCHAR(
   REFERENCES accounts_receivable(id) ON DELETE NO ACTION;
 ```
 
-**Addendum — columna nueva, SIN aplicar todavía (13/09/2026, corrección
-del gate `architecture-governor` sobre §4.3, ver ahí).** El bloque de
-arriba (v52) ya está commiteado y aplicado — no se toca. La pata del
-huésped que §4.3 ahora compensa necesita su PROPIO vínculo de auditoría,
-simétrico a `reversal_transaction_id` pero hacia el `ADJUSTMENT` del
-huésped en vez del de la empresa (misma razón de ser: "esta AR se
-revirtió con ESTA fila exacta del ledger", una vez por pata). Requiere un
-bump de schema nuevo cuando se implemente — `CURRENT_SCHEMA_VERSION` ya
-está en 53 (`8f11d19`, hoy, columna `guest_payment_transaction_id`), así
-que esta columna es v53→v54, no v51→v52 como decía una versión anterior
-de este párrafo (ese número quedó viejo apenas `8f11d19` bumpeó la
-versión real, mismo día):
-
-```sql
--- guest_reversal_transaction_id (v54, sin aplicar -- bloque de
--- implementación real de reverseTransfer()). Vínculo hacia el SEGUNDO
--- ADJUSTMENT compensatorio (§4.3 paso 6, contra el huésped) -- distinto
--- de reversal_transaction_id (arriba), que apunta al PRIMERO (contra la
--- empresa). ON DELETE NO ACTION, mismo criterio que reversal_transaction_id
--- y guest_payment_transaction_id: financial_transactions nunca se
--- hard-deletea (R12).
-ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS guest_reversal_transaction_id VARCHAR(255)
-  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
-```
+**Addendum — SUPERSEDED (14/09/2026, commit `5ae9044`, Bloque 3a). No se
+implementó como estaba escrito acá.** La versión anterior de este párrafo
+proponía `guest_reversal_transaction_id` en `accounts_receivable` —
+simétrico a `reversal_transaction_id` (arriba) pero hacia la pata del
+huésped. El dueño, en la misma sesión, preguntó por qué no adoptar
+directo el patrón que Odoo/ERPNext ya usan (`reversed_entry_id`/
+`reversal_of` — auto-referencia DENTRO del propio ledger, verificado en
+código real). **No está en el grounding de §2 de este documento** — es
+de una ronda de grounding COMPLEMENTARIA, despachada esa misma sesión
+específicamente sobre este punto (no sobre el diseño general de §1-§3);
+el detalle completo vive en el mensaje del commit `5ae9044`, no en este
+ADR. Esa ronda + revisión de otros dominios (ningún otro
+módulo tiene este patrón, es acotado a `clientes-finanzas`/`facturacion`)
+llevó a una resolución mejor y MÁS CHICA que agregar una columna dedicada
+por pata: **`financial_transactions.reversed_transaction_id`** —
+auto-referencial, un solo campo genérico para TODA reversa del ledger, no
+uno nuevo por feature. Con ese campo, tanto `reversal_transaction_id`
+(arriba, v52) como el `guest_reversal_transaction_id` que este párrafo
+proponía quedan REDUNDANTES: la misma trazabilidad sale de `SELECT * FROM
+financial_transactions WHERE reversed_transaction_id = <id de la fila
+original>`, para cualquiera de las dos patas, sin necesitar un puntero
+dedicado en `accounts_receivable`. Implementado (schema v53→v54,
+`5ae9044`): `reversal_transaction_id` se RETIRÓ del schema (0 call sites,
+0 filas en producción — costo cero); `guest_reversal_transaction_id`
+nunca se agregó. Detalle completo del campo nuevo, sus 2 CHECK y el
+cambio al guard de `insert()`: `src/db/schema.sql` (buscar
+`reversed_transaction_id`, no citar por línea — mismo criterio que
+`SCHEMA-ANCHOR-DRIFT-001`) y el mensaje de `5ae9044`. No es el rediseño
+de dos capas ni el posteo diferido (los dos evaluados y descartados con
+evidencia esa misma sesión — Odoo se retiró del modelo de dos capas en
+2019, a ERPNext el modelo de reversa le tomó 2.5 años) — es generalizar
+un patrón de una sola columna.
 
 **Corrección del gate `architecture-governor` (bloqueante, ronda 1):** la
 versión original de este documento proponía `type: 'REFUND'` para la fila
@@ -460,19 +468,35 @@ Lógica (una sola transacción, `TransactionManager.run`):
 4. **Guard nuevo:** si `ar.guestPaymentTransactionId == null` →
    `throw new ArReversalMissingGuestLinkError(id)` (ver arriba — falla
    fuerte, no reversa parcial).
-5. **Bloqueante, sin resolver todavía — ver Finding A del gate
-   `architecture-governor` (13/09/2026), §7 punto 7 reabierto más abajo.**
-   Crea el `ADJUSTMENT` compensatorio contra `ar.companyCustomerId`,
-   `amount: -ar.amount` (negativo — ver §4.2, corrección del gate),
-   `status: 'SETTLED'` directo, `reversedInvoiceId: null` SIEMPRE
-   (invariante que lo excluye de NC, ver §4.2), `notes` con el motivo.
-   **`reservationId: null, stayId: null`, la resolución que §7 punto 7
-   había cerrado, choca con un guard real** (`SqlFinancialTransactionRepository.insert()`,
-   F1-Pieza 2: todo `CHARGE`/`ADJUSTMENT` exige al menos un documento de
-   origen — `reservationId`, `orderId` o `stayId` — o lanza en el momento
-   del `INSERT`). Con los dos en `null`, este paso NO PUEDE ESCRIBIRSE
-   como está diseñado hoy — ver la reapertura de §7 punto 7 para las
-   opciones, sin elegir todavía.
+5. **RESUELTO (14/09/2026, commit `5ae9044`, Bloque 3a — ver §7 punto 7
+   cerrado más abajo).** Crea el `ADJUSTMENT` compensatorio contra
+   `ar.companyCustomerId`, `amount: -ar.amount` (negativo — ver §4.2,
+   corrección del gate), `status: 'SETTLED'` directo, `reversedInvoiceId:
+   null` SIEMPRE (invariante que lo excluye de NC, ver §4.2),
+   `reservationId: null, stayId: null` (protege del riesgo
+   `voidByReservationId()` que §1.2 documenta), `reversedTransactionId:
+   ar.financialTransactionId` (**el campo que resuelve Finding A** — el
+   `CHARGE` original de la empresa que esta fila corrige, mismo mecanismo
+   general de `financial_transactions.reversed_transaction_id`, ver §4.2),
+   `notes` con el motivo. Ya NO choca con el guard de `insert()`
+   (F1-Pieza 2) — `reversedTransactionId` cuenta como documento de origen
+   válido desde `5ae9044`, generalizando el guard en vez de necesitar una
+   excepción acotada a este único call site.
+
+   **Precondición sin guardar todavía (Condición C2 del gate, ronda
+   Bloque 3b, 14/09/2026) — a resolver en el Bloque 3c, no acá.**
+   `ar.financialTransactionId` es nullable en la interfaz TS
+   (`accounts-receivable.repository.ts`) y la columna tiene `ON DELETE
+   SET NULL` (a diferencia de `guest_payment_transaction_id`, `ON DELETE
+   NO ACTION`) — a diferencia del paso 4 (que sí guarda explícito con
+   `ArReversalMissingGuestLinkError` si `guestPaymentTransactionId` es
+   `null`), este paso NO tiene guard simétrico si
+   `ar.financialTransactionId` fuera `null`. Alcance real hoy: toda AR
+   creada por `transferStayBalanceToReceivable()` setea las dos columnas
+   juntas, así que el caso "una sí, la otra no" es angosto — pero el tipo
+   es nullable, y el Bloque 3c tiene que decidir explícito qué pasa si
+   ocurre (guard nuevo simétrico al del paso 4, o alguna otra resolución),
+   no asumir que nunca pasa.
 6. **Paso nuevo — pata del huésped, sin la cual esta operación no es una
    "reversa completa":** lee la fila `financial_transactions` de
    `ar.guestPaymentTransactionId` (**corrección, Condición C6 del gate,
@@ -496,20 +520,29 @@ Lógica (una sola transacción, `TransactionManager.run`):
    (a propósito, a diferencia del paso anterior: **REABRE el folio del
    huésped** — es literalmente lo que "Transfer back to folio" significa,
    el huésped vuelve a deber el monto en su propio folio),
-   `reservationId: null` (autocontenido, no depende de cómo se resuelva
-   Finding A del paso 5: si la reserva se cancela DESPUÉS de la reversa,
+   `reservationId: null` (si la reserva se cancela DESPUÉS de la reversa,
    `voidByReservationId()` anularía también esta fila si llevara
    `reservationId`, revirtiendo la reversa misma — mismo riesgo que §1.2
    documenta para el `CHARGE` original), `reversedInvoiceId: null`
    SIEMPRE (mismo invariante que la pata empresa — esta fila tampoco
-   participa nunca de una NC). **A diferencia del paso 5, este paso NO
-   choca con el guard de `insert()` (F1-Pieza 2, ver §7 punto 7
-   REABIERTO) — `stayId: ar.stayId` ya es, por sí solo, un documento de
-   origen no-nulo, así que la elección `reservationId: null` acá es
-   segura tal como está, sin esperar a que se resuelva Finding A.**
-7. `arRepo.markRevertedWithClient(client, id, { reversedBy, reason,
-   reversalTransactionId, guestReversalTransactionId })` — dos columnas
-   de vínculo, no una (ver §4.2).
+   participa nunca de una NC), `reversedTransactionId:
+   ar.guestPaymentTransactionId` (mismo mecanismo general del paso 5 —
+   acá no era estrictamente necesario para pasar el guard, `stayId:
+   ar.stayId` ya alcanza, pero se agrega igual por la trazabilidad: sin
+   él, esta fila no declara qué corrige, solo la del paso 5 lo haría).
+7. `arRepo.markRevertedWithClient(client, id, { reversedBy, reason })` —
+   la AR solo guarda el rastro de auditoría (quién, cuándo, por qué). Ya
+   NO necesita `reversalTransactionId`/`guestReversalTransactionId` como
+   parámetros (esas columnas se retiraron/nunca se agregaron, ver §4.2) —
+   la trazabilidad hacia las dos filas compensatorias sale de consultar
+   `financial_transactions WHERE reversed_transaction_id IN
+   (ar.financialTransactionId, ar.guestPaymentTransactionId)`, no de
+   columnas dedicadas en `accounts_receivable`. **Mismo hueco que el paso
+   5 (declarado ahí, no repetido acá dos veces):** si
+   `ar.financialTransactionId` fuera `null`, ese `IN (...)` simplemente
+   matchea menos filas, sin avisar — degradación silenciosa, no falla
+   fuerte. Mismo Bloque 3c la tiene que cerrar junto con la precondición
+   del paso 5, no por separado.
 8. Si `correctedBalance` viene y es `> 0`: reusa la lógica interna de
    `transferStayBalanceToReceivable()` (extraída a un helper privado
    compartido, no duplicada) para crear el `PAYMENT`+`CHARGE`+AR nueva por
@@ -825,7 +858,7 @@ implementación real:**
 | `src/api/routes/` (ruta nueva `POST /:id/reverse`) | DEFENSIVE_DEVELOPING §3 aplica | — (ya declarado) |
 | `req.db` vs pool de plataforma | Sin cambios de wiring — mismo patrón que el resto de `AccountsReceivableService`, `req.db` vía `TransactionManager` inyectado, nunca `getPlatformRawPool()` | — (ya declarado) |
 | RBAC (`EXPECTED_AUTHORIZE_CALL_SITES`, `docs/rbac-matriz-endpoints.md`) | **+2 call-sites** (decisión §3.7: `MANAGEMENT` Y `EMISOR_NOTA_CREDITO` en cadena, no 1 solo) | — (ya declarado, número corregido) |
-| Schema (`CURRENT_SCHEMA_VERSION`) | v52 (ya aplicado, `b82d828`) para `REVERTIDO`/`reversed_*`/`reversal_transaction_id`/`replaces_ar_id`. **Corrección 13/09/2026: el bloque de implementación real ahora suma `guest_reversal_transaction_id` (§4.2 addendum) — v53→v54, no v51→v52, porque `8f11d19` (mismo día) ya bumpeó a v53 con `guest_payment_transaction_id`.** | — (ya declarado, número corregido) |
+| Schema (`CURRENT_SCHEMA_VERSION`) | v52 (ya aplicado, `b82d828`) para `REVERTIDO`/`reversed_*`/`replaces_ar_id`. **Corrección 14/09/2026 (commit `5ae9044`, Bloque 3a) — reemplaza la corrección del 13/09/2026 de esta misma fila, que quedó vieja el mismo día: NO se agregó `guest_reversal_transaction_id` (superseded, ver §4.2 addendum) — en cambio, v53→v54 sumó `financial_transactions.reversed_transaction_id` (auto-referencial, mecanismo GENERAL de reversa del ledger, no una columna dedicada por pata) y RETIRÓ `accounts_receivable.reversal_transaction_id` (v52, redundante con el campo nuevo). `reverseTransfer()` (Bloque 3c) no debe ningún bump de schema más para esto — el mecanismo ya está completo.** | — (ya declarado, número corregido) |
 | `reversed-invoice-id-convention.test.ts::WRITE_SITES` (§7 punto 9) | `3 → 4` — el `ADJUSTMENT` compensatorio de la pata huésped (§4.3 paso 6) escribe `reversedInvoiceId: null` explícito, igual que la pata empresa | Sin actualizar el número, la suite queda roja apenas se implementa — no es opcional |
 | **`sql.accounts-receivable.repository.ts::getReportByPeriod`** | `SUM(ar.amount)` y `COUNT(*)` sin filtro, más 3 `FILTER (WHERE ar.status = ...)` que solo cubren los 3 estados viejos | **Alto** — con `REVERTIDO` sumando al total pero sin bucket propio, `totalAmount ≠ pending+invoiced+collected` en `GET /api/reports/accounts-receivable`, y un par original+reemplazo duplica el total del cierre de mes |
 | **`appfrontend-main/src/lib/finanzas/types.ts`** — `AccountsReceivableStatus` (unión de 3 valores) | Contrato cross-repo, sin CI compartida que lo detecte | Rompe en silencio hasta que alguien vea el síntoma en producción |
@@ -1051,6 +1084,33 @@ implementación real:**
      pueda descartar con este argumento en vez de "no evaluado".
    Ninguna de las tres se implementa sin que el grounding + decisión del
    dueño cierren esto — este bloque no arranca código hasta resolver.
+
+   **CERRADO (14/09/2026, commit `5ae9044`, Bloque 3a) — ni (a), ni (b),
+   ni (c).** El grounding pedido (Odoo/ERPNext verificados en código real:
+   `reversed_entry_id`/`reversal_of`, auto-referencia dentro del propio
+   ledger) más la pregunta directa del dueño ("¿por qué no adoptamos ese
+   patrón directo, en vez de excepcionar el guard puntual?") llevaron a
+   una **cuarta opción**, superior a las tres originales: generalizar el
+   guard de `insert()` para aceptar un documento de origen de LEDGER
+   (`reversedTransactionId`, campo nuevo auto-referencial en
+   `financial_transactions` — ver §4.2), no solo de negocio
+   (`reservationId`/`orderId`/`stayId`). Con esto:
+   - (a) queda descartada — el riesgo de `voidByReservationId()` que
+     motivó reabrir este punto nunca se corre, `reservationId` sigue en
+     `null` en los dos `ADJUSTMENT` compensatorios (§4.3 pasos 5 y 6).
+   - (b) queda superada — no hace falta una excepción puntual a este
+     único call site: el guard se generaliza para cualquier reversa
+     futura del ledger, no solo la de este bloque, con el CHECK de BD
+     (`type = 'ADJUSTMENT'` únicamente) sosteniendo el límite en vez de
+     un `if` de excepción a mano.
+   - (c) queda sin necesidad de evaluarse — el argumento que la
+     descartaba (colisión con `getNetBalanceByStayId()`) seguía siendo
+     válido, pero ya no hacía falta elegir entre las tres: la cuarta
+     opción no tiene ese costo.
+   Detalle completo, verificación del gate y las 2 condiciones que aplicó
+   (una de schema — evitar agregar y borrar `reversal_transaction_id` en
+   la misma corrida de `schema.sql`; una de documentación — declarar esta
+   misma ventana de deriva): mensaje del commit `5ae9044`.
 8. **Dueño, resuelta (§3.8, ronda 3, 13/09/2026):** `listByCompany()`/
    `getByCompanyCustomerId()` no filtran por `status` — una vez que
    `REVERTIDO` exista, aparece igual que cualquier otra fila en el panel
