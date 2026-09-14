@@ -541,6 +541,49 @@ anteriores.
   Se sacan de acá (se cortan, no se tachan) recién cuando alguien las
   corra contra Postgres real y confirme el resultado.
 
+- **Bloque 3a — mecanismo general de reversa del ledger** (14/09/2026,
+  commit `5ae9044`, gate `architecture-governor` APPROVED WITH CONDITIONS
+  — código ya aplica las 2 condiciones de código, C1/C2; esta entrada es
+  la condición 3 del mismo gate). `TEST_DATABASE_URL` sin definir en este
+  entorno: el DDL de este bloque NUNCA corrió contra Postgres real — ni
+  las 2 tenants de producción (Neon `ancient-king-17098519`,
+  `br-snowy-tree-ax5wmq70`/`br-square-leaf-axzvu903`). **Corrección
+  (`git fetch origin main` + `origin/main:src/platform/tenant-db.setup.ts`,
+  14/09/2026): producción sigue en schema v52, NO v53** — `8f11d19`
+  (el commit que bumpeó 52→53) tampoco está pusheado (`git branch -r
+  --contains 8f11d19` vacío). El salto real que el próximo push+deploy
+  produciría es **v52 → v54 en una sola corrida de `migrate:tenants`**,
+  aplicando de una el DDL aditivo de `8f11d19` (`guest_payment_transaction_id`)
+  y el primero DESTRUCTIVO de la serie (este bloque: `DROP COLUMN` +
+  2 `ADD CONSTRAINT` con lock `ACCESS EXCLUSIVE` sobre
+  `financial_transactions`) — no el salto de una sola versión que una
+  lectura rápida del texto anterior insinuaba. Inferencia por git +
+  `render.yaml` (corre `migrate:tenants` desde `main`, sin branch propia),
+  no una lectura directa de `schema_migrations` — un `SELECT MAX(version)
+  FROM schema_migrations` de solo lectura contra las dos tenants la
+  confirmaría como hecho medido en vez de inferido, si en algún momento
+  hace falta certeza total antes de autorizar el push.
+  Verificaciones puntuales, no el bloque entero:
+  1. Los 2 `CHECK` nuevos en `financial_transactions`
+     (`chk_financial_transactions_reversed_not_self`,
+     `chk_financial_transactions_reversed_transaction_type`) — el guard
+     `pg_constraint` que evita revalidar en cada deploy nunca se ejecutó
+     contra una tabla real; el `ADD CONSTRAINT` en sí (lock `ACCESS
+     EXCLUSIVE` breve) tampoco.
+  2. `ALTER TABLE accounts_receivable DROP COLUMN IF EXISTS
+     reversal_transaction_id` — sin datos que perder por construcción (0
+     call sites históricos en todo `src/`), pero el `DROP` en sí nunca
+     corrió contra una tabla real.
+  3. La aridad de los 2 `INSERT` de `SqlFinancialTransactionRepository::insert()`
+     (camino idempotente 20 columnas/`$20`, camino plano 19
+     columnas/`$19`) — contada a mano, verificada dos veces (por mí y por
+     el gate), pero solo Postgres real prueba que los placeholders están
+     en la posición correcta.
+  La suite que cierra las 3 de una: `src/tests/integration/schema-redeploy-idempotent.integration.test.ts`
+  (`skipIfNoDb`, hoy skippeada). Se sacan de acá (se cortan, no se tachan)
+  recién cuando alguien las corra contra Postgres real y confirme el
+  resultado.
+
 ---
 
 ## ✅ Cerrado esta sesión (12/09/2026)
