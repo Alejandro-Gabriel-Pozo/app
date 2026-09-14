@@ -596,26 +596,95 @@ Lógica (una sola transacción, `TransactionManager.run`):
    fuera de alcance acá — no se toca el método compartido, ver mitigación
    abajo.)
 
-   **Mitigación elegida — local, sin tocar el método compartido:** el
-   `ADJUSTMENT` compensatorio de la pata empresa NO nace con `stayId:
-   null` fijo — nace con `stayId: charge.stayId`, leyendo el `stay_id`
-   REAL que el `CHARGE` ya bloqueado (paso anterior, mismo `client`,
-   mismo lock) tiene en ESTE momento. Dos casos: si el `CHARGE` nunca fue
-   adoptado (`stay_id IS NULL`, el caso normal hoy), el `ADJUSTMENT` nace
-   igual con `stay_id: null` — sin cambio de comportamiento respecto a la
-   redacción anterior. Si el `CHARGE` SÍ fue adoptado por una carrera
-   externa, el `ADJUSTMENT` nace YA sincronizado con el mismo `stay_id` —
-   nunca hay una ventana donde uno de los dos está adoptado y el otro no,
-   porque se leen y escriben en la misma transacción, bajo el mismo lock.
-   `getNetBalanceByStayId()` de ese folio ve `+amount` y `-amount` juntos,
-   netea a cero. No hace falta filtrar `linkStayToReservationCharges()`
-   por `type`/`customer_id` (cambio de comportamiento sobre un método
-   compartido con otros callers, que ameritaría su propio gate) — el CHECK
-   `chk_financial_transactions_order_or_reservation` no incluye `stay_id`
-   (es un XOR entre `orderId`/`reservationId` únicamente, verificado
-   contra `schema.sql` BLOQUE 22), así que `reservationId` y `stayId`
-   coexistiendo en la misma fila es legal y ya es el patrón normal de todo
-   `CHARGE` de huésped adoptado en `checkIn()`.
+   **Mitigación elegida — local, sin tocar el método compartido, MISMO
+   PRECEDENTE YA SANCIONADO en este repo (gate 1c-0, 11/09/2026,
+   `cancel-order-with-credit-note.service.ts:343-355`, mismo modo de
+   falla exacto: `getNetBalanceByStayId` sumando el `CHARGE` sin su
+   reversión).** `const stayId = charge.stayId ?? null;` ahí — acá,
+   `stayId: charge.stayId` en el `ADJUSTMENT` compensatorio de la pata
+   empresa, leyendo el `stay_id` REAL que el `CHARGE` ya bloqueado (paso
+   anterior, mismo `client`, mismo lock) tiene en ESTE momento, en vez de
+   `stayId: null` fijo. A diferencia de ese precedente, acá no hace falta
+   la rama `CreditNoteMixedStayError` que sí tiene el hermano de reservas
+   (`cancel-reservation-with-credit-note.service.ts:419-423`, para el caso
+   multi-cargo): el conjunto de origen de `reverseTransfer()` es un
+   singleton por construcción (`ar.financialTransactionId` apunta a UN
+   solo `CHARGE`), así que un solo `stayId` posible — no hay "mixed" que
+   detectar. El CHECK `chk_financial_transactions_order_or_reservation`
+   permite la coexistencia: es **"a lo sumo uno" de `order_id`/
+   `reservation_id`** (no un XOR de tres campos — `stay_id` queda AFUERA
+   del CHECK, verificado contra `schema.sql` BLOQUE 22), así que
+   `reservationId` y `stayId` conviviendo en la misma fila es legal y ya
+   es el patrón normal de todo `CHARGE` de huésped adoptado en `checkIn()`.
+
+   **CORRECCIÓN 14/09/2026 (gate, ronda 5) — la afirmación de
+   completitud de arriba (versión previa de este párrafo) era falsa bajo
+   READ COMMITTED, aunque la dirección de la mitigación es correcta y
+   queda igual.** No es cierto que "nunca hay una ventana… porque se leen
+   y escriben en la misma transacción, bajo el mismo lock". Ordenamiento
+   concreto que la rompe: el `UPDATE` de adopción (statement S,
+   `linkStayToReservationCharges`) toma su snapshot de statement ANTES de
+   que el `INSERT` del `ADJUSTMENT` de `reverseTransfer()` (tx_A) exista o
+   commitee — si S arranca mientras tx_A ya tiene el `FOR UPDATE` sobre el
+   `CHARGE` pero no commiteó todavía, S bloquea esperando ese lock; cuando
+   tx_A commitea, S despierta y Postgres re-chequea (EvalPlanQual) LA FILA
+   QUE S YA HABÍA ENCONTRADO (el `CHARGE`, que solo estuvo lockeado, no
+   modificado) — la adopta. Postgres NO re-escanea buscando filas
+   insertadas después de que S tomó su snapshot, así que el `ADJUSTMENT`
+   (insertado por tx_A, recién visible tras su commit) **no** entra en el
+   `UPDATE` de S. Resultado: `CHARGE.stay_id` adoptado, `ADJUSTMENT.stay_id`
+   sigue `NULL` — exactamente la desincronización que esta mitigación
+   busca evitar, en un ordenamiento angosto (milisegundos, no días) que
+   sigue siendo posible. **Lo que la mitigación sí logra, con evidencia,
+   no como invariante:** reduce la ventana de riesgo de "cualquier
+   adopción entre la transferencia y la reversa" (días, sin este fix) a
+   "una adopción cuyo snapshot de statement cae exactamente dentro de la
+   transacción de `reverseTransfer()`" (milisegundos) — una reducción real
+   de varios órdenes de magnitud, no una eliminación. El residuo se
+   registra como ítem anclado, `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`,
+   en `docs/pendientes-2026-09-12.md` (candidato de fix ahí: agregar
+   `AND reversed_transaction_id IS NULL` al `WHERE` de
+   `linkStayToReservationCharges()` — cambio de comportamiento sobre un
+   método compartido con otros callers, su propio gate, no este bloque).
+   Ningún test de (ii) puede aserter esta sincronía como invariante — solo
+   puede aserter el comportamiento local y determinístico: *"el
+   `ADJUSTMENT` hereda el `stayId` leído del `CHARGE` bajo lock en el
+   momento de creación"*, no *"las dos filas nunca divergen"*.
+
+   **Consumidores de `financial_transactions.stay_id` afectados por este
+   cambio (matriz completa, gate ronda 5):**
+   - `getNetBalanceByStayId()` (`sql.financial-transaction.repository.ts:942`)
+     — el objetivo: netea a cero cuando las dos filas están sincronizadas.
+   - `getByStayId()` (`:275`) vía `StayService.getFolio()`
+     (`stay.service.ts:527-534`, expone `GET` del folio al frontend) — en
+     el caso de carrera de arriba, el folio del huésped lista el
+     `ADJUSTMENT` de la EMPRESA. Benigno en la práctica (el `CHARGE` de la
+     empresa ya aparecería ahí por el mismo hueco preexistente, y el par
+     ahora se explica solo con `reversedTransactionId`), pero es un
+     consumidor real de un campo que este mecanismo cambia — declarado,
+     no un problema nuevo a resolver acá.
+   - `getByStayId(...).filter(t => t.type === 'CHARGE')`
+     (`accounts-receivable.service.ts:298`, guard de facturación previa de
+     `transferStayBalanceToReceivable()`) — **descartado explícitamente**:
+     filtra por `type === 'CHARGE'`, un `ADJUSTMENT` nunca entra en ese
+     bucle, sin importar su `stay_id`.
+
+   **Hueco preexistente, ya declarado arriba pero subdimensionado —
+   ahora anclado como ítem propio (gate ronda 5):** la protección "a
+   propósito NO va acá" del `CHARGE` original (`accounts-receivable.service.ts`,
+   bloque `companyChargeId`) protege el momento de CREACIÓN, no evita que
+   `linkStayToReservationCharges()` lo adopte después por
+   `reservation_id` — consecuencia real, no solo mecanismo:
+   `transferStayBalanceToReceivable()` corre `linkStayToReservationCharges()`
+   en `:243`, ANTES de leer el saldo (`:245`); el `CHARGE` de la empresa
+   de una transferencia ANTERIOR sobre la misma estadía tiene
+   `reservation_id` seteado y `stay_id NULL` — una SEGUNDA transferencia
+   sobre esa estadía lo adopta, el folio vuelve a dar saldo positivo,
+   `NoBalanceToTransferError` no dispara, y la MISMA deuda se transfiere a
+   la empresa dos veces. Registrado como `CITY-LEDGER-AR-DOUBLE-TRANSFER-001`
+   en `docs/pendientes-2026-09-12.md` — fuera de alcance de Bloque 3c-ii
+   (es un bug preexistente e independiente de `reverseTransfer()`, no algo
+   que este mecanismo introduce), pero ya no queda sin ancla.
 
    **Precondición sin guardar todavía (Condición C2 del gate, ronda
    Bloque 3b, 14/09/2026) — a resolver en el Bloque 3c, no acá.**

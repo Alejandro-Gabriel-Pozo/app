@@ -200,6 +200,52 @@ cuando se pushea.
   `cancel-order-with-credit-note.service.ts:377`,
   `cancel-reservation-with-credit-note.service.ts:462` e
   `invoice.service.ts:394`) y los 3 hallazgos de concurrencia de §7.2.
+- **`CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`** — deuda con ancla (Bloque
+  3c-ii, 14/09/2026, gate `architecture-governor`, ronda 5, Finding C).
+  La mitigación de `reverseTransfer()` (§4.3 paso 5 del ADR,
+  `stayId: charge.stayId` en vez de `stayId: null` fijo, mismo precedente
+  sancionado en `cancel-order-with-credit-note.service.ts:355`) REDUCE la
+  ventana en la que `linkStayToReservationCharges()`
+  (`sql.financial-transaction.repository.ts:921`) puede adoptar el
+  `CHARGE` original y el `ADJUSTMENT` compensatorio de forma
+  desincronizada — de "cualquier adopción entre la transferencia y la
+  reversa" (días) a "una adopción cuyo snapshot de statement cae dentro
+  de la transacción de `reverseTransfer()`" (milisegundos) — pero no la
+  ELIMINA. Bajo READ COMMITTED: si el `UPDATE` de adopción toma su
+  snapshot mientras `reverseTransfer()` ya tiene el `FOR UPDATE` sobre el
+  `CHARGE` pero no commiteó, ese `UPDATE` bloquea, despierta tras el
+  commit, y Postgres re-chequea (EvalPlanQual) la fila que YA había
+  encontrado (el `CHARGE`) sin re-escanear por filas insertadas después de
+  su snapshot (el `ADJUSTMENT`, recién visible tras el commit) — adopta el
+  `CHARGE` solo. Consecuencia (no mecanismo): el folio de un stay ajeno
+  recibe el `+amount` del `CHARGE` de la empresa sin su `-amount`
+  compensatorio, deuda fantasma angosta pero real. Candidato de fix, no
+  aplicado acá (cambio de comportamiento sobre un método compartido con
+  otros callers — `checkIn()` y el propio `transferStayBalanceToReceivable()`
+  — necesita su propio gate): agregar `AND reversed_transaction_id IS
+  NULL` al `WHERE` de `linkStayToReservationCharges()`.
+- **`CITY-LEDGER-AR-DOUBLE-TRANSFER-001`** — bug preexistente,
+  independiente de `reverseTransfer()`, con ancla (encontrado al analizar
+  Finding C, Bloque 3c-ii, 14/09/2026, gate `architecture-governor`, ronda
+  5). La protección "a propósito NO va acá" del `CHARGE` compensatorio de
+  la empresa (`accounts-receivable.service.ts`, bloque `companyChargeId`,
+  comentario `:390-399`) solo protege el momento de CREACIÓN (nace sin
+  `stayId`) — no evita que `linkStayToReservationCharges()` lo adopte
+  después por `reservation_id`. Consecuencia real:
+  `transferStayBalanceToReceivable()` corre `linkStayToReservationCharges()`
+  en `:243`, ANTES de leer el saldo en `:245`; el `CHARGE` de la empresa
+  de una transferencia ANTERIOR sobre la misma estadía (todavía con
+  `reservation_id` seteado y `stay_id NULL`) queda adoptado por una
+  SEGUNDA transferencia sobre esa misma estadía — el folio vuelve a dar
+  saldo positivo, `NoBalanceToTransferError` no dispara, y la MISMA deuda
+  se transfiere a la empresa dos veces. Fuera de alcance de Bloque 3c-ii
+  (no lo introduce `reverseTransfer()`, ya existe hoy) — requiere su
+  propio diseño, candidato más directo que el de arriba: excluir de la
+  adopción cualquier fila que ya tenga `financial_transaction_id`
+  referenciado desde una `accounts_receivable` (mismo espíritu que el
+  candidato de `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`, pero acá no
+  alcanza con `reversed_transaction_id` — el `CHARGE` de una transferencia
+  vieja nunca tiene ese campo seteado, es el ORIGEN, no una reversa).
 - **`CITY-LEDGER-GUARD-RETRY-EMITS-001`** — §9.4, encontrado por el gate
   `architecture-governor` al revisar el cierre de
   `CITY-LEDGER-GUARD-INVOICE-ORDER-OPEN-001` (13/09/2026, commit
