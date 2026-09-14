@@ -184,6 +184,12 @@ function domainErrorStatus(error: DomainError): number {
     // Bloque 6, §9.1 (13/09/2026) -- STAY_CHARGE_ALREADY_INVOICED entra al
     // mismo grupo: documento fiscal ya emitido, acción no completa, no
     // reintentar.
+    // Bloque 3c-ii (14/09/2026, gate architecture-governor, Finding B) --
+    // AR_REVERSAL_REQUIRES_CREDIT_NOTE entra acá, mismo grupo semántico
+    // que sus hermanos CREDIT_NOTE_* -- literalmente redirige al circuito
+    // de Nota de Crédito. Los otros 3 códigos nuevos de reverseTransfer()
+    // NO entran acá -- van al grupo 409 de más abajo, son precondición de
+    // estado del recurso, no documento fiscal en juego.
     case 'COMPANY_CUSTOMER_REQUIRED':
     case 'LODGING_REQUIRES_SERVICE':
     case 'AFIP_REQUEST_REJECTED':
@@ -193,6 +199,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_RESERVATION_INVOICE_SET_CHANGED':
     case 'CREDIT_NOTE_ISSUED_RESERVATION_NOT_CANCELLABLE':
     case 'STAY_CHARGE_ALREADY_INVOICED':
+    case 'AR_REVERSAL_REQUIRES_CREDIT_NOTE':
       return 422;
 
     // --- 401 Unauthorized ---
@@ -286,9 +293,19 @@ function domainErrorStatus(error: DomainError): number {
     case 'RESOURCE_OCCUPIED':
     case 'RESOURCE_NOT_READY_FOR_CHECKIN':
     case 'CUSTOMER_RATE_CONFLICT':
+    // Bloque 3c-ii (14/09/2026, gate architecture-governor, Finding B) --
+    // los 3 códigos de reverseTransfer() que NO son "documento fiscal ya
+    // emitido" (ver AR_REVERSAL_REQUIRES_CREDIT_NOTE, grupo 422 más
+    // arriba) son precondición de estado del recurso no cumplida --mismo
+    // grupo que ACCOUNTS_RECEIVABLE_ALREADY_INVOICED/AR_INVOICE_NOT_ISSUED,
+    // el precedente más cercano por ser del mismo dominio AR. El comentario
+    // va acá arriba, no entre los case (no-fallthrough, ver bloque 402).
     case 'NO_BALANCE_TO_TRANSFER':
     case 'STAY_BALANCE_OWED':
     case 'ACCOUNTS_RECEIVABLE_ALREADY_INVOICED':
+    case 'AR_REVERSAL_MISSING_GUEST_LINK':
+    case 'AR_REVERSAL_MISSING_COMPANY_LINK':
+    case 'AR_REVERSAL_CHARGE_NOT_SETTLED':
     case 'NOTHING_TO_INVOICE':
     case 'MAINTENANCE_WINDOW_CONFLICT':
     case 'MAINTENANCE_WINDOW_ALREADY_CLOSED':

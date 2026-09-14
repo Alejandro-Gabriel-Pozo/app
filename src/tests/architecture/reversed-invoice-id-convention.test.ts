@@ -87,7 +87,7 @@ const SRC_DIR = join(__dirname, '../..');
  *     de schema v47** (una fila con `type` fuera de la whitelist no entra).
  */
 
-/** Los dos únicos archivos que escriben `reversedInvoiceId` en una fila de
+/** Los archivos que escriben `reversedInvoiceId` en una fila de
  *  `financial_transactions`. Verificado a mano que el `type` del write es
  *  `REFUND` (`cancellation-refund.service.ts`, el chunk `type: 'REFUND'`
  *  dentro del loop de reparto) / `ADJUSTMENT`
@@ -96,11 +96,18 @@ const SRC_DIR = join(__dirname, '../..');
  *  línea, desde SCHEMA-ANCHOR-DRIFT-001 10/09/2026),
  *  `cancel-reservation-with-credit-note.service.ts` -- bloque 3.3-b1,
  *  09/09/2026, mismo `type: 'ADJUSTMENT'`, ahora con `reservationId`
- *  seteado en vez de `null`). */
+ *  seteado en vez de `null`;
+ *  `clientes-finanzas/accounts-receivable.service.ts` -- Bloque 3c-ii
+ *  (14/09/2026, `reverseTransfer()`), las DOS filas `ADJUSTMENT`
+ *  compensatorias (pata empresa y pata huésped) escriben
+ *  `reversedInvoiceId: null` explícito -- invariante que las excluye de
+ *  NC (§4.2 del ADR de City Ledger), no "la pata huésped" nada más: es un
+ *  archivo nuevo en la lista, no una escritura nueva en uno ya listado). */
 const WRITE_SITES = [
   'facturacion/cancel-order-with-credit-note.service.ts',
   'facturacion/cancel-reservation-with-credit-note.service.ts',
   'reservas/cancellation-refund.service.ts',
+  'clientes-finanzas/accounts-receivable.service.ts',
 ].sort();
 
 /** Ahí `reversedInvoiceId` es la firma de la interfaz
@@ -176,7 +183,7 @@ describe('REVERSED-INVOICE-ID-CONVENTION-001 -- reversed_invoice_id sólo en fil
     // Anti-vacuidad: si el regex de write deja de matchear el productor real,
     // `found` queda vacío, el toEqual de arriba falla, y este bloque nunca se
     // alcanza -- pero lo dejamos explícito por si WRITE_SITES se editara mal.
-    expect(WRITE_SITES.length).toBe(3);
+    expect(WRITE_SITES.length).toBe(4);
 
     for (const rel of WRITE_SITES) {
       const code = stripComments(readFileSync(join(SRC_DIR, rel), 'utf-8'));

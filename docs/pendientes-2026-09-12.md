@@ -38,6 +38,29 @@ cuando se pushea.
   entorno real (los 3 scopes nuevos de D9), confirmar que
   `clientes/[id]/page.tsx` la renderiza sin crash. Commit `bbf98c0`
   (appfrontend-main).
+- **`CITY-LEDGER-REVERSE-TRANSFER-INTEGRATION-VERIFY-001`** —
+  `AccountsReceivableService.reverseTransfer()` (Bloque 3c-ii, 14/09/2026,
+  gate `architecture-governor`, varias rondas de diseño más gate de
+  implementación, APPROVED WITH CONDITIONS) tiene código completo,
+  gate-aprobado, y la suite completa del repo en verde (163 archivos,
+  2237 tests) -- pero NINGUNO corrió contra Postgres real. **Acotado
+  (gate de implementación, 14/09/2026):** el CHECK
+  `chk_financial_transactions_order_or_reservation` aceptando
+  `reservationId`+`stayId` juntos en el `ADJUSTMENT` de la pata empresa
+  (Finding 1/C) ya se respondió de forma estática -- ese CHECK es un XOR
+  entre `order_id`/`reservation_id` únicamente, `stay_id` no participa
+  (`schema.sql:3842-3845`, leído directo) -- no hace falta Postgres real
+  para esa pregunta puntual. Lo que sí sigue necesitando Postgres real:
+  el comportamiento efectivo del lock `FOR UPDATE` sobre
+  `accounts_receivable`/`financial_transactions` bajo concurrencia real
+  (O2F2-A, Finding A -- la ventana de `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`
+  solo se puede reproducir con dos transacciones reales, no con fakes), el
+  guard 8-bis contra una factura real `ISSUED`/`PENDING`, y la rama
+  `correctedBalance` de punta a punta con `postStayTransfer()` reusado.
+  Acción puntual: seedear un check-out con transferencia completa
+  (`transferStayBalanceToReceivable()`) contra un tenant real, revertirla
+  con `reverseTransfer()`, y confirmar en SQL directo que las 2 filas
+  `ADJUSTMENT` quedan como el diseño describe.
 - **`REPORTS-DATEONLY-MISMATCH-001`** — confirmar los 5 reportes de
   `reportes/page.tsx` contra un backend `app-main` real levantado (esta
   sesión solo validó el formato contra el regex de `dateOnlySchema`, sin
@@ -158,12 +181,26 @@ cuando se pushea.
   `this.invoiceRepo.resolveInvoiceLinkage(charge.id)` sin `client`, adentro
   de `transactionManager.run()` -- mismo patrón exacto, mismo riesgo, sin
   ancla en este ítem hasta esta corrección.
-  **Instancia 7 (anticipada, todavía no shippeada):** el paso 8-bis de
-  `AccountsReceivableService.reverseTransfer()`
-  (`docs/diseno-reconciliacion-city-ledger-2026-09-12.md` §4.3) va a
-  reusar el mismo `resolveInvoiceLinkage()` sin `client` -- se registra
-  como instancia real recién cuando el código de Bloque 3c-ii exista, no
-  acá (este documento no adelanta código que todavía no se escribió).
+  **Instancias 7-10 -- shippeadas (Bloque 3c-ii, 14/09/2026, gate
+  `architecture-governor`, implementación revisada en ronda de gate de
+  implementación).** `AccountsReceivableService.reverseTransfer()`
+  (código real ahora, `docs/diseno-reconciliacion-city-ledger-2026-09-12.md`
+  §4.3) agrega CUATRO lecturas sin `client` dentro de la MISMA transacción
+  que abre, no una sola -- corrección sobre el registro anterior de este
+  ítem, que solo nombraba la del guard 8-bis:
+  - **7.** `this.invoiceRepo.resolveInvoiceLinkage(charge.id)` (guard
+    8-bis) -- corre siempre.
+  - **8.** `this.financialRepo.getById(lockedAr.guestPaymentTransactionId!)`
+    (lee el `PAYMENT` del huésped para el `customerId` de la pata
+    huésped) -- corre siempre.
+  - **9.** `this.stayRepo.findById(lockedAr.stayId, lockedAr.businessId)`
+    -- solo en la rama `correctedBalance > 0`.
+  - **10.** `this.businessProfileRepo.get()` (moneda) -- solo en la misma
+    rama `correctedBalance > 0`.
+  Mismo riesgo que las 6 anteriores (solo lectura, sin lock, el pool falla
+  ruidoso por timeout, no cuelga) -- las 4 son secuenciales dentro de la
+  misma llamada, así que no multiplican la concurrencia POR REQUEST, solo
+  el número de lecturas nested que este ítem tiene que seguir contando.
 - **`ACCOUNTS-RECEIVABLE-STATUS-REVERTIDO-TS-001`** — deuda con ancla
   (Bloque 6, §9.2, 13/09/2026): `(ar.status as string) !== 'REVERTIDO'`
   en los 2 escapes de NC filtra un valor que `AccountsReceivableStatus`
@@ -200,6 +237,52 @@ cuando se pushea.
   `cancel-order-with-credit-note.service.ts:377`,
   `cancel-reservation-with-credit-note.service.ts:462` e
   `invoice.service.ts:394`) y los 3 hallazgos de concurrencia de §7.2.
+
+  **Cierre parcial (Bloque 3c-ii, 14/09/2026, gate `architecture-governor`,
+  Condición C1/C3).** `AccountsReceivableStatus` (TS, backend) ya incluye
+  `REVERTIDO` -- ampliado en el mismo commit que agrega
+  `AccountsReceivableService.reverseTransfer()`, el mecanismo real que
+  ahora puede producir el valor (sin él, `markRevertedWithClient()` no
+  tipa). Los 3 casts `(ar.status as string) !== 'REVERTIDO'` de los
+  escapes de NC (`cancel-order-with-credit-note.service.ts:377`,
+  `cancel-reservation-with-credit-note.service.ts:464`,
+  `invoice.service.ts:394`) **NO se angostaron** -- decisión explícita del
+  gate: esos 3 archivos son de emisión fiscal y §7.2 les reserva su propio
+  gate, angostarlos como efecto colateral de este commit sería tocar esa
+  superficie sin la revisión que le corresponde. Siguen compilando y
+  comportándose igual bajo el union ampliado (el cast a `string` ya los
+  hacía indiferentes al tamaño real de la unión).
+  **Lo que sigue abierto, y pasa a ser precondición DURA del Bloque 3c-iii
+  (no solo pendiente):** el lado `appfrontend-main` --
+  `src/lib/finanzas/types.ts:37` (`AccountsReceivableStatus`, todavía 3
+  valores) y `AR_STATUS_LABEL`/los 3 sitios allowlist de
+  `dashboard/reportes/page.tsx` (`:281,308,326`), sin tocar. Hoy es inerte
+  (sin ruta, ninguna fila `REVERTIDO` puede existir todavía) -- deja de
+  serlo en cuanto el Bloque 3c-iii exponga `POST /:id/reverse`: una AR
+  revertida real haría que `AR_STATUS_LABEL['REVERTIDO']` renderice
+  `undefined` (celda en blanco, sin crash) en la misma pantalla que ya
+  consume `listByCompany()`. Residuo NO resuelto -- se mueve, no se
+  entierra (mismo criterio que la regla de "residuo" del `CLAUDE.md`
+  raíz): sigue siendo este mismo ítem, con este párrafo describiendo
+  exactamente qué falta.
+
+  **Segunda precondición DURA del Bloque 3c-iii, encontrada en la ronda de
+  gate de IMPLEMENTACIÓN (14/09/2026), no solo la de diseño de arriba:**
+  `sql.accounts-receivable.repository.ts:170-183`
+  (`getReportByPeriod()`, base del reporte de cierre de mes) hace
+  `COUNT(*)`/`SUM(ar.amount) AS total_amount` SIN filtrar por `status`,
+  más 3 `FILTER (WHERE ar.status = ...)` que solo cubren los 3 estados
+  viejos (`PENDIENTE_FACTURAR`/`FACTURADO`/`COBRADO`) -- sin bucket
+  propio para `REVERTIDO`. Consecuencia (no mecanismo): en cuanto exista
+  una fila `REVERTIDO` real, `pending + invoiced + collected` deja de
+  sumar `total_amount` en el reporte de cierre de mes, sin ninguna
+  columna que explique la diferencia -- mismo síntoma que el hueco del
+  frontend de arriba, mismo motivo de por qué hoy es inerte (sin ruta,
+  ninguna fila `REVERTIDO` puede existir todavía). Bloque 3c-iii tiene
+  que resolver esto junto con la ruta, no como deuda que se arrastra
+  después -- agregar el bucket `revertedAmount` (o equivalente) a
+  `AccountsReceivableReportRow`/`getReportByPeriod()` antes de exponer
+  `POST /:id/reverse`.
 - **`CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`** — deuda con ancla (Bloque
   3c-ii, 14/09/2026, gate `architecture-governor`, ronda 5, Finding C).
   La mitigación de `reverseTransfer()` (§4.3 paso 5 del ADR,

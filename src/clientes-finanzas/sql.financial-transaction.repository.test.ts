@@ -882,4 +882,40 @@ describe('SqlFinancialTransactionRepository — stay_id (A1, paso 1)', () => {
       expect(d).toEqual({ tipo: 'RECHAZADO', rechazos: ['CARGO_CON_COMPROBANTE_VIVO'] });
     });
   });
+
+  describe('getByIdWithLock (Bloque 3c-ii, 14/09/2026, AccountsReceivableService.reverseTransfer())', () => {
+    it('corre SELECT * ... FOR UPDATE sobre el client recibido, no sobre this.sqlClient, y devuelve la fila mapeada', async () => {
+      const otherClient: SqlClient = {
+        query: vi.fn(async () => ({
+          rows: [{
+            id: 'tx-1', business_id: 'biz-1', customer_id: 'cust-empresa',
+            reservation_id: 'res-1', order_id: null, stay_id: null,
+            idempotency_key: null, type: 'CHARGE', amount: '15000', currency: 'ARS',
+            status: 'SETTLED', notes: null, created_at: new Date(),
+          }],
+        })) as unknown as SqlClient['query'],
+      };
+
+      const result = await repo.getByIdWithLock(otherClient, 'tx-1');
+
+      expect(otherClient.query).toHaveBeenCalledOnce();
+      expect(mockSqlClient.query).not.toHaveBeenCalled();
+      const [sql, params] = vi.mocked(otherClient.query).mock.calls[0]!;
+      expect(sql).toContain('SELECT *');
+      expect(sql).toContain('FOR UPDATE');
+      expect(params).toEqual(['tx-1']);
+      expect(result?.status).toBe('SETTLED');
+      expect(result?.reservationId).toBe('res-1');
+    });
+
+    it('devuelve undefined si la fila no existe', async () => {
+      const otherClient: SqlClient = {
+        query: vi.fn(async () => ({ rows: [] })) as unknown as SqlClient['query'],
+      };
+
+      const result = await repo.getByIdWithLock(otherClient, 'no-existe');
+
+      expect(result).toBeUndefined();
+    });
+  });
 });

@@ -22,6 +22,10 @@ interface AccountsReceivableRow {
   invoice_ref: string | null;
   financial_transaction_id: string | null;
   guest_payment_transaction_id: string | null;
+  reversed_by: string | null;
+  reversed_at: Date | null;
+  reversed_reason: string | null;
+  replaces_ar_id: string | null;
 }
 
 export class SqlAccountsReceivableRepository implements AccountsReceivableRepository {
@@ -33,8 +37,8 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
   ): Promise<AccountReceivable> {
     const result = await client.query<AccountsReceivableRow>(
       `INSERT INTO accounts_receivable
-         (id, business_id, stay_id, company_customer_id, amount, currency, status, transferred_by, notes, financial_transaction_id, guest_payment_transaction_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         (id, business_id, stay_id, company_customer_id, amount, currency, status, transferred_by, notes, financial_transaction_id, guest_payment_transaction_id, replaces_ar_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [
         ar.id,
@@ -48,6 +52,7 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
         ar.notes ?? null,
         ar.financialTransactionId ?? null,
         ar.guestPaymentTransactionId ?? null,
+        ar.replacesArId ?? null,
       ],
     );
     return this.rowToEntity(result.rows[0]!);
@@ -118,8 +123,27 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
     return this.doMarkCollected(client, id);
   }
 
-  async lockForUpdate(client: SqlClient, id: string): Promise<void> {
-    await client.query(`SELECT 1 FROM accounts_receivable WHERE id = $1 FOR UPDATE`, [id]);
+  async getByIdWithLock(client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
+    const result = await client.query<AccountsReceivableRow>(
+      `SELECT * FROM accounts_receivable WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
+  }
+
+  async markRevertedWithClient(
+    client: SqlClient,
+    id: string,
+    params: { reversedBy: string; reason: string },
+  ): Promise<AccountReceivable | undefined> {
+    const result = await client.query<AccountsReceivableRow>(
+      `UPDATE accounts_receivable
+       SET status = 'REVERTIDO', reversed_by = $2, reversed_at = NOW(), reversed_reason = $3
+       WHERE id = $1 AND status = 'PENDIENTE_FACTURAR'
+       RETURNING *`,
+      [id, params.reversedBy, params.reason],
+    );
+    return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
   }
 
   private async doMarkCollected(client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
@@ -187,6 +211,10 @@ export class SqlAccountsReceivableRepository implements AccountsReceivableReposi
       invoiceRef:         row.invoice_ref,
       financialTransactionId: row.financial_transaction_id,
       guestPaymentTransactionId: row.guest_payment_transaction_id,
+      reversedBy:         row.reversed_by,
+      reversedAt:         row.reversed_at,
+      reversedReason:     row.reversed_reason,
+      replacesArId:       row.replaces_ar_id,
     };
   }
 }

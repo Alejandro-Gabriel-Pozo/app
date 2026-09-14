@@ -215,6 +215,20 @@ export interface FinancialTransactionRepository {
    */
   getById(id: string): Promise<FinancialTransaction | null>;
 
+  /**
+   * Igual que `getById()` pero con `SELECT ... FOR UPDATE`, dentro de una
+   * transacción ya abierta. Bloque 3c-ii (14/09/2026,
+   * `AccountsReceivableService.reverseTransfer()`) -- necesita el `CHARGE`
+   * original bajo lock para leer `status`/`reservationId`/`stayId`
+   * autoritativamente antes de crear el `ADJUSTMENT` compensatorio.
+   * Opcional (mismo criterio que `settleByIdsWithClient?`, que cita
+   * explícitamente a `ReservationRepository.getByIdWithLock?`): 7 fakes
+   * completos de `FinancialTransactionRepository` en tests de otros
+   * módulos no lo necesitan -- obligatorio los rompe sin motivo. El
+   * caller hace `if (!repo.getByIdWithLock) throw`.
+   */
+  getByIdWithLock?(client: SqlClient, id: string): Promise<FinancialTransaction | undefined>;
+
   /** Obtiene todas las transacciones de una reserva. */
   getByReservationId(reservationId: string): Promise<FinancialTransaction[]>;
 

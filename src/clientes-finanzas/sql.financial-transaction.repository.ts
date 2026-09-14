@@ -230,6 +230,14 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return result.rows[0] ? this.rowToEntity(result.rows[0]) : null;
   }
 
+  async getByIdWithLock(client: SqlClient, id: string): Promise<FinancialTransaction | undefined> {
+    const result = await client.query<TransactionRow>(
+      `SELECT * FROM financial_transactions WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    return result.rows[0] ? this.rowToEntity(result.rows[0]) : undefined;
+  }
+
   async getByReservationId(reservationId: string): Promise<FinancialTransaction[]> {
     const result = await this.sqlClient.query<TransactionRow>(
       `SELECT * FROM financial_transactions

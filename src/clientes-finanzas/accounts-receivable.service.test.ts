@@ -6,6 +6,10 @@ import {
   AccountReceivableNotFoundError,
   InvalidAccountsReceivableTransitionError,
   StayChargeAlreadyInvoicedError,
+  ArReversalRequiresCreditNoteError,
+  ArReversalMissingGuestLinkError,
+  ArReversalMissingCompanyLinkError,
+  ArReversalChargeNotSettledError,
 } from './accounts-receivable.service.js';
 import type { ReservationRepoForTransfer } from './accounts-receivable.service.js';
 import { StayNotFoundError } from '../pms-estadias/stay.service.js';
@@ -40,8 +44,27 @@ class FakeAccountsReceivableRepository implements AccountsReceivableRepository {
   /** O2F2-A -- para poder aseverar que markCollected() lockea ANTES de leer nada. */
   public lockedIds: string[] = [];
 
-  async lockForUpdate(_client: SqlClient, id: string): Promise<void> {
+  async getByIdWithLock(_client: SqlClient, id: string): Promise<AccountReceivable | undefined> {
     this.lockedIds.push(id);
+    return this.rows.get(id);
+  }
+
+  async markRevertedWithClient(
+    _client: SqlClient,
+    id: string,
+    params: { reversedBy: string; reason: string },
+  ): Promise<AccountReceivable | undefined> {
+    const ar = this.rows.get(id);
+    if (!ar || ar.status !== 'PENDIENTE_FACTURAR') return undefined;
+    const updated: AccountReceivable = {
+      ...ar,
+      status: 'REVERTIDO',
+      reversedBy: params.reversedBy,
+      reversedAt: new Date(),
+      reversedReason: params.reason,
+    };
+    this.rows.set(id, updated);
+    return updated;
   }
 
   async createWithClient(
@@ -116,7 +139,15 @@ class FakeFinancialTransactionRepository implements FinancialTransactionReposito
     return { ...tx, createdAt: new Date() };
   }
 
-  async getById(): Promise<FinancialTransaction | null> { return null; }
+  /** Bloque 3c-ii -- transacciones "reales" que reverseTransfer() puede lockear/leer por id. */
+  public byId = new Map<string, FinancialTransaction>();
+  async getById(id: string): Promise<FinancialTransaction | null> {
+    return this.byId.get(id) ?? null;
+  }
+  async getByIdWithLock(_client: SqlClient, id: string): Promise<FinancialTransaction | undefined> {
+    this.ops.push('lock-financial-transaction');
+    return this.byId.get(id);
+  }
   async getByIdempotencyKey(): Promise<FinancialTransaction | undefined> { return undefined; }
   async getByReservationId(): Promise<FinancialTransaction[]> { return []; }
   async getByOrderId(): Promise<FinancialTransaction[]> { return []; }
@@ -894,5 +925,270 @@ describe('AccountsReceivableService — markInvoiced/markCollected (F1-Pieza 3, 
       expect(rows).toHaveLength(1);
       expect(rows[0]!.id).toBe('ar-1');
     });
+  });
+});
+
+describe('AccountsReceivableService.reverseTransfer (Bloque 3c-ii, 14/09/2026, docs/diseno-reconciliacion-city-ledger-2026-09-12.md §4.3)', () => {
+  let arRepo: FakeAccountsReceivableRepository;
+  let financialRepo: FakeFinancialTransactionRepository;
+  let invoiceRepo: FakeInvoiceRepository;
+  let stay: Stay;
+  let service: AccountsReceivableService;
+
+  function seedAr(overrides: Partial<AccountReceivable> = {}): AccountReceivable {
+    const ar: AccountReceivable = {
+      id: 'ar-1',
+      businessId: TEST_BUSINESS_ID,
+      stayId: TEST_STAY_ID,
+      companyCustomerId: TEST_COMPANY_ID,
+      amount: 15000,
+      currency: 'ARS',
+      status: 'PENDIENTE_FACTURAR',
+      transferredBy: 'user-manager',
+      notes: null,
+      createdAt: new Date(),
+      invoicedAt: null,
+      collectedAt: null,
+      invoiceRef: null,
+      financialTransactionId: 'ft-charge',
+      guestPaymentTransactionId: 'ft-payment',
+      ...overrides,
+    };
+    arRepo.rows.set(ar.id, ar);
+    return ar;
+  }
+
+  function seedCharge(overrides: Partial<FinancialTransaction> = {}): FinancialTransaction {
+    const charge: FinancialTransaction = {
+      id: 'ft-charge',
+      businessId: TEST_BUSINESS_ID,
+      customerId: TEST_COMPANY_ID,
+      reservationId: 'res-1',
+      stayId: null,
+      type: 'CHARGE',
+      amount: 15000,
+      currency: 'ARS',
+      status: 'SETTLED',
+      createdAt: new Date(),
+      ...overrides,
+    };
+    financialRepo.byId.set(charge.id, charge);
+    return charge;
+  }
+
+  function seedGuestPayment(overrides: Partial<FinancialTransaction> = {}): FinancialTransaction {
+    const payment: FinancialTransaction = {
+      id: 'ft-payment',
+      businessId: TEST_BUSINESS_ID,
+      customerId: TEST_GUEST_ID,
+      stayId: TEST_STAY_ID,
+      type: 'PAYMENT',
+      amount: 15000,
+      currency: 'ARS',
+      status: 'SETTLED',
+      createdAt: new Date(),
+      ...overrides,
+    };
+    financialRepo.byId.set(payment.id, payment);
+    return payment;
+  }
+
+  beforeEach(() => {
+    arRepo = new FakeAccountsReceivableRepository();
+    financialRepo = new FakeFinancialTransactionRepository();
+    invoiceRepo = new FakeInvoiceRepository();
+    stay = Stay.checkIn({
+      businessId: TEST_BUSINESS_ID,
+      reservationId: 'res-1',
+      resourceId: 'room-1',
+      customerId: TEST_GUEST_ID,
+      assignedBy: 'user-1',
+    });
+    const customers = new Map([
+      [TEST_COMPANY_ID, new Customer(TEST_COMPANY_ID, 'Empresa SA', [], 'COMPANY')],
+      [TEST_GUEST_ID, new Customer(TEST_GUEST_ID, 'Huésped Individual', [], 'INDIVIDUAL')],
+    ]);
+    service = new AccountsReceivableService(
+      arRepo, financialRepo,
+      new FakeStayRepository(stay) as unknown as StayRepository,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new InMemoryTransactionManager(),
+      new FakeBusinessProfileRepository(makeProfile()),
+      invoiceRepo,
+      new FakeReservationRepositoryForTransfer(),
+    );
+  });
+
+  it('AR ya FACTURADO -- rechaza con ArReversalRequiresCreditNoteError, redirige al circuito de NC (§3.2)', async () => {
+    seedAr({ status: 'FACTURADO' });
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+  });
+
+  it('AR ya COBRADO -- rechaza con ArReversalRequiresCreditNoteError', async () => {
+    seedAr({ status: 'COBRADO' });
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+  });
+
+  it('AR ya REVERTIDO -- idempotente, devuelve el estado actual sin re-ejecutar (mismo criterio que markCollected() sobre COBRADO)', async () => {
+    seedAr({ status: 'REVERTIDO' });
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+    expect(result.reverted.status).toBe('REVERTIDO');
+    expect(result.replacement).toBeNull();
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('sin guestPaymentTransactionId (AR anterior a 8f11d19) -- falla fuerte, no reversa parcial (R15)', async () => {
+    seedAr({ guestPaymentTransactionId: null });
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalMissingGuestLinkError);
+  });
+
+  it('sin financialTransactionId -- falla fuerte, precondición simétrica', async () => {
+    seedAr({ financialTransactionId: null });
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalMissingCompanyLinkError);
+  });
+
+  it('CHARGE original no SETTLED -- rechaza con ArReversalChargeNotSettledError', async () => {
+    seedAr();
+    seedCharge({ status: 'PENDING' });
+    seedGuestPayment();
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalChargeNotSettledError);
+  });
+
+  it('guard 8-bis -- CHARGE con factura ISSUED sin reconciliar, rechaza y no escribe nada', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.invoiceIdByFinancialTransactionId.set('ft-charge', 'inv-1');
+    invoiceRepo.reservationClassification.set('res-1', 'NOT_RECONCILED');
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+    expect(financialRepo.created).toHaveLength(0);
+  });
+
+  it('guard 8-bis -- CHARGE con factura EN VUELO (NOT_ISSUED, PENDING), rechaza', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+    invoiceRepo.notIssuedByFinancialTransactionId.set('ft-charge', { invoiceId: 'inv-1', status: 'PENDING', afipContacted: false });
+
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(ArReversalRequiresCreditNoteError);
+  });
+
+  it('camino feliz -- crea las 2 ADJUSTMENT compensatorias (Finding 1: reservationId pineado en la pata empresa) y marca la AR REVERTIDO', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+
+    const result = await service.reverseTransfer({
+      accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'reserva se canceló después de la transferencia',
+    });
+
+    expect(financialRepo.created).toHaveLength(2);
+    // Pata EMPRESA -- Finding 1 (gate, ronda 3): reservationId del CHARGE, no null.
+    expect(financialRepo.created[0]).toMatchObject({
+      customerId: TEST_COMPANY_ID,
+      reservationId: 'res-1',
+      type: 'ADJUSTMENT',
+      amount: -15000,
+      status: 'SETTLED',
+      reversedInvoiceId: null,
+      reversedTransactionId: 'ft-charge',
+    });
+    // Pata HUÉSPED -- reabre el folio, reservationId null a propósito.
+    expect(financialRepo.created[1]).toMatchObject({
+      customerId: TEST_GUEST_ID,
+      reservationId: null,
+      stayId: TEST_STAY_ID,
+      type: 'ADJUSTMENT',
+      amount: 15000,
+      status: 'SETTLED',
+      reversedInvoiceId: null,
+      reversedTransactionId: 'ft-payment',
+    });
+
+    expect(result.reverted.status).toBe('REVERTIDO');
+    expect(result.reverted.reversedBy).toBe('user-manager');
+    expect(result.reverted.reversedReason).toBe('reserva se canceló después de la transferencia');
+    expect(result.replacement).toBeNull();
+  });
+
+  it('Finding C (gate, ronda 5) -- el ADJUSTMENT de la pata empresa hereda el stayId REAL del CHARGE bajo lock, no queda en null fijo (mitigación LOCAL, no invariante -- ver CITY-LEDGER-AR-STAY-ADOPTION-RACE-001)', async () => {
+    seedAr();
+    seedCharge({ stayId: 'otro-stay-ya-adoptado' });
+    seedGuestPayment();
+
+    await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+
+    expect(financialRepo.created[0]).toMatchObject({
+      customerId: TEST_COMPANY_ID,
+      stayId: 'otro-stay-ya-adoptado',
+    });
+  });
+
+  it('correctedBalance > 0 -- crea una AR de reemplazo con replacesArId, vía postStayTransfer (§4.3 paso 8/13)', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+
+    const result = await service.reverseTransfer({
+      accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'monto corregido', correctedBalance: 9000,
+    });
+
+    expect(result.replacement).not.toBeNull();
+    expect(result.replacement!.amount).toBe(9000);
+    expect(result.replacement!.replacesArId).toBe('ar-1');
+    expect(result.replacement!.status).toBe('PENDIENTE_FACTURAR');
+    // 2 ADJUSTMENT de la reversa + PAYMENT + CHARGE del postStayTransfer nuevo.
+    expect(financialRepo.created).toHaveLength(4);
+  });
+
+  it('correctedBalance omitido -- reversa pura, sin AR nueva', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+
+    const result = await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+
+    expect(result.replacement).toBeNull();
+    expect(arRepo.created).toHaveLength(0);
+  });
+
+  it('rechaza si el id no existe', async () => {
+    await expect(
+      service.reverseTransfer({ accountReceivableId: 'no-existe', reversedBy: 'user-manager', reason: 'motivo' }),
+    ).rejects.toThrow(AccountReceivableNotFoundError);
+  });
+
+  it('lockea la AR (O2F2-A) -- ver código para el orden real, este fake no graba orden cruzada entre repos', async () => {
+    seedAr();
+    seedCharge();
+    seedGuestPayment();
+
+    await service.reverseTransfer({ accountReceivableId: 'ar-1', reversedBy: 'user-manager', reason: 'motivo' });
+
+    // Solo prueba QUE se lockea la fila correcta -- el orden real
+    // (AR antes que CHARGE) está en el código (`getByIdWithLock` de la AR
+    // es la primera operación dentro de `transactionManager.run()`), no
+    // en este fake: `FakeAccountsReceivableRepository` y
+    // `FakeFinancialTransactionRepository` no comparten un array de
+    // operaciones acá (a diferencia de otros fakes de este archivo que sí
+    // lo hacen, ver `FakeReservationRepositoryForTransfer`/`ops`), así que
+    // esta aserción no puede distinguir "lockeó primero" de "lockeó en
+    // algún momento".
+    expect(arRepo.lockedIds).toEqual(['ar-1']);
   });
 });

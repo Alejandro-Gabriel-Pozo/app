@@ -446,12 +446,15 @@ export class CancelReservationWithCreditNoteService {
       // `pendientes-2026-09-13.md` no existe).
       //
       // `REVERTIDO` ya es un valor legal de la columna `status` en
-      // Postgres (schema v52, `b82d828`) pero `AccountsReceivableStatus`
-      // (TS, accounts-receivable.repository.ts) todavía no lo declara a
-      // propósito -- se amplía junto con `reverseTransfer()` (Bloque 2 de
-      // §8 del diseño), no acá, para no reproducir
-      // `ROLES-CATALOG-DRIFT-001`. Cast a `string` en la comparación, no
-      // en el tipo.
+      // Postgres (schema v52, `b82d828`), y desde Bloque 3c-ii
+      // (14/09/2026, gate `architecture-governor`) también de
+      // `AccountsReceivableStatus` (TS) -- `reverseTransfer()` ya existe.
+      // El cast a `string` de acá abajo NO se angostó junto con ese
+      // commit, a propósito: este archivo es de emisión/cancelación
+      // fiscal y §7.2 del diseño le reserva su propio gate -- angostarlo
+      // como efecto colateral de otro commit sería tocar esa superficie
+      // sin la revisión que le corresponde. Sigue compilando y
+      // comportándose igual bajo el union ampliado.
       //
       // `undefined`, NUNCA `[]` -- normalizado acá (gate, ronda 2): sin
       // esto, cualquier estadía SIN AR (el caso mayoritario) devolvía

@@ -393,7 +393,11 @@ export function handleReservationCancelled(
     // lado `handleReservationCompleted`, ver docblock de
     // `transferStayBalanceToReceivable()`). Filtro `!== 'REVERTIDO'`
     // (cast a `string`, mismo criterio que evita `ROLES-CATALOG-DRIFT-001`
-    // -- `REVERTIDO` no existe en el union TS todavía) e
+    // -- corrección 14/09/2026, Bloque 3c-ii, gate `architecture-governor`:
+    // `AccountsReceivableStatus` YA declara `REVERTIDO` desde ese commit
+    // -- el cast queda a propósito de todos modos, sin angostar: §7.2 del
+    // diseño reserva su propio gate para tocar este archivo, angostarlo
+    // acá sería un efecto colateral de un commit que no lo revisó) e
     // INTENCIONALMENTE incluye `COBRADO`: una empresa que YA PAGÓ un
     // cargo que el ledger acaba de anular es el caso más grave, no el más
     // benigno -- corrige la ambigüedad de "estados no-terminales" del

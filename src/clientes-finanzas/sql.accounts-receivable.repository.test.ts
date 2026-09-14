@@ -43,6 +43,35 @@ describe('SqlAccountsReceivableRepository', () => {
     expect(result.amount).toBe(15000);
   });
 
+  it('createWithClient inserta replaces_ar_id cuando se pasa (Bloque 3c-ii, 14/09/2026, rama correctedBalance de reverseTransfer())', async () => {
+    const otherClient: SqlClient = {
+      query: vi.fn(async () => ({
+        rows: [{
+          id: 'ar-2', business_id: 'biz-1', stay_id: 'stay-1',
+          company_customer_id: 'cust-empresa', amount: '5000', currency: 'ARS',
+          status: 'PENDIENTE_FACTURAR', transferred_by: 'user-1', notes: null,
+          created_at: new Date(), invoiced_at: null, collected_at: null,
+        }],
+      })) as unknown as SqlClient['query'],
+    };
+
+    await repo.createWithClient(otherClient, {
+      id: 'ar-2',
+      businessId: 'biz-1',
+      stayId: 'stay-1',
+      companyCustomerId: 'cust-empresa',
+      amount: 5000,
+      currency: 'ARS',
+      status: 'PENDIENTE_FACTURAR',
+      transferredBy: 'user-1',
+      replacesArId: 'ar-1',
+    });
+
+    const [sql, params] = vi.mocked(otherClient.query).mock.calls[0]!;
+    expect(sql).toContain('replaces_ar_id');
+    expect(params).toContain('ar-1');
+  });
+
   it('markInvoiced solo actualiza filas PENDIENTE_FACTURAR', async () => {
     await repo.markInvoiced('ar-1');
 
@@ -87,18 +116,59 @@ describe('SqlAccountsReceivableRepository', () => {
     expect(params).toEqual(['ar-1']);
   });
 
-  it('lockForUpdate corre FOR UPDATE sobre el client recibido, no sobre this.sqlClient (O2F2-A, 03/09/2026)', async () => {
+  it('getByIdWithLock corre SELECT * ... FOR UPDATE sobre el client recibido, no sobre this.sqlClient, y devuelve la fila (O2F2-A, 03/09/2026; ensanchado Bloque 3c-ii, 14/09/2026, Finding A)', async () => {
     const otherClient: SqlClient = {
-      query: vi.fn(async () => ({ rows: [] })) as unknown as SqlClient['query'],
+      query: vi.fn(async () => ({
+        rows: [{
+          id: 'ar-1', business_id: 'biz-1', stay_id: 'stay-1',
+          company_customer_id: 'cust-empresa', amount: '15000', currency: 'ARS',
+          status: 'PENDIENTE_FACTURAR', transferred_by: 'user-1', notes: null,
+          created_at: new Date(), invoiced_at: null, collected_at: null,
+          invoice_ref: null, financial_transaction_id: 'ft-charge', guest_payment_transaction_id: 'ft-payment',
+          reversed_by: null, reversed_at: null, reversed_reason: null, replaces_ar_id: null,
+        }],
+      })) as unknown as SqlClient['query'],
     };
 
-    await repo.lockForUpdate(otherClient, 'ar-1');
+    const result = await repo.getByIdWithLock(otherClient, 'ar-1');
 
     expect(otherClient.query).toHaveBeenCalledOnce();
     expect(mockSqlClient.query).not.toHaveBeenCalled();
     const [sql, params] = vi.mocked(otherClient.query).mock.calls[0]!;
+    expect(sql).toContain('SELECT *');
     expect(sql).toContain('FOR UPDATE');
     expect(params).toEqual(['ar-1']);
+    expect(result?.status).toBe('PENDIENTE_FACTURAR');
+    expect(result?.amount).toBe(15000);
+  });
+
+  it('getByIdWithLock devuelve undefined si la fila no existe', async () => {
+    const otherClient: SqlClient = {
+      query: vi.fn(async () => ({ rows: [] })) as unknown as SqlClient['query'],
+    };
+
+    const result = await repo.getByIdWithLock(otherClient, 'no-existe');
+
+    expect(result).toBeUndefined();
+  });
+
+  it('markRevertedWithClient solo actualiza filas PENDIENTE_FACTURAR y escribe reversed_by/reversed_at/reversed_reason, nunca reversal_transaction_id (Bloque 3c-ii, 14/09/2026, Condición C2 del gate)', async () => {
+    const otherClient: SqlClient = {
+      query: vi.fn(async () => ({ rows: [] })) as unknown as SqlClient['query'],
+    };
+
+    await repo.markRevertedWithClient(otherClient, 'ar-1', { reversedBy: 'user-manager', reason: 'error de tipeo' });
+
+    expect(otherClient.query).toHaveBeenCalledOnce();
+    expect(mockSqlClient.query).not.toHaveBeenCalled();
+    const [sql, params] = vi.mocked(otherClient.query).mock.calls[0]!;
+    expect(sql).toContain("SET status = 'REVERTIDO'");
+    expect(sql).toContain('reversed_by');
+    expect(sql).toContain('reversed_at');
+    expect(sql).toContain('reversed_reason');
+    expect(sql).not.toContain('reversal_transaction_id');
+    expect(sql).toContain("AND status = 'PENDIENTE_FACTURAR'");
+    expect(params).toEqual(['ar-1', 'user-manager', 'error de tipeo']);
   });
 
   it('getReportByPeriod agrupa por empresa con FILTER por status (A1, paso 5)', async () => {

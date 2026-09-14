@@ -27,7 +27,7 @@ import { round2 } from '../domain/money.js';
  * (un reintento de transporte con la request original todavía en vuelo),
  * sin necesitar una fila física que representar "esta operación" --
  * a diferencia de `AccountsReceivableService.markCollected()`
- * (`AccountsReceivableRepository.lockForUpdate()`), acá la clave la provee
+ * (`AccountsReceivableRepository.getByIdWithLock()`), acá la clave la provee
  * el caller y puede cubrir N escrituras (N allocations de
  * `CustomerAccountService.recordPayment()`), así que no hay una sola fila
  * 1:1 para lockear.

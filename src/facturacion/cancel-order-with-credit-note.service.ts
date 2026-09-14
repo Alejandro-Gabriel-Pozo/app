@@ -366,9 +366,12 @@ export class CancelOrderWithCreditNoteService {
       // nueva. Detalle completo (por qué, deuda con ancla) en el
       // comentario espejo de `cancel-reservation-with-credit-note.service.ts`.
       //
-      // `REVERTIDO` filtrado por cast a `string`, no en el tipo -- mismo
-      // razonamiento que el precedente de reservas (evita
-      // `ROLES-CATALOG-DRIFT-001`). `undefined`, NUNCA `[]` -- normalizado
+      // `REVERTIDO` filtrado por cast a `string` -- corrección 14/09/2026,
+      // Bloque 3c-ii, gate `architecture-governor`: `AccountsReceivableStatus`
+      // (TS) ya declara `REVERTIDO` desde ese commit (`reverseTransfer()`
+      // ya existe), el cast queda igual, sin angostar -- mismo motivo que
+      // el precedente espejo de reservas (§7.2 del diseño reserva su
+      // propio gate para este archivo). `undefined`, NUNCA `[]` -- normalizado
       // acá (gate, ronda 2): sin esto, una orden con estadía SIN AR (caso
       // mayoritario) serializaba `"accountsReceivableWarning": []` en vez
       // de omitir la clave.

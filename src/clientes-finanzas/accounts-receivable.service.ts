@@ -113,6 +113,70 @@ export class InvalidAccountsReceivableTransitionError extends DomainError {
 }
 
 /**
+ * Bloque 3c-ii (14/09/2026, docs/diseno-reconciliacion-city-ledger-
+ * 2026-09-12.md §4.3 pasos 2 y 8-bis) -- `reverseTransfer()` sobre una AR
+ * ya `FACTURADO`/`COBRADO` (decisión §3.2 del ADR: la corrección de una
+ * fila ya facturada pasa por el circuito de Nota de Crédito existente,
+ * este método no lo maneja), o cuyo `CHARGE` original tiene una factura
+ * `ISSUED` viva sin reconciliar, o `NOT_ISSUED` en vuelo (`PENDING`, o
+ * `FAILED_UNCERTAIN` con AFIP contactada) -- mismo predicado que
+ * `StayChargeAlreadyInvoicedError`, reusado desde `reverseTransfer()`
+ * (paso 8-bis) en vez de reescrito.
+ */
+export class ArReversalRequiresCreditNoteError extends DomainError {
+  constructor(accountReceivableId: string, invoiceStatus: string) {
+    super(
+      `La cuenta por cobrar "${accountReceivableId}" tiene un comprobante fiscal vinculado (estado: ${invoiceStatus}) — la corrección tiene que hacerse con una Nota de Crédito, no con reverseTransfer().`,
+      'AR_REVERSAL_REQUIRES_CREDIT_NOTE',
+    );
+  }
+}
+
+/**
+ * §4.3 paso 4 del ADR -- AR creada antes de `8f11d19` (13/09/2026), sin
+ * backfill de `guest_payment_transaction_id`: no hay forma de saber CUÁL
+ * `PAYMENT` del huésped corresponde revertir (podría haber más de uno por
+ * estadía, y ningún otro campo lo distingue). Falla fuerte a propósito --
+ * una reversa parcial (solo la pata empresa) reproduciría la misma
+ * regresión que `ASYMMETRY-001` ya encontró y revirtió (R15: las
+ * referencias rotas fallan fuerte, nunca degradan en silencio).
+ */
+export class ArReversalMissingGuestLinkError extends DomainError {
+  constructor(accountReceivableId: string) {
+    super(
+      `La cuenta por cobrar "${accountReceivableId}" no tiene vínculo con el pago del huésped (creada antes del mecanismo de reversa) — no se puede revertir de forma completa.`,
+      'AR_REVERSAL_MISSING_GUEST_LINK',
+    );
+  }
+}
+
+/**
+ * Precondición simétrica a `ArReversalMissingGuestLinkError`, del lado del
+ * `CHARGE` contra la empresa -- `financialTransactionId` es nullable
+ * (`ON DELETE SET NULL`) en la interfaz TS aunque hoy `postStayTransfer()`
+ * siempre completa las dos columnas juntas (precondición sin guardar,
+ * declarada en §4.3 paso 5 del ADR).
+ */
+export class ArReversalMissingCompanyLinkError extends DomainError {
+  constructor(accountReceivableId: string) {
+    super(
+      `La cuenta por cobrar "${accountReceivableId}" no tiene vínculo con el cargo contra la empresa — no se puede revertir.`,
+      'AR_REVERSAL_MISSING_COMPANY_LINK',
+    );
+  }
+}
+
+/** El `CHARGE` original todavía no está `SETTLED` -- no hay nada firme que revertir todavía. */
+export class ArReversalChargeNotSettledError extends DomainError {
+  constructor(accountReceivableId: string, financialTransactionId: string, status: string) {
+    super(
+      `El cargo "${financialTransactionId}" de la cuenta por cobrar "${accountReceivableId}" está en estado "${status}", no "SETTLED" — no se puede revertir todavía.`,
+      'AR_REVERSAL_CHARGE_NOT_SETTLED',
+    );
+  }
+}
+
+/**
  * H-A (05/09/2026) -- resultado de `markCollected()`, aditivo sobre
  * `AccountReceivable`. `collection` NO es una columna persistida -- solo
  * viaja en la respuesta HTTP cuando esta llamada detectó que la factura
@@ -347,6 +411,13 @@ export class AccountsReceivableService {
    * está pensada solo para este único caller, no para lo que
    * `reverseTransfer()` vaya a necesitar (correctedBalance, replacesArId)
    * más adelante -- eso se agrega en su propio commit, cuando haga falta.
+   *
+   * **Extendido (Bloque 3c-ii, 14/09/2026) -- ese momento llegó.**
+   * `reverseTransfer()` (§4.3 paso 8/13 del ADR) reusa este mismo posteo
+   * para la rama `correctedBalance`, pasando `replacesArId` -- el ÚNICO
+   * campo nuevo que necesitaba. `undefined` para el caller original
+   * (`transferStayBalanceToReceivable()`), que nunca reemplaza nada -- sin
+   * cambio de comportamiento ahí.
    */
   private async postStayTransfer(
     client: SqlClient,
@@ -362,6 +433,8 @@ export class AccountsReceivableService {
       currency: string;
       transferredBy: string;
       notes?: string | null;
+      /** Bloque 3c-ii -- id de la AR que esta transferencia reemplaza (`reverseTransfer()`, rama `correctedBalance`). `undefined` para una transferencia original. */
+      replacesArId?: string;
     },
   ): Promise<AccountReceivable> {
     // CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001, paso 1
@@ -427,6 +500,7 @@ export class AccountsReceivableService {
       status:            'PENDIENTE_FACTURAR',
       transferredBy:     params.transferredBy,
       notes:             params.notes ?? null,
+      replacesArId:      params.replacesArId ?? null,
     });
   }
 
@@ -584,7 +658,7 @@ export class AccountsReceivableService {
       // en paralelo con el commit que lo volvería obsoleto: el perdedor
       // espera ACÁ, no en el lock de la factura, y cuando lo obtiene el
       // ganador ya commiteó de punta a punta.
-      await this.arRepo.lockForUpdate(client, id);
+      await this.arRepo.getByIdWithLock(client, id);
 
       const existingPayment = await this.financialRepo.getByIdempotencyKey(idempotencyKey);
       if (!existingPayment) {
@@ -652,7 +726,7 @@ export class AccountsReceivableService {
       if (updated) return updated;
 
       // La fila AR SÍ está lockeada desde el arranque de esta transacción
-      // (más arriba en este mismo método, `await this.arRepo.lockForUpdate(client, id)`)
+      // (más arriba en este mismo método, `await this.arRepo.getByIdWithLock(client, id)`)
       // -- eso es lo que serializa a los
       // concurrentes entre sí. Si aun así el UPDATE no afectó filas es
       // porque otra transacción concurrente ya aplicó el MISMO PAYMENT
@@ -668,5 +742,223 @@ export class AccountsReceivableService {
       );
     });
     return collection ? { ...updatedAr, collection } : updatedAr;
+  }
+
+  /**
+   * Bloque 3c-ii (14/09/2026, docs/diseno-reconciliacion-city-ledger-
+   * 2026-09-12.md §4.3) -- revierte una transferencia PENDIENTE_FACTURAR
+   * completa: anula la deuda contra la empresa Y reabre el folio del
+   * huésped, con las dos filas `ADJUSTMENT` compensatorias apuntando a la
+   * fila que corrigen vía `reversedTransactionId` (mecanismo general del
+   * ledger, no un puntero dedicado en `accounts_receivable`). FACTURADO/
+   * COBRADO no pasan por acá -- esos van por el circuito de Nota de
+   * Crédito (§3.2 del ADR).
+   *
+   * ## Finding 1 (gate, ronda 3) -- por qué la pata empresa lleva
+   * `reservationId: charge.reservationId`, no `null`
+   * La contraparte real de esta fila es el `CHARGE` original, que SÍ lleva
+   * `reservationId` desde que se creó -- dejar el `ADJUSTMENT` en `null`
+   * garantizaría que una futura cancelación de la reserva
+   * (`voidByReservationId()`, que evalúa un sub-predicado de factura viva
+   * POR FILA) pudiera anular el `CHARGE` sin alcanzar nunca al
+   * `ADJUSTMENT` -- deuda fantasma de signo invertido. Protegido por el
+   * guard 8-bis de abajo, que bloquea la reversa entera si el `CHARGE`
+   * tiene una factura viva o en vuelo.
+   *
+   * ## Finding C (gate, ronda 5) -- por qué la pata empresa lleva
+   * `stayId: charge.stayId`, no `null` fijo
+   * Mismo precedente ya sancionado en
+   * `cancel-order-with-credit-note.service.ts` (gate 1c-0, 11/09/2026):
+   * si `linkStayToReservationCharges()` ya adoptó el `CHARGE` a un folio
+   * (carrera externa, fuera de esta transacción), el `ADJUSTMENT` nace YA
+   * sincronizado con el mismo `stay_id` en vez de depender de una adopción
+   * futura que podría no verlo (residuo declarado, no eliminado --
+   * `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001`,
+   * `docs/pendientes-2026-09-12.md`). El test de este comportamiento
+   * asertea el hecho LOCAL y determinístico ("el `ADJUSTMENT` hereda el
+   * `stayId` leído del `CHARGE` bajo lock"), nunca "las dos filas nunca
+   * divergen" -- ese invariante es falso bajo READ COMMITTED, ver el ítem
+   * anclado.
+   *
+   * ## Guard 8-bis -- factura en vuelo
+   * Reusa el predicado ya establecido de `transferStayBalanceToReceivable()`
+   * (`resolveInvoiceLinkage()` + `classifyReservationLiveInvoice()`) contra
+   * el `CHARGE` original: si tiene una factura `ISSUED` no reconciliada, o
+   * `NOT_ISSUED` en vuelo, rechaza con `ArReversalRequiresCreditNoteError`
+   * y no escribe nada. **Corrección (gate de implementación, ronda de
+   * commit ii) -- no es el predicado completo, es ese MENOS la rama
+   * `orderId`.** El original de `transferStayBalanceToReceivable()` tiene
+   * 3 ramas (`reservationId` → `classifyReservationLiveInvoice`, si no
+   * `orderId` → `classifyOrderLiveInvoice`, si no `NOT_RECONCILED`); acá
+   * solo hacen falta 2 -- el `CHARGE` de `postStayTransfer()` SIEMPRE nace
+   * con `reservationId` y NUNCA con `orderId` (ver ese método), así que la
+   * rama `orderId` es alcanzable en teoría (el tipo lo permite) pero
+   * imposible en la práctica para este `CHARGE` puntual. `charge.reservationId`
+   * se lee con guard explícito (nunca `!`) -- el CHECK de origen en BD
+   * permite `<= 1` de los 3 campos, un `CHARGE` legacy sin `reservationId`
+   * es DB-legal, y si algún día existiera uno así acá, la ausencia de la
+   * rama `orderId` falla CERRADO (`NOT_RECONCILED`, bloquea la reversa),
+   * no abierto.
+   *
+   * ## Residuos declarados, no resueltos en este commit
+   * - `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001` (ver Finding C arriba).
+   * - TOCTOU de `requestConsolidatedInvoice()`/`finalizeIssued()`: ninguno
+   *   de los dos toma lock sobre la AR/CHARGE -- si commitea ENTRE la
+   *   lectura de este método y el suyo, puede emitir CAE real contra un
+   *   cargo ya revertido. Fuera de alcance (tocar el camino de emisión
+   *   AFIP merece su propio gate, ver §7.2(b) del ADR).
+   * - Cuatro lecturas de este método no reciben `client` -- corren en
+   *   conexiones separadas del pool mientras esta transacción sigue
+   *   abierta (instancias 7-10 de `CITY-LEDGER-AR-NESTED-CONN-001`, ver
+   *   `docs/pendientes-2026-09-12.md`; ninguna toma `FOR UPDATE`, sin
+   *   riesgo de deadlock): `resolveInvoiceLinkage()` (guard 8-bis,
+   *   siempre), `financialRepo.getById()` del PAYMENT del huésped
+   *   (siempre), `stayRepo.findById()` y `businessProfileRepo.get()`
+   *   (solo en la rama `correctedBalance`).
+   */
+  async reverseTransfer(input: {
+    accountReceivableId: string;
+    /** identity_id (JWT sub) de quien autoriza la reversa -- mismo criterio que `transferredBy`. */
+    reversedBy: string;
+    reason: string;
+    /** Si se omite, no hay saldo real corregido: reversa pura, sin AR nueva. */
+    correctedBalance?: number;
+  }): Promise<{ reverted: AccountReceivable; replacement: AccountReceivable | null }> {
+    const ar = await this.arRepo.getById(input.accountReceivableId);
+    if (!ar) throw new AccountReceivableNotFoundError(input.accountReceivableId);
+    if (ar.status === 'FACTURADO' || ar.status === 'COBRADO') {
+      throw new ArReversalRequiresCreditNoteError(ar.id, ar.status);
+    }
+    if (ar.status === 'REVERTIDO') {
+      // Idempotente -- mismo criterio que markCollected() sobre COBRADO.
+      return { reverted: ar, replacement: null };
+    }
+    if (ar.guestPaymentTransactionId == null) {
+      throw new ArReversalMissingGuestLinkError(ar.id);
+    }
+    if (ar.financialTransactionId == null) {
+      throw new ArReversalMissingCompanyLinkError(ar.id);
+    }
+    if (!this.financialRepo.getByIdWithLock) {
+      throw new Error(
+        'reverseTransfer: FinancialTransactionRepository.getByIdWithLock no está implementado en este repositorio.',
+      );
+    }
+    const getFinancialTxWithLock = this.financialRepo.getByIdWithLock.bind(this.financialRepo);
+
+    return this.transactionManager.run(async (client) => {
+      // Lock de la AR PRIMERO (O2F2-A) -- serializa contra un markCollected()
+      // o un reverseTransfer() concurrentes sobre la MISMA fila.
+      const lockedAr = await this.arRepo.getByIdWithLock(client, input.accountReceivableId);
+      if (!lockedAr) throw new AccountReceivableNotFoundError(input.accountReceivableId);
+      if (lockedAr.status === 'REVERTIDO') {
+        return { reverted: lockedAr, replacement: null };
+      }
+      if (lockedAr.status === 'FACTURADO' || lockedAr.status === 'COBRADO') {
+        throw new ArReversalRequiresCreditNoteError(lockedAr.id, lockedAr.status);
+      }
+
+      const charge = await getFinancialTxWithLock(client, lockedAr.financialTransactionId!);
+      if (!charge) {
+        throw new Error(
+          `reverseTransfer: no se encontró el CHARGE "${lockedAr.financialTransactionId}" de la AR "${lockedAr.id}" -- no debería pasar bajo R15 (referencia rota).`,
+        );
+      }
+      if (charge.status !== 'SETTLED') {
+        throw new ArReversalChargeNotSettledError(lockedAr.id, charge.id, charge.status);
+      }
+
+      // Guard 8-bis -- ver docblock del método.
+      const linkage = await this.invoiceRepo.resolveInvoiceLinkage(charge.id);
+      if (linkage.kind === 'ISSUED') {
+        const classification = charge.reservationId
+          ? await this.invoiceRepo.classifyReservationLiveInvoice(client, charge.reservationId)
+          : ('NOT_RECONCILED' as const);
+        if (classification === 'NOT_RECONCILED') {
+          throw new ArReversalRequiresCreditNoteError(lockedAr.id, 'ISSUED');
+        }
+      } else if (
+        linkage.kind === 'NOT_ISSUED' &&
+        (linkage.status === 'PENDING' || (linkage.status === 'FAILED_UNCERTAIN' && linkage.afipContacted))
+      ) {
+        throw new ArReversalRequiresCreditNoteError(lockedAr.id, linkage.status);
+      }
+
+      const guestPayment = await this.financialRepo.getById(lockedAr.guestPaymentTransactionId!);
+      if (!guestPayment) {
+        throw new Error(
+          `reverseTransfer: no se encontró el PAYMENT "${lockedAr.guestPaymentTransactionId}" de la AR "${lockedAr.id}" -- no debería pasar bajo R15 (referencia rota).`,
+        );
+      }
+
+      const reversalNotes = `Reversa de transferencia a cuenta por cobrar — empresa ${lockedAr.companyCustomerId}`;
+
+      // Pata EMPRESA -- ver "Finding 1"/"Finding C" en el docblock del método.
+      await this.financialRepo.createWithClient(client, {
+        id:            randomUUID(),
+        businessId:    lockedAr.businessId,
+        customerId:    lockedAr.companyCustomerId,
+        reservationId: charge.reservationId ?? null,
+        stayId:        charge.stayId ?? null,
+        type:          'ADJUSTMENT',
+        amount:        -lockedAr.amount,
+        currency:      lockedAr.currency,
+        status:        'SETTLED',
+        reversedInvoiceId: null,
+        reversedTransactionId: lockedAr.financialTransactionId ?? null,
+        notes:         reversalNotes,
+      });
+
+      // Pata HUÉSPED -- reabre el folio (`stayId: ar.stayId`), a
+      // diferencia de la pata empresa. `reservationId: null` a propósito:
+      // si la reserva se cancela después, `voidByReservationId()` no debe
+      // alcanzar a esta fila (revertiría la reversa misma) -- su
+      // contraparte, el PAYMENT original, tampoco lleva `reservationId`.
+      await this.financialRepo.createWithClient(client, {
+        id:            randomUUID(),
+        businessId:    lockedAr.businessId,
+        customerId:    guestPayment.customerId,
+        reservationId: null,
+        stayId:        lockedAr.stayId,
+        type:          'ADJUSTMENT',
+        amount:        lockedAr.amount,
+        currency:      lockedAr.currency,
+        status:        'SETTLED',
+        reversedInvoiceId: null,
+        reversedTransactionId: lockedAr.guestPaymentTransactionId ?? null,
+        notes:         reversalNotes,
+      });
+
+      const reverted = await this.arRepo.markRevertedWithClient(client, lockedAr.id, {
+        reversedBy: input.reversedBy,
+        reason:     input.reason,
+      });
+      if (!reverted) {
+        throw new Error(
+          `reverseTransfer: markRevertedWithClient no afectó ninguna fila para "${lockedAr.id}" -- no debería pasar bajo el lock ya tomado.`,
+        );
+      }
+
+      let replacement: AccountReceivable | null = null;
+      if (input.correctedBalance != null && input.correctedBalance > 0) {
+        const stay = await this.stayRepo.findById(lockedAr.stayId, lockedAr.businessId);
+        if (!stay) throw new StayNotFoundError(lockedAr.stayId);
+        const { currency } = await this.businessProfileRepo.get();
+        replacement = await this.postStayTransfer(client, {
+          businessId:        lockedAr.businessId,
+          stayId:            lockedAr.stayId,
+          stayCustomerId:    stay.customerId,
+          reservationId:     stay.reservationId,
+          companyCustomerId: lockedAr.companyCustomerId,
+          balance:           input.correctedBalance,
+          currency,
+          transferredBy:     input.reversedBy,
+          notes:             `Reversa parcial — reemplaza a "${lockedAr.id}"`,
+          replacesArId:      lockedAr.id,
+        });
+      }
+
+      return { reverted, replacement };
+    });
   }
 }
