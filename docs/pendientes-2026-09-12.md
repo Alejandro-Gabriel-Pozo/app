@@ -38,58 +38,6 @@ cuando se pushea.
   entorno real (los 3 scopes nuevos de D9), confirmar que
   `clientes/[id]/page.tsx` la renderiza sin crash. Commit `bbf98c0`
   (appfrontend-main).
-- **`CITY-LEDGER-REVERSE-TRANSFER-INTEGRATION-VERIFY-001`, residuo (punto 1:
-  lock `FOR UPDATE` bajo concurrencia real)** (14/09/2026, split del ítem al
-  migrarlo a `docs/resuelto.md` -- los otros 4 puntos, 2/3/4/5, PASARON
-  contra Postgres real y quedaron ahí con su evidencia). Lo que sigue sin
-  confirmar: el comportamiento efectivo del lock `FOR UPDATE` sobre
-  `accounts_receivable`/`financial_transactions` bajo DOS transacciones
-  Postgres genuinamente interleaved (O2F2-A, Finding A -- la ventana de
-  `CITY-LEDGER-AR-STAY-ADOPTION-RACE-001` solo se puede reproducir con dos
-  transacciones reales, no con fakes). La verificación de esta sesión (Neon
-  proyecto `ancient-king-17098519`, rama scratch `test-integration-db` --
-  `br-bold-cell-axuvmork`, la misma rama scratch ya documentada desde
-  28/08/2026 (`docs/pendientes-2026-08-28.md:27`), no una elegida ad-hoc --
-  base descartable `verify_reverse_transfer_20260914` -- creada y borrada al
-  terminar, confirmado; nunca tocó `production` (`br-snowy-tree-ax5wmq70`)
-  ni `tenant-hotel-los-alamos` (`br-square-leaf-axzvu903`) -- ids, no solo
-  nombre, ver `docs/pendientes-2026-09-10.md:1534-1536`/`:212` -- corrida
-  vía SQL-over-HTTP porque este sandbox bloquea TCP crudo a Postgres)
-  confirmó que el SQL de `getByIdWithLock` de ambos repositorios ejecuta sin
-  error contra Postgres real, y confirmó un segundo
-  `UPDATE accounts_receivable ... WHERE id=$1 AND status='PENDIENTE_FACTURAR'`
-  sobre una AR ya `REVERTIDO` devuelve 0 filas, no pisa
-  `reversed_by`/`reversed_reason` -- pero **esto NO es "confirmar el
-  guardrail del lock"**: el 0-row conditional UPDATE de
-  `markRevertedWithClient()` (`sql.accounts-receivable.repository.ts:139-145`)
-  es una SEGUNDA línea de defensa INDEPENDIENTE del lock, no algo corriente
-  abajo de él -- si el lock no serializara, tx2 crearía sus 2 `ADJUSTMENT`,
-  después `markRevertedWithClient()` devolvería 0 filas, y
-  `accounts-receivable.service.ts:936-940` tira
-  `reverseTransfer: markRevertedWithClient no afectó ninguna fila para "..."
-  -- no debería pasar bajo el lock ya tomado.` DENTRO de
-  `transactionManager.run()` -- tx2 hace rollback y sus 2 filas desaparecen.
-  Consecuencia real de un lock roto: **una de dos reversas concurrentes tira
-  un 500 espurio, no que el ledger termine con 4 `ADJUSTMENT`** (no hay
-  corrupción del ledger, hay un fallo visible). No se pudo reproducir la
-  carrera en sí: SQL-over-HTTP no sostiene una sesión abierta entre
-  llamadas, no hay forma de interlear dos transacciones genuinamente
-  simultáneas. Limitación de este sandbox, no hallazgo sobre el código.
-  Acción puntual que lo confirma: ya existe el test
-  `lock real (O2F2-A): dos reverseTransfer() GENUINAMENTE simultáneos sobre
-  la MISMA AR...` en
-  `src/tests/integration/reverse-transfer.integration.test.ts` (usa
-  `Promise.all` de dos `reverseTransfer()` reales sobre el mismo `pg.Pool`
-  vía `PgTransactionManager` -- cada llamada abre su propia conexión, la
-  interleaving real que hace falta) -- sin commitear todavía, nunca
-  ejecutado con éxito (2 intentos de `vitest` contra la rama scratch,
-  timeout a los 30s y 90s, mismo bloqueo de TCP crudo del sandbox, no un
-  problema del test). Correrlo con `TEST_DATABASE_URL` apuntando a la rama
-  scratch desde un entorno con TCP real a Postgres (fuera de este sandbox)
-  confirma el punto. Nota aparte, no accionada: esa rama Neon tiene 5 bases
-  `test_*` huérfanas de sesiones anteriores (mismo problema ya documentado
-  en `src/tests/integration/helpers/db.ts:180-191`) -- no las creó ni las
-  tocó esta verificación.
 - **`CITY-LEDGER-ORDER-GUARD-M3-INTEGRATION-VERIFY-001`** — el guard de
   re-verificación tx1→tx2 del escape de NC de órdenes (hallazgo M3,
   14/09/2026, gate `architecture-governor`, APPROVED WITH CONDITIONS)

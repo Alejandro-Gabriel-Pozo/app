@@ -45,11 +45,13 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   push verificable con `git log origin/main --oneline | grep e841d46`
   en ese repo, no citado acá como hecho fijo.
 
-- **`CITY-LEDGER-REVERSE-TRANSFER-INTEGRATION-VERIFY-001`, 4 de 5 puntos
-  (2, 3, 4, 5).** Origen: `docs/pendientes-2026-09-12.md` (residuo de
-  verificación de `AccountsReceivableService.reverseTransfer()`, Bloque
-  3c-ii, 14/09/2026, gate `architecture-governor`, APPROVED WITH
-  CONDITIONS). Verificado contra Postgres real: Neon, proyecto
+- **`CITY-LEDGER-REVERSE-TRANSFER-INTEGRATION-VERIFY-001`, 5 de 5 puntos
+  (2, 3, 4, 5 -- vía SQL transcripto contra Neon; 1 -- vía el harness real
+  de `vitest` contra un cluster Postgres 16.13 local del sandbox, agregado
+  14/09/2026, gate `architecture-governor`, ronda 2).** Origen:
+  `docs/pendientes-2026-09-12.md` (residuo de verificación de
+  `AccountsReceivableService.reverseTransfer()`, Bloque 3c-ii, 14/09/2026).
+  Puntos 2/3/4/5 verificados contra Postgres real: Neon, proyecto
   `ancient-king-17098519`, rama scratch `test-integration-db` --
   `br-bold-cell-axuvmork` (misma rama scratch ya documentada desde
   28/08/2026, `docs/pendientes-2026-08-28.md:27`, no una elegida ad-hoc),
@@ -113,21 +115,54 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
     `reversed_by`/`reversed_at`/`reversed_reason` seteados.
 
   Ningún fallo real de código encontrado en estos 4 puntos, dentro del
-  alcance declarado arriba. El punto 1 (lock `FOR UPDATE` bajo concurrencia
-  real, dos transacciones genuinamente interleaved) **no** se pudo
-  verificar completo — split a `docs/pendientes-2026-09-12.md`, sección
-  `## 🔍 Verificaciones pendientes` (residuo, sigue abierto ahí, no
-  cerrado acá). Quedó sin commitear
-  `src/tests/integration/reverse-transfer.integration.test.ts` (harness
-  real, mismo patrón que
-  `accounts-receivable-invoice-linkage.integration.test.ts`), typechequea
-  limpio pero nunca corrió con éxito (2 intentos de `vitest` contra la
-  rama scratch, timeout a los 30s y 90s por el mismo bloqueo de TCP crudo
-  del sandbox, no por un problema del test) — gate `architecture-governor`
-  posterior (14/09/2026) encontró un defecto real y reproducible en ese
-  archivo (colisión de `idx_stays_reservation_active` en el tercer test del
-  punto 2) y lo rechazó para commitear tal cual; queda pendiente de
-  corrección en un commit propio, no incluido acá.
+  alcance declarado arriba.
+
+  **Punto 1 (lock `FOR UPDATE` bajo concurrencia real, dos transacciones
+  genuinamente interleaved) — cerrado en una segunda ronda (14/09/2026, gate
+  `architecture-governor`), con evidencia distinta y más fuerte que los
+  puntos 2-5: no SQL transcripto, sino el harness real de `vitest` corrido
+  con éxito contra un cluster PostgreSQL 16.13 **local al sandbox**
+  (`pg_lsclusters` lo mostró instalado y apagado; se levantó con
+  `pg_ctlcluster 16 main start`, mismo motor mayor que el `postgres:16-alpine`
+  de `.github/workflows/ci.yml`) — no contra Neon, que sigue bloqueado por
+  TCP crudo desde este sandbox. Se corrigieron antes 2 comentarios
+  incorrectos y un dato inventado (`guest2`, un cliente que
+  `Stay.checkIn()` nunca produciría para una segunda estadía sobre la misma
+  reserva -- `stay.service.ts:220-227` siempre hereda `customerId` de la
+  reserva) que un gate previo había señalado sin bloquear el commit por
+  eso.
+  - `src/tests/integration/reverse-transfer.integration.test.ts` (8 tests):
+    **8/8 passed**, 4 corridas independientes, sin flakiness
+    (`TEST_DATABASE_URL=postgres://testuser:testpass@localhost:5432/postgres
+    npx vitest run --config vitest.integration.config.ts
+    src/tests/integration/reverse-transfer.integration.test.ts`).
+  - Suite de integración completa: **37 archivos / 317 tests, todos
+    verdes** (misma `TEST_DATABASE_URL`, sin `--config` filtrado) — nada
+    del resto del repo se rompió.
+  - El interleaving real (no solo "el resultado final da 2 filas", que un
+    `Promise.all` secuencial también daría) se probó instrumentando el
+    cluster con `log_statement='all'` (revertido después) y leyendo el
+    log: dos backends (pids `20038`/`20039`) abren `BEGIN` casi
+    simultáneo, los dos ejecutan `SELECT ... accounts_receivable WHERE
+    id=$1 FOR UPDATE` sobre la MISMA fila, el segundo backend queda
+    bloqueado ~13ms hasta que el primero hace `COMMIT` -- y entre su
+    `FOR UPDATE` y su propio `COMMIT` el backend perdedor no ejecuta
+    ningún `INSERT`/`UPDATE`: tomó la rama idempotente de
+    `accounts-receivable.service.ts:854-856` al releer la fila ya
+    `REVERTIDO`, exactamente el guardrail que este punto buscaba
+    confirmar.
+  - `npx tsc --noEmit -p .` limpio. Sin bases `test_*` huérfanas tras las
+    corridas (confirmado con `SELECT datname FROM pg_database WHERE
+    datname LIKE 'test\_%'` → 0 filas).
+  - **Lo que este punto NO verifica:** que Neon/producción se comporten
+    igual que Postgres 16.13 local en este aspecto -- mismo motor mayor,
+    semántica de `FOR UPDATE` estable entre ambos, pero es inferencia, no
+    observación directa contra Neon.
+
+  Commit del test:
+  `src/tests/integration/reverse-transfer.integration.test.ts`, 8 tests,
+  vía `git add` por path explícito (no `git add .`/`commit -a`, para no
+  arrastrar archivos de otras sesiones en curso en el mismo working tree).
 
 ---
 
