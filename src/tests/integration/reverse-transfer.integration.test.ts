@@ -15,7 +15,8 @@
  *      `reservation_id` + `stay_id` juntos en el ADJUSTMENT de la pata
  *      empresa (el CHECK es un XOR solo entre `order_id`/`reservation_id`,
  *      `stay_id` no participa -- ya confirmado ESTÁTICAMENTE leyendo el
- *      DDL, `schema.sql:3842-3845`; acá se confirma con un INSERT real).
+ *      DDL del CHECK `chk_financial_transactions_order_or_reservation`;
+ *      acá se confirma con un INSERT real).
  *   3. El guard 8-bis (factura `ISSUED` viva sin conciliar sobre el
  *      `CHARGE` original) rechaza con `ArReversalRequiresCreditNoteError`.
  *   4. La rama `correctedBalance` de punta a punta -- crea la AR de
@@ -308,8 +309,8 @@ describe.skipIf(skipIfNoDb)('AccountsReceivableService.reverseTransfer() -- veri
       // gate pidió confirmar contra Postgres real.
       //
       // `idx_stays_reservation_active` es un índice único PARCIAL sobre
-      // `(reservation_id) WHERE status = 'CHECKED_IN'` (schema.sql:1895-1896)
-      // -- dos filas CHECKED_IN para la misma reserva violan ese índice.
+      // `(reservation_id) WHERE status = 'CHECKED_IN'` -- dos filas
+      // CHECKED_IN para la misma reserva violan ese índice.
       // La estadía original de `seedTransferredScenario()` (`originalStayId`)
       // ya quedó CHECKED_IN por default; para que la adopción sea una fila
       // legal, primero hay que cerrarla (CHECKED_OUT).
