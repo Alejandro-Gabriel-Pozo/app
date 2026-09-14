@@ -2487,13 +2487,12 @@ CREATE INDEX IF NOT EXISTS idx_ar_guest_payment_transaction
 -- 14/09/2026 contra los dos tenants reales). `guest_reversal_transaction_id`
 -- (addendum propuesto en el mismo ADR, nunca aplicado) queda superseded
 -- por el mismo motivo -- no se agrega.
--- Ventana de deriva declarada (Condición 2 del gate, ronda Bloque 3a):
--- al momento de este commit, docs/diseno-reconciliacion-city-ledger-
--- 2026-09-12.md §4.2/§4.3/§7/§10 TODAVÍA describen el diseño anterior
--- (esta columna + `guest_reversal_transaction_id`) -- el ADR se actualiza
--- recién en el Bloque 3b, commit aparte. Hasta que ese commit aterrice,
--- el ADR describe el diseño superseded por este mismo bloque, no leerlo
--- como vigente.
+-- Ventana de deriva declarada en Bloque 3a (Condición 2 del gate) --
+-- CERRADA en Bloque 3b (commit `5312181`, 14/09/2026):
+-- docs/diseno-reconciliacion-city-ledger-2026-09-12.md §4.2/§4.3/§6/§7
+-- (no "§10" -- ese número era un error de esta misma nota, corregido acá
+-- de paso; el ADR no tiene sección 10) ya reflejan el diseño real de
+-- este bloque, no el anterior.
 ALTER TABLE accounts_receivable DROP COLUMN IF EXISTS reversal_transaction_id;
 
 -- ===========================================================================
