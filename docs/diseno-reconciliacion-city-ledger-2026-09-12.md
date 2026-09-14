@@ -261,6 +261,31 @@ ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS replaces_ar_id VARCHAR(
   REFERENCES accounts_receivable(id) ON DELETE NO ACTION;
 ```
 
+**Addendum — columna nueva, SIN aplicar todavía (13/09/2026, corrección
+del gate `architecture-governor` sobre §4.3, ver ahí).** El bloque de
+arriba (v52) ya está commiteado y aplicado — no se toca. La pata del
+huésped que §4.3 ahora compensa necesita su PROPIO vínculo de auditoría,
+simétrico a `reversal_transaction_id` pero hacia el `ADJUSTMENT` del
+huésped en vez del de la empresa (misma razón de ser: "esta AR se
+revirtió con ESTA fila exacta del ledger", una vez por pata). Requiere un
+bump de schema nuevo cuando se implemente — `CURRENT_SCHEMA_VERSION` ya
+está en 53 (`8f11d19`, hoy, columna `guest_payment_transaction_id`), así
+que esta columna es v53→v54, no v51→v52 como decía una versión anterior
+de este párrafo (ese número quedó viejo apenas `8f11d19` bumpeó la
+versión real, mismo día):
+
+```sql
+-- guest_reversal_transaction_id (v54, sin aplicar -- bloque de
+-- implementación real de reverseTransfer()). Vínculo hacia el SEGUNDO
+-- ADJUSTMENT compensatorio (§4.3 paso 6, contra el huésped) -- distinto
+-- de reversal_transaction_id (arriba), que apunta al PRIMERO (contra la
+-- empresa). ON DELETE NO ACTION, mismo criterio que reversal_transaction_id
+-- y guest_payment_transaction_id: financial_transactions nunca se
+-- hard-deletea (R12).
+ALTER TABLE accounts_receivable ADD COLUMN IF NOT EXISTS guest_reversal_transaction_id VARCHAR(255)
+  REFERENCES financial_transactions(id) ON DELETE NO ACTION;
+```
+
 **Corrección del gate `architecture-governor` (bloqueante, ronda 1):** la
 versión original de este documento proponía `type: 'REFUND'` para la fila
 compensatoria — **error de signo real**, no cosmético. En este ledger
@@ -324,6 +349,94 @@ nuevo para nada.
 
 ### 4.3 Servicio — `AccountsReceivableService.reverseTransfer()`
 
+**Corrección del gate `architecture-governor` (bloqueante, previa a
+implementar — 13/09/2026, tras `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`
+paso 1, commit `8f11d19`):** la versión anterior de esta sección solo
+compensaba la pata EMPRESA (paso 5 de más abajo) — la pata del HUÉSPED no
+aparecía en ningún paso. Eso contradice la propia decisión §3.1 de este
+documento ("reversa completa", no ajuste parcial) y el propio grounding
+de §2 (Cloudbeds, único de los 5 sistemas con City Ledger, nombra la
+operación de referencia *"Transfer back to folio"* — devolver el cargo
+al folio del huésped, no solo anular el lado de la empresa; §2 documenta
+el NOMBRE de la operación de Cloudbeds, no un comportamiento observado —
+leer ahí "reabre el folio" es una inferencia razonable a partir del
+nombre y consistente con la decisión §3.1, no un dato de grounding
+directo, y se declara así). Implementar §4.3 tal como estaba dejaba todo
+stay revertido con saldo ≠ 0: el `PAYMENT` sintético (`SETTLED`) del
+huésped seguía intacto, así que el folio quedaba saldado por un pago que
+nunca existió mientras la empresa ya no debía nada. En el caso más simple
+(nada más se movió desde la transferencia) el saldo total del stay pasaba
+de "correcto pero mal localizado" (folio en 0, empresa debe) a "perdido"
+(folio en 0, empresa no debe, nadie debe) — pero el caso que en realidad
+motiva este bloque (Disparador A, §1.1: un `ADJUSTMENT` de precio bajó
+DESPUÉS de transferir) deja el folio del huésped en NEGATIVO, no en cero
+— un crédito fantasma a favor del huésped, mismo patrón de bug que
+`ASYMMETRY-001` ya encontró del lado del agregado por cliente, acá del
+lado del folio por estadía.
+
+**Dependencia real, y por qué esta corrección no era posible antes de
+hoy:** solo existe una forma de encontrar la pata del huésped desde una
+fila de AR desde `8f11d19` (13/09/2026, mismo día), que agregó
+`accounts_receivable.guest_payment_transaction_id`. Antes de ese commit
+esta sección no podía haberse escrito distinto — la columna no existía.
+
+**Precondición declarada — filas sin vínculo (pre-`8f11d19`):** ese
+commit NO hizo backfill de `guest_payment_transaction_id` para AR ya
+existentes (mismo criterio que `financial_transaction_id`/
+`invoice_source`), así que toda AR creada ANTES de `8f11d19` tiene esa
+columna en `NULL`. Sin backfill, no hay forma de encontrar CUÁL `PAYMENT`
+corresponde (podría haber más de uno por estadía, y ningún otro campo lo
+distingue) — **`reverseTransfer()` sobre una de esas filas falla fuerte,
+no degrada** (guard nuevo, paso 4 de más abajo): hacer una reversa
+"parcial" (solo pata empresa) sería exactamente la misma regresión que el
+gate ya encontró y revirtió en el paso 3 de `ASYMMETRY-001` — ahí sobre
+el agregado de saldo, acá sobre esta operación. Mismo criterio R15 que ya
+sostiene `ON DELETE NO ACTION` en esa columna.
+
+**Finding B del gate, medido — no argumentado desde la cronología de
+commits.** El gate pidió medir, contra los dos tenants reales (Neon,
+proyecto `ancient-king-17098519`), (1) cuántas filas de
+`accounts_receivable` existen hoy y (2) cuántas estadías tienen más de un
+`PAYMENT` `SETTLED` (la ambigüedad que justifica no intentar resolver la
+pata del huésped por `stayId` a mano en vez de por el vínculo nuevo).
+Medido el 14/09/2026, `SELECT count(*)` de solo lectura contra
+`br-snowy-tree-ax5wmq70` (producción) y `br-square-leaf-axzvu903` (Hotel
+Los Álamos): **0 filas de `accounts_receivable` en los dos tenants, 0
+estadías con más de un `PAYMENT` `SETTLED` en los dos tenants.** Al
+momento de medir, la columna `guest_payment_transaction_id` todavía no
+estaba aplicada en producción, así que el primer `count` verificó la
+tabla entera, no la columna — estado de push verificable en el momento
+que se lea esto con `git log origin/main --oneline | grep 8f11d19`, no
+citado acá como hecho fijo del texto (mismo criterio ya establecido en
+`CLAUDE.md` raíz, incidente 11/09/2026: el estado de push cambia en el
+instante del `git push`, citarlo en presente es garantía de que el texto
+quede desactualizado).
+
+Esto cambia la severidad real de Finding B, pero **no en la dirección que
+una lectura apurada sugeriría.** Hoy no existe NINGUNA fila de
+`accounts_receivable` en producción, en ningún tenant — así que el guard
+fail-loud del paso 4 no va a rechazar ninguna reversa real el día que
+`8f11d19` + este bloque se desplieguen juntos. **Corrección (Condición
+C2 del gate, ronda 2, 13/09/2026): la ventana de riesgo real NO es "entre
+el deploy de `8f11d19` y el deploy de este bloque" — esa ventana está
+estructuralmente VACÍA, porque `8f11d19` agrega la columna Y la puebla en
+el mismo commit** (`transferStayBalanceToReceivable()` genera
+`guestPaymentId` y lo escribe en la fila de AR en la misma transacción
+que crea la columna referencia). **La ventana que sí está abierta es la
+anterior: toda AR que se cree en producción DESDE la medición del
+14/09/2026 HASTA que `8f11d19` se despliegue queda con
+`guest_payment_transaction_id` en `NULL` para siempre — sin backfill,
+esas filas nunca van a ser reversables por este mecanismo.** Sin cota
+temporal conocida (depende de cuándo se autorice y despliegue `8f11d19`,
+no de este bloque). El conteo en 0 de hoy hace que esa ventana, MEDIDA
+HOY, no tenga ninguna fila adentro todavía — pero la ventana en sí sigue
+abierta hasta que `8f11d19` se despliegue, no hasta que se mida. La
+pregunta de backfill histórico pierde urgencia por el conteo en 0, no
+porque la ventana se haya cerrado. Igual queda **fuera de alcance de este
+bloque** (mismo universo ya declarado "no autorizado" para
+`CITY-LEDGER-OVERTRANSFER-PAYMENT-001` en `docs/pendientes-2026-09-12.md`
+— necesita su propio `AskUserQuestion` + `irreversible-action-gate`).
+
 ```
 async reverseTransfer(input: {
   accountReceivableId: string;
@@ -344,18 +457,73 @@ Lógica (una sola transacción, `TransactionManager.run`):
 3. Guard: si `ar.status === 'REVERTIDO'` → idempotente, devuelve el estado
    actual sin re-ejecutar (mismo criterio que `markCollected()` sobre
    `COBRADO`).
-4. Crea el `ADJUSTMENT` compensatorio contra `ar.companyCustomerId`,
+4. **Guard nuevo:** si `ar.guestPaymentTransactionId == null` →
+   `throw new ArReversalMissingGuestLinkError(id)` (ver arriba — falla
+   fuerte, no reversa parcial).
+5. **Bloqueante, sin resolver todavía — ver Finding A del gate
+   `architecture-governor` (13/09/2026), §7 punto 7 reabierto más abajo.**
+   Crea el `ADJUSTMENT` compensatorio contra `ar.companyCustomerId`,
    `amount: -ar.amount` (negativo — ver §4.2, corrección del gate),
-   `reversedInvoiceId: null` SIEMPRE (invariante que lo excluye de NC, ver
-   §4.2), `notes` con el motivo. Campo de documento de origen
-   (`reservationId`/`stayId`): ver §7 pregunta nueva, sin resolver.
-5. `arRepo.markRevertedWithClient(client, id, { reversedBy, reason,
-   reversalTransactionId })`.
-6. Si `correctedBalance` viene y es `> 0`: reusa la lógica interna de
+   `status: 'SETTLED'` directo, `reversedInvoiceId: null` SIEMPRE
+   (invariante que lo excluye de NC, ver §4.2), `notes` con el motivo.
+   **`reservationId: null, stayId: null`, la resolución que §7 punto 7
+   había cerrado, choca con un guard real** (`SqlFinancialTransactionRepository.insert()`,
+   F1-Pieza 2: todo `CHARGE`/`ADJUSTMENT` exige al menos un documento de
+   origen — `reservationId`, `orderId` o `stayId` — o lanza en el momento
+   del `INSERT`). Con los dos en `null`, este paso NO PUEDE ESCRIBIRSE
+   como está diseñado hoy — ver la reapertura de §7 punto 7 para las
+   opciones, sin elegir todavía.
+6. **Paso nuevo — pata del huésped, sin la cual esta operación no es una
+   "reversa completa":** lee la fila `financial_transactions` de
+   `ar.guestPaymentTransactionId` (**corrección, Condición C6 del gate,
+   ronda 2:** no porque el `customerId` del huésped sea inalcanzable de
+   otra forma — `stays.customer_id`, vía `ar.stayId`, también lo da —
+   sino porque leer el `PAYMENT` mismo garantiza que el `ADJUSTMENT`
+   compensatorio pega exactamente contra el `customerId` que ESE
+   `PAYMENT` tocó, sin depender de que el `customerId` de la estadía hoy
+   sea el mismo que cuando se transfirió). Crea un SEGUNDO `ADJUSTMENT`
+   compensatorio, contra ESE `customerId`,
+   `status: 'SETTLED'` directo (a propósito — `getNetBalanceByCustomerId()`
+   solo cuenta `SETTLED`; si esta fila naciera `PENDING` reabriría el
+   folio vía `getNetBalanceByStayId()`, que SÍ cuenta `PENDING`, pero
+   dejaría el saldo por cliente todavía subdeclarado — las dos vistas
+   divergirían), `notes: "Reversa de transferencia a cuenta por cobrar —
+   empresa ${ar.companyCustomerId}"` (simétrico al `notes` que
+   `transferStayBalanceToReceivable()` ya escribe en el `PAYMENT`
+   original), `amount: +ar.amount` (POSITIVO — cancela el `-amount` que el `PAYMENT`
+   original aporta al agregado, `CASE type WHEN 'PAYMENT' THEN -amount …`,
+   mismo docblock de `getNetBalanceByCustomerId()`), `stayId: ar.stayId`
+   (a propósito, a diferencia del paso anterior: **REABRE el folio del
+   huésped** — es literalmente lo que "Transfer back to folio" significa,
+   el huésped vuelve a deber el monto en su propio folio),
+   `reservationId: null` (autocontenido, no depende de cómo se resuelva
+   Finding A del paso 5: si la reserva se cancela DESPUÉS de la reversa,
+   `voidByReservationId()` anularía también esta fila si llevara
+   `reservationId`, revirtiendo la reversa misma — mismo riesgo que §1.2
+   documenta para el `CHARGE` original), `reversedInvoiceId: null`
+   SIEMPRE (mismo invariante que la pata empresa — esta fila tampoco
+   participa nunca de una NC). **A diferencia del paso 5, este paso NO
+   choca con el guard de `insert()` (F1-Pieza 2, ver §7 punto 7
+   REABIERTO) — `stayId: ar.stayId` ya es, por sí solo, un documento de
+   origen no-nulo, así que la elección `reservationId: null` acá es
+   segura tal como está, sin esperar a que se resuelva Finding A.**
+7. `arRepo.markRevertedWithClient(client, id, { reversedBy, reason,
+   reversalTransactionId, guestReversalTransactionId })` — dos columnas
+   de vínculo, no una (ver §4.2).
+8. Si `correctedBalance` viene y es `> 0`: reusa la lógica interna de
    `transferStayBalanceToReceivable()` (extraída a un helper privado
    compartido, no duplicada) para crear el `PAYMENT`+`CHARGE`+AR nueva por
-   el monto corregido, con `replacesArId: ar.id`.
-7. Devuelve ambas filas.
+   el monto corregido, con `replacesArId: ar.id`. **Nota de secuencia
+   (no diseño cerrado, análisis completo queda para el bloque de
+   implementación):** este paso corre DESPUÉS del paso 6 — el folio ya
+   está reabierto por el monto completo cuando el re-transfer vuelve a
+   saldarlo por el monto corregido; si `correctedBalance < ar.amount`, el
+   huésped queda debiendo la diferencia en su propio folio, que es el
+   comportamiento correcto (esa diferencia nunca debió transferirse). La
+   interacción con Q1/`checkOut()` (saldo `PENDING` incluido desde el fix
+   de Bloque 1) queda para el S4.0 del bloque de implementación real, no
+   para este documento.
+9. Devuelve ambas filas (`reverted`, `replacement`).
 
 ### 4.4 Ruta — `POST /accounts-receivable/:id/reverse`
 
@@ -657,7 +825,8 @@ implementación real:**
 | `src/api/routes/` (ruta nueva `POST /:id/reverse`) | DEFENSIVE_DEVELOPING §3 aplica | — (ya declarado) |
 | `req.db` vs pool de plataforma | Sin cambios de wiring — mismo patrón que el resto de `AccountsReceivableService`, `req.db` vía `TransactionManager` inyectado, nunca `getPlatformRawPool()` | — (ya declarado) |
 | RBAC (`EXPECTED_AUTHORIZE_CALL_SITES`, `docs/rbac-matriz-endpoints.md`) | **+2 call-sites** (decisión §3.7: `MANAGEMENT` Y `EMISOR_NOTA_CREDITO` en cadena, no 1 solo) | — (ya declarado, número corregido) |
-| Schema (`CURRENT_SCHEMA_VERSION`) | v51 → v52 | — (ya declarado) |
+| Schema (`CURRENT_SCHEMA_VERSION`) | v52 (ya aplicado, `b82d828`) para `REVERTIDO`/`reversed_*`/`reversal_transaction_id`/`replaces_ar_id`. **Corrección 13/09/2026: el bloque de implementación real ahora suma `guest_reversal_transaction_id` (§4.2 addendum) — v53→v54, no v51→v52, porque `8f11d19` (mismo día) ya bumpeó a v53 con `guest_payment_transaction_id`.** | — (ya declarado, número corregido) |
+| `reversed-invoice-id-convention.test.ts::WRITE_SITES` (§7 punto 9) | `3 → 4` — el `ADJUSTMENT` compensatorio de la pata huésped (§4.3 paso 6) escribe `reversedInvoiceId: null` explícito, igual que la pata empresa | Sin actualizar el número, la suite queda roja apenas se implementa — no es opcional |
 | **`sql.accounts-receivable.repository.ts::getReportByPeriod`** | `SUM(ar.amount)` y `COUNT(*)` sin filtro, más 3 `FILTER (WHERE ar.status = ...)` que solo cubren los 3 estados viejos | **Alto** — con `REVERTIDO` sumando al total pero sin bucket propio, `totalAmount ≠ pending+invoiced+collected` en `GET /api/reports/accounts-receivable`, y un par original+reemplazo duplica el total del cierre de mes |
 | **`appfrontend-main/src/lib/finanzas/types.ts`** — `AccountsReceivableStatus` (unión de 3 valores) | Contrato cross-repo, sin CI compartida que lo detecte | Rompe en silencio hasta que alguien vea el síntoma en producción |
 | **`appfrontend-main/src/app/dashboard/reportes/page.tsx`** — `AR_STATUS_LABEL: Record<AccountsReceivableStatus, string>` | Mapa de labels sin la 4ª clave | Una fila `REVERTIDO` renderiza `undefined` — en blanco, sin crash, mal en silencio |
@@ -693,6 +862,42 @@ implementación real:**
      fila `financial_transactions` del `CHARGE` original
      (`SELECT ... FOR UPDATE`) DENTRO de la transacción de
      `reverseTransfer()`.
+
+     **Ampliado (Condición D del gate, 13/09/2026, tras la corrección de
+     §4.3 que agrega la pata del huésped):** este análisis hablaba solo
+     del `CHARGE` de la empresa — con el paso 6 nuevo de §4.3, el
+     `PAYMENT` sintético del huésped (`ar.guestPaymentTransactionId`) es
+     igualmente sujeto de la reversa, y en teoría el mismo riesgo de
+     concurrencia aplica de ese lado. **Corrección (Condición C1 del gate,
+     ronda 2, 13/09/2026):** una versión anterior de este párrafo decía
+     que `voidByReservationId()` "no filtra por `type`" — falso, y además
+     mezclaba dos hallazgos distintos: el de §1.2 es sobre el filtro de
+     `customer_id` que falta, no de `type`. El `UPDATE` real de
+     `voidByReservationId()` restringe explícito a
+     `ft.type IN ('CHARGE', 'ADJUSTMENT')` (todo lo demás cae en su
+     contador de diagnóstico `tipo_no_liquidable`), con un fix de
+     producción del 23/08/2026 documentado en el propio docblock del
+     método — "NO toca `PAYMENT`/`REFUND`". El `PAYMENT` del huésped está
+     protegido por DOS hechos independientes, no uno: nunca lleva
+     `reservationId` (`transferStayBalanceToReceivable()`) Y su `type` lo
+     excluye estructuralmente de ese `UPDATE`. Hoy no hay ningún camino
+     conocido que anule ese `PAYMENT` concurrentemente con
+     `reverseTransfer()`. Queda para el bloque de implementación real, no
+     resuelto acá — la ausencia de riesgo conocido HOY no es garantía de
+     que no aparezca uno nuevo si el diseño de `PAYMENT` cambia.
+
+     **Nota `DEFENSIVE_DEVELOPING.md` §3, declarada (no "sin impacto" por
+     accidente):** el paso 6 de §4.3 necesita leer la fila
+     `financial_transactions` de `ar.guestPaymentTransactionId` para
+     resolver el `customerId` del huésped. `FinancialTransactionRepository`
+     no expone una variante `WithClient` de esa lectura (solo `getById`,
+     sobre el pool del tenant) — así que esa lectura corre FUERA de la
+     transacción de `reverseTransfer()`, sobre el pool normal, no sobre
+     el `client` de la tx. Benigno en la práctica (la fila es `SETTLED` e
+     inmutable, R12, sin lectura sucia posible), pero es una decisión a
+     declarar explícita en el commit real, mismo criterio que la adopción
+     de huérfanos de `transferStayBalanceToReceivable()` (fuera de tx a
+     propósito, ya documentada como tal en ese método).
    - **(b) LOS DOS caminos de emisión de factura AFIP, no solo uno —
      hallazgo ampliado en la ronda 3 del gate: no es solo concurrencia,
      son dos caminos que emiten un documento fiscal REAL sin ningún
@@ -777,6 +982,75 @@ implementación real:**
    cuenta corriente de la empresa, que es donde el operador la tiene que
    ver. Sin comportamiento visible divergente para el negocio, no
    ameritaba `AskUserQuestion` — es plomería interna.
+
+   **REABIERTO (Finding A del gate `architecture-governor`, 13/09/2026,
+   ronda "Design gate: ADR §4.3 guest-leg correction") — la resolución de
+   arriba es INSERTABLE-FALSA, no solo "sin comportamiento visible
+   divergente".** La cita a "F1-Pieza 2" del párrafo anterior hablaba de
+   trazabilidad documental como convención, no del guard real que la
+   aplica en código. Ese guard existe, es un `throw` de aplicación (no
+   solo el CHECK de Postgres que este punto sí verificó), y vive en
+   `SqlFinancialTransactionRepository.insert()` (buscar el texto *"un
+   {tx.type} necesita al menos un documento de origen"*, no citar por
+   línea — mismo criterio `SCHEMA-ANCHOR-DRIFT-001`): rechaza CUALQUIER
+   `CHARGE`/`ADJUSTMENT` con `reservationId`, `orderId` Y `stayId` los
+   tres `null` a la vez. El CHECK de Postgres (`<= 1`, "a lo sumo uno")
+   permite `null/null`; este guard de aplicación NO — exige `>= 1`, no
+   `<= 1`. La resolución `reservationId: null, stayId: null` de este
+   punto viola ese guard: `reverseTransfer()`, implementado tal como este
+   documento lo describe hoy, lanzaría ese `Error` en el paso 5 de §4.3
+   en CADA llamada, antes de llegar siquiera al paso 6 nuevo. Verificado
+   además que el guard está vivo, no dormido: los dos escritores de
+   `ADJUSTMENT` que ya existen en el repo (`cancel-reservation-with-credit-note.service.ts`
+   / `cancel-order-with-credit-note.service.ts`) siempre setean
+   `reservationId` y/o `stayId` — ninguno prueba el camino `null/null`.
+
+   **Opciones — el dueño pidió grounding ERP sobre este caso completo
+   (14/09/2026, `AskUserQuestion`: "Grounding para todo el caso
+   abordado") antes de elegir, mismo patrón ya usado para "declarar vs.
+   alinear" en `ASYMMETRY-001` — no es una decisión tomada todavía, es un
+   pedido de más evidencia. Grounding pendiente de despachar/completar;
+   estas 3 son las opciones sobre la mesa, no una lista final:**
+   - **(a) Setear `reservationId` en la pata empresa** — la MENOS novedosa
+     de las tres: mismo patrón exacto que ya usan los dos escritores de
+     `ADJUSTMENT` existentes en el repo
+     (`cancel-reservation-with-credit-note.service.ts`,
+     `cancel-order-with-credit-note.service.ts`), sin tocar ningún guard
+     compartido. El costo: reabre exactamente el riesgo que este punto
+     había descartado — si la reserva se cancela DESPUÉS de la reversa,
+     `voidByReservationId()` (§1.2) anularía también esta fila
+     compensatoria, revirtiendo la reversa misma mientras la AR queda
+     `REVERTIDO` — un estado inconsistente sin que nada lo detecte.
+   - **(b) Sancionar una excepción explícita y acotada en el guard de
+     `insert()`** para este único write site (mismo espíritu que otras
+     excepciones ya documentadas en el repo, ej. el acoplamiento
+     sancionado `RESERVA-10` en `sql.financial-transaction.repository.ts`),
+     apoyada en el argumento que este mismo punto ya hizo: la
+     trazabilidad real no depende del documento de origen clásico para
+     esta fila — `accounts_receivable.reversal_transaction_id` /
+     `guest_reversal_transaction_id` (§4.2 addendum) ya apuntan a ella
+     desde la AR, un camino más específico que `reservationId`/`stayId`.
+     Requiere tocar código de un guard compartido (`insert()`), que
+     revisa TODO `CHARGE`/`ADJUSTMENT` del repo, no solo el de este
+     bloque — el riesgo a pesar antes de elegir esta opción es que la
+     excepción quede mal acotada y abra la puerta a otros callers sin
+     documento de origen por accidente.
+   - **(c) `stayId` en la pata empresa, no `orderId` sintético — con un
+     costo real ya identificable, no "no evaluado".** `accounts-receivable.service.ts`
+     ya documenta en código por qué el `CHARGE` original de la empresa
+     omite `stayId` a propósito: `getNetBalanceByStayId()` suma por
+     `stay_id` SIN filtrar por `customer_id` (bloque `companyChargeId`),
+     así que una fila de la EMPRESA con `stayId` seteado se sumaría al
+     folio del HUÉSPED. Para el `ADJUSTMENT` compensatorio (negativo,
+     `-ar.amount`) el efecto es el mismo problema en sentido inverso: si
+     esta pata llevara `stayId: ar.stayId`, restaría del folio del
+     huésped exactamente cuando el paso 6 lo está reabriendo con
+     `+ar.amount` — cancelándolo parcial o totalmente sin que sea la
+     intención. Esta opción compite en desventaja con (a)/(b), no es una
+     alternativa neutral — se deja registrada para que el grounding la
+     pueda descartar con este argumento en vez de "no evaluado".
+   Ninguna de las tres se implementa sin que el grounding + decisión del
+   dueño cierren esto — este bloque no arranca código hasta resolver.
 8. **Dueño, resuelta (§3.8, ronda 3, 13/09/2026):** `listByCompany()`/
    `getByCompanyCustomerId()` no filtran por `status` — una vez que
    `REVERTIDO` exista, aparece igual que cualquier otra fila en el panel
@@ -788,6 +1062,62 @@ implementación real:**
    distinto queda como decisión de UI de `appfrontend-main`, no de este
    mecanismo. Bloque 2 de §8 ya puede escribir el contrato de la API de
    listado sin esta pregunta pendiente.
+9. **Técnica, resuelta acá (13/09/2026) — representación, no
+   comportamiento visible para el negocio.** ¿El `ADJUSTMENT`
+   compensatorio escribe `reversedInvoiceId: null` explícito, o lo omite
+   (el campo es opcional)? **Resolución: explícito, `reversedInvoiceId:
+   null` SIEMPRE** (ya así en §4.2/§4.3, sin cambio) — no por
+   default del lenguaje, a propósito. Costo verificado:
+   `src/tests/architecture/reversed-invoice-id-convention.test.ts` define
+   `WRITE_RE` sobre el literal `reversedInvoiceId:` seguido de cualquier
+   valor (incluido `null`) excluyendo declaraciones de tipo — un write
+   explícito de `null` SÍ matchea `WRITE_RE` y hace falta sumar el
+   archivo nuevo a `WRITE_SITES` (`3 → 4`) y el mismo write tiene que
+   setear `type: 'REFUND'` o `'ADJUSTMENT'` (lo hace: `'ADJUSTMENT'`, dos
+   veces — pata empresa y pata huésped). **Condición E del gate
+   (13/09/2026), no cubierta por el párrafo original:** el mismo test
+   también aserta `expect(WRITE_SITES.length).toBe(3)` (guard
+   anti-vacuidad, aparte del array) — ese literal tiene que pasar a `4`
+   EN EL MISMO commit, o la suite queda roja aunque el array ya tenga la
+   entrada nueva. Dos ediciones en ese archivo, no una. Se prefiere explícito sobre
+   omitir porque es exactamente el caso que ese test existe para
+   vigilar: un campo que decide si una fila puede terminar en una Nota de
+   Crédito es más seguro escrito a la vista, con la cerca reaccionando a
+   propósito, que dejado a que el default de TypeScript lo resuelva en
+   silencio.
+10. **Técnica, resuelta acá (13/09/2026) — formato, no comportamiento
+    visible.** La sección 2 de `docs/rbac-matriz-endpoints.md` no tenía
+    forma de representar un AND de dos grupos en una fila (formato hoy:
+    `- MÉTODO \`path\` — \`GRUPO\``, un solo grupo). `accounts-receivable.routes.ts`
+    sigue en `EXCLUDED_FILES` de `rbac-matrix-section2-sync.test.ts`
+    (prosa, no bullets parseables) — este bloque no rompe esa cerca
+    todavía, pero el bullet que documenta la ruta a mano en la sección 2
+    sí necesita un formato consistente para cuando ese archivo se
+    normalice. **Resolución: `` `GRUPO_A` **Y** `GRUPO_B` ``** (dos
+    grupos entre backticks, conector en negrita) — mismo espíritu que el
+    formato prosa ya usado para un AND condicional en
+    `invoices.routes.ts` (línea 178 de la matriz: "`FRONT_DESK` (+
+    `requireModule(FACTURACION)`; … exige **además** `MANAGEMENT`…)"),
+    adaptado a un AND incondicional de dos `authorize()` reales. Aplicar
+    este formato a la fila nueva de `POST /:id/reverse` en el bloque de
+    implementación (§4.4/§6) y dejarlo como convención para la próxima
+    vez que una ruta encadene dos `authorize()`.
+11. **Dueño, pendiente de acuse (Condición F del gate, 13/09/2026) —
+    consecuencia visible para el negocio, no plomería.** El paso 6 nuevo
+    de §4.3 REABRE el folio del huésped (`stayId: ar.stayId` en el
+    `ADJUSTMENT` de la pata huésped). Una estadía con una transferencia a
+    City Ledger ya está normalmente `CHECKED_OUT` (la transferencia es lo
+    que habilitó ese check-out con saldo `<= 0`) — después de la reversa,
+    es una estadía CERRADA con saldo POSITIVO otra vez, visible en
+    `StayService.getFolio()`. No rompe ningún invariante
+    (`overridePendingBalance` ya permite saldo ≠ 0 en una estadía
+    cerrada), pero §3.6 ya decidió que no hay UI para disparar
+    `POST /:id/reverse` — así que tampoco hay pantalla que le muestre a
+    nadie ese saldo reabierto ni un camino para cobrarlo. Sin UI en este
+    bloque (decisión ya tomada, no se reabre), pero el dueño tiene que
+    tener presente esta consecuencia antes de autorizar el mecanismo: hoy
+    la única forma de que alguien vea ese saldo es yendo a buscarlo a
+    mano (`GET` del folio, o el propio log de auditoría de la reversa).
 
 ## 8. Bloques de implementación sugeridos (orden, no decisión)
 
