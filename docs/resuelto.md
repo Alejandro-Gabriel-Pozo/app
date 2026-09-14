@@ -45,6 +45,90 @@ o documento de auditoría la trajo) para no perder la trazabilidad.
   push verificable con `git log origin/main --oneline | grep e841d46`
   en ese repo, no citado acá como hecho fijo.
 
+- **`CITY-LEDGER-REVERSE-TRANSFER-INTEGRATION-VERIFY-001`, 4 de 5 puntos
+  (2, 3, 4, 5).** Origen: `docs/pendientes-2026-09-12.md` (residuo de
+  verificación de `AccountsReceivableService.reverseTransfer()`, Bloque
+  3c-ii, 14/09/2026, gate `architecture-governor`, APPROVED WITH
+  CONDITIONS). Verificado contra Postgres real: Neon, proyecto
+  `ancient-king-17098519`, rama scratch `test-integration-db` --
+  `br-bold-cell-axuvmork` (misma rama scratch ya documentada desde
+  28/08/2026, `docs/pendientes-2026-08-28.md:27`, no una elegida ad-hoc),
+  base descartable `verify_reverse_transfer_20260914` (creada, usada y
+  borrada al terminar, confirmado — nunca tocó `production`
+  (`br-snowy-tree-ax5wmq70`) ni `tenant-hotel-los-alamos`
+  (`br-square-leaf-axzvu903`) -- ids, no solo nombre, ver
+  `docs/pendientes-2026-09-10.md:1534-1536`/`:212`), con el schema.sql real
+  completo aplicado, vía SQL-over-HTTP porque este sandbox bloquea TCP
+  crudo a Postgres.
+
+  **Alcance real de la evidencia, declarado sin matices por punto:**
+  ningún TS de `accounts-receivable.service.ts` corrió en ningún momento —
+  la verificación consistió en re-ejecutar a mano, contra Postgres real, el
+  SQL transcripto de los repositorios reales, no el código compilado. NO
+  cubre: la selección de rama en TS (`charge.reservationId ? … :
+  'NOT_RECONCILED'`, el switch de `linkage.kind`,
+  `correctedBalance != null && > 0`), el orden de escritura dentro de
+  `TransactionManager.run()`, el rollback-on-throw, ni la fidelidad de la
+  transcripción SQL contra lo que el repositorio realmente emite. Además,
+  la base descartable fue borrada al terminar: lo que sobrevive es esta
+  prosa, no un output capturado ni un comando reproducible — no hay evidencia
+  re-consultable.
+  - Punto 2 (CHECK `chk_financial_transactions_order_or_reservation`) —
+    PASÓ a nivel SQL. INSERT real con `type='ADJUSTMENT'`,
+    `reservation_id`+`stay_id` juntos (`order_id` NULL) aceptado; control
+    negativo con `order_id`+`reservation_id` juntos rechazado por el mismo
+    CHECK. Confirma contra Postgres real lo que la lectura estática de
+    `schema.sql` ya decía: el XOR es solo entre
+    `order_id`/`reservation_id`, `stay_id` no participa.
+  - Punto 3 (guard 8-bis contra una factura real ISSUED/PENDING) — PASÓ a
+    nivel SQL, cobertura parcial: `resolveInvoiceLinkage()` (confirmó
+    `kind: ISSUED`) y `getIssuedCreditNoteCompensationTotal()` (confirmó
+    `compensated: 0`) corridos con SQL real contra una factura ISSUED real
+    vinculada al CHARGE. Lo que NO corrió: la query `facturas`
+    (`sql.invoice.repository.ts:871-885`) ni
+    `resolveReservationPairAttribution()` (`:892`) -- el selector de rama
+    real, determina si el resultado termina en `RESOLVED` o `BLOCKED` -- y
+    `getIssuedCreditNoteCompensationTotal()` (la que sí corrió) solo
+    pertenece a la rama `BLOCKED` de fail-back; la rama `RESOLVED` usa una
+    query distinta, `getIssuedCreditNoteCompensationTotalForReservation()`
+    (`:897`), que nunca se ejecutó. Que `classifyReservationLiveInvoice()`
+    devuelva `NOT_RECONCILED` y `reverseTransfer()` lance
+    `ArReversalRequiresCreditNoteError` se confirmó leyendo la rama de
+    código real (determinística), no ejecutando el TS compilado ni el
+    selector de rama.
+  - Punto 4 (rama `correctedBalance` de punta a punta) — PASÓ a nivel SQL.
+    Reprodujo con SQL transcripto la secuencia completa que
+    `postStayTransfer()` emite (no se ejecutó ese método en TS): revertir
+    la AR original + insertar la AR de reemplazo. AR nueva quedó
+    `PENDIENTE_FACTURAR`, `amount=1200`, `replaces_ar_id` apuntando a la AR
+    revertida, CHARGE/PAYMENT nuevos creados correctamente.
+  - Punto 5 (camino completo de punta a punta) — PASÓ a nivel SQL. Con una
+    AR transferida real, ejecutó con SQL transcripto la secuencia exacta
+    de `reverseTransfer()` y confirmó en SQL directo las 2 filas
+    ADJUSTMENT: pata empresa (`amount=-1500`, `reservation_id` heredado,
+    `stay_id=NULL` por diseño, `reversed_transaction_id` apuntando al
+    CHARGE original, `status=SETTLED`), pata huésped (`amount=+1500`,
+    `stay_id` heredado, `reservation_id=NULL`, `reversed_transaction_id`
+    apuntando al PAYMENT original). La AR quedó `REVERTIDO` con
+    `reversed_by`/`reversed_at`/`reversed_reason` seteados.
+
+  Ningún fallo real de código encontrado en estos 4 puntos, dentro del
+  alcance declarado arriba. El punto 1 (lock `FOR UPDATE` bajo concurrencia
+  real, dos transacciones genuinamente interleaved) **no** se pudo
+  verificar completo — split a `docs/pendientes-2026-09-12.md`, sección
+  `## 🔍 Verificaciones pendientes` (residuo, sigue abierto ahí, no
+  cerrado acá). Quedó sin commitear
+  `src/tests/integration/reverse-transfer.integration.test.ts` (harness
+  real, mismo patrón que
+  `accounts-receivable-invoice-linkage.integration.test.ts`), typechequea
+  limpio pero nunca corrió con éxito (2 intentos de `vitest` contra la
+  rama scratch, timeout a los 30s y 90s por el mismo bloqueo de TCP crudo
+  del sandbox, no por un problema del test) — gate `architecture-governor`
+  posterior (14/09/2026) encontró un defecto real y reproducible en ese
+  archivo (colisión de `idx_stays_reservation_active` en el tercer test del
+  punto 2) y lo rechazó para commitear tal cual; queda pendiente de
+  corrección en un commit propio, no incluido acá.
+
 ---
 
 ## 13/09/2026
