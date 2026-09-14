@@ -456,7 +456,7 @@ async reverseTransfer(input: {
 ```
 
 Lógica (una sola transacción, `TransactionManager.run`):
-1. `arRepo.lockForUpdate(client, id)` — mismo patrón de concurrencia que
+1. `arRepo.getByIdWithLock(client, id)` — mismo patrón de concurrencia que
    `markCollected()` (evita una reversa y un `markCollected()` concurrentes
    sobre la misma fila).
 2. Guard: si `ar.status === 'FACTURADO' || ar.status === 'COBRADO'` →
@@ -469,19 +469,71 @@ Lógica (una sola transacción, `TransactionManager.run`):
    `throw new ArReversalMissingGuestLinkError(id)` (ver arriba — falla
    fuerte, no reversa parcial).
 5. **RESUELTO (14/09/2026, commit `5ae9044`, Bloque 3a — ver §7 punto 7
-   cerrado más abajo).** Crea el `ADJUSTMENT` compensatorio contra
+   cerrado más abajo). CORRECCIÓN 14/09/2026 (gate `architecture-governor`,
+   ronda 3 de Bloque 3c-ii, Finding 1 — contradicción directa detectada
+   contra esta misma fila, no una mejora propuesta sin evidencia): el
+   `reservationId: null` de la redacción anterior queda SUPERSEDIDO por
+   `reservationId: charge.reservationId`.** La protección de `null` que
+   §1.2 documenta es correcta para la pata HUÉSPED (paso 6: el `PAYMENT`
+   original nunca llevó `reservationId`, así que si su `ADJUSTMENT`
+   compensatorio sí lo llevara, un `voidByReservationId()` posterior
+   anularía solo esa fila, revirtiendo la reversa misma) pero NO transfiere
+   a la pata EMPRESA: acá la contraparte real es el `CHARGE` original, que
+   SÍ lleva `reservationId` desde que se creó. Dejar el `ADJUSTMENT` en
+   `null` garantiza la asimetría que este mecanismo existe para evitar —
+   `voidByReservationId()` matchea `reservation_id`/`type`/`status` más un
+   sub-predicado POR FILA (`NOT EXISTS` de factura viva, scoped por
+   `ft.id`); con `CHARGE.reservationId` seteado y `ADJUSTMENT.reservationId`
+   en `null`, una futura cancelación de la reserva puede anular el `CHARGE`
+   sin alcanzar nunca al `ADJUSTMENT` — deuda fantasma de signo invertido,
+   mismo patrón de bug que `ASYMMETRY-001`. Pinear
+   `reservationId: charge.reservationId` hace que esa futura cancelación
+   evalúe el mismo `NOT EXISTS` sobre las DOS filas y las anule juntas
+   cuando corresponda. La protección real contra `voidByReservationId()`
+   no es "sin `reservationId`" — es el guard de factura-en-vuelo evaluado
+   ANTES de escribir la fila (paso 8-bis, nuevo, ver abajo), que bloquea la
+   reversa entera si el `CHARGE` tiene una factura viva o en vuelo; sin el
+   paso 8-bis este pin sería insuficiente, con él es necesario y correcto.
+
+   Crea el `ADJUSTMENT` compensatorio contra
    `ar.companyCustomerId`, `amount: -ar.amount` (negativo — ver §4.2,
    corrección del gate), `status: 'SETTLED'` directo, `reversedInvoiceId:
    null` SIEMPRE (invariante que lo excluye de NC, ver §4.2),
-   `reservationId: null, stayId: null` (protege del riesgo
-   `voidByReservationId()` que §1.2 documenta), `reversedTransactionId:
+   `reservationId: charge.reservationId, stayId: null` (ver corrección de
+   arriba — `stayId` sigue en `null` sin cambios, esta fila no participa de
+   ningún folio), `reversedTransactionId:
    ar.financialTransactionId` (**el campo que resuelve Finding A** — el
    `CHARGE` original de la empresa que esta fila corrige, mismo mecanismo
    general de `financial_transactions.reversed_transaction_id`, ver §4.2),
    `notes` con el motivo. Ya NO choca con el guard de `insert()`
-   (F1-Pieza 2) — `reversedTransactionId` cuenta como documento de origen
-   válido desde `5ae9044`, generalizando el guard en vez de necesitar una
-   excepción acotada a este único call site.
+   (F1-Pieza 2) — `reservationId`/`reversedTransactionId` cuentan como
+   documento de origen válido desde `5ae9044`, generalizando el guard en
+   vez de necesitar una excepción acotada a este único call site.
+
+   **Paso 8-bis (nuevo — corre entre este paso y la lectura del `CHARGE`
+   con lock, antes de escribir cualquiera de los dos `ADJUSTMENT`; cierra
+   Finding 1 de raíz, no como parche del pin de arriba).** Reusa el
+   predicado ya establecido de `transferStayBalanceToReceivable()`
+   (`resolveInvoiceLinkage()` + `classifyReservationLiveInvoice()`,
+   `accounts-receivable.service.ts:257-321`) contra el `CHARGE` original:
+   si tiene una factura `ISSUED` no reconciliada, o `NOT_ISSUED` con
+   estado `PENDING`/`FAILED_UNCERTAIN` (AFIP contactado), lanza
+   `ArReversalRequiresCreditNoteError` y no escribe nada. `charge.reservationId`
+   se lee con guard explícito (`charge.reservationId ? await
+   classifyReservationLiveInvoice(...) : 'NOT_RECONCILED' as const`), nunca
+   con `!` — el CHECK de origen en BD permite `<= 1` de los 3 campos de
+   origen, así que un `CHARGE` legacy sin `reservationId` es DB-legal
+   aunque el guard de aplicación de hoy no debería producir uno nuevo así;
+   con `!` el `undefined` coerciona a `NULL` vía el driver y el resultado
+   fail-closed sería accidental, no declarado. `resolveInvoiceLinkage()` no
+   recibe `client` — corre en una conexión separada del pool del tenant
+   mientras la transacción de `reverseTransfer()` sigue abierta en la
+   primera (lectura fresca, más nueva que el `ar.status` pre-tx pero no
+   transaccionalmente consistente con el lock ya tomado; sin riesgo de
+   deadlock, es un `SELECT` sin `FOR UPDATE`) — sexta instancia de la
+   deuda de clase `CITY-LEDGER-AR-NESTED-CONN-001`
+   (`docs/pendientes-2026-09-12.md`), a registrar en el commit de
+   implementación, no acá.
 
    **Precondición sin guardar todavía (Condición C2 del gate, ronda
    Bloque 3b, 14/09/2026) — a resolver en el Bloque 3c, no acá.**
@@ -860,6 +912,7 @@ implementación real:**
 | RBAC (`EXPECTED_AUTHORIZE_CALL_SITES`, `docs/rbac-matriz-endpoints.md`) | **+2 call-sites** (decisión §3.7: `MANAGEMENT` Y `EMISOR_NOTA_CREDITO` en cadena, no 1 solo) | — (ya declarado, número corregido) |
 | Schema (`CURRENT_SCHEMA_VERSION`) | v52 (ya aplicado, `b82d828`) para `REVERTIDO`/`reversed_*`/`replaces_ar_id`. **Corrección 14/09/2026 (commit `5ae9044`, Bloque 3a) — reemplaza la corrección del 13/09/2026 de esta misma fila, que quedó vieja el mismo día: NO se agregó `guest_reversal_transaction_id` (superseded, ver §4.2 addendum) — en cambio, v53→v54 sumó `financial_transactions.reversed_transaction_id` (auto-referencial, mecanismo GENERAL de reversa del ledger, no una columna dedicada por pata) y RETIRÓ `accounts_receivable.reversal_transaction_id` (v52, redundante con el campo nuevo). `reverseTransfer()` (Bloque 3c) no debe ningún bump de schema más para esto — el mecanismo ya está completo.** | — (ya declarado, número corregido) |
 | `reversed-invoice-id-convention.test.ts::WRITE_SITES` (§7 punto 9) | `3 → 4` — el `ADJUSTMENT` compensatorio de la pata huésped (§4.3 paso 6) escribe `reversedInvoiceId: null` explícito, igual que la pata empresa | Sin actualizar el número, la suite queda roja apenas se implementa — no es opcional |
+| **`AccountReceivable` (TS) vs `accounts_receivable` (schema v52)** (hallazgo del gate, ronda 3 de Bloque 3c-ii) | `reversed_by`/`reversed_at`/`reversed_reason`/`replaces_ar_id` existen en `schema.sql` desde v52 pero **cero** ocurrencias en `src/**/*.ts` — ni en la interfaz `AccountReceivable`, ni en `mapRow` de `sql.accounts-receivable.repository.ts`. `markRevertedWithClient()` (paso 7) escribe los primeros 3; el paso 8 (`correctedBalance`) necesita `replacesArId` en `postStayTransfer()` (firma a extender, ya pre-autorizado en el docblock de `49583cc`) y en `createWithClient`. Bloque 3c-ii tiene que declarar explícito si `reversed_by/at/reason` son write-only o si redondean de vuelta a la entidad — no dejarlo implícito, mismo criterio que ya se aplicó a `status` | Mismo modo de falla que el drift que este bloque entero vino a cerrar (`AccountsReceivableStatus` de 3 valores vs. 4 en BD) — repetirlo en 4 columnas más sin declararlo explícito reproduce el problema un nivel más abajo |
 | **`sql.accounts-receivable.repository.ts::getReportByPeriod`** | `SUM(ar.amount)` y `COUNT(*)` sin filtro, más 3 `FILTER (WHERE ar.status = ...)` que solo cubren los 3 estados viejos | **Alto** — con `REVERTIDO` sumando al total pero sin bucket propio, `totalAmount ≠ pending+invoiced+collected` en `GET /api/reports/accounts-receivable`, y un par original+reemplazo duplica el total del cierre de mes |
 | **`appfrontend-main/src/lib/finanzas/types.ts`** — `AccountsReceivableStatus` (unión de 3 valores) | Contrato cross-repo, sin CI compartida que lo detecte | Rompe en silencio hasta que alguien vea el síntoma en producción |
 | **`appfrontend-main/src/app/dashboard/reportes/page.tsx`** — `AR_STATUS_LABEL: Record<AccountsReceivableStatus, string>` | Mapa de labels sin la 4ª clave | Una fila `REVERTIDO` renderiza `undefined` — en blanco, sin crash, mal en silencio |
@@ -1111,6 +1164,30 @@ implementación real:**
    (una de schema — evitar agregar y borrar `reversal_transaction_id` en
    la misma corrida de `schema.sql`; una de documentación — declarar esta
    misma ventana de deriva): mensaje del commit `5ae9044`.
+
+   **CORRECCIÓN 14/09/2026 (gate `architecture-governor`, ronda 3 de
+   Bloque 3c-ii, Finding 1) — el punto "(a) queda descartada" de arriba ya
+   NO es correcto para la pata EMPRESA.** La cuarta opción (campo
+   auto-referencial) resuelve el problema de TRAZABILIDAD de origen —
+   deja de depender de `reservationId`/`stayId` para pasar el guard de
+   `insert()` — pero no resuelve, por sí sola, el riesgo de asimetría de
+   `voidByReservationId()` que motivó descartar (a): ese riesgo depende de
+   si el `ADJUSTMENT` LLEVA o no `reservationId`, no de si lo NECESITA
+   para pasar el guard. Con `reservationId: null` en la pata empresa (como
+   este punto cerró), una cancelación posterior de la reserva anula el
+   `CHARGE` original (si no tiene factura viva) pero nunca alcanza al
+   `ADJUSTMENT` compensatorio — deuda fantasma de signo invertido, mismo
+   patrón que `ASYMMETRY-001`, verificado en el gate de ronda 3. La
+   resolución final, ver §4.3 paso 5: la pata EMPRESA SÍ lleva
+   `reservationId: charge.reservationId` (variante de la opción (a),
+   readmitida para esta pata únicamente), protegida por un guard nuevo
+   (paso 8-bis, factura-en-vuelo) que bloquea la reversa entera si el
+   `CHARGE` tiene una factura viva o en curso — la combinación de (a)
+   parcial + 8-bis es la que efectivamente cierra Finding A, no el campo
+   auto-referencial solo. La pata HUÉSPED (paso 6) SÍ mantiene
+   `reservationId: null` sin cambios — su riesgo era el inverso (ver
+   razonamiento en §4.3 paso 5) y la cuarta opción sí lo resuelve completo
+   ahí, sin necesitar 8-bis para esa pata.
 8. **Dueño, resuelta (§3.8, ronda 3, 13/09/2026):** `listByCompany()`/
    `getByCompanyCustomerId()` no filtran por `status` — una vez que
    `REVERTIDO` exista, aparece igual que cualquier otra fila en el panel
