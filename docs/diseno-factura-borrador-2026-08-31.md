@@ -1,6 +1,23 @@
 # Diseño — Factura como borrador editable (proforma antes del CAE)
 
-- **Versión:** **v2.11** (12/09/2026). v2 reemplazó a v1; v2.1 corrigió la §17
+- **Versión:** **v2.13** (14/09/2026). **v2.13 resuelve PN-2** (§21/§30.4):
+  el dueño decidió que "la regla de cuenta corriente" de D1 (§4.1) es el
+  booleano ya existente `customers.enable_current_account`, **por cliente**
+  — **no** se construye un tope de crédito por tenant ahora (la idea queda
+  como backlog de producto explícito, no descartada — ver §22 y
+  `docs/pendientes-2026-09-12.md`). **Con esto, las 5 preguntas de negocio
+  nuevas de §21 (PN-1 a PN-5) y las de §26.3/§27.3 quedan todas cerradas o
+  fuera del camino crítico — ver §30.3.** Ninguna decisión de esta ronda
+  autoriza `CREATE TABLE`, migraciones ni código por sí sola: falta el gate
+  `architecture-governor`. v2.12 agregó la §30: cerró las dos últimas
+  preguntas de negocio que quedaban pendientes del dueño — §26.3 punto 5
+  (cierre de caja: solo advertir, no bloquear) y §27.3 (destino de
+  `POST /api/invoices`: se retira o redirige, no queda como bypass de un
+  click) — y encontró, al verificar que no quedara ninguna otra, que **PN-2
+  (§21) seguía abierta**: sin resolución en ningún lugar del documento,
+  bloqueando el `CREATE TABLE` igual que PN-1 (resuelta) y PN-4 (resuelta en
+  sustancia por D5/§25, sin marca explícita hasta entonces). v2 reemplazó a
+  v1; v2.1 corrigió la §17
   con la auditoría read-only; v2.2 agregó la §23 (PN-1 resuelto) e integró
   `ISSUED_PENDING_LEDGER` en la §5; **v2.3 sumó los tres controles de emisión
   de §23.6, uno de los cuales —fallo posterior al cargo— era un hueco de v2.2;
@@ -22,16 +39,32 @@
   clase — no reabre §17/§24/§28, no autoriza schema ni código**.
   Sigue sin autorizar schema ni código.
   Ver §0 para el diff.
-- **Fecha:** 2026-08-31 (creación) — última revisión 12/09/2026
-- **Estado:** **diseño, no implementado, y NO aprobado como diseño final.** v1
+- **Fecha:** 2026-08-31 (creación) — última revisión 14/09/2026
+- **Estado:** **Decisiones de negocio COMPLETAS (14/09/2026) — pendiente de
+  gate de arquitectura antes de implementar.** Esto **no** es una aprobación
+  de diseño: rondas anteriores del `architecture-governor` sí revisaron
+  DOCUMENTACIÓN de este mismo diseño (§28.1bis registra que el gate
+  encontró y corrigió una cita falsa de R14 en la ronda de D3, v2.10), pero
+  ningún gate revisó todavía el DISEÑO TÉCNICO (schema, servicios,
+  migraciones) — ningún gate autorizó `CREATE TABLE` ni código (commit,
+  schema, migraciones y código siguen en HOLD). v1
   fue aceptada por el dueño como **diagnóstico preliminar** y como encuadre
   estructural — **no** como autorización de schema. v2 formaliza las 6
   decisiones provisorias del dueño y **sigue sin autorizar nada**: no se
-  escribió código, no se creó ninguna tabla, no se escribió ninguna migración,
-  no se escribió ninguna migración. Las limitaciones que impiden considerarla
-  final: **no se corrió la suite ni el typecheck sobre este diseño** (no hay
-  código que correr), y **no se leyeron** el frontend, el
-  adaptador real de AFIP ni el `OutboxWorker`. Ver §22.
+  escribió código, no se creó ninguna tabla, no se escribió ninguna
+  migración. **Actualizado 14/09/2026 (§30, §30.4):** de las preguntas de
+  negocio que quedaban abiertas, §26.3 punto 5 y §27.3 se cerraron primero
+  hoy, y la verificación de cierre encontró que **PN-2 (§21) seguía sin
+  resolver** — el dueño la respondió más tarde en la misma fecha (§30.4):
+  la condición es `customers.enable_current_account` por cliente, **no** un
+  tope de crédito por tenant (eso queda como backlog explícito, no
+  descartado — §22). Con esa respuesta, **no queda ninguna pregunta de
+  negocio BLOQUEANTE** en este documento — PN-3 y PN-5 siguen abiertas,
+  pero fuera del camino crítico (§30.3). Las limitaciones que impiden
+  considerarlo verificado en runtime: **no se corrió la suite ni el
+  typecheck sobre este diseño** (no hay código que correr), y **no se
+  leyeron** el frontend, el adaptador real de AFIP ni el `OutboxWorker`.
+  Ver §22 y §30.
 - **Método:** `docs/DECISION_REVIEW.md` ("análisis de implicancias"). Disparo
   automático por `DECISION_REVIEW.md:119` — *"la decisión toca datos
   fiscales/legales (facturación, retención, AFIP/ARCA)"*. Todas las citas
@@ -67,6 +100,8 @@
 | **Reconciliación** (v2.9) | — | §27: grounding Odoo (confirma el mínimo de 3 pasos, no las 6 decisiones), un hueco real no tratado antes (§27.2, revalidar guards de cancelación al confirmar un borrador), una pregunta abierta (§27.3, destino de `POST /api/invoices`), y re-confirmación de C-5. El dueño instruyó además re-verificar D1-D6 contra Odoo real con Odoo ganando en caso de divergencia |
 | **Resolución Odoo D1-D6** (v2.10) | — | §28: solo D2 (origen de línea) y D6 (descuento) terminan retiradas hacia Odoo, con riesgos aceptados explícitamente (§28.2). D1/D4/D5 mantenidas por razón de dominio real (AFIP constitutivo, precedente `CN-ESCAPE-CONTAINMENT-001` ya implementado, defensa de catálogo ya funcionando). D3 tuvo una primera ronda con justificación defectuosa (cita errónea de R14) que el gate encontró antes de aprobar — re-anclada contra la clasificación real y el precedente de `orders` (`DRAFT→CANCELLED`, nunca `DELETE`), revirtió a **mantenida** (§28.1bis). §8/§24/§7.5/T18 quedan `SUPERSEDIDAS`. C-5 queda sin objeto si D2 se formaliza |
 | **Nota de catálogo — servicios administrativos** (v2.11) | — | §29: propuesta del dueño (surgida en el documento hermano de salida manual de NC) para modelar cargos administrativos/intangibles como ítem de catálogo de primera clase — no como línea manual sin origen. Registra la propuesta, corrige dos supuestos contra el schema real (`order_items.item_type` ya tiene 3 ramas, no 1; `products.product_type` ya existe con OTRO significado — no reusable para PHYSICAL/SERVICE) y dos alternativas (A: columna `requires_inventory` ortogonal; B, preferida por el dueño: rama `SERVICE` nueva en `item_type`). No reabre §17/§24/§28 — opera en una capa distinta (catálogo, no origen de la línea de factura). No autoriza schema ni código |
+| **Cierre §26.3/§27.3 + hueco PN-2** (v2.12) | §26.3 punto 5 y §27.3 abiertas | §30: **cierre de caja** DECIDIDA (solo advertir, nunca bloquear, para `ISSUED_PENDING_LEDGER`) y **destino de `POST /api/invoices`** DECIDIDA (se retira o redirige, no bypass de un click) — ambas del dueño, 14/09/2026. La verificación de que no quedara ninguna otra pregunta de negocio abierta encontró que **PN-2 (§21) sigue sin resolver** (nunca se dijo si "la regla de cuenta corriente" que puede rechazar la emisión, D1 §4.1, es el booleano por cliente que ya existe o un tope de crédito por tenant a construir) — hallazgo, no una decisión tomada hoy. El diseño **no** queda completo por esto |
+| **PN-2 resuelta — decisiones de negocio completas** (v2.13) | PN-2 (§21) abierta, único bloqueante de negocio restante | §21/§30.4: **PN-2 DECIDIDA por el dueño** (14/09/2026) — la condición es `customers.enable_current_account`, por cliente; **no** se construye un tope de crédito por tenant ahora. El dueño lo declaró backlog futuro, no lo descartó (*"La feature nueva [tope de crédito] está bien pero no para ahora"*) — registrado en §22 y en `docs/pendientes-2026-09-12.md`. Con esto **no queda ninguna pregunta de negocio abierta** (§30.3). Sigue sin autorizar `CREATE TABLE`, migraciones ni código — falta el gate `architecture-governor` |
 
 ---
 
@@ -1334,6 +1369,15 @@ Ninguna estaba en v1. Las tres primeras **bloquean el `CREATE TABLE`**.
 > Implica además actualizar `criterios-negocio.md:182-195`, que describe el
 > guard con tres orígenes.
 
+> **PN-2 ✅ DECIDIDA por el dueño (14/09/2026) — ver §30.4.** La condición
+> de rechazo es el booleano que ya existe, `customers.enable_current_account`
+> (`sql.customer.repository.ts:321`), **por cliente** — **no** se construye
+> un tope de crédito por tenant ahora. El dueño no descartó la idea del tope
+> de crédito: la declaró backlog futuro (*"La feature nueva [tope de
+> crédito] está bien pero no para ahora"*) — ver §22 (fuera de alcance) y
+> `docs/pendientes-2026-09-12.md` (backlog de producto). Lo que sigue abajo
+> es el planteo original, conservado como historial.
+>
 > **PN-2 🔒 — ¿Cuál es "la regla de cuenta corriente" que puede rechazar la
 > emisión?**
 > No existe una regla por tenant. Lo único real es
@@ -1380,6 +1424,16 @@ Ninguna estaba en v1. Las tres primeras **bloquean el `CREATE TABLE`**.
   **después** de emitida. El borrador cubre el antes; no compiten.
 - **No implementa frontend.** Mismo criterio "backend only" que C1-Fase A / C3 /
   C2 (`diseno-cancelacion-notas-credito-c2-2026-08-23.md:82-83`).
+- **No construye un tope de crédito por tenant.** Surgió como una de las dos
+  lecturas posibles de PN-2 (§21) — ¿la regla de cuenta corriente que puede
+  rechazar la emisión (D1, §4.1) es el booleano `customers.enable_current_account`
+  por cliente, o un límite de crédito nuevo a nivel tenant? **Decidido por el
+  dueño (§30.4, 14/09/2026): la condición vigente es el booleano por
+  cliente.** El tope de crédito por tenant **no se descarta como idea** —
+  el dueño lo confirmó explícitamente como backlog futuro (*"La feature
+  nueva está bien pero no para ahora"*) — queda fuera de alcance de este
+  diseño y registrado en `docs/pendientes-2026-09-12.md`
+  (`📋 Backlog de producto`) para no perderse.
 
 ### Limitaciones de la verificación que sostiene este documento
 
@@ -1948,6 +2002,19 @@ nombre a uno que ya existe**.
 | **Cliente dado de baja** | **Hoy ya se puede facturar a un cliente inactivo**, sin este diseño (no hay chequeo de `customer.active` en facturación). La postura consistente sería R11, *"bloqueo hacia adelante, nunca hacia atrás"*: bloquear al **crear** el borrador, dejar seguir los ya creados. **Verificar si es intencional** — puede querer facturarse para saldar deuda antes de cerrar la cuenta |
 | **Cierre de caja** | Separar los dos casos: advertir por `DRAFT` (el cajero puede resolverlo), **no** bloquear por `ISSUED_PENDING_LEDGER` (no puede). `closeShift()` hoy no valida nada de esto |
 
+> **Cierre de caja — DECIDIDA por el dueño (14/09/2026): solo advertir, no
+> bloquear.** Aplica al caso `ISSUED_PENDING_LEDGER` (comprobante fiscal ya
+> emitido, cargo interno todavía sin asentar en la cuenta corriente) — el
+> caso `DRAFT` ya estaba resuelto como "advertir" sin discusión. Motivo,
+> confirmado y ya presente en la fila de arriba: el cajero no puede resolver
+> el problema solo — el comprobante ya es fiscal e irreversible —, así que
+> bloquear el cierre no ayuda, solo traba la operación diaria. Esta
+> decisión no autoriza `CREATE TABLE`, migraciones ni código: `closeShift()`
+> (`src/clientes-finanzas/cash-register.service.ts::closeShift()`, líneas
+> 104-124) sigue sin ninguna validación fiscal hoy — implementar el aviso
+> es trabajo del bloque de implementación de `FACT-BORRADOR-001`, no de
+> este registro.
+
 ### 26.4 Medición contra la base real (31/08/2026)
 
 **Procedencia:** consultas de solo lectura propuestas por el asistente,
@@ -2154,8 +2221,9 @@ dónde en el pseudocódigo de §11 entra el paso 2bis.
 
 ### 27.3 Pregunta no tratada — destino de la ruta de un solo paso
 
-`POST /api/invoices` (`src/facturacion/invoices.routes.ts:94`, con
-`authorize(Roles.FRONT_DESK)` en `:97`) sí está citada en este documento
+`POST /api/invoices` (el `router.post('/')` de
+`src/facturacion/invoices.routes.ts`, con `authorize(Roles.FRONT_DESK)`
+en su cadena) sí está citada en este documento
 (§4.4, §14, §21) como el camino actual de un solo click que crea Y emite
 en el mismo request — lo que **no** trata ninguna sección es su **destino**
 una vez que exista `invoice_drafts`. Dos caminos razonables y ninguno
@@ -2170,6 +2238,20 @@ decidido:
 
 Se registra como pregunta abierta, no como propuesta — no es mía ni del
 asistente resolverla acá.
+
+> **DECIDIDA por el dueño (14/09/2026): retirar o redirigir la ruta,
+> no dejarla montada sin cambios.** `POST /api/invoices` deja de ser un
+> bypass de un click una vez implementado el flujo de borrador de 3 pasos
+> (crear → revisar → confirmar/emitir) — el dueño entendió y aceptó el
+> trade-off explícito de las dos opciones de arriba: esto es un cambio de
+> contrato público (el `router.post('/')` de `invoices.routes.ts`, hoy con
+> `authorize(Roles.FRONT_DESK)` en su cadena), consumido hoy por
+> `FacturarButton.tsx`, y necesita su propio bloque de trabajo y su propio
+> gate de arquitectura — **no se implementa acá.** Esta decisión tampoco
+> especifica todavía CUÁL de las dos formas (retirar la ruta, o
+> redirigirla internamente al flujo de borrador) — esa es una pregunta de
+> forma para el bloque de implementación, no para este registro: lo
+> decidido acá es que un bypass de un click no sobrevive al rediseño.
 
 ### 27.4 No resuelto por esta sección
 
@@ -2321,10 +2403,16 @@ aplicar; su reemplazo (si hace falta alguno sobre un `discount_percent`
 
 Nada de esto se implementa acá. `CREATE TABLE`, migraciones y código
 siguen en HOLD, ahora también condicionados a que este §28 pase por gate.
-Bloqueantes que **no** cambiaron: C-1 a C-4 (§26.1, mecánicos), §26.3 (5
-decisiones de negocio del dueño), §27.2 (mecánico, revalidar cancelación
-al confirmar) y §27.3 (decisión del dueño, destino de `POST /api/invoices`).
+Bloqueantes que **no** cambiaron: C-1 a C-4 (§26.1, mecánicos) y §27.2
+(mecánico, revalidar cancelación al confirmar).
 Bloqueante que **desaparece** si D2 se formaliza: C-5 (§28.1).
+
+**Actualizado 14/09/2026 — ver §30:** §26.3 (las 5 decisiones de negocio
+del dueño) y §27.3 (destino de `POST /api/invoices`) están **cerradas**,
+no bloqueantes. **PN-2** (§21), encontrada abierta por la verificación de
+§30 y nunca antes listada en este párrafo, también quedó **cerrada** más
+tarde el mismo 14/09/2026 (§30.4) — no queda ninguna pregunta de negocio
+pendiente bloqueando el `CREATE TABLE`.
 
 ---
 
@@ -2495,3 +2583,128 @@ catálogo es, con alta probabilidad, un MAESTRO (mismo trato que
 que revisar antes de tocar `order_items`/`invoice_items` — y por el gate
 `architecture-governor`, como cualquier cambio de schema o de contrato
 entre repos en este proyecto.
+
+---
+
+## 30. Cierre de las últimas decisiones de negocio pendientes, incluida PN-2 (14/09/2026)
+
+**No autoriza `CREATE TABLE`, migraciones ni código.** Registra que las dos
+últimas decisiones de negocio que se creían las pendientes en este
+documento —§26.3 punto 5 (cierre de caja) y §27.3 (destino de
+`POST /api/invoices`)— fueron resueltas por el dueño hoy, con el texto
+completo ya agregado en cada sección (ver arriba); que la verificación de
+cierre encontró una tercera, PN-2, que **ninguna revisión anterior de este
+documento —incluida la que declaró esos dos ítems como "las últimas 2
+preguntas de negocio pendientes"— había señalado** (§30.2); y que el dueño
+también respondió PN-2, más tarde el mismo día (§30.4). Con las tres
+cerradas, §30.3 confirma que no queda ninguna pregunta de negocio abierta.
+
+### 30.1 Qué NO queda abierto
+
+- **C-1 a C-4** (§26.1) — mecánicos/de redacción, nunca fueron preguntas de
+  negocio, no requieren al dueño.
+- **§26.3, puntos 1-4** — cerrados: 1-3 por consenso de grounding (no
+  requerían al dueño), 4 (cliente dado de baja) decidido por el dueño vía
+  `AskUserQuestion` el 13/09/2026 (`docs/pendientes-2026-09-12.md:927-937`).
+- **§26.3, punto 5** (cierre de caja) — **cerrado hoy**, ver la nota
+  agregada en la tabla de §26.3.
+- **§27.2** — mecánico (revalidar los guards de cancelación al confirmar un
+  borrador), no es una decisión de negocio.
+- **§27.3** (destino de `POST /api/invoices`) — **cerrado hoy**, ver la nota
+  agregada al final de §27.3.
+- **PN-1** — resuelto en §23 (31/08/2026).
+- **PN-4** — resuelto **en sustancia** por D5/§25 (31/08/2026, mismo día que
+  se abrió): el dueño ya había fijado que el catálogo fiscal no son las 3
+  claves hardcodeadas de `IVA_ALICUOTA_IDS` tomadas solas ni una tabla
+  nueva de cero, sino sincronización contra `FEParamGetTiposIva` con el XLS
+  como bootstrap (§25.4/§25.5) — responde directamente la disyuntiva que
+  PN-4 (§21) dejó planteada. **Precisión:** nunca se marcó
+  `✅ RESUELTA` como PN-1 — es un hallazgo de esta verificación, no una
+  decisión nueva tomada hoy.
+- **PN-2** — al momento de escribir §30.1 seguía abierta (ver §30.2, tal
+  como se escribió entonces); **cerrada más tarde el mismo 14/09/2026**,
+  ver §30.4.
+
+### 30.2 Lo que esta verificación encontró sin resolver — PN-2, no traída por el pedido de hoy
+
+**El pedido de esta sesión llegó acotado a §26.3 punto 5 y §27.3 como
+"las últimas 2 preguntas de negocio pendientes" del diseño v2.11.** Al
+releer §21 completo para confirmar esa afirmación (no solo las dos
+citadas), **PN-2 sigue exactamente como se abrió el 31/08/2026, sin
+ninguna decisión del dueño en ningún lugar de este documento ni de
+`docs/pendientes-2026-09-12.md`:**
+
+> **PN-2 (§21, planteo original) — ¿Cuál es "la regla de cuenta corriente" que
+> puede rechazar la emisión?** No existe una regla por tenant —
+> `customers.enable_current_account` (`sql.customer.repository.ts:321`)
+> es un booleano **por cliente**. ¿La condición de rechazo es "el cliente
+> no tiene cuenta corriente habilitada", o el dueño quería un tope de
+> crédito por tenant — que hoy no existe y habría que construir?
+
+Esto **no es una pregunta menor ni redundante con las dos que se cerraron
+hoy**: D1 (§4.1, decisión ya formalizada del dueño) dice textualmente que
+al emitir *"el sistema crea el cargo idempotente y lo vincula, **o rechaza
+la emisión si la regla de cuenta corriente del tenant no lo permite**"* —
+esa cláusula de rechazo sigue sin una regla real detrás. §21 la lista,
+junto con PN-1 y PN-4, entre **"las tres primeras [que] bloquean el
+`CREATE TABLE`"** (§21, encabezado) — PN-1 y PN-4 ya tienen resolución
+(§23 y §25 respectivamente); **PN-2 no.**
+
+**No se responde acá.** Siguiendo el mismo criterio que este documento ya
+aplicó en §27.3 (*"no es mía ni del asistente resolverla"*): PN-2 queda
+registrada como pregunta de negocio abierta, pendiente del dueño, y se
+promueve a `docs/pendientes-2026-09-12.md` (ver el ítem `FACT-BORRADOR-001`
+actualizado) para que no vuelva a quedar enterrada dentro de este
+documento sin aparecer en ninguna sección que se relea cada sesión —
+mismo modo de falla que el `CLAUDE.md` de este repo ya documentó una vez
+para las 5 preguntas de §26.3.
+
+**Actualización, misma fecha (14/09/2026) — PN-2 ya no está abierta.** El
+dueño la respondió más tarde en esta misma sesión. Este párrafo y el resto
+de §30.2 quedan tal cual se escribieron (registro de que la brecha existió
+y de cómo se encontró — no se reescribe historia); la resolución en sí,
+con su texto completo, vive en §30.4 y en §21.
+
+### 30.3 Estado resultante
+
+**El diseño v2.13 tiene ahora todas sus decisiones de negocio cerradas o
+fuera del camino crítico.** Con el cierre de §26.3 punto 5, §27.3, PN-4
+reconocido como resuelto en sustancia, y — la última en cerrarse, más
+tarde el mismo 14/09/2026 — **PN-2 (§30.4)**, no queda ninguna pregunta
+de negocio BLOQUEANTE en este documento. Lo que sigue abierto, sin
+bloquear el `CREATE TABLE`, por decisión explícita del propio §21:
+**PN-3** (numeración humana de `orders`, "trabajo del tipo D6, aparte") y
+**PN-5** (recálculo de `CbteFch` en un reintento tardío) — ninguna de las
+dos estaba entre "las tres primeras que bloquean el `CREATE TABLE`"
+(PN-1, PN-2, PN-4). **Esto no aprueba el diseño ni autoriza `CREATE
+TABLE`, migraciones ni código:** falta el paso obligatorio de este repo
+antes de cualquiera de esas tres cosas — el gate `architecture-governor`
+— que todavía no revisó el DISEÑO TÉCNICO de este documento (rondas
+anteriores de documentación sí pasaron por gate, ver §28.1bis). Ver la
+corrección aplicada al encabezado (v2.13).
+
+### 30.4 PN-2 — DECIDIDA por el dueño (14/09/2026)
+
+> **La condición de rechazo es el booleano que ya existe:
+> `customers.enable_current_account`, por cliente
+> (`sql.customer.repository.ts:321`). No se construye un tope de crédito
+> por tenant ahora.**
+
+El dueño respondió la disyuntiva planteada en §21/§30.2 directamente: D1
+(§4.1) — *"el sistema crea el cargo idempotente y lo vincula, o rechaza la
+emisión si la regla de cuenta corriente del tenant no lo permite"* — se
+lee con "la regla de cuenta corriente" resuelta a `enable_current_account`
+por cliente, no a una regla por tenant. No hace falta columna, tabla ni
+CHECK nuevos para esto: el campo ya existe y ya se consulta por cliente.
+
+**El dueño no descartó la otra opción — la declaró backlog, explícitamente:**
+*"La feature nueva [tope de crédito] está bien pero no para ahora."* Es una
+idea de producto validada, fuera de alcance de este diseño, no una idea
+rechazada. Registrada como backlog futuro en §22 (fuera de alcance,
+declarado) y en `docs/pendientes-2026-09-12.md` (sección
+`📋 Backlog de producto`), para que no se pierda ni quede enterrada como
+las 5 preguntas de §26.3 ya quedaron una vez.
+
+**Esta decisión no autoriza `CREATE TABLE`, migraciones ni código.** Es la
+última pieza de negocio que le faltaba a este diseño — el paso siguiente es
+el gate `architecture-governor`, no la implementación directa.

@@ -583,7 +583,7 @@ cuando se pushea.
   gate `architecture-governor` -- la primera versión de este ítem citaba
   el guard equivocado, ver nota al final).
   `docs/diseno-factura-borrador-2026-08-31.md`
-  (FACT-BORRADOR-001, **v2.11**, diseño SIN aprobar) cita el guard
+  (FACT-BORRADOR-001, **v2.13**, diseño SIN aprobar) cita el guard
   anti-double-billing de RECEIVABLE en `invoice.service.ts:429-432` --
   esas líneas ya se movieron, el guard real hoy está en
   `invoice.service.ts:628-631` (`getInvoicedFinancialTransactionIds()` +
@@ -875,7 +875,7 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
    (`docs/diseno-salida-manual-nc-y-reapertura-b3-2026-09-12.md:1651,2020`
    ya lo dice así — cerrado hoy con 0 preguntas propias, ver arriba). La
    cadena SÍ tiene decisiones de negocio genuinas sin responder, pero
-   viven enterradas en `FACT-BORRADOR-001` §26.3 (`:1941-1949`), nunca
+   viven enterradas en `FACT-BORRADOR-001` §26.3, nunca
    promovidas a un pendientes — **mismo modo de falla que el `CLAUDE.md`
    describe ("se pudre lo que queda fuera de una categoría que alguien
    relee")**. Promovidas acá, con su ancla: presupuesto de reintentos de
@@ -935,18 +935,16 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
       `customer.active` en facturación). Divergencia notada pero
       descartada: ERPNext bloquea siempre (incluso retroactivo) con
       escape configurable por rol.
-   5. **Cierre de caja con borrador pendiente** — **sin cerrar del
-      todo, parcialmente alineada.** Consenso en que el cierre SÍ se
-      defiende cuando es reversible o el operador puede resolverlo ahí
-      mismo (Odoo POS y ERPNext POS bloquean el cierre si hay facturas
-      no posteadas/no submiteadas) — pero para el caso que el operador
-      NO puede resolver solo (`ISSUED_PENDING_LEDGER`: ya emitido,
-      cargo sin asentar) ningún sistema de referencia tiene
-      precedente. La postura que ya traía el diseño (advertir, no
-      bloquear, para ESE estado específico) queda sin respaldo externo
-      pero también sin contradicción — se registra como "sin resolver
-      definitivamente, la postura propia se sostiene sola", no como
-      cerrada.
+   5. **Cierre de caja con borrador pendiente** — **DECIDIDA por el
+      dueño (14/09/2026, `FACT-BORRADOR-001` §26.3, ver el documento de
+      diseño): solo advertir, no bloquear**, para el caso que el
+      operador NO puede resolver solo (`ISSUED_PENDING_LEDGER`: ya
+      emitido, cargo sin asentar) — el caso `DRAFT` ya estaba resuelto
+      como "advertir". Sin respaldo externo (ningún sistema de
+      referencia tiene precedente para ese estado específico) pero
+      tampoco contradicción — mismo motivo que ya traía el diseño: el
+      cajero no puede resolver un comprobante fiscal ya emitido, así
+      que bloquear el cierre no ayuda.
 
    **Hallazgo transversal del grounding, no una de las 5 preguntas:**
    tres de las cinco respuestas de los sistemas de referencia NO viven
@@ -958,10 +956,43 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
    código — advertencia de reparto de trabajo a tener en cuenta ANTES
    de partir esto en tareas, no después.
 
-   Con esto, las preguntas 1/2/3 quedan cerradas por evidencia (no hace
-   falta volver a preguntarle al dueño) y la 4 fue decidida por el
-   dueño; la 5 sigue abierta pero sin bloquear — la postura del diseño
-   se puede mantener sin más grounding disponible.
+   Con esto, las 5 preguntas de §26.3 quedan cerradas: 1/2/3 por
+   evidencia (no hizo falta volver a preguntarle al dueño), 4 y 5
+   decididas por el dueño (13/09/2026 y 14/09/2026 respectivamente).
+
+   **Actualización 14/09/2026 — el dueño también cerró §27.3** (destino
+   de `POST /api/invoices`, el botón de un click que hoy crea Y emite
+   en el mismo request): **se retira o redirige al flujo de borrador de
+   3 pasos, no queda como bypass.** Cambio de contrato público, su
+   propio bloque de trabajo y gate — no implementado acá. Con esto, de
+   los bloqueantes de negocio que `FACT-BORRADOR-001` §28.3 listaba
+   (C-1 a C-4 mecánicos, §26.3 × 5, §27.2 mecánico, §27.3), **solo
+   quedaba uno sin decisión del dueño: `PN-2` (§21 del diseño)** —
+   "¿la regla de cuenta corriente que puede rechazar la emisión (D1) es
+   el booleano `customers.enable_current_account` por cliente, o un
+   tope de crédito por tenant a construir?". **No estaba en la lista de
+   bloqueantes de §28.3 del propio documento de diseño ni en el radar
+   de ninguna sesión anterior de este archivo** — encontrada al
+   verificar que no quedara ninguna otra pregunta de negocio abierta
+   antes de declarar el diseño completo.
+
+   **Actualización, mismo día (14/09/2026) — `PN-2` DECIDIDA por el
+   dueño.** La condición es el booleano que ya existe,
+   `customers.enable_current_account`, por cliente — **no** se
+   construye un tope de crédito por tenant ahora. El dueño no descartó
+   esa segunda idea: la declaró backlog futuro explícito (*"La feature
+   nueva [tope de crédito] está bien pero no para ahora"*) — ver el
+   ítem propio en `### 📋 Backlog de producto`, más abajo en este mismo
+   archivo, para que no se pierda. **Con esto, `FACT-BORRADOR-001`
+   (v2.13) no tiene ninguna pregunta de negocio abierta** — ver
+   `docs/diseno-factura-borrador-2026-08-31.md` §21/§30.4 para el texto
+   completo y las citas. El diseño sigue sin autorizar `CREATE TABLE`,
+   migraciones ni código: falta el gate `architecture-governor`.
+   `credit_note_request` la TABLA (bullet
+   aparte, más abajo en este mismo archivo, ADR
+   `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5/§10
+   fila 1) sigue en HOLD por su propia decisión del dueño, no
+   encadenada a PN-2 — no se toca acá.
 2. **UI de `cancellation-refund/preview|confirm`** — **no es una
    decisión, es un circuito sin frontend.** Backend construido y con
    tests de integración (`reservations.routes.ts:589-618`,
@@ -3048,18 +3079,32 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
     caso D5 (22/08/2026, `CLAUDE.md` de `app-main`). Decisión del dueño
     (13/09/2026): dado que es una decisión de la RELACIÓN del negocio
     con sus clientes, no del sistema, el sistema no elige por el
-    tenant — se agrega como campo configurable. **Lo que el dueño
-    decidió es QUIÉN elige (el tenant), no DÓNDE vive el campo ni CON
-    QUÉ GRANULARIDAD** -- eso sigue sin preguntar, es una tercera
-    pregunta separada (mismo criterio D5): `business_profile` (un solo
-    valor por negocio, global) vs. scope de `cancellation_policies`
-    (por política/tramo, permitiría mezclar el criterio dentro del
-    mismo tenant) son dos alternativas con costo distinto, ninguna
-    elegida todavía. Default propuesto (para cuando el tenant no lo
-    configuró, sea cual sea el mecanismo elegido): **snapshot al
-    reservar** — más conservador, protege la expectativa del cliente;
-    a confirmar con el dueño si prefiere el otro default antes de
-    implementar.
+    tenant — se agrega como campo configurable.
+    **DÓNDE vive el campo y CON QUÉ GRANULARIDAD — DECIDIDO por el
+    dueño hoy (14/09/2026, `CANCEL-POLICY-SCOPE-BASE-001` Bloque 1):
+    el campo vive POR POLÍTICA/TRAMO** (scope de `cancellation_policies`,
+    no global en `business_profile`) — permite mezclar criterio dentro
+    del mismo tenant (ej. reservas corporativas con un criterio,
+    temporada alta con otro). **Default: snapshot al reservar**
+    (`SNAPSHOT_AT_BOOKING`) — más conservador, protege la expectativa
+    del cliente, y además coincide con lo que R9
+    (`docs/criterios-datos.md`) ya favorece de fondo. Implementado
+    (Bloque 1, 14/09/2026) como columna `cancellation_policies.
+    policy_resolution_timing` (`VARCHAR(30) NOT NULL DEFAULT
+    'SNAPSHOT_AT_BOOKING'`, enum `SNAPSHOT_AT_BOOKING`/
+    `LIVE_AT_CANCELLATION`) + CRUD completo (repositorio, servicio,
+    rutas, schemas Zod) — ver docblock en `src/db/schema.sql` y en
+    `src/reservas/cancellation-policy.repository.ts` para el
+    razonamiento completo, incluida la desviación deliberada de R9 que
+    habilita `LIVE_AT_CANCELLATION`. **Nombre de columna:**
+    `policy_resolution_timing`, no `refund_basis_timing` (ese nombre
+    colisiona con el campo hermano de "base de cálculo" — ver la
+    sub-decisión de arriba, "Configurable por política" — que también
+    va a vivir en esta tabla; "basis" ya está tomado para ESE concepto,
+    sobre qué monto se calcula el %, mientras que este campo es sobre
+    CUÁNDO se resuelve la política, un eje distinto). El campo hoy es
+    de solo CRUD, sin efecto observable en `CancellationRefundService`
+    — ver Bloque 2 más abajo, sección "🟡 Listo para encarar".
   - **POS/órdenes NO entra al mismo motor de penalidad — queda
     acotado a reservas/turnos.** Decidido vía `AskUserQuestion`. Hoy
     `src/pos-menu/order.service.ts` no tiene concepto de penalidad
@@ -3082,6 +3127,56 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   no unificarlos).
 
 ### 🟡 Listo para encarar (sin decisión pendiente, solo falta tiempo/gate)
+
+- **`CANCEL-POLICY-SCOPE-BASE-001` Bloque 2** (14/09/2026, split del
+  Bloque 1 -- gate `architecture-governor` sobre el diff de Bloque 1).
+  Bloque 1 (schema + CRUD de `cancellation_policies.
+  policy_resolution_timing`) ya está — ver la sub-decisión "Snapshot al
+  reservar vs. regla viva al cancelar" más arriba. Lo que falta para que
+  el campo tenga efecto real:
+
+  - **Puntos de inserción exactos, y corrección de un registro previo:**
+    `src/reservas/cancellation-refund.service.ts:89`
+    (`previewRefund()`) y `:159` (`confirmRefund()`) son donde
+    `findApplicableTier()` se resuelve hoy contra la tabla en vivo — ahí
+    es donde el Bloque 2 tiene que ramificar por
+    `policy_resolution_timing`. El comentario en `:147-153` explica que
+    esa resolución se saca del lock (`transactionManager.run()`) A
+    PROPÓSITO, para no sostener `FOR UPDATE` sobre N facturas durante
+    round-trips de red (catálogo y config, ninguno de los dos participa
+    de la carrera). **Esto corrige un registro previo:** los dos puntos
+    de inserción NO están dentro del lock — la lógica de concurrencia
+    (`atomic-state-mutation`/`concurrency-reasoning`) no es el
+    bloqueante real de este bloque.
+
+  - **El bloqueante REAL — pregunta de negocio abierta para el dueño,
+    marcada explícitamente para `AskUserQuestion` futuro, NO respondida
+    acá:** las reservas que ya están `CONFIRMED` antes de que exista la
+    columna de snapshot en `reservations` no van a tener ningún
+    snapshot congelado. Al cancelarlas, ¿el sistema cae a regla viva
+    (`LIVE_AT_CANCELLATION` de facto, aunque la política diga
+    `SNAPSHOT_AT_BOOKING`), o rechaza el cálculo hasta que alguien
+    decida a mano? Dos respuestas defendibles, con consecuencia de
+    plata directa (cuánto se reembolsa) — no elegir una acá.
+
+  - **Lado de escritura:** `ReservationService.confirmReservation()`
+    tiene que poblar el snapshot (`reservations.
+    cancellation_policy_snapshot JSONB`, diseño ya discutido, sin
+    implementar). Falta decidir si se congela el ladder COMPLETO de
+    tramos (todas las filas de `cancellation_policies` vigentes al
+    momento de confirmar) o solo el tramo aplicable a esa reserva en
+    ese momento — cada uno tiene trade-offs distintos si la
+    anticipación real de la cancelación cae en un tramo distinto al
+    esperado.
+
+  - **Deuda de cobertura de test heredada del Bloque 1
+    (condición 6 del gate, 14/09/2026):** las 18 fixtures de
+    `cancellation-refund.service.test.ts` (`FakePolicyRepository`)
+    quedaron todas en `LIVE_AT_CANCELLATION` porque es lo único que el
+    service implementa hoy — ninguna cubre `SNAPSHOT_AT_BOOKING`. El
+    Bloque 2 va a necesitar fixtures nuevas que ejerciten esa rama de
+    verdad (snapshot congelado real, no solo cambiar el valor del
+    enum), sumadas a las 18 existentes, no en su reemplazo.
 
 - **`RESERVATION-STATUS-CROSSREPO-SYNC-001`** (13/09/2026, split del
   cierre de `RESERVATION-STATUS-EXPIRED-FRONTEND-01`, `docs/resuelto.md`
@@ -3446,7 +3541,7 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   abiertas" cuando en realidad ya están cerradas. No verificado de nuevo
   contra la ficha real en esta pasada -- solo se restituyó la cita que se
   había perdido, para que la próxima sesión no tenga que re-derivarla.
-- **`C-5`** (`FACT-BORRADOR-001`, v2.10, sigue en HOLD sin aprobar; C-5 vive
+- **`C-5`** (`FACT-BORRADOR-001`, v2.13, sigue en HOLD sin aprobar; C-5 vive
   acá, en pendientes -- la tabla de §26.1 del propio documento solo tiene
   C-1 a C-4, no hay una fila C-5 ahí) -- hallazgo de
   `pendientes-2026-09-06.md:1131`: la rama de origen
@@ -3496,6 +3591,62 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
   cliente dado de baja, cierre de caja) + ahora también §27.2 (revalidar
   cancelación al confirmar, mecánico) y §27.3 (destino de la ruta de un
   solo paso, decisión). No se implementó código en esta sesión.
+
+  **Estado actualizado 14/09/2026 — no se reescribe lo de arriba (es el
+  registro de la sesión del 11/09), se corta acá lo que ya no aplica.**
+  Decisiones de negocio completas: las 5 de §26.3 (1-3 por consenso de
+  grounding, 4 decidida por el dueño el 13/09, 5 —cierre de caja— decidida
+  por el dueño el 14/09) y §27.3 (destino de `POST /api/invoices`:
+  retirar o redirigir, decidida por el dueño el 14/09) — ambas registradas
+  con su texto completo en `docs/diseno-factura-borrador-2026-08-31.md`
+  §26.3 y §27.3. Quedan sin decisión del dueño: **C-1 a C-4** (§26.1,
+  mecánicos, no requieren al dueño, no bloqueantes) y **§27.2**
+  (mecánico, revalidar cancelación al confirmar, no bloqueante). **C-5**
+  (arriba) sigue siendo **BLOQUEANTE — decisión de modelado, no
+  mecánica**: el propio diseño (§27.4) dice explícito que su resolución
+  "NO es mecánica: falta decidir si una línea consolidada (RECEIVABLE)
+  viaja a `invoice_items` como `MANUAL` (perdiendo la distinción) o si
+  `source_kind` necesita una quinta rama", y §28.3 la mantiene como
+  bloqueante que **DESAPARECE si D2 se formaliza** — condicional a una
+  formalización de D2 que todavía no pasó por ningún gate. No reclasificar
+  a "mecánico" hasta que esa formalización ocurra.
+
+  **`PN-2`** (§21 del diseño — "¿la regla de cuenta corriente que puede
+  rechazar la emisión, D1, es el booleano `customers.enable_current_account`
+  por cliente o un tope de crédito por tenant a construir?") fue un
+  hallazgo nuevo de esa misma sesión, no una de las preguntas que había
+  venido a cerrar — no aparecía en la lista de bloqueantes de arriba
+  (11/09) ni en ninguna sesión anterior de este archivo; se encontró al
+  verificar, antes de declarar el diseño "completo del lado de negocio",
+  que no quedara ninguna otra pregunta de negocio suelta en el documento.
+  Fue la única pregunta de negocio que seguía bloqueando el `CREATE TABLE`
+  — y **también se cerró, más tarde el mismo 14/09/2026: DECIDIDA por el
+  dueño, la condición es el booleano `customers.enable_current_account`
+  por cliente, no un tope de crédito por tenant** (esa segunda idea queda
+  como backlog futuro explícito, no descartada — ver
+  `### 📋 Backlog de producto` más abajo). Detalle completo:
+  `docs/diseno-factura-borrador-2026-08-31.md` §21/§30.4 (v2.13).
+  **Estado resultante: decisiones de negocio del dueño COMPLETAS —
+  listo para gate de arquitectura antes de implementar, bloque grande de
+  implementación no encarado todavía.**
+
+  **`PN-3` y `PN-5`** (§21 del diseño) — promovidas acá el 14/09/2026,
+  mismo motivo que `PN-2` arriba: viven en §21 (y sus referencias en
+  §22/§27.4/§28.3/§11.1) pero no estaban en ningún `pendientes-*.md`
+  todavía. Ninguna de las dos bloquea el `CREATE TABLE` (§21 solo lista
+  PN-1/PN-2/PN-4 entre "las tres primeras que bloquean"); las dos siguen
+  abiertas, fuera del camino crítico (§30.3).
+  - **`PN-3`** (numeración humana de `orders`) — fuera de alcance
+    declarado en §22, comportamiento de fallback ya resuelto en §21/§22
+    (el snapshot guarda la etiqueta que exista).
+  - **`PN-5`** (recálculo de `CbteFch` en un reintento tardío) — un
+    borrador que falla la emisión y se reintenta días después reutiliza
+    un `CbteFch` congelado y puede ser rechazado por AFIP (error 10016).
+    §11.1 lo describe como "bug preexistente, independiente de este
+    diseño", pero esa defensa queda debilitada: T6 (`retryExisting()` sin
+    cambios) + el estado `EMISSION_FAILED` de §5 hacen que el flujo de
+    borrador nuevo herede exactamente este problema — no es puramente
+    preexistente, el diseño nuevo lo reproduce puertas adentro.
 - **Instrucción del dueño (11/09/2026, mismo bloque): re-verificar D1-D6
   contra Odoo 19.0 real, con Odoo ganando donde diverja "más allá de las
   decisiones que haya tomado antes"** -- **resuelta** (`FACT-BORRADOR-001`
@@ -3555,11 +3706,26 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
 
 ### 📋 Backlog de producto (sin fecha, roadmap -- no re-auditado)
 
-`Gap C1-C` · `AR-FACT-NO-ISSUED-01` Fases 2-8 · `FACT-BORRADOR-001` (v2.10)
+`Gap C1-C` · `AR-FACT-NO-ISSUED-01` Fases 2-8 · `FACT-BORRADOR-001` (v2.13,
+decisiones de negocio completas, pendiente de gate + implementación)
 · C1-B (bloqueada por proveedor externo) · C2/C3 · D7 (5 endpoints de
 reportes sin consumidor de frontend) · circuito POS-caja (`ORDER-12`/
 `CAJA-ORD-01`/`AUDIT-ORD-01`) · heredados (Redis, BullMQ, downgrade de
 plan, datos demo en prod).
+
+- **Tope de crédito por tenant en cuenta corriente** — idea de producto
+  validada por el dueño (14/09/2026), no construida: *"La feature nueva
+  está bien pero no para ahora"*. Surgió como la alternativa descartada al
+  resolver `PN-2` de `FACT-BORRADOR-001` — hoy la única regla real que
+  puede rechazar la emisión por cuenta corriente es
+  `customers.enable_current_account`, un booleano **por cliente**
+  (`sql.customer.repository.ts:321`); esto agregaría, aparte, un límite de
+  monto configurable **por tenant** que hoy no existe en ningún lado del
+  schema. Sin diseño todavía — ni tabla, ni dónde vive el límite, ni qué
+  pasa al superarlo (¿rechaza la emisión, solo advierte, requiere
+  aprobación?). Ver `docs/diseno-factura-borrador-2026-08-31.md` §22 y
+  §30.4 para el registro completo de la decisión que lo dejó fuera de
+  alcance.
 
 **Ojo, esto es distinto del roadmap de producto completo**
 (`docs/roadmap-pms-multirubro.md`, qué le falta a la app por rubro) --
