@@ -32,8 +32,23 @@ import { applyCappedPaymentToInvoice, createIdempotentPaymentWithClient, acquire
 
 export interface CustomerStatement {
   customerId: string;
-  balance: number;
-  transactions: FinancialTransaction[];
+  balance: number;                 // SIN CAMBIOS — SETTLED-only, ver docblock de getNetBalanceByCustomerId
+  transactions: FinancialTransaction[]; // SIN CAMBIOS — libro mayor completo, cualquier status
+  /**
+   * Paso 2(b), CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001
+   * (14/09/2026, diseño `docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md`
+   * §1) — cuánto de este cliente está hoy transferido a City Ledger y
+   * sigue vigente (ni revertido ni cobrado). Ver docblock completo de
+   * `FinancialTransactionRepository.getCityLedgerOutstandingByCustomerId()`
+   * para la fórmula exacta y los caveats (AR legacy sin
+   * `guest_payment_transaction_id`, AR viva tras cancelación con NC).
+   * Ausente (`undefined`) solo durante la ventana de deploy de un backend
+   * viejo — el frontend debe tratar la ausencia como "sin dato", nunca
+   * como 0 (0 real y "no lo mandaron" no son lo mismo). Nunca se suma a
+   * `balance` — es puramente informativo, igual que el propio
+   * `getCityLedgerOutstandingByCustomerId()`.
+   */
+  cityLedgerOutstanding?: number;
 }
 
 /** I4 — una factura ISSUED de un cliente con saldo pendiente > 0, para el modal de conciliación de "Registrar Pago". */
@@ -75,12 +90,26 @@ export class CustomerAccountService {
     const customer = await this.customerRepo.getById(customerId);
     if (!customer) throw new CustomerNotFoundError(customerId);
 
-    const [balance, transactions] = await Promise.all([
+    // Paso 2(b) (14/09/2026) — getCityLedgerOutstandingByCustomerId() es
+    // opcional en la interfaz (mismo criterio que getByIdWithLock?, ver su
+    // docblock): un fake de test que no lo implementa tiene que fallar
+    // ruidoso acá, nunca degradar en silencio a `undefined` (condición A1
+    // del gate de implementación) — en producción, SqlFinancialTransactionRepository
+    // (la única implementación real) siempre lo tiene, así que este throw
+    // solo puede dispararse por un fake mal armado, nunca en runtime real.
+    if (!this.financialRepo.getCityLedgerOutstandingByCustomerId) {
+      throw new Error(
+        'CustomerAccountService.getStatement: FinancialTransactionRepository.getCityLedgerOutstandingByCustomerId no está implementado en este repositorio.',
+      );
+    }
+
+    const [balance, cityLedgerOutstanding, transactions] = await Promise.all([
       this.financialRepo.getNetBalanceByCustomerId(customerId),
+      this.financialRepo.getCityLedgerOutstandingByCustomerId(customerId),
       this.financialRepo.getByCustomerId(customerId),
     ]);
 
-    return { customerId, balance, transactions };
+    return { customerId, balance, cityLedgerOutstanding, transactions };
   }
 
   /**

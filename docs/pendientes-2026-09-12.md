@@ -494,6 +494,39 @@ cuando se pushea.
   facturas/notas de crédito con `accountsReceivableWarning` presente,
   para que management la revise -- bloque de producto propio, con su
   propio gate.
+- **`CITY-LEDGER-OUTSTANDING-NC-STALE-SURFACE-001`** (14/09/2026, gate
+  `architecture-governor`, condición C3 sobre
+  `docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md`).
+  Hermano de `CITY-LEDGER-GUARD-NO-UI-SURFACE-001` (arriba) — mismo
+  origen (la decisión ya tomada del dueño, "Guard en la NC — exponer, no
+  bloquear" — `docs/diseno-reconciliacion-city-ledger-2026-09-12.md`: la
+  NC procede igual sobre una AR viva, y se detecta/expone para que
+  management la revise), pero por una VÍA DISTINTA: acá no es
+  `accountsReceivableWarning` (facturación) — es
+  `cityLedgerOutstanding`, el campo nuevo de
+  `CustomerAccountService.getStatement()` (paso 2(b) del ítem
+  `CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001`, arriba en este
+  mismo archivo, ~3052-3184). Como el circuito de cancelación con Nota de
+  Crédito no actualiza `accounts_receivable.status` cuando cancela una
+  reserva/orden con una AR activa encima (mismo hallazgo de
+  `CITY-LEDGER-GUARD-NO-UI-SURFACE-001`), `cityLedgerOutstanding` puede
+  seguir sumando una AR que el negocio ya considera resuelta del lado
+  fiscal. **La diferencia real con el ítem hermano:** hasta ahora ese
+  desbalance solo llegaba a logs (`nc_escape_con_ar_viva`) y al JSON
+  crudo de la respuesta HTTP — invisible en cualquier pantalla. Con el
+  paso 2(b) implementado (14/09/2026), `cityLedgerOutstanding` queda
+  EXPUESTO por `GET /api/customers/:id/account` — verificado: 0 usos del
+  campo en `appfrontend/`, `lib/clientes/types.ts::CustomerStatement`
+  todavía no lo declara, así que hoy no llega a ninguna pantalla, incluida
+  `dashboard/cuentas-corrientes/page.tsx`. El riesgo real es para CUANDO
+  el frontend lo consuma (backlog, sin bloque asignado todavía): en ese
+  momento el staff vería directamente un número que puede estar
+  sobreestimado, sin saber por qué. No se resuelve con el paso 2(b) ni con
+  el paso 3 (fuera
+  de su alcance, ver el diseño citado, §1.3) — confirmar junto con
+  `CITY-LEDGER-GUARD-NO-UI-SURFACE-001`, probablemente la misma pantalla
+  de revisión de management resuelve los dos a la vez (ambos son "una AR
+  viva que la NC dejó sin sincronizar, expuesta en un lugar distinto").
 - **`CITY-LEDGER-GUARD-AR-VIVA-PREDICATE-TRIPLE-001`** — §9.2 + §9.4
   (13/09/2026, gate `architecture-governor`, commit `bc5cb46`). El
   predicado "¿esta estadía/reserva tiene una AR viva?" (filtrar

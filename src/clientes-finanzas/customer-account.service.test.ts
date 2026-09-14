@@ -19,6 +19,18 @@ class InMemoryFinancialTransactionRepository implements FinancialTransactionRepo
   /** Filas ya "confirmadas" -- createdAt se fija una sola vez, al crear, para que un reintento (getByIdempotencyKey) devuelva el mismo objeto en vez de uno con un timestamp nuevo. */
   public created: FinancialTransaction[] = [];
 
+  /**
+   * Paso 2(b) (14/09/2026) -- único de los 7 fakes de
+   * FinancialTransactionRepository del repo que necesita este método
+   * (ver §4.3 del diseño): configurable por test con `setCityLedgerOutstanding()`,
+   * default 0 (sin transferencia vigente).
+   */
+  private cityLedgerOutstanding = 0;
+  setCityLedgerOutstanding(amount: number) { this.cityLedgerOutstanding = amount; }
+  async getCityLedgerOutstandingByCustomerId(_customerId: string): Promise<number> {
+    return this.cityLedgerOutstanding;
+  }
+
   /** Simula ON CONFLICT DO NOTHING sobre idempotencyKey -- null si ya existe una fila con la misma key. */
   async create(tx: Omit<FinancialTransaction, 'createdAt'>) {
     if (tx.idempotencyKey && this.created.some((c) => c.idempotencyKey === tx.idempotencyKey)) return null;
@@ -480,5 +492,78 @@ describe('CustomerAccountService.recordPayment — truncamiento controlado (O2-F
     expect(financialRepo.created[0]).toMatchObject({ settledInvoiceId: 'inv-1', amount: 250 });
     expect(financialRepo.created[1]).toMatchObject({ settledInvoiceId: 'inv-2', amount: 1060 });
     expect(financialRepo.created[2]).toMatchObject({ settledInvoiceId: null, amount: 150 });
+  });
+});
+
+// Paso 2(b), CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001 (14/09/2026)
+// docs/diseno-city-ledger-balance-asymmetry-pasos-2b-3-2026-09-14.md §1.
+//
+// La exclusión real por status (PENDIENTE_FACTURAR/FACTURADO cuentan,
+// COBRADO/REVERTIDO no) vive en el SQL de
+// SqlFinancialTransactionRepository.getCityLedgerOutstandingByCustomerId()
+// -- este fake no reimplementa esa lógica, solo devuelve el valor que el
+// test configura. Verificar la exclusión real contra Postgres es un test
+// de integración (ver src/tests/integration/), no de este archivo.
+describe('CustomerAccountService.getStatement — cityLedgerOutstanding (paso 2b)', () => {
+  let financialRepo: InMemoryFinancialTransactionRepository;
+  let service: CustomerAccountService;
+
+  beforeEach(() => {
+    financialRepo = new InMemoryFinancialTransactionRepository();
+    const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
+    service = new CustomerAccountService(
+      financialRepo,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile()),
+      new FakeInvoiceRepository(new Map()) as unknown as InvoiceRepository,
+      new FakeTransactionManager(),
+    );
+  });
+
+  it('cityLedgerOutstanding presente y con el monto vigente cuando hay una AR viva', async () => {
+    financialRepo.setCityLedgerOutstanding(700);
+
+    const statement = await service.getStatement(CUSTOMER_ID);
+
+    expect(statement.cityLedgerOutstanding).toBe(700);
+  });
+
+  it('cityLedgerOutstanding en 0 cuando no hay ninguna transferencia a City Ledger', async () => {
+    const statement = await service.getStatement(CUSTOMER_ID);
+
+    expect(statement.cityLedgerOutstanding).toBe(0);
+  });
+
+  it('nunca se suma a balance -- son dos números independientes en el statement', async () => {
+    financialRepo.setCityLedgerOutstanding(700);
+
+    const statement = await service.getStatement(CUSTOMER_ID);
+
+    expect(statement.balance).toBe(0); // InMemoryFinancialTransactionRepository.getNetBalanceByCustomerId() -- default 0
+    expect(statement.cityLedgerOutstanding).toBe(700);
+  });
+
+  // A1 del gate de implementación (14/09/2026) -- guard explícito: un fake
+  // que NO implementa el método opcional tiene que hacer fallar getStatement()
+  // ruidosamente, nunca degradar en silencio a `undefined`.
+  it('getStatement() lanza si el repo inyectado no implementa getCityLedgerOutstandingByCustomerId', async () => {
+    const incompleteRepo = new InMemoryFinancialTransactionRepository() as FinancialTransactionRepository;
+    // El método vive en el prototipo de la clase -- `delete` sobre la
+    // instancia no lo saca (no es own property). Sobreescribir con
+    // `undefined` sí simula el caso real de un fake que nunca lo implementó.
+    (incompleteRepo as { getCityLedgerOutstandingByCustomerId?: unknown }).getCityLedgerOutstandingByCustomerId = undefined;
+
+    const customers = new Map([[CUSTOMER_ID, new Customer(CUSTOMER_ID, 'Cliente Test', [], 'INDIVIDUAL')]]);
+    const incompleteService = new CustomerAccountService(
+      incompleteRepo,
+      new FakeCustomerRepository(customers) as unknown as CustomerRepository,
+      new FakeBusinessProfileRepository(makeProfile()),
+      new FakeInvoiceRepository(new Map()) as unknown as InvoiceRepository,
+      new FakeTransactionManager(),
+    );
+
+    await expect(incompleteService.getStatement(CUSTOMER_ID)).rejects.toThrow(
+      /getCityLedgerOutstandingByCustomerId no está implementado/,
+    );
   });
 });

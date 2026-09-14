@@ -888,6 +888,24 @@ export class SqlFinancialTransactionRepository implements FinancialTransactionRe
     return parseFloat(result.rows[0]?.net ?? '0');
   }
 
+  /**
+   * Ver docblock completo en la interfaz
+   * (`financial-transaction.repository.ts::getCityLedgerOutstandingByCustomerId`)
+   * — caveat de AR legacy sin `guest_payment_transaction_id` incluido ahí,
+   * no repetido acá.
+   */
+  async getCityLedgerOutstandingByCustomerId(customerId: string): Promise<number> {
+    const result = await this.sqlClient.query<{ outstanding: string }>(
+      `SELECT COALESCE(SUM(ar.amount), 0) AS outstanding
+       FROM accounts_receivable ar
+       JOIN financial_transactions gp ON gp.id = ar.guest_payment_transaction_id
+       WHERE gp.customer_id = $1
+         AND ar.status IN ('PENDIENTE_FACTURAR', 'FACTURADO')`,
+      [customerId],
+    );
+    return parseFloat(result.rows[0]?.outstanding ?? '0');
+  }
+
   async getSettledPaymentTotalForReservation(reservationId: string): Promise<number> {
     const result = await this.sqlClient.query<{ total: string }>(
       `SELECT COALESCE(SUM(amount), 0) AS total

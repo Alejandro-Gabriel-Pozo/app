@@ -229,6 +229,66 @@ export interface FinancialTransactionRepository {
    */
   getByIdWithLock?(client: SqlClient, id: string): Promise<FinancialTransaction | undefined>;
 
+  /**
+   * Cuánto de este cliente (huésped) está HOY transferido a City Ledger y
+   * sigue vigente — ni revertido (`reverseTransfer()`) ni cobrado del lado
+   * empresa (`markCollected()`). Responde la pregunta 2+3 de
+   * CITY-LEDGER-CUSTOMER-BALANCE-STATUS-ASYMMETRY-001 paso 2(b): a
+   * diferencia de un total genérico de "lo no-SETTLED", esto está cruzado
+   * contra `accounts_receivable` — solo cuenta si hay una transferencia
+   * real de por medio (usa `guest_payment_transaction_id`, paso 1).
+   *
+   * `status IN ('PENDIENTE_FACTURAR', 'FACTURADO')` — el complemento
+   * exacto de `COBRADO` (ya no es deuda, la empresa pagó) y `REVERTIDO`
+   * (nunca fue deuda real, se deshizo). Puramente informativo, igual que
+   * `getNetBalanceByCustomerId`: nunca se suma a `balance`.
+   *
+   * Devuelve 0 para un cliente EMPRESA — `guest_payment_transaction_id`
+   * siempre apunta al huésped (nunca a la empresa, ver su propio docblock
+   * en `accounts-receivable.repository.ts`), así que el JOIN nunca matchea
+   * del lado empresa. No hace falta: la deuda de la empresa ya es visible
+   * en su propio `balance` vía el `CHARGE` que `postStayTransfer()` le
+   * crea directo `SETTLED` contra su cuenta.
+   *
+   * **Caveat declarado, no bloqueante (A2 del gate de implementación,
+   * 14/09/2026) — AR legacy sin `guest_payment_transaction_id`.**
+   * `accounts_receivable.guest_payment_transaction_id` es NULL para toda
+   * AR transferida ANTES del 13/09/2026 — el comentario de esa columna en
+   * `schema.sql` (`guest_payment_transaction_id`, v53) lo declara
+   * explícito: "Nullable, SIN backfill de filas ya transferidas antes de
+   * este cambio" — el backfill retroactivo nunca se autorizó, queda como
+   * residuo de `CITY-LEDGER-OVERTRANSFER-PAYMENT-001` en
+   * `docs/pendientes-2026-09-12.md`). Consecuencia real: un cliente con
+   * una transferencia VIEJA y viva (`status` `PENDIENTE_FACTURAR`/
+   * `FACTURADO`, pero `guest_payment_transaction_id IS NULL` en su fila de
+   * `accounts_receivable`) no matchea el JOIN de este método y queda
+   * afuera del `SUM` — el número devuelto **subdeclara en silencio** para
+   * ese caso: el staff ve "Transferido a City Ledger: $0" cuando en
+   * realidad sigue habiendo una transferencia vigente, solo que de antes
+   * de que esta columna existiera. No hay forma de distinguir ese caso de
+   * "no hay transferencia" desde este método — mismo tipo de limitación
+   * que el resto de este método hereda del paso 1, no una regresión nueva.
+   *
+   * **Otro caveat ya declarado (diseño §1.3/§3, no repetido acá en
+   * detalle) — AR viva tras cancelación con Nota de Crédito.** El circuito
+   * de cancelación con NC no sincroniza `accounts_receivable.status`
+   * (decisión ya tomada por el dueño: "exponer, no bloquear" — ver
+   * `docs/diseno-reconciliacion-city-ledger-2026-09-12.md:1546-1552`), así
+   * que este método puede sobreestimar en ese escenario puntual. Registrado
+   * como `CITY-LEDGER-OUTSTANDING-NC-STALE-SURFACE-001` en
+   * `docs/pendientes-2026-09-12.md`.
+   *
+   * Opcional — mismo criterio que `getByIdWithLock?`: un solo caller real
+   * (`CustomerAccountService.getStatement()`), y de los 7 fakes completos
+   * de `FinancialTransactionRepository` en el repo, solo el de
+   * `customer-account.service.test.ts` lo necesita — obligatorio rompe los
+   * otros 6 sin motivo. El caller hace
+   * `if (!this.financialRepo.getCityLedgerOutstandingByCustomerId) throw`
+   * — un fake incompleto falla ruidoso, nunca degrada a `undefined` en
+   * silencio (condición A1 del gate de implementación, 14/09/2026).
+   */
+  getCityLedgerOutstandingByCustomerId?(customerId: string): Promise<number>;
+
   /** Obtiene todas las transacciones de una reserva. */
   getByReservationId(reservationId: string): Promise<FinancialTransaction[]>;
 
