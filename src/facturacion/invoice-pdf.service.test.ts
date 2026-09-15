@@ -40,6 +40,7 @@ class FakeInvoiceRepository implements InvoiceRepository {
   async createWithClient(_client: SqlClient, _input: CreateInvoiceInput, _afipRequest: unknown, _items: CreateInvoiceItemInput[]): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markIssued(_id: string, _data: MarkIssuedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async markFailed(_id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
+  async markFailedWithClient(_client: SqlClient, _id: string, _data: MarkFailedInput): Promise<Invoice> { throw new Error('no usado en este test'); }
   async getStatus(): Promise<InvoiceStatus | null> { return this.invoice?.status ?? null; }
   async getItemsByInvoiceId(invoiceId: string): Promise<InvoiceItem[]> { return this.invoice?.id === invoiceId ? this.items : []; }
   async getOrderIdsByInvoiceItemId() { return new Map<string, string>(); } // 1c-ii-a (11/09/2026) -- sin caller en este test

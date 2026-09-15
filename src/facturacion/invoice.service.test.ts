@@ -170,6 +170,11 @@ class FakeInvoiceRepository implements InvoiceRepository {
     return updated;
   }
   async markFailed(id: string, data: MarkFailedInput): Promise<Invoice> {
+    return this.markFailedWithClient({} as SqlClient, id, data);
+  }
+  // Bloque 2 (15/09/2026) -- el fake ignora `client` (sin transacción real
+  // en memoria), mismo criterio que createWithClient() de arriba.
+  async markFailedWithClient(_client: SqlClient, id: string, data: MarkFailedInput): Promise<Invoice> {
     const existing = this.invoices.get(id)!;
     const updated: Invoice = {
       ...existing, status: data.status, errorMessage: data.errorMessage,

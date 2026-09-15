@@ -544,7 +544,20 @@ export interface InvoiceRepository {
     charges?: { financialTransactionId: string; amount: number }[],
   ): Promise<Invoice>;
   markIssued(id: string, data: MarkIssuedInput): Promise<Invoice>;
+  /** Atajo sin transacción explícita — delega en `markFailedWithClient(this.db, ...)`. */
   markFailed(id: string, data: MarkFailedInput): Promise<Invoice>;
+  /**
+   * Bloque 2 (15/09/2026, `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+   * §6.5 bis) — versión transaccional de `markFailed()`: mismo `UPDATE`,
+   * corriendo contra el `client` recibido en vez de `this.db`, para que un
+   * call-site que además hace OTRA escritura (auditoría, otro UPDATE) pueda
+   * envolver las dos en el mismo `transactionManager.run()` — mismo criterio
+   * que `create()`/`createWithClient()` de arriba. Hoy (Bloque 2) ningún
+   * call-site de `InvoiceService` comparte transacción con otra escritura
+   * todavía; el cableado con `credit_note_request` es el Bloque 3, fuera de
+   * este alcance.
+   */
+  markFailedWithClient(client: SqlClient, id: string, data: MarkFailedInput): Promise<Invoice>;
   /** Solo para reconciliar un FAILED_UNCERTAIN ya resuelto a mano (A8.6) — no un "editar" genérico. */
   getStatus(id: string): Promise<InvoiceStatus | null>;
   /** D8-Nivel B — líneas reales del comprobante (vacío = factura Nivel A, ver InvoicePdfService). */

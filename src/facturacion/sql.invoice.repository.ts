@@ -1409,7 +1409,11 @@ export class SqlInvoiceRepository implements InvoiceRepository {
   }
 
   async markFailed(id: string, data: MarkFailedInput): Promise<Invoice> {
-    const { rows } = await this.db.query<InvoiceRow>(
+    return this.markFailedWithClient(this.db, id, data);
+  }
+
+  async markFailedWithClient(client: SqlClient, id: string, data: MarkFailedInput): Promise<Invoice> {
+    const { rows } = await client.query<InvoiceRow>(
       `UPDATE invoices
        SET status = $2, error_message = $3, afip_response = COALESCE($4, afip_response), afip_contacted = $5
        WHERE id = $1

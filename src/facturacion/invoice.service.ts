@@ -1266,6 +1266,16 @@ export class InvoiceService {
       const message = `no se pudo consultar FECompUltimoAutorizado antes de pedir el CAE: ${errMessage(err)}`;
       // createNextVoucher() nunca se invocó -- sin ambigüedad posible,
       // reintentable solo (afipContacted: false, ver invoice.entities.ts).
+      // Bloque 2 (15/09/2026) -- a propósito SIN transactionManager.run():
+      // decisión del dueño (15/09/2026), este 4to call-site no dispara
+      // ninguna transición de credit_note_request (se queda en PENDIENTE) y
+      // hoy no hay ninguna otra escritura que compartir acá -- envolver un
+      // único UPDATE en una transacción explícita no cambia su atomicidad
+      // (Postgres ya la garantiza por statement) y sugeriría, a un lector
+      // futuro, que hay algo más adentro para lo que no lo hay. Si el
+      // Bloque 3 llega a necesitar que ESTE call-site también escriba
+      // credit_note_request, se vuelve markFailedWithClient() en ese
+      // momento, no antes.
       await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: false });
       throw new AfipRequestUncertainError(invoice.id, message);
     }
@@ -1281,11 +1291,17 @@ export class InvoiceService {
       // AFIP evaluó y dijo que no -- confirmado que no quedó nada emitido,
       // reintentable solo una vez corregido lo que haya rechazado.
       const obs = result.observaciones ?? 'sin detalle';
-      await this.invoiceRepo.markFailed(invoice.id, {
-        status: 'REJECTED',
-        errorMessage: obs,
-        afipResponse: result.raw,
-        afipContacted: true,
+      // Bloque 2 (15/09/2026) -- transaccionaliza markFailed() (antes UPDATE
+      // suelto fuera de cualquier tx). Hoy no hay otra escritura que
+      // compartir acá; el wrapper deja el call-site listo para el Bloque 3
+      // (credit_note_request), que sí necesitará compartir esta misma tx.
+      await this.transactionManager.run(async (client: SqlClient) => {
+        await this.invoiceRepo.markFailedWithClient(client, invoice.id, {
+          status: 'REJECTED',
+          errorMessage: obs,
+          afipResponse: result.raw,
+          afipContacted: true,
+        });
       });
       throw new AfipRequestRejectedError(invoice.id, obs);
     }
@@ -1294,7 +1310,10 @@ export class InvoiceService {
       const message = `respuesta de AFIP sin CbteDesde/CAE pese a no venir Resultado='R': ${JSON.stringify(result.raw)}`;
       // AFIP respondió pero de forma inesperada -- genuinamente ambiguo,
       // requiere revisión manual antes de reintentar (A8.6).
-      await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.raw, afipContacted: true });
+      // Bloque 2 (15/09/2026) -- ver nota de la rama REJECTED más arriba.
+      await this.transactionManager.run(async (client: SqlClient) => {
+        await this.invoiceRepo.markFailedWithClient(client, invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipResponse: result.raw, afipContacted: true });
+      });
       throw new AfipRequestUncertainError(invoice.id, message);
     }
 
@@ -1338,7 +1357,10 @@ export class InvoiceService {
     const message = `error de red al pedir el CAE (${originalErrorMessage}) -- FECompUltimoAutorizado no avanzó de forma confirmable, requiere revisión manual antes de reintentar`;
     // createNextVoucher() SÍ se invocó y no se pudo confirmar el resultado --
     // ambiguo por definición (A8.6), no reintentable solo.
-    await this.invoiceRepo.markFailed(invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: true });
+    // Bloque 2 (15/09/2026) -- ver nota de la rama REJECTED en issue().
+    await this.transactionManager.run(async (client: SqlClient) => {
+      await this.invoiceRepo.markFailedWithClient(client, invoice.id, { status: 'FAILED_UNCERTAIN', errorMessage: message, afipContacted: true });
+    });
     throw new AfipRequestUncertainError(invoice.id, message);
   }
 }
