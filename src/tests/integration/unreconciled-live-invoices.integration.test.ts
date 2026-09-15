@@ -2,8 +2,9 @@
  * @file unreconciled-live-invoices.integration.test.ts
  * @description Bandeja "factura viva no conciliada" (10/09/2026, gate
  * `architecture-governor`) -- `InvoiceRepository.listUnreconciledLiveInvoices()`.
- * NO es `credit_note_request` (esa tabla sigue en HOLD, ver
- * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5).
+ * NO es `credit_note_request` (tabla distinta, REABIERTA 15/09/2026 -- ver
+ * `docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5 bis,
+ * diseño propuesto, sin implementar todavía).
  *
  * Cero filas en producción hoy (medido 10/09/2026, las 2 tenants) -- no hay
  * dato real contra el cual validar la query. Toda la evidencia de este
@@ -18,9 +19,17 @@
  * `cancel-order-with-credit-note.integration.test.ts` y
  * `cancel-reservation-with-credit-note.integration.test.ts`). Este archivo
  * fabrica todos los estados del lado RESERVAS -- ORDER queda sin cobertura
- * directa acá, riesgo bajo (una orden liga 1:1 con una factura, nunca
- * consolidada, así que su candidato B1 es más simple que el de reserva, no
- * más complejo) pero declarado, no oculto.
+ * directa acá. **Corrección 15/09/2026 (bloque 1c-ii-b/1d,
+ * `ORDER-CONSOLIDATED-PARTIAL-01`):** la premisa "una orden liga 1:1 con una
+ * factura, nunca consolidada" que justificaba el riesgo bajo de este alcance
+ * **ya no es cierta** -- una orden SÍ puede participar de una consolidada
+ * multi-orden, y `classifyOrderLiveInvoice()` ya resuelve el par
+ * `(invoiceId, orderId)` para ese caso (`classify-order-live-invoice-pair-classifier.integration.test.ts`
+ * cubre ESE clasificador directamente, pero no a través de
+ * `listUnreconciledLiveInvoices()` como este archivo hace del lado
+ * reservas) -- el hueco de cobertura declarado acá sigue abierto, ahora sin
+ * la justificación original. No cerrado en este commit -- doc drift
+ * corregido, cobertura real queda pendiente.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
