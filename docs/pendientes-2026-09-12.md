@@ -911,9 +911,13 @@ anteriores.
 
 ## Hallazgos de diseño abiertos, registrados por el gate (15/09/2026)
 
-No requieren entorno real — ya confirmados por lectura de código, quedan
-acá (no bajo "Verificaciones pendientes") porque lo que falta es una
-decisión de diseño, no una corrida.
+La mayoría no requiere entorno real — ya confirmados por lectura de código,
+quedan acá (no bajo "Verificaciones pendientes") porque lo que falta es una
+decisión de diseño, no una corrida. **Excepción, desde F5-01 (15/09/2026):**
+esa entrada SÍ tiene corrida real confirmada (suite de integración contra
+Postgres, ver la entrada) — queda igual en esta sección porque lo que falta
+después de esa corrida sigue siendo una decisión de diseño (cuál de los 3
+caminos de fix tomar), no otra verificación.
 
 - **`CUSTOMER-EMAIL-REQUIRED-001` — escape hatch residual (gate
   `architecture-governor`, bloque email obligatorio de `POST /customers`,
@@ -977,6 +981,64 @@ decisión de diseño, no una corrida.
   riesgo residual siempre que cada cita nueva siga nombrando su fuente?
   No se corrige en este bloque — registrado como hallazgo, no como
   condición bloqueante de ningún commit ya hecho.
+
+- **`F5-01` — token CUSTOMER del portal alcanza 4 rutas mutantes de STAFF
+  sin guard de ownership (`docs/auditoria-integral-fase5-2026-09-15.md`
+  §F5-01 + apéndice del gate; reproducido con corrida real contra
+  Postgres, `src/tests/integration/customer-token-staff-route-ownership.integration.test.ts`,
+  gate `architecture-governor` 15/09/2026).** Verificado en código y en
+  runtime: `authenticate()` acepta un JWT CUSTOMER (cookie o header
+  `Authorization: Bearer`, el login del portal devuelve el token en el
+  body — `api/routes/customer.routes.ts:393,427,464`), `authorize(Roles.BOOKING)`
+  lo deja pasar (`CUSTOMER_PERMISSION_GROUPS` incluye `BOOKING`,
+  `security/roles.ts:81-84`), y `requireModule()` también. Las 4 rutas
+  (`POST /api/reservations`, `POST /api/reservations/:id/schedule-request`,
+  `POST /api/orders`, `POST /api/orders/:id/items`) no comparan
+  `req.user.customerId` contra el dueño del recurso en ningún punto —
+  `requireOwnReservation()` vive solo en `customer.routes.ts`, y ninguna
+  de las 5 cercas RBAC existentes mira ownership dentro de routers de
+  staff. Consecuencia si se explotara: un cliente del portal podría crear
+  reservas y órdenes a nombre de otro cliente del mismo negocio, y agregar
+  consumos a la orden de otro huésped.
+  **Corrida real (15/09/2026, re-verificada por el gate con log de
+  servidor):** hoy NO hay bypass de escritura — las 4 rutas devuelven 500
+  antes de tocar la BD del tenant, por dos mecanismos distintos (caso 1:
+  `TypeError` al derefenciar `req.db` indefinido en
+  `reservations.routes.ts:369`; casos 2-4: throw explícito de
+  `buildTenantTransactionManager`, `db/tenant-context.ts:78`, porque
+  `tenantMiddleware` no fija `req.db`/`req.businessId` para tokens
+  CUSTOMER — `platform/tenant.middleware.ts:193-196`, rama pensada para
+  `/api/customer/*`). El test mide (no infiere) que ninguna fila nueva se
+  escribe a nombre del cliente víctima, y deja el objetivo real (403 por
+  ownership) como 4 `it.todo` — el 500 de hoy es un efecto colateral no
+  diseñado, no una protección deliberada.
+  Pendiente: decisión del dueño entre los 3 caminos de
+  `docs/auditoria-integral-fase5-2026-09-15.md` §F5-01 punto 5 (guard de
+  actor en el borde / guard de pertenencia por ruta / partir el grupo
+  `BOOKING`) — **con la matriz de impacto ampliada** que apareció al
+  gatear este bloque (ver ítem siguiente) cerrada primero, porque el fix
+  obvio (poblar `req.db` para CUSTOMER) reabre el bypass de escritura en
+  el mismo cambio que arreglaría el hallazgo de abajo.
+
+- **`CUSTOMER-TOKEN-STAFF-ROUTE-500-001` — el mismo token CUSTOMER
+  alcanza 9 rutas GET más por el mismo mecanismo, una con consumidor real
+  roto en producción (encontrado por el gate `architecture-governor` al
+  verificar F5-01, 15/09/2026, confirmado por camino de código — no
+  observado corriendo contra producción).** 7 rutas GET con
+  `authorize(Roles.BOOKING)` (`bookable-services.routes.ts:129,146,171,208,266`,
+  `resources.routes.ts:342`, `business-hours.routes.ts:27`) y 2 GET de
+  `categories.routes.ts` que no tienen `authorize()` en absoluto reciben
+  el mismo token y el mismo 500 accidental que F5-01. `GET /api/bookable-services`
+  tiene un consumidor real en `appfrontend-main`
+  (`src/lib/customerApi.ts:221`, llamado desde
+  `app/portal/[businessSlug]/cuenta/reservas/page.tsx:112,130`) que hoy
+  recibe ese 500 y lo traga en silencio (`.catch(() => {})`) — el
+  selector de servicios del portal de clientes queda vacío sin ningún
+  error visible al usuario. Pendiente decidir junto con F5-01: el fix
+  que arregla este consumidor (poblar `req.db` para tokens CUSTOMER en
+  rutas de staff) es el mismo cambio que reabriría el bypass de escritura
+  de F5-01 si se hace sin el guard de ownership antes o en el mismo
+  commit — no se corrige en este bloque.
 
 ---
 
