@@ -468,7 +468,33 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // schema.sql. Solo schema + CRUD (repositorio/servicio/rutas) -- inerte
 // hasta que exista snapshot congelado en `reservations` (Block 2, no
 // incluido acá).
-export const CURRENT_SCHEMA_VERSION = 55;
+// v56 (15/09/2026): docs/diseno-factura-borrador-2026-08-31.md §29.7 (gate
+// architecture-governor, Bloque A de 4 -- SOLO schema). `service_items`
+// nueva (MAESTRO: catálogo de servicios administrativos/intangibles, mismo
+// patrón estructural que `products`, category_id nullable hacia
+// resource_categories, active + deleted_at desde el día uno). `order_items`
+// gana `service_item_id` (FK nullable), el CHECK de `item_type` pasa a 4
+// valores (PRODUCT/PRODUCT_VARIANT/RESERVATION/SERVICE, nombre nuevo
+// chk_order_item_type) y `chk_order_item_polymorphic` se rediseña a 4 ramas
+// bajo nombre nuevo chk_order_item_polymorphic_service (guard pg_constraint,
+// mismo criterio que v51 -- nombre nuevo para que el DROP+ADD no revalide la
+// tabla en cada deploy siguiente). Repositorio, rutas y wiring de precio/
+// descripción quedan para los Bloques B/C/D, cada uno con su propio gate.
+// v57 (15/09/2026): docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md
+// §6.5 bis (reapertura, gatillo 1: reconciliación manual real de
+// FAILED_UNCERTAIN -- HOLD del 08/09/2026 levantado). `credit_note_request`
+// nueva (TRANSACCIÓN de workflow: trackea un intento de emisión de NC del
+// escape fiscal N1.a, máquina de estados propia de 3 valores + `resolution_
+// outcome` separado, FK a invoices + order_id/reservation_id nullable con
+// CHECK CASE-based "= 1" igual que financial_transactions, `sla_alert_sent_at`
+// para el worker de SLA de la pregunta 2). Bump elegido en el momento
+// (v56 ya tomado en esta misma sesión por el bloque paralelo de
+// `service_items`, ver entrada de arriba) -- siguiente número disponible,
+// no el 56 citado originalmente en el diseño. Solo schema -- repositorio,
+// rutas, worker `CreditNoteReviewSlaWorker` y el wiring de
+// cancelOrderWithCreditNote()/cancelReservationWithCreditNote() quedan para
+// bloques separados, cada uno con su propio gate.
+export const CURRENT_SCHEMA_VERSION = 57;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

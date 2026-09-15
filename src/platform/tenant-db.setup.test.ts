@@ -286,8 +286,14 @@ describe('applyTenantSchema', () => {
     // gana policy_resolution_timing (enum, NOT NULL DEFAULT 'SNAPSHOT_AT_BOOKING')
     // + CHECK. Solo schema + CRUD, inerte hasta que exista snapshot
     // congelado en reservations (Block 2, no incluido).
+    // 55 -> 56 el 15/09/2026: docs/diseno-factura-borrador-2026-08-31.md
+    // §29.7, Bloque A (solo schema) -- service_items nueva + order_items
+    // gana service_item_id y sus 2 CHECK polimórficos pasan a 4 ramas.
+    // 56 -> 57 el 15/09/2026: docs/diseno-cancelacion-con-nota-credito-comun-
+    // 2026-09-06.md §6.5 bis (reapertura, gatillo 1) -- credit_note_request
+    // nueva (TRANSACCIÓN de workflow del escape fiscal N1.a). Solo schema.
     expect(version).toBe(51); // mock de SELECT MAX simula la BD en la versión previa
-    expect(CURRENT_SCHEMA_VERSION).toBe(55);
+    expect(CURRENT_SCHEMA_VERSION).toBe(57);
   });
 
   it('cierra la conexión aunque la query falle a mitad de camino (finally)', async () => {

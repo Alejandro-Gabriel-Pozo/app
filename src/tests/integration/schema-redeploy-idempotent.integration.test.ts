@@ -110,4 +110,89 @@ describe.skipIf(skipIfNoDb)('schema.sql -- redeploy con datos reales ya cargados
     );
     expect(rows[0]?.movement_type).toBe('CONSUMPTION');
   }, 60_000);
+
+  /**
+   * Bloque A de docs/diseno-factura-borrador-2026-08-31.md §29.7 (gate
+   * architecture-governor, 15/09/2026, SOLO schema): `service_items` nueva +
+   * `order_items.service_item_id` + rediseño de los 2 CHECK polimórficos de
+   * `order_items` a nombre nuevo (chk_order_item_type /
+   * chk_order_item_polymorphic_service), mismo criterio que v51 (guard
+   * pg_constraint con nombre nuevo, para que el DROP+ADD del segundo deploy
+   * sea un no-op barato en vez de revalidar la tabla entera). Reproduce el
+   * mismo patrón que el test de arriba: aplica schema.sql, inserta una fila
+   * SERVICE real (order_item + service_item), reaplica schema.sql ENTERO
+   * -- no debe fallar, y la fila real debe seguir intacta.
+   */
+  it('reaplicar schema.sql con un order_item SERVICE real ya cargado NO revienta (Bloque A, service_items)', async () => {
+    const baseUrl = requireTestDatabaseUrl();
+    const schemaSql = readFileSync(resolve(__dirname, '../../db/schema.sql'), 'utf-8');
+
+    const svcDbName = `test_redeploy_svc_${randomUUID().replace(/-/g, '')}`;
+    const adminPool = new Pool({ connectionString: baseUrl });
+    try {
+      await adminPool.query(`CREATE DATABASE "${svcDbName}"`);
+    } finally {
+      await adminPool.end();
+    }
+
+    const url = new URL(baseUrl);
+    url.pathname = `/${svcDbName}`;
+    const svcPool = new Pool({ connectionString: url.toString(), max: 5 });
+    const db = new PgSqlClient(svcPool);
+
+    try {
+      // 1) Deploy inicial.
+      await db.query(schemaSql, []);
+
+      // 2) Uso real: catálogo de servicio + una orden con un order_item
+      //    item_type='SERVICE' referenciándolo -- el camino que la
+      //    constraint polimórfica nueva tiene que aceptar.
+      await db.query(`INSERT INTO locations (id, name) VALUES ('loc-svc-redeploy-1', 'Sucursal Redeploy')`);
+      await db.query(
+        `INSERT INTO service_items (id, business_id, name, price) VALUES ('svcitem-redeploy-1', 'biz-svc-redeploy-1', 'Cargo por cancelacion', 500.00)`,
+      );
+      await db.query(
+        `INSERT INTO orders (id, business_id, location_id, status, total_amount) VALUES ('order-svc-redeploy-1', 'biz-svc-redeploy-1', 'loc-svc-redeploy-1', 'DRAFT', 500.00)`,
+      );
+      await db.query(
+        `INSERT INTO order_items (id, order_id, item_type, service_item_id, quantity, unit_price, subtotal)
+         VALUES ('oi-svc-redeploy-1', 'order-svc-redeploy-1', 'SERVICE', 'svcitem-redeploy-1', 1, 500.00, 500.00)`,
+      );
+
+      // 3) El redeploy siguiente -- MISMO schema.sql, reaplicado ENTERO,
+      //    contra una BD que YA tiene la fila SERVICE real de arriba.
+      await expect(db.query(schemaSql, [])).resolves.not.toThrow();
+
+      // Los datos reales siguen intactos.
+      const { rows } = await db.query<{ item_type: string; service_item_id: string }>(
+        `SELECT item_type, service_item_id FROM order_items WHERE id = 'oi-svc-redeploy-1'`,
+      );
+      expect(rows[0]?.item_type).toBe('SERVICE');
+      expect(rows[0]?.service_item_id).toBe('svcitem-redeploy-1');
+
+      // Los nombres nuevos de los CHECK son los que quedan activos --
+      // los viejos (order_items_item_type_check / chk_order_item_polymorphic)
+      // ya no existen tras el segundo deploy.
+      const { rows: constraints } = await db.query<{ conname: string }>(
+        `SELECT conname FROM pg_constraint WHERE conrelid = 'order_items'::regclass AND contype = 'c'`,
+      );
+      const names = constraints.map((c) => c.conname);
+      expect(names).toContain('chk_order_item_type');
+      expect(names).toContain('chk_order_item_polymorphic_service');
+      expect(names).not.toContain('order_items_item_type_check');
+      expect(names).not.toContain('chk_order_item_polymorphic');
+    } finally {
+      await svcPool.end();
+      const cleanupPool = new Pool({ connectionString: baseUrl });
+      try {
+        await cleanupPool.query(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+          [svcDbName],
+        );
+        await cleanupPool.query(`DROP DATABASE IF EXISTS "${svcDbName}"`);
+      } finally {
+        await cleanupPool.end();
+      }
+    }
+  }, 60_000);
 });

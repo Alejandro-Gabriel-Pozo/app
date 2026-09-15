@@ -3945,3 +3945,286 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- ---------------------------------------------------------------------------
+-- credit_note_request (schema v57) -- fila-solicitud que trackea UN intento
+-- de emisión de Nota de Crédito dentro del escape fiscal
+-- (cancelOrderWithCreditNote/cancelReservationWithCreditNote, N1.a).
+-- No es la NC (eso es invoices, DOCUMENTO) ni el ADJUSTMENT (eso es
+-- financial_transactions, TRANSACCIÓN de ledger, A3.8) -- es el registro
+-- de WORKFLOW alrededor de los dos, para poder reconciliar a mano el único
+-- caso que ninguno de los otros dos resuelve: FAILED_UNCERTAIN con
+-- afip_contacted=true (invoice.service.ts:1189-1198), donde retryExisting()
+-- se niega a reintentar solo (A8.6) y hoy no existe ningún consumidor de
+-- "un humano confirmó que pasó".
+--
+-- Diseño completo: docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md
+-- §6.5 bis (reapertura 15/09/2026, gatillo 1: reconciliación manual real de
+-- FAILED_UNCERTAIN). Clasificación criterios-negocio: TRANSACCIÓN (A6.x),
+-- no maestro ni documento -- no lleva `code`, no se "desactiva" (sin
+-- active/deleted_at), evoluciona por estados hasta un terminal, mismo trato
+-- que financial_transactions/reservations/orders.
+--
+-- Por qué NO lleva entity_type/entity_id polimórfico: financial_transactions
+-- ya resuelve el mismo problema ("una fila que pertenece a una orden O a una
+-- reserva, nunca las dos") con dos FK nullable + CHECK CASE-based
+-- (chk_financial_transactions_order_or_reservation, arriba) -- esta tabla
+-- copia el mismo mecanismo en vez de reinventar scope_type/scope_id
+-- (CLAUDE.md, Modularidad: "pierde la FK real hacia las tablas de ítem").
+--
+-- Este bloque implementa SOLO el schema -- repositorio, rutas, worker de SLA
+-- y el flujo de reconciliación manual quedan para bloques separados, cada
+-- uno con su propio gate (§6.5 bis, nota inicial).
+--
+-- Dos correcciones al DDL propuesto en §6.5 bis (el diseño no tuvo su propio
+-- gate de "listo para implementar" -- ver nota de la sección):
+--   1. `updated_at` + trigger `set_updated_at()`: el borrador solo tenía
+--      `created_at`. Esta es una fila que se UPDATEa en cada transición de
+--      estado (A6.1: el UPDATE de `state` es el mecanismo normal) -- mismo
+--      patrón que ~10 tablas mutables de este schema (orders, stays,
+--      business_profile, etc., ver los triggers `*_updated_at` de arriba).
+--      Sin esta columna, la bandeja no podría ordenar/filtrar por "última
+--      vez que se tocó esta fila" sin recurrir a audit_log.
+--   2. CHECK de consistencia de resolución simplificado de 3 ramas a 2,
+--      cerrando un hueco real del borrador: la rama 3 original
+--      ("state = 'CERRADA' AND resolution_outcome IS NULL") no exigía
+--      resolved_by/resolved_at NULL en el cierre automático, así que una
+--      fila con resolution_outcome NULL pero resolved_by/resolved_at
+--      poblados hubiera pasado el CHECK -- contradice el propio comentario
+--      del borrador ("resolved_by NULL... poblado solo cuando
+--      resolution_outcome no es NULL"). La versión de abajo exige que los
+--      tres campos de resolución vayan siempre juntos (todos NULL o todos
+--      NOT NULL, y NOT NULL solo permitido con state='CERRADA'), sin perder
+--      ningún caso real (cierre manual: los 3 poblados; cierre automático o
+--      fila abierta: los 3 NULL).
+CREATE TABLE IF NOT EXISTS credit_note_request (
+  id                  VARCHAR(255)  PRIMARY KEY,
+  business_id         VARCHAR(255)  NOT NULL,
+
+  -- La factura-intento de NC que esta fila trackea. UNIQUE (no parcial):
+  -- cada invoice_id ya identifica un único intento de emisión
+  -- (idempotency_key único en invoices, idx_invoices_idempotency_key) -- un
+  -- invoice_id no puede pertenecer a dos solicitudes, sin excepción, en
+  -- ningún estado.
+  invoice_id          VARCHAR(255)  NOT NULL UNIQUE REFERENCES invoices(id),
+
+  -- La factura ORIGINAL que esta NC revierte -- mismo campo que
+  -- financial_transactions.reversed_invoice_id, duplicado acá a propósito
+  -- para no tener que hacer JOIN a financial_transactions solo para saber
+  -- qué factura está en juego al listar la bandeja.
+  reversed_invoice_id VARCHAR(255)  NOT NULL REFERENCES invoices(id),
+
+  -- Qué disparó el escape -- misma forma que financial_transactions
+  -- (order_id/reservation_id nullable, CHECK CASE-based), no un par
+  -- entity_type/entity_id.
+  order_id            VARCHAR(255)  REFERENCES orders(id) ON DELETE SET NULL,
+  reservation_id      VARCHAR(255)  REFERENCES reservations(id) ON DELETE SET NULL,
+
+  -- A6.x -- máquina de estados PROPIA del workflow, nunca un espejo de
+  -- invoices.status (grounding ERP citado en el HOLD original: la
+  -- ambigüedad de la Invoice se delega al estado de la Invoice, no se
+  -- refleja como un 5to estado de la solicitud). Solo 3 valores --
+  -- transiciones documentadas en §6.5 bis.
+  state               VARCHAR(30)   NOT NULL DEFAULT 'PENDIENTE'
+                        CHECK (state IN ('PENDIENTE', 'EN_REVISION_MANUAL', 'CERRADA')),
+
+  -- Qué determinó el humano (o el cierre automático) al llegar a CERRADA.
+  -- NULL cuando la fila cierra SOLA (issue()/reconcileAfterFailure()
+  -- automático llegó a ISSUED o REJECTED sin pasar por revisión manual) --
+  -- NULL en ese caso es la señal de "nadie tuvo que intervenir", no un dato
+  -- faltante.
+  resolution_outcome  VARCHAR(20)   CHECK (resolution_outcome IN ('EMITIDA', 'NO_EMITIDA')),
+
+  -- Consumidor real que el gate 2.2 pedía: identity_id (JWT sub) de la
+  -- platform DB, SIN FK a `users` -- mismo criterio que audit_log.changed_by
+  -- y stays.assigned_by. NULL para cierres automáticos, poblado solo cuando
+  -- resolution_outcome no es NULL.
+  resolved_by         VARCHAR(255),
+  resolved_at         TIMESTAMPTZ,
+
+  -- Texto libre del humano (qué miró en FECompUltimoAutorizado/getVoucherInfo,
+  -- por qué concluyó lo que concluyó) -- mismo rol que
+  -- financial_transactions.notes (VARCHAR(500)), un poco más largo porque
+  -- acá es la única evidencia escrita de una reconciliación manual contra
+  -- AFIP.
+  resolution_note     VARCHAR(1000),
+
+  -- Pregunta 2 de §6.5 bis (SLA/escalamiento, resuelta 15/09/2026: sí hace
+  -- falta alerta). NULL hasta que el worker de SLA (CreditNoteReviewSlaWorker,
+  -- no implementado en este bloque) manda el primer aviso -- persistida en
+  -- la fila, a propósito distinto del cooldown en memoria de
+  -- dead-letter-notify.ts, para que un restart de Render no reavise filas
+  -- ya notificadas.
+  sla_alert_sent_at   TIMESTAMPTZ,
+
+  created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_note_request_state
+  ON credit_note_request (state, created_at)
+  WHERE state = 'EN_REVISION_MANUAL';
+-- Índice parcial -- la bandeja SOLO lista state='EN_REVISION_MANUAL', y
+-- created_at es lo que distingue "hace 3 minutos" de "hace 3 días" ADENTRO
+-- de esa lista (resolved_at es NULL mientras sigue abierta -- queda para
+-- las filas ya CERRADA). Mismo índice cubre el poll del worker de SLA
+-- (pregunta 2 de §6.5 bis): `WHERE state = 'EN_REVISION_MANUAL' AND
+-- created_at < NOW() - INTERVAL '<SLA>' AND sla_alert_sent_at IS NULL`.
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_credit_note_request_order_or_reservation'
+  ) THEN
+    ALTER TABLE credit_note_request ADD CONSTRAINT chk_credit_note_request_order_or_reservation CHECK (
+      (CASE WHEN order_id       IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN reservation_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+    );
+  END IF;
+END $$;
+-- "= 1", no "<= 1" como en financial_transactions -- a diferencia de un
+-- CHARGE/PAYMENT suelto (que puede no pertenecer a ninguna reserva/orden),
+-- credit_note_request SOLO existe dentro del escape fiscal (N1.a), que
+-- siempre nace de una orden o una reserva -- nunca de las dos, nunca de
+-- ninguna.
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_credit_note_request_resolution_consistency'
+  ) THEN
+    ALTER TABLE credit_note_request ADD CONSTRAINT chk_credit_note_request_resolution_consistency CHECK (
+      (state = 'CERRADA' AND resolution_outcome IS NOT NULL AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)
+      OR (resolution_outcome IS NULL AND resolved_by IS NULL AND resolved_at IS NULL)
+    );
+  END IF;
+END $$;
+-- Corregido respecto del borrador de §6.5 bis (ver docblock de la tabla,
+-- corrección 2): los 3 campos de resolución van siempre juntos -- todos
+-- NULL (fila abierta, o CERRADA por cierre automático sin revisión manual)
+-- o todos NOT NULL (y solo entonces CERRADA, cierre manual con
+-- resolution_outcome poblado). Cierra el hueco donde una fila con
+-- resolution_outcome NULL podía tener resolved_by/resolved_at poblados sin
+-- violar el CHECK.
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'credit_note_request_updated_at') THEN
+    CREATE TRIGGER credit_note_request_updated_at
+      BEFORE UPDATE ON credit_note_request
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ===========================================================================
+-- BLOQUE 23 — SERVICE_ITEMS + order_items.service_item_id (15/09/2026)
+-- docs/diseno-factura-borrador-2026-08-31.md §29.7 (gate architecture-governor,
+-- "LISTO PARA IMPLEMENTAR" -- Bloque A de 4, SOLO schema; repositorio, rutas
+-- y el wiring de precio/descripción quedan para los Bloques B/C/D, cada uno
+-- con su propio gate).
+--
+-- MAESTRO (criterios-negocio, §29.7.1): catálogo de servicios administrativos/
+-- intangibles ("Cargo por cancelación", "Costo de envío", "Diferencia de
+-- tarifa") como item_type de primera clase de order_items, sin forzarlos
+-- dentro de `products` -- Alternativa B de §29.4/§29.5, decisión del dueño.
+-- No requiere inventario: confirmOrder()/el worker de inventario saltean el
+-- INSERT en stock_movements para item_type='SERVICE' (Decisión (2), §29.5).
+--
+-- Sigue el patrón estructural de `products`, no el de `bookable_services`
+-- (§29.7.2: ni `bookable_services` ni `resource_categories` tienen
+-- `business_id` directo -- un MAESTRO no puede depender de una FK opcional
+-- para resolver su propio tenant). Sin `sku`/R1 ni variantes -- mismo estado
+-- que el resto del catálogo (R1/R6 incumplidas a propósito, backlog general,
+-- Parte 7 de docs/criterios-datos.md), un "Cargo por cancelación" no tiene
+-- variantes de color/tamaño. `active` + `deleted_at` desde el día uno (R3
+-- cumplida, a diferencia de `products` que hoy solo tiene `active`).
+--
+-- Las 3 preguntas de negocio de §29.7.7 (resueltas 15/09/2026, dueño,
+-- AskUserQuestion): (1) sí a `category_id` (nullable, FK a
+-- resource_categories, ON DELETE RESTRICT -- mismo patrón que
+-- products.category_id); (2) sin FK a bookable_services, catálogos
+-- completamente independientes; (3) no participa de customer_rates/
+-- rate_catalog -- precio fijo de `service_items.price`, sin excepción.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS service_items (
+  id            VARCHAR(255)   PRIMARY KEY,
+  business_id   VARCHAR(255)   NOT NULL,
+  category_id   VARCHAR(255)   REFERENCES resource_categories(id) ON DELETE RESTRICT,
+  name          VARCHAR(255)   NOT NULL,
+  description   TEXT,
+  price         DECIMAL(10,2)  NOT NULL CHECK (price >= 0),
+  active        BOOLEAN        NOT NULL DEFAULT TRUE,
+  deleted_at    TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_items_business_active
+  ON service_items (business_id) WHERE active = TRUE AND deleted_at IS NULL;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'service_items_updated_at') THEN
+    CREATE TRIGGER service_items_updated_at
+      BEFORE UPDATE ON service_items
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- order_items: columna FK nueva (nullable -- solo item_type='SERVICE' la
+-- puebla), ampliación del CHECK de item_type a 4 valores y rediseño de
+-- chk_order_item_polymorphic a 4 ramas (§29.7.4).
+--
+-- Nombres nuevos a propósito (chk_order_item_type / chk_order_item_
+-- polymorphic_service), NO reutilizar los viejos (order_items_item_type_check
+-- autogenerado / chk_order_item_polymorphic) bajo un guard pg_constraint
+-- permanente: si el nombre no cambia, el DROP CONSTRAINT IF EXISTS de cada
+-- deploy siguiente encuentra la constraint (ya con la definición nueva), la
+-- borra, y el guard IF NOT EXISTS la ve "ausente" y la re-agrega -- revalida
+-- la tabla entera en cada deploy, exactamente el costo que el patrón
+-- pg_constraint (v51, ver bloque chk_financial_transactions_amount) existe
+-- para evitar. Con nombre nuevo, el DROP CONSTRAINT IF EXISTS del nombre
+-- viejo es un no-op barato para siempre después del primer deploy.
+--
+-- Nombre autogenerado real de Postgres para el CHECK inline de columna
+-- verificado contra una BD descartable en esta sesión (15/09/2026):
+-- `order_items_item_type_check` -- SELECT conname FROM pg_constraint WHERE
+-- conrelid = 'order_items'::regclass AND contype = 'c'. Confirmado también
+-- que `chk_order_item_polymorphic` (nombre explícito original) sigue siendo
+-- ese, sin drift.
+-- ---------------------------------------------------------------------------
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS service_item_id VARCHAR(255)
+  REFERENCES service_items(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_order_items_service_item
+  ON order_items (service_item_id) WHERE service_item_id IS NOT NULL;
+
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_item_type_check;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_order_item_type') THEN
+    ALTER TABLE order_items ADD CONSTRAINT chk_order_item_type
+      CHECK (item_type IN ('PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION', 'SERVICE'));
+  END IF;
+END $$;
+
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS chk_order_item_polymorphic;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_order_item_polymorphic_service') THEN
+    ALTER TABLE order_items ADD CONSTRAINT chk_order_item_polymorphic_service CHECK (
+      (item_type = 'PRODUCT'
+        AND product_id IS NOT NULL AND product_variant_id IS NULL
+        AND reservation_id IS NULL AND service_item_id IS NULL)
+      OR (item_type = 'PRODUCT_VARIANT'
+        AND product_variant_id IS NOT NULL AND product_id IS NOT NULL
+        AND reservation_id IS NULL AND service_item_id IS NULL)
+      OR (item_type = 'RESERVATION'
+        AND reservation_id IS NOT NULL AND product_id IS NULL
+        AND product_variant_id IS NULL AND service_item_id IS NULL)
+      OR (item_type = 'SERVICE'
+        AND service_item_id IS NOT NULL AND product_id IS NULL
+        AND product_variant_id IS NULL AND reservation_id IS NULL)
+    );
+  END IF;
+END $$;
+
+-- stock_movements: sin cambios (§29.6 punto 4, confirmado, no re-derivado
+-- acá). Ningún stock_movement llega a existir para un order_item SERVICE,
+-- por construcción de la Decisión (2) de §29.5 -- no porque el WHERE de sus
+-- 4 índices únicos parciales lo excluya.
+
