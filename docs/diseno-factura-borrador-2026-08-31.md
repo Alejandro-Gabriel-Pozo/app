@@ -1,6 +1,81 @@
 # Diseño — Factura como borrador editable (proforma antes del CAE)
 
-- **Versión:** **v2.17** (14/09/2026, **las 2 sub-decisiones de §29.5
+- **Versión:** **v2.20** (15/09/2026, **las 4 preguntas de negocio de §29.6
+  punto 7/17 y §29.7.7 quedan RESUELTAS, vía `AskUserQuestion` con el
+  dueño**): (1) precio/descripción de una línea `SERVICE` — resolución
+  server-side desde el catálogo nuevo (como PRODUCT/PRODUCT_VARIANT),
+  `InvoiceService` necesita `serviceItemRepo` inyectado; (2)
+  `service_items.category_id` — sí, se agrega (nullable, `REFERENCES
+  resource_categories(id)`); (3) relación con `bookable_services` — ninguna,
+  catálogos completamente independientes; (4) participación en
+  `customer_rates`/`rate_catalog` — no, precio fijo sin tarifas especiales
+  por cliente. Ninguna se aplicó todavía (`NO CREATE TABLE`/`ALTER
+  TABLE`/código) — quedan registradas en §29.6 (puntos 7 y 17) y §29.7.7,
+  a la espera del gate `architecture-governor` sobre el diseño técnico
+  completo (§29.5 a §29.7) antes de aplicar una sola línea de SQL.
+
+- **Versión previa:** **v2.19** (14/09/2026, **§29.7 nueva — diseño técnico real de
+  `service_items`**, la tabla nueva que §29.5 Decisión (1) dejó sin diseñar
+  y que §29.6 punto 2 marcaba como bloqueante para escribir el contenido
+  real de la 4ª rama de `chk_order_item_polymorphic`). Clasificada vía la
+  skill `criterios-negocio` como **MAESTRO** (mismo trato que
+  `products`/`bookable_services`, R1-R16 declarados explícitamente).
+  `CREATE TABLE service_items` completo (patrón estructural de `products`:
+  `business_id`, `active` + `deleted_at` desde el día uno — a diferencia de
+  `products`, que no tiene `deleted_at`, ver el porqué en §29.7); el `ALTER
+  TABLE order_items` con la columna `service_item_id` y el rediseño de
+  `chk_order_item_polymorphic` a 4 ramas (renombrada
+  `chk_order_item_polymorphic_service` — a propósito, no el mismo nombre,
+  para que el guard `pg_constraint` de v51/§31.6 no revalide la tabla en
+  cada deploy futuro); ampliación del CHECK de `item_type` a 4 valores; y
+  el bump de `CURRENT_SCHEMA_VERSION`. Propuesta de rutas RBAC (sin
+  implementar). **3 preguntas de negocio nuevas, explícitas para
+  `AskUserQuestion`, ninguna resuelta acá:** ¿`service_items` necesita
+  `category_id`?, ¿tiene alguna relación con `bookable_services`?, ¿participa
+  del mecanismo de tarifas especiales (`customer_rates`/`rate_catalog`,
+  columna `bucket`)? — las dos primeras nombradas explícitamente por el
+  encargo de esta ronda; la tercera relacionada con la pregunta ya abierta
+  en §29.6 punto 7 (resolución de precio server-side para `SERVICE`) sin
+  duplicarla. **No autoriza ningún `CREATE TABLE`/`ALTER TABLE`/migración
+  real** — sigue pendiente el gate `architecture-governor` sobre el diseño
+  técnico completo (§29.5 a §29.7) antes de aplicar una sola línea de SQL.
+
+- **Versión previa:** **v2.18** (14/09/2026, **relevamiento mecánico completo de
+  sitios que asumen `item_type` exhaustivo en 3 valores — el punto (2) de
+  §29.5 que quedaba sin cerrar**, ver §29.6 nueva). Relevado con `grep`
+  exhaustivo sobre ambos repos (`item_type`/`itemType`/`ItemType`/
+  `'PRODUCT'`/`'PRODUCT_VARIANT'`/`'RESERVATION'`/`OrderItemType`, más
+  todo `switch`/`if`/unión de tipos/enum Zod/CHECK SQL que los enumere) —
+  **SUPERA, no solo complementa, el barrido parcial de §29.4/§29.5**
+  (8 archivos de `app-main` + 3 de `appfrontend-main`, listados ahí como
+  "punto de partida, no lista cerrada"). Encontrados **2 sitios nuevos**
+  no cubiertos por ese barrido parcial, los dos con **forma de decisión
+  de negocio escondida, no mecánica** — `OrderService.resolveUnitPrice()`
+  (`order.service.ts:546-556`) e `InvoiceService.resolveOrderItemLine()`
+  (`invoice.service.ts:306-357`): los dos usan `if (itemType ===
+  'RESERVATION') {...} else {...}`, no un `switch` exhaustivo, así que
+  una rama `SERVICE` nueva cae **silenciosamente** en el `else` que hoy
+  asume PRODUCT/PRODUCT_VARIANT — sin error de compilación, sin excepción
+  en runtime necesariamente, con alta probabilidad de un resultado
+  *plausible y mal* (descripción de línea de factura `"Producto"` para un
+  servicio; posible resolución de precio contra un `productId` que no
+  existe). **Ninguna de las dos decisiones se resuelve acá** — quedan
+  explícitas en §29.6 como preguntas para `AskUserQuestion` cuando se
+  encare la implementación real de §29, mismo criterio que ya dejaron
+  abiertas las 2 sub-decisiones originales de §29.5. También confirmado
+  con evidencia de código (no solo inferido) que los 4 índices únicos
+  parciales de `stock_movements` (`ux_stock_movements_order_item_type_
+  product`/`_variant`, `ux_stock_movements_order_item_resolution_
+  product`/`_variant`) son inaplicables a un ítem `SERVICE` — no porque
+  su condición `WHERE` lo excluya en abstracto, sino porque
+  `chk_stock_movement_target` exige `product_id` XOR `product_variant_id`
+  NOT NULL en TODA fila de `stock_movements` sin importar el `item_type`
+  del `order_item` que la originó, y la Decisión (2) de §29.5 (saltear el
+  `INSERT` para `SERVICE`) hace que nunca exista una fila que referencie
+  un `order_item` `SERVICE` en primer lugar. Sigue sin autorizar `CREATE
+  TABLE`, `ALTER TABLE`, migraciones ni código.
+
+- **Versión previa:** **v2.17** (14/09/2026, **las 2 sub-decisiones de §29.5
   RESUELTAS** — decisión del dueño, vía `AskUserQuestion`, ver §29.5).
   **(1) FK de la rama `SERVICE`:** tabla nueva dedicada (nombre final sin
   fijar todavía, p. ej. `service_items`) — no reutilizar `products` con
@@ -2896,13 +2971,16 @@ tiene que tocar los tres, en el mismo cambio — no es trabajo que quede
 "del lado del frontend" para después.
 
 Además, cualquier repositorio/servicio/reporte de `app-main` que haga
-`switch`/`if` sobre `item_type` (no relevado exhaustivamente en esta
-nota — un primer barrido encuentra al menos `pos-menu/order.entities.ts`,
-`order.service.ts`, `order-pricing.service.ts`,
-`sql.order.repository.ts`, `in-memory.order.repository.ts`,
-`orders.routes.ts`, `api/schemas/request.schemas.ts` y
-`facturacion/invoice.service.ts`; relevar sitio por sitio con precisión
-es trabajo de implementación, no de esta nota).
+`switch`/`if` sobre `item_type` — **barrido parcial, ✅ SUPERADO el
+14/09/2026 por el relevamiento completo de §29.6, no solo complementado**
+(el barrido de acá quedaba explícito como "punto de partida, no lista
+cerrada"; §29.6 es el relevamiento sitio-por-sitio con precisión que acá
+se dejaba como "trabajo de implementación, no de esta nota"). Texto
+original, sin reescribir, por trazabilidad: un primer barrido encuentra
+al menos `pos-menu/order.entities.ts`, `order.service.ts`,
+`order-pricing.service.ts`, `sql.order.repository.ts`,
+`in-memory.order.repository.ts`, `orders.routes.ts`,
+`api/schemas/request.schemas.ts` y `facturacion/invoice.service.ts`.
 
 ### 29.5 Recomendación de esta nota, y lo que falta antes de tocar código
 
@@ -2958,19 +3036,615 @@ entre repos en este proyecto.
 > real sobre `order_items`/`invoice_items`, como ya exigía el párrafo de
 > arriba).
 >
-> **Lo que sigue sin cerrarse — no resuelto por esta ronda.** El punto
-> (2) de §29.5 (el relevamiento completo de sitios que asumen `item_type`
-> exhaustivo en 3 valores) es un paso **mecánico** previo a implementar,
-> distinto de las dos decisiones de negocio de arriba — sigue listado,
-> como punto de partida y no como lista cerrada: `pos-menu/order.entities.ts`,
-> `order.service.ts`, `order-pricing.service.ts`,
+> **Lo que sigue sin cerrarse — ✅ RESUELTO el 14/09/2026, ver §29.6.** El
+> punto (2) de §29.5 (el relevamiento completo de sitios que asumen
+> `item_type` exhaustivo en 3 valores) era un paso **mecánico** previo a
+> implementar, distinto de las dos decisiones de negocio de arriba. Texto
+> original de este párrafo, sin reescribir, por trazabilidad: seguía
+> listado como punto de partida y no como lista cerrada: `pos-menu/
+> order.entities.ts`, `order.service.ts`, `order-pricing.service.ts`,
 > `sql.order.repository.ts`, `in-memory.order.repository.ts`,
 > `orders.routes.ts`, `api/schemas/request.schemas.ts`,
 > `facturacion/invoice.service.ts` (todos en `app-main`), más los 3
 > sitios hardcodeados de `appfrontend-main`: `lib/ordenes/types.ts:6`,
 > `dashboard/ordenes/[id]/page.tsx:27-31,452`, `lib/ordenes/api.ts:28`
-> (§29.4). Nadie lo relevó sitio por sitio todavía — sigue siendo trabajo
-> de implementación, no de esta nota.
+> (§29.4). Nadie lo había relevado sitio por sitio hasta acá. **§29.6
+> supera (no solo complementa) esta lista** con el relevamiento completo
+> — dos de los sitios nuevos que encontró tienen forma de decisión de
+> negocio escondida, sin resolver todavía.
+
+### 29.6 Relevamiento mecánico completo de sitios que asumen `item_type`
+exhaustivo en 3 valores (14/09/2026) — supera el barrido parcial de
+§29.4/§29.5
+
+**No autoriza `CREATE TABLE`, migraciones ni código — ni resuelve ninguna
+decisión de negocio.** Grep exhaustivo sobre `app-main` y
+`appfrontend-main` (`item_type`, `itemType`, `ItemType`, `'PRODUCT'`,
+`'PRODUCT_VARIANT'`, `'RESERVATION'`, `OrderItemType`, y todo
+`switch`/`if`/unión TS/enum Zod/CHECK SQL que enumere esos 3 valores),
+verificado archivo por archivo contra el código real (no contra el
+barrido parcial de §29.4, que se tomó solo como punto de partida). Ningún
+`switch` con chequeo de exhaustividad (`: never`) existe en ninguno de
+los dos repos sobre este campo — todo el enrutamiento por `item_type` es
+`if`/`else` o un `Record` indexado, lo cual importa para la clasificación
+de abajo (una unión TS más ancha no habría hecho fallar el build en
+ninguno de estos sitios).
+
+**Convención de esta lista:** ⚙️ mecánico (agregar el caso/branch es
+seguro, sin implicancia de comportamiento) — 🔴 con implicancia de
+comportamiento real (calcula precio, es un guard financiero, o produce
+una salida visible incorrecta) — 🟡 decisión de negocio escondida, NO
+resuelta acá (ver el precedente D5, `app-main/CLAUDE.md`: una pregunta de
+alcance resuelta de una forma no declarada explícitamente es una decisión
+tomada sin preguntarla).
+
+#### `app-main`
+
+1. ⚙️ **`src/db/schema.sql:1554-1555`** — `item_type VARCHAR(20) CHECK
+   (... IN ('PRODUCT','PRODUCT_VARIANT','RESERVATION'))`. CHECK SQL,
+   unión cerrada. Hoy: un INSERT con `SERVICE` revienta 23514 (fail-closed,
+   visible). Ampliarlo es el propio objetivo de §29 — no agrega nada que
+   §29.4 no dijera ya.
+2. 🔴 **`src/db/schema.sql:1566-1570`**, `chk_order_item_polymorphic` — 3
+   ramas `OR` que exigen la nulabilidad exacta de FK por `item_type`. Hoy:
+   una fila `SERVICE` (una vez ampliado el CHECK #1) no matchea NINGUNA de
+   las 3 ramas → 23514 en TODO insert `SERVICE`, incluso con el catálogo
+   nuevo ya creado. Necesita una 4ª rama — el nombre de la columna FK
+   depende del diseño de tabla todavía sin hacer (§29.5, "el nombre final
+   de la tabla no queda fijado acá"), así que el contenido exacto de la
+   rama no se puede escribir todavía, aunque la FORMA (una rama `OR` más)
+   sea mecánica.
+3. ⚙️ **`src/db/schema.sql:1573-1576`** — 3 índices parciales `WHERE
+   product_id/product_variant_id/reservation_id IS NOT NULL`. Extienden
+   con un 4° índice parcial simétrico sobre la columna FK nueva, mismo
+   patrón — sin tocar los 3 existentes.
+4. ⚙️✅ **`src/db/schema.sql:1730,1878-1893`** — los 4 índices únicos
+   parciales de `stock_movements` (`ux_stock_movements_order_item_type_
+   product`/`_variant`, `ux_stock_movements_order_item_resolution_
+   product`/`_variant`). **Confirmado con evidencia, no solo inferido**
+   (responde el punto 4 del encargo): los 4 son parciales sobre
+   `product_id IS NOT NULL`/`product_variant_id IS NOT NULL` (líneas
+   1878-1893) — pero la razón real de que no restrinjan nada para
+   `SERVICE` no es esa condición `WHERE` en abstracto, es que
+   `chk_stock_movement_target` (líneas 1706-1709) exige `product_id` XOR
+   `product_variant_id` NOT NULL en TODA fila de `stock_movements`, sin
+   importar de qué `item_type` de `order_items` venga — y la Decisión (2)
+   de §29.5 (`confirmOrder()`/el worker de inventario saltean el `INSERT`
+   para `SERVICE`) hace que nunca llegue a existir una fila que referencie
+   un `order_item` `SERVICE`. No hay fila → los 4 índices no tienen nada
+   que restringir, por construcción — cero cambio necesario en estos 4
+   índices para la rama `SERVICE`.
+5. ⚙️ **`src/pos-menu/order.entities.ts:65`** — `export type
+   OrderItemType = 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION'`. Unión
+   TS cerrada. Hoy: TypeScript rechaza `'SERVICE'` en compile-time en
+   cualquier literal que lo use — ampliar la unión es mecánico y es lo
+   que hace que TODOS los sitios de abajo que castean/pasan el valor sin
+   inspeccionarlo (repos, rutas) sigan compilando sin cambio propio.
+   También: la tabla markdown del docblock (líneas 74-78, FK obligatoria
+   por `item_type`) necesita una fila nueva — cosmético, dentro de un
+   comentario.
+6. ⚙️✅ **`src/pos-menu/order.service.ts:272` (`resolveConfirmStockItems`)
+   y `:318` (`expandStockItemsFromSnapshot`)** — `if (item.itemType !==
+   'PRODUCT' && item.itemType !== 'PRODUCT_VARIANT') continue;`. Guard por
+   NEGACIÓN, no por enumeración positiva de RESERVATION: un ítem `SERVICE`
+   cae automáticamente en el `continue` — mismo resultado que RESERVATION
+   hoy (se excluye de la explosión/reversión de stock). **Ya hace, por
+   construcción, exactamente lo que exige la Decisión (2) de §29.5** — cero
+   cambio necesario.
+7. 🟡 **`src/pos-menu/order.service.ts:546-556` (`resolveUnitPrice`)** —
+   `if (item.itemType === 'RESERVATION') { ...usa item.unitPrice del
+   caller... } else { return this.orderPricingService.resolveUnitPrice({
+   ..., productId: item.productId!, ... }) }`. A diferencia del punto 6,
+   este es un `if`/`else` de 2 ramas, NO una negación defensiva — el
+   `else` asume implícitamente "todo lo que no es RESERVATION es
+   PRODUCT/PRODUCT_VARIANT, con `productId` no nulo". **Sitio nuevo, NO
+   estaba en el barrido parcial de §29.4/§29.5.** Un ítem `SERVICE` cae en
+   el `else`: `item.productId!` fuerza un `null` a no-nulo (SERVICE no
+   tiene `productId` — su FK es la tabla nueva de §29.5), y
+   `OrderPricingService.resolveUnitPrice()` recibe `productId: null`
+   tipado como si fuera válido. TypeScript **no** lo detecta (el `!`
+   silencia el chequeo) — en runtime, `ProductService.resolveTarget(null,
+   ...)` con altísima probabilidad tira `ProductNotFoundError` (fail-loud,
+   pero con un mensaje que habla de "producto no encontrado" para algo que
+   nunca fue un producto) o, en el peor caso, resuelve contra un
+   `productId` real si alguna vez hay colisión de datos. **🟡 Decisión de
+   negocio escondida, NO resuelta acá:** ¿un ítem `SERVICE` obtiene
+   resolución de precio server-side (como PRODUCT/PRODUCT_VARIANT — con
+   su propia tarifa de cliente sobre el catálogo de servicios) o sigue el
+   mismo eje que RESERVATION hoy (precio a cargo del caller,
+   `MissingUnitPriceError` como red de seguridad)?
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): resolución
+   server-side desde el catálogo propio** (como PRODUCT/PRODUCT_VARIANT).
+   `OrderPricingService.resolveUnitPrice()` necesita una 4ª rama para
+   `SERVICE` que consulte el `service_item_id` contra el repositorio
+   nuevo (§29.7) — sin `customer_rates`/tarifas especiales (ver §29.7,
+   pregunta de `customer_rates` también resuelta: precio fijo, sin
+   excepción por cliente). NO implementado acá — queda para el bloque de
+   implementación real de §29, con su propio gate.
+8. ⚙️ **`src/pos-menu/order.entities.ts:183-197`**
+   (`CreateOrderItemInput.unitPrice`, docblock) — documenta el mismo
+   supuesto de 2 ramas que el punto 7 ("obligatorio para RESERVATION").
+   No es código ejecutable, es el reflejo textual del mismo hueco — se
+   corrige junto con la decisión del punto 7, no antes.
+9. ⚙️ **`src/pos-menu/order-pricing.service.ts:1-28`** (docblock de
+   clase) — describe el servicio como exclusivo de "estos dos itemType"
+   (PRODUCT/PRODUCT_VARIANT) y dice explícitamente que RESERVATION "es un
+   eje distinto, fuera del alcance de D9". No menciona SERVICE en
+   absoluto — refuerza el punto 7 (la decisión de qué eje sigue SERVICE
+   sigue sin tomarse), no agrega un sitio de código nuevo.
+10. ⚙️ **`src/pos-menu/sql.order.repository.ts:44-61`**
+    (`rowToOrderItem()`) — `itemType: row['item_type'] as OrderItemType`.
+    Cast directo de la columna, sin inspeccionar el valor — ya "exhaustivo"
+    por construcción, ampliar la unión del punto 5 no requiere tocar este
+    sitio.
+11. ⚙️ **`src/pos-menu/sql.order.repository.ts:187-190`** — mensaje de
+    `Error` del método legacy `create()` menciona "PRODUCT/PRODUCT_VARIANT"
+    en texto plano. Cosmético (string de error), no bloquea nada.
+12. ⚙️ **`src/pos-menu/sql.order.repository.ts:401-419`**
+    (`addItemWithClient`, INSERT) — columnas fijas `item_type, product_id,
+    product_variant_id, reservation_id, ...`, sin slot para la FK de
+    `SERVICE` todavía. Mecánico agregar una columna nueva al INSERT una
+    vez que el diseño de tabla (§29.5) fije su nombre — no hay lógica
+    condicional que revisar, solo una columna que falta.
+13. ⚙️✅ **`src/pos-menu/sql.order.repository.ts:482`**
+    (`getSalesByProduct`) — `WHERE oi.item_type IN ('PRODUCT',
+    'PRODUCT_VARIANT')`. Filtro SQL literal — YA excluye RESERVATION hoy
+    y seguiría excluyendo SERVICE sin ningún cambio: este reporte es
+    específicamente "ventas por producto", un ítem sin producto no le
+    corresponde. Confirmado correcto tal cual está, no es deuda.
+14. ⚙️✅ **`src/pos-menu/in-memory.order.repository.ts:197`** — espejo en
+    memoria del punto 13, misma guarda por negación que el punto 6 (`!==
+    'PRODUCT' && !== 'PRODUCT_VARIANT'`). Mismo resultado: SERVICE
+    excluido automáticamente, sin cambio necesario.
+15. ⚙️ **`src/pos-menu/orders.routes.ts:144-156`**
+    (`stripItemUndefined()`) — mapea `CreateOrderItemBody` (inferido del
+    Zod schema, punto 17) a `CreateOrderItemInput`, campo por campo
+    (`productId`, `productVariantId`, `reservationId`). Mecánico agregar
+    el campo FK nuevo una vez que exista en el schema — `itemType` ya
+    pasa genérico, sin `switch`.
+16. ⚙️/🟡 **`src/api/schemas/request.schemas.ts:142-207`**
+    (`ORDER_ITEM_TYPES`, `CreateOrderItemSchema`) — la tupla `[
+    'PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION']` es el gate HTTP: hoy
+    CUALQUIER request con `itemType: 'SERVICE'` se rechaza 400 antes de
+    tocar dominio (fail-closed, visible, con mensaje de error explícito
+    listando los valores válidos — el mejor de todos los sitios de esta
+    lista en términos de honest-degradation). Ampliar la tupla es
+    mecánico. El `.superRefine()` (líneas 176-206) necesita una 4ª rama
+    `if (data.itemType === 'SERVICE')` con sus propias reglas de FK
+    obligatorio/prohibido — la FORMA es mecánica (mismo patrón que las
+    otras 3 ramas), pero el CONTENIDO depende del nombre del campo FK que
+    todavía no existe (tabla sin diseñar, §29.5) — no es una decisión de
+    negocio nueva, es que este sitio está bloqueado en el diseño de tabla
+    pendiente, no listo para tocarse todavía.
+17. 🔴🟡 **`src/facturacion/invoice.service.ts:306-357`**
+    (`resolveOrderItemLine()`) — mismo patrón exacto que el punto 7:
+    `if (item.itemType === 'RESERVATION') {...} else {...}`. **Sitio
+    nuevo, NO estaba en el barrido parcial de §29.4/§29.5** (aunque
+    `invoice.service.ts` SÍ estaba listado ahí — pero apuntando a otro
+    hallazgo, `item.itemType === 'RESERVATION'` en general, no a este
+    `else` específico). El `else` asume PRODUCT/PRODUCT_VARIANT: busca
+    `item.productId ? ... : null` y `item.productVariantId ? ... : null`
+    — un ítem `SERVICE` no tiene ninguno de los dos, así que
+    `product = null`, `variant = null`, y `description` cae hasta el
+    último fallback de la cadena: el string literal **`'Producto'`**
+    (línea 343: `product?.name ?? item.productId ?? 'Producto'`). **Esto
+    es un bug de facturación esperando pasar, no cosmético**: una línea
+    de factura para un servicio mostraría literalmente la palabra
+    "Producto" como descripción, sin excepción, sin fallar de forma
+    visible — exactamente el antipatrón que `honest-degradation`
+    (`app-main/CLAUDE.md`) pide evitar: "plausible y mal" en vez de fallar
+    ruidoso. `unit`/`arcaUnitCode` también caen a `product?.unit`/
+    `product?.arcaUnitCode` → `null`/`null` para SERVICE, lo cual puede o
+    no ser correcto para AFIP (no se resuelve acá). **🟡 Decisión de
+    negocio escondida, NO resuelta acá:** ¿de dónde sale la descripción/
+    unidad de una línea de factura `SERVICE` — del catálogo de servicios
+    nuevo (necesita su propio repositorio inyectado a `InvoiceService`,
+    como ya tiene `productRepo`/`productVariantRepo`/`reservationRepo`) o
+    de otro lado?
+
+    **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`), mismo criterio
+    que el punto 7: del catálogo de servicios nuevo.** `InvoiceService`
+    necesita `serviceItemRepo` inyectado, mismo patrón que los otros 3
+    repositorios — `resolveOrderItemLine()` gana una 4ª rama que resuelve
+    `product = null` / `variant = null` / `serviceItem =
+    serviceItemRepo.findById(item.serviceItemId)` y usa
+    `serviceItem.name`/`serviceItem.unit` en vez de caer al fallback
+    `'Producto'`. NO implementado acá — bloque de implementación real de
+    §29, con su propio gate (`resolveOrderItemLine()` toca facturación
+    fiscal, máximo escrutinio).
+18. ⚙️✅ **`src/facturacion/invoice.entities.ts:94-101`** (docblock de
+    `InvoiceItem`) — "exactamente uno de `orderItemId`/`reservationId`...
+    mismo criterio que `order_items.item_type`". **Verificado, no
+    asumido: este comentario menciona `item_type` pero NO es un sitio que
+    necesite tocarse.** El XOR que describe es `orderItemId`/
+    `reservationId` a nivel `invoice_items` (2 valores, no 3) — un ítem
+    `SERVICE` factura igual que PRODUCT/PRODUCT_VARIANT hoy: setea
+    `orderItemId`, dejando `reservationId` en `null` (ver
+    `resolveOrderItemLine()`, punto 17, el `else` ya hace esto
+    correctamente vía `orderItemId: item.id, reservationId: null`). Cero
+    cambio.
+19. ⚙️ **`src/facturacion/refund-attribution.ts`** — usa `orderItemId`/
+    `reservationId` como "clave de atribución" (`attributionKey`), nunca
+    lee `item_type` directamente. Mismo motivo que el punto 18: una línea
+    `SERVICE` produce un `invoice_item` con `orderItemId` seteado, igual
+    que PRODUCT/PRODUCT_VARIANT — no hay rama nueva que agregar acá.
+20. ⚙️ **18 archivos de test** (`orders.routes.test.ts`,
+    `order.service.test.ts`, `request.schemas.test.ts`,
+    `invoice.service.test.ts`, y las integration tests `order-effects`,
+    `order-flow`, `order-cancel-invoice-toctou`,
+    `invoice-order-reservation-item`,
+    `classify-order-live-invoice-pair`, `credit-note-lines`,
+    `cancel-order-with-credit-note`) — todos construyen ítems con
+    literales `itemType: 'PRODUCT'`/`'RESERVATION'`. Ninguno se rompe al
+    ampliar la unión (TypeScript no falla por una unión más ancha en un
+    literal ya angosto) — pero ninguno cubre `SERVICE` tampoco: cobertura
+    nueva a agregar como parte de la implementación real, no un sitio que
+    "asuma" nada incorrectamente hoy.
+21. **`workers/inventory.handlers.ts`** — verificado, CERO referencias a
+    `itemType`/`item_type`. Recibe el payload ya filtrado por los puntos 6
+    (`resolveConfirmStockItems`/`expandStockItemsFromSnapshot`) — no
+    necesita saber de `item_type` para que la Decisión (2) de §29.5 se
+    cumpla.
+
+#### `appfrontend-main`
+
+Confirmado con grep exhaustivo sobre todo `src/`: **exactamente los 3
+sitios que §29.4 ya tenía listados, ninguno nuevo.**
+
+22. ⚙️ **`src/lib/ordenes/types.ts:6`** — `export type OrderItemType =
+    'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION'`. Unión TS cerrada,
+    espejo manual de `order.entities.ts` (punto 5) — sin mecanismo que
+    los mantenga sincronizados (mismo patrón de riesgo que
+    `ROLES-CATALOG-DRIFT-001`, ya citado en §29.4). Ampliar es mecánico.
+23. ⚙️ **`src/app/dashboard/ordenes/[id]/page.tsx:27-31,452`** —
+    `ITEM_TYPE_LABEL: Record<string, string>` (nótese: tipado por
+    `string`, no por `OrderItemType` — no hay chequeo de exhaustividad
+    posible ni con la unión ampliada) + `{ITEM_TYPE_LABEL[item.itemType]
+    ?? item.itemType}`. Hoy, con `SERVICE` no listado en el diccionario:
+    el fallback `?? item.itemType` ya cubre el caso — muestra el string
+    crudo `SERVICE` en vez de una etiqueta en español. Degradación
+    visible (se nota que falta traducir), no un crash — pero sigue sin
+    etiqueta linda hasta que alguien agregue la entrada al diccionario.
+    Mecánico agregar `SERVICE: 'Servicio'` (o el nombre que decida el
+    dueño del lado de producto).
+24. ⚙️ **`src/lib/ordenes/api.ts:28`** (`addItem()`) — el parámetro
+    `itemType` de la firma ya está tipado como `string` genérico (no
+    `OrderItemType`) — no rechaza `SERVICE` en compile-time hoy, sin
+    ningún cambio necesario en este archivo.
+
+Verificado además, sin resultados: `docs/roadmap-migracion-refine.md` y
+`dashboard/reportes/page.tsx` no enumeran `item_type` en ningún lado —
+no hay un reporte de ventas por tipo de ítem en el frontend que necesite
+tocarse.
+
+---
+
+### 29.7 Diseño real de `service_items`, propuesto 14/09/2026 — pendiente de gate y autorización explícita antes de aplicar
+
+**No autoriza `CREATE TABLE`, `ALTER TABLE`, migraciones ni código.** Es la
+propuesta de diseño técnico que §29.5 Decisión (1) dejó pendiente (nombre,
+columnas de la tabla nueva) y que §29.6 punto 2 marcaba como bloqueante
+para poder escribir el contenido real de la 4ª rama de
+`chk_order_item_polymorphic` ("el nombre de la columna FK depende del
+diseño de tabla todavía sin hacer"). Sigue pendiente el gate
+`architecture-governor` sobre el diseño técnico completo (§29.5-§29.7) y,
+por separado, la autorización explícita del dueño para aplicar cualquier
+SQL — ver el cierre de esta sección.
+
+#### 29.7.1 Clasificación — skill `criterios-negocio`
+
+**MAESTRO**, no transacción ni documento. Razonamiento: `service_items`
+describe un concepto vendible que persiste independientemente de las
+órdenes que lo usan ("Cargo por cancelación" existe en el catálogo antes y
+después de cualquier orden concreta), no es un hecho que ocurrió
+(eso es `order_items`, que lo referencia) ni un documento fiscal
+inmutable. Mismo trato que `products`/`bookable_services` — confirmado,
+no asumido, contra la tabla de `docs/criterios-datos.md` Parte 1.
+
+Reglas de `criterios-datos.md`/`criterios-negocio.md` que aplican y cómo
+las cumple este diseño:
+
+| Regla | Aplica | Cómo la cumple el diseño |
+|---|---|---|
+| R1 (código de negocio) | Sí, en teoría | **Incumplida a propósito, mismo estado que `products`/`bookable_services`** (Parte 7 de `criterios-datos.md`: "❌ Ningún maestro lo tiene", backlog general "esta semana" desde el 13/08). No es una regresión nueva de esta tabla — es paridad con el resto del catálogo. Si R1 se implementa para el catálogo en general, `service_items` entra en el mismo lote. |
+| R2 (`findById` sin filtro de estado) | Sí | El repositorio nuevo (no diseñado en detalle acá, es capa de aplicación) debe seguir el patrón ya corregido de `resources`/`resource_categories`/`bookable_services`: `findById` nunca filtra por `active`/`deleted_at` en el `WHERE`. Declarado como requisito de implementación, no de schema. |
+| R3 (borrado ≠ pausado) | Sí | **Cumplida desde el día uno**: `active BOOLEAN` + `deleted_at TIMESTAMPTZ` en el `CREATE TABLE` (§29.7.2) — a diferencia de `products`, que hoy solo tiene `active` (sin `deleted_at`, confirmado por grep, cero `ALTER TABLE products ADD COLUMN ... deleted_at` en `schema.sql`). No es "mejorar" una decisión ya cerrada — R3 nunca se cerró para `products`, sigue listada como debt en `criterios-datos.md`; una tabla nueva no tiene por qué heredar una deuda de otra tabla. |
+| R5 (plan para dependientes al desactivar) | Sí, en teoría | No implementado en el schema (es lógica de servicio, backlog general — mismo estado ❌ que el resto del catálogo). Nota de diseño: dado R9/R12 (una transacción no depende del estado del maestro — ver abajo), desactivar un `service_item` con `order_items` históricos que lo referencian **no rompe nada por construcción** — el caso real de R5 (bloquear/cascada/reasignar) aplicaría si `service_items` tuviera hijos propios, y este diseño no le da ninguno. |
+| R6 (unicidad normalizada) | Sí, en teoría | **Incumplida a propósito, mismo estado que el resto del catálogo** (❌ en Parte 7, depende de R1). Sin índice único sobre `name` — dos servicios administrativos podrían llamarse igual, igual que hoy pasa con `products`/`bookable_services`. |
+| R9 (la transacción congela lo que necesita del maestro) | Sí | `order_items.unit_price`/`subtotal` ya son snapshot inmutable, genérico para cualquier `item_type` — sin cambio necesario para que `SERVICE` lo cumpla. **Mismo hueco ya documentado en `criterios-datos.md`** para el resto del catálogo: el **nombre** del servicio no se congela en `order_items` (no hay columna `name`/`description` ahí) — si se renombra un `service_item` después de facturado, el historial relee el nombre actual vía el FK. No es un gap nuevo de este diseño: es el mismo estado ⚠️ que ya tienen `products`/`bookable_services`/`reservations` hoy. `invoice_items`/`invoice_draft_items` sí tienen su propio snapshot de descripción (ver §25/§28), que es la capa que realmente importa para el documento fiscal — el `order_item` en sí nunca fue el punto de congelamiento en este repo. |
+| R10/R11 (histórico intacto / bloqueo hacia adelante) | Sí | R10 sale gratis de R9 (igual que el resto del catálogo). R11 es responsabilidad de la capa de servicio (`OrderService` al agregar un ítem a una orden nueva debe rechazar un `service_item_id` con `active = FALSE` o `deleted_at IS NOT NULL`) — declarado como requisito de implementación, mismo patrón que `ReservationService` ya aplica para recursos/categorías. |
+| R15 (FK rota falla fuerte) | Sí | `service_item_id REFERENCES service_items(id) ON DELETE RESTRICT` — un `service_item` con `order_items` que lo referencian no se puede hard-borrar (coherente con "MAESTRO nunca hard-delete"), y una referencia rota es imposible por construcción de FK, no por disciplina de capa de servicio. |
+| R16 (límite de plan sobre lo existente) | Sí, en teoría | No aplica límite de plan nuevo en esta propuesta — mismo estado ❌ que `products`/`resources` hoy (`maxResources` nunca se aplica). Si el negocio quiere limitar el catálogo de servicios por plan más adelante, es una decisión de producto aparte, no bloqueante para este diseño. |
+| A2.8 (pool por tenant, `business_id` explícito igual) | Sí | `business_id VARCHAR(255) NOT NULL`, mismo patrón que `products` (no el de `bookable_services`, que no lo tiene — ver §29.7.2 para por qué se sigue el patrón de `products` acá). |
+| A3.1 (nunca float) | Sí | `price DECIMAL(10,2) NOT NULL CHECK (price >= 0)` — mismo tipo que `products.base_price`/`bookable_services.price`. |
+| A2.9 (nada fiscal como constante) | Sí, verificado | Este diseño **no** agrega `fiscal_treatment`/`arca_iva_id` a `service_items` — mismo estado que `products`/`bookable_services` hoy (ninguno de los dos tiene esas columnas todavía; §25 las propuso solo para `invoice_draft_items`/`invoice_items`, no para el catálogo, y esa propuesta tampoco está aplicada — cero `fiscal_treatment`/`arca_iva_id` en `schema.sql`, confirmado por grep). No es una omisión de este diseño, es paridad con el estado real del resto del catálogo. |
+
+**No se propone `valid_from`/`valid_to` (R4)** — mismo estado que el resto
+del catálogo (❌, backlog "cuando duela", no específico de esta tabla).
+**No se propone `merge()`/R7** por el mismo motivo. Ninguna de las dos es
+una regresión introducida acá.
+
+#### 29.7.2 Patrón estructural — por qué `products`, no `bookable_services`
+
+El encargo pide seguir el patrón de `products`/`bookable_services` salvo
+que una diferencia real de negocio justifique apartarse. Verificado contra
+`schema.sql` (ambos `CREATE TABLE` leídos completos en esta sesión):
+
+- **`products`** tiene `business_id VARCHAR(255) NOT NULL` directo en la
+  tabla. **`bookable_services` no tiene `business_id` en absoluto** — su
+  único ancla de tenant es indirecta, vía `category_id NOT NULL REFERENCES
+  resource_categories(id)` (y `resource_categories` sí tiene `business_id`
+  — no verificado línea por línea en esta ronda, asumido por el patrón
+  general del resto de tablas de `BLOQUE 1`, a confirmar si se implementa).
+- `service_items` sigue el patrón de **`products`**: `business_id` directo,
+  no indirecto vía una categoría — una tabla MAESTRO no puede depender de
+  una columna opcional para resolver su propio tenant. `category_id` **ya
+  resuelta** (§29.7.7 punto 1, 15/09/2026: sí, se agrega) — pero nullable,
+  así que este argumento sigue vigente sin cambios: `business_id` no puede
+  depender de una FK que puede no estar poblada.
+- **Variantes** (`product_variants`): no se replican. Un "Cargo por
+  cancelación" no tiene variantes de color/tamaño — el propio encargo ya
+  lo daba por descontado ("¿necesita variantes como `products`?
+  probablemente no"), y nada en el caso de uso (§29.1: cargos
+  administrativos, costo de envío, diferencia de tarifa) sugiere lo
+  contrario. `has_variants` tampoco se incluye.
+- **`sku`**: no se incluye. Es la mitad de R1 (código de negocio) que
+  `products` sí tiene aunque sin unicidad forzada (R6 ❌) — incluirlo acá
+  sin la contraparte de unicidad sería peor que no tenerlo (una columna
+  que invita a asumir que hace algo que no hace). Mismo criterio que R1 en
+  la tabla de arriba: se deja fuera, no a medias.
+
+#### 29.7.3 `CREATE TABLE service_items` — propuesto
+
+```sql
+-- ===========================================================================
+-- BLOQUE — SERVICE_ITEMS (propuesto, NO aplicado — §29.7 del diseño de
+-- factura como borrador, docs/diseno-factura-borrador-2026-08-31.md)
+-- MAESTRO: catálogo de servicios administrativos/intangibles ("Cargo por
+-- cancelación", "Costo de envío", "Diferencia de tarifa") como ítem de
+-- primera clase de order_items, sin forzarlos dentro de `products`
+-- (Alternativa B de §29.4/§29.5, decisión del dueño). No requiere
+-- inventario -- confirmOrder()/el worker de inventario saltean el INSERT
+-- en stock_movements para item_type='SERVICE' (Decisión (2), §29.5).
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS service_items (
+  id            VARCHAR(255)   PRIMARY KEY,
+  business_id   VARCHAR(255)   NOT NULL,
+  -- category_id: PREGUNTA ABIERTA, ver §29.7.5 — no incluida en esta
+  -- propuesta hasta que se resuelva vía AskUserQuestion. Si se decide
+  -- que sí hace falta, es un ALTER TABLE ADD COLUMN nullable después,
+  -- sin romper nada de lo de abajo.
+  name          VARCHAR(255)   NOT NULL,
+  description   TEXT,
+  price         DECIMAL(10,2)  NOT NULL CHECK (price >= 0),
+  active        BOOLEAN        NOT NULL DEFAULT TRUE,
+  deleted_at    TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_items_business_active
+  ON service_items (business_id) WHERE active = TRUE AND deleted_at IS NULL;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'service_items_updated_at') THEN
+    CREATE TRIGGER service_items_updated_at
+      BEFORE UPDATE ON service_items
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END $$;
+```
+
+Nombre de tabla: `service_items` (plural, snake_case, mismo estilo que
+`products`/`bookable_services`/`product_variants`/`waste_reasons` — no hay
+convención escrita para nombres de tabla en
+`docs/convenciones-nombres.md` más allá de la de archivos TS, así que se
+sigue el precedente del propio `schema.sql`). Capa de dominio, si se
+implementa: `service-item.entities.ts`/`sql.service-item.repository.ts`,
+consistente con `<entidad>.<capa>.ts` del `CLAUDE.md` de este repo.
+
+#### 29.7.4 `ALTER TABLE order_items` — propuesto
+
+Dos constraints existentes cambian de forma, más una columna nueva. Los
+nombres nuevos son **deliberadamente distintos** de los viejos — no
+reutilizar el mismo nombre en un `DROP CONSTRAINT IF EXISTS` +
+`ADD CONSTRAINT` bajo un guard `pg_constraint` permanente: si el nombre no
+cambia, el `DROP CONSTRAINT IF EXISTS` encuentra la constraint (ya con la
+definición nueva) en **cada** deploy siguiente y la vuelve a borrar, lo que
+hace que el guard `IF NOT EXISTS` la vea "ausente" y la re-agregue —
+revalidando la tabla entera en cada deploy, exactamente el costo que el
+patrón `pg_constraint` (v51, documentado en §31.6 de este mismo documento)
+existe para evitar. Con nombre nuevo, el `DROP CONSTRAINT IF EXISTS` del
+nombre viejo es un no-op barato para siempre después del primer deploy.
+
+```sql
+-- Columna FK nueva — nullable (solo item_type='SERVICE' la puebla).
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS service_item_id VARCHAR(255)
+  REFERENCES service_items(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_order_items_service_item
+  ON order_items (service_item_id) WHERE service_item_id IS NOT NULL;
+
+-- Ampliar el enum de item_type a 4 valores (§29.6 punto 1). El nombre
+-- autogenerado por Postgres para el CHECK inline de columna se ASUME acá
+-- como 'order_items_item_type_check' (mismo patrón que
+-- 'accounts_receivable_status_check'/'financial_transactions_amount_check',
+-- los dos casos reales de este archivo donde se reemplazó un CHECK
+-- autogenerado) -- VERIFICAR contra pg_constraint real antes de aplicar:
+-- `SELECT conname FROM pg_constraint WHERE conrelid = 'order_items'::regclass
+-- AND contype = 'c'`. Si el nombre asumido está mal, el DROP CONSTRAINT IF
+-- EXISTS de abajo es un no-op silencioso -- R15 (fallo ruidoso) exige que
+-- esto se confirme contra una BD real, no que se asuma, porque el síntoma
+-- sería sutil: la constraint vieja de 3 valores seguiría activa y CUALQUIER
+-- INSERT con item_type='SERVICE' seguiría rompiendo 23514 incluso después
+-- de este deploy, con el resto del cambio ya aplicado y aparentando éxito.
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_item_type_check;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_order_item_type') THEN
+    ALTER TABLE order_items ADD CONSTRAINT chk_order_item_type
+      CHECK (item_type IN ('PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION', 'SERVICE'));
+  END IF;
+END $$;
+
+-- Rediseño de chk_order_item_polymorphic (§29.6 punto 2) — 4 ramas
+-- CASE-based, mismo patrón ya usado 3 veces en este repo (chk_rate_catalog_
+-- scope, chk_customer_rate_scope, y el propio chk_order_item_polymorphic
+-- original) -- NO el diseño scope_type/scope_id (pierde la FK real hacia
+-- service_items, ver CLAUDE.md "Modularidad"). Nombre nuevo a propósito,
+-- ver el porqué en el párrafo de arriba de esta subsección.
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS chk_order_item_polymorphic;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_order_item_polymorphic_service') THEN
+    ALTER TABLE order_items ADD CONSTRAINT chk_order_item_polymorphic_service CHECK (
+      (item_type = 'PRODUCT'
+        AND product_id IS NOT NULL AND product_variant_id IS NULL
+        AND reservation_id IS NULL AND service_item_id IS NULL)
+      OR (item_type = 'PRODUCT_VARIANT'
+        AND product_variant_id IS NOT NULL AND product_id IS NOT NULL
+        AND reservation_id IS NULL AND service_item_id IS NULL)
+      OR (item_type = 'RESERVATION'
+        AND reservation_id IS NOT NULL AND product_id IS NULL
+        AND product_variant_id IS NULL AND service_item_id IS NULL)
+      OR (item_type = 'SERVICE'
+        AND service_item_id IS NOT NULL AND product_id IS NULL
+        AND product_variant_id IS NULL AND reservation_id IS NULL)
+    );
+  END IF;
+END $$;
+```
+
+**`stock_movements` — sin cambios, confirmado por §29.6 punto 4, no
+re-derivado acá.** Los 4 índices únicos parciales
+(`ux_stock_movements_order_item_type_product`/`_variant`,
+`ux_stock_movements_order_item_resolution_product`/`_variant`) no
+necesitan ningún `ALTER` — ningún `stock_movement` llega a existir para un
+`order_item` `SERVICE`, por construcción de la Decisión (2) de §29.5, no
+porque el `WHERE` de esos índices lo excluya.
+
+#### 29.7.5 Bump de `CURRENT_SCHEMA_VERSION`
+
+`CURRENT_SCHEMA_VERSION` está en **55** hoy
+(`src/platform/tenant-db.setup.ts:471`, verificado en esta sesión). §31.6
+(este mismo documento) ya anticipó que el diseño de §31 (las tres tablas
+de `invoice_drafts`) sería **v56** si se implementa tal como está. Este
+diseño (`service_items` + `ALTER TABLE order_items`) es un bloque
+**separado e independiente** de §31 — ninguno depende del otro para
+aplicarse. Si se implementan en el mismo deploy, comparten el bump a
+**v56** (un bump por deploy, no por tabla — mismo criterio que ya usa
+`schema.sql` para v50-v55, varios bloques bajo un solo número de versión).
+Si se implementan en deploys separados, el que salga segundo es **v57**.
+No se fija acá cuál de los dos sale primero — es una decisión de
+secuenciación de implementación, no de este diseño.
+
+#### 29.7.6 RBAC — rutas propuestas (sin implementar)
+
+Mismo patrón que `products.routes.ts`/`bookable-services.routes.ts`:
+lectura disponible para quien arma órdenes, escritura reservada a gestión.
+
+| Método | Ruta propuesta | Grupo propuesto | Motivo |
+|---|---|---|---|
+| `GET` | `/api/service-items` | `Roles.ORDERS` | Personal armando una orden necesita listar el catálogo para agregar un ítem `SERVICE` — mismo nivel que `products.routes.ts` da a `/stock/decrement` (`ORDERS`), no el nivel más alto de `MANAGEMENT` que ese archivo usa para el resto. |
+| `GET` | `/api/service-items/:id` | `Roles.ORDERS` | Ídem. |
+| `POST` | `/api/service-items` | `Roles.MANAGEMENT` | Alta de catálogo — mismo nivel que `POST /api/products`/`POST /api/bookable-services`. |
+| `PUT` | `/api/service-items/:id` | `Roles.MANAGEMENT` | Ídem, edición de catálogo. |
+| `DELETE` | `/api/service-items/:id` | `Roles.MANAGEMENT` | Por R3, este endpoint desactiva (`active = FALSE`) o marca `deleted_at`, nunca hace `DROP`/`DELETE FROM` real — mismo semántica que el resto del catálogo, a implementar en el servicio, no en el nombre de la ruta. |
+
+Si se implementa: agregar la fila a `docs/rbac-matriz-endpoints.md`
+sección 2, sumar 5 al `EXPECTED_AUTHORIZE_CALL_SITES` de
+`rbac-matrix-sync.test.ts`, y verificar que `rbac-route-coverage.test.ts`/
+`rbac-matrix-section2-sync.test.ts`/`openapi-spec-route-sync.test.ts` (si
+se documenta en `spec.ts`) sigan en verde — ningún archivo de este
+diseño lo modifica, es trabajo de implementación futura.
+
+#### 29.7.7 Preguntas de negocio nuevas — explícitas para `AskUserQuestion` — ✅ LAS 3 RESUELTAS (15/09/2026)
+
+Mismo precedente D5 (`CLAUDE.md`): cada una tiene más de una respuesta
+razonable, así que se listan, no se deciden.
+
+1. **¿`service_items` necesita `category_id`?** La propuesta de §29.7.3 lo
+   deja afuera. A favor de agregarlo: agrupar "Cargos administrativos" vs.
+   "Ajustes de tarifa" en un selector largo sería más usable, y ya existe
+   `resource_categories` compartida por `resources`/`bookable_services`/
+   `products`. En contra: son pocos ítems por negocio (a diferencia de un
+   menú de productos con decenas de SKUs), y el propio caso de uso de
+   §29.1 no menciona necesidad de categorización. Si la respuesta es sí,
+   es un `ALTER TABLE service_items ADD COLUMN category_id VARCHAR(255)
+   REFERENCES resource_categories(id) ON DELETE RESTRICT` nullable, sin
+   romper nada del diseño de arriba.
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): sí, agregar
+   `category_id`.** El `ALTER TABLE` propuesto arriba queda confirmado —
+   nullable, `REFERENCES resource_categories(id) ON DELETE RESTRICT`,
+   mismo patrón que `resources`. NO aplicado acá, va en el `CREATE TABLE`
+   real del bloque de implementación (junto con el resto de §29.7.3).
+2. **¿Tiene alguna relación con `bookable_services`?** Por ejemplo: ¿un
+   "Cargo por no-show" debería poder atarse a un `bookable_service`
+   concreto (para reportar no-shows por servicio), o es siempre genérico
+   al negocio? El diseño de §29.7.3 no incluye ningún FK hacia
+   `bookable_services` — los dos catálogos quedan completamente
+   independientes salvo que se responda que sí hace falta.
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): completamente
+   independientes.** Sin FK hacia `bookable_services` — el diseño de
+   §29.7.3 queda tal como estaba propuesto en este punto, confirmado, no
+   modificado.
+3. **¿Participa de tarifas especiales (`customer_rates`/`rate_catalog`)?**
+   D9-Parte 1 (`schema.sql:1128-1179`) ya agregó `product_id`/`category_id`/
+   `bucket` (con `'PRODUCTOS'` entre los valores) a las 5 columnas de scope
+   excluyente de esas dos tablas. Un `service_item_id` sexto sería el mismo
+   patrón — pero no se agrega acá porque no está pedido y **depende de la
+   pregunta 7 de §29.6** (¿`SERVICE` resuelve precio server-side, como
+   `PRODUCT`/`PRODUCT_VARIANT`, o el caller lo provee siempre, como
+   `RESERVATION` hoy?) — no tiene sentido dar de alta tarifas especiales
+   para un eje que todavía no decidió si tiene resolución de precio
+   propia. Relacionada con esa pregunta, no duplicada: se cita para que
+   quien la responda vea las dos juntas, pero es §29.6 quien la posee.
+
+   **✅ RESUELTO (15/09/2026, dueño, `AskUserQuestion`): no participa —
+   precio fijo, sin tarifas especiales por cliente.** Aunque §29.6 punto 7
+   se resolvió como "sí, resolución server-side" (lo que habilitaba
+   técnicamente esta pregunta), el dueño decidió NO extender
+   `customer_rates`/`rate_catalog` con un sexto scope para `service_items`
+   — el precio es el de la fila del catálogo (`service_items.price`), sin
+   excepción. Se puede reabrir más adelante como su propia pregunta si
+   hace falta, no bloqueante para el diseño de §29.7.
+
+#### 29.7.8 Grounding liviano — nota, no requisito
+
+Odoo (`product.template` con `type = 'service'`) y QloApps ya citados en
+§29.4/§28 modelan un servicio administrativo como fila de catálogo con
+flags, no con tabla separada — este repo ya decidió lo contrario
+(Decisión (1) de §29.5, tabla dedicada) y esta nota no lo reabre. Un campo
+que ninguno de los dos árboles de este repo contempla todavía y que Odoo
+sí trae de fábula en su catálogo de servicios: **duración estimada** (para
+reportar tiempo facturable) y **si es recurrente** (cargo que se repite
+por período vs. cargo puntual). Ninguno de los dos aparece en el caso de
+uso real de §29.1 ("Cargo por cancelación", "Costo de envío", "Diferencia
+de tarifa" — los tres puntuales, ninguno con duración ni recurrencia) —
+se deja como nota para si el catálogo crece hacia servicios con esas
+propiedades, no como requisito de esta propuesta.
+
+#### 29.7.9 Qué NO autoriza esta sección
+
+Ningún `CREATE TABLE`/`ALTER TABLE`/migración real — el DDL de arriba es
+texto de referencia dentro de este `.md`, no aplicado a `src/db/schema.sql`
+ni a ningún archivo TypeScript. Antes de aplicar una sola línea:
+
+1. Gate `architecture-governor` sobre el diseño técnico completo
+   (§29.5-§29.7 de este documento).
+2. ~~Resolver las 3 preguntas de negocio de §29.7.7 (más la pregunta 7 de
+   §29.6...) vía `AskUserQuestion`~~ — **✅ LAS 4 RESUELTAS (15/09/2026,
+   dueño, `AskUserQuestion`)**: ver §29.6 puntos 7/17 y §29.7.7 puntos 1-3.
+   El DDL de §29.7.3/§29.7.4 todavía NO se editó para reflejarlas (queda
+   para el bloque de implementación real, junto con el punto 3 de abajo) —
+   esta precondición ya no bloquea el gate del punto 1.
+3. Verificar el nombre real del CHECK autogenerado de `item_type` contra
+   `pg_constraint` (§29.7.4) antes de escribir el `DROP CONSTRAINT IF
+   EXISTS` definitivo.
+4. Autorización explícita del dueño para el push/deploy, por revisión
+   humana del diff — no hay atajo técnico que la sustituya (`CLAUDE.md`,
+   sección Governance).
 
 ---
 

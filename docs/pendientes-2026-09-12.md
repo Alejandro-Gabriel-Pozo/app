@@ -1052,6 +1052,30 @@ todavía en HOLD de implementación — borrado, no migrado, para no marcar
    **sigue sin autorizar** `CREATE TABLE`, `ALTER TABLE`, migraciones ni
    código — falta el diseño real de la tabla nueva y el gate
    `architecture-governor`.
+
+   **Actualización 14/09/2026, más tarde el mismo día — relevamiento
+   mecánico ✅ COMPLETO (v2.18, §29.6 nueva).** Grep exhaustivo sobre los
+   dos repos, superando (no solo complementando) el barrido parcial de
+   §29.4/§29.5. **2 sitios nuevos** no cubiertos por ese barrido, los dos
+   con forma de decisión de negocio escondida — **✅ RESUELTOS 15/09/2026,
+   vía `AskUserQuestion`** (ver `docs/diseno-factura-borrador-2026-08-31.md`
+   v2.20, §29.6 puntos 7/17: resolución server-side desde el catálogo
+   nuevo, no a cargo del caller): `OrderService.resolveUnitPrice()`
+   (`order.service.ts:546-556`) e `InvoiceService.resolveOrderItemLine()`
+   (`invoice.service.ts:306-357`) — los dos son `if (itemType ===
+   'RESERVATION') {...} else {...}`, no un `switch` exhaustivo, así que
+   un ítem `SERVICE` caería silenciosamente en el `else` que hoy asume
+   PRODUCT/PRODUCT_VARIANT. El segundo es el más serio: hoy produciría
+   una línea de factura con la descripción literal `"Producto"` para un
+   servicio, sin fallar de forma visible (antipatrón que
+   `honest-degradation` pide evitar). También confirmado con evidencia de
+   código (no solo inferido) que los 4 índices únicos parciales de
+   `stock_movements` son inaplicables a `SERVICE` — nunca llega a existir
+   una fila que lo referencie, por la Decisión (2) de arriba. Detalle
+   completo, sitio por sitio (21 en `app-main`, 3 en `appfrontend-main`,
+   sin sitios nuevos del lado frontend), en
+   `docs/diseno-factura-borrador-2026-08-31.md` §29.6. Esto **sigue sin
+   autorizar** `CREATE TABLE`, `ALTER TABLE`, migraciones ni código.
    `credit_note_request` la TABLA (bullet
    aparte, más abajo en este mismo archivo, ADR
    `diseno-cancelacion-con-nota-credito-comun-2026-09-06.md` §6.5/§10
@@ -2280,6 +2304,36 @@ sección por sección. Marcado explícito lo que esta sesión SÍ revalidó
     para órdenes, mismo residual que 3.3-d cerró para reservas) va
     empaquetado con 1c-ii, no después -- 1b ya construyó las piezas que
     necesita.
+
+  - **Actualización 15/09/2026 — 1d ✅ IMPLEMENTADO (sin commitear
+    todavía, pendiente de gate `architecture-governor`).** Al re-verificar
+    contra el código real (no contra este archivo) se encontró que
+    **1c-ii ya estaba hecho** -- los docblocks de `resolveOrderPairAttribution()`/
+    `getIssuedCreditNoteCompensationTotalForOrder()`
+    (`sql.invoice.repository.ts`) ya narraban "1c-ii-b" como completo,
+    fechado 11/09/2026, en una sesión anterior a la que dejó este archivo
+    diciendo "1c-ii sigue sin hacer" -- este archivo había quedado stale
+    en ese punto específico, no el código. Lo que faltaba de verdad era
+    solo **1d**: `classifyOrderLiveInvoice()` seguía comparando F4/ledger
+    por FACTURA ENTERA incluso después de que 1c-ii-b permitiera una NC
+    granular por orden -- una orden totalmente reconciliada podía seguir
+    clasificando `NOT_RECONCILED` porque OTRA orden de la misma
+    consolidada no tenía su NC. Fix: mismo patrón exacto que 3.3-d ya
+    aplicó del lado reservas -- resuelve el par `(invoiceId, orderId)` vía
+    `resolveOrderPairAttribution()` (ya existía, sin consumidor hasta
+    ahora) y, si resuelve, compara F4/ledger acotado a esa orden; si no
+    resuelve (Nivel A / anomalía), fail-back byte a byte al comportamiento
+    de antes. `buildCreditNote()` NO se tocó -- 1c-ii-b seguía intacto.
+    Sin schema nuevo, sin rename de `reservationId` (diferido, fuera de
+    alcance, como ya estaba decidido). Verificado: `tsc --noEmit` limpio;
+    `npm run lint`/`lint:arch` limpios; **2282/2282 unit** (164 archivos) +
+    **329/329 integration contra Postgres real** (local, 39 archivos,
+    incluido el test nuevo `classify-order-live-invoice-pair-classifier.integration.test.ts`,
+    3 casos -- reconciliado por par, no-reconciliado por par, y un caso de
+    NC "incompleta" sin IVA sumado que expone que F4 por-par es tan
+    estricto como el F4 por-factura-entera que reemplaza en ese scope).
+    Sin push ni commit todavía -- diff en el working tree, pendiente de
+    gate.
   - **Producción, medido 11/09/2026 (Neon `ancient-king-17098519`,
     ambos tenants, `production` y `tenant-hotel-los-alamos`): 0 facturas
     consolidadas ISSUED con >1 orden distinta hoy.** El bloque es
