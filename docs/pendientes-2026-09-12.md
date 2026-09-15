@@ -74,6 +74,17 @@ cuando se pushea.
     test` por `vitest.config.ts`, corre solo por esa vía) y confirmar que
     `getFiltered({})` devuelve exactamente 100 filas contra Postgres real,
     no solo contra el repo in-memory (ya confirmado en verde).
+  - **`dd48592`** (horizonte de ventana de mantenimiento en dos tramos,
+    D-03) — el test de atomicidad (`maintenance-window.service.test.ts`,
+    caso "(d) atomicidad") corre contra `InMemoryTransactionManager` (sin
+    BEGIN/COMMIT/ROLLBACK real), no contra Postgres — confirma que el
+    wiring usa una sola invocación de `transactionManager.run()`
+    envolviendo ventana + reservas, pero no que Postgres revierta el
+    INSERT de la ventana si el UPDATE de una reserva falla a mitad de
+    camino. Acción puntual: agregar un test de integración que fuerce el
+    fallo del UPDATE de `needs_maintenance_review` de una reserva del
+    tramo incierto (hoy no existe uno — solo el mock) y confirmar que la
+    ventana tampoco queda en la tabla `maintenance_windows`.
 
 - **`credit_note_request` Bloque 5 -- reconciliación manual, verificación
   contra Postgres real pendiente** (15/09/2026, gate `architecture-governor`,
