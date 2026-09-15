@@ -511,13 +511,26 @@ export const UpdateBusinessProfileSchema = z.object({
   defaultCheckOutTime: timeOnlySchema.optional(),
   // Perfil fiscal del negocio emisor (18/08/2026, Facturación Electrónica
   // AFIP, Fase 1 — docs/referencia-afip-wsfev1.md). Sin catálogo cerrado
-  // para taxIdType/taxCondition todavía: AFIP expone sus propios catálogos
-  // de referencia para esto (ver el documento), se valida contra ellos
-  // recién cuando se conecte de verdad — acá solo se guarda lo que el
-  // dueño del negocio carga a mano.
+  // para taxCondition todavía: AFIP expone sus propios catálogos de
+  // referencia para esto (ver el documento), se valida contra ellos recién
+  // cuando se conecte de verdad — acá solo se guarda lo que el dueño del
+  // negocio carga a mano.
   legalName: z.string().trim().min(1).max(255).nullable().optional(),
   taxId:     cuitSchema.nullable().optional(),
-  taxIdType: z.string().trim().min(1).max(20).nullable().optional(),
+  // D-15 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §9):
+  // el EMISOR es CUIT-only por diseño -- AFIP/ARCA no tiene otro lugar
+  // donde poner la identidad del emisor (`<Auth><Cuit>`, WSFEv1) y ningún
+  // ERP de referencia con integración fiscal real deja esto condicional
+  // del lado emisor (sí del lado receptor -- ver customers.routes.ts,
+  // customer_tax_profiles, que sigue condicional a propósito). Antes era
+  // texto libre sin validar y sin ningún camino de producción que lo
+  // leyera (EMISOR-TAXIDTYPE-DECORATIVO-01) -- ahora el schema exige el
+  // único valor válido si se manda, en vez de aceptar cualquier string.
+  // No `.nullable()`: nada en el repo manda `taxIdType: null` hoy (se
+  // verificó contra los tests de business-profile.routes.ts/.service.ts
+  // antes de elegir esta forma), así que no hace falta contemplar "borrar"
+  // un campo que ya no es editable.
+  taxIdType: z.literal('CUIT').optional(),
   taxCondition: z.string().trim().min(1).max(50).nullable().optional(),
   fiscalAddressLine1:      z.string().trim().min(1).max(255).nullable().optional(),
   fiscalAddressCity:       z.string().trim().min(1).max(120).nullable().optional(),

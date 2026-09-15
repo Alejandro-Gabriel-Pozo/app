@@ -102,6 +102,53 @@ describe('PUT /api/business-profile', () => {
     expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  it('D-15 -- rechaza con 400 un taxIdType que no sea CUIT (emisor CUIT-only, docs/decisiones-auditoria-fase2-2026-09-15.md §9)', async () => {
+    const router = createBusinessProfileRouter();
+    const handler = getHandler(router, 'put', '/');
+    const req = {
+      body: { taxIdType: 'DNI' },
+      user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] },
+      db: fakeDb(),
+    } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    await handler(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
+  it('D-15 -- acepta taxIdType: "CUIT" explícito', async () => {
+    const router = createBusinessProfileRouter();
+    const handler = getHandler(router, 'put', '/');
+    const req = {
+      body: { taxIdType: 'CUIT' },
+      user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] },
+      db: fakeDb(profileRow({ tax_id_type: 'CUIT' })),
+    } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ taxIdType: 'CUIT' }));
+  });
+
+  it('D-15 -- taxIdType ausente del body sigue funcionando (no es obligatorio mandarlo)', async () => {
+    const router = createBusinessProfileRouter();
+    const handler = getHandler(router, 'put', '/');
+    const req = {
+      body: { displayName: 'Hotel Los Álamos' },
+      user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] },
+      db: fakeDb(profileRow({ display_name: 'Hotel Los Álamos' })),
+    } as unknown as Request;
+    const res = fakeRes();
+
+    await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ displayName: 'Hotel Los Álamos' }));
+  });
+
   it('D3 -- si el CUIT ya está confirmado, tocar un campo fiscal sin OWNER_ONLY se rechaza (FiscalProfileLockedError)', async () => {
     const router = createBusinessProfileRouter();
     const handler = getHandler(router, 'put', '/');

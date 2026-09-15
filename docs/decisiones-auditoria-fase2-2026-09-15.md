@@ -329,10 +329,13 @@ antes de commitear — igual que el resto de esta sesión:
 - **Bloque "auditoría de reservas"**: #8.
 - **Bloque "tope de paginación en reservas"**: mitad de #12 que no
   depende del grounding.
+- **Bloque "D-15 emisor CUIT fijo"**: #9 — grounding ya resuelto (dueño,
+  "sí fijarlo"), implementado en el mismo batch de seguimiento (gate
+  `architecture-governor`, APPROVED WITH CONDITIONS — condición
+  cumplida acá mismo).
 
-**Grounding despachado en paralelo** (no implementa nada, solo investiga):
-#6 (horizonte de mantenimiento, caso de borde), #9 (emisores no-CUIT),
-#12 (contrato de paginación).
+**Grounding despachado en paralelo, sin implementar todavía**: #6
+(horizonte de mantenimiento, caso de borde), #12 (contrato de paginación).
 
 **Bloques de diseño propio, para después de este batch** (no arrancan
 hoy): #5 (tipo `req.db?`, 186 sitios), #10 (moneda en frontend, 17

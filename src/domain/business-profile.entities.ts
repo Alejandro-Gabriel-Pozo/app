@@ -51,6 +51,15 @@ export interface BusinessProfile {
    */
   legalName: string | null;
   taxId: string | null;
+  /**
+   * D-15 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md §9):
+   * el emisor es CUIT-only -- `UpdateBusinessProfileSchema.taxIdType` ya
+   * no acepta texto libre, solo el literal `'CUIT'`. El tipo sigue siendo
+   * `string | null` (no `'CUIT' | null`) a propósito: la columna no se
+   * borra ni se migra hacia atrás, así que un negocio que haya guardado
+   * otro valor antes de este cambio puede seguir teniéndolo persistido
+   * hasta que alguien vuelva a guardar el perfil fiscal.
+   */
   taxIdType: string | null;
   taxCondition: string | null;
   fiscalAddressLine1: string | null;
