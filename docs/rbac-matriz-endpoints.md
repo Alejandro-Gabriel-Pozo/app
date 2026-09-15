@@ -1,6 +1,6 @@
 # Matriz RBAC — endpoint × grupo de permisos
 
-**Última actualización:** 15/09/2026 (`credit-note-requests.routes.ts` nuevo, Bloque 5 del ADR común cancelar-con-NC §6.5 bis — bandeja de reconciliación manual + `authorizeAny()`).
+**Última actualización:** 15/09/2026 (F2-06, `invoices.routes.ts::createAfipCredentialsRouter` PUT/DELETE `MANAGEMENT` → `OWNER_ONLY`, `docs/decisiones-auditoria-fase2-2026-09-15.md` #1 -- conteo de `authorize()` sin cambios, solo el argumento).
 
 Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
@@ -182,7 +182,7 @@ sección 4.
 
 **`invoices.routes.ts`** — `requireModule(FACTURACION)` en las MUTACIONES y en `createAfipCredentialsRouter`. Los GET de `/api/invoices` van **sin** gate de módulo: leer un comprobante fiscal ya emitido es obligación legal de exhibición (`criterios-datos.md` línea 24; ver `diseno-cascada-enforcement-2026-08-30.md` §3d — 30/08/2026). Dos routers:
 - `createInvoicesRouter`: POST `/` — `FRONT_DESK` (+ `requireModule(FACTURACION)`; si el cargo pertenece a un cliente `kind='COMPANY'` exige **además** `MANAGEMENT`, chequeo inline en el handler, no un `authorize()` de más — 13/09/2026, `INVOICE-CHARGES-GUARD-INDIVIDUAL-01` hallazgo 3, ver `requireManagementForCompanyCharge()` en `invoices.routes.ts`; NO aplica si el cargo es `REFUND`/`ADJUSTMENT` — la Nota de Crédito del escape de cancelación sigue alcanzando con `EMISOR_NOTA_CREDITO`, decisión separada del dueño); POST `/consolidated` — `MANAGEMENT` (+ `requireModule(FACTURACION)`, C1-Fase C, "Facturar ahora"); GET `/unreconciled` — `FRONT_DESK` (sin gate de módulo, 10/09/2026 — bandeja "factura viva no conciliada", registrada ANTES de `/:id` para no quedar sombreada por ese patrón); GET `/:id` — `FRONT_DESK` (sin gate de módulo); GET `/:id/pdf` — `FRONT_DESK` (sin gate de módulo); GET `/` — `FRONT_DESK` (sin gate de módulo)
-- `createAfipCredentialsRouter` (todo `requireModule(FACTURACION)`): GET `/status` — `MANAGEMENT`; PUT `/` — `MANAGEMENT`; DELETE `/` — `MANAGEMENT`
+- `createAfipCredentialsRouter` (todo `requireModule(FACTURACION)`): GET `/status` — `MANAGEMENT` (solo devuelve `{configured, environment}`, nunca el secreto -- no escaló); PUT `/` — `OWNER_ONLY` (15/09/2026, F2-06, antes `MANAGEMENT` -- mismo nivel que el candado de campo fiscal de `business-profile.routes.ts`, ver punto 6 de la sección 5); DELETE `/` — `OWNER_ONLY` (ídem PUT)
 
 ### `src/platform/`
 
@@ -464,6 +464,14 @@ panel (`dashboard/usuarios`, filtrado explícito de `assignableRoles`).
    desde `api/middleware/auth.middleware.wrapper.js` (re-export 1:1 de
    `security/auth.middleware.js`) en vez de directo — sin diferencia de
    comportamiento, cosmético, no urge homogeneizar.
+6. **Candado de secreto fiscal — `invoices.routes.ts` `createAfipCredentialsRouter`
+   PUT/DELETE `/`**: no es un chequeo a mano como los puntos 1/2 de arriba —
+   directo `authorize(Roles.OWNER_ONLY)` — pero se documenta acá porque es
+   el mismo criterio que el punto 2 (candado de campo fiscal) aplicado al
+   certificado/clave AFIP en vez de al resto del perfil fiscal: ambos
+   viven en `business_profile`, ambos exigen `OWNER_ONLY` para escribir.
+   GET `/status` se queda en `MANAGEMENT` porque no expone el secreto
+   (F2-06, 15/09/2026).
 
 ---
 

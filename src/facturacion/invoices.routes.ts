@@ -3,9 +3,13 @@
  * @description Facturación electrónica AFIP (Fase 2, WSFEv1 real).
  *
  * GET  /api/business-profile/afip-credentials/status — MANAGEMENT (nunca
- *      devuelve el cert/clave, solo si está configurado y en qué ambiente)
- * PUT  /api/business-profile/afip-credentials        — MANAGEMENT
- * DELETE /api/business-profile/afip-credentials      — MANAGEMENT
+ *      devuelve el cert/clave, solo si está configurado y en qué ambiente;
+ *      queda en MANAGEMENT a propósito -- decisión F2-06 de
+ *      `docs/decisiones-auditoria-fase2-2026-09-15.md` #1 solo escaló
+ *      PUT/DELETE, ver docblock de `createAfipCredentialsRouter` más abajo)
+ * PUT  /api/business-profile/afip-credentials        — OWNER_ONLY (15/09/2026,
+ *      F2-06 -- antes MANAGEMENT, ver docblock de `createAfipCredentialsRouter`)
+ * DELETE /api/business-profile/afip-credentials      — OWNER_ONLY (ídem PUT)
  *
  * POST /api/invoices          — FRONT_DESK (pedir el CAE de un cobro ya existente);
  *      si el cargo pertenece a un cliente kind='COMPANY' exige ADEMÁS
@@ -44,6 +48,7 @@ import { requireModule } from '../security/module.middleware.js';
 import { ModuleKey } from '../types/enums.js';
 import type { AppContainer } from '../container.js';
 import { SqlAfipCredentialsRepository } from './sql.afip-credentials.repository.js';
+import { AfipCredentialsService } from './afip-credentials.service.js';
 import { SqlInvoiceRepository } from './sql.invoice.repository.js';
 import { InvoiceService } from './invoice.service.js';
 import { InvoicePdfService } from './invoice-pdf.service.js';
@@ -349,6 +354,26 @@ export function createInvoicesRouter(container: AppContainer): Router {
  * Router aparte porque cuelga de `/api/business-profile`, no de
  * `/api/invoices` — mismo negocio (config del emisor), pero un secreto,
  * no un dato del perfil que ya viaja entero por `GET /api/business-profile`.
+ *
+ * **F2-06 (15/09/2026, `docs/decisiones-auditoria-fase2-2026-09-15.md` #1):**
+ * PUT/DELETE (guardar/borrar el certificado y la clave privada) pasan de
+ * `MANAGEMENT` a `OWNER_ONLY` -- mismo nivel que el candado que ya protege
+ * el resto del perfil fiscal una vez cargado el CUIT
+ * (`business-profile.service.ts::FISCAL_PROFILE_LOCKED`). GET `/status`
+ * queda en `MANAGEMENT` a propósito: el handler solo devuelve
+ * `{ configured, environment }` (`AfipCredentialsStatus`) -- nunca el
+ * cert/clave, ni cifrados -- así que no hay secreto que proteger con un
+ * rol más alto, es lectura pura del mismo tipo que ya es seguro exponer
+ * por `GET /api/business-profile` completo.
+ *
+ * **F2-05 (mismo commit):** PUT/DELETE dejan de construir
+ * `SqlAfipCredentialsRepository` a mano y usan `AfipCredentialsService`
+ * (`afip-credentials.service.ts`), que envuelve el UPDATE de
+ * `business_profile` + el DELETE de `afip_tickets` en una sola transacción
+ * (`buildTenantTransactionManager(req)`, ya se construye en este mismo
+ * archivo para `buildInvoiceService()`) y deja rastro en `audit_log` del
+ * HECHO del cambio (nunca el valor del secreto) -- ver docblock del
+ * servicio para el detalle de qué se audita.
  */
 export function createAfipCredentialsRouter(container: AppContainer): Router {
   const router = Router();
@@ -369,13 +394,14 @@ export function createAfipCredentialsRouter(container: AppContainer): Router {
   router.put(
     '/',
     gate,
-    authorize(Roles.MANAGEMENT),
+    authorize(Roles.OWNER_ONLY),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = SaveAfipCredentialsSchema.parse(req.body);
         const repo = new SqlAfipCredentialsRepository(req.db!);
-        await repo.save(body.cert, body.key, body.environment);
-        res.json(await repo.getStatus());
+        const service = new AfipCredentialsService(repo, new SqlAuditLogRepository(req.db!), buildTenantTransactionManager(req));
+        const status = await service.save(body.cert, body.key, body.environment, req.user!.id);
+        res.json(status);
       } catch (err) { next(err); }
     },
   );
@@ -383,10 +409,12 @@ export function createAfipCredentialsRouter(container: AppContainer): Router {
   router.delete(
     '/',
     gate,
-    authorize(Roles.MANAGEMENT),
+    authorize(Roles.OWNER_ONLY),
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        await new SqlAfipCredentialsRepository(req.db!).clear();
+        const repo = new SqlAfipCredentialsRepository(req.db!);
+        const service = new AfipCredentialsService(repo, new SqlAuditLogRepository(req.db!), buildTenantTransactionManager(req));
+        await service.clear(req.user!.id);
         res.status(204).send();
       } catch (err) { next(err); }
     },

@@ -25,6 +25,18 @@ import type { AppContainer } from '../container.js';
 import type { Request, Response } from 'express';
 import type { FinancialTransaction } from '../clientes-finanzas/financial-transaction.repository.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
+import { Roles } from '../security/roles.js';
+
+// F2-05 (15/09/2026): PUT/DELETE de AfipCredentialsRouter ahora pasan por
+// AfipCredentialsService -> buildTenantTransactionManager(req) -- mismo mock
+// que business-profile.routes.test.ts/categories.routes.test.ts: `run()`
+// ejecuta el callback contra el mismo `req.db` (fakeDb) en vez de resolver
+// un pool de tenant real (que no existe en este entorno de test unitario).
+vi.mock('../db/tenant-context.js', () => ({
+  buildTenantTransactionManager: vi.fn((req: Request) => ({
+    run: vi.fn(async (fn: (client: unknown) => unknown) => fn(req.db)),
+  })),
+}));
 
 function fakeRes() {
   const res: Partial<Response> & { statusCode?: number; body?: unknown } = {};
@@ -45,6 +57,24 @@ function getHandler(
   // stack real: mutaciones [requireModule(gate), authorize(), handler]; GET de
   // /api/invoices [authorize(), handler]. El handler final es siempre el último.
   return layer.route.stack[layer.route.stack.length - 1]!.handle as (req: Request, res: Response, next: (err?: unknown) => void) => Promise<void>;
+}
+
+/**
+ * Igual que `getHandler()`, pero devuelve el middleware en `index` (no el
+ * handler final) -- para ejercitar `authorize(Roles.X)` de verdad y
+ * confirmar el 403 real, en vez de solo el resultado del handler asumiendo
+ * que la autorización ya pasó (F2-06, 15/09/2026).
+ */
+function getMiddlewareAt(
+  router: ReturnType<typeof createInvoicesRouter> | ReturnType<typeof createAfipCredentialsRouter>,
+  method: 'get' | 'post' | 'put' | 'delete',
+  path: string,
+  index: number,
+) {
+  const stack = (router as unknown as { stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> }).stack;
+  const layer = stack.find((l) => l.route?.path === path && l.route.methods[method]);
+  if (!layer?.route) throw new Error(`${method.toUpperCase()} ${path} no está montado`);
+  return layer.route.stack[index]!.handle as (req: Request, res: Response, next: (err?: unknown) => void) => void;
 }
 
 // requireModule(container, ModuleKey.FACTURACION) gatea las MUTACIONES de
@@ -421,6 +451,7 @@ describe('AfipCredentialsRouter', () => {
     const handler = getHandler(router, 'put', '/');
     const req = {
       body: { cert: 'CERT-PEM', key: 'KEY-PEM', environment: 'homologacion' },
+      user: { id: 'identity-owner', businessId: 'biz-1', permissionGroups: [Roles.OWNER_ONLY] },
       db: fakeDb(async (sql: string) => {
         if (sql.startsWith('SELECT')) return { rows: [{ afip_environment: 'homologacion', has_cert: true }] };
         return { rows: [] };
@@ -438,6 +469,7 @@ describe('AfipCredentialsRouter', () => {
     const handler = getHandler(router, 'put', '/');
     const req = {
       body: { key: 'KEY-PEM', environment: 'homologacion' },
+      user: { id: 'identity-owner', businessId: 'biz-1', permissionGroups: [Roles.OWNER_ONLY] },
       db: { query: vi.fn(async () => { throw new Error('no debería tocar la DB'); }) },
     } as unknown as Request;
     const res = fakeRes();
@@ -451,11 +483,82 @@ describe('AfipCredentialsRouter', () => {
   it('DELETE / -- limpia las credenciales con 204', async () => {
     const router = createAfipCredentialsRouter(FAKE_CONTAINER);
     const handler = getHandler(router, 'delete', '/');
-    const req = { db: fakeDb(async () => ({ rows: [] })) } as unknown as Request;
+    const req = {
+      user: { id: 'identity-owner', businessId: 'biz-1', permissionGroups: [Roles.OWNER_ONLY] },
+      // AfipCredentialsService.clear() ahora arranca con getStatus() (SELECT,
+      // para armar el diff de auditoría) antes de la transacción -- necesita
+      // una fila, no `{ rows: [] }` a secas (eso hacía que getStatus()
+      // tirara "business_profile sin la fila 'default'").
+      db: fakeDb(async (sql: string) => {
+        if (sql.startsWith('SELECT')) return { rows: [{ afip_environment: 'homologacion', has_cert: true }] };
+        return { rows: [] };
+      }),
+    } as unknown as Request;
     const res = fakeRes();
 
     await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
     expect(res.status).toHaveBeenCalledWith(204);
+  });
+
+  // F2-06 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #1):
+  // PUT/DELETE pasan de MANAGEMENT a OWNER_ONLY -- las 2 pruebas de abajo
+  // ejercitan el middleware `authorize()` real (índice 1 del stack
+  // [gate, authorize, handler]), no solo el handler final asumiendo que la
+  // autorización ya pasó.
+  describe('PUT/DELETE / -- exigen OWNER_ONLY, no alcanza con MANAGEMENT (F2-06)', () => {
+    it('PUT / -- 403 si el actor tiene MANAGEMENT pero no OWNER_ONLY', () => {
+      const router = createAfipCredentialsRouter(FAKE_CONTAINER);
+      const authorizeMw = getMiddlewareAt(router, 'put', '/', 1);
+      const req = { user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] } } as unknown as Request;
+      const res = fakeRes();
+      const next = vi.fn();
+
+      authorizeMw(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.body).toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('OWNER_ONLY') });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('DELETE / -- 403 si el actor tiene MANAGEMENT pero no OWNER_ONLY', () => {
+      const router = createAfipCredentialsRouter(FAKE_CONTAINER);
+      const authorizeMw = getMiddlewareAt(router, 'delete', '/', 1);
+      const req = { user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] } } as unknown as Request;
+      const res = fakeRes();
+      const next = vi.fn();
+
+      authorizeMw(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.body).toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('OWNER_ONLY') });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('PUT / -- deja pasar (next()) con OWNER_ONLY', () => {
+      const router = createAfipCredentialsRouter(FAKE_CONTAINER);
+      const authorizeMw = getMiddlewareAt(router, 'put', '/', 1);
+      const req = { user: { id: 'identity-owner', businessId: 'biz-1', permissionGroups: [Roles.OWNER_ONLY] } } as unknown as Request;
+      const res = fakeRes();
+      const next = vi.fn();
+
+      authorizeMw(req, res, next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(res.status).not.toHaveBeenCalled();
+    });
+  });
+
+  it('GET /status -- sigue alcanzando con MANAGEMENT (no escaló, no expone el secreto)', () => {
+    const router = createAfipCredentialsRouter(FAKE_CONTAINER);
+    const authorizeMw = getMiddlewareAt(router, 'get', '/status', 1);
+    const req = { user: { id: 'identity-admin', businessId: 'biz-1', permissionGroups: [Roles.MANAGEMENT] } } as unknown as Request;
+    const res = fakeRes();
+    const next = vi.fn();
+
+    authorizeMw(req, res, next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(res.status).not.toHaveBeenCalled();
   });
 });

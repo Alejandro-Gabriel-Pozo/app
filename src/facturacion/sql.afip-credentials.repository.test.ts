@@ -146,6 +146,38 @@ describe('SqlAfipCredentialsRepository', () => {
     expect(await repo.getTicket('wsfe')).toBeNull();
   });
 
+  // F2-05 (15/09/2026) -- saveWithClient()/clearWithClient() son las
+  // variantes que AfipCredentialsService usa dentro de una transacción
+  // explícita; acá solo se confirma que escriben contra el `client` que
+  // reciben, NO contra `this.db` -- la atomicidad real (rollback) se
+  // prueba en afip-credentials.service.test.ts (simulada) y en
+  // src/tests/integration/afip-credentials-transactional.integration.test.ts
+  // (Postgres real, declarada como pendiente de correr en este entorno).
+  describe('saveWithClient()/clearWithClient() -- escriben contra el client explícito, no this.db', () => {
+    it('saveWithClient() muta el client pasado, no el this.db del repositorio', async () => {
+      const ownDb = fakeSqlClient();
+      const txClient = fakeSqlClient();
+      const repo = new SqlAfipCredentialsRepository(ownDb);
+
+      await repo.saveWithClient(txClient, 'CERT', 'KEY', 'homologacion');
+
+      expect(txClient.row.afip_cert_encrypted).not.toBeNull();
+      expect(ownDb.row.afip_cert_encrypted).toBeNull(); // this.db nunca se tocó
+    });
+
+    it('clearWithClient() muta el client pasado, no el this.db del repositorio', async () => {
+      const ownDb = fakeSqlClient();
+      const txClient = fakeSqlClient();
+      const repo = new SqlAfipCredentialsRepository(ownDb);
+
+      await repo.saveWithClient(txClient, 'CERT', 'KEY', 'homologacion');
+      await repo.clearWithClient(txClient);
+
+      expect(txClient.row.afip_cert_encrypted).toBeNull();
+      expect(ownDb.row.afip_cert_encrypted).toBeNull(); // this.db nunca se tocó (seguía en null)
+    });
+  });
+
   describe('ticket WSAA (cache del Token de Acceso, 12hs, particionado por servicio)', () => {
     it('saveTicket()/getTicket() hacen roundtrip cifrado', async () => {
       const client = fakeSqlClient();

@@ -47,6 +47,14 @@ export class SqlAfipCredentialsRepository implements AfipCredentialsRepository {
   }
 
   async save(cert: string, key: string, environment: AfipEnvironment): Promise<void> {
+    return this.saveWith(this.db, cert, key, environment);
+  }
+
+  async saveWithClient(client: SqlClient, cert: string, key: string, environment: AfipEnvironment): Promise<void> {
+    return this.saveWith(client, cert, key, environment);
+  }
+
+  private async saveWith(client: SqlClient, cert: string, key: string, environment: AfipEnvironment): Promise<void> {
     const [certEncrypted, keyEncrypted] = await Promise.all([
       encryptConnectionString(cert),
       encryptConnectionString(key),
@@ -55,22 +63,37 @@ export class SqlAfipCredentialsRepository implements AfipCredentialsRepository {
     // certificado viejo, de TODOS los servicios (wsfe, padrón, etc.) --
     // WSAA lo hubiera rechazado igual en el próximo uso, pero limpiarlo
     // acá evita el intento de más y el error confuso.
-    await this.db.query(
+    //
+    // F2-05 (15/09/2026): las dos escrituras corren contra `client` (el de
+    // la transacción de `AfipCredentialsService`, o `this.db` si se llama
+    // sin transacción explícita) -- antes eran dos `await` sueltos contra
+    // `this.db` sin garantía de atomicidad: un fallo entre el UPDATE y el
+    // DELETE dejaba el certificado nuevo guardado con tickets viejos
+    // todavía cacheados (o viceversa).
+    await client.query(
       `UPDATE business_profile
        SET afip_cert_encrypted = $1, afip_key_encrypted = $2, afip_environment = $3, updated_at = NOW()
        WHERE id = 'default'`,
       [certEncrypted, keyEncrypted, environment],
     );
-    await this.db.query(`DELETE FROM afip_tickets`);
+    await client.query(`DELETE FROM afip_tickets`);
   }
 
   async clear(): Promise<void> {
-    await this.db.query(
+    return this.clearWith(this.db);
+  }
+
+  async clearWithClient(client: SqlClient): Promise<void> {
+    return this.clearWith(client);
+  }
+
+  private async clearWith(client: SqlClient): Promise<void> {
+    await client.query(
       `UPDATE business_profile
        SET afip_cert_encrypted = NULL, afip_key_encrypted = NULL, afip_environment = NULL, updated_at = NOW()
        WHERE id = 'default'`,
     );
-    await this.db.query(`DELETE FROM afip_tickets`);
+    await client.query(`DELETE FROM afip_tickets`);
   }
 
   async getTicket(serviceName: string): Promise<AfipTicketCache | null> {
