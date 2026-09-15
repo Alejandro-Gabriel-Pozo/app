@@ -16,10 +16,17 @@
  * ```
  *
  * ## Rate limiting
- * Limita a 10 intentos por IP cada 15 minutos para prevenir fuerza bruta.
- * En producción detrás de Render/Cloudflare, asegúrate de activar
- * `app.set('trust proxy', 1)` para que el limiter lea la IP real desde
- * el header `X-Forwarded-For`.
+ * `RATE-LIMIT-DUP-001` (15/09/2026, decisión del dueño, Fase 3 seguimiento):
+ * este router NO implementa su propio rate limiter. Hasta esta fecha
+ * llevaba un `loginRateLimiter` hecho a mano (Map en memoria por IP),
+ * completamente redundante con `authLimiter`
+ * (`api/middleware/rate-limit.middleware.ts`), que `app.ts` ya monta
+ * DELANTE de este router (`app.use('/api/login', ..., authLimiter,
+ * createAuthRouter(...))`) y cubre las 3 rutas (`/`, `/select-business`,
+ * `/google`) por igual. Se retiró el duplicado: `authLimiter` es más
+ * correcto (ignora logins exitosos vía `skipSuccessfulRequests`, headers
+ * RFC 6585 estándar) y es la única fuente de verdad ahora. Ver
+ * `rate-limit.middleware.test.ts` para la cobertura real de 429.
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -27,60 +34,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import type { AuthService } from '../../security/auth.service.js';
 import { setAuthCookie } from '../../security/auth.middleware.js';
-
-// ---------------------------------------------------------------------------
-// Rate limiter — protección anti fuerza bruta
-// ---------------------------------------------------------------------------
-
-/**
- * Mapa en memoria: IP → { count, resetAt }.
- * Suficiente para una instancia única (Render free/starter).
- * Para multi-instancia reemplazar por un store Redis.
- */
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-
-/** Máximo de intentos fallidos por IP en la ventana */
-const MAX_ATTEMPTS = 10;
-/** Ventana de tiempo en milisegundos (15 minutos) */
-const WINDOW_MS = 15 * 60 * 1_000;
-
-/**
- * Middleware de rate limiting para el endpoint de login.
- * Retorna 429 con el header `Retry-After` si se supera el límite.
- */
-function loginRateLimiter(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
-  const ip =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ??
-    req.socket.remoteAddress ??
-    'unknown';
-
-  const now = Date.now();
-  const entry = loginAttempts.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    // Primera petición o ventana expirada — reiniciar contador
-    loginAttempts.set(ip, { count: 1, resetAt: now + WINDOW_MS });
-    next();
-    return;
-  }
-
-  if (entry.count >= MAX_ATTEMPTS) {
-    const retryAfterSeconds = Math.ceil((entry.resetAt - now) / 1_000);
-    res.set('Retry-After', String(retryAfterSeconds));
-    res.status(429).json({
-      code: 'TOO_MANY_REQUESTS',
-      message: `Demasiados intentos de inicio de sesión. Intentá de nuevo en ${Math.ceil(retryAfterSeconds / 60)} minuto(s).`,
-    });
-    return;
-  }
-
-  entry.count += 1;
-  next();
-}
 
 // ---------------------------------------------------------------------------
 // Schema de validación del body
@@ -210,7 +163,6 @@ export function createAuthRouter(authService: AuthService): Router {
    */
   router.post(
     '/',
-    loginRateLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         // 1. Validar formato del body con Zod (400 si falla)
@@ -269,7 +221,6 @@ export function createAuthRouter(authService: AuthService): Router {
    */
   router.post(
     '/select-business',
-    loginRateLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = SelectBusinessBodySchema.parse(req.body);
@@ -313,7 +264,6 @@ export function createAuthRouter(authService: AuthService): Router {
    */
   router.post(
     '/google',
-    loginRateLimiter,
     async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
         const body = GoogleLoginBodySchema.parse(req.body);

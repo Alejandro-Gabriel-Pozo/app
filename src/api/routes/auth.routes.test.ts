@@ -6,9 +6,11 @@
  * probar: acá solo importa el mapeo status/body, no la lógica interna del
  * servicio, que ya tiene su propio auth.service.test.ts).
  *
- * OJO -- loginRateLimiter usa un Map en memoria a nivel de módulo, clave por
- * IP (x-forwarded-for/socket.remoteAddress) que NO se resetea entre tests.
- * Cada test usa una IP distinta (vía x-forwarded-for) para no pisarse.
+ * `RATE-LIMIT-DUP-001` (15/09/2026): este router ya no monta su propio
+ * rate limiter (retirado, redundante con `authLimiter` -- ver el docblock
+ * de auth.routes.ts). La cobertura de 429/Retry-After vive en
+ * `api/middleware/rate-limit.middleware.test.ts`, contra `authLimiter`
+ * real montado igual que en producción.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -29,7 +31,6 @@ function getHandler(router: ReturnType<typeof createAuthRouter>, path: string) {
   const stack = (router as unknown as { stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> }).stack;
   const layer = stack.find((l) => l.route?.path === path && l.route.methods.post);
   if (!layer?.route) throw new Error(`POST ${path} no está montado`);
-  // loginRateLimiter es el primer layer -- el handler real es el último.
   return layer.route.stack[layer.route.stack.length - 1]!.handle as (req: Request, res: Response, next: (err?: unknown) => void) => Promise<void>;
 }
 
@@ -112,44 +113,6 @@ describe('POST /api/login', () => {
 
     expect(login).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledWith(expect.any(Error)); // ZodError -> errorHandler global
-  });
-
-  it('429 con Retry-After tras superar MAX_ATTEMPTS (10) desde la misma IP', async () => {
-    const login = vi.fn(async () => { throw Object.assign(new Error('nope'), { code: 'INVALID_CREDENTIALS' }); });
-    const authService = { login } as unknown as AuthService;
-    const router = createAuthRouter(authService);
-    // loginRateLimiter SÍ es el primer layer acá -- lo ejercitamos completo
-    // (no solo el handler final vía getHandler), porque el 429 se responde ahí.
-    const stack = (router as unknown as { stack: Array<{ route?: { path: string; stack: Array<{ handle: (...args: unknown[]) => unknown }> } }> }).stack;
-    const layer = stack.find((l) => l.route?.path === '/');
-    const [rateLimiter, finalHandler] = layer!.route!.stack.map((l) => l.handle) as [
-      (req: Request, res: Response, next: (err?: unknown) => void) => void,
-      (req: Request, res: Response, next: (err?: unknown) => void) => Promise<void>,
-    ];
-
-    const ip = 'ip-rate-limit-test';
-    async function runOnce() {
-      const req = reqWithIp(ip, { body: { email: 'admin@demo.com', password: 'mala-password' } });
-      const res = fakeRes();
-      let blocked = false;
-      rateLimiter(req, res, () => { blocked = false; });
-      if (!res.status || (res.status as ReturnType<typeof vi.fn>).mock.calls.length === 0) {
-        // rateLimiter llamó a next() -- sigue a la lógica real del handler.
-        await finalHandler(req, res, () => {});
-      } else {
-        blocked = true;
-      }
-      return { res, blocked };
-    }
-
-    let last: Awaited<ReturnType<typeof runOnce>> | undefined;
-    for (let i = 0; i < 11; i++) {
-      last = await runOnce();
-    }
-
-    expect(last!.blocked).toBe(true);
-    expect(last!.res.status).toHaveBeenCalledWith(429);
-    expect(last!.res.set).toHaveBeenCalledWith('Retry-After', expect.any(String));
   });
 });
 

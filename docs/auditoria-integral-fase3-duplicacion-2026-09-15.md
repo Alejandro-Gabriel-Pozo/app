@@ -506,25 +506,13 @@ como si fueran nuevos:
 
 ## Preguntas para el dueño (no resueltas acá — requieren decisión de negocio o de arquitectura, no solo técnica)
 
-1. **F3-02 (doble rate-limiter de login):** ¿cuál de los dos mecanismos se
-   conserva — `authLimiter` (`express-rate-limit`, con camino más claro
-   hacia un store distribuido) o `loginRateLimiter` (`Map` en memoria, ya
-   documentado como no apto para multi-instancia)? ¿O hay un motivo para
-   mantener los dos que no quedó registrado en el código (p. ej. contar
-   intentos fallidos de forma distinta a intentos totales)? Antes de tocar
-   esto, valdría confirmar si Render corre hoy una sola instancia del
-   backend o más de una (el comentario de `loginRateLimiter` asume una
-   sola; no se verificó en esta ronda contra `render.yaml` con el detalle
-   suficiente).
-2. **F3-03 (email obligatorio en el alta de cliente):** ¿el negocio
-   realmente quiere exigir email siempre al dar de alta un cliente desde el
-   dashboard (y entonces la regla debería vivir en el backend, no solo en
-   el `required` del input), o el modal debería alinearse con lo que el
-   backend ya permite (alta con solo nombre + un contacto de cualquier
-   canal)? Nota: esto es exactamente el tipo de regla que el criterio
-   general del proyecto pide evaluar como "configurable por tenant" antes
-   de asumirla global — un negocio de reservas por WhatsApp puede querer
-   una regla distinta de uno que factura por email.
+1. **F3-02 (doble rate-limiter de login):** ✅ RESUELTO — ver
+   `docs/decisiones-auditoria-fase3-2026-09-15.md` §1 (se conserva
+   `authLimiter`, se retira `loginRateLimiter`).
+2. **F3-03 (email obligatorio en el alta de cliente):** ✅ RESUELTO — ver
+   `docs/decisiones-auditoria-fase3-2026-09-15.md` §2 (email pasa a ser
+   obligatorio, sin excepción, regla global — no configurable por tenant
+   por ahora).
 3. **F3-04 (contrato de tipos frontend/backend):** ¿vale la pena, dado que
    ya causó un incidente real, priorizar antes de Fase 4 un inventario
    dominio-por-dominio de `appfrontend/src/lib/<dominio>/types.ts` contra
