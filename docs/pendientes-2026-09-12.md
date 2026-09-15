@@ -33,6 +33,48 @@ de acá (se corta, no se tacha) y recién ahí pasa a `docs/resuelto.md` con la
 evidencia de la corrida, cuando alguien confirma el resultado real — no
 cuando se pushea.
 
+- **Fase 2 de la auditoría, 5 bloques (15/09/2026) — verificaciones contra
+  Postgres real, ninguna corrida en este entorno (sin `TEST_DATABASE_URL`)**:
+  - **`089ca3e`** (limpieza SSL/migraciones/PDF) — el cambio de SSL en los 3
+    `pg.Client` (`tenant-db.setup.ts::applyTenantSchema()`,
+    `company-sync.worker.ts`, `outbox-purge.ts`) no se verificó contra la
+    flota real de tenants de producción — si algún tenant tiene un
+    certificado que hoy no validaría con `rejectUnauthorized: true`, el
+    cambio lo rompe. El dueño ya autorizó el cambio igual (decisión #4 de
+    `docs/decisiones-auditoria-fase2-2026-09-15.md`). Acción puntual:
+    confirmar contra la flota real antes del próximo deploy, o correr
+    `npm run migrate:tenants` contra un tenant descartable con
+    `NEON_SSL=true` primero.
+  - **`073a8d4`** (unicidad de nombre de recurso, F2-13) — el índice único
+    parcial `uq_resources_name` nunca corrió contra Postgres real; solo se
+    ejercitó el catch del `23505` con un mock. Acción puntual: aplicar
+    `applyTenantSchema()` contra un tenant de prueba, insertar dos
+    recursos con nombres normalizados iguales, confirmar el `23505` real y
+    el 409 `RESOURCE_NAME_CONFLICT` resultante.
+  - **`4c4a17b`** (credenciales AFIP, F2-05+F2-06) — `afip-credentials-
+    transactional.integration.test.ts` compila y se saltea limpio sin
+    `TEST_DATABASE_URL`. Acción puntual: `TEST_DATABASE_URL=... npx vitest
+    run src/tests/integration/afip-credentials-transactional.integration.test.ts`
+    — confirmar la atomicidad real (rollback de las 2 escrituras si falla
+    una) y que la fila de `audit_log` no contiene el valor del secreto.
+  - **`d5d27c4`** (auditoría de transiciones de reserva, D-10) — las
+    aserciones reales sobre `audit_log` (filas creadas, `changed_by`
+    correcto, 0 filas si el guard RESERVA-10 tira) viven en
+    `reservation.service.integration.test.ts`,
+    `cancellation-refund.integration.test.ts` y
+    `reservation-cancel-invoice-toctou.integration.test.ts`, con
+    `skipIfNoDb`. Acción puntual: `TEST_DATABASE_URL=... npx vitest run
+    src/tests/integration/reservation.service.integration.test.ts
+    src/tests/integration/cancellation-refund.integration.test.ts
+    src/tests/integration/reservation-cancel-invoice-toctou.integration.test.ts`.
+  - **`bf29137`** (filtros de reservas + tope, D-02/D-14 parcial) —
+    `reservations-unpaginated-limit.integration.test.ts` (siembra
+    `limit+1` filas reales) no corrió. Acción puntual:
+    `TEST_DATABASE_URL=... npm run test:integration` (excluido de `npm
+    test` por `vitest.config.ts`, corre solo por esa vía) y confirmar que
+    `getFiltered({})` devuelve exactamente 100 filas contra Postgres real,
+    no solo contra el repo in-memory (ya confirmado en verde).
+
 - **`credit_note_request` Bloque 5 -- reconciliación manual, verificación
   contra Postgres real pendiente** (15/09/2026, gate `architecture-governor`,
   APPROVED WITH CONDITIONS). Código completo, gate-aprobado: `authorizeAny()`
