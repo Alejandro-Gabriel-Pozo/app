@@ -55,12 +55,17 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'rbac-matriz-endpoints.md');
 // accounts-receivable.routes.ts suma POST /:id/reverse, DOS authorize()
 // en cadena (Roles.MANAGEMENT Y Roles.EMISOR_NOTA_CREDITO, §3.7 del ADR
 // de City Ledger) -- primer endpoint del repo que encadena dos.
-const EXPECTED_AUTHORIZE_CALL_SITES = 209;
+// service_items Bloque B (15/09/2026, docs/diseno-factura-borrador-2026-08-31.md
+// §29.7.6) -- 214, no 209: service-items.routes.ts nuevo suma 5
+// authorize() (GET / y GET /:id -> Roles.ORDERS; POST /, PUT /:id,
+// DELETE /:id -> Roles.MANAGEMENT).
+const EXPECTED_AUTHORIZE_CALL_SITES = 214;
 // F1-Pieza 3 (23/08/2026) -- 34, no 33: accounts-receivable.routes.ts nuevo.
 // A6.1 en stock (27/08/2026) -- 36, no 35: consumption-destinations.routes.ts nuevo.
 // Fase 4 Bloque 4B (30/08/2026, commit 9119a50) -- 37, no 36:
 // business-context.routes.ts nuevo.
-const EXPECTED_ROUTES_FILE_COUNT = 37;
+// service_items Bloque B (15/09/2026) -- 38, no 37: service-items.routes.ts nuevo.
+const EXPECTED_ROUTES_FILE_COUNT = 38;
 
 function findRouteFiles(dir: string): string[] {
   const results: string[] = [];

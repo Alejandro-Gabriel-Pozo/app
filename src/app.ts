@@ -28,8 +28,8 @@
  * 15. tenantMiddleware()    — inyecta req.db + arranca OutboxWorker por tenant
  * 16. apiLimiter            — 200 req/min/IP sobre /api/* autenticado
  * 17. /api/resources, /reservations, /reports, /customers, /users,
- *     /categories, /products, /orders, /waste-reasons, /bookable-services,
- *     /housekeeping, /stays
+ *     /categories, /products, /service-items, /orders, /waste-reasons,
+ *     /bookable-services, /housekeeping, /stays
  * 18. Sentry + errorHandler
  */
 
@@ -63,6 +63,7 @@ import { createRolesRouter }             from './usuarios-roles/roles.routes.js'
 import { createPlatformRouter }          from './platform/platform.routes.js';
 import { createAdminRouter }             from './platform/admin.routes.js';
 import { createProductsRouter }          from './pos-menu/products.routes.js';
+import { createServiceItemsRouter }      from './pos-menu/service-items.routes.js';
 import { createWasteReasonsRouter }      from './pos-menu/waste-reasons.routes.js';
 import { createConsumptionDestinationsRouter } from './pos-menu/consumption-destinations.routes.js';
 import { createCancellationPoliciesRouter } from './reservas/cancellation-policies.routes.js';
@@ -366,6 +367,7 @@ export async function createApp(): Promise<{
   app.use('/api/roles',             createRolesRouter(platformRepo, container));
   app.use('/api/categories',        createCategoryRouter(container));
   app.use('/api/products', requireModule(container, ModuleKey.POS_RESTAURANTE), createProductsRouter(container));
+  app.use('/api/service-items', requireModule(container, ModuleKey.POS_RESTAURANTE), createServiceItemsRouter(container));
   app.use('/api/orders',   requireModule(container, ModuleKey.POS_RESTAURANTE), createOrdersRouter(container));
   app.use('/api/waste-reasons', requireModule(container, ModuleKey.POS_RESTAURANTE), createWasteReasonsRouter(container));
   app.use('/api/consumption-destinations', requireModule(container, ModuleKey.POS_RESTAURANTE), createConsumptionDestinationsRouter(container));

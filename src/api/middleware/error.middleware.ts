@@ -255,6 +255,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CUSTOMER_NOT_FOUND':
     case 'WASTE_REASON_NOT_FOUND':
     case 'CONSUMPTION_DESTINATION_NOT_FOUND':
+    case 'SERVICE_ITEM_NOT_FOUND':
     case 'CANCELLATION_POLICY_NOT_FOUND':
     case 'RECIPE_ITEM_NOT_FOUND':
     case 'PRODUCT_NOT_SHARED':

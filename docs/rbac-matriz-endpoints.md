@@ -1,6 +1,6 @@
 # Matriz RBAC — endpoint × grupo de permisos
 
-**Última actualización:** 23/08/2026 (sección L, `pendientes-2026-08-23.md`).
+**Última actualización:** 15/09/2026 (`service-items.routes.ts` nuevo, Bloque B de `docs/diseno-factura-borrador-2026-08-31.md` §29.7).
 
 Este documento es la fuente de verdad de qué grupo de permisos exige cada
 endpoint del backend hoy. Es un documento **vivo** — como
@@ -51,7 +51,7 @@ middleware compartido:**
 
 ---
 
-## 2. Matriz de endpoints por archivo (209 call-sites, 37 archivos)
+## 2. Matriz de endpoints por archivo (214 call-sites, 38 archivos)
 
 > **Corregido el 01/09/2026.** Este encabezado decía `(198 call-sites, 35
 > archivos)` mientras `src/tests/security/rbac-matrix-sync.test.ts` (constantes
@@ -262,6 +262,13 @@ disponibilidad, ver `docs/diseno-housekeeping-ventana-mantenimiento-2026-08-24.m
 **`products.routes.ts`** — todo `MANAGEMENT` salvo:
 GET `/`, POST `/`, GET `/company-catalog`, GET `/:id`, PUT `/:id`, DELETE `/:id`, GET/POST/PUT/DELETE `/:id/variants*`, GET/POST/PUT/DELETE `/:id/recipe-items*`, POST `/stock/transfer`, POST `/stock/waste`, POST `/stock/consumption`, POST `/stock/production`, POST `/:id/company/share`, `/publish`, `/price-override/*`, `/recipe-override/*`
 → excepciones **`ORDERS`**: POST `/:id/stock/decrement`, POST `/:id/variants/:variantId/stock/decrement`.
+
+**`service-items.routes.ts`** (15/09/2026, Bloque B, `docs/diseno-factura-borrador-2026-08-31.md` §29.7 — catálogo de service_items, item_type SERVICE de `order_items`; el wiring de precio/descripción en `OrderPricingService`/`InvoiceService` queda para los Bloques C/D)
+- GET `/` — `ORDERS`
+- GET `/:id` — `ORDERS`
+- POST `/` — `MANAGEMENT`
+- PUT `/:id` — `MANAGEMENT`
+- DELETE `/:id` — `MANAGEMENT`
 
 ### `src/reservas/`
 

@@ -284,6 +284,15 @@ mano vs. generarlo desde las rutas), no algo que un fence deba forzar. Ver
 `docs/pendientes-2026-09-08.md`, sección Higiene, para el detalle
 completo y los dos ítems de backlog que bloquea.
 
+**Corrección 15/09/2026 (Bloque B de `service_items`, gate
+`architecture-governor`): 254 → 259.** `docs/inventario-rutas.md` ya
+regenerado en este mismo cambio (+5 rutas de `service-items.routes.ts`,
+nuevas en el árbol vivo, no `CLOSURE_MOUNTS`). El gate decidió corregir
+las 4 citas de "254" de esta sección en el mismo commit que produce el
+delta, precisamente para no reproducir el incidente que este mismo
+párrafo ya narra (una cita que nadie re-chequea después de regenerarse
+el artefacto).
+
 **`CONTRACT-COVERAGE-001`, componente de existencia — resuelto el
 09/09/2026 (gate `architecture-governor`, opción (A) elegida por el
 dueño), `2194849`.** No completando `spec.ts` a mano — mismo modo de
@@ -312,7 +321,7 @@ capturan el permiso en un closure — nada legible desde `app._router.stack`;
 esa pregunta sigue siendo `docs/rbac-matriz-endpoints.md` + 7 cercas, y
 cruzarla contra este inventario es un bloque futuro, no decidido) ni la
 forma del request/response (`spec.ts` sigue siendo el único con eso, para
-18 de 254). Depende de `NODE_ENV` — generado con `development`, `/` y
+18 de 259 -- corrección 15/09/2026, ver arriba). Depende de `NODE_ENV` — generado con `development`, `/` y
 `/openapi.json` no existen en producción, marcado en el propio artefacto.
 
 ## Pendientes — revalidar antes de arrastrar

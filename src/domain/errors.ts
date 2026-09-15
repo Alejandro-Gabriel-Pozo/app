@@ -343,6 +343,16 @@ export class ConsumptionDestinationNotFoundError extends DomainError {
   }
 }
 
+/**
+ * 15/09/2026 — Bloque B de `service_items` (docs/diseno-factura-borrador-2026-08-31.md
+ * §29.7). Mismo criterio que `WasteReasonNotFoundError`/`ConsumptionDestinationNotFoundError`.
+ */
+export class ServiceItemNotFoundError extends DomainError {
+  constructor(id: string) {
+    super(`Ítem de servicio con id "${id}" no encontrado`, 'SERVICE_ITEM_NOT_FOUND');
+  }
+}
+
 export class RecipeItemNotFoundError extends DomainError {
   constructor(id: string) {
     super(`Ítem de receta con id "${id}" no encontrado`, 'RECIPE_ITEM_NOT_FOUND');
