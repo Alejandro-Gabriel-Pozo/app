@@ -955,6 +955,29 @@ decisión de diseño, no una corrida.
   aceptar el toast de 4s como suficiente? No se corrige en este bloque
   — el gate lo marcó como seguimiento, no como condición bloqueante.
 
+- **`F3-ID-COLLISION-001` — la etiqueta `F3-0N` significa cosas distintas
+  en 4 documentos de auditoría (gate `architecture-governor`, 15/09/2026,
+  al revisar `docs/auditoria-integral-fase3-2026-09-15.md` y su puntero
+  de supersesión).** `docs/auditoria-integral-fase3-2026-09-15.md`
+  (flujos: F3-01/F3-02 = cancelar-con-NC sin UI, F3-03 =
+  `accounts-receivable/:id/reverse` sin consumidor, F3-04 = bandeja
+  `credit-note-requests`) y
+  `docs/auditoria-integral-fase3-grounding-2026-09-15.md` (mismo
+  grounding, misma numeración) usan una serie; `docs/auditoria-integral-fase3-duplicacion-2026-09-15.md`
+  (F3-01 = redondeo duplicado, F3-02 = doble rate-limiter, F3-03 = email
+  obligatorio, F3-04 = tipos redefinidos a mano) y
+  `docs/auditoria-integral-fase4-2026-09-15.md` (que cita esa segunda
+  numeración en su §0) usan otra. Ningún documento nuevo la agrava —
+  `docs/auditoria-integral-fase3-canonico-2026-09-15.md` y el puntero de
+  supersesión de esta sesión desambiguan nombrando siempre el archivo
+  fuente — pero la colisión en sí es preexistente y sigue sin resolverse.
+  Pendiente decidir: ¿renumerar/prefijar por documento (ej. `F3-FLUJO-0N`
+  vs. `F3-DUP-0N`) — bloque de docs aparte, toca 4 archivos y cambia
+  identificadores que otros docs ya citan — o aceptar la colisión como
+  riesgo residual siempre que cada cita nueva siga nombrando su fuente?
+  No se corrige en este bloque — registrado como hallazgo, no como
+  condición bloqueante de ningún commit ya hecho.
+
 ---
 
 ## ✅ Cerrado esta sesión (12/09/2026)
