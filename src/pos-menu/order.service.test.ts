@@ -17,6 +17,8 @@ import { RecipeService } from './recipe.service.js';
 import { InMemoryRecipeItemRepository } from '../repositories/in-memory.recipe-item.repository.js';
 import { OrderPricingService } from './order-pricing.service.js';
 import { InMemoryCustomerRateRepository } from '../clientes-finanzas/in-memory.customer-rate.repository.js';
+import { InMemoryServiceItemRepository } from './in-memory.service-item.repository.js';
+import { ServiceItemNotFoundError } from '../domain/errors.js';
 import type { DomainEventRepository, DomainEvent } from '../repositories/domain-event.repository.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
@@ -154,15 +156,18 @@ describe('OrderService', () => {
   let recipeItemRepo: InMemoryRecipeItemRepository;
   let productService: ProductService;
   let customerRateRepo: InMemoryCustomerRateRepository;
+  let serviceItemRepo: InMemoryServiceItemRepository;
   let auditLogRepo: InMemoryAuditLogRepository;
   let financialTransactionRepo: FakeFinancialTransactionRepositoryForOrders;
   let invoiceRepo: FakeInvoiceRepositoryForOrders;
   let service: OrderService;
+  /** Bloque C (§29, 15/09/2026) -- id real del service_item sembrado en cada beforeEach, ver seedServiceItem1(). */
+  let serviceItem1Id: string;
 
   // Bug #4 (27/08/2026) — actor de las transiciones auditadas.
   const ACTOR = 'user-actor-1';
 
-  beforeEach(() => {
+  beforeEach(async () => {
     orderRepo          = new InMemoryOrderRepository();
     eventRepo          = new InMemoryDomainEventRepository();
     txManager          = new InMemoryTransactionManager();
@@ -172,7 +177,8 @@ describe('OrderService', () => {
     productService      = new ProductService(productRepo, new FakeProductVariantRepository(), new InMemoryAuditLogRepository(), inventoryLevelRepo, txManager);
     const recipeService = new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository());
     customerRateRepo     = new InMemoryCustomerRateRepository();
-    const orderPricingService = new OrderPricingService(productService, customerRateRepo);
+    serviceItemRepo      = new InMemoryServiceItemRepository();
+    const orderPricingService = new OrderPricingService(productService, customerRateRepo, serviceItemRepo);
     auditLogRepo        = new InMemoryAuditLogRepository();
     financialTransactionRepo = new FakeFinancialTransactionRepositoryForOrders();
     invoiceRepo               = new FakeInvoiceRepositoryForOrders();
@@ -186,6 +192,17 @@ describe('OrderService', () => {
       id: 'lvl-prod-1', businessId: TEST_BUSINESS_ID, productId: 'prod-1', productVariantId: null,
       locationId: 'loc-default', stockQuantity: 1000, reservedQuantity: 0, stockMinAlert: 0,
     });
+
+    /**
+     * Bloque C (§29, 15/09/2026) -- catálogo de servicios usado por los
+     * tests de itemType SERVICE más abajo (createOrder resuelve el precio
+     * server-side contra este repo). `create()` genera un id random -- se
+     * captura acá para usarlo como `serviceItemId` en esos tests.
+     */
+    const seeded = await serviceItemRepo.create({
+      businessId: TEST_BUSINESS_ID, name: 'Cargo por cancelación', price: 75,
+    });
+    serviceItem1Id = seeded.id;
   });
 
   /**
@@ -728,7 +745,7 @@ describe('OrderService', () => {
       const bare = new OrderService(
         orderRepo, txManager, eventRepo, productService,
         new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository()),
-        new OrderPricingService(productService, customerRateRepo),
+        new OrderPricingService(productService, customerRateRepo, serviceItemRepo),
         financialTransactionRepo, invoiceRepo,
         // sin auditLogRepo a propósito
       );
@@ -953,7 +970,7 @@ describe('OrderService', () => {
       const bare = new OrderService(
         orderRepo, txManager, eventRepo, productService,
         new RecipeService(recipeItemRepo, productRepo, new FakeProductVariantRepository()),
-        new OrderPricingService(productService, customerRateRepo),
+        new OrderPricingService(productService, customerRateRepo, serviceItemRepo),
         financialTransactionRepo, invoiceRepo,
         // sin auditLogRepo a propósito
       );
@@ -1138,6 +1155,69 @@ describe('OrderService', () => {
         businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
         items: [{ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1 }],
       })).rejects.toThrow(MissingUnitPriceError);
+    });
+  });
+
+  /**
+   * Bloque C (§29, docs/diseno-factura-borrador-2026-08-31.md, 15/09/2026)
+   * -- creación end-to-end de un ítem SERVICE dentro de una orden: precio
+   * resuelto server-side desde `ServiceItemRepository` (mismo eje que
+   * PRODUCT/PRODUCT_VARIANT, sin tarifa especial -- §29.7.7 punto 3), y
+   * persistido con `serviceItemId` poblado y las otras 3 FK en NULL
+   * (verifica la 4ª rama de `chk_order_item_polymorphic_service`, aunque
+   * acá contra InMemoryOrderRepository -- la contraparte contra Postgres
+   * real vive en order-service-item.integration.test.ts).
+   */
+  describe('Bloque C — itemType SERVICE, resolución de precio server-side (§29)', () => {
+    it('createOrder resuelve unitPrice desde service_items.price y persiste solo serviceItemId poblado', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'SERVICE', serviceItemId: serviceItem1Id, quantity: 2 }],
+      });
+
+      expect(order.items).toHaveLength(1);
+      const item = order.items[0]!;
+      expect(item.itemType).toBe('SERVICE');
+      expect(item.unitPrice).toBe(75); // service_items.price sembrado en beforeEach
+      expect(item.subtotal).toBe(150); // quantity(2) * unitPrice(75)
+      expect(item.serviceItemId).toBe(serviceItem1Id);
+      // Las otras 3 FK polimórficas quedan NULL -- mismo invariante que
+      // chk_order_item_polymorphic_service exige en schema.sql.
+      expect(item.productId).toBeNull();
+      expect(item.productVariantId).toBeNull();
+      expect(item.reservationId).toBeNull();
+      // Sin tarifa especial posible para SERVICE (§29.7.7 punto 3).
+      expect(item.appliedCustomerRateId).toBeNull();
+      // service_items no tiene columna iva_rate propia -- InvoiceService
+      // cae al default_iva_rate del negocio (mismo criterio que RESERVATION).
+      expect(item.ivaRate).toBeNull();
+      expect(order.totalAmount).toBe(150);
+    });
+
+    it('addItem() también resuelve el precio server-side para SERVICE sobre una orden ya creada', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default', items: [],
+      });
+
+      const item = await service.addItem(order.id, { itemType: 'SERVICE', serviceItemId: serviceItem1Id, quantity: 1 });
+
+      expect(item.unitPrice).toBe(75);
+      expect(item.serviceItemId).toBe(serviceItem1Id);
+    });
+
+    it('un service_item inexistente lanza ServiceItemNotFoundError -- fail-loud, no un precio inventado', async () => {
+      await expect(service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'SERVICE', serviceItemId: 'svc-inexistente', quantity: 1 }],
+      })).rejects.toThrow(ServiceItemNotFoundError);
+    });
+
+    it('un unitPrice mandado igual por un caller interno (saltando el schema Zod) se ignora -- el servidor manda siempre, mismo criterio que PRODUCT', async () => {
+      const order = await service.createOrder({
+        businessId: TEST_BUSINESS_ID, customerId: TEST_CUSTOMER_ID, locationId: 'loc-default',
+        items: [{ itemType: 'SERVICE', serviceItemId: serviceItem1Id, quantity: 1, unitPrice: 999999 }],
+      });
+      expect(order.items[0]!.unitPrice).toBe(75);
     });
   });
 

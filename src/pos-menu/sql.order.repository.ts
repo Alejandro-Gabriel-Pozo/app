@@ -49,6 +49,7 @@ function rowToOrderItem(row: Record<string, unknown>): OrderItem {
     productId:        (row['product_id'] as string | null) ?? null,
     productVariantId: (row['product_variant_id'] as string | null) ?? null,
     reservationId:    (row['reservation_id'] as string | null) ?? null,
+    serviceItemId:    (row['service_item_id'] as string | null) ?? null,
     quantity:         Number(row['quantity']),
     unitPrice:        Number(row['unit_price']),
     subtotal:         Number(row['subtotal']),
@@ -194,6 +195,7 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
         productId:        item.productId        ?? null,
         productVariantId: item.productVariantId ?? null,
         reservationId:    item.reservationId    ?? null,
+        serviceItemId:    item.serviceItemId    ?? null,
         quantity:         item.quantity,
         unitPrice:        item.unitPrice,
         subtotal:         item.quantity * item.unitPrice,
@@ -401,14 +403,15 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     const { rows } = await client.query<Record<string, unknown>>(
       `INSERT INTO order_items
          (id, order_id, item_type, product_id, product_variant_id, reservation_id,
-          quantity, unit_price, subtotal, notes, iva_rate, applied_customer_rate_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          service_item_id, quantity, unit_price, subtotal, notes, iva_rate, applied_customer_rate_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         id, orderId, item.itemType,
         item.productId        ?? null,
         item.productVariantId ?? null,
         item.reservationId    ?? null,
+        item.serviceItemId    ?? null,
         item.quantity, item.unitPrice, item.subtotal,
         item.notes ?? null,
         item.ivaRate ?? null,

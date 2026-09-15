@@ -15,6 +15,7 @@ import { OrderPricingService } from '../../pos-menu/order-pricing.service.js';
 import { SqlRecipeItemRepository } from '../../repositories/sql.recipe-item.repository.js';
 import { SqlInventoryLevelRepository } from '../../repositories/sql.inventory-level.repository.js';
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
+import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
@@ -86,7 +87,7 @@ describe.skipIf(skipIfNoDb)('O2 — efectos de negocio únicos (integración)', 
     );
     service = new OrderService(
       new SqlOrderRepository(db), txManager, eventRepo, productService, recipeService,
-      new OrderPricingService(productService, new SqlCustomerRateRepository(db)),
+      new OrderPricingService(productService, new SqlCustomerRateRepository(db), new SqlServiceItemRepository(db)),
       financialRepo, new SqlInvoiceRepository(db),
       new SqlAuditLogRepository(db),
     );

@@ -534,6 +534,7 @@ export class OrderService {
       productId:        item.productId        ?? null,
       productVariantId: item.productVariantId ?? null,
       reservationId:    item.reservationId    ?? null,
+      serviceItemId:    item.serviceItemId    ?? null,
       quantity:         item.quantity,
       unitPrice,
       subtotal:         item.quantity * unitPrice,
@@ -554,6 +555,16 @@ export class OrderService {
       // y sin tarifa especial posible (D7 -- ese eje no existe todavía
       // para RESERVATION dentro de una orden POS).
       return { unitPrice: item.unitPrice, ivaRate: null, appliedCustomerRateId: null };
+    }
+
+    if (item.itemType === 'SERVICE') {
+      // Bloque C (§29, 15/09/2026) -- resolución server-side desde
+      // service_items.price, mismo eje que PRODUCT/PRODUCT_VARIANT (el
+      // servidor tiene autoridad completa del precio), sin tarifa especial
+      // (§29.7.7 punto 3). CreateOrderItemSchema ya exige serviceItemId
+      // para este itemType -- el `!` confía en esa validación de borde,
+      // mismo criterio que `item.productId!` un poco más abajo.
+      return this.orderPricingService.resolveServiceUnitPrice(item.serviceItemId!);
     }
 
     return this.orderPricingService.resolveUnitPrice({

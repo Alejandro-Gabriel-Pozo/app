@@ -8,7 +8,7 @@
 // ## Fuente de verdad de enums: schema.sql (src/db/schema.sql)
 //
 // orders.status     CHECK: DRAFT | CONFIRMED | CANCELLED | COMPLETED
-// order_items.type  CHECK: PRODUCT | PRODUCT_VARIANT | RESERVATION
+// order_items.type  CHECK: PRODUCT | PRODUCT_VARIANT | RESERVATION | SERVICE
 //
 // Estado actual: solo dominio (interfaces + DTOs).
 // Pendiente de implementar: OrderRepository, OrderService y rutas /api/orders.
@@ -61,8 +61,16 @@ export function isOrderStatus(value: unknown): value is OrderStatus {
  * - PRODUCT         → producto simple (sin variante). FK: product_id.
  * - PRODUCT_VARIANT → producto con variante. FK: product_id + product_variant_id.
  * - RESERVATION     → reserva de recurso/servicio. FK: reservation_id.
+ * - SERVICE         → ítem del catálogo de servicios administrativos/
+ *                      intangibles ("Cargo por cancelación", "Costo de
+ *                      envío"). FK: service_item_id. Bloque C de
+ *                      docs/diseno-factura-borrador-2026-08-31.md §29
+ *                      (schema/repo ya existían, Bloques A/B) — sin
+ *                      inventario asociado (confirmOrder()/el worker de
+ *                      inventario ya lo saltean por construcción, §29.6
+ *                      punto 6).
  */
-export type OrderItemType = 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION';
+export type OrderItemType = 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION' | 'SERVICE';
 
 // ---------------------------------------------------------------------------
 // OrderItem
@@ -71,11 +79,12 @@ export type OrderItemType = 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION';
 /**
  * Línea de una orden. Relación polimórfica controlada por item_type:
  *
- * | item_type        | product_id | productVariantId | reservationId |
- * |------------------|------------|------------------|---------------|
- * | PRODUCT          | NOT NULL   | NULL             | NULL          |
- * | PRODUCT_VARIANT  | NOT NULL   | NOT NULL         | NULL          |
- * | RESERVATION      | NULL       | NULL             | NOT NULL      |
+ * | item_type        | product_id | productVariantId | reservationId | serviceItemId |
+ * |------------------|------------|------------------|---------------|---------------|
+ * | PRODUCT          | NOT NULL   | NULL             | NULL          | NULL          |
+ * | PRODUCT_VARIANT  | NOT NULL   | NOT NULL         | NULL          | NULL          |
+ * | RESERVATION      | NULL       | NULL             | NOT NULL      | NULL          |
+ * | SERVICE          | NULL       | NULL             | NULL          | NOT NULL      |
  *
  * unit_price es snapshot inmutable del precio al momento de la orden.
  * subtotal = quantity * unitPrice (persistido, no calculado en runtime).
@@ -90,6 +99,8 @@ export interface OrderItem {
   productVariantId:   ProductVariantId | null;
   /** FK a reservations.id — obligatorio para RESERVATION */
   reservationId:      string | null;
+  /** FK a service_items.id — obligatorio para SERVICE (Bloque C, §29). */
+  serviceItemId:      string | null;
   quantity:           number;
   unitPrice:          number;
   /** quantity * unitPrice */
@@ -107,8 +118,10 @@ export interface OrderItem {
    * D8 (22/08/2026) — snapshot de `Product.ivaRate` al momento de armar la
    * orden (R9: la transacción congela lo que necesitó). `null` = el
    * producto no tenía override (cae al `default_iva_rate` del negocio
-   * VIGENTE al facturar, no al de hoy) o el ítem es RESERVATION (sin
-   * producto). Ver `OrderPricingService.resolveUnitPrice()` y
+   * VIGENTE al facturar, no al de hoy), o el ítem es RESERVATION (sin
+   * producto), o es SERVICE (`service_items` no tiene columna `iva_rate`
+   * propia — Bloque C, §29, cae al mismo default del negocio). Ver
+   * `OrderPricingService.resolveUnitPrice()`/`resolveServiceUnitPrice()` y
    * `InvoiceService.resolveIvaGroups()`.
    */
   ivaRate:            number | null;
@@ -185,13 +198,18 @@ export interface CreateOrderItemInput {
   productId?:       ProductId | null;
   productVariantId?: ProductVariantId | null;
   reservationId?:   string | null;
+  /** FK a service_items.id — obligatorio para SERVICE (Bloque C, §29). */
+  serviceItemId?:   string | null;
   quantity:         number;
   /**
    * D9-Parte 2 (docs/diseno-scope-multinivel-tarifas-2026-08-22.md): para
    * PRODUCT/PRODUCT_VARIANT el servidor lo resuelve (OrderPricingService) --
-   * este campo se ignora/rechaza para esos dos tipos (ver
-   * CreateOrderItemSchema, request.schemas.ts). Sigue siendo obligatorio
-   * para RESERVATION, que no tiene resolución server-side todavía.
+   * este campo se ignora/rechaza para esos tipos (ver CreateOrderItemSchema,
+   * request.schemas.ts). Bloque C (§29, 15/09/2026): SERVICE también lo
+   * resuelve el servidor, desde `service_items.price` (precio fijo, sin
+   * tarifas especiales -- §29.7.7 punto 3), mismo rechazo. Sigue siendo
+   * obligatorio SOLO para RESERVATION, que no tiene resolución server-side
+   * todavía.
    */
   unitPrice?:       number;
 }

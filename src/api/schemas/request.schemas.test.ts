@@ -211,3 +211,40 @@ describe('CreateOrderItemSchema — unitPrice server-side para PRODUCT/PRODUCT_V
     expect(result.success).toBe(true);
   });
 });
+
+describe('CreateOrderItemSchema — itemType SERVICE (Bloque C, docs/diseno-factura-borrador-2026-08-31.md §29, 15/09/2026)', () => {
+  it('acepta SERVICE con serviceItemId, sin unitPrice -- el servidor lo resuelve', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'SERVICE', serviceItemId: 'svc-1', quantity: 1 });
+    expect(result.success).toBe(true);
+  });
+
+  it('rechaza SERVICE sin serviceItemId', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'SERVICE', quantity: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza unitPrice para itemType SERVICE -- el servidor lo resuelve (service_items.price)', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'SERVICE', serviceItemId: 'svc-1', quantity: 1, unitPrice: 100 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza SERVICE con productId', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'SERVICE', serviceItemId: 'svc-1', productId: 'p1', quantity: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza SERVICE con reservationId', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'SERVICE', serviceItemId: 'svc-1', reservationId: 'res-1', quantity: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza PRODUCT con serviceItemId -- FK cruzada entre tipos', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'PRODUCT', productId: 'p1', serviceItemId: 'svc-1', quantity: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza RESERVATION con serviceItemId -- FK cruzada entre tipos', () => {
+    const result = CreateOrderItemSchema.safeParse({ itemType: 'RESERVATION', reservationId: 'res-1', serviceItemId: 'svc-1', quantity: 1, unitPrice: 100 });
+    expect(result.success).toBe(false);
+  });
+});

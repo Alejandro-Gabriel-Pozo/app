@@ -44,6 +44,8 @@ import {
   VariantRequiredError,
   InsufficientStockError,
 } from './product.service.js';
+import { ServiceItemNotFoundError }      from '../domain/errors.js';
+import { SqlServiceItemRepository }      from './sql.service-item.repository.js';
 import { SqlOrderRepository }            from './sql.order.repository.js';
 import { SqlDomainEventRepository }      from '../repositories/sql.domain-event.repository.js';
 import { SqlProductRepository, SqlProductVariantRepository } from './sql.product.repository.js';
@@ -97,7 +99,8 @@ function buildOrderService(req: Request, _container: AppContainer): OrderService
       new SqlProductVariantRepository(req.db!),
     ),
     // D9-Parte 2 -- resuelve unitPrice server-side para PRODUCT/PRODUCT_VARIANT.
-    new OrderPricingService(productService, new SqlCustomerRateRepository(req.db!)),
+    // Bloque C (§29, 15/09/2026) -- ídem para SERVICE, vía SqlServiceItemRepository.
+    new OrderPricingService(productService, new SqlCustomerRateRepository(req.db!), new SqlServiceItemRepository(req.db!)),
     // ORDER-10 (05/09/2026, architecture-governor, bloque 1) -- guard
     // fail-closed de cancelOrder() contra una factura ya vinculada.
     new SqlFinancialTransactionRepository(req.db!),
@@ -148,18 +151,23 @@ function stripItemUndefined(item: CreateOrderItemBody): CreateOrderItemInput {
     productId:        item.productId        ?? null,
     productVariantId: item.productVariantId ?? null,
     reservationId:    item.reservationId    ?? null,
+    // Bloque C (§29, 15/09/2026) -- FK del catálogo de servicios, obligatoria
+    // solo para itemType SERVICE (mismo mapeo mecánico que las otras 3 FK).
+    serviceItemId:    item.serviceItemId    ?? null,
     // D9-Parte 2 -- ausente para PRODUCT/PRODUCT_VARIANT (el schema ya lo
     // prohíbe ahí, el servidor lo resuelve); presente y obligatorio para
-    // RESERVATION (sin cambios).
+    // RESERVATION (sin cambios). Bloque C: también ausente para SERVICE
+    // (mismo prohibido, el servidor lo resuelve desde service_items.price).
     ...(item.unitPrice !== undefined && { unitPrice: item.unitPrice }),
   };
 }
 
-/** D9-Parte 2 -- createOrder()/addItem() ahora resuelven precio (ProductService.resolveTarget()) al armar cada ítem, no solo al confirmar -- mismo mapeo de errores que ya usaba confirmOrder() más abajo. */
+/** D9-Parte 2 -- createOrder()/addItem() ahora resuelven precio (ProductService.resolveTarget()) al armar cada ítem, no solo al confirmar -- mismo mapeo de errores que ya usaba confirmOrder() más abajo. Bloque C (§29, 15/09/2026) -- ServiceItemNotFoundError se suma al mismo mapeo, para el mismo camino de resolución de precio, ahora con SERVICE. */
 function handleItemPricingError(err: unknown, res: Response, next: NextFunction): void {
   if (err instanceof ProductNotFoundError)      res.status(404).json({ code: 'PRODUCT_NOT_FOUND', message: (err as Error).message });
   else if (err instanceof VariantNotFoundError) res.status(404).json({ code: 'VARIANT_NOT_FOUND', message: (err as Error).message });
   else if (err instanceof VariantRequiredError) res.status(400).json({ code: 'VARIANT_REQUIRED',  message: (err as Error).message });
+  else if (err instanceof ServiceItemNotFoundError) res.status(404).json({ code: 'SERVICE_ITEM_NOT_FOUND', message: (err as Error).message });
   else next(err);
 }
 

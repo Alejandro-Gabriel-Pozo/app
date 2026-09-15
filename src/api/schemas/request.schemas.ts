@@ -139,15 +139,17 @@ export const GetReservationsQuerySchema = z.object({
 // Schemas de Órdenes
 // ---------------------------------------------------------------------------
 
-const ORDER_ITEM_TYPES = ['PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION'] as const;
+const ORDER_ITEM_TYPES = ['PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION', 'SERVICE'] as const;
 
 /**
  * Valida una línea de orden al agregarla (POST /api/orders/:id/items).
  *
  * Reglas de consistencia FK por tipo:
- *  - PRODUCT          → productId obligatorio, productVariantId prohibido, reservationId prohibido
- *  - PRODUCT_VARIANT  → productId y productVariantId obligatorios, reservationId prohibido
- *  - RESERVATION      → reservationId obligatorio, productId y productVariantId prohibidos
+ *  - PRODUCT          → productId obligatorio, productVariantId/reservationId/serviceItemId prohibidos
+ *  - PRODUCT_VARIANT  → productId y productVariantId obligatorios, reservationId/serviceItemId prohibidos
+ *  - RESERVATION      → reservationId obligatorio, productId/productVariantId/serviceItemId prohibidos
+ *  - SERVICE          → serviceItemId obligatorio, productId/productVariantId/reservationId prohibidos
+ *    (Bloque C, docs/diseno-factura-borrador-2026-08-31.md §29, 15/09/2026)
  *
  * ## unitPrice — D9-Parte 2 (docs/diseno-scope-multinivel-tarifas-2026-08-22.md)
  * Hasta esta pasada `unitPrice` era SIEMPRE el que mandaba el cliente, sin
@@ -155,9 +157,12 @@ const ORDER_ITEM_TYPES = ['PRODUCT', 'PRODUCT_VARIANT', 'RESERVATION'] as const;
  * D9-Parte 2, fuera del diseño original). Decisión del dueño: el servidor
  * pasa a tener autoridad completa del precio para ítems de producto --
  * `unitPrice` queda PROHIBIDO para PRODUCT/PRODUCT_VARIANT (lo resuelve
- * `OrderPricingService`, ver order-pricing.service.ts) y sigue siendo
- * OBLIGATORIO para RESERVATION, que no tiene (todavía) ningún paso de
- * resolución server-side -- fuera del alcance de D9.
+ * `OrderPricingService`, ver order-pricing.service.ts). Bloque C (§29.6
+ * punto 7/§29.7.7 punto 3, 15/09/2026, dueño): SERVICE sigue el mismo eje
+ * -- resolución server-side desde `service_items.price`, precio fijo sin
+ * tarifas especiales -- así que `unitPrice` queda PROHIBIDO también para
+ * SERVICE. Sigue siendo OBLIGATORIO solo para RESERVATION, que no tiene
+ * (todavía) ningún paso de resolución server-side -- fuera del alcance de D9.
  */
 export const CreateOrderItemSchema = z.object({
   itemType:         z.enum(ORDER_ITEM_TYPES, {
@@ -166,6 +171,8 @@ export const CreateOrderItemSchema = z.object({
   productId:        z.string().min(1).nullable().optional(),
   productVariantId: z.string().min(1).nullable().optional(),
   reservationId:    z.string().min(1).nullable().optional(),
+  /** FK a service_items.id -- obligatorio para SERVICE (Bloque C, §29). */
+  serviceItemId:    z.string().min(1).nullable().optional(),
   quantity:         z.number({ invalid_type_error: 'quantity debe ser un número' })
     .int({ message: 'quantity debe ser un entero' })
     .min(1, { message: 'quantity debe ser mayor o igual a 1' }),
@@ -180,6 +187,9 @@ export const CreateOrderItemSchema = z.object({
     }
     if (data.reservationId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'reservationId debe ser null para itemType PRODUCT y PRODUCT_VARIANT', path: ['reservationId'] });
+    }
+    if (data.serviceItemId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'serviceItemId debe ser null para itemType PRODUCT y PRODUCT_VARIANT', path: ['serviceItemId'] });
     }
     if (data.unitPrice !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unitPrice no se acepta para PRODUCT/PRODUCT_VARIANT -- el servidor lo resuelve (precio base + tarifa especial, D9-Parte 2).', path: ['unitPrice'] });
@@ -200,8 +210,28 @@ export const CreateOrderItemSchema = z.object({
     if (data.productVariantId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productVariantId debe ser null para itemType RESERVATION', path: ['productVariantId'] });
     }
+    if (data.serviceItemId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'serviceItemId debe ser null para itemType RESERVATION', path: ['serviceItemId'] });
+    }
     if (data.unitPrice === undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unitPrice es obligatorio para itemType RESERVATION', path: ['unitPrice'] });
+    }
+  }
+  if (data.itemType === 'SERVICE') {
+    if (!data.serviceItemId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'serviceItemId es obligatorio para itemType SERVICE', path: ['serviceItemId'] });
+    }
+    if (data.productId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productId debe ser null para itemType SERVICE', path: ['productId'] });
+    }
+    if (data.productVariantId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'productVariantId debe ser null para itemType SERVICE', path: ['productVariantId'] });
+    }
+    if (data.reservationId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'reservationId debe ser null para itemType SERVICE', path: ['reservationId'] });
+    }
+    if (data.unitPrice !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'unitPrice no se acepta para SERVICE -- el servidor lo resuelve desde el catálogo de servicios (service_items.price).', path: ['unitPrice'] });
     }
   }
 });

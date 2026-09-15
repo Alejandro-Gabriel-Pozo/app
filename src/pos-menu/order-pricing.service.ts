@@ -25,16 +25,34 @@
  * tienen (todavía) ningún paso de resolución server-side, siguen tomando
  * `unitPrice` tal cual lo manda el caller. Es un eje distinto, fuera del
  * alcance de D9 (ver order.service.ts, resolveUnitPrice()).
+ *
+ * ## SERVICE -- Bloque C (docs/diseno-factura-borrador-2026-08-31.md §29,
+ * 15/09/2026)
+ * `resolveServiceUnitPrice()` resuelve el precio de un ítem SERVICE contra
+ * `service_items.price` (catálogo de servicios administrativos/
+ * intangibles). A diferencia de PRODUCT/PRODUCT_VARIANT, es precio FIJO --
+ * §29.7.7 punto 3 (resuelto por el dueño): SERVICE no participa de
+ * `customer_rates`/`rate_catalog`, sin excepción por cliente. Por eso no
+ * comparte `resolveUnitPrice()` (que sí consulta tarifas especiales) --
+ * es una resolución más simple, con su propio método.
  */
 
 import type { ProductService } from './product.service.js';
 import type { ProductId, ProductVariantId } from './product.entities.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
+import type { ServiceItemRepository } from './service-item.repository.js';
+import { ServiceItemNotFoundError } from '../domain/errors.js';
 
 export class OrderPricingService {
   constructor(
     private readonly productService: ProductService,
     private readonly customerRateRepository: ICustomerRateRepository,
+    /**
+     * Bloque C (§29, 15/09/2026) -- resuelve `unitPrice` server-side para
+     * ítems SERVICE (precio fijo del catálogo, sin tarifas especiales). Ver
+     * resolveServiceUnitPrice() más abajo.
+     */
+    private readonly serviceItemRepository: ServiceItemRepository,
   ) {}
 
   /**
@@ -84,5 +102,26 @@ export class OrderPricingService {
   private resolveRateAmount(rate: { fixedPrice: number | null; discountPercentage: number | null }, basePrice: number): number {
     if (rate.fixedPrice !== null) return rate.fixedPrice;
     return Math.round(basePrice * (1 - rate.discountPercentage! / 100) * 100) / 100;
+  }
+
+  /**
+   * Bloque C (§29, 15/09/2026) -- precio server-side para un ítem SERVICE.
+   * Precio fijo de `service_items.price`, sin tarifa especial de cliente
+   * (§29.7.7 punto 3) -- a diferencia de `resolveUnitPrice()`, no consulta
+   * `ICustomerRateRepository`. `ivaRate` es siempre `null`: `service_items`
+   * no tiene columna `iva_rate` propia (mismo estado que `products` sin
+   * override -- `InvoiceService` cae al `default_iva_rate` del negocio).
+   * `findById()` NO filtra por `active`/`deleted_at` (R2, mismo criterio
+   * que el resto del catálogo) -- un `service_item` pausado o borrado
+   * lógicamente igual resuelve precio acá; R11 (bloqueo hacia adelante de
+   * un ítem pausado) queda declarado como deuda backlog en §29.7.1, mismo
+   * estado que PRODUCT hoy (`ProductService.resolveTarget()` tampoco
+   * chequea `active`) -- no es una regresión nueva de este bloque.
+   */
+  async resolveServiceUnitPrice(serviceItemId: string): Promise<{ unitPrice: number; ivaRate: number | null; appliedCustomerRateId: string | null }> {
+    const serviceItem = await this.serviceItemRepository.findById(serviceItemId);
+    if (!serviceItem) throw new ServiceItemNotFoundError(serviceItemId);
+
+    return { unitPrice: serviceItem.price, ivaRate: null, appliedCustomerRateId: null };
   }
 }

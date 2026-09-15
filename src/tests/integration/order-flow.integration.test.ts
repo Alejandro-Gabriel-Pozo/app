@@ -15,6 +15,7 @@ import { OrderPricingService } from '../../pos-menu/order-pricing.service.js';
 import { SqlRecipeItemRepository } from '../../repositories/sql.recipe-item.repository.js';
 import { SqlInventoryLevelRepository } from '../../repositories/sql.inventory-level.repository.js';
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
+import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import type { AuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
@@ -98,7 +99,7 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
     service = new OrderService(
       new SqlOrderRepository(db), txManager, new SqlDomainEventRepository(db), productService,
       new RecipeService(new SqlRecipeItemRepository(db), new SqlProductRepository(db), new SqlProductVariantRepository(db)),
-      new OrderPricingService(productService, new SqlCustomerRateRepository(db)),
+      new OrderPricingService(productService, new SqlCustomerRateRepository(db), new SqlServiceItemRepository(db)),
       financialRepo, new SqlInvoiceRepository(db),
       new SqlAuditLogRepository(db),
     );
@@ -408,7 +409,7 @@ describe.skipIf(skipIfNoDb)('O3 — flujo funcional controlado (integración)', 
     return new OrderService(
       new SqlOrderRepository(db), txManager, new SqlDomainEventRepository(db), ps,
       new RecipeService(new SqlRecipeItemRepository(db), new SqlProductRepository(db), new SqlProductVariantRepository(db)),
-      new OrderPricingService(ps, new SqlCustomerRateRepository(db)),
+      new OrderPricingService(ps, new SqlCustomerRateRepository(db), new SqlServiceItemRepository(db)),
       financialRepo, new SqlInvoiceRepository(db),
       auditRepo,
     );
