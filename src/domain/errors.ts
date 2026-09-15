@@ -279,6 +279,21 @@ export class RateCatalogEntryConflictError extends DomainError {
 }
 
 /**
+ * F2-13 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #2,
+ * decisión del dueño: "NO, dos recursos no pueden llamarse igual") --
+ * `uq_resources_name` (schema.sql, BLOQUE 25) sobre `upper(btrim(name))`,
+ * acotado a recursos activos y no borrados. `code` (`RESOURCE_NAME_CONFLICT`)
+ * es el mismo que `openapi/spec.ts` ya documentaba para POST/PUT
+ * /api/resources desde antes de que esta clase existiera -- ahí vivía como
+ * 409 fantasma (spec sin implementación real detrás).
+ */
+export class ResourceNameConflictError extends DomainError {
+  constructor(name: string) {
+    super(`Ya existe un recurso con el nombre "${name}"`, 'RESOURCE_NAME_CONFLICT');
+  }
+}
+
+/**
  * No se puede desactivar un producto/variante mientras tenga stock físico
  * (no el disponible) > 0 en cualquier ubicación — 17/08/2026,
  * docs/diseno-empresas-multipropiedad.md decisión 4 (regla general de

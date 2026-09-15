@@ -45,6 +45,7 @@ import type { VisualMetadata }           from '../types/visual.interface.js';
 import { SqlAuditLogRepository }         from '../repositories/audit-log.repository.js';
 import { diffFields, recordFieldChangesWithClient } from '../domain/audit.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
+import { ResourceNameConflictError }     from '../domain/errors.js';
 
 const AUDIT_ENTITY_RESOURCE = 'resources';
 
@@ -186,7 +187,17 @@ export function createResourcesRouter(): Router {
           /* categoryName */ null,
           locationId,
         );
-        await new SqlResourceRepository(req.db).save(resource);
+        try {
+          await new SqlResourceRepository(req.db).save(resource);
+        } catch (dbErr) {
+          // uq_resources_name (schema.sql, BLOQUE 25) -- mismo criterio que
+          // RateCatalogEntryConflictError en rate-catalog.routes.ts (F2-13,
+          // docs/decisiones-auditoria-fase2-2026-09-15.md #2).
+          if ((dbErr as { code?: string }).code === '23505') {
+            throw new ResourceNameConflictError(body.name);
+          }
+          throw dbErr;
+        }
         res.status(201).json(resource);
       } catch (err) { next(err); }
     },
@@ -260,12 +271,21 @@ export function createResourcesRouter(): Router {
           locationId:  body.locationId ?? body.location_id,
         });
         const auditLogRepo = new SqlAuditLogRepository(req.db);
-        await buildTenantTransactionManager(req).run(async (client) => {
-          await repo.saveWithClient!(client, updated);
-          if (changes.length > 0) {
-            await recordFieldChangesWithClient(client, auditLogRepo, AUDIT_ENTITY_RESOURCE, existing.id, changes, req.user!.id);
+        try {
+          await buildTenantTransactionManager(req).run(async (client) => {
+            await repo.saveWithClient!(client, updated);
+            if (changes.length > 0) {
+              await recordFieldChangesWithClient(client, auditLogRepo, AUDIT_ENTITY_RESOURCE, existing.id, changes, req.user!.id);
+            }
+          });
+        } catch (dbErr) {
+          // uq_resources_name (schema.sql, BLOQUE 25) -- mismo criterio que el
+          // catch de POST, arriba.
+          if ((dbErr as { code?: string }).code === '23505') {
+            throw new ResourceNameConflictError(updated.name);
           }
-        });
+          throw dbErr;
+        }
 
         res.json(updated);
       } catch (err) { next(err); }

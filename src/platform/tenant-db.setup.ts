@@ -504,7 +504,19 @@ async function deriveOldEncryptionKey(): Promise<Buffer | null> {
 // rutas nuevas (`GET /api/credit-note-requests`, `GET /:id`,
 // `POST /:id/resolve`) + `authorizeAny()` + las transiciones EMITIDA/
 // NO_EMITIDA de `InvoiceService`, mismo commit.
-export const CURRENT_SCHEMA_VERSION = 58;
+// v59 (15/09/2026): F2-13 (docs/decisiones-auditoria-fase2-2026-09-15.md
+// #2, decisión del dueño) -- unicidad de nombre de recurso. `resources`
+// gana el índice único parcial `uq_resources_name` sobre
+// `upper(btrim(name))`, acotado a filas `active = TRUE AND deleted_at IS
+// NULL` (ver BLOQUE 25 en schema.sql para el razonamiento completo:
+// normalización R6, por qué no lleva `business_id`, y por qué no usa el
+// guard `pg_constraint` que sí hace falta para CHECK constraints).
+// Acompaña `ResourceNameConflictError` (domain/errors.ts, code
+// `RESOURCE_NAME_CONFLICT` -- el que `openapi/spec.ts` ya documentaba
+// como 409 desde antes, hasta ahora fantasma), el case 409 en
+// `error.middleware.ts::domainErrorStatus()`, y el catch de la violación
+// real `23505` en `resources.routes.ts` (POST y PUT), mismo commit.
+export const CURRENT_SCHEMA_VERSION = 59;
 
 /**
  * Aplica schema.sql (completo, idempotente) contra la tenant DB dada y

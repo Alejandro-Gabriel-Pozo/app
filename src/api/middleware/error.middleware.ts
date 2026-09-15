@@ -339,6 +339,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'AR_INVOICE_NOT_ISSUED':
     case 'AFIP_RECONCILIATION_PENDING':
     case 'RATE_CATALOG_ENTRY_CONFLICT':
+    case 'RESOURCE_NAME_CONFLICT':
     case 'RESERVATION_NOT_CANCELLED':
     case 'NOTHING_TO_REFUND':
     case 'REFUND_BASE_CHANGED':

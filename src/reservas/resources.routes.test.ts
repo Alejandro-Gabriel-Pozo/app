@@ -76,6 +76,22 @@ function fakeDb(state: ReturnType<typeof makeState>) {
 
     if (text.includes('INSERT INTO resources')) {
       const [id, name, categoryId, basePrice, visualData, locationId] = params as [string, string, string, number, string | null, string | null];
+      // F2-13 (uq_resources_name, schema.sql BLOQUE 25) -- simula la
+      // violación real de Postgres (23505) que resources.routes.ts captura
+      // y relanza como ResourceNameConflictError. Mismo alcance del índice
+      // real: normalizado (trim + uppercase) y solo contra OTROS recursos
+      // ACTIVOS -- un recurso inactivo con el mismo nombre, o el propio
+      // recurso en un UPDATE (mismo id), nunca choca.
+      const normalized = name.trim().toUpperCase();
+      const conflict = [...state.resources.values()].some(
+        (r) => r.id !== id && r.active && r.name.trim().toUpperCase() === normalized,
+      );
+      if (conflict) {
+        throw Object.assign(
+          new Error('duplicate key value violates unique constraint "uq_resources_name"'),
+          { code: '23505' },
+        );
+      }
       state.resources.set(id, {
         id, name, category_id: categoryId, base_price: basePrice, visual_data: visualData,
         active: true, location_id: locationId ?? 'loc-default',
@@ -264,6 +280,38 @@ describe('resources.routes', () => {
       expect(next.mock.calls[0]![0]).toBeInstanceOf(Error);
       expect(state.resources.size).toBe(0);
     });
+
+    // F2-13 (docs/decisiones-auditoria-fase2-2026-09-15.md #2) -- uq_resources_name.
+    it('409 RESOURCE_NAME_CONFLICT si ya existe un recurso ACTIVO con el mismo nombre normalizado', async () => {
+      seedCategory(state);
+      seedResource(state, { id: 'res-1', name: 'Habitación 101', active: true });
+      const handler = getHandler(router, 'post', '/');
+      // Distinto casing/espacios a propósito -- el índice normaliza con
+      // upper(btrim(name)), así que "  habitación 101  " también choca.
+      const req = { db: fakeDb(state), body: { name: '  habitación 101  ', basePrice: 100, categoryId: 'cat-1' } } as unknown as Request;
+      const res = fakeRes();
+      const next = vi.fn();
+
+      await handler(req, res, next);
+
+      expect(next).toHaveBeenCalledOnce();
+      const err = next.mock.calls[0]![0] as { code?: string };
+      expect(err.code).toBe('RESOURCE_NAME_CONFLICT');
+      expect(state.resources.size).toBe(1); // no se creó el segundo
+    });
+
+    it('201 -- un nombre distinto, o el mismo nombre de un recurso INACTIVO, no chocan', async () => {
+      seedCategory(state);
+      seedResource(state, { id: 'res-1', name: 'Habitación 101', active: false });
+      const handler = getHandler(router, 'post', '/');
+      const req = { db: fakeDb(state), body: { name: 'Habitación 101', basePrice: 100, categoryId: 'cat-1' } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(state.resources.size).toBe(2);
+    });
   });
 
   describe('PUT /resources/:id', () => {
@@ -310,6 +358,44 @@ describe('resources.routes', () => {
       await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
       expect(res.status).toHaveBeenCalledWith(422);
+    });
+
+    // F2-13 (docs/decisiones-auditoria-fase2-2026-09-15.md #2) -- uq_resources_name.
+    it('409 RESOURCE_NAME_CONFLICT si se renombra a un nombre que ya usa OTRO recurso ACTIVO', async () => {
+      seedCategory(state);
+      seedResource(state, { id: 'res-1', name: 'Habitación 101' });
+      seedResource(state, { id: 'res-2', name: 'Habitación 102' });
+      const handler = getHandler(router, 'put', '/:id');
+      const req = {
+        db: fakeDb(state), params: { id: 'res-2' },
+        body: { name: 'Habitación 101' },
+        user: { id: 'identity-1' },
+      } as unknown as Request;
+      const res = fakeRes();
+      const next = vi.fn();
+
+      await handler(req, res, next);
+
+      expect(next).toHaveBeenCalledOnce();
+      const err = next.mock.calls[0]![0] as { code?: string };
+      expect(err.code).toBe('RESOURCE_NAME_CONFLICT');
+      expect(state.resources.get('res-2')!.name).toBe('Habitación 102'); // no se pisó
+    });
+
+    it('200 -- renombrar a su propio nombre actual (sin cambios reales) no choca contra sí mismo', async () => {
+      seedCategory(state);
+      seedResource(state, { id: 'res-1', name: 'Habitación 101' });
+      const handler = getHandler(router, 'put', '/:id');
+      const req = {
+        db: fakeDb(state), params: { id: 'res-1' },
+        body: { name: 'Habitación 101' },
+        user: { id: 'identity-1' },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.json).toHaveBeenCalledOnce();
     });
   });
 

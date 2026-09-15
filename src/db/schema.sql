@@ -4255,3 +4255,48 @@ END $$;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS uncertain_cleared_at TIMESTAMPTZ;
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS uncertain_cleared_by VARCHAR(255);
 
+-- ===========================================================================
+-- BLOQUE 25 — UNICIDAD DE NOMBRE DE RECURSO (F2-13, 15/09/2026, schema v59)
+-- docs/decisiones-auditoria-fase2-2026-09-15.md #2 (decisión del dueño:
+-- "NO, dos recursos no pueden llamarse igual"). `src/openapi/spec.ts` ya
+-- documentaba un 409 `RESOURCE_NAME_CONFLICT` para POST/PUT /api/resources
+-- desde antes -- hasta este bloque era un code fantasma, sin clase de
+-- error, sin case en domainErrorStatus() y sin constraint real en la BD.
+--
+-- Normalización: `upper(btrim(name))`, mismo criterio de unicidad
+-- normalizada que R6 (docs/criterios-datos.md) y que ya usan
+-- `resources_code_uniq` (ejemplo de ese mismo documento) y
+-- `excl_rate_plans_overlapping_validity` (BLOQUE de rate_plans, más
+-- arriba en este archivo) -- no `LOWER()` a secas: btrim además absorbe
+-- espacios de borde que un usuario puede tipear sin darse cuenta
+-- ("Mesa 5" vs "Mesa 5 ").
+--
+-- Sin `business_id` en el índice: `resources` no tiene esa columna (cada
+-- tenant ya es su propia BD -- confirmado contra el CREATE TABLE de
+-- `resources`, más arriba en este archivo).
+--
+-- Alcance "activo": `WHERE active = TRUE AND deleted_at IS NULL`, NO el
+-- `WHERE active = TRUE` más simple de `idx_resources_category` -- ese
+-- índice es de 2013/pre-R3 (antes de que `deleted_at` existiera en esta
+-- tabla). El repositorio real (`sql.resource.repository.ts::getByName()`/
+-- `getAll()`/`getByCategory()`/`countActive()`) YA trata "activo" como
+-- `active IS NOT FALSE AND deleted_at IS NULL` en los cuatro métodos que
+-- filtran por estado -- este índice sigue esa definición real del código,
+-- no la del índice más viejo. R2/R3 (docs/criterios-datos.md): un recurso
+-- desactivado o borrado nunca bloquea crear uno nuevo con el mismo nombre.
+--
+-- `CREATE UNIQUE INDEX IF NOT EXISTS` directo, SIN el guard
+-- `DO $$ ... pg_constraint ...` que este archivo usa para CHECK
+-- constraints nuevos (ver BLOQUE `chk_financial_transactions_amount`,
+-- schema v51): ese guard existe porque `ALTER TABLE ADD CONSTRAINT`
+-- (CHECK) no soporta `IF NOT EXISTS` nativo y un DROP+ADD incondicional
+-- revalidaría la tabla entera en cada deploy. `CREATE UNIQUE INDEX`
+-- SÍ soporta `IF NOT EXISTS` nativo -- ya es idempotente y barato sin
+-- guard adicional, mismo patrón que decenas de índices únicos ya
+-- existentes en este archivo (`uq_products_business_sku`,
+-- `uq_customers_google_sub`, `uq_occupancy_resource_date`, etc.).
+-- ===========================================================================
+CREATE UNIQUE INDEX IF NOT EXISTS uq_resources_name
+  ON resources (upper(btrim(name)))
+  WHERE active = TRUE AND deleted_at IS NULL;
+
