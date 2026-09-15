@@ -73,6 +73,8 @@ import type { ResourceRepository }           from './resource.repository.js';
 import type { OccupancyRepository }          from './occupancy.repository.js';
 import type { ICategoryRepository }          from './category.repository.js';
 import type { DomainEventRepository }        from '../repositories/domain-event.repository.js';
+import type { AuditLogRepository }           from '../repositories/audit-log.repository.js';
+import { auditReservationTransition }        from './reservation-audit.js';
 import type { IResourceLockRepository }      from './resource-lock.repository.js';
 import type { IBookableServiceRepository } from './bookable-service.repository.js';
 import type { ICustomerRateRepository } from '../clientes-finanzas/customer-rate.repository.js';
@@ -156,6 +158,21 @@ export class ReservationService {
      * para el camino LIVE_AT_CANCELLATION -- no se toca acá.
      */
     private readonly cancellationPolicyRepository: Pick<CancellationPolicyRepository, 'findAll'>,
+    /**
+     * D-10 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #8) --
+     * A6.5: `confirmReservation()`/`cancelReservation()`/`completeReservation()`
+     * dejaban de rastro NADA en `audit_log` (a diferencia del escape con
+     * Nota de Crédito, `ReservationCancelForCreditNote`, que sí auditaba).
+     * SIN default a propósito -- F2-12 (misma auditoría) señaló que un
+     * parámetro nuevo con default no rompe `tsc --noEmit` si alguno de los
+     * 3 composition roots (`reservations.routes.ts`,
+     * `bookable-services.routes.ts`, `customer.routes.ts`) se olvida de
+     * actualizarse; requerido, el compilador los obliga a los tres.
+     * `Pick<..., 'recordWithClient'>` -- mismo recorte que ya usa
+     * `ReservationCancelForCreditNote`, que comparte el helper
+     * `auditReservationTransition()` con este servicio (`reservation-audit.ts`).
+     */
+    private readonly auditLogRepo: Pick<AuditLogRepository, 'recordWithClient'>,
     /**
      * J1 (23/08/2026) — reloj inyectable para el guard de "no crear/mover
      * una reserva al pasado". Opcional con default real: los ~101
@@ -803,8 +820,9 @@ export class ReservationService {
    * `PENDING` hasta que el folio cierra, exactamente como hacía la única
    * CHARGE de antes.
    */
-  async confirmReservation(id: string, businessId: string): Promise<Reservation> {
+  async confirmReservation(id: string, businessId: string, changedBy: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en confirmReservation');
+    if (!changedBy) throw new Error('changedBy es obligatorio en confirmReservation (A6.5)');
 
     // Pre-chequeo FUERA de la transacción -- financial_transactions es otra
     // tabla, no hace falta el lock de reservations para leerla. No es la
@@ -854,6 +872,7 @@ export class ReservationService {
     // el evento se inserte.
     await this.transactionManager.run(async (client: SqlClient) => {
       reservation = await this.requireReservationWithLock(client, id);
+      const previousStatus = reservation.status;
       reservation.confirm();
       // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- misma transacción que el
       // UPDATE de abajo (atomic-state-mutation: una sola operación
@@ -865,6 +884,10 @@ export class ReservationService {
       reservation.freezeCancellationPolicy(cancellationPolicySnapshot);
 
       await this.reservationRepository.saveWithClient(client, reservation);
+      // D-10 -- misma transacción que el UPDATE de arriba (atomic-state-mutation).
+      await auditReservationTransition(
+        client, this.auditLogRepo, reservation.id, previousStatus, reservation.status, changedBy,
+      );
       await this.domainEventRepository.insertWithClient(client, {
         businessId,
         aggregateType: 'RESERVATION',
@@ -922,8 +945,9 @@ export class ReservationService {
     return null;
   }
 
-  async cancelReservation(id: string, businessId: string): Promise<Reservation> {
+  async cancelReservation(id: string, businessId: string, changedBy: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en cancelReservation');
+    if (!changedBy) throw new Error('changedBy es obligatorio en cancelReservation (A6.5)');
 
     let reservation!: Reservation;
 
@@ -932,6 +956,7 @@ export class ReservationService {
     // la segunda ve el estado ya CANCELLED y transitionTo() la rechaza.
     await this.transactionManager.run(async (client: SqlClient) => {
       reservation = await this.requireReservationWithLock(client, id);
+      const previousStatus = reservation.status;
       reservation.cancel();
 
       // RESERVA-10 (05/09/2026, architecture-governor) -- puerta
@@ -950,6 +975,10 @@ export class ReservationService {
       }
 
       await this.reservationRepository.saveWithClient(client, reservation);
+      // D-10 -- misma transacción que el UPDATE de arriba (atomic-state-mutation).
+      await auditReservationTransition(
+        client, this.auditLogRepo, reservation.id, previousStatus, reservation.status, changedBy,
+      );
       await this.domainEventRepository.insertWithClient(client, {
         businessId,
         aggregateType: 'RESERVATION',
@@ -967,8 +996,9 @@ export class ReservationService {
     return reservation;
   }
 
-  async completeReservation(id: string, businessId: string): Promise<Reservation> {
+  async completeReservation(id: string, businessId: string, changedBy: string): Promise<Reservation> {
     if (!businessId) throw new Error('businessId es obligatorio en completeReservation');
+    if (!changedBy) throw new Error('changedBy es obligatorio en completeReservation (A6.5)');
 
     let reservation!: Reservation;
 
@@ -976,9 +1006,14 @@ export class ReservationService {
     // confirmReservation(), ver docblock de arriba.
     await this.transactionManager.run(async (client: SqlClient) => {
       reservation = await this.requireReservationWithLock(client, id);
+      const previousStatus = reservation.status;
       reservation.complete();
 
       await this.reservationRepository.saveWithClient(client, reservation);
+      // D-10 -- misma transacción que el UPDATE de arriba (atomic-state-mutation).
+      await auditReservationTransition(
+        client, this.auditLogRepo, reservation.id, previousStatus, reservation.status, changedBy,
+      );
       await this.domainEventRepository.insertWithClient(client, {
         businessId,
         aggregateType: 'RESERVATION',

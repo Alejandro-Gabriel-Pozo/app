@@ -170,6 +170,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
       invoiceRepo,
       new SqlNumberSequenceRepository(db),
       new SqlCancellationPolicyRepository(db),
+      new SqlAuditLogRepository(db),
     );
 
     invoiceService = new InvoiceService(
@@ -213,7 +214,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
       startTime: new Date('2030-01-01T10:00:00Z'), endTime: new Date('2030-01-01T12:00:00Z'),
       details: {},
     });
-    await reservationService.confirmReservation(reservation.id, BIZ);
+    await reservationService.confirmReservation(reservation.id, BIZ, 'user-1');
 
     // El CHARGE normalmente lo crea el handler del outbox (reservation.confirmed);
     // acá se inserta directo -- lo único que importa es que exista un CHARGE.
@@ -231,7 +232,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
   it('secuencial: cancelada la reserva primero, requestInvoice() del cargo rechaza con ReservationCancelledCannotInvoiceError', async () => {
     const { reservationId, chargeId } = await seedConfirmedReservationWithCharge();
 
-    await reservationService.cancelReservation(reservationId, BIZ);
+    await reservationService.cancelReservation(reservationId, BIZ, 'user-1');
 
     await expect(
       invoiceService.requestInvoice({ businessId: BIZ, financialTransactionId: chargeId, changedBy: 'user-1' }),
@@ -320,7 +321,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
     });
     expect(invoice.status).toBe('ISSUED');
 
-    await expect(reservationService.cancelReservation(reservationId, BIZ))
+    await expect(reservationService.cancelReservation(reservationId, BIZ, 'user-1'))
       .rejects.toThrow(ReservationChargeInvoicedError);
 
     const { rows } = await db.query<{ status: string }>(

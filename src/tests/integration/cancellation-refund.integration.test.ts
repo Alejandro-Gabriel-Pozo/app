@@ -24,6 +24,7 @@ import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js
 import { SqlCancellationPolicyRepository } from '../../reservas/sql.cancellation-policy.repository.js';
 import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.financial-transaction.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
+import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
 import type { BusinessProfileRepository } from '../../repositories/business-profile.repository.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
@@ -95,6 +96,7 @@ function buildReservationService(): ReservationService {
     new SqlInvoiceRepository(db),
     new SqlNumberSequenceRepository(db),
     new SqlCancellationPolicyRepository(db),
+    new SqlAuditLogRepository(db),
   );
 }
 
@@ -1239,7 +1241,7 @@ describe.skipIf(skipIfNoDb)('CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- snapshot c
       details: {},
     });
 
-    const confirmed = await reservationService.confirmReservation(created.id, businessId);
+    const confirmed = await reservationService.confirmReservation(created.id, businessId, 'user-1');
     expect(confirmed.cancellationPolicySnapshot, 'confirmReservation() tiene que congelar el ladder').not.toBeNull();
     expect(confirmed.cancellationPolicySnapshot?.tiers).toEqual([
       { minDaysBeforeCheckin: 7, refundPercentage: 100 },
@@ -1302,7 +1304,7 @@ describe.skipIf(skipIfNoDb)('CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- snapshot c
       endTime: daysFromNowAtMinute(11),
       details: {},
     });
-    const confirmed = await reservationService.confirmReservation(created.id, businessId);
+    const confirmed = await reservationService.confirmReservation(created.id, businessId, 'user-1');
     expect(confirmed.cancellationPolicySnapshot).toBeNull();
 
     const financialRepo = new SqlFinancialTransactionRepository(db);

@@ -244,7 +244,13 @@ const SIGNATURES: Array<{ file: string; signature: string }> = [
   },
   {
     file: 'reservas/reservation.service.ts',
-    signature: 'async cancelReservation(id: string, businessId: string): Promise<Reservation> {',
+    // D-10 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #8) --
+    // cambio legítimo de firma, no un flag de bypass (ver "SI ESTO ROMPE"
+    // (C.1) más arriba): `changedBy` es quién audita la transición en
+    // audit_log (A6.5), mismo nombre/rol que ya usa `cancelOrder()` un poco
+    // más arriba en este mismo array -- no cambia el guard de factura viva
+    // ni el ADR de contención del escape fiscal.
+    signature: 'async cancelReservation(id: string, businessId: string, changedBy: string): Promise<Reservation> {',
   },
   {
     file: 'reservas/reservation.service.ts',

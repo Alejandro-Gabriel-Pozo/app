@@ -15,6 +15,7 @@ import { InMemoryOperatingHoursRepository } from '../platform/in-memory.operatin
 import { InMemoryMaintenanceWindowRepository } from '../pms-estadias/in-memory.maintenance-window.repository.js';
 import { InMemoryNumberSequenceRepository } from '../repositories/in-memory.number-sequence.repository.js';
 import { InMemoryCancellationPolicyRepository } from './in-memory.cancellation-policy.repository.js';
+import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
 import { MaintenanceWindow } from '../pms-estadias/maintenance-window.js';
 import { InvalidReservationError, ResourceNotFoundError, RatePlanNotAvailableError, NoPriceAdjustmentPendingError, DepositNotPaidError, ReservationChargeInvoicedError } from '../domain/errors.js';
 import type { ICategoryRepository } from './category.repository.js';
@@ -76,6 +77,9 @@ class InMemoryTransactionManager implements TransactionManager {
 /** businessId de prueba — requerido desde fix/reservation-businessid-required. */
 const TEST_BUSINESS_ID = 'biz-test';
 
+/** D-10 (15/09/2026) — changedBy de prueba para confirm/cancel/completeReservation(). */
+const TEST_USER_ID = 'user-test';
+
 /**
  * J1 (23/08/2026, pendientes-2026-08-23.md) — reloj congelado para el
  * guard de "no crear/mover una reserva al pasado". Todos los fixtures de
@@ -101,6 +105,7 @@ describe('ReservationService', () => {
   let invoiceRepo: FakeInvoiceRepositoryForReservations;
   let numberSequenceRepo: InMemoryNumberSequenceRepository;
   let cancellationPolicyRepo: InMemoryCancellationPolicyRepository;
+  let auditLogRepo: InMemoryAuditLogRepository;
   let service: ReservationService;
 
   /** Sin política de seña -- comportamiento default (deposit_amount = 0, gate nunca se activa). */
@@ -196,6 +201,7 @@ describe('ReservationService', () => {
     invoiceRepo           = new FakeInvoiceRepositoryForReservations();
     numberSequenceRepo    = new InMemoryNumberSequenceRepository();
     cancellationPolicyRepo = new InMemoryCancellationPolicyRepository();
+    auditLogRepo          = new InMemoryAuditLogRepository();
 
     service = new ReservationService(
       reservationRepo,
@@ -215,6 +221,7 @@ describe('ReservationService', () => {
       invoiceRepo,
       numberSequenceRepo,
       cancellationPolicyRepo,
+      auditLogRepo,
       FROZEN_TEST_NOW,
     );
 
@@ -656,7 +663,7 @@ describe('ReservationService', () => {
 
       // businessId es obligatorio desde fix/reservation-businessid-required.
       // Los eventos de dominio se persisten con este ID — no puede ser vacío.
-      const confirmed = await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(confirmed.status).toBe(ReservationStatus.CONFIRMED);
 
@@ -693,6 +700,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -713,7 +721,7 @@ describe('ReservationService', () => {
         id: 'res-lodging', resourceId: 't1', serviceId: 'svc-estadia', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
-      await lodgingService.confirmReservation('res-lodging', TEST_BUSINESS_ID);
+      await lodgingService.confirmReservation('res-lodging', TEST_BUSINESS_ID, TEST_USER_ID);
 
       const event = eventRepo.events[0] as { payload: { isLodging: boolean } };
       expect(event.payload.isLodging).toBe(true);
@@ -728,7 +736,7 @@ describe('ReservationService', () => {
         id: 'res-sin-politica', resourceId: 't1', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
-      const confirmed = await service.confirmReservation('res-sin-politica', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-sin-politica', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(confirmed.cancellationPolicySnapshot).toBeNull();
     });
 
@@ -752,7 +760,7 @@ describe('ReservationService', () => {
         id: 'res-con-politica', resourceId: 't1', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
-      const confirmed = await service.confirmReservation('res-con-politica', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-con-politica', TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
       expect(confirmed.cancellationPolicySnapshot?.version).toBe(1);
@@ -776,7 +784,7 @@ describe('ReservationService', () => {
         id: 'res-live', resourceId: 't1', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
-      const confirmed = await service.confirmReservation('res-live', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-live', TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(confirmed.cancellationPolicySnapshot).toBeNull();
     });
@@ -791,7 +799,7 @@ describe('ReservationService', () => {
         id: 'res-otro-negocio', resourceId: 't1', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
-      const confirmed = await service.confirmReservation('res-otro-negocio', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-otro-negocio', TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(confirmed.cancellationPolicySnapshot).toBeNull();
     });
@@ -811,7 +819,7 @@ describe('ReservationService', () => {
         id, resourceId: 't1', customer,
         startTime: new Date('2026-07-01T20:00:00'), endTime: new Date('2026-07-01T22:00:00'), details: {},
       });
-      await service.confirmReservation(id, TEST_BUSINESS_ID);
+      await service.confirmReservation(id, TEST_BUSINESS_ID, TEST_USER_ID);
     }
 
     it('rechaza cancelar si el cargo tiene una factura ISSUED (CAE real de AFIP)', async () => {
@@ -820,7 +828,7 @@ describe('ReservationService', () => {
       financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
       invoiceRepo.seed(chargeId, { kind: 'ISSUED', invoiceId: 'inv-1' });
 
-      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID))
+      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID))
         .rejects.toThrow(ReservationChargeInvoicedError);
 
       // La reserva sigue como estaba -- ningún evento de cancelación salió.
@@ -833,7 +841,7 @@ describe('ReservationService', () => {
       financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
       invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'PENDING', afipContacted: false });
 
-      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID))
+      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID))
         .rejects.toThrow(ReservationChargeInvoicedError);
     });
 
@@ -843,7 +851,7 @@ describe('ReservationService', () => {
       financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
       invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: true });
 
-      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID))
+      await expect(service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID))
         .rejects.toThrow(ReservationChargeInvoicedError);
     });
 
@@ -853,7 +861,7 @@ describe('ReservationService', () => {
       financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
       invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'REJECTED', afipContacted: true });
 
-      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
     });
 
@@ -863,7 +871,7 @@ describe('ReservationService', () => {
       financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', chargeId));
       invoiceRepo.seed(chargeId, { kind: 'NOT_ISSUED', invoiceId: 'inv-1', status: 'FAILED_UNCERTAIN', afipContacted: false });
 
-      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
     });
 
@@ -872,7 +880,7 @@ describe('ReservationService', () => {
       financialTransactionRepo.seedCharge('res-1', makeCharge('res-1', 'charge-res-1'));
       // sin invoiceRepo.seed(): resuelve a { kind: 'NONE' } por default.
 
-      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
     });
 
@@ -887,7 +895,7 @@ describe('ReservationService', () => {
       // el guard filtra por type === 'CHARGE' antes de resolver linkage.
       invoiceRepo.seed('pay-res-1', { kind: 'ISSUED', invoiceId: 'inv-1' });
 
-      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      const cancelled = await service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(cancelled.status).toBe(ReservationStatus.CANCELLED);
     });
   });
@@ -916,7 +924,7 @@ describe('ReservationService', () => {
 
       // Sin pago registrado (financialTransactionRepo por default no tiene nada
       // en FakePaymentLedger) y aun así confirma -- el gate no se activa con deposit=0.
-      const confirmed = await service.confirmReservation('res-nosena', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-nosena', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(confirmed.status).toBe(ReservationStatus.CONFIRMED);
     });
 
@@ -926,6 +934,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -936,7 +945,7 @@ describe('ReservationService', () => {
       // t1 tiene basePrice=50 -- 30% = 15.
       expect(reservation.depositAmount).toBe(15);
 
-      await expect(depositService.confirmReservation('res-sena30', TEST_BUSINESS_ID))
+      await expect(depositService.confirmReservation('res-sena30', TEST_BUSINESS_ID, TEST_USER_ID))
         .rejects.toThrow(DepositNotPaidError);
     });
 
@@ -946,6 +955,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -956,7 +966,7 @@ describe('ReservationService', () => {
 
       financialTransactionRepo.setPaid('res-sena-pagada', 15);
 
-      const confirmed = await depositService.confirmReservation('res-sena-pagada', TEST_BUSINESS_ID);
+      const confirmed = await depositService.confirmReservation('res-sena-pagada', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(confirmed.status).toBe(ReservationStatus.CONFIRMED);
     });
 
@@ -971,6 +981,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -988,6 +999,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, makeBusinessProfileRepo({ defaultDepositPercentage: 30, depositHoldHours: 24 }), financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
         FROZEN_TEST_NOW,
       );
 
@@ -1040,11 +1052,11 @@ describe('ReservationService', () => {
         endTime:   new Date('2026-07-01T22:00:00'),
         details: {},
       });
-      await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       eventRepo.events = []; // reset — solo nos interesa el evento de complete
 
       // businessId es obligatorio desde fix/reservation-businessid-required.
-      const completed = await service.completeReservation('res-1', TEST_BUSINESS_ID);
+      const completed = await service.completeReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
 
       expect(completed.status).toBe(ReservationStatus.COMPLETED);
       expect(eventRepo.events).toHaveLength(1);
@@ -1180,7 +1192,7 @@ describe('ReservationService', () => {
 
     it('debe permitir editar una reserva CONFIRMED (drag-to-move del calendario de PMS)', async () => {
       await createBase();
-      await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       const updated = await service.updateReservation('res-1', {
         startTime: new Date('2026-08-01T18:00:00Z'),
       });
@@ -1199,7 +1211,7 @@ describe('ReservationService', () => {
         policyResolutionTiming: 'SNAPSHOT_AT_BOOKING',
       });
       await createBase();
-      const confirmed = await service.confirmReservation('res-1', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
 
       const updated = await service.updateReservation('res-1', {
@@ -1245,8 +1257,8 @@ describe('ReservationService', () => {
 
     it('debe rechazar si la reserva está en un estado terminal (CANCELLED/COMPLETED)', async () => {
       await createBase();
-      await service.confirmReservation('res-1', TEST_BUSINESS_ID);
-      await service.cancelReservation('res-1', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
+      await service.cancelReservation('res-1', TEST_BUSINESS_ID, TEST_USER_ID);
       await expect(
         service.updateReservation('res-1', {
           startTime: new Date('2026-08-01T18:00:00Z'),
@@ -1325,7 +1337,7 @@ describe('ReservationService', () => {
           endTime:   new Date('2026-09-03T10:00:00Z'), // 2 noches = 200
           details: {},
         });
-        await service.confirmReservation('res-confirmed-noprice', TEST_BUSINESS_ID);
+        await service.confirmReservation('res-confirmed-noprice', TEST_BUSINESS_ID, TEST_USER_ID);
 
         const updated = await service.updateReservation('res-confirmed-noprice', {
           endTime: new Date('2026-09-05T10:00:00Z'), // sería 4 noches = 400 si recotizara
@@ -1438,7 +1450,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'), // 200
         details: {},
       });
-      await service.confirmReservation('res-preview-same', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-preview-same', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(await service.previewPriceAdjustment('res-preview-same')).toBeNull();
     });
 
@@ -1448,7 +1460,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'), // 200
         details: {},
       });
-      await service.confirmReservation('res-preview-extend', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-preview-extend', TEST_BUSINESS_ID, TEST_USER_ID);
       // totalPrice sigue congelado en 200 -- solo cambian fechas/lo que costaría hoy.
       await service.updateReservation('res-preview-extend', { endTime: new Date('2026-09-05T10:00:00Z') }); // 4 noches
 
@@ -1462,7 +1474,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-05T10:00:00Z'), // 400
         details: {},
       });
-      await service.confirmReservation('res-preview-shrink', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-preview-shrink', TEST_BUSINESS_ID, TEST_USER_ID);
       await service.updateReservation('res-preview-shrink', { endTime: new Date('2026-09-02T10:00:00Z') }); // 1 noche
 
       const preview = await service.previewPriceAdjustment('res-preview-shrink');
@@ -1475,7 +1487,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'), // 200
         details: {},
       });
-      await service.confirmReservation('res-confirm-adjust', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-confirm-adjust', TEST_BUSINESS_ID, TEST_USER_ID);
       eventRepo.events = []; // solo nos interesa el evento del ajuste, no el de confirmación
       await service.updateReservation('res-confirm-adjust', { endTime: new Date('2026-09-05T10:00:00Z') });
 
@@ -1511,7 +1523,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
         details: {},
       });
-      const confirmed = await service.confirmReservation('res-confirm-adjust-snapshot', TEST_BUSINESS_ID);
+      const confirmed = await service.confirmReservation('res-confirm-adjust-snapshot', TEST_BUSINESS_ID, TEST_USER_ID);
       expect(confirmed.cancellationPolicySnapshot).not.toBeNull();
 
       await service.updateReservation('res-confirm-adjust-snapshot', { endTime: new Date('2026-09-05T10:00:00Z') });
@@ -1526,7 +1538,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
         details: {},
       });
-      await service.confirmReservation('res-confirm-noattr', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-confirm-noattr', TEST_BUSINESS_ID, TEST_USER_ID);
       await service.updateReservation('res-confirm-noattr', { endTime: new Date('2026-09-05T10:00:00Z') });
 
       await expect(service.confirmPriceAdjustment('res-confirm-noattr', TEST_BUSINESS_ID, ''))
@@ -1539,7 +1551,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-05T10:00:00Z'), // 400
         details: {},
       });
-      await service.confirmReservation('res-confirm-credit', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-confirm-credit', TEST_BUSINESS_ID, TEST_USER_ID);
       eventRepo.events = [];
       await service.updateReservation('res-confirm-credit', { endTime: new Date('2026-09-02T10:00:00Z') }); // 1 noche
 
@@ -1557,7 +1569,7 @@ describe('ReservationService', () => {
         startTime: new Date('2026-09-01T15:00:00Z'), endTime: new Date('2026-09-03T10:00:00Z'),
         details: {},
       });
-      await service.confirmReservation('res-confirm-nodiff', TEST_BUSINESS_ID);
+      await service.confirmReservation('res-confirm-nodiff', TEST_BUSINESS_ID, TEST_USER_ID);
 
       await expect(service.confirmPriceAdjustment('res-confirm-nodiff', TEST_BUSINESS_ID, 'user-manager-1'))
         .rejects.toThrow(NoPriceAdjustmentPendingError);
@@ -1915,6 +1927,7 @@ describe('ReservationService', () => {
         eventRepo, txManager, lockRepo, bookableServiceRepo,
         customerRateRepo, operatingHoursRepo, maintenanceWindowRepo,
         depositPolicyRepo, businessProfileRepo, financialTransactionRepo, invoiceRepo, numberSequenceRepo, cancellationPolicyRepo,
+        auditLogRepo,
         FROZEN_TEST_NOW,
       );
       // 27/08/2026 — decisión del dueño, docs/diseno-precio-servicio-vs-

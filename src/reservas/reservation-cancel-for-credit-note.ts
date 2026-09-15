@@ -27,12 +27,16 @@
  *     en tx1 -- ese es una instancia vieja, de otra transacción) y
  *     persistirlo con `saveWithClient()`.
  *
- * ## Divergencia deliberada con `ReservationService.cancelReservation()` (A6.5)
- * `cancelReservation()` HOY no escribe `audit_log` (verificado,
- * `reservation.service.ts`). Este adaptador SÍ lo hace: el escape es un
- * override administrativo con autor nombrado (`changedBy` = quien autorizó
- * la Nota de Crédito, no el sistema) -- no es "corregir" la cancelación
- * normal por analogía, es una decisión aparte para este code path.
+ * ## Auditoría (A6.5) -- D-10 (15/09/2026, decisiones-auditoria-fase2, #8)
+ * Hasta el 15/09/2026 este adaptador era el ÚNICO lugar que escribía
+ * `audit_log` para una transición de `Reservation` -- `cancelReservation()`
+ * del camino normal no auditaba nada (asimetría cerrada por D-10, ver
+ * `reservation.service.ts`). Ahora los 4 call-sites (los 3 del camino
+ * normal + este) comparten `auditReservationTransition()`
+ * (`reservation-audit.ts`) -- lo que sigue siendo propio de ESTE adaptador
+ * es el `changedBy`: acá es quien autorizó la Nota de Crédito (override
+ * administrativo con autor nombrado), no el sistema ni quien pidió el
+ * cambio por el camino normal.
  *
  * ## Qué NO hace (a diferencia de `cancelReservation()`)
  *  - **No** llama a `findBlockingInvoiceLinkage()`: la factura viva es
@@ -56,6 +60,7 @@ import type { AuditLogRepository } from '../repositories/audit-log.repository.js
 import type { ReservationRepository } from './reservation.repository.js';
 import type { ReservationCancelPort, ReservationCancelOutcome } from '../facturacion/cancel-reservation-with-credit-note.service.js';
 import { ReservationStatus } from '../types/enums.js';
+import { auditReservationTransition } from './reservation-audit.js';
 
 export class ReservationCancelForCreditNote implements ReservationCancelPort {
   constructor(
@@ -103,15 +108,9 @@ export class ReservationCancelForCreditNote implements ReservationCancelPort {
 
     await this.reservationRepo.saveWithClient(client, reservation);
 
-    if (!this.auditLogRepo.recordWithClient) {
-      throw new Error(
-        'ReservationCancelForCreditNote requiere un AuditLogRepository con recordWithClient -- una cancelación sin rastro no es aceptable (A6.5).',
-      );
-    }
-    await this.auditLogRepo.recordWithClient(client, [{
-      entity: 'reservations', entityId: reservation.id, field: 'status',
-      oldValue: previousStatus, newValue: ReservationStatus.CANCELLED, changedBy,
-    }]);
+    await auditReservationTransition(
+      client, this.auditLogRepo, reservation.id, previousStatus, ReservationStatus.CANCELLED, changedBy,
+    );
 
     await this.domainEventRepository.insertWithClient(client, {
       businessId,

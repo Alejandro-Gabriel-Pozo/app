@@ -140,6 +140,10 @@ function buildReservationService(req: Request): ReservationService {
   // CANCEL-POLICY-SCOPE-BASE-001 Bloque 2 -- confirmReservation() necesita
   // el ladder de tramos del negocio para congelar el snapshot (R9).
   const cancellationPolicyRepo = new SqlCancellationPolicyRepository(db);
+  // D-10 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #8) --
+  // confirmReservation()/cancelReservation()/completeReservation() ahora
+  // auditan (A6.5), ver reservation-audit.ts.
+  const auditLogRepo = new SqlAuditLogRepository(db);
   return new ReservationService(
     reservationRepo,
     resourceRepo,
@@ -158,6 +162,7 @@ function buildReservationService(req: Request): ReservationService {
     invoiceRepo,
     numberSequenceRepo,
     cancellationPolicyRepo,
+    auditLogRepo,
   );
 }
 
@@ -480,6 +485,7 @@ export function createReservationsRouter(container: AppContainer): Router {
         const reservation = await service.confirmReservation(
           req.params['id']!,
           req.user!.businessId as string,
+          req.user!.id,
         );
         res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
@@ -496,6 +502,7 @@ export function createReservationsRouter(container: AppContainer): Router {
         const reservation = await service.cancelReservation(
           req.params['id']!,
           req.user!.businessId as string,
+          req.user!.id,
         );
         res.json(toReservationDto(reservation));
       } catch (err) { next(err); }
@@ -647,6 +654,7 @@ export function createReservationsRouter(container: AppContainer): Router {
         const reservation = await service.completeReservation(
           req.params['id']!,
           req.user!.businessId as string,
+          req.user!.id,
         );
         res.json(toReservationDto(reservation));
       } catch (err) { next(err); }

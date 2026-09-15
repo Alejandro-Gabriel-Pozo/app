@@ -109,6 +109,12 @@ function buildReservationService(req: Request): ReservationService {
     new SqlInvoiceRepository(db),
     new SqlNumberSequenceRepository(db),
     new SqlCancellationPolicyRepository(db),
+    // D-10 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #8) --
+    // este composition root solo usa el servicio para getAvailableSlots()
+    // (no llama a confirm/cancel/completeReservation() hoy), pero el
+    // constructor lo exige igual -- los 3 composition roots quedan
+    // consistentes por construcción (F2-12), no a ojo.
+    new SqlAuditLogRepository(db),
   );
 }
 

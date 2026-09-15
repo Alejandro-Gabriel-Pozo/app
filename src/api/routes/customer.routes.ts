@@ -119,6 +119,7 @@ import { SqlBookableServiceRepository } from '../../reservas/sql.bookable-servic
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlOperatingHoursRepository } from '../../platform/sql.operating-hours.repository.js';
 import { SqlMaintenanceWindowRepository } from '../../pms-estadias/sql.maintenance-window.repository.js';
+import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { ReservationService }        from '../../reservas/reservation.service.js';
 
 // ---------------------------------------------------------------------------
@@ -243,6 +244,12 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
   const invoiceRepo = new SqlInvoiceRepository(client);
   const numberSequenceRepo = new SqlNumberSequenceRepository(client);
   const cancellationPolicyRepo = new SqlCancellationPolicyRepository(client);
+  // D-10 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #8) --
+  // confirmReservation()/cancelReservation()/completeReservation() ahora
+  // auditan (A6.5), ver reservation-audit.ts. Este router usa `client`
+  // (el SqlClient del tenant resuelto por slug), no `req.db` -- mismo
+  // patrón que el resto de los repos de esta función.
+  const auditLogRepo = new SqlAuditLogRepository(client);
 
   const reservationService = new ReservationService(
     reservationRepo,
@@ -262,6 +269,7 @@ function buildService(client: SqlClient, tenantPool: pg.Pool) {
     invoiceRepo,
     numberSequenceRepo,
     cancellationPolicyRepo,
+    auditLogRepo,
   );
 
   return { reservationService, reservationRepo, resourceRepo, customerRepo, numberSequenceRepo };
@@ -828,7 +836,11 @@ export function createCustomerRouter(
           }
         }
 
-        const cancelled = await reservationService.cancelReservation(reservationId, businessId);
+        // D-10 -- changedBy = el cliente autenticado dueño de la reserva
+        // (ya verificado por requireOwnReservation() arriba); audit_log.changed_by
+        // no tiene FK (identity_id libre, ver schema.sql BLOQUE 10) así que
+        // un id de cliente es tan válido acá como un identity_id de staff.
+        const cancelled = await reservationService.cancelReservation(reservationId, businessId, customerId);
         res.json(toReservationDto(cancelled));
       } catch (err) {
         next(err);

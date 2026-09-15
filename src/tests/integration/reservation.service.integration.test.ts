@@ -15,16 +15,22 @@
  * - Concurrencia: 2 requests simultáneos → exactamente 1 éxito, 1 fallo
  *
  * ### confirmReservation
- * - Confirma PENDING → status CONFIRMED + evento domain_events
+ * - Confirma PENDING → status CONFIRMED + evento domain_events + fila en
+ *   audit_log (D-10, 15/09/2026, A6.5)
  * - businessId vacío → Error explícito (guard del servicio)
+ * - changedBy vacío → Error explícito (D-10, mismo guard fail-loud)
  * - Reserva inexistente → ReservationNotFoundError
  *
  * ### cancelReservation
- * - Cancela PENDING → CANCELLED + evento domain_events
+ * - Cancela PENDING → CANCELLED + evento domain_events + fila en audit_log
  * - Cancela CONFIRMED → CANCELLED + evento domain_events
+ * - Portal de cliente: changedBy = customerId (no identity_id de staff) — la
+ *   fila de audit_log lo registra igual, sin FK (schema.sql BLOQUE 10)
+ * - RESERVA-10 (factura ISSUED bloquea) → rollback deshace TODO, sin fila de
+ *   audit_log a medias (atomic-state-mutation)
  *
  * ### completeReservation
- * - Completa CONFIRMED → COMPLETED + evento domain_events
+ * - Completa CONFIRMED → COMPLETED + evento domain_events + fila en audit_log
  * - Intento sobre PENDING → InvalidReservationError
  *
  * ### updateReservation
@@ -63,6 +69,7 @@ import { SqlFinancialTransactionRepository }  from '../../clientes-finanzas/sql.
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlNumberSequenceRepository }        from '../../repositories/sql.number-sequence.repository.js';
 import { SqlCancellationPolicyRepository }    from '../../reservas/sql.cancellation-policy.repository.js';
+import { SqlAuditLogRepository }              from '../../repositories/audit-log.repository.js';
 import { PostgresTransactionManager }         from '../../db/postgres-transaction-manager.js';
 import { ReservationService }                 from '../../reservas/reservation.service.js';
 import { Customer }                           from '../../clientes-finanzas/customer.entities.js';
@@ -86,6 +93,8 @@ let dbName: string;
 // ---------------------------------------------------------------------------
 
 const BUSINESS_ID = 'biz-test-001';
+/** D-10 (15/09/2026) — changedBy de prueba para confirm/cancel/completeReservation(). */
+const USER_ID = 'user-test-001';
 
 async function buildService() {
   const resourceRepo    = new SqlResourceRepository(db);
@@ -105,6 +114,7 @@ async function buildService() {
   const invoiceRepo = new SqlInvoiceRepository(db);
   const numberSequenceRepo = new SqlNumberSequenceRepository(db);
   const cancellationPolicyRepo = new SqlCancellationPolicyRepository(db);
+  const auditLogRepo = new SqlAuditLogRepository(db);
 
   return new ReservationService(
     reservationRepo,
@@ -124,6 +134,7 @@ async function buildService() {
     invoiceRepo,
     numberSequenceRepo,
     cancellationPolicyRepo,
+    auditLogRepo,
   );
 }
 
@@ -349,7 +360,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         endTime:   new Date('2030-07-01T12:00:00Z'),
       });
 
-      const confirmed = await service.confirmReservation(seeded.id, BUSINESS_ID);
+      const confirmed = await service.confirmReservation(seeded.id, BUSINESS_ID, USER_ID);
       expect(confirmed.status).toBe('CONFIRMED');
 
       // Verifica en BD
@@ -367,6 +378,18 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       );
       expect(event.rows).toHaveLength(1);
       expect(event.rows[0]!.business_id).toBe(BUSINESS_ID);
+
+      // D-10 (A6.5) -- la transición deja rastro en audit_log, misma
+      // transacción que el UPDATE de arriba (atomic-state-mutation).
+      const audit = await db.query<{ field: string; old_value: string; new_value: string; changed_by: string }>(
+        `SELECT field, old_value, new_value, changed_by FROM audit_log
+         WHERE entity = 'reservations' AND entity_id = $1`,
+        [seeded.id],
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]).toMatchObject({
+        field: 'status', old_value: 'PENDING', new_value: 'CONFIRMED', changed_by: USER_ID,
+      });
     });
 
     it('lanza Error si businessId es string vacío', async () => {
@@ -377,14 +400,28 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       });
 
       await expect(
-        service.confirmReservation(seeded.id, ''),
+        service.confirmReservation(seeded.id, '', USER_ID),
       ).rejects.toThrow('businessId es obligatorio');
+    });
+
+    // D-10 -- mismo guard fail-loud que businessId, para que confirmar sin
+    // identidad no sea silenciosamente "sin auditar" (A6.5).
+    it('lanza Error si changedBy es string vacío', async () => {
+      const { resource, customer, service } = await setupFixture();
+      const seeded = await seedReservation(db, resource.id, customer.id, {
+        startTime: new Date('2030-07-02T11:00:00Z'),
+        endTime:   new Date('2030-07-02T13:00:00Z'),
+      });
+
+      await expect(
+        service.confirmReservation(seeded.id, BUSINESS_ID, ''),
+      ).rejects.toThrow('changedBy es obligatorio');
     });
 
     it('lanza ReservationNotFoundError si la reserva no existe', async () => {
       const { service } = await setupFixture();
       await expect(
-        service.confirmReservation('id-inexistente', BUSINESS_ID),
+        service.confirmReservation('id-inexistente', BUSINESS_ID, USER_ID),
       ).rejects.toThrow(ReservationNotFoundError);
     });
   });
@@ -400,7 +437,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         status:    'PENDING',
       });
 
-      const cancelled = await service.cancelReservation(seeded.id, BUSINESS_ID);
+      const cancelled = await service.cancelReservation(seeded.id, BUSINESS_ID, USER_ID);
       expect(cancelled.status).toBe('CANCELLED');
 
       const event = await db.query(
@@ -409,6 +446,18 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         [seeded.id],
       );
       expect(event.rows).toHaveLength(1);
+
+      // D-10 (A6.5) -- portal de cliente y catálogo/staff comparten el mismo
+      // changedBy libre (sin FK, ver schema.sql BLOQUE 10) -- acá se prueba
+      // con un identity_id de staff; el test de portal más abajo prueba con
+      // un customerId, mismo mecanismo.
+      const audit = await db.query<{ old_value: string; new_value: string; changed_by: string }>(
+        `SELECT old_value, new_value, changed_by FROM audit_log
+         WHERE entity = 'reservations' AND entity_id = $1 AND field = 'status'`,
+        [seeded.id],
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]).toMatchObject({ old_value: 'PENDING', new_value: 'CANCELLED', changed_by: USER_ID });
     });
 
     it('cancela una reserva CONFIRMED → status CANCELLED', async () => {
@@ -419,8 +468,31 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         status:    'CONFIRMED',
       });
 
-      const cancelled = await service.cancelReservation(seeded.id, BUSINESS_ID);
+      const cancelled = await service.cancelReservation(seeded.id, BUSINESS_ID, USER_ID);
       expect(cancelled.status).toBe('CANCELLED');
+    });
+
+    // D-10 -- portal de cliente: `changedBy` es el customerId (verificado por
+    // `requireOwnReservation()` en customer.routes.ts), no un identity_id de
+    // staff -- audit_log.changed_by no tiene FK (schema.sql BLOQUE 10), así
+    // que un id de cualquiera de los dos "mundos" es igual de válido.
+    it('portal de cliente: cancela con changedBy = customerId', async () => {
+      const { resource, customer, service } = await setupFixture();
+      const seeded = await seedReservation(db, resource.id, customer.id, {
+        startTime: new Date('2030-08-02T14:00:00Z'),
+        endTime:   new Date('2030-08-02T16:00:00Z'),
+        status:    'PENDING',
+      });
+
+      await service.cancelReservation(seeded.id, BUSINESS_ID, customer.id);
+
+      const audit = await db.query<{ changed_by: string }>(
+        `SELECT changed_by FROM audit_log
+         WHERE entity = 'reservations' AND entity_id = $1 AND field = 'status'`,
+        [seeded.id],
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]!.changed_by).toBe(customer.id);
     });
 
     // RESERVA-10 (05/09/2026) -- puerta fail-closed contra factura viva.
@@ -451,7 +523,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         [invoiceId, BUSINESS_ID, chargeId, customer.id, `idem-${invoiceId}`],
       );
 
-      await expect(service.cancelReservation(seeded.id, BUSINESS_ID))
+      await expect(service.cancelReservation(seeded.id, BUSINESS_ID, USER_ID))
         .rejects.toThrow(ReservationChargeInvoicedError);
 
       // El rollback deshizo TODA la transacción -- la reserva sigue como
@@ -460,6 +532,17 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         `SELECT status FROM reservations WHERE id = $1`, [seeded.id],
       );
       expect(row.rows[0]!.status).toBe('CONFIRMED');
+
+      // D-10/atomic-state-mutation -- el guard de factura viva tira ANTES
+      // de `saveWithClient()`/`auditReservationTransition()` (ver
+      // cancelReservation()), así que ni el UPDATE ni el INSERT de
+      // auditoría llegan a ejecutarse -- no queda un rastro de una
+      // transición que en los hechos nunca se persistió.
+      const audit = await db.query(
+        `SELECT 1 FROM audit_log WHERE entity = 'reservations' AND entity_id = $1`,
+        [seeded.id],
+      );
+      expect(audit.rows).toHaveLength(0);
     });
   });
 
@@ -474,7 +557,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         status:    'CONFIRMED',
       });
 
-      const completed = await service.completeReservation(seeded.id, BUSINESS_ID);
+      const completed = await service.completeReservation(seeded.id, BUSINESS_ID, USER_ID);
       expect(completed.status).toBe('COMPLETED');
 
       const event = await db.query(
@@ -483,6 +566,14 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
         [seeded.id],
       );
       expect(event.rows).toHaveLength(1);
+
+      const audit = await db.query<{ old_value: string; new_value: string; changed_by: string }>(
+        `SELECT old_value, new_value, changed_by FROM audit_log
+         WHERE entity = 'reservations' AND entity_id = $1 AND field = 'status'`,
+        [seeded.id],
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect(audit.rows[0]).toMatchObject({ old_value: 'CONFIRMED', new_value: 'COMPLETED', changed_by: USER_ID });
     });
 
     it('lanza InvalidReservationError si la reserva está en PENDING', async () => {
@@ -494,7 +585,7 @@ describe.skipIf(skipIfNoDb)('ReservationService — integración', () => {
       });
 
       await expect(
-        service.completeReservation(seeded.id, BUSINESS_ID),
+        service.completeReservation(seeded.id, BUSINESS_ID, USER_ID),
       ).rejects.toThrow(InvalidReservationError);
     });
   });
