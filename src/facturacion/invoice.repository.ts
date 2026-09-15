@@ -415,6 +415,26 @@ export interface InvoiceRepository {
    * el par `CHARGE`/`ADJUSTMENT` `SETTLED` es LO CORRECTO, lo único mal
    * clasificado es la severidad.
    *
+   * **Bloque 1d (`ORDER-CONSOLIDATED-PARTIAL-01`, 14/09/2026, gate
+   * `architecture-governor`) — espejo exacto de lo que 3.3-d residual 1 ya
+   * hizo del lado RESERVAS (`classifyReservationLiveInvoice()`, ver su
+   * docblock más abajo para la doctrina compartida completa).** Las dos
+   * condiciones de arriba (fiscal y ledger) ya NO preguntan siempre por la
+   * factura ENTERA: cuando `resolveOrderPairAttribution()` resuelve el par
+   * `(invoiceId, orderId)` (factura con `invoice_items` congelados y la
+   * orden participando en alguno), ambas mitades se acotan a la PORCIÓN de
+   * esta orden — `getIssuedCreditNoteCompensationTotalForOrder()` para (1),
+   * `financial_transactions.order_id = $2` sumado al filtro de (2) — para
+   * que una orden totalmente reconciliada dentro de una consolidada
+   * multi-orden (1c-ii-b, la NC granular por orden) no siga leyendo `grave`
+   * solo porque OTRA orden de la misma consolidada no tiene su NC todavía.
+   * Cuando el par no resuelve (`BLOCKED` — factura Nivel A sin
+   * `invoice_items`, la mayoría de las facturas reales de al menos una
+   * tenant, o cualquier anomalía que `resolveRefundableForPair()` ya
+   * detecta), fail-back a F4-por-factura-entera + ledger sin scope, BYTE A
+   * BYTE el comportamiento de antes de este bloque — las dos mitades
+   * siguen SIEMPRE la misma rama, nunca una mezcla de las dos.
+   *
    * Recibe `client` (mismo criterio que `getIssuedCreditNoteCompensationTotal`):
    * `handleOrderCancelled` no abre transacción, le pasa el `SqlClient` crudo
    * del tenant. **Lectura sin lock** — una emisión de NC concurrente podría
@@ -448,9 +468,10 @@ export interface InvoiceRepository {
    *    facturas reales de al menos una tenant, `refund-attribution.ts:46-48`)
    *    hacen fail-back a F4-por-factura-entera, comportamiento idéntico al
    *    de antes de este bloque. El residual simétrico del lado ÓRDENES
-   *    (`classifyOrderLiveInvoice` sigue con F4 por factura entera siempre,
-   *    sin fail-back porque nunca lo necesita hoy) queda registrado aparte:
-   *    `ORDER-CONSOLIDATED-PARTIAL-01`, `docs/pendientes-2026-09-10.md`.
+   *    (`classifyOrderLiveInvoice` seguía con F4 por factura entera siempre)
+   *    **RESUELTO 14/09/2026, bloque 1d de `ORDER-CONSOLIDATED-PARTIAL-01`**
+   *    -- ver el docblock de `classifyOrderLiveInvoice` más arriba, mismo
+   *    patrón exacto (par → fail-back Nivel A).
    * 2. **RESUELTO junto con el punto 1.** La condición de ledger
    *    (`reversed_invoice_id = $1`) era de alcance FACTURA -- en una
    *    consolidada, contaba también las filas revertidoras de OTRAS

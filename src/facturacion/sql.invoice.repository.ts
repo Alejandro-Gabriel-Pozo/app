@@ -521,22 +521,25 @@ export class SqlInvoiceRepository implements InvoiceRepository {
    * reserva -- vía el JOIN intermedio `order_items` (`invoice_items` no
    * tiene `order_id` directo, solo `order_item_id`).
    *
-   * **Sigue PARKEADO, sin consumidor de producción (corrección 11/09/2026,
-   * gate `architecture-governor`, bloque 1c-ii-b).** La expectativa
-   * original ("`buildCreditNote()` lo va a llamar cuando cablee la rama de
-   * orden") no se cumplió -- distinto método, distinta pregunta: este
-   * numerador responde "¿cuánto ya se compensó con NC ISSUED?" para el
-   * clasificador de reconciliación (mismo rol que
+   * **Consumidor de producción desde bloque 1d (14/09/2026, gate
+   * `architecture-governor`).** Corrección de la nota anterior (11/09/2026,
+   * bloque 1c-ii-b): la expectativa original ("`buildCreditNote()` lo va a
+   * llamar cuando cablee la rama de orden") no se cumplió -- distinto
+   * método, distinta pregunta, y seguía sin caller. Este numerador responde
+   * "¿cuánto ya se compensó con NC ISSUED?" para el clasificador de
+   * reconciliación (mismo rol que
    * `getIssuedCreditNoteCompensationTotalForReservation()`, consumido por
    * `classifyReservationLiveInvoice()`); `buildCreditNote()` resuelve una
    * pregunta distinta ("¿cuánto es atribuible?") vía
    * `resolveRefundableForPair()` directo, sin pasar por ningún numerador de
-   * NC ya emitidas. `classifyOrderLiveInvoice()` (lado órdenes del mismo
-   * clasificador) sigue usando el numerador genérico por-factura-entera,
-   * no este -- por eso este método queda sin caller, igual que
-   * `resolveOrderPairAttribution()` de arriba, mismo criterio de "no se
-   * borra, el cálculo es correcto y puede hacer falta si el residual 1 de
-   * 3.3-d (lado órdenes) se encara".
+   * NC ya emitidas -- eso no cambió. Lo que sí cambió en 1d:
+   * `classifyOrderLiveInvoice()` (lado órdenes del mismo clasificador) deja
+   * de usar el numerador genérico por-factura-entera como único camino y
+   * pasa a llamar a este método por PAR `(invoiceId, orderId)` cuando
+   * `resolveOrderPairAttribution()` (de arriba) resuelve, con fail-back a
+   * F4-por-factura-entera cuando no -- mismo patrón exacto que
+   * `classifyReservationLiveInvoice()` ya aplicó del lado reservas
+   * (3.3-d residual 1).
    *
    * El mismo argumento de "por qué sumar el `imp_total` COMPLETO alcanza,
    * sin prorratear por línea" del método de reservas aplica acá igual: es
@@ -593,9 +596,11 @@ export class SqlInvoiceRepository implements InvoiceRepository {
    * ORDEN con `attributionKey: null`. Un `JOIN` interno los descartaría del
    * denominador por completo, inflando la atribución del resto.
    *
-   * **PARKEADO -- sin consumidor de producción, decisión explícita (no un
+   * **Sin consumidor en `buildCreditNote()`, decisión explícita (no un
    * olvido) (11/09/2026, gate `architecture-governor`, condición C1 de
-   * 1c-ii-b).** La expectativa original de este docblock ("`buildCreditNote()`
+   * 1c-ii-b) -- pero YA NO "sin consumidor de producción": bloque 1d
+   * (14/09/2026) lo cablea desde `classifyOrderLiveInvoice()`, ver más
+   * abajo.** La expectativa original de este docblock ("`buildCreditNote()`
    * es quien lo va a llamar") no se cumplió: 1c-ii-b cableó la rama de
    * órdenes de `buildCreditNote()` espejando la estructura de la rama de
    * reservas -- lectura inline vía `getOrderIdsByInvoiceItemId()` (`this.db`,
@@ -606,14 +611,18 @@ export class SqlInvoiceRepository implements InvoiceRepository {
    * mover el cómputo de atribución DENTRO de `transactionManager.run()`
    * solo para el caso orden, una asimetría de concurrencia respecto de
    * reservas y un adelanto parcial no pedido de la decisión de 1c-ii-c
-   * ("pre-validar en tx1"). Este método NO se borra: el cálculo es
-   * correcto (cobertura de integración real,
-   * `classify-order-live-invoice-pair.integration.test.ts`) y sirve de
-   * verificación de equivalencia cruzada contra el camino real de
-   * `buildCreditNote()` (ver ese mismo archivo de test, describe
-   * "1c-ii-b -- equivalencia") -- y queda disponible si algún consumidor
-   * futuro sí necesita resolver la atribución DENTRO de una transacción ya
-   * abierta.
+   * ("pre-validar en tx1"). Esa parte sigue vigente sin cambios -- 1d NO
+   * toca `buildCreditNote()`. Lo que sí cambió: `classifyOrderLiveInvoice()`
+   * (`handleOrderCancelled`, siempre con un `client` ya abierto -- nunca
+   * dentro de `transactionManager.run()`, mismo shape que
+   * `classifyReservationLiveInvoice()`) SÍ llama a este método ahora, así
+   * que la asimetría de concurrencia que motivó no usarlo en
+   * `buildCreditNote()` no aplica acá: no hay una segunda transacción de la
+   * que preocuparse. Cobertura de integración real,
+   * `classify-order-live-invoice-pair.integration.test.ts` (equivalencia
+   * contra el camino real de `buildCreditNote()`) y
+   * `classify-order-live-invoice-pair-classifier.integration.test.ts`
+   * (bloque 1d, el clasificador mismo).
    */
   async resolveOrderPairAttribution(
     client: SqlClient,
@@ -790,6 +799,35 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     // af2b2b5). Este método consulta `financial_transactions` (tabla de
     // clientes-finanzas) -- ya es práctica establecida en este archivo
     // (getIssuedCreditNoteCompensationTotal, :148/:153/:178/:183/:190).
+    //
+    // `ORDER-CONSOLIDATED-PARTIAL-01` bloque 1d (14/09/2026, gate
+    // `architecture-governor`) -- espejo exacto de la generalización que
+    // 3.3-d residual 1 ya aplicó del lado RESERVAS
+    // (`classifyReservationLiveInvoice()`, más abajo): antes de este bloque,
+    // F4 y el ledger preguntaban por la factura ENTERA, incluso cuando
+    // 1c-ii-b ya permite que el escape de UNA orden emita una NC PARCIAL
+    // sobre una consolidada multi-orden -- una orden totalmente reconciliada
+    // podía seguir clasificando `NOT_RECONCILED` (`grave`) porque OTRA orden
+    // de la misma consolidada todavía no tenía su NC. Ahora resuelve la
+    // atribución por PAR `(invoiceId, orderId)` vía `resolveOrderPairAttribution()`
+    // (bloque 1b, construido el 11/09/2026 pero sin consumidor de producción
+    // hasta este bloque -- 1d es exactamente ese consumidor) y compara BRUTO
+    // contra BRUTO con `getIssuedCreditNoteCompensationTotalForOrder()`
+    // (también 1b). Cuando el par no se puede resolver (`BLOCKED` --
+    // facturas Nivel A sin `invoice_items`, o cualquier anomalía que
+    // `resolveRefundableForPair()` ya detecta), fail-back a F4-por-factura-
+    // entera + ledger sin scope, BYTE A BYTE el comportamiento de antes de
+    // este bloque -- misma disciplina que el precedente de reservas: las dos
+    // mitades (fiscal y ledger) siguen SIEMPRE la misma rama, nunca una
+    // mezcla de las dos.
+    //
+    // `isReservationPortionFullyCompensatedByIssuedCreditNotes()` se reusa
+    // tal cual pese al nombre -- la fórmula (`round2(attributedTotal -
+    // issuedCreditNoteTotal) <= CREDIT_NOTE_COMPENSATION_TOLERANCE`) no
+    // tiene nada específico de reserva, es la misma comparación bruto-contra-
+    // bruto que necesita el par (factura, orden). Renombrarla es un bloque
+    // de higiene aparte (fuera de alcance -- mismo criterio que el rename de
+    // `reservationId` diferido en 1c-ii-b), no una decisión de negocio.
 
     // Factura B (`cbte_tipo = 6`) ISSUED ligada a algún CHARGE de la orden,
     // por el camino individual (`invoices.financial_transaction_id`) o el
@@ -816,27 +854,55 @@ export class SqlInvoiceRepository implements InvoiceRepository {
     if (facturas.length === 0) return 'NOT_RECONCILED';
 
     for (const f of facturas) {
-      // (1) FISCAL -- F4, reusado verbatim (isInvoiceFullyCompensatedByIssuedCreditNotes
-      //     + getIssuedCreditNoteCompensationTotal, sin SQL de compensación nuevo).
-      const compensado = await this.getIssuedCreditNoteCompensationTotal(client, f.id);
-      if (!isInvoiceFullyCompensatedByIssuedCreditNotes(parseFloat(f.imp_total), compensado)) {
-        return 'NOT_RECONCILED';
+      const pair = await this.resolveOrderPairAttribution(client, f.id, orderId);
+
+      if (pair.kind === 'RESOLVED') {
+        // (1) FISCAL -- por PAR: la porción de ESTA orden vs. las NC ISSUED
+        //     que la cubren específicamente (invoice_items.order_item_id →
+        //     order_items.order_id).
+        const compensadoPorOrden = await this.getIssuedCreditNoteCompensationTotalForOrder(client, f.id, orderId);
+        if (!isReservationPortionFullyCompensatedByIssuedCreditNotes(pair.attributedTotal, compensadoPorOrden)) {
+          return 'NOT_RECONCILED';
+        }
+        // (2) LEDGER -- scoped a esta orden, misma rama que (1).
+        const { rows: rev } = await client.query<{ total: string; settled: string }>(
+          `SELECT COUNT(*)                                  AS total,
+                  COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
+             FROM financial_transactions
+            WHERE reversed_invoice_id = $1
+              AND order_id = $2
+              AND type IN ('REFUND', 'ADJUSTMENT')`,
+          [f.id, orderId],
+        );
+        const total = Number(rev[0]!.total);
+        const settled = Number(rev[0]!.settled);
+        if (total === 0 || total !== settled) return 'NOT_RECONCILED';
+      } else {
+        // Fail-back declarado (mismo criterio que classifyReservationLiveInvoice)
+        // -- Nivel A / anomalía: F4 por factura entera, tal cual el
+        // comportamiento de antes de este bloque.
+        // (1) FISCAL -- F4, reusado verbatim (isInvoiceFullyCompensatedByIssuedCreditNotes
+        //     + getIssuedCreditNoteCompensationTotal, sin SQL de compensación nuevo).
+        const compensado = await this.getIssuedCreditNoteCompensationTotal(client, f.id);
+        if (!isInvoiceFullyCompensatedByIssuedCreditNotes(parseFloat(f.imp_total), compensado)) {
+          return 'NOT_RECONCILED';
+        }
+        // (2) LEDGER -- conjunción que sólo estrecha: >= 1 fila revertidora y
+        //     TODAS `SETTLED`. Un `ADJUSTMENT` `PENDING` (tx2 sin commitear) no
+        //     netea el saldo del cliente. `total === 0` cubre además la verdad
+        //     vacua del caso `imp_total = 0` (F4 daría `true` con cero NC).
+        const { rows: rev } = await client.query<{ total: string; settled: string }>(
+          `SELECT COUNT(*)                                  AS total,
+                  COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
+             FROM financial_transactions
+            WHERE reversed_invoice_id = $1
+              AND type IN ('REFUND', 'ADJUSTMENT')`,
+          [f.id],
+        );
+        const total = Number(rev[0]!.total);
+        const settled = Number(rev[0]!.settled);
+        if (total === 0 || total !== settled) return 'NOT_RECONCILED';
       }
-      // (2) LEDGER -- conjunción que sólo estrecha: >= 1 fila revertidora y
-      //     TODAS `SETTLED`. Un `ADJUSTMENT` `PENDING` (tx2 sin commitear) no
-      //     netea el saldo del cliente. `total === 0` cubre además la verdad
-      //     vacua del caso `imp_total = 0` (F4 daría `true` con cero NC).
-      const { rows: rev } = await client.query<{ total: string; settled: string }>(
-        `SELECT COUNT(*)                                  AS total,
-                COUNT(*) FILTER (WHERE status = 'SETTLED') AS settled
-           FROM financial_transactions
-          WHERE reversed_invoice_id = $1
-            AND type IN ('REFUND', 'ADJUSTMENT')`,
-        [f.id],
-      );
-      const total = Number(rev[0]!.total);
-      const settled = Number(rev[0]!.settled);
-      if (total === 0 || total !== settled) return 'NOT_RECONCILED';
     }
     return 'RECONCILED';
   }
