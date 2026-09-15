@@ -176,6 +176,46 @@ describe('reservations.routes', () => {
 
       expect(res.statusCode).toBe(400);
     });
+
+    // D-02 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md) --
+    // filtros parciales rechazados en el borde HTTP. Cobertura de schema
+    // exhaustiva en request.schemas.test.ts; acá solo se confirma que la
+    // ruta real (no solo el schema aislado) devuelve 400.
+    it('400 -- `from` sin `to`', async () => {
+      const handler = getHandler(router, 'get', '/');
+      const req = { db: fakeDb(state), query: { from: '2026-01-01T00:00:00.000Z' } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('400 -- `limit` sin `page`', async () => {
+      const handler = getHandler(router, 'get', '/');
+      const req = { db: fakeDb(state), query: { limit: '10' } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('200 -- `from` y `to` juntos, y `page`/`limit` juntos, siguen aceptándose', async () => {
+      seedResource(state);
+      seedReservation(state);
+      const handler = getHandler(router, 'get', '/');
+      const req = {
+        db: fakeDb(state),
+        query: { from: '2020-01-01T00:00:00.000Z', to: '2030-01-01T00:00:00.000Z', page: '1', limit: '10' },
+      } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.statusCode).toBeUndefined(); // fakeRes no setea statusCode en el camino feliz -- ver 200 implícito
+      expect(res.json).toHaveBeenCalledOnce();
+    });
   });
 
   describe('POST /reservations/search', () => {

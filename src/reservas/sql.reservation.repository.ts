@@ -57,6 +57,13 @@ interface ReservationRow {
  * concurrentes al mismo slot de recurso.
  */
 export class SqlReservationRepository implements ReservationRepository {
+  /**
+   * D-14 (parcial) — ver el comentario en getFiltered(). Tope PROVISORIO
+   * para `GET /api/reservations` sin page/limit, pendiente del contrato
+   * canónico de paginación (grounding en curso).
+   */
+  static readonly DEFAULT_UNPAGINATED_LIMIT = 100;
+
   constructor(
     private readonly sqlClient: SqlClient,
     private readonly resourceRepository: ResourceRepository,
@@ -444,6 +451,22 @@ export class SqlReservationRepository implements ReservationRepository {
       sql += ` LIMIT $${params.length}`;
       params.push((filters.page - 1) * filters.limit);
       sql += ` OFFSET $${params.length}`;
+    } else {
+      // D-14 (parcial, 15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md)
+      // — sin page/limit esta query no tenía NINGUNA cota: un
+      // GET /api/reservations sin parámetros devolvía la tabla entera. El
+      // contrato canónico de paginación (page/limit vs limit/offset, tope
+      // global/por plan/por tenant) sigue en grounding (D-14 completo, no
+      // resuelto todavía) — este valor es PROVISORIO, solo cierra la
+      // lectura sin cota. Mismo criterio de magnitud que los otros
+      // defaults hardcodeados del repo (sql.product.repository.ts usa
+      // 100, sql.order.repository.ts / sql.cash-register-shift.repository.ts
+      // usan 50); se eligió 100 porque, a diferencia de esos casos, acá el
+      // caller no pidió paginar en absoluto (probablemente un caller
+      // legacy o interno esperando "todo") y un tope más alto reduce el
+      // riesgo de romper ese uso sin dejar de acotar la lectura.
+      params.push(SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT);
+      sql += ` LIMIT $${params.length}`;
     }
 
     const result = await this.sqlClient.query<ReservationRow>(sql, params);

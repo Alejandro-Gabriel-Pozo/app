@@ -156,16 +156,16 @@ describe('SqlReservationRepository', () => {
   // K2 (23/08/2026) — filtro isLodging/search nuevo en getFiltered/countFiltered,
   // para separar Reservas/Turnos y buscar por nombre/email server-side.
   describe('getFiltered / countFiltered — isLodging y search', () => {
-    it('sin filtros no agrega el EXISTS de isLodging ni el ILIKE de search', async () => {
+    it('sin filtros no agrega el EXISTS de isLodging ni el ILIKE de search (D-14: sí agrega el LIMIT default)', async () => {
       await repo.getFiltered({});
 
       const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
       expect(call[0]).not.toContain('EXISTS');
       expect(call[0]).not.toContain('ILIKE');
-      expect(call[1]).toEqual([]);
+      expect(call[1]).toEqual([SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
     });
 
-    it('isLodging agrega un EXISTS contra resources/resource_categories, no un JOIN en el FROM principal', async () => {
+    it('isLodging agrega un EXISTS contra resources/resource_categories, no un JOIN en el FROM principal (D-14: sí agrega el LIMIT default)', async () => {
       await repo.getFiltered({ isLodging: true });
 
       const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
@@ -173,7 +173,7 @@ describe('SqlReservationRepository', () => {
       expect(call[0]).toContain('EXISTS (');
       expect(call[0]).toContain('JOIN resource_categories rc ON rc.id = res.category_id');
       expect(call[0]).toContain('rc.is_lodging = $1');
-      expect(call[1]).toEqual([true]);
+      expect(call[1]).toEqual([true, SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
     });
 
     it('isLodging: false también viaja como parámetro real, no se cae por falsy', async () => {
@@ -184,31 +184,31 @@ describe('SqlReservationRepository', () => {
       expect(call[1]).toEqual([false]);
     });
 
-    it('search busca por customer_name O customer_email con el mismo parámetro', async () => {
+    it('search busca por customer_name O customer_email con el mismo parámetro (D-14: sí agrega el LIMIT default)', async () => {
       await repo.getFiltered({ search: 'Ana' });
 
       const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
       expect(call[0]).toContain('r.customer_name ILIKE $1');
       expect(call[0]).toContain('r.customer_email ILIKE $1');
-      expect(call[1]).toEqual(['%Ana%']);
+      expect(call[1]).toEqual(['%Ana%', SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
     });
 
-    it('search vacío o solo espacios no agrega ningún filtro', async () => {
+    it('search vacío o solo espacios no agrega ningún filtro (D-14: sí agrega el LIMIT default)', async () => {
       await repo.getFiltered({ search: '   ' });
 
       const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
       expect(call[0]).not.toContain('ILIKE');
-      expect(call[1]).toEqual([]);
+      expect(call[1]).toEqual([SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
     });
 
-    it('isLodging + search combinados usan índices de parámetro correlativos', async () => {
+    it('isLodging + search combinados usan índices de parámetro correlativos (D-14: sí agrega el LIMIT default)', async () => {
       await repo.getFiltered({ isLodging: true, search: 'Ana' });
 
       const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
       expect(call[0]).toContain('rc.is_lodging = $1');
       expect(call[0]).toContain('r.customer_name ILIKE $2');
       expect(call[0]).toContain('r.customer_email ILIKE $2');
-      expect(call[1]).toEqual([true, '%Ana%']);
+      expect(call[1]).toEqual([true, '%Ana%', SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
     });
 
     it('countFiltered arma el mismo WHERE que getFiltered, sin LIMIT/OFFSET', async () => {
@@ -219,6 +219,41 @@ describe('SqlReservationRepository', () => {
       expect(call[0]).not.toContain('LIMIT');
       expect(call[0]).not.toContain('OFFSET');
       expect(call[1]).toEqual([true, '%Ana%']);
+    });
+  });
+
+  // D-14 parcial (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md)
+  // -- getFiltered() sin page/limit ya no arma la query sin ningún LIMIT
+  // (ver el bug original: devolvía la tabla entera). El caso "seedeá > tope
+  // filas y confirmá que devuelve como máximo el tope" necesita Postgres
+  // real (fila por fila) -- ver
+  // src/tests/integration/reservations-unpaginated-limit.integration.test.ts.
+  // Estos tests solo verifican la forma de la query/params contra el mock,
+  // sin necesitar Postgres.
+  describe('getFiltered — tope duro sin page/limit (D-14 parcial)', () => {
+    it('page y limit juntos: arma LIMIT/OFFSET normal, sin el tope default', async () => {
+      await repo.getFiltered({ page: 2, limit: 20 });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain('LIMIT $1');
+      expect(call[0]).toContain('OFFSET $2');
+      expect(call[1]).toEqual([20, 20]); // limit=20, offset=(2-1)*20
+    });
+
+    it('sin page ni limit: agrega LIMIT con el tope default (DEFAULT_UNPAGINATED_LIMIT), sin OFFSET', async () => {
+      await repo.getFiltered({});
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[0]).toContain(`LIMIT $1`);
+      expect(call[0]).not.toContain('OFFSET');
+      expect(call[1]).toEqual([SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
+    });
+
+    it('solo limit sin page (no debería llegar así desde HTTP tras D-02, pero el repo igual acota): aplica el tope default, no el limit parcial', async () => {
+      await repo.getFiltered({ limit: 5 });
+
+      const call = (mockSqlClient.query as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(call[1]).toEqual([SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT]);
     });
   });
 });

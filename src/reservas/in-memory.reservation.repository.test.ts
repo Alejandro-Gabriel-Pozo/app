@@ -81,3 +81,36 @@ describe('InMemoryReservationRepository — getFiltered/countFiltered (K2, isLod
     expect(await repo.countFiltered({})).toBe(2);
   });
 });
+
+// D-14 parcial (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md) —
+// getFiltered({}) sin page/limit ya no devuelve "todo" (results.length):
+// cae al mismo tope PROVISORIO que SqlReservationRepository
+// (DEFAULT_UNPAGINATED_LIMIT), para no reabrir la divergencia que D-02
+// acaba de cerrar.
+describe('InMemoryReservationRepository — getFiltered() sin page/limit tiene tope duro (D-14 parcial)', () => {
+  it('siembra más filas que el tope y confirma que getFiltered({}) devuelve como máximo el tope', async () => {
+    const repo = new InMemoryReservationRepository();
+    const resource = new BookableResource('room-1', 'Habitación 1', 100, 'cat-lodging', null);
+    const limit = InMemoryReservationRepository.DEFAULT_UNPAGINATED_LIMIT;
+    const seeded = limit + 1;
+
+    for (let i = 0; i < seeded; i++) {
+      await repo.save(Reservation.restore({
+        id: `res-${i}`,
+        customer: { id: 'c1', fullName: 'Ana García' },
+        resource,
+        startTime: new Date(`2026-08-01T10:00:00`),
+        endTime:   new Date(`2026-08-01T11:00:00`),
+        details: {}, totalPrice: 100,
+        initialStatus: ReservationStatus.CONFIRMED,
+        reservationNumber: i + 1,
+        appliedCustomerRateId: null,
+      }));
+    }
+
+    expect(await repo.countFiltered({})).toBe(seeded); // sembrado real, sin tope
+    const results = await repo.getFiltered({});
+    expect(results.length).toBe(limit);
+    expect(results.length).toBeLessThan(seeded);
+  });
+});

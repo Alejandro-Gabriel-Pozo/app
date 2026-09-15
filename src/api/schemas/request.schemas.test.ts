@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RecordPaymentSchema, CompleteOrderSchema, CreateCustomerRateSchema, CreateRateCatalogEntrySchema, CreateOrderItemSchema } from './request.schemas.js';
+import { RecordPaymentSchema, CompleteOrderSchema, CreateCustomerRateSchema, CreateRateCatalogEntrySchema, CreateOrderItemSchema, GetReservationsQuerySchema } from './request.schemas.js';
 
 describe('RecordPaymentSchema — cardInstallments/cardSurchargeAmount (Gap Tango #3)', () => {
   it('acepta CARD con cuotas y recargo dentro del monto', () => {
@@ -208,6 +208,57 @@ describe('CreateOrderItemSchema — unitPrice server-side para PRODUCT/PRODUCT_V
 
   it('acepta RESERVATION con unitPrice', () => {
     const result = CreateOrderItemSchema.safeParse({ itemType: 'RESERVATION', reservationId: 'res-1', quantity: 1, unitPrice: 500 });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('GetReservationsQuerySchema — filtros parciales (D-02, docs/decisiones-auditoria-fase2-2026-09-15.md)', () => {
+  it('rechaza from sin to', () => {
+    const result = GetReservationsQuerySchema.safeParse({ from: '2026-01-01T00:00:00.000Z' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza to sin from', () => {
+    const result = GetReservationsQuerySchema.safeParse({ to: '2026-01-31T00:00:00.000Z' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza limit sin page', () => {
+    const result = GetReservationsQuerySchema.safeParse({ limit: '20' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza page sin limit', () => {
+    const result = GetReservationsQuerySchema.safeParse({ page: '1' });
+    expect(result.success).toBe(false);
+  });
+
+  it('acepta from y to juntos', () => {
+    const result = GetReservationsQuerySchema.safeParse({
+      from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta page y limit juntos', () => {
+    const result = GetReservationsQuerySchema.safeParse({ page: '2', limit: '20' });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta los 4 juntos', () => {
+    const result = GetReservationsQuerySchema.safeParse({
+      from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z', page: '1', limit: '10',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta ninguno de los 4 (solo otros filtros)', () => {
+    const result = GetReservationsQuerySchema.safeParse({ status: 'CONFIRMED' });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta sin ningún parámetro', () => {
+    const result = GetReservationsQuerySchema.safeParse({});
     expect(result.success).toBe(true);
   });
 });

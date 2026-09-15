@@ -20,6 +20,15 @@ import type { ICategoryRepository } from './category.repository.js';
  * - `saveWithClient` usa `SqlClient` (abstracto) en lugar de `PoolClient` (concreto de pg).
  */
 export class InMemoryReservationRepository implements ReservationRepository {
+  /**
+   * D-14 (parcial, 15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md)
+   * — mismo tope PROVISORIO que `SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT`,
+   * para que las dos implementaciones sigan coincidiendo (evita reabrir la
+   * divergencia que D-02 acaba de cerrar). Ver el comentario en
+   * `SqlReservationRepository.getFiltered()` para el criterio de magnitud.
+   */
+  static readonly DEFAULT_UNPAGINATED_LIMIT = 100;
+
   private reservations: Map<string, Reservation> = new Map();
 
   /**
@@ -117,7 +126,22 @@ export class InMemoryReservationRepository implements ReservationRepository {
     return this.getActiveInRange((r) => r.serviceId === serviceId, startDate, endDate);
   }
 
-  async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
+  /**
+   * Aplica todos los filtros de `ReservationFilters` MENOS page/limit —
+   * extraído de getFiltered() (D-14 parcial, 15/09/2026) para que
+   * countFiltered() pueda seguir devolviendo el total REAL (sin cota):
+   * antes de este cambio countFiltered() delegaba en getFiltered(), y
+   * ahora que getFiltered() cae a un tope por default sin page/limit,
+   * esa delegación habría devuelto el total CAPADO en vez del real —
+   * mismo bug shape que D-02 (dos operaciones que deberían coincidir
+   * divergiendo en silencio), esta vez entre getFiltered/countFiltered
+   * del mismo repo en vez de entre repos. countFiltered() nunca recibe
+   * page/limit (`Omit<...>` en su firma) así que no hace falta que este
+   * helper los toque.
+   */
+  private async applyFilters(
+    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+  ): Promise<Reservation[]> {
     let results = Array.from(this.reservations.values());
 
     if (filters.status)     results = results.filter((r) => r.status === filters.status);
@@ -148,15 +172,26 @@ export class InMemoryReservationRepository implements ReservationRepository {
       );
     }
 
+    return results;
+  }
+
+  async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
+    const results = await this.applyFilters(filters);
+
+    // D-14 (parcial) — sin limit explícito, antes se devolvía
+    // `results.length` (todo, sin cota real). Ahora cae al mismo tope
+    // PROVISORIO que el repo SQL (ver arriba) en vez de "todo".
     const page  = filters.page  ?? 1;
-    const limit = filters.limit ?? results.length;
+    const limit = filters.limit ?? InMemoryReservationRepository.DEFAULT_UNPAGINATED_LIMIT;
     return results.slice((page - 1) * limit, page * limit);
   }
 
   async countFiltered(
     filters: Omit<ReservationFilters, 'page' | 'limit'>,
   ): Promise<number> {
-    return (await this.getFiltered(filters)).length;
+    // Cuenta sobre applyFilters() directo, NUNCA sobre getFiltered() — ver
+    // el docblock de applyFilters(): total real, sin el tope de getFiltered().
+    return (await this.applyFilters(filters)).length;
   }
 
   async delete(id: string): Promise<boolean> {

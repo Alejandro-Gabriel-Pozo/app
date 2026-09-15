@@ -123,6 +123,21 @@ export const SearchReservationsSchema = z.object({
  * query string (todo string) en vez de JSON body: `isLodging`/`page`/
  * `limit` necesitan coerción explícita en vez de los tipos nativos que
  * usa el schema de arriba.
+ *
+ * ## D-02 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md) —
+ * rechazo de filtros parciales
+ * `ReservationFilters` (reservation.repository.ts) sigue declarando
+ * `from`/`to`/`page`/`limit` cada uno `?` independiente a nivel de TIPO —
+ * eso no cambia acá. Lo que sí cambia es que este schema, que es el único
+ * punto por el que `GET /api/reservations` puede llegar a construir esos
+ * filtros, ahora garantiza en el borde HTTP que `from`/`to` y
+ * `page`/`limit` nunca lleguen parciales: antes de este cambio,
+ * `SqlReservationRepository.getFiltered()` ignoraba un `from` sin `to` (o
+ * un `limit` sin `page`) en silencio, mientras que
+ * `InMemoryReservationRepository.getFiltered()` sí aplicaba `from`/`to`
+ * de forma independiente — la misma request producía resultados
+ * distintos según el repositorio. Con el `superRefine` de abajo, ese
+ * request parcial nunca llega al repositorio: se rechaza acá con 400.
  */
 export const GetReservationsQuerySchema = z.object({
   status:     z.string().optional(),
@@ -133,6 +148,21 @@ export const GetReservationsQuerySchema = z.object({
   isLodging:  z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
   page:       z.coerce.number().int().positive().optional(),
   limit:      z.coerce.number().int().positive().optional(),
+}).superRefine((data, ctx) => {
+  if (Boolean(data.from) !== Boolean(data.to)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'from y to deben enviarse juntos',
+      path: ['from'],
+    });
+  }
+  if (Boolean(data.limit) !== Boolean(data.page)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'limit y page deben enviarse juntos',
+      path: ['limit'],
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
