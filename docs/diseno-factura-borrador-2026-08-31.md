@@ -3290,7 +3290,23 @@ tomada sin preguntarla).
 #### `appfrontend-main`
 
 Confirmado con grep exhaustivo sobre todo `src/`: **exactamente los 3
-sitios que §29.4 ya tenía listados, ninguno nuevo.**
+sitios que §29.4 ya tenía listados.**
+
+**Corrección (15/09/2026, gate `architecture-governor` de diseño técnico
+listo-para-implementar): esta afirmación era falsa — hay 2 sitios más,
+un grep independiente los encontró.** `src/lib/types.ts:44` — descartado:
+es el barrel de compatibilidad (`CLAUDE.md` de `appfrontend-main`: "solo
+re-exportan, nunca declaran implementación real"), re-exporta
+`OrderItemType` desde el sitio 22 de abajo sin enumerarlo, hereda la
+unión ampliada automáticamente, no es un consumidor nuevo. **Sitio real
+no catalogado hasta ahora: `src/app/dashboard/ordenes/page.tsx:182`**
+(formulario rápido de "nueva orden", distinto de `ordenes/[id]/page.tsx`
+que sí está listado abajo) — `itemType: 'PRODUCT'` como literal
+hardcodeado, sin branch ni enumeración de los 3 valores. Inerte frente a
+este cambio (un literal más angosto sigue compilando bajo una unión más
+ancha, cero riesgo de runtime) — mismo criterio ⚙️ que el resto de esta
+lista, pero la afirmación "ninguno nuevo" era incorrecta y quedaba
+citable como verificada sin estarlo.
 
 22. ⚙️ **`src/lib/ordenes/types.ts:6`** — `export type OrderItemType =
     'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION'`. Unión TS cerrada,
@@ -3374,9 +3390,18 @@ que una diferencia real de negocio justifique apartarse. Verificado contra
 - **`products`** tiene `business_id VARCHAR(255) NOT NULL` directo en la
   tabla. **`bookable_services` no tiene `business_id` en absoluto** — su
   único ancla de tenant es indirecta, vía `category_id NOT NULL REFERENCES
-  resource_categories(id)` (y `resource_categories` sí tiene `business_id`
-  — no verificado línea por línea en esta ronda, asumido por el patrón
-  general del resto de tablas de `BLOQUE 1`, a confirmar si se implementa).
+  resource_categories(id)`.
+
+  **Corrección (15/09/2026, gate `architecture-governor` de diseño técnico
+  listo-para-implementar): `resource_categories` TAMPOCO tiene
+  `business_id`** — verificado contra el `CREATE TABLE` real y todos sus
+  `ALTER TABLE ADD COLUMN` (grep completo), no asumido como decía este
+  párrafo hasta ahora. Ninguna de las dos tablas (`resource_categories`,
+  `bookable_services`) tiene ancla de tenant directa. Esto no cambia la
+  conclusión del punto siguiente — al contrario, la refuerza: si ni
+  siquiera `resource_categories` tiene `business_id`, seguir el patrón
+  `products` (ancla directa) para `service_items` es más correcto todavía,
+  no menos.
 - `service_items` sigue el patrón de **`products`**: `business_id` directo,
   no indirecto vía una categoría — una tabla MAESTRO no puede depender de
   una columna opcional para resolver su propio tenant. `category_id` **ya

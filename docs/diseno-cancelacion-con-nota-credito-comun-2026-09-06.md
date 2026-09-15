@@ -731,6 +731,154 @@ A6.6 — rol: **solo** la transición manual necesita `authorize()`; las otras d
 
 **Actualización de §10 fila 1:** ver tabla de §10 — pasa de `HOLD` a `REABIERTO 15/09/2026`, referenciando esta subsección.
 
+### 6.5 bis, pregunta 2 — diseño del mecanismo de SLA/escalamiento, propuesto 15/09/2026
+
+El dueño confirmó (arriba) que hace falta alerta/escalamiento para una fila
+`EN_REVISION_MANUAL` que queda abierta más de X tiempo. Esta subsección diseña
+el mecanismo concreto. Es una propuesta — no implementada, sin gate real
+todavía — y separa explícitamente lo que es una decisión técnica (mecanismo,
+razonada contra precedente real del repo) de lo que sigue siendo una decisión
+de negocio nueva (SLA, destinatario, reiteración), cada una con su propio
+`AskUserQuestion` pendiente, mismo criterio D5.
+
+**Precedente investigado — `management-emails` / D2-C (07/09/2026,
+`docs/diseno-order13-o5-dead-letter-2026-09-07.md`, bloque 4):**
+`PlatformRepository.getManagementEmails(businessId)` (`platform.repository.ts:1151`)
+resuelve los emails de las identities con membresía ACTIVA cuyo rol incluye el
+grupo `MANAGEMENT` (join `memberships → role_permission_groups → identities`,
+hardcodeado a `'MANAGEMENT'` — no es un parámetro). Hoy el único consumidor es
+`makeDeadLetterEmailNotifier` (`workers/dead-letter-notify.ts`), enchufado como
+`onDeadLetterBatch` del `OutboxWorker` en `ensureTenantWorker`
+(`workers/outbox.registry.ts:126-134`): cuando el outbox detecta eventos NUEVOS
+en dead-letter durante su propio poll de 5s, dispara un email agrupado (uno por
+ciclo, no uno por evento) a todos los `MANAGEMENT` del tenant, con un cooldown
+de 15 min **en memoria del proceso** (`lastActedAt`, `dead-letter-notify.ts:63,68`)
+para no hacer spam durante un outage sostenido.
+
+**Por qué D2-C no es el mecanismo a reusar tal cual — diferencia estructural, no
+estética.** D2-C notifica sobre **arribos nuevos** a un estado: el outbox ya
+está recorriendo la tabla cada 5s buscando trabajo pendiente, y el aviso
+piggybackea en esa misma pasada. El escalamiento de esta pregunta 2 notifica
+sobre **antigüedad** de filas que ya existen y no cambiaron de estado — nadie
+"arriba" a `EN_REVISION_MANUAL` por segunda vez para volver a disparar el
+aviso. Eso es exactamente la forma de `ReservationHoldExpiryWorker`
+(`workers/reservation-hold-expiry.worker.ts`), no la de `dead-letter-notify.ts`:
+un worker que barre periódicamente filas viejas contra una condición de tiempo
+(`getPendingWithExpiredDeposit(new Date())`), no un callback que reacciona a un
+evento fresco.
+
+**Mecanismo propuesto (decisión técnica, razonada contra precedente —
+no pregunta de negocio):**
+
+1. **Worker periódico nuevo, mismo esqueleto que `ReservationHoldExpiryWorker`**
+   (propuesto `CreditNoteReviewSlaWorker`, mismo patrón `setInterval` + `poll()`,
+   cada fila en su propio `try/catch` para que una falle sin bloquear las demás
+   del ciclo) — instanciado y arrancado por tenant dentro de
+   `ensureTenantWorker()` (`workers/outbox.registry.ts`), junto al
+   `holdExpiryWorker` que ya vive ahí (mismo ciclo de vida: `start()` al
+   registrar el tenant, `stop()` en `stopAllWorkers()`). **No se diseña
+   infraestructura de colas/scheduling nueva** — es el tercer worker con esta
+   misma forma en el repo (`OutboxWorker`, `ReservationHoldExpiryWorker`, este).
+2. **Query del poll** — reusa el índice parcial que §6.5 bis ya diseñó para la
+   bandeja, sin índice nuevo:
+   `SELECT id, created_at FROM credit_note_request WHERE state = 'EN_REVISION_MANUAL' AND created_at < NOW() - INTERVAL '<SLA>' AND sla_alert_sent_at IS NULL`
+   — cubierta por `idx_credit_note_request_state (state, created_at) WHERE state = 'EN_REVISION_MANUAL'`
+   (líneas 638-640 arriba).
+3. **`created_at` como proxy de antigüedad en revisión, no un campo nuevo de
+   "entró a revisión el…".** Mismo razonamiento que ya está escrito en el
+   comentario del índice parcial (líneas 641-647): como `PENDIENTE →
+   EN_REVISION_MANUAL` es la única transición de entrada y no hay camino de
+   vuelta a `PENDIENTE`, `created_at` alcanza para "hace cuánto está en esta
+   bandeja" sin admitir una columna `entered_review_at` separada. Esto asume
+   que la ventana entre la creación (`PENDIENTE`, dentro de la transacción de
+   N1.a) y la transición a `EN_REVISION_MANUAL` (`reconcileAfterFailure()`/
+   `markFailed()`, línea 684) es chica frente al SLA propuesto — razonable con
+   un SLA en horas, no lo sería con un SLA en minutos. Si el bloque de
+   implementación real confirma que esa ventana importa, ahí se agrega la
+   columna separada; no se declara acá porque no cambia el mecanismo, solo el
+   `WHERE`.
+4. **Columna nueva declarada, NO aplicada:** `sla_alert_sent_at TIMESTAMPTZ`
+   nullable en `credit_note_request`, para no reavisar en cada poll una fila
+   ya notificada. **Persistida en la tabla, a propósito distinto del cooldown
+   de `dead-letter-notify.ts`** (que vive en una variable de proceso y se
+   resetea en cada restart/redeploy): acá un restart de Render no tiene que
+   volver a mandar N alertas de filas que ya se avisaron hace 10 minutos — la
+   fuente de verdad de "¿ya se avisó esto?" es la fila, no el proceso que la
+   revisó. Si el dueño elige escalamiento reiterado (pregunta nueva C abajo),
+   la misma columna se reinterpreta como "última vez que se avisó" y el
+   `WHERE` pasa a `(sla_alert_sent_at IS NULL OR sla_alert_sent_at < NOW() - INTERVAL '<intervalo de re-escalamiento>')`
+   — sin cambiar el esqueleto del worker ni el índice.
+5. **Contenido del aviso** — reusa `EmailSender` (`email/email.sender.ts`) +
+   un template nuevo en `email/templates.ts` junto a `deadLetterAlertEmail`
+   (ej. `creditNoteReviewSlaAlertEmail`), mismo criterio B2 de D2-C: nombre del
+   negocio en asunto/cuerpo (`business_profile.display_name`, mismo patrón que
+   `getBusinessDisplayName` en `dead-letter-notify.ts`) y deep link al
+   dashboard — acá a la bandeja (`dashboard/facturacion/...`, §6.5 bis arriba)
+   en vez de al `OutboxAlertBanner`. Degradación honesta igual que D2-C: sin
+   destinatarios resueltos, se loguea y no se envía nada — a diferencia de
+   D2-C, acá no hace falta un "banner de respaldo" porque la bandeja misma ya
+   es la superficie visible permanente; degradar el email no oculta la fila en
+   ningún lado.
+6. **Destinatario del `getXEmails()`** depende de la pregunta de negocio B de
+   abajo — si es `MANAGEMENT`, se reusa `getManagementEmails()` tal cual
+   existe hoy; si es `EMISOR_NOTA_CREDITO` (o ambos), hace falta generalizar
+   ese método (parametrizar el `permission_group` del `WHERE`, hoy hardcodeado
+   a `'MANAGEMENT'`) o agregar uno nuevo — declarado, no implementado acá.
+
+**Preguntas de negocio nuevas — NO resueltas acá, cada una su propio
+`AskUserQuestion` con el dueño antes de implementar (mismo criterio D5):**
+
+- **A. Tiempo del SLA.** Propuesta (no decisión): **48 horas** desde que la
+  fila entra a `EN_REVISION_MANUAL`. Justificación de la propuesta, no del
+  valor final: el escape fiscal de esta bandeja es de volumen bajísimo (0
+  filas hoy, ninguna de las 3 referencias ERP citadas en §6.3.2 fija un SLA
+  para reconciliación manual de comprobantes ambiguos — grounding liviano
+  intentado, sin resultado adicional, consistente con lo que el ADR ya
+  registró), así que 24hs podría escalar sobre una fila que un operador
+  todavía no llegó a mirar en su próximo turno hábil; 48hs da margen para un
+  fin de semana corto sin ser tan laxo como para que la ventaja de tener
+  alerta se pierda. **Ninguna de las dos cifras es obviamente correcta** — es
+  la pregunta a llevarle al dueño, no un hecho.
+- **B. Destinatario/canal.** Dos caminos razonables, sin ganador obvio:
+  (i) `MANAGEMENT` del negocio — reusa `getManagementEmails()` sin tocar
+  `platform.repository.ts`, consistente con que `MANAGEMENT` ya ve la bandeja
+  en modo lectura (pregunta 3, arriba) — el mismo grupo que puede *ver* la
+  fila trabada es el que se entera de que lleva mucho tiempo así; (ii) todos
+  los que tienen `EMISOR_NOTA_CREDITO` — el grupo que puede efectivamente
+  *resolverla*, más accionable pero requiere generalizar el método de
+  emails (punto 6 arriba) y puede excluir al dueño/gerente si nadie con ese
+  permiso puntual está revisando. Combinarlos (unión de ambos conjuntos de
+  emails) es un tercer camino, no descartado. **A confirmar con el dueño.**
+- **C. Escalamiento único o reiterado.** Dos caminos razonables: (i) una sola
+  alerta al cruzar el SLA (más simple, `sla_alert_sent_at` como flag
+  binario); (ii) re-notificar cada N horas mientras siga sin resolver (mismo
+  mecanismo, `sla_alert_sent_at` reinterpretado como "última vez", ver punto 4
+  arriba). Ninguna referencia ERP citada en este ADR resuelve esto por sí
+  sola. **A confirmar con el dueño** — si no hay preferencia clara, (i) es la
+  opción de menor complejidad para arrancar.
+
+**Grounding ERP adicional (liviano, según lo pedido):** no se encontró nada
+más allá de lo que §6.3.2 de este mismo ADR ya registró (ninguna de las 3
+referencias — Odoo/ERPNext/QloApps — fija un SLA de reconciliación manual de
+comprobantes ambiguos); no se profundizó más, según el criterio explícito de
+la tarea de no demorarse acá si no aparece algo rápido.
+
+**✅ Las 3 preguntas RESUELTAS (15/09/2026, dueño, `AskUserQuestion`):**
+- **A. Tiempo del SLA: 48 horas** — la propuesta queda confirmada tal cual.
+- **B. Destinatario/canal: `MANAGEMENT`** — se reusa `getManagementEmails()`
+  sin modificar (no hace falta generalizar el `WHERE` hardcodeado a
+  `'MANAGEMENT'`, ni agregar un método nuevo para `EMISOR_NOTA_CREDITO`).
+- **C. Escalamiento: único, no reiterado** — la opción de menor complejidad.
+  `sla_alert_sent_at` queda como flag binario (se setea una vez, el `WHERE`
+  del poll usa `sla_alert_sent_at IS NULL` sin el `OR ... < NOW() - INTERVAL`
+  de re-escalamiento descripto en el punto 4 arriba, que queda descartado
+  para este diseño).
+
+NO implementado acá -- el worker (`CreditNoteReviewSlaWorker`), la columna
+(`sla_alert_sent_at`) y el template de email siguen siendo propuesta de
+texto, pendientes del gate real de implementación junto con el resto de
+`credit_note_request` (§6.5 bis).
+
 ### 6.6 El orquestador `cancelReservationWithCreditNote()` — diseño de 3.3-b (08/09/2026, gate `architecture-governor`)
 
 **Corrección de encuadre — "subcaso 1 con N cargos en una factura directa" no existe.** `invoices.financial_transaction_id` es una columna 1:1 (`schema.sql:2701`) — una factura directa liga EXACTAMENTE un cargo, misma cardinalidad que una orden. Una reserva con N cargos está en N facturas directas (pool multi-factura → bloque 3.5) o en una consolidada (subcaso 2). Consecuencia: **el orquestador no bifurca por subcaso.** Resuelve, bajo el lock de la reserva, el conjunto de facturas vivas de sus cargos (mismo recorrido que `ReservationService.findBlockingInvoiceLinkage()`, `reservation.service.ts:864-875`); exige exactamente UNA `ISSUED` (0 → error tipado "usá la cancelación normal"; **>1 → error tipado fail-closed, SIN llamar a AFIP y SIN crear ADJUSTMENT** — eso es pool mixto, bloque 3.5, gate propio, con un parámetro explícito de factura destino). La bifurcación total/parcial la absorbe entera el predicado estructural que ya vive en `buildCreditNote()` (3.3-a).
