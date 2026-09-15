@@ -40,6 +40,7 @@ import type { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './tenant-db.setup.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import { SqlDomainEventRepository } from '../repositories/sql.domain-event.repository.js';
+import { stripSslMode, sslConfig } from '../db/pg.client.js';
 
 /** A7.6 (docs/criterios-negocio.md), decisión del dueño 10/09/2026 — ver
  * docs/diseno-outbox-backoff-2026-09-10.md. */
@@ -61,8 +62,8 @@ export interface OutboxPurgeTenantResult {
 async function purgeOutboxForTenant(connectionString: string): Promise<number> {
   const { default: pg } = await import('pg');
   const client = new pg.Client({
-    connectionString,
-    ssl: { rejectUnauthorized: false },
+    connectionString: stripSslMode(connectionString),
+    ssl: sslConfig(),
     connectionTimeoutMillis: 10_000,
   });
   try {

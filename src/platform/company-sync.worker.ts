@@ -25,6 +25,7 @@ import type { PlatformRepository } from './platform.repository.js';
 import { decryptConnectionString } from './tenant-db.setup.js';
 import { logger } from '../logger.js';
 import { AdaptivePoller } from '../workers/adaptive-poller.js';
+import { stripSslMode, sslConfig } from '../db/pg.client.js';
 
 const BATCH_SIZE = 20;
 const MAX_RETRIES = 5;
@@ -124,7 +125,7 @@ export class CompanyCatalogPropagationWorker {
       const canonicalRecipe = await this.companyRepo.getCompanyRecipeItems(row.companyProductId);
 
       const connectionString = await decryptConnectionString(targetBusiness.dbUrlEncrypted);
-      const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+      const client = new pg.Client({ connectionString: stripSslMode(connectionString), ssl: sslConfig() });
       try {
         await client.connect();
         await this.applyToTenant(client, companyProduct, canonicalRecipe, row.targetBusinessId);

@@ -7,7 +7,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { BusinessProfile, UpdateBusinessProfileInput } from '../domain/business-profile.entities.js';
 import type { CustomerRepository } from '../clientes-finanzas/customer.repository.js';
 import { Customer } from '../clientes-finanzas/customer.entities.js';
-import { InvoiceNotFoundError, InvoiceNotIssuedError } from '../domain/errors.js';
+import { InvoiceNotFoundError, InvoiceNotIssuedError, AfipNotConfiguredError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, CONCEPTO_SERVICIOS, DOC_TIPO_CONSUMIDOR_FINAL } from './afip-catalog.constants.js';
 
 // ---------------------------------------------------------------------------
@@ -114,6 +114,20 @@ describe('InvoicePdfService -- guards antes de generar (sin invocar Puppeteer)',
   it('rechaza si el comprobante quedó FAILED_UNCERTAIN (sin CAE real)', async () => {
     const service = buildService({ invoice: makeInvoice({ status: 'FAILED_UNCERTAIN', cae: null, cbteNro: null, caeVto: null }) });
     await expect(service.generate('inv-1')).rejects.toThrow(InvoiceNotIssuedError);
+  });
+
+  // D-08 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #15) --
+  // antes de este cambio, si los 3 fallback (emisorCuit congelado en la
+  // invoice, profile.afipCuit, profile.taxId) daban null, el servicio
+  // seguía adelante e imprimía un PDF con emisor.cuit: '' -- honest-degradation:
+  // ahora falla ruidoso en vez de entregar un comprobante con el CUIT del
+  // emisor vacío.
+  it('rechaza si ningún fallback resuelve un CUIT de emisor (comprobante viejo sin emisorCuit congelado + negocio sin CUIT cargado)', async () => {
+    const service = buildService({
+      invoice: makeInvoice({ emisorCuit: null }),
+      profile: makeProfile({ taxId: null, afipCuit: null }),
+    });
+    await expect(service.generate('inv-1')).rejects.toThrow(AfipNotConfiguredError);
   });
 });
 

@@ -35,7 +35,7 @@ import type { BusinessProfileRepository } from '../repositories/business-profile
 import type { CustomerRepository } from '../clientes-finanzas/customer.repository.js';
 import { toAfipDate } from './invoice.service.js';
 import { CBTE_TIPO_FACTURA_B, CONCEPTO_SERVICIOS, CONDICION_IVA_RECEPTOR_CONSUMIDOR_FINAL, docTipoLabel, paymentMethodLabel, ivaAlicuotaLabel, ivaAlicuotaPercentFromId } from './afip-catalog.constants.js';
-import { InvoiceNotFoundError, InvoiceNotIssuedError } from '../domain/errors.js';
+import { InvoiceNotFoundError, InvoiceNotIssuedError, AfipNotConfiguredError } from '../domain/errors.js';
 
 /**
  * Lee `afipRequest.Iva` (D8, 22/08/2026) -- el `afipRequest` real mandado
@@ -75,8 +75,18 @@ export class InvoicePdfService {
     ]);
 
     // Congelado al crear (schema v26) -- solo cae al valor ACTUAL para
-    // comprobantes emitidos antes de que ese campo existiera.
-    const emisorCuit = invoice.emisorCuit ?? profile.afipCuit ?? profile.taxId ?? '';
+    // comprobantes emitidos antes de que ese campo existiera. Si ninguno de
+    // los 3 resuelve un CUIT real, honest-degradation: no se imprime un PDF
+    // con el CUIT del emisor vacío (D-08, docs/decisiones-auditoria-fase2-2026-09-15.md
+    // #15) -- se reusa AfipNotConfiguredError (mismo code/mensaje que ya usan
+    // afip-client.factory.ts/invoice.service.ts para "falta cargar el CUIT
+    // del negocio en Mi Negocio"): la causa raíz es la misma -- el negocio
+    // nunca cargó un CUIT y esta factura tampoco lo congeló al emitirse --
+    // así que el remedio que ve el usuario también es el mismo.
+    const emisorCuit = invoice.emisorCuit ?? profile.afipCuit ?? profile.taxId ?? null;
+    if (!emisorCuit) {
+      throw new AfipNotConfiguredError('falta cargar el CUIT del negocio en Mi Negocio');
+    }
 
     const domicilioComercial = [profile.fiscalAddressLine1, profile.fiscalAddressCity, profile.fiscalAddressState]
       .filter((part): part is string => !!part)

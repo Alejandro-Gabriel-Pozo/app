@@ -34,6 +34,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripSslMode, sslConfig } from '../db/pg.client.js';
 
 // ---------------------------------------------------------------------------
 // Schema loader — fuente de verdad única, resuelta desde este archivo
@@ -524,8 +525,8 @@ export const CURRENT_SCHEMA_VERSION = 58;
 export async function applyTenantSchema(connectionString: string): Promise<number> {
   const { default: pg } = await import('pg');
   const client = new pg.Client({
-    connectionString,
-    ssl: { rejectUnauthorized: false },
+    connectionString: stripSslMode(connectionString),
+    ssl: sslConfig(),
     connectionTimeoutMillis: 10_000,
   });
   try {
