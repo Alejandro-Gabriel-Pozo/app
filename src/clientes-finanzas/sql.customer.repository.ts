@@ -111,7 +111,11 @@ export class SqlCustomerRepository implements CustomerRepository {
   async getFiltered(filters: CustomerFilters): Promise<Customer[]> {
     const { where, params } = this.buildCustomerWhereClause(filters);
 
-    let idQuery = `SELECT c.id FROM customers c ${where} ORDER BY c.display_name ASC`;
+    // Desempate explícito (D-14, 15/09/2026,
+    // docs/decisiones-auditoria-fase2-2026-09-15.md #12, `, c.id ASC`) --
+    // sin él, dos clientes con el mismo display_name pueden aparecer
+    // duplicados o faltar entre páginas.
+    let idQuery = `SELECT c.id FROM customers c ${where} ORDER BY c.display_name ASC, c.id ASC`;
     if (filters.limit !== undefined && filters.page !== undefined) {
       params.push(filters.limit);
       idQuery += ` LIMIT $${params.length}`;

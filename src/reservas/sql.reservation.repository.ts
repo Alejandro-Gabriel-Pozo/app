@@ -1,6 +1,7 @@
 import { ReservationStatus } from '../types/enums.js';
 import { Reservation } from './Reservation.js';
 import type { ReservationRepository, ReservationFilters } from './reservation.repository.js';
+import { resolveReservationsLimit } from './reservation.repository.js';
 import type { ReservationCustomer } from './reservation-customer.entities.js';
 import { ResourceNotFoundError } from '../domain/errors.js';
 import type { SqlClient } from '../repositories/sql.client.js';
@@ -46,9 +47,10 @@ interface ReservationRow {
  *
  * ## getFiltered() / countFiltered()
  * buildWhereClause() construye la cláusula WHERE dinámicamente.
- * getFiltered() aplica LIMIT/OFFSET cuando page+limit están presentes.
+ * getFiltered() SIEMPRE aplica LIMIT/OFFSET (D-14, limit/offset con default
+ * 50 y tope 200 -- ver resolveReservationsLimit() en reservation.repository.ts).
  * countFiltered() corre SELECT COUNT(*) con los mismos filtros (sin paginar)
- * para poder construir el envelope paginado { data, total, page, limit, totalPages }.
+ * para poder construir el envelope { data, limit, offset, total, hasMore }.
  *
  * ## getActiveForResourceInRangeWithLock()
  * Igual que getActiveForResourceInRange pero añade FOR UPDATE al final
@@ -57,13 +59,6 @@ interface ReservationRow {
  * concurrentes al mismo slot de recurso.
  */
 export class SqlReservationRepository implements ReservationRepository {
-  /**
-   * D-14 (parcial) — ver el comentario en getFiltered(). Tope PROVISORIO
-   * para `GET /api/reservations` sin page/limit, pendiente del contrato
-   * canónico de paginación (grounding en curso).
-   */
-  static readonly DEFAULT_UNPAGINATED_LIMIT = 100;
-
   constructor(
     private readonly sqlClient: SqlClient,
     private readonly resourceRepository: ResourceRepository,
@@ -398,7 +393,7 @@ export class SqlReservationRepository implements ReservationRepository {
    *   r.end_time > from AND r.start_time < to
    */
   private buildWhereClause(
-    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+    filters: Omit<ReservationFilters, 'limit' | 'offset'>,
   ): { conditions: string[]; params: unknown[] } {
     const conditions: string[] = [];
     const params: unknown[]    = [];
@@ -444,37 +439,28 @@ export class SqlReservationRepository implements ReservationRepository {
   async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
     const { conditions, params } = this.buildWhereClause(filters);
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    let sql = `${this.baseSelect()} ${where} ORDER BY r.start_time DESC`;
+    // D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12)
+    // — contrato canónico limit/offset, SIEMPRE con LIMIT/OFFSET (antes,
+    // sin page/limit, esta query no tenía NINGUNA cota — devolvía la tabla
+    // entera). `, r.id DESC` es el desempate explícito que pide el
+    // grounding: sin él, dos reservas con el mismo start_time pueden
+    // aparecer duplicadas o faltar entre páginas (mismo bug shape que
+    // erpnext#49037, citado en el grounding).
+    let sql = `${this.baseSelect()} ${where} ORDER BY r.start_time DESC, r.id DESC`;
 
-    if (filters.limit !== undefined && filters.page !== undefined) {
-      params.push(filters.limit);
-      sql += ` LIMIT $${params.length}`;
-      params.push((filters.page - 1) * filters.limit);
-      sql += ` OFFSET $${params.length}`;
-    } else {
-      // D-14 (parcial, 15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md)
-      // — sin page/limit esta query no tenía NINGUNA cota: un
-      // GET /api/reservations sin parámetros devolvía la tabla entera. El
-      // contrato canónico de paginación (page/limit vs limit/offset, tope
-      // global/por plan/por tenant) sigue en grounding (D-14 completo, no
-      // resuelto todavía) — este valor es PROVISORIO, solo cierra la
-      // lectura sin cota. Mismo criterio de magnitud que los otros
-      // defaults hardcodeados del repo (sql.product.repository.ts usa
-      // 100, sql.order.repository.ts / sql.cash-register-shift.repository.ts
-      // usan 50); se eligió 100 porque, a diferencia de esos casos, acá el
-      // caller no pidió paginar en absoluto (probablemente un caller
-      // legacy o interno esperando "todo") y un tope más alto reduce el
-      // riesgo de romper ese uso sin dejar de acotar la lectura.
-      params.push(SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT);
-      sql += ` LIMIT $${params.length}`;
-    }
+    const limit  = resolveReservationsLimit(filters.limit);
+    const offset = filters.offset ?? 0;
+    params.push(limit);
+    sql += ` LIMIT $${params.length}`;
+    params.push(offset);
+    sql += ` OFFSET $${params.length}`;
 
     const result = await this.sqlClient.query<ReservationRow>(sql, params);
     return Promise.all(result.rows.map((row) => this.rowToReservation(row)));
   }
 
   async countFiltered(
-    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+    filters: Omit<ReservationFilters, 'limit' | 'offset'>,
   ): Promise<number> {
     const { conditions, params } = this.buildWhereClause(filters);
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

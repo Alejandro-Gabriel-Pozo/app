@@ -135,7 +135,11 @@ describe('reservations.routes', () => {
   });
 
   describe('GET /reservations', () => {
-    it('sin page/limit -- devuelve el array plano de siempre (compatibilidad K2)', async () => {
+    // D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12)
+    // -- contrato canónico limit/offset, SIEMPRE devuelve el envelope
+    // {data, limit, offset, total, hasMore}, nunca el array plano de antes
+    // (reemplaza el compat K2 page/limit-o-array).
+    it('sin limit/offset -- devuelve el envelope con los defaults (limit=50, offset=0)', async () => {
       seedResource(state);
       seedReservation(state);
       const handler = getHandler(router, 'get', '/');
@@ -145,26 +149,46 @@ describe('reservations.routes', () => {
       await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
       expect(res.json).toHaveBeenCalledOnce();
-      const body = res.body as Array<{ id: string; status: string }>;
-      expect(body).toHaveLength(1);
-      expect(body[0]!.id).toBe('rsv-1');
-      expect(body[0]!.status).toBe(ReservationStatus.PENDING); // toReservationDto expone `status`, nunca `_status` (ver docblock del archivo)
+      const body = res.body as { data: Array<{ id: string; status: string }>; limit: number; offset: number; total: number; hasMore: boolean };
+      expect(body.limit).toBe(50);
+      expect(body.offset).toBe(0);
+      expect(body.total).toBe(1);
+      expect(body.hasMore).toBe(false);
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0]!.id).toBe('rsv-1');
+      expect(body.data[0]!.status).toBe(ReservationStatus.PENDING); // toReservationDto expone `status`, nunca `_status` (ver docblock del archivo)
     });
 
-    it('con page/limit -- devuelve el envelope paginado {data, total, page, totalPages}', async () => {
+    it('con limit/offset explícitos -- devuelve el envelope con esos valores', async () => {
       seedResource(state);
       seedReservation(state);
       const handler = getHandler(router, 'get', '/');
-      const req = { db: fakeDb(state), query: { page: '1', limit: '10' } } as unknown as Request;
+      const req = { db: fakeDb(state), query: { limit: '10', offset: '0' } } as unknown as Request;
       const res = fakeRes();
 
       await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
-      const body = res.body as { data: unknown[]; total: number; page: number; totalPages: number };
+      const body = res.body as { data: unknown[]; total: number; limit: number; offset: number; hasMore: boolean };
       expect(body.total).toBe(1);
-      expect(body.page).toBe(1);
-      expect(body.totalPages).toBe(1);
+      expect(body.limit).toBe(10);
+      expect(body.offset).toBe(0);
       expect(body.data).toHaveLength(1);
+    });
+
+    // limit=99999 clampea a 200 (RESERVATIONS_MAX_LIMIT), nunca se rechaza
+    // ni se trunca en silencio -- el envelope informa el valor EFECTIVO.
+    it('limit por encima del tope (200) clampea, no rechaza con 400', async () => {
+      seedResource(state);
+      seedReservation(state);
+      const handler = getHandler(router, 'get', '/');
+      const req = { db: fakeDb(state), query: { limit: '99999' } } as unknown as Request;
+      const res = fakeRes();
+
+      await handler(req, res, () => { throw new Error('no debería llamar next()'); });
+
+      expect(res.statusCode).toBeUndefined(); // 200 implícito, no 400
+      const body = res.body as { limit: number };
+      expect(body.limit).toBe(200);
     });
 
     it('400 -- `from` que no es un datetime ISO válido', async () => {
@@ -191,23 +215,28 @@ describe('reservations.routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
-    it('400 -- `limit` sin `page`', async () => {
+    // D-14: a diferencia del contrato page/limit viejo, `limit` ya NO
+    // necesita viajar junto a otro parámetro -- tiene su propio default.
+    it('200 -- `limit` solo (sin `offset`), sin rechazo', async () => {
+      seedResource(state);
+      seedReservation(state);
       const handler = getHandler(router, 'get', '/');
       const req = { db: fakeDb(state), query: { limit: '10' } } as unknown as Request;
       const res = fakeRes();
 
       await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBeUndefined();
+      expect(res.json).toHaveBeenCalledOnce();
     });
 
-    it('200 -- `from` y `to` juntos, y `page`/`limit` juntos, siguen aceptándose', async () => {
+    it('200 -- `from` y `to` juntos, y `limit`/`offset` juntos, siguen aceptándose', async () => {
       seedResource(state);
       seedReservation(state);
       const handler = getHandler(router, 'get', '/');
       const req = {
         db: fakeDb(state),
-        query: { from: '2020-01-01T00:00:00.000Z', to: '2030-01-01T00:00:00.000Z', page: '1', limit: '10' },
+        query: { from: '2020-01-01T00:00:00.000Z', to: '2030-01-01T00:00:00.000Z', limit: '10', offset: '0' },
       } as unknown as Request;
       const res = fakeRes();
 
@@ -219,7 +248,8 @@ describe('reservations.routes', () => {
   });
 
   describe('POST /reservations/search', () => {
-    it('200 -- arma los filtros desde el body (nunca desde query, A7.2) y devuelve la lista', async () => {
+    // D-14 -- mismo envelope SIEMPRE que GET /reservations (respondWithReservationsList compartida).
+    it('200 -- arma los filtros desde el body (nunca desde query, A7.2) y devuelve el envelope', async () => {
       seedResource(state);
       seedReservation(state, { customer_name: 'María López' });
       const handler = getHandler(router, 'post', '/search');
@@ -229,8 +259,10 @@ describe('reservations.routes', () => {
       await handler(req, res, () => { throw new Error('no debería llamar next()'); });
 
       expect(res.json).toHaveBeenCalledOnce();
-      const body = res.body as Array<{ customer: { fullName: string } }>;
-      expect(body[0]!.customer.fullName).toBe('María López');
+      const body = res.body as { data: Array<{ customer: { fullName: string } }>; limit: number; offset: number };
+      expect(body.limit).toBe(50);
+      expect(body.offset).toBe(0);
+      expect(body.data[0]!.customer.fullName).toBe('María López');
     });
 
     it('body inválido (search vacío) -- propaga a next(), nunca pega contra la base', async () => {

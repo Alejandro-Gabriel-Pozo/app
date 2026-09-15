@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RecordPaymentSchema, CompleteOrderSchema, CreateCustomerRateSchema, CreateRateCatalogEntrySchema, CreateOrderItemSchema, GetReservationsQuerySchema } from './request.schemas.js';
+import { RecordPaymentSchema, CompleteOrderSchema, CreateCustomerRateSchema, CreateRateCatalogEntrySchema, CreateOrderItemSchema, GetReservationsQuerySchema, GetOrdersQuerySchema } from './request.schemas.js';
 
 describe('RecordPaymentSchema — cardInstallments/cardSurchargeAmount (Gap Tango #3)', () => {
   it('acepta CARD con cuotas y recargo dentro del monto', () => {
@@ -223,31 +223,9 @@ describe('GetReservationsQuerySchema — filtros parciales (D-02, docs/decisione
     expect(result.success).toBe(false);
   });
 
-  it('rechaza limit sin page', () => {
-    const result = GetReservationsQuerySchema.safeParse({ limit: '20' });
-    expect(result.success).toBe(false);
-  });
-
-  it('rechaza page sin limit', () => {
-    const result = GetReservationsQuerySchema.safeParse({ page: '1' });
-    expect(result.success).toBe(false);
-  });
-
   it('acepta from y to juntos', () => {
     const result = GetReservationsQuerySchema.safeParse({
       from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('acepta page y limit juntos', () => {
-    const result = GetReservationsQuerySchema.safeParse({ page: '2', limit: '20' });
-    expect(result.success).toBe(true);
-  });
-
-  it('acepta los 4 juntos', () => {
-    const result = GetReservationsQuerySchema.safeParse({
-      from: '2026-01-01T00:00:00.000Z', to: '2026-01-31T00:00:00.000Z', page: '1', limit: '10',
     });
     expect(result.success).toBe(true);
   });
@@ -260,6 +238,60 @@ describe('GetReservationsQuerySchema — filtros parciales (D-02, docs/decisione
   it('acepta sin ningún parámetro', () => {
     const result = GetReservationsQuerySchema.safeParse({});
     expect(result.success).toBe(true);
+  });
+});
+
+// D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12) --
+// contrato canónico limit/offset. A diferencia del `page`/`limit` viejo,
+// `limit` y `offset` NO necesitan viajar juntos (cada uno tiene su propio
+// default razonable), y `limit` NO tiene `.max()` acá -- el clamp real
+// (resolveReservationsLimit) vive en el repo/ruta, no en el schema
+// (honest-degradation: clampea e informa, no rechaza con 400).
+describe('GetReservationsQuerySchema — limit/offset (D-14, docs/decisiones-auditoria-fase2-2026-09-15.md)', () => {
+  it('acepta limit solo, sin offset', () => {
+    const result = GetReservationsQuerySchema.safeParse({ limit: '20' });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta offset solo, sin limit', () => {
+    const result = GetReservationsQuerySchema.safeParse({ offset: '40' });
+    expect(result.success).toBe(true);
+  });
+
+  it('acepta limit y offset juntos', () => {
+    const result = GetReservationsQuerySchema.safeParse({ limit: '20', offset: '40' });
+    expect(result.success).toBe(true);
+  });
+
+  it('NO rechaza un limit por encima de 200 -- el clamp es responsabilidad del repo/ruta, no del schema', () => {
+    const result = GetReservationsQuerySchema.safeParse({ limit: '99999' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rechaza offset negativo', () => {
+    const result = GetReservationsQuerySchema.safeParse({ offset: '-1' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rechaza limit no positivo (0)', () => {
+    const result = GetReservationsQuerySchema.safeParse({ limit: '0' });
+    expect(result.success).toBe(false);
+  });
+});
+
+// D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12) --
+// fix mecánico acotado sobre los 4 listados que NO migran al envelope
+// completo en este bloque: solo `.max(200)`, con rechazo 400 (a diferencia
+// de reservations, que clampea -- ver arriba).
+describe('GetOrdersQuerySchema — .max(200) en limit (D-14, docs/decisiones-auditoria-fase2-2026-09-15.md)', () => {
+  it('acepta limit hasta 200', () => {
+    const result = GetOrdersQuerySchema.safeParse({ limit: '200' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rechaza limit por encima de 200', () => {
+    const result = GetOrdersQuerySchema.safeParse({ limit: '201' });
+    expect(result.success).toBe(false);
   });
 });
 

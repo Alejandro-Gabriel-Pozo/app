@@ -158,11 +158,17 @@ const SearchByTaxIdSchema = z.object({
 // tipeado por el usuario, mismo tipo de dato que taxId arriba: nunca en
 // query string. Body, mismo criterio. page/limit no son PII, viajan igual
 // para no duplicar la llamada.
+//
+// `.max(200)` en `limit` (D-14, 15/09/2026,
+// docs/decisiones-auditoria-fase2-2026-09-15.md #12) — fix mecánico
+// acotado: este recurso sigue con page/limit (no migra a limit/offset ni
+// al envelope `{data, limit, offset, total, hasMore}` en este bloque, eso
+// es aparte); acá solo se pone un tope duro con rechazo 400.
 const SearchCustomersSchema = z.object({
   search: z.string().trim().min(1).max(200),
   currentAccountEnabled: z.boolean().optional(),
   page: z.number().int().positive().optional(),
-  limit: z.number().int().positive().optional(),
+  limit: z.number().int().positive().max(200).optional(),
 });
 
 // ---------------------------------------------------------------------------

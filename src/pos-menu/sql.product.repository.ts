@@ -113,10 +113,14 @@ export class SqlProductRepository implements IProductRepository {
     const offset = filter.offset ?? 0;
     params.push(limit, offset);
 
+    // Desempate explícito (D-14, 15/09/2026,
+    // docs/decisiones-auditoria-fase2-2026-09-15.md #12, `, id ASC`) --
+    // sin él, dos productos con el mismo name pueden aparecer duplicados o
+    // faltar entre páginas.
     const sql = `
       SELECT * FROM products
       WHERE ${conditions.join(' AND ')}
-      ORDER BY name ASC
+      ORDER BY name ASC, id ASC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
 

@@ -5,6 +5,7 @@ import type {
   ReservationRepository,
   ReservationFilters,
 }                                   from './reservation.repository.js';
+import { resolveReservationsLimit } from './reservation.repository.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 import type { ICategoryRepository } from './category.repository.js';
 
@@ -20,15 +21,6 @@ import type { ICategoryRepository } from './category.repository.js';
  * - `saveWithClient` usa `SqlClient` (abstracto) en lugar de `PoolClient` (concreto de pg).
  */
 export class InMemoryReservationRepository implements ReservationRepository {
-  /**
-   * D-14 (parcial, 15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md)
-   * — mismo tope PROVISORIO que `SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT`,
-   * para que las dos implementaciones sigan coincidiendo (evita reabrir la
-   * divergencia que D-02 acaba de cerrar). Ver el comentario en
-   * `SqlReservationRepository.getFiltered()` para el criterio de magnitud.
-   */
-  static readonly DEFAULT_UNPAGINATED_LIMIT = 100;
-
   private reservations: Map<string, Reservation> = new Map();
 
   /**
@@ -140,7 +132,7 @@ export class InMemoryReservationRepository implements ReservationRepository {
    * helper los toque.
    */
   private async applyFilters(
-    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+    filters: Omit<ReservationFilters, 'limit' | 'offset'>,
   ): Promise<Reservation[]> {
     let results = Array.from(this.reservations.values());
 
@@ -178,16 +170,17 @@ export class InMemoryReservationRepository implements ReservationRepository {
   async getFiltered(filters: ReservationFilters): Promise<Reservation[]> {
     const results = await this.applyFilters(filters);
 
-    // D-14 (parcial) — sin limit explícito, antes se devolvía
-    // `results.length` (todo, sin cota real). Ahora cae al mismo tope
-    // PROVISORIO que el repo SQL (ver arriba) en vez de "todo".
-    const page  = filters.page  ?? 1;
-    const limit = filters.limit ?? InMemoryReservationRepository.DEFAULT_UNPAGINATED_LIMIT;
-    return results.slice((page - 1) * limit, page * limit);
+    // D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12)
+    // — limit/offset, mismo `resolveReservationsLimit()` (default 50, tope
+    // 200) que usa el repo SQL, para que las dos implementaciones sigan
+    // coincidiendo (evita reabrir la divergencia que D-02 cerró).
+    const limit  = resolveReservationsLimit(filters.limit);
+    const offset = filters.offset ?? 0;
+    return results.slice(offset, offset + limit);
   }
 
   async countFiltered(
-    filters: Omit<ReservationFilters, 'page' | 'limit'>,
+    filters: Omit<ReservationFilters, 'limit' | 'offset'>,
   ): Promise<number> {
     // Cuenta sobre applyFilters() directo, NUNCA sobre getFiltered() — ver
     // el docblock de applyFilters(): total real, sin el tope de getFiltered().

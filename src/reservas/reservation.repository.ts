@@ -3,6 +3,27 @@ import type { ReservationStatus } from '../types/enums.js';
 import type { SqlClient } from '../repositories/sql.client.js';
 import type { AppliedRateReportRow } from '../clientes-finanzas/customer-rate.repository.js';
 
+// ---------------------------------------------------------------------------
+// D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12) --
+// contrato canónico de paginación para reservas: limit/offset, tope FIJO y
+// GLOBAL (no por plan ni por tenant -- protege al servidor, no es una
+// variable de negocio). Reemplaza el DEFAULT_UNPAGINATED_LIMIT=100
+// provisorio de la ronda anterior (bf29137) y el contrato page/limit que
+// tenía GET /api/reservations. Único punto de cálculo del límite efectivo
+// -- lo comparten SqlReservationRepository, InMemoryReservationRepository
+// (misma semántica, mismo criterio que ya evitó la divergencia de D-02) y
+// reservations.routes.ts (necesita el valor EFECTIVO para informarlo en el
+// envelope -- honest-degradation, nunca trunca en silencio).
+// ---------------------------------------------------------------------------
+export const RESERVATIONS_DEFAULT_LIMIT = 50;
+export const RESERVATIONS_MAX_LIMIT = 200;
+
+/** Clampea `limit` a [1, RESERVATIONS_MAX_LIMIT]; sin `limit`, el default. */
+export function resolveReservationsLimit(limit?: number): number {
+  if (limit === undefined) return RESERVATIONS_DEFAULT_LIMIT;
+  return Math.min(limit, RESERVATIONS_MAX_LIMIT);
+}
+
 export interface ReservationFilters {
   status?:     ReservationStatus;
   resourceId?: string;
@@ -25,8 +46,11 @@ export interface ReservationFilters {
    * de reservar, no por el nombre actual del cliente si cambió después.
    */
   search?:     string;
-  page?:       number;
+  /** D-14 -- limit/offset, no page/limit. Sin clamp a nivel de tipo: el
+   *  clamp real (`resolveReservationsLimit`) vive en el borde (ruta) y en
+   *  cada repositorio, esto es solo la interfaz. */
   limit?:      number;
+  offset?:     number;
 }
 
 export interface ReservationRepository {
@@ -128,7 +152,7 @@ export interface ReservationRepository {
 
   // Filtrado genérico + paginación
   getFiltered(filters: ReservationFilters): Promise<Reservation[]>;
-  countFiltered(filters: Omit<ReservationFilters, 'page' | 'limit'>): Promise<number>;
+  countFiltered(filters: Omit<ReservationFilters, 'limit' | 'offset'>): Promise<number>;
 
   /** @deprecated Usar getFiltered({}) */
   getAll(): Promise<Reservation[]>;

@@ -35,9 +35,14 @@ import { z, ZodError } from 'zod';
  * GET /api/cash-register (nivel 2 de cobertura de Zod, 25/08/2026,
  * docs/auditoria-tecnica-infra-reservas.md) — `Number(limit)` sin chequear
  * NaN: un `?limit=abc` pasaba `NaN` directo a `listShifts()`.
+ *
+ * `.max(200)` (D-14, 15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md
+ * #12) — fix mecánico acotado, mismo criterio que `GetOrdersQuerySchema`:
+ * tope duro con rechazo 400, sin migrar este recurso al envelope
+ * `{data, limit, offset, total, hasMore}` todavía (bloque aparte).
  */
 const ListShiftsQuerySchema = z.object({
-  limit:  z.coerce.number().int().positive().optional(),
+  limit:  z.coerce.number().int().positive().max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
 

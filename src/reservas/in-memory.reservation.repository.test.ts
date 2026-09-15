@@ -3,6 +3,7 @@ import { ReservationStatus } from '../types/enums.js';
 import { BookableResource } from './resource.entities.js';
 import { Reservation } from './Reservation.js';
 import { InMemoryReservationRepository } from './in-memory.reservation.repository.js';
+import { RESERVATIONS_DEFAULT_LIMIT, RESERVATIONS_MAX_LIMIT } from './reservation.repository.js';
 import type { ICategoryRepository } from './category.repository.js';
 import type { ResourceCategory } from './resource-category.types.js';
 
@@ -82,19 +83,13 @@ describe('InMemoryReservationRepository — getFiltered/countFiltered (K2, isLod
   });
 });
 
-// D-14 parcial (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md) —
-// getFiltered({}) sin page/limit ya no devuelve "todo" (results.length):
-// cae al mismo tope PROVISORIO que SqlReservationRepository
-// (DEFAULT_UNPAGINATED_LIMIT), para no reabrir la divergencia que D-02
-// acaba de cerrar.
-describe('InMemoryReservationRepository — getFiltered() sin page/limit tiene tope duro (D-14 parcial)', () => {
-  it('siembra más filas que el tope y confirma que getFiltered({}) devuelve como máximo el tope', async () => {
-    const repo = new InMemoryReservationRepository();
+// D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12) —
+// limit/offset, mismo `resolveReservationsLimit()` (default 50, tope 200)
+// que SqlReservationRepository, para no reabrir la divergencia que D-02 cerró.
+describe('InMemoryReservationRepository — getFiltered() limit/offset (D-14)', () => {
+  async function seedMany(repo: InMemoryReservationRepository, count: number): Promise<void> {
     const resource = new BookableResource('room-1', 'Habitación 1', 100, 'cat-lodging', null);
-    const limit = InMemoryReservationRepository.DEFAULT_UNPAGINATED_LIMIT;
-    const seeded = limit + 1;
-
-    for (let i = 0; i < seeded; i++) {
+    for (let i = 0; i < count; i++) {
       await repo.save(Reservation.restore({
         id: `res-${i}`,
         customer: { id: 'c1', fullName: 'Ana García' },
@@ -107,10 +102,37 @@ describe('InMemoryReservationRepository — getFiltered() sin page/limit tiene t
         appliedCustomerRateId: null,
       }));
     }
+  }
+
+  it('siembra más filas que el default y confirma que getFiltered({}) devuelve como máximo RESERVATIONS_DEFAULT_LIMIT', async () => {
+    const repo = new InMemoryReservationRepository();
+    const seeded = RESERVATIONS_DEFAULT_LIMIT + 1;
+    await seedMany(repo, seeded);
 
     expect(await repo.countFiltered({})).toBe(seeded); // sembrado real, sin tope
     const results = await repo.getFiltered({});
-    expect(results.length).toBe(limit);
+    expect(results.length).toBe(RESERVATIONS_DEFAULT_LIMIT);
     expect(results.length).toBeLessThan(seeded);
+  });
+
+  // Clamp, no rechazo -- mismo criterio que el repo SQL.
+  it('limit=99999 clampea a RESERVATIONS_MAX_LIMIT, no devuelve todo', async () => {
+    const repo = new InMemoryReservationRepository();
+    const seeded = RESERVATIONS_MAX_LIMIT + 10;
+    await seedMany(repo, seeded);
+
+    const results = await repo.getFiltered({ limit: 99999 });
+    expect(results.length).toBe(RESERVATIONS_MAX_LIMIT);
+  });
+
+  it('offset navega páginas -- sin solaparse con la anterior', async () => {
+    const repo = new InMemoryReservationRepository();
+    await seedMany(repo, 5);
+
+    const page1 = await repo.getFiltered({ limit: 2, offset: 0 });
+    const page2 = await repo.getFiltered({ limit: 2, offset: 2 });
+    expect(page1.map((r) => r.id)).not.toEqual(page2.map((r) => r.id));
+    expect(page1).toHaveLength(2);
+    expect(page2).toHaveLength(2);
   });
 });

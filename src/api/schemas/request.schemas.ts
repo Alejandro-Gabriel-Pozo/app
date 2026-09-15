@@ -103,6 +103,13 @@ export const UpdateReservationSchema = z.object({
 // sesión (K2) — el resto de filtros no es PII, viaja igual acá para no
 // duplicar la llamada. Sin validar `status` contra el enum a propósito:
 // GET /reservations tampoco lo valida hoy (cast directo), mismo criterio.
+// D-14 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12) --
+// contrato canónico limit/offset (reemplaza page/limit). Sin `.max()` acá
+// a propósito: un `limit` por encima del tope se CLAMPEA en el repo/ruta
+// (resolveReservationsLimit(), reservation.repository.ts) e informa el
+// valor EFECTIVO en el envelope -- nunca se rechaza con 400 ni se trunca
+// en silencio (honest-degradation). `offset` sí valida `>= 0` acá porque
+// un offset negativo no tiene clamp razonable, es directamente inválido.
 export const SearchReservationsSchema = z.object({
   search:     z.string().trim().min(1).max(200),
   status:     z.string().optional(),
@@ -111,8 +118,8 @@ export const SearchReservationsSchema = z.object({
   from:       z.string().datetime().optional(),
   to:         z.string().datetime().optional(),
   isLodging:  z.boolean().optional(),
-  page:       z.number().int().positive().optional(),
   limit:      z.number().int().positive().optional(),
+  offset:     z.number().int().min(0).optional(),
 });
 
 /**
@@ -120,24 +127,25 @@ export const SearchReservationsSchema = z.object({
  * docs/auditoria-tecnica-infra-reservas.md) — mismos filtros que
  * `SearchReservationsSchema` menos `search` (que vive en el body de
  * POST /search desde A7.2, nunca en query string), pero acá vienen como
- * query string (todo string) en vez de JSON body: `isLodging`/`page`/
- * `limit` necesitan coerción explícita en vez de los tipos nativos que
+ * query string (todo string) en vez de JSON body: `isLodging`/`limit`/
+ * `offset` necesitan coerción explícita en vez de los tipos nativos que
  * usa el schema de arriba.
  *
  * ## D-02 (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md) —
  * rechazo de filtros parciales
- * `ReservationFilters` (reservation.repository.ts) sigue declarando
- * `from`/`to`/`page`/`limit` cada uno `?` independiente a nivel de TIPO —
- * eso no cambia acá. Lo que sí cambia es que este schema, que es el único
- * punto por el que `GET /api/reservations` puede llegar a construir esos
- * filtros, ahora garantiza en el borde HTTP que `from`/`to` y
- * `page`/`limit` nunca lleguen parciales: antes de este cambio,
- * `SqlReservationRepository.getFiltered()` ignoraba un `from` sin `to` (o
- * un `limit` sin `page`) en silencio, mientras que
- * `InMemoryReservationRepository.getFiltered()` sí aplicaba `from`/`to`
- * de forma independiente — la misma request producía resultados
- * distintos según el repositorio. Con el `superRefine` de abajo, ese
- * request parcial nunca llega al repositorio: se rechaza acá con 400.
+ * `from`/`to` siguen siendo cada uno `?` independiente a nivel de TIPO en
+ * `ReservationFilters` (reservation.repository.ts) — eso no cambia acá. Lo
+ * que sí cambia es que este schema, el único punto por el que
+ * `GET /api/reservations` puede llegar a construir esos filtros, garantiza
+ * en el borde HTTP que `from`/`to` nunca lleguen parciales: antes de este
+ * cambio, `SqlReservationRepository.getFiltered()` ignoraba un `from` sin
+ * `to` en silencio, mientras que `InMemoryReservationRepository.getFiltered()`
+ * sí lo aplicaba de forma independiente — la misma request producía
+ * resultados distintos según el repositorio. Con el `superRefine` de
+ * abajo, ese request parcial nunca llega al repositorio: se rechaza acá
+ * con 400. `limit`/`offset` NO tienen esta restricción de a pares (D-14):
+ * cada uno tiene su propio default razonable (limit=50, offset=0), no hace
+ * falta que viajen juntos.
  */
 export const GetReservationsQuerySchema = z.object({
   status:     z.string().optional(),
@@ -146,21 +154,14 @@ export const GetReservationsQuerySchema = z.object({
   from:       z.string().datetime().optional(),
   to:         z.string().datetime().optional(),
   isLodging:  z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
-  page:       z.coerce.number().int().positive().optional(),
   limit:      z.coerce.number().int().positive().optional(),
+  offset:     z.coerce.number().int().min(0).optional(),
 }).superRefine((data, ctx) => {
   if (Boolean(data.from) !== Boolean(data.to)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'from y to deben enviarse juntos',
       path: ['from'],
-    });
-  }
-  if (Boolean(data.limit) !== Boolean(data.page)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'limit y page deben enviarse juntos',
-      path: ['limit'],
     });
   }
 });
@@ -285,13 +286,23 @@ export const CreateOrderSchema = z.object({
  * docs/auditoria-tecnica-infra-reservas.md) — antes `from`/`to` iban
  * directo a `new Date(...)` sin chequear formato, y `limit`/`offset` a
  * `Number(...)` sin chequear NaN.
+ *
+ * `.max(200)` en `limit` (D-14, 15/09/2026,
+ * docs/decisiones-auditoria-fase2-2026-09-15.md #12) — fix mecánico
+ * acotado: este recurso NO migra al envelope completo `{data, limit,
+ * offset, total, hasMore}` en este bloque (sin consumidor de frontend
+ * hoy, `ordersApi.list()` se llama sin argumentos — eso queda para el
+ * bloque del envelope completo). Acá solo se pone un tope duro, con
+ * rechazo 400 (no clamp -- a diferencia de reservations, que sí clampea
+ * porque expone el valor efectivo en su envelope; este endpoint no tiene
+ * envelope todavía para informarlo).
  */
 export const GetOrdersQuerySchema = z.object({
   customerId: z.string().min(1).optional(),
   status:     z.string().optional(),
   from:       z.string().datetime().optional(),
   to:         z.string().datetime().optional(),
-  limit:      z.coerce.number().int().positive().optional(),
+  limit:      z.coerce.number().int().positive().max(200).optional(),
   offset:     z.coerce.number().int().min(0).optional(),
 });
 

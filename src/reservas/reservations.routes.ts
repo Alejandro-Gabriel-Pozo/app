@@ -107,6 +107,7 @@ import { CancellationRefundService }     from './cancellation-refund.service.js'
 import { SqlInvoiceRepository }          from '../facturacion/sql.invoice.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { CreateReservationSchema, UpdateReservationSchema, SearchReservationsSchema, GetReservationsQuerySchema, CancelWithCreditNoteSchema } from '../api/schemas/request.schemas.js';
+import { resolveReservationsLimit } from './reservation.repository.js';
 import { ZodError } from 'zod';
 import { RequestScheduleChangeSchema, ApproveScheduleChangeSchema } from '../api/schemas/stay.schemas.js';
 import { toReservationDto }              from '../api/mappers/reservation.mapper.js';
@@ -238,33 +239,37 @@ function buildStayService(req: Request): StayService {
 }
 
 /**
- * Arma la respuesta de GET /reservations y POST /reservations/search — con
- * page+limit el envelope paginado (PaginatedResponse<T>), sin ellos el
- * array plano de siempre (compatibilidad hacia atrás, K2). Un solo lugar
- * para las dos rutas: la única diferencia entre ellas es DE DÓNDE sale
- * `search` (query string vs. body, A7.2), no qué se hace con él.
+ * Arma la respuesta de GET /reservations y POST /reservations/search — D-14
+ * (15/09/2026, docs/decisiones-auditoria-fase2-2026-09-15.md #12): contrato
+ * canónico limit/offset, envelope ÚNICO SIEMPRE
+ * `{ data, limit, offset, total, hasMore }` — reemplaza el compat K2
+ * (page/limit-o-array-plano) que tenía esta misma función. `limit` se
+ * clampea acá (resolveReservationsLimit — default 50, tope 200, global,
+ * no por plan/tenant) y el valor EFECTIVO (no el pedido crudo) es el que
+ * se informa en el envelope — honest-degradation, nunca trunca en
+ * silencio. Un solo lugar para las dos rutas: la única diferencia entre
+ * ellas es DE DÓNDE sale `search` (query string vs. body, A7.2), no qué se
+ * hace con él.
  */
 async function respondWithReservationsList(
   repo: SqlReservationRepository,
   filters: ReservationFilters,
   res: Response,
 ): Promise<void> {
-  if (filters.page !== undefined && filters.limit !== undefined) {
-    const { page, limit, ...countFilters } = filters;
-    const [reservations, total] = await Promise.all([
-      repo.getFiltered(filters),
-      repo.countFiltered(countFilters),
-    ]);
-    res.json({
-      data: reservations.map(toReservationDto),
-      total,
-      page,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-    });
-    return;
-  }
-  const reservations = await repo.getFiltered(filters);
-  res.json(reservations.map(toReservationDto));
+  const limit  = resolveReservationsLimit(filters.limit);
+  const offset = filters.offset ?? 0;
+  const { limit: _limit, offset: _offset, ...countFilters } = filters;
+  const [reservations, total] = await Promise.all([
+    repo.getFiltered({ ...filters, limit, offset }),
+    repo.countFiltered(countFilters),
+  ]);
+  res.json({
+    data: reservations.map(toReservationDto),
+    limit,
+    offset,
+    total,
+    hasMore: offset + reservations.length < total,
+  });
 }
 
 export function createReservationsRouter(container: AppContainer): Router {
@@ -273,13 +278,13 @@ export function createReservationsRouter(container: AppContainer): Router {
   // ── GET /reservations ──────────────────────────────────────────────────────
   // K2 (23/08/2026, pendientes-2026-08-23.md, SC16) — antes llamaba a
   // getAll() (deprecado), sin leer query params: siempre un SELECT sin
-  // LIMIT sobre toda la tabla. `getFiltered`/`countFiltered` ya existían
-  // implementados (sql.reservation.repository.ts), solo faltaba wirear la
-  // ruta. Sin page/limit en la query, se mantiene el array plano de
-  // siempre (compatibilidad hacia atrás) — con page/limit, devuelve el
-  // envelope paginado que el frontend ya tipa (PaginatedResponse<T>,
-  // lib/http.ts). `search` YA NO va acá — ver POST /reservations/search
-  // (A7.2, 23/08/2026: era PII viajando en query string).
+  // LIMIT sobre toda la tabla. D-14 (15/09/2026,
+  // docs/decisiones-auditoria-fase2-2026-09-15.md #12) — contrato
+  // canónico limit/offset, SIEMPRE devuelve el envelope
+  // `{ data, limit, offset, total, hasMore }` (reemplaza el compat K2
+  // page/limit-o-array-plano). `search` NO va acá — ver
+  // POST /reservations/search (A7.2, 23/08/2026: era PII viajando en
+  // query string).
   router.get(
     '/',
     authorize(Roles.FRONT_DESK),
@@ -287,15 +292,16 @@ export function createReservationsRouter(container: AppContainer): Router {
       try {
         const resourceRepo = new SqlResourceRepository(req.db);
         const repo         = new SqlReservationRepository(req.db, resourceRepo);
-        const { status, resourceId, customerId, from, to, isLodging, page, limit } = GetReservationsQuerySchema.parse(req.query);
-        const filters = {
+        const { status, resourceId, customerId, from, to, isLodging, limit, offset } = GetReservationsQuerySchema.parse(req.query);
+        const filters: ReservationFilters = {
           ...(status     !== undefined && { status: status as ReservationStatus }),
           ...(resourceId !== undefined && { resourceId }),
           ...(customerId !== undefined && { customerId }),
           ...(from       !== undefined && { from: new Date(from) }),
           ...(to         !== undefined && { to:   new Date(to) }),
           ...(isLodging  !== undefined && { isLodging }),
-          ...(page !== undefined && limit !== undefined && { page, limit }),
+          ...(limit      !== undefined && { limit }),
+          ...(offset     !== undefined && { offset }),
         };
         await respondWithReservationsList(repo, filters, res);
       } catch (err) {
@@ -306,9 +312,9 @@ export function createReservationsRouter(container: AppContainer): Router {
   );
 
   // POST /reservations/search — { search } en el body, nunca en la URL
-  // (A7.2: nombre/email tipeado por el usuario es PII). Reemplaza el
-  // `?search=` que tenía GET /reservations hasta esta sesión (K2,
-  // pendientes-2026-08-23.md).
+  // (A7.2: nombre/email tipeado por el usuario es PII). Mismo contrato
+  // limit/offset que GET /reservations (D-14) — comparten
+  // respondWithReservationsList().
   router.post(
     '/search',
     authorize(Roles.FRONT_DESK),
@@ -317,7 +323,7 @@ export function createReservationsRouter(container: AppContainer): Router {
         const body = SearchReservationsSchema.parse(req.body);
         const resourceRepo = new SqlResourceRepository(req.db);
         const repo         = new SqlReservationRepository(req.db, resourceRepo);
-        const filters = {
+        const filters: ReservationFilters = {
           search: body.search,
           ...(body.status     !== undefined && { status: body.status as ReservationStatus }),
           ...(body.resourceId !== undefined && { resourceId: body.resourceId }),
@@ -325,7 +331,8 @@ export function createReservationsRouter(container: AppContainer): Router {
           ...(body.from       !== undefined && { from: new Date(body.from) }),
           ...(body.to         !== undefined && { to:   new Date(body.to) }),
           ...(body.isLodging  !== undefined && { isLodging: body.isLodging }),
-          ...(body.page !== undefined && body.limit !== undefined && { page: body.page, limit: body.limit }),
+          ...(body.limit      !== undefined && { limit: body.limit }),
+          ...(body.offset     !== undefined && { offset: body.offset }),
         };
         await respondWithReservationsList(repo, filters, res);
       } catch (err) { next(err); }

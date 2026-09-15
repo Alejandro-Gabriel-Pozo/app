@@ -1,27 +1,27 @@
 /**
  * @file reservations-unpaginated-limit.integration.test.ts
- * @description D-14 parcial (15/09/2026,
- * docs/decisiones-auditoria-fase2-2026-09-15.md, hallazgo D-14 de la
- * auditoría Fase 2) -- `SqlReservationRepository.getFiltered()` sin
- * `page`/`limit` no tenía NINGUNA cota: un `GET /api/reservations` sin
- * parámetros devolvía la tabla `reservations` entera. Esta suite siembra
- * más filas que `SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT`
- * contra Postgres real y confirma que `getFiltered({})` devuelve como
- * máximo ese tope -- el mismo caso que
+ * @description D-14 (15/09/2026,
+ * docs/decisiones-auditoria-fase2-2026-09-15.md #12, RESUELTO) --
+ * `SqlReservationRepository.getFiltered()` sin `limit`/`offset` explícitos
+ * cae al default (`RESERVATIONS_DEFAULT_LIMIT`, 50) -- antes de D-02/D-14
+ * (bf29137) esta query no tenía NINGUNA cota: un `GET /api/reservations`
+ * sin parámetros devolvía la tabla `reservations` entera. Esta suite
+ * siembra más filas que el default contra Postgres real y confirma que
+ * `getFiltered({})` devuelve como máximo ese default -- el mismo caso que
  * `in-memory.reservation.repository.test.ts` ya cubre en memoria (ese sí
  * corre sin Postgres).
  *
- * El tope es PROVISORIO: el contrato canónico de paginación (page/limit
- * vs. limit/offset, y si el tope debe ser global/por plan/por tenant)
- * sigue en grounding (D-14 completo, no resuelto todavía) -- ver el
- * comentario en `SqlReservationRepository.getFiltered()`.
+ * El contrato es DEFINITIVO (D-14 resuelto, grounding contra 8 sistemas de
+ * referencia): limit/offset, envelope único, tope fijo y global (no por
+ * plan/tenant), default 50 / máximo 200 (`RESERVATIONS_MAX_LIMIT`, clamp,
+ * no rechazo). Ver `resolveReservationsLimit()` en
+ * `reservation.repository.ts`.
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
  * Si no está definida, la suite se saltea (skipIfNoDb), no falla el
  * pipeline. **No se pudo correr en este entorno (sin Postgres real
- * disponible) -- queda como verificación pendiente en CI/entorno real,
- * ver docs/pendientes-2026-09-15.md.**
+ * disponible) -- queda como verificación pendiente en CI/entorno real.**
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -34,12 +34,13 @@ import { seedCategory, seedResource, seedCustomer } from './helpers/seed.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { SqlReservationRepository } from '../../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository } from '../../reservas/sql.resource.repository.js';
+import { RESERVATIONS_DEFAULT_LIMIT } from '../../reservas/reservation.repository.js';
 
 let db: SqlClient;
 let pool: pg.Pool;
 let dbName: string;
 
-describe.skipIf(skipIfNoDb)('SqlReservationRepository.getFiltered() sin page/limit -- tope duro (D-14 parcial)', () => {
+describe.skipIf(skipIfNoDb)('SqlReservationRepository.getFiltered() sin limit/offset -- default duro (D-14)', () => {
   let repo: SqlReservationRepository;
 
   beforeAll(async () => {
@@ -52,8 +53,8 @@ describe.skipIf(skipIfNoDb)('SqlReservationRepository.getFiltered() sin page/lim
     await dropTestDatabase(dbName, pool);
   });
 
-  it('siembra más filas que el tope y confirma que getFiltered({}) devuelve como máximo el tope', async () => {
-    const limit = SqlReservationRepository.DEFAULT_UNPAGINATED_LIMIT;
+  it('siembra más filas que el default y confirma que getFiltered({}) devuelve como máximo el default', async () => {
+    const limit = RESERVATIONS_DEFAULT_LIMIT;
     const seeded = limit + 1;
 
     const category = await seedCategory(db);

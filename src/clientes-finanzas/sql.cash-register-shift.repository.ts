@@ -114,10 +114,14 @@ export class SqlCashRegisterShiftRepository implements CashRegisterShiftReposito
   async list(businessId: string, filter?: { limit?: number; offset?: number }): Promise<CashRegisterShift[]> {
     const limit = filter?.limit ?? 50;
     const offset = filter?.offset ?? 0;
+    // Desempate explícito (D-14, 15/09/2026,
+    // docs/decisiones-auditoria-fase2-2026-09-15.md #12, `, id DESC`) --
+    // sin él, dos turnos con el mismo opened_at pueden aparecer duplicados
+    // o faltar entre páginas.
     const result = await this.sqlClient.query<ShiftRow>(
       `SELECT * FROM cash_register_shifts
        WHERE business_id = $1
-       ORDER BY opened_at DESC
+       ORDER BY opened_at DESC, id DESC
        LIMIT $2 OFFSET $3`,
       [businessId, limit, offset],
     );

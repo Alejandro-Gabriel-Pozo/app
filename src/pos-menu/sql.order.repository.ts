@@ -136,10 +136,14 @@ export class SqlOrderRepository implements IOrderRepositoryWithClient {
     const offset = filter.offset ?? 0;
     params.push(limit, offset);
 
+    // Desempate explícito (D-14, 15/09/2026,
+    // docs/decisiones-auditoria-fase2-2026-09-15.md #12, `, o.id DESC`) --
+    // sin él, dos órdenes con el mismo created_at pueden aparecer
+    // duplicadas o faltar entre páginas.
     const sql = `
       SELECT o.* FROM orders o
       WHERE ${conditions.join(' AND ')}
-      ORDER BY o.created_at DESC
+      ORDER BY o.created_at DESC, o.id DESC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
 

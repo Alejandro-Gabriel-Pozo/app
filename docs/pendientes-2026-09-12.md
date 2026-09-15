@@ -67,13 +67,28 @@ cuando se pushea.
     src/tests/integration/reservation.service.integration.test.ts
     src/tests/integration/cancellation-refund.integration.test.ts
     src/tests/integration/reservation-cancel-invoice-toctou.integration.test.ts`.
-  - **`bf29137`** (filtros de reservas + tope, D-02/D-14 parcial) —
-    `reservations-unpaginated-limit.integration.test.ts` (siembra
-    `limit+1` filas reales) no corrió. Acción puntual:
+  - **D-14 (contrato canónico de paginación, RESUELTO
+    15/09/2026 — reemplaza el ítem anterior sobre `bf29137`/tope
+    provisorio de 100 que estaba acá)** —
+    `reservations-unpaginated-limit.integration.test.ts` sigue sin poder
+    correr contra Postgres real en este entorno (sin `TEST_DATABASE_URL`).
+    Ya no es "verificar un tope provisorio": ahora hay que confirmar el
+    contrato canónico completo contra una base real —
+    `limit`/`offset` (default 50 / tope 200 vía `resolveReservationsLimit()`,
+    clamp-and-report, nunca 400), envelope SIEMPRE
+    `{data, limit, offset, total, hasMore}`, y el desempate
+    `ORDER BY ..., id [ASC|DESC]` en los 5 listados (reservations +
+    orders/products/cash-register-shift/customers). Acción puntual:
     `TEST_DATABASE_URL=... npm run test:integration` (excluido de `npm
     test` por `vitest.config.ts`, corre solo por esa vía) y confirmar que
-    `getFiltered({})` devuelve exactamente 100 filas contra Postgres real,
-    no solo contra el repo in-memory (ya confirmado en verde).
+    `getFiltered({})` sin `limit`/`offset` devuelve exactamente 50 filas
+    (`RESERVATIONS_DEFAULT_LIMIT`, no las 100 del tope provisorio
+    anterior) contra Postgres real, no solo contra el repo in-memory (ya
+    confirmado en verde). Confirmar también, sembrando filas con
+    `start_time`/`opened_at`/`created_at`/`display_name`/`name` empatados
+    a propósito, que el desempate por `id` evita duplicados/faltantes
+    entre páginas (motivo del cambio: `erpnext#49037`, citado en el
+    grounding de D-14, docs/decisiones-auditoria-fase2-2026-09-15.md #12).
   - **`dd48592`** (horizonte de ventana de mantenimiento en dos tramos,
     D-03) — el test de atomicidad (`maintenance-window.service.test.ts`,
     caso "(d) atomicidad") corre contra `InMemoryTransactionManager` (sin
