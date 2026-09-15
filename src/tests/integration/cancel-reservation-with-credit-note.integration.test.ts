@@ -77,6 +77,7 @@ import type { Order } from '../../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../../pos-menu/product.repository.js';
 import type { Product, ProductVariant } from '../../pos-menu/product.entities.js';
 import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
+import { SqlCreditNoteRequestRepository } from '../../facturacion/sql.credit-note-request.repository.js';
 
 const BIZ = 'biz-cancel-res-cn';
 const ACTOR = 'user-cancel-res-cn';
@@ -178,6 +179,12 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
 
   beforeEach(async () => {
     await db.query('DELETE FROM audit_log');
+    // Bloque 3 (15/09/2026) -- `credit_note_request.invoice_id`/
+    // `reversed_invoice_id` referencian `invoices` SIN `ON DELETE` (RESTRICT
+    // por default) -- tiene que borrarse ANTES de `DELETE FROM invoices` más
+    // abajo, o esa sentencia falla por violación de FK en cuanto esta suite
+    // empiece a poblar la tabla.
+    await db.query('DELETE FROM credit_note_request');
     await db.query('DELETE FROM invoice_items');
     await db.query('DELETE FROM invoice_charges');
     await db.query('UPDATE financial_transactions SET reversed_invoice_id = NULL, settled_invoice_id = NULL');
@@ -196,6 +203,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
       reservationRepo,
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
       new SqlServiceItemRepository(db),
+      new SqlCreditNoteRequestRepository(db),
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }

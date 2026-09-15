@@ -58,6 +58,8 @@ import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.f
 import { SqlCashRegisterShiftRepository } from '../../clientes-finanzas/sql.cash-register-shift.repository.js';
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 import { SqlAccountsReceivableRepository } from '../../clientes-finanzas/sql.accounts-receivable.repository.js';
+import { SqlCreditNoteRequestRepository } from '../../facturacion/sql.credit-note-request.repository.js';
+import type { CreditNoteRequestRepository } from '../../facturacion/credit-note-request.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
 import { CancelOrderWithCreditNoteService } from '../../facturacion/cancel-order-with-credit-note.service.js';
@@ -187,6 +189,12 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
 
   beforeEach(async () => {
     await db.query('DELETE FROM audit_log');
+    // Bloque 3 (15/09/2026) -- `credit_note_request.invoice_id`/
+    // `reversed_invoice_id` referencian `invoices` SIN `ON DELETE` (RESTRICT
+    // por default) -- tiene que borrarse ANTES de `DELETE FROM invoices` más
+    // abajo, o esa sentencia falla por violación de FK en cuanto esta suite
+    // empiece a poblar la tabla (los tests de Bloque 3, más abajo).
+    await db.query('DELETE FROM credit_note_request');
     await db.query('DELETE FROM invoice_items');
     await db.query('DELETE FROM invoice_charges');
     // `invoices` <-> `financial_transactions` se referencian mutuamente
@@ -219,6 +227,29 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
       new SqlServiceItemRepository(db),
+      new SqlCreditNoteRequestRepository(db),
+      () => buildArcaBillingAdapter(arcaFactory()),
+    );
+  }
+
+  /**
+   * Bloque 3 -- test de atomicidad (más abajo): un `creditNoteRequestRepo`
+   * cuyo `createWithClient()` siempre falla, para verificar que la factura
+   * (NC) tampoco persiste cuando el INSERT de `credit_note_request` explota
+   * DENTRO de la misma transacción.
+   */
+  function buildInvoiceServiceWithFailingCreditNoteRequestRepo(arcaFactory: () => Arca): InvoiceService {
+    const failingRepo: Pick<CreditNoteRequestRepository, 'createWithClient'> = {
+      async createWithClient(): Promise<never> {
+        throw new Error('simulado -- violación de constraint en credit_note_request');
+      },
+    };
+    return new InvoiceService(
+      invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
+      orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
+      pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
+      failingRepo,
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }
@@ -236,6 +267,7 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new SqlAccountsReceivableRepository(db), new SqlAuditLogRepository(db),
       new SqlServiceItemRepository(db),
+      new SqlCreditNoteRequestRepository(db),
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }
@@ -794,6 +826,103 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
         `SELECT status FROM orders WHERE id = $1`, [orderB.id],
       );
       expect(orderBRows[0]!.status).toBe('CONFIRMED');
+    }, 30_000);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bloque 3 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis corregido) --
+  // el INSERT de `credit_note_request` dentro de `buildCreditNote()`,
+  // gateado por `tx.type === 'ADJUSTMENT'`.
+  // ---------------------------------------------------------------------------
+  describe('Bloque 3 -- credit_note_request nace en PENDIENTE dentro de buildCreditNote()', () => {
+    it('el escape fiscal completo crea una fila credit_note_request real (PENDIENTE, invoice_id/order_id correctos)', async () => {
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const sut = buildSut(invoiceService);
+      const { orderId, invoiceId } = await seedInvoicedOrder(invoiceService);
+
+      const result = await sut.cancelOrderWithCreditNote(orderId, auth(orderId));
+      expect(result.emitted).toBe(true);
+      expect(result.creditNote.status).toBe('ISSUED');
+
+      const { rows } = await db.query<{
+        invoice_id: string; reversed_invoice_id: string; order_id: string | null;
+        reservation_id: string | null; state: string; resolution_outcome: string | null;
+        resolved_by: string | null; resolved_at: string | null;
+      }>(
+        `SELECT invoice_id, reversed_invoice_id, order_id, reservation_id, state,
+                resolution_outcome, resolved_by, resolved_at
+         FROM credit_note_request WHERE invoice_id = $1`, [result.creditNote.id],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.invoice_id).toBe(result.creditNote.id);
+      expect(rows[0]!.reversed_invoice_id).toBe(invoiceId);
+      expect(rows[0]!.order_id).toBe(orderId);
+      expect(rows[0]!.reservation_id).toBeNull();
+      expect(rows[0]!.state).toBe('PENDIENTE');
+      // Cierre automático NO corrió (Bloque 4, todavía no implementado) --
+      // los campos de resolución tienen que seguir en NULL.
+      expect(rows[0]!.resolution_outcome).toBeNull();
+      expect(rows[0]!.resolved_by).toBeNull();
+      expect(rows[0]!.resolved_at).toBeNull();
+    }, 30_000);
+
+    it('un reembolso normal (C2, type=REFUND, sin escape) NO genera ninguna fila credit_note_request', async () => {
+      // Mismo shape que produce hoy `CancellationRefundService.confirmRefund()`
+      // (REFUND SETTLED con reversedInvoiceId resuelto) -- criterio ya usado
+      // por `credit-note-compensation.integration.test.ts`. Se arma sobre una
+      // factura de ORDEN (la única infra de facturación que este archivo ya
+      // tiene) solo para poder reusar `seedInvoicedOrder()`; lo que se prueba
+      // es el gate `tx.type === 'ADJUSTMENT'` de `buildCreditNote()`, no el
+      // origen real de un REFUND (que siempre es de reserva, C2) -- el gate
+      // no distingue por sujeto, solo por `tx.type`.
+      const invoiceService = buildInvoiceService(fakeArcaClientOk);
+      const { invoiceId } = await seedInvoicedOrder(invoiceService);
+
+      const { rows: before } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM credit_note_request`);
+      expect(Number(before[0]!.count)).toBe(0);
+
+      const refundTx = await financialRepo.create({
+        id: randomUUID(), businessId: BIZ, customerId: CUS,
+        type: 'REFUND', amount: 100, currency: 'ARS', status: 'PENDING',
+        reversedInvoiceId: invoiceId,
+      });
+
+      const creditNote = await invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: refundTx!.id, changedBy: ACTOR,
+      });
+      expect(creditNote.status).toBe('ISSUED'); // confirma que SÍ pasó por buildCreditNote() (no un no-op)
+
+      const { rows: after } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM credit_note_request`);
+      expect(Number(after[0]!.count)).toBe(0);
+    }, 30_000);
+
+    it('atomicidad -- si el INSERT de credit_note_request falla, la factura (NC) tampoco persiste', async () => {
+      const invoiceService = buildInvoiceServiceWithFailingCreditNoteRequestRepo(fakeArcaClientOk);
+      const sut = buildSut(invoiceService);
+      const { orderId } = await seedInvoicedOrder(invoiceService);
+
+      const { rows: invoicesBefore } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM invoices`);
+
+      await expect(sut.cancelOrderWithCreditNote(orderId, auth(orderId))).rejects.toThrow(
+        /violación de constraint en credit_note_request/,
+      );
+
+      // Ni la NC (`invoices`) ni la fila `credit_note_request` persistieron --
+      // mismo commit, buildCreditNote() nunca llegó a llamar a AFIP (el throw
+      // pasa DENTRO de transactionManager.run(), antes de this.issue()).
+      const { rows: invoicesAfter } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM invoices`);
+      expect(Number(invoicesAfter[0]!.count)).toBe(Number(invoicesBefore[0]!.count));
+
+      const { rows: cnrRows } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM credit_note_request`);
+      expect(Number(cnrRows[0]!.count)).toBe(0);
+
+      // La orden sigue CONFIRMED -- tx1 (el ADJUSTMENT) sí commiteó por su
+      // cuenta ANTES de que buildCreditNote() corriera (flujo corregido de
+      // §6.5 bis: son dos transacciones separadas) -- eso es esperado, no
+      // parte de lo que este test cubre (mismo N11 que el resto del ADR: sin
+      // NC ISSUED, la orden no se cancela).
+      const { rows: orderRows } = await db.query<{ status: string }>(`SELECT status FROM orders WHERE id = $1`, [orderId]);
+      expect(orderRows[0]!.status).toBe('CONFIRMED');
     }, 30_000);
   });
 });

@@ -67,6 +67,8 @@ import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-
 import { round2 } from '../domain/money.js';
 import { CREDIT_NOTE_COMPENSATION_TOLERANCE, creditNoteLinesFromInvoiceItems, type AccountsReceivableWarningEntry } from './cancel-with-credit-note.js';
 import type { AuditLogRepository } from '../repositories/audit-log.repository.js';
+import type { CreditNoteRequestRepository } from './credit-note-request.repository.js';
+import type { CreditNoteRequestSubject } from './credit-note-request.entities.js';
 import { logger } from '../logger.js';
 
 const AUDIT_ENTITY = 'invoices';
@@ -211,6 +213,18 @@ export class InvoiceService {
      * en vez de fallar ruidoso). Ver `resolveOrderItemLine()`.
      */
     private readonly serviceItemRepo: Pick<ServiceItemRepository, 'findById'>,
+    /**
+     * Bloque 3 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis
+     * corregido) -- el INSERT de `credit_note_request` corre DENTRO de la
+     * MISMA transacción que `invoiceRepo.createWithClient()` +
+     * `recordInvoiceAudit()` en `buildCreditNote()`, gateado por
+     * `tx.type === 'ADJUSTMENT'` (nunca para `REFUND`: `CancellationRefundService`
+     * también llama a `buildCreditNote()` con `type: 'REFUND'` -- sin el
+     * filtro se generarían filas espurias para reembolsos normales de C2).
+     * `Pick<..., 'createWithClient'>` -- mínimo necesario, mismo criterio
+     * que el resto de repos inyectados acá (bounded contexts).
+     */
+    private readonly creditNoteRequestRepo: Pick<CreditNoteRequestRepository, 'createWithClient'>,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
@@ -900,7 +914,13 @@ export class InvoiceService {
     changedBy: string,
   ): Promise<Invoice> {
     if (!tx.reversedInvoiceId) throw new InvoiceNotReversibleError(tx.id);
-    const original = await this.invoiceRepo.getById(tx.reversedInvoiceId);
+    // Capturado en un local -- Bloque 3 lo reusa DENTRO del closure de
+    // `transactionManager.run()` más abajo, y una propiedad narrowed de un
+    // parámetro no sobrevive de forma confiable el cruce a una función
+    // anidada (mismo criterio ya usado en este archivo para `reservationId`/
+    // `orderId` en las ramas por-par, unas líneas más abajo).
+    const reversedInvoiceId = tx.reversedInvoiceId;
+    const original = await this.invoiceRepo.getById(reversedInvoiceId);
     if (!original || original.status !== 'ISSUED' || !original.cbteNro) {
       throw new InvoiceNotReversibleError(tx.id);
     }
@@ -1228,6 +1248,52 @@ export class InvoiceService {
         items,
       );
       await this.recordInvoiceAudit(client, invoice, changedBy);
+
+      // Bloque 3 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis
+      // corregido) -- la fila `credit_note_request` nace acá, EN LA MISMA
+      // transacción que la factura de arriba (atomic-state-mutation: un
+      // solo commit, un fallo a mitad de camino no puede dejar una factura
+      // sin su fila de solicitud asociada, ni viceversa). Gateado por
+      // `tx.type === 'ADJUSTMENT'` -- NUNCA para `REFUND`
+      // (`CancellationRefundService.confirmRefund()` también llega hasta
+      // acá con `type: 'REFUND'`, flujo C2 normal, sin escape de por
+      // medio; sin este filtro se crearían filas espurias para reembolsos
+      // que no son el escape fiscal).
+      if (tx.type === 'ADJUSTMENT') {
+        // El guard de ambigüedad de más arriba (`tx.orderId != null &&
+        // tx.reservationId != null` -> `CreditNoteAmbiguousSubjectError`) ya
+        // descartó "los dos". Los dos únicos productores reales de un
+        // ADJUSTMENT con `reversedInvoiceId` puesto (los orquestadores del
+        // escape, `cancel-order-with-credit-note.service.ts`/
+        // `cancel-reservation-with-credit-note.service.ts`) siempre setean
+        // exactamente uno -- pero `credit_note_request` tiene su PROPIO
+        // CHECK "= 1" (`chk_credit_note_request_order_or_reservation`), más
+        // estricto que el "<= 1" de `financial_transactions` (que sí admite
+        // los dos en null, ver p.ej. `accounts-receivable.service.ts`
+        // reverseTransfer(), que nunca llega hasta acá porque esas filas
+        // llevan `reversedInvoiceId: null`). Falla ruidoso acá -- con un
+        // error tipado que nombra el `tx.id` -- en vez de dejar que un
+        // futuro tercer productor de ADJUSTMENT-con-reversedInvoiceId
+        // rebote contra un CHECK de Postgres genérico.
+        let subject: CreditNoteRequestSubject;
+        if (tx.orderId != null) {
+          subject = { kind: 'ORDER', id: tx.orderId };
+        } else if (tx.reservationId != null) {
+          subject = { kind: 'RESERVATION', id: tx.reservationId };
+        } else {
+          throw new Error(
+            `[buildCreditNote] ADJUSTMENT ${tx.id} sin orderId ni reservationId al crear credit_note_request -- ` +
+            `no debería pasar (el guard de ambigüedad y las ramas de arriba ya exigen exactamente un sujeto real).`,
+          );
+        }
+        await this.creditNoteRequestRepo.createWithClient(client, {
+          id: randomUUID(),
+          businessId: input.businessId,
+          invoiceId: invoice.id,
+          reversedInvoiceId,
+          subject,
+        });
+      }
     });
 
     return invoice;

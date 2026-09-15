@@ -79,6 +79,17 @@ const INVOICE_SERVICE_FILE = join(__dirname, '../../facturacion/invoice.service.
  *    para esta cerca -- verificado a mano que no hay ninguno así dentro de
  *    `buildCreditNote()` hoy (12/09/2026), pero si se agrega uno, esta
  *    cerca no lo va a ver.
+ * 4. La extracción es por NOMBRE DE CLASE, no por sitio de código -- si DOS
+ *    `throw` distintos usan la misma clase genérica (`Error`), colapsan en
+ *    UNA sola entrada de `EXPECTED_THROWS`, cada una con su propia nota
+ *    dentro del mismo string. Un TERCER sitio nuevo que tire esa misma
+ *    clase no mueve esta cerca -- no hay forma de que el conteo por nombre
+ *    detecte "apareció un sitio más" si la clase ya estaba en el set.
+ *    Caso real (15/09/2026, Bloque 3 de `credit_note_request`): el guard
+ *    `throw new Error(...)` nuevo (orderId/reservationId ambos null antes
+ *    del INSERT de `credit_note_request`) comparte clase con el guard
+ *    heredado de la rama proporcional -- la nota de `EXPECTED_THROWS.Error`
+ *    documenta los dos sitios a mano porque la cerca no puede.
  */
 
 interface ThrowClassification {
@@ -115,7 +126,7 @@ const EXPECTED_THROWS: Record<string, ThrowClassification> = {
   Error: {
     classification: 'DETERMINISTIC',
     note:
-      '[buildCreditNote] un ADJUSTMENT parcial sin orderId ni reservationId -- rama heredada, sujeto ausente. Determinístico igual que el resto, pero NO es un DomainError (mapea a 500 genérico, no a un `code` propio) y HOY es estructuralmente inalcanzable desde los 2 escapes reales (cada uno setea exactamente un sujeto) -- invariante rota si salta, no un caso de negocio.',
+      '[buildCreditNote] DOS sitios distintos tiran esta misma clase genérica -- la extracción por regex es por NOMBRE de clase, no por sitio de código, así que colapsan en una sola entrada acá (falso negativo declarado, ver "SI ESTO ROMPE" arriba: un tercer sitio nuevo con la misma clase tampoco movería esta cerca). (1) rama heredada, un ADJUSTMENT parcial sin orderId ni reservationId. (2) Bloque 3 de credit_note_request (15/09/2026): mismo guard, ahora también antes del INSERT de credit_note_request -- ambos null ahí exigiría violar el CHECK `chk_credit_note_request_order_or_reservation` (="1"), así que se falla legible antes de llegar a Postgres. Los DOS son determinísticos por el mismo argumento: NO son DomainError (mapean a 500 genérico, no a un `code` propio) y HOY son estructuralmente inalcanzables desde los 2 escapes reales (cada uno setea exactamente un sujeto) -- invariante rota si salta, no un caso de negocio.',
   },
   CreditNoteCapExceededError: {
     classification: 'TRANSIENT',

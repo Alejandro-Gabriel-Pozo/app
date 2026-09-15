@@ -47,6 +47,7 @@ import { SqlRecipeItemRepository } from '../../repositories/sql.recipe-item.repo
 import { SqlInventoryLevelRepository } from '../../repositories/sql.inventory-level.repository.js';
 import { SqlCustomerRateRepository } from '../../clientes-finanzas/sql.customer-rate.repository.js';
 import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
+import { SqlCreditNoteRequestRepository } from '../../facturacion/sql.credit-note-request.repository.js';
 import { SqlAuditLogRepository } from '../../repositories/audit-log.repository.js';
 import { SqlDomainEventRepository } from '../../repositories/sql.domain-event.repository.js';
 import { SqlBusinessProfileRepository } from '../../repositories/sql.business-profile.repository.js';
@@ -159,6 +160,7 @@ describe.skipIf(skipIfNoDb)('Bloque D service_items -- facturar una orden con or
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
       serviceItemRepo,
+      new SqlCreditNoteRequestRepository(db),
       () => buildArcaBillingAdapter(sharedArcaClient),
     );
   }, 60_000);

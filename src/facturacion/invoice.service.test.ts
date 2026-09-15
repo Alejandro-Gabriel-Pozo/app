@@ -15,6 +15,8 @@ import type { IProductRepository, IProductVariantRepository } from '../pos-menu/
 import type { Product, ProductVariant } from '../pos-menu/product.entities.js';
 import type { ServiceItemRepository } from '../pos-menu/service-item.repository.js';
 import type { ServiceItem } from '../pos-menu/service-item.entities.js';
+import type { CreditNoteRequestRepository } from './credit-note-request.repository.js';
+import type { CreditNoteRequest, CreateCreditNoteRequestInput } from './credit-note-request.entities.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -262,6 +264,35 @@ class FakeServiceItemRepository implements Pick<ServiceItemRepository, 'findById
   async findById(id: string): Promise<ServiceItem | null> { return this.items.get(id) ?? null; }
 }
 
+/**
+ * Bloque 3 del ADR común cancelar-con-NC (15/09/2026, §6.5 bis corregido) --
+ * fake mínimo que graba cada `createWithClient()` para que los tests puedan
+ * verificar que el gate `tx.type === 'ADJUSTMENT'` de `buildCreditNote()`
+ * llama (o NO llama) al repo, y con qué campos.
+ */
+class FakeCreditNoteRequestRepository implements Pick<CreditNoteRequestRepository, 'createWithClient'> {
+  public calls: CreateCreditNoteRequestInput[] = [];
+  async createWithClient(_client: SqlClient, input: CreateCreditNoteRequestInput): Promise<CreditNoteRequest> {
+    this.calls.push(input);
+    return {
+      id: input.id,
+      businessId: input.businessId,
+      invoiceId: input.invoiceId,
+      reversedInvoiceId: input.reversedInvoiceId,
+      orderId: input.subject.kind === 'ORDER' ? input.subject.id : null,
+      reservationId: input.subject.kind === 'RESERVATION' ? input.subject.id : null,
+      state: 'PENDIENTE',
+      resolutionOutcome: null,
+      resolvedBy: null,
+      resolvedAt: null,
+      resolutionNote: null,
+      slaAlertSentAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  }
+}
+
 class FakeTransactionManager implements TransactionManager {
   async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
     return work({} as SqlClient);
@@ -404,6 +435,8 @@ describe('InvoiceService', () => {
     reservation?: Reservation | null;
     /** Bloque D de `service_items` -- solo hace falta cuando `order` trae ítems SERVICE. */
     serviceItems?: Map<string, ServiceItem>;
+    /** Bloque 3 -- para que un test pueda inspeccionar `.calls` tras `requestInvoice()`. */
+    creditNoteRequestRepo?: FakeCreditNoteRequestRepository;
   } = {}) {
     const client = opts.client ?? fakeArcaClient();
     return new InvoiceService(
@@ -419,6 +452,7 @@ describe('InvoiceService', () => {
       arRepo,
       auditLogRepo,
       new FakeServiceItemRepository(opts.serviceItems),
+      opts.creditNoteRequestRepo ?? new FakeCreditNoteRequestRepository(),
       // buildService sigue armando un Arca fake (fakeArcaClient) igual que
       // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
       // existentes de fakeArcaClient({...}) en esta suite no necesiten
@@ -536,6 +570,7 @@ describe('InvoiceService', () => {
         arRepo,
         new InMemoryAuditLogRepository(),
         new FakeServiceItemRepository(),
+        new FakeCreditNoteRequestRepository(),
         clientFactory,
       );
 
@@ -559,6 +594,7 @@ describe('InvoiceService', () => {
         arRepo,
         new InMemoryAuditLogRepository(),
         new FakeServiceItemRepository(),
+        new FakeCreditNoteRequestRepository(),
         clientFactory,
       );
 
@@ -1023,6 +1059,66 @@ describe('InvoiceService', () => {
       });
       const invoiceAdj = await serviceAdj.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
       expect(CBTE_TIPOS_NOTA_CREDITO).toContain(invoiceAdj.cbteTipo);
+    });
+
+    describe('Bloque 3 (15/09/2026, §6.5 bis corregido) -- gate tx.type === \'ADJUSTMENT\' del INSERT de credit_note_request', () => {
+      it('ADJUSTMENT: llama a creditNoteRequestRepo.createWithClient() una vez, con invoiceId/reversedInvoiceId/subject correctos', async () => {
+        seedOriginalInvoice({ id: 'inv-orden-cnr', financialTransactionId: 'ft-charge-cnr' });
+        // N3 (reversión total con detalle de líneas) exige invoice_items --
+        // sin esto cae a la rama "sin líneas" y tira OrderInvoiceHasNoLinesError
+        // antes de llegar a la transacción donde vive el INSERT bajo prueba.
+        seedOriginalItems('inv-orden-cnr', [
+          { orderItemId: 'oi-cnr', description: 'Producto CNR', quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 21 },
+        ]);
+        const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+        const service = buildService({
+          tx: makeTx({ type: 'ADJUSTMENT', amount: -100, orderId: 'ord-cnr', reversedInvoiceId: 'inv-orden-cnr' }),
+          client: fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }),
+          creditNoteRequestRepo,
+        });
+
+        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+        expect(creditNoteRequestRepo.calls).toHaveLength(1);
+        const call = creditNoteRequestRepo.calls[0]!;
+        expect(call.businessId).toBe('biz-1');
+        expect(call.invoiceId).toBe(invoice.id);
+        expect(call.reversedInvoiceId).toBe('inv-orden-cnr');
+        expect(call.subject).toEqual({ kind: 'ORDER', id: 'ord-cnr' });
+      });
+
+      it('ADJUSTMENT con reservationId (en vez de orderId): subject = { kind: RESERVATION }', async () => {
+        seedOriginalInvoice({ id: 'inv-reserva-cnr', financialTransactionId: 'ft-charge-res-cnr' });
+        seedOriginalItems('inv-reserva-cnr', [
+          { reservationId: 'res-cnr', description: 'Estadía CNR', quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 21 },
+        ]);
+        const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+        const service = buildService({
+          tx: makeTx({ type: 'ADJUSTMENT', amount: 100, reservationId: 'res-cnr', reversedInvoiceId: 'inv-reserva-cnr' }),
+          client: fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }),
+          creditNoteRequestRepo,
+        });
+
+        await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+        expect(creditNoteRequestRepo.calls).toHaveLength(1);
+        expect(creditNoteRequestRepo.calls[0]!.subject).toEqual({ kind: 'RESERVATION', id: 'res-cnr' });
+      });
+
+      it('REFUND (C2 normal): NUNCA llama a creditNoteRequestRepo.createWithClient() -- solo ADJUSTMENT dispara el escape', async () => {
+        seedOriginalInvoice({ id: 'inv-refund-cnr', financialTransactionId: 'ft-charge-refund-cnr' });
+        const creditNoteRequestRepo = new FakeCreditNoteRequestRepository();
+        const service = buildService({
+          tx: makeTx({ type: 'REFUND', amount: 100, reservationId: 'res-refund-cnr', reversedInvoiceId: 'inv-refund-cnr' }),
+          client: fakeArcaClient({ createNextVoucher: vi.fn().mockResolvedValue(afipApprovedResponse(1)) }),
+          creditNoteRequestRepo,
+        });
+
+        const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+        expect(invoice.status).toBe('ISSUED'); // confirma que SÍ pasó por buildCreditNote() -- no es un no-op por otra razón
+        expect(creditNoteRequestRepo.calls).toHaveLength(0);
+      });
     });
 
     it('rechaza un REFUND sin reversedInvoiceId (ledger-only, sin factura que corregir)', async () => {
@@ -2062,6 +2158,7 @@ describe('InvoiceService — C1-Fase C', () => {
         arRepo,
         new InMemoryAuditLogRepository(),
         new FakeServiceItemRepository(),
+        new FakeCreditNoteRequestRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
@@ -2088,6 +2185,7 @@ describe('InvoiceService — C1-Fase C', () => {
         arRepo,
         new InMemoryAuditLogRepository(),
         new FakeServiceItemRepository(),
+        new FakeCreditNoteRequestRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
@@ -2127,6 +2225,7 @@ describe('InvoiceService — C1-Fase C', () => {
         arRepo,
         auditLogRepo,
         new FakeServiceItemRepository(),
+        new FakeCreditNoteRequestRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
       return { service, invoiceRepo, arRepo, auditLogRepo, createNextVoucher, orderRepo, reservationRepo };
@@ -2206,6 +2305,7 @@ describe('InvoiceService — C1-Fase C', () => {
         arRepo,
         new InMemoryAuditLogRepository(),
         new FakeServiceItemRepository(),
+        new FakeCreditNoteRequestRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 

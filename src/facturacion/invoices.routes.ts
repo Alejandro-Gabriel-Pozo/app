@@ -57,6 +57,7 @@ import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/s
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
 import { SqlServiceItemRepository } from '../pos-menu/sql.service-item.repository.js';
+import { SqlCreditNoteRequestRepository } from './sql.credit-note-request.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
@@ -97,6 +98,10 @@ export function buildInvoiceService(req: Request): InvoiceService {
     // descripción de una línea de factura SERVICE, ver docblock del
     // constructor de InvoiceService.
     new SqlServiceItemRepository(db),
+    // Bloque 3 del ADR común cancelar-con-NC (15/09/2026) -- INSERT de
+    // credit_note_request dentro de buildCreditNote(), ver docblock del
+    // constructor de InvoiceService.
+    new SqlCreditNoteRequestRepository(db),
   );
 }
 
