@@ -120,6 +120,26 @@ const DEFINITION_FILES = new Set([
   'clientes-finanzas/sql.financial-transaction.repository.ts',
 ]);
 
+/**
+ * `credit_note_request` (schema v57, Bloque 1 del ADR común cancelar-con-NC
+ * -- repositorio + entidades, sin wiring en ningún orquestador todavía) tiene
+ * su PROPIA columna `reversed_invoice_id` -- "duplicado acá a propósito"
+ * respecto de `financial_transactions.reversed_invoice_id` (ver el docblock
+ * de `CREATE TABLE credit_note_request` en `schema.sql`: evita un JOIN solo
+ * para saber qué factura está en juego al listar la bandeja). Mismo NOMBRE
+ * de campo, TABLA distinta -- esta cerca lee el archivo entero sin distinguir
+ * a qué entidad pertenece el object literal (FN #1 del docblock de arriba),
+ * así que el mapeo columna↔entidad de `CreditNoteRequest.reversedInvoiceId`
+ * matchea el mismo regex que un write real de `financial_transactions` sin
+ * serlo. Mismo criterio que `DEFINITION_FILES`: exclusión por archivo,
+ * verificada a mano (15/09/2026) que ninguno de los dos toca
+ * `financial_transactions`.
+ */
+const OTHER_ENTITY_REVERSED_INVOICE_ID_FILES = new Set([
+  'facturacion/sql.credit-note-request.repository.ts',
+  'facturacion/in-memory.credit-note-request.repository.ts',
+]);
+
 /** Asignación de la propiedad `reversedInvoiceId` (key + `:`). Las lecturas
  *  (`.reversedInvoiceId` / `?.reversedInvoiceId`) no tienen `:` después del
  *  identificador y no matchean. */
@@ -170,7 +190,7 @@ describe('REVERSED-INVOICE-ID-CONVENTION-001 -- reversed_invoice_id sólo en fil
 
     for (const file of files) {
       const rel = relative(SRC_DIR, file).replace(/\\/g, '/');
-      if (DEFINITION_FILES.has(rel)) continue;
+      if (DEFINITION_FILES.has(rel) || OTHER_ENTITY_REVERSED_INVOICE_ID_FILES.has(rel)) continue;
       const code = stripComments(readFileSync(file, 'utf-8'));
       if (writeLines(code).length > 0) found.push(rel);
     }

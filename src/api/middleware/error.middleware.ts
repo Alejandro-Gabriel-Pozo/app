@@ -292,6 +292,13 @@ function domainErrorStatus(error: DomainError): number {
     // al 100% -> el ADJUSTMENT no se puede atribuir sin ambigüedad). Ninguno
     // llamó a AFIP todavía. El comentario va acá arriba, no entre los case
     // (no-fallthrough, ver bloque 402).
+    //
+    // Bloque 1 de `credit_note_request` (repositorio + entidades, schema v57,
+    // sin wiring en ningún orquestador todavía) -- CREDIT_NOTE_REQUEST_INVALID_TRANSITION
+    // (ver el case junto a CREDIT_NOTE_AMBIGUOUS_SUBJECT más abajo): transición
+    // inválida de la máquina de estados propia del workflow (A6.3). Mismo
+    // grupo semántico que INVALID_TRANSITION de más arriba: request bien
+    // formado, el estado actual del recurso no admite la operación.
     case 'INVALID_RESERVATION_CONFLICT':
     case 'ORDER_NOT_EDITABLE':
     case 'INVALID_TRANSITION':
@@ -350,6 +357,7 @@ function domainErrorStatus(error: DomainError): number {
     case 'CREDIT_NOTE_MIXED_STAY':
     case 'CREDIT_NOTE_CONSOLIDATED_FULL_REVERSAL':
     case 'CREDIT_NOTE_AMBIGUOUS_SUBJECT':
+    case 'CREDIT_NOTE_REQUEST_INVALID_TRANSITION':
       return 409;
 
     // --- 503 Service Unavailable ---

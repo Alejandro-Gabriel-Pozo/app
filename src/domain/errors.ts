@@ -1245,3 +1245,23 @@ export class CreditNoteAmbiguousSubjectError extends DomainError {
     );
   }
 }
+
+/**
+ * A6.3 (`docs/diseno-cancelacion-con-nota-credito-comun-2026-09-06.md`
+ * §6.5 bis, Bloque 1 -- repositorio + entidades de `credit_note_request`,
+ * sin wiring en ningún orquestador todavía) -- `transitionWithClient()`
+ * de `CreditNoteRequestRepository` pidió una transición que no figura en
+ * `ALLOWED_CREDIT_NOTE_REQUEST_TRANSITIONS`
+ * (`credit-note-request.entities.ts`) para el estado actual de la fila.
+ * Cubre tanto un intento de salir de `CERRADA` (A6.4, terminal) como
+ * cualquier otro salto no declarado -- nunca un UPDATE silencioso que dejaría
+ * la fila en un estado inconsistente con la máquina documentada en §6.5 bis.
+ */
+export class CreditNoteRequestInvalidTransitionError extends DomainError {
+  constructor(id: string, fromState: string, toState: string) {
+    super(
+      `La solicitud de Nota de Crédito "${id}" está en estado "${fromState}" -- no admite la transición a "${toState}".`,
+      'CREDIT_NOTE_REQUEST_INVALID_TRANSITION',
+    );
+  }
+}
