@@ -64,6 +64,7 @@ import type { IOrderRepository } from '../../pos-menu/order.repository.js';
 import type { Order } from '../../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../../pos-menu/product.repository.js';
 import type { Product, ProductVariant } from '../../pos-menu/product.entities.js';
+import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
 
 /** Mismo helper que `reservation-cancel-invoice-toctou.integration.test.ts` -- ver ese archivo para el razonamiento completo. */
 async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ settled: boolean }> {
@@ -158,6 +159,7 @@ describe.skipIf(skipIfNoDb)('FACT-CONSOL-TOCTOU-01 -- TOCTOU entre cancelReserva
       pgTxManager,
       arRepo,
       new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
       () => buildArcaBillingAdapter(fakeArcaClient()),
     );
   }, 90_000);

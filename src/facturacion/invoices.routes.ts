@@ -56,6 +56,7 @@ import { SqlOrderRepository } from '../pos-menu/sql.order.repository.js';
 import { SqlProductRepository, SqlProductVariantRepository } from '../pos-menu/sql.product.repository.js';
 import { SqlReservationRepository } from '../reservas/sql.reservation.repository.js';
 import { SqlResourceRepository } from '../reservas/sql.resource.repository.js';
+import { SqlServiceItemRepository } from '../pos-menu/sql.service-item.repository.js';
 import { buildTenantTransactionManager } from '../db/tenant-context.js';
 import { SaveAfipCredentialsSchema, RequestInvoiceSchema, RequestConsolidatedInvoiceSchema } from '../api/schemas/facturacion.schemas.js';
 import { SqlAccountsReceivableRepository } from '../clientes-finanzas/sql.accounts-receivable.repository.js';
@@ -92,6 +93,10 @@ export function buildInvoiceService(req: Request): InvoiceService {
     // I9 (24/08/2026) -- quién pidió cada comprobante, ver docblock del
     // constructor de InvoiceService.
     new SqlAuditLogRepository(db),
+    // Bloque D de `service_items` (15/09/2026) -- resuelve nombre/
+    // descripción de una línea de factura SERVICE, ver docblock del
+    // constructor de InvoiceService.
+    new SqlServiceItemRepository(db),
   );
 }
 

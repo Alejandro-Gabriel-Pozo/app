@@ -1,22 +1,22 @@
 /**
- * @file invoice-order-reservation-item.integration.test.ts
- * @description `INVOICE-ITEM-ORIGIN-XOR-001` (11/09/2026, gate
- * `architecture-governor`) -- ejercita el PRODUCTOR real
- * (`InvoiceService.resolveOrderItemLine()` vía `requestInvoice()`) para una
- * orden que contiene un `order_item` de tipo `RESERVATION`, contra Postgres
- * real. Cierra el hueco exacto que dejó pasar el defecto original:
- * `credit-note-lines.integration.test.ts` sí seedea un `order_item`
- * `RESERVATION`, pero inserta el `invoice_item` A MANO
- * (`reservation_id = NULL`), sin pasar nunca por `resolveOrderItemLine()`.
- * Acá el `invoice_item` lo escribe el código de producción, no el test.
+ * @file invoice-order-service-item.integration.test.ts
+ * @description Bloque D de `service_items` (15/09/2026,
+ * docs/diseno-factura-borrador-2026-08-31.md §29.6 punto 17) -- ejercita
+ * el PRODUCTOR real (`InvoiceService.resolveOrderItemLine()` vía
+ * `requestInvoice()`) para una orden que contiene un `order_item` de tipo
+ * `SERVICE`, contra Postgres real. Mismo patrón que
+ * `invoice-order-reservation-item.integration.test.ts` (XOR-001), que
+ * cierra el hueco análogo para RESERVATION.
  *
- * Antes del fix (`reservationId: item.reservationId` en la rama RESERVATION
- * de `resolveOrderItemLine()`), este test reventaba con Postgres 23514
- * (`chk_invoice_item_origin`) -- reproducido en la investigación previa a
- * este bloque con un script descartable, no commiteado. Después del fix
- * (`reservationId: null`), `requestInvoice()` tiene que completar y la fila
- * de `invoice_items` resultante debe tener `orderItemId` seteado y
- * `reservationId` null.
+ * Antes del fix, un `order_item` SERVICE no tenía `productId` ni
+ * `productVariantId` (`chk_order_item_polymorphic_service` ya exige
+ * `serviceItemId` NOT NULL para este itemType) -- `resolveOrderItemLine()`
+ * caía al `else` de PRODUCT/PRODUCT_VARIANT, `product`/`variant` quedaban
+ * `null`, y la descripción de la línea de factura caía al fallback
+ * literal `'Producto'`: un bug real de facturación, no cosmético
+ * (antipatrón `honest-degradation` -- "plausible y mal" en vez de fallar
+ * ruidoso). Después del fix, la descripción es el `name` real del
+ * `service_item` referenciado.
  *
  * ## Requisito de entorno
  * TEST_DATABASE_URL=postgres://user:pass@localhost:5432/postgres
@@ -33,7 +33,7 @@ vi.mock('../../logger.js', () => ({
 }));
 
 import { createTestDatabase, dropTestDatabase, skipIfNoDb } from './helpers/db.js';
-import { seedCategory, seedResource, seedCustomer, seedReservation } from './helpers/seed.js';
+import { seedCustomer } from './helpers/seed.js';
 import type { SqlClient } from '../../repositories/sql.client.js';
 import { PgTransactionManager } from '../../db/pg.transaction-manager.js';
 
@@ -54,6 +54,7 @@ import { SqlFinancialTransactionRepository } from '../../clientes-finanzas/sql.f
 import { SqlInvoiceRepository } from '../../facturacion/sql.invoice.repository.js';
 
 import { InvoiceService } from '../../facturacion/invoice.service.js';
+import { ServiceItemNotFoundError } from '../../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B } from '../../facturacion/afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from '../../facturacion/arca-sdk-billing.adapter.js';
 import type { AfipCredentialsRepository, AfipCredentials, AfipCredentialsStatus, AfipTicketCache } from '../../facturacion/afip-credentials.repository.js';
@@ -61,8 +62,9 @@ import type { AccountsReceivableRepository, AccountReceivable } from '../../clie
 import type { ReservationRepository } from '../../reservas/reservation.repository.js';
 import type { Reservation } from '../../reservas/Reservation.js';
 
-const BIZ = 'biz-inv-order-res-item';
-const LOC = 'loc-inv-order-res-item';
+const BIZ = 'biz-inv-order-svc-item';
+const LOC = 'loc-inv-order-svc-item';
+const SVC1 = 'svc-item-inv-1';
 
 class FakeAfipCredentialsRepository implements AfipCredentialsRepository {
   async getStatus(): Promise<AfipCredentialsStatus> { return { configured: true, environment: 'homologacion' }; }
@@ -79,7 +81,6 @@ class FakeAccountsReceivableRepo implements Pick<
 > {
   async getByFinancialTransactionId(): Promise<AccountReceivable | undefined> { return undefined; }
   async getPendingByCompanyCustomerId(): Promise<AccountReceivable[]> { return []; }
-  /** §9.4 (13/09/2026) -- exposición de AR viva en `requestInvoice()`; este archivo no la ejercita. */
   async getByStayId(): Promise<AccountReceivable[]> { return []; }
   async markInvoiced(): Promise<AccountReceivable | undefined> { return undefined; }
 }
@@ -110,7 +111,7 @@ function fakeArcaClientOk(): Arca {
   } as unknown as Arca;
 }
 
-describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden con order_item RESERVATION contra Postgres real', () => {
+describe.skipIf(skipIfNoDb)('Bloque D service_items -- facturar una orden con order_item SERVICE contra Postgres real', () => {
   let db: SqlClient;
   let pool: pg.Pool;
   let dbName: string;
@@ -123,8 +124,11 @@ describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden c
   beforeAll(async () => {
     ({ db, pool, dbName } = await createTestDatabase());
 
-    await db.query(`INSERT INTO locations (id, name) VALUES ($1,'XOR-001')`, [LOC]);
+    await db.query(`INSERT INTO locations (id, name) VALUES ($1,'INV-SVC-ITEM')`, [LOC]);
     await db.query(`UPDATE business_profile SET tax_id = '20111111112', afip_sales_point = 3`);
+    await db.query(
+      `INSERT INTO service_items (id, business_id, name, price)
+       VALUES ($1,$2,'Cargo por cancelación',75)`, [SVC1, BIZ]);
 
     const pgTxManager = new PgTransactionManager(pool);
     const orderRepo = new SqlOrderRepository(db);
@@ -133,6 +137,7 @@ describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden c
     const productRepo = new SqlProductRepository(db);
     const productVariantRepo = new SqlProductVariantRepository(db);
     const businessProfileRepo = new SqlBusinessProfileRepository(db);
+    const serviceItemRepo = new SqlServiceItemRepository(db);
 
     const productService = new ProductService(
       productRepo, productVariantRepo, new SqlAuditLogRepository(db), new SqlInventoryLevelRepository(db), pgTxManager,
@@ -140,24 +145,20 @@ describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden c
     orderService = new OrderService(
       orderRepo, pgTxManager, new SqlDomainEventRepository(db), productService,
       new RecipeService(new SqlRecipeItemRepository(db), productRepo, productVariantRepo),
-      new OrderPricingService(productService, new SqlCustomerRateRepository(db), new SqlServiceItemRepository(db)),
+      new OrderPricingService(productService, new SqlCustomerRateRepository(db), serviceItemRepo),
       financialRepo, invoiceRepo,
       new SqlAuditLogRepository(db),
     );
 
-    // 1c-ii-a -- UNA sola instancia de mock persistente entre llamadas
-    // (mismo patrón que `credit-note-pair-cap.integration.test.ts`): el
-    // archivo original solo tenía 1 test, así que `() => fakeArcaClientOk()`
-    // (una closure NUEVA, con `nextNro` reseteado a 10, por cada llamada del
-    // factory) nunca colisionaba. Con más de un `requestInvoice()` real en
-    // el archivo, cada uno volvía a pedir `cbteNro=10/11` -> duplicado en
-    // `idx_invoices_talonario`.
+    // Mismo motivo que invoice-order-reservation-item.integration.test.ts --
+    // UNA sola instancia de mock persistente entre llamadas para no chocar
+    // contra idx_invoices_talonario si esta suite gana un segundo test.
     const sharedArcaClient = fakeArcaClientOk();
     invoiceService = new InvoiceService(
       invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
-      new SqlServiceItemRepository(db),
+      serviceItemRepo,
       () => buildArcaBillingAdapter(sharedArcaClient),
     );
   }, 60_000);
@@ -165,101 +166,87 @@ describe.skipIf(skipIfNoDb)('INVOICE-ITEM-ORIGIN-XOR-001 -- facturar una orden c
   afterAll(async () => { await dropTestDatabase(dbName, pool); });
 
   it(
-    'requestInvoice() para una orden con un ítem RESERVATION completa -- antes del fix reventaba con 23514 (chk_invoice_item_origin)',
+    'requestInvoice() para una orden con un ítem SERVICE usa el nombre REAL del service_item en la descripción -- no el fallback "Producto"',
     async () => {
-      const category = await seedCategory(db);
-      const resource = await seedResource(db, category.id);
       const customer = await seedCustomer(db);
-      const reservation = await seedReservation(db, resource.id, customer.id);
 
       const order = await orderService.createOrder({
         businessId: BIZ, customerId: customer.id, locationId: LOC,
-        items: [{
-          itemType: 'RESERVATION', reservationId: reservation.id,
-          productId: null, productVariantId: null,
-          quantity: 1, unitPrice: 100,
-        }],
+        items: [{ itemType: 'SERVICE', serviceItemId: SVC1, quantity: 1 }],
       });
-      await orderService.confirmOrder(order.id, 'user-xor-001');
+      await orderService.confirmOrder(order.id, 'user-svc-item');
 
       const charge = await financialRepo.create({
         id: randomUUID(), businessId: BIZ, customerId: customer.id, orderId: order.id,
-        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+        type: 'CHARGE', amount: 75, currency: 'ARS', status: 'PENDING',
       });
 
-      // Antes del fix, esto rechazaba con un error de Postgres (23514) --
-      // el INSERT de invoice_items violaba chk_invoice_item_origin porque
-      // resolveOrderItemLine() seteaba orderItemId Y reservationId a la vez.
       const invoice = await invoiceService.requestInvoice({
-        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-xor-001',
+        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-svc-item',
       });
       expect(invoice.status).toBe('ISSUED');
 
       const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
       expect(items).toHaveLength(1);
+      // El bug real: antes de este bloque, esto daba 'Producto' -- el
+      // fallback literal de la rama PRODUCT/PRODUCT_VARIANT, alcanzado
+      // porque un SERVICE no tiene productId/productVariantId.
+      expect(items[0]!.description).toBe('Cargo por cancelación');
+      expect(items[0]!.description).not.toBe('Producto');
+      // Mismo XOR que RESERVATION/PRODUCT: nace de un order_item.
       expect(items[0]!.orderItemId).not.toBeNull();
-      // El invariante que chk_invoice_item_origin exige a nivel base --
-      // reservationId debe ser null cuando orderItemId no lo es.
       expect(items[0]!.reservationId).toBeNull();
+      // §29.6 punto 17 -- service_items no tiene columnas unit/arca_unit_code
+      // propias, explícito en null/null (no se resuelve en este bloque).
+      expect(items[0]!.unit).toBeNull();
+      expect(items[0]!.arcaUnitCode).toBeNull();
     },
     30_000,
   );
 
   it(
-    '1c-ii-a (11/09/2026) -- getOrderIdsByInvoiceItemId() resuelve el order_id real vía JOIN invoice_items.order_item_id -> order_items.order_id',
+    'requestInvoice() rechaza VISIBLE (ServiceItemNotFoundError) si el service_item referenciado por el order_item no existe -- no repite el bug con un fallback distinto',
     async () => {
-      const category = await seedCategory(db);
-      const resource = await seedResource(db, category.id);
       const customer = await seedCustomer(db);
-      const reservation = await seedReservation(db, resource.id, customer.id);
 
       const order = await orderService.createOrder({
         businessId: BIZ, customerId: customer.id, locationId: LOC,
-        items: [{
-          itemType: 'RESERVATION', reservationId: reservation.id,
-          productId: null, productVariantId: null,
-          quantity: 1, unitPrice: 100,
-        }],
+        items: [{ itemType: 'SERVICE', serviceItemId: SVC1, quantity: 1 }],
       });
-      await orderService.confirmOrder(order.id, 'user-xor-001');
+      await orderService.confirmOrder(order.id, 'user-svc-item');
+
+      // Referencia rota simulada: el service_item se borra permanentemente
+      // DESPUÉS de que el order_item ya lo referenciaba (dato corrupto --
+      // el escenario que honest-degradation pide manejar fail-loud, no
+      // silencioso). ON DELETE RESTRICT normalmente lo impediría; se
+      // simula acá desactivando temporalmente el constraint para reproducir
+      // el estado de dato corrupto sin depender de un camino de borrado
+      // real que hoy no existe (DELETE /api/service-items/:id es soft).
+      // El trigger que hace valer ON DELETE RESTRICT vive en la tabla
+      // REFERENCIADA (service_items), no en order_items -- se dispara al
+      // borrar de service_items, no al tocar order_items.
+      await db.query('ALTER TABLE service_items DISABLE TRIGGER ALL');
+      try {
+        await db.query('DELETE FROM service_items WHERE id = $1', [SVC1]);
+      } finally {
+        await db.query('ALTER TABLE service_items ENABLE TRIGGER ALL');
+      }
 
       const charge = await financialRepo.create({
         id: randomUUID(), businessId: BIZ, customerId: customer.id, orderId: order.id,
-        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
+        type: 'CHARGE', amount: 75, currency: 'ARS', status: 'PENDING',
       });
-      const invoice = await invoiceService.requestInvoice({
-        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-xor-001',
-      });
-      expect(invoice.status).toBe('ISSUED');
 
-      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
-      const orderIds = await invoiceRepo.getOrderIdsByInvoiceItemId(invoice.id);
+      await expect(invoiceService.requestInvoice({
+        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-svc-item',
+      })).rejects.toThrow(ServiceItemNotFoundError);
 
-      expect(orderIds.size).toBe(1);
-      expect(orderIds.get(items[0]!.id)).toBe(order.id);
-    },
-    30_000,
-  );
-
-  it(
-    '1c-ii-a -- getOrderIdsByInvoiceItemId() en una factura de RESERVA directa (sin order_item): Map vacío, no confunde el origen',
-    async () => {
-      const category = await seedCategory(db);
-      const resource = await seedResource(db, category.id);
-      const customer = await seedCustomer(db);
-      const reservation = await seedReservation(db, resource.id, customer.id);
-
-      const charge = await financialRepo.create({
-        id: randomUUID(), businessId: BIZ, customerId: customer.id, reservationId: reservation.id,
-        type: 'CHARGE', amount: 100, currency: 'ARS', status: 'PENDING',
-      });
-      const invoice = await invoiceService.requestInvoice({
-        businessId: BIZ, financialTransactionId: charge!.id, changedBy: 'user-xor-001',
-      });
-      expect(invoice.status).toBe('ISSUED');
-
-      const orderIds = await invoiceRepo.getOrderIdsByInvoiceItemId(invoice.id);
-      expect(orderIds.size).toBe(0);
+      // Restaura el catálogo para no romper otros tests de esta suite si
+      // se agregan más adelante en el mismo archivo.
+      await db.query(
+        `INSERT INTO service_items (id, business_id, name, price) VALUES ($1,$2,'Cargo por cancelación',75)`,
+        [SVC1, BIZ],
+      );
     },
     30_000,
   );

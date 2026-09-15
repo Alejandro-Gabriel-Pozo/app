@@ -29,6 +29,7 @@ import type { BusinessProfile } from '../domain/business-profile.entities.js';
 import type { IOrderRepository } from '../pos-menu/order.repository.js';
 import type { OrderItem } from '../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../pos-menu/product.repository.js';
+import type { ServiceItemRepository } from '../pos-menu/service-item.repository.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import { ReservationStatus } from '../types/enums.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
@@ -60,6 +61,7 @@ import {
   CreditNoteAttributionBlockedError,
   CreditNoteAttributionMismatchError,
   CreditNoteAmbiguousSubjectError,
+  ServiceItemNotFoundError,
 } from '../domain/errors.js';
 import { resolveRefundableForPair, type FrozenInvoiceItemShare } from './refund-attribution.js';
 import { round2 } from '../domain/money.js';
@@ -196,6 +198,19 @@ export class InvoiceService {
      * (`retryExisting()`) NO vuelve a auditar -- no crea una fila nueva.
      */
     private readonly auditLogRepo: AuditLogRepository,
+    /**
+     * Bloque D de `service_items` (15/09/2026,
+     * docs/diseno-factura-borrador-2026-08-31.md §29.6 punto 17, decisión
+     * del dueño vía `AskUserQuestion`) -- resuelve nombre/descripción para
+     * la línea de factura de un `order_item` `SERVICE`, mismo patrón que
+     * `productRepo`/`productVariantRepo`/`reservationRepo`. Antes de este
+     * bloque, `resolveOrderItemLine()` no tenía ninguna rama para SERVICE:
+     * caía al `else` de PRODUCT/PRODUCT_VARIANT, `product`/`variant`
+     * quedaban `null` y la descripción caía al fallback literal
+     * `'Producto'` -- antipatrón `honest-degradation` ("plausible y mal"
+     * en vez de fallar ruidoso). Ver `resolveOrderItemLine()`.
+     */
+    private readonly serviceItemRepo: Pick<ServiceItemRepository, 'findById'>,
     private readonly clientFactory: AfipBillingPortFactory = buildDefaultAfipBillingPort,
   ) {}
 
@@ -333,6 +348,44 @@ export class InvoiceService {
         subtotal: item.subtotal,
         // D8 nunca extendió IVA-por-ítem a reservas -- solo productos.
         ivaRate: profile.defaultIvaRate,
+        unit: null,
+        arcaUnitCode: null,
+      };
+    }
+
+    if (item.itemType === 'SERVICE') {
+      // Bloque D de `service_items` (15/09/2026, §29.6 punto 17). Antes de
+      // este fix, un ítem SERVICE no tenía `productId` ni `productVariantId`
+      // (chk_order_item_polymorphic ya exige `serviceItemId` NOT NULL para
+      // este itemType) -- caía al `else` de abajo, `product`/`variant`
+      // quedaban `null`, y la descripción caía al fallback literal
+      // `'Producto'`: un bug real, no cosmético (honest-degradation). Si el
+      // `service_item` referenciado no existe (dato corrupto/referencia
+      // rota), esto falla VISIBLE con `ServiceItemNotFoundError` en vez de
+      // repetir el mismo antipatrón con un fallback silencioso distinto.
+      const serviceItem = item.serviceItemId ? await this.serviceItemRepo.findById(item.serviceItemId) : null;
+      if (!serviceItem) throw new ServiceItemNotFoundError(item.serviceItemId ?? item.id);
+
+      return {
+        orderItemId: item.id,
+        // Mismo XOR que la rama RESERVATION de arriba y la de PRODUCT/
+        // PRODUCT_VARIANT de abajo -- confirmado sin cambios, §29.6 punto 18:
+        // un ítem SERVICE factura igual que PRODUCT/PRODUCT_VARIANT (nace de
+        // un order_item, ESE es su origen documental).
+        reservationId: null,
+        description: serviceItem.name,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        subtotal: item.subtotal,
+        ivaRate: item.ivaRate ?? profile.defaultIvaRate,
+        // `service_items` no tiene columnas `unit`/`arca_unit_code` propias
+        // (Bloque B del schema, `service-item.entities.ts`) -- a diferencia
+        // de `products`, no hay equivalente que resolver acá. Explícito en
+        // `null`/`null`, no un valor inventado: puede o no ser correcto para
+        // AFIP, y ESO no se resuelve en este bloque (§29.6 punto 17,
+        // diseño). No reintroduce el bug: el bug era la DESCRIPCIÓN cayendo
+        // a `'Producto'`, no estos dos campos, que ya eran `null`/`null`
+        // para RESERVATION también (ver arriba).
         unit: null,
         arcaUnitCode: null,
       };

@@ -76,6 +76,7 @@ import type { IOrderRepository } from '../../pos-menu/order.repository.js';
 import type { Order } from '../../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../../pos-menu/product.repository.js';
 import type { Product, ProductVariant } from '../../pos-menu/product.entities.js';
+import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
 
 const BIZ = 'biz-cancel-res-cn';
 const ACTOR = 'user-cancel-res-cn';
@@ -194,6 +195,7 @@ describe.skipIf(skipIfNoDb)('Bloque 3.3-b1 -- cancelReservationWithCreditNote() 
       new FakeOrderRepository(), new FakeProductRepository(), new FakeProductVariantRepository(),
       reservationRepo,
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }

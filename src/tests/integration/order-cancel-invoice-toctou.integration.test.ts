@@ -256,6 +256,7 @@ describe.skipIf(skipIfNoDb)('ORDER-10 -- TOCTOU entre cancelOrder() y requestInv
       pgTxManager,
       new FakeAccountsReceivableRepo(),
       new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
       () => buildArcaBillingAdapter(fakeArcaClient()),
     );
   }, 60_000);

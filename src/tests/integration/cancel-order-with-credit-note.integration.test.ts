@@ -218,6 +218,7 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new FakeAccountsReceivableRepo(), new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }
@@ -234,6 +235,7 @@ describe.skipIf(skipIfNoDb)('ADR cancelar-con-NC sub-bloque 4 -- cancelOrderWith
       invoiceRepo, financialRepo, businessProfileRepo, new FakeAfipCredentialsRepository(),
       orderRepo, productRepo, productVariantRepo, new FakeReservationRepository(),
       pgTxManager, new SqlAccountsReceivableRepository(db), new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
       () => buildArcaBillingAdapter(arcaFactory()),
     );
   }

@@ -13,11 +13,13 @@ import type { IOrderRepository } from '../pos-menu/order.repository.js';
 import type { Order } from '../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../pos-menu/product.repository.js';
 import type { Product, ProductVariant } from '../pos-menu/product.entities.js';
+import type { ServiceItemRepository } from '../pos-menu/service-item.repository.js';
+import type { ServiceItem } from '../pos-menu/service-item.entities.js';
 import type { ReservationRepository } from '../reservas/reservation.repository.js';
 import type { Reservation } from '../reservas/Reservation.js';
 import type { TransactionManager } from '../db/transaction-manager.js';
 import type { SqlClient } from '../repositories/sql.client.js';
-import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError } from '../domain/errors.js';
+import { AfipNotConfiguredError, FinancialTransactionNotFoundError, AfipRequestRejectedError, AfipRequestUncertainError, UnsupportedIvaRateError, InvoiceNotReversibleError, NothingToInvoiceError, AccountsReceivableAlreadyInvoicedError, InvoiceAlreadyLinkedByOtherPathError, OrderCancelledCannotInvoiceError, ReservationCancelledCannotInvoiceError, OrderInvoiceHasNoLinesError, ServiceItemNotFoundError } from '../domain/errors.js';
 import { CBTE_TIPO_FACTURA_B, CBTE_TIPO_NOTA_CREDITO_B, CBTE_TIPOS_NOTA_CREDITO } from './afip-catalog.constants.js';
 import { buildArcaBillingAdapter } from './arca-sdk-billing.adapter.js';
 import { InMemoryAuditLogRepository } from '../repositories/in-memory.audit-log.repository.js';
@@ -250,6 +252,16 @@ class FakeReservationRepository implements Pick<ReservationRepository, 'getById'
   }
 }
 
+/**
+ * Bloque D de `service_items` (15/09/2026, §29.6 punto 17) -- fake mínimo
+ * para armar la línea de factura de un `order_item` SERVICE. Mismo patrón
+ * que `FakeProductRepository`/`FakeReservationRepository` de arriba.
+ */
+class FakeServiceItemRepository implements Pick<ServiceItemRepository, 'findById'> {
+  constructor(private readonly items: Map<string, ServiceItem> = new Map()) {}
+  async findById(id: string): Promise<ServiceItem | null> { return this.items.get(id) ?? null; }
+}
+
 class FakeTransactionManager implements TransactionManager {
   async run<T>(work: (client: SqlClient) => Promise<T>): Promise<T> {
     return work({} as SqlClient);
@@ -390,6 +402,8 @@ describe('InvoiceService', () => {
     productVariants?: Map<string, ProductVariant>;
     /** D8-Nivel B -- solo hace falta cuando `tx.reservationId` está seteado (factura directa de una reserva). */
     reservation?: Reservation | null;
+    /** Bloque D de `service_items` -- solo hace falta cuando `order` trae ítems SERVICE. */
+    serviceItems?: Map<string, ServiceItem>;
   } = {}) {
     const client = opts.client ?? fakeArcaClient();
     return new InvoiceService(
@@ -404,6 +418,7 @@ describe('InvoiceService', () => {
       new FakeTransactionManager(),
       arRepo,
       auditLogRepo,
+      new FakeServiceItemRepository(opts.serviceItems),
       // buildService sigue armando un Arca fake (fakeArcaClient) igual que
       // antes del puerto/adapter -- se envuelve acá para que los ~16 usos
       // existentes de fakeArcaClient({...}) en esta suite no necesiten
@@ -520,6 +535,7 @@ describe('InvoiceService', () => {
         new FakeTransactionManager(),
         arRepo,
         new InMemoryAuditLogRepository(),
+        new FakeServiceItemRepository(),
         clientFactory,
       );
 
@@ -542,6 +558,7 @@ describe('InvoiceService', () => {
         new FakeTransactionManager(),
         arRepo,
         new InMemoryAuditLogRepository(),
+        new FakeServiceItemRepository(),
         clientFactory,
       );
 
@@ -744,8 +761,9 @@ describe('InvoiceService', () => {
   // ---------------------------------------------------------------------------
   describe('D8-Nivel B -- líneas reales del comprobante', () => {
     function makeOrderItem(overrides: Partial<{
-      subtotal: number; ivaRate: number | null; itemType: 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION';
-      productId: string | null; productVariantId: string | null; reservationId: string | null; quantity: number;
+      subtotal: number; ivaRate: number | null; itemType: 'PRODUCT' | 'PRODUCT_VARIANT' | 'RESERVATION' | 'SERVICE';
+      productId: string | null; productVariantId: string | null; reservationId: string | null;
+      serviceItemId: string | null; quantity: number;
     }> = {}) {
       return {
         id: `oi-${Math.random()}`, orderId: 'ord-1',
@@ -753,11 +771,19 @@ describe('InvoiceService', () => {
         productId: overrides.productId !== undefined ? overrides.productId : 'prod-1',
         productVariantId: overrides.productVariantId ?? null,
         reservationId: overrides.reservationId ?? null,
+        serviceItemId: overrides.serviceItemId ?? null,
         quantity: overrides.quantity ?? 1,
         unitPrice: overrides.subtotal ?? 100, subtotal: overrides.subtotal ?? 100,
         notes: null, stockSnapshot: null, ivaRate: overrides.ivaRate ?? null,
         appliedCustomerRateId: null,
         createdAt: new Date(), updatedAt: new Date(),
+      };
+    }
+
+    function makeServiceItemFake(id: string, name: string): ServiceItem {
+      return {
+        id, businessId: 'biz-1', categoryId: null, name, description: null,
+        price: 100, active: true, deletedAt: null, createdAt: new Date(), updatedAt: new Date(),
       };
     }
 
@@ -847,6 +873,60 @@ describe('InvoiceService', () => {
       // resolveOrderItemLine()). El nombre del recurso de la reserva se
       // sigue resolviendo bien para la descripción -- eso no cambia.
       expect(items[0]).toMatchObject({ description: 'Mesa Ventana', orderItemId: expect.any(String), reservationId: null });
+    });
+
+    /**
+     * Bloque D de `service_items` (15/09/2026, §29.6 punto 17). Antes de
+     * este fix, un ítem SERVICE caía al `else` de PRODUCT/PRODUCT_VARIANT
+     * -- `product`/`variant` quedaban `null` y la descripción caía al
+     * fallback literal `'Producto'`. Este test es el "mutation test" que
+     * el bloque de verificación pide: revertir solo el fix (volver al
+     * fallback) lo pone en rojo.
+     */
+    it('un ítem SERVICE dentro de una orden usa el nombre real del service_item, no el fallback "Producto"', async () => {
+      const createNextVoucher = vi.fn().mockResolvedValue(afipApprovedResponse(1));
+      const serviceItems = new Map<string, ServiceItem>([
+        ['svc-1', makeServiceItemFake('svc-1', 'Cargo por cancelación')],
+      ]);
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, itemType: 'SERVICE', productId: null, serviceItemId: 'svc-1' })],
+        } as unknown as Order,
+        serviceItems,
+        client: fakeArcaClient({ createNextVoucher }),
+      });
+
+      const invoice = await service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' });
+
+      const items = await invoiceRepo.getItemsByInvoiceId(invoice.id);
+      expect(items[0]).toMatchObject({
+        description: 'Cargo por cancelación', // no 'Producto' -- ese era el bug
+        orderItemId: expect.any(String), reservationId: null,
+        unit: null, arcaUnitCode: null, // service_items no tiene columnas equivalentes -- §29.6 punto 17
+      });
+      expect(items[0]?.description).not.toBe('Producto');
+    });
+
+    it('un ítem SERVICE con service_item referenciado inexistente falla VISIBLE (honest-degradation), no cae al fallback "Producto"', async () => {
+      const service = buildService({
+        tx: makeTx({ amount: 121, orderId: 'ord-1' }),
+        profile: makeProfile({ pricesIncludeIva: true, defaultIvaRate: 21 }),
+        order: {
+          id: 'ord-1', businessId: 'biz-1', customerId: 'cust-1', status: 'CONFIRMED', totalAmount: 121,
+          notes: null, stayId: null, locationId: 'loc-1', confirmedAt: new Date(), cancelledAt: null,
+          completedAt: null, servedAt: null,
+          items: [makeOrderItem({ subtotal: 121, itemType: 'SERVICE', productId: null, serviceItemId: 'svc-inexistente' })],
+        } as unknown as Order,
+        serviceItems: new Map(), // vacío -- referencia rota
+      });
+
+      await expect(service.requestInvoice({ businessId: 'biz-1', financialTransactionId: 'ft-1', changedBy: 'identity-1' }))
+        .rejects.toThrow(ServiceItemNotFoundError);
     });
 
     it('una reserva facturada directo (sin orderId) arma UNA línea con tx.amount, no reservation.totalPrice', async () => {
@@ -1981,6 +2061,7 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeTransactionManager(),
         arRepo,
         new InMemoryAuditLogRepository(),
+        new FakeServiceItemRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
@@ -2006,6 +2087,7 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeTransactionManager(),
         arRepo,
         new InMemoryAuditLogRepository(),
+        new FakeServiceItemRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 
@@ -2044,6 +2126,7 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeTransactionManager(),
         arRepo,
         auditLogRepo,
+        new FakeServiceItemRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
       return { service, invoiceRepo, arRepo, auditLogRepo, createNextVoucher, orderRepo, reservationRepo };
@@ -2122,6 +2205,7 @@ describe('InvoiceService — C1-Fase C', () => {
         new FakeTransactionManager(),
         arRepo,
         new InMemoryAuditLogRepository(),
+        new FakeServiceItemRepository(),
         () => buildArcaBillingAdapter(fakeArcaClient({ createNextVoucher })),
       );
 

@@ -58,6 +58,7 @@ import type { IOrderRepository } from '../../pos-menu/order.repository.js';
 import type { Order } from '../../pos-menu/order.entities.js';
 import type { IProductRepository, IProductVariantRepository } from '../../pos-menu/product.repository.js';
 import type { Product, ProductVariant } from '../../pos-menu/product.entities.js';
+import { SqlServiceItemRepository } from '../../pos-menu/sql.service-item.repository.js';
 
 /** Mismo helper que `for-key-share-lock-semantics.integration.test.ts` --
  *  ver ese archivo para el razonamiento completo (los dos brazos, por qué
@@ -182,6 +183,7 @@ describe.skipIf(skipIfNoDb)('RESERVA-10 -- TOCTOU entre cancelReservation() y re
       pgTxManager,
       new FakeAccountsReceivableRepo(),
       new SqlAuditLogRepository(db),
+      new SqlServiceItemRepository(db),
       () => buildArcaBillingAdapter(fakeArcaClient()),
     );
   }, 90_000);
